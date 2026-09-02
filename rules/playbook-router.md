@@ -11,7 +11,6 @@ knowledge/cards/
 knowledge/payloads/
 knowledge/playbooks/
 rules/
-skills/security-arsenal/references/
 ```
 
 原始外部笔记、CTF 题解、payload 字典和本机绝对路径不参与默认路由。若需要追溯
@@ -68,7 +67,7 @@ skills/security-arsenal/references/
 
 ```text
 Evidence: 当前命中的 URL / 参数 / token / header / source path / response diff
-Reference: 本表对应的项目知识卡、payload pack、playbook 或规则路径
+Reference: 本表对应的项目知识卡、playbook 或规则路径
 Next action: 一个最小可 replay 的请求、角色差异测试、OAST probe 或 source grep
 Stop condition: 何时放弃该方向
 ```

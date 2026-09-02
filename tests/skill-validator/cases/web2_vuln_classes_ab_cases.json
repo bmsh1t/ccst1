@@ -1,8 +1,8 @@
 {
   "meta": {
-    "purpose": "Deterministic A/B for web2-vuln-classes: compare context_pack cards/references alone against cards/references plus skills/web2-vuln-classes/SKILL.md.",
+    "purpose": "Deterministic A/B for web2-vuln-classes: compare context_pack project cards alone against project cards plus skills/web2-vuln-classes/SKILL.md.",
     "arms": {
-      "baseline": "context_pack selected knowledge cards, reference_hints, required checks, and hypothesis_seeds only",
+      "baseline": "context_pack selected knowledge cards, required checks, and hypothesis_seeds only",
       "enhanced": "baseline plus skills/web2-vuln-classes/SKILL.md"
     },
     "scoring": "route checks use context_pack output; signal checks search for concrete evidence-gate, stop-condition, script-action, and chain-connector terms in each arm's loaded material.",

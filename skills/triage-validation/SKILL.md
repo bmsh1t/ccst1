@@ -210,7 +210,7 @@ Run in sequence. ALL 4 must PASS.
 ### Gate 3: Report Quality
 ```
 [ ] Title: [Bug Class] in [Endpoint] allows [actor] to [impact]
-[ ] Steps to Reproduce: copy-pasteable HTTP request
+[ ] Steps to Reproduce: exact replayable artifact (HTTP when applicable; browser, frame, state, or OOB equivalent otherwise)
 [ ] Evidence: target-bound artifact showing the actual impact (not just a status code)
 [ ] Severity: matches the recorded `cvss.version`/`cvss.score`/`cvss.vector` and program definitions
 [ ] NEVER used "could potentially" or "may allow"
@@ -366,7 +366,7 @@ quote 必须是该行可执行、具有 guard 形态的代码；文件缺失、�
 
 The goal is to QUICKLY disqualify bad report candidates so you hunt real bugs:
 
-1. **Evidence-completeness rule**: If Q1 cannot be filled with a real target-bound request and observable result, preserve the Candidate and route it to DO_NOT_REPORT or a concrete next evidence action
+1. **Evidence-completeness rule**: If Q1 cannot be filled with a real target-bound replayable artifact and observable result, preserve the Candidate and route it to DO_NOT_REPORT or a concrete next evidence action
 2. **Precondition clarity**: Record every required precondition and its
    reachability; there is no universal numeric cutoff.
 3. **Impact test**: "What does attacker walk away with?" — if nothing tangible → do not report

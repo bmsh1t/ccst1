@@ -2,6 +2,11 @@
 
 ## Scope
 
+> **Historical baseline:** This report documents the prior on-demand reference
+> design. Those generic reference files were retired on 2026-09-02 after the
+> project adopted the AI-first policy that the model supplies general technique
+> knowledge. Current project-specific rules live in governed Skills and cards.
+
 This report validates commit `39bf09b refactor: slim bug bounty skill`, which slimmed `skills/bug-bounty/SKILL.md` and moved repeated tables into on-demand `skills/security-arsenal/references/*.md` files.
 
 The goal was not to add new exploit capability. The goal was to reduce default context load, keep the broad skill as a coordinator, and preserve route precision, evidence gates, stop conditions, and context-pack behavior.

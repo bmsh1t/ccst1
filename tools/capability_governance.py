@@ -24,7 +24,11 @@ try:
     from tools.knowledge_audit import audit_repository
     from tools.knowledge_candidates import audit_candidates
     from tools.knowledge_lifecycle import audit_lifecycle
-    from tools.knowledge_registry import KnowledgeRegistryError, load_registry
+    from tools.knowledge_registry import (
+        KnowledgeRegistryError,
+        load_registry,
+        parse_knowledge_document,
+    )
     from tools.knowledge_value_review import audit_matrix
 except ImportError:  # pragma: no cover - direct tools/ execution
     from context_pack import (  # type: ignore
@@ -36,7 +40,11 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from knowledge_audit import audit_repository  # type: ignore
     from knowledge_candidates import audit_candidates  # type: ignore
     from knowledge_lifecycle import audit_lifecycle  # type: ignore
-    from knowledge_registry import KnowledgeRegistryError, load_registry  # type: ignore
+    from knowledge_registry import (  # type: ignore
+        KnowledgeRegistryError,
+        load_registry,
+        parse_knowledge_document,
+    )
     from knowledge_value_review import audit_matrix  # type: ignore
 
 
@@ -58,6 +66,19 @@ def audit_skill_catalog(repo_root: Path | str = BASE_DIR) -> dict[str, Any]:
         catalog_paths.append(path)
         if path != f"skills/{skill_id}/SKILL.md":
             errors.append(f"{skill_id}: path must match the Skill ID")
+        skill_file = repo / path
+        if skill_file.is_file():
+            parsed = parse_knowledge_document(skill_file.read_text(encoding="utf-8"))
+            if parsed.frontmatter_error:
+                errors.append(f"{skill_id}: invalid frontmatter: {parsed.frontmatter_error}")
+            elif not isinstance(parsed.metadata, dict):
+                errors.append(f"{skill_id}: SKILL.md requires frontmatter")
+            else:
+                if parsed.metadata.get("name") != skill_id:
+                    errors.append(f"{skill_id}: frontmatter name must match the Skill ID")
+                description = parsed.metadata.get("description")
+                if not isinstance(description, str) or not description.strip():
+                    errors.append(f"{skill_id}: frontmatter description must be non-empty")
         if route_mode not in SKILL_ROUTE_MODES:
             errors.append(f"{skill_id}: invalid route_mode {route_mode!r}")
         dimensions = entry.get("required_dimensions", [])

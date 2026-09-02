@@ -3,7 +3,7 @@
 
 This script measures loaded-context value, not live model behavior:
 
-- baseline arm: context_pack cards, reference_hints, checks, and seeds
+- baseline arm: context_pack project cards, checks, and seeds
 - enhanced arm: baseline plus skills/web2-vuln-classes/SKILL.md
 
 The output shows which evidence-gate / stop-condition / chain-connector
@@ -76,16 +76,6 @@ def _build_baseline_material(repo_root: Path, pack: dict) -> Material:
             path = _repo_path(repo_root, rel)
             paths.append(rel)
             parts.append(f"\n--- {rel} ---\n{_read_text(path)}")
-
-    for hint in pack.get("reference_hints", []) or []:
-        if not isinstance(hint, dict):
-            continue
-        rel = str(hint.get("path") or "").strip()
-        if not rel:
-            continue
-        path = _repo_path(repo_root, rel)
-        paths.append(rel)
-        parts.append(f"\n--- {rel} ---\n{_read_text(path)}")
 
     parts.append("\n--- context_pack.required_checks ---\n" + _compact_lines(pack.get("required_checks", []) or []))
     parts.append("\n--- context_pack.hypothesis_seeds ---\n" + _compact_lines(pack.get("hypothesis_seeds", []) or []))

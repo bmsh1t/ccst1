@@ -30,6 +30,24 @@ def test_skill_catalog_and_trigger_collision_projection_are_complete() -> None:
     } in collisions
 
 
+def test_skill_catalog_rejects_missing_skill_frontmatter(tmp_path: Path, monkeypatch) -> None:
+    skill_file = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_file.parent.mkdir(parents=True)
+    skill_file.write_text("# demo\n", encoding="utf-8")
+    monkeypatch.setattr(
+        governance,
+        "SKILL_CATALOG",
+        {"demo": {"path": "skills/demo/SKILL.md", "route_mode": "direct-only"}},
+    )
+    monkeypatch.setattr(governance, "SKILL_PATHS", {})
+    monkeypatch.setattr(governance, "SKILL_TEST_DIMENSIONS", {})
+
+    result = governance.audit_skill_catalog(tmp_path)
+
+    assert result["ok"] is False
+    assert any("demo: SKILL.md requires frontmatter" in item for item in result["errors"])
+
+
 def _stub_owners(
     monkeypatch,
     *,

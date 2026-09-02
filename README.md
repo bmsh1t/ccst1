@@ -424,7 +424,7 @@ documents the preferred model class for each role.
   of truth for optional external-tool install hints and `_have <tool>` checks.
 - **Recon pipeline.** `recon_engine.sh` can add an optional nuclei phase when
   the tool is present.
-- **Methodology cheatsheet.** `skills/security-arsenal/METHODOLOGY_CHEATSHEET.md`
+- **AI-first technique policy.** General technique knowledge stays in the model; project-specific routing and evidence rules live in `skills/security-arsenal/SKILL.md`.
   distills quick-check tables from HowToHunt, HolyTips, AllAboutBugBounty, and
   KingOfBugBountyTips.
 
@@ -772,9 +772,9 @@ These are always active. Non-negotiable.
 PRs welcome. Best contributions:
 
 - New vulnerability scanners or detection modules
-- Decision improvements belong in the matching Skill/Rule; detailed technique
-  references belong in `skills/security-arsenal/references/` or governed
-  Knowledge cards, not in the core routing Skills
+- Decision improvements belong in the matching Skill/Rule; project-specific
+  evidence and boundary rules belong in governed Knowledge cards, not generic
+  technique catalogues in the core routing Skills
 - New agent definitions for specific platforms
 - Real-world methodology improvements (with evidence from paid reports)
 - Platform support (YesWeHack, Synack, HackenProof)

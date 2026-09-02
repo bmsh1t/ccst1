@@ -1,528 +1,136 @@
 ---
 name: report-writing
-description: Validated vulnerability reporting for formal penetration tests and H1/Bugcrowd/Intigriti/Immunefi submissions. Covers evidence traceability, attack chains, retest/closeout, impact-first writing, CVSS, and pre-delivery checks. Use after validating findings. Never use theoretical impact language.
+description: Report-only rendering contract for validated findings. Selects the requested delivery format, preserves evidence traceability and canonical CVSS fields, and produces concise impact-first output without creating a second lifecycle.
 ---
 
 # REPORT WRITING
 
-Impact-first. Human tone. No theoretical language. Triagers are people.
-This is a `report-only` Skill: `/report` selects the canonical finding and
-`tools/validate.py` supplies the structured evidence and CVSS result. Render
-those inputs; do not create a second finding lifecycle or recalculate scores.
-
----
-
-## FORMAL PENETRATION-TEST REPORT
-
-Use this branch when the requested deliverable is an engagement report rather
-than a single bounty submission. Reuse the canonical finding index, Evidence
-Ledger, validation summaries, target memory, and report index; do not create a
-second finding/report lifecycle or duplicate evidence state.
-
-```markdown
-# [Engagement Name] Penetration Test Report
-
-## Executive Summary
-[Objectives, demonstrated business impact, overall risk, and current posture.]
-
-## Scope
-[In-scope assets, applications, APIs, roles, testing window, and explicit exclusions.]
-
-## Limitations
-[Unavailable accounts, blocked paths, time/environment constraints, and untested coverage.]
-
-## Assumptions
-[Provided access, test data, architecture facts, and dependencies accepted for this assessment.]
-
-## Methodology and Coverage
-[Phases performed and evidence-backed coverage; do not imply exhaustive testing.]
-
-## Attack Chains
-[Ordered validated finding IDs, preconditions, transitions, evidence references, and combined impact.]
-
-## Technical Findings
-[One section per validated finding: evidence, reproduction, impact, severity, and remediation.]
-
-## Retest and Closeout
-[UTC time, version/environment, fixed/partially_fixed/not_fixed/not_retested, residual risk, artifact refs.]
-
-## Evidence Manifest
-[Artifact path, UTC capture time, collector/source, purpose, SHA-256, and redaction note.]
-
-## Strategic Recommendations
-[Prioritized systemic controls derived from demonstrated root causes.]
-```
-
-### Formal delivery rules
-
-- Scope, Limitations, and Assumptions are factual engagement boundaries, not boilerplate.
-- Every attack-chain step references a validated finding ID and existing artifact; a Lead/Signal is not a chain link.
-- Retest results describe the observed closeout outcome without inventing a new canonical finding status.
-- Evidence custody uses existing artifact paths, UTC timestamps, collector/source, and SHA-256 hashes.
-- Delivered evidence is minimized and redacted for credentials, tokens, session material, PII, and unrelated customer data; never place raw secrets in the report or manifest.
-- Preserve traceability to controlled originals instead of copying evidence into a second store.
-
----
-
-## THE MOST IMPORTANT RULE
-
-> **Never use "could potentially" or "could be used to" or "may allow".**
-> Either it does the thing or it doesn't. If you haven't proved it, don't claim it.
-
-```
-BAD:  "This vulnerability could potentially allow an attacker to access user data."
-GOOD: "An attacker can access any user's order history by changing the user_id
-       parameter to the target user's ID. I confirmed this using two test accounts:
-       attacker@test.com (ID 123) successfully retrieved victim@test.com (ID 456)
-       orders, including their shipping address and payment method last 4 digits."
-```
-
----
-
-## TITLE FORMULA
-
-```
-[Bug Class] in [Exact Endpoint/Feature] allows [attacker role] to [impact] [victim scope]
-```
-
-**Good titles (specific, impact-first):**
-```
-IDOR in /api/v2/invoices/{id} allows authenticated user to read any customer's invoice data
-Missing auth on POST /api/admin/users allows unauthenticated attacker to create admin accounts
-Stored XSS in profile bio field executes in admin panel — allows privilege escalation
-SSRF via image import URL parameter reaches AWS EC2 metadata service
-Race condition in coupon redemption allows same code to be used unlimited times
-```
-
-**Bad titles (vague, useless to triager):**
-```
-IDOR vulnerability found
-Broken access control
-XSS in user input
-Security issue in API
-Unauthorized access to user data
-```
-
----
-
-## HACKERONE REPORT TEMPLATE
-
-```markdown
-## Summary
-
-[One paragraph: what the bug is, where it is, what an attacker can do. Be specific.
-Include: endpoint, method, parameter, data exposed, required access level.]
-
-Example: "The `/api/users/{user_id}/orders` endpoint does not verify that the
-authenticated user owns the requested user_id. An attacker can enumerate any
-user's order history, including PII (email, address, phone) and purchase history,
-by incrementing the user_id parameter. No privileges beyond a standard free
-account are required."
-
-## Vulnerability Details
-
-**Vulnerability Type:** IDOR / Broken Object Level Authorization
-**CVSS:** `[cvss.version] [cvss.score] — [cvss.vector]` (from validation summary)
-**Affected Endpoint:** GET /api/users/{user_id}/orders
-
-## Steps to Reproduce
-
-**Environment:**
-- Attacker account: attacker@test.com, user_id = 123
-- Victim account: victim@test.com, user_id = 456
-- Target: https://target.com
-
-**Steps:**
-
-1. Log in as attacker@test.com, obtain Bearer token
-
-2. Send the following request:
-
-```
-GET /api/users/456/orders HTTP/1.1
-Host: target.com
-Authorization: Bearer ATTACKER_TOKEN_HERE
-```
-
-3. Observe response:
-
-```json
-{
-  "orders": [
-    {"id": 789, "items": [...], "email": "victim@test.com", "address": "123 Main St..."}
-  ]
-}
-```
-
-The response contains victim's full order history and PII despite being requested
-by a different user.
-
-## Impact
-
-An authenticated attacker can enumerate all user orders by iterating user_id values.
-This exposes: full name, email, shipping address, purchase history, and payment
-method (last 4). With ~100K users, this represents a mass PII breach affecting
-all registered users. Exploitation requires only a free account and takes minutes
-with a simple loop.
-
-## Supporting Materials
-
-[Screenshot showing attacker's session returning victim's order data]
-[Video walkthrough if available]
-```
-
----
-
-## BUGCROWD REPORT TEMPLATE
-
-```markdown
-# [IDOR] User order history accessible without authorization via /api/users/{id}/orders
-
-**VRT Category:** Broken Access Control > IDOR > P2
-
-## Description
-
-[Same impact-first paragraph as HackerOne summary]
-
-## Steps to Reproduce
-
-[Same structured steps — exact replayable artifacts and observed results]
-
-## Proof of Concept
-
-[Screenshot/video showing the actual impact]
-
-## Expected vs Actual Behavior
-
-**Expected:** 403 Forbidden when user_id does not match authenticated user
-**Actual:** 200 OK with victim's full order data
-
-## Severity Justification
-
-P2 (High) — Direct read access to other users' PII. Affects all user accounts.
-No user interaction required. Exploitable by any authenticated user.
-Automated enumeration could exfil all [N] user records in minutes.
-```
-
----
-
-## INTIGRITI REPORT TEMPLATE
-
-```markdown
-# [Bug Class]: [Exact Impact] in [Endpoint/Feature]
-
-## Description
-
-[Impact-first paragraph. Start with what an attacker can do, not with how you found it.
-Include: endpoint, method, parameter, data exposed, required privileges.]
-
-## Steps to Reproduce
-
-**Environment:**
-- Attacker: email=attacker@test.com (standard account, no special role)
-- Victim: email=victim@test.com
-- Tested: [date]
-
-**Reproduction steps:**
-
-1. [Login as attacker / visit URL / send request]
-
-2. Provide the following replayable artifact:
-
-\```http
-METHOD /endpoint HTTP/1.1
-Host: target.com
-Authorization: Bearer ATTACKER_TOKEN
-Content-Type: application/json
-
-{"param": "victim_id_here"}
-\```
-
-3. Observe response contains victim's private data:
-
-\```json
-{"email": "victim@test.com", "address": "123 Main St", ...}
-\```
-
-## Impact
-
-[Specific, quantified impact. What data, how many users, what can attacker do.]
-
-CVSS: [cvss.version] [cvss.score] ([Severity]) — [cvss.vector]
-
-## Attachments
-
-[Screenshot or Loom video showing the impact — Intigriti triagers prefer video for complex bugs]
-```
-
-**Intigriti-specific notes:**
-- Title format: `[Bug Class]: [One-line impact]` (no formula required, but keep it specific)
-- Severity is set by you: Critical/High/Medium/Low/Exceptional
-- Render the version selected by the program from the validation summary; do not
-  infer a score from prose
-- PoC video is valued much more than screenshot alone — record with Loom
-- Safe harbor: Intigriti enforces it, be comfortable going slightly aggressive with testing
-
----
-
-## IMMUNEFI REPORT TEMPLATE
-
-```markdown
-# [Bug Class] — [Protocol Name] — [Severity]
-
-## Summary
-
-[One paragraph with: root cause, affected function, and concrete security impact.]
-
-## Vulnerability Details
-
-**Contract:** `VulnerableContract.sol`
-**Function:** `claimRedemption()`
-**Bug Class:** Accounting State Desynchronization
-**Severity:** Critical
-
-### Root Cause
-
-[Exact code snippet showing the vulnerable code with comments]
-
-## Proof of Concept
-
-```solidity
-// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.0;
-// Foundry PoC — run: forge test --match-test test_exploit -vvvv
-
-contract ExploitTest is Test {
-    // ... full working exploit
-}
-```
-
-## Impact
-
-[Quantified: "Attacker can drain X% of TVL = $Y at current rates.
-Requires $Z gas. Attack is repeatable."]
-```
-
----
-
-## CVSS CALIBRATION (NOT SCORING OWNER)
+This is a `report-only` Skill. Use it after validation has selected a canonical
+finding. Render the existing finding, Evidence Ledger, validation summary, and
+target record; do not create a second finding/report lifecycle or replace
+structured validation with model judgement.
+
+## Preconditions
+
+Before drafting a standalone report, resolve the finding's exact validation
+summary from its canonical `validation_summary` field or the matching
+`/validate` result. The summary must contain:
+
+- `seven_question_gate_passed: true`;
+- `four_validation_gates_passed: true`;
+- `all_gates_passed: true`; and
+- a structured `cvss` object with `version`, `score`, and `vector`.
+
+If the result is `chain_required`, `needs_review`, or `kill`, keep the missing
+evidence or connector as the next action. Do not produce a standalone report.
+`findings/last-validate.json` is only a latest pointer and never binds a report
+to a finding.
+
+## Canonical Inputs
+
+Use the existing owners as read-only report inputs:
+
+| Input | Use |
+|---|---|
+| Finding Index | finding ID, target, type, lifecycle, and report binding |
+| Evidence Ledger | operation identity, actors, artifacts, timestamps, and hashes |
+| Validation summary | gate results, demonstrated impact, and structured CVSS |
+| Target/Case State | scope, roles, objects, session and workflow context |
+| Report Index | cumulative report ID and file mapping |
+
+Every claim must point to a target-bound artifact. Preserve the exact target,
+operation/method, actors, preconditions, observed result, and impact connector.
+Use the smallest necessary sample and retain the controlled original outside the
+delivered copy.
+
+## Delivery Modes
+
+Choose the format requested for this deliverable; the finding lifecycle is the
+same for every mode.
+
+| Format | Required emphasis |
+|---|---|
+| Formal assessment | Executive Summary, Scope, Limitations, Assumptions, Methodology and Coverage, Attack Chains, Technical Findings, Retest and Closeout, Evidence Manifest, Strategic Recommendations |
+| Local/lab write-up | Setup, target state, replayable artifact, exact result, demonstrated impact, and limitations |
+| HackerOne | Summary, Vulnerability Details, Steps to Reproduce, Impact, and recorded CVSS; use the platform's requested length |
+| Bugcrowd | VRT classification, description, reproduction, Expected vs Actual, and severity justification |
+| Intigriti | Specific title, prominent recorded CVSS, reproduction, and business impact |
+| Immunefi | Root cause, affected contract/function, reproducible PoC artifact, state/value impact, and required comparison evidence |
+
+Platform conventions affect rendering only. They do not change evidence gates,
+scope, severity, or canonical status.
+
+## Report Contract
+
+Include, as applicable:
+
+1. A title naming the test class, exact endpoint/operation, actor, and
+   demonstrated impact.
+2. An impact-first summary with factual scope and preconditions.
+3. Vulnerability details tied to the selected finding ID and source artifact.
+4. Reproduction steps using the exact artifact and the exact observed result.
+5. Impact limited to what the evidence demonstrates, with measured quantities
+   only when they are recorded.
+6. Remediation or retest notes without changing the canonical finding status.
+7. An Evidence Manifest containing artifact path, UTC capture time,
+   collector/source, purpose, SHA-256, and redaction note.
+
+## Reproduction Artifacts
+
+Use the medium that preserves the tested state:
+
+- HTTP request/response when the operation is HTTP;
+- browser trace or state transition for browser workflows;
+- frame/handshake/stream/trailer transcript for realtime or RPC protocols;
+- controlled callback/OOB artifact for blind server-side behavior; or
+- an equivalent target-bound record for another medium.
+
+Do not convert a non-HTTP test into a fabricated HTTP request. Do not treat a
+status code, scanner match, model explanation, or generic output as impact proof.
+
+## CVSS Rendering
 
 `tools/validate.py` is the only scoring producer. Copy the selected finding's
-`cvss.version`, `cvss.score`, and `cvss.vector` from its validation summary;
-everything in this section is a display/calibration reference and cannot
-override that record.
+`cvss.version`, `cvss.score`, and `cvss.vector` unchanged from its validation
+summary. This Skill does not calculate, infer, or override CVSS from prose,
+platform examples, or a static table.
 
-### Legacy metric reference (display only)
-```
-CVSS metrics may be shown when a program requests them, but this Skill does not
-calculate or infer a score from prose.
-```
+## Evidence and Redaction
 
-### Metric labels (for rendering only)
+- Keep credentials, tokens, session material, secrets, and unrelated customer
+  data out of the delivered report and hash manifest.
+- Use a redacted copy while preserving a reference to the controlled original.
+- Include actor comparison whenever the claim crosses an identity boundary.
+- State unavailable accounts, blocked paths, untested branches, assumptions,
+  and residual uncertainty instead of implying exhaustive coverage.
+- For a chain, reference a validated finding ID and evidence artifact for every
+  transition; a Lead or Signal is not a chain link.
 
-| Metric | Value | Weight | When |
-|---|---|---|---|
-| **Attack Vector (AV)** | Network | +0.85 | Via internet |
-| | Local | +0.55 | Local access needed |
-| **Attack Complexity (AC)** | Low | +0.77 | Repeatable |
-| | High | +0.44 | Race/timing needed |
-| **Privileges Required (PR)** | None | +0.85 | No login |
-| | Low | +0.62 | Regular user account |
-| | High | +0.27 | Admin account |
-| **User Interaction (UI)** | None | +0.85 | No victim action |
-| | Required | +0.62 | Victim must click |
-| **Scope (S)** | Changed | higher | Affects browser/OS/other |
-| | Unchanged | lower | Stays in app |
-| **Confidentiality (C)** | High | +0.56 | All data exposed |
-| | Low | +0.22 | Limited data |
-| **Integrity (I)** | High | +0.56 | Can modify any data |
-| **Availability (A)** | High | +0.56 | Crashes service |
+## Retest and Closeout
 
-### Calibration examples (never override a recorded result)
+Record UTC time, tested version/environment, result (`fixed`,
+`partially_fixed`, `not_fixed`, or `not_retested`), residual risk, and artifact
+references. Retest notes are report content and must not create a second status
+or overwrite the canonical finding lifecycle.
 
-| Bug | Typical CVSS | Severity |
-|---|---|---|
-| IDOR (read PII) | 6.5 | Medium |
-| IDOR (write/delete) | 7.5 | High |
-| Auth bypass → admin | 9.8 | Critical |
-| Stored XSS (any user) | 5.4–8.8 | Med–High |
-| SQLi (data exfil) | 8.6 | High |
-| SSRF (cloud metadata) | 9.1 | Critical |
-| Race condition (double spend) | 7.5 | High |
-| GraphQL auth bypass | 8.7 | High |
-| JWT none algorithm | 9.1 | Critical |
+## Writing Rules
 
----
+- State the demonstrated action or data in the first sentence.
+- Use exact facts and target terminology; do not turn theory into impact.
+- Quantify only what the evidence supports.
+- Keep bounty submissions concise when the platform requests a length limit;
+  formal assessment reports may be longer when their scope requires it.
+- Never include raw test secrets or unrelated target data.
 
-## SEVERITY RENDERING NOTES
+## Final Checklist
 
-Severity is rendered from the validated structured result and the program's
-classification. The examples below explain impact language only; they do not
-set a score or create a second gate.
-
-### Critical (P1)
-- Full account takeover of any user without interaction
-- Remote code execution
-- SQLi with ability to dump/modify entire DB
-- Auth bypass to admin panel
-- SSRF to cloud metadata → IAM credentials exfil
-
-### High (P2)
-- Mass PII exposure (email, phone, SSN, payment data)
-- Privilege escalation from user to admin
-- SSRF reaching internal services (data returned)
-- Stored XSS executing for all users of sensitive feature
-- Payment bypass / financial loss without limit
-
-### Medium (P3)
-- IDOR on specific user's non-critical data
-- XSS on low-sensitivity page requiring victim interaction
-- CSRF on important but non-critical action
-- Rate limit bypass on OTP (with effort demonstrated)
-
-### Low (P4)
-- Information disclosure (non-sensitive, no PII)
-- Clickjacking on sensitive action WITH working PoC
-- CORS on limited data
-
----
-
-## IMPACT NARRATIVE INPUTS
-
-These facts support the impact narrative; they do not calculate severity:
-```
-1. Exposes PII / health / financial data of other users?        → +1 severity
-2. Allows account takeover or privilege escalation?             → +2 severity
-3. Requires ZERO user interaction from victim?                  → +1 severity
-4. Affects ALL users (not specific condition)?                  → +1 severity
-5. Remotely exploitable with no internal network access?        → baseline for High+
-```
-
----
-
-## PROGRAM CONTEXT NOTES
-
-| Program Says | Counter With |
-|---|---|
-| "Requires authentication" | "Attacker needs only a free account — no special role or permission" |
-| "Limited impact" | "Affects [N] users / exposes [PII type] / $[amount] at risk" |
-| "Already known" | "Show me the report number — I searched hacktivity and found none" |
-| "By design" | "Show me the documentation stating this is intended behavior" |
-| "Low CVSS" | "CVSS doesn't capture business impact — attacker can extract [X] in [Y] minutes" |
-| "Not exploitable" | "Here is the exact response showing victim's data returned to attacker session" |
-
----
-
-## THE 60-SECOND PRE-SUBMIT CHECKLIST
-
-```
-[ ] Title follows formula: [Class] in [endpoint] allows [actor] to [impact]
-[ ] First sentence states exact impact in plain English
-[ ] Steps to Reproduce has an exact replayable artifact (HTTP when applicable)
-[ ] Observed result showing the bug is included (response, trace, state, or callback)
-[ ] Actor comparison is included when the claim crosses an identity boundary
-[ ] Recorded `cvss.version`, `cvss.score`, and `cvss.vector` are rendered unchanged
-[ ] No typos in endpoint paths or parameter names
-[ ] Report is < 600 words — triagers skim long reports
-[ ] Severity claimed matches impact described — don't overclaim
-[ ] Never used "could potentially" or "may allow"
-[ ] PoC is reproducible by triager from a fresh state
-```
-
----
-
-## CVSS 4.0 CALIBRATION REFERENCE (newer programs)
-
-CVSS 4.0 replaced CVSS 3.1 in November 2023. Some newer programs require it.
-
-### Key Differences from CVSS 3.1
-
-| Metric | CVSS 3.1 | CVSS 4.0 |
-|---|---|---|
-| Attack Vector | Network/Adjacent/Local/Physical | Same |
-| Attack Complexity | Low/High | Low/High |
-| **NEW**: Attack Requirements | (didn't exist) | None/Present (replaces some PR/UI) |
-| Privileges Required | None/Low/High | Same |
-| User Interaction | None/Required | None/Passive/Active |
-| Scope | Unchanged/Changed | REMOVED |
-| **NEW**: Sub-Impact metrics | (didn't exist) | Vulnerable/Subsequent system impact |
-
-### CVSS 4.0 Score Examples
-
-| Finding | CVSS 4.0 Score | Vector |
-|---|---|---|
-| Unauthenticated RCE | 10.0 | CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:H/SI:H/SA:H |
-| IDOR read PII, auth required | 6.9 | CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:H/VI:N/VA:N/SC:N/SI:N/SA:N |
-| Stored XSS, admin views it | 8.2 | CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:P/VC:H/VI:H/VA:N/SC:H/SI:H/SA:N |
-| SSRF → cloud metadata | 8.7 | CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:N/VA:N/SC:H/SI:H/SA:N |
-
-### Quick CVSS 4.0 Calculator
-```
-Use: https://www.first.org/cvss/calculator/4.0
-Key fields:
-  VC/VI/VA = Vulnerable System Confidentiality/Integrity/Availability
-  SC/SI/SA = Subsequent System (downstream impact)
-  AT = None (no special condition) | Present (race/specific config needed)
-  UI = None | Passive (victim visits URL) | Active (victim takes explicit action)
-```
-
-**Practical rule**: If the program uses CVSS 4.0, render the validated
-`cvss.version`, `cvss.score`, and `cvss.vector`; do not substitute a calculator
-estimate or a score inferred from report prose.
-
----
-
-## HUMAN TONE GUIDELINES
-
-**Write to a person, not a system:**
-- Triagers are tired. Get to the impact in sentence 1.
-- Use "I" not "the researcher" — you found it, own it
-- Short paragraphs, bullet points for steps
-- Hyperlink relevant docs if needed
-
-**Escalation language (when payout is being downgraded):**
-```
-"This vulnerability does not require any special privileges — only a free account."
-"The exposed data includes [PII type], which is subject to GDPR requirements."
-"An attacker can automate this with a simple loop — all [N] records in minutes."
-"This is exploitable externally without network access to any internal system."
-"The impact is equivalent to a full data breach of [feature/data type]."
-```
-
-**Avoid:**
-- Jargon the triager might not know
-- 5-paragraph explanations of what IDOR is (they know)
-- Theoretical chains ("could be combined with X to...")
-- Passive voice ("it was observed that...")
-- Qualifying language ("seems to," "appears to")
-
----
-
-## STEPS TO REPRODUCE FORMAT (triager-optimized)
-
-```markdown
-**Setup:**
-- Account A (attacker): email=attacker@test.com, ID=111
-- Account B (victim): email=victim@test.com, ID=222
-- Both created via normal registration — no special access
-
-**Steps:**
-
-1. Log in as Account A
-2. Send this request (replace `111` with victim ID `222`):
-
-\```
-GET /api/v2/resource/222 HTTP/1.1
-Host: target.com
-Authorization: Bearer ACCOUNT_A_TOKEN
-\```
-
-3. Response contains Account B's private data:
-
-\```json
-{"id": 222, "email": "victim@test.com", "name": "Victim User", "address": "..."}
-\```
-
-**Expected:** 403 Forbidden
-**Actual:** 200 OK with victim's private data
+```text
+[ ] Canonical finding and exact validation summary selected
+[ ] seven_question_gate_passed, four_validation_gates_passed, and all_gates_passed are true
+[ ] Target, operation, actors, preconditions, and artifact references match
+[ ] Protocol-appropriate replayable artifact and observed result are included
+[ ] Demonstrated impact is separated from untested or theoretical impact
+[ ] Recorded cvss.version, cvss.score, and cvss.vector are copied unchanged
+[ ] Evidence manifest has path, UTC time, source, purpose, SHA-256, and redaction note
+[ ] No raw secrets, unrelated customer data, or second lifecycle state is created
 ```

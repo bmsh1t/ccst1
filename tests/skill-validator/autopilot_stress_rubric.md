@@ -21,8 +21,7 @@ For target `<target>` with storage key `<target_key>`:
 1. **Context-pack route is recorded**
    - Evidence must show `tools/context_pack.py` or a structured `context_pack`
      object was used.
-   - The same run artifact must expose `selected_skill` and either
-     `knowledge_cards` or `reference_hints`.
+   - The same run artifact must expose `selected_skill` and `knowledge_cards`.
 
 2. **At least one action is executable**
    - `action_queue.json` must contain at least one item whose `action`,

@@ -54,9 +54,7 @@ def _write_passing_run(repo: Path, target: str = "demo.test") -> None:
             "context_pack": {
                 "selected_skill": "skills/web2-vuln-classes/SKILL.md",
                 "knowledge_cards": ["knowledge/cards/server-side-template-injection.md"],
-                "reference_hints": [
-                    {"path": "skills/security-arsenal/references/payload-families.md"}
-                ],
+                "reference_hints": [],
             }
         },
     )

@@ -292,7 +292,7 @@ def test_knowledge_index_preserves_card_layering_contract():
     assert "## Capability Registry" in index
     assert "knowledge/capabilities.yaml" in index
     assert "最多 1 张 core card" in index
-    assert "最多 1 个 payload pack 或 playbook（仅验证阶段 gated）" in index
+    assert "最多 1 个项目验证 playbook（仅验证阶段 gated）" in index
     assert "## 核心决策知识卡" in index
     assert "## 按需 Router 知识卡" in index
     assert "case-router 与 HackerOne 或任何单一案例库无绑定" in index

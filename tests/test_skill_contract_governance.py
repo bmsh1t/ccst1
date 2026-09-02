@@ -10,6 +10,35 @@ def _read(*paths: str) -> str:
     return "\n".join((REPO_ROOT / path).read_text(encoding="utf-8") for path in paths)
 
 
+def test_security_arsenal_is_a_thin_ai_first_contract():
+    path = REPO_ROOT / "skills/security-arsenal/SKILL.md"
+    text = path.read_text(encoding="utf-8")
+
+    assert len(text.splitlines()) <= 180
+    for marker in (
+        "## XSS PAYLOADS",
+        "169.254.169.254",
+        "UNION SELECT",
+        "<script>",
+        "wscat",
+        "METHODOLOGY_CHEATSHEET",
+    ):
+        assert marker not in text
+    for marker in (
+        "## Decision Tree",
+        "## ROI Selection",
+        "## Phase Switch",
+        "## Stateful Continuity",
+        "## Evidence Gate",
+        "## Canonical Write-Back",
+        "## AI Autonomy and Red Lines",
+    ):
+        assert marker in text
+
+    reference_dir = REPO_ROOT / "skills/security-arsenal/references"
+    assert not list(reference_dir.glob("*.md"))
+
+
 def test_validation_uses_replayable_artifacts_without_fixed_http_or_count_gates():
     text = _read(
         "skills/triage-validation/SKILL.md",
@@ -26,6 +55,7 @@ def test_validation_uses_replayable_artifacts_without_fixed_http_or_count_gates(
     assert "More than 2 preconditions simultaneously required" not in text
     assert "Confirmed with a target-bound replayable artifact" in text
     assert "Gate 0 (30 sec)" not in text
+    assert "HTTP when applicable; browser, frame, state, or OOB equivalent otherwise" in text
 
 
 def test_report_contract_consumes_one_structured_cvss_owner():
@@ -46,6 +76,20 @@ def test_report_contract_consumes_one_structured_cvss_owner():
     assert "Method: [GET/POST/PUT/DELETE]" not in writer
     assert "tools/validate.py` is the only scoring producer" in rules
     assert "CVSS 4.0 Calculation Guide" not in command
+    assert "CVSS Calibration" not in skill
+    assert "CVSS Calibration Notes" not in command
+    assert "slightly aggressive" not in skill
+
+
+def test_report_only_skill_has_an_explicit_non_default_route():
+    from tools.context_pack import SKILL_CATALOG, SKILL_PATHS
+
+    assert SKILL_CATALOG["report-writing"]["route_mode"] == "report-only"
+    assert "report-writing" not in SKILL_PATHS
+    command = _read("commands/report.md")
+    writer = _read("agents/report-writer.md")
+    assert "skills/report-writing/SKILL.md" in command
+    assert "skills/report-writing/SKILL.md" in writer
 
 
 def test_ai_first_routes_do_not_reintroduce_fixed_specialist_sequences():

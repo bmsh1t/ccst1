@@ -64,7 +64,7 @@ These tools are memory and execution aids, not a pre-flight checklist. Empty/sta
 - Skills route through `skills/runtime-protocol.md`.
 - Target case state stores actors, session metadata, objects, private markers, hypotheses, and validation backlog under `state/<target_key>/case_state.json`; session headers are private artifacts referenced from that file.
 - `case_state_seed.py` suggests add-actor/add-object/add-backlog commands from cached object-like endpoints; it does not auto-write.
-- Knowledge cards come from `knowledge/index.md`; load only matching cards and `reference_hints` from context-pack when evidence needs on-demand references.
+- Knowledge cards come from `knowledge/index.md`; load only matching project cards from context-pack. General technique detail comes from the model and is not stored as a default reference catalogue.
 - Coverage and tool/AI boundary semantics live in `rules/coverage-gate.md`, `rules/hunting.md`,
   and `rules/tool-ai-boundary.md`.
 - Resolve queue items with `tools/action_queue.py resolve` after the smallest safe evidence-producing step.

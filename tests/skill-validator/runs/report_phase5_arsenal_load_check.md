@@ -2,6 +2,11 @@
 
 Date: 2026-07-01
 
+> **Superseded (2026-09-02):** The earlier decision to retain the arsenal
+> references was based on on-demand loading. The current AI-first contract
+> explicitly retires generic technique catalogues; only project-specific
+> routing, evidence, lifecycle, and owner rules remain in the Skill.
+
 ## Decision
 
 Do not slim `skills/security-arsenal/SKILL.md` in this iteration.

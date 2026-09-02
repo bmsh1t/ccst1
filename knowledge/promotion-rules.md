@@ -37,7 +37,7 @@ Skill 或知识卡。
 
 | 新内容类型 | 应落位置 | 示例 |
 |---|---|---|
-| 稀缺经验、技巧、bypass、反例、误判模式 | `knowledge/cards/` 或 `skills/security-arsenal/references/` | `q='` 无差异但闭合括号注释改变结果集；列表接口弱于详情接口 |
+| 稀缺项目经验、边界思路、反例、误判模式 | `knowledge/cards/` | 记录目标无关、可复用且能改变证据判断的边界差异 |
 | 证据门槛、Candidate 判断、降级条件 | `tools/evidence_rubric.py` + `tests/test_evidence_rubric.py` | 匿名敏感配置泄露不需要无意义 actor diff；DNS-only SSRF 不能 candidate-ready |
 | 触发词、上下文路由、知识卡选择 | `tools/context_pack.py` + `tests/test_context_pack.py` | `application-configuration` + unauth 路由到 auth-access；search/filter/sort 路由到 SQLi |
 | 发现后的下一步动作、replay 草案、queue 优先级 | `tools/checkpoint.py` + `tests/test_checkpoint.py` | IDOR 缺 actor diff 时生成 A/B replay skeleton；已验证 finding 转 `/validate` |

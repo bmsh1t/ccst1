@@ -41,16 +41,16 @@ methods owned by narrower Skills, Rules, Cards, or deterministic tools.
 | Session strategy, hypothesis choice, rotation, stopping | `skills/bb-methodology/SKILL.md` |
 | Scope, hosts, endpoints, JS/source and recon evidence | `skills/web2-recon/SKILL.md` |
 | Web/API vulnerability-family testing | `skills/web2-vuln-classes/SKILL.md` |
-| Payload, bypass, sink, grep, or tool detail | `skills/security-arsenal/SKILL.md` and its selected reference |
+| Concrete technique detail | Use the model's general knowledge; read `skills/security-arsenal/SKILL.md` only for project-specific evidence and owner rules |
 | Validity, report/no-report, chain precedence | `skills/triage-validation/SKILL.md` |
 | Report drafting and triager-facing wording | `skills/report-writing/SKILL.md` |
 | Android/iOS | `skills/mobile-pentest/SKILL.md` |
 | CI/CD and supply-chain workflows | `skills/cicd-security/SKILL.md` |
 | Web3/wallet/token/smart contracts | The matching Web3/token Skill |
 
-Payload and bypass references are conditional probe shapes. Load only the
-specific `skills/security-arsenal/references/` document selected by trigger,
-expected observation, evidence gate, and stop condition.
+The model supplies general technique details. `skills/security-arsenal/SKILL.md`
+contains only project-specific selection, evidence, lifecycle, and owner rules;
+it has no local technique catalogue.
 
 ## Target Isolation
 

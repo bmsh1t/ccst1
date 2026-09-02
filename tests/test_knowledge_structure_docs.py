@@ -31,15 +31,15 @@ def test_knowledge_readme_and_index_define_dual_role():
     index = _read("knowledge/index.md")
 
     assert "经验压缩库" in readme
-    assert "payload 家族" in readme
+    assert "项目经验压缩库" in readme
     assert "补充 checklist" in readme
     assert "推荐知识卡结构" in readme
     assert "能力定位" in readme
     assert "晋升到 Skill / Queue 的条件" in readme
 
     assert "经验压缩库" in index
-    assert "payload 家族" in index
-    assert "bypass 思维" in index
+    assert "项目经验压缩库" in index
+    assert "项目边界" in index
     assert "Technique family" in index
     assert "Checklist gap" in index
     assert "action queue" in index

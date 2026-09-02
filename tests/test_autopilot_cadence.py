@@ -52,13 +52,14 @@ def test_autopilot_references_canonical_runtime_layers():
         assert marker in combined, f"missing canonical reference: {marker}"
 
 
-def test_autopilot_uses_context_pack_reference_hints_without_embedding_tables():
+def test_autopilot_uses_project_cards_without_embedding_technique_tables():
     command = _read(COMMAND)
     agent = _read(AGENT)
     combined = f"{command}\n{agent}"
 
-    assert "reference_hints" in combined
-    assert "on-demand references" in combined
+    assert "Knowledge cards" in combined
+    assert "general technique detail comes from the model" in combined.lower()
+    assert "reference_hints" not in combined
 
     embedded_table_markers = (
         "SSRF IP Bypass Table",

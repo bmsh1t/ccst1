@@ -105,9 +105,8 @@ def test_install_script_recursively_copies_managed_skill_resources(tmp_path):
         assert (runtime_skill / relative_path).read_bytes() == (
             repo_skill / relative_path
         ).read_bytes()
-    assert Path("references/bypass-patterns.md") in installed_files
-    assert Path("METHODOLOGY_CHEATSHEET.md") in installed_files
-    assert Path("REFERENCES.md") in installed_files
+    assert Path("SKILL.md") in installed_files
+    assert not any(path.parts[0] == "references" for path in installed_files)
 
 
 def test_install_script_produces_runtime_doctor_clean_tree(tmp_path):

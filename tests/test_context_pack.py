@@ -123,10 +123,6 @@ def _seed_reviewed_candidate(
     return candidate_id
 
 
-def _hint_paths(pack: dict) -> list[str]:
-    return [item["path"] for item in pack.get("reference_hints", [])]
-
-
 def test_bounded_context_readers_preserve_order_limits_and_error_handling(tmp_path):
     lines_path = tmp_path / "lines.txt"
     lines_path.write_bytes(b"\nalpha\nalpha\nbeta\n\xfftail\ngamma\n")
@@ -381,7 +377,7 @@ def test_target_registry_remap_reaches_context_pack_checkpoint_and_witness(tmp_p
     assert any(item["file"] == custom_card for item in pack["knowledge_card_recall"])
     assert any("SSTI 先做模板求值 primitive" in item for item in pack["hypothesis_seeds"])
     assert any("SSTI 无结果时" in item for item in pack["alternative_angles"])
-    assert "skills/security-arsenal/references/payload-families.md" in _hint_paths(pack)
+    assert pack["reference_hints"] == []
 
     checkpoint = build_checkpoint(tmp_path, target="target.com", refresh_coverage=False)
     witness = json.loads(
@@ -869,17 +865,15 @@ def test_collision_recall_marks_budgeted_cards_as_deferred(tmp_path):
     assert "deferred by card budget" in recall_by_file[deferred]["reason"]
 
 
-def test_reference_hints_are_added_only_for_evidence_specific_details(tmp_path):
+def test_reference_hints_are_retired_for_generic_technique_details(tmp_path):
     ssti_pack = build_context_pack(tmp_path, target="target.com", focus="ssti template injection")
     ssrf_pack = build_context_pack(tmp_path, target="target.com", focus="ssrf blacklist filter url parser bypass")
     dom_pack = build_context_pack(tmp_path, target="target.com", focus="dom xss source sink grep")
     recon_pack = build_context_pack(tmp_path, target="target.com", focus="recon ffuf semgrep endpoint discovery")
 
-    assert "skills/security-arsenal/references/payload-families.md" in _hint_paths(ssti_pack)
-    assert "skills/security-arsenal/references/bypass-patterns.md" in _hint_paths(ssrf_pack)
-    assert "skills/security-arsenal/references/sink-and-grep-patterns.md" in _hint_paths(dom_pack)
-    assert "skills/security-arsenal/references/recon-tool-usage.md" in _hint_paths(recon_pack)
-    assert "Reference hints:" in format_context_pack(ssti_pack)
+    for pack in (ssti_pack, ssrf_pack, dom_pack, recon_pack):
+        assert pack["reference_hints"] == []
+    assert "Reference hints (retired" in format_context_pack(ssti_pack)
 
 
 def test_reference_hints_do_not_add_noise_for_unrelated_focus(tmp_path):
@@ -1126,7 +1120,7 @@ def test_context_pack_without_owner_backed_classes_keeps_context_but_no_actor_ma
     )
 
     assert "knowledge/cards/api-idor.md" in pack["knowledge_cards"]
-    assert pack["reference_hints"]
+    assert pack["knowledge_cards"]
     assert pack["actor_matrix_gaps"] == []
     assert pack["source_summary"]["actor_matrix_gaps"] == 0
     assert not any("Actor gap:" in item for item in pack["evidence_anchors"])

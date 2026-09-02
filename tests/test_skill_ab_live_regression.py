@@ -151,10 +151,6 @@ def test_web2_live_ab_artifacts_and_answers_are_locked():
 def test_web2_vuln_classes_keeps_live_ab_decision_anchors():
     material = _text(
         "skills/web2-vuln-classes/SKILL.md",
-        "skills/security-arsenal/references/bypass-patterns.md",
-        "skills/security-arsenal/references/payload-families.md",
-        "skills/security-arsenal/references/recon-tool-usage.md",
-        "skills/security-arsenal/references/sink-and-grep-patterns.md",
         "knowledge/cards/missing-parameter-discovery.md",
         "knowledge/cards/sqli-hidden-surfaces.md",
         "knowledge/cards/ssrf-internal-impact.md",

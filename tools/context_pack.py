@@ -679,13 +679,6 @@ def _budget_knowledge_cards(
             deferred.append(path)
     return selected, deferred
 
-REFERENCE_PATHS = {
-    "bypass-patterns": "skills/security-arsenal/references/bypass-patterns.md",
-    "payload-families": "skills/security-arsenal/references/payload-families.md",
-    "sink-and-grep-patterns": "skills/security-arsenal/references/sink-and-grep-patterns.md",
-    "recon-tool-usage": "skills/security-arsenal/references/recon-tool-usage.md",
-}
-
 DISTILLED_TOKEN_TO_CARDS = (
     (API_ANCESTOR_PREFIX_RE, ("api-testing-workflow", "path-pattern-management-exposure")),
     (JS_RUNTIME_SIGNATURE_RE, ("js-runtime-signature-reconstruction",)),
@@ -3232,105 +3225,6 @@ def _ledger_source_summary(summary: dict) -> dict:
     }
 
 
-def _reference_hints(
-    cards: list[str],
-    blob: str,
-    focus: str,
-    skill: str,
-    *,
-    card_paths: dict[str, str] | None = None,
-) -> list[dict]:
-    """按当前证据给 `/autopilot` 提供按需 reference 提示，不默认加载大字典。"""
-
-    card_paths = CARD_PATHS if card_paths is None else card_paths
-    evidence = f"{focus}\n{blob}"
-    hints: list[dict] = []
-
-    def add(key: str, when: str) -> None:
-        path = REFERENCE_PATHS[key]
-        if any(item["path"] == path for item in hints):
-            return
-        hints.append({"path": path, "when": when})
-
-    bypass_signal = bool(
-        re.search(
-            r"\b(?:bypass|blacklist|allowlist|whitelist|filter|parser|parse|normalization|"
-            r"canonicali[sz]ation|waf|magic[-_ ]?bytes?|polyglot|content[-_ ]?type|"
-            r"double[-_ ]?encod(?:e|ing)|redirect[-_ ]?chain)\b",
-            evidence,
-            re.I,
-        )
-        and (
-            card_paths.get("ssrf-url-fetch") in cards
-            or card_paths.get("ssrf-internal-impact") in cards
-            or card_paths.get("upload-parser") in cards
-            or card_paths.get("upload-to-execution") in cards
-            or card_paths.get("sqli-hidden-surfaces") in cards
-            or re.search(r"\b(open[-_ ]?redirect|sql(?:i|[-_ ]?injection)|ssrf|upload|file[-_ ]?upload)\b", evidence, re.I)
-        )
-    )
-    if bypass_signal:
-        add(
-            "bypass-patterns",
-            "Parser or validation bypass is evidenced for SSRF/open-redirect/upload/SQLi; load only for concrete bypass shape selection.",
-        )
-
-    payload_signal = bool(
-        card_paths.get("server-side-template-injection") in cards
-        or card_paths.get("xxe-xml-parser") in cards
-        or card_paths.get("proxy-cache-boundaries") in cards
-        or COMMAND_INJECTION_RE.search(evidence)
-        or re.search(
-            r"\b(ssti|template[-_ ]?injection|command[-_ ]?injection|cmdi|xxe|"
-            r"request[-_ ]?smuggling|http[-_ ]?smuggling|cl\.te|te\.cl|h2\.(?:cl|te))\b",
-            evidence,
-            re.I,
-        )
-    )
-    if payload_signal:
-        add(
-            "payload-families",
-            "SSTI/command/XXE/smuggling primitive needs concrete probe family detail after baseline evidence.",
-        )
-
-    sink_grep_signal = bool(
-        re.search(
-            r"\b(source[-_ ]?review|source[-_ ]?audit|code[-_ ]?review|grep|sink|"
-            r"source[-_ ]?to[-_ ]?sink|innerhtml|document\.write|postmessage|"
-            r"dom[-_ ]?xss|client[-_ ]?xss)\b",
-            evidence,
-            re.I,
-        )
-        and (
-            card_paths.get("xss-client-injection") in cards
-            or card_paths.get("browser-client-boundaries") in cards
-            or re.search(r"\b(dom|xss|javascript|typescript|python|php|ruby|rust|golang|go)\b", evidence, re.I)
-        )
-    )
-    if sink_grep_signal:
-        add(
-            "sink-and-grep-patterns",
-            "Source or bundle review needs concrete DOM sinks, client sources, or language grep patterns.",
-        )
-
-    recon_tool_signal = bool(
-        skill == "web2-recon"
-        or re.search(
-            r"\b(recon|ffuf|semgrep|endpoint[-_ ]?discovery|api[-_ ]?endpoint[-_ ]?discovery|"
-            r"scope[-_ ]?retrieval|subdomain|httpx|nuclei|katana|waybackurls|gau)\b",
-            evidence,
-            re.I,
-        )
-    )
-    if recon_tool_signal:
-        add(
-            "recon-tool-usage",
-            "Recon, ffuf, Semgrep, endpoint discovery, or scope command detail is needed for an executable action.",
-        )
-
-    return hints
-
-
 def _redact_candidate_source_targets(value: str, targets: list[str]) -> str:
     redacted = str(value or "")
     for target in sorted(set(targets), key=len, reverse=True):
@@ -3503,13 +3397,9 @@ def build_context_pack(
         "deferred_knowledge_cards": deferred_cards,
         "deferred_knowledge_card_capabilities": _card_capabilities(deferred_cards, repo, registry=registry),
         "knowledge_card_recall": knowledge_card_recall,
-        "reference_hints": _reference_hints(
-            cards,
-            blob,
-            focus,
-            skill,
-            card_paths=card_paths,
-        ),
+        # Compatibility field: generic technique references are intentionally
+        # retired; project-specific guidance comes from knowledge_cards.
+        "reference_hints": [],
         "historical_patterns": historical_patterns,
         "reviewed_candidate_hints": reviewed_candidate_hints,
         "required_checks": checks,
@@ -3536,7 +3426,7 @@ def build_context_pack(
         "do_not_load": [
             "full skills/* tree",
             "full knowledge/cards/* tree",
-            "full skills/security-arsenal/REFERENCES.md unless playbook-router requires it",
+            "generic technique catalogues and external reference indexes",
             "raw large recon logs, full JSONL, full HTML responses, or unrelated historical sessions",
             "raw browser capture requests/console/storage unless validating one exact replay path",
             "all findings evidence bodies; start from findings/<target>/findings.json index only",
@@ -3616,7 +3506,7 @@ def format_context_pack(pack: dict) -> str:
             )
             for item in pack.get("knowledge_card_recall", [])
         ]),
-        "- Reference hints:",
+        "- Reference hints (retired; generic technique detail comes from the model):",
         *_format_list([
             "{path} — {when}".format(
                 path=item.get("path", ""),

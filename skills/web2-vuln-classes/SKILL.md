@@ -1,13 +1,13 @@
 ---
 name: web2-vuln-classes
-description: Web/API vulnerability-class routing guide for autonomous assessment. Use when the focus or target memory names a concrete class such as IDOR, access control, JWT/OAuth/SAML, GraphQL, SQLi/NoSQL, SSRF, upload, SSTI, deserialization, XXE, path traversal, request smuggling, cache poisoning/deception, race, browser boundary, WebSocket, LLM tool flow, or controlled RCE. Provides lane triggers, first safe action, evidence gate, stop condition, chain path, and on-demand reference routing.
+description: Web/API vulnerability-class routing guide for autonomous assessment. Use when the focus or target memory names a concrete class such as IDOR, access control, JWT/OAuth/SAML, GraphQL, SQLi/NoSQL, SSRF, upload, SSTI, deserialization, XXE, path traversal, request smuggling, cache poisoning/deception, race, browser boundary, WebSocket, LLM tool flow, or controlled RCE. Provides lane triggers, first safe action, evidence gate, stop condition, and chain path.
 ---
 
 # WEB2 VULN CLASSES — Compact Routing Layer
 
 This Skill is the decision layer after Claude selects a concrete Web/API bug-class
-lane. Keep it small. Put payload bodies, bypass tables, grep lists, and tool syntax
-in the on-demand references below.
+lane. Keep it small. General technique knowledge and exact test-input syntax come
+from the model; this file keeps only project-specific routing and evidence rules.
 
 ## Runtime Contract
 
@@ -56,24 +56,13 @@ Load these cards through `context_pack.py`; do not read all of them manually.
 | Node / prototype pollution | `knowledge/cards/node-prototype-pollution.md` |
 | Race conditions | `knowledge/cards/race-conditions.md` |
 
-## On-Demand References
-
-Read only when the active evidence asks for concrete detail:
-
-| Need | Reference |
-|---|---|
-| URL/parser bypass, SSRF IP forms, redirect validation, upload validation, path traversal normalization, WAF/router normalization | `skills/security-arsenal/references/bypass-patterns.md` |
-| SSTI, command injection, SQLi confirmation, GraphQL batching, XXE, SAML/XML, deserialization, smuggling payload families | `skills/security-arsenal/references/payload-families.md` |
-| DOM/source sinks, language grep, server-side RCE/deserialization sink search | `skills/security-arsenal/references/sink-and-grep-patterns.md` |
-| Recon, ffuf, Semgrep, subdomain takeover checks, cloud/storage enum, SAML tooling | `skills/security-arsenal/references/recon-tool-usage.md` |
-
 ## Boundary-First Pattern Router
 
-Use the distilled project decision shape, not raw external notes or fixed
-payload routes: `boundary -> baseline -> hidden surface -> bug family ->
-primitive -> connector -> impact`. Keep this as an AI reasoning aid; do not
-import flag hunting, admin-bot assumptions, DoS/ReDoS, persistent shell, or
-broad payload spraying into real targets.
+Use the distilled project decision shape, not a fixed technique route:
+`boundary -> baseline -> hidden surface -> bug family -> primitive -> connector -> impact`.
+Keep this as an AI reasoning aid; do not import flag hunting,
+admin-bot assumptions, DoS/ReDoS, persistent shell, or broad payload spraying into real
+targets.
 
 ### Boundary-First Pass
 
@@ -166,8 +155,8 @@ branch that answers the current question:
   the callback is controlled. Stop on a WAF-only signal, unstable timing, or no
   reproducible raw diff.
 
-Load `payload-families.md` only when the selected evidence requires SQLi type or
-DBMS classification; it is not a prerequisite for choosing the lane.
+The model chooses the least invasive SQLi/NoSQL technique from the observed
+query shape; this lane does not require a local syntax catalogue.
 
 ### Hidden Auth Switch Lane
 
@@ -194,7 +183,7 @@ rate limits and stop conditions.
 ## Lane Cards
 
 Each lane keeps only trigger, first safe action, evidence gate, stop condition,
-chain path, and reference routing.
+chain path, and project-card routing.
 
 ### 1. IDOR / BOLA
 - Trigger: object IDs, tenant/org/user/account/order/invoice IDs, GraphQL node IDs.
@@ -218,7 +207,7 @@ chain path, and reference routing.
 - Evidence gate: browser-context execution or sensitive action/data connector.
 - Stop condition: reflection only, CSP blocks execution, no controllable sink.
 - Chain path: XSS -> CSRF/action, token exposure, admin browser, ATO.
-- Read if needed: `sink-and-grep-patterns.md`.
+- Read if needed: `knowledge/cards/xss-client-injection.md` and `knowledge/cards/browser-client-boundaries.md`.
 
 ### 4. SSRF
 - Trigger: URL fetch, webhook, import, preview, oEmbed, callback, server-side request.
@@ -226,7 +215,7 @@ chain path, and reference routing.
 - Evidence gate: server-side fetch plus second signal; DNS-only is insufficient.
 - Stop condition: browser-only redirect or no resolver/connect/read-back delta.
 - Chain path: SSRF -> internal admin/metadata credential/control-plane.
-- Read if needed: `bypass-patterns.md` for URL parser or IP normalization.
+- Read if needed: `knowledge/cards/ssrf-url-fetch.md` and `knowledge/cards/ssrf-internal-impact.md`.
 
 ### 5. Business Logic
 - Trigger: price, coupon, checkout, quantity, workflow skip, client-side controls.
@@ -250,7 +239,7 @@ chain path, and reference routing.
 - Evidence gate: type classification plus reproducible boolean/error/length/sort delta.
 - Stop condition: WAF-only signal, unstable timing, no raw diff.
 - Chain path: injection -> read/write/auth bypass; NoSQL -> auth/filter bypass.
-- Read if needed: `payload-families.md` for SQLi families, `knowledge/cards/nosql-query-injection.md` for operator/type behavior.
+- Read if needed: `knowledge/cards/sqli-hidden-surfaces.md` and `knowledge/cards/nosql-query-injection.md`.
 
 ### 8. JWT / OAuth / OIDC / SAML / SSO
 - Trigger: JWT, JWK/JKU/KID, alg confusion, redirect_uri, state, PKCE, RelayState, SAMLResponse.
@@ -258,7 +247,7 @@ chain path, and reference routing.
 - Evidence gate: server accepts changed identity/account/session or leaks code/token to controlled endpoint.
 - Stop condition: decode-only, metadata-only, or redirect alone without chain.
 - Chain path: redirect/PKCE/state/key-source flaw -> account linking or ATO.
-- Read if needed: `payload-families.md` for SAML/XML examples; `bypass-patterns.md` for redirect bypass.
+- Read if needed: `knowledge/cards/auth-sso-token-edge-cases.md`.
 
 ### 9. File Upload
 - Trigger: upload, import, avatar, attachment, SVG/Office/XML, converter, storage path.
@@ -266,7 +255,7 @@ chain path, and reference routing.
 - Evidence gate: safe verification of parser/component boundary or storage access execution proof.
 - Stop condition: filename-only rejection or no read-back/processing delta.
 - Chain path: upload parser -> XXE/XSS/deserialization; upload execution -> controlled RCE.
-- Read if needed: `bypass-patterns.md` for validation bypass; `payload-families.md` for XXE/SSTI/RCE families.
+- Read if needed: `knowledge/cards/upload-parser.md`, `knowledge/cards/xxe-xml-parser.md`, and `knowledge/cards/controlled-rce-impact.md`.
 
 ### 10. GraphQL
 - Trigger: GraphQL, introspection, node/global ID, mutation, subscription, field-level auth matrix.
@@ -274,7 +263,7 @@ chain path, and reference routing.
 - Evidence gate: field-level auth matrix shows protected data/action; introspection alone is informational.
 - Stop condition: schema only, no object/field/mutation boundary.
 - Chain path: node global ID -> object auth bypass; subscription -> realtime leak.
-- Read if needed: `payload-families.md` for batching/query body shapes.
+- Read if needed: `knowledge/cards/graphql.md`.
 
 ### 11. LLM / AI Features
 - Trigger: chatbot, prompt injection, indirect prompt, RAG, agent tool, markdown exfil, tool call.
@@ -306,7 +295,7 @@ chain path, and reference routing.
 - Evidence gate: controlled RCE proof shows output/timing channel and bounded execution identity.
 - Stop condition: 500/timeout only, no observable execution identity or output.
 - Chain path: primitive -> controlled RCE -> bounded impact statement.
-- Read if needed: `payload-families.md` and `sink-and-grep-patterns.md`.
+- Read if needed: `knowledge/cards/server-side-template-injection.md` and `knowledge/cards/controlled-rce-impact.md`.
 
 ### 15. Subdomain Takeover / Cloud / Infra
 - Trigger: dangling CNAME, storage bucket, Firebase/open rules, exposed admin/metrics/config.
@@ -314,7 +303,7 @@ chain path, and reference routing.
 - Evidence gate: provider confirms claimable resource or readable storage/config boundary.
 - Stop condition: ambiguous fingerprint or no claimable resource/provider proof.
 - Chain path: takeover/config -> app data/source/secret/auth boundary.
-- Read if needed: `recon-tool-usage.md`.
+- Read if needed: `knowledge/cards/cloud-control-plane-pivots.md` and `knowledge/cards/information-disclosure-source-config.md`.
 
 ### 16. HTTP Request Smuggling / Cache
 - Trigger: Content-Length, Transfer-Encoding, H2 downgrade, host header, proxy trust, cache poisoning/deception.
@@ -322,7 +311,7 @@ chain path, and reference routing.
 - Evidence gate: raw desync/request-capture/cache-key/private response evidence.
 - Stop condition: timing-only, prod-wide poison, or victim impact without controlled target/test resource.
 - Chain path: smuggling -> request capture/cache poison/auth bypass; deception -> private response leak.
-- Read if needed: `payload-families.md` for smuggling families; `bypass-patterns.md` for proxy/cache normalization.
+- Read if needed: `knowledge/cards/proxy-cache-boundaries.md`.
 
 ### 17. MFA / 2FA
 - Trigger: OTP, TOTP, backup code, remember device, MFA skip, lockout, rate limit.
@@ -338,7 +327,7 @@ chain path, and reference routing.
 - Evidence gate: controlled file read or route/config/source disclosure.
 - Stop condition: error-only, no read-back, sensitive bulk read required.
 - Chain path: file read -> source/config/secret -> auth/RCE/SSRF connector.
-- Read if needed: `bypass-patterns.md`.
+- Read if needed: `knowledge/cards/path-traversal-file-read.md`.
 
 ### 19. XXE / XML Parser
 - Trigger: XML/SOAP/SAML/SVG/Office/RSS/Atom/import/conversion parser.
@@ -346,7 +335,7 @@ chain path, and reference routing.
 - Evidence gate: external entity, XInclude, file-read, or SSRF behavior observed.
 - Stop condition: XML error only or sensitive file/OOB without authorization.
 - Chain path: XXE -> file read/SSRF/upload parser chain.
-- Read if needed: `payload-families.md`.
+- Read if needed: `knowledge/cards/xxe-xml-parser.md`.
 
 ### 20. Deserialization / Signed Objects
 - Trigger: serialized cookie, ViewState, remember-me, signed object, gadget, pickle, PHP serialize.
@@ -354,7 +343,7 @@ chain path, and reference routing.
 - Evidence gate: state tamper accepted or gadget chain reachable in controlled target/test resource.
 - Stop condition: signature/encryption rejects tamper, format only, no reachable sink.
 - Chain path: state tamper -> privilege; gadget -> controlled RCE.
-- Read if needed: `payload-families.md` and `sink-and-grep-patterns.md`.
+- Read if needed: `knowledge/cards/insecure-deserialization.md` and `knowledge/cards/controlled-rce-impact.md`.
 
 ### 21. Host Header / Proxy Trust / CRLF
 - Trigger: Host, XFH, Forwarded, X-Original-URL, CRLF, response splitting.
@@ -362,7 +351,7 @@ chain path, and reference routing.
 - Evidence gate: server-side trust or response header/body injection changes action/data boundary.
 - Stop condition: reflection only, browser-only display, no downstream consumer.
 - Chain path: host/proxy trust -> password reset, cache poison, SSRF connector.
-- Read if needed: `bypass-patterns.md` and `payload-families.md`.
+- Read if needed: `knowledge/cards/proxy-cache-boundaries.md`.
 
 ### 22. WebSocket / Realtime API
 - Trigger: websocket, socket.io, STOMP, SignalR, GraphQL subscription, CSWSH, message schema.

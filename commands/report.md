@@ -127,81 +127,14 @@ Provide when prompted:
 6. Supporting materials section
 7. Evidence references from `findings/`, screenshots, response snippets, or validation summary when available
 
-## Platform Selection
+## Report Contract
 
-### HackerOne Format
-- Markdown sections: Summary, Vulnerability Details, Steps to Reproduce, Impact
-- Include the recorded CVSS version, score, and vector
-- Include two test account setup instructions
-- Keep under 600 words
+The report-only Skill owns platform structure, tone, evidence presentation, and
+the final checklist. This command only selects the validated source and invokes
+the generator. Render the recorded `cvss.version`, `cvss.score`, and
+`cvss.vector`; do not calculate a score here or copy a static calibration table.
 
-### Bugcrowd Format
-- Title with VRT category: `[VRT Category] > [Subcategory] > P[1-4]`
-- Expected vs Actual Behavior section
-- Severity Justification section referencing Bugcrowd VRT
-
-### Intigriti Format
-- CVSS score prominent at top
-- Clear reproduction steps
-- Business impact focused
-
-### Immunefi Format (Web3)
-- Root cause in Solidity code
-- Foundry PoC test included
-- Concrete security impact backed by evidence
-- Comparison evidence (same check present elsewhere, missing here)
-
-## Writing Rules
-
-1. **Never use:** "could potentially", "may allow", "might be possible"
-2. **Always prove:** show actual data/action, not just "200 OK"
-3. **Impact first:** sentence 1 = what attacker gets, not what the bug is
-4. **Quantify:** how many users affected, what data type, $ amount
-5. **Short:** triagers skim. < 600 words.
-6. **Human:** write to a person, not a system
-
-## CVSS Calibration Notes (Not A Scoring Owner)
-
-Use the structured result produced by `/validate`. The following are calibration
-shapes only; never replace a finding's recorded `cvss` object with a template
-estimate or a score inferred from report prose.
-
-```
-IDOR read PII (any user, auth needed):
-→ CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:H/VI:N/VA:N/SC:N/SI:N/SA:N = 7.1 High
-
-Auth bypass → admin (no auth):
-→ CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N = 9.3 Critical
-
-SSRF → cloud metadata:
-→ CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:N/SC:H/SI:N/SA:N = 7.7 High
-
-Stored XSS (any user, victim views page):
-→ CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:P/VC:L/VI:L/VA:N/SC:H/SI:L/SA:N = 6.2 Medium
-```
-
-## Escalation Language
-
-Use when payout is being downgraded:
-```
-"This requires only a free account — no special privileges."
-"The exposed data includes [PII type], subject to GDPR/CCPA requirements."
-"An attacker can automate this — all [N] records in [X] minutes with a simple loop."
-"This is exploitable externally without any internal network access."
-"The impact is equivalent to a full data breach of [feature/data type]."
-```
-
-## Final Checklist Before Submitting
-
-```
-[ ] Title follows formula
-[ ] First sentence states exact impact
-[ ] Replayable artifact is copy-pasteable or otherwise reproducible
-[ ] Observed result showing impact included
-[ ] Actor comparison is included when the claim crosses an identity boundary
-[ ] Recorded `cvss.version`, `cvss.score`, and `cvss.vector` are rendered unchanged
-[ ] No typos in endpoint/param names
-[ ] Under 600 words
-[ ] Severity matches impact (no overclaiming)
-[ ] NEVER used "could potentially"
-```
+Use the protocol-appropriate replayable artifact: HTTP when applicable, or a
+browser, frame, stream, state, callback, or equivalent target-bound record for
+other protocols. Keep the report tied to the canonical finding and do not create
+a second lifecycle.

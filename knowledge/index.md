@@ -1,9 +1,9 @@
 # 知识库索引
 
-本文件是知识目录，不代表每轮运行时默认加载正文。根据当前目标、Skill、证据形态和假设，再按需选择具体知识卡或现有参考资料。
+本文件是知识目录，不代表每轮运行时默认加载正文。根据当前目标、Skill、证据形态和假设，再按需选择具体项目知识卡。
 
-知识库是 Skills 的经验压缩库：负责提供可复用模式、思路分支、技巧家族、
-payload 家族、bypass 思维、补充 checklist、反例、误判/死路和思路变形。
+知识库是 Skills 的项目经验压缩库：负责提供可复用模式、思路分支、项目边界、
+证据门、停止条件、反例、误判/死路和思路变形。
 它不负责指挥流程。具体执行顺序、工具选择、验证深度和写回位置仍由当前
 Skill 与检查层决定。
 
@@ -36,7 +36,7 @@ frontmatter 属于 `warning`，允许渐进迁移。需要把迁移债务也纳�
 
 | 能力类型 | 落位 |
 |---|---|
-| 技巧 / bypass / 经验 | `knowledge/cards/` 或 references |
+| 项目经验 / 边界思路 | `knowledge/cards/` |
 | 判断标准 | `tools/evidence_rubric.py` |
 | 路由触发 | `tools/context_pack.py` |
 | 下一步动作 | `tools/checkpoint.py` |
@@ -51,7 +51,7 @@ frontmatter 属于 `warning`，允许渐进迁移。需要把迁移债务也纳�
 最多 1 张 core card
 + 最多 1 张 reference card
 + 最多 1 个 case-router；若卡片存在可选 `source_refs`，可再按需查询案例
-+ 最多 1 个 payload pack 或 playbook（仅验证阶段 gated）
++ 最多 1 个项目验证 playbook（仅验证阶段 gated）
 ```
 
 降级不是删除：`case-router`、`out-of-target-intel`、`public-metadata` 等低优先级线索
@@ -62,9 +62,6 @@ frontmatter 属于 `warning`，允许渐进迁移。需要把迁移债务也纳�
 | 文件 | 作用 | 何时读取 |
 |---|---|---|
 | `rules/playbook-router.md` | 证据形态到本地深度参考和项目工具的路由 | 已有 JWT、SSRF、OAuth、GraphQL、AI/RAG、上传解析等明确 Web 证据时 |
-| `skills/security-arsenal/REFERENCES.md` | 外部参考库索引 | 当前项目内置方法论不够，需要外部 playbook、writeup、工具目录时 |
-| `skills/security-arsenal/METHODOLOGY_CHEATSHEET.md` | 压缩方法论速查 | 需要快速补充某类漏洞的测试步骤时 |
-
 ## 核心决策知识卡（参考层）
 
 这些卡片是当前 Skill 的有限参考：可提供 route、证据门、停止条件和覆盖提醒，但不拥有路线或目标状态。
@@ -94,7 +91,7 @@ frontmatter 属于 `warning`，允许渐进迁移。需要把迁移债务也纳�
 | `knowledge/cards/upload-to-execution.md` | 上传后执行、webshell primitive 和受控影响证明 | `web2-vuln-classes`, `triage-validation` |
 | `knowledge/cards/server-side-template-injection.md` | SSTI 输入面、模板引擎指纹和受控升级路径 | `web2-vuln-classes`, `triage-validation` |
 | `knowledge/cards/insecure-deserialization.md` | 反序列化、signed object、ViewState/remember-me 和 sink 验证 | `web2-vuln-classes`, `triage-validation` |
-| `knowledge/cards/xss-client-injection.md` | Reflected/Stored/DOM XSS 的输入面、输出上下文、payload 家族和最小浏览器执行证据 | `web2-vuln-classes`, `triage-validation` |
+| `knowledge/cards/xss-client-injection.md` | Reflected/Stored/DOM XSS 的输入面、输出上下文和最小浏览器执行证据 | `web2-vuln-classes`, `triage-validation` |
 | `knowledge/cards/browser-client-boundaries.md` | CORS、CSRF、Clickjacking、DOM/postMessage 的浏览器边界验证 | `web2-vuln-classes`, `triage-validation` |
 | `knowledge/cards/proxy-cache-boundaries.md` | Host header、代理信任、Request smuggling、Cache poisoning/deception | `web2-vuln-classes`, `triage-validation` |
 | `knowledge/cards/websocket-realtime-api.md` | WebSocket、CSWSH、订阅/发布和消息级权限 | `web2-vuln-classes`, `triage-validation` |
@@ -174,7 +171,7 @@ case-router 不是默认方法论正文，而是低优先级、按信号加载�
 
 ## 外部材料蒸馏记录
 
-默认知识加载只依赖项目内已蒸馏卡片、payload pack 和 playbook，不再挂载本机
+默认知识加载只依赖项目内已蒸馏卡片和项目 playbook，不再挂载本机
 绝对路径形式的原始外部笔记。外部材料的审计、取舍和未吸收原因保存在
 `docs/ctf-web-distillation-audit.md`；该文档只用于人工追溯，不参与默认路由。
 

@@ -144,7 +144,7 @@ baseline and change one boundary at a time.
 | Encoding, normalization, parser/proxy, WAF, or view/storage mismatch | Load `rules/playbook-router.md` and the selected boundary card |
 | Role/object authorization difference | Route to `skills/web2-vuln-classes/SKILL.md` and actor-pair evidence |
 | Blind server-side behavior | Use the shared OAST workflow only when a callback can answer the hypothesis |
-| Payload, bypass, sink, or grep detail | Load the specific `skills/security-arsenal/references/` file on demand |
+| Concrete technique detail | Use the model's general knowledge; load only a project knowledge card when it adds a trigger, evidence gate, stop condition, or owner rule |
 
 These are evidence routes, not a fixed checklist. Error, timing, OAST, Boolean,
 browser, source, and role-diff observations are alternatives, not a

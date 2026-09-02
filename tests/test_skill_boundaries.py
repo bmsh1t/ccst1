@@ -158,15 +158,13 @@ def test_triage_validation_keeps_preseverity_and_retraction_discipline():
     assert "**KILL:**" not in command
 
 
-def test_payload_reference_requires_stateful_chain_continuity():
-    reference = (
-        REPO_ROOT / "skills" / "security-arsenal" / "references" / "payload-families.md"
-    ).read_text(encoding="utf-8")
+def test_security_arsenal_requires_stateful_chain_continuity():
+    reference = (REPO_ROOT / "skills" / "security-arsenal" / "SKILL.md").read_text(encoding="utf-8")
 
-    assert "## 状态型链路连续性" in reference
+    assert "## Stateful Continuity" in reference
     assert "leak -> use" in reference
-    assert "同一进程" in reference
-    assert "显式恢复" in reference
+    assert "same process" in reference
+    assert "explicitly restore" in reference
 
 
 def test_runtime_protocol_keeps_compact_mode_transition_review():

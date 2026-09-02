@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased - AI-First Arsenal Convergence (2026-09-02)
+
+### Changed
+
+- Reduced `skills/security-arsenal/SKILL.md` from 856 lines to a 131-line
+  project contract containing only decision routing, ROI, phase switching,
+  evidence, state continuity, owner write-back, and red-line rules.
+- Retired generic payload, bypass, methodology, command, wordlist, and external
+  reference catalogues. The model supplies general technique knowledge; project
+  cards retain only project-specific boundaries and evidence conditions.
+- Removed automatic Context Pack `reference_hints` generation while preserving
+  the empty field for historical artifact compatibility.
+
 ## v4.4.1 — JSON-Inject Probe Dispatcher Wiring + Heuristic Alignment (May 2026)
 
 ### Added
