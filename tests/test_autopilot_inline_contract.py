@@ -103,6 +103,25 @@ def test_generic_asset_relationship_lane_is_bounded_public_and_scope_preserving(
         assert marker in combined
 
 
+def test_asset_relation_triage_is_ai_routed_without_scope_or_execution_promotion():
+    command = " ".join(_read("commands/autopilot.md").split()).lower()
+    lanes = " ".join(_read("docs/autopilot-lanes.md").split()).lower()
+    combined = f"{command} {lanes}"
+
+    for marker in (
+        "compact ai triage contract",
+        "related",
+        "uncertain",
+        "unrelated",
+        "bounded reason",
+        "source refs",
+        "only existing `in_scope` permits active validation",
+        "this decision never changes scope",
+        "keep raw observations for audit and rebuild",
+    ):
+        assert marker in combined
+
+
 def test_inline_auth_and_seed_contract_uses_formal_arguments_only():
     command = _read("commands/autopilot.md")
     readme = _read("README.md")
@@ -307,6 +326,42 @@ def test_phase_gate_keeps_long_runs_evidence_driven_without_new_state_owner():
     assert "existing `decision`/`next_action` heartbeat" in command
     assert "do not create another state, queue, or checklist owner" in command
     assert "bounded dead-end/blocker or handoff" in command
+
+
+def test_mid_run_review_is_delta_based_and_uses_existing_owner_projections():
+    command = " ".join(_read("commands/autopilot.md").split()).lower()
+
+    for marker in (
+        "mid-run review is delta-based, not a fixed sequence",
+        "observation_inventory",
+        "recon_artifacts.asset_relations",
+        "structured_findings.chain_context",
+        "all bounded owner projections",
+        "related",
+        "uncertain",
+        "unrelated",
+        "scope/auth",
+        "external context never directly blocks closure",
+        "only unresolved target-owned work can block closure",
+    ):
+        assert marker in command
+
+
+def test_global_review_covers_long_tail_relations_and_runtime_without_new_closure_inputs():
+    command = " ".join(_read("commands/autopilot.md").split()).lower()
+
+    for marker in (
+        "before target-wide `finish`, run global review",
+        "surface/observation long-tail",
+        "recon asset relations and `chain_context`",
+        "browser/js/source/intel artifacts",
+        "scope/auth and runtime blockers",
+        "residual unknowns",
+        "only unresolved target-owned work can block closure",
+        "external/uncertain/unrelated relation context remains passive",
+        "record the review through the checkpoint owner",
+    ):
+        assert marker in command
 
 
 def test_failed_sources_and_tools_are_suppressed_within_one_invocation():

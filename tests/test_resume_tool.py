@@ -313,6 +313,79 @@ class TestResumeSummary:
         assert "Next validate: sqli_pending [high/confirmed] sqli https://api.target.com/search?q=1" in output
         assert "Next report: mfa_report [medium/high] mfa https://api.target.com/mfa" in output
 
+    def test_preserves_external_dependency_as_inert_chain_context(self, tmp_hunt_dir, sample_target_profile, monkeypatch, tmp_path):
+        save_target_profile(tmp_hunt_dir, sample_target_profile)
+
+        repo_root = tmp_path
+        findings_dir = repo_root / "findings" / "target.com"
+        findings_dir.mkdir(parents=True)
+        (findings_dir / "findings.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "target": "target.com",
+                    "findings": [
+                        {
+                            "id": "target-chain",
+                            "type": "authz",
+                            "url": "https://target.com/login",
+                            "validation_status": "unvalidated",
+                            "report_status": "not_generated",
+                            "assets": [
+                                "https://external.example/admin/",
+                                "//protocol-relative.example/admin/",
+                                "/target-owned/path",
+                            ],
+                            "scope_status": "scope-review",
+                            "evidence_ref": "evidence/target.com/chain.md",
+                            "poc_ref": "evidence/target.com/poc/chain/",
+                        },
+                        {
+                            "id": "off-target-no-chain",
+                            "type": "info",
+                            "url": "https://unrelated.example/",
+                            "assets": ["https://unrelated-chain.example/admin/"],
+                            "validation_status": "unvalidated",
+                            "report_status": "not_generated",
+                        },
+                        {
+                            "id": "empty-without-claim",
+                            "type": "info",
+                            "url": "",
+                            "validation_status": "unvalidated",
+                            "report_status": "not_generated",
+                        },
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(resume_tool, "BASE_DIR", str(repo_root))
+
+        first = load_resume_summary(tmp_hunt_dir, "target.com")
+        second = load_resume_summary(tmp_hunt_dir, "target.com")
+        output = format_resume_output(first, "target.com")
+
+        assert first is not None
+        structured = first["structured_findings"]
+        assert structured["total"] == 1
+        assert structured["next_validation"]["id"] == "target-chain"
+        assert structured["chain_context_count"] == 1
+        assert structured["chain_context"] == second["structured_findings"]["chain_context"]
+        context = structured["chain_context"][0]
+        assert context["finding_id"] == "target-chain"
+        assert context["external_assets"] == [
+            "https://external.example/admin/",
+            "//protocol-relative.example/admin/",
+        ]
+        assert context["scope_status"] == "scope-review"
+        assert "evidence/target.com/chain.md" in context["evidence_refs"]
+        assert context["active"] is False
+        assert "Chain Context:" in output
+        assert "https://external.example/admin/" in output
+        assert "unrelated.example" not in output
+        assert "unrelated-chain.example" not in output
+
     def test_recovers_incomplete_root_claim_without_url(self, tmp_hunt_dir, sample_target_profile, monkeypatch, tmp_path):
         save_target_profile(tmp_hunt_dir, sample_target_profile)
         repo_root = tmp_path

@@ -46,6 +46,11 @@ persist proxy setup. Apply `rules/hunting.md` target-isolation/new-target defaul
 `/pickup` never replays another target's skips or scanner decisions. DNS expansion is
 advisory: host count alone is not a trigger; target-specific evidence plus `--reason` is
 required.
+Asset relation candidates use the compact AI triage contract in
+`docs/autopilot-lanes.md#credentials-and-asset-expansion`: return `related`, `uncertain`, or
+`unrelated` with a bounded reason and source refs. Related only changes priority, uncertain
+stays passive, and unrelated stays out of active Context/Surface/Queue/Coverage/Closure;
+only existing `in_scope` permits active validation.
 `/autopilot` runs inline in the current AI session and remains the sole writer/closure
 controller and only owner of lane claims/state write-back. Specialists default to zero;
 justified delegation loads
@@ -103,6 +108,16 @@ or was ruled out, and why the next action has better information gain than rotat
 answers in the existing `decision`/`next_action` heartbeat; do not create another state,
 queue, or checklist owner. Without an evidence-backed answer, resolve a bounded
 dead-end/blocker or handoff instead of silently widening work.
+
+Run a mid-run review when new assets or cross-source evidence arrive, a phase changes, a
+blocker/rotation occurs, or a bounded batch ends. This mid-run review is delta-based, not a
+fixed sequence: inspect the bounded `surface`, `observation_inventory`,
+`recon_artifacts.asset_relations`, `structured_findings.chain_context`, and all bounded owner
+projections (Coverage, Ledger, Finding, Queue, Case State, Runtime/Auth). AI may return one
+`related`, `uncertain`, or `unrelated` relation decision with a bounded reason and source refs,
+then re-rank or add a hypothesis through existing `decision`/`next_action` fields. This is
+incremental review, not a new owner or checklist; external context never directly blocks
+Closure, and only unresolved target-owned work can block closure.
 
 When starting a target, entering a high-value feature, or rotating after a stalled lane,
 recall `Developer-View Pre-Hunt Recall` in `skills/bb-methodology/SKILL.md` as a soft reasoning prompt. Record target-specific answers in existing fields; never make it a second gate, fixed vulnerability order, or Queue action list.
@@ -193,9 +208,13 @@ Read `closure.verdict`, `closure.can_claim_exhausted`, `closure.reasons`, and ad
 `finish/complete/exhausted` claim; `handoff` preserves durable work and `blocked` records
 terminal prerequisite blocker.
 
-Before target-wide `finish`, cross-source review Surface, Coverage, Ledger, Finding,
-Browser/JS/Source/Intel evidence and residual unknowns. Record it through the Checkpoint
-owner with `--record-global-review`, returned `closure.snapshot_digest`, at least one current
+Before target-wide `finish`, run Global Review over the bounded projections and evidence
+inventory: Surface/Observation long-tail, Coverage/Ledger/Finding/Queue/Case State, recon
+asset relations and `chain_context`, Browser/JS/Source/Intel artifacts, Scope/Auth and Runtime
+blockers, residual unknowns, and active Queue work. AI may re-rank or add hypotheses, but only
+unresolved target-owned work can block closure; external/uncertain/unrelated relation context
+remains passive. Record the review through the Checkpoint owner with
+`--record-global-review`, returned `closure.snapshot_digest`, at least one current
 target-owned non-empty `evidence_refs`, the decision, and `complete` or `follow_up` mapped to
 an active Queue action. Missing/stale/invalid review yields `global_review_required`,
 `global_review_stale`, or `global_review_invalid`; prose/new state cannot replace it. Valid

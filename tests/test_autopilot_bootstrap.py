@@ -672,6 +672,44 @@ def test_compact_state_keeps_each_priority_frontier_owner_head():
     ]
 
 
+def test_compact_state_keeps_external_chain_context_inert_and_bounded():
+    context = [
+        {
+            "finding_id": f"finding-{index}",
+            "finding_type": "authz",
+            "validation_status": "validated",
+            "report_status": "generated",
+            "external_assets": [f"https://external-{index}.example/"],
+            "scope_status": "external-chain-context",
+            "evidence_refs": [f"evidence/target/chain-{index}.md"],
+            "active": False,
+            "raw": "do-not-project",
+        }
+        for index in range(10)
+    ]
+
+    compact = autopilot_bootstrap.compact_autopilot_state({
+        "structured_findings": {
+            "chain_context": context,
+            "next_validation": {"id": "target-chain", "url": "https://target.example/"},
+        },
+    })
+
+    assert len(compact["chain_context"]) == 8
+    assert compact["chain_context"][0] == {
+        "finding_id": "finding-0",
+        "finding_type": "authz",
+        "validation_status": "validated",
+        "report_status": "generated",
+        "external_assets": ["https://external-0.example/"],
+        "scope_status": "external-chain-context",
+        "evidence_refs": ["evidence/target/chain-0.md"],
+        "active": False,
+    }
+    assert compact["structured_next"]["id"] == "target-chain"
+    assert "raw" not in json.dumps(compact["chain_context"])
+
+
 def test_capability_profile_runs_after_runtime_and_before_target_state(monkeypatch, tmp_path):
     calls = []
 

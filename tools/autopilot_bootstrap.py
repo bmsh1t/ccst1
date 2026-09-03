@@ -378,6 +378,30 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
         structured_next_kind = "report"
     else:
         structured_next_kind = ""
+    chain_context = []
+    for item in (structured.get("chain_context") or [])[:8]:
+        if not isinstance(item, dict):
+            continue
+        projected = {
+            "finding_id": str(item.get("finding_id") or "")[:240],
+            "finding_type": str(item.get("finding_type") or "finding")[:128],
+            "validation_status": str(item.get("validation_status") or "unvalidated")[:64],
+            "report_status": str(item.get("report_status") or "not_generated")[:64],
+            "external_assets": [
+                str(value)[:240]
+                for value in (item.get("external_assets") or [])[:8]
+                if str(value).strip()
+            ],
+            "scope_status": str(item.get("scope_status") or "external-chain-context")[:64],
+            "evidence_refs": [
+                str(value)[:512]
+                for value in (item.get("evidence_refs") or [])[:8]
+                if str(value).strip()
+            ],
+            "active": bool(item.get("active", False)),
+        }
+        if projected["finding_id"]:
+            chain_context.append(projected)
     runner_next = state.get("validation_runner_next") or {}
     if not runner_next:
         runner_candidates = state.get("validation_runner_candidates") or []
@@ -514,6 +538,9 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
             else {}
         ),
         "structured_next_kind": structured_next_kind,
+        # External dependencies stay visible as inert context; they are never
+        # merged into the executable Finding/Queue candidate projection.
+        "chain_context": chain_context,
         "runner_next": (
             _compact_candidate(runner_next)
             if isinstance(runner_next, dict)

@@ -45,10 +45,15 @@ from memory.pattern_db import PatternDB
 from memory.target_profile import default_memory_dir, load_target_profile
 try:
     from tools.finding_index import load_finding_index
-    from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
+    from tools.target_paths import (
+        canonical_target_value,
+        compact_url,
+        target_storage_key,
+        url_belongs_to_target,
+    )
 except ImportError:  # pragma: no cover - direct tools/ execution
     from finding_index import load_finding_index
-    from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
+    from target_paths import canonical_target_value, compact_url, target_storage_key, url_belongs_to_target
 
 _SESSION_SUMMARY_RE = re.compile(
     r"Endpoints tested:\s*(?P<endpoints_count>\d+)\.\s*"
@@ -56,6 +61,91 @@ _SESSION_SUMMARY_RE = re.compile(
     r"Findings:\s*(?P<findings_count>\d+)\."
     r"(?:\s*Session:\s*(?P<session_id>[^.]+)\.)?"
 )
+
+_CHAIN_CONTEXT_LIMIT = 8
+_CHAIN_CONTEXT_ITEM_LIMIT = 8
+_CHAIN_CONTEXT_ASSET_FIELDS = ("assets", "related_assets", "external_assets")
+_CHAIN_CONTEXT_REFERENCE_FIELDS = (
+    "related_evidence",
+    "chain_extension_summary",
+    "cross_source_links",
+)
+_CHAIN_CONTEXT_EVIDENCE_FIELDS = (
+    "source_file",
+    "evidence_ref",
+    "evidence_refs",
+    "poc_ref",
+)
+
+
+def _text_values(value: object) -> list[str]:
+    """Return bounded-source strings without interpreting arbitrary finding prose."""
+    values = value if isinstance(value, list) else [value]
+    return [str(item).strip() for item in values if str(item or "").strip()]
+
+
+def _external_chain_asset(value: str, target: str) -> str:
+    """Return an inert external asset preview, or an empty string for target assets."""
+    raw = str(value or "").strip()
+    if not raw or raw.startswith(("./", "../")) or (
+        raw.startswith("/") and not raw.startswith("//")
+    ):
+        return ""
+    candidate = raw if ("://" in raw or raw.startswith("//")) else f"https://{raw}"
+    try:
+        if url_belongs_to_target(candidate, target):
+            return ""
+    except (OSError, ValueError):
+        return ""
+    return compact_url(raw, limit=240)
+
+
+def _finding_chain_context(finding: dict, target: str) -> dict | None:
+    """Project external dependencies without turning them into direct findings."""
+    finding_id = str(finding.get("id") or "").strip()
+    if not finding_id:
+        return None
+
+    external_assets: list[str] = []
+    for field in _CHAIN_CONTEXT_ASSET_FIELDS:
+        for value in _text_values(finding.get(field)):
+            preview = _external_chain_asset(value, target)
+            if preview and preview not in external_assets:
+                external_assets.append(preview)
+
+    explicit_refs: list[str] = []
+    for field in _CHAIN_CONTEXT_REFERENCE_FIELDS:
+        for value in _text_values(finding.get(field)):
+            preview = compact_url(value, limit=240) if "://" in value or value.startswith("//") else value[:512]
+            if preview and preview not in explicit_refs:
+                explicit_refs.append(preview)
+
+    if not external_assets and not explicit_refs:
+        return None
+
+    scope_status = str(finding.get("scope_status") or "").strip()
+    if not scope_status:
+        scope_status = "external-chain-context" if external_assets else "evidence-context"
+    evidence_refs: list[str] = []
+    evidence_values = []
+    for field in _CHAIN_CONTEXT_EVIDENCE_FIELDS:
+        evidence_values.extend(_text_values(finding.get(field)))
+    evidence_values.extend(explicit_refs)
+    for value in evidence_values:
+        if value and value not in evidence_refs:
+            evidence_refs.append(value)
+    return {
+        "finding_id": finding_id,
+        "finding_type": str(
+            finding.get("type") or finding.get("vuln_class") or finding.get("category") or "finding"
+        ).strip(),
+        "validation_status": str(finding.get("validation_status") or "unvalidated").strip(),
+        "report_status": str(finding.get("report_status") or "not_generated").strip(),
+        "external_assets": external_assets[:_CHAIN_CONTEXT_ITEM_LIMIT],
+        "scope_status": scope_status[:64],
+        "evidence_refs": evidence_refs[:_CHAIN_CONTEXT_ITEM_LIMIT],
+        "active": False,
+    }
 
 
 def load_structured_finding_followup(
@@ -77,26 +167,42 @@ def load_structured_finding_followup(
         target=target,
         allow_legacy=True,
     )
-    findings = [
-        item for item in payload.get("findings", [])
-        if isinstance(item, dict)
-        and (
-            url_belongs_to_target(str(item.get("url") or ""), target)
+    all_findings = [
+        item for item in payload.get("findings", []) if isinstance(item, dict)
+    ]
+    findings = []
+    for item in all_findings:
+        url = str(item.get("url") or "").strip()
+        if (
+            (bool(url) and url_belongs_to_target(url, target))
             # An incomplete root claim may not know its endpoint yet.  It is
             # already scoped by the target-owned findings directory and must
             # remain recoverable instead of disappearing from bootstrap.
             or (
-                not str(item.get("url") or "").strip()
+                not url
                 and bool(item.get("claim_id") or item.get("claim_source_file"))
             )
-        )
-    ]
-    return summarize_structured_findings(
+        ):
+            findings.append(item)
+
+    chain_context = []
+    for item in findings:
+        context = _finding_chain_context(item, target)
+        if context:
+            chain_context.append(context)
+        if len(chain_context) >= _CHAIN_CONTEXT_LIMIT:
+            break
+
+    summary = summarize_structured_findings(
         findings,
         findings_dir,
         target=target,
         enforce_owner_provenance=True,
     )
+    if chain_context:
+        summary["chain_context"] = chain_context
+        summary["chain_context_count"] = len(chain_context)
+    return summary
 
 
 def format_minutes(total_minutes: int | float) -> str:
@@ -528,6 +634,32 @@ def format_resume_output(summary: dict | None, target: str) -> str:
         next_report = structured_findings.get("next_report") or {}
         if next_report:
             lines.append(f"  Command: python3 tools/report_generator.py {next_report.get('findings_dir')}")
+
+    chain_context = structured_findings.get("chain_context") or []
+    if chain_context:
+        lines.append("")
+        lines.append("Chain Context:")
+        for item in chain_context[:_CHAIN_CONTEXT_LIMIT]:
+            if not isinstance(item, dict):
+                continue
+            finding_id = str(item.get("finding_id") or "finding").strip()
+            scope_status = str(item.get("scope_status") or "external-chain-context").strip()
+            details = f"  - {finding_id} [{scope_status}]"
+            assets = ", ".join(
+                str(value).strip()
+                for value in (item.get("external_assets") or [])[:_CHAIN_CONTEXT_ITEM_LIMIT]
+                if str(value).strip()
+            )
+            refs = ", ".join(
+                str(value).strip()
+                for value in (item.get("evidence_refs") or [])[:_CHAIN_CONTEXT_ITEM_LIMIT]
+                if str(value).strip()
+            )
+            if assets:
+                details += f" assets={assets}"
+            if refs:
+                details += f" evidence={refs}"
+            lines.append(details)
 
     checkpoint = summary.get("checkpoint") or {}
     if checkpoint:
