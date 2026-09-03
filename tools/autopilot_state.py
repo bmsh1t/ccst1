@@ -5960,6 +5960,33 @@ _GLOBAL_REVIEW_STATUSES = {"complete", "follow_up"}
 _GLOBAL_REVIEW_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
+def _global_review_error(
+    status: str,
+    reason: str,
+    *,
+    state_changes: list[dict[str, str]] | None = None,
+) -> dict:
+    """Return a stable, actionable diagnostic without mutating the witness."""
+    actions = {
+        "global_review_required": (
+            "Run closure check, then record a global review with the current "
+            "snapshot_digest and target-owned evidence_refs."
+        ),
+        "global_review_invalid": (
+            "Correct the global review fields and retry; the review was not recorded."
+        ),
+        "global_review_stale": (
+            "Re-run closure check and resubmit the review with its returned snapshot_digest."
+        ),
+    }
+    return {
+        "status": status,
+        "reason": reason,
+        "state_changes": list(state_changes or []),
+        "action_required": actions.get(reason, "Correct the review and retry."),
+    }
+
+
 def _bounded_review_strings(value: object, *, field: str, limit: int = 16) -> list[str]:
     if not isinstance(value, list) or len(value) > limit:
         raise ValueError(f"global review {field} must be a list of at most {limit} strings")
@@ -6005,15 +6032,25 @@ def validate_global_review(
 ) -> dict:
     """Validate the optional target-wide review witness against current owners."""
     if review in (None, {}):
-        return {"status": "missing", "reason": "global_review_required"}
+        return _global_review_error("missing", "global_review_required")
     if not isinstance(review, dict):
-        return {"status": "invalid", "reason": "global_review_invalid"}
+        return _global_review_error("invalid", "global_review_invalid")
     status = str(review.get("status") or "").strip().lower()
     digest = str(review.get("snapshot_digest") or "").strip().lower()
     if status not in _GLOBAL_REVIEW_STATUSES or not _GLOBAL_REVIEW_DIGEST_RE.fullmatch(digest):
-        return {"status": "invalid", "reason": "global_review_invalid"}
+        return _global_review_error("invalid", "global_review_invalid")
     if digest != str(expected_digest or "").strip().lower():
-        return {"status": "stale", "reason": "global_review_stale"}
+        return _global_review_error(
+            "stale",
+            "global_review_stale",
+            state_changes=[
+                {
+                    "field": "snapshot_digest",
+                    "provided": digest,
+                    "current": str(expected_digest or "").strip().lower(),
+                }
+            ],
+        )
     try:
         evidence_refs = _bounded_review_strings(
             review.get("evidence_refs"), field="evidence_refs"
@@ -6023,24 +6060,24 @@ def validate_global_review(
             review.get("residual_unknowns", []), field="residual_unknowns"
         )
     except ValueError:
-        return {"status": "invalid", "reason": "global_review_invalid"}
+        return _global_review_error("invalid", "global_review_invalid")
     if not evidence_refs:
-        return {"status": "invalid", "reason": "global_review_invalid"}
+        return _global_review_error("invalid", "global_review_invalid")
     resolved_target = canonical_target_value(target)
     owned_refs = [
         _target_owned_nonempty_evidence_ref(repo_root, resolved_target, ref)
         for ref in evidence_refs
     ]
     if any(not ref for ref in owned_refs):
-        return {"status": "invalid", "reason": "global_review_invalid"}
+        return _global_review_error("invalid", "global_review_invalid")
     decision = " ".join(str(review.get("decision") or "").split())
     next_action = " ".join(str(review.get("next_action") or "").split())
     if not decision or len(decision) > 500 or len(next_action) > 500:
-        return {"status": "invalid", "reason": "global_review_invalid"}
+        return _global_review_error("invalid", "global_review_invalid")
     matched_action = None
     if status == "follow_up":
         if not next_action:
-            return {"status": "invalid", "reason": "global_review_invalid"}
+            return _global_review_error("invalid", "global_review_invalid")
         for item in queue.get("actions") or []:
             if not isinstance(item, dict):
                 continue
@@ -6052,11 +6089,11 @@ def validate_global_review(
             }:
                 continue
             if str(item.get("status") or "queued").strip().lower() not in ACTIVE_STATUSES:
-                return {"status": "invalid", "reason": "global_review_invalid"}
+                return _global_review_error("invalid", "global_review_invalid")
             matched_action = item
             break
         if matched_action is None:
-            return {"status": "invalid", "reason": "global_review_invalid"}
+            return _global_review_error("invalid", "global_review_invalid")
     normalized = {
         "status": status,
         "snapshot_digest": digest,

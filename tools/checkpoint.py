@@ -634,9 +634,15 @@ def record_global_review(
                 expected_digest=expected_digest,
             )
             if checked.get("status") != "valid":
+                diagnostics = {
+                    "status": checked.get("status") or "invalid",
+                    "reason": checked.get("reason") or "global_review_invalid",
+                    "state_changes": checked.get("state_changes") or [],
+                    "action_required": checked.get("action_required") or "Correct the review and retry.",
+                }
                 raise ValueError(
                     "global review cannot be recorded: "
-                    + str(checked.get("reason") or "global_review_invalid")
+                    + json.dumps(diagnostics, ensure_ascii=False, separators=(",", ":"))
                 )
             payload = _load_checkpoint_witness(path)
             if not payload:

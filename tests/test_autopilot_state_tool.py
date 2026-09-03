@@ -160,6 +160,27 @@ def test_global_review_requires_current_nonempty_target_evidence(tmp_path):
     )
     assert missing["reason"] == "global_review_invalid"
 
+    stale = validate_global_review(
+        tmp_path,
+        target,
+        {
+            "status": "complete",
+            "snapshot_digest": "a" * 64,
+            "evidence_refs": [evidence_ref],
+            "decision": "reviewed",
+        },
+        queue,
+        expected_digest="b" * 64,
+    )
+    assert stale["status"] == "stale"
+    assert stale["reason"] == "global_review_stale"
+    assert stale["state_changes"] == [{
+        "field": "snapshot_digest",
+        "provided": "a" * 64,
+        "current": "b" * 64,
+    }]
+    assert "Re-run closure check" in stale["action_required"]
+
 
 def test_global_review_follow_up_must_bind_active_queue_action(tmp_path):
     target = "target.com"

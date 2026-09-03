@@ -37,6 +37,21 @@ python3 tools/checkpoint.py --target target.com --record-global-review \
 `follow_up` 必须把 `--next-action` 指向现有活动 Queue action；缺失、过期或无效
 复核会让 Closure 保持 handoff，不会创建新的状态 owner。
 
+如果 `snapshot_digest` 已过期，Checkpoint 会拒绝写入并返回可恢复诊断：
+
+```json
+{
+  "status": "stale",
+  "reason": "global_review_stale",
+  "state_changes": [
+    {"field": "snapshot_digest", "provided": "<old_digest>", "current": "<current_digest>"}
+  ],
+  "action_required": "Re-run closure check and resubmit the review with its returned snapshot_digest."
+}
+```
+
+恢复方式：重新运行 Closure check，使用返回的最新 `snapshot_digest` 重提交 Global Review。
+
 ## 自动读取
 
 ```bash

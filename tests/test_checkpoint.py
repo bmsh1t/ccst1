@@ -267,6 +267,41 @@ def test_record_global_review_persists_checkpoint_witness(tmp_path, monkeypatch)
     assert payload["round_guard"]["fingerprint"] == "x"
 
 
+def test_record_global_review_propagates_stale_recovery_diagnostics(tmp_path, monkeypatch):
+    target = "target.com"
+    witness = tmp_path / "state" / target / "checkpoint_latest.json"
+    witness.parent.mkdir(parents=True)
+    witness.write_text(
+        json.dumps({"schema_version": 1, "kind": "autopilot_checkpoint_witness", "target": target}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        checkpoint_module,
+        "build_autopilot_state",
+        lambda *_args, **_kwargs: {"target": target, "resolved_target": target},
+    )
+    monkeypatch.setattr(
+        checkpoint_module,
+        "load_closure_projection",
+        lambda *_args, **_kwargs: {"snapshot_digest": "b" * 64},
+    )
+
+    with pytest.raises(ValueError) as exc:
+        record_global_review(
+            tmp_path,
+            target,
+            status="complete",
+            snapshot_digest="a" * 64,
+            evidence_refs=[],
+            decision="reviewed",
+        )
+
+    diagnostics = json.loads(str(exc.value).split(": ", 1)[1])
+    assert diagnostics["reason"] == "global_review_stale"
+    assert diagnostics["state_changes"][0]["current"] == "b" * 64
+    assert "Re-run closure check" in diagnostics["action_required"]
+
+
 def test_checkpoint_projects_visible_knowledge_effect_stages(tmp_path):
     checkpoint = {
         "context_pack": {
