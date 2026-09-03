@@ -47,60 +47,26 @@ chooses whether and how to validate each observed request.
 
 ### Developer-View Pre-Hunt Recall
 
-Use this short recall when starting a target, entering a new high-value feature,
-or rotating after a stalled lane. It is a reasoning aid, not a mandatory timed
-session, report-count, account-count, or testing-order gate.
+Use this soft prompt when starting a target, entering a high-value feature, or
+rotating after a stall; it is not a mandatory timed session or testing-order gate.
+Ask only what fits:
 
-1. **Build the mental model**: ask why the feature was implemented this way,
-   which business decision it serves, and where a shortcut could have left a
-   trust-boundary mismatch. Hunt the feature and its interactions, not only one
-   endpoint.
-2. **Name the crown jewel**: identify the highest-value confidentiality,
-   integrity, account, tenant, identity, financial, or execution outcome in
-   scope, then use it to rank evidence work.
-3. **Use developer empathy**: consider the simplest implementation, the likely
-   omitted validation, whether authorization lives in controller, middleware,
-   or the data layer, whether endpoint B can bypass endpoint A, and whether
-   separate teams or versions use different checks.
-4. **Map trust boundaries**: keep the path visible as
-   `Client -> CDN -> Gateway -> Backend -> Worker -> Cache/Storage/Renderer`.
-   Mark where input is trusted, normalized, serialized, stored, rendered, or
-   consumed asynchronously.
-5. **Trace feature interaction**: compare UI, web API, mobile or legacy API,
-   WebSocket, import/export, background jobs, and neighboring workflows. Shared
-   features can have separate authentication, authorization, validation, or
-   version behavior.
+- **mental model / crown jewel**: What is the business model and one current crown jewel?
+  What stack, authentication model, roles, tenants, and trust boundaries are observed?
+- **developer empathy / Feature over endpoint**: Why was the feature built this way,
+  which endpoints and states interact, and where could validation or authorization
+  differ?
+- **Authorization inconsistency / Compare clients and diffs**: Which two actor, role,
+  tenant, client, version, or documented-vs-observed views should be compared?
+- **trust boundaries / Think second-order**: Where does data cross
+  `Client -> CDN -> Gateway -> Backend -> Worker -> Cache/Storage/Renderer`, and
+  which downstream consumer may expose a mismatch?
+- What changed recently? What is today's highest-information question and bounded next
+  action?
 
-For a compact pre-hunt recall, answer only the questions that fit the target:
-
-- What is the business model, and what is the one current crown jewel?
-- What stack, authentication model, roles, tenants, and trust boundaries are
-  actually observed?
-- What changed recently in routes, releases, components, clients, or workflows?
-- Which two actor, role, tenant, client, or version views provide a useful
-  comparison?
-- Which feature interaction or second-order consumer is most likely to expose a
-  meaningful boundary mismatch?
-- What is today's highest-information question and its bounded next action?
-
-Soft prompts for route selection:
-
-- **Feature over endpoint**: enumerate the endpoints and states serving one
-  business feature, then test their interaction.
-- **Authorization inconsistency**: compare the same object and action across
-  actors, tenants, roles, versions, and entry points.
-- **New means less reviewed**: use recent release, commit, route, or component
-  evidence to raise priority without treating recency as proof.
-- **Think second-order**: follow values saved for later cron, worker, admin,
-  preview, conversion, cache, or renderer consumption.
-- **Follow the business value**: payments, billing, credits, refunds, identity,
-  tenant boundaries, and administrative workflows deserve connector checks.
-- **Compare clients and diffs**: contrast mobile versus web, old versus new
-  API, free versus paid responses, and documented versus observed behavior.
-- **Keep the checklist soft**: capture only target-specific answers in the
-  existing `goal`, `known_facts`, `hypothesis`, `expected_learning`,
-  `evidence_refs`, `next_action`, and `kill_condition` fields. Do not turn a
-  prompt into a fixed vulnerability list or directly enqueue it as an action.
+Keep the checklist soft: record target-specific answers in existing `goal`, `known_facts`, `hypothesis`,
+`expected_learning`, `evidence_refs`, `next_action`, and `kill_condition`;
+do not create a fixed vulnerability list or queue action.
 
 ## Hypothesis Selection
 

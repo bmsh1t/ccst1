@@ -24,8 +24,6 @@ interrupted.
 3. 如需补充漏洞类别判断，按需读取 `knowledge/index.md` 和相关知识卡。
 4. 验证失败时写回目标层为 lead、dead-end 或 next action；验证通过后再进入 `/remember` 和报告流程。
 
-> "N/A hurts your validity ratio. Informative is neutral. Only submit what passes all 7 questions."
-
 ---
 
 ## SCOPE OF THIS SKILL
@@ -187,15 +185,9 @@ conditional: external bounty metadata is required only for external submission;
 local/lab validation must still record the target-local documentation checks.
 
 ### Gate 0: Reality Check
-```
-[ ] Bug is REAL — confirmed with a target-bound replayable artifact (HTTP,
-    browser/frame, state transition, transport frame, or OOB equivalent when applicable),
-    not code reading alone
-[ ] Bug matches the supplied target context
-[ ] Reproducible from scratch — can reproduce starting from fresh session
-[ ] Evidence ready — raw request/response, frame/state/OOB artifact, screenshot,
-    or video as applicable
-```
+Use Q1's reproduction record as the source of truth: require a target-bound
+replayable artifact, target match, fresh reproducibility, and the appropriate
+evidence medium. Do not repeat the Q1 template here.
 
 ### Gate 1: Impact Validation
 ```
@@ -338,15 +330,12 @@ quote 必须是该行可执行、具有 guard 形态的代码；文件缺失、�
 
 ## FAST NO-REPORT RULES
 
-The goal is to QUICKLY disqualify bad report candidates so you hunt real bugs:
+Use the gates above as the detailed check. The short form is:
 
-1. **Evidence-completeness rule**: If Q1 cannot be filled with a real target-bound replayable artifact and observable result, preserve the Candidate and route it to DO_NOT_REPORT or a concrete next evidence action
-2. **Precondition clarity**: Record every required precondition and its
-   reachability; there is no universal numeric cutoff.
-3. **Impact test**: "What does attacker walk away with?" — if nothing tangible → do not report
-4. **Admin bypass**: "Admin can do X" is NEVER a bug → do not report
-5. **Design doc test**: If it's documented behavior → do not report
-6. **Repeated bounded failure**: If Q6 repeats the same progress fingerprint without a reproducible PoC, stop the report path, preserve the evidence, and record what new evidence would reopen it
+1. **Evidence-completeness rule**: an incomplete Q1 stays a Candidate with a next evidence action.
+2. **Precondition and impact**: record reachability and a tangible demonstrated outcome.
+3. **Admin/design checks**: admin-only behavior or documented behavior is not a report by itself.
+4. **Repeated bounded failure**: a repeated progress fingerprint without a reproducible PoC stops the report path and records what would reopen it.
 
 ---
 

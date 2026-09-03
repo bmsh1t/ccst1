@@ -48,10 +48,6 @@ methods owned by narrower Skills, Rules, Cards, or deterministic tools.
 | CI/CD and supply-chain workflows | `skills/cicd-security/SKILL.md` |
 | Web3/wallet/token/smart contracts | The matching Web3/token Skill |
 
-The model supplies general technique details. `skills/security-arsenal/SKILL.md`
-contains only project-specific selection, evidence, lifecycle, and owner rules;
-it has no local technique catalogue.
-
 ## Target Isolation
 
 - The active command target set is the execution surface unless the user changes
@@ -64,9 +60,8 @@ it has no local technique catalogue.
 
 # Methodology Boundary
 
-This coordinator does not restate mindset, phase checklists, timers, probe order,
-or rotation policy. Use `skills/bb-methodology/SKILL.md` for those decisions and
-return here only for cross-stage routing and handoff.
+Mindset, phase order, timers, and rotation live in
+`skills/bb-methodology/SKILL.md`; this Skill handles cross-stage routing and handoff.
 
 ## Evidence-Selected Card Handoffs
 

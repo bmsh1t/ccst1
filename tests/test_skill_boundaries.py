@@ -259,8 +259,7 @@ def test_access_control_boundary_matrix_is_part_of_skill_flow():
 
     assert "### Access-Control Boundary Matrix" in web2
     assert "method diff -> path/header rewrite -> raw replay" in web2
-    assert "X-Original-URL" in web2
-    assert "Referer" in web2
+    assert "not a fixed dictionary" in web2
     assert "Playwright request/raw replay" in web2
     assert "URL-based access 最小验证" in card
     assert "Referer-based access 最小验证" in card

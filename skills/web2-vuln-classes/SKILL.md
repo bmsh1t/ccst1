@@ -83,11 +83,10 @@ a stop condition; introspection or a UI difference is not an authorization proof
 
 ### Access-Control Boundary Matrix
 
-Use raw replay for URL, method, path/header rewrite, and Referer boundaries. The
-method diff -> path/header rewrite -> raw replay branch is optional evidence-driven
-routing; `X-Original-URL`, `X-Rewrite-URL`, and `Referer` are observed candidates,
-not a fixed dictionary. Playwright request/raw replay may be needed when browser
-fetch cannot set a restricted header.
+Use raw replay for URL, method, path/header rewrite, and other observed access
+boundaries. The method diff -> path/header rewrite -> raw replay branch is optional
+evidence-driven routing, not a fixed dictionary. Use Playwright request/raw replay
+when browser fetch cannot preserve the observed request.
 
 ### Missing Parameter Signal Lane
 
@@ -104,12 +103,10 @@ record minimal config evidence and a validation plan.
 
 ### SQLi Lane Flow
 
-示例输入面按证据选择，不是固定顺序; not a fixed checklist. Select only the
-branch that answers the current question: hidden surfaces (including headers, path segments,
-and second-order inputs), baseline confirmation,
-type classification, boolean/length differential, or controlled time/OOB evidence.
-Change one boundary at a time. Stop on WAF-only or unstable timing; require a second signal for SSRF impact and compare WAF and backend behavior against a
-baseline before escalating. The model chooses syntax from the observed query shape.
+示例输入面按证据选择，不是固定顺序; not a fixed checklist. Select the branch
+that answers the current question: hidden surface, baseline/type, differential, or
+controlled time/OOB evidence. Change one boundary at a time and stop on unstable or
+WAF-only output; the model chooses syntax from the observed query shape.
 
 ### Hidden Auth Switch Lane
 

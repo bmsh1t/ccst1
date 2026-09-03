@@ -62,6 +62,12 @@ this rule. Tool discovery stays in `docs/tool-index.md`; host/JS volume alone is
 and partial/unavailable output remains open. Concrete JS gaps may select
 `tools/deep_js_packer.py`; target naming evidence may select `tools/dns_expand.py`; neither
 helper is a baseline lane.
+
+Invoke setup helpers on demand: self-owned test-account email verification uses
+`/root/tool/aitool/zocom/mail_receiver.py`; Cloudflare clearance uses `tools/cf_solver.py`.
+Persist results through private AuthSession/Case State; failures remain `blocked`/`partial` and
+never become clean.
+
 ## State Consumption Loop
 ```text
 fresh: TARGET -> RECON -> BUSINESS/CROWN JEWELS -> SURFACE/CONTEXT -> BROWSER/SOURCE/JS TRUTH -> SCANNER QUICK -> WORKFLOW -> HYPOTHESIS -> MINIMAL PROOF -> CHAIN -> VALIDATE -> RECORD/CHECKPOINT

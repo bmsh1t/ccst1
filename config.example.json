@@ -13,7 +13,7 @@
     "probe_url": "https://api.ipify.org"
   },
 
-  "_cf_solver_comment": "Optional manual Cloudflare challenge clearance helper. Not auto-run by /autopilot. Set api_key in local config.json or TWOCAPTCHA_API_KEY; headful=true requires a desktop browser.",
+  "_cf_solver_comment": "Evidence-triggered Cloudflare challenge clearance helper. /autopilot may invoke it after target-owned challenge evidence; set api_key in local config.json or TWOCAPTCHA_API_KEY; headful=true requires a desktop browser.",
   "cf_solver": {
     "service": "2captcha",
     "api_key": "YOUR_2CAPTCHA_API_KEY",

@@ -1,4 +1,4 @@
-"""静态/本地行为测试：Cloudflare solver 保持手动可选，不触网。"""
+"""静态/本地行为测试：Cloudflare solver 按证据触发且不触网。"""
 
 from pathlib import Path
 
@@ -47,15 +47,20 @@ def test_cf_solver_export_env_pairs_cookie_with_user_agent(capsys, monkeypatch, 
     assert all(path.stat().st_mode & 0o777 == 0o600 for path in private_dir.iterdir())
 
 
-def test_cf_solver_is_documented_as_manual_optional_helper():
+def test_cf_solver_is_documented_as_evidence_triggered_helper():
     repo = Path(__file__).resolve().parents[1]
     tool_index = (repo / "docs" / "tool-index.md").read_text(encoding="utf-8")
     config_example = (repo / "config.example.json").read_text(encoding="utf-8")
+    command = (repo / "commands" / "autopilot.md").read_text(encoding="utf-8")
+    lanes = (repo / "docs" / "autopilot-lanes.md").read_text(encoding="utf-8")
     source = (repo / "tools" / "cf_solver.py").read_text(encoding="utf-8")
 
     assert "tools/cf_solver.py" in tool_index
-    assert "manual-only" in tool_index
-    assert "Not auto-run by /autopilot" in config_example
+    assert "Evidence-triggered" in tool_index
+    assert "target-owned challenge evidence" in config_example
+    assert "tools/cf_solver.py" in command
+    assert "on demand" in command
+    assert "tools/cf_solver.py" in lanes
     assert "BBHUNT_AUTH_HEADERS" in source
     assert "BBHUNT_COOKIE" not in source
 

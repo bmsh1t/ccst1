@@ -26,15 +26,18 @@ def test_autopilot_mentions_mail_receiver_without_turning_it_into_attack_lane():
     command = _read("docs/autopilot-lanes.md")
     agent = _read("agents/autopilot.md")
     auth_sessions = _read("docs/auth-sessions.md")
+    autopilot = _read("commands/autopilot.md")
 
     assert "Credential Lane" in command
     assert "skills/credential-attack/" in command
     for text in (agent, auth_sessions):
         assert HELPER in text
         assert "self-owned" in text
-    assert "setup aid" in agent
-    assert ".private/" in agent
-    assert "case_state" in agent
+    assert "on demand" in agent
+    assert ".private" in agent or "private AuthSession/Case State" in agent
+    assert "continue auth" in agent
+    assert "/root/tool/aitool/zocom/mail_receiver.py" in autopilot
+    assert "self-owned test-account" in autopilot
 
     combined = f"{command}\n{agent}"
     assert "Password brute force" in combined
