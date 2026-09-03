@@ -1,5 +1,10 @@
 # 当前项目架构审核报告
 
+> **历史快照说明**：本文记录 2026-08-30 的审核结果，验证数字、runtime drift 和结论
+> 仅适用于该时间点，不是当前发布基线。当前架构契约以
+> [`docs/architecture-contract.md`](../docs/architecture-contract.md) 为准；当前验证状态以
+> `.trellis/workspace/Codex/current-context-summary.md` 和实际质量门禁输出为准。
+
 审核日期：2026-08-30（基于 2026-07-13 初始审核更新）
 范围：以 Claude CLI `/autopilot` 为核心，关注功能、能力、架构、流程、2–8GB 个人机器
 顺序使用和失败恢复；不把项目自身安全加固作为本轮主线。
