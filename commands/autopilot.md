@@ -208,12 +208,14 @@ Read `closure.verdict`, `closure.can_claim_exhausted`, `closure.reasons`, and ad
 `finish/complete/exhausted` claim; `handoff` preserves durable work and `blocked` records
 terminal prerequisite blocker.
 
-Before target-wide `finish`, run Global Review over the bounded projections and evidence
-inventory: Surface/Observation long-tail, Coverage/Ledger/Finding/Queue/Case State, recon
-asset relations and `chain_context`, Browser/JS/Source/Intel artifacts, Scope/Auth and Runtime
-blockers, residual unknowns, and active Queue work. AI may re-rank or add hypotheses, but only
-unresolved target-owned work can block closure; external/uncertain/unrelated relation context
-remains passive. Record the review through the Checkpoint owner with
+Before target-wide `finish`, run Global Review over bounded summaries, then inspect referenced
+evidence on demand. Review Surface and Observation long-tail; Coverage/Ledger/Finding; Case
+State and business-chain; pending Queue, unfinished reports, and Runtime state; recon asset
+relations and `chain_context`; Browser/JS/Source/Intel artifacts; Scope Review, external
+dependencies, and blocked items; residual unknowns, including unconfirmed high-value candidates.
+Do not load all raw files at once. AI may re-rank or add hypotheses, but only unresolved
+target-owned work can block closure; external/uncertain/unrelated relation context remains
+passive. Record the review through the Checkpoint owner with
 `--record-global-review`, returned `closure.snapshot_digest`, at least one current
 target-owned non-empty `evidence_refs`, the decision, and `complete` or `follow_up` mapped to
 an active Queue action. Missing/stale/invalid review yields `global_review_required`,
