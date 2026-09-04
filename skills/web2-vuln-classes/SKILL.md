@@ -23,19 +23,8 @@ this file keeps project-specific routing, evidence gates, and lifecycle boundari
 
 ## Four-Layer Memory Hooks
 
-Load `knowledge/index.md` and only the cards matching the observed boundary.
-Typical routes are:
-
-| Boundary | Card route |
-|---|---|
-| Object/role/tenant authorization | `api-idor.md`, `auth-access.md` |
-| API schema/parser/query | `api-testing-workflow.md`, `sqli-hidden-surfaces.md`, `nosql-query-injection.md` |
-| Token, SSO, recovery, MFA | `auth-sso-token-edge-cases.md`, `auth-credential-recovery-flows.md` |
-| URL fetch, upload, XML, file read | `ssrf-url-fetch.md`, `upload-parser.md`, `xxe-xml-parser.md`, `path-traversal-file-read.md` |
-| Template, command, serialized object | `server-side-template-injection.md`, `insecure-deserialization.md`, `controlled-rce-impact.md` |
-| Browser, proxy, cache, realtime | `browser-client-boundaries.md`, `proxy-cache-boundaries.md`, `websocket-realtime-api.md` |
-| GraphQL, gRPC, LLM/RAG, cloud | `graphql.md`, `grpc-api-boundaries.md`, `web-llm-tool-chains.md`, `cloud-control-plane-pivots.md` |
-| Business state and concurrency | `business-logic-state-machines.md`, `race-conditions.md` |
+Use `tools/context_pack.py` and the `knowledge` registry to select only cards
+matching the observed boundary; do not maintain a second card map here.
 
 Cards provide patterns, counterexamples, and evidence prompts. They do not own
 the target state or force an execution sequence.
