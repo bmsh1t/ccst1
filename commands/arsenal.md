@@ -14,25 +14,12 @@ Inspect the external tool inventory used by this plugin.
 /arsenal nuclei                # show install hint for a single tool
 ```
 
-## What it covers
+## Registry
 
-`tools/external_arsenal.sh` knows about ~50 tools across:
-
-- **Recon** — subfinder, opt-in amass, assetfinder, bbot, theHarvester, dnsrecon, massdns, puredns, shuffledns, knockpy
-- **Probing** — httpx, dnsx, naabu, smap, aquatone, eyewitness
-- **Crawling** — katana, gau, waybackurls, waymore, hakrawler, gospider, cariddi
-- **Fuzzing** — ffuf, feroxbuster, gobuster, arjun, x8
-- **Scanning** — nuclei, xsstrike, ghauri, sqlmap, fuxploider, log4j-scan, linkfinder
-- **Secrets** — trufflehog, noseyparker, gitleaks, shhgit, git-hound
-- **Cloud** — s3scanner, cloud_enum, cloudfail, scoutsuite
-- **Takeover** — dnsreaper, subjack
-- **Bypass** — byp4xx, wafw00f, unwaf
-- **JWT/auth** — jwt_tool
-- **Exchange** — eburst (external `/root/Tools/EBurst`, Python 2 runtime)
-- **Scope** — bbscope
-- **Mobile** — mobsf, apkleaks, objection, jadx
-- **OSINT** — maigret, pywhat, sublert
-- **Misc** — gf, qsreplace, anew, interactsh-client
+`tools/external_arsenal.sh` is the single inventory and install-hint registry;
+this command renders its current entries and does not maintain a copied tool
+list. The helper supports `--versions`, `--install-hint <tool>`, and
+`--have <tool>` from that same registry.
 
 ## Sourcing the helper
 
@@ -45,6 +32,9 @@ if _have nuclei; then nuclei -l hosts.txt -severity high; fi
 
 Use `_have <tool>` rather than `command -v` so the install-hint table stays the
 single source of truth for what is and isn't wired in.
+
+For a direct install hint, use `./tools/external_arsenal.sh --install-hint <tool>`;
+`/arsenal <tool>` is the Claude-facing equivalent.
 
 Version smoke is diagnostic-only and never runs during `/autopilot` bootstrap.
 It executes only known read-only version flags and reports unsupported tools without guessing.

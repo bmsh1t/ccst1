@@ -2293,6 +2293,12 @@ def _is_substantive_queue_action(item: dict) -> bool:
         and str(metadata.get("category") or "") == "asset-scope-review"
     ):
         return True
+    if (
+        status in {"queued", "ready"}
+        and action_type == "viewstate-integrity-review"
+        and evidence_type == "checkpoint-next-action"
+    ):
+        return True
     if status == "queued" and action_type == "case-state-enrichment":
         missing = metadata.get("missing_evidence")
         missing_text = " ".join(

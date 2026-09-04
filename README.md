@@ -585,7 +585,6 @@ closeable only after mapping to one of the canonical coverage cells above.
 | `report_generator.py` | H1/Bugcrowd/Intigriti report output |
 | `scope_checker.py` | Deterministic target matching with anchored suffix matching |
 | `cicd_scanner.sh` | GitHub Actions SAST — wraps [sisakulint](https://github.com/sisaku-security/sisakulint) remote scan (52 rules, 81.6% GHSA coverage) |
-| `mindmap.py` | Prioritized attack mindmap generator |
 
 </details>
 

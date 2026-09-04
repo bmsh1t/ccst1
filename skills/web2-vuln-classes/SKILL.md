@@ -1,6 +1,6 @@
 ---
 name: web2-vuln-classes
-description: Web/API vulnerability-class routing guide for autonomous assessment. Use when the focus or target memory names a concrete class such as IDOR, access control, JWT/OAuth/SAML, GraphQL, SQLi/NoSQL, SSRF, upload, SSTI, deserialization, XXE, path traversal, request smuggling, cache poisoning/deception, race, browser boundary, WebSocket, LLM tool flow, or controlled RCE. Provides evidence-driven route selection, project-card recall, evidence gates, stop conditions, and write-back boundaries.
+description: Web/API vulnerability-class routing guide for autonomous assessment. Use when the focus or target memory names a concrete class such as IDOR, access control, JWT/OAuth/SAML, GraphQL, SQLi/NoSQL, SSRF, upload, SSTI, deserialization/ViewState/machineKey, XXE, path traversal, request smuggling, cache poisoning/deception, race, browser boundary, WebSocket, LLM tool flow, or controlled RCE. Provides evidence-driven route selection, project-card recall, evidence gates, stop conditions, and write-back boundaries.
 ---
 
 # WEB2 VULN CLASSES — Routing Layer
@@ -47,12 +47,6 @@ Use the distilled project decision shape, not a fixed technique route:
 Keep this as an AI reasoning aid; do not import flag hunting, admin-bot assumptions,
 DoS/ReDoS, persistent shell, or broad payload spraying into real targets.
 
-### Boundary-First Pass
-
-```text
-Boundary -> baseline -> hidden surface -> bug family -> primitive -> connector -> impact
-```
-
 At each pivot record `Evidence`, `Primitive`, `Connector`, `Impact hypothesis`,
 `Next action`, and `Stop condition`. Use explicit `Primitive:` and `Connector:`
 entries. The model may skip, combine, or invent a
@@ -68,6 +62,7 @@ branch when the observed evidence justifies it.
 | URL fetch, webhook, import, preview, callback | SSRF URL fetch; internal impact only after server-side proof |
 | Upload, import, convert, preview, SVG/Office/XML | Upload parser; safe verification and read-back before storage, access, and execution proof |
 | Template syntax, command output, shell primitive | SSTI/command/controlled RCE |
+| ASP.NET `__VIEWSTATE` / ViewState / machineKey | Insecure deserialization / ViewState integrity |
 | CL/TE, host header, proxy trust, cache key, unkeyed header | Proxy/cache/smuggling |
 | Origin, postMessage, DOM, CORS, clickjacking | Browser boundary |
 | WS handshake/frame/subscription | WebSocket / realtime API |

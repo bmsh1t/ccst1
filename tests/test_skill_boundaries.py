@@ -281,6 +281,7 @@ def test_boundary_router_uses_distilled_project_shape_not_raw_ctf_refs():
     assert "boundary -> baseline -> hidden surface -> bug family" in web2
     assert "primitive -> connector -> impact" in web2
     assert "Source/config/secret/file read signal" in web2
+    assert "ASP.NET `__VIEWSTATE` / ViewState / machineKey" in web2
     assert "broad payload spraying" in web2
 
     assert "### Boundary Pivot Prompts" in methodology
@@ -353,18 +354,41 @@ def test_path_pattern_management_exposure_is_part_of_skill_flow():
     assert "不是固定字典" in card
 
 
-def test_controlled_credential_testing_is_not_an_absolute_red_line():
+def test_login_form_credential_review_policy_is_bounded():
     credential_skill = (REPO_ROOT / "skills" / "credential-attack" / "SKILL.md").read_text(
         encoding="utf-8"
     )
+    autopilot_agent = (REPO_ROOT / "agents" / "autopilot.md").read_text(encoding="utf-8")
+    autopilot_command = (REPO_ROOT / "commands" / "autopilot.md").read_text(encoding="utf-8")
+    hunter = (REPO_ROOT / "agents" / "credential-hunter.md").read_text(encoding="utf-8")
     spray = (REPO_ROOT / "commands" / "spray.md").read_text(encoding="utf-8")
+    lanes = (REPO_ROOT / "docs" / "autopilot-lanes.md").read_text(encoding="utf-8")
     router = (REPO_ROOT / "rules" / "playbook-router.md").read_text(encoding="utf-8")
 
-    assert "发现登录页、组件名或 SSO 品牌都不自动触发 Spray" in credential_skill
+    for marker in (
+        "real `login form`",
+        "admin/back-office",
+        "稳定测试账号",
+        "大规模弱口令",
+        "高价值后台",
+        "已识别产品指纹",
+        "明显默认凭据场景",
+        "匿名态已出现弱口令信号",
+        "少量默认凭据检查",
+        "高价值组合验证",
+        "Skill 不维护",
+        "静态密码列表",
+    ):
+        assert marker in credential_skill
+
+    for text in (autopilot_agent, autopilot_command, hunter, spray, lanes):
+        assert "skills/credential-attack/SKILL.md" in text
+    assert "preparation-only" in autopilot_agent
     assert "dry-run preflight 和停止条件" in credential_skill
     assert "默认首个 valid 停止" in credential_skill
     assert "首个 rate-limit/guard/ambiguous 停止" in spray
     assert "弱口令测试不是红线" in router
+    assert "skills/credential-attack/SKILL.md" in router
 
 
 def test_autopilot_can_select_controlled_credential_lane():
@@ -373,7 +397,9 @@ def test_autopilot_can_select_controlled_credential_lane():
     tool_index = (REPO_ROOT / "docs" / "tool-index.md").read_text(encoding="utf-8")
 
     assert "Credential Lane may be selected" in autopilot
-    assert "Password brute force, default credential checks, and password spray are not mandatory last lanes" in autopilot
+    assert "A real login form (including admin/back-office)" in autopilot
+    assert "skills/credential-attack/" in autopilot
+    assert "stable-account exception" in autopilot
     assert "Controlled credential spray" in spray
     assert "Credential breakthrough lane selected" in tool_index
 

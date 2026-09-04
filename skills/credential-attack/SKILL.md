@@ -9,17 +9,24 @@ description: AI-first credential preparation and controlled Spray methodology co
 
 ```text
 AI /autopilot
-  → 判断是否进入 Credential Lane、入口价值、模式、用户名可信度、shortlist 和是否 live
+  → 真实 login form 触发 baseline review；判断入口价值、模式、用户名可信度、shortlist 和是否 live
 确定性工具
   → 输入校验、编码、节奏、请求、停止、脱敏、证据和恢复
 ```
 
-发现登录页、组件名或 SSO 品牌都不自动触发 Spray。live 前需要：具体 endpoint、reviewed users、AI shortlist、可判定信号、锁定/限速计划、dry-run preflight 和停止条件。
+观察到 real `login form`（包括 admin/back-office）时，创建或考虑一个有界的 Credential
+Review，默认评估少量 default/common weak-password candidates；这只是准备/排队动作，不是
+live Spray。用户已提供稳定测试账号且未明确要求验证弱口令/默认凭据风险时，可跳过大规模弱口令
+字典测试；高价值后台、已识别产品指纹、明显默认凭据场景或匿名态已出现弱口令信号时，仍可在
+预算内保留少量默认凭据检查和高价值组合验证。候选值由 AI 基于目标证据有限选择，Skill 不维护
+静态密码列表。
+live 前仍需要：具体 endpoint、reviewed users、AI shortlist、可判定信号、锁定/限速计划、
+dry-run preflight 和停止条件。
 
 ## Evidence-Selected Preparation
 
-候选准备不是固定流水线。仅在当前证据显示凭据路径具有足够信息增益时，模型才选择
-一个或多个来源：
+Baseline Review 不是固定流水线；除默认/常见候选的少量评估外，模型只在当前证据显示凭据路径
+具有足够信息增益时选择一个或多个来源：
 
 - target-owned brand/route/source observations;
 - operator-supplied or previously confirmed usernames;

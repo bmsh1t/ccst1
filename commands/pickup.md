@@ -82,55 +82,29 @@ current turn if you really want them.
 
 ## Output
 
-```text
-PICKUP: target.com
-═══════════════════════════════════════
+The terminal summary is target-specific and includes only fields available from
+current state. It may contain:
 
-Hunt History:
-  Sessions:    3
-  Last hunt:   2026-03-24
-  Total time:  2h 00m
-  Findings:    1 confirmed (IDOR, $1500 paid)
-
-Untested Surface:
-  3 endpoints from last recon:
-  1. /api/v2/users/{id}/export
-  2. /api/v2/users/{id}/share
-  3. /api/v2/users/{id}/history
-
-Structured Findings:
-  total=2, pending_validation=1, validated_pending_report=1, reported=0
-  Next validate: sqli_abc123 [high/confirmed] sqli https://api.target.com/search?q=1
-  Command: python3 tools/validate.py --findings-dir findings/target.com --finding-id sqli_abc123
-  Next report: mfa_def456 [medium/high] mfa https://api.target.com/mfa
-  Command: python3 tools/report_generator.py findings/target.com
-
-Checkpoint:
-  Decision: continue
-  Next action: hunt_p1
-  Current action: Replay the evidence lane.
-  Recent evidence: evidence/target.com/validation/summary.json
-  Blocker: none
-  Recommended skill: skills/web2-vuln-classes/SKILL.md
-  High-value gaps: 3
-  Target write-back proposals: lead=1, next=2, dead-end=0
-  Suggested command:
-  python3 tools/target_memory.py next "Cover high-value matrix gap..." --target "target.com"
-
-Memory Suggestions:
-  Tech stack [Next.js, GraphQL, PostgreSQL] matches 2 targets
-  where you found auth bypass. Try introspection → mutation pattern.
-
-Actions:
-  [r] Continue hunting untested endpoints
-  [c] Run checkpoint write-back when ready
-  [n] Re-run recon first (surface may have changed)
-  [s] Show full hunt journal for this target
-```
+- `PICKUP: <target>` and hunt history (`Sessions`, `Last hunt`, `Total time`,
+  `Journal`, and confirmed Finding summary when present).
+- Recent Findings, the latest session snapshot, and recent guard advisories when
+  available.
+- Repo source, last workflow, and recon-cache context when available.
+- Structured Findings with owner-verified totals/statuses and pending
+  validation/report references or commands. A separate bounded Chain Context
+  may show external dependencies and evidence references without promoting them
+  to target Findings or executable endpoints.
+- Checkpoint: `Decision`, `Next action`, `Current action`, `Recent
+  evidence`, `Blocker`, optional `Recommended skill`, `High-value gaps`,
+  `Target write-back proposals`, and an optional `Suggested command`.
+  Checkpoint data is read-only here; target write-back remains explicit.
+- Untested Surface with the cached endpoint count/list or an empty-cache notice.
+- Memory Suggestions from available target-compatible memory and pattern hints.
+- Actions: [r] Continue hunting untested endpoints; [c] Run checkpoint write-back when ready; [n] Re-run recon first (surface may have changed); and [s] Show full hunt journal for this target.
 
 ## If No Previous Hunt
 
 ```text
-No previous hunt data for target.com.
-Run /recon target.com first, then /hunt target.com.
+No previous hunt data for <target>.
+Run /recon <target> first, then /hunt <target>.
 ```

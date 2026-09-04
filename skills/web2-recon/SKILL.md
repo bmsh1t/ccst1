@@ -52,6 +52,11 @@ localhost, lab, private-scope, and supplied target-set runs, keep the supplied
 target record and the same artifact contract; bounty ROI only affects attention,
 not scope or completion.
 
+### Origin/Host Clues
+
+Origin IP/range, ASN, SAN/CNAME, or edge/direct response differences are
+Host/SNI comparison candidates.
+
 ## ROI and Feature Choice
 
 Rank candidate surfaces by observed business value and information gain, not by

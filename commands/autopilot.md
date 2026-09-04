@@ -51,6 +51,8 @@ Asset relation candidates use the compact AI triage contract in
 `unrelated` with a bounded reason and source refs. Related only changes priority, uncertain
 stays passive, and unrelated stays out of active Context/Surface/Queue/Coverage/Closure;
 only existing `in_scope` permits active validation.
+Observed login forms route to the bounded baseline policy in
+`skills/credential-attack/SKILL.md`; this review never authorizes live `/spray`.
 `/autopilot` runs inline in the current AI session and remains the sole writer/closure
 controller and only owner of lane claims/state write-back. Specialists default to zero;
 justified delegation loads

@@ -4,7 +4,10 @@ description: Controlled credential spray with input-bound dry-run, explicit HTTP
 
 # /spray
 
-Controlled credential spray。`/autopilot` 仅在登录价值、用户名来源、AI shortlist、成功/失败信号和锁定条件均有证据时选择本 lane；发现登录页本身不触发 Spray。
+Controlled credential spray。登录框的 baseline review 和默认/常见弱口令场景策略由
+`skills/credential-attack/SKILL.md` 负责；本命令只执行已审阅的候选。AI 仍选择 reviewed users
+和有限 shortlist，不新增静态密码列表；live 仍需登录价值、成功/失败信号、锁定/限速计划、
+dry-run preflight、审计和停止条件。
 
 ## 基本流程
 

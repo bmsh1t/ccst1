@@ -40,5 +40,6 @@ def test_autopilot_mentions_mail_receiver_without_turning_it_into_attack_lane():
     assert "self-owned test-account" in autopilot
 
     combined = f"{command}\n{agent}"
-    assert "Password brute force" in combined
+    assert "skills/credential-attack/SKILL.md" in combined
+    assert "baseline" in combined
     assert "stop-on-hit" in combined

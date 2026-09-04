@@ -88,100 +88,17 @@ missing evidence action instead of pretending it is report-ready.
 3. 如果缺失证明，输出 CHAIN REQUIRED 或 DOWNGRADE，并把缺失证明写成 next action。
 4. 结束时明确建议 `/target dead-end ...` 或 `/target next ...` 的写回内容，避免后续 Claude CLI 重复踩同一条路。
 
-## Your Decision Framework
+## Decision Contract
 
-For every finding, output exactly one of:
+Read `skills/triage-validation/SKILL.md` before deciding. It is the sole owner
+of Q1-Q7, Q7b, never-submit/chain precedence, and the four pre-submission
+gates; do not maintain a second checklist here. Apply it to target-bound,
+protocol-appropriate reproducible evidence and output exactly one:
 
-- **PASS** — All 7 questions pass. All 4 gates pass. Proceed to report writing.
-- **KILL [Q#]** — Failed at question N. Reason. Do not report.
-- **DOWNGRADE** — Valid bug, but severity overclaimed. Specific change needed.
-- **CHAIN REQUIRED** — Valid on the never-submit list but can be chained. Specific chain needed.
-
-## The 7-Question Gate
-
-Apply in order. First NO = KILL the report path immediately.
-
-**Q1: Can an attacker reproduce this RIGHT NOW with a target-bound artifact?**
-- YES: "Researcher has a replayable request/response, browser trace, frame, state transition, OOB result, or equivalent artifact"
-- NO: "Researcher only has a hypothesis or unbound signal" → KILL Q1
-
-**Q2: Is this impact clearly demonstrated?**
-- YES: "Impact is shown by reproduced behavior and evidence"
-- NO: "Impact is asserted but not demonstrated" → KILL Q2
-
-**Q3: Is the asset tied to the supplied target context?**
-- YES: "Domain / URL / workflow matches the supplied target context"
-- NO: "Candidate drifted away from the current target being validated" → KILL Q3
-
-**Q4: Are the attacker preconditions reachable and in scope?**
-- YES: "The required account, role, device, victim action, or prior state is recorded and reproducible"
-- NO: "The required boundary is unreachable or out of scope" → KILL Q4
-
-**Q5: Is this not already known or documented behavior?**
-- YES: "Not in changelogs or disclosed reports"
-- NO: "Documented behavior" → KILL Q5
-
-**Q6: Can impact be proved beyond 'technically possible' with the lowest-risk evidence?**
-- YES: "The smallest necessary data, state, execution, or callback differential is observed"
-- PARTIAL: "The artifact shows a boundary signal but not the claimed impact" → DOWNGRADE (not kill)
-- NO: "Only a status, error, or weak signal is present" → record the missing proof and reduce severity
-
-**Q7: Is this not on the never-submit list?**
-- YES: "Bug class is valid for standalone submission"
-- NO: "On never-submit list" → KILL Q7 or CHAIN REQUIRED
-
-## Never-Submit List (no standalone report if no chain)
-
-```
-Missing headers (CSP/HSTS/X-Frame-Options)
-Missing SPF/DKIM/DMARC
-GraphQL introspection alone
-Banner/version disclosure without CVE exploit
-Clickjacking without sensitive action PoC
-Tabnabbing
-CSV injection without code execution
-CORS wildcard without credentialed exfil PoC
-Logout CSRF
-Self-XSS
-Open redirect alone
-OAuth client_secret in mobile app
-SSRF DNS-only
-Host header injection alone
-Rate limit on non-critical forms
-Session not invalidated on logout
-Concurrent sessions
-Internal IP in error message
-Missing cookie flags alone
-```
-
-## Conditionally Valid (chain required)
-
-```
-Open redirect → OAuth callback or token boundary → CHAIN REQUIRED
-SSRF callback → internal service or metadata boundary → CHAIN REQUIRED
-CORS behavior → credentialed data boundary → CHAIN REQUIRED
-Prompt injection → unauthorized data/tool boundary → CHAIN REQUIRED
-S3 exposure → source/secret/auth boundary → CHAIN REQUIRED
-```
-
-These are common chain shapes, not an exhaustive allowlist. An evidence-backed
-connector outside this list remains eligible for review.
-
-## 4 Gates (check after 7 questions pass)
-
-**Gate 0:** Confirmed with a target-bound replayable artifact? Target-context match? Reproducible? Evidence?
-**Gate 1:** What does attacker walk away with? More than non-sensitive data? Real victim?
-**Gate 2:** Searched HacktActivity? GitHub issues? Recent disclosed reports?
-**Gate 3:** Title has formula? Reproduction artifact is attached? Recorded structured CVSS is present? Fix included?
-
-## No-Report Signals
-
-Do not report immediately if:
-- "Could theoretically..." → no replayable artifact → KILL Q1
-- "Admin can do X" → evaluate the actual authorization boundary and impact
-- "Might be chained with..." → keep as chain candidate; build it first before reporting
-- Preconditions are not recorded or cannot be reproduced → KILL Q4
-- "API returns extra fields" → if not sensitive = not a bug → KILL Q2
+- **PASS** — all required questions and gates pass; hand off to report writing.
+- **KILL [Q#]** — the named question fails; do not report the candidate.
+- **DOWNGRADE** — the evidence proves a lower impact; state the required change.
+- **CHAIN REQUIRED** — a concrete connector remains to be built and proved.
 
 ## Burp MCP Integration (optional — only if Burp MCP is connected)
 

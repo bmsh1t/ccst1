@@ -112,7 +112,6 @@ identity, and cloud signals without re-enumerating everything.
 | `tools/surface_finalizer.py` | Recon completed or derived surface needs recovery | Shared non-fatal recon post-processor for exact index, full streaming rank, inventory summary, and projection |
 | `tools/surface_js_intel.py` | After js-reader has run | Feed js-reader hypotheses into `surface.py` |
 | `tools/surface_source_intel.py` | After source_intel has run | Feed source-intel hypotheses into `surface.py` |
-| `tools/mindmap.py` | Choosing vuln class for a stack | Mermaid mind map + tech→vuln-class priority |
 | `tools/finding_index.py` | Listing/querying structured findings | Structured finding index store + query API |
 | `tools/structured_findings.py` | Reading single finding | Helpers to rank/load structured findings |
 
@@ -205,7 +204,6 @@ identity, and cloud signals without re-enumerating everything.
 These tools exist in the repo but are rarely cited in slash-command or sub-agent prompts. Surface them when the trigger fits — they are battle-tested and ready:
 
 - `zero_day_fuzzer.py` — LLM-guided fuzz post-plateau
-- `mindmap.py` — Tech → vuln-class priority (consult before lane choice)
 - `wordlist_engine.sh` / `osint_employees.sh` / `breach_checker.py` — manual credential-prep chain; useful when identity surface matters
 
 ---

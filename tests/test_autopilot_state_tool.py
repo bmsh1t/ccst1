@@ -434,6 +434,19 @@ def test_deep_js_review_queue_item_is_substantive():
     assert not _is_substantive_queue_action({**action, "evidence_type": "generic"})
 
 
+def test_checkpoint_viewstate_review_is_substantive_only_with_checkpoint_evidence():
+    action = {
+        "status": "queued",
+        "type": "viewstate-integrity-review",
+        "source": "checkpoint",
+        "evidence_type": "checkpoint-next-action",
+    }
+
+    assert _is_substantive_queue_action(action)
+    assert _is_substantive_queue_action({**action, "status": "ready"})
+    assert not _is_substantive_queue_action({**action, "evidence_type": "generic"})
+
+
 def test_actor_context_enrichment_lead_is_advisory_until_context_exists():
     action = {
         "status": "queued",

@@ -39,18 +39,11 @@ invent endpoint, actor, response, severity, or quantity.
 
 ## Rendering Contract
 
-- Formal assessment: include Executive Summary, Scope, Limitations, Assumptions,
-  Methodology and Coverage, Attack Chains, Technical Findings, Retest and
-  Closeout, Evidence Manifest, and Strategic Recommendations.
-- Local/lab write-up: include setup, target state, artifact, exact result,
-  demonstrated impact, and limitations.
-- HackerOne, Bugcrowd, Intigriti, or Immunefi: apply only the requested
-  platform headings and classification fields from the report Skill; keep the
-  same canonical finding and evidence references.
-- Title and first sentence state the demonstrated action or data. Do not turn
-  an untested connector or theoretical reach into impact.
-- Render `cvss.version`, `cvss.score`, and `cvss.vector` unchanged from the
-  validation summary. Never calculate a score here.
+Load `skills/report-writing/SKILL.md` for the requested formal, local/lab, or
+bounty-platform chapters and rendering. Keep the same canonical finding and
+evidence references. The title and first sentence state demonstrated action or
+data, and `cvss.version`, `cvss.score`, and `cvss.vector` are copied unchanged
+from the validation summary; never calculate a score here.
 
 ## Evidence Handling
 

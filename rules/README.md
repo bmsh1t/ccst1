@@ -40,7 +40,7 @@ contract, but must not redefine it.
 | `coverage-gate.md` | `tools/coverage_matrix.py` |
 | `hunting.md` | `rules/hunting.md` |
 | `playbook-router.md` | `tools/context_pack.py` |
-| `reporting.md` | `skills/triage-validation/SKILL.md` |
+| `reporting.md` | `rules/reporting.md`; report rendering: `skills/report-writing/SKILL.md` |
 | `retrospective.md` | `commands/retrospect.md` |
 | `tool-ai-boundary.md` | `rules/tool-ai-boundary.md` |
 | `web-intel.md` | `tools/web_intel_artifact.py` |

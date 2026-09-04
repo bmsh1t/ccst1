@@ -53,54 +53,20 @@ markdown file mapping without opening the directory manually.
 The corresponding `findings.json` item is updated with `report_status`,
 `report_id`, and `report_file` for later `/pickup` or agent continuation.
 
-## Local / Lab / Supplied Target Reports
+## Delivery Contract
 
-Use the supplied target set as the target record. External bounty
-metadata such as policy text, accepted impact lists, or platform submission
-requirements is non-applicable unless the user requests that format. A local
-write-up should show:
+Load `skills/report-writing/SKILL.md` for the requested delivery mode. Local/lab
+delivery uses the supplied target record and its setup, target state, replayable
+artifact, exact result, demonstrated
+impact, and limitations. Keep the existing target scope, finding index,
+Evidence Ledger, validation summaries, target memory, and report index as the
+inputs; do not create a second report status or evidence store.
 
-- exact setup and target state
-- exact replayable request, browser/frame trace, workflow path, or equivalent artifact
-- exact response, artifact, or state change
-- why the behavior satisfies the task objective or demonstrates impact
-
-Use local write-up language by default; switch to a bounty-platform
-submission format only when the user explicitly requests that format.
-
-## Formal Penetration-Test Delivery
-
-When the requested deliverable is a formal engagement report, keep the same
-validated finding lifecycle and render an engagement-level document with:
-
-1. Executive Summary
-2. Scope
-3. Limitations
-4. Assumptions
-5. Methodology and Coverage
-6. Attack Chains
-7. Technical Findings
-8. Retest and Closeout
-9. Evidence Manifest
-10. Strategic Recommendations
-
-Do not create a second report status or copy evidence into a new store. Build
-the report from the existing target scope, finding index, Evidence Ledger,
-validation summaries, target memory, and report index. State exact in-scope and
-excluded assets, testing window, access/credential assumptions, unavailable or
-blocked coverage, and residual uncertainty.
-
-Attack-chain narratives must reference the validated finding IDs and evidence
-artifacts for every step; do not turn an unvalidated lead into a chain link.
-Retest/closeout records the UTC retest time, tested version/environment, result
-(`fixed`, `partially_fixed`, `not_fixed`, or `not_retested`), residual risk, and
-supporting artifact references without changing the canonical finding status.
-
-The Evidence Manifest lists the existing artifact path, UTC capture time,
-collector/source, purpose, and SHA-256. Redact credentials, session material,
-tokens, PII, and unrelated customer data in the delivered copy while retaining
-traceability to the controlled original. Never place raw secrets in the report
-or hash manifest.
+Keep every chain step tied to a validated finding and artifact. Record retest
+time, version/environment, result, residual risk, and artifact refs without
+changing canonical finding status. The manifest carries path, UTC time,
+collector/source, purpose, and SHA-256; redact credentials, session material,
+tokens, PII, unrelated customer data, and raw secrets from the delivered copy.
 
 ## Usage
 
@@ -117,21 +83,10 @@ Provide when prompted:
 - The exact observed result that shows the impact
 - Tech stack (for severity context)
 
-## What This Generates
-
-1. Title following the formula: `[Bug Class] in [Endpoint] allows [actor] to [impact]`
-2. Summary paragraph (impact-first, no "could potentially")
-3. Vulnerability details with the recorded CVSS version, score, and vector
-4. Steps to Reproduce with the exact replayable artifact
-5. Impact statement with quantification
-6. Supporting materials section
-7. Evidence references from `findings/`, screenshots, response snippets, or validation summary when available
-
 ## Report Contract
 
-The report-only Skill owns platform structure, tone, evidence presentation, and
-the final checklist. This command only selects the validated source and invokes
-the generator. Render the recorded `cvss.version`, `cvss.score`, and
+This command only selects the validated source and invokes the generator.
+Render the recorded `cvss.version`, `cvss.score`, and
 `cvss.vector`; do not calculate a score here or copy a static calibration table.
 
 Use the protocol-appropriate replayable artifact: HTTP when applicable, or a

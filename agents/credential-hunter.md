@@ -19,7 +19,10 @@ model: inherit
 
 ### 1. 判断 lane 是否值得准备
 
-登录页本身不是触发条件。至少说明：登录入口价值、账号来源、协议模式、可判定信号、锁定/限速未知项。证据不足时写入既有 next action，不生成 live 命令。
+观察到 real `login form`（包括 admin/back-office）时，按
+`skills/credential-attack/SKILL.md` 创建或评估有界的 baseline review；该 Skill 负责默认/常见
+弱口令候选的场景例外。本 agent 只准备/排队，不触发 live；至少说明登录入口价值、账号来源、
+协议模式、可判定信号和锁定/限速未知项，证据不足时写入既有 next action。
 
 ### 2. 生成 candidate pool
 

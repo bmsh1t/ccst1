@@ -185,8 +185,8 @@ conditional: external bounty metadata is required only for external submission;
 local/lab validation must still record the target-local documentation checks.
 
 ### Gate 0: Reality Check
-Use Q1's reproduction record as the source of truth: require a target-bound
-replayable artifact, target match, fresh reproducibility, and the appropriate
+Use Q1's reproduction record as the source of truth: require a target-bound replayable artifact,
+target match, fresh reproducibility, and the appropriate
 evidence medium. Do not repeat the Q1 template here.
 
 ### Gate 1: Impact Validation
@@ -218,8 +218,6 @@ evidence medium. Do not repeat the Q1 template here.
 ---
 
 ## NEVER SUBMIT LIST
-
-Submitting these destroys your validity ratio.
 
 > **Routing note:** Items below marked "alone / standalone / without ..." are
 > chain-eligible — see the CONDITIONALLY VALID table. Apply Q7 precedence: a

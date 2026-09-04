@@ -52,9 +52,9 @@ def test_report_docs_support_formal_pentest_delivery_without_new_state():
         "evidence manifest",
         "sha-256",
     ):
-        assert expected in command
         assert expected in skill
 
+    assert "skills/report-writing/skill.md` is the report-only contract owner" in command
     assert "do not create a second report status" in command
     assert "do not create a second finding/report lifecycle" in skill
     assert "redact" in command

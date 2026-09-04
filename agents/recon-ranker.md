@@ -148,8 +148,8 @@ If no age signal is available, omit it from priority reasoning (don't guess).
 
 ## Rules
 
-1. Read `tools/mindmap.py` or the existing technology inventory for tech → vuln
-   class context; do not duplicate routing logic in this Agent.
+1. Read the existing technology inventory for tech → vuln class context; do not
+   duplicate routing logic in this Agent.
 2. If hunt memory shows this endpoint was tested before, deprioritize (unless the test was >30 days ago).
 3. If a pattern from another target matches this tech stack, boost priority and note the pattern.
 4. GraphQL/WebSocket endpoints are strong leads when reachable, stateful, schema-rich, or auth-sensitive; do not mark them P1 solely by name.

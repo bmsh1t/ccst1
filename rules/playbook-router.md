@@ -17,9 +17,9 @@ rules/
 为什么某个外部模式没有吸收，读取 `docs/ctf-web-distillation-audit.md`，不要把它
 当作运行时 playbook。
 
-弱口令测试不是红线，也不走本 Web playbook router 的通用验证输入路径。出现
-有价值的登录面时，按证据转 `skills/credential-attack/` 或 `/spray`；该 lane 自己
-负责选择条件、执行节奏、审计和停止条件。
+弱口令测试不是红线，也不走本 Web playbook router 的通用验证输入路径。观察到登录框时，
+转 `skills/credential-attack/SKILL.md` 做 baseline review；稳定测试账号、默认/常见候选和
+是否进入 `/spray` 的场景策略、执行节奏、审计和停止条件均由该 Skill 与命令契约负责。
 
 ## Signal → Reference → Tool
 
