@@ -337,7 +337,11 @@ class TestResumeSummary:
                                 "/target-owned/path",
                             ],
                             "scope_status": "scope-review",
+                            "chain_context": [
+                                "target login -> external identity provider",
+                            ],
                             "evidence_ref": "evidence/target.com/chain.md",
+                            "source_refs": ["evidence/target.com/chain-source.json"],
                             "poc_ref": "evidence/target.com/poc/chain/",
                         },
                         {
@@ -379,9 +383,14 @@ class TestResumeSummary:
             "//protocol-relative.example/admin/",
         ]
         assert context["scope_status"] == "scope-review"
+        assert context["chain_context"] == [
+            "target login -> external identity provider",
+        ]
         assert "evidence/target.com/chain.md" in context["evidence_refs"]
+        assert "evidence/target.com/chain-source.json" in context["evidence_refs"]
         assert context["active"] is False
         assert "Chain Context:" in output
+        assert "target login -> external identity provider" in output
         assert "https://external.example/admin/" in output
         assert "unrelated.example" not in output
         assert "unrelated-chain.example" not in output

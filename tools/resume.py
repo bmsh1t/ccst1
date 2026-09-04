@@ -70,10 +70,13 @@ _CHAIN_CONTEXT_REFERENCE_FIELDS = (
     "chain_extension_summary",
     "cross_source_links",
 )
+_CHAIN_CONTEXT_RELATION_FIELDS = ("chain_context",)
 _CHAIN_CONTEXT_EVIDENCE_FIELDS = (
     "source_file",
     "evidence_ref",
     "evidence_refs",
+    "source_ref",
+    "source_refs",
     "poc_ref",
 )
 
@@ -120,7 +123,14 @@ def _finding_chain_context(finding: dict, target: str) -> dict | None:
             if preview and preview not in explicit_refs:
                 explicit_refs.append(preview)
 
-    if not external_assets and not explicit_refs:
+    chain_relations: list[str] = []
+    for field in _CHAIN_CONTEXT_RELATION_FIELDS:
+        for value in _text_values(finding.get(field)):
+            preview = compact_url(value, limit=512)
+            if preview and preview not in chain_relations:
+                chain_relations.append(preview)
+
+    if not external_assets and not explicit_refs and not chain_relations:
         return None
 
     scope_status = str(finding.get("scope_status") or "").strip()
@@ -132,16 +142,18 @@ def _finding_chain_context(finding: dict, target: str) -> dict | None:
         evidence_values.extend(_text_values(finding.get(field)))
     evidence_values.extend(explicit_refs)
     for value in evidence_values:
-        if value and value not in evidence_refs:
-            evidence_refs.append(value)
+        preview = compact_url(value, limit=512) if "://" in value or value.startswith("//") else value[:512]
+        if preview and preview not in evidence_refs:
+            evidence_refs.append(preview)
     return {
-        "finding_id": finding_id,
+        "finding_id": finding_id[:240],
         "finding_type": str(
             finding.get("type") or finding.get("vuln_class") or finding.get("category") or "finding"
-        ).strip(),
-        "validation_status": str(finding.get("validation_status") or "unvalidated").strip(),
-        "report_status": str(finding.get("report_status") or "not_generated").strip(),
+        ).strip()[:128],
+        "validation_status": str(finding.get("validation_status") or "unvalidated").strip()[:64],
+        "report_status": str(finding.get("report_status") or "not_generated").strip()[:64],
         "external_assets": external_assets[:_CHAIN_CONTEXT_ITEM_LIMIT],
+        "chain_context": chain_relations[:_CHAIN_CONTEXT_ITEM_LIMIT],
         "scope_status": scope_status[:64],
         "evidence_refs": evidence_refs[:_CHAIN_CONTEXT_ITEM_LIMIT],
         "active": False,
@@ -655,8 +667,15 @@ def format_resume_output(summary: dict | None, target: str) -> str:
                 for value in (item.get("evidence_refs") or [])[:_CHAIN_CONTEXT_ITEM_LIMIT]
                 if str(value).strip()
             )
+            relations = "; ".join(
+                str(value).strip()
+                for value in (item.get("chain_context") or [])[:_CHAIN_CONTEXT_ITEM_LIMIT]
+                if str(value).strip()
+            )
             if assets:
                 details += f" assets={assets}"
+            if relations:
+                details += f" chain={relations}"
             if refs:
                 details += f" evidence={refs}"
             lines.append(details)

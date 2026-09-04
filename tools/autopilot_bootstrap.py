@@ -398,8 +398,16 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
                 for value in (item.get("evidence_refs") or [])[:8]
                 if str(value).strip()
             ],
-            "active": bool(item.get("active", False)),
+            # Chain context is display/routing-only and can never be active work.
+            "active": False,
         }
+        chain_relations = [
+            str(value)[:512]
+            for value in (item.get("chain_context") or [])[:8]
+            if str(value).strip()
+        ]
+        if chain_relations:
+            projected["chain_context"] = chain_relations
         if projected["finding_id"]:
             chain_context.append(projected)
     runner_next = state.get("validation_runner_next") or {}
