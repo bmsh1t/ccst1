@@ -11,7 +11,7 @@
 | Tool | When to use | One-line function |
 |---|---|---|
 | `tools/recon_engine.sh` | New target / stale recon / primary-domain batch | Expanded pipeline: batch→subdomain→probe→ports→urls→js→fuzz→config→API-leak→identity/cloud→params→cicd |
-| `tools/cf_solver.py` | Confirmed target-owned Cloudflare challenge or expired private clearance | Evidence-triggered 2Captcha+Playwright helper; writes cf_clearance headers privately for recon reuse |
+| `tools/cf_solver.py` | Confirmed Cloudflare challenge or expired clearance | Evidence-triggered 2Captcha+Playwright; stores clearance privately for recon |
 | `tools/recon_adapter.py` | Reading recon output programmatically | Unified reader for `recon/<target>/`; streams and pages compact FFUF evidence without loading full artifacts |
 | `tools/recon_candidates.py` | Cached routing evidence | Builds bounded candidates and host ranking; `--asset-cursor` resumes relation pages; never expands Scope |
 | `tools/recon_host_verify.py` | Host pivot candidates were derived | One bounded read-only Host/SNI/default-vhost response comparison; appends observations without changing Scope or Queue |

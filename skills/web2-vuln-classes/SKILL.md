@@ -98,10 +98,12 @@ record minimal config evidence and a validation plan.
 
 ### SQLi Lane Flow
 
-示例输入面按证据选择，不是固定顺序; not a fixed checklist. Select the branch
-that answers the current question: hidden surface, baseline/type, differential, or
-controlled time/OOB evidence. Change one boundary at a time and stop on unstable or
-WAF-only output; the model chooses syntax from the observed query shape.
+示例输入面按证据选择，不是固定顺序; not a fixed checklist. When ordinary
+parameters are quiet, check observed hidden surfaces such as headers, path segments,
+or second-order inputs; establish a baseline and require a boolean/length or
+time/OOB differential. A DNS-only SSRF signal needs a second signal proving a
+server-side fetch before impact routing. Change one boundary at a time and stop on
+unstable or WAF-only output; the model chooses syntax from the observed query shape.
 
 ### Hidden Auth Switch Lane
 

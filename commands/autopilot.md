@@ -14,7 +14,7 @@ AUTOPILOT_CRITICAL_RUNTIME_MANIFEST -->
 Authoritative bootstrap contract (do not reinterpret): !`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_bootstrap.py" --json -- "$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"`
 Formal arguments: `<target> [--paranoid|--normal|--yolo] [--quick] [--deep [--max-lanes N]] [--auth-file PATH] [--context-file=PATH]`; `--max-lanes` is valid only with `--deep` and bounds a deep invocation batch. `<target>` may be a domain/IP/CIDR, a readable text list, or a schema-v1 JSON Scope manifest. `--context-file` accepts only an owner-generated batch continuation under repository state.
 ## Runtime Preflight
-Run embedded bootstrap before lane contracts/Resin/Recon/target docs; do not parallel-read.
+Run the embedded bootstrap before reading lane contracts, Resin configuration, Recon instructions, or target-specific documents; do not parallel-read.
 Obey its `action` first: `ask_target` asks for the exact target,
 `stop_invalid_arguments` reports `arguments.errors`; `stop_invalid_scope`/`stop_invalid_context`
 and `stop_state_error`/`stop_runtime_error` return bounded `error`; critical `stop_runtime_drift`
@@ -43,9 +43,9 @@ Before the first network lane, inspect `config.json.resin`; when enabled, inline
 sticky export from `docs/resin-proxy.md` in the same shell command. If blocked, use current evidence and the request budget to decide reuse/switch and retry depth; use no fixed count.
 Rotate only on request, bypass localhost/private targets, never print the token, and never
 persist proxy setup. Apply `rules/hunting.md` target-isolation/new-target defaults;
-`/pickup` never replays another target's skips or scanner decisions. DNS expansion is
-advisory: host count alone is not a trigger; target-specific evidence plus `--reason` is
-required.
+`/pickup` never replays another target's skips or scanner decisions. DNS expansion remains
+an advisory audit/replay lane: host count alone is not a trigger; target-specific evidence
+plus `--reason` is required.
 Asset relation candidates use the compact AI triage contract in
 `docs/autopilot-lanes.md#credentials-and-asset-expansion`: return `related`, `uncertain`, or
 `unrelated` with a bounded reason and source refs. Related only changes priority, uncertain

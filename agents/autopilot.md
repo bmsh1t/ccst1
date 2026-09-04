@@ -44,9 +44,7 @@ Do not become a passive scanner wrapper. Turn recon, browser behavior, source/JS
 ## Four-Layer Runtime
 
 `commands/autopilot.md` is canonical for loop, state, queue, and finish semantics; read only
-the matching section of `docs/autopilot-lanes.md` for lane mechanics. Run bounded state once
-before choosing work, obey `hard_gate`, and preserve Scope/Auth plus owner write-back. Missing,
-stale, or partial state remains unresolved, never clean.
+the matching section of `docs/autopilot-lanes.md` for lane mechanics. Run `python3 tools/autopilot_state.py --target <target> --bounded` exactly once before choosing fresh, existing, or batch behavior. Obey `hard_gate` and preserve Scope/Auth plus owner write-back. Missing, stale, or partial state remains unresolved, never clean.
 For a URL-form input, keep canonical host state but inspect the exact path/query seed before historical focus or score hints. Pass a supplied `--auth-file` to hunt/recon/scan commands.
 
 For a readable text list or schema-v1 JSON Scope manifest, run bounded batch recon, read `recon/<list-stem>/ai_handoff.md` and `surface_ranking.txt`, select one completed `in_scope` asset, then create an owner continuation with `python3 tools/autopilot_continuation.py create --parent-target <scope_ref> --selected-target <domain> [--auth-file <path>]` and invoke `/autopilot <domain> --context-file=<returned-path>`. Bootstrap validates the parent `scope_ref/scope_hash` and private Auth ref before bounded state or target I/O. Never scan or actively hunt the batch index; unlisted assets remain context/review and explicit `out_of_scope` wins. `invalid_batch_target` and `batch_failed` are terminal until input/evidence changes.
@@ -56,6 +54,8 @@ Startup anti-loop: if `autopilot_state.py` returns `next_action: wait_recon` / `
 Only add heavier state tools when they directly change the next action: `target_case_state.py` for actor/session/object continuity, `case_state_seed.py` for concrete object IDs, and checkpoint/action_queue/coverage after progress, validation, handoff, or before finish; do not let them drive first contact.
 
 These tools are memory and execution aids, not a pre-flight checklist. Empty/stale/noisy/low-value state must not block fresh recon, broad scan, browser/source enrichment, or AI-generated pivots. If checkpoint/action_queue show no executable next action, `continue_last_focus`, resume targets, and `/surface` score hints are historical context, not commands; re-open only when fresh browser/source/JS/recon evidence or business context contradicts closure. Before executing historical focus on an existing target, do that closed-state sanity check without making checkpoint the first-contact steering wheel.
+
+Read the bounded `observation_inventory` summary before declaring exhaustion; use `/observations` for long-tail review. Never auto-route or enqueue the full inventory.
 
 - Skills route through `skills/runtime-protocol.md`.
 - Target case state stores actors, session metadata, objects, private markers, hypotheses, and validation backlog under `state/<target_key>/case_state.json`; session headers are private artifacts referenced from that file.
@@ -149,6 +149,7 @@ Lead -> Signal -> Candidate -> Validated Finding -> Report
 Validation is not an early hunting kill-switch. Keep useful leads and chain seeds while hunting; promote only replayable, impact-bearing candidates. Only a structured same-target finding with locatable raw evidence and matching `finding_index` owner provenance may be called confirmed/validated; target-memory prose and direct JSON edits remain lead/candidate, and placeholder drafts are not report-ready. The only non-TTY signature is `python3 tools/validate.py --target <target> --finding-id <id> --decision-json <json_file> --json`; `--decision-json` is a JSON file path, never inline JSON. A validated finding is a reportable asset, not an automatic stop condition; scanner-negative never ends the hunt by itself.
 ## Core Loop
 
+Existing-target loop: `LOAD -> REVIEW EVIDENCE -> ENRICH -> HUNT -> VALIDATE CANDIDATES -> REPORT/CHECKPOINT`.
 Choose each next action from current state and evidence; use the canonical `/autopilot`
 command and lane contract for execution, validation, checkpoint, and finish details.
 Do not impose a fixed phase or vulnerability order.
