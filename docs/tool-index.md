@@ -101,9 +101,9 @@ identity, and cloud signals without re-enumerating everything.
 | Tool | When to use | One-line function |
 |---|---|---|
 | `tools/browser_evidence.py` | MCP browser evidence already imported | Compact linkage and last-capture lookup only; it does not launch a browser |
-| `tools/browser_mcp_import.py` | Chrome DevTools/Playwright MCP artifacts ready | Normalize MCP network/snapshot/console/screenshot evidence into browser surface |
+| `tools/browser_mcp_import.py` | Chrome DevTools/Playwright MCP artifacts ready | Normalize MCP network/snapshot/console/screenshot/realtime evidence into browser surface |
 | `tools/browser_playwright_fallback.py` | Neither browser MCP backend is usable | Capture one target-owned page with Python Playwright and reuse the MCP importer; never installs browsers |
-| `tools/browser_surface.py` | Browser evidence dumped | Extract XHR/API/GraphQL surface from browser evidence |
+| `tools/browser_surface.py` | Browser evidence dumped | Extract XHR/API/GraphQL/realtime shapes from browser evidence |
 | `tools/deep_js_packer.py` | Concrete webpack/chunk/source-map signal | Evidence-gated Packer bundle/page recovery into existing JS artifacts |
 | `tools/js_reader.py` | JS bundles cached | Prepare js-reader agent materials from cached JS |
 | `tools/surface.py` | Cached recon ready for review | Fully stream/rank the exact target-owned surface, publish bounded AI-first review projection; scores/top-K are advisory hints |

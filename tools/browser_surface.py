@@ -121,12 +121,18 @@ def _parse_request_item(item: object) -> dict:
         request.get("resourceType"),
         request.get("type"),
     )
-    return {
+    parsed = {
         "url": url,
         "method": method.upper(),
         "resource_type": resource_type.lower(),
         "body": _body_from_request(item, request),
     }
+    if isinstance(item.get("realtime"), dict):
+        parsed["realtime"] = item["realtime"]
+    for key in ("webSocketMessages", "websocketMessages", "frames", "events", "eventSourceMessages", "sseEvents"):
+        if isinstance(item.get(key), list):
+            parsed[key] = item[key]
+    return parsed
 
 
 def _raw_request_items(raw: str) -> list[dict]:
@@ -225,6 +231,7 @@ def _body_shape(body: object) -> dict:
             "graphql_variables": [],
             "body_bytes": 0,
             "body_sha256": "",
+            "graphql_batch_count": 0,
         }
     if isinstance(body, str):
         raw = body
@@ -254,6 +261,18 @@ def _body_shape(body: object) -> dict:
     else:
         body_type = "text"
         content_type_hint = "text/plain"
+    graphql_batch = 0
+    batch_source = body.get("text") if isinstance(body, dict) and isinstance(body.get("text"), str) else body
+    if isinstance(batch_source, str):
+        try:
+            batch_source = json.loads(batch_source)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            batch_source = None
+    if isinstance(batch_source, list) and batch_source and all(
+        isinstance(item, dict) and isinstance(item.get("query"), str)
+        for item in batch_source
+    ):
+        graphql_batch = len(batch_source)
     return {
         "kind": "request-body-shape",
         "body_type": body_type,
@@ -263,10 +282,91 @@ def _body_shape(body: object) -> dict:
         "graphql_variables": variables,
         "body_bytes": len(raw.encode("utf-8", errors="replace")),
         "body_sha256": hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest(),
+        "graphql_batch_count": graphql_batch,
     }
 
 
-def public_request_shape(item: object) -> dict:
+def _realtime_shape(item: dict, *, request_index: int) -> dict:
+    """Expose ordered realtime message metadata without publishing values."""
+    resource_type = str(item.get("resourceType") or item.get("resource_type") or item.get("type") or "").lower()
+    collections: list[tuple[str, object]] = []
+    for key in ("webSocketMessages", "websocketMessages", "frames"):
+        if isinstance(item.get(key), list):
+            collections.extend(("websocket", value) for value in item[key])
+    for key in ("events", "eventSourceMessages", "sseEvents"):
+        if isinstance(item.get(key), list):
+            collections.extend(("sse", value) for value in item[key])
+    body = _body_from_request(item, item.get("request") if isinstance(item.get("request"), dict) else {})
+    batch_source = body.get("text") if isinstance(body, dict) and isinstance(body.get("text"), str) else body
+    if isinstance(batch_source, str):
+        try:
+            batch = json.loads(batch_source)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            batch = None
+    else:
+        batch = batch_source
+    if isinstance(batch, list) and batch and all(
+        isinstance(value, dict) and isinstance(value.get("query"), str) for value in batch
+    ):
+        collections.extend(("graphql-batch", value.get("query", "")) for value in batch)
+    if not collections and resource_type in {"websocket", "eventsource", "sse"}:
+        return {}
+    messages = []
+    for index, (transport, value) in enumerate(collections):
+        if isinstance(value, dict):
+            body = value.get("data", value.get("payload", value.get("body", value.get("message", ""))))
+            marker = str(value.get("direction") or value.get("type") or value.get("event") or "").strip()
+        else:
+            body, marker = value, ""
+        if isinstance(body, str):
+            raw = body.encode("utf-8", errors="replace")
+        else:
+            raw = json.dumps(body, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        messages.append({
+            "index": index,
+            "transport": transport,
+            "marker": marker,
+            "body_bytes": len(raw),
+            "body_sha256": hashlib.sha256(raw).hexdigest(),
+        })
+    if not messages:
+        return {}
+    return {
+        "message_count": len(messages),
+        "messages": messages,
+        "raw_ref": {"artifact": "network_private_json", "request_index": request_index},
+    }
+
+
+def _safe_realtime_projection(value: object, *, request_index: int) -> dict:
+    """Keep only bounded realtime metadata when reading a pre-shaped item."""
+    if not isinstance(value, dict):
+        return {}
+    messages = []
+    for index, message in enumerate((value.get("messages") or [])[:64]):
+        if not isinstance(message, dict):
+            continue
+        try:
+            body_bytes = min(max(0, int(message.get("body_bytes", 0) or 0)), 2**31 - 1)
+        except (TypeError, ValueError):
+            body_bytes = 0
+        messages.append({
+            "index": index,
+            "transport": str(message.get("transport") or "")[:32],
+            "marker": str(message.get("marker") or "")[:128],
+            "body_bytes": body_bytes,
+            "body_sha256": str(message.get("body_sha256") or "")[:64],
+        })
+    if not messages:
+        return {}
+    return {
+        "message_count": len(messages),
+        "messages": messages,
+        "raw_ref": {"artifact": "network_private_json", "request_index": request_index},
+    }
+
+
+def public_request_shape(item: object, *, request_index: int = 0) -> dict:
     """返回可进入公共 evidence/surface 的请求形状。"""
     parsed = _parse_request_item(item)
     if not parsed.get("url"):
@@ -275,7 +375,12 @@ def public_request_shape(item: object) -> dict:
     status = item.get("status", "") if isinstance(item, dict) else ""
     if isinstance(item, dict) and isinstance(item.get("response"), dict):
         status = item["response"].get("status", status)
-    return {
+    realtime = (
+        _safe_realtime_projection(item.get("realtime"), request_index=request_index)
+        if isinstance(item, dict) and isinstance(item.get("realtime"), dict)
+        else _realtime_shape(item, request_index=request_index) if isinstance(item, dict) else {}
+    )
+    result = {
         "url": public_url_shape(raw_url),
         "url_sha256": hashlib.sha256(raw_url.encode("utf-8", errors="replace")).hexdigest(),
         "method": parsed.get("method", "GET"),
@@ -283,10 +388,17 @@ def public_request_shape(item: object) -> dict:
         "status": status,
         "postData": _body_shape(parsed.get("body", "")),
     }
+    if realtime:
+        result["realtime"] = realtime
+    return result
 
 
 def public_request_shapes(items: list[object]) -> list[dict]:
-    return [shape for item in items if (shape := public_request_shape(item))]
+    return [
+        shape
+        for index, item in enumerate(items)
+        if (shape := public_request_shape(item, request_index=index))
+    ]
 
 
 def public_request_payload(payload: object, *, source: str = "") -> dict:
@@ -399,6 +511,7 @@ def write_browser_surface(
                     "url": shape.get("url", ""),
                     "method": shape.get("method", "GET"),
                     "postData": shape.get("postData", {}),
+                    "realtime": shape.get("realtime", {}),
                 },
                 sort_keys=True,
                 ensure_ascii=False,
@@ -427,6 +540,11 @@ def write_browser_surface(
             "browser_params": len(params),
             "forms": len(forms.get("forms", [])),
             "request_shapes": len(request_shapes),
+            "realtime_messages": sum(
+                int(shape.get("realtime", {}).get("message_count", 0) or 0)
+                for shape in request_shapes
+                if isinstance(shape, dict) and isinstance(shape.get("realtime"), dict)
+            ),
         },
         "artifacts": artifacts,
         "forms_status": forms.get("status", ""),

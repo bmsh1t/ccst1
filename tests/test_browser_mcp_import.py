@@ -1,5 +1,6 @@
 """Regression tests for importing browser MCP artifacts into recon surface."""
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -412,6 +413,86 @@ def test_browser_mcp_import_accepts_raw_playwright_network_text(tmp_path):
         "http://127.0.0.1:3002/socket.io/?EIO=&transport= :: EIO",
         "http://127.0.0.1:3002/socket.io/?EIO=&transport= :: transport",
     ]
+
+
+def test_realtime_fixture_preserves_order_hashes_and_private_raw_reference(tmp_path):
+    frames = ["frame-one", "frame-two"]
+    events = ["event-one", "event-two"]
+    batch = [
+        {"query": "query First { first }"},
+        {"query": "query Second { second }"},
+    ]
+    network_path = tmp_path / "realtime.json"
+    network_path.write_text(
+        json.dumps(
+            {
+                "requests": [
+                    {
+                        "request": {
+                            "url": "https://target.local/socket",
+                            "resourceType": "websocket",
+                            "webSocketMessages": [
+                                {"type": "received", "data": value} for value in frames
+                            ],
+                        },
+                    },
+                    {
+                        "url": "https://target.local/events",
+                        "resourceType": "eventsource",
+                        "events": [
+                            {"event": "message", "data": value} for value in events
+                        ],
+                    },
+                    {
+                        "url": "https://target.local/graphql",
+                        "method": "POST",
+                        "resourceType": "fetch",
+                        "postData": {"text": json.dumps(batch)},
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    summary = browser_mcp_import.import_mcp_browser_evidence(
+        target="target.local",
+        network_path=network_path,
+        evidence_root=tmp_path / "evidence",
+        recon_root=tmp_path / "recon",
+    )
+
+    requests = json.loads(Path(summary["artifacts"]["requests_json"]).read_text(encoding="utf-8"))["requests"]
+    realtime = [item["realtime"] for item in requests]
+    assert [item["message_count"] for item in realtime] == [2, 2, 2]
+    assert [item["messages"][0]["transport"] for item in realtime] == ["websocket", "sse", "graphql-batch"]
+    assert [item["messages"][0]["marker"] for item in realtime[:2]] == ["received", "message"]
+    assert [item["messages"][i]["index"] for item in realtime for i in range(2)] == [0, 1, 0, 1, 0, 1]
+    assert realtime[0]["messages"][0]["body_sha256"] == hashlib.sha256(frames[0].encode()).hexdigest()
+    assert realtime[1]["messages"][1]["body_sha256"] == hashlib.sha256(events[1].encode()).hexdigest()
+    assert [message["body_sha256"] for message in realtime[2]["messages"]] == [
+        hashlib.sha256(entry["query"].encode()).hexdigest() for entry in batch
+    ]
+    assert all(item["raw_ref"] == {"artifact": "network_private_json", "request_index": index} for index, item in enumerate(realtime))
+    assert summary["counts"]["realtime_messages"] == 6
+    assert summary["browser_surface"]["counts"]["realtime_messages"] == 6
+    private_raw = Path(summary["artifacts"]["network_private_json"]).read_text(encoding="utf-8")
+    private_requests = json.loads(private_raw)["requests"]
+    assert [message["data"] for message in private_requests[0]["request"]["webSocketMessages"]] == frames
+    assert [message["data"] for message in private_requests[1]["events"]] == events
+    assert json.loads(private_requests[2]["postData"]["text"]) == batch
+    assert all(value in private_raw for value in [*frames, *events, *[entry["query"] for entry in batch]])
+    public_files = [
+        path
+        for root in (tmp_path / "evidence", tmp_path / "recon")
+        for path in root.rglob("*")
+        if path.is_file()
+    ]
+    public_text = "\n".join(
+        path.read_text(encoding="utf-8", errors="ignore") for path in public_files
+    )
+    assert "frame-one" not in public_text
+    assert "query First" not in public_text
 
 
 def test_browser_mcp_import_falls_back_to_har_when_network_file_is_missing(tmp_path):

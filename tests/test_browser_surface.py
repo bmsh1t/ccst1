@@ -111,6 +111,50 @@ def test_browser_surface_publishes_method_and_body_shape_without_values(tmp_path
     assert secret not in json.dumps(shapes)
 
 
+def test_browser_surface_sanitizes_precomputed_realtime_shape():
+    secret = "PRIVATE_FRAME_VALUE"
+    shape = browser_surface.public_request_shape(
+        {
+            "url": "https://target.local/socket",
+            "realtime": {
+                "messages": [{
+                    "index": "bad",
+                    "transport": "websocket",
+                    "marker": "received",
+                    "body_bytes": "bad",
+                    "body_sha256": "a" * 64,
+                    "body": secret,
+                }],
+                "raw_ref": {"secret": secret},
+            },
+        },
+        request_index=3,
+    )
+
+    assert "realtime" in shape
+    assert shape["realtime"]["raw_ref"] == {
+        "artifact": "network_private_json",
+        "request_index": 3,
+    }
+    assert shape["realtime"]["messages"][0]["index"] == 0
+    assert shape["realtime"]["messages"][0]["body_bytes"] == 0
+    assert secret not in json.dumps(shape)
+
+
+def test_browser_surface_counts_single_graphql_batch_item():
+    shape = browser_surface.public_request_shape(
+        {
+            "url": "https://target.local/graphql",
+            "method": "POST",
+            "postData": {
+                "text": json.dumps([{"query": "query Only { only }"}]),
+            },
+        }
+    )
+
+    assert shape["postData"]["graphql_batch_count"] == 1
+
+
 def test_browser_surface_keeps_hidden_field_names_without_values(tmp_path):
     snapshot_path = tmp_path / "page.html"
     snapshot_path.write_text(

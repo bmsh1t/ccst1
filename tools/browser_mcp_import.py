@@ -314,15 +314,18 @@ def normalize_mcp_network(payload: Any) -> list[dict[str, Any]]:
             request.get("type"),
         )
         status = item.get("status", response.get("status", ""))
-        normalized.append(
-            {
-                "url": url,
-                "method": method.upper(),
-                "resourceType": resource_type.lower(),
-                "status": status,
-                "postData": _body_from_item(item, request),
-            }
-        )
+        normalized_item = {
+            "url": url,
+            "method": method.upper(),
+            "resourceType": resource_type.lower(),
+            "status": status,
+            "postData": _body_from_item(item, request),
+        }
+        for key in ("webSocketMessages", "websocketMessages", "frames", "events", "eventSourceMessages", "sseEvents"):
+            value = item.get(key, request.get(key))
+            if isinstance(value, list):
+                normalized_item[key] = value
+        normalized.append(normalized_item)
     return normalized
 
 
@@ -672,6 +675,7 @@ def import_mcp_browser_evidence(
             "browser_xhr_endpoints": int(browser_counts.get("xhr_endpoints", 0) or 0),
             "browser_api_endpoints": int(browser_counts.get("api_endpoints", 0) or 0),
             "browser_params": int(browser_counts.get("browser_params", 0) or 0),
+            "realtime_messages": int(browser_counts.get("realtime_messages", 0) or 0),
         },
         "artifacts": artifacts,
         "private_artifacts": private_artifacts,

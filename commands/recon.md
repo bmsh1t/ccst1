@@ -280,7 +280,7 @@ recon/<target>/
 ├── urls/api_endpoints_filtered.txt
 ├── urls/filter.log
 ├── urls/filter_summary.json
-├── browser/request_shapes.json           # value-free method/body/GraphQL request shapes
+├── browser/request_shapes.json           # value-free request/GraphQL/realtime shapes with raw refs
 ├── js/endpoints.txt
 ├── js/potential_secrets.txt
 ├── js/deep_candidates.txt
