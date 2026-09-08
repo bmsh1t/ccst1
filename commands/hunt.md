@@ -10,7 +10,8 @@ Active vulnerability hunting through Claude CLI. Use the scanner as a bounded br
 
 Replace `target.com` with the supplied target.
 
-Before running active probes, load the minimal context pack:
+Before running active probes, apply `skills/runtime-protocol.md#shared-knowledge-recall`.
+When no matching Pack is available, build one:
 
 ```bash
 python3 tools/context_pack.py --target target.com
@@ -41,10 +42,10 @@ Success signal: `findings/<target>/summary.json`, `findings/<target>/findings.js
 ## Default Hunt Loop
 
 ```text
-1. LOAD      Run context-pack, then read /surface output, target memory, cached recon, findings, and guard hints
+1. LOAD      Reuse or refresh context-pack, then read /surface output, target memory, cached recon, findings, and guard hints
 2. ROUTE     Select the main Skill using skills/runtime-protocol.md
 3. REVIEW    Build an evidence-backed surface view; Claude chooses the highest-value workflow: account, admin, API, export, upload, webhook, GraphQL, invite, report/download
-4. KNOWLEDGE Load only 1-2 relevant cards from knowledge/index.md when a lane needs deeper thinking
+4. KNOWLEDGE Read the selected Skill/cards through the shared recall rule; reuse contents already in context
 5. ATTACK    Reduce one hypothesis to exact requests: auth, role, object, method, version, body diff
 6. CHAIN     Check siblings, roles, versions, and side effects when a signal appears
 7. RECORD    Preserve leads/signals/candidates with exact next evidence actions in target memory

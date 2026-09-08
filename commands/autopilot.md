@@ -88,6 +88,14 @@ Coverage taxonomy, from evidence and unknowns. `knowledge_cards` are
 context, never conclusions; Case State/Queue `vuln_class` is a compatibility string. Only an
 owner-backed Matrix terminal state or complete evidence-backed identity candidate closes
 canonical Coverage; unknown/incomplete work stays open.
+After bootstrap and the bounded state read, use the shared recall gate in
+`skills/runtime-protocol.md#shared-knowledge-recall` before a boundary-specific action.
+For a substantive Queue item with a concrete boundary or `vuln_class`, this checkpoint is
+mandatory before claim: reuse a matching Context Pack already present in this turn; otherwise
+run `python3 tools/context_pack.py --target TARGET --focus FOCUS`, then read the selected Skill
+and any needed card before the action. Target memory alone is not a Context Pack. Refresh when
+target, focus, or material evidence changes; pure explanation and non-substantive state work
+remain exempt.
 Keep each iteration explicit:
 `inspect candidate/context -> AI choose and activate one hypothesis -> claim -> execute one
 bounded action -> read Runner observation -> AI resolve one continuation or kill -> refresh

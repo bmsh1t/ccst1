@@ -203,13 +203,11 @@ def test_claude_cli_runtime_responsibility_and_loading_boundaries_are_explicit()
 
 
 def test_hidden_sqli_surfaces_are_part_of_skill_flow():
-    runtime = (REPO_ROOT / "skills" / "runtime-protocol.md").read_text(encoding="utf-8")
     web2 = (REPO_ROOT / "skills" / "web2-vuln-classes" / "SKILL.md").read_text(encoding="utf-8")
     bug_bounty = (REPO_ROOT / "skills" / "bug-bounty" / "SKILL.md").read_text(encoding="utf-8")
     methodology = (REPO_ROOT / "skills" / "bb-methodology" / "SKILL.md").read_text(encoding="utf-8")
     card = (REPO_ROOT / "knowledge" / "cards" / "sqli-hidden-surfaces.md").read_text(encoding="utf-8")
 
-    assert "knowledge/cards/sqli-hidden-surfaces.md" in runtime
     assert "### SQLi Lane Flow" in web2
     assert "示例输入面按证据选择，不是固定顺序" in web2
     assert "not a fixed checklist" in web2
@@ -230,14 +228,12 @@ def test_hidden_sqli_surfaces_are_part_of_skill_flow():
 
 
 def test_hidden_auth_switches_are_part_of_skill_flow():
-    runtime = (REPO_ROOT / "skills" / "runtime-protocol.md").read_text(encoding="utf-8")
     web2 = (REPO_ROOT / "skills" / "web2-vuln-classes" / "SKILL.md").read_text(encoding="utf-8")
     bug_bounty = (REPO_ROOT / "skills" / "bug-bounty" / "SKILL.md").read_text(encoding="utf-8")
     methodology = (REPO_ROOT / "skills" / "bb-methodology" / "SKILL.md").read_text(encoding="utf-8")
     card = (REPO_ROOT / "knowledge" / "cards" / "auth-hidden-switches.md").read_text(encoding="utf-8")
     context_pack = (REPO_ROOT / "tools" / "context_pack.py").read_text(encoding="utf-8")
 
-    assert "knowledge/cards/auth-hidden-switches.md" in runtime
     assert "### Hidden Auth Switch Lane" in web2
     assert "owned/test account baseline" in web2
     assert "Do not silently fall into password brute force" in web2
@@ -308,14 +304,12 @@ def test_layer_placement_standard_keeps_skills_small_and_project_aligned():
 
 
 def test_missing_parameter_discovery_is_part_of_skill_flow():
-    runtime = (REPO_ROOT / "skills" / "runtime-protocol.md").read_text(encoding="utf-8")
     recon = (REPO_ROOT / "skills" / "web2-recon" / "SKILL.md").read_text(encoding="utf-8")
     web2 = (REPO_ROOT / "skills" / "web2-vuln-classes" / "SKILL.md").read_text(encoding="utf-8")
     bug_bounty = (REPO_ROOT / "skills" / "bug-bounty" / "SKILL.md").read_text(encoding="utf-8")
     methodology = (REPO_ROOT / "skills" / "bb-methodology" / "SKILL.md").read_text(encoding="utf-8")
     card = (REPO_ROOT / "knowledge" / "cards" / "missing-parameter-discovery.md").read_text(encoding="utf-8")
 
-    assert "knowledge/cards/missing-parameter-discovery.md" in runtime
     assert "### Missing Parameter Signal / Target-Specific Params" in recon
     assert "### Missing Parameter Signal Lane" in web2
     assert "Do not bulk-enumerate real users" in web2
@@ -328,7 +322,6 @@ def test_missing_parameter_discovery_is_part_of_skill_flow():
 
 
 def test_path_pattern_management_exposure_is_part_of_skill_flow():
-    runtime = (REPO_ROOT / "skills" / "runtime-protocol.md").read_text(encoding="utf-8")
     recon = (REPO_ROOT / "skills" / "web2-recon" / "SKILL.md").read_text(encoding="utf-8")
     web2 = (REPO_ROOT / "skills" / "web2-vuln-classes" / "SKILL.md").read_text(encoding="utf-8")
     bug_bounty = (REPO_ROOT / "skills" / "bug-bounty" / "SKILL.md").read_text(encoding="utf-8")
@@ -336,7 +329,6 @@ def test_path_pattern_management_exposure_is_part_of_skill_flow():
     api_card = (REPO_ROOT / "knowledge" / "cards" / "api-testing-workflow.md").read_text(encoding="utf-8")
     card = (REPO_ROOT / "knowledge" / "cards" / "path-pattern-management-exposure.md").read_text(encoding="utf-8")
 
-    assert "knowledge/cards/path-pattern-management-exposure.md" in runtime
     assert "### Pattern-Based Directory Fuzzing" in recon
     assert "### Management Exposure Lane" in web2
     assert "Do not import keys into cloud panels" in web2

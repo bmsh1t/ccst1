@@ -20,6 +20,24 @@
 Claude Code CLI 当前主会话保留最终路线判断权。本协议、推荐 Skill/Card 和工具输出
 都不能建立第二个 controller 或 target-state owner。
 
+## Shared Knowledge Recall
+
+两种入口共用这一条判断：
+
+- 纯解释不强制查包或读卡；宽泛目标先沿既有目标上下文/发现入口补证据，不预选专项卡。
+- 提示词或 `state/evidence` 命中具体边界时，在边界相关动作前按当前证据确定 focus；没有
+  当前对话中匹配的 Context Pack 工具输出，就按 `commands/context-pack.md` 调用
+  `python3 tools/context_pack.py --target TARGET --focus FOCUS`；目标记忆或磁盘目录不能代替 Pack。
+- 已有匹配 Pack 时直接复用推荐，不重复查包。推荐路径不等于文件已读：选中的 Skill 和
+  当前需要的卡若正文不在上下文中，先读取再行动；已读正文不重复加载。
+- 同一 target/focus/实质证据可复用；目标、focus 或实质证据变化时重新判断并按需刷新。
+- Autopilot 先完成 bootstrap 和 state read，再在 substantive lane 选择后执行这条判断；bootstrap
+  不等于已有匹配 Pack 或知识卡已读，也不因召回而抢占 owner 选定的初始工作。
+- 默认推荐 0-2 张卡；查包返回不足时再使用已有 deferred recall、`knowledge/index.md` 或 `/kb`。
+  推荐预算不限制有理由的显式补读，不新增持久化加载状态。
+
+卡片保持独立，提供模式、反例和证据提示；Skill 保留路线和证据门，不复制卡片正文。
+
 Context Pack 的 `selected_skill`、`skill_route` 和 `knowledge_cards` 是兼容推荐字段，
 不是已选择的执行状态，也不进入默认 `must_read` 或自动写入 Queue。Claude 在实质
 Action Queue claim 时显式选择 Skill route；只有替换 action owner 已有 route 时才需要
@@ -101,17 +119,11 @@ Evidence gate；细节回到现有 owner，不在本协议中复制。
 
 ## 3. Knowledge layer
 
-知识库只提供可复用模式、反例和发散问题，不指挥流程，也不保存当前目标状态。按证据
-从 `knowledge/index.md` 选择 1-2 张卡；常见入口包括：
-
-- `knowledge/cards/sqli-hidden-surfaces.md`
-- `knowledge/cards/auth-hidden-switches.md`
-- `knowledge/cards/missing-parameter-discovery.md`
-- `knowledge/cards/path-pattern-management-exposure.md`
-- `knowledge/cards/api-idor.md`, `knowledge/cards/auth-access.md`
-- `knowledge/cards/ssrf-url-fetch.md`, `knowledge/cards/upload-parser.md`
-- `knowledge/cards/graphql.md`, `knowledge/cards/websocket-realtime-api.md`
-- `knowledge/cards/grpc-api-boundaries.md`, `knowledge/cards/web-llm-tool-chains.md`
+知识库只提供可复用模式、反例和发散问题，不指挥流程，也不保存当前目标状态。由
+Shared Knowledge Recall 按证据通过 Context Pack 选择 0-2 张卡；常见 focus 包括
+`sqli`、`auth-hidden`、`missing-param`、`path-pattern`、`api-idor`、`ssrf`、`graphql`
+和 `upload`。具体卡片路径以 registry/Context Pack 返回为准；`knowledge/index.md`
+只在召回不足时作为目录回退。
 
 知识输出必须回到 `Evidence -> Hypothesis -> Next action -> Stop condition`；是否执行仍由
 Skill 和检查层决定。不得默认全量读取卡片、原始日志或大型响应。

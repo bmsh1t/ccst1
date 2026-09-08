@@ -84,6 +84,10 @@ Command discovery comes from `commands/`, not a hand-maintained list here.
 
 - 无 authoritative bootstrap 时，复杂任务先读取目标记忆并运行 `/context-pack`；一轮只选一个主 Skill，
   按证据读取 0-2 张知识卡，不全量读取 Skills、知识库、历史或大日志。
+- 提示词或证据命中具体类别/边界时，实质动作（包括离线验证）前先读取
+  `skills/runtime-protocol.md#shared-knowledge-recall` 对应的 `Shared Knowledge Recall` 段，
+  再完成其中的查包/读卡判断；本轮上下文中已有的正文不重读。
+  从当前证据确定 focus（如 sqli、missing-param、path-pattern、auth-hidden）；纯解释可跳过。
 - 首次主动测试前，只要提示词或已有证据命中具体类别/边界，先运行 `/context-pack <target> <focus>`；
   纯解释或只读问题可跳过。
 - 先复用摘要、索引和缓存证据；原始响应只按引用展开，Validation gate 只用于 Candidate。

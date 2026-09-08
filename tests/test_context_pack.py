@@ -289,6 +289,45 @@ def test_recommended_skill_and_cards_stay_advisory_and_outside_must_read(tmp_pat
     assert set(pack["knowledge_cards"]).isdisjoint(pack["must_read"])
 
 
+@pytest.mark.parametrize(
+    ("focus", "expected_card"),
+    [
+        ("sqli", "sqli-hidden-surfaces"),
+        ("auth-hidden", "auth-hidden-switches"),
+        ("missing-param", "missing-parameter-discovery"),
+        ("path-pattern", "path-pattern-management-exposure"),
+        ("api-idor", "api-idor"),
+        ("ssrf", "ssrf-url-fetch"),
+    ],
+)
+def test_command_and_autopilot_state_recall_share_candidates(tmp_path, capsys, focus, expected_card):
+    """Check deterministic entry parity, not live model discovery or file reads."""
+    _seed_recon(tmp_path, "target.com", ["https://target.com/"])
+    memory_dir = str(tmp_path / "hunt-memory")
+    state = build_autopilot_state(str(tmp_path), "target.com", memory_dir=memory_dir)
+    state_pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus=focus,
+        memory_dir=memory_dir,
+        surface_state=state["surface"],
+    )
+    assert context_pack_module.main([
+        "target.com", focus, "--repo-root", str(tmp_path),
+        "--memory-dir", memory_dir, "--json",
+    ]) == 0
+    command_pack = json.loads(capsys.readouterr().out)
+
+    for key in (
+        "target", "focus", "selected_skill", "knowledge_cards",
+        "deferred_knowledge_cards", "knowledge_card_recall",
+    ):
+        assert command_pack[key] == state_pack[key], key
+    assert f"knowledge/cards/{expected_card}.md" in command_pack["knowledge_cards"]
+    assert len(command_pack["knowledge_cards"]) <= 2
+    assert set(command_pack["knowledge_cards"]).isdisjoint(command_pack["must_read"])
+
+
 def test_explicit_primary_skill_names_precede_generic_validation_words(tmp_path):
     for skill_id in SKILL_PATHS:
         pack = build_context_pack(

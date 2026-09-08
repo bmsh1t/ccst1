@@ -23,8 +23,9 @@ this file keeps project-specific routing, evidence gates, and lifecycle boundari
 
 ## Four-Layer Memory Hooks
 
-Use `tools/context_pack.py` and the `knowledge` registry to select only cards
-matching the observed boundary; do not maintain a second card map here.
+Use `skills/runtime-protocol.md#shared-knowledge-recall` for card recall from either
+entrypoint. Context Pack selects cards; this Skill supplies the boundary decision and
+evidence gate. A recommendation is not a file read, and this Skill keeps no card map.
 
 Cards provide patterns, counterexamples, and evidence prompts. They do not own
 the target state or force an execution sequence.
@@ -76,8 +77,8 @@ when browser fetch cannot preserve the observed request.
 
 Use target material, schemas, source, and parser errors to build a target-specific wordlist.
 Test one low-impact parameter at a time; Do not bulk-enumerate real users,
-PII, passwords, addresses, or tokens. Preserve the raw differential and route to
-`knowledge/cards/missing-parameter-discovery.md`.
+PII, passwords, addresses, or tokens. Preserve the raw differential and request
+the `missing-param` focus through the shared recall rule.
 
 ### Management Exposure Lane
 

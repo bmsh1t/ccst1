@@ -33,12 +33,13 @@ rules/context-loading.md
 
 ## 默认流程
 
-先运行：
+先按 `skills/runtime-protocol.md#shared-knowledge-recall` 判断复用或刷新；需要查包时运行：
 
 ```bash
 python3 tools/context_pack.py --target <target>
 ```
 
+有 focus 时追加 `--focus <focus>`，不要丢弃用户输入或当前证据对应的边界。
 如果用户没有传 target，工具会读取 `memory/goals/active.json` 的当前目标。
 
 工具会：
@@ -58,7 +59,8 @@ python3 tools/context_pack.py --target <target>
 8. 输出证据锚点、假设种子、Actor Matrix 缺口、相邻角度、矛盾点和写回建议。
 
 `selected_skill`、`skill_route` 和 `knowledge_cards` 是兼容推荐字段，不表示已经加载或
-选择。Claude 根据当前证据显式选择适用 Skill / 知识卡，并保留覆盖检查。
+选择；Context Pack 不会自动读取这些文件。Claude 根据当前证据显式选择适用 Skill / 知识卡，
+再读取实际需要的文件，并保留覆盖检查。
 `hypothesis_seeds`、`alternative_angles` 和 `knowledge_card_recall` 也只是建议/诊断，
 不会由 Checkpoint 自动变成 Queue 动作或已选择假设。
 
