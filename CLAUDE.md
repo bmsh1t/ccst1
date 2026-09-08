@@ -7,7 +7,6 @@
 当 `config.json` 的 `ctf_mode` 为 `true` 时，直接把 supplied target 和仓库配置作为本轮靶场记录。
 New target default keeps the built-in XSS lane skip unless the current turn requests broader coverage。
 当前回合明确点名某个动作时，该请求本身就是该动作的 opt-in。
-Temporary skips are per-current-target and per-current-invocation only。
 
 ## Operator Contract
 
@@ -44,12 +43,10 @@ Target state / Evidence -> Coverage Matrix -> Skill / Context Router
 
 - `CLAUDE.md` 是本仓库由 Claude Code CLI 项目机制常驻加载的平台契约，只负责
   AI/工具边界、状态 owner 和最小入口路由，不承载专项测试方法。
-- `skills/runtime-protocol.md` 是 Context Pack 的共享路由与写回契约；它连接 Target、Skill、
-  Knowledge、Checks 和 owner write-back，但不替 Claude 选择当前测试路线。
-- `skills/bb-methodology/SKILL.md` 是按需决策 Skill，只在会话开始、切换目标、进展停滞或
-  需要选择/轮换假设时加载；专项 Skill 和知识卡继续按当前证据加载。
-- Claude Code CLI 当前主会话保留路线、取舍和证据组合的最终判断权；Skill、Card 和工具
-  提供契约或候选，Coverage/Ledger/Queue/Checkpoint 继续拥有确定性状态。
+- 各层级（Skill、知识卡、Rules、Tools）的职责划分与加载时机统一见
+  `skills/runtime-protocol.md` 和 `rules/context-loading.md`；Claude Code CLI
+  当前主会话保留路线、取舍和证据组合的最终判断权，状态由
+  Coverage/Ledger/Queue/Checkpoint 等 owner 持有。
 
 ## Intent Routing in Claude CLI
 
@@ -73,10 +70,9 @@ Command discovery comes from `commands/`, not a hand-maintained list here.
 ## Context and Evidence Discipline
 
 - 无 authoritative bootstrap 时，复杂任务先读取目标记忆并运行 `/context-pack`；一轮只选一个主 Skill，
-  按证据读取 0-2 张知识卡，不全量读取 Skills、知识库、历史或大日志。
+  知识卡与加载边界按 `rules/context-loading.md` 执行。
 - 提示词或证据命中具体类别/边界时，实质动作（包括离线验证）前先读取
-  `skills/runtime-protocol.md#shared-knowledge-recall` 对应的 `Shared Knowledge Recall` 段，
-  再完成其中的查包/读卡判断；本轮上下文中已有的正文不重读。
+  `skills/runtime-protocol.md#shared-knowledge-recall`，按其中的判断完成查包/读卡；
   从当前证据确定 focus（如 sqli、missing-param、path-pattern、auth-hidden）；纯解释可跳过。
 - 先复用摘要、索引和缓存证据；原始响应只按引用展开，Validation gate 只用于 Candidate。
 - 外部研究按需选择 Grok Search 或 Smartsearch；结果不足或冲突时再使用另一个。
@@ -90,20 +86,15 @@ LOAD -> REVIEW EVIDENCE -> ENRICH -> TEST -> CHAIN -> RECORD
      -> VALIDATE CANDIDATES -> REPORT / CHECKPOINT
 ```
 
-- Claude CLI `/autopilot` runs inline in the current Claude session，并且是唯一 target-state controller；
-  不隐式创建第二套 target-state session。
-- Specialist 委派遵循 `commands/autopilot.md`；
-  当前 session 始终是唯一 controller，负责结果回收、Checkpoint、owner 写回和 Closure。
+- Claude CLI `/autopilot` runs inline in the current Claude session，并且是唯一 target-state
+  controller，不隐式创建第二套 target-state session；Specialist 委派遵循 `commands/autopilot.md`，
+  结果回收、Checkpoint、owner 写回和 Closure 由当前 session 负责。
 - Runtime drift 通过 `/sync-check` 查看；advisory 不阻塞，critical drift 才阻塞，且不得自动同步。
 
 ## Egress Proxy (Resin)
 
-Resin 配置与密钥规则见 `docs/resin-proxy.md`；token 只存于 gitignored `.env`，不得打印或持久化。
-启用时公网 recon/scanner/login/session/multi-step
-默认使用每个 target/job 稳定的 **sticky** Account，只有用户明确要求轮换出口时使用 **rotate**，
-localhost、RFC1918 和其他私网目标始终 **bypass** Resin。
-
-`hunt.py` 不自动接线代理；按 `docs/resin-proxy.md` 设置环境变量或工具代理参数。
+配置、mode 决策表和密钥规则见 `docs/resin-proxy.md`；token 只存于 gitignored `.env`，
+不得打印或持久化。`hunt.py` 不自动接线代理；按 `docs/resin-proxy.md` 设置环境变量或工具代理参数。
 
 ## Canonical References
 
