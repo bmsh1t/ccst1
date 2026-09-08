@@ -81,3 +81,7 @@ memory/goals/sessions/
 # Local cleanup archives; may contain real target lists or campaign scripts
 archive/root-clutter/
 archive/campaign-scripts/
+
+# Local runtime workspace roots (tracked historical snapshots stay via explicit git add -f)
+research/
+hunt_targets/
