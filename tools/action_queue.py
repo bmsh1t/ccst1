@@ -213,9 +213,9 @@ def _validate_action_metadata(metadata: dict | None) -> dict:
         if not skill_id:
             raise ValueError("Action Queue metadata skill_route requires skill_id")
         try:
-            from tools.context_pack import SKILL_CATALOG
+            from tools.skill_catalog import SKILL_CATALOG
         except ImportError:  # pragma: no cover - direct tools/ execution
-            from context_pack import SKILL_CATALOG  # type: ignore
+            from skill_catalog import SKILL_CATALOG  # type: ignore
         catalog_entry = SKILL_CATALOG.get(skill_id)
         if not isinstance(catalog_entry, dict) or catalog_entry.get("route_mode") != "primary":
             raise ValueError(

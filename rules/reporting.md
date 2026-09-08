@@ -1,30 +1,22 @@
 # Reporting Rules
 
-Report quality directly impacts payout. Triagers are busy. Make their job easy.
+This file owns cross-cutting reporting checks and scoring calibration.
+`skills/triage-validation/SKILL.md` owns validation verdicts;
+`skills/report-writing/SKILL.md` owns presentation, delivery modes, titles,
+word budgets, and follow-up wording. Do not maintain another format here.
 
 ---
 
-## 1. NEVER USE THEORETICAL LANGUAGE
+## 1. Claim Presentation
 
-```
-NEVER: "could potentially allow"
-NEVER: "may allow an attacker to"
-NEVER: "might be possible"
-NEVER: "could lead to"
-NEVER: "could be chained with X to cause Y"
-
-ALWAYS: "An attacker can [exact action] by [exact method]"
-```
-
-If you can't write a concrete statement → you don't have a bug yet.
+Apply the Writing Rules in `skills/report-writing/SKILL.md`. Unproven impact
+stays an evidence gap, not a stronger claim created during report drafting.
 
 ## 2. RUN 7-QUESTION GATE BEFORE WRITING
 
-Every finding must pass all 7 questions before spending time on a report.
-
-One NO = stop the report path immediately. N/A hurts your validity ratio more
-than missing a bug. If there is still a concrete next evidence action, demote
-the item to Lead/Signal instead of reporting it.
+Apply Q1-Q7 and the four gates in `skills/triage-validation/SKILL.md` before
+reporting. That Skill owns REPORT, CHAIN_REQUIRED, DOWNGRADE, and DO_NOT_REPORT
+precedence; this file does not redefine the verdict.
 
 ## 3. ALWAYS INCLUDE PROOF OF CONCEPT
 
@@ -94,22 +86,8 @@ infer severity from a bug-class name or a scanner label.
 
 ## 5. NEVER SUBMIT FROM THE ALWAYS-REJECTED LIST
 
-These are normally not standalone findings without a demonstrated connector:
-
-```
-Missing headers (CSP, HSTS, X-Frame-Options)
-GraphQL introspection alone
-Self-XSS
-Open redirect alone
-SSRF DNS-only
-Logout CSRF
-Missing cookie flags alone
-Rate limit on non-critical forms
-Banner/version disclosure without working exploit
-```
-
-Build and prove the connector first. The canonical triage contract decides
-whether the result is a chain-required candidate or a reportable finding.
+Use the NEVER SUBMIT list and Q7 chain precedence in
+`skills/triage-validation/SKILL.md`; do not maintain a second class list here.
 
 ## 6. VERIFY DATA ISN'T ALREADY PUBLIC
 
@@ -128,57 +106,8 @@ For an identity-boundary claim, report must show the smallest reproducible
 actor/object differential, for example: Account A's session reached Account B's
 private object. Use an equivalent artifact when the boundary is not HTTP.
 
-## 8. REPORT FORMAT BY PLATFORM
+## 8. Delivery
 
-**HackerOne:** Impact-first summary → CVSS → Steps to Reproduce → Impact → Fix
-**Bugcrowd:** VRT category in title → Description → Expected vs Actual → Severity Justification
-**Intigriti:** CVSS prominent → Clear steps → Business impact
-**Immunefi:** Root cause in code → Foundry PoC → $ impact quantified
-
-## 9. UNDER 600 WORDS
-
-Triagers skim. Long reports get skimmed harder.
-
-Structure:
-- Sentence 1: What attacker can do (impact)
-- Sentence 2-3: How (endpoint, parameter, method)
-- Steps to reproduce: numbered, with the exact replayable artifact (request,
-  browser trace, frame, state transition, or equivalent)
-- Impact: one paragraph, quantified
-- Fix: 1-2 sentences
-
-## 10. ESCALATION LANGUAGE (WHEN PAYOUT IS DOWNGRADED)
-
-```
-"This requires only a free account — no special privileges."
-"The data includes [PII type], subject to GDPR/CCPA requirements."
-"An attacker can automate this — all [N] records in minutes."
-"This is externally exploitable with no internal access required."
-"Impact equivalent to a full breach of [feature/data type]."
-```
-
-## 11. DON'T COMBINE SEPARATE BUGS
-
-If A and B are independent bugs (different endpoints, different impact):
-- Report them as SEPARATE reports = separate payouts
-- Only combine if they're part of ONE attack chain that requires both
-
-## 12. TITLE FORMULA — NEVER DEVIATE
-
-```
-[Bug Class] in [Exact Endpoint/Feature] allows [attacker role] to [impact] [scope]
-```
-
-Examples:
-```
-IDOR in /api/v2/invoices/{id} allows authenticated user to read any customer's invoice
-Missing auth on POST /api/admin/users allows unauthenticated creation of admin accounts
-Stored XSS in profile bio field executes in admin panel — privilege escalation possible
-```
-
-Bad (never use):
-```
-IDOR vulnerability found
-Security issue in API
-XSS in user input
-```
+Use `skills/report-writing/SKILL.md` for platform structure, title wording,
+length, independent submissions, and clarification responses. Delivery choices
+do not change the validation result, recorded CVSS, or evidence requirements.

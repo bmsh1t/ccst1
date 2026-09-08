@@ -140,6 +140,15 @@ applicable、Dead ends、Still unknown 和 Next actions。不得用“没有发�
 现有 `target_memory.py`、Action Queue、Evidence Ledger、Finding、Checkpoint 或 `/remember`
 写回，不在协议内创建第二份状态。
 
+### Stateful Continuity
+
+For dependent steps such as leak -> use, login -> token -> action, multi-round
+oracles, browser workflows, or connection-bound protocols, keep all steps in
+the same process, socket, or browser context. If a new process is required,
+export and explicitly restore the complete session state. Never assume that
+memory tokens, cookies, nonces, connection state, or oracle rounds survive a
+new shell/tool invocation.
+
 ## 输出契约
 
 ```text

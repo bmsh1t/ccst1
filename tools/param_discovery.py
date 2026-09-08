@@ -28,7 +28,7 @@ try:
     from tools.action_queue import build_action, load_queue, queue_mutation_lock, save_queue, upsert_actions
     from tools.auth_session import AuthSession, add_cli_args, session_from_args
     from tools.browser_surface import public_url_shape
-    from tools.context_pack import skill_route
+    from tools.skill_catalog import skill_route
     from tools.deep_budget import project_budget
     from tools.private_artifacts import private_artifact_dir, write_private_text
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
@@ -37,7 +37,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from action_queue import build_action, load_queue, queue_mutation_lock, save_queue, upsert_actions  # type: ignore
     from auth_session import AuthSession, add_cli_args, session_from_args  # type: ignore
     from browser_surface import public_url_shape  # type: ignore
-    from context_pack import skill_route  # type: ignore
+    from skill_catalog import skill_route  # type: ignore
     from deep_budget import project_budget  # type: ignore
     from private_artifacts import private_artifact_dir, write_private_text  # type: ignore
     from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # type: ignore

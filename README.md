@@ -424,7 +424,7 @@ documents the preferred model class for each role.
   of truth for optional external-tool install hints and `_have <tool>` checks.
 - **Recon pipeline.** `recon_engine.sh` can add an optional nuclei phase when
   the tool is present.
-- **AI-first technique policy.** General technique knowledge stays in the model; project-specific routing and evidence rules live in `skills/security-arsenal/SKILL.md`.
+- **AI-first technique policy.** General technique knowledge stays in the model; `skills/runtime-protocol.md` owns shared loading and execution contracts, while `skills/security-arsenal/SKILL.md` remains an on-demand reference entry. See `skills/README.md` for role boundaries.
   distills quick-check tables from HowToHunt, HolyTips, AllAboutBugBounty, and
   KingOfBugBountyTips.
 

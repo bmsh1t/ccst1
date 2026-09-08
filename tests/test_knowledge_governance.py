@@ -329,6 +329,39 @@ def test_absorbed_distilled_patterns_route_to_kept_base_cards(tmp_path):
         assert expected_card in pack["knowledge_cards"]
 
 
+def test_evidence_counterexamples_recall_existing_boundary_cards(tmp_path):
+    cases = [
+        (
+            "access-control",
+            "session role permission: one endpoint now rejects, but the test token "
+            "is still accepted by an observed protected endpoint",
+            "knowledge/cards/auth-access.md",
+        ),
+        (
+            "path-pattern",
+            "management-path candidate and random miss share a Login title, "
+            "password form and redirect; only return_to and CSRF token differ",
+            "knowledge/cards/path-pattern-management-exposure.md",
+        ),
+    ]
+
+    for focus, observation, expected_card in cases:
+        target = f"{focus}.test"
+        evidence_ref = f"findings/{target}/source_intel/hypotheses.jsonl"
+        evidence = tmp_path / evidence_ref
+        evidence.parent.mkdir(parents=True)
+        evidence.write_text(
+            json.dumps({"candidate": observation, "reason": "synthetic boundary counterexample"}) + "\n",
+            encoding="utf-8",
+        )
+
+        pack = build_context_pack(tmp_path, target=target, focus=focus)
+
+        assert expected_card in pack["knowledge_cards"]
+        assert len(pack["knowledge_cards"]) <= 2
+        assert evidence_ref in pack["must_read"]
+
+
 def test_distilled_router_cards_are_discoverable_from_real_evidence_indexes(tmp_path):
     for card_name, evidence in DISTILLED_ROUTER_TRIGGER_CASES.items():
         target = card_name.removesuffix(".md")

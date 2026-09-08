@@ -64,8 +64,9 @@ scope, severity, or canonical status.
 
 Include, as applicable:
 
-1. A title naming the test class, exact endpoint/operation, actor, and
-   demonstrated impact.
+1. A title naming the test class, exact endpoint/operation, actor, demonstrated
+   impact, and scope: `[Bug Class] in [Exact Endpoint/Feature] allows [attacker role]
+   to [impact] [scope]`.
 2. An impact-first summary with factual scope and preconditions.
 3. Vulnerability details tied to the selected finding ID and source artifact.
 4. Reproduction steps using the exact artifact and the exact observed result.
@@ -117,9 +118,17 @@ or overwrite the canonical finding lifecycle.
 
 - State the demonstrated action or data in the first sentence.
 - Use exact facts and target terminology; do not turn theory into impact.
+- Do not fill evidence gaps with "could potentially allow", "may allow", or
+  an unproven chain. State the demonstrated action, method, and bounded impact.
 - Quantify only what the evidence supports.
-- Keep bounty submissions concise when the platform requests a length limit;
-  formal assessment reports may be longer when their scope requires it.
+- Aim for under 600 words for a bounty submission unless the user or platform
+  requires a different length. Formal assessment reports follow their scope
+  and required sections, not this bounty word budget.
+- Separate independent root causes into separate bounty submissions; a formal
+  assessment may contain separate finding sections. Combine steps as one chain
+  only when the demonstrated outcome depends on those steps.
+- Answer clarification or severity disputes with recorded preconditions,
+  artifacts, and measured impact; do not invent reachability or scale.
 - Never include raw test secrets or unrelated target data.
 
 ## Final Checklist

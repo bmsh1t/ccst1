@@ -62,6 +62,11 @@ deep_refs: []
 - Secret-like 字段降级处理：`accesskey` 等字段只进入最小证据、归属判断和验证计划，不直接扩大到资源接管。
 - Response-shape gate：管理路径的 status 只表示路由可达；title、content-type、JSON key、链接结构、
   文件 magic 和相邻 endpoint 一致性共同证明真实组件，不由 200/401/403 单点判断暴露。
+- 登录兜底反例：通用 Login/Admin 标题、密码框或 302 到 `/login` 只证明登录流程，不能确认
+  原候选是某个组件的管理入口。与同方法、同认证上下文的随机 miss 比较最终 URL 和稳定响应结构；
+  仅 `return_to`、路径回显、CSRF token 或时间戳不同，不算组件特有差异。
+- 组件身份与访问缺陷分开判断：Swagger UI 不单独证明 Spring Boot；只有目标特有内容、协议结构
+  或可追溯组件证据才能增强入口判断，确认入口也不等于确认权限缺陷。
 - 反馈收敛：候选与随机 miss 同质时降低该转换优先级；稳定的不同错误族、方法差异或同词根
   多点信号才支持下一轮有界扩写。每轮根据新证据重新决定继续或停止，单轮有界不是全局能力上限。
 
@@ -86,7 +91,8 @@ deep_refs: []
 3. 生成与一个具体 request/template 和认证上下文绑定的有限候选，去重后再执行。
 4. 用同方法、同认证语义的随机 miss 对照 status、length、words、lines、content-type、redirect、
    404/405/`Allow` 和错误族；SPA/soft-404、登录跳转、网关/WAF 页面单独聚类。
-5. 把稳定差异写为 Signal/lead，把同质范围写为 dead-end；只有新证据支持时再开始下一轮。
+5. 把稳定差异写为 Signal/lead；同质结果只说明当前转换没有提供区分度，不证明认证层背后的入口
+   不存在。无新证据时停止该转换，未确认的入口保留 unknown/blocked 及原因；有新证据再开始下一轮。
 
 画像和候选只是本轮证据附件，不拥有 finding、queue、coverage 或 target memory 状态。
 

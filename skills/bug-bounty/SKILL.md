@@ -15,7 +15,8 @@ methods owned by narrower Skills, Rules, Cards, or deterministic tools.
 - Coverage/completion: `rules/coverage-gate.md`.
 - Hypothesis selection and rotation: `skills/bb-methodology/SKILL.md`.
 - Finding validity: `skills/triage-validation/SKILL.md` and `/validate`.
-- Report structure: `rules/reporting.md` and `skills/report-writing/SKILL.md`.
+- Report presentation: `skills/report-writing/SKILL.md`; reporting checks and
+  scoring calibration: `rules/reporting.md`.
 
 ## Cross-Stage Loop
 
@@ -60,50 +61,16 @@ methods owned by narrower Skills, Rules, Cards, or deterministic tools.
 
 # Methodology Boundary
 
-Mindset, phase order, timers, and rotation live in
+Hypothesis selection, evidence-driven rotation, and stopping live in
 `skills/bb-methodology/SKILL.md`; this Skill handles cross-stage routing and handoff.
 
-## Evidence-Selected Card Handoffs
+## Evidence-Selected Handoffs
 
-### Hidden SQLi Surface
-
-When explicit parameters are quiet but headers, paths, JSON fields, sibling
-endpoints, or query semantics remain plausible, load
-`knowledge/cards/sqli-hidden-surfaces.md`. The Card and Web vuln Skill own the
-actual input selection and evidence gate.
-
-### Path 8: Hidden Auth Switches
-
-When auth behavior exposes a hidden selector, role flag, legacy/mobile branch,
-or admin binder, load `knowledge/cards/auth-hidden-switches.md`. Compare legal
-owned/test-account baselines; do not silently turn this handoff into credential
-spraying.
-
-### Missing Parameter Signal
-
-For missing/null/required/type/schema/validator responses, load
-`knowledge/cards/missing-parameter-discovery.md`. Treat the response as a surface
-signal, not a finding; build bounded target-material candidates and verify a
-minimal response-shape difference.
-
-### Path Pattern / Management Exposure
-
-For target-specific path, filename, prefix, parameter, host, static-asset, log,
-config, or management patterns, load
-`knowledge/cards/path-pattern-management-exposure.md`. Keep discovery bounded and
-read-only until evidence selects a separate validation lane.
-
-## Other Signal Handoffs
-
-| Signal | Coordinator route |
-|---|---|
-| Object/role/tenant difference | Web vuln Skill plus actor-pair evidence path |
-| URL fetch, XML parser, blind server-side behavior | Web vuln Skill plus shared OAST primitive when informative |
-| OAuth/OIDC/JWT/SAML/account linking | Selected auth Card and legal-flow binding comparison |
-| Upload, template, serializer, Node/prototype, command sink | Matching Card/reference; prove source, boundary, and observable sink |
-| Cache, smuggling, WebSocket, GraphQL | Matching shared replay/diff primitive and target-owned raw evidence |
-| Workflow, quota, OTP, recovery, payment, order state | State model plus bounded controlled replay |
-| Component, release, CVE, source/JS clue | Applicability check, reachable surface, then family-specific validation |
+Choose the narrower Skill from the stage and evidence. Before a boundary-specific
+action, apply `skills/runtime-protocol.md#shared-knowledge-recall`; use the returned
+card paths instead of maintaining a coordinator-side card map. A handoff keeps
+the target/auth context, evidence references, and the concrete question to answer.
+The selected Skill and card own the detailed branch and evidence requirements.
 
 ## Chain Coordination
 

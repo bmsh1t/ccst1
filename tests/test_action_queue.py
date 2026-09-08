@@ -1292,7 +1292,9 @@ def test_action_queue_rejects_required_skill_route_without_dimensions(tmp_path):
         )
 
 
-def test_action_queue_accepts_skill_route_with_required_dimensions(tmp_path):
+def test_action_queue_accepts_skill_route_with_required_dimensions(tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, "tools.context_pack", None)
+    monkeypatch.setitem(sys.modules, "context_pack", None)
     action = build_action(
         target="api.target.com",
         action_type="hypothesis",

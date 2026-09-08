@@ -101,18 +101,12 @@ baseline and change one boundary at a time.
 
 ## Signal Routing
 
-| Signal | Next route |
-|---|---|
-| Hidden SQLi surface after obvious parameters are quiet | `context-pack sqli`; load `knowledge/cards/sqli-hidden-surfaces.md` |
-| Hidden login selector, legacy/mobile auth branch, role binder | `context-pack auth-hidden`; load `knowledge/cards/auth-hidden-switches.md` |
-| Missing/null/type/schema/validator parameter response | `context-pack missing-param`; load `knowledge/cards/missing-parameter-discovery.md` |
-| Target naming pattern or management/config/log surface | `context-pack path-pattern`; load `knowledge/cards/path-pattern-management-exposure.md` |
-| Encoding, normalization, parser/proxy, WAF, or view/storage mismatch | Load `rules/playbook-router.md` and the selected boundary card |
-| Role/object authorization difference | Route to `skills/web2-vuln-classes/SKILL.md` and actor-pair evidence |
-| Blind server-side behavior | Use the shared OAST workflow only when a callback can answer the hypothesis |
-| Concrete technique detail | Use the model's general knowledge; load only a project knowledge card when it adds a trigger, evidence gate, stop condition, or owner rule |
+Once a hypothesis is selected, apply
+`skills/runtime-protocol.md#shared-knowledge-recall` before a boundary-specific
+action. Use its recommended Skill/card paths; this strategy Skill does not keep
+another signal-to-card map.
 
-These are evidence routes, not a fixed checklist. Error, timing, OAST, Boolean,
+Error, timing, OAST, Boolean,
 browser, source, and role-diff observations are alternatives, not a
 mandatory sequence. Select the one with the clearest expected learning and stop
 condition.

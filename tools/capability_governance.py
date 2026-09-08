@@ -15,7 +15,7 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 try:
-    from tools.context_pack import (
+    from tools.skill_catalog import (
         SKILL_CATALOG,
         SKILL_PATHS,
         SKILL_ROUTE_MODES,
@@ -31,7 +31,7 @@ try:
     )
     from tools.knowledge_value_review import audit_matrix
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from context_pack import (  # type: ignore
+    from skill_catalog import (  # type: ignore
         SKILL_CATALOG,
         SKILL_PATHS,
         SKILL_ROUTE_MODES,

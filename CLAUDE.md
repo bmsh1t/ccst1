@@ -72,8 +72,7 @@ Command discovery comes from `commands/`, not a hand-maintained list here.
 - 无 authoritative bootstrap 时，复杂任务先读取目标记忆并运行 `/context-pack`；一轮只选一个主 Skill，
   知识卡与加载边界按 `rules/context-loading.md` 执行。
 - 提示词或证据命中具体类别/边界时，实质动作（包括离线验证）前先读取
-  `skills/runtime-protocol.md#shared-knowledge-recall`，按其中的判断完成查包/读卡；
-  从当前证据确定 focus（如 sqli、missing-param、path-pattern、auth-hidden）；纯解释可跳过。
+  `skills/runtime-protocol.md#shared-knowledge-recall`，按其中的判断完成查包/读卡。
 - 先复用摘要、索引和缓存证据；原始响应只按引用展开，Validation gate 只用于 Candidate。
 - 外部研究按需选择 Grok Search 或 Smartsearch；结果不足或冲突时再使用另一个。
 - Temporary skips are per-current-target and per-current-invocation only；交接说明 covered、blocked、unknown、
@@ -94,7 +93,7 @@ LOAD -> REVIEW EVIDENCE -> ENRICH -> TEST -> CHAIN -> RECORD
 ## Egress Proxy (Resin)
 
 配置、mode 决策表和密钥规则见 `docs/resin-proxy.md`；token 只存于 gitignored `.env`，
-不得打印或持久化。`hunt.py` 不自动接线代理；按 `docs/resin-proxy.md` 设置环境变量或工具代理参数。
+不得打印或持久化。`hunt.py` 不自动接线代理；按该文档设置环境变量或工具代理参数。
 
 ## Canonical References
 

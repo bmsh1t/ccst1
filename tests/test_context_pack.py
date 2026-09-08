@@ -275,6 +275,31 @@ def test_skill_catalog_covers_repository_and_derives_primary_routes():
     }
 
 
+def test_context_pack_preserves_catalog_exports_and_independent_route_metadata():
+    from tools import skill_catalog
+
+    for name in (
+        "SKILL_CATALOG", "SKILL_PATHS", "SKILL_ROUTE_MODES",
+        "SKILL_TEST_DIMENSIONS", "skill_route",
+    ):
+        assert getattr(context_pack_module, name) is getattr(skill_catalog, name)
+
+    route = context_pack_module.skill_route("web2-vuln-classes", "  API evidence  ")
+    assert route == {
+        "skill_id": "web2-vuln-classes",
+        "skill_path": "skills/web2-vuln-classes/SKILL.md",
+        "reason": "API evidence",
+        "required_dimensions": skill_catalog.SKILL_TEST_DIMENSIONS["web2-vuln-classes"],
+    }
+    route["required_dimensions"].append("caller-local")
+    assert "caller-local" not in skill_catalog.SKILL_TEST_DIMENSIONS["web2-vuln-classes"]
+    assert "caller-local" not in skill_catalog.skill_route(
+        "web2-vuln-classes", "next action",
+    )["required_dimensions"]
+    with pytest.raises(KeyError):
+        skill_catalog.skill_route("security-arsenal", "reference-only")
+
+
 def test_recommended_skill_and_cards_stay_advisory_and_outside_must_read(tmp_path):
     pack = build_context_pack(tmp_path, target="target.com", focus="api-idor")
     catalog_paths = {item["path"] for item in SKILL_CATALOG.values()}

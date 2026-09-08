@@ -148,20 +148,10 @@ recall reason is insufficient; it is not part of the default `Must read` set.
 
 ## Skill / Focus 路由
 
-| 输入 | 主 Skill | 知识卡 |
-|---|---|---|
-| recon 缺失 / `web2-recon` | `skills/web2-recon/SKILL.md` | `coverage-prompts`, 按 surface 追加 |
-| `api-idor` | `skills/web2-vuln-classes/SKILL.md` | `api-idor`, `auth-access` |
-| `auth` | `skills/web2-vuln-classes/SKILL.md` | `auth-access`, `api-idor` |
-| `auth-hidden` / `login-bypass` | `skills/web2-vuln-classes/SKILL.md` | `auth-hidden-switches`, `auth-access` |
-| `missing-param` / `parameter-null` | `skills/web2-vuln-classes/SKILL.md` | `missing-parameter-discovery` |
-| `path-pattern` / `management-exposure` | `skills/web2-vuln-classes/SKILL.md` | `path-pattern-management-exposure` |
-| `ssrf` / `url-fetch` | `skills/web2-vuln-classes/SKILL.md` | `ssrf-url-fetch` |
-| `graphql` | `skills/web2-vuln-classes/SKILL.md` | `graphql` |
-| `sqli` / `hidden-param` | `skills/web2-vuln-classes/SKILL.md` | `sqli-hidden-surfaces` |
-| `upload` | `skills/web2-vuln-classes/SKILL.md` | `upload-parser` |
-| `race` | `skills/web2-vuln-classes/SKILL.md` | `race-conditions` |
-| candidate / validation | `skills/triage-validation/SKILL.md` | 相关漏洞卡 + `dead-ends` |
+`focus` 表达当前证据要回答的边界问题。实际 Skill/Card 推荐以工具输出为准：
+Skill 身份、路由模式和维度由 `tools/skill_catalog.py` 定义，证据到推荐的选择由
+`tools/context_pack.py` 实现，知识卡路径来自 `knowledge/capabilities.yaml`。
+本命令不再维护另一张固定映射表。
 
 ## 纪律
 

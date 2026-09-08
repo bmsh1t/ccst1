@@ -46,6 +46,7 @@ Surface, Coverage, Checkpoint witness, Resume, Context Pack, Autopilot views, an
 
 | Boundary | Contract | Authority |
 |---|---|---|
+| Skill identity -> route admission | dependency-free IDs, paths, route modes, and dimensions | `tools/skill_catalog.py` |
 | AI -> kernel | versioned activation metadata | `tools/action_queue.py` |
 | execution -> evidence | canonical runner summary plus raw operation material | `tools/validation_runner.py` |
 | runner evidence -> validation/report finality | shared witness verification | `tools/runner_witness.py` |
@@ -54,6 +55,12 @@ Surface, Coverage, Checkpoint witness, Resume, Context Pack, Autopilot views, an
 | knowledge -> context | registry-backed selection and budgets | `tools/knowledge_registry.py` / `tools/context_pack.py` |
 
 Do not introduce a universal `RuntimeStore`, a second result/intent schema, or a second lifecycle owner. Existing public imports, CLI defaults, schemas, and direct-script compatibility remain constraints.
+
+Skill roles and content owners are described in `skills/README.md`; they are
+separate from the catalog's routing modes. Route admission and governance import
+`tools/skill_catalog.py` directly, without depending on Context Pack's evidence
+assembly. `tools/context_pack.py` re-exports the existing catalog constants and
+`skill_route` for compatibility; it does not maintain a second registry.
 
 ## Change Classification
 

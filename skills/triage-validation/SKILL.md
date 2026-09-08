@@ -1,6 +1,6 @@
 ---
 name: triage-validation
-description: Finding validation before writing any report — 7-Question Gate (all 7 questions), 4 pre-submission gates, always-rejected list, conditionally valid with chain table, CVSS 3.1 quick reference, severity decision guide, report title formula, and pre-submit checklist. Use BEFORE writing any report. Route complete evidence to REPORT, missing connectors to CHAIN_REQUIRED, impact-only gaps to DOWNGRADE, and failed reportability gates to DO_NOT_REPORT without erasing exploration context.
+description: Candidate validation and verdict contract before reporting. Owns Q1-Q7, identity-boundary checks, four gates, chain precedence, severity readiness, and retraction. Routes evidence to REPORT, CHAIN_REQUIRED, DOWNGRADE, or DO_NOT_REPORT while preserving exploration context; report presentation belongs to report-writing.
 ---
 
 # TRIAGE & VALIDATION
@@ -208,7 +208,7 @@ evidence medium. Do not repeat the Q1 template here.
 
 ### Gate 3: Report Quality
 ```
-[ ] Title: [Bug Class] in [Endpoint] allows [actor] to [impact]
+[ ] Title and delivery structure follow skills/report-writing/SKILL.md
 [ ] Steps to Reproduce: exact replayable artifact (HTTP when applicable; browser, frame, state, or OOB equivalent otherwise)
 [ ] Evidence: target-bound artifact showing the actual impact (not just a status code)
 [ ] Severity: matches the recorded `cvss.version`/`cvss.score`/`cvss.vector` and program definitions
@@ -337,5 +337,5 @@ Use the gates above as the detailed check. The short form is:
 
 ---
 
-Report-writing anti-patterns and title guidance are owned by `rules/reporting.md`;
+Report-writing anti-patterns and title guidance are owned by `skills/report-writing/SKILL.md`;
 this Skill stops at the validation verdict and write-back decision.
