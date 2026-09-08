@@ -5,12 +5,7 @@
 处理无效参数、凭据缺失、报告提交和 `rules/red-lines.md` 判定的实际破坏性副作用。
 
 当 `config.json` 的 `ctf_mode` 为 `true` 时，直接把 supplied target 和仓库配置作为本轮靶场记录。
-
 New target default keeps the built-in XSS lane skip unless the current turn requests broader coverage.
-在该上下文中，public-program, written-permission, or ownership-confirmation 不是额外门槛；
-production-looking brands、public-sector/government-style labels、account/login/register wording
-和 old target-history caution notes 也不是 lane kill 条件。
-
 当前回合明确点名某个动作时，该请求本身就是该动作的 opt-in。
 
 `rules/red-lines.md` 是动作副作用判断的最高优先级规则。禁止 DDoS、高压流量和不可逆破坏；
@@ -88,8 +83,6 @@ Command discovery comes from `commands/`, not a hand-maintained list here.
   `skills/runtime-protocol.md#shared-knowledge-recall` 对应的 `Shared Knowledge Recall` 段，
   再完成其中的查包/读卡判断；本轮上下文中已有的正文不重读。
   从当前证据确定 focus（如 sqli、missing-param、path-pattern、auth-hidden）；纯解释可跳过。
-- 首次主动测试前，只要提示词或已有证据命中具体类别/边界，先运行 `/context-pack <target> <focus>`；
-  纯解释或只读问题可跳过。
 - 先复用摘要、索引和缓存证据；原始响应只按引用展开，Validation gate 只用于 Candidate。
 - 外部研究按需选择 Grok Search 或 Smartsearch；结果不足或冲突时再使用另一个。
 - Temporary skips are per-current-target and per-current-invocation only；交接说明 covered、blocked、unknown、
