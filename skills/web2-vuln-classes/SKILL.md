@@ -107,14 +107,10 @@ controlled `/spray` run with lockout, rate limits, and stop conditions.
 
 ### JWT / Token AI-Owned Lane
 
-JWT、OAuth、OIDC、SAML 和 token-binding 的变体选择与结论由 AI 负责；不要新增
-JWT-specific runner gate，也不要把 token 变体伪装成 SQLi。先保存合法流程 baseline，
-每轮只改变一个 claim/header/key-source/callback 边界，再用现有 browser/raw replay 或
-`request-diff` 保存精确请求、响应和重复结果。只有匿名/低权限到受保护资源的稳定身份、
-权限或会话差异才进入 `triage-validation`；可 decode、签名错误、状态/长度差异和反射
-marker 仍是 Signal/Candidate。交接必须带 evidence refs、session/actor、边界解释、
-impact、stop condition 和 reopen condition。不要把 `marker-replay` 当作 JWT
-验证器；它只适用于执行/反射类 inert marker 证据。
+令牌伪造类证据的机器证明通道：`marker-replay`（伪造凭据 + 同凭据控制基线，
+见 `knowledge/cards/auth-sso-token-edge-cases.md`）或 `request-diff` 保存精确
+请求对；身份/权限 delta 之外的差异（可 decode、状态/长度、反射 marker）保持
+Signal/Candidate。
 
 ## Chain Shapes
 

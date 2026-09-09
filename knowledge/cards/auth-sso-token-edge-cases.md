@@ -76,14 +76,8 @@ source_refs:
 本卡为 `auth-access` 和 `auth-hidden-switches` 补充 token/SSO 深水区思路：
 当目标出现 JWT/JWE/JWKS、OAuth/OIDC、SAML、SSO、IdP 或 account-linking 证据时，
 帮助当前 Skill 选择高价值、低影响的验证路径。它不替代身份矩阵，也不替代
-`triage-validation`。
-
-JWT/SSO 的判定属于 AI-owned lane：不要为某一种 token 变体新增专用 Python
-晋升器，也不要把 JWT 伪装成 SQLi。AI 选择单变量 token/header/claim/key-source
-或 callback 差异，工具只负责按现有请求边界保存精确 raw request/response、重复结果
-和目标归属；最终身份、权限和影响判断由 AI 交给 `triage-validation`。
-`marker-replay` 仅用于执行/反射类 inert marker 证据，不作为 JWT 验证器；JWT
-应使用 AI 选定的浏览器或 raw 请求对，再交给 `/validate`。
+`triage-validation`。同凭据控制基线：拿同一个伪造凭据访问 marker 不会出现的
+控制端点当 baseline，即可用 `marker-replay` 对令牌伪造类证据做机器重放。
 
 ## 触发信号
 
@@ -148,9 +142,6 @@ JWT/SSO 的判定属于 AI-owned lane：不要为某一种 token 变体新增专
 - 对 SAML/OIDC account linking，只证明测试账号或自有账号的错误绑定可能性，不接管真实账号。
 - 对 MFA/step-up 链，先保存合法流程 baseline，再用自有/授权账号验证：外部漏洞取得的 secret 或中间 token 是否能让 `/verify`、reset、recovery、remember-device 或 refresh 流程签发完整 session；最终只用只读身份页/role endpoint 证明身份差异。
 - Candidate 前必须有 replayable 请求、身份差异、边界解释和影响说明。
-- JWT Candidate 交接至少写明：合法 baseline、唯一改变的 token 边界、匿名/低权限与
-  受保护资源结果、重复次数、原始证据路径、影响和 stop/reopen 条件。仅有可 decode、
-  状态码变化、正文长度变化或 marker 反射时保持 Signal/Candidate，不让 runner 自动晋升。
 
 ## 常见误判 / 死路
 

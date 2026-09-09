@@ -3279,15 +3279,20 @@ def run_marker_replay(
         "confidence": "high" if candidate_ready else "medium",
     }
     rubric = compact_evidence_rubric(evaluate_candidate_evidence(finding, vuln_type=vuln_class))
-    ledger_result = (
-        "tested_finding"
-        if candidate_ready and rubric.get("ready") is True
-        else "signal"
-        if candidate_ready or (baseline_url and (baseline_valid is False or marker_present))
-        else "tested_clean"
-    )
+    # The oracle (baseline_valid + baseline_absent + marker quality + repeats) is
+    # the single promotion authority; the rubric stays advisory-only here so the
+    # ledger row can never disagree with the runner result the witness compares.
+    ledger_result = result
     summary_path = bundle / "summary.json"
-    evidence_ref = _rel(summary_path, repo_root)
+    # Keep the ledger evidence_ref bound to an artifact inside the bundle's own
+    # bindings, mirroring request-diff/idor lanes: the witness requires the
+    # ledger row's evidence_ref to appear in the runner artifact_bindings, and a
+    # self-referencing summary.json can never satisfy that.
+    marker_replay_evidence = {"runs": runs}
+    first_response = runs[0].get("artifacts", {}).get("response", "") if runs else ""
+    if first_response:
+        marker_replay_evidence["artifacts"] = {"marker_response": first_response}
+    evidence_ref = str(first_response or _rel(summary_path, repo_root))
     notes = (
         f"Validation runner marker-replay for {vuln_class}: "
         f"marker_present={marker_present}, oracle={oracle_status}, "
@@ -3311,7 +3316,7 @@ def run_marker_replay(
         redline_checked=redline_checked,
         state_changing=state_changing,
         identity_v2=identity_v2,
-        artifact_bindings=_artifact_bindings({"runs": runs}, repo_root),
+        artifact_bindings=_artifact_bindings(marker_replay_evidence, repo_root),
         finding_id=finding_id,
     )
     xss_marker = str(vuln_class or "").strip().lower() in {

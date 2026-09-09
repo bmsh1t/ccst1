@@ -1889,8 +1889,11 @@ def test_xss_marker_reflection_stays_open_signal_until_browser_context(monkeypat
     entry = json.loads(ledger.read_text(encoding="utf-8").splitlines()[-1])
 
     assert summary["result"] == "tested_finding"
+    # The oracle is the single promotion authority: the advisory rubric may
+    # still score the reflection evidence low, but the ledger row must never
+    # disagree with the runner result the witness compares.
     assert summary["evidence_rubric"]["ready"] is False
-    assert entry["result"] == "signal"
+    assert entry["result"] == "tested_finding"
     assert "reflected" in summary["ai_next"]["hypothesis"]
     assert "browser execution context" in summary["ai_next"]["next_action"]
 

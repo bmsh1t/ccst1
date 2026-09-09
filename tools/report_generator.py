@@ -1517,11 +1517,23 @@ def _existing_structured_report_entries(
         if key in seen:
             continue
         seen.add(key)
+        # Keep index rows consistent with the report prose: severity resolves
+        # through the attached validation summary first, then the finding row.
+        repo_root = _repo_root_for_findings_dir(findings_dir)
+        entry_validation = _load_validation_summary(finding, repo_root=repo_root)
+        entry_severity = _report_severity(
+            finding,
+            entry_validation,
+            VULN_TEMPLATES.get(
+                _report_vuln_type(finding),
+                VULN_TEMPLATES["misconfig"],
+            ),
+        )
         entries.append({
             "id": report_id,
             "finding_id": finding.get("id", ""),
             "title": finding.get("title") or f"{str(finding.get('type') or 'finding').upper()} on {finding.get('url', '')}",
-            "severity": finding.get("severity", "medium"),
+            "severity": entry_severity,
             "url": finding.get("url", ""),
             "file": report_file,
             "type": finding.get("type") or finding.get("category") or "misconfig",

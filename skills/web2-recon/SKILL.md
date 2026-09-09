@@ -52,12 +52,6 @@ localhost, lab, private-scope, and supplied target-set runs, keep the supplied
 target record and the same artifact contract; bounty ROI only affects attention,
 not scope or completion.
 
-For a single `host:port` target, do not treat an empty automatic JS list as proof
-that the surface has no JavaScript. Read the root response, enumerate its exact
-`script src` values, follow observed dynamic chunks/source maps, then pass only
-those target-owned artifacts to `deep_js_packer.py`/`js_reader.py`; preserve the
-empty collector result as a diagnostic fact.
-
 ### Origin/Host Clues
 
 Origin IP/range, ASN, SAN/CNAME, or edge/direct response differences are

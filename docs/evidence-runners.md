@@ -34,9 +34,7 @@ evidence privately, and writes the existing Ledger/Finding/Queue projections.
 XML/text, header/cookie, and path pairs can use the same contract. Unsupported
 multipart, compressed, protobuf, and gRPC wire bodies return `manual_required`
 without being marked clean. Use a canonical `vuln_class` when the pair must
-close a Ledger family; an unclassified pair remains reviewable evidence. JWT,
-OAuth, and token-boundary reasoning stays AI-owned: the runner stores the exact
-pair but does not add a class-specific promotion gate or infer identity impact.
+close a Ledger family; an unclassified pair remains reviewable evidence.
 
 ```json
 {
