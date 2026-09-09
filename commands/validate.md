@@ -81,11 +81,10 @@ pass `--seven-question-json <file>`; otherwise the script stores a coarse
 /validate
 ```
 
-## Non-TTY Claude CLI
+## Machine Decision Path
 
-`claude -p` has no interactive stdin. Do not let EOF answer a gate and never
-edit `findings/<target>/findings.json` directly. Bind a complete machine decision
-to the existing canonical finding instead:
+Never edit `findings/<target>/findings.json` directly. Bind a complete machine
+decision to the existing canonical finding instead:
 
 ```bash
 python3 tools/validate.py --target <target> --finding-id <canonical-id> \
@@ -128,8 +127,8 @@ mutation event, so a later runtime check can distinguish an owner mutation from
 an untracked JSON edit. Each canonical row records the actual
 `validation_summary` path and its `validation_summary_sha256`; do not reconstruct
 the filename in a caller. `findings/last-validate.json` is only a latest pointer
-and is never canonical evidence. Omit `--decision-json` only from a real TTY session;
-non-TTY calls fail closed without creating report, finding, queue or runtime state.
+and is never canonical evidence. Calls without `--decision-json` fail closed
+without creating report, finding, queue or runtime state.
 
 ## Browser-State Priority
 
@@ -144,11 +143,12 @@ current state:
 
 Reproducibility and evidence quality matter here.
 
-When a scanner finding index exists, use the finding id from
-`findings/<target>/findings.json` to prefill the interactive validation context:
+When a scanner finding index exists, the finding id from
+`findings/<target>/findings.json` binds the machine decision:
 
 ```bash
-python3 tools/validate.py --findings-dir findings/target.com --finding-id sqli_abc123
+python3 tools/validate.py --findings-dir findings/target.com --finding-id sqli_abc123 \
+    --decision-json /tmp/validate-decision.json --json
 ```
 
 For a quick candidate list, read `findings/<target>/findings.json` directly or

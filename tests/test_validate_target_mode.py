@@ -31,20 +31,6 @@ def test_finding_url_from_summary_preserves_protocol_relative_external_endpoint(
     }) == "http://target.com/orders/123"
 
 
-def test_validate_prompt_helpers_fail_closed_on_eof(monkeypatch):
-    def raise_eof(_prompt):
-        raise EOFError
-
-    monkeypatch.setattr("builtins.input", raise_eof)
-
-    with pytest.raises(validate.ValidationInputUnavailable):
-        validate.ask("Target", "target.local")
-    with pytest.raises(validate.ValidationInputUnavailable):
-        validate.ask_yn("Continue?", default=False)
-    with pytest.raises(validate.ValidationInputUnavailable):
-        validate.ask_choice("Attack Vector", [("N", "Network"), ("A", "Adjacent")])
-
-
 def _bind_runner_witness(
     *,
     target: str,
@@ -253,7 +239,7 @@ def test_non_tty_validate_without_decision_fails_closed_before_state_write(tmp_p
     exit_code = validate.main([])
 
     assert exit_code == 2
-    assert "non-TTY validation requires --decision-json" in capsys.readouterr().err
+    assert "validation requires --decision-json" in capsys.readouterr().err
     assert not (tmp_path / "findings").exists()
     assert not (tmp_path / "state").exists()
 
@@ -830,42 +816,6 @@ def test_valid_machine_decision_revalidates_quarantined_legacy_finality(
     assert finding["validation_status"] == "validated"
     assert finding["report_status"] == "not_generated"
     assert verify_finding_owner_provenance(findings_dir, finding, target=target)["valid"] is True
-
-
-def test_gate2_in_scope_is_target_driven_advisory(capsys):
-    passed, notes = validate.gate2_in_scope("ignored-program")
-
-    output = capsys.readouterr().out
-    assert passed is True
-    assert notes["advisory_only"] is True
-    assert notes["matches_target_context"] is True
-    assert notes["target_context"] == "ignored-program"
-    assert "supplied target/program context directly" in output.lower()
-    assert "external program pages are optional context only" in output.lower()
-
-
-def test_gate2_in_scope_marks_ctf_override_when_enabled(capsys):
-    passed, notes = validate.gate2_in_scope("ignored-program", skip_scope=True)
-
-    output = capsys.readouterr().out
-    assert passed is True
-    assert notes["skipped_in_ctf_mode"] is True
-    assert "ctf mode is enabled" in output.lower()
-
-
-def test_gate4_dup_policy_stays_advisory_only(capsys):
-    passed, notes = validate.gate4_not_dup(
-        "IDOR",
-        "https://target.local/api/users/1",
-        "ignored-program",
-    )
-
-    output = capsys.readouterr().out
-    assert passed is True
-    assert notes["advisory_only"] is True
-    assert notes["target_context"] == "ignored-program"
-    assert notes["endpoint"] == "https://target.local/api/users/1"
-    assert "external disclosed-report and program-policy checks stay advisory only" in output.lower()
 
 
 def test_write_validation_summary_updates_last_validate(tmp_path, monkeypatch):

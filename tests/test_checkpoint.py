@@ -4346,7 +4346,7 @@ def test_candidate_finding_creates_one_scoped_sibling_action(tmp_path):
     )
     assert item["type"] == "sibling-chain-review"
     assert item["source"] == "primary-finding-sibling"
-    assert "sibling_generator.py" in item["command_hint"]
+    assert "sibling" in item["command_hint"].lower() and "recon URLs" in item["command_hint"]
     assert item["metadata"]["finding_id"] == "F-1"
 
 

@@ -21,7 +21,6 @@
 | `tools/intel_artifact.py` | AI selects an omitted advisory group or filter | Read-only, bounded, cursor-paged query over the complete `intel.json`; never writes findings or Queue |
 | `tools/technology_inventory.py` | Multiple consumers need reliable httpx/Nmap tech, version, service, or CPE data | Shared JSONL/text/Nmap parser and atomic component inventory owner |
 | `tools/web_intel_artifact.py` | Official-source gap | Verified Web Intel recorder: TTL, source groups, atomic index |
-| `tools/fresh_code.py` | Recent feature or code-change signal may change the attack surface | Bounded recent code/feature intelligence; record leads, do not auto-run it |
 | `tools/disclosure_search.py` / `disclosed-researcher` | Target or comparable disclosed-report pattern may transfer | Bounded disclosed-pattern research; records evidence, not a finding |
 | `tools/learn.py` | Legacy tech-stack research | Compatibility backend; not the schema-v2 Intel artifact owner |
 | `tools/scope_checker.py` | Verifying target classification | Deterministic host/URL classifier against active target set |
@@ -84,7 +83,6 @@ identity, and cloud signals without re-enumerating everything.
 |---|---|---|
 | `tools/vuln_scanner.sh` | Recon done, want bounded breadth context | Bounded Nuclei/passive candidates with residual accounting; never report-ready proof |
 | `tools/validation_runner.py` (`request-diff`) | Exact AI baseline/variant pair | Shared replay/diff across query, form, JSON, text, header/cookie, and path inputs |
-| `tools/sibling_generator.py` | Candidate route has an ID-bearing sibling shape | Writes a bounded sibling-endpoint probe queue for evidence-fit replay |
 | `tools/sender_semantics.py` | Byte-exact/proxy/cache/smuggling work needs sender choice | `--list` / `--require ...`; sender capability matrix + raw HTTP/1 sender for low-level request semantics |
 | `tools/aspnet_viewstate_knownkey.py` ⚠️ manual-only | Captured page contains `__VIEWSTATE` | Offline machineKey check; `--reveal-key` only for controlled validation |
 | `tools/telerik_knownkey.py` ⚠️ manual-only | Captured Telerik `SerializedParameters` | Offline vendored Badsecrets default-key check; no HTTP or state write |

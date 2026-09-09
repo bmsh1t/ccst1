@@ -2388,9 +2388,10 @@ def _sibling_queue_item(
                 "review the generated queue and validate only same-target endpoints."
             ),
             "command_hint": (
-                "python3 tools/sibling_generator.py --target "
-                f"{_quote(target)} --finding-id {_quote(finding_id)} "
-                f"--endpoint {_quote(endpoint)} --max-count 20"
+                "AI action: from cached recon URLs, find same-prefix ID-bearing "
+                "sibling endpoints for the finding route (e.g. invoices/exports "
+                "next to orders); review at most 20, then validate only "
+                "same-target endpoints"
             ),
             "redline_required": False,
             "stop_condition": (

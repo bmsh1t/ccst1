@@ -136,7 +136,6 @@ disposition and makes the group reviewable again.
 ## Related Helpers
 
 - `tools/disclosure_search.py` / `disclosed-researcher`: targeted disclosed-report pattern transfer.
-- `python3 tools/fresh_code.py --target target.com`: recent code/feature signals.
 - `/surface target.com`: ranks intel-backed leads when artifacts exist.
 
 These helpers are Claude-invoked and not auto-run by `/intel`; call them only
