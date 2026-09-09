@@ -2547,3 +2547,28 @@ def test_target_memory_runtime_signal_routes_without_explicit_focus(tmp_path):
 
     assert pack["selected_skill"] == "skills/web2-recon/SKILL.md"
     assert "knowledge/cards/js-runtime-signature-reconstruction.md" in pack["knowledge_cards"]
+
+
+def test_context_pack_projects_target_facts_for_cheap_recovery(tmp_path):
+    _seed_target_memory(tmp_path, "target.com", {
+        "facts": {
+            "cdn-filtering-502": {
+                "text": "CDN filters backend responses: 502 = filtered, 404 = absent",
+                "evidence_refs": ["evidence/target.com/diff.json"],
+                "ts": "2026-09-09T00:00:00Z",
+            },
+            "wildcard-dns": {
+                "text": "random123.target.com resolves to the same CDN: wildcard DNS",
+                "evidence_refs": [],
+                "ts": "2026-09-09T00:00:00Z",
+            },
+        },
+    })
+
+    pack = build_context_pack(tmp_path, target="target.com", focus="cdn")
+
+    facts = pack["facts"]
+    assert [item["key"] for item in facts] == ["cdn-filtering-502", "wildcard-dns"]
+    assert facts[0]["text"].startswith("CDN filters backend responses")
+    assert facts[0]["evidence_refs"] == ["evidence/target.com/diff.json"]
+    assert facts[1]["evidence_refs"] == []

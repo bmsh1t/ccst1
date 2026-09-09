@@ -29,6 +29,38 @@ the controller's `max_lanes` boundary. For `arguments.deep=false`, keep normal
 depth. A specialist reports its effective mode and batch boundary; the inline
 controller alone claims lanes, writes owner state, and decides closure.
 
+### Handoff Content Pack (mandatory)
+
+Mode/budget propagation alone does not make a specialist effective: a
+sub-agent sees only the dispatch text, not the controller's conversation.
+Every dispatch description must therefore carry a content pack:
+
+- **已完成 (done so far)**: a compact summary of confirmed facts for this
+  target — enumerated subdomains/ports, confirmed URLs, known hypotheses and
+  their status, relevant evidence refs. Read these from target memory facts
+  and the Evidence Ledger instead of re-deriving them.
+- **本轮只做 (this round only)**: the single sub-goal, plus an explicit
+  no-repeat boundary — e.g. "do not re-run full subdomain enumeration;
+  only probe the three new hosts listed". Incremental work names its delta.
+- **证据指针与格式**: evidence file paths with the expected read shape
+  (JSON key, line range, or summary), and for any image/captcha input the
+  absolute path plus the expected output format. A specialist cannot see the
+  controller's tool outputs; pointers must be self-describing.
+- **专家匹配理由**: one sentence why this specialist (not another lane)
+  fits the sub-goal, so a mismatched dispatch is reviewable.
+
+Pre-dispatch completeness check: if the target identifier or the test scope
+is missing from what the specialist would receive, the dispatch is forbidden —
+ask the user or collect the evidence first instead of delegating an
+under-specified task.
+
+Specialists without owner-write access end their report with a structured
+「待落库」 tail (fact key, summary, evidence refs, suggested owner action);
+the controller writes each entry back immediately through the existing
+owners (`target_memory.py fact/lead/next`, Action Queue, Evidence Ledger)
+before starting the next lane. The controller does not assume the specialist
+already recorded anything.
+
 ## State And Queue
 
 - Every substantive candidate is claimed before replay with

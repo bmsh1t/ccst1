@@ -124,4 +124,4 @@ def test_repository_matrix_covers_every_active_card() -> None:
     result = audit_matrix(REPO_ROOT)
 
     assert result["ok"] is True
-    assert result["cards"] == result["registry_cards"] == 57
+    assert result["cards"] == result["registry_cards"] == 58

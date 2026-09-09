@@ -131,6 +131,11 @@ KNOWN_SKILL_OR_FOCUS = {
     "local-file-inclusion",
     "ssrf",
     "url-fetch",
+    "cdn",
+    "cdn-differential",
+    "catch-all",
+    "wildcard-dns",
+    "origin-discovery",
     "webhook",
     "upload",
     "import",
@@ -619,6 +624,7 @@ DISTILLED_TOKEN_TO_CARDS = (
     (re.compile(r"\b(kubernetes|k8s|kubelet|self[-_ ]?subject[-_ ]?(?:rules|access)[-_ ]?review|nodes?[/_-]?proxy|projected[-_ ]?service[-_ ]?account)\b", re.I), ("k8s-control-plane-boundaries", "cloud-control-plane-pivots")),
     (re.compile(r"\b(cloud[-_ ]?control[-_ ]?plane|cloud[-_ ]?metadata|metadata[-_ ]?service|cloud[-_ ]?(?:iam|rbac)|service[-_ ]?account|workload[-_ ]?identity|assume[-_ ]?role|pass[-_ ]?role|control[-_ ]?plane)\b", re.I), ("cloud-control-plane-pivots",)),
     (re.compile(r"\b(subdomain[-_ ]?takeover|dangling[-_ ]?(?:dns|cname)|dns[-_ ]?trust|mx[-_ ]?record|email[-_ ]?spoof|spf|dkim|dmarc)\b", re.I), ("dns-email-trust-boundaries",)),
+    (re.compile(r"\b(cdn|edge[-_ ]?proxy|reverse[-_ ]?proxy[-_ ]?filter|catch[-_ ]?all|wildcard[-_ ]?dns|dns[-_ ]?differential|multi[-_ ]?resolver|origin[-_ ]?discovery|status[-_ ]?code[-_ ]?filter(?:ing|ed)?|502[-_ ]?filter)\b", re.I), ("cdn-response-differential",)),
     (re.compile(r"\b(signature[-_ ]?scope[-_ ]?mismatch|signed bytes|consumption object|xsw|duplicate assertion)\b", re.I), ("signature-scope-mismatch",)),
     (re.compile(r"\b(oauth[-_ ]?sso[-_ ]?trust|email trust|audience confusion|redirect_uri trust)\b", re.I), ("auth-sso-token-edge-cases",)),
     (JSON_VIEW_DIFFERENTIAL_RE, ("view-differential",)),
@@ -998,6 +1004,37 @@ def _load_goal_memory(repo_root: Path, target: str) -> dict:
         repo_root,
     )
     return projection
+
+
+def _target_facts_projection(goal_memory: dict, *, limit: int = 20) -> list[dict]:
+    """Project the keyed confirmed-fact map into the pack.
+
+    Facts are the cheap context-recovery layer: after compaction, reading
+    these key/text pairs replaces re-reading full history. Bounded by design.
+    """
+    target_memory = goal_memory.get("target") or {}
+    facts = target_memory.get("facts")
+    if not isinstance(facts, dict):
+        return []
+    projected = []
+    for key in sorted(facts):
+        item = facts.get(key)
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text", "")).strip()
+        if not text:
+            continue
+        refs = item.get("evidence_refs")
+        projected.append(
+            {
+                "key": key,
+                "text": text,
+                "evidence_refs": [str(ref) for ref in refs] if isinstance(refs, list) else [],
+            }
+        )
+        if len(projected) >= limit:
+            break
+    return projected
 
 
 def _load_findings(repo_root: Path, target_key: str) -> list[dict]:
@@ -3299,6 +3336,7 @@ def build_context_pack(
         "phase": _phase(goal_memory),
         "active_goal": _active_goal(goal_memory),
         "current_hypothesis": _hypothesis(goal_memory),
+        "facts": _target_facts_projection(goal_memory),
         "focus": focus,
         "tech_stack": tech_stack,
         "selected_skill": SKILL_PATHS[skill],

@@ -311,6 +311,18 @@ capabilities:
       - coverage
       - missed-lane
       - checklist-gap
+  - id: cdn-response-differential
+    kind: card
+    file: knowledge/cards/cdn-response-differential.md
+    layer: reference
+    load: signal-only
+    purpose: route
+    triggers:
+      - cdn
+      - dns-differential
+      - status-semantics
+      - catch-all
+      - origin-discovery
   - id: cicd-trust-boundaries
     kind: card
     file: knowledge/cards/cicd-trust-boundaries.md

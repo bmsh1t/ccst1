@@ -273,6 +273,65 @@ def test_target_memory_set_append_and_handoff_use_canonical_paths(tmp_path, monk
     assert "Try two-account read-only diff" in handoff_path.read_text(encoding="utf-8")
 
 
+def test_target_memory_fact_upserts_by_key_and_renders_digest(tmp_path, monkeypatch):
+    monkeypatch.setattr(target_memory, "BASE_DIR", tmp_path)
+    monkeypatch.setattr(target_memory, "GOALS_DIR", tmp_path / "memory" / "goals")
+    monkeypatch.setattr(target_memory, "ACTIVE_PATH", tmp_path / "memory" / "goals" / "active.json")
+    monkeypatch.setattr(target_memory, "TARGETS_DIR", tmp_path / "memory" / "goals" / "targets")
+    monkeypatch.setattr(target_memory, "SESSIONS_DIR", tmp_path / "memory" / "goals" / "sessions")
+
+    target_memory.set_active(
+        argparse.Namespace(
+            target="example.com",
+            mode="hunt",
+            phase="recon",
+            goal="",
+            hypothesis="",
+            skill=[],
+            knowledge=[],
+        )
+    )
+
+    first = target_memory.upsert_fact(
+        argparse.Namespace(
+            key="cdn-filtering-502",
+            text=["CDN filters backend responses: 502 = filtered, 404 = absent"],
+            target=None,
+            evidence_ref=["evidence/example.com/diff.json"],
+        )
+    )
+    assert "FACT saved" in first
+    assert "cdn-filtering-502" in first
+
+    second = target_memory.upsert_fact(
+        argparse.Namespace(
+            key="cdn-filtering-502",
+            text=["Confirmed via random-miss baseline: 502 = filtered"],
+            target=None,
+            evidence_ref=["evidence/example.com/baseline.json"],
+        )
+    )
+    assert "FACT saved" in second
+
+    saved = target_memory.load_target_memory("example.com")
+    facts = saved["facts"]
+    assert len(facts) == 1  # same key overwrites, never appends
+    assert facts["cdn-filtering-502"]["text"] == "Confirmed via random-miss baseline: 502 = filtered"
+    assert facts["cdn-filtering-502"]["evidence_refs"] == ["evidence/example.com/baseline.json"]
+
+    digest = target_memory.facts_digest(saved)
+    assert digest == ["- cdn-filtering-502: Confirmed via random-miss baseline: 502 = filtered"]
+
+    with pytest.raises(SystemExit):
+        target_memory.upsert_fact(
+            argparse.Namespace(key="Bad Key!", text=["x"], target=None, evidence_ref=[])
+        )
+    with pytest.raises(SystemExit):
+        target_memory.upsert_fact(
+            argparse.Namespace(key="ok-key", text=[], target=None, evidence_ref=[])
+        )
+
+
 def test_high_value_signal_combines_action_path_query_and_evidence():
     signal = high_value_signals.classify_high_value_signal(
         path="/api/v2/admin/orders/42/export",

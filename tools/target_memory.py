@@ -191,6 +191,14 @@ def normalize_target_memory(
     normalized = dict(payload)
     normalized["schema_version"] = SCHEMA_VERSION
     normalized["target"] = target
+    facts = normalized.get("facts")
+    if facts is None:
+        facts = {}
+    if not isinstance(facts, dict) or any(
+        not isinstance(value, dict) for value in facts.values()
+    ):
+        raise ValueError(f"invalid target memory{location}: facts must be a keyed map of objects")
+    normalized["facts"] = facts
     for field in TARGET_MEMORY_LIST_FIELDS:
         value = normalized.get(field, [])
         if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
@@ -235,6 +243,7 @@ def new_target_memory(target: str) -> dict:
         "next_actions": [],
         "useful_patterns": [],
         "session_handoffs": [],
+        "facts": {},
     }
 
 
@@ -372,6 +381,75 @@ def append_entry(args: argparse.Namespace, field: str, label: str) -> str:
     return f"{label} saved for {target}{suffix}: {entry['text']}"
 
 
+FACT_KEY_RE = None  # compiled lazily to keep import-time cost unchanged
+
+
+def _fact_key_is_valid(key: str) -> bool:
+    """Fact keys are slug-like so the keyed map stays greppable and safe."""
+    global FACT_KEY_RE
+    if FACT_KEY_RE is None:
+        import re
+
+        FACT_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,79}$")
+    return bool(FACT_KEY_RE.match(key))
+
+
+def upsert_fact(args: argparse.Namespace) -> str:
+    """Upsert one confirmed-cognition fact under a stable key.
+
+    Same-key writes overwrite text/evidence_refs and refresh the timestamp;
+    facts never append duplicates. This mirrors the blackboard rhythm: every
+    confirmed cognition is recorded immediately so it survives context
+    compaction, and overwrite semantics keep the layer cheap to refresh.
+    """
+    key = args.key.strip()
+    text = " ".join(args.text).strip()
+    if not key:
+        raise SystemExit("fact --key is required")
+    if not _fact_key_is_valid(key):
+        raise SystemExit(
+            "fact key must match ^[a-z0-9][a-z0-9._-]{0,79}$ "
+            "(lowercase slug, dots/dashes/underscores allowed)"
+        )
+    if not text:
+        raise SystemExit("fact text is required")
+    target = resolve_target(args.target)
+    path = target_memory_path(target)
+    evidence_refs = normalize_evidence_refs(getattr(args, "evidence_ref", []))
+    with target_memory_mutation_lock(path):
+        target_memory = load_target_memory(target)
+        facts = target_memory.get("facts")
+        if facts is None:
+            facts = {}
+        if not isinstance(facts, dict):
+            raise SystemExit("invalid target memory: facts must be a keyed map")
+        facts[key] = {
+            "text": text,
+            "ts": now_utc(),
+            "evidence_refs": evidence_refs,
+        }
+        target_memory["facts"] = facts
+        _save_target_memory_unlocked(target_memory)
+    return f"FACT saved for {target} [{key}]: {text}"
+
+
+def facts_digest(target_memory: dict, *, limit: int | None = None) -> list[str]:
+    """Render the keyed fact map as bounded display lines."""
+    facts = target_memory.get("facts") or {}
+    if not isinstance(facts, dict):
+        return []
+    lines = []
+    for key in sorted(facts):
+        item = facts.get(key) or {}
+        text = str(item.get("text", "")).strip()
+        if not text:
+            continue
+        lines.append(f"- {key}: {text}")
+        if limit is not None and len(lines) >= limit:
+            break
+    return lines
+
+
 def write_handoff(args: argparse.Namespace) -> str:
     target = resolve_target(args.target)
     summary = " ".join(args.summary).strip()
@@ -429,21 +507,24 @@ def format_entries(entries: list[dict]) -> list[str]:
 
 
 def format_summary(title: str, active: dict, target_memory: dict) -> str:
-    return "\n".join(
-        [
-            title,
-            "=" * len(title),
-            f"Target: {active.get('target') or target_memory.get('target', '')}",
-            f"Mode: {active.get('mode') or target_memory.get('mode', '')}",
-            f"Phase: {active.get('phase') or target_memory.get('phase', '')}",
-            f"Goal: {active.get('active_goal') or target_memory.get('active_goal', '')}",
-            f"Hypothesis: {active.get('current_hypothesis') or target_memory.get('current_hypothesis', '')}",
-            f"Active leads: {len(target_memory.get('active_leads', []))}",
-            f"Next actions: {len(target_memory.get('next_actions', []))}",
-            f"Dead ends: {len(target_memory.get('dead_ends', []))}",
-            f"Memory: {display_path(target_memory_path(target_memory.get('target', '')))}",
-        ]
-    )
+    lines = [
+        title,
+        "=" * len(title),
+        f"Target: {active.get('target') or target_memory.get('target', '')}",
+        f"Mode: {active.get('mode') or target_memory.get('mode', '')}",
+        f"Phase: {active.get('phase') or target_memory.get('phase', '')}",
+        f"Goal: {active.get('active_goal') or target_memory.get('active_goal', '')}",
+        f"Hypothesis: {active.get('current_hypothesis') or target_memory.get('current_hypothesis', '')}",
+        f"Active leads: {len(target_memory.get('active_leads', []))}",
+        f"Next actions: {len(target_memory.get('next_actions', []))}",
+        f"Dead ends: {len(target_memory.get('dead_ends', []))}",
+        f"Memory: {display_path(target_memory_path(target_memory.get('target', '')))}",
+    ]
+    fact_lines = facts_digest(target_memory)
+    if fact_lines:
+        lines.append("Facts:")
+        lines.extend(fact_lines)
+    return "\n".join(lines)
 
 
 def show(args: argparse.Namespace) -> str:
@@ -502,6 +583,20 @@ def build_parser() -> argparse.ArgumentParser:
     handoff_parser.add_argument("summary", nargs="+")
     handoff_parser.add_argument("--target", default=None)
     handoff_parser.set_defaults(func=write_handoff)
+
+    fact_parser = subparsers.add_parser(
+        "fact", help="upsert a confirmed-cognition fact (same key overwrites)"
+    )
+    fact_parser.add_argument("--key", required=True, help="stable fact key, e.g. cdn-filtering-502")
+    fact_parser.add_argument("text", nargs="+", help="fact summary text")
+    fact_parser.add_argument("--target", default=None)
+    fact_parser.add_argument(
+        "--evidence-ref",
+        action="append",
+        default=[],
+        help="repository-relative evidence reference; repeatable",
+    )
+    fact_parser.set_defaults(func=upsert_fact)
 
     return parser
 

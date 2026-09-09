@@ -269,6 +269,40 @@
       "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
     },
     {
+      "card_id": "cdn-response-differential",
+      "card_path": "knowledge/cards/cdn-response-differential.md",
+      "layer": "reference",
+      "load": "signal-only",
+      "maturity": "draft",
+      "trigger_tags": [
+        "cdn",
+        "dns-differential",
+        "status-semantics",
+        "catch-all",
+        "origin-discovery",
+        "response-differential"
+      ],
+      "source_refs_count": 0,
+      "source_strength": "none",
+      "unique_value": "将 CDN/代理环境下的判别语义集中为一张卡：多 resolver DNS 差分定位源站与通配符、502/404/403 过滤语义差分枚举入口、catch-all 与原生 404 差分",
+      "overlap_with": [
+        "proxy-cache-boundaries",
+        "dns-email-trust-boundaries",
+        "path-pattern-management-exposure"
+      ],
+      "ai_likely_known": "partial",
+      "disposition": "ab-required",
+      "reason": "外部实战笔记蒸馏；判别模式可跨目标复用，与现有卡无语义重叠（缓存投毒/接管/命名规律均不覆盖状态码过滤语义）",
+      "reviewer": "operator",
+      "model_profile": "opus",
+      "evidence_refs": [
+        "knowledge/cards/cdn-response-differential.md#核心判别模式"
+      ],
+      "ab_required": true,
+      "ab_status": "pending",
+      "ab_success_criteria": "CDN 过滤/通配符场景判断案例上有卡臂不做字面误判:不把 502 当不存在、不在通配符下重复枚举"
+    },
+    {
       "card_id": "cicd-trust-boundaries",
       "card_path": "knowledge/cards/cicd-trust-boundaries.md",
       "layer": "reference",
