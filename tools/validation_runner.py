@@ -3,11 +3,8 @@
 
 Validation Runner v1 intentionally stays small:
 
-- authz-public-exposure: one anonymous/read-only request, sensitive exposure check.
-- authz-role-replay: anonymous/owner/peer replay on the same surface from case_state.
 - request-diff: AI-supplied exact baseline/variant replay across one input dimension.
 - marker-replay: exact request replay plus inert marker evidence check.
-- idor-actor-pair: owner vs peer exact replay plus response diff and evidence gate.
 
 AI 仍负责选择 hypothesis、解释业务影响、决定是否升级/降级；本工具只负责稳定
 执行 replay / diff / evidence bundle / ledger 写入。
@@ -56,17 +53,11 @@ try:
         verify_finding_owner_provenance,
         verify_finalized_finding_owner_provenance,
     )
-    from tools.public_exposure_signals import (
-        public_exposure_candidate_ready as shared_public_exposure_candidate_ready,
-        public_exposure_marker_sources as shared_public_exposure_marker_sources,
-        public_exposure_markers as shared_public_exposure_markers,
-    )
     from tools.response_diff import diff_responses, snapshot_response
     from tools.request_diff import RequestPairError, request_pair_digest, validate_request_pair
     from tools.browser_surface import public_url_shape
     from tools.closure_resolver import CLOSURE_FAMILIES, canonical_vuln_class
     from tools.private_artifacts import private_artifact_dir, write_private_json, write_private_text
-    from tools.target_case_state import complete_backlog, load_case_state
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
 except ImportError:  # pragma: no cover - direct tools/ execution
     from auth_session import AuthSession, add_cli_args, session_from_args  # type: ignore
@@ -91,17 +82,11 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         verify_finding_owner_provenance,
         verify_finalized_finding_owner_provenance,
     )
-    from public_exposure_signals import (  # type: ignore
-        public_exposure_candidate_ready as shared_public_exposure_candidate_ready,
-        public_exposure_marker_sources as shared_public_exposure_marker_sources,
-        public_exposure_markers as shared_public_exposure_markers,
-    )
     from response_diff import diff_responses, snapshot_response  # type: ignore
     from request_diff import RequestPairError, request_pair_digest, validate_request_pair  # type: ignore
     from browser_surface import public_url_shape  # type: ignore
     from closure_resolver import CLOSURE_FAMILIES, canonical_vuln_class  # type: ignore
     from private_artifacts import private_artifact_dir, write_private_json, write_private_text  # type: ignore
-    from target_case_state import complete_backlog, load_case_state  # type: ignore
     from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # type: ignore
 
 
@@ -1596,32 +1581,6 @@ def _response_diff(baseline: dict[str, Any], variant: dict[str, Any]) -> dict[st
     return payload
 
 
-def public_exposure_markers(url: str, body: str) -> list[str]:
-    return shared_public_exposure_markers(url, body)
-
-
-def public_exposure_marker_sources(url: str, body: str) -> dict[str, list[str]]:
-    """按共享 helper 提取 url/body marker，避免 path-only 或叙述文本误报。"""
-    return shared_public_exposure_marker_sources(url, body)
-
-
-def public_exposure_candidate_ready(status: int, marker_sources: dict[str, list[str]]) -> bool:
-    return shared_public_exposure_candidate_ready(status, marker_sources)
-
-
-def _public_exposure_impact_text(markers: list[str]) -> str:
-    marker_set = set(markers or [])
-    if "secret-like" in marker_set:
-        return "business impact: sensitive secret/token/private data exposure"
-    if "security-answer" in marker_set:
-        return "business impact: sensitive security-question/account-recovery data exposure"
-    if "oauth" in marker_set:
-        return "business impact: oauth/client configuration exposure"
-    if marker_set & {"admin", "configuration"}:
-        return "business impact: admin/application configuration exposure"
-    return "business impact: public data exposure"
-
-
 def looks_like_sqli_probe(value: str) -> bool:
     """Return True when the perturbation is injection-shaped, not ordinary search text."""
     return bool(SQLI_PROBE_RE.search(str(value or "")))
@@ -1849,169 +1808,6 @@ def _private_body_match(owner_body: str, peer_body: str) -> bool:
     return _json_has_private_shape(parsed)
 
 
-def _case_state_session_header(state: dict[str, Any], actor: str) -> tuple[str, dict[str, str]]:
-    invalid = {"invalid", "expired", "revoked"}
-    for session_id, session in (state.get("sessions") or {}).items():
-        if not isinstance(session, dict) or session.get("actor") != actor:
-            continue
-        if str(session.get("validity") or "unknown").lower() in invalid:
-            continue
-        headers = session.get("headers") if isinstance(session.get("headers"), dict) else {}
-        normalized = {
-            str(name).strip(): str(value).strip()
-            for name, value in headers.items()
-            if str(name).strip() and str(value).strip()
-        }
-        name = str(session.get("header_name") or "").strip()
-        value = str(session.get("header_value") or "").strip()
-        if name and value:
-            normalized.setdefault(name, value)
-        if normalized:
-            return str(session_id), normalized
-    raise ValueError(f"case_state session missing for actor: {actor}")
-
-
-def _case_state_backlog(state: dict[str, Any], backlog_id: str) -> dict[str, Any]:
-    for item in state.get("validation_backlog") or []:
-        if isinstance(item, dict) and item.get("id") == backlog_id:
-            return item
-    raise ValueError(f"case_state backlog id not found: {backlog_id}")
-
-
-def resolve_idor_actor_pair_from_case_state(
-    *,
-    repo_root: Path,
-    target: str,
-    backlog_id: str = "",
-    owner_actor: str = "",
-    peer_actor: str = "",
-    object_ref: str = "",
-    url: str = "",
-    peer_url: str = "",
-    owner_headers: dict[str, str] | None = None,
-    peer_headers: dict[str, str] | None = None,
-    expect_marker: str = "",
-) -> dict[str, Any]:
-    """Resolve IDOR actor-pair replay material from target case_state.json."""
-    state = load_case_state(repo_root, target)
-    backlog: dict[str, Any] = _case_state_backlog(state, backlog_id) if backlog_id else {}
-    if backlog and backlog.get("runner") != "idor-actor-pair":
-        raise ValueError(f"case_state backlog is not idor-actor-pair: {backlog_id}")
-
-    ref = object_ref or str(backlog.get("object_ref") or "")
-    if not ref:
-        raise ValueError("object_ref is required when using --from-case-state")
-    obj = (state.get("objects") or {}).get(ref)
-    if not isinstance(obj, dict):
-        raise ValueError(f"case_state object_ref not found: {ref}")
-
-    owner = owner_actor or str(backlog.get("owner_actor") or obj.get("owner_actor") or "")
-    peer = peer_actor or str(backlog.get("peer_actor") or "")
-    if not peer:
-        # Authz role replay already infers the peer actor when case_state has a
-        # clear two-session setup. IDOR object replay should behave the same:
-        # object_ref provides the owner, and the remaining session-backed actor
-        # is the natural peer candidate. 这只是解析运行态上下文，不替 AI 判断结果。
-        actors_with_sessions = _case_state_actor_ids_with_sessions(state)
-        peer = next((actor for actor in actors_with_sessions if actor != owner), "")
-    if not owner:
-        raise ValueError(f"case_state owner actor missing for object_ref: {ref}")
-    if not peer:
-        raise ValueError("peer_actor is required or at least two case_state actor sessions must exist")
-    if owner == peer:
-        raise ValueError("owner_actor and peer_actor must differ when using --from-case-state")
-    if owner not in (state.get("actors") or {}):
-        raise ValueError(f"case_state owner actor not found: {owner}")
-    if peer not in (state.get("actors") or {}):
-        raise ValueError(f"case_state peer actor not found: {peer}")
-
-    owner_session_id, owner_session_header = _case_state_session_header(state, owner)
-    peer_session_id, peer_session_header = _case_state_session_header(state, peer)
-    merged_owner_headers = {**owner_session_header, **dict(owner_headers or {})}
-    merged_peer_headers = {**peer_session_header, **dict(peer_headers or {})}
-    endpoint = url or str(backlog.get("endpoint") or obj.get("endpoint") or "")
-    if not endpoint:
-        raise ValueError(f"case_state endpoint missing for object_ref: {ref}")
-
-    return {
-        "url": endpoint,
-        "peer_url": peer_url or endpoint,
-        "owner_headers": merged_owner_headers,
-        "peer_headers": merged_peer_headers,
-        "expect_marker": expect_marker or str(obj.get("private_marker") or ""),
-        "case_state_ref": {
-            "backlog_id": backlog_id,
-            "object_ref": ref,
-            "owner_actor": owner,
-            "peer_actor": peer,
-            "owner_session_id": owner_session_id,
-            "peer_session_id": peer_session_id,
-        },
-    }
-
-
-def _case_state_actor_ids_with_sessions(state: dict[str, Any]) -> list[str]:
-    """Return deterministic actor ids that have usable session headers."""
-    actors = state.get("actors") if isinstance(state.get("actors"), dict) else {}
-    out: list[str] = []
-    for actor in sorted(str(item) for item in actors):
-        try:
-            _case_state_session_header(state, actor)
-        except ValueError:
-            continue
-        out.append(actor)
-    return out
-
-
-def resolve_authz_role_replay_from_case_state(
-    *,
-    repo_root: Path,
-    target: str,
-    owner_actor: str = "",
-    peer_actor: str = "",
-    owner_headers: dict[str, str] | None = None,
-    peer_headers: dict[str, str] | None = None,
-) -> dict[str, Any]:
-    """Resolve two authenticated actor contexts from target case_state.json."""
-    state = load_case_state(repo_root, target)
-    actors_with_sessions = _case_state_actor_ids_with_sessions(state)
-    owner = str(owner_actor or "").strip()
-    peer = str(peer_actor or "").strip()
-    if owner and owner not in (state.get("actors") or {}):
-        raise ValueError(f"case_state owner actor not found: {owner}")
-    if peer and peer not in (state.get("actors") or {}):
-        raise ValueError(f"case_state peer actor not found: {peer}")
-    if not owner:
-        owner = actors_with_sessions[0] if actors_with_sessions else ""
-    if not peer:
-        peer = next((actor for actor in actors_with_sessions if actor != owner), "")
-    if not owner:
-        raise ValueError("owner_actor is required or at least one case_state actor session must exist")
-    if not peer:
-        raise ValueError("peer_actor is required or at least two case_state actor sessions must exist")
-    if owner == peer:
-        raise ValueError("owner_actor and peer_actor must differ")
-    owner_session_id, owner_session_header = _case_state_session_header(state, owner)
-    peer_session_id, peer_session_header = _case_state_session_header(state, peer)
-    actors = state.get("actors") if isinstance(state.get("actors"), dict) else {}
-    owner_info = actors.get(owner) if isinstance(actors.get(owner), dict) else {}
-    peer_info = actors.get(peer) if isinstance(actors.get(peer), dict) else {}
-    return {
-        "owner_actor": owner,
-        "peer_actor": peer,
-        "owner_headers": {**owner_session_header, **dict(owner_headers or {})},
-        "peer_headers": {**peer_session_header, **dict(peer_headers or {})},
-        "case_state_ref": {
-            "owner_actor": owner,
-            "peer_actor": peer,
-            "owner_role": str(owner_info.get("role") or ""),
-            "peer_role": str(peer_info.get("role") or ""),
-            "owner_session_id": owner_session_id,
-            "peer_session_id": peer_session_id,
-        },
-    }
-
-
 def _record_ledger_if_needed(
     *,
     repo_root: Path,
@@ -2094,723 +1890,13 @@ def _record_ledger_if_needed(
         }
 
 
-def run_authz_public_exposure(
-    *,
-    repo_root: Path,
-    target: str,
-    url: str,
-    method: str = "GET",
-    headers: dict[str, str] | None = None,
-    body: str = "",
-    timeout: int = 10,
-    finding_id: str = "",
-    no_ledger: bool = False,
-    browser_observed: bool = False,
-    state_changing: bool | None = None,
-    redline_checked: bool = False,
-    identity_v2: dict[str, Any] | None = None,
-    session: AuthSession | None = None,
-) -> dict[str, Any]:
-    state_changing = _validate_request_facts(state_changing, redline_checked)
-    finding_id = finding_id or _default_finding_id("authz-public-exposure", url)
-    bundle = _bundle_dir(repo_root, target, finding_id)
-    private_bundle = _private_bundle_dir(repo_root, target, bundle)
-    response = request_once(
-        target=target,
-        url=url,
-        method=method,
-        headers=headers,
-        body=body,
-        timeout=timeout,
-        session=session,
-    )
-    raw_artifacts = _write_raw_http(private_bundle, "baseline.", response, repo_root)
-
-    marker_sources = public_exposure_marker_sources(url, response["body"])
-    markers = sorted(set(marker_sources["url"]) | set(marker_sources["body"]))
-    candidate_ready = public_exposure_candidate_ready(response["status"], marker_sources)
-    result = "tested_finding" if candidate_ready else "tested_clean"
-    impact_text = _public_exposure_impact_text(markers) if candidate_ready else ""
-    finding = {
-        "type": "auth_bypass",
-        "url": public_url_shape(url),
-        "summary": (
-            f"{response['status']} {len(response['body'])} {public_url_shape(url)} "
-            f"markers={','.join(markers)} anonymous public exposure observation {impact_text}".strip()
-        ),
-        "raw": f"anonymous baseline returned {response['status']} with markers {markers}; {impact_text}".strip(),
-        "confidence": "high" if candidate_ready else "medium",
-    }
-    rubric = compact_evidence_rubric(evaluate_candidate_evidence(finding))
-    if not candidate_ready:
-        # The generic authz rubric sees words such as "admin" in URLs and can
-        # otherwise look candidate-ready even when the lane-specific classifier
-        # correctly rejected the response for lacking body-backed exposure.
-        # Keep runner output internally consistent: path/name markers are useful
-        # leads, not Candidate evidence.
-        rubric.update({
-            "status": "tested-clean",
-            "ready": False,
-            "score": 0,
-            "missing": ["body_backed_sensitive_marker"],
-            "missing_labels": ["body-backed sensitive/admin/config marker"],
-            "next_actions": [
-                "Do not promote path/name markers alone; pivot to body-backed exposure or role/object diff."
-            ],
-            "summary": "authz:tested-clean score=0 missing=body-backed sensitive/admin/config marker",
-        })
-    evidence_ref = raw_artifacts["response"]
-    notes = (
-        f"Validation runner authz-public-exposure: anonymous {method.upper()} baseline returned "
-        f"{response['status']} with markers={markers or []}; this lane checks public exposure only "
-        "and does not establish protected-resource Authz denial."
-    )
-    ledger = _record_ledger_if_needed(
-        repo_root=repo_root,
-        no_ledger=no_ledger,
-        target=target,
-        endpoint=url,
-        method=method,
-        vuln_class="Authz",
-        actor="anonymous",
-        object_scope="none",
-        variant="baseline",
-        result=result,
-        source="validation-runner:authz-public-exposure",
-        evidence_ref=evidence_ref,
-        notes=notes,
-        browser_observed=browser_observed,
-        redline_checked=redline_checked,
-        state_changing=state_changing,
-        identity_v2=identity_v2,
-        artifact_bindings=_artifact_bindings(
-            {
-                "artifacts": {
-                    "baseline_request": raw_artifacts["request"],
-                    "baseline_response": raw_artifacts["response"],
-                    "baseline_identity": raw_artifacts["identity"],
-                }
-            },
-            repo_root,
-        ),
-        finding_id=finding_id,
-    )
-
-    summary = {
-        "schema_version": SCHEMA_VERSION,
-        "lane": "authz_public_exposure",
-        "target": canonical_target_value(target),
-        "finding_id": finding_id,
-        "url": public_url_shape(url),
-        "method": method.upper(),
-        "generated_at": now_utc(),
-        "result": result,
-        "candidate_ready": candidate_ready,
-        "assessment_scope": "anonymous_public_exposure_only",
-        "observation_kind": "baseline_only",
-        "markers": markers,
-        "marker_sources": marker_sources,
-        "baseline": _response_snapshot(response),
-        "state_changing": state_changing,
-        "redline_checked": redline_checked,
-        "artifacts": {
-            "baseline_request": raw_artifacts["request"],
-            "baseline_response": raw_artifacts["response"],
-            "baseline_identity": raw_artifacts["identity"],
-        },
-        "evidence_rubric": rubric,
-        "ledger_record": ledger,
-        "ai_next": {
-            "hypothesis": "anonymous response may expose body-backed sensitive/admin/config data",
-            "next_action": "Treat tested_clean as clean for public-exposure evidence only; protected-resource Authz remains untested. If markers are meaningful, run /validate using this evidence bundle; otherwise downgrade to informational/dead-end.",
-            "stop_condition": "No 200 response or no body-backed sensitive/admin/config marker.",
-        },
-    }
-    summary_path = bundle / "summary.json"
-    return _finalize_runner_summary(summary, summary_path, repo_root)
 
 
-def _role_replay_material_diff(diff: dict[str, Any]) -> bool:
-    """Return true for owner/peer response differences worth AI review."""
-    details = diff.get("diff") if isinstance(diff.get("diff"), dict) else {}
-    if not details:
-        return False
-    changed = details.get("changed") if isinstance(details.get("changed"), dict) else {}
-    if changed.get("status"):
-        return True
-    if changed.get("json_count") or changed.get("json_fields"):
-        return True
-    # Length-only differences are common for nonce/CAPTCHA/randomized SVG,
-    # timestamps, personalized copy, compression, and other dynamic-but-equivalent
-    # responses. Without a status, JSON count, or field-shape delta, this is not
-    # strong enough to create an Authz candidate; Claude can still inspect the
-    # raw bundle if another signal makes the surface interesting.
-    return False
 
-
-AUTHENTICATED_COLLECTION_IDENTITY_FIELDS = {
-    "account",
-    "accountid",
-    "address",
-    "customer",
-    "customerid",
-    "email",
-    "firstname",
-    "ip",
-    "lastloginip",
-    "lastname",
-    "phone",
-    "profileimage",
-    "tenant",
-    "tenantid",
-    "user",
-    "userid",
-    "username",
-    "workspace",
-    "workspaceid",
-}
-AUTHENTICATED_COLLECTION_AUTHZ_FIELDS = {
-    "deletedat",
-    "groups",
-    "isactive",
-    "isadmin",
-    "org",
-    "orgid",
-    "permissions",
-    "role",
-    "roles",
-}
-AUTHENTICATED_COLLECTION_SECRET_FIELDS = {
-    "apitoken",
-    "apikey",
-    "deluxetoken",
-    "password",
-    "passwordhash",
-    "recoverytoken",
-    "secret",
-    "token",
-    "totpsecret",
-}
-
-LOW_PRIV_AUTHZ_ROLES = {"user", "low_role"}
-PRIVILEGED_ROLE_VALUES = {"admin", "administrator", "owner", "superadmin", "superuser", "root"}
-AUTH_COLLECTION_PATH_HINTS = {
-    "account",
-    "accounts",
-    "admin",
-    "auth",
-    "authentication",
-    "authentication-details",
-    "members",
-    "roles",
-    "user",
-    "users",
-}
 
 
 def _normalized_json_key(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
-
-
-def _normalized_role_value(value: Any) -> str:
-    return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
-
-
-def _low_priv_case_state_context(case_state_ref: dict[str, Any] | None) -> bool:
-    if not isinstance(case_state_ref, dict):
-        return False
-    owner_role = str(case_state_ref.get("owner_role") or "").strip().lower()
-    peer_role = str(case_state_ref.get("peer_role") or "").strip().lower()
-    if not owner_role or not peer_role:
-        return False
-    return owner_role in LOW_PRIV_AUTHZ_ROLES and peer_role in LOW_PRIV_AUTHZ_ROLES
-
-
-def _auth_collection_path_signal(url: str) -> bool:
-    path = urllib.parse.urlparse(str(url or "")).path.lower()
-    segments = {segment for segment in re.split(r"[/._-]+", path) if segment}
-    # 同时保留完整 path token，覆盖 authentication-details 这类复合命名。
-    segments.add(path.strip("/"))
-    return bool(segments & AUTH_COLLECTION_PATH_HINTS)
-
-
-def _privileged_record_count(items: list[dict[str, Any]]) -> int:
-    count = 0
-    for item in items[:50]:
-        for key, value in item.items():
-            normalized_key = _normalized_json_key(key)
-            if normalized_key in {"role", "roles"}:
-                if isinstance(value, list):
-                    values = {_normalized_role_value(entry) for entry in value}
-                else:
-                    values = {_normalized_role_value(value)}
-                if values & PRIVILEGED_ROLE_VALUES:
-                    count += 1
-                    break
-            if normalized_key in {"isadmin", "admin"} and str(value).lower() in {"true", "1", "yes"}:
-                count += 1
-                break
-    return count
-
-
-def _distinct_identity_count(items: list[dict[str, Any]]) -> int:
-    values: set[str] = set()
-    for item in items[:50]:
-        for key, value in item.items():
-            normalized_key = _normalized_json_key(key)
-            if normalized_key in {"email", "username", "userid", "id"}:
-                clean = str(value or "").strip().lower()
-                if clean:
-                    values.add(f"{normalized_key}:{clean}")
-    return len(values)
-
-
-def _json_data_node(value: Any) -> Any:
-    if isinstance(value, dict):
-        for key in ("data", "items", "results", "users", "accounts", "records"):
-            if key in value:
-                return value.get(key)
-    return value
-
-
-def _collection_dict_items(value: Any) -> list[dict[str, Any]]:
-    """Return top-level collection items without deep-scanning arbitrary prose."""
-    node = _json_data_node(value)
-    if isinstance(node, list):
-        return [item for item in node if isinstance(item, dict)]
-    return []
-
-
-def _authenticated_broad_exposure_evidence(
-    status: int,
-    body: str,
-    *,
-    url: str = "",
-    case_state_ref: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Detect authenticated-only broad data exposure candidates.
-
-    默认只给 role-aware replay 提供保守候选信号。只有当 case_state 明确说明
-    owner/peer 都是低权限角色，且低权限会话能读取 broad account/auth collection
-    中的 privileged records 或 auth-secret-shaped 字段时，才给 candidate-ready
-    信号。这样可覆盖“普通用户能枚举用户目录/角色/账号元数据”的实战线索，
-    同时避免把普通 public catalog 或角色未知的目录页直接当成 finding。
-    """
-    evidence = {
-        "candidate": False,
-        "reason": "",
-        "item_count": 0,
-        "fields": [],
-        "identity_fields": [],
-        "authz_fields": [],
-        "secret_fields": [],
-        "privileged_record_count": 0,
-        "distinct_identity_count": 0,
-        "low_privileged_context": False,
-        "auth_collection_path": False,
-        "candidate_ready": False,
-        "policy_inference": "",
-    }
-    if not _is_success_status(status):
-        evidence["reason"] = "authenticated response was not successful"
-        return evidence
-    try:
-        payload = json.loads(body or "")
-    except (TypeError, ValueError, json.JSONDecodeError):
-        evidence["reason"] = "authenticated response was not JSON"
-        return evidence
-
-    items = _collection_dict_items(payload)
-    fields = sorted({_normalized_json_key(key) for item in items[:50] for key in item.keys()})
-    identity_hits = sorted(set(fields) & AUTHENTICATED_COLLECTION_IDENTITY_FIELDS)
-    authz_hits = sorted(set(fields) & AUTHENTICATED_COLLECTION_AUTHZ_FIELDS)
-    secret_hits = sorted(set(fields) & AUTHENTICATED_COLLECTION_SECRET_FIELDS)
-    privileged_count = _privileged_record_count(items)
-    distinct_identity_count = _distinct_identity_count(items)
-    low_privileged_context = _low_priv_case_state_context(case_state_ref)
-    auth_collection_path = _auth_collection_path_signal(url)
-
-    evidence.update({
-        "item_count": len(items),
-        "fields": fields,
-        "identity_fields": identity_hits,
-        "authz_fields": authz_hits,
-        "secret_fields": secret_hits,
-        "privileged_record_count": privileged_count,
-        "distinct_identity_count": distinct_identity_count,
-        "low_privileged_context": low_privileged_context,
-        "auth_collection_path": auth_collection_path,
-    })
-
-    has_sensitive_account_shape = bool(secret_hits) or (
-        bool(identity_hits) and (bool(authz_hits) or len(identity_hits) >= 2)
-    )
-    if len(items) >= 2 and has_sensitive_account_shape:
-        evidence["candidate"] = True
-        evidence["reason"] = (
-            "authenticated-only collection exposes account/identity/authz-shaped fields; "
-            "requires policy and role expectation review"
-        )
-        if (
-            low_privileged_context
-            and distinct_identity_count >= 2
-            and auth_collection_path
-            and (privileged_count > 0 or bool(secret_hits))
-        ):
-            evidence["candidate_ready"] = True
-            evidence["policy_inference"] = (
-                "low-privileged authenticated actors can read a broad account/auth collection "
-                "containing privileged records or auth-secret-shaped fields"
-            )
-    else:
-        evidence["reason"] = "no broad authenticated account/identity/authz collection shape"
-    return evidence
-
-
-def run_authz_role_replay(
-    *,
-    repo_root: Path,
-    target: str,
-    url: str,
-    method: str = "GET",
-    owner_headers: dict[str, str] | None = None,
-    peer_headers: dict[str, str] | None = None,
-    owner_body: str = "",
-    peer_body: str | None = None,
-    include_anonymous: bool = True,
-    timeout: int = 10,
-    finding_id: str = "",
-    repeat: int = 1,
-    no_ledger: bool = False,
-    browser_observed: bool = False,
-    state_changing: bool | None = None,
-    redline_checked: bool = False,
-    case_state_ref: dict[str, Any] | None = None,
-    identity_v2: dict[str, Any] | None = None,
-    owner_session: AuthSession | None = None,
-) -> dict[str, Any]:
-    """Replay one surface as anonymous/owner/peer without claiming object IDOR.
-
-    This lane is intentionally conservative: role/status/body differences are
-    ``candidate`` evidence for Claude to interpret, while only body-backed
-    anonymous sensitive exposure promotes directly to ``tested_finding``.
-    """
-    method_u = method.upper()
-    state_changing = _validate_request_facts(state_changing, redline_checked)
-    owner_headers = dict(owner_headers or {})
-    peer_headers = dict(peer_headers or {})
-    peer_body = owner_body if peer_body is None else peer_body
-    if not _actor_context_differs(
-        url=url,
-        peer_url=url,
-        owner_headers=_request_headers(owner_session, url, owner_headers),
-        peer_headers=peer_headers,
-        owner_body=owner_body,
-        peer_body=peer_body,
-    ):
-        raise ValueError("owner and peer request contexts are identical; provide distinct actor headers/body")
-
-    finding_id = finding_id or _default_finding_id("authz-role-replay", url)
-    bundle = _bundle_dir(repo_root, target, finding_id)
-    private_bundle = _private_bundle_dir(repo_root, target, bundle)
-    repeat = max(1, int(repeat or 1))
-    runs: list[dict[str, Any]] = []
-    marker_sources_by_round: list[dict[str, list[str]]] = []
-    authenticated_exposure_checks: list[dict[str, Any]] = []
-
-    for idx in range(1, repeat + 1):
-        prefix = "" if repeat == 1 else f"{idx}."
-        anonymous = (
-            request_once(target=target, url=url, method=method_u, headers={}, body="", timeout=timeout)
-            if include_anonymous else None
-        )
-        owner = request_once(
-            target=target,
-            url=url,
-            method=method_u,
-            headers=owner_headers,
-            body=owner_body,
-            timeout=timeout,
-            session=owner_session,
-        )
-        peer = request_once(
-            target=target,
-            url=url,
-            method=method_u,
-            headers=peer_headers,
-            body=peer_body,
-            timeout=timeout,
-        )
-
-        if anonymous is not None:
-            anon_artifacts = _write_raw_http(
-                private_bundle,
-                f"{prefix}anonymous.",
-                anonymous,
-                repo_root,
-            )
-            marker_sources_by_round.append(public_exposure_marker_sources(url, anonymous["body"]))
-        owner_artifacts = _write_raw_http(private_bundle, f"{prefix}owner.", owner, repo_root)
-        peer_artifacts = _write_raw_http(private_bundle, f"{prefix}peer.", peer, repo_root)
-
-        owner_peer_diff = _response_diff(owner, peer)
-        anonymous_owner_diff = (
-            _response_diff(anonymous, owner)
-            if anonymous is not None else {}
-        )
-        authenticated_exposure = _authenticated_broad_exposure_evidence(
-            owner["status"],
-            owner["body"],
-            url=url,
-            case_state_ref=case_state_ref,
-        )
-        authenticated_exposure_checks.append(authenticated_exposure)
-        runs.append({
-            "iteration": idx,
-            "url": public_url_shape(url),
-            "method": method_u,
-            "anonymous_status": anonymous["status"] if anonymous is not None else None,
-            "owner_status": owner["status"],
-            "peer_status": peer["status"],
-            "anonymous_success": _is_success_status(anonymous["status"]) if anonymous is not None else False,
-            "owner_success": _is_success_status(owner["status"]),
-            "peer_success": _is_success_status(peer["status"]),
-            "peer_denied": _is_blocked_or_denied_response(peer["status"], peer["body"]),
-            "owner_peer_material_diff": _role_replay_material_diff(owner_peer_diff),
-            "anonymous_owner_material_diff": _role_replay_material_diff(anonymous_owner_diff) if anonymous_owner_diff else False,
-            "authenticated_exposure_candidate": bool(authenticated_exposure.get("candidate")),
-            "artifacts": {
-                **({
-                    "anonymous_request": anon_artifacts["request"],
-                    "anonymous_response": anon_artifacts["response"],
-                    "anonymous_identity": anon_artifacts["identity"],
-                } if anonymous is not None else {}),
-                "owner_request": owner_artifacts["request"],
-                "owner_response": owner_artifacts["response"],
-                "owner_identity": owner_artifacts["identity"],
-                "peer_request": peer_artifacts["request"],
-                "peer_response": peer_artifacts["response"],
-                "peer_identity": peer_artifacts["identity"],
-            },
-            "owner_peer_diff": owner_peer_diff,
-            "anonymous_owner_diff": anonymous_owner_diff,
-        })
-
-    # Finding-grade marker 必须在每一轮都出现；不能让最后一轮覆盖前一轮缺失。
-    public_marker_sources = {
-        key: sorted(
-            set.intersection(
-                *(set(round_sources.get(key, [])) for round_sources in marker_sources_by_round)
-            )
-        )
-        if marker_sources_by_round
-        else []
-        for key in ("url", "body")
-    }
-    markers = sorted(
-        set(public_marker_sources.get("url", []))
-        | set(public_marker_sources.get("body", []))
-    )
-    public_ready = (
-        include_anonymous
-        and all(bool(run["anonymous_success"]) for run in runs)
-        and all(
-            public_exposure_candidate_ready(run["anonymous_status"], round_sources)
-            for run, round_sources in zip(runs, marker_sources_by_round)
-        )
-    )
-    owner_success_all = all(bool(run["owner_success"]) for run in runs)
-    role_diff_any = any(bool(run["owner_peer_material_diff"]) for run in runs)
-    peer_denied_all = all(bool(run["peer_denied"]) for run in runs)
-    object_specific_peer_denied = _object_specific_url(url) and peer_denied_all
-    anonymous_denied_all = include_anonymous and all(
-        run["anonymous_status"] is not None and not bool(run["anonymous_success"]) for run in runs
-    )
-    authenticated_exposure_any = (
-        anonymous_denied_all
-        and owner_success_all
-        and all(bool(run["peer_success"]) for run in runs)
-        and all(bool(item.get("candidate")) for item in authenticated_exposure_checks)
-    )
-    authenticated_exposure_ready = (
-        authenticated_exposure_any
-        and all(bool(item.get("candidate_ready")) for item in authenticated_exposure_checks)
-    )
-    if public_ready or authenticated_exposure_ready:
-        result = "tested_finding"
-    elif not owner_success_all:
-        result = "dead_end"
-    elif object_specific_peer_denied and not authenticated_exposure_any:
-        result = "tested_clean"
-    elif role_diff_any or authenticated_exposure_any:
-        result = "candidate"
-    else:
-        result = "tested_clean"
-    candidate_ready = result == "tested_finding"
-    authenticated_exposure_summary = {
-        "candidate": bool(authenticated_exposure_any),
-        "candidate_ready": bool(authenticated_exposure_ready),
-        "checks": authenticated_exposure_checks,
-        "reason": (
-            authenticated_exposure_checks[0].get("reason", "")
-            if authenticated_exposure_checks else ""
-        ),
-        "policy_inference": (
-            authenticated_exposure_checks[0].get("policy_inference", "")
-            if authenticated_exposure_checks else ""
-        ),
-    }
-
-    diff_path = bundle / "diff.json"
-    _write_json(diff_path, {
-        "runs": runs,
-        "authenticated_exposure": authenticated_exposure_summary,
-    })
-    finding = {
-        "type": "auth_bypass",
-        "url": public_url_shape(url),
-        "summary": (
-            f"authz role replay result={result}; repeat={repeat}; "
-            f"anonymous_statuses={[run['anonymous_status'] for run in runs]}; "
-            f"owner_statuses={[run['owner_status'] for run in runs]}; "
-            f"peer_statuses={[run['peer_status'] for run in runs]}"
-        ),
-        "raw": (
-            f"anonymous markers={markers}; owner/peer material diff={role_diff_any}; "
-            f"authenticated broad exposure={authenticated_exposure_any}; "
-            "role-aware replay captured"
-        ),
-        "confidence": "high" if candidate_ready else "medium",
-    }
-    rubric = compact_evidence_rubric(evaluate_candidate_evidence(finding, vuln_type="authz"))
-    if result == "dead_end":
-        rubric.update({
-            "status": "dead-end",
-            "ready": False,
-            "score": 0,
-            "missing": ["owner_baseline_success"],
-            "missing_labels": ["valid owner/authenticated baseline"],
-            "next_actions": [
-                "Refresh or recapture the authenticated owner request/session before drawing any authz conclusion for this surface."
-            ],
-            "summary": "authz:dead-end score=0 missing=valid owner/authenticated baseline",
-        })
-    elif result == "tested_clean":
-        rubric.update({
-            "status": "tested-clean",
-            "ready": False,
-            "score": 0,
-            "missing": ["role_or_body_backed_authz_delta"],
-            "missing_labels": ["role/object/body-backed authorization delta"],
-            "next_actions": [
-                "No role-specific difference on this exact surface; pivot to object-specific or state-changing workflow evidence."
-            ],
-            "summary": (
-                "authz:tested-clean object-specific peer denied"
-                if object_specific_peer_denied
-                else "authz:tested-clean score=0 missing=role/object/body-backed authorization delta"
-            ),
-        })
-    elif result == "tested_finding" and authenticated_exposure_ready:
-        first_check = authenticated_exposure_checks[0] if authenticated_exposure_checks else {}
-        rubric.update({
-            "status": "candidate-ready",
-            "ready": True,
-            "score": 95,
-            "missing": [],
-            "missing_labels": [],
-            "next_actions": [],
-            "summary": (
-                "authz:candidate-ready low-privileged broad authenticated collection "
-                f"items={first_check.get('item_count', 0)} "
-                f"privileged_records={first_check.get('privileged_record_count', 0)} "
-                f"identity_count={first_check.get('distinct_identity_count', 0)} "
-                f"secret={first_check.get('secret_fields', [])}"
-            ),
-        })
-    elif result == "candidate" and authenticated_exposure_any and not role_diff_any:
-        first_check = authenticated_exposure_checks[0] if authenticated_exposure_checks else {}
-        rubric.update({
-            "status": "candidate",
-            "ready": False,
-            "missing": ["policy_or_role_expectation", "object_scope_or_private_marker"],
-            "missing_labels": [
-                "policy/role expectation for authenticated collection",
-                "object-specific private marker or documented admin-only expectation",
-            ],
-            "next_actions": [
-                "Review whether this collection should be admin-only or self-scoped; then pivot to object-specific endpoints, lower-role replay, or policy evidence before reporting."
-            ],
-            "summary": (
-                "authz:candidate authenticated-only broad collection "
-                f"items={first_check.get('item_count', 0)} "
-                f"identity={first_check.get('identity_fields', [])} "
-                f"authz={first_check.get('authz_fields', [])} "
-                f"secret={first_check.get('secret_fields', [])}"
-            ),
-        })
-    evidence_ref = _rel(diff_path, repo_root)
-    notes = (
-        f"Validation runner authz-role-replay: result={result}, repeat={repeat}, "
-        f"anonymous_statuses={[run['anonymous_status'] for run in runs]}, "
-        f"owner_statuses={[run['owner_status'] for run in runs]}, "
-        f"peer_statuses={[run['peer_status'] for run in runs]}."
-    )
-    ledger = _record_ledger_if_needed(
-        repo_root=repo_root,
-        no_ledger=no_ledger,
-        target=target,
-        endpoint=url,
-        method=method_u,
-        vuln_class="Authz",
-        actor="owner",
-        object_scope="unknown",
-        variant="role_diff",
-        result=result,
-        source="validation-runner:authz-role-replay",
-        evidence_ref=evidence_ref,
-        notes=notes,
-        browser_observed=browser_observed,
-        redline_checked=redline_checked,
-        state_changing=state_changing,
-        identity_v2=identity_v2,
-        artifact_bindings=_artifact_bindings(
-            {"runs": runs, "artifacts": {"diff": evidence_ref}},
-            repo_root,
-        ),
-        finding_id=finding_id,
-    )
-    summary = {
-        "schema_version": SCHEMA_VERSION,
-        "lane": "authz_role_replay",
-        "target": canonical_target_value(target),
-        "finding_id": finding_id,
-        "url": public_url_shape(url),
-        "method": method_u,
-        "generated_at": now_utc(),
-        "result": result,
-        "candidate_ready": candidate_ready,
-        "state_changing": state_changing,
-        "redline_checked": redline_checked,
-        "markers": markers,
-        "marker_sources": public_marker_sources,
-        "marker_sources_by_round": marker_sources_by_round,
-        "authenticated_exposure": authenticated_exposure_summary,
-        "object_specific_peer_denied": bool(object_specific_peer_denied),
-        "case_state_ref": case_state_ref or {},
-        "repeat": repeat,
-        "runs": runs,
-        "artifacts": {"diff": evidence_ref},
-        "evidence_rubric": rubric,
-        "ledger_record": ledger,
-        "ai_next": {
-            "hypothesis": "authenticated actor contexts may reveal a role/object authorization delta on this surface",
-            "next_action": "If candidate, inspect raw owner/peer diff or authenticated-only collection fields, then add object/private marker, lower-role, or policy evidence before reporting. If tested_clean, pivot to object-specific endpoints or state-changing workflows.",
-            "stop_condition": "Owner baseline fails, owner/peer responses are equivalent, and no authenticated-only account/identity/authz collection is present.",
-        },
-    }
-    summary_path = bundle / "summary.json"
-    return _finalize_runner_summary(summary, summary_path, repo_root)
 
 
 def _merge_request_headers(request: dict[str, Any], extra: dict[str, str] | None) -> dict[str, str]:
@@ -2835,6 +1921,38 @@ def _request_pair_materiality(run: dict[str, Any]) -> bool:
         or changed.get("json_fields")
         or abs(int(run.get("diff", {}).get("body_length", {}).get("delta", 0) or 0)) > 20
     )
+
+
+CREDENTIAL_BOUNDARY_HEADER_RE = re.compile(
+    r"^(authorization|cookie|x-api-key|api-key|x-auth-token|x-session-token|x-csrf-token)$",
+    re.I,
+)
+
+
+def _request_pair_boundary_dimension(spec: dict[str, Any]) -> bool:
+    """Return whether the pair's single active dimension is a credential boundary.
+
+    This is a fact reconciliation, not a vulnerability judgment: the AI declares
+    an auth/credential dimension, and the runner confirms the declared dimension
+    is where the two requests actually differ. Interpreting the diff stays with
+    the validation gates.
+    """
+    active = str(spec.get("active_dimension") or "").strip()
+    if not active:
+        return False
+    header_match = re.match(r"^header:([\w-]+)$", active)
+    if not header_match:
+        return False
+    if not CREDENTIAL_BOUNDARY_HEADER_RE.match(header_match.group(1)):
+        return False
+    header_name = header_match.group(1)
+    baseline_headers = dict(spec["baseline_request"].get("headers") or {})
+    variant_headers = dict(spec["variant_request"].get("headers") or {})
+    find = lambda headers: next(
+        (value for key, value in headers.items() if key.lower() == header_name.lower()),
+        None,
+    )
+    return find(baseline_headers) != find(variant_headers)
 
 
 def _request_pair_spec_view(spec: dict[str, Any]) -> dict[str, Any]:
@@ -2997,8 +2115,18 @@ def run_request_diff(
     ])
     probe_shape = all(bool(run.get("sqli_evidence", {}).get("features")) for run in runs) if classifier == "sqli" else None
     strong = all(bool(run.get("sqli_evidence", {}).get("strong")) for run in runs) if classifier == "sqli" else False
-    candidate_ready = bool(classifier == "sqli" and probe_shape and all(material) and strong)
-    result = "tested_finding" if candidate_ready else ("candidate" if any(material) and classifier != "sqli" else "tested_clean")
+    # Promotion splits into two independent routes:
+    # - shape confirmation: the SQLi probe-shape detector confirms the diff form
+    #   (kept as a fast lane; other shape detectors may register later);
+    # - boundary dimension: the pair's declared active dimension is a
+    #   credential/auth boundary AND the two requests actually differ in it.
+    # The runner only proves the diff is real, stable, and sits on the declared
+    # boundary; whether it is an actual authorization violation stays with the
+    # 7-Question/4-gate AI review. A material diff never falls to tested_clean.
+    shape_confirmed = bool(classifier == "sqli" and probe_shape and strong)
+    boundary_dimension = _request_pair_boundary_dimension(spec)
+    candidate_ready = bool(all(material) and (shape_confirmed or boundary_dimension))
+    result = "tested_finding" if candidate_ready else ("candidate" if any(material) else "tested_clean")
     vuln_class = _classifier_vuln_class(classifier, spec.get("vuln_class", ""))
     diff_path = bundle / "diff.json"
     _write_json(diff_path, {"runs": runs, "request_pair": _request_pair_spec_view(spec)})
@@ -3288,10 +2416,12 @@ def run_marker_replay(
     # bindings, mirroring request-diff/idor lanes: the witness requires the
     # ledger row's evidence_ref to appear in the runner artifact_bindings, and a
     # self-referencing summary.json can never satisfy that.
-    marker_replay_evidence = {"runs": runs}
+    # The ledger evidence_ref must resolve into the bundle's own artifact
+    # bindings (the witness requires it); the first replayed response is
+    # already bound as the "response" artifact, so point at it directly
+    # instead of adding a duplicate kind that desyncs the operation id.
     first_response = runs[0].get("artifacts", {}).get("response", "") if runs else ""
-    if first_response:
-        marker_replay_evidence["artifacts"] = {"marker_response": first_response}
+    marker_replay_evidence = {"runs": runs}
     evidence_ref = str(first_response or _rel(summary_path, repo_root))
     notes = (
         f"Validation runner marker-replay for {vuln_class}: "
@@ -3317,6 +2447,18 @@ def run_marker_replay(
         state_changing=state_changing,
         identity_v2=identity_v2,
         artifact_bindings=_artifact_bindings(marker_replay_evidence, repo_root),
+        operation_material={
+            "target": canonical_target_value(target),
+            "lane": "marker_replay",
+            "finding_id": finding_id,
+            "url": public_url_shape(url),
+            "method": method_u,
+            "vuln_class": vuln_class,
+            "expect_marker_sha256": hashlib.sha256(marker.encode("utf-8", errors="replace")).hexdigest(),
+            "baseline_url": public_url_shape(baseline_url) if baseline_url else "",
+            "repeat": repeat,
+            "evidence_shape": "marker_replay",
+        },
         finding_id=finding_id,
     )
     xss_marker = str(vuln_class or "").strip().lower() in {
@@ -3365,240 +2507,6 @@ def run_marker_replay(
     return _finalize_runner_summary(summary, summary_path, repo_root)
 
 
-def run_idor_actor_pair(
-    *,
-    repo_root: Path,
-    target: str,
-    url: str,
-    method: str = "GET",
-    owner_headers: dict[str, str] | None = None,
-    peer_headers: dict[str, str] | None = None,
-    owner_body: str = "",
-    peer_body: str | None = None,
-    peer_url: str = "",
-    expect_marker: str = "",
-    timeout: int = 10,
-    finding_id: str = "",
-    repeat: int = 1,
-    no_ledger: bool = False,
-    browser_observed: bool = False,
-    state_changing: bool | None = None,
-    redline_checked: bool = False,
-    case_state_ref: dict[str, Any] | None = None,
-    identity_v2: dict[str, Any] | None = None,
-    owner_session: AuthSession | None = None,
-) -> dict[str, Any]:
-    """Replay the same object/action as owner and peer, then preserve the diff.
-
-    The strong finding gate is intentionally conservative:
-    - owner must succeed;
-    - peer must also succeed;
-    - and either the peer response contains an operator-provided private marker
-      or the peer body exactly matches the owner body with a non-trivial private
-      object shape.
-
-    If peer access is possible but the response is not strong enough, the runner
-    records ``candidate`` rather than pretending the issue is clean or proven.
-    """
-    method_u = method.upper()
-    owner_headers = dict(owner_headers or {})
-    peer_headers = dict(peer_headers or {})
-    peer_url = peer_url or url
-    peer_body = owner_body if peer_body is None else peer_body
-    state_changing = _validate_request_facts(state_changing, redline_checked)
-    if not _actor_context_differs(
-        url=url,
-        peer_url=peer_url,
-        owner_headers=_request_headers(owner_session, url, owner_headers),
-        peer_headers=peer_headers,
-        owner_body=owner_body,
-        peer_body=peer_body,
-    ):
-        raise ValueError("owner and peer request contexts are identical; provide distinct actor headers/body/url")
-
-    finding_id = finding_id or _default_finding_id("idor-actor-pair", url)
-    bundle = _bundle_dir(repo_root, target, finding_id)
-    private_bundle = _private_bundle_dir(repo_root, target, bundle)
-    repeat = max(1, int(repeat or 1))
-    marker = str(expect_marker or "")
-    write_private_json(
-        private_bundle / "inputs.json",
-        {"url": url, "peer_url": peer_url, "expect_marker": marker},
-    )
-    runs: list[dict[str, Any]] = []
-
-    for idx in range(1, repeat + 1):
-        owner = request_once(
-            target=target,
-            url=url,
-            method=method_u,
-            headers=owner_headers,
-            body=owner_body,
-            timeout=timeout,
-            session=owner_session,
-        )
-        peer = request_once(
-            target=target,
-            url=peer_url,
-            method=method_u,
-            headers=peer_headers,
-            body=peer_body,
-            timeout=timeout,
-        )
-        prefix = "" if repeat == 1 else f"{idx}."
-        owner_artifacts = _write_raw_http(private_bundle, f"{prefix}owner.", owner, repo_root)
-        peer_artifacts = _write_raw_http(private_bundle, f"{prefix}peer.", peer, repo_root)
-        diff = _response_diff(owner, peer)
-        marker_found = bool(marker and marker in peer["body"])
-        exact_body_match = owner["body"] == peer["body"] and len(str(peer["body"] or "").strip()) >= 20
-        private_body_match = _private_body_match(owner["body"], peer["body"])
-        owner_success = _is_success_status(owner["status"])
-        peer_success = _is_success_status(peer["status"])
-        peer_denied = _is_blocked_or_denied_response(peer["status"], peer["body"])
-        strong_access = owner_success and peer_success and (marker_found if marker else private_body_match)
-        ambiguous_access = owner_success and peer_success and not strong_access
-        runs.append({
-            "iteration": idx,
-            "owner_url": public_url_shape(url),
-            "peer_url": public_url_shape(peer_url),
-            "method": method_u,
-            "owner_status": owner["status"],
-            "peer_status": peer["status"],
-            "owner_success": owner_success,
-            "peer_success": peer_success,
-            "peer_denied": peer_denied,
-            "marker_found": marker_found,
-            "exact_body_match": exact_body_match,
-            "private_body_match": private_body_match,
-            "strong_access": strong_access,
-            "ambiguous_access": ambiguous_access,
-            "artifacts": {
-                "owner_request": owner_artifacts["request"],
-                "owner_response": owner_artifacts["response"],
-                "owner_identity": owner_artifacts["identity"],
-                "peer_request": peer_artifacts["request"],
-                "peer_response": peer_artifacts["response"],
-                "peer_identity": peer_artifacts["identity"],
-            },
-            **diff,
-        })
-
-    candidate_ready = all(bool(run["strong_access"]) for run in runs)
-    owner_success_all = all(bool(run["owner_success"]) for run in runs)
-    peer_denied_all = all(bool(run["peer_denied"]) for run in runs)
-    ambiguous_any = any(bool(run["ambiguous_access"]) for run in runs)
-    if not owner_success_all:
-        result = "dead_end"
-    elif candidate_ready:
-        result = "tested_finding"
-    elif ambiguous_any and not peer_denied_all:
-        result = "candidate"
-    else:
-        result = "tested_clean"
-
-    diff_path = bundle / "diff.json"
-    _write_json(diff_path, {"runs": runs})
-    finding = {
-        "type": "idor",
-        "url": public_url_shape(url),
-        "summary": (
-            f"owner vs peer replay result={result}; repeat={repeat}; "
-            f"peer_statuses={[run['peer_status'] for run in runs]}"
-        ),
-        "raw": (
-            "owner peer other user response diff exact request private marker verified"
-            if candidate_ready
-            else "owner peer replay captured; strong private-data marker not proven"
-        ),
-        "confidence": "high" if candidate_ready else "medium",
-    }
-    rubric = compact_evidence_rubric(evaluate_candidate_evidence(finding, vuln_type="idor"))
-    if result == "dead_end":
-        rubric.update({
-            "status": "dead-end",
-            "ready": False,
-            "score": 0,
-            "missing": ["owner_baseline_success"],
-            "missing_labels": ["valid owner object baseline"],
-            "next_actions": [
-                "Refresh the owner session, object endpoint, or private marker before drawing any IDOR conclusion."
-            ],
-            "summary": "idor:dead-end score=0 missing=valid owner object baseline",
-        })
-    elif result == "tested_clean":
-        rubric.update({
-            "status": "tested-clean",
-            "ready": False,
-            "score": 0,
-            "missing": ["peer_access_to_owner_object"],
-            "missing_labels": ["peer access to owner object/private marker"],
-            "next_actions": [
-                "No peer access on this exact object replay; pivot to a different object endpoint, state-changing workflow, or collection scoping lead."
-            ],
-            "summary": (
-                "idor:tested-clean peer denied owner object"
-                if peer_denied_all
-                else "idor:tested-clean score=0 missing=peer access to owner object/private marker"
-            ),
-        })
-    notes = (
-        f"Validation runner IDOR actor pair: result={result}, "
-        f"repeat={repeat}, peer_statuses={[run['peer_status'] for run in runs]}."
-    )
-    ledger = _record_ledger_if_needed(
-        repo_root=repo_root,
-        no_ledger=no_ledger,
-        target=target,
-        endpoint=url,
-        method=method_u,
-        vuln_class="IDOR",
-        actor="peer",
-        object_scope="peer",
-        variant="id_swap",
-        result=result,
-        source="validation-runner:idor-actor-pair",
-        evidence_ref=_rel(diff_path, repo_root),
-        notes=notes,
-        browser_observed=browser_observed,
-        redline_checked=redline_checked,
-        state_changing=state_changing,
-        identity_v2=identity_v2,
-        artifact_bindings=_artifact_bindings(
-            {"runs": runs, "artifacts": {"diff": _rel(diff_path, repo_root)}},
-            repo_root,
-        ),
-        finding_id=finding_id,
-    )
-    summary = {
-        "schema_version": SCHEMA_VERSION,
-        "lane": "idor_actor_pair",
-        "target": canonical_target_value(target),
-        "finding_id": finding_id,
-        "url": public_url_shape(url),
-        "peer_url": public_url_shape(peer_url),
-        "method": method_u,
-        "generated_at": now_utc(),
-        "result": result,
-        "candidate_ready": candidate_ready,
-        "expect_marker_length": len(marker.encode("utf-8", errors="replace")),
-        "expect_marker_sha256": hashlib.sha256(marker.encode("utf-8", errors="replace")).hexdigest(),
-        "state_changing": state_changing,
-        "redline_checked": redline_checked,
-        "case_state_ref": case_state_ref or {},
-        "repeat": repeat,
-        "runs": runs,
-        "artifacts": {"diff": _rel(diff_path, repo_root)},
-        "evidence_rubric": rubric,
-        "ledger_record": ledger,
-        "ai_next": {
-            "hypothesis": "server may return an owner object/action result when replayed as peer/lower-role",
-            "next_action": "If result is dead_end, refresh the owner baseline/session/object endpoint before treating the lane as tested. If result is candidate, add a known private marker/object field or second object to distinguish public/generic data from IDOR.",
-            "stop_condition": "Owner baseline is invalid, peer is consistently denied, actor contexts are unavailable, or peer response lacks a private marker/exact owner-body match.",
-        },
-    }
-    summary_path = bundle / "summary.json"
-    return _finalize_runner_summary(summary, summary_path, repo_root)
-
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run deterministic validation evidence lanes")
@@ -3621,38 +2529,6 @@ def build_parser() -> argparse.ArgumentParser:
         group.add_argument("--no-state-changing", dest="state_changing", action="store_false")
         p.set_defaults(state_changing=None)
         p.add_argument("--redline-checked", action="store_true", default=False)
-
-    authz = sub.add_parser("authz-public-exposure", help="Validate anonymous public admin/config exposure")
-    add_common(authz)
-    add_cli_args(authz)
-    authz.add_argument("--url", required=True)
-    authz.add_argument("--method", default="GET")
-    authz.add_argument("--header", action="append", default=[])
-    authz.add_argument("--body", default="")
-    authz.add_argument("--timeout", type=int, default=10)
-    authz.add_argument("--browser-observed", action="store_true")
-    authz.add_argument("--no-ledger", action="store_true")
-    add_request_facts(authz)
-
-    authz_role = sub.add_parser("authz-role-replay", help="Replay anonymous/owner/peer actor contexts on one surface")
-    add_common(authz_role)
-    add_cli_args(authz_role)
-    authz_role.add_argument("--url", required=True)
-    authz_role.add_argument("--method", default="GET")
-    authz_role.add_argument("--owner-header", action="append", default=[])
-    authz_role.add_argument("--peer-header", action="append", default=[])
-    authz_role.add_argument("--from-case-state", action="store_true")
-    authz_role.add_argument("--owner-actor", default="")
-    authz_role.add_argument("--peer-actor", default="")
-    authz_role.add_argument("--body", default="")
-    authz_role.add_argument("--owner-body", default=None)
-    authz_role.add_argument("--peer-body", default=None)
-    authz_role.add_argument("--timeout", type=int, default=10)
-    authz_role.add_argument("--repeat", type=int, default=1)
-    authz_role.add_argument("--no-anonymous", action="store_true")
-    authz_role.add_argument("--browser-observed", action="store_true")
-    add_request_facts(authz_role)
-    authz_role.add_argument("--no-ledger", action="store_true")
 
     request_diff = sub.add_parser(
         "request-diff",
@@ -3693,29 +2569,6 @@ def build_parser() -> argparse.ArgumentParser:
     add_request_facts(marker)
     marker.add_argument("--no-ledger", action="store_true")
 
-    idor_pair = sub.add_parser("idor-actor-pair", help="Replay owner vs peer actor pair and diff responses")
-    add_common(idor_pair)
-    add_cli_args(idor_pair)
-    idor_pair.add_argument("--url", default="")
-    idor_pair.add_argument("--peer-url", default="")
-    idor_pair.add_argument("--method", default="GET")
-    idor_pair.add_argument("--owner-header", action="append", default=[])
-    idor_pair.add_argument("--peer-header", action="append", default=[])
-    idor_pair.add_argument("--from-case-state", action="store_true")
-    idor_pair.add_argument("--backlog-id", default="")
-    idor_pair.add_argument("--owner-actor", default="")
-    idor_pair.add_argument("--peer-actor", default="")
-    idor_pair.add_argument("--object-ref", default="")
-    idor_pair.add_argument("--body", default="")
-    idor_pair.add_argument("--owner-body", default=None)
-    idor_pair.add_argument("--peer-body", default=None)
-    idor_pair.add_argument("--expect-marker", default="")
-    idor_pair.add_argument("--timeout", type=int, default=10)
-    idor_pair.add_argument("--repeat", type=int, default=1)
-    idor_pair.add_argument("--browser-observed", action="store_true")
-    add_request_facts(idor_pair)
-    idor_pair.add_argument("--no-ledger", action="store_true")
-    idor_pair.add_argument("--complete-case-state", action="store_true", help="Write result back to case_state backlog after replay")
 
     return parser
 
@@ -3758,62 +2611,6 @@ def main(argv: list[str] | None = None) -> int:
             headers=parse_headers(args.header),
             session=auth_session,
         )
-    elif args.lane == "authz-public-exposure":
-        summary = run_authz_public_exposure(
-            repo_root=repo_root,
-            target=args.target,
-            url=args.url,
-            method=args.method,
-            headers=parse_headers(args.header),
-            body=args.body,
-            timeout=args.timeout,
-            finding_id=args.finding_id,
-            no_ledger=args.no_ledger,
-            browser_observed=args.browser_observed,
-            state_changing=args.state_changing,
-            redline_checked=args.redline_checked,
-            identity_v2=identity_v2,
-            session=auth_session,
-        )
-    elif args.lane == "authz-role-replay":
-        owner_body = args.body if args.owner_body is None else args.owner_body
-        peer_body = owner_body if args.peer_body is None else args.peer_body
-        owner_headers = parse_headers(args.owner_header)
-        peer_headers = parse_headers(args.peer_header)
-        case_state_ref: dict[str, Any] = {}
-        if args.from_case_state:
-            resolved = resolve_authz_role_replay_from_case_state(
-                repo_root=repo_root,
-                target=args.target,
-                owner_actor=args.owner_actor,
-                peer_actor=args.peer_actor,
-                owner_headers=owner_headers,
-                peer_headers=peer_headers,
-            )
-            owner_headers = resolved["owner_headers"]
-            peer_headers = resolved["peer_headers"]
-            case_state_ref = resolved["case_state_ref"]
-        summary = run_authz_role_replay(
-            repo_root=repo_root,
-            target=args.target,
-            url=args.url,
-            method=args.method,
-            owner_headers=owner_headers,
-            peer_headers=peer_headers,
-            owner_body=owner_body,
-            peer_body=peer_body,
-            include_anonymous=not args.no_anonymous,
-            timeout=args.timeout,
-            finding_id=args.finding_id,
-            repeat=args.repeat,
-            no_ledger=args.no_ledger,
-            browser_observed=args.browser_observed,
-            state_changing=args.state_changing,
-            redline_checked=args.redline_checked,
-            case_state_ref=case_state_ref,
-            identity_v2=identity_v2,
-            owner_session=None if args.from_case_state else auth_session,
-        )
     elif args.lane == "marker-replay":
         summary = run_marker_replay(
             repo_root=repo_root,
@@ -3836,72 +2633,7 @@ def main(argv: list[str] | None = None) -> int:
             identity_v2=identity_v2,
             session=auth_session,
         )
-    elif args.lane == "idor-actor-pair":
-        owner_body = args.body if args.owner_body is None else args.owner_body
-        peer_body = owner_body if args.peer_body is None else args.peer_body
-        owner_headers = parse_headers(args.owner_header)
-        peer_headers = parse_headers(args.peer_header)
-        url = args.url
-        peer_url = args.peer_url
-        expect_marker = args.expect_marker
-        case_state_ref: dict[str, Any] = {}
-        if args.from_case_state:
-            resolved = resolve_idor_actor_pair_from_case_state(
-                repo_root=repo_root,
-                target=args.target,
-                backlog_id=args.backlog_id,
-                owner_actor=args.owner_actor,
-                peer_actor=args.peer_actor,
-                object_ref=args.object_ref,
-                url=url,
-                peer_url=peer_url,
-                owner_headers=owner_headers,
-                peer_headers=peer_headers,
-                expect_marker=expect_marker,
-            )
-            url = resolved["url"]
-            peer_url = resolved["peer_url"]
-            owner_headers = resolved["owner_headers"]
-            peer_headers = resolved["peer_headers"]
-            expect_marker = resolved["expect_marker"]
-            case_state_ref = resolved["case_state_ref"]
-        if not url:
-            raise ValueError("--url is required unless --from-case-state resolves an object endpoint")
-        summary = run_idor_actor_pair(
-            repo_root=repo_root,
-            target=args.target,
-            url=url,
-            method=args.method,
-            owner_headers=owner_headers,
-            peer_headers=peer_headers,
-            owner_body=owner_body,
-            peer_body=peer_body,
-            peer_url=peer_url,
-            expect_marker=expect_marker,
-            timeout=args.timeout,
-            finding_id=args.finding_id,
-            repeat=args.repeat,
-            no_ledger=args.no_ledger,
-            browser_observed=args.browser_observed,
-            state_changing=args.state_changing,
-            redline_checked=args.redline_checked,
-            case_state_ref=case_state_ref,
-            identity_v2=identity_v2,
-            owner_session=None if args.from_case_state else auth_session,
-        )
-        if args.complete_case_state:
-            backlog_id = str((case_state_ref or {}).get("backlog_id") or "")
-            if not args.from_case_state or not backlog_id:
-                raise ValueError("--complete-case-state requires --from-case-state with --backlog-id")
-            summary["case_state_write_back"] = complete_backlog(
-                repo_root,
-                args.target,
-                backlog_id=backlog_id,
-                result=str(summary.get("result") or "candidate"),
-                evidence_ref=str(summary.get("summary_path") or ""),
-                notes="auto-written by validation_runner --complete-case-state",
-            )
-    else:  # pragma: no cover - argparse guards this
+    else:
         raise ValueError(f"unknown lane: {args.lane}")
     if identity_v2 is not None and summary.get("ledger_record") is None:
         summary["identity_v2"] = identity_v2

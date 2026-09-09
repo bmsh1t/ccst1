@@ -67,6 +67,8 @@ methods, fields, and workflow states. A stable 403/404 or no server-side delta i
 a stop condition; introspection or a UI difference is not an authorization proof.
 多 session 场景用矩阵方法：对每个高价值端点在 owner/peer（必要时 cross-tenant）
 上下文各发一次同样请求，只比较身份/对象/角色差，纯状态码差保持 Signal。
+机器重放用 request-diff owner/peer 对（`active_dimension=header:authorization`），
+匿名暴露用无凭据 vs 有凭据对；越权与否由 validate gates 判断。
 
 ### Access-Control Boundary Matrix
 
@@ -111,8 +113,7 @@ controlled `/spray` run with lockout, rate limits, and stop conditions.
 ### GraphQL Lane
 
 发现 GraphQL endpoint 后做有界 introspection（schema/operation 名称、`node(id)`
-可枚举性），双角色对象对照用 `validation_runner.py` 原语（request-diff /
-idor-actor-pair）；批量/alias 只测最小次数，订单生命周期 mutation 只记录不执行。
+可枚举性），双角色对象对照用 `validation_runner.py request-diff` owner/peer 对；批量/alias 只测最小次数，订单生命周期 mutation 只记录不执行。
 
 ### Workflow Perturbation Lane
 

@@ -2764,7 +2764,7 @@ def test_path_only_authz_coverage_gap_is_baseline_first():
     })
 
     assert "baseline GET or observed-method replay" in validation_path
-    assert "authz-public-exposure" in validation_path
+    assert "request-diff" in validation_path
     assert "two-actor" not in validation_path
 
 
@@ -4471,7 +4471,7 @@ def test_ranked_surface_role_replay_when_case_state_ready():
     )
 
     ranked_text = next(item for item in proposals if item.startswith("Review surface candidate "))
-    assert "authz-role-replay" in ranked_text
+    assert "request-diff" in ranked_text
     assert "use registered case_state owner/peer sessions" in ranked_text
     assert "First capture/register actor, session, and object context" not in ranked_text
 
@@ -4513,7 +4513,7 @@ def test_ranked_surface_auth_workflow_requires_exact_request_before_role_replay(
     ranked_text = next(item for item in proposals if item.startswith("Review surface candidate "))
     assert "auth-workflow endpoint; exact method/body required before replay" in ranked_text
     assert "Capture the exact auth workflow request first" in ranked_text
-    assert "authz-role-replay" not in ranked_text
+    assert "request-diff" not in ranked_text
     assert "default GET role replay" in ranked_text
 
     action = _build_next_action_queue([ranked_text], "target.com")[0]
@@ -4555,7 +4555,7 @@ def test_ranked_surface_redirect_parameter_uses_parameter_behavior_first():
     ranked_text = next(item for item in proposals if item.startswith("Review surface candidate "))
     assert "parameter-behavior-first redirect/url input; avoid role replay" in ranked_text
     assert "Run parameter-behavior validation first" in ranked_text
-    assert "authz-role-replay" not in ranked_text
+    assert "request-diff" not in ranked_text
     assert "owner/peer role replay" in ranked_text
 
     action = _build_next_action_queue([ranked_text], "target.com")[0]
@@ -4591,7 +4591,7 @@ def test_ranked_surface_parent_prefix_uses_route_prefix_triage():
     ranked_text = next(item for item in proposals if item.startswith("Review surface candidate "))
     assert "route-prefix-first parent path; validate concrete child handlers" in ranked_text
     assert "possible route-prefix/container path" in ranked_text
-    assert "authz-role-replay" not in ranked_text
+    assert "request-diff" not in ranked_text
 
     action = _build_next_action_queue([ranked_text], "target.com")[0]
     assert "Ledger skeleton:" not in ranked_text
@@ -4628,7 +4628,7 @@ def test_ranked_surface_parent_prefix_uses_matrix_child_paths_when_surface_windo
 
     ranked_text = next(item for item in proposals if item.startswith("Review surface candidate "))
     assert "route-prefix-first parent path; validate concrete child handlers" in ranked_text
-    assert "authz-role-replay" not in ranked_text
+    assert "request-diff" not in ranked_text
 
 
 def test_ranked_surface_generic_api_uses_role_replay_when_case_state_ready():
@@ -4661,8 +4661,8 @@ def test_ranked_surface_generic_api_uses_role_replay_when_case_state_ready():
     )
 
     ranked_text = next(item for item in proposals if item.startswith("Review surface candidate "))
-    assert "authz-role-replay" in ranked_text
-    assert "--url" in ranked_text
+    assert "request-diff" in ranked_text
+    assert "owner/peer" in ranked_text or "--request-spec" in ranked_text
     assert "https://app.target.com/api/Orders" in ranked_text
 
 
@@ -4712,9 +4712,9 @@ def test_ranked_surface_placeholder_object_uses_case_state_object():
     ranked_text = next(item for item in proposals if item.startswith("Review surface candidate "))
     assert "non-concrete object value NaN" in ranked_text
     assert "do not replay it directly" in ranked_text
-    assert "idor-actor-pair" in ranked_text
+    assert "request-diff pair" in ranked_text and "header:authorization" in ranked_text
     assert "basket_6" in ranked_text
-    assert "authz-role-replay" not in ranked_text
+    assert "request-diff" in ranked_text
 
     action = _build_next_action_queue([ranked_text], "target.com")[0]
     assert "Ledger skeleton:" not in ranked_text

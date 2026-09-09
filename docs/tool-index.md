@@ -164,9 +164,9 @@ identity, and cloud signals without re-enumerating everything.
 | `/orders/123`, `/invoices/42`, `/addresses/7`, `account_id`, `tenantId` appears in cached artifacts | `case_state_seed.py --target <target> --json`, then review suggested commands |
 | Concrete CMS/plugin/theme/library version observed, or network product/CPE identified | `/intel` → `tools/intel_engine.py`; add `/scan-cves` only after AI selects a reachable advisory |
 | 401/403 on interesting endpoint | AI direct browser/curl/raw request; optional `validation_runner.py request-diff` |
-| Anonymous `application-configuration` `200` | `authz-public-exposure` + body review; path/admin naming alone is only a signal |
-| Multiple session files in `.private/` | AI-selected multi-role comparison via `validation_runner.py request-diff` pairs or `idor-actor-pair` |
-| Two account creds + numeric IDs | `validation_runner.py idor-actor-pair` |
+| Anonymous `application-configuration` `200` | AI body review (config/oauth/security-answer content vs ordinary listing); preserve as a request-diff pair when promoting |
+| Multiple session files in `.private/` | AI-selected multi-role comparison via `validation_runner.py request-diff` owner/peer pairs |
+| Two account creds + numeric IDs | `validation_runner.py request-diff` owner/peer pair with `active_dimension=header:authorization` |
 | GraphQL endpoint discovered | manual bounded introspection, then `validation_runner.py request-diff` with the observed baseline/variant HTTP request spec |
 | OAuth `/authorize` `/callback` discovered | manual OAuth/OIDC flow review with an evidence-backed `request-diff` where an exact pair is known |
 | Payment / coupon / wallet / cart / checkout endpoint | high-value business-logic lane |

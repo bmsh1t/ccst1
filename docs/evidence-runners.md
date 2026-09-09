@@ -12,19 +12,6 @@
 
 ## 常用 runner
 
-### Anonymous exposure
-
-用于匿名访问 admin/config/account/API 暴露的最小证明。只有 body-backed 敏感/配置/密钥形态才应升级。
-该 lane 的 `tested_clean` 只表示没有观察到公开暴露证据，不代表受保护资源的匿名
-Authz 已验证；匿名请求写入 Ledger 时使用 `baseline`，不使用 `unauth_denied`。
-
-```bash
-python3 tools/validation_runner.py authz-public-exposure \
-  --target <target> \
-  --url <exact-url> \
-  --browser-observed
-```
-
 ### Request diff (shared evidence primitive)
 
 Claude chooses the exact baseline/variant pair and one active input dimension;
@@ -70,31 +57,11 @@ JSON as JSON, and never paste a manually double-encoded value into a second
 layer. The runner records the exact pair; it does not rewrite malformed input
 or infer a vulnerability from an encoding-only response change.
 
-### IDOR / Authz actor pair
-
-用于 owner/peer 两个上下文可复现时的对象访问验证。case state 可以降低手工拼 header 的漂移，但不是前置门槛。
-
-```bash
-python3 tools/validation_runner.py idor-actor-pair \
-  --target <target> \
-  --from-case-state \
-  --object-ref <object_ref> \
-  --repeat 2 \
-  --browser-observed
-```
-
-或显式传入请求上下文：
-
-```bash
-python3 tools/validation_runner.py idor-actor-pair \
-  --target <target> \
-  --url '<same-object-url>' \
-  --owner-header 'Authorization: Bearer <owner-token>' \
-  --peer-header 'Authorization: Bearer <peer-token>' \
-  --expect-marker '<owner-private-marker>' \
-  --repeat 2 \
-  --browser-observed
-```
+Promotion is fact-based: a stable material diff promotes to `tested_finding`
+when the SQLi probe-shape detector confirms the diff form, or when the declared
+active dimension is a credential boundary (e.g. `header:authorization`) that
+the two requests actually differ in. Whether a boundary diff is a real
+authorization violation stays with the 7-Question/4-gate AI review.
 
 ### Marker replay
 

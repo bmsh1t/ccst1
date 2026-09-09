@@ -818,12 +818,15 @@ def _coverage_gap_validation_path(gap: dict) -> str:
         return (
             "First run an anonymous baseline GET or observed-method replay and "
             "classify status/body before any role-diff work. If 200 with "
-            "body-backed sensitive/admin/config markers, run "
-            "`python3 tools/validation_runner.py authz-public-exposure --target "
-            "<target> --url <target>{endpoint}` and preserve raw evidence. If "
-            "401/403, record the auth boundary. If 404/5xx/framework error or "
-            "SPA fallback, record tested_clean/dead-end and pivot to "
-            "browser-observed sibling endpoints."
+            "body-backed sensitive/admin/config markers, preserve it as a "
+            "request-diff pair (anonymous vs same request with a denied/empty "
+            "credential dimension) via "
+            "`python3 tools/validation_runner.py request-diff --target "
+            "<target> --request-spec <spec>` and let the AI review config "
+            "exposure. If 401/403, record the auth boundary. If "
+            "404/5xx/framework error or SPA fallback, record "
+            "tested_clean/dead-end and pivot to browser-observed sibling "
+            "endpoints."
         ).format(endpoint=endpoint)
     evaluation = evaluate_candidate_evidence({
         "type": vuln_class,
@@ -1342,7 +1345,7 @@ def _case_state_seed_proposal(seed: dict) -> str:
         ).format(
             object_ref=first_object.get("object_ref", "-"),
             object_type=first_object.get("type", "-"),
-            runner=first_backlog.get("runner", "idor-actor-pair"),
+            runner=first_backlog.get("runner", "request-diff"),
             missing=missing or "object endpoint",
             command=command,
         )
@@ -1356,7 +1359,7 @@ def _case_state_seed_proposal(seed: dict) -> str:
         object_ref=first_object.get("object_ref", "-"),
         object_type=first_object.get("type", "-"),
         endpoint=endpoint or "-",
-        runner=first_backlog.get("runner", "idor-actor-pair"),
+        runner=first_backlog.get("runner", "request-diff"),
         missing=missing or "review required",
         command=command,
     )
@@ -1554,8 +1557,9 @@ def _placeholder_object_replay_guidance(url: str, case_state: dict | None, targe
         command = ""
         if object_ref:
             command = (
-                f"`python3 tools/validation_runner.py idor-actor-pair --target {target_arg} "
-                f"--from-case-state --object-ref {_quote(object_ref)} --repeat 2`"
+                "replay the object request as an owner/peer request-diff pair "
+                "(active_dimension=header:authorization) using the case_state "
+                f"actor sessions for {target_arg} and object {object_ref}"
             )
         return (
             f"observed URL contains non-concrete object value {placeholder_text}; "
@@ -1924,7 +1928,7 @@ def _ranked_surface_replay_draft(
         validation_path = (
             "Use browser-state first for this page route: open it as owner and peer, "
             "capture/import MCP browser artifacts, extract the real XHR/object IDs, "
-            "then run validation_runner authz-role-replay or idor-actor-pair on the "
+            "then replay the underlying API as an owner/peer request-diff pair on the "
             "underlying API instead of replaying the raw SPA HTML shell"
         )
     elif auth_workflow_first:
@@ -1954,9 +1958,10 @@ def _ranked_surface_replay_draft(
         target_arg = _quote(target or "<target>")
         url_arg = _quote(url)
         validation_path = (
-            "Run authenticated role replay from case_state: "
-            f"`python3 tools/validation_runner.py authz-role-replay --target {target_arg} "
-            f"--url {url_arg} --from-case-state --repeat 2`; compare anonymous/owner/peer "
+            "Run an authenticated owner/peer request-diff pair from case_state: "
+            f"`python3 tools/validation_runner.py request-diff --target {target_arg} "
+            f"--request-spec <spec>` with the owner and peer session headers as "
+            "the active header:authorization dimension; compare anonymous/owner/peer "
             "status, JSON shape, and body diff; only promote body-backed public exposure "
             "or role/object-specific authorization delta"
         )
@@ -2122,7 +2127,7 @@ def _ranked_surface_ledger_skeleton(
     elif role_replay_ready:
         notes = (
             "Checkpoint ranked-surface authenticated role replay; run validation_runner "
-            "authz-role-replay and update result/evidence-ref from the generated summary."
+            "request-diff pair and update result/evidence-ref from the generated summary."
         )
     parts = [
         "python3 tools/evidence_ledger.py record",
