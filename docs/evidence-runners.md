@@ -34,7 +34,9 @@ evidence privately, and writes the existing Ledger/Finding/Queue projections.
 XML/text, header/cookie, and path pairs can use the same contract. Unsupported
 multipart, compressed, protobuf, and gRPC wire bodies return `manual_required`
 without being marked clean. Use a canonical `vuln_class` when the pair must
-close a Ledger family; an unclassified pair remains reviewable evidence.
+close a Ledger family; an unclassified pair remains reviewable evidence. JWT,
+OAuth, and token-boundary reasoning stays AI-owned: the runner stores the exact
+pair but does not add a class-specific promotion gate or infer identity impact.
 
 ```json
 {
@@ -63,6 +65,12 @@ close a Ledger family; an unclassified pair remains reviewable evidence.
 python3 tools/validation_runner.py request-diff \
   --target TARGET --request-spec REQUEST_SPEC.json --repeat 2
 ```
+
+Request specs must preserve the observed wire shape. Encode query/path/form
+values structurally (for example with the request builder or `urlencode`), keep
+JSON as JSON, and never paste a manually double-encoded value into a second
+layer. The runner records the exact pair; it does not rewrite malformed input
+or infer a vulnerability from an encoding-only response change.
 
 ### IDOR / Authz actor pair
 

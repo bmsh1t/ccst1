@@ -1721,6 +1721,63 @@ def test_report_generator_uses_validation_summary_for_auth_bypass_narrative(monk
     assert "Baseline Response" in report_text
 
 
+def test_report_generator_uses_validation_cvss_for_severity(monkeypatch, tmp_path):
+    findings_dir = tmp_path / "findings" / "example.com"
+    findings_dir.mkdir(parents=True)
+    validation_dir = tmp_path / "evidence" / "example.com" / "validation" / "cvss-critical"
+    validation_dir.mkdir(parents=True)
+    validation_summary = validation_dir / "summary.json"
+    validation_summary.write_text(
+        json.dumps(
+            {
+                "all_gates_passed": True,
+                "seven_question_gate_passed": True,
+                "four_validation_gates_passed": True,
+                "cvss_score": 9.8,
+                "severity": "medium",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (findings_dir / "findings.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "target": "example.com",
+                "total": 1,
+                "findings": [
+                    {
+                        "id": "cvss-critical",
+                        "type": "sqli",
+                        "category": "sqli",
+                        "title": "SQL injection",
+                        "url": "https://example.com/search?q=x",
+                        "severity": "medium",
+                        "confidence": "confirmed",
+                        "validation_status": "validated",
+                        "validation_summary": str(validation_summary),
+                        "report_status": "not_generated",
+                        "source_file": "sqli/findings.txt",
+                        "raw": "SQLI-POC-VERIFIED",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    _record_owner_provenance(findings_dir, "cvss-critical")
+    monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
+    monkeypatch.setattr(report_generator, "BASE_DIR", str(tmp_path))
+
+    total, index = report_generator.process_findings_dir(str(findings_dir))
+
+    assert total == 1
+    assert index[0]["severity"] == "critical"
+    report_text = Path(index[0]["file"]).read_text(encoding="utf-8")
+    assert "**CRITICAL** (CVSS: 9.8)" in report_text
+    assert finding_index.find_finding(findings_dir, "cvss-critical")["severity"] == "critical"
+
+
 def test_report_generator_uses_write_sink_auth_bypass_narrative(monkeypatch, tmp_path):
     findings_dir = tmp_path / "findings" / "example.com"
     findings_dir.mkdir(parents=True)

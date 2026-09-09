@@ -94,6 +94,9 @@ or second-order inputs; establish a baseline and require a boolean/length or
 time/OOB differential. A DNS-only SSRF signal needs a second signal proving a
 server-side fetch before impact routing. Change one boundary at a time and stop on
 unstable or WAF-only output; the model chooses syntax from the observed query shape.
+For request specs, encode query/path/form values structurally and keep JSON as
+JSON; do not hand-encode twice or treat an encoding-only response change as a
+finding.
 
 ### Hidden Auth Switch Lane
 
@@ -101,6 +104,17 @@ Start with an owned/test account baseline across the visible flow and any observ
 provider, channel, or role selector. Do not silently fall into password brute force.
 If credential testing is selected, route to `skills/credential-attack/` or a
 controlled `/spray` run with lockout, rate limits, and stop conditions.
+
+### JWT / Token AI-Owned Lane
+
+JWT、OAuth、OIDC、SAML 和 token-binding 的变体选择与结论由 AI 负责；不要新增
+JWT-specific runner gate，也不要把 token 变体伪装成 SQLi。先保存合法流程 baseline，
+每轮只改变一个 claim/header/key-source/callback 边界，再用现有 browser/raw replay 或
+`request-diff` 保存精确请求、响应和重复结果。只有匿名/低权限到受保护资源的稳定身份、
+权限或会话差异才进入 `triage-validation`；可 decode、签名错误、状态/长度差异和反射
+marker 仍是 Signal/Candidate。交接必须带 evidence refs、session/actor、边界解释、
+impact、stop condition 和 reopen condition。不要把 `marker-replay` 当作 JWT
+验证器；它只适用于执行/反射类 inert marker 证据。
 
 ## Chain Shapes
 

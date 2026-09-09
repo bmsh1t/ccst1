@@ -806,6 +806,58 @@ def _load_validation_summary(finding, *, repo_root=None):
     return _load_json_file(summary_path) if summary_path else {}
 
 
+def _validation_cvss_score(validation):
+    """Return a bounded numeric CVSS score from the attached summary."""
+    if not isinstance(validation, dict):
+        return None
+    candidates = [validation.get("cvss_score")]
+    cvss = validation.get("cvss")
+    if isinstance(cvss, dict):
+        candidates.extend(
+            cvss.get(key)
+            for key in ("score", "base_score", "cvss_score", "baseScore")
+        )
+        data = cvss.get("cvssData")
+        if isinstance(data, dict):
+            candidates.extend(data.get(key) for key in ("baseScore", "score"))
+    elif cvss is not None:
+        candidates.append(cvss)
+    for value in candidates:
+        if isinstance(value, bool):
+            continue
+        try:
+            score = float(value)
+        except (TypeError, ValueError):
+            continue
+        if 0.0 <= score <= 10.0:
+            return score
+    return None
+
+
+def _severity_from_cvss(score):
+    if score >= 9.0:
+        return "critical"
+    if score >= 7.0:
+        return "high"
+    if score >= 4.0:
+        return "medium"
+    if score > 0.0:
+        return "low"
+    return "info"
+
+
+def _report_severity(finding, validation, template):
+    """Resolve one severity for report prose, index rows, and persistence."""
+    score = _validation_cvss_score(validation)
+    if score is not None:
+        return _severity_from_cvss(score)
+    summary_severity = str((validation or {}).get("severity") or "").strip().lower()
+    if summary_severity in SEVERITY_MAP:
+        return summary_severity
+    finding_severity = str(finding.get("severity") or template.get("severity") or "medium").strip().lower()
+    return finding_severity if finding_severity in SEVERITY_MAP else "medium"
+
+
 def _validation_summary_is_report_ready(finding, validation):
     """Return whether an attached validation summary is a report-readiness gate."""
     path = str(finding.get("validation_summary") or "").strip()
@@ -1008,8 +1060,10 @@ def generate_report(finding, vuln_type, target_name=None, *, repo_root=None):
         cve_id=finding.get("template_id", "Unknown CVE")
     )
 
-    severity = finding.get("severity", template["severity"])
+    severity = _report_severity(finding, validation, template)
     severity_info = SEVERITY_MAP.get(severity, SEVERITY_MAP["medium"])
+    cvss_score = _validation_cvss_score(validation)
+    cvss_label = f"{cvss_score:g}" if cvss_score is not None else severity_info["cvss_range"]
     finding_reference = format_finding_reference(finding)
     validation_evidence = _validation_evidence_block(validation)
     reproduction_steps = _reproduction_steps_block(finding, validation, url)
@@ -1019,7 +1073,7 @@ def generate_report(finding, vuln_type, target_name=None, *, repo_root=None):
     report = f"""# {title}
 
 ## Severity
-**{severity.upper()}** (CVSS: {severity_info['cvss_range']})
+**{severity.upper()}** (CVSS: {cvss_label})
 
 ## Vulnerability Type
 {template.get('cwe', 'N/A')} — {vuln_type.upper()}
@@ -1273,12 +1327,22 @@ def process_findings_dir(findings_dir, *, allow_legacy_drafts=False):
         for finding in reportable_findings:
 
             vuln_type = _report_vuln_type(finding)
+            findings_repo_root = _repo_root_for_findings_dir(findings_dir)
 
             report_content, title = generate_report(
                 finding,
                 vuln_type,
                 target_name,
-                repo_root=_repo_root_for_findings_dir(findings_dir),
+                repo_root=findings_repo_root,
+            )
+            validation = _load_validation_summary(
+                finding,
+                repo_root=findings_repo_root,
+            )
+            report_severity = _report_severity(
+                finding,
+                validation,
+                VULN_TEMPLATES.get(vuln_type, VULN_TEMPLATES["misconfig"]),
             )
 
             while True:
@@ -1299,12 +1363,17 @@ def process_findings_dir(findings_dir, *, allow_legacy_drafts=False):
 
             legacy_draft = not str(finding.get("validation_status") or "").strip()
             if finding.get("id") and not legacy_draft:
+                updates = {
+                    "report_status": "generated",
+                    "report_file": report_file,
+                    "report_id": report_id,
+                }
+                if report_severity != str(finding.get("severity") or "").strip().lower():
+                    updates["severity"] = report_severity
                 updated = update_finding_status(
                     findings_dir,
                     finding.get("id", ""),
-                    report_status="generated",
-                    report_file=report_file,
-                    report_id=report_id,
+                    **updates,
                 )
                 if updated is None:
                     raise ValueError(
@@ -1327,7 +1396,7 @@ def process_findings_dir(findings_dir, *, allow_legacy_drafts=False):
                 "id": report_id,
                 "finding_id": finding.get("id", ""),
                 "title": title,
-                "severity": finding.get("severity", "medium"),
+                "severity": report_severity,
                 "url": finding.get("url", ""),
                 "file": report_file,
                 "type": vuln_type,

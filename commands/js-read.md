@@ -53,6 +53,14 @@ Queue action, select a real Skill path, normally `skills/web2-recon/SKILL.md`.
 
 The preparation step is local-only and does not call an LLM. The agent reads the prepared materials and selected cached JS files.
 
+### Single host:port fallback
+
+When the target is a single `host:port` and the cached JS inventory is empty,
+first fetch the root page and record its exact `script src` values. Follow only
+observed dynamic chunk/source-map requests, then rerun the evidence-gated packer
+or `js_reader.py`. An empty collector output is a collection diagnostic, not a
+clean result and not permission to use a broad bundle dictionary.
+
 On a resumed run, the agent reuses hypotheses whose source file is marked
 `unchanged` and reads only new/changed files or unresolved evidence. Existing
 hypotheses are merged into the new report; unchanged bundles are not re-read

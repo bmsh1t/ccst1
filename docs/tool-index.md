@@ -170,6 +170,7 @@ identity, and cloud signals without re-enumerating everything.
 | `/orders/123`, `/invoices/42`, `/addresses/7`, `account_id`, `tenantId` appears in cached artifacts | `case_state_seed.py --target <target> --json`, then review suggested commands |
 | Concrete CMS/plugin/theme/library version observed, or network product/CPE identified | `/intel` → `tools/intel_engine.py`; add `/scan-cves` only after AI selects a reachable advisory |
 | 401/403 on interesting endpoint | AI direct browser/curl/raw request; optional `validation_runner.py request-diff` |
+| Anonymous `application-configuration` `200` | `authz-public-exposure` + body review; path/admin naming alone is only a signal |
 | Multiple session files in `.private/` | `role_diff.py` |
 | Two account creds + numeric IDs | `role_diff.py`, then `validation_runner.py idor-actor-pair` |
 | GraphQL endpoint discovered | `graphql_audit.sh` for target-owned discovery, then `validation_runner.py request-diff` with the observed baseline/variant HTTP request spec |

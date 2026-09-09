@@ -119,6 +119,7 @@ Browser-state surfaces should use the shared browser evidence lane:
 - **SSRF / webhook / async**: use `tools/oast_listen.py` only when a URL-fetch or webhook sink exists.
 - **Upload/import/export**: confirm parser/authorization paths with minimal samples; record state-changing leads separately.
 - **JWT/OIDC/SAML/OAuth**: decode and inspect issuer/JWKS/callback/state/session binding signals before probing.
+- **JWT request construction**: keep token/header/claim variants AI-selected and change one boundary at a time; build query/path/form encoding structurally, preserve raw baseline/variant evidence, and treat status/length/marker differences without an identity or permission delta as Signal/Candidate.
 - **SQL/NoSQL JSON body**: use the target-observed body or parameter shape and let Claude choose a bounded direct request. Optionally use `validation_runner.py request-diff` for an exact same-method pair, or `timing_sql_runner.py` for a time-shaped candidate. Keep baseline/variant evidence and stop on transport, WAF, or ordinary application noise; do not invoke a fixed matrix or encoder catalogue.
 - **API leak / Swagger / Postman**: review `recon/<target>/exposure/` before widening.
 - **IIS short filename**: when IIS is detected, use `shortscan <url> -s -p 1`; if `shortscan` is missing, keep a manual review hint instead of failing.
