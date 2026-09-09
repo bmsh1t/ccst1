@@ -3269,7 +3269,7 @@ emit_claude_hint \
     sensitive_paths_filtered "$URLS_SENS_FILTERED" \
     url_filter_log       "$URL_FILTER_LOG"
 emit_claude_hint_actions \
-    "tools/role_diff.py --target ${TARGET} --endpoints recon/${RECON_TARGET_KEY}/urls/api_endpoints_filtered.txt --session ...   # fallback to api_endpoints.txt if absent" \
+    "compare api_endpoints access across both owned sessions (owner vs peer) on ${TARGET}" \
     "python3 tools/param_discovery.py --target ${TARGET} --list recon/${RECON_TARGET_KEY}/live/urls.txt --method GET   # mine hidden params" \
     "spawn js-reader if js_files_filtered/js_files > 0"
 

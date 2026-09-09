@@ -83,14 +83,9 @@ identity, and cloud signals without re-enumerating everything.
 | Tool | When to use | One-line function |
 |---|---|---|
 | `tools/vuln_scanner.sh` | Recon done, want bounded breadth context | Bounded Nuclei/passive candidates with residual accounting; never report-ready proof |
-| `tools/workflow_sequence.py` | HAR/browser flow has 2+ same-target requests | Bounded replay/perturb/diff with token refresh, private evidence and Action Queue |
-| `tools/timing_sql_runner.py` | Time-shaped SQL candidate remains | Interleaved timing evidence with robust stats, caps, WAF/429 semantics and queue |
 | `tools/validation_runner.py` (`request-diff`) | Exact AI baseline/variant pair | Shared replay/diff across query, form, JSON, text, header/cookie, and path inputs |
-| `tools/graphql_audit.sh` | GraphQL endpoint needs bounded discovery | Target-owned audit summary and candidate Finding; never auto-validates signals |
 | `tools/sibling_generator.py` | Candidate route has an ID-bearing sibling shape | Writes a bounded sibling-endpoint probe queue for evidence-fit replay |
 | `tools/sender_semantics.py` | Byte-exact/proxy/cache/smuggling work needs sender choice | `--list` / `--require ...`; sender capability matrix + raw HTTP/1 sender for low-level request semantics |
-| `tools/smuggling_executor.py` | Smuggling/cache candidate execution plan | `--summary` / `--variant 0.CL`; sender + evidence classes |
-| `tools/role_diff.py` | Multiple session files available | **Multi-role endpoint diff — IDOR gold standard** (R2 new) |
 | `tools/zero_day_fuzzer.py` ⚠️ underused | Standard scans plateaued | LLM-guided fuzz on remaining unexplored surface |
 | `tools/aspnet_viewstate_knownkey.py` ⚠️ manual-only | Captured page contains `__VIEWSTATE` | Offline machineKey check; `--reveal-key` only for controlled validation |
 | `tools/telerik_knownkey.py` ⚠️ manual-only | Captured Telerik `SerializedParameters` | Offline vendored Badsecrets default-key check; no HTTP or state write |
@@ -171,12 +166,12 @@ identity, and cloud signals without re-enumerating everything.
 | Concrete CMS/plugin/theme/library version observed, or network product/CPE identified | `/intel` → `tools/intel_engine.py`; add `/scan-cves` only after AI selects a reachable advisory |
 | 401/403 on interesting endpoint | AI direct browser/curl/raw request; optional `validation_runner.py request-diff` |
 | Anonymous `application-configuration` `200` | `authz-public-exposure` + body review; path/admin naming alone is only a signal |
-| Multiple session files in `.private/` | `role_diff.py` |
-| Two account creds + numeric IDs | `role_diff.py`, then `validation_runner.py idor-actor-pair` |
-| GraphQL endpoint discovered | `graphql_audit.sh` for target-owned discovery, then `validation_runner.py request-diff` with the observed baseline/variant HTTP request spec |
+| Multiple session files in `.private/` | AI-selected multi-role comparison via `validation_runner.py request-diff` pairs or `idor-actor-pair` |
+| Two account creds + numeric IDs | `validation_runner.py idor-actor-pair` |
+| GraphQL endpoint discovered | manual bounded introspection, then `validation_runner.py request-diff` with the observed baseline/variant HTTP request spec |
 | OAuth `/authorize` `/callback` discovered | manual OAuth/OIDC flow review with an evidence-backed `request-diff` where an exact pair is known |
 | Payment / coupon / wallet / cart / checkout endpoint | high-value business-logic lane |
-| Quota / OTP / payment / cart race signal | manual review; use `workflow_sequence.py` for a captured multi-step flow when applicable |
+| Quota / OTP / payment / cart race signal | AI-selected workflow perturbation on the captured flow; preserve per-step raw evidence |
 | Blind SSRF / RCE / XXE candidate | `oast_listen.py start` |
 | Standard scans plateaued | `zero_day_fuzzer.py` |
 | Unicode / filter representation needs review | AI selects the exact representation and preserves raw evidence |

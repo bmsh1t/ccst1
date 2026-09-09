@@ -127,57 +127,12 @@ The neutral control must finish with a successful, non-truncated response. An
 error or truncated control keeps the replay as a `candidate` signal so it
 cannot become either `tested_finding` or `tested_clean`.
 
-### Workflow sequence
-
-Use only an imported HAR/browser Network artifact with at least two ordered,
-same-target business requests. The runner performs one remove/repeat perturbation,
-refreshes declared short-lived tokens, keeps raw traffic private, and writes a
-bounded result to the Action Queue.
-
-```bash
-python3 tools/workflow_sequence.py \
-  --target <target> \
-  --evidence-ref evidence/<target>/browser/<capture>/requests.json
-```
-
-The workflow runner records raw traffic, budgets, and response differences; a
-response difference remains a candidate until AI reviews impact and replayability.
-
-A step-level `token` declares exactly one source: `regex` (body capture group),
-`response_header`, `cookie` (`Set-Cookie` name), or a bounded dotted `json_path`.
-Send the extracted value through `header` or a body `placeholder`; token source
-URLs and redirects remain target-scoped. Example:
-
-```json
-{
-  "token": {
-    "url": "https://api.TARGET/session/refresh",
-    "json_path": "$.data.csrf",
-    "header": "X-CSRF-Token"
-  }
-}
-```
-
-### Timing SQL
-
-Use after a time-shaped SQL signal, never as a default sweep. Samples are
-interleaved baseline/variant pairs with a lane-global request cap. Median/MAD and
-WAF/429/transport classification keep a single slow response from becoming a
-finding.
-
-```bash
-python3 tools/timing_sql_runner.py \
-  --target <target> --url '<target-url-with-param>' \
-  --param <name> --variant-value '<controlled-delay>' \
-  --repeat 5 --max-requests 20
-```
-
 ### Request smuggling capability gate
 
-`smuggling_executor.py` reports whether a local sender can preserve the required
-byte-exact and connection-reuse semantics. `disposition=manual_required` is the
-expected result for unsupported H2/desync variants; it is not evidence of a
-vulnerability.
+`sender_semantics.py --require ...` reports whether a local sender can preserve
+the required byte-exact and connection-reuse semantics; the AI builds the raw
+probe from the observed wire shape. An unsupported sender capability is a
+handoff, not evidence of a vulnerability.
 
 ## 相关状态工具
 

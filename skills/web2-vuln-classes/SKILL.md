@@ -65,6 +65,8 @@ branch when the observed evidence justifies it.
 Compare the same target-bound action across two owned identities, object IDs,
 methods, fields, and workflow states. A stable 403/404 or no server-side delta is
 a stop condition; introspection or a UI difference is not an authorization proof.
+多 session 场景用矩阵方法：对每个高价值端点在 owner/peer（必要时 cross-tenant）
+上下文各发一次同样请求，只比较身份/对象/角色差，纯状态码差保持 Signal。
 
 ### Access-Control Boundary Matrix
 
@@ -96,7 +98,8 @@ server-side fetch before impact routing. Change one boundary at a time and stop 
 unstable or WAF-only output; the model chooses syntax from the observed query shape.
 For request specs, encode query/path/form values structurally and keep JSON as
 JSON; do not hand-encode twice or treat an encoding-only response change as a
-finding.
+finding. 时间型信号用交错 baseline/variant 采样验证趋势（中位数/MAD 稳定才算
+数；单次慢响应、`429`、WAF 块页、传输错误保持 partial）。
 
 ### Hidden Auth Switch Lane
 
@@ -104,6 +107,19 @@ Start with an owned/test account baseline across the visible flow and any observ
 provider, channel, or role selector. Do not silently fall into password brute force.
 If credential testing is selected, route to `skills/credential-attack/` or a
 controlled `/spray` run with lockout, rate limits, and stop conditions.
+
+### GraphQL Lane
+
+发现 GraphQL endpoint 后做有界 introspection（schema/operation 名称、`node(id)`
+可枚举性），双角色对象对照用 `validation_runner.py` 原语（request-diff /
+idor-actor-pair）；批量/alias 只测最小次数，订单生命周期 mutation 只记录不执行。
+
+### Workflow Perturbation Lane
+
+捕获到 ≥2 个有序同目标业务请求时，按步做单变量 remove/repeat 扰动：每步只
+删除或重复一个参数/步骤，短时效 token（CSRF/session 刷新）按观察到的来源
+重新提取，raw 流量落私有证据；响应差异在 AI 审查影响与可重放性前保持
+Candidate。
 
 ### JWT / Token AI-Owned Lane
 

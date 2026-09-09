@@ -155,8 +155,6 @@ def build_capability_profile(
     browser_mcp_import_ready = _helpers_exist(resolved_repo, "tools/browser_mcp_import.py")
     dns_expansion_ready = _helpers_exist(resolved_repo, "tools/dns_expand.py")
     surface_ready = _helpers_exist(resolved_repo, "tools/surface.py", "tools/surface_projection.py")
-    workflow_ready = _helpers_exist(resolved_repo, "tools/workflow_sequence.py")
-    timing_ready = _helpers_exist(resolved_repo, "tools/timing_sql_runner.py")
     idor_authz_ready = _helpers_exist(
         resolved_repo,
         "tools/validation_runner.py",
@@ -298,12 +296,10 @@ def build_capability_profile(
         ),
         _lane_record(
             "workflow",
-            {"tools/workflow_sequence.py": workflow_ready},
             evidence_required=("ordered-same-target-requests",),
         ),
         _lane_record(
             "timing",
-            {"tools/timing_sql_runner.py": timing_ready},
             evidence_required=("time-shaped-candidate",),
         ),
         _lane_record(

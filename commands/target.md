@@ -41,7 +41,7 @@ python3 tools/target_memory.py set target.com \
 
 python3 tools/target_memory.py note "Login is account-gated; API paths expose org_id"
 python3 tools/target_memory.py lead "Possible IDOR on /api/org/{id}/users"
-python3 tools/target_memory.py next "Run role_diff with two accounts against org user list"
+python3 tools/target_memory.py next "Compare org user list access across both accounts"
 python3 tools/target_memory.py dead-end "GraphQL introspection disabled; no operation names in JS"
 python3 tools/target_memory.py pattern "Export endpoints are high-signal on this target"
 python3 tools/target_memory.py handoff "Recon complete; next step is role-diff on org APIs"

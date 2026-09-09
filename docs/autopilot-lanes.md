@@ -154,7 +154,7 @@ already recorded anything.
 ## SQL JSON And WAF
 
 - `live/wafw00f_hits.txt` is sampled host-level context. AI chooses the target-observed POST/JSON/query/form shape and exact test input, then uses browser/MCP/curl/raw sender directly.
-- Use `validation_runner.py request-diff` only for an exact same-method, one-dimension HTTP pair that benefits from stable replay, response diff, and canonical evidence. Use `timing_sql_runner.py` only for a time-shaped candidate. `429`, transport failure, block pages, and WAF observations are not findings; never run a fixed matrix merely because parameters or a WAF exist.
+- Use `validation_runner.py request-diff` only for an exact same-method, one-dimension HTTP pair that benefits from stable replay, response diff, and canonical evidence. Time-shaped candidates use AI interleaved sampling with a stable median/MAD trend. `429`, transport failure, block pages, and WAF observations are not findings; never run a fixed matrix merely because parameters or a WAF exist.
 - Direct or browser evidence that does not fit a Runner remains raw evidence or a target-owned `finding_claim`; checkpoint owns the lifecycle handoff.
 
 ## Access Limit
@@ -164,8 +164,8 @@ already recorded anything.
 
 ## Workflow Timing And Case State
 
-- When imported HAR/browser Network evidence contains at least two ordered same-target business requests, run `python3 tools/workflow_sequence.py --target <target_shell> --evidence-ref <repo-evidence-json>`. It performs one bounded remove/repeat perturbation, refreshes declared per-step tokens, writes raw traffic privately, and leaves the result in Action Queue. The runner records observed requests and response differences; the AI reviews the resulting evidence.
-- When a time-shaped candidate or explicit SQL timing evidence remains after result-diff, run `python3 tools/timing_sql_runner.py --target <target_shell> --url <target-url> --param <name> --variant-value <controlled-delay>` with an explicit request cap. It interleaves baseline/variant samples and requires a stable median/MAD trend; one slow response, `429`, WAF block, or transport error stays partial.
+- When imported HAR/browser Network evidence contains at least two ordered same-target business requests, the AI replays the flow with one bounded remove/repeat perturbation per step, refreshing short-lived tokens observed in the flow, and preserves raw traffic as private evidence; a response difference stays a candidate until AI reviews impact and replayability.
+- When a time-shaped candidate or explicit SQL timing evidence remains after result-diff, the AI runs interleaved baseline/variant samples with an explicit request cap and requires a stable median/MAD trend; one slow response, `429`, WAF block, or transport error stays partial.
 - Case-State First, Not Case-State Only: case-state-validation and case-state-enrichment are high-value continuity, not a scope gate or bug-class selector. Stale/missing cannot block fresh evidence/AI override; use `tools/target_case_state.py`, `tools/case_state_seed.py`, and runners.
 
 ## Credentials And Asset Expansion
@@ -179,5 +179,5 @@ already recorded anything.
 
 ## Wire And Live-Action Boundaries
 
-- Byte-exact HTTP/cache/desync uses `tools/sender_semantics.py --require` and `tools/smuggling_executor.py --variant`; read `disposition=manual_required` as a capability handoff, not a verified smuggling result. Browser evidence cannot prove wire absence.
+- Byte-exact HTTP/cache/desync gates the sender with `tools/sender_semantics.py --require`; an unsupported sender capability is a handoff, not a verified smuggling result. Browser evidence cannot prove wire absence.
 - Preserve unavailable credentials, off-target requests, report submission, and other execution blockers as blocked or untested, never tested-clean.
