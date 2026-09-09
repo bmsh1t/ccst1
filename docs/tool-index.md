@@ -86,7 +86,6 @@ identity, and cloud signals without re-enumerating everything.
 | `tools/validation_runner.py` (`request-diff`) | Exact AI baseline/variant pair | Shared replay/diff across query, form, JSON, text, header/cookie, and path inputs |
 | `tools/sibling_generator.py` | Candidate route has an ID-bearing sibling shape | Writes a bounded sibling-endpoint probe queue for evidence-fit replay |
 | `tools/sender_semantics.py` | Byte-exact/proxy/cache/smuggling work needs sender choice | `--list` / `--require ...`; sender capability matrix + raw HTTP/1 sender for low-level request semantics |
-| `tools/zero_day_fuzzer.py` ⚠️ underused | Standard scans plateaued | LLM-guided fuzz on remaining unexplored surface |
 | `tools/aspnet_viewstate_knownkey.py` ⚠️ manual-only | Captured page contains `__VIEWSTATE` | Offline machineKey check; `--reveal-key` only for controlled validation |
 | `tools/telerik_knownkey.py` ⚠️ manual-only | Captured Telerik `SerializedParameters` | Offline vendored Badsecrets default-key check; no HTTP or state write |
 | `tools/token_scanner.py` | Smart contract / token audit | Token red-flag scanner — meme coin rug vectors |
@@ -173,7 +172,7 @@ identity, and cloud signals without re-enumerating everything.
 | Payment / coupon / wallet / cart / checkout endpoint | high-value business-logic lane |
 | Quota / OTP / payment / cart race signal | AI-selected workflow perturbation on the captured flow; preserve per-step raw evidence |
 | Blind SSRF / RCE / XXE candidate | `oast_listen.py start` |
-| Standard scans plateaued | `zero_day_fuzzer.py` |
+| Standard scans plateaued | AI-selected focused fuzz on remaining unexplored surface |
 | Unicode / filter representation needs review | AI selects the exact representation and preserves raw evidence |
 | Public repo URL in target footer | `source_hunt.py` |
 | Brand keyword for buckets | `cloud_recon.sh` |
@@ -199,7 +198,6 @@ identity, and cloud signals without re-enumerating everything.
 
 These tools exist in the repo but are rarely cited in slash-command or sub-agent prompts. Surface them when the trigger fits — they are battle-tested and ready:
 
-- `zero_day_fuzzer.py` — LLM-guided fuzz post-plateau
 - `wordlist_engine.sh` / `osint_employees.sh` / `breach_checker.py` — manual credential-prep chain; useful when identity surface matters
 
 ---

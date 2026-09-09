@@ -16,15 +16,12 @@ CLASSIFICATIONS = {
     "browser_evidence": "narrow-root-injected",
     "browser_playwright_fallback": "narrow-root-injected",
     "cf_solver": "repo-root-dependent",
-    "hypothesis_worker": "import-only",
     "remember": "repo-root-dependent",
     "request_guard": "narrow-root-injected",
     "resume": "repo-root-dependent",
     "scanner_pass_writer": "narrow-root-injected",
-    "sibling_worker": "repo-root-dependent",
     "source_hunt": "repo-root-dependent",
     "vision_browser": "narrow-root-injected",
-    "zero_day_fuzzer": "repo-root-dependent",
 }
 
 ROOT_SYMBOLS = {
@@ -35,9 +32,7 @@ ROOT_SYMBOLS = {
         "load_validate_prefill",
     ),
     "resume": ("load_resume_summary", "load_pickup_summary"),
-    "sibling_worker": ("run_worker",),
     "source_hunt": ("_exposure_dir", "_write_result_bundle", "run_source_hunt"),
-    "zero_day_fuzzer": ("ZeroDayFuzzer",),
 }
 
 NARROW_SYMBOLS = {
@@ -63,9 +58,7 @@ CLI_MODULES = (
     "cf_solver",
     "remember",
     "resume",
-    "sibling_worker",
     "source_hunt",
-    "zero_day_fuzzer",
 )
 
 
@@ -98,7 +91,6 @@ def test_root_boundaries_have_explicit_parameters_and_import_only_stays_clean():
             assert expected.issubset(parameters), f"{module_name}.{symbol} lost its narrow root"
             assert "repo_root" not in parameters, f"{module_name}.{symbol} gained a cosmetic repo_root"
 
-    assert "repo_root" not in inspect.signature(_module("hypothesis_worker").run_worker).parameters
 
 
 @pytest.mark.parametrize("module_name", CLI_MODULES)
@@ -191,48 +183,6 @@ def test_resume_explicit_root_reads_runtime_artifacts(tmp_path, monkeypatch):
     assert not legacy.exists()
 
 
-def test_sibling_worker_explicit_root_reads_recon_pool(tmp_path, monkeypatch):
-    import sibling_worker
-
-    legacy = tmp_path / "legacy"
-    root = tmp_path / "isolated"
-    target = "target.test"
-    recon = root / "recon" / target / "urls"
-    recon.mkdir(parents=True)
-    (recon / "all.txt").write_text(
-        "/api/users/1\n/api/orders/1\n/api/invoices/1\n", encoding="utf-8"
-    )
-    scratch = root / "evidence/worker"
-    scratch.mkdir(parents=True)
-    seed_path = scratch / "seed.json"
-    seed_path.write_text(
-        json.dumps(
-            {
-                "worker_id": "w1",
-                "target": target,
-                "seed_finding": {"id": "f1", "endpoint": "/api/users/1", "vuln_class": "IDOR"},
-            }
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(sibling_worker, "BASE_DIR", legacy)
-    limiter = sibling_worker._select_global_limiter(scratch, root)
-    assert limiter is not None
-    assert (root / "hunt-memory/audit/parallel_lock.json").is_file()
-    monkeypatch.setattr(sibling_worker, "_select_global_limiter", lambda *_args: None)
-    monkeypatch.setattr(
-        sibling_worker,
-        "_http_probe",
-        lambda _url: {"status": 200, "snippet": '{"id":1}', "content_type": "application/json"},
-    )
-
-    summary = sibling_worker.run_worker(seed_path, scratch, target, 2, repo_root=root)
-
-    assert summary["probes_attempted"] == 2
-    assert json.loads((scratch / "findings.json").read_text(encoding="utf-8"))
-    assert not legacy.exists()
-
-
 def test_source_hunt_explicit_root_contains_exposure_bundle(tmp_path, monkeypatch):
     import source_hunt
     from repo_scan_models import RepoFinding, RepoSourceMeta
@@ -272,20 +222,3 @@ def test_source_hunt_explicit_root_contains_exposure_bundle(tmp_path, monkeypatc
     assert not legacy.exists()
 
 
-def test_zero_day_fuzzer_explicit_root_contains_findings_dir(tmp_path, monkeypatch):
-    from tools import zero_day_fuzzer
-    from tools.scope_context import ScopeContext
-
-    legacy = tmp_path / "legacy"
-    root = tmp_path / "isolated"
-    monkeypatch.setattr(zero_day_fuzzer, "BASE_DIR", str(legacy))
-    fuzzer = zero_day_fuzzer.ZeroDayFuzzer(
-        "https://target.test",
-        repo_root=root,
-        scope_target="target.test",
-        scope_context=ScopeContext.from_target("target.test"),
-        max_requests=1,
-    )
-
-    assert Path(fuzzer.findings_dir).is_relative_to(root)
-    assert not legacy.exists()

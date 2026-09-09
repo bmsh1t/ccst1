@@ -12,7 +12,7 @@ import json
 
 import pytest
 
-from tools import action_queue, high_value_signals, noise_filter, parallel_workers, runtime_config, target_memory, target_paths
+from tools import action_queue, high_value_signals, noise_filter, runtime_config, target_memory, target_paths
 
 
 def test_resolve_target_url_preserves_protocol_relative_authority():
@@ -430,43 +430,3 @@ def test_runtime_config_is_fail_open_and_explicit_override_wins(tmp_path):
     assert runtime_config.load_runtime_config(tmp_path) == {}
 
 
-def test_parallel_workers_join_consolidate_preserves_highest_severity_and_appends_once(tmp_path, monkeypatch):
-    monkeypatch.setattr(parallel_workers, "_trigger_matrix_rebuild", lambda target, repo: True)
-    results = [
-        parallel_workers.WorkerResult(
-            worker_id="w1",
-            kind="hypothesis",
-            scratch_dir="",
-            completed=True,
-            timed_out=False,
-            exit_code=0,
-            findings=[{"endpoint": "/api/orders/1", "vuln_class": "IDOR", "severity": "low"}],
-        ),
-        parallel_workers.WorkerResult(
-            worker_id="w2",
-            kind="hypothesis",
-            scratch_dir="",
-            completed=True,
-            timed_out=False,
-            exit_code=0,
-            findings=[{"endpoint": "/api/orders/1", "vuln_class": "IDOR", "severity": "high"}],
-        ),
-    ]
-
-    first = parallel_workers.join_and_consolidate(results, "target.test", repo_root=tmp_path)
-    second = parallel_workers.join_and_consolidate(results, "target.test", repo_root=tmp_path)
-
-    findings = json.loads((tmp_path / "findings" / "target.test" / "findings.json").read_text(encoding="utf-8"))
-    assert first == {
-        "workers_total": 2,
-        "workers_completed": 2,
-        "workers_timed_out": 0,
-        "consolidated_findings": 1,
-        "appended_to_findings": 1,
-        "matrix_rebuilt": True,
-    }
-    assert second["appended_to_findings"] == 0
-    assert findings["schema_version"] == 1
-    assert len(findings["findings"]) == 1
-    assert findings["findings"][0]["severity"] == "high"
-    assert findings["findings"][0]["worker_id"] == "w2"

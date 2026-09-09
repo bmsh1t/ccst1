@@ -11,8 +11,7 @@ Usage:
     python3 hunt.py --scan-only --target <target> --scanner-full --scanner-skip module1,module2
     python3 hunt.py --status                # Show current progress
     python3 hunt.py --setup-wordlists       # Download common wordlists
-    python3 hunt.py --zero-day --target <target>   # Run zero-day fuzzer
-"""
+  """
 
 import argparse
 import json
@@ -794,7 +793,7 @@ def _update_target_profile(domain, *, elapsed_minutes=0, recon_completed=False):
     save_target_profile(HUNT_MEMORY_DIR, profile)
 
 
-def _session_vuln_classes(domain, *, recon_completed=False, scan_completed=False, zero_day=False):
+def _session_vuln_classes(domain, *, recon_completed=False, scan_completed=False):
     """Derive a minimal list of vuln classes/scan modes attempted in the session."""
     classes = []
     for item in _load_report_findings(domain):
@@ -808,8 +807,6 @@ def _session_vuln_classes(domain, *, recon_completed=False, scan_completed=False
         elif recon_completed:
             classes.append("recon")
 
-    if zero_day:
-        classes.append("zero_day")
 
     return _dedupe_keep_order(classes)
 
@@ -820,7 +817,6 @@ def _auto_log_session_summary(
     action="hunt",
     recon_completed=False,
     scan_completed=False,
-    zero_day=False,
     session_id=None,
 ):
     """Auto-log a non-fatal session summary to hunt memory."""
@@ -840,7 +836,6 @@ def _auto_log_session_summary(
             domain,
             recon_completed=recon_completed,
             scan_completed=scan_completed,
-            zero_day=zero_day,
         )
         journal = HuntJournal(Path(HUNT_MEMORY_DIR) / "journal.jsonl")
         journal.log_session_summary(
@@ -864,7 +859,6 @@ def _persist_runtime_state(
     recon_completed=False,
     scan_completed=False,
     reports_generated=0,
-    zero_day=False,
     ctf_mode=False,
     enrichment_tools=None,
 ):
@@ -887,7 +881,6 @@ def _persist_runtime_state(
             surface_ready=bool(artifacts.get("surface_inputs_ready")),
             scan_completed=bool(scan_completed),
             reports_generated=int(reports_generated or 0),
-            zero_day=bool(zero_day),
             ctf_mode=bool(ctf_mode),
             enrichment_tools=list(enrichment_tools or []),
             pending_validation=int(structured.get("pending_validation", 0) or 0),
@@ -939,7 +932,6 @@ def _batch_recon_result(canonical_target, recon_ok, started, *, ctf_mode=False):
         recon_completed=bool(recon_ok),
         scan_completed=False,
         reports_generated=0,
-        zero_day=False,
         ctf_mode=ctf_mode,
     )
     _update_target_profile(canonical_target, elapsed_minutes=elapsed_minutes, recon_completed=bool(recon_ok))
@@ -947,7 +939,6 @@ def _batch_recon_result(canonical_target, recon_ok, started, *, ctf_mode=False):
         canonical_target,
         recon_completed=bool(recon_ok),
         scan_completed=False,
-        zero_day=False,
     )
 
     for label, path in (("completed", completed), ("failed", failed)):
@@ -1514,37 +1505,6 @@ def print_dashboard(results):
         print(f"\n{'='*60}\n")
 
 
-def run_zero_day_fuzzer(domain, deep=False):
-    """Run zero-day fuzzer on a target."""
-    log("info", f"Running zero-day fuzzer on {domain}...")
-    script = os.path.join(TOOLS_DIR, "zero_day_fuzzer.py")
-    # Check if we have recon data with live URLs
-    recon_dir = _resolve_recon_dir(domain)
-    cmd = [sys.executable, script, target_https_url(domain)]
-    if os.path.isdir(recon_dir):
-        cmd.extend(["--recon-dir", recon_dir])
-    if deep:
-        cmd.append("--deep")
-        cmd.append("--adaptive-budget")
-
-    proc = None
-    signal_handlers = None
-    try:
-        proc = subprocess.Popen(cmd, shell=False, cwd=BASE_DIR, start_new_session=True)
-        signal_handlers = _install_child_signal_handlers(proc)
-        proc.wait(timeout=900)
-        return proc.returncode == 0
-    except subprocess.TimeoutExpired:
-        _kill_process_group(proc)
-        log("err", f"Zero-day fuzzer timed out for {domain}")
-        return False
-    except BaseException:
-        _kill_process_group(proc)
-        log("err", f"Zero-day fuzzer interrupted for {domain}")
-        raise
-    finally:
-        _restore_child_signal_handlers(signal_handlers)
-
 
 def read_browser_surface(domain):
     """Read browser-observed recon surface for a target."""
@@ -1638,7 +1598,6 @@ def _hunt_target_impl(
     deep=False,
     recon_only=False,
     scan_only=False,
-    zero_day=False,
     scanner_full=False,
     scanner_skip="",
     ctf_mode=False,
@@ -1729,7 +1688,6 @@ def _hunt_target_impl(
             canonical_target,
             recon_completed=result["recon"],
             scan_completed=False,
-            zero_day=False,
         )
         _persist_runtime_state(
             canonical_target,
@@ -1780,7 +1738,6 @@ def _hunt_target_impl(
             recon_completed=recon_available,
             scan_completed=False,
             reports_generated=0,
-            zero_day=zero_day,
             ctf_mode=ctf_mode,
             enrichment_tools=result.get("enrichment", []),
         )
@@ -1793,7 +1750,7 @@ def _hunt_target_impl(
     if not result["scan"]:
         result["success"] = False
 
-    # phase 退出后立即覆盖 running marker；后续 zero-day/profile
+    # phase 退出后立即覆盖 running marker；后续 profile
     # 失败也不会把 `run_scan_started` 留给下一轮 autopilot。
     _persist_runtime_state(
         canonical_target,
@@ -1803,15 +1760,9 @@ def _hunt_target_impl(
         recon_completed=recon_available,
         scan_completed=result["scan"],
         reports_generated=0,
-        zero_day=zero_day,
         ctf_mode=ctf_mode,
         enrichment_tools=result.get("enrichment", []),
     )
-
-    # Zero-day fuzzing (disabled by default — high false positive rate)
-    if zero_day:
-        log("warn", "Zero-day fuzzer enabled — results require manual verification")
-        run_zero_day_fuzzer(canonical_target, deep=not quick)
 
     # Report generation is now an explicit workflow step. `/hunt` may produce
     # raw scanner signals and Candidate items, but report drafts should be
@@ -1824,7 +1775,6 @@ def _hunt_target_impl(
         canonical_target,
         recon_completed=recon_available,
         scan_completed=result["scan"],
-        zero_day=zero_day,
     )
 
     _persist_runtime_state(
@@ -1835,7 +1785,6 @@ def _hunt_target_impl(
         recon_completed=recon_available,
         scan_completed=result["scan"],
         reports_generated=result["reports"],
-        zero_day=zero_day,
         ctf_mode=ctf_mode,
         enrichment_tools=result.get("enrichment", []),
     )
@@ -1849,7 +1798,6 @@ def hunt_target(
     deep=False,
     recon_only=False,
     scan_only=False,
-    zero_day=False,
     scanner_full=False,
     scanner_skip="",
     ctf_mode=False,
@@ -1866,7 +1814,6 @@ def hunt_target(
         deep=deep,
         recon_only=recon_only,
         scan_only=scan_only,
-        zero_day=zero_day,
         scanner_full=scanner_full,
         scanner_skip=scanner_skip,
         ctf_mode=ctf_mode,
@@ -1903,7 +1850,6 @@ Examples:
     parser.add_argument("--report-only", action="store_true", help="Only generate reports")
     parser.add_argument("--status", action="store_true", help="Show pipeline status")
     parser.add_argument("--setup-wordlists", action="store_true", help="Download wordlists")
-    parser.add_argument("--zero-day", action="store_true", help="Run zero-day fuzzer")
     parser.add_argument(
         "--deep",
         action="store_true",
@@ -1976,7 +1922,6 @@ Examples:
                 deep=args.deep,
                 recon_only=args.recon_only,
                 scan_only=args.scan_only,
-                zero_day=args.zero_day,
                 scanner_full=args.scanner_full,
                 scanner_skip=args.scanner_skip,
                 ctf_mode=ctf_mode,

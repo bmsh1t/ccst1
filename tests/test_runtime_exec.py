@@ -10,7 +10,6 @@ import sys
 import pytest
 
 import runtime_exec
-import zero_day_fuzzer
 
 
 def _timeout_test_command() -> str:
@@ -410,47 +409,3 @@ def test_trim_replayed_prefix_only_strips_confirmed_duplicate_prefix():
     assert runtime_exec._trim_replayed_prefix("same", "same") == ""
 
 
-def test_zero_day_fuzzer_run_cmd_delegates_to_split_shared_helper(monkeypatch):
-    captured = {}
-
-    def fake_run_shell_command_split(cmd, *, cwd=None, timeout=600, max_output_bytes=None):
-        captured["cmd"] = cmd
-        captured["cwd"] = cwd
-        captured["timeout"] = timeout
-        captured["max_output_bytes"] = max_output_bytes
-        return False, "out", "err"
-
-    monkeypatch.setattr(
-        zero_day_fuzzer,
-        "run_shell_command_split",
-        fake_run_shell_command_split,
-        raising=False,
-    )
-
-    success, stdout, stderr = zero_day_fuzzer.run_cmd("echo nope", timeout=9)
-
-    assert (success, stdout, stderr) == (False, "out", "err")
-    assert captured == {"cmd": "echo nope", "cwd": None, "timeout": 9, "max_output_bytes": None}
-
-
-def test_zero_day_fuzzer_run_cmd_preserves_legacy_timeout_contract(monkeypatch):
-    captured = {}
-
-    def fake_run_shell_command_split(cmd, *, cwd=None, timeout=600, max_output_bytes=None):
-        captured["cmd"] = cmd
-        captured["cwd"] = cwd
-        captured["timeout"] = timeout
-        captured["max_output_bytes"] = max_output_bytes
-        return False, "partial out\n", "partial err\nCommand timed out after 9s"
-
-    monkeypatch.setattr(
-        zero_day_fuzzer,
-        "run_shell_command_split",
-        fake_run_shell_command_split,
-        raising=False,
-    )
-
-    success, stdout, stderr = zero_day_fuzzer.run_cmd("sleep 9", timeout=9)
-
-    assert (success, stdout, stderr) == (False, "", "timeout")
-    assert captured == {"cmd": "sleep 9", "cwd": None, "timeout": 9, "max_output_bytes": None}
