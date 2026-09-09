@@ -22,7 +22,7 @@ def test_compact_state_keeps_bounded_case_state_continuation():
             "top_next_action": {
                 "next_action": "run_validation_runner",
                 "backlog_id": "val_001",
-                "redacted_command": "python3 tools/validation_runner.py idor-actor-pair --from-case-state",
+                "redacted_command": "python3 tools/validation_runner.py request-diff --target T --request-spec spec.json",
             },
         },
     })

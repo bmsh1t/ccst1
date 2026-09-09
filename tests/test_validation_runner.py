@@ -968,51 +968,6 @@ def test_xss_marker_reflection_stays_open_signal_until_browser_context(monkeypat
     assert "browser execution context" in summary["ai_next"]["next_action"]
 
 
-def _build_case_state_for_idor(tmp_path):
-    target = "https://target.test"
-    target_case_state.add_actor(tmp_path, target, actor="user_a", role="user")
-    target_case_state.add_actor(tmp_path, target, actor="user_b", role="user")
-    target_case_state.add_session(
-        tmp_path,
-        target,
-        session="sess_user_a",
-        actor="user_a",
-        kind="bearer",
-        header_value="Bearer owner",
-        validity="valid",
-    )
-    target_case_state.add_session(
-        tmp_path,
-        target,
-        session="sess_user_b",
-        actor="user_b",
-        kind="bearer",
-        header_value="Bearer peer",
-        validity="valid",
-    )
-    target_case_state.add_object(
-        tmp_path,
-        target,
-        object_ref="order_123",
-        object_type="order",
-        object_id="123",
-        owner_actor="user_a",
-        endpoint="https://target.test/api/orders/123",
-        private_marker="victim@example.test",
-    )
-    target_case_state.add_backlog(
-        tmp_path,
-        target,
-        backlog_id="val_001",
-        runner="idor-actor-pair",
-        owner_actor="user_a",
-        peer_actor="user_b",
-        object_ref="order_123",
-        priority="high",
-    )
-    return target
-
-
 def test_request_once_rejects_off_target_before_open(monkeypatch):
     called = False
 

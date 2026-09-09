@@ -643,8 +643,14 @@ def _object_command(target: str, item: dict[str, Any], owner_actor: str) -> str:
     return " ".join(parts)
 
 
+def _request_spec_ref(target: str, object_ref: str) -> str:
+    """Suggested private spec path; the AI writes the real pair there first."""
+    return f"evidence/{target_storage_key(canonical_target_value(target))}/validation/{object_ref}/spec.json"
+
+
 def _backlog_command(target: str, item: dict[str, Any], owner_actor: str, peer_actor: str) -> str:
     priority = str(item.get("priority") or ("high" if item.get("type") in HIGH_PRIORITY_TYPES else "medium"))
+    object_ref = str(item.get("object_ref") or "")
     return " ".join([
         "python3",
         "tools/target_case_state.py",
@@ -652,23 +658,27 @@ def _backlog_command(target: str, item: dict[str, Any], owner_actor: str, peer_a
         "--target",
         _quote(target),
         "--runner",
-        "idor-actor-pair",
+        "request-diff",
+        "--endpoint",
+        _quote(item.get("endpoint", "")),
+        "--request-spec-ref",
+        _quote(_request_spec_ref(target, object_ref)),
+        "--active-dimension",
+        _quote("header:authorization"),
+        "--classifier",
+        _quote("authz"),
         "--owner-actor",
         _quote(owner_actor),
         "--peer-actor",
         _quote(peer_actor),
         "--object-ref",
-        _quote(item.get("object_ref", "")),
+        _quote(object_ref),
         "--priority",
         _quote(priority),
         "--required-evidence",
-        _quote("owner session"),
-        "--required-evidence",
-        _quote("peer session"),
-        "--required-evidence",
-        _quote("owner private marker"),
+        _quote("request pair spec"),
         "--stop-condition",
-        _quote("peer 403/404 or no owner-private marker"),
+        _quote("peer 403/404 or no owner-private material"),
         "--chain-extension",
         _quote("try export/report/mobile/API sibling for the same object"),
     ])
@@ -705,34 +715,25 @@ def build_case_state_seed(repo_root: str | Path, target: str, *, limit: int = 8)
     object_candidates = _sort_object_candidates(object_candidates)[:limit]
 
     actor_suggestions = _actor_suggestions(state, bool(object_candidates))
-    existing_actors = _existing_actor_ids(state)
-    session_actors = _existing_session_actors(state)
     owner_actor, peer_actor = _choose_actor_pair(state, actor_suggestions)
     existing_backlogs = _existing_backlog_keys(state)
 
     backlog_candidates = []
     for item in object_candidates:
         object_ref = str(item.get("object_ref") or "")
-        if ("idor-actor-pair", object_ref) in existing_backlogs:
+        if ("request-diff", object_ref) in existing_backlogs:
             continue
         missing = []
-        if not owner_actor:
-            missing.append("owner actor")
-        if owner_actor and owner_actor not in session_actors:
-            missing.append("owner session")
-        if not peer_actor:
-            missing.append("peer actor")
-        if peer_actor and peer_actor not in session_actors:
-            missing.append("peer session")
         if not item.get("endpoint"):
             missing.append("object endpoint")
-        if not item.get("private_marker"):
-            missing.append("owner private marker")
+        missing.append("request pair spec")
         backlog_candidates.append({
-            "runner": "idor-actor-pair",
+            "runner": "request-diff",
             "owner_actor": owner_actor or "user_a",
             "peer_actor": peer_actor or "user_b",
             "object_ref": object_ref,
+            "endpoint": str(item.get("endpoint") or ""),
+            "request_spec_ref": _request_spec_ref(resolved, object_ref),
             "priority": "high" if item.get("type") in HIGH_PRIORITY_TYPES else "medium",
             "missing": list(dict.fromkeys(missing)),
             "reason": f"{item.get('type')} object candidate from {item.get('source') or 'cached artifact'}",

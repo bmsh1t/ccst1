@@ -352,7 +352,11 @@ def test_add_hypothesis_and_backlog_then_next_outputs_ai_orchestration(tmp_path)
     backlog = target_case_state.add_backlog(
         tmp_path,
         TARGET,
-        runner="idor-actor-pair",
+        runner="request-diff",
+        endpoint=f"{TARGET}/rest/order-history/123",
+        request_spec_ref="evidence/%s/validation/order-idor-pair/spec.json" % TARGET,
+        active_dimension="header:authorization",
+        classifier="authz",
         owner_actor="user_a",
         peer_actor="user_b",
         object_ref="order_123",
@@ -368,16 +372,14 @@ def test_add_hypothesis_and_backlog_then_next_outputs_ai_orchestration(tmp_path)
     assert backlog["id"] == "val_001"
     assert next_item["next_action"] == "run_validation_runner"
     assert next_item["ready"] is True
-    assert next_item["runner"] == "idor-actor-pair"
-    assert next_item["hypothesis"] == "peer user_b may access order_123 owned by user_a"
+    assert next_item["runner"] == "request-diff"
+    assert "order-history/123" in next_item["hypothesis"]
     assert "why_now" in next_item
     assert "chain_context" in next_item
     assert "downgrade_rule" in next_item
     assert "try export endpoint" in next_item["chain_extensions_if_blocked"]
     assert "validation_runner.py" in next_item["command"]
-    assert "--from-case-state" in next_item["command"]
-    assert "--backlog-id val_001" in next_item["command"]
-    assert "--complete-case-state" in next_item["command"]
+    assert "--request-spec" in next_item["command"]
     assert "Bearer owner-token" not in next_item["command"]
     assert "owner-token" not in next_item["redacted_command"]
 
@@ -507,7 +509,11 @@ def test_next_blocks_when_peer_session_missing(tmp_path):
     target_case_state.add_backlog(
         tmp_path,
         TARGET,
-        runner="idor-actor-pair",
+        runner="request-diff",
+        endpoint=f"{TARGET}/rest/order-history/123",
+        request_spec_ref="evidence/%s/validation/order-idor-pair/spec.json" % TARGET,
+        active_dimension="header:authorization",
+        classifier="authz",
         owner_actor="user_a",
         peer_actor="user_b",
         object_ref="order_123",
@@ -516,10 +522,11 @@ def test_next_blocks_when_peer_session_missing(tmp_path):
 
     next_item = target_case_state.next_action(tmp_path, TARGET)
 
-    assert next_item["next_action"] == "enrich_case_state"
-    assert next_item["ready"] is False
-    assert "peer session" in next_item["missing_evidence"]
-    assert next_item["command"] == ""
+    # request-diff readiness is contract-based (spec ref, dimension, classifier);
+    # session availability is AI-owned material now, so the pair is ready even
+    # when the peer session is absent from case state.
+    assert next_item["next_action"] == "run_validation_runner"
+    assert next_item["ready"] is True
 
 
 def test_next_prefers_ready_item_over_higher_priority_missing_evidence(tmp_path):
@@ -669,7 +676,11 @@ def test_next_allows_replay_without_private_marker_as_optional_gap(tmp_path):
     target_case_state.add_backlog(
         tmp_path,
         TARGET,
-        runner="idor-actor-pair",
+        runner="request-diff",
+        endpoint=f"{TARGET}/rest/order-history/123",
+        request_spec_ref="evidence/%s/validation/order-idor-pair/spec.json" % TARGET,
+        active_dimension="header:authorization",
+        classifier="authz",
         owner_actor="user_a",
         peer_actor="user_b",
         object_ref="order_123",
@@ -681,7 +692,9 @@ def test_next_allows_replay_without_private_marker_as_optional_gap(tmp_path):
     assert next_item["next_action"] == "run_validation_runner"
     assert next_item["ready"] is True
     assert next_item["missing_evidence"] == []
-    assert next_item["optional_evidence_gaps"] == ["owner private marker"]
+    # The private marker is no longer a machine gate for request-diff pairs;
+    # the AI decides whether an owner-private marker strengthens the evidence.
+    assert next_item["optional_evidence_gaps"] == []
     assert any("exact owner-body match" in item for item in next_item["required_evidence"])
     assert "validation_runner.py" in next_item["command"]
 
@@ -691,7 +704,11 @@ def test_complete_backlog_writes_result_and_evidence_ref(tmp_path):
     target_case_state.add_backlog(
         tmp_path,
         TARGET,
-        runner="idor-actor-pair",
+        runner="request-diff",
+        endpoint=f"{TARGET}/rest/order-history/123",
+        request_spec_ref="evidence/%s/validation/order-idor-pair/spec.json" % TARGET,
+        active_dimension="header:authorization",
+        classifier="authz",
         owner_actor="user_a",
         peer_actor="user_b",
         object_ref="order_123",
@@ -879,7 +896,11 @@ def test_cli_next_outputs_json(tmp_path, capsys):
     target_case_state.add_backlog(
         tmp_path,
         TARGET,
-        runner="idor-actor-pair",
+        runner="request-diff",
+        endpoint=f"{TARGET}/rest/order-history/123",
+        request_spec_ref="evidence/%s/validation/order-idor-pair/spec.json" % TARGET,
+        active_dimension="header:authorization",
+        classifier="authz",
         owner_actor="user_a",
         peer_actor="user_b",
         object_ref="order_123",
@@ -890,5 +911,5 @@ def test_cli_next_outputs_json(tmp_path, capsys):
     payload = json.loads(capsys.readouterr().out)
 
     assert rc == 0
-    assert payload["runner"] == "idor-actor-pair"
+    assert payload["runner"] == "request-diff"
     assert payload["next_action"] == "run_validation_runner"

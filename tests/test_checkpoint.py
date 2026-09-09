@@ -3139,7 +3139,11 @@ def test_checkpoint_prioritizes_case_state_validation_backlog(tmp_path):
     add_backlog(
         tmp_path,
         "target.com",
-        runner="idor-actor-pair",
+        runner="request-diff",
+        endpoint="https://api.target.com/rest/order-history/123",
+        request_spec_ref="evidence/target.com/validation/order-idor-pair/spec.json",
+        active_dimension="header:authorization",
+        classifier="authz",
         owner_actor="user_a",
         peer_actor="user_b",
         object_ref="order_123",
@@ -3156,13 +3160,12 @@ def test_checkpoint_prioritizes_case_state_validation_backlog(tmp_path):
     assert checkpoint["target_write_back"]["next"][0].startswith("Case-state validation backlog val_001:")
     assert checkpoint["recommended_executable_action"]["type"] == "case-state-validation"
     assert checkpoint["recommended_executable_action"]["metadata"]["backlog_id"] == "val_001"
-    assert checkpoint["recommended_executable_action"]["metadata"]["runner"] == "idor-actor-pair"
+    assert checkpoint["recommended_executable_action"]["metadata"]["runner"] == "request-diff"
     assert checkpoint["recommended_executable_action"]["metadata"]["owner_actor"] == "user_a"
     assert checkpoint["recommended_executable_action"]["metadata"]["peer_actor"] == "user_b"
     assert checkpoint["recommended_executable_action"]["metadata"]["object_ref"] == "order_123"
     assert checkpoint["recommended_executable_action"]["metadata"]["endpoint"] == "https://api.target.com/rest/order-history/123"
-    assert "--from-case-state" in checkpoint["recommended_executable_action"]["command_hint"]
-    assert "--backlog-id val_001" in checkpoint["recommended_executable_action"]["command_hint"]
+    assert "--request-spec" in checkpoint["recommended_executable_action"]["command_hint"]
     assert checkpoint["case_state"]["pending_validation_backlog"] == 1
     assert checkpoint["case_state"]["top_next_action"]["backlog_id"] == "val_001"
     assert "Case state:" in output
@@ -3195,7 +3198,10 @@ def test_checkpoint_surfaces_case_state_enrichment_when_evidence_missing(tmp_pat
     add_backlog(
         tmp_path,
         "target.com",
-        runner="idor-actor-pair",
+        runner="request-diff",
+        endpoint="https://api.target.com/rest/order-history/123",
+        active_dimension="header:authorization",
+        classifier="authz",
         owner_actor="user_a",
         peer_actor="user_b",
         object_ref="order_123",
@@ -3208,9 +3214,7 @@ def test_checkpoint_surfaces_case_state_enrichment_when_evidence_missing(tmp_pat
     assert checkpoint["target_write_back"]["next"][0].startswith("Case-state enrichment backlog val_001:")
     assert checkpoint["recommended_executable_action"]["type"] == "case-state-enrichment"
     assert checkpoint["recommended_executable_action"]["metadata"]["backlog_id"] == "val_001"
-    assert checkpoint["recommended_executable_action"]["metadata"]["missing_evidence"] == [
-        "peer session",
-    ]
+    assert "request_spec_ref" in checkpoint["recommended_executable_action"]["metadata"]["missing_evidence"]
     assert "replay_draft" not in checkpoint["recommended_executable_action"]["metadata"]
     assert checkpoint["recommended_executable_action"]["command_hint"] == "enrich actor/session/object/private-marker evidence in case_state"
 
@@ -3260,7 +3264,11 @@ def test_checkpoint_surfaces_optional_case_state_marker_gap_without_blocking_rep
     add_backlog(
         tmp_path,
         "target.com",
-        runner="idor-actor-pair",
+        runner="request-diff",
+        endpoint="https://api.target.com/rest/order-history/123",
+        request_spec_ref="evidence/target.com/validation/order-idor-pair/spec.json",
+        active_dimension="header:authorization",
+        classifier="authz",
         owner_actor="user_a",
         peer_actor="user_b",
         object_ref="order_123",
@@ -3270,9 +3278,9 @@ def test_checkpoint_surfaces_optional_case_state_marker_gap_without_blocking_rep
     checkpoint = build_checkpoint(tmp_path, target="target.com")
 
     assert checkpoint["target_write_back"]["next"][0].startswith("Case-state validation backlog val_001:")
-    assert "Optional evidence gaps: owner private marker." in checkpoint["target_write_back"]["next"][0]
     assert checkpoint["recommended_executable_action"]["type"] == "case-state-validation"
-    assert checkpoint["recommended_executable_action"]["metadata"]["optional_evidence_gaps"] == ["owner private marker"]
+    # The private marker is no longer a machine-side optional gate for
+    # request-diff pairs; readiness is contract-based only.
     assert checkpoint["recommended_executable_action"]["metadata"].get("missing_evidence", []) == []
 
 
@@ -3288,11 +3296,9 @@ def test_checkpoint_surfaces_case_state_seed_opportunity_from_object_endpoint(tm
     assert checkpoint["target_write_back"]["next"][0].startswith("Case-state seed opportunity:")
     assert checkpoint["recommended_executable_action"]["type"] == "case-state-seed"
     assert checkpoint["recommended_executable_action"]["metadata"]["object_ref"] == "order_123"
-    assert checkpoint["recommended_executable_action"]["metadata"]["runner"] == "idor-actor-pair"
+    assert checkpoint["recommended_executable_action"]["metadata"]["runner"] == "request-diff"
     assert checkpoint["recommended_executable_action"]["metadata"]["missing_evidence"] == [
-        "owner session",
-        "peer session",
-        "owner private marker",
+        "request pair spec",
     ]
     assert "tools/case_state_seed.py" in checkpoint["recommended_executable_action"]["command_hint"]
 
@@ -3353,7 +3359,7 @@ def test_checkpoint_demotes_endpointless_case_state_seed_to_enrichment(tmp_path)
     assert checkpoint["case_state_seed"]["status"] == "suggestions"
     assert seed_action["type"] == "case-state-enrichment"
     assert seed_action["priority"] < 70
-    assert seed_action["metadata"]["missing_evidence"] == ["object endpoint"]
+    assert seed_action["metadata"]["missing_evidence"] == ["object endpoint", "request pair spec"]
     assert checkpoint["recommended_executable_action"]["type"] != "case-state-seed"
     assert "endpoint discovery lead" in seed_action["action"]
 

@@ -69,11 +69,8 @@ HIGH_IMPACT_OBJECT_TYPES = {
 # command.  Required values are public request facts; session headers remain
 # in the private Case State session store.
 RUNNER_CONTRACTS = {
-    "authz-public-exposure": ("endpoint",),
-    "authz-role-replay": ("endpoint", "owner_actor", "peer_actor"),
     "request-diff": ("request_spec_ref", "active_dimension", "classifier"),
     "marker-replay": ("endpoint", "expect_marker"),
-    "idor-actor-pair": ("endpoint", "owner_actor", "peer_actor"),
 }
 
 HYPOTHESIS_METADATA_KEYS = (
@@ -721,8 +718,6 @@ def _impact_weight(state: dict[str, Any], item: dict[str, Any]) -> int:
         score += 30
     if any(token in endpoint for token in ("order", "invoice", "address", "report", "export", "admin", "billing")):
         score += 20
-    if item.get("runner") == "idor-actor-pair":
-        score += 15
     return score
 
 
@@ -740,38 +735,6 @@ def _readiness(
     if runner not in RUNNER_CONTRACTS:
         missing.append(f"unsupported runner: {runner or '<empty>'}")
         return 0, missing, details
-    if runner == "idor-actor-pair":
-        owner = item.get("owner_actor") or obj.get("owner_actor")
-        peer = item.get("peer_actor")
-        owner_session_id, owner_session = _session_for_actor(state, owner) if owner else (None, None)
-        peer_session_id, peer_session = _session_for_actor(state, peer) if peer else (None, None)
-        if not endpoint:
-            missing.append("object endpoint")
-        if not owner:
-            missing.append("owner actor")
-        elif not owner_session:
-            missing.append("owner session")
-        if not peer:
-            missing.append("peer actor")
-        elif not peer_session:
-            missing.append("peer session")
-        if not obj.get("private_marker"):
-            optional_gaps.append("owner private marker")
-        details.update({
-            "endpoint": endpoint,
-            "object": obj,
-            "owner_actor": owner,
-            "peer_actor": peer,
-            "owner_session_id": owner_session_id,
-            "peer_session_id": peer_session_id,
-            "owner_session": owner_session,
-            "peer_session": peer_session,
-            "optional_evidence_gaps": optional_gaps,
-        })
-        return max(0, 60 - 15 * len(missing) - 5 * len(optional_gaps)), missing, details
-
-    details["endpoint"] = endpoint
-    details["method"] = str(item.get("method") or "GET").upper()
     for field in RUNNER_CONTRACTS[runner]:
         if field == "endpoint":
             if not endpoint:
@@ -782,49 +745,7 @@ def _readiness(
             missing.append(field)
         else:
             details[field] = str(value)
-    if runner == "authz-role-replay":
-        owner = str(item.get("owner_actor") or "").strip()
-        peer = str(item.get("peer_actor") or "").strip()
-        owner_session_id, owner_session = _session_for_actor(state, owner) if owner else (None, None)
-        peer_session_id, peer_session = _session_for_actor(state, peer) if peer else (None, None)
-        if owner and not owner_session:
-            missing.append("owner session")
-        if peer and not peer_session:
-            missing.append("peer session")
-        if owner and peer and owner == peer:
-            missing.append("distinct owner and peer actors")
-        details.update({
-            "owner_session_id": owner_session_id,
-            "peer_session_id": peer_session_id,
-            "owner_session": owner_session,
-            "peer_session": peer_session,
-        })
     return max(0, 30 - 10 * len(missing)), missing, details
-
-
-def _build_idor_actor_pair_command(target: str, item: dict[str, Any], details: dict[str, Any], *, redact: bool) -> str:
-    parts = [
-        "python3",
-        "tools/validation_runner.py",
-        "idor-actor-pair",
-        "--target",
-        target,
-        "--from-case-state",
-    ]
-    if item.get("id"):
-        parts.extend(["--backlog-id", item.get("id")])
-        parts.append("--complete-case-state")
-    else:
-        parts.extend([
-            "--owner-actor",
-            details.get("owner_actor") or item.get("owner_actor") or "",
-            "--peer-actor",
-            details.get("peer_actor") or item.get("peer_actor") or "",
-            "--object-ref",
-            item.get("object_ref") or "",
-        ])
-    parts.extend(["--repeat", "2"])
-    return " ".join(_quote(part) for part in parts if part != "")
 
 
 def _build_generic_command(target: str, item: dict[str, Any], details: dict[str, Any]) -> str:
@@ -834,13 +755,7 @@ def _build_generic_command(target: str, item: dict[str, Any], details: dict[str,
     if endpoint:
         parts.extend(["--url", endpoint])
     parts.extend(["--method", str(item.get("method") or "GET").upper()])
-    if runner == "authz-role-replay":
-        parts.extend([
-            "--from-case-state",
-            "--owner-actor", item.get("owner_actor") or "",
-            "--peer-actor", item.get("peer_actor") or "",
-        ])
-    elif runner == "request-diff":
+    if runner == "request-diff":
         parts.extend(["--request-spec", item.get("request_spec_ref") or ""])
     elif runner == "marker-replay":
         if str(item.get("baseline_url") or ""):
@@ -856,14 +771,10 @@ def _chain_context(state: dict[str, Any], item: dict[str, Any], details: dict[st
         context.append("object endpoint is known")
     if obj.get("private_marker"):
         context.append("object has private marker")
-    elif item.get("runner") == "idor-actor-pair":
-        context.append("private marker missing; runner will fall back to exact owner-body match and may downgrade to candidate")
     if details.get("owner_session"):
         context.append("owner session is available")
     if details.get("peer_session"):
         context.append("peer session is available")
-    if item.get("runner") == "idor-actor-pair":
-        context.append("actor/object replay can be executed by validation_runner")
     return context
 
 
@@ -898,8 +809,6 @@ def _recovery_next_action(item: dict[str, Any]) -> str:
         text = str(extension or "").strip()
         if text:
             return text
-    if item.get("runner") == "idor-actor-pair":
-        return "try export/report endpoint for the same object"
     return "capture the missing prerequisite before creating a fresh validation backlog"
 
 
@@ -954,6 +863,8 @@ def _matching_final_findings(
             "idor-actor-pair": "IDOR",
             "authz-role-replay": "Authz",
             "authz-public-exposure": "Authz",
+            "request-diff": "Authz",
+            "marker-replay": "RCE",
         }.get(str(item.get("runner") or "").strip().lower(), "")
     vuln_key = _case_vuln_identity(vuln_class)
     matches: list[dict[str, Any]] = []
@@ -1049,23 +960,10 @@ def next_action(
     ready = not missing and backlog_status not in {"candidate", "blocked"}
     target_value = state.get("target") or canonical_target_value(target)
     runner = item.get("runner")
-    if runner == "idor-actor-pair":
-        command = _build_idor_actor_pair_command(target_value, item, details, redact=False) if ready else ""
-        redacted_command = (
-            _build_idor_actor_pair_command(target_value, item, details, redact=True)
-            if ready and details.get("endpoint")
-            else ""
-        )
-    else:
-        command = _build_generic_command(target_value, item, details) if ready else ""
-        redacted_command = command
+    command = _build_generic_command(target_value, item, details) if ready else ""
+    redacted_command = command
     obj = details.get("object") or {}
-    hypothesis = (
-        f"peer {details.get('peer_actor')} may access {item.get('object_ref')} "
-        f"owned by {details.get('owner_actor')}"
-        if runner == "idor-actor-pair"
-        else f"validate {runner} on {details.get('endpoint') or item.get('endpoint')}"
-    )
+    hypothesis = f"validate {runner} on {details.get('endpoint') or item.get('endpoint')}"
     if linked_hypothesis:
         hypothesis = str(
             linked_hypothesis.get("next_action")
@@ -1073,12 +971,6 @@ def next_action(
             or hypothesis
         )
     extensions = list(item.get("chain_extensions_if_blocked") or [])
-    if runner == "idor-actor-pair" and not extensions:
-        extensions = [
-            "try export/report endpoint for the same object",
-            "try mobile/versioned API equivalent",
-            "try GraphQL node/global id if discovered",
-        ]
     recovery_next = next(
         (str(extension).strip() for extension in extensions if str(extension).strip()),
         "capture the missing prerequisite before creating a fresh validation backlog",

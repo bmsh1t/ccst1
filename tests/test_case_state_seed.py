@@ -30,17 +30,16 @@ def test_case_state_seed_suggests_order_object_and_idor_backlog(tmp_path):
     assert payload["suggested_objects"][0]["object_ref"] == "order_123"
     assert payload["suggested_objects"][0]["type"] == "order"
     assert payload["suggested_objects"][0]["object_id"] == "123"
-    assert payload["suggested_backlog"][0]["runner"] == "idor-actor-pair"
+    assert payload["suggested_backlog"][0]["runner"] == "request-diff"
     assert payload["suggested_backlog"][0]["object_ref"] == "order_123"
     assert payload["suggested_backlog"][0]["priority"] == "high"
-    assert payload["suggested_backlog"][0]["missing"] == [
-        "owner session",
-        "peer session",
-        "owner private marker",
-    ]
+    assert payload["suggested_backlog"][0]["request_spec_ref"].endswith(
+        "/validation/order_123/spec.json"
+    )
+    assert payload["suggested_backlog"][0]["missing"] == ["request pair spec"]
     assert any("add-object" in command and "order_123" in command for command in payload["commands"])
     assert any(
-        "add-backlog" in command and "idor-actor-pair" in command and "--priority high" in command
+        "add-backlog" in command and "request-diff" in command and "--priority high" in command
         for command in payload["commands"]
     )
 
@@ -180,7 +179,7 @@ def test_case_state_seed_reuses_existing_custom_actor_sessions(tmp_path):
     assert payload["suggested_actors"] == []
     assert payload["suggested_backlog"][0]["owner_actor"] == "owner_account"
     assert payload["suggested_backlog"][0]["peer_actor"] == "peer_account"
-    assert payload["suggested_backlog"][0]["missing"] == ["object endpoint"]
+    assert payload["suggested_backlog"][0]["missing"] == ["object endpoint", "request pair spec"]
     assert any("--owner-actor owner_account" in command for command in payload["commands"])
 
 
@@ -224,10 +223,7 @@ def test_case_state_seed_uses_existing_actors_and_sessions_for_missing_matrix(tm
 
     assert payload["suggested_actors"] == []
     assert payload["suggested_objects"][0]["object_ref"] == "account_42"
-    assert payload["suggested_backlog"][0]["missing"] == [
-        "peer session",
-        "owner private marker",
-    ]
+    assert payload["suggested_backlog"][0]["missing"] == ["request pair spec"]
 
 
 def test_case_state_seed_skips_existing_objects_and_backlogs(tmp_path):
