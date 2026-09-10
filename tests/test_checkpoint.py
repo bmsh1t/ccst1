@@ -32,7 +32,8 @@ from checkpoint import (
     _dead_end_proposals,
     _dedupe_artifact_category_items,
     _entry_text,
-    _extract_action_metadata,
+    _is_proposal_entry,
+    _proposal_entry,
     _filter_final_action_queue_items,
     _json_inject_queue_item,
     _lead_proposals,
@@ -1354,21 +1355,29 @@ def test_checkpoint_no_refresh_is_read_only_for_coverage(tmp_path, monkeypatch):
 
 
 def test_bounded_proposals_preserve_lane_types_before_duplicate_fill():
+    def _entry(text, action_type, priority):
+        return _proposal_entry(text, action_type=action_type, priority=priority)
+
     proposals = [
-        f"Candidate evidence gap for finding F-{index} on /items/{index}: fill evidence."
+        _entry(
+            f"Candidate evidence gap for finding F-{index} on /items/{index}: fill evidence.",
+            "candidate-evidence-gap", 105,
+        )
         for index in range(8)
     ] + [
-        "Cover high-value matrix gap: /admin x Authz (weight=5).",
-        "Cover actor matrix gap: /orders/1 x IDOR with peer/other/id_swap expected=deny status=missing.",
-        "Review surface candidate https://target.com/payments: inspect workflow.",
+        _entry("Cover high-value matrix gap: /admin x Authz (weight=5).", "coverage-gap", 94),
+        _entry(
+            "Cover actor matrix gap: /orders/1 x IDOR with peer/other/id_swap expected=deny status=missing.",
+            "actor-gap", 96,
+        ),
+        _entry("Review surface candidate https://target.com/payments: inspect workflow.", "surface-review", 70),
     ]
 
     bounded = _bounded_next_proposals(proposals, "target.com")
 
     assert len(bounded) == 8
-    assert any(item.startswith("Cover high-value matrix gap:") for item in bounded)
-    assert any(item.startswith("Cover actor matrix gap:") for item in bounded)
-    assert any(_entry_text(item).startswith("Review surface candidate ") for item in bounded)
+    types = {str(item.get("type")) for item in bounded if _is_proposal_entry(item)}
+    assert {"candidate-evidence-gap", "coverage-gap", "actor-gap", "surface-review"} <= types
 
 
 def test_checkpoint_fails_explicitly_on_corrupt_case_state(tmp_path):
@@ -2059,9 +2068,19 @@ def test_matrix_summary_separates_raw_and_actionable_coverage_gaps():
 
 def test_report_action_stays_above_advisory_surface_review_but_below_high_value_actions():
     queue = _build_next_action_queue([
-        "Draft report for validated finding F-REPORT; do not submit without human review.",
-        "Review surface candidate https://api.target.com/api/admin/export: focused authz replay",
-        "Cover high-value matrix gap: /api/admin/export x Authz (weight=5, relevance=8: admin path).",
+        _proposal_entry(
+            "Draft report for validated finding F-REPORT; do not submit without human review.",
+            action_type="report", priority=90, command_hint="/report",
+            metadata={"finding_id": "F-REPORT"},
+        ),
+        _proposal_entry(
+            "Review surface candidate https://api.target.com/api/admin/export: focused authz replay",
+            action_type="surface-review", priority=70,
+        ),
+        _proposal_entry(
+            "Cover high-value matrix gap: /api/admin/export x Authz (weight=5, relevance=8: admin path).",
+            action_type="coverage-gap", priority=94,
+        ),
         "Secondary-sweep lead [open-200-api-review]: Anonymous API returned 200. "
         "Artifact=findings/target/manual_review/open_200_api.txt. Why it matters: review. "
         "Next action: sample body. Stop condition: keep demoted unless concrete evidence appears.",
@@ -2077,12 +2096,23 @@ def test_report_action_stays_above_advisory_surface_review_but_below_high_value_
 def test_default_candidate_uses_action_queue_selection_for_executable_surface_review():
     queue = _build_next_action_queue(
         [
-            "Draft report for validated finding F-REPORT; do not submit without human review.",
-            (
-                "Review surface candidate https://api.target.com/api/users: baseline authz checks. "
-                "Replay draft: Run authenticated role replay from case_state: "
-                "`python3 tools/validation_runner.py authz-role-replay --target \"target.com\" "
-                "--url \"https://api.target.com/api/users\" --from-case-state --repeat 2`."
+            _proposal_entry(
+                "Draft report for validated finding F-REPORT; do not submit without human review.",
+                action_type="report", priority=90, command_hint="/report",
+                metadata={"finding_id": "F-REPORT"},
+            ),
+            _proposal_entry(
+                "Review surface candidate https://api.target.com/api/users: baseline authz checks.",
+                action_type="surface-review", priority=70,
+                metadata={
+                    "url": "https://api.target.com/api/users",
+                    "endpoint": "/api/users",
+                    "replay_draft": (
+                        "Run authenticated role replay from case_state: "
+                        "`python3 tools/validation_runner.py authz-role-replay --target \"target.com\" "
+                        "--url \"https://api.target.com/api/users\" --from-case-state --repeat 2`."
+                    ),
+                },
             ),
         ],
         "target.com",
@@ -2098,8 +2128,15 @@ def test_default_candidate_uses_action_queue_selection_for_executable_surface_re
 def test_default_candidate_keeps_report_above_advisory_surface_review():
     queue = _build_next_action_queue(
         [
-            "Draft report for validated finding F-REPORT; do not submit without human review.",
-            "Review surface candidate https://api.target.com/api/catalog: advisory review only.",
+            _proposal_entry(
+                "Draft report for validated finding F-REPORT; do not submit without human review.",
+                action_type="report", priority=90, command_hint="/report",
+                metadata={"finding_id": "F-REPORT"},
+            ),
+            _proposal_entry(
+                "Review surface candidate https://api.target.com/api/catalog: advisory review only.",
+                action_type="surface-review", priority=70,
+            ),
         ],
         "target.com",
     )
@@ -2609,12 +2646,16 @@ def test_checkpoint_keeps_open_200_secondary_sweep_without_authz_ledger_closure(
 
 def test_public_metadata_secondary_sweep_does_not_outrank_ranked_surface():
     queue = _build_next_action_queue([
+        # plain-string 通道仍然有效：secondary-sweep 生产者保持文本建议形态。
         "Secondary-sweep lead [public-metadata]: Standard public metadata endpoints were demoted. "
         "Artifact=findings/target.com/manual_review/standard_public_metadata.txt. "
         "Why it matters: standard metadata. Next action: review only for unusual fields. "
         "Stop condition: keep demoted unless concrete evidence appears.",
-        "Review surface candidate https://api.target.com/rest/admin/application-version: "
-        "capture baseline first",
+        _proposal_entry(
+            "Review surface candidate https://api.target.com/rest/admin/application-version: "
+            "capture baseline first",
+            action_type="surface-review", priority=70,
+        ),
     ], "target.com")
 
     by_type = {item["type"]: item for item in queue}
@@ -2668,7 +2709,7 @@ def test_checkpoint_does_not_queue_zero_relevance_coverage_gap():
     )
     queue = _build_next_action_queue(proposals, "target.com")
 
-    assert not any("Cover high-value matrix gap" in item for item in proposals)
+    assert not any("Cover high-value matrix gap" in _entry_text(item) for item in proposals)
     assert not any(item["type"] == "coverage-gap" for item in queue)
 
 
@@ -2722,7 +2763,7 @@ def test_checkpoint_still_queues_semantically_relevant_coverage_gap():
     )
     queue = _build_next_action_queue(proposals, "target.com")
 
-    assert any("Cover high-value matrix gap" in item for item in proposals)
+    assert any("Cover high-value matrix gap" in _entry_text(item) for item in proposals)
     coverage_action = next(item for item in queue if item["type"] == "coverage-gap")
     assert coverage_action["metadata"]["relevance_score"] == 3
 
@@ -2803,8 +2844,8 @@ def test_checkpoint_skips_parent_only_authz_gap_when_child_validated():
         evidence_summary={},
     )
 
-    assert not any("Cover high-value matrix gap: /rest/admin x Authz" in item for item in proposals)
-    assert any("Cover high-value matrix gap: /api/v1/admin/users x Authz" in item for item in proposals)
+    assert not any("Cover high-value matrix gap: /rest/admin x Authz" in _entry_text(item) for item in proposals)
+    assert any("Cover high-value matrix gap: /api/v1/admin/users x Authz" in _entry_text(item) for item in proposals)
 
 
 def test_checkpoint_skips_coverage_gap_closed_by_evidence_ledger():
@@ -3032,13 +3073,13 @@ def test_next_proposals_only_queue_anonymous_actor_gap_without_case_state():
 
     actor_gap_proposals = [
         item for item in proposals
-        if item.startswith("Cover actor matrix gap:")
+        if _entry_text(item).startswith("Cover actor matrix gap:")
     ]
     assert len(actor_gap_proposals) == 1
-    assert "with anonymous/none/unauth_denied" in actor_gap_proposals[0]
-    assert not any("with owner/own_object/baseline" in item for item in actor_gap_proposals)
-    assert not any("with peer/other_object_same_org/id_swap" in item for item in actor_gap_proposals)
-    assert any(item.startswith("Case-state enrichment lead:") for item in proposals)
+    assert "with anonymous/none/unauth_denied" in _entry_text(actor_gap_proposals[0])
+    assert not any("with owner/own_object/baseline" in _entry_text(item) for item in actor_gap_proposals)
+    assert not any("with peer/other_object_same_org/id_swap" in _entry_text(item) for item in actor_gap_proposals)
+    assert any(_entry_text(item).startswith("Case-state enrichment lead:") for item in proposals)
 
     queue = _build_next_action_queue(proposals, "target.com")
     actor_action = next(item for item in queue if item["type"] == "actor-gap")
@@ -3096,9 +3137,9 @@ def test_next_proposals_queue_role_actor_gaps_when_case_state_ready():
         case_state={"actors": 2, "sessions": 2, "objects": 1},
     )
 
-    assert any("with owner/own_object/baseline" in item for item in proposals)
-    assert any("with peer/other_object_same_org/id_swap" in item for item in proposals)
-    assert not any(item.startswith("Case-state enrichment lead:") for item in proposals)
+    assert any("with owner/own_object/baseline" in _entry_text(item) for item in proposals)
+    assert any("with peer/other_object_same_org/id_swap" in _entry_text(item) for item in proposals)
+    assert not any(_entry_text(item).startswith("Case-state enrichment lead:") for item in proposals)
 
     queue = _build_next_action_queue(proposals, "target.com")
     actor_actions = [item for item in queue if item["type"] == "actor-gap"]
@@ -3917,19 +3958,22 @@ def test_checkpoint_coverage_projection_bounds_large_family_without_closing_sibl
         for endpoint in matrix["endpoints"]
     )
 
-    proposal = (
-        "Cover high-value matrix gap: {endpoint} x Path (weight=3.5, relevance=14: "
-        "file/path selector; file download/read path). Family projection: "
-        "key=structural:path:file/path selector; kind=structural; size=3; "
-        "samples={members}."
-    ).format(
-        endpoint=family_selected[0]["endpoint"],
-        members=",".join(family_selected[0]["_projection_family"]["members"]),
+    proposals = _next_proposals(
+        state={"has_recon": True, "recommended_targets": []},
+        coverage_gaps=[*family_gaps, other],
+        matrix=matrix,
+        target="target.com",
+        context_pack={},
+        evidence_summary={},
     )
-    metadata = _extract_action_metadata(proposal)
-    assert metadata["family_projection"] == "structural"
-    assert metadata["family_size"] == 3
-    assert len(metadata["family_members"]) == 3
+    action = next(
+        item
+        for item in _build_next_action_queue(proposals, "target.com")
+        if item["type"] == "coverage-gap"
+    )
+    assert action["metadata"]["family_projection"] == "structural"
+    assert action["metadata"]["family_size"] == 3
+    assert len(action["metadata"]["family_members"]) == 3
 
 
 def test_checkpoint_family_projection_keeps_all_members_and_leaves_ai_override_visible():
@@ -3965,11 +4009,12 @@ def test_checkpoint_family_projection_keeps_all_members_and_leaves_ai_override_v
         context_pack={},
         evidence_summary={},
     )
-    proposal = next(item for item in proposals if item.startswith("Cover high-value matrix gap:"))
-    assert "Queue projection only" in proposal
-    assert "does not assert family equivalence" in proposal
-    assert "AI remains the judgment owner and may choose or expand any listed member" in proposal
-    assert "sibling Matrix cells stay unclosed" in proposal
+    proposal = next(item for item in proposals if _entry_text(item).startswith("Cover high-value matrix gap:"))
+    proposal_text = _entry_text(proposal)
+    assert "Queue projection only" in proposal_text
+    assert "does not assert family equivalence" in proposal_text
+    assert "AI remains the judgment owner and may choose or expand any listed member" in proposal_text
+    assert "sibling Matrix cells stay unclosed" in proposal_text
 
     action = next(
         item
@@ -4016,9 +4061,10 @@ def test_checkpoint_family_projection_bounds_preview_without_hiding_family_size(
         context_pack={},
         evidence_summary={},
     )
-    proposal = next(item for item in proposals if item.startswith("Cover high-value matrix gap:"))
-    assert "preview is incomplete" in proposal
-    assert "raw Coverage gap window" in proposal
+    proposal = next(item for item in proposals if _entry_text(item).startswith("Cover high-value matrix gap:"))
+    proposal_text = _entry_text(proposal)
+    assert "preview is incomplete" in proposal_text
+    assert "raw Coverage gap window" in proposal_text
 
 
 def test_checkpoint_does_not_merge_distinct_dynamic_resources():
@@ -4049,43 +4095,71 @@ def test_checkpoint_does_not_merge_distinct_dynamic_resources():
 
 
 def test_checkpoint_family_metadata_preserves_delimiters_in_reason_and_paths():
-    proposal = (
-        "Cover high-value matrix gap: /api/orders/list.json x Path "
-        "(weight=3.5, relevance=14: file/path selector; file download/read path). "
-        "Validation path: Capture the exact request. If concrete side-effect risk "
-        "appears, mark blocked and use low-risk evidence instead. "
-        "Family projection: key=structural:path:file/path selector; file download/read "
-        "path:{static}/{static}/{static}:/api/orders; kind=structural; size=3; "
-        "samples=/api/orders/list.json,/api/orders/search.json,/api/orders/export.json."
+    # 分隔符（分号、大括号、冒号）出现在 relevance reason 和路径模板中时，
+    # 结构化 metadata 必须原样保留——这是 prose/regex 通道曾经的截断风险点。
+    reason = "file/path selector; file download/read path"
+    gaps = [
+        {
+            "endpoint": f"/api/orders/{name}.json",
+            "vuln_class": "Path",
+            "weight": 3.5,
+            "relevance_score": 14,
+            "relevance_reason": reason,
+        }
+        for name in ("list", "search", "export")
+    ]
+    matrix = {
+        "endpoints": [
+            {"endpoint": item["endpoint"], "cells": {"Path": {"status": "untested"}}}
+            for item in gaps
+        ]
+    }
+
+    proposals = _next_proposals(
+        state={"has_recon": True, "recommended_targets": []},
+        coverage_gaps=gaps,
+        matrix=matrix,
+        target="target.com",
+        context_pack={},
+        evidence_summary={},
+    )
+    action = next(
+        item
+        for item in _build_next_action_queue(proposals, "target.com")
+        if item["type"] == "coverage-gap"
     )
 
-    action = _build_next_action_queue([proposal], "target.com")[0]
-
     assert action["metadata"]["family_key"] == (
-        "structural:path:file/path selector; file download/read path:"
-        "{static}/{static}/{static}:/api/orders"
+        f"structural:path:{reason}:{{static}}/{{static}}/{{static}}:/api/orders"
     )
     assert action["metadata"]["family_members"] == [
         "/api/orders/list.json",
         "/api/orders/search.json",
         "/api/orders/export.json",
     ]
-    assert action["metadata"]["validation_path"] == "Capture the exact request."
+    assert action["metadata"]["relevance_reason"] == reason
 
 
 def test_checkpoint_family_projection_refreshes_queued_action_without_duplicate(tmp_path):
     def checkpoint_for(size):
-        members = ",".join(
-            f"/api/orders/{name}.json"
-            for name in ("list", "search", "export", "archive")[:size]
-        )
-        action = (
+        names = ("list", "search", "export", "archive")[:size]
+        action = _proposal_entry(
             "Cover high-value matrix gap: /api/orders/list.json x Path "
-            "(weight=3.5, relevance=14: file/path selector). Validation path: "
-            "Capture the exact request. If concrete side-effect risk appears, "
-            "mark blocked and use low-risk evidence instead. Family projection: "
+            "(weight=3.5, relevance=14: file/path selector). Family projection: "
             f"key=route-template:path:file/path selector:/api/orders/{{id}}; "
-            f"kind=route-template; size={size}; samples={members}."
+            f"kind=route-template; size={size}; samples={','.join(f'/api/orders/{name}.json' for name in names)}.",
+            action_type="coverage-gap", priority=94,
+            metadata={
+                "endpoint": "/api/orders/list.json",
+                "vuln_class": "Path",
+                "weight": "3.5",
+                "relevance_score": 14,
+                "relevance_reason": "file/path selector",
+                "family_key": "route-template:path:file/path selector:/api/orders/{id}",
+                "family_projection": "route-template",
+                "family_size": size,
+                "family_members": [f"/api/orders/{name}.json" for name in names],
+            },
         )
         return {"next_action_queue": _build_next_action_queue([action], "target.com")}
 
@@ -4407,7 +4481,8 @@ def test_ranked_surface_proposal_includes_replay_draft_and_metadata():
     assert "First capture/register actor, session, and object context" in ranked_text
     assert "two-actor replay evidence" in ranked_text
 
-    queue = _build_next_action_queue([ranked_text], "target.com")
+    entry = next(item for item in proposals if _entry_text(item).startswith("Review surface candidate "))
+    queue = _build_next_action_queue([entry], "target.com")
     ranked_action = queue[0]
     assert ranked_action["type"] == "surface-review"
     assert ranked_action["metadata"]["url"] == url
@@ -4477,12 +4552,13 @@ def test_ranked_surface_role_replay_when_case_state_ready():
         case_state={"actors": 2, "sessions": 2, "objects": 1},
     )
 
-    ranked_text = next(_entry_text(item) for item in proposals if _entry_text(item).startswith("Review surface candidate "))
+    entry = next(item for item in proposals if _entry_text(item).startswith("Review surface candidate "))
+    ranked_text = _entry_text(entry)
     assert "request-diff" in ranked_text
     assert "use registered case_state owner/peer sessions" in ranked_text
     assert "First capture/register actor, session, and object context" not in ranked_text
 
-    action = _build_next_action_queue([ranked_text], "target.com")[0]
+    action = _build_next_action_queue([entry], "target.com")[0]
     skeleton = action["metadata"]["ledger_record_skeleton"]
     assert "--actor \"owner\"" in skeleton
     assert "--variant \"role_diff\"" in skeleton
@@ -4517,13 +4593,14 @@ def test_ranked_surface_auth_workflow_requires_exact_request_before_role_replay(
         case_state={"actors": 2, "sessions": 2, "objects": 1},
     )
 
-    ranked_text = next(_entry_text(item) for item in proposals if _entry_text(item).startswith("Review surface candidate "))
+    entry = next(item for item in proposals if _entry_text(item).startswith("Review surface candidate "))
+    ranked_text = _entry_text(entry)
     assert "auth-workflow endpoint; exact method/body required before replay" in ranked_text
     assert "Capture the exact auth workflow request first" in ranked_text
     assert "request-diff" not in ranked_text
     assert "default GET role replay" in ranked_text
 
-    action = _build_next_action_queue([ranked_text], "target.com")[0]
+    action = _build_next_action_queue([entry], "target.com")[0]
     skeleton = action["metadata"]["ledger_record_skeleton"]
     assert "--variant \"baseline\"" in skeleton
     assert "--actor \"anonymous\"" in skeleton
@@ -4565,7 +4642,8 @@ def test_ranked_surface_redirect_parameter_uses_parameter_behavior_first():
     assert "request-diff" not in ranked_text
     assert "owner/peer role replay" in ranked_text
 
-    action = _build_next_action_queue([ranked_text], "target.com")[0]
+    entry = next(item for item in proposals if _entry_text(item).startswith("Review surface candidate "))
+    action = _build_next_action_queue([entry], "target.com")[0]
     assert "Ledger skeleton:" not in ranked_text
     assert "ledger_record_skeleton" not in action["metadata"]
 
@@ -4600,7 +4678,8 @@ def test_ranked_surface_parent_prefix_uses_route_prefix_triage():
     assert "possible route-prefix/container path" in ranked_text
     assert "request-diff" not in ranked_text
 
-    action = _build_next_action_queue([ranked_text], "target.com")[0]
+    entry = next(item for item in proposals if _entry_text(item).startswith("Review surface candidate "))
+    action = _build_next_action_queue([entry], "target.com")[0]
     assert "Ledger skeleton:" not in ranked_text
     assert "ledger_record_skeleton" not in action["metadata"]
 
@@ -4723,7 +4802,8 @@ def test_ranked_surface_placeholder_object_uses_case_state_object():
     assert "basket_6" in ranked_text
     assert "request-diff" in ranked_text
 
-    action = _build_next_action_queue([ranked_text], "target.com")[0]
+    entry = next(item for item in proposals if _entry_text(item).startswith("Review surface candidate "))
+    action = _build_next_action_queue([entry], "target.com")[0]
     assert "Ledger skeleton:" not in ranked_text
     assert "ledger_record_skeleton" not in action["metadata"]
 
@@ -4841,7 +4921,8 @@ def test_ranked_surface_spa_page_route_uses_browser_state_first_with_case_state_
     assert "authz-role-replay --target" not in ranked_text
     assert "raw SPA HTML shell" in ranked_text
 
-    action = _build_next_action_queue([ranked_text], "target.com")[0]
+    entry = next(item for item in proposals if _entry_text(item).startswith("Review surface candidate "))
+    action = _build_next_action_queue([entry], "target.com")[0]
     skeleton = action["metadata"]["ledger_record_skeleton"]
     assert "--actor \"owner\"" in skeleton
     assert "--variant \"browser_observed\"" in skeleton
@@ -4907,14 +4988,15 @@ def test_ranked_surface_defers_repeated_authz_baselines_when_case_state_missing(
 
 
 def test_coverage_gap_boilerplate_does_not_force_redline_first():
-    proposal = (
+    entry = _proposal_entry(
         "Cover high-value matrix gap: /rest/products/search x XSS "
         "(weight=3.0, relevance=5: reflection/DOM input surface). "
         "Validation path: Capture the exact request or browser flow needed to reproduce the signal. "
-        "If concrete side-effect risk appears, mark blocked and use low-risk evidence instead."
+        "If concrete side-effect risk appears, mark blocked and use low-risk evidence instead.",
+        action_type="coverage-gap", priority=94,
     )
 
-    action = _build_next_action_queue([proposal], "target.com")[0]
+    action = _build_next_action_queue([entry], "target.com")[0]
 
     assert action["type"] == "coverage-gap"
     assert action["redline_required"] is False
@@ -4949,11 +5031,12 @@ def test_ranked_surface_path_only_authz_uses_baseline_first():
         evidence_summary={},
     )
 
-    ranked_text = next(_entry_text(item) for item in proposals if _entry_text(item).startswith("Review surface candidate "))
+    entry = next(item for item in proposals if _entry_text(item).startswith("Review surface candidate "))
+    ranked_text = _entry_text(entry)
     assert "baseline GET or observed-method replay" in ranked_text
     assert "Build a two-actor" not in ranked_text
 
-    action = _build_next_action_queue([ranked_text], "target.com")[0]
+    action = _build_next_action_queue([entry], "target.com")[0]
     skeleton = action["metadata"]["ledger_record_skeleton"]
     assert '--actor "anonymous"' in skeleton
     assert '--object-scope "none"' in skeleton

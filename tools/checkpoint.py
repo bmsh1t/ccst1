@@ -1167,21 +1167,35 @@ def _actor_gap_enrichment_proposal(
         missing.append("business object")
     missing = _dedupe(missing) or ["case-state actor/session/object"]
 
-    return (
-        "Case-state enrichment lead: actor matrix has {count} role/object gap(s) "
-        "that are not executable until runtime context is registered. Example: "
-        "{endpoint} x {vuln} with {actor}/{scope}/{variant}. Missing evidence: "
-        "{missing}. Next: register actor/session/object with tools/target_case_state.py "
-        "or use tools/case_state_seed.py suggestions; keep anonymous baselines and "
-        "ranked-surface discovery moving while enrichment is missing."
-    ).format(
-        count=len(blocked),
-        endpoint=first.get("endpoint", ""),
-        vuln=first.get("vuln_class", ""),
-        actor=first.get("actor", ""),
-        scope=first.get("object_scope", ""),
-        variant=first.get("variant", ""),
-        missing=", ".join(missing),
+    actor_value = str(first.get("actor") or "").strip().lower()
+    return _proposal_entry(
+        (
+            "Case-state enrichment lead: actor matrix has {count} role/object gap(s) "
+            "that are not executable until runtime context is registered. Example: "
+            "{endpoint} x {vuln} with {actor}/{scope}/{variant}. Missing evidence: "
+            "{missing}. Next: register actor/session/object with tools/target_case_state.py "
+            "or use tools/case_state_seed.py suggestions; keep anonymous baselines and "
+            "ranked-surface discovery moving while enrichment is missing."
+        ).format(
+            count=len(blocked),
+            endpoint=first.get("endpoint", ""),
+            vuln=first.get("vuln_class", ""),
+            actor=actor_value,
+            scope=first.get("object_scope", ""),
+            variant=first.get("variant", ""),
+            missing=", ".join(missing),
+        ),
+        action_type="case-state-enrichment",
+        priority=54,
+        command_hint="register actor/session/object with tools/target_case_state.py or review tools/case_state_seed.py",
+        metadata={
+            "endpoint": str(first.get("endpoint") or ""),
+            "vuln_class": str(first.get("vuln_class") or ""),
+            "actor": actor_value,
+            "object_scope": str(first.get("object_scope") or ""),
+            "variant": str(first.get("variant") or ""),
+            "missing_evidence": missing,
+        },
     )
 
 
@@ -1947,17 +1961,27 @@ def _recent_anonymous_authz_clean_count(evidence_summary: dict) -> int:
     return count
 
 
-def _case_state_acquisition_proposal(deferred_count: int, clean_count: int) -> str:
-    return (
-        "Case-state acquisition lead: {clean_count} recent anonymous Authz "
-        "baseline(s) are already clean, and {deferred_count} ranked role/object "
-        "surface(s) need runtime actor/session/object context before meaningful "
-        "owner/peer replay. Next: capture a real browser session or create test-owned "
-        "actors where authorized, then register actors/sessions/objects with "
-        "tools/target_case_state.py; if no authorized session path exists, record "
-        "no-auth-context and pivot to unauth/source-intel lanes instead of testing "
-        "more identical 401 baselines."
-    ).format(clean_count=clean_count, deferred_count=deferred_count)
+def _case_state_acquisition_proposal(deferred_count: int, clean_count: int) -> dict:
+    return _proposal_entry(
+        (
+            "Case-state acquisition lead: {clean_count} recent anonymous Authz "
+            "baseline(s) are already clean, and {deferred_count} ranked role/object "
+            "surface(s) need runtime actor/session/object context before meaningful "
+            "owner/peer replay. Next: capture a real browser session or create test-owned "
+            "actors where authorized, then register actors/sessions/objects with "
+            "tools/target_case_state.py; if no authorized session path exists, record "
+            "no-auth-context and pivot to unauth/source-intel lanes instead of testing "
+            "more identical 401 baselines."
+        ).format(clean_count=clean_count, deferred_count=deferred_count),
+        action_type="case-state-enrichment",
+        priority=66,
+        command_hint="capture/register actors, sessions, and owned objects with tools/target_case_state.py",
+        metadata={
+            "clean_authz_baselines": clean_count,
+            "deferred_role_surfaces": deferred_count,
+            "missing_evidence": ["actor", "session", "business object"],
+        },
+    )
 
 
 # Downgradable approach hints: observed-shape heuristics that suggest (not
@@ -3047,7 +3071,7 @@ def _next_proposals(
                     expansion_suffix=expansion_suffix,
                 )
             )
-        proposals.append(
+        gap_text = (
             "Cover high-value matrix gap: {endpoint} x {vuln_class} "
             "(weight={weight}{coverage_suffix}{relevance}).{validation_suffix} If concrete side-effect risk appears, mark blocked "
             "and use low-risk evidence instead.{family_suffix}".format(
@@ -3060,8 +3084,37 @@ def _next_proposals(
                 family_suffix=family_suffix,
             )
         )
+        gap_metadata: dict = {
+            "endpoint": endpoint,
+            "vuln_class": str(gap.get("vuln_class") or ""),
+            "weight": str(gap.get("weight") or ""),
+        }
+        if int(gap.get("relevance_score", 0) or 0) > 0:
+            gap_metadata["relevance_score"] = int(gap.get("relevance_score", 0) or 0)
+            if str(gap.get("relevance_reason") or "").strip():
+                gap_metadata["relevance_reason"] = str(gap.get("relevance_reason")).strip()
+        if endpoint != coverage_endpoint:
+            gap_metadata["coverage_endpoint"] = coverage_endpoint
+        if validation_path:
+            gap_metadata["validation_path"] = validation_path
+        if family:
+            gap_metadata["family_key"] = str(family.get("key") or "family")
+            gap_metadata["family_projection"] = str(family.get("kind") or "route-template")
+            gap_metadata["family_size"] = int(family.get("size", 0) or 0)
+            gap_metadata["family_members"] = [
+                str(value).strip()
+                for value in family.get("members") or []
+                if str(value).strip()
+            ]
+        proposals.append(_proposal_entry(
+            gap_text,
+            action_type="coverage-gap",
+            priority=94,
+            command_hint="focused low-risk probe + evidence ledger",
+            metadata=gap_metadata,
+        ))
     for gap in _actionable_actor_gaps(evidence_summary, case_state)[:3]:
-        proposals.append(
+        actor_text = (
             "Cover actor matrix gap: {endpoint} x {vuln} with {actor}/{scope}/{variant} "
             "expected={expected} status={status}. Record result with: {cmd}".format(
                 endpoint=gap.get("endpoint", ""),
@@ -3074,6 +3127,19 @@ def _next_proposals(
                 cmd=evidence_record_command(target, gap),
             )
         )
+        proposals.append(_proposal_entry(
+            actor_text,
+            action_type="actor-gap",
+            priority=96,
+            command_hint="focused replay + tools/evidence_ledger.py record",
+            metadata={
+                "endpoint": str(gap.get("endpoint") or ""),
+                "vuln_class": str(gap.get("vuln_class") or ""),
+                "actor": str(gap.get("actor") or ""),
+                "object_scope": str(gap.get("object_scope") or ""),
+                "variant": str(gap.get("variant") or ""),
+            },
+        ))
     actor_enrichment = _actor_gap_enrichment_proposal(
         evidence_summary,
         case_state,
@@ -3131,7 +3197,20 @@ def _next_proposals(
                 f"capture missing browser/source/actor evidence, or defer with evidence"
                 f"{replay_suffix}{ledger_suffix}"
             )
-            surface_metadata: dict = {"url": url}
+            surface_metadata: dict = {
+                "url": url,
+                "endpoint": _canonicalize_url_path(url),
+            }
+            # Upstream (next_validation / autopilot_state) embeds the finding id
+            # in the suggested prose. Keep promoting it to structured metadata so
+            # action_queue identity/dedupe can match persisted final actions.
+            finding_id_match = re.search(r"for finding\s+([A-Za-z0-9_-]+)", suggested)
+            if finding_id_match:
+                surface_metadata["finding_id"] = finding_id_match.group(1)
+            if replay_draft:
+                surface_metadata["replay_draft"] = replay_draft
+            if ledger_skeleton:
+                surface_metadata["ledger_record_skeleton"] = ledger_skeleton
             if facts["approach_hints"]:
                 surface_metadata["approach_hints"] = list(facts["approach_hints"])
             if facts["context_prereq"]:
@@ -3154,7 +3233,14 @@ def _next_proposals(
 
 
 def _classify_next_action(text: str, target: str = "") -> tuple[str, int, str]:
-    """把 checkpoint 的自然语言建议归类成 Claude 可消费的执行队列。"""
+    """把 checkpoint 的自然语言建议归类成 Claude 可消费的执行队列。
+
+    Dual-read 通道：只服务仍未结构化的 plain-string 生产者（recon、enrichment
+    hint、viewstate/secret/cross-evidence/high-risk/secondary-sweep/unsafe、
+    case-state seed、root-claim candidate evidence gap）。结构化 entry 在
+    `_bounded_next_proposals` / `_build_next_action_queue` 里直接读字段，
+    不经过这里；已迁移分支的 classify 规则随生产者一起删除。
+    """
     value = str(text or "").strip()
     lowered = value.lower()
     replay_match = re.search(
@@ -3163,18 +3249,6 @@ def _classify_next_action(text: str, target: str = "") -> tuple[str, int, str]:
         re.I,
     )
     replay_hint = replay_match.group("cmd").strip() if replay_match else ""
-    if "case-state validation backlog" in lowered:
-        return "case-state-validation", 110, replay_hint or "python3 tools/validation_runner.py ... --from-case-state"
-    if "case-state enrichment backlog" in lowered:
-        return "case-state-enrichment", 108, "enrich actor/session/object/private-marker evidence in case_state"
-    if "case-state recovery backlog" in lowered:
-        return "case-state-enrichment", 108, "complete the recorded hypothesis recovery step before creating a fresh backlog"
-    if "case-state acquisition lead" in lowered:
-        return "case-state-enrichment", 66, "capture/register actors, sessions, and owned objects with tools/target_case_state.py"
-    if "case-state enrichment lead" in lowered:
-        return "case-state-enrichment", 54, "register actor/session/object with tools/target_case_state.py or review tools/case_state_seed.py"
-    if "case-state backlog creation" in lowered:
-        return "case-state-backlog-create", 103, "promote the active hypothesis into validation backlog"
     if "case-state endpoint discovery lead" in lowered:
         return "case-state-enrichment", 66, "identify concrete object endpoint from browser/source evidence, then update case_state"
     if "case-state seed opportunity" in lowered:
@@ -3182,10 +3256,6 @@ def _classify_next_action(text: str, target: str = "") -> tuple[str, int, str]:
         return "case-state-seed", 99, seed_match.group("cmd").strip() if seed_match else "python3 tools/case_state_seed.py --target <target> --json"
     if "candidate evidence gap" in lowered:
         return "candidate-evidence-gap", 105, "fill missing rubric evidence, then /validate"
-    if "run /validate" in lowered:
-        return "validation", 100, "/validate"
-    if "draft report" in lowered:
-        return "report", 90, "/report"
     if "review context contradiction" in lowered:
         quoted_target = _quote(target) if target else "target.com"
         return "context-review", 90, f"python3 tools/context_pack.py --target {quoted_target}"
@@ -3198,8 +3268,6 @@ def _classify_next_action(text: str, target: str = "") -> tuple[str, int, str]:
             "python3 tools/surface.py --target {target} && "
             "python3 tools/checkpoint.py --target {target}".format(target=quoted_target),
         )
-    if "actor matrix gap" in lowered:
-        return "actor-gap", 96, "focused replay + tools/evidence_ledger.py record"
     if "action-gated scanner lane" in lowered or "unsafe-skipped scanner lane" in lowered:
         return "action-gated-review", 93, "review legacy unsafe_skipped.txt; resolve queue with tested/blocked/dead-end/n/a/candidate"
     if "high-risk lane review" in lowered:
@@ -3210,8 +3278,6 @@ def _classify_next_action(text: str, target: str = "") -> tuple[str, int, str]:
         if "[public-metadata]" in lowered:
             return "secondary-sweep", 52, "review public metadata only for unusual fields or chain pivots"
         return "secondary-sweep", 72, "review demoted raw artifact; re-promote only with concrete secret/chain evidence"
-    if "high-value matrix gap" in lowered:
-        return "coverage-gap", 94, "focused low-risk probe + evidence ledger"
     if "cross-evidence high-value surface" in lowered:
         return "evidence-convergence", 98, "focused replay with browser/JS/source evidence"
     if "secret verification lane" in lowered:
@@ -3222,10 +3288,6 @@ def _classify_next_action(text: str, target: str = "") -> tuple[str, int, str]:
         return "source-enrichment", 70, "python3 tools/source_intel.py"
     if "run enrichment run_js_read" in lowered:
         return "js-enrichment", 70, "python3 tools/js_reader.py"
-    if "review surface candidate" in lowered:
-        return "surface-review", 70, "AI reviews surface evidence, then chooses the exact lane"
-    if "continue top ranked surface" in lowered:
-        return "ranked-surface", 70, "AI reviews ranked surface evidence, then chooses the exact lane"
     return "next-action", 50, "execute the smallest safe evidence-producing step"
 
 
@@ -3273,63 +3335,17 @@ def _bounded_next_proposals(
 def _extract_action_metadata(text: str) -> dict:
     """从 checkpoint 的动作文本中提取可机器消费的轻量字段。
 
-    target_write_back 仍保持人类可读文本；action queue 额外保存这些字段，
-    让后续执行/resolve 不必重新从自然语言猜 endpoint 和漏洞类型。
+    Dual-read 通道：只服务仍未结构化的 plain-string 生产者（seed/endpoint-seed、
+    unsafe/action-gated、secondary-sweep、workflow lead、root-claim finding_id）。
+    结构化 entry 在 `_build_next_action_queue` 里直接携带 metadata dict；
+    已迁移 family（case-state backlog、coverage-gap、actor-gap、
+    ranked-surface/surface-review、validation、report）的提取规则随生产者删除。
     """
     value = str(text or "").strip()
     metadata: dict = {}
     hypothesis_id_match = re.search(r"Hypothesis ID:\s+(?P<value>[A-Za-z0-9_-]+)", value, re.I)
     if hypothesis_id_match:
         metadata["hypothesis_id"] = hypothesis_id_match.group("value")
-    case_state_match = re.search(
-        r"Case-state\s+(?:validation backlog|enrichment backlog|recovery backlog|backlog creation)\s+(?P<backlog_id>[A-Za-z0-9_-]+)",
-        value,
-        re.I,
-    )
-    if case_state_match:
-        metadata["backlog_id"] = case_state_match.group("backlog_id")
-        for key, pattern in (
-            ("runner", r"Runner:\s+(?P<value>[^.]+)"),
-            ("object_ref", r"Object ref:\s+(?P<value>[^.]+)"),
-            ("endpoint", r"Endpoint:\s+(?P<value>\S+)"),
-            ("downgrade_rule", r"Downgrade rule:\s+(?P<value>.*?)(?:\.\s+(?:Stop condition|Write-back|Chain extensions if blocked):|$)"),
-            ("stop_condition", r"Stop condition:\s+(?P<value>.*?)(?:\.\s+(?:Write-back|Chain extensions if blocked):|$)"),
-            ("write_back", r"Write-back:\s+(?P<value>.*?)(?:\.\s+(?:Chain extensions if blocked|Recovery next action):|$)"),
-            ("hypothesis", r"Hypothesis:\s+(?P<value>.*?)(?:\.\s+(?:Hypothesis ID|Why now):|$)"),
-            ("why_now", r"Why now:\s+(?P<value>.*?)(?:\.\s+(?:Runner|Actors|Object ref|Endpoint|Exact replay draft|Write-back|Chain extensions if blocked|Recovery next action):|$)"),
-            ("recovery_next_action", r"Recovery next action:\s+(?P<value>.*?)(?:\.$|$)"),
-        ):
-            match = re.search(pattern, value, re.I)
-            if match:
-                clean = match.group("value").strip()
-                if key == "endpoint":
-                    clean = clean.rstrip(".")
-                metadata[key] = clean
-
-        actors_match = re.search(
-            r"Actors:\s+owner=(?P<owner>[^,]+),\s+peer=(?P<peer>[^.]+)",
-            value,
-            re.I,
-        )
-        if actors_match:
-            metadata["owner_actor"] = actors_match.group("owner").strip()
-            metadata["peer_actor"] = actors_match.group("peer").strip()
-
-        for key, pattern in (
-            ("replay_draft", r"Exact replay draft:\s+(?P<value>.*?)(?:\.\s+(?:Required evidence|Missing evidence|Downgrade rule|Stop condition|Write-back|Chain extensions if blocked):|$)"),
-            ("required_evidence", r"Required evidence:\s+(?P<value>.*?)(?:\.\s+(?:Missing evidence|Optional evidence gaps|Downgrade rule|Stop condition|Write-back|Chain extensions if blocked):|$)"),
-            ("missing_evidence", r"Missing evidence:\s+(?P<value>.*?)(?:\.\s+(?:Optional evidence gaps|Downgrade rule|Stop condition|Write-back|Chain extensions if blocked):|$)"),
-            ("optional_evidence_gaps", r"Optional evidence gaps:\s+(?P<value>.*?)(?:\.\s+(?:Downgrade rule|Stop condition|Write-back|Chain extensions if blocked):|$)"),
-            ("chain_extensions_if_blocked", r"Chain extensions if blocked:\s+(?P<value>.*?)(?:\.\s+Recovery next action:|\.$|$)"),
-        ):
-            match = re.search(pattern, value, re.I)
-            if match:
-                raw = match.group("value").strip()
-                if key in {"required_evidence", "missing_evidence", "optional_evidence_gaps", "chain_extensions_if_blocked"}:
-                    metadata[key] = [part.strip() for part in raw.split(",") if part.strip()]
-                else:
-                    metadata[key] = raw
-        return metadata
 
     seed_match = re.search(
         r"Case-state seed opportunity:\s+Found object candidate\s+(?P<object_ref>\S+)\s+"
@@ -3416,70 +3432,6 @@ def _extract_action_metadata(text: str) -> dict:
         })
         return metadata
 
-    validation_match = re.search(
-        r"Validation path:\s+(?P<path>.*?)(?:\s+If red-line|"
-        r"\s+If concrete side-effect|\s+Queue projection only:|"
-        r"\s+Family projection:|"
-        r"\s+Stop condition:|$)",
-        value,
-        re.I,
-    )
-
-    match = re.search(
-        r"Cover high-value matrix gap:\s+(?P<endpoint>\S+)\s+x\s+"
-        r"(?P<vuln>[A-Za-z0-9_-]+)\s+\(weight=(?P<weight>[^,\)]+)"
-        r"(?:,\s*coverage_endpoint=(?P<coverage_endpoint>[^,\)]+))?"
-        r"(?:,\s*relevance=(?P<score>\d+)(?::\s*(?P<reason>[^\)]+))?)?\)",
-        value,
-    )
-    if match:
-        metadata.update({
-            "endpoint": match.group("endpoint"),
-            "vuln_class": match.group("vuln"),
-            "weight": match.group("weight"),
-        })
-        if match.group("score"):
-            metadata["relevance_score"] = int(match.group("score"))
-        if match.group("coverage_endpoint"):
-            metadata["coverage_endpoint"] = match.group("coverage_endpoint").strip()
-        if match.group("reason"):
-            metadata["relevance_reason"] = match.group("reason").strip()
-        if validation_match:
-            metadata["validation_path"] = validation_match.group("path").strip()
-        family_match = re.search(
-            r"Family projection:\s+key=(?P<key>.*?);\s+kind=(?P<kind>[^;]+);"
-            r"\s+size=(?P<size>\d+);\s+(?:members|samples)=(?P<members>.*?)\.\s*$",
-            value,
-            re.I,
-        )
-        if family_match:
-            metadata.update({
-                "family_key": family_match.group("key").strip(),
-                "family_projection": family_match.group("kind").strip(),
-                "family_size": int(family_match.group("size")),
-                "family_members": [
-                    part.strip()
-                    for part in family_match.group("members").split(",")
-                    if part.strip()
-                ],
-            })
-        return metadata
-
-    match = re.search(
-        r"Cover actor matrix gap:\s+(?P<endpoint>\S+)\s+x\s+"
-        r"(?P<vuln>[A-Za-z0-9_-]+)\s+with\s+"
-        r"(?P<actor>[^/]+)/(?P<object_scope>[^/]+)/(?P<variant>\S+)",
-        value,
-    )
-    if match:
-        metadata.update({
-            "endpoint": match.group("endpoint"),
-            "vuln_class": match.group("vuln"),
-            "actor": match.group("actor"),
-            "object_scope": match.group("object_scope"),
-            "variant": match.group("variant"),
-        })
-
     match = re.search(
         r"Review (?:action-gated|unsafe-skipped) scanner lane\s+(?P<unsafe_id>[a-f0-9]{8,64}|-)"
         r".*?Artifact=(?P<artifact>\S*unsafe_skipped\.txt)",
@@ -3531,30 +3483,6 @@ def _extract_action_metadata(text: str) -> dict:
         })
         if match.group("artifact"):
             metadata["artifact"] = match.group("artifact").strip().rstrip(".")
-
-    match = re.match(
-        r"(?:Continue top ranked surface|Review surface candidate)\s+(?P<url>\S+):\s*(?P<rest>.*)$",
-        value,
-        re.I,
-    )
-    if match:
-        rest = match.group("rest").strip()
-        ledger_skeleton = ""
-        if "Ledger skeleton:" in rest:
-            rest, ledger_skeleton = rest.split("Ledger skeleton:", 1)
-        suggested = rest
-        replay_draft = ""
-        if "Replay draft:" in rest:
-            suggested, replay_draft = rest.split("Replay draft:", 1)
-        metadata.update({
-            "url": match.group("url"),
-            "endpoint": _canonicalize_url_path(match.group("url")),
-            "suggested": suggested.strip().rstrip("."),
-        })
-        if replay_draft.strip():
-            metadata["replay_draft"] = replay_draft.strip().rstrip(".")
-        if ledger_skeleton.strip():
-            metadata["ledger_record_skeleton"] = ledger_skeleton.strip()
 
     return metadata
 

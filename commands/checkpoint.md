@@ -65,6 +65,9 @@ python3 tools/target_case_state.py summary --target <target>
 工具会从这些状态生成：
 
 - 当前 decision：`refresh-recon` / `enrich` / `hunt` / `continue` / `validate` / `report` / `checkpoint` / `handoff`
+- `next_action_queue`：建议以结构化 entry（`schema_version: 1` 的
+  `{text, type, priority, command_hint, metadata}`）从生产函数直接携带字段；
+  仍未迁移的文本建议保留 dual-read 分类，`text` 恒为人类可读 prose
 - 覆盖摘要和 high-value gaps
 - Evidence Ledger 摘要和 Actor Matrix gaps
 - Target Case State 摘要和 top backlog / enrichment action
