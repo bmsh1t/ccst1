@@ -36,7 +36,9 @@ Before target work, state:
    account, execution, or availability impact.
 2. **Known facts**: target-owned observations, actors, workflows, source/JS,
    component intelligence, and current coverage gaps.
-3. **Hypothesis**: open family/technique, expected learning, and evidence source.
+3. **Hypothesis**: open family/technique, expected learning, evidence source,
+   and one line on why this hypothesis over the alternatives (expected
+   information gain, not a favorite class).
 4. **Kill condition**: the result that closes or rotates this path.
 5. **Budget and risk**: bounded actions plus the current request budget.
 

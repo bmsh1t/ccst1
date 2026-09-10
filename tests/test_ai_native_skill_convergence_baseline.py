@@ -79,6 +79,22 @@ def test_web2_vuln_pattern_map_keeps_java_deserialization_and_webhook_routes():
     assert "Webhook / Callback Lane" in skill
 
 
+def test_phase0_and_intel_route_keep_selection_reason_and_urgency():
+    """Anchor the two desredteam-derived prose weights.
+
+    - Phase 0 requires a one-line selection reason (advisory, not a gate):
+      why this hypothesis over alternatives.
+    - The recon /intel route marks a concrete version fingerprint as an
+      immediate trigger, not a deferred enrichment step.
+    """
+    methodology = (REPO_ROOT / "skills" / "bb-methodology" / "SKILL.md").read_text(encoding="utf-8")
+    assert "why this hypothesis over the alternatives" in methodology
+    assert "not a favorite class" in methodology
+
+    recon = (REPO_ROOT / "skills" / "web2-recon" / "SKILL.md").read_text(encoding="utf-8")
+    assert "immediate next step, not a deferred one" in recon
+
+
 def test_focus_recall_pulls_deserialization_cards():
     """The pull channel (focus-based recall) must reach the execution-chain cards."""
     sys.path.insert(0, str(REPO_ROOT / "tools"))

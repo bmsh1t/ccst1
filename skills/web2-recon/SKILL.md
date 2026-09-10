@@ -40,7 +40,7 @@ and lowest reversible cost. Branches are alternatives, not a mandatory order.
 | Browser, JS, source, schema, or history names a missing host/path/parameter | Choose one evidence-linked expansion, not a generic dictionary | `tools/dns_expand.py --reason <evidence>`, focused FFUF, `/js-read` |
 | Authenticated API exposes object or role state | Compare the same object/action across owned actors before broad probes | `web2-vuln-classes`, actor-pair evidence |
 | Upload, URL fetch, GraphQL, realtime, import/export, or payment evidence appears | Preserve the request shape and route to the matching card/validation lane | `/surface`, selected Knowledge card, `/validate` |
-| Exposure, component, source, or CI/CD artifact appears | Record provenance and test applicability before any active follow-up | `/intel`, source or CI/CD tool |
+| Exposure, component, source, or CI/CD artifact appears | Record provenance and test applicability before any active follow-up; a concrete framework/version fingerprint makes `/intel` the immediate next step, not a deferred one | `/intel`, source or CI/CD tool |
 | Recon is low-signal but still underexplored | Run one bounded discovery action with a reopen condition; keep unknowns open | `/recon`, browser/source evidence, or a targeted tool |
 
 ### Target-specific Branching
