@@ -1960,41 +1960,50 @@ def _case_state_acquisition_proposal(deferred_count: int, clean_count: int) -> s
     ).format(clean_count=clean_count, deferred_count=deferred_count)
 
 
-def _ranked_surface_replay_draft(
+# Downgradable approach hints: observed-shape heuristics that suggest (not
+# gate) the next replay approach. All applicable hints stay visible in queue
+# metadata so the AI keeps override authority; the first hint picks the
+# default replay draft / ledger skeleton, preserving prior if/elif semantics.
+RANKED_SURFACE_APPROACH_HINTS = {
+    "browser_state_first": "browser-state-first page route",
+    "auth_workflow_first": "auth-workflow endpoint; exact method/body required",
+    "parameter_behavior_first": "parameter-behavior-first redirect/url input",
+    "route_prefix_first": "route-prefix-first parent path",
+}
+
+
+def _ranked_surface_fact_block(
     state: dict,
     item: dict,
-    case_state: dict | None = None,
+    case_state: dict | None,
     *,
     target: str = "",
-) -> str:
+) -> dict:
+    """Compute the ranked-surface fact block once for all its consumers.
+
+    Facts stay deterministic code (observed query keys, JS methods, case-state
+    counts, placeholder segments, matrix child paths). The four downgradable
+    first-predicates become an ordered approach_hints list; identity
+    preconditions (needs_role_context / context_prereq / role_replay_ready)
+    remain hard constraints because they gate the ledger skeleton's actor
+    value and prevent uncredentialed two-actor claims.
+    """
     url = str(item.get("url") or "").strip()
-    if not url:
-        return ""
     entry = _ranked_surface_entry(state, url)
     query_keys = _ranked_surface_query_keys(url)
-    js_methods = [
+    js_methods = list(dict.fromkeys([
         str(js.get("method") or "").upper()
         for js in (entry.get("js_intel_endpoints") or [])
         if isinstance(js, dict) and str(js.get("method") or "").strip()
-    ]
-    js_methods = list(dict.fromkeys([method for method in js_methods if method]))
-    source_types = [
+    ]))
+    source_types = list(dict.fromkeys([
         str(src.get("type") or "").lower()
         for src in (entry.get("source_intel_hypotheses") or [])
         if isinstance(src, dict) and str(src.get("type") or "").strip()
-    ]
-    source_types = list(dict.fromkeys([value for value in source_types if value]))
-
+    ]))
     vuln_hint = _ranked_surface_vuln_hint(entry, url)
-    evidence_text = " ".join([
-        str(entry.get("suggested") or item.get("suggested") or ""),
-        " ".join(query_keys),
-        " ".join(source_types),
-        "browser observed" if entry.get("browser_observed") else "",
-        " ".join(js_methods),
-    ])
-    authz_gap = _path_only_authz_gap_for_url(url, vuln_hint)
     vuln_class = _canonical_vuln_for_ledger(vuln_hint)
+    authz_gap = _path_only_authz_gap_for_url(url, vuln_hint)
     baseline_first = _is_path_only_authz_gap(authz_gap)
     browser_state_first = _ranked_surface_browser_state_first(url, vuln_class, query_keys)
     auth_workflow_first = _ranked_surface_auth_workflow_first(url, js_methods)
@@ -2004,6 +2013,7 @@ def _ranked_surface_replay_draft(
     )
     route_prefix_first = _ranked_surface_route_prefix_first(state, url, query_keys)
     placeholder_guidance = _placeholder_object_replay_guidance(url, case_state, target)
+    context_prereq = _ranked_surface_context_prereq(state, item, case_state)
     role_replay_ready = (
         _ranked_surface_role_replay_ready(vuln_class, baseline_first, case_state)
         and not browser_state_first
@@ -2012,6 +2022,72 @@ def _ranked_surface_replay_draft(
         and not route_prefix_first
         and not placeholder_guidance
     )
+    # Ordered exactly like the retired if/elif ladder so the first hint keeps
+    # choosing the same default replay draft as before.
+    approach_hints: list[str] = []
+    if browser_state_first:
+        approach_hints.append("browser_state_first")
+    if auth_workflow_first:
+        approach_hints.append("auth_workflow_first")
+    if parameter_behavior_first:
+        approach_hints.append("parameter_behavior_first")
+    if route_prefix_first:
+        approach_hints.append("route_prefix_first")
+    return {
+        "url": url,
+        "entry": entry,
+        "query_keys": query_keys,
+        "js_methods": js_methods,
+        "source_types": source_types,
+        "vuln_hint": vuln_hint,
+        "vuln_class": vuln_class,
+        "authz_gap": authz_gap,
+        "baseline_first": baseline_first,
+        "browser_state_first": browser_state_first,
+        "auth_workflow_first": auth_workflow_first,
+        "parameter_behavior_first": parameter_behavior_first,
+        "route_prefix_first": route_prefix_first,
+        "placeholder_guidance": placeholder_guidance,
+        "context_prereq": context_prereq,
+        "role_replay_ready": role_replay_ready,
+        "approach_hints": approach_hints,
+    }
+
+
+def _ranked_surface_replay_draft(
+    state: dict,
+    item: dict,
+    case_state: dict | None = None,
+    *,
+    target: str = "",
+    fact_block: dict | None = None,
+) -> str:
+    facts = fact_block if fact_block is not None else _ranked_surface_fact_block(state, item, case_state, target=target)
+    url = facts["url"]
+    if not url:
+        return ""
+    entry = facts["entry"]
+    query_keys = facts["query_keys"]
+    js_methods = facts["js_methods"]
+    source_types = facts["source_types"]
+    vuln_hint = facts["vuln_hint"]
+    evidence_text = " ".join([
+        str(entry.get("suggested") or item.get("suggested") or ""),
+        " ".join(query_keys),
+        " ".join(source_types),
+        "browser observed" if entry.get("browser_observed") else "",
+        " ".join(js_methods),
+    ])
+    authz_gap = facts["authz_gap"]
+    vuln_class = facts["vuln_class"]
+    baseline_first = facts["baseline_first"]
+    browser_state_first = facts["browser_state_first"]
+    auth_workflow_first = facts["auth_workflow_first"]
+    parameter_behavior_first = facts["parameter_behavior_first"]
+    route_prefix_first = facts["route_prefix_first"]
+    placeholder_guidance = facts["placeholder_guidance"]
+    role_replay_ready = facts["role_replay_ready"]
+    context_prereq = facts["context_prereq"]
     if placeholder_guidance:
         validation_path = placeholder_guidance
     elif baseline_first:
@@ -2057,7 +2133,7 @@ def _ranked_surface_replay_draft(
             "status, JSON shape, and body diff; only promote body-backed public exposure "
             "or role/object-specific authorization delta"
         )
-    elif _ranked_surface_context_prereq(state, item, case_state):
+    elif context_prereq:
         validation_path = (
             "First capture/register actor, session, and object context in "
             "tools/target_case_state.py; until owner/peer context exists, only run "
@@ -2105,6 +2181,7 @@ def _ranked_surface_ledger_skeleton(
     target: str,
     replay_draft: str,
     case_state: dict | None = None,
+    fact_block: dict | None = None,
 ) -> str:
     """Build a copyable ledger record command for the suggested ranked-surface replay.
 
@@ -2112,39 +2189,27 @@ def _ranked_surface_ledger_skeleton(
     run it after the replay and adjust `--result` / `--evidence-ref` to the actual
     evidence captured.
     """
-    url = str(item.get("url") or "").strip()
+    facts = fact_block if fact_block is not None else _ranked_surface_fact_block(state, item, case_state, target=target)
+    url = facts["url"]
     if not url:
         return ""
-    entry = _ranked_surface_entry(state, url)
+    entry = facts["entry"]
     endpoint = _canonicalize_url_path(url)
-    js_methods = [
-        str(js.get("method") or "").upper()
-        for js in (entry.get("js_intel_endpoints") or [])
-        if isinstance(js, dict) and str(js.get("method") or "").strip()
-    ]
+    js_methods = facts["js_methods"]
     method = next((value for value in js_methods if value), "GET")
-    vuln_hint = _ranked_surface_vuln_hint(entry, url)
-    vuln_class = _canonical_vuln_for_ledger(vuln_hint)
+    vuln_hint = facts["vuln_hint"]
+    vuln_class = facts["vuln_class"]
     if not vuln_class:
         return ""
-    authz_gap = _path_only_authz_gap_for_url(url, vuln_hint)
-    baseline_first = _is_path_only_authz_gap(authz_gap)
-    context_prereq = _ranked_surface_context_prereq(state, item, case_state)
-    query_keys = _ranked_surface_query_keys(url)
-    browser_state_first = _ranked_surface_browser_state_first(url, vuln_class, query_keys)
-    auth_workflow_first = _ranked_surface_auth_workflow_first(url, js_methods)
-    parameter_behavior_first = _ranked_surface_parameter_behavior_first(url, query_keys)
-    route_prefix_first = _ranked_surface_route_prefix_first(state, url, query_keys)
-    placeholder_guidance = _placeholder_object_replay_guidance(url, case_state, target)
+    baseline_first = facts["baseline_first"]
+    context_prereq = facts["context_prereq"]
+    browser_state_first = facts["browser_state_first"]
+    auth_workflow_first = facts["auth_workflow_first"]
+    parameter_behavior_first = facts["parameter_behavior_first"]
+    route_prefix_first = facts["route_prefix_first"]
+    placeholder_guidance = facts["placeholder_guidance"]
     placeholder_object = _case_state_object_for_surface(url, case_state) if placeholder_guidance else {}
-    role_replay_ready = (
-        _ranked_surface_role_replay_ready(vuln_class, baseline_first, case_state)
-        and not browser_state_first
-        and not auth_workflow_first
-        and not parameter_behavior_first
-        and not route_prefix_first
-        and not placeholder_guidance
-    )
+    role_replay_ready = facts["role_replay_ready"]
     actor = (
         "anonymous"
         if baseline_first or context_prereq or auth_workflow_first or parameter_behavior_first or route_prefix_first
@@ -3054,17 +3119,32 @@ def _next_proposals(
             if defer_role_ranked and _ranked_surface_context_prereq(ranked_state, item, case_state):
                 deferred_role_ranked += 1
                 continue
-            replay_draft = _ranked_surface_replay_draft(ranked_state, item, case_state, target=target)
+            facts = _ranked_surface_fact_block(ranked_state, item, case_state, target=target)
+            replay_draft = _ranked_surface_replay_draft(ranked_state, item, case_state, target=target, fact_block=facts)
             replay_suffix = f". Replay draft: {replay_draft.rstrip('.')}" if replay_draft else ""
-            ledger_skeleton = _ranked_surface_ledger_skeleton(ranked_state, item, target, replay_draft, case_state)
+            ledger_skeleton = _ranked_surface_ledger_skeleton(ranked_state, item, target, replay_draft, case_state, fact_block=facts)
             ledger_suffix = f". Ledger skeleton: {ledger_skeleton}" if ledger_skeleton else ""
             reason = str(item.get("review_reason") or "advisory surface evidence").strip()
-            proposals.append(
+            surface_text = (
                 f"Review surface candidate {url}: {suggested}. "
                 f"Reason: {reason}. AI decision required: choose the exact lane, "
                 f"capture missing browser/source/actor evidence, or defer with evidence"
                 f"{replay_suffix}{ledger_suffix}"
             )
+            surface_metadata: dict = {"url": url}
+            if facts["approach_hints"]:
+                surface_metadata["approach_hints"] = list(facts["approach_hints"])
+            if facts["context_prereq"]:
+                surface_metadata["role_context_prereq"] = True
+            if facts["placeholder_guidance"]:
+                surface_metadata["placeholder_object_path"] = True
+            proposals.append(_proposal_entry(
+                surface_text,
+                action_type="surface-review",
+                priority=70,
+                command_hint="AI reviews surface evidence, then chooses the exact lane",
+                metadata=surface_metadata,
+            ))
             ranked_surface_added += 1
     if deferred_role_ranked:
         proposals.append(_case_state_acquisition_proposal(deferred_role_ranked, clean_authz_baselines))

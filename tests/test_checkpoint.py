@@ -31,6 +31,7 @@ from checkpoint import (
     _decision_for_action,
     _dead_end_proposals,
     _dedupe_artifact_category_items,
+    _entry_text,
     _extract_action_metadata,
     _filter_final_action_queue_items,
     _json_inject_queue_item,
@@ -1367,7 +1368,7 @@ def test_bounded_proposals_preserve_lane_types_before_duplicate_fill():
     assert len(bounded) == 8
     assert any(item.startswith("Cover high-value matrix gap:") for item in bounded)
     assert any(item.startswith("Cover actor matrix gap:") for item in bounded)
-    assert any(item.startswith("Review surface candidate ") for item in bounded)
+    assert any(_entry_text(item).startswith("Review surface candidate ") for item in bounded)
 
 
 def test_checkpoint_fails_explicitly_on_corrupt_case_state(tmp_path):
@@ -3721,9 +3722,9 @@ def test_next_proposals_rolls_past_covered_ranked_surfaces():
         },
     )
 
-    assert not any(covered_finding in item for item in proposals)
-    assert not any(covered_ledger in item for item in proposals)
-    assert any(fresh in item for item in proposals)
+    assert not any(covered_finding in _entry_text(item) for item in proposals)
+    assert not any(covered_ledger in _entry_text(item) for item in proposals)
+    assert any(fresh in _entry_text(item) for item in proposals)
 
 
 def test_next_proposals_keeps_ranked_surface_candidates_after_secondary_sweeps():
@@ -3770,7 +3771,7 @@ def test_next_proposals_keeps_ranked_surface_candidates_after_secondary_sweeps()
         evidence_summary={},
     )
 
-    ranked = [item for item in proposals if item.startswith("Review surface candidate ")]
+    ranked = [_entry_text(item) for item in proposals if _entry_text(item).startswith("Review surface candidate ")]
     assert len(ranked) == 4
     assert any(urls[-1] in item for item in ranked)
 
@@ -4398,7 +4399,7 @@ def test_ranked_surface_proposal_includes_replay_draft_and_metadata():
         evidence_summary={},
     )
 
-    ranked_text = next(item for item in proposals if item.startswith("Review surface candidate "))
+    ranked_text = next(_entry_text(item) for item in proposals if _entry_text(item).startswith("Review surface candidate "))
     assert "Replay draft:" in ranked_text
     assert "Ledger skeleton:" in ranked_text
     assert "browser-observed request/response baseline first" in ranked_text
@@ -4476,7 +4477,7 @@ def test_ranked_surface_role_replay_when_case_state_ready():
         case_state={"actors": 2, "sessions": 2, "objects": 1},
     )
 
-    ranked_text = next(item for item in proposals if item.startswith("Review surface candidate "))
+    ranked_text = next(_entry_text(item) for item in proposals if _entry_text(item).startswith("Review surface candidate "))
     assert "request-diff" in ranked_text
     assert "use registered case_state owner/peer sessions" in ranked_text
     assert "First capture/register actor, session, and object context" not in ranked_text
@@ -4516,7 +4517,7 @@ def test_ranked_surface_auth_workflow_requires_exact_request_before_role_replay(
         case_state={"actors": 2, "sessions": 2, "objects": 1},
     )
 
-    ranked_text = next(item for item in proposals if item.startswith("Review surface candidate "))
+    ranked_text = next(_entry_text(item) for item in proposals if _entry_text(item).startswith("Review surface candidate "))
     assert "auth-workflow endpoint; exact method/body required before replay" in ranked_text
     assert "Capture the exact auth workflow request first" in ranked_text
     assert "request-diff" not in ranked_text
@@ -4558,7 +4559,7 @@ def test_ranked_surface_redirect_parameter_uses_parameter_behavior_first():
         case_state={"actors": 2, "sessions": 2, "objects": 1},
     )
 
-    ranked_text = next(item for item in proposals if item.startswith("Review surface candidate "))
+    ranked_text = next(_entry_text(item) for item in proposals if _entry_text(item).startswith("Review surface candidate "))
     assert "parameter-behavior-first redirect/url input; avoid role replay" in ranked_text
     assert "Run parameter-behavior validation first" in ranked_text
     assert "request-diff" not in ranked_text
@@ -4594,7 +4595,7 @@ def test_ranked_surface_parent_prefix_uses_route_prefix_triage():
         case_state={"actors": 2, "sessions": 2, "objects": 1},
     )
 
-    ranked_text = next(item for item in proposals if item.startswith("Review surface candidate "))
+    ranked_text = next(_entry_text(item) for item in proposals if _entry_text(item).startswith("Review surface candidate "))
     assert "route-prefix-first parent path; validate concrete child handlers" in ranked_text
     assert "possible route-prefix/container path" in ranked_text
     assert "request-diff" not in ranked_text
@@ -4632,7 +4633,7 @@ def test_ranked_surface_parent_prefix_uses_matrix_child_paths_when_surface_windo
         case_state={"actors": 2, "sessions": 2, "objects": 1},
     )
 
-    ranked_text = next(item for item in proposals if item.startswith("Review surface candidate "))
+    ranked_text = next(_entry_text(item) for item in proposals if _entry_text(item).startswith("Review surface candidate "))
     assert "route-prefix-first parent path; validate concrete child handlers" in ranked_text
     assert "request-diff" not in ranked_text
 
@@ -4666,7 +4667,7 @@ def test_ranked_surface_generic_api_uses_role_replay_when_case_state_ready():
         case_state={"actors": 2, "sessions": 2, "objects": 1},
     )
 
-    ranked_text = next(item for item in proposals if item.startswith("Review surface candidate "))
+    ranked_text = next(_entry_text(item) for item in proposals if _entry_text(item).startswith("Review surface candidate "))
     assert "request-diff" in ranked_text
     assert "owner/peer" in ranked_text or "--request-spec" in ranked_text
     assert "https://app.target.com/api/Orders" in ranked_text
@@ -4715,7 +4716,7 @@ def test_ranked_surface_placeholder_object_uses_case_state_object():
         case_state=case_state,
     )
 
-    ranked_text = next(item for item in proposals if item.startswith("Review surface candidate "))
+    ranked_text = next(_entry_text(item) for item in proposals if _entry_text(item).startswith("Review surface candidate "))
     assert "non-concrete object value NaN" in ranked_text
     assert "do not replay it directly" in ranked_text
     assert "request-diff pair" in ranked_text and "header:authorization" in ranked_text
@@ -4802,7 +4803,7 @@ def test_ranked_surface_finalized_finding_does_not_hide_raw_endpoint(tmp_path):
         evidence_summary={},
     )
 
-    assert any("Review surface candidate" in item and url in item for item in proposals)
+    assert any("Review surface candidate" in _entry_text(item) and url in _entry_text(item) for item in proposals)
 
 
 def test_ranked_surface_spa_page_route_uses_browser_state_first_with_case_state_ready():
@@ -4834,7 +4835,7 @@ def test_ranked_surface_spa_page_route_uses_browser_state_first_with_case_state_
         case_state={"actors": 2, "sessions": 2, "objects": 1},
     )
 
-    ranked_text = next(item for item in proposals if item.startswith("Review surface candidate "))
+    ranked_text = next(_entry_text(item) for item in proposals if _entry_text(item).startswith("Review surface candidate "))
     assert "browser-state-first page route" in ranked_text
     assert "underlying API" in ranked_text
     assert "authz-role-replay --target" not in ranked_text
@@ -4900,9 +4901,9 @@ def test_ranked_surface_defers_repeated_authz_baselines_when_case_state_missing(
         case_state={"actors": 0, "sessions": 0, "objects": 0},
     )
 
-    ranked = next(item for item in proposals if item.startswith("Review surface candidate "))
+    ranked = next(_entry_text(item) for item in proposals if _entry_text(item).startswith("Review surface candidate "))
     assert "Ledger skeleton:" not in ranked
-    assert not any(item.startswith("Case-state acquisition lead:") for item in proposals)
+    assert not any(_entry_text(item).startswith("Case-state acquisition lead:") for item in proposals)
 
 
 def test_coverage_gap_boilerplate_does_not_force_redline_first():
@@ -4948,7 +4949,7 @@ def test_ranked_surface_path_only_authz_uses_baseline_first():
         evidence_summary={},
     )
 
-    ranked_text = next(item for item in proposals if item.startswith("Review surface candidate "))
+    ranked_text = next(_entry_text(item) for item in proposals if _entry_text(item).startswith("Review surface candidate "))
     assert "baseline GET or observed-method replay" in ranked_text
     assert "Build a two-actor" not in ranked_text
 
@@ -5069,3 +5070,30 @@ def test_apply_target_memory_preserves_concurrent_entries_and_handoffs(tmp_path)
     session_paths = [item["path"] for item in payload["session_handoffs"]]
     assert len(session_paths) == len(set(session_paths))
     assert all((tmp_path / path).is_file() for path in session_paths)
+
+
+def test_action_decisions_are_default_projection_ai_overridable_without_hard_gate():
+    """ACTION_DECISIONS 是默认投影而非门：无 hard_gate 时 AI 保留选择权。
+
+    checkpoint 的 decision 字段只决定摘要标签和 handoff 措辞；队列项本身
+    始终携带完整的 type/action/command_hint/metadata 供 AI 自主选择。
+    hard_gate 语义由 autopilot_state 投影（wait_recon/wait_scan 等）持有，
+    checkpoint 侧不存在第二套 gate。
+    """
+    from checkpoint import ACTION_DECISIONS, _decision_for_action
+
+    # 每个 action type 都有默认决策映射（handoff 兜底）
+    assert _decision_for_action("nonexistent-action-type") == "handoff"
+    assert _decision_for_action("validation") == "validate"
+    assert _decision_for_action("surface-review") == "hunt"
+
+    # decision 不改变队列项内容: 同一输入无论 decision 如何, 队列项可执行字段不变
+    queue = _build_next_action_queue(
+        ["Review surface candidate http://target.test/api/orders/1: authz checks."],
+        "target.test",
+    )
+    item = queue[0]
+    for field in ("type", "action", "command_hint", "priority", "stop_condition"):
+        assert field in item
+    # AI 覆盖通道: 队列项不带任何强制字段（redline_required 是显式投影不是推断）
+    assert item["redline_required"] is False
