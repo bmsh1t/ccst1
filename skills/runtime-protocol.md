@@ -24,6 +24,8 @@ Claude Code CLI 当前主会话保留最终路线判断权。本协议、推荐 
 
 两种入口共用这一条判断：
 
+- substantive 的判据只有一条：该动作会触及目标或写入 owner 状态（发请求、记录
+  evidence、queue 写回）。是则先过 recall gate 再动手；纯解释、规划、复盘不触发。
 - 纯解释不强制查包或读卡；宽泛目标先沿既有目标上下文/发现入口补证据，不预选专项卡。
 - 提示词或 `state/evidence` 命中具体边界时，在边界相关动作前按当前证据确定 focus；没有
   当前对话中匹配的 Context Pack 工具输出，就按 `commands/context-pack.md` 调用

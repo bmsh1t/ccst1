@@ -95,6 +95,19 @@ def test_phase0_and_intel_route_keep_selection_reason_and_urgency():
     assert "immediate next step, not a deferred one" in recon
 
 
+def test_runtime_protocol_has_single_substantive_criterion():
+    """Substantive work is one criterion, not an enumerated decision tree.
+
+    Touching the target or writing owner state (requests, evidence records,
+    queue writes) requires the recall gate first; pure explanation, planning,
+    and retrospection do not. Model keeps full boundary discretion otherwise.
+    """
+    protocol = (REPO_ROOT / "skills" / "runtime-protocol.md").read_text(encoding="utf-8")
+    assert "substantive 的判据只有一条" in protocol
+    assert "先过 recall gate 再动手" in protocol
+    assert "纯解释、规划、复盘不触发" in protocol
+
+
 def test_runtime_protocol_invalidates_pack_recommendations_after_compaction():
     """Compaction expires in-conversation Pack recommendations.
 
