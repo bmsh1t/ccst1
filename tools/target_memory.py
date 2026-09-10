@@ -11,6 +11,7 @@ import argparse
 import fcntl
 import json
 import os
+import re
 import sys
 import tempfile
 from contextlib import contextmanager
@@ -463,12 +464,23 @@ def write_handoff(args: argparse.Namespace) -> str:
         active_leads = target_memory.get("active_leads", [])[-5:]
         dead_ends = target_memory.get("dead_ends", [])[-5:]
 
+        # Snapshot notice: handoff files are point-in-time snapshots. The
+        # resumed run must rebuild current state via context_pack instead of
+        # treating this file as the present tense.
+        intent = ""
+        intent_match = re.search(r"\[intent=(.+?)\]", summary)
+        if intent_match:
+            intent = intent_match.group(1).strip()
         lines = [
             f"# Target Handoff: {target}",
             "",
             f"- Time: {ts}",
             f"- Mode: {target_memory.get('mode', 'hunt')}",
             f"- Phase: {target_memory.get('phase', 'unknown')}",
+            "- Snapshot: point-in-time; rebuild current state via context_pack",
+            "",
+            "## User Intent",
+            intent or "no explicit intent recorded for this handoff",
             "",
             "## Summary",
             summary,
@@ -488,9 +500,13 @@ def write_handoff(args: argparse.Namespace) -> str:
             target_storage_key(target),
             "\n".join(lines),
         )
-
         target_memory.setdefault("session_handoffs", []).append(
-            {"ts": ts, "path": display_path(session_path), "summary": summary}
+            {
+                "ts": ts,
+                "path": display_path(session_path),
+                "summary": summary,
+                "user_intent": intent,
+            }
         )
         try:
             _save_target_memory_unlocked(target_memory)

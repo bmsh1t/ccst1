@@ -125,6 +125,7 @@ class HuntJournal:
         vuln_classes_tried: list[str],
         findings_count: int,
         session_id: str | None = None,
+        user_intent: str | None = None,
     ) -> None:
         """Auto-log a session summary entry at hunt/autopilot session end.
 
@@ -138,6 +139,7 @@ class HuntJournal:
                 vuln_classes_tried=vuln_classes_tried,
                 findings_count=findings_count,
                 session_id=session_id,
+                user_intent=user_intent,
             )
             self.append(entry)
         except Exception as e:

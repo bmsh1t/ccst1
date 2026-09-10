@@ -4171,9 +4171,12 @@ def _handoff_summary(
     if findings.get("validated_pending_report"):
         next_report = findings.get("next_report") or {}
         parts.append(f"pending_report={next_report.get('id', findings.get('validated_pending_report'))}")
+    summary = f"{target} checkpoint: " + "; ".join(parts)
+    # The operator note is the user-intent ledger: it must stay a distinct,
+    # un-truncated field instead of dissolving into the stats string.
     if note:
-        parts.append(f"operator_note={note.strip()[:180]}")
-    return f"{target} checkpoint: " + "; ".join(parts)
+        summary = f"{target} checkpoint [intent={note.strip()[:300]}]: " + "; ".join(parts)
+    return summary
 
 
 def _target_memory_path(repo_root: Path, target: str) -> Path:
@@ -4460,6 +4463,9 @@ def build_checkpoint(
         "decision": decision,
         "phase": context.get("phase", "unknown"),
         "next_action": next_action_label,
+        # User-intent ledger: preserves the operator's instruction for this
+        # checkpoint so compaction/resume rebuilds intent, not just state.
+        "user_intent": note.strip()[:2000] if note.strip() else "",
         "context_pack": {
             "selected_skill": context.get("selected_skill", ""),
             "skill_route": context.get("skill_route", {}),

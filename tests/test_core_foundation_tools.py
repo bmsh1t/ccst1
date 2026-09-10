@@ -430,3 +430,49 @@ def test_runtime_config_is_fail_open_and_explicit_override_wins(tmp_path):
     assert runtime_config.load_runtime_config(tmp_path) == {}
 
 
+def test_user_intent_ledger_survives_session_summary_to_resume(tmp_path, monkeypatch):
+    """The operator's original instruction must survive compaction/resume.
+
+    Chain: make_session_summary_entry(user_intent) -> journal entry ->
+    latest_session_summary -> resume output -> autopilot bootstrap line.
+    """
+    monkeypatch.setattr(target_memory, "BASE_DIR", tmp_path)
+    monkeypatch.setattr(target_memory, "GOALS_DIR", tmp_path / "memory" / "goals")
+    monkeypatch.setattr(target_memory, "ACTIVE_PATH", tmp_path / "memory" / "goals" / "active.json")
+    monkeypatch.setattr(target_memory, "TARGETS_DIR", tmp_path / "memory" / "goals" / "targets")
+    monkeypatch.setattr(target_memory, "SESSIONS_DIR", tmp_path / "memory" / "goals" / "sessions")
+
+    # 1. schema 层: user_intent 作为可选字段通过校验并保留原文
+    from memory.schemas import make_session_summary_entry
+    entry = make_session_summary_entry(
+        target="target.com",
+        action="hunt",
+        endpoints_tested=["/api/users"],
+        vuln_classes_tried=["IDOR"],
+        findings_count=0,
+        user_intent="重点测 RCE 和上传链",
+    )
+    assert entry["user_intent"] == "重点测 RCE 和上传链"
+
+    # 无 intent 的旧条目保持合法（向后兼容）
+    legacy = make_session_summary_entry(
+        target="target.com", action="hunt", endpoints_tested=[], vuln_classes_tried=[], findings_count=0,
+    )
+    assert "user_intent" not in legacy
+
+    # 2. journal -> resume 解析链
+    from tools.resume import parse_session_summary_entry, latest_session_summary
+    parsed = parse_session_summary_entry(entry)
+    assert parsed["user_intent"] == "重点测 RCE 和上传链"
+    latest = latest_session_summary([entry])
+    assert latest["user_intent"] == "重点测 RCE 和上传链"
+
+    # 3. handoff 摘要中 [intent=...] 提取（checkpoint --note 注入的形态）
+    import re as _re
+    summary = "target.com checkpoint [intent=重点测 RCE 和上传链]: Decision=continue; next_action=coverage-gap"
+    intent_match = _re.search(r"\[intent=(.+?)\]", summary)
+    assert intent_match and intent_match.group(1).strip() == "重点测 RCE 和上传链"
+
+    # 4. 无 intent 的 handoff 摘要不误提取
+    plain = "target.com checkpoint: Decision=continue"
+    assert _re.search(r"\[intent=(.+?)\]", plain) is None

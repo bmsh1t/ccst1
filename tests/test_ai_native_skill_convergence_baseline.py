@@ -53,3 +53,38 @@ def test_ai_native_decision_cases_are_fixed_and_parseable(case_file, expected_ca
     assert {row["oracle_status"] for row in rows} == {"passed"}
     assert {row["oracle_label"] for row in rows} == {"safe", "vulnerable"}
     assert all(isinstance(row["prompt"], str) and row["prompt"].strip() for row in rows)
+
+
+def test_web2_vuln_pattern_map_keeps_java_deserialization_and_webhook_routes():
+    """Anchor the discovery-side routing rows (signal -> lane).
+
+    43d22fb deleted the skill-side card route table expecting context_pack to
+    rebuild recall; the rebuild never happened and the deserialization chain
+    went dark silently. These anchors make removing the routing rows loud:
+    decision text belongs in the skill (A/B-testable), not in hidden regexes.
+    """
+    skill = (REPO_ROOT / "skills" / "web2-vuln-classes" / "SKILL.md").read_text(encoding="utf-8")
+
+    # Pattern Map rows: shape signals (not confirmed-vuln words) must have a route.
+    assert "JSON body with `@type`" in skill
+    # First branch: target profile -> high-value surface distribution (direction only).
+    assert "Target Profile First Branch" in skill
+    assert "不是决策树也不排除任何类别" in skill
+    # Lane notes stay direction-only (no how-to-test methodology): entry
+    # condition + card pointer, nothing more.
+    assert "Java Deserialization Lane" in skill
+    assert "insecure-deserialization.md" in skill
+    assert "版本指纹先行" not in skill  # methodology stays in the model, not the skill
+    # Webhook lane covers the SSRF / signature / concurrency triple.
+    assert "Webhook / Callback Lane" in skill
+
+
+def test_focus_recall_pulls_deserialization_cards():
+    """The pull channel (focus-based recall) must reach the execution-chain cards."""
+    sys.path.insert(0, str(REPO_ROOT / "tools"))
+    from context_pack import build_context_pack
+
+    pack = build_context_pack(REPO_ROOT, target="127.0.0.1:3001", focus="java deserialization fastjson")
+    cards = " ".join(str(item) for item in pack.get("knowledge_cards") or [])
+    assert "insecure-deserialization.md" in cards
+    assert "controlled-rce-impact.md" in cards

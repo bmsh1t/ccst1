@@ -818,6 +818,7 @@ def _auto_log_session_summary(
     recon_completed=False,
     scan_completed=False,
     session_id=None,
+    user_intent=None,
 ):
     """Auto-log a non-fatal session summary to hunt memory."""
     try:
@@ -845,6 +846,7 @@ def _auto_log_session_summary(
             vuln_classes_tried=vuln_classes,
             findings_count=len(findings),
             session_id=session_id,
+            user_intent=user_intent,
         )
     except Exception as exc:
         log("warn", f"Auto session memory failed (non-fatal): {exc}")

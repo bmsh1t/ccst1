@@ -243,6 +243,9 @@ def parse_session_summary_entry(entry: dict) -> dict:
         "endpoints_preview": endpoint_preview[:3],
         "vuln_classes": [],
         "raw_notes": notes,
+        # User-intent ledger: the operator's original instruction for the
+        # session, preserved verbatim so a resumed run rebuilds intent.
+        "user_intent": str(entry.get("user_intent") or ""),
     }
 
     match = _SESSION_SUMMARY_RE.search(notes)
@@ -575,6 +578,9 @@ def format_resume_output(summary: dict | None, target: str) -> str:
     if latest_session:
         lines.append("")
         lines.append("Latest Session Snapshot:")
+        user_intent = str(latest_session.get("user_intent") or "").strip()
+        if user_intent:
+            lines.append(f"  User Intent: {user_intent}")
         lines.append(f"  Time: {latest_session.get('ts') or 'unknown'}")
         if latest_session.get("session_id"):
             lines.append(f"  Session: {latest_session['session_id']}")

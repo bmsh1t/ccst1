@@ -6746,6 +6746,9 @@ def format_autopilot_state(state: dict) -> str:
 
     summary = state.get("resume_summary") or {}
     latest_session = summary.get("latest_session_summary") or {}
+    # User-intent ledger: the operator's original instruction stays a distinct
+    # leading line so a resumed session rebuilds intent, not just state.
+    resumed_user_intent = str(latest_session.get("user_intent") or "").strip()
     recent_guard_advisories = state.get("recent_guard_advisories") or state.get("recent_guard_blocks", []) or []
     repo_source_summary = state.get("repo_source_summary") or {}
     repo_source_hint = str(repo_source_summary.get("summary_hint", "") or "").strip()
@@ -7055,6 +7058,8 @@ def format_autopilot_state(state: dict) -> str:
                 lines.append(f"  Next: {next_action}")
 
     if summary:
+        if resumed_user_intent:
+            lines.append(f"User Intent: {resumed_user_intent}")
         lines.append(f"Sessions: {summary.get('sessions', 0)}")
         lines.append(f"Untested endpoints: {len(summary.get('untested_endpoints', []))}")
         if latest_session:

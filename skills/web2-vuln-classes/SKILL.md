@@ -42,6 +42,20 @@ At each pivot record `Evidence`, `Primitive`, `Connector`, `Impact hypothesis`,
 entries. The model may skip, combine, or invent a
 branch when the observed evidence justifies it.
 
+### Target Profile First Branch
+
+从目标画像出发的注意力分布，不是决策树也不排除任何类别；每一行只是
+"这类目标的历史高价报告集中在哪里"，模型保留完整的选择与倒序自由。
+
+| 目标特征 | 高危面分布（按历史高价报告） |
+|---|---|
+| Java 栈 + JSON API | deserialization > authz > SSRF |
+| 文件处理链（上传/转换/导入） | parser 链 > deserialization > 越权 |
+| 支付/订单工作流 | 状态机 > 幂等/并发 > 越权 |
+| 多租户 SaaS | 租户隔离 > 对象级越权 > 注入 |
+| 复杂认证（SSO/MFA/恢复流） | token 边界 > 恢复流接管 > 会话固定 |
+| 移动端 API 后端 | 旧版 API 越权 > 参数污染 > 批量接口 |
+
 ### Pattern Map
 
 | Signal | Route |
@@ -53,6 +67,7 @@ branch when the observed evidence justifies it.
 | Upload, import, convert, preview, SVG/Office/XML | Upload parser; safe verification and read-back before storage, access, and execution proof |
 | Template syntax, command output, shell primitive | SSTI/command/controlled RCE |
 | ASP.NET `__VIEWSTATE` / ViewState / machineKey | Insecure deserialization / ViewState integrity |
+| JSON body with `@type`/type-field shape, Java/fastjson/Jackson/Shiro stack signal | Insecure deserialization (Java) |
 | CL/TE, host header, proxy trust, cache key, unkeyed header | Proxy/cache/smuggling |
 | Origin, postMessage, DOM, CORS, clickjacking | Browser boundary |
 | WS handshake/frame/subscription | WebSocket / realtime API |
@@ -128,6 +143,17 @@ Candidate。
 见 `knowledge/cards/auth-sso-token-edge-cases.md`）或 `request-diff` 保存精确
 请求对；身份/权限 delta 之外的差异（可 decode、状态/长度、反射 marker）保持
 Signal/Candidate。
+
+### Java Deserialization Lane
+
+进入条件是形态信号（`@type`/type-field 输入面、序列化对象标记、Java 栈 +
+JSON content-type），不是已确认的漏洞词。版本矩阵与会话中段的可靠召回锚见
+`knowledge/cards/insecure-deserialization.md`。
+
+### Webhook / Callback Lane
+
+Webhook/callback 注册面同时是 SSRF URL fetch 入口、签名验证绕过面和
+并发重放面（幂等/限流/状态迁移），三个方向共享同一证据基线。
 
 ## Chain Shapes
 

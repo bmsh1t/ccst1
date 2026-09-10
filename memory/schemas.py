@@ -12,7 +12,9 @@ CURRENT_SCHEMA_VERSION = 1
 
 # Required fields for each entry type
 JOURNAL_REQUIRED = {"ts", "target", "action", "vuln_class", "endpoint", "result", "schema_version"}
-JOURNAL_OPTIONAL = {"severity", "payout", "technique", "notes", "tags", "session_id"}
+# user_intent preserves the operator's original instruction for this session; it
+# survives summarization/compaction so a resumed run rebuilds intent, not just state.
+JOURNAL_OPTIONAL = {"severity", "payout", "technique", "notes", "tags", "session_id", "user_intent"}
 JOURNAL_ALL = JOURNAL_REQUIRED | JOURNAL_OPTIONAL
 
 PATTERN_REQUIRED = {"ts", "target", "vuln_class", "technique", "tech_stack", "schema_version"}
@@ -292,6 +294,7 @@ def make_session_summary_entry(
     vuln_classes_tried: list[str],
     findings_count: int,
     session_id: str | None = None,
+    user_intent: str | None = None,
 ) -> dict:
     """Create a journal entry summarizing a completed hunt/autopilot session."""
     tested_str = ", ".join(endpoints_tested) if endpoints_tested else "none"
@@ -320,6 +323,8 @@ def make_session_summary_entry(
         "tags": tags,
         "schema_version": CURRENT_SCHEMA_VERSION,
     }
+    if user_intent and str(user_intent).strip():
+        entry["user_intent"] = str(user_intent).strip()[:2000]
     auth_session_id = _current_session_id()
     if auth_session_id is not None:
         entry["session_id"] = auth_session_id
