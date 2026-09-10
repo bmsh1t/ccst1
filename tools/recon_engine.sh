@@ -4953,6 +4953,31 @@ record_recon_phase \
     0 \
     "derived cache only; failure is recoverable and does not close attack surface"
 
+# ============================================================
+# Route-kind observation layer (facts only, never a judgment)
+# ============================================================
+# GET-probe endpoints lacking observations so queue qualification can use
+# live response facts (client_route vs json_api vs auth_gate). Read-only
+# method; failures are advisory and never fail the recon run.
+ROUTE_KIND_STATUS="ok"
+ROUTE_KIND_PROBED=0
+if python3 "$BASE_DIR/tools/route_kinds.py" probe \
+    --target "$TARGET" \
+    --repo-root "$BASE_DIR" \
+    --json > "$RECON_DIR/logs/route_kinds.json" 2>"$RECON_DIR/logs/route_kinds.err"; then
+    ROUTE_KIND_PROBED=$(python3 -c "import json,sys; print(json.load(sys.stdin).get('new_probes', 0))" < "$RECON_DIR/logs/route_kinds.json" 2>/dev/null || echo 0)
+    log_done "Route-kind observations recorded (new probes: $ROUTE_KIND_PROBED)"
+else
+    ROUTE_KIND_STATUS="partial"
+    log_warn "Route-kind probe failed; coverage qualification falls back to relevance only"
+fi
+record_recon_phase \
+    route_kind_observation \
+    "$ROUTE_KIND_STATUS" \
+    "recon/${RECON_TARGET_KEY}/route_kinds.json" \
+    "$ROUTE_KIND_PROBED" \
+    "GET-probe facts only; labels never close cells and never override AI selection"
+
 RECON_ELAPSED_SECONDS=$(( $(date +%s) - RECON_STARTED_EPOCH ))
 RECON_BUDGET_STATUS="ok"
 [ "${RECON_PHASE_PARTIAL:-0}" -eq 1 ] && RECON_BUDGET_STATUS="partial"

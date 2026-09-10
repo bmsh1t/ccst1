@@ -103,7 +103,11 @@ bounded state`. Obey a non-empty `state.hard_gate` exactly. Otherwise choose one
 item from `state.priority_frontier`; array order is not priority. Compare business impact,
 evidence strength, crown-jewel/chain fit, expected information gain, request cost, and
 starvation of `closure_blocking` work. A weaker historical Queue/Case/Resume item must not
-automatically preempt a stronger Surface/Finding/Intel candidate. Selection changes order only:
+automatically preempt a stronger Surface/Finding/Intel candidate. Machine ordering (weights,
+relevance scores, route-kind labels) is advisory input, not a decision: the current session
+owns selection, and may deviate from the suggested order at any time with an evidence-backed
+reason; route-kind labels are GET observations and never close a cell or block a chosen test.
+Selection changes order only:
 never bypasses the selected item's evidence/owner contract, relabel deferred work as tested-clean,
 or remove it from Closure. Consume structured `next_action` and the durable Action Queue as
 compatibility projections/owner contracts. With one frontier item execute it; with none use

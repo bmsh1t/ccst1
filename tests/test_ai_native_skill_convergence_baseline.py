@@ -130,3 +130,17 @@ def test_focus_recall_pulls_deserialization_cards():
     cards = " ".join(str(item) for item in pack.get("knowledge_cards") or [])
     assert "insecure-deserialization.md" in cards
     assert "controlled-rce-impact.md" in cards
+
+
+def test_autopilot_contract_keeps_selection_authority_with_ai():
+    """Machine ordering is advisory; the session owns selection.
+
+    Anchor the two contract lines added after the juice-shop blind run:
+    route-kind labels are GET observations (never close a cell, never block a
+    chosen test), and any deviation from suggested order is legal with an
+    evidence-backed reason.
+    """
+    skill = (REPO_ROOT / "commands" / "autopilot.md").read_text(encoding="utf-8")
+    assert "Machine ordering (weights," in skill
+    assert "route-kind labels) is advisory input, not a decision" in skill
+    assert "never close a cell or block a chosen test" in skill
