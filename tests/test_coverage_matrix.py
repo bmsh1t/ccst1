@@ -367,8 +367,10 @@ class TestComputeSummary:
                 },
             }],
         })
+        # Both cells are evidence-backed (observed param "url"), so both count
+        # as evidence-backed gaps under the observation criterion.
         assert semantic["high_value_gaps_count"] == 2
-        assert semantic["actionable_high_value_gaps_count"] == 1
+        assert semantic["actionable_high_value_gaps_count"] == 2
 
 
 class TestSaveLoadRoundTrip:
@@ -1018,9 +1020,11 @@ class TestFindGaps:
         ]) == 0
         complete = json.loads(capsys.readouterr().out)
 
+        # Both views now return the same gap set: qualification by word
+        # lists is retired and --all is kept as a compat no-op. Every gap
+        # carries its relevance annotation for AI visibility.
         assert semantic
-        assert all(item["relevance_score"] > 0 for item in semantic)
-        assert len(complete) > len(semantic)
+        assert len(complete) == len(semantic)
         assert any(item["relevance_score"] == 0 for item in complete)
 
 
@@ -1034,9 +1038,13 @@ class TestFindGaps:
         gaps = find_high_value_gaps("x.com", repo_root=tmp_path, min_weight=3.0)
         endpoint_gaps = [g for g in gaps if g["endpoint"] == "/api/admin/users"]
 
+        # Fact-ordered ranking: ordering follows route-kind/params/weight/impact,
+        # not word-list relevance, so any class may lead. What must hold: the
+        # evidence-backed gap set includes the word-relevant classes with their
+        # relevance annotation intact (visible to AI, outside the ordering).
         assert endpoint_gaps
-        assert endpoint_gaps[0]["vuln_class"] == "Authz"
-        assert endpoint_gaps[0]["relevance_score"] > 0
+        assert {g["vuln_class"] for g in endpoint_gaps} >= {"Authz", "IDOR"}
+        assert any(g["vuln_class"] == "Authz" and g["relevance_score"] > 0 for g in endpoint_gaps)
         ep = load_matrix("x.com", repo_root=tmp_path)["endpoints"][0]
         assert set(ep["observed_params"]) == {"isAdmin", "userId"}
 
@@ -1060,8 +1068,14 @@ class TestFindGaps:
             if g["endpoint"] == endpoint
         ]
 
+        # Ordering is fact-based; the word-relevant class stays present with a
+        # positive relevance annotation the AI can read.
         assert gaps
-        assert gaps[0]["vuln_class"] == expected_class
+        assert expected_class in {g["vuln_class"] for g in gaps}
+        assert any(
+            g["vuln_class"] == expected_class and int(g.get("relevance_score", 0) or 0) > 0
+            for g in gaps
+        )
 
     def test_class_relevance_is_soft_signal_not_na(self):
         rel = class_relevance("/plain/path", "RCE", [])
@@ -1111,12 +1125,14 @@ class TestFindGaps:
         save_matrix("x.com", matrix, repo_root=tmp_path)
 
         gaps = find_high_value_gaps("x.com", repo_root=tmp_path, min_weight=3.0)
-        first_by_endpoint = {}
+        classes_by_endpoint = {}
         for gap in gaps:
-            first_by_endpoint.setdefault(gap["endpoint"], gap["vuln_class"])
+            classes_by_endpoint.setdefault(gap["endpoint"], set()).add(gap["vuln_class"])
 
-        assert first_by_endpoint["/urldom/location/hash/fetch"] == "XSS"
-        assert first_by_endpoint["/reflected/filteredstrings/body/caseSensitive/script"] == "XSS"
+        # Fact ordering no longer puts the word-relevant class first, but the
+        # XSS signal stays present and annotated on these DOM-shaped paths.
+        assert "XSS" in classes_by_endpoint["/urldom/location/hash/fetch"]
+        assert "XSS" in classes_by_endpoint["/reflected/filteredstrings/body/caseSensitive/script"]
 
     def test_unbalanced_archive_path_stays_raw_but_not_in_coverage_queue(self, tmp_path):
         malformed = "https://x.com/dom/index.html.[10"
@@ -1686,67 +1702,84 @@ class TestVulnClassNormalization:
 
 
 class TestRouteKindQualification:
-    """Route-kind observations qualify the queue by facts, not word lists.
+    """Route-kind observations order the queue by facts; no qualification filter.
 
-    Regression anchors from the juice-shop blind run (2026-09-10):
-    a client_route GET observation (SPA shell) must not auto-queue server
-    vulnerability cells on its own, but stays AI-selectable and requalifies
-    as soon as a parameter or a server-interaction source is observed.
+    Anchors after the selection-authority refactor: every untested
+    high-value cell stays in the matrix and AI-selectable regardless of its
+    route kind; ordering prefers observed server-backed handlers over SPA
+    shell routes; word-list relevance stays as a visible annotation and
+    exits both qualification and ordering.
     """
 
     def _seed_route_kind(self, tmp_path: Path, target: str, endpoint_url: str, kind: str) -> None:
         recon_dir = tmp_path / "recon" / target
         recon_dir.mkdir(parents=True, exist_ok=True)
-        (recon_dir / "route_kinds.json").write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "target": target,
-                    "endpoints": {
-                        endpoint_url: {
-                            "route_kind": kind,
-                            "source": "route_probe",
-                            "observed_at": "2026-09-10T00:00:00Z",
-                            "facts": {"status": 200, "content_type": "text/html", "body_length": 9903, "body_sha256": "x", "probe_error": ""},
-                        }
-                    },
-                }
-            ),
-            encoding="utf-8",
-        )
+        path = recon_dir / "route_kinds.json"
+        existing: dict = {"schema_version": 1, "target": target, "endpoints": {}}
+        if path.is_file():
+            try:
+                existing = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                pass
+        endpoints = existing.setdefault("endpoints", {})
+        endpoints[endpoint_url] = {
+            "route_kind": kind,
+            "source": "route_probe",
+            "observed_at": "2026-09-10T00:00:00Z",
+            "facts": {"status": 200, "content_type": "text/html", "body_length": 9903, "body_sha256": "x", "probe_error": ""},
+        }
+        path.write_text(json.dumps(existing), encoding="utf-8")
 
-    def test_client_route_gap_without_replayable_evidence_is_not_actionable(self, tmp_path):
+    def test_client_route_gap_stays_in_matrix_and_orders_after_server_backed(self, tmp_path):
         target = "route.test"
-        _seed_recon(tmp_path, target, ["https://route.test/payment"])
+        _seed_recon(tmp_path, target, [
+            "https://route.test/payment",
+            "https://route.test/rest/admin/application-configuration",
+        ])
         self._seed_route_kind(tmp_path, target, "https://route.test/payment", "client_route")
+        self._seed_route_kind(
+            tmp_path, target,
+            "https://route.test/rest/admin/application-configuration", "json_api",
+        )
         matrix = coverage_matrix_module._rebuild_matrix_unlocked(target, tmp_path)
         gaps = list(coverage_matrix_module._iter_high_value_gaps(matrix))
         payment_gaps = [g for g in gaps if g["endpoint"] == "/payment"]
         assert payment_gaps, "client_route stays in the matrix, never dropped"
         assert all(g.get("route_kind") == "client_route" for g in payment_gaps)
-        actionable = coverage_matrix_module.actionable_coverage_gaps(payment_gaps)
-        assert actionable == [], "SPA-shell GET alone must not auto-queue server cells"
+        # All gaps are returned; ordering prefers server-backed first.
+        assert coverage_matrix_module.actionable_coverage_gaps(payment_gaps) == payment_gaps
+        server_gaps = [g for g in gaps if g.get("route_kind") == "json_api"]
+        assert server_gaps
+        ordered = sorted(gaps, key=coverage_matrix_module._gap_sort_key)
+        first_server = min(
+            index for index, gap in enumerate(ordered) if gap.get("route_kind") == "json_api"
+        )
+        last_client = max(
+            index for index, gap in enumerate(ordered) if gap.get("route_kind") == "client_route"
+        )
+        assert first_server < last_client, "observed server-backed handlers rank ahead of SPA shells"
 
-    def test_client_route_gap_with_param_or_server_source_requalifies(self, tmp_path):
-        gap = {
-            "endpoint": "/payment",
-            "vuln_class": "Race",
-            "route_kind": "client_route",
-            "observed_params": ["coupon"],
-            "sources": ["js"],
-            "source_count": 1,
-            "observation_count": 1,
+    def test_word_list_relevance_stays_visible_but_exits_ordering(self, tmp_path):
+        gap_high = {
+            "endpoint": "/a", "vuln_class": "Authz", "weight": 5.0,
+            "relevance_score": 9, "route_kind": "client_route",
         }
-        assert coverage_matrix_module.actionable_coverage_gaps([gap]) == [gap]
-        paramless = dict(gap, observed_params=[])
-        assert coverage_matrix_module.actionable_coverage_gaps([paramless]) == []
-        xhr_backed = dict(paramless, sources=["browser_xhr"])
-        assert coverage_matrix_module.actionable_coverage_gaps([xhr_backed]) == [xhr_backed]
+        gap_low = {
+            "endpoint": "/b", "vuln_class": "Authz", "weight": 5.0,
+            "relevance_score": 0, "route_kind": "json_api",
+        }
+        ordered = sorted([gap_high, gap_low], key=coverage_matrix_module._gap_sort_key)
+        assert ordered[0] is gap_low, "route-kind observation outranks word-list relevance"
+        # The relevance annotation survives for AI visibility.
+        assert gap_high["relevance_score"] == 9
 
-    def test_server_backed_route_kind_qualifies_without_word_list_score(self, tmp_path):
+    def test_server_backed_route_kind_recorded_on_matrix_row(self, tmp_path):
         target = "route.test"
         _seed_recon(tmp_path, target, ["https://route.test/rest/admin/application-configuration"])
-        self._seed_route_kind(tmp_path, target, "https://route.test/rest/admin/application-configuration", "json_api")
+        self._seed_route_kind(
+            tmp_path, target,
+            "https://route.test/rest/admin/application-configuration", "json_api",
+        )
         matrix = coverage_matrix_module._rebuild_matrix_unlocked(target, tmp_path)
         gaps = list(coverage_matrix_module._iter_high_value_gaps(matrix))
         assert any(g.get("route_kind") == "json_api" for g in gaps)
@@ -1760,3 +1793,4 @@ class TestRouteKindQualification:
         assert not coverage_matrix_module.matrix_is_fresh(target, matrix, repo_root=tmp_path), (
             "a new route_kinds.json generation must invalidate the cached matrix"
         )
+

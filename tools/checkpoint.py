@@ -58,7 +58,7 @@ try:
         validate_global_review,
     )
     from tools.context_pack import build_context_pack
-    from tools.coverage_matrix import VULN_CLASSES, _route_template, actionable_coverage_gaps, class_relevance, high_risk_lane_summary, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, normalize_vuln_class, rebuild_matrix, save_matrix, save_matrix_projection
+    from tools.coverage_matrix import VULN_CLASSES, _route_template, class_relevance, coverage_gaps_with_observed_evidence, high_risk_lane_summary, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, normalize_vuln_class, rebuild_matrix, save_matrix, save_matrix_projection
     from tools.evidence_rubric import evaluate_candidate_evidence, first_missing_action
     from tools.evidence_ledger import ACTOR_MATRIX_VULN_CLASSES, build_summary as build_evidence_summary, record_command as evidence_record_command
     from tools.case_state_seed import build_case_state_seed
@@ -762,15 +762,15 @@ def _matrix_gaps(matrix: dict, min_weight: float = 3.0) -> list[dict]:
 
 
 def _actionable_coverage_gaps(coverage_gaps: list[dict]) -> list[dict]:
-    """Return coverage gaps with concrete semantic fit for immediate action.
+    """Return coverage gaps that at least one observed fact points at.
 
-    The coverage matrix intentionally tracks broad high-impact cells, but the
-    action queue should not be driven by generic "endpoint × vuln class" pairs
-    with no path/parameter/source/browser signal.  Keep those gaps visible in
-    coverage statistics; only promote semantically relevant cells into the
-    next-action loop.
+    Qualification by word lists is retired: any observed parameter, source,
+    or route-kind fact makes a gap evidence-backed (queue-visible); grid
+    enumeration cells with no observation stay advisory in the matrix and
+    remain AI-selectable. The lane budget, not this filter, bounds how many
+    gaps get executed.
     """
-    return actionable_coverage_gaps(coverage_gaps)
+    return coverage_gaps_with_observed_evidence(coverage_gaps)
 
 
 def _gap_observed_params(gap: dict) -> list[str]:
@@ -2741,11 +2741,14 @@ _STRUCTURAL_COVERAGE_FAMILY_MIN_MEMBERS = 3
 _COVERAGE_FAMILY_MEMBER_PREVIEW = 12
 
 
-def _checkpoint_coverage_gaps(coverage_gaps: list[dict], matrix: dict, limit: int = 2) -> list[dict]:
+def _checkpoint_coverage_gaps(coverage_gaps: list[dict], matrix: dict, limit: int = 6) -> list[dict]:
     """Select coverage gaps for the immediate checkpoint queue.
 
-    Coverage itself keeps all untested cells.  The execution queue is stricter:
-    it skips parent-only Authz closure gaps that are already represented by a
+    Coverage itself keeps all untested cells.  The execution queue is a
+    FACT-CARRYING WINDOW, not a filter: every untested high-value cell stays
+    AI-selectable in the matrix, ordering comes from observed route kinds,
+    and the lane budget (not this window) bounds how many get executed.
+    It still skips parent-only Authz closure gaps that are already represented by a
     validated child endpoint, and emits one representative for an existing
     route-template or high-volume structural family. This prevents noisy loops
     while preserving other high-signal gaps for Claude to reason over. The

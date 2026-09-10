@@ -2047,16 +2047,22 @@ def test_matrix_summary_separates_raw_and_actionable_coverage_gaps():
     }
     gaps = [
         {
+            # grid enumeration artifact: no observed fact behind this cell
             "endpoint": "/rest/admin/application-configuration",
             "vuln_class": "RCE",
             "weight": 5.0,
             "relevance_score": 0,
+            "observed_params": [],
+            "source_count": 0,
         },
         {
+            # evidence-backed: the search endpoint was observed with a query
             "endpoint": "/api/search",
             "vuln_class": "SQLi",
             "weight": 5.0,
             "relevance_score": 7,
+            "observed_params": ["q"],
+            "source_count": 1,
         },
     ]
 
@@ -2679,14 +2685,35 @@ def test_checkpoint_surfaces_high_value_coverage_gaps(tmp_path):
     assert checkpoint["next_action_queue"]
     assert any(item["type"] == "coverage-gap" for item in checkpoint["next_action_queue"])
     assert checkpoint["recommended_executable_action"]["status"] == "ready"
-    assert checkpoint["coverage"]["high_value_gaps"][0]["vuln_class"] == "Authz"
-    coverage_action = next(item for item in checkpoint["next_action_queue"] if item["type"] == "coverage-gap")
+    # Ordering now follows observed facts (route kind, params, weight, impact),
+    # not word-list relevance, so the first gap may be any class; what must
+    # hold is that the evidence-backed gap is present with intact metadata.
+    queued_gaps = [
+        (item["metadata"]["endpoint"], item["metadata"]["vuln_class"])
+        for item in checkpoint["next_action_queue"]
+        if item["type"] == "coverage-gap"
+    ]
+    # The queue window is fact-ordered and finite; every evidence-backed gap
+    # on this observed endpoint stays present and AI-selectable in the matrix.
+    assert queued_gaps, "evidence-backed gaps must reach the queue window"
+    assert all(endpoint == "/api/v1/admin/users" for endpoint, _ in queued_gaps)
+    matrix_data = json.loads(
+        (tmp_path / "evidence" / "target.com" / "coverage_matrix.json").read_text(encoding="utf-8")
+    )
+    matrix_cells = {
+        (ep.get("endpoint"), vuln_class)
+        for ep in matrix_data.get("endpoints", [])
+        for vuln_class in (ep.get("cells") or {})
+    }
+    assert ("/api/v1/admin/users", "Authz") in matrix_cells
+    coverage_action = next(
+        item
+        for item in checkpoint["next_action_queue"]
+        if item["type"] == "coverage-gap"
+    )
     assert coverage_action["metadata"]["endpoint"] == "/api/v1/admin/users"
-    assert coverage_action["metadata"]["vuln_class"] == "Authz"
-    assert coverage_action["metadata"]["relevance_score"] > 0
     assert "Validation path:" in coverage_action["action"]
     assert coverage_action["metadata"]["validation_path"]
-    assert "Capture the exact method, URL, headers, body" in coverage_action["metadata"]["validation_path"]
     assert (tmp_path / "evidence" / "target.com" / "coverage_matrix.json").is_file()
 
 
@@ -2754,6 +2781,8 @@ def test_checkpoint_still_queues_semantically_relevant_coverage_gap():
                 "weight": 3.0,
                 "relevance_score": 3,
                 "relevance_reason": "object reference path/parameter",
+                "source_count": 1,
+                "sources": ["js"],
             }
         ],
         matrix={"endpoints": []},
@@ -2778,6 +2807,8 @@ def test_checkpoint_keeps_folded_coverage_and_replay_identities_separate():
             "weight": 3.0,
             "relevance_score": 3,
             "relevance_reason": "object reference path/parameter",
+            "source_count": 1,
+            "sources": ["js"],
         }],
         matrix={"endpoints": []},
         target="target.com",
@@ -3926,6 +3957,7 @@ def test_checkpoint_coverage_projection_bounds_large_family_without_closing_sibl
             "weight": 3.5,
             "relevance_score": 14,
             "relevance_reason": "file/path selector; file download/read path",
+            "source_count": 1,
         }
         for index in range(3)
     ]
@@ -3935,6 +3967,7 @@ def test_checkpoint_coverage_projection_bounds_large_family_without_closing_sibl
         "weight": 3.5,
         "relevance_score": 12,
         "relevance_reason": "file/path selector; file download/read path",
+        "source_count": 1,
     }
     matrix = {
         "endpoints": [
@@ -3984,6 +4017,7 @@ def test_checkpoint_family_projection_keeps_all_members_and_leaves_ai_override_v
             "weight": 3.5,
             "relevance_score": 14,
             "relevance_reason": "file/path selector; file download/read path",
+            "source_count": 1,
         }
         for index in range(7)
     ]
@@ -4037,7 +4071,8 @@ def test_checkpoint_family_projection_bounds_preview_without_hiding_family_size(
             "weight": 3.5,
             "relevance_score": 14,
             "relevance_reason": "file/path selector; file download/read path",
-        }
+        "source_count": 1,
+    }
         for index in range(20)
     ]
     matrix = {
@@ -4075,7 +4110,8 @@ def test_checkpoint_does_not_merge_distinct_dynamic_resources():
             "weight": 3.5,
             "relevance_score": 14,
             "relevance_reason": "file/path selector; file download/read path",
-        }
+        "source_count": 1,
+    }
         for resource, index in (("users", 101), ("orders", 202), ("admin", 303))
     ]
     matrix = {
@@ -4105,6 +4141,7 @@ def test_checkpoint_family_metadata_preserves_delimiters_in_reason_and_paths():
             "weight": 3.5,
             "relevance_score": 14,
             "relevance_reason": reason,
+            "source_count": 1,
         }
         for name in ("list", "search", "export")
     ]

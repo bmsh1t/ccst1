@@ -333,10 +333,6 @@ STRUCTURAL_NOISE_HINTS = {
 # server-backed surface is not crowded out by SPA shell routes.
 SERVER_BACKED_ROUTE_KINDS = {"json_api", "auth_gate", "http_error", "http_redirect"}
 OBSERVED_ROUTE_KIND_HINT_PREFIX = "route_kind:"
-# Sources that prove a server-side interaction (a real request was issued to
-# this exact path), as opposed to string-level discovery (JS text, raw URL
-# lists, the Active URL view) which SPA client routes also come from.
-SERVER_INTERACTION_SOURCES = {"browser_xhr", "browser_api", "xhr", "scanner", "api"}
 
 
 def _storage_key(target: str) -> str:
@@ -1183,27 +1179,36 @@ def _semantic_weight_floor(endpoint: str, observed_params: object | None = None)
 
 
 def _gap_sort_key(gap: dict) -> tuple:
-    """Sort high-value gaps by semantic fit, endpoint value, and impact."""
+    """Order gaps by OBSERVED facts first; word-list scores stay visible but
+    exit the ordering.
+
+    Ordering is presentation, never qualification: a low rank means "less
+    observed evidence so far", not "do not test". Route-kind facts rank
+    server-backed handlers (a live handler was observed) ahead of unprobed
+    surfaces, and both ahead of SPA-shell/static GETs; the AI remains free
+    to pick any gap in any order.
+    """
     vuln_class = str(gap.get("vuln_class") or "")
     try:
         weight = _coerce_weight(gap.get("weight", 1.0))
     except (TypeError, ValueError):
         weight = 1.0
-    try:
-        relevance = int(gap.get("relevance_score", 0) or 0)
-    except (TypeError, ValueError):
-        relevance = 0
     impact = int(CLASS_IMPACT_PRIORITY.get(vuln_class, 0) or 0)
     class_index = VULN_CLASSES.index(vuln_class) if vuln_class in VULN_CLASSES else len(VULN_CLASSES)
+    route_kind = str(gap.get("route_kind") or "").strip()
+    if route_kind in SERVER_BACKED_ROUTE_KINDS:
+        route_bucket = 0  # live server handler observed
+    elif route_kind in {"client_route", "static_asset"}:
+        route_bucket = 2  # SPA shell / static GET observed
+    else:
+        route_bucket = 1  # unknown / not probed yet
+    has_params = 1 if gap.get("observed_params") else 0
 
-    # 先把“路径/参数明显暗示的漏洞类型”排到泛化 cell 前面；同为语义命中时，
-    # 再结合 endpoint 价值、命中强度和漏洞影响排序。
-    semantic_bucket = 1 if relevance > 0 else 0
-    effective = (weight * 5.0) + (relevance * 3.0) + (impact / 10.0)
+    effective = (weight * 5.0) + (impact / 10.0)
     return (
-        -semantic_bucket,
+        route_bucket,
+        -has_params,
         -effective,
-        -relevance,
         -weight,
         -impact,
         str(gap.get("endpoint") or ""),
@@ -1218,53 +1223,60 @@ def high_value_gaps_from_matrix(matrix: dict, min_weight: float = DEFAULT_MIN_WE
     return gaps
 
 
-def actionable_coverage_gaps(gaps: list[dict]) -> list[dict]:
-    """Keep raw coverage hints visible; mark queue qualification by facts.
+def coverage_gaps_with_observed_evidence(gaps: list[dict], matrix: dict | None = None) -> list[dict]:
+    """Gaps that at least one OBSERVED fact points at.
 
-    Qualification for the automatic next-action loop now follows OBSERVED
-    facts, not word-list relevance:
+    Shared Closure/queue visibility criterion: evidence-backed gaps are open
+    work (unassessed != clean); gaps with no parameter, no source, and no
+    route-kind observation are enumeration artifacts of the endpoint x class
+    grid, advisory only, and AI may dispose of them implicitly. Word-list
+    relevance never decides this — only observations do.
 
-    - a server-backed route kind (json_api / auth_gate / http_error /
-      http_redirect) qualifies — a live handler was observed;
-    - any observed parameter, source, or prior observation qualifies — a real
-      replayable surface exists;
-    - a missing route_kind (no probe yet) keeps legacy relevance>0 behavior
-      so unprobed surfaces are not silently dropped;
-    - client_route / static_asset GET observations do NOT qualify on their
-      own: the GET returned the SPA shell or a static file, so there is no
-      observed server handler behind this exact cell. The gap stays in the
-      matrix and remains AI-selectable; this only stops the automatic queue
-      from spending its limited slots on shell routes.
+    An endpoint row in a full rebuild matrix was itself observed by recon
+    (source_count defaults positive there), so gaps on such rows are
+    evidence-backed unless the row explicitly records zero sources. Compact
+    projections carry no source fields, so gaps there speak through their own
+    observation fields.
     """
-    actionable: list[dict] = []
+    endpoint_sources: dict[str, int] = {}
+    if isinstance(matrix, dict) and not matrix.get("_coverage_projection"):
+        for item in matrix.get("endpoints") or []:
+            if isinstance(item, dict):
+                try:
+                    endpoint_sources[str(item.get("endpoint") or "")] = int(
+                        item.get("source_count", 1) or 0
+                    )
+                except (TypeError, ValueError):
+                    endpoint_sources[str(item.get("endpoint") or "")] = 1
+    evidence_gaps: list[dict] = []
     for gap in gaps:
         if not isinstance(gap, dict):
             continue
-        route_kind = str(gap.get("route_kind") or "").strip()
-        if route_kind in {"client_route", "static_asset"}:
-            has_replayable_evidence = bool(
-                gap.get("observed_params")
-                or int(gap.get("observation_count", 0) or 0) > 1
-                or (
-                    set(gap.get("sources") or [])
-                    & SERVER_INTERACTION_SOURCES
-                )
-            )
-            if not has_replayable_evidence:
-                continue
-            actionable.append(gap)
-            continue
-        if "relevance_score" not in gap:
-            actionable.append(gap)
-            continue
-        try:
-            relevance = int(gap.get("relevance_score", 0) or 0)
-        except (TypeError, ValueError):
-            actionable.append(gap)
-            continue
-        if relevance > 0:
-            actionable.append(gap)
-    return actionable
+        endpoint = str(gap.get("endpoint") or "")
+        source_count = int(gap.get("source_count", 0) or 0)
+        if not source_count and matrix is not None:
+            source_count = endpoint_sources.get(endpoint, 0)
+        has_evidence = bool(
+            gap.get("observed_params")
+            or gap.get("sources")
+            or source_count > 0
+            or int(gap.get("observation_count", 0) or 0) > 1
+            or str(gap.get("route_kind") or "").strip()
+        )
+        if has_evidence:
+            evidence_gaps.append(gap)
+    return evidence_gaps
+
+
+def actionable_coverage_gaps(gaps: list[dict]) -> list[dict]:
+    """Deprecated qualification filter; kept as a passthrough for callers.
+
+    Selection authority moved to the AI: every untested high-value cell is a
+    gap, none is blocked by word-list relevance or code-defined "replayable
+    evidence" rules. Ordering (not qualification) is handled by
+    _gap_sort_key, which ranks observed route kinds ahead of shell routes.
+    """
+    return [gap for gap in gaps if isinstance(gap, dict)]
 
 
 def _iter_high_value_gaps(matrix: dict, min_weight: float = DEFAULT_MIN_WEIGHT):

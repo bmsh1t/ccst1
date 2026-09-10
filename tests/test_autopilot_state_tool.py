@@ -3233,10 +3233,17 @@ def test_closure_falls_back_when_coverage_projection_is_unavailable(tmp_path, mo
 
 
 def test_compact_projection_keeps_default_cells_as_pending_gaps():
+    # Real projection gaps carry their observation fields; an IDOR gap on an
+    # observed endpoint (source evidence present) blocks Closure.
     projection = {
         "summary": {"high_value_gaps_count": 1},
         "endpoints": [{"endpoint": "/api/orders/1", "cells": {}}],
-        "_coverage_gaps": [{"endpoint": "/api/orders/1", "vuln_class": "IDOR"}],
+        "_coverage_gaps": [{
+            "endpoint": "/api/orders/1",
+            "vuln_class": "IDOR",
+            "source_count": 1,
+            "sources": ["js"],
+        }],
         "_coverage_projection": True,
     }
 
@@ -3247,10 +3254,19 @@ def test_compact_projection_keeps_default_cells_as_pending_gaps():
 
 
 def test_zero_relevance_coverage_gap_is_advisory_not_closure_work():
+    # A grid-enumeration gap with NO observed fact behind it (no params, no
+    # sources, no route-kind probe) is advisory: it never blocks Closure.
+    # Word-list relevance_score no longer decides this either way.
     projection = {
         "summary": {"high_value_gaps_count": 1},
         "endpoints": [{"endpoint": "/api/orders/1", "cells": {}}],
-        "_coverage_gaps": [{"endpoint": "/api/orders/1", "vuln_class": "RCE", "relevance_score": 0}],
+        "_coverage_gaps": [{
+            "endpoint": "/api/orders/1",
+            "vuln_class": "RCE",
+            "relevance_score": 0,
+            "observed_params": [],
+            "source_count": 0,
+        }],
         "_coverage_projection": True,
     }
 
@@ -3285,7 +3301,12 @@ def test_actionable_coverage_gap_still_blocks_closure_and_frontier():
     projection = {
         "summary": {"high_value_gaps_count": 1},
         "endpoints": [{"endpoint": "/api/orders/1", "cells": {}}],
-        "_coverage_gaps": [{"endpoint": "/api/orders/1", "vuln_class": "IDOR", "relevance_score": 3}],
+        "_coverage_gaps": [{
+            "endpoint": "/api/orders/1",
+            "vuln_class": "IDOR",
+            "relevance_score": 3,
+            "source_count": 1,
+        }],
         "_coverage_projection": True,
     }
 

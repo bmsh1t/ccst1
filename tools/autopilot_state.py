@@ -138,8 +138,8 @@ try:
         STATUS_VALUES,
         VULN_CLASSES,
         _route_template,
-        actionable_coverage_gaps,
         class_relevance,
+        coverage_gaps_with_observed_evidence,
         high_value_gaps_from_matrix,
         _is_auto_applicability_na,
         load_matrix,
@@ -155,8 +155,8 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         STATUS_VALUES,
         VULN_CLASSES,
         _route_template,
-        actionable_coverage_gaps,
         class_relevance,
+        coverage_gaps_with_observed_evidence,
         high_value_gaps_from_matrix,
         _is_auto_applicability_na,
         load_matrix,
@@ -3490,8 +3490,12 @@ def _coverage_gaps(matrix: dict) -> list[dict]:
     return high_value_gaps_from_matrix(matrix)
 
 
+def _coverage_gaps_with_observed_evidence(gaps: list[dict], matrix: dict | None = None) -> list[dict]:
+    return coverage_gaps_with_observed_evidence(gaps, matrix)
+
+
 def _actionable_coverage_gaps(matrix: dict) -> list[dict]:
-    return actionable_coverage_gaps(_coverage_gaps(matrix))
+    return _coverage_gaps_with_observed_evidence(_coverage_gaps(matrix), matrix)
 
 
 def _coverage_has_high_value_gaps(matrix: dict) -> bool:
