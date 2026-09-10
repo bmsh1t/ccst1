@@ -136,6 +136,14 @@ def gate_from_record(repo_root: str | Path, record: dict) -> dict:
     Persisted gates are historical hints only: artifacts can disappear or be
     replaced after a manifest row was written, so trusting the embedded value
     could turn an incomplete phase into a false completion.
+
+    Binding drift is recorded as an advisory gap, not a forced downgrade:
+    within one recon run later phases legitimately rewrite shared artifacts
+    (raw_archive appends urls/raw/all.txt, every record touches the manifest
+    itself, directory artifacts track the whole tree's mtime). Downgrading on
+    any drift would make those phases permanently partial and block Closure on
+    normal pipeline timing. A missing artifact still downgrades, and the drift
+    flag keeps the generation mismatch visible for AI reconciliation.
     """
     gate = build_phase_gate(
         repo_root,
@@ -148,10 +156,13 @@ def gate_from_record(repo_root: str | Path, record: dict) -> dict:
     persisted_binding = persisted.get("artifact_binding")
     current_binding = gate.get("artifact_binding")
     if persisted_binding and persisted_binding != current_binding:
-        gate["status"] = "partial"
         gaps = list(gate.get("coverage_gaps") or [])
         if "artifact_changed_since_record" not in gaps:
             gaps.append("artifact_changed_since_record")
         gate["coverage_gaps"] = gaps
-        gate["next_focus"] = "Reconcile the changed artifact generation before declaring this phase complete."
+        if gate.get("status") == "complete":
+            gate["next_focus"] = (
+                "Artifact generation changed after this record; reconcile the newer "
+                "evidence before treating this phase as fully complete."
+            )
     return gate

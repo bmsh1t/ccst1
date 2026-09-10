@@ -3746,9 +3746,17 @@ def _recon_phase_residuals(
             except (TypeError, ValueError):
                 remaining = 0
             accounting_valid = False
-        blocking = bool(bounded.get("closure_blocking", True)) if not accounting_valid else bool(
-            bounded.get("closure_blocking")
-        )
+        # A gate without bounded metadata still carries a trustworthy default:
+        # build_phase_gate defaults closure_blocking to remaining>0, and a
+        # skipped/blocked phase with no sampling budget is advisory, not a
+        # Closure blocker. Only an invalid bounded dict (wrong types, torn
+        # accounting) forces blocking so the anomaly reaches AI review.
+        if accounting_valid:
+            blocking = bool(bounded.get("closure_blocking"))
+        elif bounded:
+            blocking = bool(bounded.get("closure_blocking", True))
+        else:
+            blocking = remaining > 0
         residual = status != "complete" or not accounting_valid or remaining > 0
         if not residual or (closure_blocking is not None and blocking != closure_blocking):
             continue

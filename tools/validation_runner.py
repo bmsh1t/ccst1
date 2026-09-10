@@ -2126,7 +2126,30 @@ def run_request_diff(
     shape_confirmed = bool(classifier == "sqli" and probe_shape and strong)
     boundary_dimension = _request_pair_boundary_dimension(spec)
     candidate_ready = bool(all(material) and (shape_confirmed or boundary_dimension))
-    result = "tested_finding" if candidate_ready else ("candidate" if any(material) else "tested_clean")
+    # A credential-boundary pair with NO response difference still carries an
+    # authz claim to review: when the unauthenticated side also succeeded, the
+    # identical responses are themselves the evidence of a missing identity
+    # check. Falling that to tested_clean would invert the meaning. Direction
+    # is AI-declared (baseline may be either the anonymous or the credentialed
+    # side), so "held" is judged per-run as both sides being rejected; if both
+    # sides succeeded the pair stays a reviewable candidate.
+    boundary_held = bool(
+        boundary_dimension
+        and not any(material)
+        and all(
+            int(run.get("baseline", {}).get("status") or 0) >= 400
+            and int(run.get("variant", {}).get("status") or 0) >= 400
+            for run in runs
+        )
+    )
+    if candidate_ready:
+        result = "tested_finding"
+    elif any(material):
+        result = "candidate"
+    elif boundary_dimension and not boundary_held:
+        result = "candidate"
+    else:
+        result = "tested_clean"
     vuln_class = _classifier_vuln_class(classifier, spec.get("vuln_class", ""))
     diff_path = bundle / "diff.json"
     _write_json(diff_path, {"runs": runs, "request_pair": _request_pair_spec_view(spec)})

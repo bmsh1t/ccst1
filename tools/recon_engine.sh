@@ -4531,12 +4531,19 @@ else
     log_warn "validate_api_candidates.sh not found - skipping API candidate validation"
 fi
 API_VALIDATED_TOTAL=$((API_LEAK_CANDIDATE_COUNT + API_DOC_COUNT))
+# Empty candidate inputs legitimately produce no .validated artifact; record
+# a zero-result success instead of a wildcard that can never resolve.
+if [ "$API_VALIDATED_TOTAL" -eq 0 ]; then
+    API_VALIDATION_ARTIFACT="recon/${RECON_TARGET_KEY}/exposure/api_leak_candidates.txt"
+else
+    API_VALIDATION_ARTIFACT="recon/${RECON_TARGET_KEY}/exposure/*.validated"
+fi
 record_recon_phase \
     api_candidate_validation \
     "$API_VALIDATION_STATUS" \
-    "recon/${RECON_TARGET_KEY}/exposure/*.validated" \
+    "$API_VALIDATION_ARTIFACT" \
     "$API_VALIDATED_TOTAL" \
-    "validated files are denoised views; original candidates are preserved"
+    "validated files are denoised views; original candidates are preserved; zero candidates recorded against the empty candidate list"
 
 # ============================================================
 # Phase 6.7.6: OpenAPI Semantic Extraction

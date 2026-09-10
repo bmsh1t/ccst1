@@ -1512,3 +1512,70 @@ def test_request_diff_sqli_material_diff_without_strong_shape_is_candidate_not_c
 
     assert summary["result"] == "candidate"
     assert summary["candidate_ready"] is False
+
+
+def test_request_diff_credential_pair_both_sides_succeed_stays_candidate_not_clean(monkeypatch, tmp_path):
+    """Anonymous 200 + denied-credential 200 with identical bodies means the
+    endpoint performs no identity check. That pair must stay a reviewable
+    candidate; recording tested_clean would invert the meaning."""
+
+    def fake_request_once(**kwargs):
+        body = '{"config": {"chatbot": "shared"}}'
+        return _fake_response(kwargs["url"], body=body)
+
+    monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
+    spec = {
+        "schema_version": 1,
+        "baseline_request": {"method": "GET", "url": "https://target.test/rest/admin/application-configuration"},
+        "variant_request": {
+            "method": "GET",
+            "url": "https://target.test/rest/admin/application-configuration",
+            "headers": {"Authorization": "Bearer denied"},
+        },
+        "active_dimension": "header:Authorization",
+        "evidence_shape": "auth_boundary",
+        "classifier": "authz_access",
+        "vuln_class": "Authz",
+        "repeat": 1,
+    }
+    summary = validation_runner.run_request_diff(
+        repo_root=tmp_path,
+        target="https://target.test",
+        request_spec=spec,
+    )
+
+    assert summary["result"] == "candidate", (
+        "identical 200 responses across a credential boundary are the evidence "
+        "of a missing identity check, not a clean auth boundary"
+    )
+
+
+def test_request_diff_credential_pair_both_sides_rejected_is_clean(monkeypatch, tmp_path):
+    """Anonymous 401 + invalid-credential 401 with identical bodies means the
+    auth boundary held; that pair is a genuine tested_clean."""
+
+    def fake_request_once(**kwargs):
+        return _fake_response(kwargs["url"], status=401, body='{"error": "unauthorized"}')
+
+    monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
+    spec = {
+        "schema_version": 1,
+        "baseline_request": {"method": "GET", "url": "https://target.test/api/users"},
+        "variant_request": {
+            "method": "GET",
+            "url": "https://target.test/api/users",
+            "headers": {"Authorization": "Bearer denied"},
+        },
+        "active_dimension": "header:Authorization",
+        "evidence_shape": "auth_boundary",
+        "classifier": "authz_access",
+        "vuln_class": "Authz",
+        "repeat": 1,
+    }
+    summary = validation_runner.run_request_diff(
+        repo_root=tmp_path,
+        target="https://target.test",
+        request_spec=spec,
+    )
+
+    assert summary["result"] == "tested_clean"
