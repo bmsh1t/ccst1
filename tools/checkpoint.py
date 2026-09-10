@@ -1207,7 +1207,56 @@ def _list_clause(values: object) -> str:
     return ", ".join(clean)
 
 
-def _case_state_proposal(case_state: dict) -> str:
+PROPOSAL_ENTRY_SCHEMA_VERSION = 1
+
+
+def _proposal_entry(
+    text: str,
+    *,
+    action_type: str,
+    priority: int,
+    command_hint: str = "",
+    metadata: dict | None = None,
+) -> dict:
+    """One structured proposal entry; text stays human-readable prose.
+
+    Producers that already hold the fields emit them here instead of losing
+    them into a format string. Plain strings remain valid (dual-read): the
+    queue builder classifies and extracts from text exactly as before.
+    """
+    entry = {
+        "schema_version": PROPOSAL_ENTRY_SCHEMA_VERSION,
+        "text": text,
+        "type": action_type,
+        "priority": priority,
+        "command_hint": command_hint,
+    }
+    if metadata:
+        entry["metadata"] = dict(metadata)
+    return entry
+
+
+def _is_proposal_entry(item: object) -> bool:
+    return (
+        isinstance(item, dict)
+        and item.get("schema_version") == PROPOSAL_ENTRY_SCHEMA_VERSION
+        and isinstance(item.get("text"), str)
+    )
+
+
+def _entry_text(item: object) -> str:
+    if _is_proposal_entry(item):
+        return str(item["text"])
+    return str(item or "")
+
+
+def _case_state_proposal(case_state: dict) -> dict:
+    """Emit a structured proposal entry for the top case-state next action.
+
+    The `top` projection already carries every field the prose version used
+    to hide behind `Key: value.` markers; pass them directly and keep the
+    prose for human/legacy consumers.
+    """
     top = _case_state_top_next(case_state)
     action = str(top.get("next_action") or "").strip().lower()
     if not action or action == "none":
@@ -1287,7 +1336,50 @@ def _case_state_proposal(case_state: dict) -> str:
     recovery_next = str(top.get("recovery_next_action") or "").strip()
     if recovery_next:
         parts.append(f"Recovery next action: {recovery_next}.")
-    return " ".join(parts).strip()
+
+    text = " ".join(parts).strip()
+    # The classification mirror of this ladder lives in _classify_next_action;
+    # structured entries carry the type/priority directly.
+    type_hint = {
+        "run_validation_runner": ("case-state-validation", 110, replay_draft if replay_draft else "python3 tools/validation_runner.py ... --request-spec <spec>"),
+        "enrich_case_state": ("case-state-enrichment", 108, "enrich actor/session/object/private-marker evidence in case_state"),
+        "recover_hypothesis": ("case-state-enrichment", 108, "complete the recorded hypothesis recovery step before creating a fresh backlog"),
+        "create_validation_backlog": ("case-state-backlog-create", 103, "promote the active hypothesis into validation backlog"),
+    }
+    entry_type, priority, hint = type_hint.get(
+        action, ("case-state-enrichment", 54, "register actor/session/object with tools/target_case_state.py or review tools/case_state_seed.py")
+    )
+    replay_draft = str(top.get("redacted_command") or top.get("command") or "").strip()
+    metadata: dict = {"backlog_id": backlog_id}
+    for key in (
+        "hypothesis_id", "hypothesis", "why_now", "runner",
+        "object_ref", "endpoint", "downgrade_rule", "stop_condition",
+        "write_back", "recovery_next_action",
+    ):
+        value = str(top.get(key) or "").strip()
+        if value:
+            metadata[key] = value
+    owner_actor = str(top.get("owner_actor") or "").strip()
+    peer_actor = str(top.get("peer_actor") or "").strip()
+    if owner_actor or peer_actor:
+        metadata["owner_actor"] = owner_actor or "-"
+        metadata["peer_actor"] = peer_actor or "-"
+    for key in (
+        "required_evidence", "missing_evidence", "optional_evidence_gaps",
+        "chain_extensions_if_blocked",
+    ):
+        values = top.get(key)
+        if isinstance(values, list) and values:
+            metadata[key] = [str(item or "").strip() for item in values if str(item or "").strip()]
+    if action == "run_validation_runner" and replay_draft:
+        metadata["replay_draft"] = replay_draft
+    return _proposal_entry(
+        text,
+        action_type=entry_type,
+        priority=priority,
+        command_hint=hint,
+        metadata=metadata,
+    )
 
 
 def _case_state_seed_summary(repo_root: Path | str, target: str) -> dict:
@@ -2249,7 +2341,7 @@ def _ledger_candidate_proposals(evidence_summary: dict, *, limit: int = 3) -> li
             continue
         evidence_suffix = f" Evidence={evidence_ref}." if evidence_ref else ""
         notes_suffix = f" Notes={notes[:220]}." if notes else ""
-        proposals.append(
+        candidate_text = (
             "Run /validate for ledger candidate {method} {endpoint} x {vuln_class}. "
             "AI task: review raw evidence, impact, replayability, and side-effect/risk status; "
             "then promote to finding/report or downgrade with evidence ledger update."
@@ -2262,6 +2354,24 @@ def _ledger_candidate_proposals(evidence_summary: dict, *, limit: int = 3) -> li
                 notes=notes_suffix,
             ) + identity_suffix
         )
+        candidate_metadata: dict = {
+            "endpoint": endpoint,
+            "vuln_class": vuln_class,
+            "method": method,
+        }
+        if evidence_ref:
+            candidate_metadata["evidence_ref"] = evidence_ref
+        if notes:
+            candidate_metadata["summary"] = notes[:240]
+        if isinstance(identity_dimensions, dict) and identity_dimensions:
+            candidate_metadata["identity_v2_dimensions"] = identity_dimensions
+        proposals.append(_proposal_entry(
+            candidate_text,
+            action_type="validation",
+            priority=100,
+            command_hint="/validate",
+            metadata=candidate_metadata,
+        ))
     return proposals
 
 
@@ -2431,7 +2541,7 @@ def _runner_candidate_proposals(state: dict, *, limit: int = 2) -> list[str]:
         rubric_suffix = f" rubric={rubric}" if rubric else ""
         missing_suffix = f" missing={missing}" if missing else ""
         evidence_suffix = f" Evidence={evidence_ref}." if evidence_ref else ""
-        proposals.append(
+        runner_text = (
             "Review validation-runner candidate {id} [{lane}] {method} {url}.{rubric}{missing} "
             "AI task: read raw request/response evidence, impact, replayability, and policy context; "
             "then run /validate if reportable, or record tested_clean/dead_end in evidence ledger."
@@ -2445,6 +2555,28 @@ def _runner_candidate_proposals(state: dict, *, limit: int = 2) -> list[str]:
                 evidence=evidence_suffix,
             )
         )
+        runner_metadata: dict = {
+            "finding_id": candidate_id,
+            "url": url,
+            "method": method,
+            "lane": lane,
+            "summary_path": evidence_ref,
+        }
+        if rubric:
+            runner_metadata["rubric_status"] = rubric
+        if missing:
+            runner_metadata["missing_evidence"] = [
+                str(value).strip()
+                for value in (item.get("missing_evidence") or [])[:3]
+                if str(value).strip()
+            ]
+        proposals.append(_proposal_entry(
+            runner_text,
+            action_type="validation",
+            priority=100,
+            command_hint="/validate if reportable, else record tested_clean/dead_end in evidence ledger",
+            metadata=runner_metadata,
+        ))
     return proposals
 
 
@@ -2610,7 +2742,7 @@ def _next_proposals(
     next_validation = findings.get("next_validation") or {}
     next_report = findings.get("next_report") or {}
     if next_owner_revalidation:
-        proposals.append(
+        text = (
             "Owner-provenance recovery for finding {id} on {url}: it claims "
             "{validation}/{report} but provenance is {reason}. Treat it as a "
             "candidate, replay locatable raw evidence, then rerun /validate with "
@@ -2623,6 +2755,16 @@ def _next_proposals(
                 reason=next_owner_revalidation.get("provenance_reason", "owner-provenance-invalid"),
             )
         )
+        proposals.append(_proposal_entry(
+            text,
+            action_type="revalidate_finding_owner",
+            priority=100,
+            command_hint="replay locatable raw evidence, then rerun /validate with the canonical finding id",
+            metadata={
+                "finding_id": str(next_owner_revalidation.get("id") or ""),
+                "url": str(next_owner_revalidation.get("url") or ""),
+            },
+        ))
     if next_validation:
         rubric = next_validation.get("rubric") if isinstance(next_validation.get("rubric"), dict) else {}
         missing_items = []
@@ -2639,7 +2781,7 @@ def _next_proposals(
                 evidence_step = str(action or "").strip()
                 if evidence_step:
                     break
-            proposals.append(
+            gap_text = (
                 "Candidate evidence gap for finding {id} on {url}: rubric={status}, "
                 "missing={missing}. Next evidence step: {step}. Then rerun /validate "
                 "when the smallest replayable impact proof is captured.".format(
@@ -2650,19 +2792,54 @@ def _next_proposals(
                     step=evidence_step or "fill the missing candidate evidence item",
                 )
             )
-        proposals.append(
+            gap_metadata: dict = {
+                "finding_id": str(next_validation.get("id") or "-"),
+                "url": str(next_validation.get("url") or ""),
+            }
+            if missing_items:
+                gap_metadata["missing_evidence"] = missing_items
+            if evidence_step:
+                gap_metadata["validation_path"] = evidence_step
+            proposals.append(_proposal_entry(
+                gap_text,
+                action_type="candidate-evidence-gap",
+                priority=105,
+                command_hint="fill missing rubric evidence, then /validate",
+                metadata=gap_metadata,
+            ))
+        validate_text = (
             "Run /validate for finding {id} on {url}; verify replay, A/B diff, "
             "impact, evidence rubric, and red-line safety before report.".format(
                 id=next_validation.get("id", "-"),
                 url=next_validation.get("url", ""),
             )
         )
+        proposals.append(_proposal_entry(
+            validate_text,
+            action_type="validation",
+            priority=100,
+            command_hint="/validate",
+            metadata={
+                "finding_id": str(next_validation.get("id") or "-"),
+                "url": str(next_validation.get("url") or ""),
+            },
+        ))
     if next_report:
-        proposals.append(
+        report_text = (
             "Draft report for validated finding {id}; do not submit without human review.".format(
                 id=next_report.get("id", "-"),
             )
         )
+        proposals.append(_proposal_entry(
+            report_text,
+            action_type="report",
+            priority=90,
+            command_hint="/report",
+            metadata={
+                "finding_id": str(next_report.get("id") or "-"),
+                "url": str(next_report.get("url") or ""),
+            },
+        ))
     proposals.extend(_ledger_candidate_proposals(evidence_summary))
     proposals.extend(_runner_candidate_proposals(state))
     if not state.get("has_recon"):
@@ -2973,17 +3150,30 @@ def _classify_next_action(text: str, target: str = "") -> tuple[str, int, str]:
 
 
 def _bounded_next_proposals(
-    proposals: list[str],
+    proposals: list,
     target: str,
     limit: int = 8,
-) -> list[str]:
-    """保留 action 类型多样性，再用既有优先级填充固定窗口。"""
-    deduped = _dedupe(proposals)
-    classified = [
-        (index, proposal, *_classify_next_action(proposal, target)[:2])
-        for index, proposal in enumerate(deduped)
-    ]
-    first_by_type: dict[str, tuple[int, str, str, int]] = {}
+) -> list:
+    """保留 action 类型多样性，再用既有优先级填充固定窗口。
+
+    Structured entries contribute their own type/priority; plain strings are
+    classified as before (dual-read).
+    """
+    deduped_by_text: dict[str, object] = {}
+    for proposal in proposals:
+        text = _entry_text(proposal)
+        if text and text not in deduped_by_text:
+            deduped_by_text[text] = proposal
+    deduped = list(deduped_by_text.values())
+    classified = []
+    for index, proposal in enumerate(deduped):
+        if _is_proposal_entry(proposal):
+            action_type = str(proposal.get("type") or "")
+            priority = int(proposal.get("priority") or 0)
+        else:
+            action_type, priority, _ = _classify_next_action(proposal, target)
+        classified.append((index, proposal, action_type, priority))
+    first_by_type: dict[str, tuple[int, object, str, int]] = {}
     for item in classified:
         first_by_type.setdefault(item[2], item)
 
@@ -3324,17 +3514,24 @@ def _dedupe_artifact_category_items(items: list[dict]) -> list[dict]:
     return result
 
 
-def _build_next_action_queue(next_items: list[str], target: str = "") -> list[dict]:
+def _build_next_action_queue(next_items: list, target: str = "") -> list[dict]:
     queue: list[dict] = []
     for idx, item in enumerate(next_items, 1):
-        action_type, priority, command_hint = _classify_next_action(item, target)
-        metadata = _extract_action_metadata(item)
+        text = _entry_text(item)
+        if _is_proposal_entry(item):
+            action_type = str(item.get("type") or "next-action")
+            priority = int(item.get("priority") or 50)
+            command_hint = str(item.get("command_hint") or "")
+            metadata = dict(item.get("metadata") or {})
+        else:
+            action_type, priority, command_hint = _classify_next_action(item, target)
+            metadata = _extract_action_metadata(item)
         row = {
             "id": f"A{idx}",
             "priority": priority,
             "type": action_type,
             "status": "ready",
-            "action": item,
+            "action": text,
             "command_hint": command_hint,
             # Checkpoint projects an explicit flag; it does not infer a
             # red-line requirement from an action type or its wording.
@@ -4318,9 +4515,9 @@ def build_checkpoint(
         "validation_runner_candidates": state.get("validation_runner_candidates") or [],
         "unsafe_skipped": _unsafe_leads(state),
         "target_write_back": {
-            "lead": lead,
-            "next": next_items,
-            "dead_end": dead_ends,
+            "lead": [_entry_text(item) for item in lead],
+            "next": [_entry_text(item) for item in next_items],
+            "dead_end": [_entry_text(item) for item in dead_ends],
             "handoff": handoff,
         },
         "next_action_queue": next_action_queue,
@@ -4353,11 +4550,11 @@ def _write_back_commands(
     commands: list[str] = []
     quoted_target = _quote(target)
     for item in leads[:3]:
-        commands.append(f"python3 tools/target_memory.py lead {_quote(item)} --target {quoted_target}")
+        commands.append(f"python3 tools/target_memory.py lead {_quote(_entry_text(item))} --target {quoted_target}")
     for item in next_items[:5]:
-        commands.append(f"python3 tools/target_memory.py next {_quote(item)} --target {quoted_target}")
+        commands.append(f"python3 tools/target_memory.py next {_quote(_entry_text(item))} --target {quoted_target}")
     for item in dead_ends[:2]:
-        commands.append(f"python3 tools/target_memory.py dead-end {_quote(item)} --target {quoted_target}")
+        commands.append(f"python3 tools/target_memory.py dead-end {_quote(_entry_text(item))} --target {quoted_target}")
     if handoff:
         commands.append(f"python3 tools/target_memory.py handoff {_quote(handoff)} --target {quoted_target}")
     return commands
