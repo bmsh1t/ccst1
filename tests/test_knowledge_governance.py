@@ -378,5 +378,14 @@ def test_distilled_router_cards_are_discoverable_from_real_evidence_indexes(tmp_
 
         pack = build_context_pack(tmp_path, target=target)
 
-        assert f"knowledge/cards/{card_name}" in pack["knowledge_cards"]
+        # Evidence-index word signals surface as recall annotations (visible
+        # to the AI through the signal channel), not auto-selected cards.
+        recall_files = {
+            str(entry.get("file") or "")
+            for entry in pack.get("knowledge_card_recall", [])
+            if isinstance(entry, dict)
+        }
+        assert f"knowledge/cards/{card_name}" in (
+            recall_files | set(pack["knowledge_cards"])
+        )
         assert f"findings/{target}/source_intel/hypotheses.jsonl" in pack["must_read"]

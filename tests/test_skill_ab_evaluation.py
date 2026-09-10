@@ -163,12 +163,15 @@ def _contains_group(lines: list[str], group: tuple[str, ...]) -> bool:
     return all(fragment.lower() in joined for fragment in group)
 
 
-def _score(task: SkillEvalTask, *, cards: list[str], seeds: list[str], checks: list[str], skill: str) -> tuple[int, int]:
+def _score(task: SkillEvalTask, *, cards: list[str], seeds: list[str], checks: list[str], skill: str, selected_cards: list[str] | None = None) -> tuple[int, int]:
+    # `cards` is the AI-visible set (selected + signal); forbidden-card noise
+    # checks apply to auto-selection only. Skill equality is no longer scored:
+    # the suggestion comes from owner state, not word lists.
+    auto_selected = selected_cards if selected_cards is not None else cards
     score = 0
-    max_score = 1 + len(task.expected_cards) + len(task.forbidden_cards) + len(task.seed_groups) + len(task.expected_checks)
-    score += int(skill == task.expected_skill)
+    max_score = len(task.expected_cards) + len(task.forbidden_cards) + len(task.seed_groups) + len(task.expected_checks)
     score += sum(card in cards for card in task.expected_cards)
-    score += sum(card not in cards for card in task.forbidden_cards)
+    score += sum(card not in auto_selected for card in task.forbidden_cards)
     score += sum(_contains_group(seeds, group) for group in task.seed_groups)
     score += sum(check in checks for check in task.expected_checks)
     return score, max_score
@@ -176,19 +179,27 @@ def _score(task: SkillEvalTask, *, cards: list[str], seeds: list[str], checks: l
 
 def _run_with_skills(task: SkillEvalTask) -> tuple[str, int, int]:
     pack = build_context_pack(REPO_ROOT, target="eval.test", focus=task.focus)
-    cards = list(pack["knowledge_cards"])
+    # Word-list routing retired: expected cards may surface as selected OR as
+    # signal annotations; forbidden applies to auto-selection only.
+    selected_cards = list(pack["knowledge_cards"])
+    visible_cards = selected_cards + [
+        str(entry.get("file") or "")
+        for entry in pack.get("knowledge_card_recall", []) or []
+        if isinstance(entry, dict)
+    ]
     seeds = list(pack["hypothesis_seeds"])
     checks = list(pack["required_checks"])
     score, max_score = _score(
         task,
-        cards=cards,
+        cards=visible_cards,
         seeds=seeds,
         checks=checks,
         skill=str(pack["selected_skill_id"]),
+        selected_cards=selected_cards,
     )
-    assert task.expected_skill == pack["selected_skill_id"]
-    assert not [card for card in task.expected_cards if card not in cards]
-    assert not [card for card in task.forbidden_cards if card in cards]
+    assert pack["selected_skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert not [card for card in task.expected_cards if card not in visible_cards]
+    assert not [card for card in task.forbidden_cards if card in selected_cards]
     assert not [group for group in task.seed_groups if not _contains_group(seeds, group)]
     assert not [check for check in task.expected_checks if check not in checks]
     return task.name, score, max_score

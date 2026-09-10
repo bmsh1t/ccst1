@@ -122,11 +122,23 @@ def evaluate_cases(repo_root: Path = BASE_DIR, cases_path: Path = DEFAULT_CASES)
 
         expected_cards = [str(item) for item in case.get("expected_cards", [])]
         forbidden_cards = [str(item) for item in case.get("forbidden_cards", [])]
-        cards = [str(item) for item in pack.get("knowledge_cards", []) or []]
-        route_missing = [card for card in expected_cards if card not in cards]
-        forbidden_present = [card for card in forbidden_cards if card in cards]
+        # Word-list routing retired: expected cards may surface as selected
+        # cards OR as signal annotations in recall. Both are AI-visible; the
+        # eval checks visibility, not auto-selection.
+        visible_cards = set(pack.get("knowledge_cards", []) or []) | {
+            str(entry.get("file") or "")
+            for entry in pack.get("knowledge_card_recall", []) or []
+            if isinstance(entry, dict)
+        }
+        cards = sorted(visible_cards)
+        route_missing = [card for card in expected_cards if card not in visible_cards]
+        # Forbidden checks apply to AUTO-SELECTION only: signal annotations are
+        # objective records of word-list noise and must stay visible for the
+        # AI (and this eval) to see; they are not misroutes.
+        selected_cards = set(pack.get("knowledge_cards", []) or [])
+        forbidden_present = [card for card in forbidden_cards if card in selected_cards]
         route_score = sum(card in cards for card in expected_cards)
-        forbidden_score = sum(card not in cards for card in forbidden_cards)
+        forbidden_score = sum(card not in selected_cards for card in forbidden_cards)
         route_max = len(expected_cards) + len(forbidden_cards)
 
         signal_checks = [item for item in case.get("signal_checks", []) if isinstance(item, dict)]

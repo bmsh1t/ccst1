@@ -3902,7 +3902,19 @@ def test_context_pack_hypothesis_seed_and_recall_do_not_materialize_queue(
     checkpoint = build_checkpoint(tmp_path, target=target, refresh_coverage=False)
     context = checkpoint["context_pack"]
 
-    assert "knowledge/cards/server-side-template-injection.md" in context["knowledge_cards"]
+    # Word-list matches no longer auto-select cards: the SSTI card appears as
+    # a signal annotation in recall (visible, AI-readable, not auto-loaded)
+    # while the full card catalog is published for AI-side selection.
+    ssti_path = "knowledge/cards/server-side-template-injection.md"
+    recall_entries = {
+        entry.get("file"): entry.get("status")
+        for entry in context["knowledge_card_recall"]
+    }
+    assert recall_entries.get(ssti_path) == "signal"
+    assert any(
+        entry.get("id") == "server-side-template-injection"
+        for entry in context.get("card_catalog", [])
+    )
     assert context["hypothesis_seeds"]
     assert context["knowledge_card_recall"]
     assert checkpoint["next_action_queue"] == []

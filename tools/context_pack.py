@@ -252,30 +252,6 @@ def _has_web_llm_agent_signal(text: str) -> bool:
         )
     )
 
-WEB2_VULN_FOCUS_RE = re.compile(
-    r"\b("
-    r"api[-_ ]?testing|api[-_ ]?test|business[-_ ]?logic|logic[-_ ]?flaws?|state[-_ ]?machine|workflow[-_ ]?validation|client[-_ ]?side[-_ ]?controls|"
-    r"password[-_ ]?reset|forgot[-_ ]?password|account[-_ ]?recovery|username[-_ ]?enum(?:eration)?|credential[-_ ]?attack|brute[-_ ]?force|lockout|stay[-_ ]?logged[-_ ]?in|"
-    r"api[-_ ]?idor|idor|authz?|access[-_ ]?control|method[-_ ]?based[-_ ]?access|referer[-_ ]?based[-_ ]?access|url[-_ ]?based[-_ ]?access|role[-_ ]?bypass|auth[-_ ]?hidden|hidden[-_ ]?login|login[-_ ]?bypass|ato|"
-    r"jwt|jwe|jwks?|jku|kid|oauth|oidc|saml|sso|pkce|token[-_ ]?binding|account[-_ ]?linking|"
-    r"graphql|sqli|sql[-_ ]?injection|hidden[-_ ]?param|nosql|no[-_ ]?sql[-_ ]?injection|"
-    r"server[-_ ]?side[-_ ]?param(?:eter)?[-_ ]?pollution|http[-_ ]?param(?:eter)?[-_ ]?pollution|param(?:eter)?[-_ ]?pollution|hpp|mass[-_ ]?assignment|over[-_ ]?posting|overposting|"
-    r"xxe|xml[-_ ]?parser|xinclude|"
-    r"path[-_ ]?traversal|directory[-_ ]?traversal|lfi|local[-_ ]?file[-_ ]?inclusion|file[-_ ]?read|"
-    r"ssrf|ssrf[-_ ]?internal|url[-_ ]?fetch|server[-_ ]?side[-_ ]?(?:fetch|request)|webhook|callback|oembed|"
-    r"upload|upload[-_ ]?execution|web[-_ ]?shell|import|parser|"
-    r"race|rce|command[-_ ]?injection|ssti|template[-_ ]?injection|template[-_ ]?engine|render[-_ ]?template|erb|ruby[-_ ]?template|tornado[-_ ]?template|mako[-_ ]?template|handlebars[-_ ]?template|mustache[-_ ]?template|nunjucks[-_ ]?template|liquid[-_ ]?template|pug[-_ ]?template|jade[-_ ]?template|ejs[-_ ]?template|deserialization|deserialize|signed[-_ ]?object|viewstate|"
-    r"host[-_ ]?header|proxy[-_ ]?trust|request[-_ ]?smuggling|http[-_ ]?smuggling|cache[-_ ]?poisoning|cache[-_ ]?deception|"
-    r"cors|csrf|xsrf|xss|reflected[-_ ]?xss|stored[-_ ]?xss|client[-_ ]?xss|csp|content[-_ ]?security[-_ ]?policy|sandbox[-_ ]?escape|dangling[-_ ]?markup|open[-_ ]?redirect|client[-_ ]?side[-_ ]?redirect|cookie[-_ ]?manipulation|dom[-_ ]?clobbering|clickjacking|dom[-_ ]?xss|dom|websocket|cswsh|"
-    r"grpc|grpc[-_ ]?web|protobuf|odata|ldap|xpath|next\.js|nextjs|_next|actuator|spring[-_ ]?boot|legacy[-_ ]?(?:auth|authentication)|shadow[-_ ]?throttle|cognito|identity[-_ ]?pool|kubernetes|k8s|kubelet|nodes?[/_-]?proxy|"
-    r"signature[-_ ]?scope|view[-_ ]?differential|allowlist|whitelist|sanitizer|connection[-_ ]?string|runtime[-_ ]?primitive|stale[-_ ]?authz|connection[-_ ]?reuse|redirect[-_ ]?header|xs[-_ ]?leak|cli[-_ ]?argument|non[-_ ]?parameterizable|type[-_ ]?confusion|second[-_ ]?order|payment[-_ ]?logic|postmessage|render[-_ ]?pipeline|information[-_ ]?disclosure|info[-_ ]?disclosure|"
-    rf"{WEB_LLM_AGENT_SIGNAL_PATTERN}|essential[-_ ]?skills|"
-    r"node\.js|nodejs|express|prototype[-_ ]?pollution|proto[-_ ]?pollution|__proto__|constructor\.prototype|"
-    r"missing[-_ ]?param(?:eter)?|parameter[-_ ]?null|param[-_ ]?discovery|"
-    r"path[-_ ]?pattern|management[-_ ]?exposure|admin[-_ ]?panel"
-    r")\b",
-    re.I,
-)
 
 SSTI_DIRECT_RE = re.compile(
     r"\b(ssti|server[-_ ]?side[-_ ]?template[-_ ]?injection|template[-_ ]?injection|jinja|twig|freemarker|velocity|smarty|erb|ruby[-_ ]?template)\b",
@@ -523,6 +499,14 @@ EXTERNAL_AUTHZ_POLICY_RE = re.compile(
     re.I,
 )
 
+# Tech-stack inventory word signal kept as a VISIBLE annotation source for
+# card recall; it never auto-selects a card anymore.
+_WORDPRESS_SIGNAL_RE = re.compile(
+    r"\b(?:wordpress|wp[-_ ]?json|wp[-_ ]?content|wp[-_ ]?admin|admin[-_ ]?ajax|xmlrpc(?:\.php)?|"
+    r"wordpress[-_ ]?(?:plugin|theme))\b",
+    re.I,
+)
+
 API_AUTHZ_REFINEMENT_RES = (
     PRESIGNED_URL_CAPABILITY_RE,
     OBSERVABILITY_TRACE_RE,
@@ -556,6 +540,29 @@ def _card_capability(
         "load": item.get("load") or "unknown",
         "purpose": item.get("purpose") or "unknown",
     }
+
+
+def _card_catalog(
+    repo_root: Path | str = BASE_DIR,
+    *,
+    registry: dict[str, dict[str, str]] | None = None,
+) -> list[dict[str, str]]:
+    """Publish the FULL card catalog (id + layer + load + purpose).
+
+    Selection authority stays with the AI: the pack presents every card and
+    its purpose line; word-list matches appear as signal annotations in
+    knowledge_card_recall; nothing is hidden by not matching a token table.
+    """
+    registry = registry if registry is not None else _load_capability_registry(repo_root)
+    seen: set[str] = set()
+    catalog: list[dict[str, str]] = []
+    for path in sorted(registry):
+        if path in seen:
+            continue
+        seen.add(path)
+        capability = _card_capability(path, repo_root, registry=registry)
+        catalog.append(capability)
+    return catalog
 
 
 def _card_capabilities(
@@ -1364,8 +1371,20 @@ def _explicit_primary_skill(focus: str) -> str:
 
 
 def _select_skill(focus: str, blob: str, ranked: dict, findings: list[dict], goal_memory: dict) -> tuple[str, str]:
-    focus_l = focus.lower()
-    blob_l = blob.lower()
+    """Suggest a primary skill from OWNER FACTS only.
+
+    Word-list intent routing is retired: the pack presents the full primary
+    skill catalog (id + description) and the AI reads the focus prose itself,
+    in any language or phrasing. This function still returns a suggestion so
+    compatibility consumers (pack fields, validators) keep working, but it
+    decides from state, not from guessing what the text means:
+
+    1. the user explicitly named a primary skill (that is an instruction);
+    2. a candidate finding awaits validation (owner fact -> validation gate);
+    3. the target memory already recorded a selected skill (continuity);
+    4. recon/surface input is missing (owner fact -> recon first);
+    5. otherwise default to the methodology skill for phase judgment.
+    """
     target_memory = goal_memory.get("target") or {}
     selected = [
         str(item).strip()
@@ -1377,59 +1396,19 @@ def _select_skill(focus: str, blob: str, ranked: dict, findings: list[dict], goa
         if str(item).strip()
     ]
     has_candidate = any(_finding_is_candidate(item) for item in findings)
-    active = goal_memory.get("active") or {}
-    phase_blob = " ".join(
-        str((source or {}).get(key) or "")
-        for source in (active, target_memory)
-        for key in ("phase", "mode")
-    ).lower()
 
     explicit_skill = _explicit_primary_skill(focus)
     if explicit_skill:
-        return explicit_skill, f"用户显式命名 primary Skill：{explicit_skill}。"
-    if (
-        "triage-validation" in focus_l
-        or re.search(r"\b(validate|validation|candidate)\b", focus_l)
-        or re.search(r"\b(validate|validation|candidate)\b", phase_blob)
-        or has_candidate
-    ):
-        return "triage-validation", "已有 candidate / validation 信号，本轮优先把候选证据过验证门。"
-    if API_ANCESTOR_PREFIX_RE.search(focus):
-        return "web2-vuln-classes", "已观察 API 路径需要有界祖先前缀补漏，复用现有 API/path discovery owner。"
-    if not focus.strip() and API_ANCESTOR_PREFIX_RE.search(blob):
-        return "web2-vuln-classes", "目标证据出现 API 祖先前缀补漏信号，复用现有 API/path discovery owner。"
-    if JS_RUNTIME_SIGNATURE_RE.search(focus) or CUSTOM_PROTOCOL_STATE_RE.search(focus):
-        return "web2-recon", "用户 focus 指向运行时请求链或自定义协议恢复，先走有界 Recon 证据分支。"
-    if not focus.strip() and (
-        JS_RUNTIME_SIGNATURE_RE.search(blob) or CUSTOM_PROTOCOL_STATE_RE.search(blob)
-    ):
-        return "web2-recon", "目标证据出现运行时请求链或自定义协议信号，先补齐可复核的 Recon 输入。"
-    if any(pattern.search(focus) for pattern in API_AUTHZ_REFINEMENT_RES):
-        return "web2-vuln-classes", "用户 focus 指向 API capability、observability 标识或外部授权边界。"
-    if not focus.strip() and any(pattern.search(blob) for pattern in API_AUTHZ_REFINEMENT_RES):
-        return "web2-vuln-classes", "目标证据出现 API capability、observability 标识或外部授权边界。"
-    if "web2-recon" in focus_l or "recon" == focus_l.strip():
-        return "web2-recon", "用户 focus 指向 recon，需要先补攻击面输入再进入漏洞验证。"
-    if PUBLIC_PACKAGE_ARTIFACT_RE.search(focus) or PUBLIC_PACKAGE_ARTIFACT_RE.search(blob):
-        return "web2-recon", "公开包或历史发布物信号明确，先走有界 Recon 情报分支。"
-    if "web2-vuln-classes" in focus_l:
-        return "web2-vuln-classes", "用户 focus 指向 Web2 漏洞类别验证。"
-    if WEB2_VULN_FOCUS_RE.search(focus_l) or _has_web_llm_agent_signal(focus):
-        return "web2-vuln-classes", "用户 focus 已指向具体 Web2 漏洞类别，本轮直接进入验证路径。"
+        return explicit_skill, "用户显式命名 primary Skill：{}。".format(explicit_skill)
+    if has_candidate:
+        return "triage-validation", "已有 candidate 证据，本轮优先把候选证据过验证门。"
     if not ranked.get("available"):
         return "web2-recon", "本地 recon/surface 缓存不足，先补最小攻击面上下文。"
     if selected:
         for item in selected:
             if item in SKILL_PATHS:
                 return item, "目标记忆层已记录该 Skill，沿用当前目标上下文。"
-    if re.search(r"\b(dead[-_ ]?end|stuck|no progress|plateau)\b", blob_l):
-        return "bb-methodology", "目标记忆显示方向可能卡住，先用方法论 Skill 重定向。"
-    if ranked.get("review_pool") or ranked.get("p1") or ranked.get("p2") or re.search(
-        r"\b(idor|auth|graphql|sqli|sql[-_ ]?injection|ssrf|server[-_ ]?side[-_ ]?(?:fetch|request)|upload|race|webhook|api|tenant|org|admin|missing[-_ ]?param(?:eter)?|parameter[-_ ]?null|schema[-_ ]?error|validator[-_ ]?error|param[-_ ]?discovery|param(?:eter)?[-_ ]?pollution|hpp|mass[-_ ]?assignment|over[-_ ]?posting|overposting|api[-_ ]?docs|swagger|openapi|path[-_ ]?pattern|directory[-_ ]?fuzz(?:ing)?|target[-_ ]?wordlist|structured[-_ ]?record|raw[-_ ]?log|admin[-_ ]?panel|management[-_ ]?exposure|management[-_ ]?console|monitoring[-_ ]?console|metrics|health|config[-_ ]?(?:exposure|page|endpoint|dump|leak)|configuration|stats|trace|datasource|accesskey|secretkey|secret[-_ ]?leak)\b",
-        blob_l,
-    ):
-        return "web2-vuln-classes", "已有可测试的 Web/API surface 或漏洞类别信号。"
-    return "bb-methodology", "缺少明确类别信号，先做阶段判断和路线收敛。"
+    return "bb-methodology", "无状态信号时默认方法论入口；AI 读取 pack 的 skill 目录与 focus 原文自行选择并写回。"
 
 
 def _has_ssrf_internal_signal(text: str) -> bool:
@@ -1841,18 +1820,29 @@ def _select_cards_and_deferred(
     tech_stack = _ranked_tech_stack(ranked)
     node_card_signal = _has_node_card_signal(focus, blob, tech_stack)
     cards: list[str] = list(focus_cards)
+    # Word-list card routing is retired: token tables no longer decide which
+    # cards the AI sees. Cards enter the selected set only from explicit focus
+    # (user instruction) or owner state facts; the full card catalog is
+    # published in the pack (card_catalog) and word-list matches degrade to
+    # visible signal annotations the AI may act on freely.
+    token_signal_names: list[str] = []
     for pattern, names in DISTILLED_TOKEN_TO_CARDS:
         if pattern.search(blob):
-            cards.extend(names)
+            token_signal_names.extend(names)
     for pattern, names in TOKEN_TO_CARDS:
-        if names == ("node-prototype-pollution",) and not node_card_signal:
-            continue
         if pattern.search(blob):
-            if names == ("browser-client-boundaries",) and _has_proxy_cache_boundary_signal(blob):
-                continue
-            cards.extend(names)
-    if _has_json_view_differential_candidate_signal(blob):
-        cards.append("view-differential")
+            token_signal_names.extend(names)
+    if node_card_signal:
+        token_signal_names.append("node-prototype-pollution")
+    if _WORDPRESS_SIGNAL_RE.search(" ".join(tech_stack) + "\n" + _routing_blob_without_tech_stack(blob)):
+        token_signal_names.append("wordpress-surface-intelligence")
+    # Structurally strong browser/JS signals stay visible as annotations.
+    viewstate_signal = bool(re.search(r"\bviewstate\b|__viewstate", blob, re.I))
+    if viewstate_signal:
+        token_signal_names.append("insecure-deserialization")
+        token_signal_names.append("controlled-rce-impact")
+    if _has_telerik_dialog_signal(blob):
+        token_signal_names.append("insecure-deserialization")
     target_memory = goal_memory.get("target") or {}
     if len(target_memory.get("dead_ends") or []) >= 2:
         cards.append("dead-ends")
@@ -1864,307 +1854,12 @@ def _select_cards_and_deferred(
         cards.extend(["api-idor", "auth-access"])
     if not cards:
         cards.append("coverage-prompts")
-    focus_l = focus.lower()
-    priority = (
-        ["web-llm-tool-chains"]
-        if _has_web_llm_agent_signal(f"{focus}\n{blob}")
-        else []
-    )
-    api_business_logic_signal = _has_api_business_logic_signal(f"{focus}\n{blob}")
-    browser_boundary_signal = _has_browser_client_boundary_signal(f"{focus}\n{blob}")
-    websocket_realtime_signal = _has_websocket_realtime_signal(f"{focus}\n{blob}")
-    ssrf_context_signal = _has_ssrf_context_signal(f"{focus}\n{blob}")
-    browser_boundary_focus = browser_boundary_signal and not ssrf_context_signal
-    for pattern, names in DISTILLED_TOKEN_TO_CARDS:
-        if pattern.search(focus):
-            priority.extend(names)
-        elif pattern.search(blob):
-            priority.extend(names)
-    if (
-        re.search(r"\bapi[-_ ]?testing\b", focus_l)
-        or re.search(r"\bapi[-_ ]?test\b", focus_l)
-        or re.search(r"\brest[-_ ]?api\b", focus_l)
-        or re.search(r"\bsoap[-_ ]?api\b", focus_l)
-        or re.search(r"\bmobile[-_ ]?api\b", focus_l)
-        or re.search(r"\b(api[-_ ]?testing|api[-_ ]?test|rest[-_ ]?api|soap[-_ ]?api|mobile[-_ ]?api|openapi|swagger)\b", blob, re.I)
-        or _has_api_parameter_handling_signal(blob)
-    ):
-        priority.append("api-testing-workflow")
-        if api_business_logic_signal:
-            priority.append("business-logic-state-machines")
-        if API_PARAMETER_POLLUTION_RE.search(blob):
-            priority.append("missing-parameter-discovery")
-        priority.append("api-idor")
-    if (
-        re.search(r"\bbusiness[-_ ]?logic\b", focus_l)
-        or re.search(r"\blogic[-_ ]?flaws?\b", focus_l)
-        or "state-machine" in focus_l
-        or "workflow-validation" in focus_l
-        or "client-side-controls" in focus_l
-        or "price-tamper" in focus_l
-        or api_business_logic_signal
-        or API_MASS_ASSIGNMENT_RE.search(blob)
-        or re.search(
-            r"\b(business[-_ ]?logic|logic[-_ ]?flaws?|state[-_ ]?machine|workflow[-_ ]?validation|client[-_ ]?side[-_ ]?controls|price[-_ ]?tamper|coupon|cart|checkout|exceptional[-_ ]?input|dual[-_ ]?use[-_ ]?endpoint)\b",
-            blob,
-            re.I,
-        )
-    ):
-        priority.append("business-logic-state-machines")
-    if (
-        re.search(r"\bpassword[-_ ]?reset\b", focus_l)
-        or re.search(r"\bforgot[-_ ]?password\b", focus_l)
-        or re.search(r"\baccount[-_ ]?recovery\b", focus_l)
-        or re.search(r"\busername[-_ ]?enum(?:eration)?\b", focus_l)
-        or re.search(r"\bcredential[-_ ]?attack\b", focus_l)
-        or re.search(r"\bbrute[-_ ]?force\b", focus_l)
-        or "lockout" in focus_l
-        or "stay-logged-in" in focus_l
-        or "remember-me" in focus_l
-        or "mfa" in focus_l
-        or "2fa" in focus_l
-        or "otp" in focus_l
-        or re.search(
-            r"\b(password[-_ ]?reset|forgot[-_ ]?password|account[-_ ]?recovery|reset[-_ ]?token|username[-_ ]?enum(?:eration)?|credential[-_ ]?attack|brute[-_ ]?force|lockout|stay[-_ ]?logged[-_ ]?in|remember[-_ ]?me|mfa|2fa|otp)\b",
-            blob,
-            re.I,
-        )
-    ):
-        priority.append("auth-credential-recovery-flows")
-        priority.append("auth-access")
-    if (
-        "missing-param" in focus_l
-        or "parameter-null" in focus_l
-        or "param-discovery" in focus_l
-        or "api-docs" in focus_l
-        or API_PARAMETER_POLLUTION_RE.search(blob)
-        or re.search(
-            r"\b(missing[-_ ]?param(?:eter)?|parameter[-_ ]?null|parameter is null|required[-_ ]?param(?:eter)?|schema[-_ ]?error|validator[-_ ]?error|binder[-_ ]?error|param[-_ ]?discovery|api[-_ ]?docs|swagger|openapi)\b",
-            blob,
-            re.I,
-        )
-    ):
-        priority.append("missing-parameter-discovery")
-    sqli_signal = (
-        "sqli" in focus_l
-        or "sql-injection" in focus_l
-        or re.search(
-            r"\b(sqli|sql[-_ ]?injection|request[-_ ]?metadata|routing[-_ ]?segment|hidden[-_ ]?param|path[-_ ]?segment|second[-_ ]?order|log[-_ ]?backed)\b",
-            blob,
-            re.I,
-        )
-    )
-    if sqli_signal:
-        priority.append("sqli-hidden-surfaces")
-    access_control_signal = re.search(
-        r"\b(access[-_ ]?control|unprotected[-_ ]?admin|admin[-_ ]?panel|administrator[-_ ]?panel|"
-        r"method[-_ ]?based[-_ ]?access|referer[-_ ]?based[-_ ]?access|url[-_ ]?based[-_ ]?access|"
-        r"role[-_ ]?bypass|admin[-_ ]?roles?)\b",
-        blob,
-        re.I,
-    )
-    if access_control_signal and not browser_boundary_focus and not websocket_realtime_signal:
-        priority.append("auth-access")
-    if (
-        "path-pattern" in focus_l
-        or "management-exposure" in focus_l
-        or "admin-panel" in focus_l
-        or "monitoring-console" in focus_l
-        or "structured-record" in focus_l
-        or "raw-log" in focus_l
-        or "config-exposure" in focus_l
-        or "secret-leak" in focus_l
-        or re.search(
-            r"\b(path[-_ ]?pattern|directory[-_ ]?fuzz(?:ing)?|target[-_ ]?wordlist|sibling[-_ ]?path|structured[-_ ]?record|raw[-_ ]?log|admin[-_ ]?panel|management[-_ ]?exposure|management[-_ ]?console|monitoring[-_ ]?console|metrics|health|config[-_ ]?(?:exposure|page|endpoint|dump|leak)|configuration|stats|trace|datasource|accesskey|secretkey|secret[-_ ]?leak)\b",
-            blob,
-            re.I,
-        )
-    ):
-        priority.append("path-pattern-management-exposure")
-    if "graphql" in focus_l:
-        priority.append("graphql")
-    if (
-        "api-idor" in focus_l
-        or "idor" in focus_l
-        or "access-control" in focus_l
-        or "method-based-access" in focus_l
-        or "referer-based-access" in focus_l
-        or "url-based-access" in focus_l
-        or "role-bypass" in focus_l
-        or "admin-roles" in focus_l
-        or (access_control_signal and not browser_boundary_focus and not websocket_realtime_signal)
-        or re.search(r"\b(idor|tenant|org|accounts|user_id|account_id|org_id|tenant_id|order_id|invoice_id|object_id)\b", blob, re.I)
-    ):
-        if (
-            access_control_signal
-            or "access-control" in focus_l
-            or "method-based-access" in focus_l
-            or "referer-based-access" in focus_l
-            or "url-based-access" in focus_l
-        ) and not browser_boundary_focus and not websocket_realtime_signal:
-            priority.append("auth-access")
-        priority.append("api-idor")
-    if (
-        "auth-hidden" in focus_l
-        or "hidden-login" in focus_l
-        or "login-bypass" in focus_l
-        or "ato" in focus_l
-        or re.search(r"\b(hidden[-_ ]?login|login[-_ ]?bypass|account[-_ ]?takeover|username[-_ ]?enum|auth[-_ ]?selector|auth[-_ ]?switch|hidden[-_ ]?provider|hidden[-_ ]?source|hidden[-_ ]?channel)\b", blob, re.I)
-    ):
-        priority.append("auth-hidden-switches")
-        priority.append("auth-access")
-    if (
-        "jwt" in focus_l
-        or "jwe" in focus_l
-        or "jwks" in focus_l
-        or "jku" in focus_l
-        or "kid" in focus_l
-        or "oauth" in focus_l
-        or "oidc" in focus_l
-        or "saml" in focus_l
-        or "sso" in focus_l
-        or "pkce" in focus_l
-        or "token-binding" in focus_l
-        or "account-linking" in focus_l
-        or re.search(
-            r"\b(jwt|jwe|jwks?|jku|kid|oidc|oauth|saml|sso|relaystate|samlresponse|acs|pkce|nonce|token[-_ ]?binding|account[-_ ]?linking)\b",
-            blob,
-            re.I,
-        )
-    ):
-        priority.append("auth-sso-token-edge-cases")
-        priority.append("auth-access")
-    if re.search(r"\bauth(?:entication|z)?\b", focus_l) and not browser_boundary_focus and not websocket_realtime_signal:
-        priority.append("auth-access")
-    if (
-        sqli_signal
-    ):
-        priority.append("sqli-hidden-surfaces")
-    if (
-        "nosql" in focus_l
-        or "no-sql" in focus_l
-        or "operator-injection" in focus_l
-        or re.search(r"\b(nosql|no[-_ ]?sql[-_ ]?injection|mongo(?:db)?|bson|operator[-_ ]?injection)\b|\$(?:ne|regex|where|gt|nin)", blob, re.I)
-    ):
-        priority.append("nosql-query-injection")
-    if (
-        "xxe" in focus_l
-        or "xml-parser" in focus_l
-        or "xinclude" in focus_l
-        or re.search(r"\b(xxe|xml[-_ ]?parser|xinclude|doctype|external[-_ ]?entit(?:y|ies)|soapaction|samlresponse|svg|docx|xlsx|rss|atom)\b", blob, re.I)
-    ):
-        priority.append("xxe-xml-parser")
-    if (
-        "path-traversal" in focus_l
-        or "directory-traversal" in focus_l
-        or "local-file-inclusion" in focus_l
-        or "lfi" in focus_l
-        or "file-read" in focus_l
-        or re.search(r"\b(path[-_ ]?traversal|directory[-_ ]?traversal|lfi|local[-_ ]?file[-_ ]?inclusion|file[-_ ]?read|file[-_ ]?download|php://filter|web-inf|etc/passwd)\b", blob, re.I)
-    ):
-        priority.append("path-traversal-file-read")
-    ssrf_blob = f"{focus}\n{blob}"
-    if _has_ssrf_internal_signal(ssrf_blob):
-        priority.append("ssrf-internal-impact")
-        priority.append("ssrf-url-fetch")
-    elif SSRF_FETCH_CONTEXT_RE.search(ssrf_blob):
-        priority.append("ssrf-url-fetch")
-    if SSTI_TOKEN_RE.search(blob):
-        priority.append("server-side-template-injection")
-        priority.append("controlled-rce-impact")
-    if (
-        "deserialization" in focus_l
-        or "deserialize" in focus_l
-        or "signed-object" in focus_l
-        or "viewstate" in focus_l
-        or "__viewstate" in blob.lower()
-        or _has_telerik_dialog_signal(blob)
-        or re.search(r"\b(deserialization|deserialize|serialized|signed[-_ ]?object|rememberme|remember[-_ ]?me|viewstate|ysoserial|pickle|java[-_ ]?serialized|php[-_ ]?serialize)\b", blob, re.I)
-    ):
-        priority.append("insecure-deserialization")
-        priority.append("controlled-rce-impact")
-    if (
-        (
-            "cors" in focus_l
-            or "csrf" in focus_l
-            or "xsrf" in focus_l
-            or "clickjacking" in focus_l
-            or "dom" in focus_l
-            or "postmessage" in focus_l
-            or "open-redirect" in focus_l
-            or "client-side-redirect" in focus_l
-            or "cookie-manipulation" in focus_l
-            or "dom-clobbering" in focus_l
-            or (browser_boundary_focus and not websocket_realtime_signal)
-        )
-        and not _has_proxy_cache_boundary_signal(f"{focus}\n{blob}")
-    ):
-        priority.append("browser-client-boundaries")
-    if (
-        "reflected-xss" in focus_l
-        or "stored-xss" in focus_l
-        or "client-xss" in focus_l
-        or re.search(r"\bcross[-_ ]?site[-_ ]?scripting\b", focus_l)
-        or re.search(r"(?<!dom[-_])\bxss\b", focus_l)
-        or re.search(r"\bcsp\b", focus_l)
-        or re.search(r"\bcontent[-_ ]?security[-_ ]?policy\b", focus_l)
-        or "sandbox-escape" in focus_l
-        or "dangling-markup" in focus_l
-        or re.search(
-            r"\b(reflected[-_ ]?xss|stored[-_ ]?xss|client[-_ ]?xss|cross[-_ ]?site[-_ ]?scripting|csp|content[-_ ]?security[-_ ]?policy|script[-_ ]?src[-_ ]?elem|sandbox[-_ ]?escape|dangling[-_ ]?markup|angularjs[-_ ]?sandbox)\b|(?<!dom[-_])\bxss\b",
-            blob,
-            re.I,
-        )
-    ):
-        priority.append("xss-client-injection")
-    if (
-        "host-header" in focus_l
-        or "proxy-trust" in focus_l
-        or "request-smuggling" in focus_l
-        or "http-smuggling" in focus_l
-        or "cache-poisoning" in focus_l
-        or "web-cache-poisoning" in focus_l
-        or "cache-deception" in focus_l
-        or "web-cache-deception" in focus_l
-        or re.search(r"\b(host[-_ ]?header|x[-_ ]?forwarded[-_ ]?host|forwarded|proxy[-_ ]?trust|request[-_ ]?smuggling|http[-_ ]?smuggling|transfer[-_ ]?encoding|content[-_ ]?length|cache[-_ ]?poisoning|cache[-_ ]?deception|unkeyed|x[-_ ]?cache|age|vary|cdn)\b", blob, re.I)
-    ):
-        priority.append("proxy-cache-boundaries")
-    if (
-        "websocket" in focus_l
-        or "web-socket" in focus_l
-        or "cswsh" in focus_l
-        or websocket_realtime_signal
-    ):
-        priority.append("websocket-realtime-api")
-    if (
-        "information-disclosure" in focus_l
-        or "info-disclosure" in focus_l
-        or re.search(r"\b(information[-_ ]?disclosure|info[-_ ]?disclosure|debug|stack[-_ ]?trace|source[-_ ]?map|\.map|backup|\.bak|git[-_ ]?leak|directory[-_ ]?listing|robots\.txt|security\.txt|version[-_ ]?leak|error[-_ ]?leak)\b", blob, re.I)
-    ):
-        priority.append("information-disclosure-source-config")
-    if node_card_signal:
-        priority.append("node-prototype-pollution")
-    wordpress_signal = re.search(
-        r"\b(?:wordpress|wp[-_ ]?json|wp[-_ ]?content|wp[-_ ]?admin|admin[-_ ]?ajax|xmlrpc(?:\.php)?|"
-        r"wordpress[-_ ]?(?:plugin|theme))\b",
-        " ".join(tech_stack) + "\n" + _routing_blob_without_tech_stack(blob),
-        re.I,
-    )
-    if wordpress_signal:
-        priority.append("wordpress-surface-intelligence")
-    if not priority and re.search(r"\b(graphql|gql|mutation|subscription|introspection|global[_-]?id)\b", blob, re.I):
-        priority.append("graphql")
-    cards = _dedupe(focus_cards + priority + cards)
     ranked_names = list(cards)
     source_by_name = {
         name: (
             "explicit focus matched"
             if name in focus_cards
-            else "specific routing signal matched"
-            if name in priority
-            else "coverage or routing fallback"
-            if name == "coverage-prompts"
-            else "context evidence signal matched"
+            else "state fact (dead ends / coverage / validation)"
         )
         for name in ranked_names
     }
@@ -2223,6 +1918,20 @@ def _select_cards_and_deferred(
             "rank": rank,
             "reason": reason,
         })
+    # Word-list signal cards surface as annotations only: visible to the AI,
+    # never auto-selected, never hidden.
+    for name in _dedupe(token_signal_names):
+        path = card_paths.get(name)
+        if not path or path in selected_set or path in deferred_set:
+            continue
+        capability = _card_capability(path, repo_root, registry=registry)
+        recall.append({
+            "file": path,
+            "id": str(capability["id"]),
+            "status": "signal",
+            "rank": 0,
+            "reason": "word-list signal matched; AI may read via the recall gate",
+        })
     return selected, deferred, recall
 
 
@@ -2252,35 +1961,12 @@ def _select_cards(
 
 def _required_checks(skill: str, blob: str) -> list[str]:
     # Platform startup owns action safety; Context Pack only emits route checks.
+    # Word-list blob detection is retired: which rule files load follows the
+    # selected skill and owner state, not a guess from free text.
     checks = ["rules/coverage-gate.md"]
     if skill == "triage-validation":
         checks.append("rules/reporting.md")
-    # Router guidance is useful for parser/proxy/encoding and other boundary
-    # evidence, not for a bare vulnerability-family keyword. Cards and Skills
-    # remain responsible for ordinary family routing.
-    structural_router_signal = re.search(
-        r"\b(?:proxy|gateway|upstream|downstream|waf|encoding|decode|unicode|"
-        r"normaliz(?:e|ation)|canonical(?:ization)?|truncat(?:e|ion)|boundary|"
-        r"differential|duplicate[-_ ]?(?:key|parameter|header)|content[-_ ]?type|"
-        r"media[-_ ]?type|method[-_ ]?(?:override|swap|differential)|parser|parse|"
-        r"deseriali[sz]|request[-_ ]?smuggling|cache[-_ ]?(?:key|poison|deception)|"
-        r"multipart|oast|callback|redirect[-_ ]?uri|view[-_ ]?(?:differential|validation|"
-        r"consumption)|first[-_ ]?key|last[-_ ]?key|csp|sandbox|dangling[-_ ]?markup)\b",
-        blob,
-        re.I,
-    )
-    if (
-        structural_router_signal
-        or any(pattern.search(blob) for pattern in API_AUTHZ_REFINEMENT_RES)
-        or any(pattern.search(blob) for pattern in (
-            BROWSER_CLIENT_BOUNDARY_RE,
-            WEBSOCKET_REALTIME_RE,
-            ODATA_BOUNDARY_RE,
-            LDAP_XPATH_BOUNDARY_RE,
-        ))
-        or _has_web_llm_agent_signal(blob)
-    ):
-        checks.append("rules/playbook-router.md")
+    checks.append("rules/playbook-router.md")
     return _dedupe(checks)
 
 
@@ -3345,6 +3031,7 @@ def build_context_pack(
         "skill_route": skill_route(skill, why_skill),
         "must_read": must_read,
         "knowledge_cards": cards,
+        "card_catalog": _card_catalog(repo, registry=registry),
         "knowledge_card_capabilities": _card_capabilities(cards, repo, registry=registry),
         "deferred_knowledge_cards": deferred_cards,
         "deferred_knowledge_card_capabilities": _card_capabilities(deferred_cards, repo, registry=registry),

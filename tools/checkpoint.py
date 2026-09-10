@@ -454,6 +454,7 @@ def write_checkpoint_witness(
             "selected_skill": context.get("selected_skill", ""),
             "skill_route": context.get("skill_route", {}),
             "knowledge_cards": context.get("knowledge_cards", []),
+            "card_catalog": context.get("card_catalog", []),
             "knowledge_card_recall": [
                 item
                 for item in (context.get("knowledge_card_recall") or [])[:8]
@@ -4473,6 +4474,7 @@ def build_checkpoint(
             "selected_skill": context.get("selected_skill", ""),
             "skill_route": context.get("skill_route", {}),
             "knowledge_cards": context.get("knowledge_cards", []),
+            "card_catalog": context.get("card_catalog", []),
             "knowledge_card_recall": [
                 item
                 for item in (context.get("knowledge_card_recall") or [])[:8]
@@ -4638,6 +4640,17 @@ def _project_knowledge_effect_trace(checkpoint: dict, actions: list[dict]) -> di
         if str(item).strip() in cards
     ]
     card = selected_refs[0] if selected_refs else cards[0]
+    # Word-list signal cards carry the same suggestion visibility as selected
+    # cards: the trace reports what was recommended, not what a token table
+    # auto-loaded (that behavior is retired).
+    if not selected_refs:
+        signal_cards = [
+            str(entry.get("file") or "").strip()
+            for entry in context.get("knowledge_card_recall", [])
+            if isinstance(entry, dict) and entry.get("status") == "signal"
+        ]
+        if signal_cards:
+            card = signal_cards[0]
     seeds = [str(item).strip() for item in context.get("hypothesis_seeds", []) if str(item).strip()]
     seed = str(metadata.get("hypothesis_seed") or (seeds[0] if seeds else "")).strip()
     suggestion = card + (f" / {re.sub(r'\s+', ' ', seed)[:80]}" if seed else "")
