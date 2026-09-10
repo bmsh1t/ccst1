@@ -6753,3 +6753,41 @@ class TestAutopilotState:
         })
 
         assert "Pivot hint: live API has guard advisories; inspect repo source findings first." in output
+
+
+def test_target_memory_entry_matches_ignores_host_level_keyword_tokens():
+    """Host-level words (scheme, bare port) must not bind a remembered action
+    to every URL on the target.
+
+    Regression: a remembered "Run /validate for finding X on
+    http://127.0.0.1:3001/api/Users" used to match /ws/v3/ because the keyword
+    fallback saw "http"/"3001" in the raw URL, and the polluted suggested
+    prose then leaked into ranked-surface proposals as a surface-review queue
+    item for an unrelated endpoint.
+    """
+    validate_prose = (
+        "Run /validate for finding jwt-none-bypass-001 on "
+        "http://127.0.0.1:3001/api/Users; verify replay, A/B diff, impact, "
+        "evidence rubric, and red-line safety before report."
+    )
+    # 同 host 的无关路径：scheme/port 词不再构成绑定证据。
+    assert not surface_module._target_memory_entry_matches(
+        {"text": validate_prose}, "http://127.0.0.1:3001/ws/v3/", "/ws/v3/"
+    )
+    # 裸端口词同样不绑定任意路径。
+    assert not surface_module._target_memory_entry_matches(
+        {"text": "check port 3001 service next"},
+        "http://127.0.0.1:3001/anything",
+        "/anything",
+    )
+    # 路径级 token 与业务词绑定保持不变。
+    assert surface_module._target_memory_entry_matches(
+        {"text": validate_prose},
+        "http://127.0.0.1:3001/api/Users",
+        "/api/users",
+    )
+    assert surface_module._target_memory_entry_matches(
+        {"text": "the orders export workflow needs replay"},
+        "https://app.target.com/api/orders/export",
+        "/api/orders/export",
+    )

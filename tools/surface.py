@@ -722,7 +722,10 @@ def _target_memory_entry_matches(item: dict, raw_url: str, path: str) -> bool:
         word for word in re.findall(r"[a-z0-9_]{4,}", text)
         if word not in stopwords
     ]
-    return bool(keywords and any(word in haystack for word in keywords[:8]))
+    # Host-level tokens (scheme words, bare ports, the target host itself) match
+    # every URL on the target, so keyword evidence is accepted only when the
+    # word appears in the path — never in the raw URL's scheme/host segments.
+    return bool(keywords and any(word in path.lower() for word in keywords[:8]))
 
 
 def _matching_target_memory_entries(
