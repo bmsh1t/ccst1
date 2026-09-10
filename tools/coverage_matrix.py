@@ -109,6 +109,7 @@ try:
         has_malformed_path,
         has_url_encoding_error,
     )
+    from tools.route_kinds import load_observations as load_route_kind_observations
     from tools.surface_index import iter_surface_index, load_surface_index_status
     from tools.surface_weights import value_weight
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
@@ -126,6 +127,7 @@ except ImportError:  # pragma: no cover - top-level tools/ import
         has_malformed_path,
         has_url_encoding_error,
     )
+    from route_kinds import load_observations as load_route_kind_observations  # type: ignore
     from surface_index import iter_surface_index, load_surface_index_status  # type: ignore
     from surface_weights import value_weight  # type: ignore
     from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # type: ignore
@@ -324,6 +326,18 @@ STRUCTURAL_NOISE_HINTS = {
     "route_prefix_candidate",
 }
 
+# Route-kind observation labels (tools/route_kinds.py) attached as endpoint
+# hints. These are GET-probe/brower/scanner facts, never an endpoint-kind
+# decision: a client_route label does not close any cell and does not block
+# an AI-chosen test; it only feeds queue qualification so an unobserved
+# server-backed surface is not crowded out by SPA shell routes.
+SERVER_BACKED_ROUTE_KINDS = {"json_api", "auth_gate", "http_error", "http_redirect"}
+OBSERVED_ROUTE_KIND_HINT_PREFIX = "route_kind:"
+# Sources that prove a server-side interaction (a real request was issued to
+# this exact path), as opposed to string-level discovery (JS text, raw URL
+# lists, the Active URL view) which SPA client routes also come from.
+SERVER_INTERACTION_SOURCES = {"browser_xhr", "browser_api", "xhr", "scanner", "api"}
+
 
 def _storage_key(target: str) -> str:
     """Return the canonical directory key shared with recon/findings/memory.
@@ -410,6 +424,7 @@ def coverage_source_fingerprint(
         repo / "recon" / key / "urls" / "all_filtered.txt",
         repo / "recon" / key / "urls" / "all.txt",
         repo / "recon" / key / "urls" / "filter.log",
+        repo / "recon" / key / "route_kinds.json",
         repo / "findings" / key / "findings.json",
         repo / "findings" / key / "scanner_pass.json",
         repo / "findings" / key / "summary.json",
@@ -1204,10 +1219,40 @@ def high_value_gaps_from_matrix(matrix: dict, min_weight: float = DEFAULT_MIN_WE
 
 
 def actionable_coverage_gaps(gaps: list[dict]) -> list[dict]:
-    """Keep raw coverage hints visible, but return only semantically matched gaps."""
+    """Keep raw coverage hints visible; mark queue qualification by facts.
+
+    Qualification for the automatic next-action loop now follows OBSERVED
+    facts, not word-list relevance:
+
+    - a server-backed route kind (json_api / auth_gate / http_error /
+      http_redirect) qualifies — a live handler was observed;
+    - any observed parameter, source, or prior observation qualifies — a real
+      replayable surface exists;
+    - a missing route_kind (no probe yet) keeps legacy relevance>0 behavior
+      so unprobed surfaces are not silently dropped;
+    - client_route / static_asset GET observations do NOT qualify on their
+      own: the GET returned the SPA shell or a static file, so there is no
+      observed server handler behind this exact cell. The gap stays in the
+      matrix and remains AI-selectable; this only stops the automatic queue
+      from spending its limited slots on shell routes.
+    """
     actionable: list[dict] = []
     for gap in gaps:
         if not isinstance(gap, dict):
+            continue
+        route_kind = str(gap.get("route_kind") or "").strip()
+        if route_kind in {"client_route", "static_asset"}:
+            has_replayable_evidence = bool(
+                gap.get("observed_params")
+                or int(gap.get("observation_count", 0) or 0) > 1
+                or (
+                    set(gap.get("sources") or [])
+                    & SERVER_INTERACTION_SOURCES
+                )
+            )
+            if not has_replayable_evidence:
+                continue
+            actionable.append(gap)
             continue
         if "relevance_score" not in gap:
             actionable.append(gap)
@@ -1246,8 +1291,12 @@ def _iter_high_value_gaps(matrix: dict, min_weight: float = DEFAULT_MIN_WEIGHT):
                 # 轻量信号来区分“真实可重放输入面”和“仅路径命中的语义 gap”。
                 "observed_params": list(observed_params),
                 "source_count": int(ep.get("source_count", 0) or 0),
+                "sources": sorted(str(s) for s in (ep.get("sources") or []) if str(s)),
                 "observation_count": int(ep.get("observation_count", 0) or 0),
             }
+            route_kind_label = str(ep.get("route_kind") or "").strip()
+            if route_kind_label:
+                gap["route_kind"] = route_kind_label
             representative = str(ep.get("representative_endpoint") or "").strip()
             if representative and representative != endpoint:
                 gap["representative_endpoint"] = representative
@@ -1496,6 +1545,19 @@ def _rebuild_matrix_unlocked(
     # now distinguish `/api/admin/users?isAdmin=true` from a generic users
     # endpoint and avoid always proposing IDOR first.
     js_path_artifacts = _load_js_path_artifact_urls(urls_dir)
+    # Route-kind observations are keyed by full URL (query stripped); index
+    # them by path so both full URLs and bare paths can pick the fact up.
+    route_kind_by_path: dict[str, str] = {}
+    route_kind_observations = load_route_kind_observations(repo, target).get("endpoints") or {}
+    for observed_url, item in route_kind_observations.items():
+        if not isinstance(item, dict):
+            continue
+        kind_label = str(item.get("route_kind") or "").strip()
+        if not kind_label:
+            continue
+        observed_path = _canonicalize_endpoint(str(observed_url))
+        if observed_path:
+            route_kind_by_path.setdefault(observed_path, kind_label)
     seen: dict[str, dict] = {}
     for raw, raw_sources in source_rows:
         sources = {
@@ -1532,6 +1594,9 @@ def _rebuild_matrix_unlocked(
         meta["params"].update(params)
         meta["sources"].update(sources)
         meta["observation_count"] = int(meta.get("observation_count", 0) or 0) + 1
+        route_kind_label = route_kind_by_path.get(path)
+        if route_kind_label:
+            meta["route_kind"] = route_kind_label
 
     route_template_counts: dict[str, int] = {}
     for endpoint in seen:
@@ -1561,6 +1626,16 @@ def _rebuild_matrix_unlocked(
         current["params"].update(meta.get("params") or [])
         current["sources"].update(meta.get("sources") or [])
         current["observation_count"] += int(meta.get("observation_count", 0) or 0)
+        merged_kind = str(current.get("route_kind") or "")
+        incoming_kind = str(meta.get("route_kind") or "")
+        if incoming_kind and (
+            not merged_kind
+            or (
+                incoming_kind in SERVER_BACKED_ROUTE_KINDS
+                and merged_kind not in SERVER_BACKED_ROUTE_KINDS
+            )
+        ):
+            current["route_kind"] = incoming_kind
         if key != endpoint:
             representative = str(current.get("representative_endpoint") or "")
             current["representative_endpoint"] = min(
@@ -1592,9 +1667,18 @@ def _rebuild_matrix_unlocked(
             "weight": weight,
             "params": params,
             "source_count": len(meta.get("sources") or []),
+            "sources": sorted(meta.get("sources") or []),
             "observation_count": int(meta.get("observation_count", 0) or 0),
             "auto_hints": auto_hints,
         }
+        route_kind_label = str(meta.get("route_kind") or "").strip()
+        if route_kind_label:
+            filtered_seen[endpoint]["route_kind"] = route_kind_label
+            # Observation hint, sibling of auto_hints: never an endpoint-kind
+            # decision, never N/A proof, visible to AI triage.
+            filtered_seen[endpoint]["auto_hints"] = auto_hints + [
+                OBSERVED_ROUTE_KIND_HINT_PREFIX + route_kind_label
+            ]
         representative = str(meta.get("representative_endpoint") or "").strip()
         if representative and representative != endpoint:
             filtered_seen[endpoint]["representative_endpoint"] = representative
@@ -1620,6 +1704,14 @@ def _rebuild_matrix_unlocked(
             ep["observed_params"] = sorted(set(ep.get("observed_params") or []) | set(meta.get("params") or []))
             ep["source_count"] = int(meta.get("source_count", 0) or 0)
             ep["observation_count"] = int(meta.get("observation_count", 0) or 0)
+            merged_sources = sorted(set(ep.get("sources") or []) | set(meta.get("sources") or []))
+            if merged_sources:
+                ep["sources"] = merged_sources
+            route_kind_label = str(meta.get("route_kind") or "").strip()
+            if route_kind_label:
+                ep["route_kind"] = route_kind_label
+            else:
+                ep.pop("route_kind", None)
             representative = str(meta.get("representative_endpoint") or "").strip()
             if representative and representative != endpoint:
                 ep["representative_endpoint"] = representative
@@ -1637,9 +1729,13 @@ def _rebuild_matrix_unlocked(
                 "auto_hints": auto_hints,
                 "observed_params": list(meta.get("params") or []),
                 "source_count": int(meta.get("source_count", 0) or 0),
+                "sources": list(meta.get("sources") or []),
                 "observation_count": int(meta.get("observation_count", 0) or 0),
                 "cells": _empty_cells(endpoint, endpoint_kind=kind, auto_hints=auto_hints),
             }
+            route_kind_label = str(meta.get("route_kind") or "").strip()
+            if route_kind_label:
+                new_endpoint["route_kind"] = route_kind_label
             representative = str(meta.get("representative_endpoint") or "").strip()
             if representative and representative != endpoint:
                 new_endpoint["representative_endpoint"] = representative

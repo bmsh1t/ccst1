@@ -1683,3 +1683,80 @@ class TestVulnClassNormalization:
                 f"alias {alias!r} maps to {canonical!r} which is not "
                 "in VULN_CLASSES — broken alias table"
             )
+
+
+class TestRouteKindQualification:
+    """Route-kind observations qualify the queue by facts, not word lists.
+
+    Regression anchors from the juice-shop blind run (2026-09-10):
+    a client_route GET observation (SPA shell) must not auto-queue server
+    vulnerability cells on its own, but stays AI-selectable and requalifies
+    as soon as a parameter or a server-interaction source is observed.
+    """
+
+    def _seed_route_kind(self, tmp_path: Path, target: str, endpoint_url: str, kind: str) -> None:
+        recon_dir = tmp_path / "recon" / target
+        recon_dir.mkdir(parents=True, exist_ok=True)
+        (recon_dir / "route_kinds.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "target": target,
+                    "endpoints": {
+                        endpoint_url: {
+                            "route_kind": kind,
+                            "source": "route_probe",
+                            "observed_at": "2026-09-10T00:00:00Z",
+                            "facts": {"status": 200, "content_type": "text/html", "body_length": 9903, "body_sha256": "x", "probe_error": ""},
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def test_client_route_gap_without_replayable_evidence_is_not_actionable(self, tmp_path):
+        target = "route.test"
+        _seed_recon(tmp_path, target, ["https://route.test/payment"])
+        self._seed_route_kind(tmp_path, target, "https://route.test/payment", "client_route")
+        matrix = coverage_matrix_module._rebuild_matrix_unlocked(target, tmp_path)
+        gaps = list(coverage_matrix_module._iter_high_value_gaps(matrix))
+        payment_gaps = [g for g in gaps if g["endpoint"] == "/payment"]
+        assert payment_gaps, "client_route stays in the matrix, never dropped"
+        assert all(g.get("route_kind") == "client_route" for g in payment_gaps)
+        actionable = coverage_matrix_module.actionable_coverage_gaps(payment_gaps)
+        assert actionable == [], "SPA-shell GET alone must not auto-queue server cells"
+
+    def test_client_route_gap_with_param_or_server_source_requalifies(self, tmp_path):
+        gap = {
+            "endpoint": "/payment",
+            "vuln_class": "Race",
+            "route_kind": "client_route",
+            "observed_params": ["coupon"],
+            "sources": ["js"],
+            "source_count": 1,
+            "observation_count": 1,
+        }
+        assert coverage_matrix_module.actionable_coverage_gaps([gap]) == [gap]
+        paramless = dict(gap, observed_params=[])
+        assert coverage_matrix_module.actionable_coverage_gaps([paramless]) == []
+        xhr_backed = dict(paramless, sources=["browser_xhr"])
+        assert coverage_matrix_module.actionable_coverage_gaps([xhr_backed]) == [xhr_backed]
+
+    def test_server_backed_route_kind_qualifies_without_word_list_score(self, tmp_path):
+        target = "route.test"
+        _seed_recon(tmp_path, target, ["https://route.test/rest/admin/application-configuration"])
+        self._seed_route_kind(tmp_path, target, "https://route.test/rest/admin/application-configuration", "json_api")
+        matrix = coverage_matrix_module._rebuild_matrix_unlocked(target, tmp_path)
+        gaps = list(coverage_matrix_module._iter_high_value_gaps(matrix))
+        assert any(g.get("route_kind") == "json_api" for g in gaps)
+
+    def test_matrix_fingerprint_binds_route_kinds_file(self, tmp_path):
+        target = "route.test"
+        _seed_recon(tmp_path, target, ["https://route.test/payment"])
+        matrix = coverage_matrix_module._rebuild_matrix_unlocked(target, tmp_path)
+        assert coverage_matrix_module.matrix_is_fresh(target, matrix, repo_root=tmp_path)
+        self._seed_route_kind(tmp_path, target, "https://route.test/payment", "client_route")
+        assert not coverage_matrix_module.matrix_is_fresh(target, matrix, repo_root=tmp_path), (
+            "a new route_kinds.json generation must invalidate the cached matrix"
+        )
