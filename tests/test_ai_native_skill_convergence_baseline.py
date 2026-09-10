@@ -95,6 +95,19 @@ def test_phase0_and_intel_route_keep_selection_reason_and_urgency():
     assert "immediate next step, not a deferred one" in recon
 
 
+def test_runtime_protocol_invalidates_pack_recommendations_after_compaction():
+    """Compaction expires in-conversation Pack recommendations.
+
+    refreshFactIndexInMessages (desredteam) rebuilds the injected blackboard
+    index after every summarization. The CLI equivalent is a protocol rule:
+    after compaction, recall judgments rebuild from on-disk owner state, never
+    from recommendations preserved in the compressed summary.
+    """
+    protocol = (REPO_ROOT / "skills" / "runtime-protocol.md").read_text(encoding="utf-8")
+    assert "会话上下文压缩（compaction/summary）后" in protocol
+    assert "不从压缩摘要里复用旧推荐" in protocol
+
+
 def test_focus_recall_pulls_deserialization_cards():
     """The pull channel (focus-based recall) must reach the execution-chain cards."""
     sys.path.insert(0, str(REPO_ROOT / "tools"))

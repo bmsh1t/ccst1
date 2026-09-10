@@ -31,6 +31,8 @@ Claude Code CLI 当前主会话保留最终路线判断权。本协议、推荐 
 - 已有匹配 Pack 时直接复用推荐，不重复查包。推荐路径不等于文件已读：选中的 Skill 和
   当前需要的卡若正文不在上下文中，先读取再行动；已读正文不重复加载。
 - 同一 target/focus/实质证据可复用；目标、focus 或实质证据变化时重新判断并按需刷新。
+  会话上下文压缩（compaction/summary）后，对话内既有的 Pack 推荐和卡片引用按过期处理：
+  重建判断以当前磁盘上的 owner 状态为准，不从压缩摘要里复用旧推荐。
 - Autopilot 先完成 bootstrap 和 state read，再在 substantive lane 选择后执行这条判断；bootstrap
   不等于已有匹配 Pack 或知识卡已读，也不因召回而抢占 owner 选定的初始工作。
 - 默认推荐 0-2 张卡；查包返回不足时再使用已有 deferred recall、`knowledge/index.md` 或 `/kb`。
