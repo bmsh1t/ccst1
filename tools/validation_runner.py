@@ -544,6 +544,7 @@ def _create_runner_finding(
         "validation_summary": validation_summary,
         "validated_at": str(summary.get("generated_at") or now_utc()),
         "vuln_class": vuln_class,
+        "method": str(summary.get("method") or "GET").strip().upper() or "GET",
         "runner_operation_id": str(summary.get("operation_id") or ""),
         "updated_at": now_utc(),
         "report_status": "not_generated",
@@ -737,6 +738,10 @@ def _sync_finding_status(summary: dict[str, Any], *, repo_root: Path) -> dict[st
     summary_ref = str(summary_path) if summary_path else str(summary.get("summary_path") or "")
     generated_at = str(summary.get("generated_at") or now_utc())
     operation_id = str(summary.get("operation_id") or "").strip()
+    # The runner witness compares the canonical finding's method against the
+    # replayed request, so the owning sync must persist the observed method or
+    # a non-GET lane could never reach validation finality.
+    observed_method = str(summary.get("method") or "GET").strip().upper() or "GET"
     existing = _find_existing_finding(findings_dir, finding_id, target=target)
     if (
         operation_id
@@ -773,6 +778,17 @@ def _sync_finding_status(summary: dict[str, Any], *, repo_root: Path) -> dict[st
 
         incomplete = [str(item) for item in (existing.get("incomplete_fields") or [])]
         class_incomplete = "vuln_class" in incomplete
+        # Method is runner-owned identity: the witness requires the canonical
+        # row and the replayed request to agree, and a conflict means the row
+        # was bound to a different request shape.
+        existing_method = str(existing.get("method") or "").strip().upper()
+        if existing_method and existing_method != observed_method:
+            return {
+                "status": "skipped",
+                "reason": "runner method conflicts with non-empty canonical finding identity",
+                "finding_id": finding_id,
+            }
+        identity_updates["method"] = observed_method
         existing_class = str(existing.get("vuln_class") or "").strip()
         if (
             existing_class
@@ -860,6 +876,7 @@ def _sync_finding_status(summary: dict[str, Any], *, repo_root: Path) -> dict[st
                 evidence_rubric=summary.get("evidence_rubric") or {},
                 confidence=confidence,
                 runner_operation_id=operation_id,
+                method=observed_method,
             )
             if updated:
                 return {
