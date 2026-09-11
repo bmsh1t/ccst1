@@ -327,6 +327,19 @@ def load_entries(repo_root: Path | str, target: str) -> list[dict]:
     return list(diagnostic.get("entries") or [])
 
 
+def _load_probe_entry(repo_root: Path | str, target: str, event_id: str) -> dict:
+    """Return the ledger entry for one probe event_id (mechanical copy source)."""
+    wanted = str(event_id or "").strip()
+    if not wanted:
+        raise ValueError("--from-probe requires a non-empty event_id")
+    for entry in load_entries(repo_root, target):
+        if str(entry.get("event_id") or "") == wanted:
+            return entry
+    raise ValueError(
+        f"--from-probe event_id {wanted!r} not found in the ledger for {target}"
+    )
+
+
 def record_entry(
     repo_root: Path | str,
     *,
@@ -1233,7 +1246,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_record = sub.add_parser("record", help="append one explicit evidence ledger entry")
     p_record.add_argument("--target", required=True)
-    p_record.add_argument("--endpoint", required=True)
+    p_record.add_argument("--endpoint", default="")
     p_record.add_argument("--method", default="GET")
     p_record.add_argument("--vuln-class", default="IDOR")
     p_record.add_argument("--workflow", default="")
@@ -1247,6 +1260,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_record.add_argument("--state-changing", action="store_true")
     p_record.add_argument("--redline-checked", action="store_true")
     p_record.add_argument("--evidence-ref", default="")
+    p_record.add_argument(
+        "--from-probe",
+        default="",
+        help=(
+            "Ledger event_id of an existing probe entry: copy its mechanical "
+            "fields (endpoint/method/actor/variant/evidence_ref) so only "
+            "result/notes remain AI-supplied. Explicit flags still win."
+        ),
+    )
     p_record.add_argument("--notes", default="")
     identity_group = p_record.add_mutually_exclusive_group()
     identity_group.add_argument(
@@ -1286,6 +1308,20 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.cmd == "record":
+        if getattr(args, "from_probe", ""):
+            probe = _load_probe_entry(args.repo_root, args.target, args.from_probe)
+            if not args.endpoint or args.endpoint == "/":
+                args.endpoint = probe.get("endpoint") or args.endpoint
+            if args.method == "GET" and probe.get("method"):
+                args.method = probe.get("method")
+            if args.actor == "owner" and probe.get("actor"):
+                args.actor = probe.get("actor")
+            if args.variant == "baseline" and probe.get("variant"):
+                args.variant = probe.get("variant")
+            if not args.evidence_ref and probe.get("evidence_ref"):
+                args.evidence_ref = probe.get("evidence_ref")
+            if args.vuln_class == "IDOR" and probe.get("vuln_class"):
+                args.vuln_class = probe.get("vuln_class")
         try:
             identity_v2 = json.loads(args.identity_v2_json) if args.identity_v2_json else None
             identity_dimensions = json.loads(args.identity_dimensions_json) if args.identity_dimensions_json else None
@@ -1298,6 +1334,8 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--identity-dimensions-json must contain a JSON object")
         if identity_candidate is not None and not isinstance(identity_candidate, dict):
             parser.error("--identity-candidate-json must contain a JSON object")
+        if not str(args.endpoint or "").strip():
+            parser.error("--endpoint is required (or supply --from-probe to copy it)")
         entry = record_entry(
             args.repo_root,
             target=args.target,

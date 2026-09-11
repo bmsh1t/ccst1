@@ -355,14 +355,37 @@ def resolve_target(explicit_target: str | None) -> str:
 def append_entry(args: argparse.Namespace, field: str, label: str) -> str:
     target = resolve_target(args.target)
     path = target_memory_path(target)
+    structured_raw = str(getattr(args, "structured_json", "") or "")
+    structured: dict = {}
+    if structured_raw:
+        try:
+            structured = json.loads(structured_raw)
+        except json.JSONDecodeError as exc:
+            raise SystemExit(f"--structured-json must be valid JSON: {exc}") from exc
+        if not isinstance(structured, dict):
+            raise SystemExit("--structured-json must be a JSON object")
+        required = {"hypothesis", "evidence_ref", "next", "stop_condition"}
+        missing = required - set(structured)
+        if missing:
+            raise SystemExit(
+                "--structured-json requires all of: " + ", ".join(sorted(required))
+            )
     with target_memory_mutation_lock(path):
         target_memory = load_target_memory(target)
         entry = {
             "ts": now_utc(),
             "text": " ".join(args.text).strip(),
         }
+        if structured:
+            entry["text"] = entry["text"] or str(structured.get("hypothesis") or "")
+            entry["structured"] = {
+                "hypothesis": str(structured.get("hypothesis") or "").strip(),
+                "evidence_ref": str(structured.get("evidence_ref") or "").strip(),
+                "next": str(structured.get("next") or "").strip(),
+                "stop_condition": str(structured.get("stop_condition") or "").strip(),
+            }
         if not entry["text"]:
-            raise SystemExit(f"{label} text is required")
+            raise SystemExit(f"{label} text is required (or supply --structured-json)")
         if field in {"useful_patterns", "dead_ends"}:
             default_kind = "dead-end" if field == "dead_ends" else "useful-pattern"
             evidence_refs = normalize_evidence_refs(getattr(args, "evidence_ref", []))
@@ -578,8 +601,17 @@ def build_parser() -> argparse.ArgumentParser:
         ("pattern", "useful_patterns", "append useful target pattern"),
     ):
         item_parser = subparsers.add_parser(name, help=help_text)
-        item_parser.add_argument("text", nargs="+")
+        item_parser.add_argument("text", nargs="*")
         item_parser.add_argument("--target", default=None)
+        if name in {"lead", "next"}:
+            item_parser.add_argument(
+                "--structured-json",
+                default="",
+                help=(
+                    "JSON object {hypothesis, evidence_ref, next, stop_condition} "
+                    "for structured leads/next (plain text stays compatible)"
+                ),
+            )
         if name in {"pattern", "dead-end"}:
             item_parser.add_argument(
                 "--kind",

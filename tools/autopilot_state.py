@@ -7387,6 +7387,38 @@ def build_decision_projection(state: dict, kind: str) -> dict:
     return projection
 
 
+def _plain_summary(state: dict) -> str:
+    """One human-readable line derived from bounded projections (zero new state)."""
+    frontier = state.get("priority_frontier") or []
+    if isinstance(frontier, list) and frontier and isinstance(frontier[0], dict):
+        next_item = str(
+            frontier[0].get("action")
+            or frontier[0].get("action_type")
+            or frontier[0].get("evidence")
+            or frontier[0].get("text")
+            or ""
+        ).strip()[:70]
+    else:
+        next_item = str(frontier[0])[:70] if frontier else ""
+    hard_gate = state.get("hard_gate") or {}
+    gate_action = str(hard_gate.get("action") or state.get("next_action") or "").strip()
+    runtime_queue = (
+        state.get("runtime_derived", {}).get("queue")
+        if isinstance(state.get("runtime_derived"), dict)
+        else {}
+    )
+    active = str(runtime_queue.get("active") or "?")
+    round_info = state.get("round_progress") if isinstance(state.get("round_progress"), dict) else {}
+    lanes = round_info.get("lanes_used")
+    budget = round_info.get("max_lanes")
+    round_part = f" | Round: {lanes}/{budget} lanes" if lanes is not None and budget else ""
+    return (
+        f"Next: {next_item or gate_action or 'no runnable item'} "
+        f"| Gate: {gate_action or 'none'} "
+        f"| Queue: {active} active{round_part}"
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build combined autopilot state for a target")
     parser.add_argument("--target", required=True, help="Target domain")
@@ -7460,6 +7492,8 @@ def main() -> int:
             break
         if args.loop_check:
             state["loop_guard"] = _load_loop_guard_projection(BASE_DIR, state)
+        if args.bounded:
+            state["summary"] = _plain_summary(state)
     except (OSError, ValueError) as exc:
         if args.json:
             print(json.dumps(_error_state(args.target, exc), indent=2))

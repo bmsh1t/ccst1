@@ -536,7 +536,22 @@ def load_pickup_summary(
         resolved_target,
         memory_dir=memory_dir,
     )
+    summary["target_leads"] = _target_active_leads(root, resolved_target)
     return summary
+
+
+def _target_active_leads(repo_root: Path, target: str) -> list:
+    """Bounded read of the target-memory active leads for the scene summary."""
+    try:
+        from tools.target_memory import load_target_memory
+
+        memory = load_target_memory(target)
+    except Exception:  # pragma: no cover - memory is optional context
+        return []
+    if not isinstance(memory, dict):
+        return []
+    leads = memory.get("active_leads")
+    return leads if isinstance(leads, list) else []
 
 
 def format_resume_output(summary: dict | None, target: str) -> str:
@@ -737,6 +752,10 @@ def format_resume_output(summary: dict | None, target: str) -> str:
     else:
         lines.append("  No cross-target pattern matches yet.")
 
+    scene = _scene_summary(summary)
+    if scene:
+        lines.extend(["", "Scene (我上次在干嘛):", scene])
+
     lines.extend([
         "",
         "Actions:",
@@ -747,6 +766,39 @@ def format_resume_output(summary: dict | None, target: str) -> str:
     ])
 
     return "\n".join(lines)
+
+
+def _scene_summary(summary: dict) -> str:
+    """One human-readable paragraph from structured leads + checkpoint state."""
+    checkpoint = summary.get("checkpoint") or {}
+    parts: list[str] = []
+    leads: list = []
+    leads = summary.get("target_leads") or []
+    structured_leads = [
+        item
+        for item in leads
+        if isinstance(item, dict) and isinstance(item.get("structured"), dict)
+    ]
+    for lead in structured_leads[-2:]:
+        s = lead["structured"]
+        parts.append(
+            "假设：{h}（证据 {e}）；下一步 {n}；停止条件 {s}".format(
+                h=s.get("hypothesis") or "?",
+                e=s.get("evidence_ref") or "?",
+                n=s.get("next") or "?",
+                s=s.get("stop_condition") or "?",
+            )
+        )
+    if not parts:
+        plain = leads
+        if plain:
+            text = plain[-1].get("text") if isinstance(plain[-1], dict) else str(plain[-1])
+            if text:
+                parts.append(f"最近 lead：{text}")
+    decision = str(checkpoint.get("decision") or "").strip()
+    if decision:
+        parts.append(f"checkpoint 决策：{decision}")
+    return "\n".join(f"  - {p}" for p in parts)
 
 
 def main() -> None:
