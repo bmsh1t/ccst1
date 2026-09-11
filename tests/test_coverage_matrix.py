@@ -1400,6 +1400,175 @@ class TestQuestionToToolDiscoverability:
         assert "rebuild 后 endpoint 为空" in md
 
 
+class TestCoverageGateFourStateInterface:
+    """A5 (task 09-11-ai-capability-roadmap batch 6): the AI-facing coverage
+    interface collapses to 4 states while the 9 storage states and the
+    reason discipline stay intact. Structural anchors only, per PRD C4.
+    """
+
+    def _gate_md(self) -> str:
+        return (REPO_ROOT / "rules" / "coverage-gate.md").read_text(encoding="utf-8")
+
+    def test_nine_storage_states_table_is_preserved(self):
+        """The 9-state table survives as the internal storage model."""
+        md = self._gate_md()
+        assert "### 内部存储状态（9 态）" in md
+        for state in (
+            "unknown", "queued", "tested", "lead", "signal",
+            "candidate", "blocked", "n/a", "dead-end",
+        ):
+            assert f"`{state}`" in md, f"storage state {state!r} missing"
+
+    def test_four_state_interface_section_exists(self):
+        """The AI-facing interface section declares the 4 states."""
+        md = self._gate_md()
+        assert "### AI 接口状态（4 态）" in md
+        for state in ("untested", "investigating", "confirmed", "ruled_out"):
+            assert f"`{state}`" in md, f"interface state {state!r} missing"
+
+    def test_mapping_table_covers_all_nine_storage_states(self):
+        """Every storage state is projected to exactly one interface state.
+
+        blocked -> investigating and n/a -> ruled_out are deliberate design
+        decisions (blocked is an investigation on hold; n/a is an explicit
+        not-applicable ruling) and are asserted here so they cannot drift.
+        """
+        md = self._gate_md()
+        assert "### 4 态 ↔ 9 态映射" in md
+        expected = {
+            "unknown": "untested",
+            "queued": "untested",
+            "lead": "investigating",
+            "signal": "investigating",
+            "candidate": "investigating",
+            "blocked": "investigating",
+            "tested": "ruled_out",
+            "n/a": "ruled_out",
+            "dead-end": "ruled_out",
+        }
+        # The projection row asserts the storage states explicitly.
+        assert "`unknown`、`queued`" in md
+        assert "`lead`、`signal`、`candidate`、`blocked`" in md
+        assert "`tested`、`n/a`、`dead-end`" in md
+        # Deliberate placements stated in prose.
+        assert "blocked` 归 `investigating`，理由写阻塞原因" in md
+        assert "不适用原因（n/a）/ 证伪原因（dead-end）" in md
+        # The mapping table itself must not assign any storage state to
+        # `confirmed` — confirmed has no per-cell preimage and comes from the
+        # finding lifecycle only. Guard against a future edit that "fixes"
+        # this by inventing a 9-state preimage (e.g. mapping `candidate`
+        # straight to `confirmed`, which would bypass /validate).
+        confirm_row = next(
+            line for line in md.splitlines()
+            if line.startswith("| `confirmed` |") and "无逐格对应物" in line
+        )
+        assert "candidate 经 `/validate` 确证" in confirm_row
+        # The read-direction mapping table lists exactly the 4 interface
+        # states as row keys. A row keyed by a 9-state name (candidate, etc.)
+        # would break the storage/interface separation, so pin the row keys.
+        lines = md.splitlines()
+        start = lines.index("### 4 态 ↔ 9 态映射")
+        end = next(
+            i for i in range(start, len(lines))
+            if lines[i].startswith("## ")
+        )
+        row_keys = [
+            line.split("|")[1].strip()
+            for line in lines[start:end]
+            if line.startswith("| `")
+        ]
+        assert row_keys == [
+            "`untested`", "`investigating`", "`confirmed`", "`ruled_out`",
+        ], f"mapping table row keys drifted: {row_keys}"
+
+    def test_reason_field_is_part_of_the_mapping_not_decoration(self):
+        """The doc must state that the reason field carries the mapping
+        detail (which sub-state, which evidence) — lossless projection."""
+        md = self._gate_md()
+        assert "理由字段是映射的一部分，不是可选装饰" in md
+        # conservative write-direction default: investigating -> lead.
+        assert "默认落" in md
+        assert "`lead`" in md
+
+    def test_reason_requirements_survive_four_state_interface(self):
+        """Safety residual (prd A5 row): final-state reason discipline
+        stays mandatory — ruled_out must carry the reason, including the
+        n/a inapplicability reason."""
+        md = self._gate_md()
+        assert "## 必填理由" in md
+        assert "`ruled_out` 必写理由" in md
+        for reason_rule in (
+            "`tested`：写明证据或测试方式",
+            "`blocked`：写明阻塞原因和需要什么输入",
+            "`n/a`：写明为什么不适用",
+            "`dead-end`：写明证伪原因",
+            "`unknown`：写明下一步或为什么本轮未覆盖",
+        ):
+            assert reason_rule in md, f"reason rule lost: {reason_rule!r}"
+
+    def test_matrix_cell_projection_declared(self):
+        """The tool's own per-cell enum (tested_clean/tested_finding/
+        untested/n_a) has an explicit projection into the 4-state
+        interface — the code enum is unchanged, the doc states the bridge."""
+        md = self._gate_md()
+        assert "`tested_clean` → `ruled_out`" in md
+        assert "`tested_finding` → `confirmed`" in md
+        assert "`n_a` → `ruled_out`" in md
+        # The tool enum itself is untouched by this batch.
+        assert STATUS_VALUES == (
+            "tested_clean", "tested_finding", "untested", "n_a",
+        )
+
+    def test_tool_remains_untouched_by_interface_change(self):
+        """A5 tool-side decision: the lane-narrative 9-state vocabulary has
+        no CLI surface in coverage_matrix.py, so no code mapping layer was
+        added. The mark CLI enum keeps its exact 4 evidence values."""
+        assert coverage_matrix_module.STATUS_VALUES == (
+            "tested_clean", "tested_finding", "untested", "n_a",
+        )
+        # The lane-narrative 9-state vocabulary must not leak into the
+        # accepted mark-cell statuses (it never did; guard against
+        # accidental conflation of the two models in either direction).
+        for narrative_state in ("dead-end", "blocked", "signal", "investigating", "ruled_out"):
+            assert narrative_state not in coverage_matrix_module.STATUS_VALUES
+
+
+class TestCoverageGateSemanticGapDuty:
+    """A6 (task 09-11-ai-capability-roadmap batch 6): the explanation duty
+    narrows from "explain every gap" to "explain the high-value gaps you
+    choose NOT to pursue", while the anti-early-stopping rule stays
+    word-for-word.
+    """
+
+    def _gate_md(self) -> str:
+        return (REPO_ROOT / "rules" / "coverage-gate.md").read_text(encoding="utf-8")
+
+    def test_explanation_duty_targets_unpursued_gaps(self):
+        md = self._gate_md()
+        assert "解释你选择不追的高价值 gap" in md
+
+    def test_anti_early_stopping_rule_is_word_for_word(self):
+        md = self._gate_md()
+        assert "如果存在高价值 `unknown`，不能说“完成全面测试”，只能说：" in md
+        assert "本轮覆盖了 X；仍未覆盖 Y；下一步建议 Z。" in md
+
+    def test_ledger_framing_survives(self):
+        md = self._gate_md()
+        assert "矩阵不是唯一真相，而是防偷懒的 evidence hint ledger" in md
+        assert "未解释的 AI-actionable `find-gaps` 非空：只能 checkpoint 或继续，不能声称全面完成。" in md
+
+    def test_default_view_carries_the_duty_all_is_audit_view(self):
+        md = self._gate_md()
+        assert "解释义务落在默认（AI-actionable）视图上" in md
+        assert "`--all` 是审计视图，人不背它的逐格" in md
+
+    def test_all_flag_still_exists_in_tool(self):
+        """The --all escape hatch the duty split relies on still exists."""
+        import inspect
+        source = inspect.getsource(coverage_matrix_module)
+        assert '"--all"' in source
+
+
 class TestF3InvariantActivation:
     """PR-10 must activate F3 — the placeholder note is gone, active
     text references the CLI."""

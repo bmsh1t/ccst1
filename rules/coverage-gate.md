@@ -16,7 +16,9 @@ Claude 不能直接说“测试完成”或“没有发现问题”，除非已�
 
 ## 状态枚举
 
-覆盖状态只能使用以下值：
+### 内部存储状态（9 态）
+
+覆盖的内部记录、owner 写回和终局判定使用以下 storage states：
 
 | 状态 | 含义 |
 |---|---|
@@ -30,9 +32,50 @@ Claude 不能直接说“测试完成”或“没有发现问题”，除非已�
 | `n/a` | 明确不适用 |
 | `dead-end` | 已证伪或低价值，继续投入不划算 |
 
+### AI 接口状态（4 态）
+
+交接、摘要和 COVERAGE 输出使用 4 态接口；细粒度信息由理由字段承载：
+
+| 4 态 | 含义 |
+|---|---|
+| `untested` | 尚未判断或尚未测试（含已计划未执行的 `queued`） |
+| `investigating` | 已在调查中：`lead` / `signal` / `candidate`，或被阻塞的 `blocked` |
+| `confirmed` | 该方向已确证：finding 级证据，或 candidate 通过 `/validate` |
+| `ruled_out` | 已收敛为不再追：`tested`（未发现有效线索）/ `n/a` / `dead-end` |
+
+交付前检查（COVERAGE SUMMARY）的字段分组是这些理由内容的展开面，
+不构成第二套状态接口。
+
+### 4 态 ↔ 9 态映射
+
+映射必须语义无损：任何一格的 9 态信息都能从 4 态 + 理由文本还原。
+**理由字段是映射的一部分，不是可选装饰。**
+
+读方向（9 态 → 4 态投影）：
+
+| 4 态 | 覆盖的内部状态 | 理由必须承载 |
+|---|---|---|
+| `untested` | `unknown`、`queued` | 下一步动作，或已计划未执行的内容 |
+| `investigating` | `lead`、`signal`、`candidate`、`blocked` | 具体档位（lead / signal / candidate）；`blocked` 归 `investigating`，理由写阻塞原因和需要什么输入 |
+| `confirmed` | 无逐格对应物（来自 finding 生命周期：candidate 经 `/validate` 确证；矩阵格 `tested_finding`） | validation / finding evidence 引用 |
+| `ruled_out` | `tested`、`n/a`、`dead-end` | 三档细分：测试方式与证据（tested）/ 不适用原因（n/a）/ 证伪原因（dead-end） |
+
+写方向（4 态 → 9 态，取保守侧）：回落到 9 态记录时，`investigating` 默认落
+`lead`（宁可低估，不默认 `signal` / `candidate`，理由里再细化档位）；
+`ruled_out` 按理由内容三选一落 `tested` / `n/a` / `dead-end`，三者的必填理由
+规则原样适用；`confirmed` 按 finding owner 的既有字段记录（candidate /
+validated），矩阵格记 `tested_finding`；`untested` 默认落 `unknown`，理由写明
+已计划时落 `queued`。
+
+覆盖矩阵的单格状态（`untested` / `tested_clean` / `tested_finding` / `n_a`）是
+更细的 per-endpoint 证据模型，投影到 4 态接口为：`untested` → `untested`、
+`tested_clean` → `ruled_out`（tested 档）、`tested_finding` → `confirmed`、
+`n_a` → `ruled_out`（n/a 档）。
+
 ## 必填理由
 
-以下状态必须写理由：
+以下内部状态必须写理由（4 态接口下，这些理由落在对应 4 态的理由字段里；
+`ruled_out` 必写理由，含 `n/a` 的不适用原因）：
 
 - `tested`：写明证据或测试方式
 - `blocked`：写明阻塞原因和需要什么输入
@@ -111,9 +154,14 @@ python3 tools/coverage_matrix.py find-gaps --target <target>
 
 `find-gaps` 默认是有语义证据的 AI-actionable 视图；需要核对完整 raw endpoint x
 vuln_class 矩阵时使用同一命令追加 `--all`。两者都只读，Closure 仍以完整矩阵为准。
+**解释义务落在默认（AI-actionable）视图上**：`--all` 是审计视图，人不背它的逐格
+解释义务。
 
 矩阵不是唯一真相，而是防偷懒的 evidence hint ledger：
 
+- 解释义务是“**解释你选择不追的高价值 gap**”：默认视图中你实际追过、并已有
+  状态/证据的项不需要逐格交代；没有追的高价值 gap 必须解释——推进为
+  lead/signal/candidate、blocked、n/a、dead-end 或有理由的 defer，写明理由。
 - 未解释的 AI-actionable `find-gaps` 非空：只能 checkpoint 或继续，不能声称全面完成。
 - raw `find-gaps` 可以被 Claude 基于 browser/source/JS、ledger、case_state、业务语义和 raw evidence 解释为 covered / n/a / low-evidence / blocked / intentionally deferred；必须写明理由。
 - `find-gaps` 为空：还要检查 `/surface` Workflow Leads、target memory dead ends、unsafe-skipped、blocked/n/a。
