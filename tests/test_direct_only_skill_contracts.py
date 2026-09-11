@@ -5,7 +5,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from tools.context_pack import SKILL_CATALOG, SKILL_PATHS, build_context_pack
+from tools.context_pack import build_context_pack
+from tools.skill_catalog import SKILL_CATALOG, SKILL_PATHS
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -48,6 +49,11 @@ def test_direct_only_skills_have_domain_contracts_and_stay_manual(tmp_path):
     } == DIRECT_ONLY
     assert set(SKILL_PATHS) == PRIMARY
 
+    # S1 native loading: no recommendation slot; the on-disk catalog publishes
+    # every skill (direct-only included) with its frontmatter description.
     for skill_id in DIRECT_ONLY:
         pack = build_context_pack(tmp_path, target="target.com", focus=f"{skill_id} review")
-        assert pack["selected_skill_id"] in PRIMARY
+        assert pack["selected_skill_id"] == ""
+        catalog_ids = {item["id"] for item in pack["skill_catalog"]}
+        assert PRIMARY <= catalog_ids
+        assert DIRECT_ONLY <= catalog_ids

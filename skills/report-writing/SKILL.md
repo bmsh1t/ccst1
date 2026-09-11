@@ -1,6 +1,6 @@
 ---
 name: report-writing
-description: Report-only rendering contract for validated findings. Selects the requested delivery format, preserves evidence traceability and canonical CVSS fields, and produces concise impact-first output without creating a second lifecycle.
+description: Use only after validation has selected a canonical finding (seven-question and four-gate checks passed) and a report must be drafted. Renders the requested delivery format from the existing finding, Evidence Ledger, and validation summary with evidence traceability and canonical CVSS fields intact; it does not create a second finding lifecycle or replace structured validation with model judgment.
 ---
 
 # REPORT WRITING

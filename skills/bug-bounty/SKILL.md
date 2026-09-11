@@ -1,6 +1,6 @@
 ---
 name: bug-bounty
-description: Cross-stage bug bounty coordinator for target isolation, Skill routing, chain handoff, validation, and report preparation. Use when work spans recon, learning, hunting, validation, or reporting; use a narrower Skill for a single well-defined lane.
+description: Use when work spans more than one stage — recon, learning, hunting, validation, or reporting — or when choosing which stage runs next. Coordinates target isolation, Skill routing, chain handoff, and report preparation without duplicating narrower Skills, Rules, or cards; for a single well-defined lane, load that lane's Skill instead.
 ---
 
 # Bug Bounty Workflow Coordinator

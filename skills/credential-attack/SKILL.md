@@ -1,6 +1,6 @@
 ---
 name: credential-attack
-description: AI-first credential preparation and controlled Spray methodology covering target word candidates, HIBP enrichment, known/inferred usernames, HTTP request specs, OAuth/O365/Okta execution, preflight binding, stop conditions, evidence, and resume.
+description: Use when a real login form or credential path (including admin/back-office) is observed and a bounded credential review is warranted. Builds the AI shortlist from target evidence and binds preflight — endpoint, reviewed users, decidable signal, lockout plan, dry-run, stop conditions — before any live execution; deterministic tools own requests, pacing, redaction, evidence, and resume. It prepares and queues, it never authorizes a live spray by itself.
 ---
 
 # Credential Attack Pipeline

@@ -25,12 +25,11 @@ def test_web2_vuln_ab_cases_keep_post_slim_signal_coverage():
     assert summary["enhanced_total"] == summary["max_total"]
     assert not summary["cases_missing_even_enhanced"]
     assert not summary["route_gap_cases"]
-    # Skill suggestion now comes from owner state, not word lists; every case
-    # still routes within the primary skill family the AI can choose from.
-    # bb-methodology left the pack recommendation surface in the S1 pilot
-    # (native Skill-tool loading); the coordinator takes the default slot.
+    # S1 native loading (batch 3): the pack's skill recommendation slot is
+    # retired (empty shell); this eval scores card/signal recall quality,
+    # which is unchanged. The rows keep the empty selected_skill for display.
     assert all(
-        row["selected_skill"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
+        row["selected_skill"] == ""
         for row in result["rows"]
     )
 

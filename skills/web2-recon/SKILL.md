@@ -1,6 +1,6 @@
 ---
 name: web2-recon
-description: Evidence-driven Web2 attack-surface decisions. Use when a target needs discovery, surface review, or a bounded recon follow-up; use /recon for execution and existing tools for deterministic artifacts.
+description: Use when a target needs attack-surface discovery, surface review, or a bounded recon follow-up — it decides the next evidence-producing recon action from current target state (which lane, what artifact, what it answers). A decision layer, not a scanner recipe; the /recon command owns command execution and artifacts, and deterministic tools own collection, scope filtering, and resumable cursors.
 ---
 
 # Web2 Recon Decision Skill

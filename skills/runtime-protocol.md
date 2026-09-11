@@ -11,8 +11,7 @@
 |---|---|---|
 | `CLAUDE.md` | 授权、AI/工具边界、状态 owner、入口路由 | 仓库启动时常驻 |
 | 本协议 | Target -> Skill -> Knowledge -> Checks -> Write-back | Context Pack 共享必读 |
-| `bb-methodology` | 假设选择、轮换、停止和交接 | 会话开始、停滞或需要选路时按需 |
-| 专项 Skill | 当前路线的决策、观察和写回契约 | 按证据推荐后读取 |
+| 全部 Skill（含 `bb-methodology`） | 决策契约、路线、证据门 | 原生 Skill 工具按需加载（description 路由） |
 | 知识卡/参考资料 | 模式、技巧、证据门和发散思路 | 默认推荐 0-2 张，按信号读取 |
 | Rules / checks | Coverage、Validation 和 Reporting gate | 按动作与阶段读取 |
 | Tools / state owners | 确定性执行、原始证据、生命周期和恢复 | 调用或写回时执行 |
@@ -27,14 +26,14 @@ Claude Code CLI 当前主会话保留最终路线判断权。本协议、推荐 
 - substantive 的判据只有一条：该动作会触及目标或写入 owner 状态（发请求、记录
   evidence、queue 写回）；纯解释、规划、复盘不触发召回。
 - substantive 动作是否查包以信息增量为唯一判据，不引入“什么算基础知识”的类别判断：
-  当前上下文已覆盖该 focus 的 Pack 推荐与卡片正文（查包无新信息）即免重查，直接动手；
+  当前上下文已覆盖该 focus 的卡片推荐与卡片正文（查包无新信息）即免重查，直接动手；
   尚未覆盖时按当前证据确定 focus，按 `commands/context-pack.md` 调用
   `python3 tools/context_pack.py --target TARGET --focus FOCUS`。目标记忆或磁盘目录
   不能代替 Pack。宽泛目标先沿既有目标上下文/发现入口补证据，不预选专项卡。
 - 推荐路径不等于文件已读：选中的 Skill 和当前需要的卡若正文不在上下文中，先读取再
   行动；已读正文不重复加载。
 - 同一 target/focus/实质证据可复用；目标、focus 或实质证据变化时重新判断并按需刷新。
-  会话上下文压缩（compaction/summary）后，对话内既有的 Pack 推荐和卡片引用按过期处理：
+  会话上下文压缩（compaction/summary）后，对话内既有的卡片推荐和 Pack 引用按过期处理：
   重建判断以当前磁盘上的 owner 状态为准，不从压缩摘要里复用旧推荐。
 - Autopilot 先完成 bootstrap 和 state read，再在 substantive lane 选择后执行这条判断；bootstrap
   不等于已有匹配 Pack 或知识卡已读，也不因召回而抢占 owner 选定的初始工作。
@@ -43,9 +42,11 @@ Claude Code CLI 当前主会话保留最终路线判断权。本协议、推荐 
 
 卡片保持独立，提供模式、反例和证据提示；Skill 保留路线和证据门，不复制卡片正文。
 
-Context Pack 的 `selected_skill`、`skill_route` 和 `knowledge_cards` 是兼容推荐字段，
-不是已选择的执行状态，也不进入默认 `must_read` 或自动写入 Queue。Claude 在实质
-Action Queue claim 时显式选择 Skill route；只有替换 action owner 已有 route 时才需要
+Context Pack 的 `selected_skill`、`skill_route` 和 `knowledge_cards` 是兼容推荐字段
+（S1 原生加载铺开后 skill 两个字段为空，pack 只发布磁盘 skill 目录），不是已选择的执行
+状态，也不进入默认 `must_read` 或自动写入 Queue。Skill 的选择与加载由 AI 通过原生
+Skill 工具完成（frontmatter description 是路由面）；Claude 在实质 Action Queue claim 时
+显式选择 Skill route；只有替换 action owner 已有 route 时才需要
 `skill_override_reason`。
 
 `hypothesis_seeds`、`alternative_angles` 和 `knowledge_card_recall` 只供判断与诊断。

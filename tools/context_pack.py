@@ -29,13 +29,6 @@ try:
         load_card_paths,
     )
     from tools.knowledge_candidates import load_candidate_states_diagnostic
-    from tools.skill_catalog import (
-        SKILL_CATALOG as SKILL_CATALOG,
-        SKILL_PATHS as SKILL_PATHS,
-        SKILL_ROUTE_MODES as SKILL_ROUTE_MODES,
-        SKILL_TEST_DIMENSIONS as SKILL_TEST_DIMENSIONS,
-        skill_route as skill_route,
-    )
     from tools.structured_findings import (
         format_validation_runner_candidate_lines,
         load_validation_runner_candidate_pool,
@@ -55,13 +48,6 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         load_card_paths,
     )
     from knowledge_candidates import load_candidate_states_diagnostic  # type: ignore
-    from skill_catalog import (  # type: ignore
-        SKILL_CATALOG as SKILL_CATALOG,
-        SKILL_PATHS as SKILL_PATHS,
-        SKILL_ROUTE_MODES as SKILL_ROUTE_MODES,
-        SKILL_TEST_DIMENSIONS as SKILL_TEST_DIMENSIONS,
-        skill_route as skill_route,
-    )
     from structured_findings import (  # type: ignore
         format_validation_runner_candidate_lines,
         load_validation_runner_candidate_pool,
@@ -73,16 +59,29 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from target_memory import load_active_file, load_goal_memory  # type: ignore
 
 
-# S1 pilot (batch 2 of ai-capability-roadmap): these skills load on demand via
-# the native Claude Code Skill tool (their frontmatter description is the
-# routing surface), so the pack stops recommending them and instead points the
-# AI at the native loading path. Explicit focus requests are still honored.
-# Batch 3 rolls the remaining skills in; SKILL_PATHS/SKILL_CATALOG keep all 12
-# entries so Action Queue route validation is untouched during the pilot.
-NATIVE_LOADED_SKILLS = {"bb-methodology"}
+# S1 native skill loading (ai-capability-roadmap batch 3): every skill loads
+# on demand via the native Claude Code Skill tool (frontmatter description is
+# the routing surface). The pack no longer recommends a single skill; it
+# publishes the on-disk skill catalog (id + path + description) and the AI
+# selects and loads skills itself. `selected_skill` / `skill_route` /
+# `selected_skill_id` / `why_this_skill` remain as empty compatibility shells
+# for old checkpoint/witness readers.
 
 KNOWN_SKILL_OR_FOCUS = {
-    *SKILL_PATHS.keys(),
+    # Primary skill ids (kept from the retired catalog whitelist era so
+    # `web2-recon`-style focus words are not mistaken for a target host).
+    "bb-methodology",
+    "bug-bounty",
+    "credential-attack",
+    "triage-validation",
+    "web2-recon",
+    "web2-vuln-classes",
+    "cicd-security",
+    "meme-coin-audit",
+    "mobile-pentest",
+    "web3-audit",
+    "security-arsenal",
+    "report-writing",
     "api",
     "api-testing",
     "api-test",
@@ -1372,65 +1371,62 @@ def _text_blob(
     return "\n".join(piece for piece in pieces if piece)
 
 
-def _explicit_primary_skill(focus: str) -> str:
-    match = re.match(r"\s*([a-z0-9]+(?:-[a-z0-9]+)*)", focus.casefold())
-    skill = match.group(1) if match else ""
-    return skill if skill in SKILL_PATHS else ""
-
-
-# S1 pilot: when the owner-state default would be a native-loaded skill, fall
-# back to the coordinator skill so the pack still points at a pack-recommended
-# route. Native skills are named in `native_skills` for the AI to load via the
-# Claude Code Skill tool instead.
-_PACK_RECOMMENDABLE_SKILLS = {
-    skill_id for skill_id in SKILL_PATHS if skill_id not in NATIVE_LOADED_SKILLS
-}
-
-
 def _select_skill(focus: str, blob: str, ranked: dict, findings: list[dict], goal_memory: dict) -> tuple[str, str]:
-    """Suggest a primary skill from OWNER FACTS only.
+    """Retired recommendation decision (S1 native skill loading, batch 3).
 
-    Word-list intent routing is retired: the pack presents the full primary
-    skill catalog (id + description) and the AI reads the focus prose itself,
-    in any language or phrasing. This function still returns a suggestion so
-    compatibility consumers (pack fields, validators) keep working, but it
-    decides from state, not from guessing what the text means:
-
-    1. the user explicitly named a primary skill (that is an instruction);
-    2. a candidate finding awaits validation (owner fact -> validation gate);
-    3. the target memory already recorded a selected skill (continuity);
-    4. recon/surface input is missing (owner fact -> recon first);
-    5. otherwise default to the coordinator skill for phase judgment;
-       native-loaded skills (S1 pilot) load on demand via the Skill tool and
-       are excluded from pack recommendation.
+    Kept only as a compatibility shim for callers that import it; it always
+    returns the empty recommendation. Skill selection belongs to the AI via
+    the native Skill tool (frontmatter descriptions route it); the pack only
+    publishes the on-disk skill catalog (``skill_catalog`` field).
     """
-    target_memory = goal_memory.get("target") or {}
-    selected = [
-        str(item).strip()
-        for item in (
-            (goal_memory.get("active") or {}).get("selected_skills")
-            or target_memory.get("selected_skills")
-            or []
-        )
-        if str(item).strip()
-    ]
-    has_candidate = any(_finding_is_candidate(item) for item in findings)
+    return "", ""
 
-    explicit_skill = _explicit_primary_skill(focus)
-    if explicit_skill:
-        return explicit_skill, "用户显式命名 primary Skill：{}。".format(explicit_skill)
-    if has_candidate:
-        return "triage-validation", "已有 candidate 证据，本轮优先把候选证据过验证门。"
-    if not ranked.get("available"):
-        return "web2-recon", "本地 recon/surface 缓存不足，先补最小攻击面上下文。"
-    if selected:
-        for item in selected:
-            if item in _PACK_RECOMMENDABLE_SKILLS:
-                return item, "目标记忆层已记录该 Skill，沿用当前目标上下文。"
-    return "bug-bounty", (
-        "无状态信号时默认协调入口；AI 读取 pack 的 skill 目录与 focus 原文自行选择并写回；"
-        "方法论与假设轮换（bb-methodology）按需通过原生 Skill 工具加载。"
-    )
+
+def _skill_frontmatter_field(skill_file: Path, field: str) -> str:
+    """Dependency-free read of one frontmatter field from a SKILL.md."""
+    try:
+        lines = skill_file.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    if not lines or lines[0].strip() != "---":
+        return ""
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        match = re.match(rf"^{re.escape(field)}:\s*(.*?)\s*$", line)
+        if match:
+            return match.group(1).strip().strip("\"'")
+    return ""
+
+
+def _disk_skill_catalog(repo_root: Path | str = BASE_DIR) -> list[dict[str, str]]:
+    """Publish the FULL on-disk skill catalog (id + path + description).
+
+    Same shape as ``card_catalog``: selection authority stays with the AI.
+    Every ``skills/*/SKILL.md`` on disk is published with its frontmatter
+    description (the native routing surface); nothing depends on
+    ``tools/skill_catalog.py``, so adding a skill needs no tool change.
+    A temporary target repo without a skills/ tree falls back to the installed
+    repository, mirroring the card-registry fallback.
+    """
+    repo = Path(repo_root).resolve()
+    skills_root = repo / "skills"
+    if not skills_root.is_dir():
+        skills_root = BASE_DIR / "skills"
+    catalog: list[dict[str, str]] = []
+    try:
+        candidates = sorted(skills_root.glob("*/SKILL.md"))
+    except OSError:
+        return catalog
+    for skill_file in candidates:
+        skill_id = skill_file.parent.name
+        description = _skill_frontmatter_field(skill_file, "description")
+        catalog.append({
+            "id": skill_id,
+            "path": f"skills/{skill_id}/SKILL.md",
+            "description": description,
+        })
+    return catalog
 
 
 def _has_ssrf_internal_signal(text: str) -> bool:
@@ -1827,16 +1823,24 @@ def _cards_from_focus(focus: str) -> list[str]:
 
 def _select_cards_and_deferred(
     blob: str,
-    skill: str,
     ranked: dict,
     gaps: list[dict],
     goal_memory: dict,
     focus: str,
+    findings: list[dict],
     repo_root: Path | str = BASE_DIR,
     *,
     registry: dict[str, dict[str, str]] | None = None,
     card_paths: dict[str, str] | None = None,
 ) -> tuple[list[str], list[str], list[dict[str, object]]]:
+    """Card recall from OWNER FACTS only.
+
+    Skill recommendation is retired (S1 native loading): the routing shape the
+    old skill argument carried is now derived from owner facts directly —
+    a candidate finding awaiting validation, and whether recon/surface state
+    is available. Card logic itself is unchanged.
+    """
+    has_candidate = any(_finding_is_candidate(item) for item in findings)
     card_paths = CARD_PATHS if card_paths is None else card_paths
     focus_cards = _cards_from_focus(focus)
     tech_stack = _ranked_tech_stack(ranked)
@@ -1868,16 +1872,18 @@ def _select_cards_and_deferred(
     target_memory = goal_memory.get("target") or {}
     if len(target_memory.get("dead_ends") or []) >= 2:
         cards.append("dead-ends")
-    # S1 pilot: `skill` here is the pack recommendation. Native-loaded skills
-    # never appear as the recommendation, so the hunt-wide coverage-prompts
-    # trigger follows the recommendation set: recon + coordinator + the
-    # native methodology skill (kept for explicit-focus packs where the skill
-    # can still be named by the user).
-    if gaps or skill in {"web2-recon", "bb-methodology", "bug-bounty"}:
+    # Skill recommendation is retired (S1 native loading); the hunt-wide
+    # coverage-prompts trigger now follows the owner-fact shapes the old
+    # recommendation carried: any coverage gap, no surface state, or a
+    # candidate awaiting validation.
+    if gaps or not ranked.get("available") or has_candidate:
         cards.append("coverage-prompts")
-    if not ranked.get("available") and skill != "web2-vuln-classes":
-        cards = (cards[:1] + ["coverage-prompts"]) if cards else ["coverage-prompts"]
-    if skill == "triage-validation" and not cards:
+    if not ranked.get("available"):
+        if cards[:1] == focus_cards[:1] and len(focus_cards) >= 2:
+            cards = cards[:1] + ["coverage-prompts"]
+        else:
+            cards = _dedupe((cards[:1] if cards else []) + ["coverage-prompts"])
+    if has_candidate and not cards:
         cards.extend(["api-idor", "auth-access"])
     if not cards:
         cards.append("coverage-prompts")
@@ -1893,11 +1899,7 @@ def _select_cards_and_deferred(
     preserved_deferred: list[str] = []
     if not ranked.get("available"):
         before_fallback = cards
-        if skill == "web2-vuln-classes" and focus_cards:
-            cards = focus_cards[:2]
-        elif skill == "web2-vuln-classes" and len(cards) >= 2:
-            cards = cards[:2]
-        elif len(focus_cards) >= 2:
+        if focus_cards:
             cards = focus_cards[:2]
         else:
             cards = _dedupe((cards[:1] if cards else []) + ["coverage-prompts"])
@@ -1964,34 +1966,35 @@ def _select_cards_and_deferred(
 
 def _select_cards(
     blob: str,
-    skill: str,
     ranked: dict,
     gaps: list[dict],
     goal_memory: dict,
     focus: str,
+    findings: list[dict],
     repo_root: Path | str = BASE_DIR,
     *,
     card_paths: dict[str, str] | None = None,
 ) -> list[str]:
     selected, _, _ = _select_cards_and_deferred(
         blob,
-        skill,
         ranked,
         gaps,
         goal_memory,
         focus,
+        findings,
         repo_root,
         card_paths=card_paths,
     )
     return selected
 
 
-def _required_checks(skill: str, blob: str) -> list[str]:
+def _required_checks(blob: str, has_candidate: bool) -> list[str]:
     # Platform startup owns action safety; Context Pack only emits route checks.
-    # Word-list blob detection is retired: which rule files load follows the
-    # selected skill and owner state, not a guess from free text.
+    # Skill recommendation is retired (S1 native loading): the reporting rule
+    # loads on the owner fact "a candidate awaits validation", which is what
+    # the old triage-validation recommendation encoded.
     checks = ["rules/coverage-gate.md"]
-    if skill == "triage-validation":
+    if has_candidate:
         checks.append("rules/reporting.md")
     checks.append("rules/playbook-router.md")
     return _dedupe(checks)
@@ -2993,7 +2996,7 @@ def build_context_pack(
     ) = _reviewed_candidate_hints(repo, target=resolved_target, evidence_blob=blob)
     telerik_dialog_signal = _has_telerik_dialog_signal(blob)
     viewstate_signal = bool(re.search(r"\bviewstate\b|__viewstate", blob, re.I))
-    skill, why_skill = _select_skill(focus, blob, ranked, findings, goal_memory)
+    has_candidate = any(_finding_is_candidate(item) for item in findings)
     historical_patterns = []
     for item in ((ranked.get("memory") or {}).get("pattern_suggestions") or []):
         lesson = str(item).strip()
@@ -3014,16 +3017,16 @@ def build_context_pack(
     card_paths = {item["id"]: path for path, item in registry.items()}
     cards, deferred_cards, knowledge_card_recall = _select_cards_and_deferred(
         blob,
-        skill,
         ranked,
         gaps,
         goal_memory,
         focus,
+        findings,
         repo,
         registry=registry,
         card_paths=card_paths,
     )
-    checks = _required_checks(skill, blob)
+    checks = _required_checks(blob, has_candidate)
     evidence_summary = build_evidence_summary(
         repo,
         target=resolved_target,
@@ -3074,14 +3077,15 @@ def build_context_pack(
         "facts": _target_facts_projection(goal_memory),
         "focus": focus,
         "tech_stack": tech_stack,
-        "selected_skill": SKILL_PATHS[skill],
-        "selected_skill_id": skill,
-        "why_this_skill": why_skill,
-        "skill_route": skill_route(skill, why_skill),
-        # S1 pilot: these skills load on demand via the native Claude Code
-        # Skill tool; the pack does not recommend them but keeps them visible
-        # so the AI knows they are available and how to load them.
-        "native_skills": sorted(NATIVE_LOADED_SKILLS),
+        # Compatibility shells (S1 native skill loading, batch 3): the pack no
+        # longer recommends a skill. Empty values stay schema-compatible with
+        # old checkpoint/witness readers. Skills are selected and loaded by
+        # the AI via the native Skill tool; see the `skill_catalog` field.
+        "selected_skill": "",
+        "selected_skill_id": "",
+        "why_this_skill": "",
+        "skill_route": {},
+        "skill_catalog": _disk_skill_catalog(repo),
         "must_read": must_read,
         "knowledge_cards": cards,
         "card_catalog": _card_catalog(repo, registry=registry),
@@ -3169,10 +3173,14 @@ def format_context_pack(pack: dict) -> str:
         f"- Active goal: {pack.get('active_goal') or '-'}",
         f"- Current hypothesis: {pack.get('current_hypothesis') or '-'}",
         f"- Tech stack: {', '.join(pack.get('tech_stack') or []) or '-'}",
-        f"- Recommended skill: {pack['selected_skill']}",
-        f"- Why this recommendation: {pack['why_this_skill']}",
-        f"- Native-loaded skills (load on demand via the Skill tool, not recommended here): {', '.join(pack.get('native_skills', [])) or '-'}",
-        f"- Recommended test dimensions: {', '.join((pack.get('skill_route') or {}).get('required_dimensions', []))}",
+        "- Skill recommendation retired (S1 native loading): select and load skills on demand via the Claude Code Skill tool. On-disk skill catalog:",
+        *_format_list([
+            "{id} — {description}".format(
+                id=item.get("id", ""),
+                description=item.get("description", ""),
+            )
+            for item in pack.get("skill_catalog", [])
+        ]),
         "- Must read:",
         *_format_list(pack["must_read"]),
         "- Recommended knowledge cards:",

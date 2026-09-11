@@ -1334,9 +1334,131 @@ def test_action_queue_reports_the_exact_missing_skill_path():
         )
 
 
-@pytest.mark.parametrize("skill_id", ["made-up", "security-arsenal", "../outside"])
+@pytest.mark.parametrize("skill_id", ["made-up", "../outside", "skills/evil"])
+def test_action_queue_rejects_forged_skill_routes(skill_id):
+    """Anti-forgery only: a skill_id that does not resolve to a real Skill
+    file on disk (S1 native loading retired the catalog whitelist, replacing
+    the former 'canonical primary Skill' membership gate)."""
+    with pytest.raises(ValueError, match="skill_route"):
+        build_action(
+            target="api.target.com",
+            action_type="hypothesis",
+            evidence="Observed an API object path.",
+            next_question="Can a peer actor read it?",
+            action="Replay the object path with a peer actor.",
+            metadata={
+                "skill_route": {
+                    "skill_id": skill_id,
+                    "skill_path": f"skills/{skill_id}/SKILL.md",
+                    "required_dimensions": ["auth"],
+                }
+            },
+        )
+
+
+def test_action_queue_accepts_off_catalog_skill_present_on_disk(tmp_path, monkeypatch):
+    """The point of S1: a Skill outside SKILL_CATALOG but real on disk is a
+    valid route. Adding a skill no longer requires touching skill_catalog.py."""
+    skill_dir = Path(action_queue_module.BASE_DIR) / "skills" / "brand-new-lane"
+    assert not skill_dir.exists()
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: brand-new-lane\n"
+        "description: Off-catalog skill used by the route-existence test.\n"
+        "---\n\n# Brand New Lane\n",
+        encoding="utf-8",
+    )
+    try:
+        action = build_action(
+            target="api.target.com",
+            action_type="hypothesis",
+            evidence="Observed an API object path.",
+            next_question="Can a peer actor read it?",
+            action="Replay the object path with a peer actor.",
+            metadata={
+                "route_required": True,
+                "skill_route": {
+                    "skill_id": "brand-new-lane",
+                    "skill_path": "skills/brand-new-lane/SKILL.md",
+                    "reason": "New lane evidence",
+                    "required_dimensions": ["auth", "object"],
+                },
+            },
+        )
+        assert action["metadata"]["skill_route"]["skill_id"] == "brand-new-lane"
+    finally:
+        import shutil
+
+        shutil.rmtree(skill_dir)
+
+
+def test_action_queue_rejects_skill_file_with_mismatched_frontmatter_name(tmp_path):
+    """A real SKILL.md whose frontmatter name differs from skill_id is
+    rejected: skill_id cannot alias an existing skill."""
+    skill_dir = Path(action_queue_module.BASE_DIR) / "skills" / "alias-lane"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: some-other-skill\n"
+        "description: Frontmatter name deliberately mismatched.\n"
+        "---\n\n# Some Other Skill\n",
+        encoding="utf-8",
+    )
+    try:
+        with pytest.raises(ValueError, match="frontmatter name"):
+            build_action(
+                target="api.target.com",
+                action_type="hypothesis",
+                evidence="Observed an API object path.",
+                next_question="Can a peer actor read it?",
+                action="Replay the object path with a peer actor.",
+                metadata={
+                    "skill_route": {
+                        "skill_id": "alias-lane",
+                        "skill_path": "skills/alias-lane/SKILL.md",
+                        "required_dimensions": ["auth"],
+                    }
+                },
+            )
+    finally:
+        import shutil
+
+        shutil.rmtree(skill_dir)
+
+
+def test_action_queue_accepts_non_primary_catalog_skills(tmp_path):
+    """route_mode is no longer validated: direct-only / reference-only /
+    report-only skills in the catalog are valid routes (their frontmatter
+    descriptions say when to load them; the queue does not judge routes)."""
+    for skill_id in ("security-arsenal", "report-writing", "cicd-security", "bb-methodology"):
+        action = build_action(
+            target="api.target.com",
+            action_type="hypothesis",
+            evidence="Observed an API object path.",
+            next_question="Can a peer actor read it?",
+            action="Replay the object path with a peer actor.",
+            metadata={
+                "skill_route": {
+                    "skill_id": skill_id,
+                    "skill_path": f"skills/{skill_id}/SKILL.md",
+                    "reason": "Evidence named the lane",
+                    "required_dimensions": ["evidence"],
+                }
+            },
+        )
+        assert action["metadata"]["skill_route"]["skill_id"] == skill_id
+
+
+@pytest.mark.parametrize(
+    "skill_id",
+    ["made-up", "does-not-exist", "nested/does-not-exist", "../outside", "skills/evil"],
+)
 def test_action_queue_rejects_noncanonical_skill_routes(skill_id):
-    with pytest.raises(ValueError, match="canonical primary Skill"):
+    """Backward-compatible negative anchor kept from the whitelist era, with
+    file-existence semantics: an id that resolves to no Skill file on disk is
+    rejected (anti-forgery), regardless of any catalog."""
+    with pytest.raises(ValueError, match="skill_route"):
         build_action(
             target="api.target.com",
             action_type="hypothesis",

@@ -1,6 +1,6 @@
 ---
 name: security-arsenal
-description: On-demand reference entry for project execution, session continuity, evidence, and write-back contracts. Use when a selected action needs these shared boundaries; not a primary route or technique catalogue.
+description: Read only when a selected, target-backed action needs a shared project contract — which owner accepts the result, how dependent steps retain session state, which evidence tools must preserve, which side effects require controls. It is a reference-only lookup table routing to the real owners; it does not choose a primary route, add tool syntax, or maintain its own decision tree.
 ---
 
 # Execution Contract Reference

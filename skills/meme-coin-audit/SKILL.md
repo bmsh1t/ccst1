@@ -1,6 +1,6 @@
 ---
 name: meme-coin-audit
-description: Decision skill for explicitly scoped token, liquidity-pool, and Solana program reviews. Chooses authority, transfer, liquidity, and integration branches without embedding probe syntax.
+description: Use only when a token, liquidity pool, or Solana program is explicitly in scope. Separates token identity, authority state, market/liquidity state, and holder impact to choose the next branch within the allowed simulation boundary; command and probe knowledge remains on demand, and a centralization note alone stops before promotion.
 ---
 
 # Token and Meme-Coin Decision Skill

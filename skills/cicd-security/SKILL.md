@@ -1,6 +1,6 @@
 ---
 name: cicd-security
-description: Decision skill for explicitly scoped CI/CD and supply-chain trust-boundary reviews. Selects the next evidence-producing branch; deterministic tools and knowledge cards provide execution detail.
+description: Use only when a CI/CD or supply-chain target is explicitly in scope — a repository, workflow, package, artifact, or deployment path. Selects the next evidence-producing branch from observed trigger, permission, runner, and artifact context (entry/evidence/stop contract included); probe shapes and tool syntax stay with the model and on-demand knowledge, and a scanner output is a lead, never a finding.
 ---
 
 # CI/CD Security Decision Skill

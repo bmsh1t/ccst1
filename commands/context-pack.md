@@ -55,13 +55,13 @@ python3 tools/context_pack.py --target <target>
    - `findings/<target>/js_intel/hypotheses.json`
    - `findings/<target>/source_intel/hypotheses.jsonl`
 6. 读取 Evidence Ledger 摘要：`memory/evidence/<target>/ledger.jsonl`。
-7. 推荐一个主 Skill，再推荐 1-2 张知识卡。原生加载 Skill（当前试点：
-   `bb-methodology`）不进入推荐，改为在 `native_skills` 字段声明，AI 按需通过
-   原生 Skill 工具加载。
+7. 发布磁盘上的 skill 目录（id + path + description，来自 SKILL.md frontmatter），
+   并推荐 1-2 张知识卡。S1 铺开后 pack 不再推荐单一 Skill——AI 通过原生 Skill 工具
+   按需加载，frontmatter description 是路由面；`selected_skill`/`skill_route` 为空兼容字段。
 8. 输出证据锚点、假设种子、Actor Matrix 缺口、相邻角度、矛盾点和写回建议。
 
-`selected_skill`、`skill_route` 和 `knowledge_cards` 是兼容推荐字段，不表示已经加载或
-选择；Context Pack 不会自动读取这些文件。Claude 根据当前证据显式选择适用 Skill / 知识卡，
+`skill_catalog`、`knowledge_cards` 是事实/兼容字段，不表示已经加载或选择；Context Pack
+不会自动读取这些文件。Claude 根据当前证据显式选择适用 Skill / 知识卡，
 再读取实际需要的文件，并保留覆盖检查。
 `hypothesis_seeds`、`alternative_angles` 和 `knowledge_card_recall` 也只是建议/诊断，
 不会由 Checkpoint 自动变成 Queue 动作或已选择假设。
@@ -74,9 +74,7 @@ CONTEXT PACK
 - Phase:
 - Active goal:
 - Current hypothesis:
-- Recommended skill:
-- Why this recommendation:
-- Native-loaded skills:
+- Skill recommendation retired (S1 native loading): select and load skills on demand via the Claude Code Skill tool. On-disk skill catalog:
 - Must read:
 - Recommended knowledge cards:
 - Required checks:
@@ -105,8 +103,9 @@ CONTEXT PACK
 - Phase: hunt
 - Active goal: Find high-value API authorization issues
 - Current hypothesis: org_id may be user-controlled
-- Recommended skill: skills/web2-vuln-classes/SKILL.md
-- Why this recommendation: 已有可测试的 Web/API surface 或漏洞类别信号。
+- Skill recommendation retired (S1 native loading): select and load skills on demand via the Claude Code Skill tool. On-disk skill catalog:
+  - web2-vuln-classes — Use when evidence or focus names a concrete Web/API bug-class lane...
+  - bug-bounty — Use when work spans more than one stage...
 - Must read:
   - memory/goals/active.json
   - memory/goals/targets/example.com.json
@@ -151,14 +150,15 @@ recall reason is insufficient; it is not part of the default `Must read` set.
 
 ## Skill / Focus 路由
 
-`focus` 表达当前证据要回答的边界问题。实际 Skill/Card 推荐以工具输出为准：
-Skill 身份、路由模式和维度由 `tools/skill_catalog.py` 定义，证据到推荐的选择由
-`tools/context_pack.py` 实现，知识卡路径来自 `knowledge/capabilities.yaml`。
-本命令不再维护另一张固定映射表。
+`focus` 表达当前证据要回答的边界问题。S1 铺开后 pack 不再做 Skill 推荐：skill 目录从
+磁盘 `skills/*/SKILL.md` frontmatter 直接发布（`skill_catalog` 字段），知识卡路径来自
+`knowledge/capabilities.yaml`。Skill 的选择与加载由 AI 通过原生 Skill 工具完成，
+frontmatter description 是路由面。本命令不维护另一张固定映射表。
 
 ## 纪律
 
-- Context Pack 一轮只推荐一个主 Skill，Claude 选择后再读取。
+- S1 铺开后 Context Pack 不推荐主 Skill，只发布磁盘 skill 目录；Claude 通过原生
+  Skill 工具按需加载并说明选择原因。
 - Context Pack 一次最多推荐 1-2 张知识卡，Claude 只读取当前证据需要的卡。
 - Context Pack 不生成动作安全门禁。
 - 结束前必须加入 `rules/coverage-gate.md`。

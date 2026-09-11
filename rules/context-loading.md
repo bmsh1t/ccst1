@@ -20,15 +20,15 @@ Context Pack 的默认入口是当前目标状态（如存在 `memory/goals/acti
   重复列入 `must_read`。
 - Context Pack、Queue 和 runner 不重复把平台安全契约变成第二个 `must_read` 或执行门禁。
 - 当前 Context Pack 的 `must_read` 只包含目标状态、`skills/runtime-protocol.md`、当前
-  证据/Ledger 和证据明确需要的工具引用；推荐的 primary Skill 和最多两张知识卡不在
+  证据/Ledger 和证据明确需要的工具引用；`skill_catalog` 发布的 Skill 和最多两张知识卡不在
   `must_read`，由 Claude 根据当前证据显式选择后按需读取。
-- `skills/bb-methodology/SKILL.md` 不是额外常驻核心；只在会话开始、换目标、停滞或需要
-  选择/轮换假设时成为当前按需 Skill。S1 试点后它不经 Context Pack 推荐，AI 按需通过
-  原生 Skill 工具加载；pack 的 `native_skills` 字段声明这一加载面。
+- Skill 加载走 Claude 原生 Skill 工具（S1 铺开后全部 12 个）：frontmatter description 是
+  路由面，pack 只发布磁盘上的 skill 目录（id + path + description），不做推荐；
+  `selected_skill`/`skill_route` 保留为空兼容字段。
 - 正式安装面是 `skills/*.md` 和 `skills/*/`；根目录不再提供单文件 Skill 入口。
-- `selected_skill`、`skill_route` 和 `knowledge_cards` 保留为兼容推荐字段，不表示 Claude
-  已选择路线，也不直接生成 Queue route。首次 claim 显式选择 Skill；只有替换 action
-  owner 已有 route 时才需要 `skill_override_reason`。
+- `selected_skill`、`skill_route` 和 `knowledge_cards` 保留为兼容推荐字段（S1 铺开后
+  skill 两个字段为空），不表示 Claude 已选择路线，也不直接生成 Queue route。首次 claim
+  显式选择 Skill；只有替换 action owner 已有 route 时才需要 `skill_override_reason`。
 
 ## 按需读取
 
@@ -103,9 +103,7 @@ owner 创建或激活正常动作。
 ```text
 CONTEXT PACK
 - Target:
-- Phase:
-- Recommended skill:
-- Native-loaded skills (load on demand via the Skill tool, not recommended here):
+- Skill catalog (select and load on demand via the native Skill tool):
 - Must read:
 - Recommended knowledge cards:
 - Required checks:

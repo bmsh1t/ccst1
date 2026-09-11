@@ -215,21 +215,34 @@ def _validate_action_metadata(metadata: dict | None) -> dict:
         dimensions = route.get("required_dimensions")
         if not skill_id:
             raise ValueError("Action Queue metadata skill_route requires skill_id")
+        # S1 native skill loading (ai-capability-roadmap batch 3): the catalog
+        # whitelist is retired. Which skill fits the evidence is AI judgment
+        # (frontmatter descriptions route it via the native Skill tool); the
+        # only mechanical check left is anti-forgery — the skill_id must
+        # resolve to a real Skill file on disk whose frontmatter name matches
+        # (the same surgery as selected_knowledge_refs). A skill outside the
+        # catalog but present on disk is accepted: adding a skill no longer
+        # requires touching tools/skill_catalog.py.
+        skills_root = (BASE_DIR / "skills").resolve()
+        skill_file = (BASE_DIR / "skills" / skill_id / "SKILL.md").resolve()
         try:
-            from tools.skill_catalog import SKILL_CATALOG
-        except ImportError:  # pragma: no cover - direct tools/ execution
-            from skill_catalog import SKILL_CATALOG  # type: ignore
-        catalog_entry = SKILL_CATALOG.get(skill_id)
-        if not isinstance(catalog_entry, dict) or catalog_entry.get("route_mode") != "primary":
+            skill_file.relative_to(skills_root)
+        except ValueError:
             raise ValueError(
-                "Action Queue metadata skill_route skill_id must reference a canonical primary Skill"
+                "Action Queue metadata skill_route skill_id must be a plain "
+                "Skill directory name under skills/ (path escape rejected)"
             )
-        expected_path = str(catalog_entry.get("path") or "")
-        if not expected_path or not (BASE_DIR / expected_path).is_file():
+        if not skill_file.is_file():
             raise ValueError(
-                "Action Queue metadata skill_route references a missing canonical Skill: "
-                f"{expected_path or skill_id}"
+                "Action Queue metadata skill_route must reference an existing "
+                f"Skill file: skills/{skill_id}/SKILL.md"
             )
+        if _skill_frontmatter_name(skill_file) != skill_id:
+            raise ValueError(
+                "Action Queue metadata skill_route skill_id must match the "
+                "Skill frontmatter name"
+            )
+        expected_path = f"skills/{skill_id}/SKILL.md"
         if not skill_path:
             raise ValueError(
                 "Action Queue metadata skill_route requires "
@@ -240,9 +253,28 @@ def _validate_action_metadata(metadata: dict | None) -> dict:
                 "Action Queue metadata skill_route skill_path must be "
                 f"{expected_path}"
             )
+        # Route dimensions are advisory context, not a membership gate; only
+        # the form (a non-empty list of non-empty labels) is validated.
         if not isinstance(dimensions, list) or not dimensions or any(not str(item).strip() for item in dimensions):
             raise ValueError("Action Queue metadata skill_route requires test dimensions")
     return metadata
+
+
+def _skill_frontmatter_name(skill_file: Path) -> str:
+    """Dependency-free read of a SKILL.md frontmatter ``name`` value."""
+    try:
+        lines = skill_file.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    if not lines or lines[0].strip() != "---":
+        return ""
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        match = re.match(r"^name:\s*(.*?)\s*$", line)
+        if match:
+            return match.group(1).strip().strip("\"'")
+    return ""
 
 
 def _merge_action_metadata(existing: Any, incoming: dict | None) -> dict:

@@ -1,6 +1,6 @@
 ---
 name: web3-audit
-description: Decision skill for explicitly scoped Solidity, Rust, wallet, and smart-contract reviews. Chooses invariant, authority, oracle, signature, and upgrade branches; execution detail remains on demand.
+description: Use only when a Solidity, Rust, wallet, or smart-contract target is explicitly in scope. Treats source, bytecode, chain state, and value movement as separate evidence planes and chooses the invariant, authority, oracle, signature, or upgrade branch from the contract's actual interfaces; execution detail stays on demand, and static patterns or TVL are leads, never findings.
 ---
 
 # Web3 Audit Decision Skill

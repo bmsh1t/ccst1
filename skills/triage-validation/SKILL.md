@@ -1,6 +1,6 @@
 ---
 name: triage-validation
-description: Candidate validation and verdict contract before reporting. Owns Q1-Q7, identity-boundary checks, four gates, chain precedence, severity readiness, and retraction. Routes evidence to REPORT, CHAIN_REQUIRED, DOWNGRADE, or DO_NOT_REPORT while preserving exploration context; report presentation belongs to report-writing.
+description: Use when a finding reaches candidate quality and must be validated before any report claim — it answers the seven questions and four gates, resolves chain precedence, and routes the evidence to REPORT, CHAIN_REQUIRED, DOWNGRADE, or DO_NOT_REPORT. Preserves exploration context (leads stay leads when a concrete next action remains); report presentation itself belongs to report-writing.
 ---
 
 # TRIAGE & VALIDATION

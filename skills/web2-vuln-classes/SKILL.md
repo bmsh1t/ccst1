@@ -1,6 +1,6 @@
 ---
 name: web2-vuln-classes
-description: Web/API vulnerability-class routing guide for autonomous assessment. Use when the focus or target memory names a concrete class such as IDOR, access control, JWT/OAuth/SAML, GraphQL, SQLi/NoSQL, SSRF, upload, SSTI, deserialization/ViewState/machineKey, XXE, path traversal, request smuggling, cache poisoning/deception, race, browser boundary, WebSocket, LLM tool flow, or controlled RCE. Provides evidence-driven route selection, project-card recall, evidence gates, stop conditions, and write-back boundaries.
+description: Use when evidence or focus names a concrete Web/API bug-class lane — IDOR/access control, JWT/OAuth/SAML, GraphQL, SQLi/NoSQL, SSRF, upload, SSTI, deserialization/ViewState, XXE, path traversal, smuggling, cache poisoning/deception, race, browser boundary, WebSocket, LLM tool flow, or controlled RCE. Answers which lane's evidence gates, card recall, and stop conditions apply after the lane is chosen; general technique knowledge and exact test syntax stay with the model, and it never runs a class checklist or bypasses triage-validation before reporting.
 ---
 
 # WEB2 VULN CLASSES — Routing Layer
