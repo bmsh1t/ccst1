@@ -41,6 +41,12 @@ Success signal: `findings/<target>/summary.json`, `findings/<target>/findings.js
 
 ## Default Hunt Loop
 
+Fast path: when concrete evidence is already in hand (browser-observed requests,
+cached recon artifacts, an explicit lead, or the selected Skill/card contents
+already read in this conversation), go straight to step 5 ATTACK. The target and
+scope confirmation in step 1 LOAD is not skippable — confirm target identity
+before touching it.
+
 ```text
 1. LOAD      Reuse or refresh context-pack, then read /surface output, target memory, cached recon, findings, and guard hints
 2. ROUTE     Select the main Skill using skills/runtime-protocol.md

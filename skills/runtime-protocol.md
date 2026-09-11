@@ -25,13 +25,14 @@ Claude Code CLI 当前主会话保留最终路线判断权。本协议、推荐 
 两种入口共用这一条判断：
 
 - substantive 的判据只有一条：该动作会触及目标或写入 owner 状态（发请求、记录
-  evidence、queue 写回）。是则先过 recall gate 再动手；纯解释、规划、复盘不触发。
-- 纯解释不强制查包或读卡；宽泛目标先沿既有目标上下文/发现入口补证据，不预选专项卡。
-- 提示词或 `state/evidence` 命中具体边界时，在边界相关动作前按当前证据确定 focus；没有
-  当前对话中匹配的 Context Pack 工具输出，就按 `commands/context-pack.md` 调用
-  `python3 tools/context_pack.py --target TARGET --focus FOCUS`；目标记忆或磁盘目录不能代替 Pack。
-- 已有匹配 Pack 时直接复用推荐，不重复查包。推荐路径不等于文件已读：选中的 Skill 和
-  当前需要的卡若正文不在上下文中，先读取再行动；已读正文不重复加载。
+  evidence、queue 写回）；纯解释、规划、复盘不触发召回。
+- substantive 动作是否查包以信息增量为唯一判据，不引入“什么算基础知识”的类别判断：
+  当前上下文已覆盖该 focus 的 Pack 推荐与卡片正文（查包无新信息）即免重查，直接动手；
+  尚未覆盖时按当前证据确定 focus，按 `commands/context-pack.md` 调用
+  `python3 tools/context_pack.py --target TARGET --focus FOCUS`。目标记忆或磁盘目录
+  不能代替 Pack。宽泛目标先沿既有目标上下文/发现入口补证据，不预选专项卡。
+- 推荐路径不等于文件已读：选中的 Skill 和当前需要的卡若正文不在上下文中，先读取再
+  行动；已读正文不重复加载。
 - 同一 target/focus/实质证据可复用；目标、focus 或实质证据变化时重新判断并按需刷新。
   会话上下文压缩（compaction/summary）后，对话内既有的 Pack 推荐和卡片引用按过期处理：
   重建判断以当前磁盘上的 owner 状态为准，不从压缩摘要里复用旧推荐。

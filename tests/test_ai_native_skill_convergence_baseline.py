@@ -99,13 +99,23 @@ def test_runtime_protocol_has_single_substantive_criterion():
     """Substantive work is one criterion, not an enumerated decision tree.
 
     Touching the target or writing owner state (requests, evidence records,
-    queue writes) requires the recall gate first; pure explanation, planning,
-    and retrospection do not. Model keeps full boundary discretion otherwise.
+    queue writes) is substantive; pure explanation, planning, and retrospection
+    are not. Whether a substantive action queries the pack is decided by
+    information gain alone: if the pack's recommendations and card contents for
+    that focus are already in context (no new information), skip the re-query
+    and act; no "what counts as basic knowledge" proxy. Model keeps full
+    boundary discretion otherwise.
     """
     protocol = (REPO_ROOT / "skills" / "runtime-protocol.md").read_text(encoding="utf-8")
     assert "substantive 的判据只有一条" in protocol
-    assert "先过 recall gate 再动手" in protocol
     assert "纯解释、规划、复盘不触发" in protocol
+    # A1': information-gain criterion replaces the unconditional re-query.
+    assert "以信息增量为唯一判据" in protocol
+    assert "免重查，直接动手" in protocol
+    # "什么算基础知识" must stay a rejected proxy, not a reintroduced rule.
+    assert "不引入“什么算基础知识”的类别判断" in protocol
+    # Recommended path is not the same as file read: contents still must be loaded.
+    assert "推荐路径不等于文件已读" in protocol
 
 
 def test_runtime_protocol_invalidates_pack_recommendations_after_compaction():
