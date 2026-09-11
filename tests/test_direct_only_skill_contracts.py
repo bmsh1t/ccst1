@@ -49,11 +49,10 @@ def test_direct_only_skills_have_domain_contracts_and_stay_manual(tmp_path):
     } == DIRECT_ONLY
     assert set(SKILL_PATHS) == PRIMARY
 
-    # S1 native loading: no recommendation slot; the on-disk catalog publishes
-    # every skill (direct-only included) with its frontmatter description.
+    # S1 native loading: no recommendation slot and no duplicated skill
+    # listing in the pack — the platform's native skill mechanism (driven by
+    # on-disk SKILL.md frontmatter) is the single routing surface.
     for skill_id in DIRECT_ONLY:
         pack = build_context_pack(tmp_path, target="target.com", focus=f"{skill_id} review")
         assert pack["selected_skill_id"] == ""
-        catalog_ids = {item["id"] for item in pack["skill_catalog"]}
-        assert PRIMARY <= catalog_ids
-        assert DIRECT_ONLY <= catalog_ids
+        assert "skill_catalog" not in pack

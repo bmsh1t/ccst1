@@ -60,7 +60,7 @@ python3 tools/context_pack.py --target <target>
    按需加载，frontmatter description 是路由面；`selected_skill`/`skill_route` 为空兼容字段。
 8. 输出证据锚点、假设种子、Actor Matrix 缺口、相邻角度、矛盾点和写回建议。
 
-`skill_catalog`、`knowledge_cards` 是事实/兼容字段，不表示已经加载或选择；Context Pack
+`selected_skill`（空壳）、`knowledge_cards` 是兼容/事实字段，不表示已经加载或选择；Context Pack
 不会自动读取这些文件。Claude 根据当前证据显式选择适用 Skill / 知识卡，
 再读取实际需要的文件，并保留覆盖检查。
 `hypothesis_seeds`、`alternative_angles` 和 `knowledge_card_recall` 也只是建议/诊断，
@@ -151,7 +151,7 @@ recall reason is insufficient; it is not part of the default `Must read` set.
 ## Skill / Focus 路由
 
 `focus` 表达当前证据要回答的边界问题。S1 铺开后 pack 不再做 Skill 推荐：skill 目录从
-磁盘 `skills/*/SKILL.md` frontmatter 直接发布（`skill_catalog` 字段），知识卡路径来自
+Skill 路由交给原生 Skill 工具（frontmatter 即路由面），知识卡路径来自
 `knowledge/capabilities.yaml`。Skill 的选择与加载由 AI 通过原生 Skill 工具完成，
 frontmatter description 是路由面。本命令不维护另一张固定映射表。
 

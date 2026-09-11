@@ -20,7 +20,7 @@ Context Pack 的默认入口是当前目标状态（如存在 `memory/goals/acti
   重复列入 `must_read`。
 - Context Pack、Queue 和 runner 不重复把平台安全契约变成第二个 `must_read` 或执行门禁。
 - 当前 Context Pack 的 `must_read` 只包含目标状态、`skills/runtime-protocol.md`、当前
-  证据/Ledger 和证据明确需要的工具引用；`skill_catalog` 发布的 Skill 和最多两张知识卡不在
+  证据/Ledger 和证据明确需要的工具引用；Skill 由原生 Skill 工具按 frontmatter 自主加载，最多两张知识卡不在
   `must_read`，由 Claude 根据当前证据显式选择后按需读取。
 - Skill 加载走 Claude 原生 Skill 工具（S1 铺开后全部 12 个）：frontmatter description 是
   路由面，pack 只发布磁盘上的 skill 目录（id + path + description），不做推荐；

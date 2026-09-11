@@ -1371,64 +1371,6 @@ def _text_blob(
     return "\n".join(piece for piece in pieces if piece)
 
 
-def _select_skill(focus: str, blob: str, ranked: dict, findings: list[dict], goal_memory: dict) -> tuple[str, str]:
-    """Retired recommendation decision (S1 native skill loading, batch 3).
-
-    Kept only as a compatibility shim for callers that import it; it always
-    returns the empty recommendation. Skill selection belongs to the AI via
-    the native Skill tool (frontmatter descriptions route it); the pack only
-    publishes the on-disk skill catalog (``skill_catalog`` field).
-    """
-    return "", ""
-
-
-def _skill_frontmatter_field(skill_file: Path, field: str) -> str:
-    """Dependency-free read of one frontmatter field from a SKILL.md."""
-    try:
-        lines = skill_file.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return ""
-    if not lines or lines[0].strip() != "---":
-        return ""
-    for line in lines[1:]:
-        if line.strip() == "---":
-            break
-        match = re.match(rf"^{re.escape(field)}:\s*(.*?)\s*$", line)
-        if match:
-            return match.group(1).strip().strip("\"'")
-    return ""
-
-
-def _disk_skill_catalog(repo_root: Path | str = BASE_DIR) -> list[dict[str, str]]:
-    """Publish the FULL on-disk skill catalog (id + path + description).
-
-    Same shape as ``card_catalog``: selection authority stays with the AI.
-    Every ``skills/*/SKILL.md`` on disk is published with its frontmatter
-    description (the native routing surface); nothing depends on
-    ``tools/skill_catalog.py``, so adding a skill needs no tool change.
-    A temporary target repo without a skills/ tree falls back to the installed
-    repository, mirroring the card-registry fallback.
-    """
-    repo = Path(repo_root).resolve()
-    skills_root = repo / "skills"
-    if not skills_root.is_dir():
-        skills_root = BASE_DIR / "skills"
-    catalog: list[dict[str, str]] = []
-    try:
-        candidates = sorted(skills_root.glob("*/SKILL.md"))
-    except OSError:
-        return catalog
-    for skill_file in candidates:
-        skill_id = skill_file.parent.name
-        description = _skill_frontmatter_field(skill_file, "description")
-        catalog.append({
-            "id": skill_id,
-            "path": f"skills/{skill_id}/SKILL.md",
-            "description": description,
-        })
-    return catalog
-
-
 def _has_ssrf_internal_signal(text: str) -> bool:
     """识别“服务端取 URL + 内部目标”组合，避免把普通 internal/admin 误路由成 SSRF。"""
 
@@ -3080,12 +3022,12 @@ def build_context_pack(
         # Compatibility shells (S1 native skill loading, batch 3): the pack no
         # longer recommends a skill. Empty values stay schema-compatible with
         # old checkpoint/witness readers. Skills are selected and loaded by
-        # the AI via the native Skill tool; see the `skill_catalog` field.
+        # the AI via the native Skill tool; the platform's skill listing is
+        # the routing surface, the pack does not duplicate it.
         "selected_skill": "",
         "selected_skill_id": "",
         "why_this_skill": "",
         "skill_route": {},
-        "skill_catalog": _disk_skill_catalog(repo),
         "must_read": must_read,
         "knowledge_cards": cards,
         "card_catalog": _card_catalog(repo, registry=registry),
@@ -3173,14 +3115,7 @@ def format_context_pack(pack: dict) -> str:
         f"- Active goal: {pack.get('active_goal') or '-'}",
         f"- Current hypothesis: {pack.get('current_hypothesis') or '-'}",
         f"- Tech stack: {', '.join(pack.get('tech_stack') or []) or '-'}",
-        "- Skill recommendation retired (S1 native loading): select and load skills on demand via the Claude Code Skill tool. On-disk skill catalog:",
-        *_format_list([
-            "{id} — {description}".format(
-                id=item.get("id", ""),
-                description=item.get("description", ""),
-            )
-            for item in pack.get("skill_catalog", [])
-        ]),
+        "- Skill recommendation retired (S1 native loading): select and load skills on demand via the Claude Code Skill tool (the platform's skill listing is the routing surface).",
         "- Must read:",
         *_format_list(pack["must_read"]),
         "- Recommended knowledge cards:",

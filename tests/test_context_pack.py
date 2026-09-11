@@ -278,8 +278,9 @@ def test_skill_catalog_covers_repository_and_derives_primary_routes():
 
 def test_context_pack_retired_skill_recommendation_keeps_skill_catalog_import_free(tmp_path):
     """S1 native loading (batch 3): context_pack no longer imports skill_catalog
-    at all — the skill routing surface is the on-disk SKILL.md frontmatter,
-    published as `skill_catalog`, and the recommendation fields are empty
+    at all and does not duplicate the platform's skill listing — the routing
+    surface is the on-disk SKILL.md frontmatter surfaced by Claude Code's
+    native skill mechanism, and the recommendation fields are empty
     compatibility shells."""
     from tools import skill_catalog
 
@@ -288,17 +289,12 @@ def test_context_pack_retired_skill_recommendation_keeps_skill_catalog_import_fr
         assert not hasattr(context_pack_module, name), name
 
     pack = build_context_pack(tmp_path, target="target.com")
-    catalog = pack["skill_catalog"]
-    disk_ids = {
-        path.parent.name
-        for path in (Path(__file__).resolve().parents[1] / "skills").glob("*/SKILL.md")
-    }
-    assert {item["id"] for item in catalog} == disk_ids
-    assert {item["path"] for item in catalog} == {
-        entry["path"] for entry in SKILL_CATALOG.values()
-    }
-    for item in catalog:
-        assert item["description"].strip(), item["id"]
+    # The pack no longer publishes a skill catalog: the platform's skill
+    # listing is the single routing surface. Recommendation fields stay as
+    # empty compatibility shells.
+    assert "skill_catalog" not in pack
+    assert pack["selected_skill"] == ""
+    assert pack["skill_route"] == {}
 
     # skill_catalog.skill_route factory stays available for owner-generated
     # actions (param_discovery) and stays import-independent of the pack.
@@ -332,11 +328,11 @@ def test_skill_catalog_and_cards_stay_advisory_and_outside_must_read(tmp_path):
     assert "CLAUDE.md" not in pack["must_read"]
     assert "SKILL.md" not in pack["must_read"]
     assert "skills/runtime-protocol.md" in pack["must_read"]
-    # S1 native loading: no recommendation, but the full on-disk catalog is
-    # published for the AI to select from via the native Skill tool.
+    # S1 native loading: no recommendation and no duplicated catalog — the
+    # platform's native skill listing is the routing surface.
     assert pack["selected_skill"] == ""
     assert pack["skill_route"] == {}
-    assert {item["path"] for item in pack["skill_catalog"]} == catalog_paths
+    assert "skill_catalog" not in pack
     assert set(pack["must_read"]).isdisjoint(catalog_paths)
     assert len(pack["knowledge_cards"]) <= 2
     assert set(pack["knowledge_cards"]).isdisjoint(pack["must_read"])
@@ -382,22 +378,29 @@ def test_command_and_autopilot_state_recall_share_candidates(tmp_path, capsys, f
 
 
 def test_every_disk_skill_is_published_with_description_for_native_selection(tmp_path):
-    """S1 native loading (batch 3): every skill on disk is published with its
-    frontmatter description (the native routing surface), including direct-only
-    / reference-only / report-only modes — the pack no longer ranks them."""
-    pack = build_context_pack(tmp_path, target="target.com", focus="api-idor")
-
-    catalog = {item["id"]: item for item in pack["skill_catalog"]}
-    for skill_id in SKILL_CATALOG:
-        assert skill_id in catalog
-        assert catalog[skill_id]["description"].strip()
-        assert catalog[skill_id]["path"] == SKILL_CATALOG[skill_id]["path"]
+    """S1 native loading (batch 3): every skill on disk carries its frontmatter
+    description (the native routing surface) — including direct-only /
+    reference-only / report-only modes. The pack no longer ranks or lists them;
+    verify the routing surface is the SKILL.md frontmatter itself."""
+    repo = Path(__file__).resolve().parents[1]
+    for skill_id, entry in SKILL_CATALOG.items():
+        skill_file = repo / entry["path"]
+        assert skill_file.is_file(), skill_id
+        text = skill_file.read_text(encoding="utf-8", errors="replace").splitlines()
+        assert text and text[0].strip() == "---", skill_id
+        frontmatter = []
+        for line in text[1:]:
+            if line.strip() == "---":
+                break
+            frontmatter.append(line)
+        assert any(l.startswith("name:") and l.split(":", 1)[1].strip() == skill_id for l in frontmatter), skill_id
+        assert any(l.startswith("description:") and l.split(":", 1)[1].strip() for l in frontmatter), skill_id
 
 
 def test_native_pilot_recommendation_surface_fully_retired(tmp_path):
     """S1 batch 3 superseded the bb-methodology pilot: the pack recommends no
-    skill at all (empty compatibility shells) and publishes the full on-disk
-    catalog instead. The pilot-era `native_skills` field is gone."""
+    skill at all (empty compatibility shells) and does not duplicate the
+    platform's skill listing. The pilot-era `native_skills` field is gone."""
     _seed_recon(tmp_path, "target.com", ["https://api.target.com/"])
 
     pack = build_context_pack(tmp_path, target="target.com", focus="api idor")
@@ -408,10 +411,8 @@ def test_native_pilot_recommendation_surface_fully_retired(tmp_path):
     assert pack["why_this_skill"] == ""
     assert pack["skill_route"] == {}
     assert "native_skills" not in pack
+    assert "skill_catalog" not in pack
     assert "Skill recommendation retired (S1 native loading)" in output
-    catalog_ids = {item["id"] for item in pack["skill_catalog"]}
-    assert "bb-methodology" in catalog_ids
-    assert "web2-vuln-classes" in catalog_ids
 
 
 def test_memory_continuity_no_longer_drives_recommendation(tmp_path):
