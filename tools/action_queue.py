@@ -1753,12 +1753,18 @@ def add_manual_action(
 
 
 def ingest_checkpoint(repo_root: Path | str, target: str, *, checkpoint: dict | None = None) -> dict:
+    """Ingest checkpoint next_action_queue into the durable queue.
+
+    The checkpoint dict must be supplied by the caller (CLI builds it via the
+    Checkpoint owner; ``checkpoint.sync_checkpoint_action_queue`` passes its own
+    built checkpoint). Queue no longer imports Checkpoint — the dependency is
+    one-way: checkpoint -> action_queue.
+    """
     if checkpoint is None:
-        try:
-            from tools.checkpoint import build_checkpoint
-        except ImportError:  # pragma: no cover - direct tools/ execution
-            from checkpoint import build_checkpoint  # type: ignore
-        checkpoint = build_checkpoint(repo_root, target=target)
+        raise ValueError(
+            "ingest_checkpoint requires an explicit checkpoint dict; callers "
+            "own building it via tools/checkpoint.py (one-way dependency)"
+        )
 
     actions = [
         _checkpoint_item_to_action(target, item)
@@ -2382,7 +2388,13 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if args.command == "ingest-checkpoint":
-            result = ingest_checkpoint(repo, args.target)
+            try:
+                from tools.checkpoint import build_checkpoint
+            except ImportError:  # pragma: no cover - direct tools/ execution
+                from checkpoint import build_checkpoint  # type: ignore
+            result = ingest_checkpoint(
+                repo, args.target, checkpoint=build_checkpoint(repo, args.target)
+            )
             _print(result, as_json=args.json)
             return 0
 
