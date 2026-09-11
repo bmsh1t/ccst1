@@ -198,11 +198,102 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from target_memory import load_goal_memory  # type: ignore
 
 
+# Loop Guard 拆分（09-11-simple-efficient-refactor 批次 7）：re-export 保持
+# 全部外部 import 零破坏；函数体已纯搬动到 autopilot_loop_guard.py。
+try:
+    from tools.autopilot_loop_guard import (  # noqa: F401
+        HIGH_VALUE_OBSERVATION_KINDS,
+        _LOOP_GUARD_ROTATABLE_ACTIONS,
+        _ROTATION_OUTCOMES,
+        _STAGNANT_REASONS,
+        _endpoint_family,
+        _format_loop_guard_line,
+        _ledger_health_projection,
+        _load_loop_guard_projection,
+        _loop_control_projection,
+        _loop_guard_authoritative_reason,
+        _rotation_hint,
+        _rotation_target,
+        _stagnation_continuation,
+        _stagnation_dimensions,
+        _stagnation_obligation,
+        _stagnation_outcome,
+        _stagnation_owner_obligations,
+        _stagnation_text,
+        build_loop_guard_projection,
+        stagnation_fingerprint,
+    )
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from autopilot_loop_guard import (  # type: ignore  # noqa: F401
+        HIGH_VALUE_OBSERVATION_KINDS,
+        _LOOP_GUARD_ROTATABLE_ACTIONS,
+        _ROTATION_OUTCOMES,
+        _STAGNANT_REASONS,
+        _endpoint_family,
+        _format_loop_guard_line,
+        _ledger_health_projection,
+        _load_loop_guard_projection,
+        _loop_control_projection,
+        _loop_guard_authoritative_reason,
+        _rotation_hint,
+        _rotation_target,
+        _stagnation_continuation,
+        _stagnation_dimensions,
+        _stagnation_obligation,
+        _stagnation_outcome,
+        _stagnation_owner_obligations,
+        _stagnation_text,
+        build_loop_guard_projection,
+        stagnation_fingerprint,
+    )
 
+
+# artifact reader 拆分（批次 7）：re-export 保持外部 import 零破坏。
+try:
+    from tools.autopilot_state_read import (  # noqa: F401
+        _JS_TERMINAL_DISPOSITIONS,
+        _SQL_MATRIX_LANES,
+        _SQL_MATRIX_STATUSES,
+        _bounded_count,
+        _has_any_artifact,
+        _has_js_read_signal,
+        _load_case_state_projection,
+        _load_js_intel_projection,
+        _load_json_inject_projection,
+        _load_scanner_summary_projection,
+        _load_sql_matrix_projection,
+        _load_sql_matrix_projections,
+        _probe_cursor_projection,
+        _probe_cursor_valid,
+        _read_batch_lines,
+        _read_batch_manifest_completed,
+        _read_batch_ranked_targets,
+        load_target_goal_memory,
+    )
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from autopilot_state_read import (  # type: ignore  # noqa: F401
+        _JS_TERMINAL_DISPOSITIONS,
+        _SQL_MATRIX_LANES,
+        _SQL_MATRIX_STATUSES,
+        _bounded_count,
+        _has_any_artifact,
+        _has_js_read_signal,
+        _load_case_state_projection,
+        _load_js_intel_projection,
+        _load_json_inject_projection,
+        _load_scanner_summary_projection,
+        _load_sql_matrix_projection,
+        _load_sql_matrix_projections,
+        _probe_cursor_projection,
+        _probe_cursor_valid,
+        _read_batch_lines,
+        _read_batch_manifest_completed,
+        _read_batch_ranked_targets,
+        load_target_goal_memory,
+    )
 
 PLACEHOLDER_OBJECT_SEGMENTS = {"nan", "undefined", "null", "none", "object", "[object object]"}
 DECISION_PROJECTION_SCHEMA_VERSION = 1
-
 
 
 def _has_placeholder_object_segment(value: str) -> bool:
@@ -399,7 +490,6 @@ APP_LIKE_HINT_TOKENS = (
     "websocket",
     "client-side",
 )
-HIGH_VALUE_OBSERVATION_KINDS = frozenset({"exposure", "infra"})
 
 
 def _checkpoint_round_projection(
@@ -501,493 +591,6 @@ def _checkpoint_queue_health(witness: dict, queue: dict) -> dict:
             "current_next_id": current_next,
         }
     return {"status": "unverified", "reason": "checkpoint predates queue fingerprint"}
-
-
-def _load_json_inject_projection(repo_root: str, target: str) -> dict:
-    """Read only the bounded JSON probe summary; malformed data stays partial."""
-    path = Path(repo_root) / "findings" / target_storage_key(target) / "poc" / "json_inject" / "summary.json"
-    projection = {"status": "not_run", "path": str(path), "present": path.is_file()}
-    if not path.is_file():
-        return projection
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        projection.update({"status": "partial", "reason": "malformed_summary"})
-        return projection
-    if not isinstance(payload, dict) or payload.get("kind") != "json_inject_summary":
-        projection.update({"status": "partial", "reason": "invalid_summary"})
-        return projection
-    if canonical_target_value(str(payload.get("target") or "")) != canonical_target_value(target):
-        projection.update({"status": "partial", "reason": "target_mismatch"})
-        return projection
-    status = str(payload.get("status") or "partial")
-    fingerprint = str(payload.get("input_fingerprint") or "")
-    if (
-        int(payload.get("schema_version", 0) or 0) < 2
-        or status not in {"complete_no_hit", "candidate_pending", "partial", "invalid_input"}
-        or not re.fullmatch(r"[0-9a-f]{64}", fingerprint)
-        or (
-            str(payload.get("waf_plan_sha256") or "")
-            and not re.fullmatch(r"[0-9a-f]{64}", str(payload.get("waf_plan_sha256") or ""))
-        )
-    ):
-        status = "partial"
-    valid_source_paths: list[str] = []
-    valid_source_refs: list[dict[str, str]] = []
-    repo = Path(repo_root).resolve()
-    target_key = target_storage_key(target)
-    for binding in payload.get("source_bindings") or []:
-        if not isinstance(binding, dict):
-            status = "partial"
-            projection["reason"] = "stale_source_binding"
-            break
-        source = Path(str(binding.get("path") or ""))
-        source = source if source.is_absolute() else Path(repo_root) / source
-        try:
-            relative = source.resolve().relative_to(repo)
-            current = hashlib.sha256(source.read_bytes()).hexdigest()
-        except (OSError, ValueError):
-            current = ""
-            relative = None
-        if (
-            current != str(binding.get("sha256") or "")
-            or relative is None
-            or target_key not in relative.parts
-        ):
-            status = "partial"
-            projection["reason"] = "stale_source_binding"
-            break
-        binding_path = str(binding.get("path") or "")[:300]
-        valid_source_paths.append(binding_path)
-        kind = str(binding.get("kind") or "").strip().lower()
-        if kind in {"endpoints", "js-intel", "waf-plan"}:
-            valid_source_refs.append({"kind": kind, "path": binding_path})
-    source_bindings = payload.get("source_bindings")
-    if not isinstance(source_bindings, list):
-        source_bindings = []
-    projection.update({
-        "status": status,
-        "schema_version": int(payload.get("schema_version", 0) or 0),
-        "input_fingerprint": fingerprint,
-        "endpoint_count": int(payload.get("endpoint_count", 0) or 0),
-        "probed_endpoint_count": int(payload.get("probed_endpoint_count", 0) or 0),
-        "request_count": int(payload.get("request_count", 0) or 0),
-        "hit_count": int(payload.get("hit_count", 0) or 0),
-        "waf_observation_count": int(payload.get("waf_observation_count", 0) or 0),
-        "batch_start_endpoint_index": _bounded_count(payload.get("batch_start_endpoint_index")),
-        "batch_tested_endpoint_count": _bounded_count(payload.get("batch_tested_endpoint_count")),
-        "resumed": bool(payload.get("resumed")),
-        "cursor": _probe_cursor_projection(payload.get("cursor")),
-        "waf_plan_ref": str(payload.get("waf_plan_ref") or "")[:300],
-        "waf_plan_sha256": str(payload.get("waf_plan_sha256") or ""),
-        "waf_plan_variant_count": _bounded_count(payload.get("waf_plan_variant_count")),
-        "waf_ai_variants_executed": _bounded_count(payload.get("waf_ai_variants_executed")),
-        "transport_error_count": int(payload.get("transport_error_count", 0) or 0),
-        "source_paths": valid_source_paths[:3],
-        "source_refs": valid_source_refs[:3],
-        "skipped": {
-            key: int((payload.get("skipped") or {}).get(key, 0) or 0)
-            for key in ("out_of_scope", "unsupported_method", "invalid_url", "out_of_scope_redirect")
-        },
-    })
-    if payload.get("cursor") is not None and not _probe_cursor_valid(
-        payload.get("cursor"), fingerprint, int(payload.get("endpoint_count", 0) or 0)
-    ):
-        projection["status"] = "partial"
-        projection["reason"] = "invalid_cursor"
-    return projection
-
-
-def _load_scanner_summary_projection(repo_root: str, target: str) -> dict:
-    """Load bounded scanner lane accounting without treating candidates as tests."""
-    path = Path(repo_root) / "findings" / target_storage_key(target) / "summary.json"
-    projection = {"status": "missing", "path": str(path), "lanes": {}}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return projection
-    except (OSError, json.JSONDecodeError):
-        return {**projection, "status": "partial"}
-    if not isinstance(payload, dict):
-        return {**projection, "status": "partial"}
-    try:
-        if canonical_target_value(str(payload.get("target") or "")) != canonical_target_value(target):
-            return {**projection, "status": "partial"}
-    except ValueError:
-        return {**projection, "status": "partial"}
-    raw_lanes = payload.get("lane_coverage")
-    if not isinstance(raw_lanes, dict):
-        return projection
-    lanes = {}
-    projection_status = "valid"
-    for name, item in raw_lanes.items():
-        if not isinstance(item, dict):
-            projection_status = "partial"
-            continue
-        accounting_valid = True
-        try:
-            values = [item.get(key) for key in ("input_total", "selected", "remaining")]
-            if any(isinstance(value, bool) for value in values):
-                raise ValueError
-            input_total, selected, remaining = (int(value) for value in values)
-            accounting_valid = (
-                input_total >= 0
-                and selected >= 0
-                and remaining >= 0
-                and selected <= input_total
-                and remaining <= input_total
-                and input_total == selected + remaining
-            )
-        except (TypeError, ValueError):
-            input_total = selected = 0
-            try:
-                remaining = max(0, int(item.get("remaining", 0) or 0))
-            except (TypeError, ValueError):
-                remaining = 0
-            accounting_valid = False
-        if not accounting_valid:
-            projection_status = "partial"
-        lanes[str(name)] = {
-            "lane": str(item.get("lane") or name),
-            "execution_kind": str(item.get("execution_kind") or "unknown"),
-            "status": str(item.get("status") or "unknown"),
-            "input_total": input_total,
-            "selected": selected,
-            "remaining": remaining,
-            "continuation": " ".join(str(item.get("continuation") or "").split()),
-            "closure_blocking": bool(item.get("closure_blocking")),
-            "accounting_valid": accounting_valid,
-        }
-    return {"status": projection_status, "path": str(path), "lanes": lanes}
-
-
-_SQL_MATRIX_STATUSES = {"complete_no_hit", "candidate_pending", "partial", "invalid_input"}
-_SQL_MATRIX_LANES = {"query", "form"}
-
-
-def _bounded_count(value: object) -> int:
-    try:
-        value = int(value or 0)
-    except (TypeError, ValueError):
-        return 0
-    return max(0, min(value, 1_000_000))
-
-
-def _probe_cursor_projection(value: object) -> dict:
-    if not isinstance(value, dict):
-        return {}
-    deferred = value.get("deferred_endpoint_indices")
-    return {
-        "schema_version": _bounded_count(value.get("schema_version")),
-        "input_fingerprint": str(value.get("input_fingerprint") or "")[:64],
-        "endpoint_count": _bounded_count(value.get("endpoint_count")),
-        "next_endpoint_index": _bounded_count(value.get("next_endpoint_index")),
-        "deferred_endpoint_count": len(deferred) if isinstance(deferred, list) else 0,
-        "remaining_endpoint_count": _bounded_count(value.get("remaining_endpoint_count")),
-        "coverage_complete": bool(value.get("coverage_complete")),
-    }
-
-
-def _probe_cursor_valid(value: object, input_fingerprint: str, endpoint_count: int) -> bool:
-    if not isinstance(value, dict) or value.get("schema_version") != 1:
-        return False
-    if value.get("input_fingerprint") != input_fingerprint or value.get("endpoint_count") != endpoint_count:
-        return False
-    start_index = value.get("next_endpoint_index")
-    deferred = value.get("deferred_endpoint_indices")
-    if not isinstance(value.get("coverage_complete"), bool):
-        return False
-    if isinstance(start_index, bool) or not 0 <= start_index <= endpoint_count:
-        return False
-    if not isinstance(deferred, list) or any(
-        isinstance(item, bool) or not isinstance(item, int) or not 0 <= item < endpoint_count
-        for item in deferred
-    ) or len(set(deferred)) != len(deferred):
-        return False
-    remaining = value.get("remaining_endpoint_count")
-    expected = len(deferred) + max(0, endpoint_count - start_index)
-    return (
-        isinstance(remaining, int)
-        and not isinstance(remaining, bool)
-        and remaining == expected
-        and value.get("coverage_complete") == (expected == 0)
-    )
-
-
-def _load_sql_matrix_projection(repo_root: str, target: str, lane: str | None = None) -> dict:
-    """Read a secret-free query/form SQL summary and reject stale inputs."""
-    if lane is None:
-        return _load_sql_matrix_projections(repo_root, target)
-    path = Path(repo_root) / "findings" / target_storage_key(target) / "poc" / "sql_matrix" / lane / "summary.json"
-    projection = {"status": "not_run", "lane": lane, "path": str(path), "present": path.is_file()}
-    if lane not in _SQL_MATRIX_LANES:
-        return {"status": "partial", "lane": lane, "path": str(path), "reason": "invalid_lane", "present": False}
-    if not path.is_file():
-        return projection
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        projection.update({"status": "partial", "reason": "malformed_summary"})
-        return projection
-    if not isinstance(payload, dict) or payload.get("kind") != "sql_matrix_summary":
-        projection.update({"status": "partial", "reason": "invalid_summary"})
-        return projection
-    if canonical_target_value(str(payload.get("target") or "")) != canonical_target_value(target):
-        projection.update({"status": "partial", "reason": "target_mismatch"})
-        return projection
-    if str(payload.get("lane") or "").strip().lower() != lane:
-        projection.update({"status": "partial", "reason": "lane_mismatch"})
-        return projection
-    status = str(payload.get("status") or "partial").strip().lower()
-    fingerprint = str(payload.get("input_fingerprint") or "")
-    reason = ""
-    try:
-        schema_version = int(payload.get("schema_version", 0) or 0)
-    except (TypeError, ValueError):
-        schema_version = 0
-    if schema_version < 1:
-        reason = "invalid_schema"
-    elif status not in _SQL_MATRIX_STATUSES:
-        reason = "invalid_status"
-    elif not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
-        reason = "missing_input_fingerprint"
-    elif str(payload.get("waf_plan_sha256") or "") and not re.fullmatch(
-        r"[0-9a-f]{64}", str(payload.get("waf_plan_sha256") or "")
-    ):
-        reason = "invalid_waf_plan_hash"
-    bindings = payload.get("source_bindings")
-    if not isinstance(bindings, list) or not bindings:
-        reason = reason or "missing_source_binding"
-    else:
-        for binding in bindings:
-            if not isinstance(binding, dict) or not str(binding.get("path") or "") or not re.fullmatch(r"[0-9a-f]{64}", str(binding.get("sha256") or "")):
-                reason = "invalid_source_binding"
-                break
-            source = Path(str(binding["path"]))
-            source = source if source.is_absolute() else Path(repo_root) / source
-            try:
-                current = hashlib.sha256(source.read_bytes()).hexdigest()
-            except OSError:
-                current = ""
-            if current != str(binding.get("sha256") or ""):
-                reason = "stale_source_binding"
-                break
-    if payload.get("cursor") is not None and not _probe_cursor_valid(
-        payload.get("cursor"), fingerprint, int(payload.get("endpoint_count", 0) or 0)
-    ):
-        reason = reason or "invalid_cursor"
-    if reason:
-        status = "partial"
-    candidates = []
-    for item in payload.get("hits") or []:
-        if not isinstance(item, dict):
-            continue
-        endpoint = canonical_endpoint_path(str(item.get("url") or ""))
-        if endpoint:
-            candidates.append({
-                "endpoint": endpoint,
-                "field": str(item.get("field") or "")[:120],
-                "class": str(item.get("class") or "")[:80],
-                "signal": str(item.get("signal") or "")[:160],
-            })
-    projection.update({
-        "status": status,
-        "schema_version": _bounded_count(schema_version),
-        "input_fingerprint": fingerprint,
-        "endpoint_count": _bounded_count(payload.get("endpoint_count")),
-        "probed_endpoint_count": _bounded_count(payload.get("probed_endpoint_count")),
-        "request_count": _bounded_count(payload.get("request_count")),
-        "request_budget": _bounded_count(payload.get("request_budget")),
-        "hit_count": _bounded_count(payload.get("hit_count")),
-        "candidate_count": _bounded_count(payload.get("hit_count")),
-        "waf_observation_count": _bounded_count(payload.get("waf_observation_count")),
-        "batch_start_endpoint_index": _bounded_count(payload.get("batch_start_endpoint_index")),
-        "batch_tested_endpoint_count": _bounded_count(payload.get("batch_tested_endpoint_count")),
-        "resumed": bool(payload.get("resumed")),
-        "cursor": _probe_cursor_projection(payload.get("cursor")),
-        "waf_plan_ref": str(payload.get("waf_plan_ref") or "")[:300],
-        "waf_plan_sha256": str(payload.get("waf_plan_sha256") or ""),
-        "waf_plan_variant_count": _bounded_count(payload.get("waf_plan_variant_count")),
-        "waf_ai_variants_executed": _bounded_count(payload.get("waf_ai_variants_executed")),
-        "transport_error_count": _bounded_count(payload.get("transport_error_count")),
-        "budget_exhausted": bool(payload.get("budget_exhausted")),
-        "candidates": candidates[:20],
-        "source_paths": [
-            str(binding.get("path") or "")[:300]
-            for binding in (bindings or [])[:3]
-            if isinstance(binding, dict) and str(binding.get("path") or "")
-        ],
-    })
-    if reason:
-        projection["reason"] = reason
-    return projection
-
-
-def _load_sql_matrix_projections(repo_root: str, target: str) -> dict:
-    return {lane: _load_sql_matrix_projection(repo_root, target, lane) for lane in sorted(_SQL_MATRIX_LANES)}
-
-
-_JS_TERMINAL_DISPOSITIONS = {"tested", "blocked", "dead_end", "not_applicable"}
-
-
-def _load_js_intel_projection(repo_root: str, target: str) -> dict:
-    """Keep js-reader's prepared and analyzed lifecycle distinct."""
-    root = Path(repo_root) / "findings" / target_storage_key(target) / "js_intel"
-    materials = root / "materials.json"
-    summary = root / "materials_summary.md"
-    hypotheses = root / "hypotheses.json"
-    disposition = root / "disposition.json"
-    projection = {"status": "not_run", "path": str(materials), "present": False}
-    if materials.is_file() or summary.is_file():
-        projection.update({"status": "prepared", "present": True, "path": str(materials if materials.is_file() else summary)})
-    if materials.is_file():
-        try:
-            material_payload = json.loads(materials.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            projection.update({"status": "partial", "reason": "malformed_materials"})
-            return projection
-        if isinstance(material_payload, dict) and material_payload.get("target"):
-            if canonical_target_value(str(material_payload.get("target"))) != canonical_target_value(target):
-                projection.update({"status": "partial", "reason": "target_mismatch"})
-                return projection
-    if disposition.is_file():
-        try:
-            payload = json.loads(disposition.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            projection.update({"status": "partial", "reason": "malformed_disposition"})
-            return projection
-        disposition_status = str(payload.get("status") or "").strip().lower() if isinstance(payload, dict) else ""
-        if disposition_status not in _JS_TERMINAL_DISPOSITIONS:
-            projection.update({"status": "partial", "reason": "invalid_disposition"})
-            return projection
-        if not isinstance(payload, dict) or not str(payload.get("evidence_ref") or payload.get("reason") or "").strip():
-            projection.update({"status": "partial", "reason": "disposition_missing_evidence"})
-            return projection
-        projection.update({"status": disposition_status, "disposition_path": str(disposition)})
-        return projection
-    payload = None
-    if hypotheses.is_file():
-        try:
-            payload = json.loads(hypotheses.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            projection.update({"status": "partial", "reason": "malformed_hypotheses", "hypotheses_path": str(hypotheses)})
-            return projection
-        # The Claude js-reader contract is a structured report, not a generic
-        # ``hypotheses`` list.  Treat its lead/endpoints fields as analysis
-        # evidence so a valid report with no promoted lead is not misclassified
-        # as an empty or malformed artifact.
-        values = None
-        analysis_format = "hypotheses"
-        for field in ("hypotheses", "attack_surface_leads", "ranked_leads"):
-            candidate = payload.get(field) if isinstance(payload, dict) else None
-            if not isinstance(candidate, list):
-                continue
-            if values is None or not values:
-                values = candidate
-                analysis_format = field
-            if candidate:
-                break
-        report_keys = {
-            "endpoints",
-            "auth_model",
-            "sinks",
-            "graphql_operations",
-            "attack_surface_leads",
-            "noise_observed",
-        }
-        canonical_report = isinstance(payload, dict) and bool(report_keys.intersection(payload))
-        if values is None and canonical_report:
-            values = []
-        if not isinstance(values, list) or (not values and not canonical_report):
-            projection.update({"status": "partial", "reason": "hypotheses_empty", "hypotheses_path": str(hypotheses)})
-            return projection
-        bindings = payload.get("source_bindings") if isinstance(payload, dict) else None
-        if bindings is not None:
-            if not isinstance(bindings, list) or not bindings:
-                projection.update({"status": "partial", "reason": "invalid_source_binding", "hypotheses_path": str(hypotheses)})
-                return projection
-            for binding in bindings:
-                if not isinstance(binding, dict) or not str(binding.get("path") or ""):
-                    projection.update({"status": "partial", "reason": "invalid_source_binding", "hypotheses_path": str(hypotheses)})
-                    return projection
-                source = Path(str(binding["path"]))
-                source = source if source.is_absolute() else Path(repo_root) / source
-                try:
-                    current = hashlib.sha256(source.read_bytes()).hexdigest()
-                except OSError:
-                    current = ""
-                if current != str(binding.get("sha256") or ""):
-                    projection.update({"status": "partial", "reason": "stale_source_binding", "hypotheses_path": str(hypotheses)})
-                    return projection
-        projection.update({
-            "status": "analyzed",
-            "hypotheses_path": str(hypotheses),
-            "hypothesis_count": min(len(values), 100),
-            "analysis_format": analysis_format,
-        })
-    return projection
-
-
-def _load_case_state_projection(
-    repo_root: str,
-    target: str,
-    *,
-    case_state_summary: dict | None = None,
-) -> dict:
-    """Load the bounded, secret-free Case State continuation."""
-    path = case_state_path(repo_root, target)
-    if not path.is_file():
-        return {"status": "missing", "path": str(path)}
-    if isinstance(case_state_summary, dict):
-        snapshot_target = canonical_target_value(str(case_state_summary.get("target") or ""))
-        if snapshot_target != canonical_target_value(target):
-            raise ValueError("case state snapshot target does not match requested target")
-    payload = (
-        case_state_summary
-        if isinstance(case_state_summary, dict)
-        else build_case_state_summary(repo_root, target)
-    )
-    top = payload.get("top_next_action") if isinstance(payload.get("top_next_action"), dict) else {}
-    canonical_conflict_count = int(payload.get("canonical_conflict_count", 0) or 0)
-    if canonical_conflict_count and str(top.get("next_action") or "none") == "none":
-        top = {
-            "next_action": "reconcile_case_state",
-            "ready": False,
-            "why_now": "Case State marks a backlog terminal while canonical findings are finalized",
-            "write_back": "reconcile the backlog outcome with the canonical finding owner before closure",
-        }
-    allowed = {
-        "next_action", "ready", "score", "backlog_id", "hypothesis_id", "runner", "hypothesis",
-        "chain_context", "why_now", "vuln_class", "endpoint", "owner_actor",
-        "peer_actor", "object_ref", "object_type", "required_evidence",
-        "optional_evidence_gaps", "missing_evidence", "redacted_command",
-        "downgrade_rule", "stop_condition", "chain_extensions_if_blocked", "recovery_next_action", "write_back",
-        "param", "baseline_value", "variant_value", "expect_marker", "method",
-    }
-    projected_top = {key: value for key, value in top.items() if key in allowed}
-    metadata = project_hypothesis_metadata(top.get("metadata"))
-    if metadata:
-        projected_top["metadata"] = metadata
-    return {
-        "status": "valid",
-        "path": str(path),
-        "authz_coverage": payload.get("authz_coverage") if isinstance(payload.get("authz_coverage"), dict) else {},
-        "canonical_conflict_count": canonical_conflict_count,
-        "canonical_conflicts": payload.get("canonical_conflicts") if isinstance(payload.get("canonical_conflicts"), list) else [],
-        **{
-            key: int(payload.get(key, 0) or 0)
-            for key in (
-                "actors", "sessions", "objects", "open_hypotheses",
-                "pending_validation_backlog",
-            )
-        },
-        "top_next_action": projected_top,
-    }
-
-
-def load_target_goal_memory(repo_root: str, target: str) -> dict:
-    """Load the four-layer target memory for autopilot bootstrapping."""
-    return load_goal_memory(repo_root, target)
 
 
 def _matches_resume_target(url: str, resume_targets: list[str]) -> bool:
@@ -1632,22 +1235,6 @@ def _build_pivot_hint(
     return ""
 
 
-def _has_any_artifact(*paths: str) -> bool:
-    """Return whether any provided artifact path exists and is non-empty."""
-    for path in paths:
-        if not path:
-            continue
-        if os.path.isfile(path):
-            try:
-                if os.path.getsize(path) > 0:
-                    return True
-            except OSError:
-                continue
-        elif os.path.isdir(path):
-            return True
-    return False
-
-
 def _has_browser_mcp_signal(surface_context: dict, ranked: dict) -> bool:
     """Return whether cached recon looks app-like enough to justify browser probing."""
     titles = [
@@ -1672,17 +1259,6 @@ def _has_browser_mcp_signal(surface_context: dict, ranked: dict) -> bool:
         if any(token in value for token in APP_LIKE_HINT_TOKENS):
             return True
     return False
-
-
-def _has_js_read_signal(recon_dir: str, surface_context: dict) -> bool:
-    """Return whether cached JS artifacts exist and are worth handing to js-reader."""
-    if surface_context.get("js_endpoints"):
-        return True
-    return _has_any_artifact(
-        os.path.join(recon_dir, "urls", "js_files.txt"),
-        os.path.join(recon_dir, "js", "linkfinder_endpoints.txt"),
-        os.path.join(recon_dir, "js", "potential_secrets.txt"),
-    )
 
 
 EXPOSURE_SUMMARY_KEYS = (
@@ -2475,85 +2051,6 @@ def _fresh_recon_needs_surface_context(
     return workflow in {"run_recon", "recon"} or mode == "recon_only"
 
 
-def _read_batch_lines(path: Path) -> list[str]:
-    """Read a small batch index file with stable de-duplication."""
-    try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return []
-    values = []
-    for line in lines:
-        value = line.strip().strip("\ufeff").rstrip("/").lower()
-        if value.startswith("*."):
-            value = value[2:]
-        if value:
-            values.append(value)
-    return list(dict.fromkeys(values))
-
-
-def _read_batch_manifest_completed(path: Path) -> list[str]:
-    """Recover completed domains from JSONL when the compact list is absent."""
-    completed = []
-    try:
-        handle = path.open(encoding="utf-8", errors="replace")
-    except OSError:
-        return completed
-    with handle:
-        for raw in handle:
-            try:
-                item = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(item, dict) or item.get("status") != "ok":
-                continue
-            target = str(item.get("target") or "").strip().rstrip("/").lower()
-            if target.startswith("*."):
-                target = target[2:]
-            if target:
-                completed.append(target)
-    return list(dict.fromkeys(completed))
-
-
-def _read_batch_ranked_targets(path: Path, completed: list[str]) -> list[dict]:
-    """Return AI handoff candidates that are backed by completed recon."""
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        payload = []
-    completed_set = set(completed)
-    ranked = []
-    for item in payload if isinstance(payload, list) else []:
-        if not isinstance(item, dict):
-            continue
-        target = str(item.get("target") or "").strip().rstrip("/").lower()
-        if target.startswith("*."):
-            target = target[2:]
-        if target not in completed_set:
-            continue
-        try:
-            score = int(item.get("score", 0) or 0)
-        except (TypeError, ValueError):
-            score = 0
-        ranked.append({
-            "target": target,
-            "score": score,
-            "top_signals": item.get("top_signals") or [],
-            "recon_dir": str(item.get("recon_dir") or f"recon/{target_storage_key(target)}"),
-        })
-    ranked_targets = {item["target"] for item in ranked}
-    ranked.extend(
-        {
-            "target": target,
-            "score": 0,
-            "top_signals": [],
-            "recon_dir": f"recon/{target_storage_key(target)}",
-        }
-        for target in completed
-        if target not in ranked_targets
-    )
-    return ranked
-
-
 def _build_batch_autopilot_state(repo_root: str, target: str, resolved_target: str) -> dict:
     """Build the list-only recon/handoff state without treating the index as a target."""
     storage_key = target_storage_key(resolved_target)
@@ -3260,193 +2757,6 @@ _TERMINAL_CLOSURE_ACTIONS = {
     "batch_failed",
     "recon_no_live_hosts",
 }
-_ROTATION_OUTCOMES = {"tested_clean", "dead_end"}
-_LOOP_GUARD_ROTATABLE_ACTIONS = {
-    "handoff",
-    "continue_last_focus",
-    "resume_untested",
-    "hunt_p1",
-    "hunt_p2",
-    "guard_safe_pivot",
-}
-_UUID_SEGMENT_RE = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-    re.IGNORECASE,
-)
-_VARIABLE_PATH_SEGMENT_RE = re.compile(r"^(?:\d+|[0-9a-f]{12,})$", re.IGNORECASE)
-
-
-def _endpoint_family(endpoint: object) -> str:
-    """Collapse common object-id path segments for the advisory rotation check."""
-    path = canonical_endpoint_path(str(endpoint or ""))
-    return "/".join(
-        ":id" if _UUID_SEGMENT_RE.fullmatch(segment) or _VARIABLE_PATH_SEGMENT_RE.fullmatch(segment) else segment
-        for segment in path.split("/")
-    ) or "/"
-
-
-def _rotation_hint(entries: list[dict]) -> dict:
-    recent = entries[-3:]
-    if len(recent) != 3 or not all(isinstance(item, dict) for item in recent):
-        return {}
-    outcomes = {str(item.get("result") or "").strip().lower() for item in recent}
-    endpoints = [str(item.get("endpoint") or item.get("url") or "").strip() for item in recent]
-    if not all(endpoints):
-        return {}
-    families = {_endpoint_family(endpoint) for endpoint in endpoints}
-    vuln_classes = {str(item.get("vuln_class") or "").strip() for item in recent}
-    if outcomes <= _ROTATION_OUTCOMES and len(families) == len(vuln_classes) == 1 and next(iter(vuln_classes)):
-        return {
-            "reason": "three_homogeneous_clean_outcomes",
-            "endpoint_family": next(iter(families)),
-            "vuln_class": next(iter(vuln_classes)),
-            "action": "rotate_to_adjacent_high_value_lane",
-        }
-    return {}
-
-
-def _rotation_target(state: dict, blocked_family: str) -> dict:
-    """Choose one bounded adjacent Surface candidate without changing its rank."""
-    candidates = state.get("surface_review_candidates") or state.get("recommended_targets") or []
-    target = str(state.get("resolved_target") or state.get("target") or "")
-    eligible = [
-        item
-        for item in candidates
-        if isinstance(item, dict)
-        and (url := str(item.get("url") or "").strip())
-        and url_belongs_to_target(url, target)
-        and _endpoint_family(url) != blocked_family
-    ]
-    if not eligible:
-        return {}
-    candidate = next((item for item in eligible if item.get("new_observation")), eligible[0])
-    return {
-        key: candidate[key]
-        for key in ("url", "host", "suggested", "score", "review_reason", "new_observation")
-        if key in candidate
-    }
-
-
-def _loop_guard_authoritative_reason(state: dict) -> str:
-    """Keep a stale handoff from rotating past durable control-plane work."""
-    if state.get("recon_in_progress") or state.get("scan_in_progress"):
-        return "authoritative_runtime_work"
-    if (
-        state.get("active_action_queue_count")
-        or state.get("action_queue_next")
-        or state.get("validation_runner_next")
-    ):
-        return "authoritative_durable_work"
-    case_state = state.get("case_state") or {}
-    if (
-        int(case_state.get("pending_validation_backlog", 0) or 0) > 0
-        or int(case_state.get("open_hypotheses", 0) or 0) > 0
-        or str((case_state.get("top_next_action") or {}).get("next_action") or "none") != "none"
-    ):
-        return "authoritative_case_state_work"
-    if state.get("root_finding_claim_next") or state.get("memory_candidate_next"):
-        return "authoritative_finding_work"
-    findings = state.get("structured_findings") or {}
-    if isinstance(findings, dict) and any(
-        findings.get(key)
-        for key in (
-            "next_owner_revalidation",
-            "next_validation",
-            "draft_completion_pending",
-            "validated_pending_report",
-        )
-    ):
-        return "authoritative_finding_work"
-    intel = state.get("intel_continuation") or {}
-    if isinstance(intel, dict) and intel.get("blocked"):
-        return "authoritative_intel_work"
-    return ""
-
-
-def _ledger_health_projection(diagnostic: dict) -> dict:
-    """Keep Ledger damage visible without serializing raw rows or paths."""
-    if not isinstance(diagnostic, dict):
-        return {}
-    status = str(diagnostic.get("status") or "missing").strip().lower()
-    health = {
-        "status": status,
-        "invalid_count": int(diagnostic.get("invalid_count", 0) or 0),
-        "invalid_rows": [
-            item for item in (diagnostic.get("invalid_rows") or [])[:5]
-            if isinstance(item, dict)
-        ],
-        "last_valid_offset": int(diagnostic.get("last_valid_offset", 0) or 0),
-    }
-    if status == "unreadable" and diagnostic.get("read_error"):
-        health["read_error"] = " ".join(str(diagnostic["read_error"]).split())[:240]
-    return health
-
-
-def build_loop_guard_projection(state: dict, ledger_entries: list[dict] | None = None) -> dict:
-    """Return a read-only per-iteration rotation decision from recent evidence."""
-    action = str(state.get("next_action") or "handoff")
-    ledger_health = state.get("_ledger_health") if isinstance(state.get("_ledger_health"), dict) else {}
-    ledger_status = str(ledger_health.get("status") or "missing").strip().lower()
-    if ledger_status in {"partial", "unreadable"}:
-        result = {
-            "verdict": "continue",
-            "reason": f"ledger_{ledger_status}",
-            "endpoint_family": "",
-            "vuln_class": "",
-            "next_action": action,
-            "rotation_target": {},
-        }
-        result["ledger_health"] = ledger_health
-        return result
-    authoritative_reason = _loop_guard_authoritative_reason(state)
-    if authoritative_reason:
-        result = {
-            "verdict": "continue",
-            "reason": authoritative_reason,
-            "endpoint_family": "",
-            "vuln_class": "",
-            "next_action": action,
-            "rotation_target": {},
-        }
-        if ledger_health:
-            result["ledger_health"] = ledger_health
-        return result
-    hint = _rotation_hint(ledger_entries or [])
-    if not hint:
-        result = {
-            "verdict": "continue",
-            "reason": "insufficient_homogeneous_outcomes",
-            "endpoint_family": "",
-            "vuln_class": "",
-            "next_action": action,
-            "rotation_target": {},
-        }
-        if ledger_health:
-            result["ledger_health"] = ledger_health
-        return result
-    if action not in _LOOP_GUARD_ROTATABLE_ACTIONS:
-        result = {
-            "verdict": "continue",
-            "reason": "authoritative_next_action",
-            "endpoint_family": hint["endpoint_family"],
-            "vuln_class": hint["vuln_class"],
-            "next_action": action,
-            "rotation_target": {},
-        }
-        if ledger_health:
-            result["ledger_health"] = ledger_health
-        return result
-    result = {
-        "verdict": "rotate",
-        "reason": hint["reason"],
-        "endpoint_family": hint["endpoint_family"],
-        "vuln_class": hint["vuln_class"],
-        "next_action": hint["action"],
-        "rotation_target": _rotation_target(state, hint["endpoint_family"]),
-    }
-    if ledger_health:
-        result["ledger_health"] = ledger_health
-    return result
 
 
 def _matrix_is_usable_for_closure(matrix: object) -> bool:
@@ -5648,302 +4958,6 @@ def build_closure_projection(
     return result
 
 
-_STAGNANT_REASONS = {
-    "browser_evidence_partial",
-    "browser_evidence_required",
-    "observation_inventory_partial",
-    "observation_high_value_pending",
-    "source_evidence_partial",
-    "js_evidence_partial",
-    "surface_projection_pending",
-    "intel_evidence_blocked",
-    "json_evidence_partial",
-    "sql_evidence_partial",
-    "next_action_pending",
-    "surface_work_pending",
-    "coverage_high_value_gaps",
-    "coverage_ledger_evidence_missing",
-    "case_state_canonical_conflict",
-    "actor_context_required",
-}
-
-
-def _stagnation_text(value: object, *, limit: int = 300) -> str:
-    """Keep semantic owner text bounded and stable across formatting changes."""
-    return " ".join(str(value or "").split())[:limit]
-
-
-def _stagnation_dimensions(value: object) -> list[str]:
-    if isinstance(value, (list, tuple, set)):
-        values = value
-    elif value:
-        values = [value]
-    else:
-        values = []
-    return sorted({
-        _stagnation_text(item, limit=120)
-        for item in values
-        if _stagnation_text(item, limit=120)
-    })[:8]
-
-
-def _stagnation_outcome(value: object) -> dict:
-    """Project outcome meaning while excluding operation/timestamp noise."""
-    if not isinstance(value, dict):
-        text = _stagnation_text(value)
-        return {"result": text} if text else {}
-    projected = {}
-    for key in (
-        "status",
-        "result",
-        "decision",
-        "observation_kind",
-        "observed_difference",
-        "evidence_ref",
-        "summary_ref",
-        "kill_condition_met",
-    ):
-        item = value.get(key)
-        if isinstance(item, bool):
-            projected[key] = item
-        elif item not in (None, "", [], {}):
-            text = _stagnation_text(item)
-            if text:
-                projected[key] = text
-    return projected
-
-
-def _stagnation_obligation(item: object, *, kind: str) -> dict:
-    """Return the small semantic contract for one current owner obligation."""
-    if not isinstance(item, dict):
-        return {}
-    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
-    outcome = item.get("last_outcome")
-    if not isinstance(outcome, dict):
-        outcome = metadata.get("last_outcome")
-    dimensions = item.get("tested_dimensions")
-    if dimensions in (None, "", []):
-        dimensions = metadata.get("tested_dimensions")
-    result = {
-        "kind": kind,
-        "id": _stagnation_text(item.get("id") or item.get("finding_id") or item.get("backlog_id"), limit=160),
-        "status": {
-            key: _stagnation_text(item.get(key) or metadata.get(key), limit=120)
-            for key in ("status", "validation_status", "report_status", "evidence_status", "rubric_status")
-            if _stagnation_text(item.get(key) or metadata.get(key), limit=120)
-        },
-        "action": _stagnation_text(
-            item.get("action")
-            or item.get("required_action")
-            or item.get("next_action")
-            or item.get("write_back")
-            or metadata.get("action"),
-        ),
-        "next_question": _stagnation_text(
-            item.get("next_question")
-            or metadata.get("next_question")
-            or item.get("why_now"),
-        ),
-        "evidence": {
-            key: _stagnation_text(item.get(key) or metadata.get(key), limit=240)
-            for key in ("evidence", "evidence_ref", "summary_ref")
-            if _stagnation_text(item.get(key) or metadata.get(key), limit=240)
-        },
-        "missing_evidence": _stagnation_dimensions(
-            item.get("missing_evidence") or metadata.get("missing_evidence")
-        ),
-        "tested_dimensions": _stagnation_dimensions(dimensions),
-        "last_outcome": _stagnation_outcome(outcome),
-        "stop_condition": _stagnation_text(
-            item.get("stop_condition")
-            or metadata.get("stop_condition")
-            or item.get("kill_condition")
-            or metadata.get("kill_condition"),
-        ),
-    }
-    return {
-        key: value
-        for key, value in result.items()
-        if value not in ("", {}, [])
-    }
-
-
-def _stagnation_owner_obligations(state: dict) -> dict:
-    """Collect bounded Queue/Finding/Case semantics for no-progress detection."""
-    obligations = {}
-    queue = state.get("action_queue_next")
-    if not isinstance(queue, dict) or not queue:
-        action_queue = state.get("action_queue")
-        queue = action_queue.get("next") if isinstance(action_queue, dict) else None
-    if isinstance(queue, dict) and queue:
-        obligations["queue"] = _stagnation_obligation(queue, kind="action_queue")
-
-    findings = state.get("structured_findings")
-    if isinstance(findings, dict):
-        finding_items = []
-        for key in (
-            "next_owner_revalidation",
-            "next_validation",
-            "next_draft_completion",
-            "next_report",
-        ):
-            item = findings.get(key)
-            if isinstance(item, dict) and item:
-                finding_items.append(_stagnation_obligation(item, kind=key))
-        if finding_items:
-            obligations["findings"] = finding_items[:4]
-
-    case_state = state.get("case_state")
-    if isinstance(case_state, dict) and case_state:
-        case_next = case_state.get("top_next_action")
-        case_summary = _stagnation_obligation(
-            case_next if isinstance(case_next, dict) else case_state,
-            kind="case_state",
-        )
-        counts = {}
-        for key in (
-            "canonical_conflict_count",
-            "pending_validation_backlog",
-            "open_hypotheses",
-        ):
-            raw = case_state.get(key)
-            if raw in (None, ""):
-                continue
-            try:
-                counts[key] = int(raw or 0)
-            except (TypeError, ValueError):
-                counts[key] = _stagnation_text(raw, limit=80)
-        if counts:
-            case_summary["counts"] = counts
-        if case_summary:
-            obligations["case_state"] = case_summary
-    return obligations
-
-
-def stagnation_fingerprint(state: dict, closure: dict) -> str:
-    """Fingerprint only explicit prerequisite blockers; other handoffs never count."""
-    projected = str(closure.get("stagnation_fingerprint") or "")
-    if projected:
-        return projected
-    reasons = closure.get("reasons") or []
-    reason = str(reasons[0] if reasons else "")
-    if closure.get("verdict") != "handoff" or reason not in _STAGNANT_REASONS:
-        return ""
-    target = str(state.get("resolved_target") or state.get("target") or "")
-    payload = {
-        "target": target,
-        "reason": reason,
-        "next_action": str(closure.get("next_action") or ""),
-    }
-    if reason.startswith("browser_evidence_"):
-        payload["browser"] = {
-            key: (state.get("browser_evidence") or {}).get(key)
-            for key in ("present", "ready", "status")
-        }
-    elif reason == "source_evidence_partial":
-        payload["source"] = {
-            key: (state.get("repo_source_summary") or {}).get(key)
-            for key in ("status", "input_fingerprint")
-        }
-    elif reason == "intel_evidence_blocked":
-        payload["intel"] = {
-            "blocked": (state.get("intel_continuation") or {}).get("blocked") or [],
-            "reason": (state.get("intel_continuation") or {}).get("reason") or "",
-        }
-    elif reason == "surface_projection_pending":
-        payload["surface_projection"] = {
-            key: (state.get("surface_projection") or {}).get(key)
-            for key in ("status", "reason", "input_fingerprint")
-        }
-    elif reason == "json_evidence_partial":
-        payload["json"] = {
-            key: (state.get("json_inject") or {}).get(key)
-            for key in ("status", "input_fingerprint")
-        }
-    elif reason == "sql_evidence_partial":
-        payload["sql"] = {
-            lane: {
-                key: item.get(key)
-                for key in ("status", "input_fingerprint")
-            }
-            for lane, item in (state.get("sql_matrix") or {}).items()
-            if isinstance(item, dict)
-        }
-    elif reason == "js_evidence_partial":
-        payload["js"] = {
-            key: (state.get("js_intel") or {}).get(key)
-            for key in ("status", "reason", "hypothesis_count")
-        }
-    elif reason.startswith("observation_"):
-        inventory = state.get("observation_inventory") or {}
-        by_kind = inventory.get("by_kind") if isinstance(inventory.get("by_kind"), dict) else {}
-        payload["observations"] = {
-            "status": inventory.get("status"),
-            "high_value_untouched": {
-                kind: int((by_kind.get(kind) or {}).get("present_untouched", 0) or 0)
-                for kind in HIGH_VALUE_OBSERVATION_KINDS
-            },
-        }
-    elif reason == "coverage_high_value_gaps":
-        payload["coverage"] = str(state.get("_stagnation_coverage") or "")
-    elif reason == "coverage_ledger_evidence_missing":
-        evidence = closure.get("coverage_terminal_evidence")
-        missing = evidence.get("missing") if isinstance(evidence, dict) else []
-        payload["coverage_ledger"] = [
-            {
-                "endpoint": str(item.get("endpoint") or ""),
-                "vuln_class": str(item.get("vuln_class") or ""),
-                "matrix_status": str(item.get("matrix_status") or ""),
-            }
-            for item in missing
-            if isinstance(item, dict)
-        ][:20]
-    elif reason == "case_state_canonical_conflict":
-        case_state = state.get("case_state") or {}
-        payload["case_state"] = {
-            "canonical_conflict_count": int(case_state.get("canonical_conflict_count", 0) or 0),
-            "canonical_conflicts": case_state.get("canonical_conflicts") or [],
-        }
-    elif reason == "next_action_pending":
-        findings = state.get("structured_findings") or {}
-        finding = next(
-            (
-                findings.get(key)
-                for key in (
-                    "next_owner_revalidation",
-                    "next_validation",
-                    "draft_completion_pending",
-                    "validated_pending_report",
-                )
-                if isinstance(findings.get(key), dict)
-            ),
-            {},
-        )
-        payload["owner"] = {
-            "queue_id": str((state.get("action_queue_next") or {}).get("id") or ""),
-            "finding_id": str(finding.get("id") or ""),
-            "case_action": str(
-                ((state.get("case_state") or {}).get("top_next_action") or {}).get("next_action")
-                or ""
-            ),
-        }
-        payload["owner_semantics"] = _stagnation_owner_obligations(state)
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-
-
-def _stagnation_continuation(state: dict, closure: dict) -> dict:
-    """Project bounded work that can continue after a repeated lane blocker."""
-    authoritative = _loop_guard_authoritative_reason(state)
-    if authoritative:
-        return {
-            "reason": str((closure.get("reasons") or [authoritative])[0]),
-            "next_action": str(closure.get("next_action") or "handoff"),
-            "rotation_target": {},
-        }
-    return {}
-
-
 def _semantic_coverage_fingerprint(matrix: dict | None) -> str:
     """Hash only unresolved high-value coverage meaning."""
     if not isinstance(matrix, dict):
@@ -6655,53 +5669,6 @@ def load_closure_projection(
 _load_closure_projection = load_closure_projection
 
 
-def _load_loop_guard_projection(repo_root: str, state: dict) -> dict:
-    """Read the ledger only for an explicit per-iteration loop check."""
-    target = str(state.get("resolved_target") or state.get("target") or "")
-    diagnostic = load_entries_diagnostic(repo_root, target)
-    projected_state = dict(state)
-    projected_state["_ledger_health"] = _ledger_health_projection(diagnostic)
-    return build_loop_guard_projection(projected_state, list(diagnostic.get("entries") or []))
-
-
-def _loop_control_projection(state: dict) -> dict:
-    """Return the bounded post-lane control state with the loop decision."""
-    def text(value: object, limit: int) -> str:
-        return " ".join(str(value or "").split())[:limit]
-
-    hard_gate = state.get("hard_gate") if isinstance(state.get("hard_gate"), dict) else {}
-    frontier = []
-    for item in state.get("priority_frontier") or []:
-        if not isinstance(item, dict):
-            continue
-        frontier.append({
-            "owner": text(item.get("owner"), 80),
-            "id": text(item.get("id"), 300),
-            "action": text(item.get("action"), 500),
-            "evidence_ref": text(item.get("evidence_ref"), 300),
-            "expected_information_gain": text(item.get("expected_information_gain"), 300),
-            "stop_condition": text(item.get("stop_condition"), 300),
-            "lane": text(item.get("lane"), 120),
-            "impact_hint": text(item.get("impact_hint"), 300),
-            "evidence_status": text(item.get("evidence_status"), 80),
-            "closure_blocking": bool(item.get("closure_blocking", True)),
-            "continuity": bool(item.get("continuity", False)),
-            "runnable": bool(item.get("runnable", True)),
-        })
-    return {
-        "next_action": text(state.get("next_action") or "handoff", 120),
-        "fallback_action": text(
-            state.get("fallback_action") or state.get("next_action") or "handoff", 120
-        ),
-        "selection_mode": text(state.get("selection_mode"), 80),
-        "hard_gate": {
-            "action": text(hard_gate.get("action"), 120),
-            "reason": text(hard_gate.get("reason"), 300),
-        } if hard_gate else {},
-        "priority_frontier": frontier,
-    }
-
-
 def _format_closure_line(state: dict) -> str:
     closure = state.get("closure") or {}
     if not closure:
@@ -6716,17 +5683,6 @@ def _format_closure_line(state: dict) -> str:
             reasons=reasons,
             rotation=rotation_text,
         )
-    )
-
-
-def _format_loop_guard_line(state: dict) -> str:
-    guard = state.get("loop_guard") or {}
-    if not guard:
-        return ""
-    return "Loop guard: verdict={verdict} reason={reason} next={next_action}".format(
-        verdict=guard.get("verdict", "continue"),
-        reason=guard.get("reason", "-"),
-        next_action=guard.get("next_action", "handoff"),
     )
 
 
