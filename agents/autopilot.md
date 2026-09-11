@@ -124,13 +124,17 @@ Business / Workflow Read: after fresh recon starts, write or refresh `evidence/<
 
 ## Tool Routing
 
-Choose tools from evidence shape:
-- Browser/app/XHR/auth state:
-  1. Use chrome-devtools MCP for deep live DevTools, Network, Console, DOM, performance, and runtime inspection.
-  2. Use Playwright MCP for page interaction and file-backed capture. Persist network, console, snapshot, evaluate/state, and screenshot with native `filename` parameters instead of copying MCP response bodies through the model.
-  3. Reuse the current actor/session, visit at most 8 AI-selected same-target paths, write a path-only manifest, and call `python3 tools/browser_mcp_import.py --target <target> --focused-manifest <manifest-json>`. The importer owns private archival, Surface delta, snapshot dedupe, and generation-based Action Queue continuation. After import, close the native browser/MCP session before handoff or finish; if close fails, record `partial`/`blocked` and do not create a replacement session. In a bounded round, finishing the browser lane with the manifest as `evidence_ref` (`--record-round-lane-result --lane browser:<...>`) auto-imports it through the same owner function, so the separate importer call is only needed outside a round lane or on import failure.
-  Chrome DevTools MCP may use native `filePath` outputs for deep diagnosis. Missing/unpersisted Network, Console, or complete HttpOnly state is partial/blocked, never tested-clean. Then run `tools/surface.py --target <target> --refresh` and `/checkpoint`. Do not create a second browser queue or restore a CLI browser backend.
-  When chrome-devtools/playwright evidence leaves a specific runtime JavaScript question unresolved, JSHook MCP can be used as an optional follow-up evidence source.
+Choose tools from evidence shape. Browser/app/XHR/auth state follows
+`docs/autopilot-lanes.md#browser-source-and-js` as the authoritative backend
+selection/switch/close/import contract; sub-agent quick shape: Chrome DevTools MCP
+for deep live DevTools/Network/Console/runtime work, Playwright MCP for
+interaction and file-backed capture (persist via native `filename`/`filePath`
+parameters, never by copying response bodies through the model), then import via
+`browser_mcp_import.py --focused-manifest` and close the native session.
+Missing/unpersisted Network, Console, or complete HttpOnly state is
+partial/blocked, never tested-clean. When browser evidence leaves a specific
+runtime JavaScript question unresolved, JSHook MCP is an optional follow-up
+evidence source.
 - Source/route/auth logic: `python3 tools/source_intel.py --target <target> [--repo-path <repo>]`.
 - DNS expansion: after passive Recon, AI may call `python3 tools/dns_expand.py --target <target> --reason "<observed naming/scope gap>" [--wordlist <reviewed-labels>]` when target-specific certificate/JS/source evidence or a naming dialect supports it. The lane is never a baseline checklist item; host count alone is insufficient. Let the tool own permutation, budgets, `puredns` wildcard filtering, scope checks, and atomic merge, then refresh `/surface` when it adds hosts.
 - JS bundles: with concrete webpack/dynamic-import/chunk-map/source-map/missing-chunk evidence, call `python3 tools/deep_js_packer.py ...` on 1-5 bundles or one high-value app entry, then `python3 tools/js_reader.py --target <target>`; JS count alone is not a trigger and partial/unavailable remains unresolved.
@@ -146,7 +150,14 @@ For byte-exact work, build the raw probe from the observed wire shape and use `t
 
 ## Known Software Intelligence Lane
 
-If a concrete product/plugin/theme/library and version appears, do not leave "needs CVE lookup" as a final state. Identified network services follow the same lane. Run `/intel`/`tools/intel_engine.py`, then refresh state: `run_intel` must complete before generic hunting, `collect_web_intel` records verified bodies through `tools/web_intel_artifact.py`, `test_advisory_applicability` adds one durable action before the smallest reachability/version test, and `review_intel_group` uses the read-only paged query for advisory facts outside the bounded sidecar before recording an existing Queue disposition. Query CVE/advisory sources, map affected/fixed ranges, and record `tested`, `dead-end`, `blocked`, `lead`, `signal`, or `candidate`; provider failure is a blocked handoff, never clean. For a confirmed, high-value WordPress target with a plugin/theme version or historical-vulnerability coverage gap, AI may directly run `wpscan --url <target-url> --format json --output recon/<target-key>/intel/wpscan.json --no-banner --no-update --enumerate p,t --detection-mode mixed --max-threads 2 --request-timeout 10 --connect-timeout 5 --api-token "$WPSCAN_API_TOKEN"`; it is not default Recon and must not add user enumeration or password-attack flags. A WPScan hit, residual file, `wp-json`, or single 200 is only a Lead; confirm active component, exact version, affected range, and reachable route before the existing `/intel`, Action Queue, and validation gates.
+If a concrete product/plugin/theme/library and version appears, do not leave "needs CVE
+lookup" as a final state. Identified network services follow the same lane. The full
+lane contract (intel_engine / web_intel_artifact / advisory applicability / paged
+review / WPScan bounded invocation and its Lead-only thresholds) lives in
+`docs/autopilot-lanes.md#software-and-intel` and
+`knowledge/cards/wordpress-surface-intelligence.md`; record `tested`, `dead-end`,
+`blocked`, `lead`, `signal`, or `candidate`, and provider failure is a blocked
+handoff, never clean.
 
 ## State Model
 
