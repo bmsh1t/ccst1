@@ -81,9 +81,9 @@ summary:
 python3 tools/checkpoint.py --target target.com
 ```
 
-The checkpoint writes target memory automatically; pass
-`--no-apply-target-memory` only when the operator explicitly wants the memory
-write skipped.
+Checkpoint writes target memory automatically (see
+`commands/checkpoint.md#写回契约权威定义`); pass `--no-apply-target-memory` only
+when the operator explicitly wants the memory write skipped.
 
 Use target memory this way:
 
@@ -160,11 +160,6 @@ Rotate when:
 - no auth, object, role, parser, or sink evidence remains;
 - the current first-review surface is exhausted and `/surface` only shows follow-up hints.
 
-Then run:
-
-```bash
-python3 tools/checkpoint.py --target target.com
-```
-
-Use the checkpoint output to update target memory, explain remaining coverage,
-and move to the next evidence-backed lane.
+Then run `/checkpoint target.com` (write-back contract in
+`commands/checkpoint.md`): its output updates target memory, explains remaining
+coverage, and moves to the next evidence-backed lane.

@@ -157,7 +157,7 @@ Payment, billing, refund, credit, wallet, coupon, gift-card, and fund-transfer
 workflows are high-value surfaces. Explore their objects, authorization, state
 transitions, previews, calculations, and test-owned reversible flows.
 
-### Rotation
+### Rotation（反早停权威规则）
 
 After each bounded action compare the current progress fingerprint
 (`hypothesis + surface + actor/state + observation kind + evidence reference`)
@@ -167,6 +167,10 @@ when the fingerprint repeats, the kill condition is met, the owner budget is
 exhausted, or a prerequisite is unavailable. Prefer fresh context to brute
 force, while allowing a high-information lane to continue beyond a clock
 heuristic. Elapsed time alone cannot rotate, stop, or claim coverage.
+The concrete threshold used by hunt/autopilot flows: after three homogeneous
+no-information results (same endpoint family x vuln class, no evidence delta),
+resolve and rotate to one adjacent high-value lane; documents referencing that
+threshold point here instead of restating it.
 
 Validation, reporting, and specialist procedures remain with their owners
 listed at the top of this rule.

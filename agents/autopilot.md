@@ -49,9 +49,12 @@ Do not become a passive scanner wrapper. Turn recon, browser behavior, source/JS
 unresolved 不许 clean；URL 形态输入保持 canonical host 状态但先查 path/query seed；
 `--auth-file` 透传 hunt/recon/scan。
 
-For a readable text list or schema-v1 JSON Scope manifest, run bounded batch recon, read `recon/<list-stem>/ai_handoff.md` and `surface_ranking.txt`, select one completed `in_scope` asset, then create an owner continuation with `python3 tools/autopilot_continuation.py create --parent-target <scope_ref> --selected-target <domain> [--auth-file <path>]` and invoke `/autopilot <domain> --context-file=<returned-path>`. Bootstrap validates the parent `scope_ref/scope_hash` and private Auth ref before bounded state or target I/O. Never scan or actively hunt the batch index; unlisted assets remain context/review and explicit `out_of_scope` wins. `invalid_batch_target` and `batch_failed` are terminal until input/evidence changes.
+For a readable text list or schema-v1 JSON Scope manifest, follow the batch/manifest
+lane contract in `docs/autopilot-lanes.md#state-and-queue` (owner continuation via
+`autopilot_continuation.py create`, never scan the list/manifest itself, `out_of_scope`
+always wins, `invalid_batch_target`/`batch_failed` are terminal).
 
-Startup anti-loop: if `autopilot_state.py` returns `next_action: wait_recon` / `Recon: in progress`, do not announce a fresh start or launch another recon. If it returns `next_action: wait_scan` / `Scan: in progress`, do not launch another `scan-only --quick`; wait/poll and rerun state. Runtime phase locks are the final duplicate-launch guard. Repeating startup or scan commands is not progress. Recon completion attempts a non-fatal exact-index/full-stream-ranking finalizer; failure preserves raw recon and leaves `prepare_surface_context` for explicit refresh. `collect_candidate_evidence` uses structured `next_actions` and `missing_labels`, or a memory candidate only after reviewing locatable evidence, otherwise collects raw request/response. If bootstrap exposes `root_claim_next`, run `/checkpoint` first to reconcile the claim through `finding_index`, then use its refreshed canonical finding ID with `python3 tools/validation_runner.py <lane> --target <target> --finding-id <id> ...`; its first positional argument is `<lane>`, and `validation_runner.py` never accepts `--decision-json`. Use `/validate` only after state returns `validate_finding`; `complete_report_draft` fills placeholders without reopening validated evidence.
+Startup anti-loop: if `autopilot_state.py` returns `next_action: wait_recon` / `Recon: in progress`, do not announce a fresh start or launch another recon. If it returns `wait_scan` / `Scan: in progress`, do not launch another `scan-only --quick`; wait/poll and rerun state. Runtime phase locks are the final duplicate-launch guard. Repeating startup or scan commands is not progress. Recon completion attempts a non-fatal exact-index/full-stream-ranking finalizer; failure preserves raw recon and leaves `prepare_surface_context` for explicit refresh. `collect_candidate_evidence` uses structured `next_actions`/`missing_labels`, or a memory candidate only after reviewing locatable evidence, otherwise collects raw request/response. The `root_claim_next` -> `/checkpoint` -> canonical-ID -> `validation_runner.py <lane> ...` chain, `/validate` timing, and `complete_report_draft` semantics follow `docs/autopilot-lanes.md#state-and-queue` (never `--decision-json` on the runner).
 
 Only add heavier state tools when they directly change the next action: `target_case_state.py` for actor/session/object continuity, `case_state_seed.py` for concrete object IDs, and checkpoint/action_queue/coverage after progress, validation, handoff, or before finish; do not let them drive first contact.
 
@@ -159,37 +162,29 @@ Choose each next action from current state and evidence; use the canonical `/aut
 command and lane contract for execution, validation, checkpoint, and finish details.
 Do not impose a fixed phase or vulnerability order.
 ## High-impact success handoff
-A reproduced exploit or browser-observed impact is not a finding lifecycle transition. After RCE, SSRF, XXE, deserialization, upload, JWT, or another high-impact lane, save exact raw request/response or a locatable browser artifact; if no runner exists, write a target-owned root claim JSON under `findings/<target-key>/` with `kind: "finding_claim"`, `schema_version: 1`, `title`, `target`, `vuln_class`/`type`, known `endpoint`/`path`, impact, and evidence refs, then run `tools/checkpoint.py` for owner candidate/action creation. Do not reuse another tool's status/summary JSON as a claim.
+A reproduced exploit or browser-observed impact is not a finding lifecycle transition. After RCE, SSRF, XXE, deserialization, upload, JWT, or another high-impact lane, save exact raw request/response or a locatable browser artifact; if no runner exists, write a target-owned root claim JSON under `findings/<target-key>/` using the explicit schema in `commands/checkpoint.md` (kind/schema_version/required fields), then run `tools/checkpoint.py` for owner candidate/action creation. Do not reuse another tool's status/summary JSON as a claim.
 Missing endpoint data is an explicit incomplete claim; never invent the target root as an endpoint. Refresh state, use the canonical ID for `/validate`, or close the action as blocked/dead-end; terminal prose alone cannot establish confirmed/validated state.
 ## Deep Mode
-Use `--deep` when the target is high-value, surface is broad, shallow scanner-negative results are not enough, or evidence gaps remain. `--deep` is a value-first comprehensive depth flag, not a checkpoint mode.
 
-Deep mode:
+Use `--deep` when the target is high-value, surface is broad, shallow scanner-negative
+results are not enough, or evidence gaps remain. The deep-mode contract (value-first
+posture, lane caps, depth packs, no fixed favorite class, rotation, exhaustion checklist)
+is defined once in `commands/autopilot.md` (Deep Mode and Transition And Finish Contract
+sections) and `rules/hunting.md#high-intensity-hunting-posture` — not restated here. Sub-agent hardening beyond the controller contract:
 
-- Substantive actions add, confirm, disprove, block, or record target evidence; do not pad the run with repeated scans or cosmetic steps.
-- Do not stop after one scanner pass, one dead lane, or a few read-only steps.
-- Use `rules/hunting.md#high-intensity-hunting-posture` and the value-first coverage model.
-- do not lock onto authz/IDOR or any other fixed favorite class; include SQLi/NoSQLi, SSRF, XXE, RCE/SSTI/command injection, unsafe deserialization, LFI/RFI/path traversal, upload/parser, OAuth/JWT/CSRF, XSS/DOM, race/state-machine, cloud/CI/CD/secret, and business-logic lanes when evidence supports them.
-- Rotate across access/identity, injection/RCE, server-side/file/network, client-side, business workflow, and infrastructure/supply-chain bugs.
-- Browser-observed APIs, JS/source-derived routes, recon, errors, parameters, workflows, target memory, and target case state are evidence sources for any bug family.
-- Convert failures into next questions, sibling expansion, bypass, role/object diff, enrichment, chain-building, or lane rotation.
-- For a concrete API or browser XHR surface in deep mode, run both the observed
-  Build the query/body/form lanes from target-observed request shapes; a single
-  passive observation is never API-depth completion. Do not invent unobserved
-  request shapes; preserve the shapes present in target-owned evidence.
-- After the first negative result, select an evidence-linked depth pack for the
-  lane: type/encoding/content-type, parser/error oracle, auth actor/object,
-  browser/JS/source sibling, replay/workflow, or chain impact. Record
-  `hypothesis`, `tested_dimensions`, `expected_learning`, `kill_condition`, and
-  `next_question` in the existing Action Queue metadata before stopping.
-- When writing a manual continuation, use the existing queue owner with
-  `tools/action_queue.py add --metadata-json '<JSON object>'`; invalid,
-  non-object, or credential-bearing metadata fails before any queue write. Do
-  not create a parallel hypothesis file or treat the metadata as finding evidence.
-- A tool cap is an invocation budget, not a clean verdict. Partial cursors,
-  untested endpoints, untried depth dimensions, and unresolved hypotheses must
-  produce a resumable queue action or an explicit blocked/dead-end reason.
-- Finish only with a concrete Deep Exhaustion Checklist: recon/state and `/surface` consulted; coverage matrix rebuilt; Evidence Ledger / actor matrix reviewed; scanner-negative results received manual follow-up; JS/source/browser/exposure context used or ruled out; high-value vuln-family directions tested, blocked, not applicable, or listed with reasons.
+- Do not pad the run with repeated scans or cosmetic steps; every substantive action
+  adds, confirms, disproves, blocks, or records target evidence.
+- Evidence sources are browser-observed APIs, JS/source-derived routes, recon, errors,
+  parameters, workflows, target memory, and case state — for any bug family, no
+  category pre-excluded.
+- Convert failures into next questions, sibling expansion, bypass, role/object diff,
+  enrichment, chain-building, or lane rotation; record `hypothesis`,
+  `tested_dimensions`, `expected_learning`, `kill_condition`, and `next_question` in
+  Action Queue metadata before stopping (via the existing queue owner, never a
+  parallel hypothesis file).
+- A tool cap is an invocation budget, not a clean verdict: partial cursors, untested
+  endpoints, and unresolved hypotheses must produce a resumable queue action or an
+  explicit blocked/dead-end reason.
 
 ## Credential Lane
 For any real login form, route to `skills/credential-attack/SKILL.md` for the bounded baseline review and its stable-account exception. The review is preparation-only while AI selects reviewed usernames and a finite candidate shortlist; it does not authorize live requests.
