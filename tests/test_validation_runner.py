@@ -1634,6 +1634,57 @@ def test_request_diff_missing_auth_expect_auth_pair_promotes_to_tested_finding(m
     assert led.get("result") == "tested_finding"
 
 
+def test_request_diff_expect_auth_trusts_arbitrary_declared_dimension(monkeypatch, tmp_path):
+    """When the AI declares expect_auth, the declared active dimension IS the
+    credential boundary. The runner must not second-guess the header name
+    against a fixed well-known vocabulary: custom auth headers
+    (X-Internal-Auth, X-Company-Token, ...) promote exactly like
+    Authorization. The vocabulary only serves the undeclared default path."""
+
+    def fake_request_once(**kwargs):
+        body = '{"internal": {"config": "shared"}}'
+        return _fake_response(kwargs["url"], body=body)
+
+    monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
+    spec = {
+        "schema_version": 1,
+        "baseline_request": {"method": "GET", "url": "https://target.test/internal/config"},
+        "variant_request": {
+            "method": "GET",
+            "url": "https://target.test/internal/config",
+            "headers": {"X-Internal-Auth": "Bearer denied"},
+        },
+        "active_dimension": "header:X-Internal-Auth",
+        "evidence_shape": "auth_boundary",
+        "classifier": "authz_access",
+        "vuln_class": "Authz",
+        "expect_auth": True,
+        "repeat": 1,
+    }
+    summary = validation_runner.run_request_diff(
+        repo_root=tmp_path,
+        target="https://target.test",
+        request_spec=spec,
+    )
+
+    assert summary["result"] == "tested_finding"
+    assert summary["candidate_ready"] is True
+
+    # Without the declaration the same custom-header pair has no
+    # AI-asserted boundary meaning: an ordinary header value that does not
+    # change the response is clean for that dimension (same semantics as an
+    # ineffective probe). The well-known vocabulary (Authorization & co.)
+    # keeps its extra undeclared-candidate conservatism.
+    spec.pop("expect_auth")
+    summary_undeclared = validation_runner.run_request_diff(
+        repo_root=tmp_path,
+        target="https://target.test",
+        request_spec=spec,
+    )
+    assert summary_undeclared["result"] == "tested_clean"
+    assert summary_undeclared["candidate_ready"] is False
+
+
 def test_request_diff_missing_auth_pair_with_3xx_both_sides_promotes(monkeypatch, tmp_path):
     """The success class is 2xx/3xx: redirects on both sides still count as
     'the endpoint answered both requesters' for the missing-auth route."""

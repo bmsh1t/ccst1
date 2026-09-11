@@ -1961,14 +1961,21 @@ CREDENTIAL_BOUNDARY_HEADER_RE = re.compile(
 def _request_pair_boundary_dimension(spec: dict[str, Any]) -> bool:
     """Return whether the pair's single active dimension is a credential boundary.
 
-    This is a fact reconciliation, not a vulnerability judgment: the AI declares
-    an auth/credential dimension, and the runner confirms the declared dimension
-    is where the two requests actually differ. Interpreting the diff stays with
-    the validation gates.
+    ``expect_auth`` is the AI's judgment that this endpoint should require
+    authentication; when it is declared, the declared active dimension IS the
+    credential boundary (the pair validator already guarantees it is the only
+    request difference), and the runner does not second-guess the header name
+    with a fixed vocabulary. The well-known-header regex below only serves
+    the undeclared default path so a legacy pair still recognizes common
+    credential dimensions without an explicit assertion.
     """
     active = str(spec.get("active_dimension") or "").strip()
     if not active:
         return False
+    if spec.get("expect_auth") is True:
+        # Declared boundary: any single header/cookie/query dimension the AI
+        # named is trusted as the credential boundary.
+        return active.startswith(("header:", "cookie:", "query:"))
     cookie_match = re.match(r"^cookie:([\w-]+)$", active)
     if cookie_match:
         # The pair validator already guarantees the cookie header is the only
