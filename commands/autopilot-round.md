@@ -15,7 +15,7 @@ allowed-tools:
 Authoritative round bootstrap (do not reinterpret): !`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_bootstrap.py" --json --round-defaults -- "$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"`
 Native fixed-loop prompt identity (do not reinterpret): `/autopilot-round $ARGUMENTS`
 
-Arguments match `/autopilot`. Defaults are `--normal --deep --max-lanes 8`;
+Arguments match `/autopilot`. Defaults are `--normal --deep --max-lanes 16`;
 an active round keeps its checkpoint-owned `max_lanes`. The bootstrap parser is
 the only argument owner.
 
@@ -135,7 +135,7 @@ timing, business state, or vulnerability has been exhausted.
 Recommended scheduler entry:
 
 ```text
-/loop 10m /autopilot-round TARGET --normal --deep --max-lanes 8
+/loop 10m /autopilot-round TARGET --normal --deep --max-lanes 16
 ```
 
 Native `/loop` owns the fixed-interval cron job. For `STATUS: CONTINUE`, do not
