@@ -913,23 +913,30 @@ def _unsafe_leads(state: dict) -> list[dict]:
     ]
 
 
-def _unsafe_skipped_proposals(state: dict) -> list[str]:
-    proposals: list[str] = []
+def _unsafe_skipped_proposals(state: dict) -> list[dict]:
+    proposals: list[dict] = []
     for lead in _unsafe_leads(state)[:3]:
         artifact = str(lead.get("artifact") or "").strip()
         unsafe_id = str(lead.get("unsafe_skipped_id") or "").strip()
         evidence = str(lead.get("evidence") or "").strip()
         if not artifact and not unsafe_id:
             continue
-        proposals.append(
+        proposals.append(_proposal_entry(
             "Review action-gated scanner lane {unsafe_id}: {evidence}. "
             "Artifact={artifact}. Decide tested, blocked, dead-end, n/a, or candidate; "
             "record the selected outcome before continuing.".format(
                 unsafe_id=unsafe_id or "-",
                 evidence=evidence or "side-effect-capable scanner probe was skipped",
                 artifact=artifact or "findings/<target>/manual_review/unsafe_skipped.txt",
-            )
-        )
+            ),
+            action_type="action-gated-review",
+            priority=93,
+            command_hint="review legacy unsafe_skipped.txt; resolve queue with tested/blocked/dead-end/n/a/candidate",
+            metadata={
+                "unsafe_skipped_id": unsafe_id,
+                "artifact": artifact or "findings/<target>/manual_review/unsafe_skipped.txt",
+            },
+        ))
     return proposals
 
 
@@ -1027,7 +1034,8 @@ def _secondary_sweep_proposals(
         evidence = str(lead.get("evidence") or "").strip()
         if not title:
             continue
-        proposals.append(
+        demoted = category == "public-metadata"
+        proposals.append(_proposal_entry(
             "Secondary-sweep lead [{category}]: {title}. "
             "Artifact={artifact}. Why it matters: {rationale}. "
             "Next action: {next_action}. "
@@ -1038,8 +1046,21 @@ def _secondary_sweep_proposals(
                 artifact=artifact,
                 rationale=(rationale or evidence or category)[:220],
                 next_action=(next_action or "inspect the raw manual_review artifact for chain, secret, or pivot signals")[:220],
-            )
-        )
+            ),
+            action_type="secondary-sweep",
+            priority=52 if demoted else 72,
+            command_hint=(
+                "review public metadata only for unusual fields or chain pivots"
+                if demoted
+                else "review demoted raw artifact; re-promote only with concrete secret/chain evidence"
+            ),
+            metadata={
+                "lead_category": category,
+                "lead_title": title[:180],
+                "artifact": artifact,
+                "demoted": demoted,
+            },
+        ))
     return proposals
 
 
@@ -1441,34 +1462,60 @@ def _case_state_seed_proposal(seed: dict) -> str:
     missing = ", ".join(str(item) for item in (first_backlog.get("missing") or [])[:4])
     endpoint = str(first_object.get("endpoint") or "").strip()
     if "object endpoint" in {part.strip().lower() for part in (first_backlog.get("missing") or [])}:
-        return (
-            "Case-state endpoint discovery lead: Found object candidate {object_ref} "
-            "type={object_type} endpoint=<missing>. Runner: {runner}. "
-            "Missing evidence: {missing}. Next action: identify a concrete "
-            "object-specific endpoint from browser XHR, source routes, or MCP "
-            "observations before adding IDOR backlog. Seed command: {command}. "
-            "Stop condition: no endpoint can be tied to the object ID without "
-            "substring or collection-only guessing."
+        return _proposal_entry(
+            (
+                "Case-state endpoint discovery lead: Found object candidate {object_ref} "
+                "type={object_type} endpoint=<missing>. Runner: {runner}. "
+                "Missing evidence: {missing}. Next action: identify a concrete "
+                "object-specific endpoint from browser XHR, source routes, or MCP "
+                "observations before adding IDOR backlog. Seed command: {command}. "
+                "Stop condition: no endpoint can be tied to the object ID without "
+                "substring or collection-only guessing."
+            ).format(
+                object_ref=first_object.get("object_ref", "-"),
+                object_type=first_object.get("type", "-"),
+                runner=first_backlog.get("runner", "request-diff"),
+                missing=missing or "object endpoint",
+                command=command,
+            ),
+            action_type="case-state-enrichment",
+            priority=66,
+            command_hint="identify concrete object endpoint from browser/source evidence, then update case_state",
+            metadata={
+                "object_ref": first_object.get("object_ref", "-"),
+                "object_type": first_object.get("type", "-"),
+                "runner": first_backlog.get("runner", "request-diff"),
+                "missing_evidence": [part.strip() for part in (missing or "object endpoint").split(",") if part.strip() and part.strip() != "review required"],
+                "seed_command": command,
+                "endpoint_missing": True,
+            },
+        )
+    return _proposal_entry(
+        (
+            "Case-state seed opportunity: Found object candidate {object_ref} "
+            "type={object_type} endpoint={endpoint}. Runner: {runner}. "
+            "Missing evidence: {missing}. Next: {command}. "
+            "Review suggested add-actor/add-object/add-backlog commands; do not treat "
+            "seed suggestions as validated findings."
         ).format(
             object_ref=first_object.get("object_ref", "-"),
             object_type=first_object.get("type", "-"),
+            endpoint=endpoint or "-",
             runner=first_backlog.get("runner", "request-diff"),
-            missing=missing or "object endpoint",
+            missing=missing or "review required",
             command=command,
-        )
-    return (
-        "Case-state seed opportunity: Found object candidate {object_ref} "
-        "type={object_type} endpoint={endpoint}. Runner: {runner}. "
-        "Missing evidence: {missing}. Next: {command}. "
-        "Review suggested add-actor/add-object/add-backlog commands; do not treat "
-        "seed suggestions as validated findings."
-    ).format(
-        object_ref=first_object.get("object_ref", "-"),
-        object_type=first_object.get("type", "-"),
-        endpoint=endpoint or "-",
-        runner=first_backlog.get("runner", "request-diff"),
-        missing=missing or "review required",
-        command=command,
+        ),
+        action_type="case-state-seed",
+        priority=99,
+        command_hint=command,
+        metadata={
+            "object_ref": first_object.get("object_ref", "-"),
+            "object_type": first_object.get("type", "-"),
+            "endpoint": endpoint or "-",
+            "runner": first_backlog.get("runner", "request-diff"),
+            "missing_evidence": [part.strip() for part in (missing or "review required").split(",") if part.strip() and part.strip() != "review required"],
+            "seed_command": command,
+        },
     )
 
 
@@ -1559,7 +1606,13 @@ def _lead_proposals(
         category = str(lead.get("category") or "workflow").strip()
         artifact = str(lead.get("artifact") or lead.get("evidence_ref") or "").strip()
         if title:
-            proposals.append(
+            wf_metadata: dict = {
+                "lead_title": title[:180],
+                "lead_category": category[:80],
+            }
+            if artifact:
+                wf_metadata["artifact"] = artifact
+            proposals.append(_proposal_entry(
                 "Evidence: Workflow lead: {title}. Why it matters: {why}. "
                 "Category={category}. {artifact_clause}Next action: {next_action}. Stop condition: no reproducible "
                 "behavior difference or new evidence after focused replay.".format(
@@ -1568,8 +1621,12 @@ def _lead_proposals(
                     category=category[:80],
                     artifact_clause=(f"Artifact={artifact}. " if artifact else ""),
                     next_action=next_action[:180] or "inspect the linked artifact",
-                )
-            )
+                ),
+                action_type="workflow-lead-review",
+                priority=88,
+                command_hint="review the linked artifact and choose the lane, or record a dead-end with evidence",
+                metadata=wf_metadata,
+            ))
 
     for item in (surface.get("p1") or [])[:2]:
         url = str(item.get("url") or "").strip()
@@ -1585,7 +1642,7 @@ def _lead_proposals(
                 item.get("identity_v2"),
             ):
                 continue
-            proposals.append(
+            proposals.append(_proposal_entry(
                 "Evidence: Surface review candidate {url} ({reasons}). Why it matters: "
                 "interesting attack-surface evidence from cached recon/browser/source signals. "
                 "Next action: {suggested}. Stop condition: no authz/data/state "
@@ -1593,8 +1650,15 @@ def _lead_proposals(
                     url=url,
                     reasons=reasons or "ranked surface",
                     suggested=suggested or "run focused authz and workflow checks",
-                )
-            )
+                ),
+                action_type="surface-review",
+                priority=70,
+                command_hint="AI reviews surface evidence, then chooses the exact lane",
+                metadata={
+                    "url": url,
+                    "endpoint": _canonicalize_url_path(url),
+                },
+            ))
 
     return _dedupe(proposals)[:3]
 
@@ -2385,10 +2449,19 @@ def _ledger_candidate_proposals(evidence_summary: dict, *, limit: int = 3) -> li
         if not endpoint or not family:
             continue
         reason = "; ".join(item for item in (f"missing={missing}" if missing else "", f"conflicts={conflicts}" if conflicts else "") if item)
-        proposals.append(
+        proposals.append(_proposal_entry(
             f"Resolve closure identity for {endpoint} x {family}: {reason or 'deterministic identity gate pending'}. "
-            "Review the referenced evidence and record a linked complete identity or retain the fail-open state."
-        )
+            "Review the referenced evidence and record a linked complete identity or retain the fail-open state.",
+            action_type="closure-identity-review",
+            priority=90,
+            command_hint="record a linked complete identity via evidence_ledger identity flags, or retain fail-open with reason",
+            metadata={
+                "endpoint": endpoint,
+                "family": family,
+                "missing_fields": [str(i) for i in (action.get("missing_fields") or []) if str(i)],
+                "conflicts": [str(i) for i in (action.get("conflicts") or []) if str(i)],
+            },
+        ))
     candidates = [
         item
         for item in [
@@ -2936,14 +3009,35 @@ def _next_proposals(
     proposals.extend(_ledger_candidate_proposals(evidence_summary))
     proposals.extend(_runner_candidate_proposals(state))
     if not state.get("has_recon"):
-        proposals.append(f"Run /recon {target}, then /surface {target}, then rerun /checkpoint {target}.")
+        proposals.append(_proposal_entry(
+            f"Run /recon {target}, then /surface {target}, then rerun /checkpoint {target}.",
+            action_type="recon",
+            priority=85,
+            command_hint="python3 tools/hunt.py --target {t} --recon-only && python3 tools/surface.py --target {t} && python3 tools/checkpoint.py --target {t}".format(t=_quote(target) if target else "target.com"),
+            metadata={"target": target},
+        ))
 
     next_tool_hint = str(state.get("next_tool_hint") or "").strip()
     if next_tool_hint:
         hint = (state.get("enrichment_hints") or [{}])[0] or {}
-        proposals.append(
-            f"Run enrichment {next_tool_hint}: {str(hint.get('reason') or '').strip()}"
-        )
+        hint_type = next_tool_hint.lower()
+        entry_type = {
+            "run_source_intel": "source-enrichment",
+            "run_js_read": "js-enrichment",
+            "collect_browser_mcp_evidence": "browser-enrichment",
+        }.get(hint_type, "next-action")
+        hint_command = {
+            "run_source_intel": "python3 tools/source_intel.py",
+            "run_js_read": "python3 tools/js_reader.py",
+            "collect_browser_mcp_evidence": "Chrome DevTools/Playwright MCP capture, import artifacts, then /surface",
+        }.get(hint_type, "run the hinted enrichment tool")
+        proposals.append(_proposal_entry(
+            f"Run enrichment {next_tool_hint}: {str(hint.get('reason') or '').strip()}",
+            action_type=entry_type,
+            priority=70,
+            command_hint=hint_command,
+            metadata={"tool_hint": next_tool_hint},
+        ))
 
     proposals.extend(_unsafe_skipped_proposals(state))
     proposals.extend(
@@ -2962,23 +3056,31 @@ def _next_proposals(
         else {}
     )
     if source_summary.get("viewstate_signal") is True:
-        proposals.append(
+        proposals.append(_proposal_entry(
             "ViewState integrity review: browser evidence exposes __VIEWSTATE. "
             "Save one target-owned fresh same-page GET baseline with __VIEWSTATEGENERATOR/__EVENTVALIDATION; first run tools/aspnet_viewstate_knownkey.py offline, then replay only a format control and single-byte __VIEWSTATE tamper without submitting a business action. "
-            "Telerik absence only closes the Telerik branch and cannot make ViewState/deserialization N/A. Stop condition: the known-key branch has no match and tamper is uniformly rejected with no repeatable consume/state difference."
-        )
+            "Telerik absence only closes the Telerik branch and cannot make ViewState/deserialization N/A. Stop condition: the known-key branch has no match and tamper is uniformly rejected with no repeatable consume/state difference.",
+            action_type="viewstate-integrity-review",
+            priority=93,
+            command_hint="offline project machineKey check, then one format control and one-byte ViewState tamper; Telerik absence is not N/A",
+            metadata={"browser_signal": "viewstate"},
+        ))
 
     repo_source_summary = state.get("repo_source_summary") or {}
     secret_findings = int(repo_source_summary.get("secret_findings", 0) or 0)
     if secret_findings > 0:
-        proposals.append(
+        proposals.append(_proposal_entry(
             "Secret verification lane: repo/source artifacts contain {count} secret "
             "finding(s). Triage provider/type/source ownership, then run only the "
             "minimal safe identity/capability check or record a verification blocker; "
             "promote to Candidate only with validity/usability and impact path.".format(
                 count=secret_findings,
-            )
-        )
+            ),
+            action_type="secret-verification",
+            priority=86,
+            command_hint="python3 tools/secret_triage.py --file findings/<target>/exposure/repo_secrets.json",
+            metadata={"secret_findings": secret_findings},
+        ))
 
     surface = state.get("surface") or {}
     for lead in _json_list(surface.get("workflow_leads"))[:5]:
@@ -2988,15 +3090,19 @@ def _next_proposals(
         next_action = str(lead.get("next_action") or "").strip()
         evidence = str(lead.get("evidence") or lead.get("category") or "").strip()
         if title:
-            proposals.append(
+            proposals.append(_proposal_entry(
                 "Cross-evidence high-value surface {title}: {evidence}. "
                 "Next action: {next_action}. Stop condition: record tested, "
                 "blocked, dead-end, signal, or candidate after focused replay.".format(
                     title=title,
                     evidence=evidence[:180],
                     next_action=next_action[:180] or "focused replay with source/JS/browser evidence",
-                )
-            )
+                ),
+                action_type="evidence-convergence",
+                priority=98,
+                command_hint="focused replay with browser/JS/source evidence",
+                metadata={"lead_title": title[:180], "lead_category": evidence[:80]},
+            ))
 
     lane_summary = matrix.get("high_risk_lanes")
     if not isinstance(lane_summary, dict):
@@ -3014,14 +3120,22 @@ def _next_proposals(
         label = f"{name}[{','.join(techniques)}]" if techniques else name
         lane_review.append(f"{label}={lane.get('disposition')}")
     if lane_review and state.get("has_recon") and matrix.get("endpoints"):
-        proposals.append(
+        proposals.append(_proposal_entry(
             "High-risk lane review: {lanes}. For every listed family, use the smallest "
             "evidence-producing interface test (SQLi/NoSQLi, SSRF URL-fetch/OAST, "
             "XXE XML parser, RCE/SSTI/command/deserialization/upload, authz/IDOR, "
             "GraphQL/OAuth/JWT, Path/LFI/RFI, CSRF/Race/Webhook/XSS) or record an "
             "explicit blocked/not_applicable reason; never treat unassessed as clean."
-            .format(lanes=", ".join(lane_review))
-        )
+            .format(lanes=", ".join(lane_review)),
+            action_type="high-risk-lane-review",
+            priority=92,
+            command_hint="focused interface test or explicit blocked/not_applicable disposition",
+            metadata={"lane_dispositions": dict(
+                (part.split("=", 1)[0], part.split("=", 1)[1])
+                for part in lane_review
+                if "=" in part
+            )},
+        ))
 
     for gap in _checkpoint_coverage_gaps(coverage_gaps, matrix):
         if _ledger_covers_cell(
@@ -3237,63 +3351,14 @@ def _next_proposals(
 
 
 def _classify_next_action(text: str, target: str = "") -> tuple[str, int, str]:
-    """把 checkpoint 的自然语言建议归类成 Claude 可消费的执行队列。
+    """Classify a legacy plain-string proposal into queue fields.
 
-    Dual-read 通道：只服务仍未结构化的 plain-string 生产者（recon、enrichment
-    hint、viewstate/secret/cross-evidence/high-risk/secondary-sweep/unsafe、
-    case-state seed、root-claim candidate evidence gap）。结构化 entry 在
-    `_bounded_next_proposals` / `_build_next_action_queue` 里直接读字段，
-    不经过这里；已迁移分支的 classify 规则随生产者一起删除。
+    All in-repo producers now emit structured entries (_proposal_entry); this
+    path only serves genuinely external/ad-hoc plain strings (hand-written
+    notes, future tools) and keeps a single safe default instead of
+    re-growing per-family regex branches.
     """
-    value = str(text or "").strip()
-    lowered = value.lower()
-    replay_match = re.search(
-        r"Exact replay draft:\s+(?P<cmd>.*?)(?:\.\s+(?:Required evidence|Missing evidence|Downgrade rule|Stop condition|Write-back|Chain extensions if blocked):|$)",
-        value,
-        re.I,
-    )
-    replay_hint = replay_match.group("cmd").strip() if replay_match else ""
-    if "case-state endpoint discovery lead" in lowered:
-        return "case-state-enrichment", 66, "identify concrete object endpoint from browser/source evidence, then update case_state"
-    if "case-state seed opportunity" in lowered:
-        seed_match = re.search(r"Next:\s+(?P<cmd>python3\s+tools/case_state_seed\.py\s+.*?)(?:\.\s+Review|$)", value, re.I)
-        return "case-state-seed", 99, seed_match.group("cmd").strip() if seed_match else "python3 tools/case_state_seed.py --target <target> --json"
-    if "candidate evidence gap" in lowered:
-        return "candidate-evidence-gap", 105, "fill missing rubric evidence, then /validate"
-    if "review context contradiction" in lowered:
-        quoted_target = _quote(target) if target else "target.com"
-        return "context-review", 90, f"python3 tools/context_pack.py --target {quoted_target}"
-    if "run /recon" in lowered:
-        quoted_target = _quote(target) if target else "target.com"
-        return (
-            "recon",
-            85,
-            "python3 tools/hunt.py --target {target} --recon-only && "
-            "python3 tools/surface.py --target {target} && "
-            "python3 tools/checkpoint.py --target {target}".format(target=quoted_target),
-        )
-    if "action-gated scanner lane" in lowered or "unsafe-skipped scanner lane" in lowered:
-        return "action-gated-review", 93, "review legacy unsafe_skipped.txt; resolve queue with tested/blocked/dead-end/n/a/candidate"
-    if "high-risk lane review" in lowered:
-        return "high-risk-lane-review", 92, "focused interface test or explicit blocked/not_applicable disposition"
-    if "viewstate integrity review" in lowered:
-        return "viewstate-integrity-review", 93, "offline project machineKey check, then one format control and one-byte ViewState tamper; Telerik absence is not N/A"
-    if "secondary-sweep lead" in lowered:
-        if "[public-metadata]" in lowered:
-            return "secondary-sweep", 52, "review public metadata only for unusual fields or chain pivots"
-        return "secondary-sweep", 72, "review demoted raw artifact; re-promote only with concrete secret/chain evidence"
-    if "cross-evidence high-value surface" in lowered:
-        return "evidence-convergence", 98, "focused replay with browser/JS/source evidence"
-    if "secret verification lane" in lowered:
-        return "secret-verification", 86, "python3 tools/secret_triage.py --file findings/<target>/exposure/repo_secrets.json"
-    if "collect_browser_mcp_evidence" in lowered:
-        return "browser-enrichment", 70, "Chrome DevTools/Playwright MCP capture, import artifacts, then /surface"
-    if "run enrichment run_source_intel" in lowered:
-        return "source-enrichment", 70, "python3 tools/source_intel.py"
-    if "run enrichment run_js_read" in lowered:
-        return "js-enrichment", 70, "python3 tools/js_reader.py"
     return "next-action", 50, "execute the smallest safe evidence-producing step"
-
 
 def _bounded_next_proposals(
     proposals: list,
@@ -3337,118 +3402,15 @@ def _bounded_next_proposals(
 
 
 def _extract_action_metadata(text: str) -> dict:
-    """从 checkpoint 的动作文本中提取可机器消费的轻量字段。
+    """Extract machine-readable fields from a legacy plain-string proposal.
 
-    Dual-read 通道：只服务仍未结构化的 plain-string 生产者（seed/endpoint-seed、
-    unsafe/action-gated、secondary-sweep、workflow lead、root-claim finding_id）。
-    结构化 entry 在 `_build_next_action_queue` 里直接携带 metadata dict；
-    已迁移 family（case-state backlog、coverage-gap、actor-gap、
-    ranked-surface/surface-review、validation、report）的提取规则随生产者删除。
+    All in-repo producers now emit structured entries carrying metadata
+    dicts; this path only serves genuinely external/ad-hoc plain strings.
+    Keep the one extraction external strings reliably carry (finding id),
+    and re-read the prose itself when richer fields are needed.
     """
     value = str(text or "").strip()
     metadata: dict = {}
-    hypothesis_id_match = re.search(r"Hypothesis ID:\s+(?P<value>[A-Za-z0-9_-]+)", value, re.I)
-    if hypothesis_id_match:
-        metadata["hypothesis_id"] = hypothesis_id_match.group("value")
-
-    seed_match = re.search(
-        r"Case-state seed opportunity:\s+Found object candidate\s+(?P<object_ref>\S+)\s+"
-        r"type=(?P<object_type>\S+)\s+endpoint=(?P<endpoint>\S+)\.\s+"
-        r"Runner:\s+(?P<runner>\S+)\.\s+Missing evidence:\s+(?P<missing>.*?)(?:\.\s+Next:|$)",
-        value,
-        re.I,
-    )
-    if seed_match:
-        metadata.update({
-            "object_ref": seed_match.group("object_ref"),
-            "object_type": seed_match.group("object_type"),
-            "endpoint": seed_match.group("endpoint"),
-            "runner": seed_match.group("runner"),
-            "missing_evidence": [
-                part.strip()
-                for part in seed_match.group("missing").split(",")
-                if part.strip() and part.strip() != "review required"
-            ],
-        })
-        command_match = re.search(r"Next:\s+(?P<cmd>python3\s+tools/case_state_seed\.py\s+.*?)(?:\.\s+Review|$)", value, re.I)
-        if command_match:
-            metadata["seed_command"] = command_match.group("cmd").strip()
-        return metadata
-
-    endpoint_seed_match = re.search(
-        r"Case-state endpoint discovery lead:\s+Found object candidate\s+(?P<object_ref>\S+)\s+"
-        r"type=(?P<object_type>\S+)\s+endpoint=(?P<endpoint>\S+)\.\s+"
-        r"Runner:\s+(?P<runner>\S+)\.\s+Missing evidence:\s+(?P<missing>.*?)(?:\.\s+Next action:|$)",
-        value,
-        re.I,
-    )
-    if endpoint_seed_match:
-        metadata.update({
-            "object_ref": endpoint_seed_match.group("object_ref"),
-            "object_type": endpoint_seed_match.group("object_type"),
-            "endpoint": endpoint_seed_match.group("endpoint"),
-            "runner": endpoint_seed_match.group("runner"),
-            "missing_evidence": [
-                part.strip()
-                for part in endpoint_seed_match.group("missing").split(",")
-                if part.strip() and part.strip() != "review required"
-            ],
-        })
-        command_match = re.search(r"Seed command:\s+(?P<cmd>python3\s+tools/case_state_seed\.py\s+.*?)(?:\.\s+Stop condition:|$)", value, re.I)
-        if command_match:
-            metadata["seed_command"] = command_match.group("cmd").strip()
-        return metadata
-
-    enrichment_match = re.search(
-        r"Case-state enrichment lead:.*?Example:\s+"
-        r"(?P<endpoint>\S+)\s+x\s+(?P<vuln>[A-Za-z0-9_-]+)\s+with\s+"
-        r"(?P<actor>[^/]+)/(?P<object_scope>[^/]+)/(?P<variant>\S+).*?"
-        r"Missing evidence:\s+(?P<missing>.*?)(?:\.\s+Next:|$)",
-        value,
-        re.I,
-    )
-    if enrichment_match:
-        metadata.update({
-            "endpoint": enrichment_match.group("endpoint"),
-            "vuln_class": enrichment_match.group("vuln"),
-            "actor": enrichment_match.group("actor"),
-            "object_scope": enrichment_match.group("object_scope"),
-            "variant": enrichment_match.group("variant").rstrip("."),
-            "missing_evidence": [
-                part.strip()
-                for part in enrichment_match.group("missing").split(",")
-                if part.strip()
-            ],
-        })
-        return metadata
-
-    acquisition_match = re.search(
-        r"Case-state acquisition lead:\s+(?P<clean>\d+)\s+recent anonymous Authz "
-        r"baseline\(s\).*?and\s+(?P<deferred>\d+)\s+ranked role/object surface\(s\)",
-        value,
-        re.I,
-    )
-    if acquisition_match:
-        metadata.update({
-            "clean_authz_baselines": int(acquisition_match.group("clean")),
-            "deferred_role_surfaces": int(acquisition_match.group("deferred")),
-            "missing_evidence": ["actor", "session", "business object"],
-        })
-        return metadata
-
-    match = re.search(
-        r"Review (?:action-gated|unsafe-skipped) scanner lane\s+(?P<unsafe_id>[a-f0-9]{8,64}|-)"
-        r".*?Artifact=(?P<artifact>\S*unsafe_skipped\.txt)",
-        value,
-        re.I,
-    )
-    if match:
-        unsafe_id = match.group("unsafe_id")
-        metadata.update({
-            "unsafe_skipped_id": "" if unsafe_id == "-" else unsafe_id,
-            "artifact": match.group("artifact"),
-        })
-
     match = re.search(
         r"(?:Candidate evidence gap|Run /validate) for finding\s+(?P<finding_id>[^;\s]+)",
         value,
@@ -3456,40 +3418,7 @@ def _extract_action_metadata(text: str) -> dict:
     )
     if match:
         metadata["finding_id"] = match.group("finding_id").strip().rstrip(".")
-
-    match = re.search(r"Draft report for validated finding\s+(?P<finding_id>[^;\s]+)", value, re.I)
-    if match:
-        metadata["finding_id"] = match.group("finding_id").strip().rstrip(".")
-
-    match = re.search(
-        r"Secondary-sweep lead\s+\[(?P<category>[^\]]+)\]:\s+(?P<title>.*?)[.]\s+Artifact=(?P<artifact>\S+)",
-        value,
-        re.I,
-    )
-    if match:
-        metadata.update({
-            "lead_category": match.group("category").strip(),
-            "lead_title": match.group("title").strip(),
-            "artifact": match.group("artifact").strip().rstrip("."),
-        })
-
-    match = re.search(
-        r"Evidence:\s+Workflow lead:\s+(?P<title>.*?)[.]\s+Why it matters:.*?"
-        r"Category=(?P<category>[^.\s]+)\.\s+(?:Artifact=(?P<artifact>\S+)\.\s+)?"
-        r"Next action:",
-        value,
-        re.I,
-    )
-    if match:
-        metadata.update({
-            "lead_category": match.group("category").strip(),
-            "lead_title": match.group("title").strip(),
-        })
-        if match.group("artifact"):
-            metadata["artifact"] = match.group("artifact").strip().rstrip(".")
-
     return metadata
-
 
 def _artifact_category_identity(item: dict) -> str:
     metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}

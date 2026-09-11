@@ -2087,9 +2087,16 @@ def test_report_action_stays_above_advisory_surface_review_but_below_high_value_
             "Cover high-value matrix gap: /api/admin/export x Authz (weight=5, relevance=8: admin path).",
             action_type="coverage-gap", priority=94,
         ),
-        "Secondary-sweep lead [open-200-api-review]: Anonymous API returned 200. "
-        "Artifact=findings/target/manual_review/open_200_api.txt. Why it matters: review. "
-        "Next action: sample body. Stop condition: keep demoted unless concrete evidence appears.",
+        _proposal_entry(
+            "Secondary-sweep lead [open-200-api-review]: Anonymous API returned 200. "
+            "Artifact=findings/target/manual_review/open_200_api.txt. Why it matters: review. "
+            "Next action: sample body. Stop condition: keep demoted unless concrete evidence appears.",
+            action_type="secondary-sweep", priority=72,
+            metadata={
+                "lead_category": "open-200-api-review",
+                "artifact": "findings/target/manual_review/open_200_api.txt",
+            },
+        ),
     ], "target.com")
 
     by_type = {item["type"]: item for item in queue}
@@ -2619,8 +2626,11 @@ def test_checkpoint_surfaces_identity_follow_up_action():
     })
 
     assert len(proposals) == 1
-    assert "Resolve closure identity for /api/search x SQLi" in proposals[0]
-    assert "method_mismatch" in proposals[0]
+    entry_text = _entry_text(proposals[0])
+    assert "Resolve closure identity for /api/search x SQLi" in entry_text
+    assert "method_mismatch" in entry_text
+    assert proposals[0]["metadata"]["endpoint"] == "/api/search"
+    assert proposals[0]["metadata"]["family"] == "SQLi"
 
 
 def test_checkpoint_keeps_open_200_secondary_sweep_without_authz_ledger_closure(tmp_path):
@@ -2652,11 +2662,20 @@ def test_checkpoint_keeps_open_200_secondary_sweep_without_authz_ledger_closure(
 
 def test_public_metadata_secondary_sweep_does_not_outrank_ranked_surface():
     queue = _build_next_action_queue([
-        # plain-string 通道仍然有效：secondary-sweep 生产者保持文本建议形态。
-        "Secondary-sweep lead [public-metadata]: Standard public metadata endpoints were demoted. "
-        "Artifact=findings/target.com/manual_review/standard_public_metadata.txt. "
-        "Why it matters: standard metadata. Next action: review only for unusual fields. "
-        "Stop condition: keep demoted unless concrete evidence appears.",
+        # Structured entry is the real producer path since the plain-string
+        # secondary-sweep producer was migrated.
+        _proposal_entry(
+            "Secondary-sweep lead [public-metadata]: Standard public metadata endpoints were demoted. "
+            "Artifact=findings/target.com/manual_review/standard_public_metadata.txt. "
+            "Why it matters: standard metadata. Next action: review only for unusual fields. "
+            "Stop condition: keep demoted unless concrete evidence appears.",
+            action_type="secondary-sweep", priority=52,
+            metadata={
+                "lead_category": "public-metadata",
+                "artifact": "findings/target.com/manual_review/standard_public_metadata.txt",
+                "demoted": True,
+            },
+        ),
         _proposal_entry(
             "Review surface candidate https://api.target.com/rest/admin/application-version: "
             "capture baseline first",
@@ -2760,7 +2779,8 @@ def test_high_risk_review_groups_techniques_without_truncating_canonical_familie
         evidence_summary={},
     )
 
-    review = next(item for item in proposals if item.startswith("High-risk lane review:"))
+    review_entry = next(item for item in proposals if _entry_text(item).startswith("High-risk lane review:"))
+    review = _entry_text(review_entry)
     assert "SQLi[BooleanBlind]=unassessed" in review
     assert "RCE[SSTI,CommandInjection,Deserialization]=unassessed" in review
     assert "Path[LFI,RFI]=unassessed" in review
@@ -3583,16 +3603,18 @@ def test_next_proposals_emit_bounded_viewstate_integrity_review():
         evidence_summary={},
     )
 
-    review = next(item for item in proposals if item.startswith("ViewState integrity review:"))
+    review_entry = next(item for item in proposals if _entry_text(item).startswith("ViewState integrity review:"))
+    review = _entry_text(review_entry)
     assert "tools/aspnet_viewstate_knownkey.py" in review
     assert "single-byte __VIEWSTATE tamper" in review
     assert "without submitting a business action" in review
     assert "cannot make ViewState/deserialization N/A" in review
-    action_type, priority, hint = checkpoint_module._classify_next_action(review, "target.com")
-    assert action_type == "viewstate-integrity-review"
-    assert priority == 93
-    assert "machineKey" in hint
-    assert "Telerik absence is not N/A" in hint
+    # Entry now carries type/priority/command_hint structurally; the legacy
+    # classify path is a single safe default for external plain strings.
+    assert review_entry["type"] == "viewstate-integrity-review"
+    assert review_entry["priority"] == 93
+    assert "machineKey" in review_entry["command_hint"]
+    assert "Telerik absence is not N/A" in review_entry["command_hint"]
 
 
 def test_capability_chain_review_projection_has_stable_identity_and_bounded_lineage(tmp_path):
@@ -4339,9 +4361,17 @@ def test_checkpoint_prefers_structured_workflow_lead_for_same_artifact_category(
     artifact = "findings/target.com/manual_review/openapi.jsonl"
     natural = _build_next_action_queue(
         [
-            "Evidence: Workflow lead: OpenAPI auth boundary. Why it matters: API. "
-            "Category=openapi-semantics. Artifact=findings/target.com/manual_review/openapi.jsonl. "
-            "Next action: replay the declared operation."
+            _proposal_entry(
+                "Evidence: Workflow lead: OpenAPI auth boundary. Why it matters: API. "
+                "Category=openapi-semantics. Artifact=findings/target.com/manual_review/openapi.jsonl. "
+                "Next action: replay the declared operation.",
+                action_type="workflow-lead-review", priority=88,
+                metadata={
+                    "lead_title": "OpenAPI auth boundary",
+                    "lead_category": "openapi-semantics",
+                    "artifact": "findings/target.com/manual_review/openapi.jsonl",
+                },
+            )
         ],
         "target.com",
     )[0]
