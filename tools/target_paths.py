@@ -15,6 +15,53 @@ _HOST_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
 URL_DISPLAY_LIMIT = 240
 
 
+def target_scoped_owner_roots(repo_root: str | Path, target: str) -> dict[str, str]:
+    """Enumerate EVERY per-target owner state location for a full reset.
+
+    Single source of truth: reset tooling derives its list from this function
+    instead of maintaining a parallel one. A new owner path added here is
+    automatically covered by reset; forgetting to add a new owner here is a
+    test-visible gap (see tests/test_target_paths_owner_roots.py). Global
+    cross-target files (journal/patterns/audit) are NOT listed — they are
+    preserved by design; per-target rows inside them are filtered separately
+    by the reset tool.
+    """
+    repo = Path(repo_root)
+    canonical = canonical_target_value(target)
+    key = target_storage_key(target)
+    # memory/evidence/<key>/ledger.jsonl  — per-target Evidence Ledger owner
+    # memory/goals/targets/<key>.json     — per-target goal memory owner
+    # memory/goals/active.json            — pointer, reset only when bound to
+    #                                       this target (handled by the caller)
+    # evidence/<key>/                     — coverage matrix + validation/review
+    #                                       evidence bundles (owner state, not
+    #       just derived caches: closure reads them as claim components)
+    return {
+        "recon": str(repo / "recon" / key),
+        "findings": str(repo / "findings" / key),
+        "reports": str(repo / "reports" / key),
+        "state": str(repo / "state" / key),
+        "evidence": str(repo / "evidence" / key),
+        "memory_evidence": str(repo / "memory" / "evidence" / key),
+        "goal_target_file": str(repo / "memory" / "goals" / "targets" / f"{key}.json"),
+        "targets_sessions": str(repo / "targets" / key / "sessions"),
+        "hunt_memory_target": os.environ.get(
+            "HUNT_MEMORY_DIR",
+            str(repo / "hunt-memory"),
+        ) + f"/targets/{key.replace(':', '-')}.json",
+        "hunt_memory_guard": os.environ.get(
+            "HUNT_MEMORY_DIR",
+            str(repo / "hunt-memory"),
+        ) + f"/guards/{key.replace(':', '-')}.json",
+    }
+
+
+def active_goal_pointer_path(repo_root: str | Path) -> str:
+    """Path of the global active-goal pointer; reset deletes it only when it
+    names the target being reset (a stale pointer poisons the next round)."""
+    return str(Path(repo_root) / "memory" / "goals" / "active.json")
+
+
 def compact_url(value: str, *, limit: int = URL_DISPLAY_LIMIT) -> str:
     """Bound an AI-facing URL preview without changing replay identity."""
     raw = str(value or "").strip()
