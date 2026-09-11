@@ -204,12 +204,9 @@ PLACEHOLDER_OBJECT_SEGMENTS = {"nan", "undefined", "null", "none", "object", "[o
 DECISION_PROJECTION_SCHEMA_VERSION = 1
 
 
-def _normalise_endpoint_path(value: str) -> str:
-    return canonical_endpoint_path(value)
-
 
 def _has_placeholder_object_segment(value: str) -> bool:
-    path = _normalise_endpoint_path(value).lower()
+    path = canonical_endpoint_path(value).lower()
     segments = [segment for segment in path.split("/") if segment]
     return any(segment in PLACEHOLDER_OBJECT_SEGMENTS for segment in segments)
 
@@ -785,7 +782,7 @@ def _load_sql_matrix_projection(repo_root: str, target: str, lane: str | None = 
     for item in payload.get("hits") or []:
         if not isinstance(item, dict):
             continue
-        endpoint = _normalise_endpoint_path(str(item.get("url") or ""))
+        endpoint = canonical_endpoint_path(str(item.get("url") or ""))
         if endpoint:
             candidates.append({
                 "endpoint": endpoint,
@@ -3281,7 +3278,7 @@ _VARIABLE_PATH_SEGMENT_RE = re.compile(r"^(?:\d+|[0-9a-f]{12,})$", re.IGNORECASE
 
 def _endpoint_family(endpoint: object) -> str:
     """Collapse common object-id path segments for the advisory rotation check."""
-    path = _normalise_endpoint_path(str(endpoint or ""))
+    path = canonical_endpoint_path(str(endpoint or ""))
     return "/".join(
         ":id" if _UUID_SEGMENT_RE.fullmatch(segment) or _VARIABLE_PATH_SEGMENT_RE.fullmatch(segment) else segment
         for segment in path.split("/")
@@ -3652,12 +3649,12 @@ def _surface_review_completion(
         return {"status": "unresolved", "unresolved": [{"reason": "coverage_unavailable"}]}
 
     matrix_by_path = {
-        _normalise_endpoint_path(str(item.get("endpoint") or "")): item
+        canonical_endpoint_path(str(item.get("endpoint") or "")): item
         for item in matrix.get("endpoints") or []
-        if isinstance(item, dict) and _normalise_endpoint_path(str(item.get("endpoint") or ""))
+        if isinstance(item, dict) and canonical_endpoint_path(str(item.get("endpoint") or ""))
     }
     high_gap_paths = {
-        _normalise_endpoint_path(str(gap.get("endpoint") or ""))
+        canonical_endpoint_path(str(gap.get("endpoint") or ""))
         for gap in _actionable_coverage_gaps(matrix)
         if isinstance(gap, dict)
     }
@@ -3669,12 +3666,12 @@ def _surface_review_completion(
             unresolved.append({"reason": "invalid_candidate"})
             continue
         url = str(candidate.get("url") or "").strip()
-        endpoint = _normalise_endpoint_path(url)
+        endpoint = canonical_endpoint_path(url)
         endpoint_identity = canonical_endpoint_identity(url)
         coverage_endpoint = (
             endpoint
             if endpoint in matrix_by_path
-            else _normalise_endpoint_path(_route_template(endpoint))
+            else canonical_endpoint_path(_route_template(endpoint))
         )
         if not endpoint or not endpoint_identity:
             unresolved.append({"url": url, "reason": "missing_endpoint"})
@@ -6355,7 +6352,7 @@ def load_closure_projection(
     repo_root: str,
     state: dict,
     *,
-    max_lanes_reached: bool,
+    max_lanes_reached: bool = False,
     apply_round_guard: bool = True,
     include_round_projection: bool = True,
     queue_snapshot: dict | None = None,
@@ -7405,11 +7402,6 @@ def main() -> int:
         help="Read existing coverage and evidence owners for an explicit closure verdict",
     )
     parser.add_argument(
-        "--max-lanes-reached",
-        action="store_true",
-        help="Mark this bounded invocation as a required handoff",
-    )
-    parser.add_argument(
         "--loop-check",
         action="store_true",
         help="Read recent ledger outcomes for an explicit per-iteration rotation decision",
@@ -7445,7 +7437,6 @@ def main() -> int:
                 state["closure"] = load_closure_projection(
                     BASE_DIR,
                     state,
-                    max_lanes_reached=args.max_lanes_reached,
                     queue_snapshot=queue_snapshot,
                 )
                 source_markers_after = _owner_source_markers(BASE_DIR, args.target)

@@ -1078,7 +1078,7 @@ def _artifact_endpoints(repo_root: Path | None, target: str, artifact: str) -> l
         url = match.group(0).rstrip(".,;)]}'\"")
         if target and not url_belongs_to_target(url, target):
             continue
-        endpoint = _normalise_endpoint_path(url)
+        endpoint = canonical_endpoint_path(url)
         if endpoint:
             endpoints.append(endpoint)
     return _dedupe(endpoints)
@@ -1724,7 +1724,7 @@ def _lead_proposals(
         reasons = ", ".join(str(reason) for reason in (item.get("reasons") or [])[:2])
         suggested = str(item.get("suggested") or "").strip()
         if url:
-            endpoint_path = _normalise_endpoint_path(url)
+            endpoint_path = canonical_endpoint_path(url)
             vuln_hint = _ranked_surface_vuln_hint(item, url)
             if _ledger_covers_cell(
                 _ledger_covered_cells(evidence_summary or {}),
@@ -1757,9 +1757,6 @@ def _lead_proposals(
 def _canonicalize_url_path(value: str) -> str:
     return extract_endpoint_path(value)
 
-
-def _normalise_endpoint_path(value: str) -> str:
-    return canonical_endpoint_path(value)
 
 
 PLACEHOLDER_OBJECT_SEGMENTS = {"nan", "undefined", "null", "none", "object", "[object object]"}
@@ -1843,8 +1840,8 @@ def _placeholder_concrete_endpoint(url: str, case_state: dict | None) -> str:
 
 
 def _is_parent_endpoint(parent: str, child: str) -> bool:
-    parent_path = _normalise_endpoint_path(parent)
-    child_path = _normalise_endpoint_path(child)
+    parent_path = canonical_endpoint_path(parent)
+    child_path = canonical_endpoint_path(child)
     if not parent_path or not child_path or parent_path == "/" or parent_path == child_path:
         return False
     return child_path.startswith(parent_path + "/")
@@ -2037,7 +2034,7 @@ def _matrix_endpoint_paths(matrix: dict) -> set[str]:
         endpoint = str(item.get("endpoint") or "").strip()
         if not endpoint:
             continue
-        path = _normalise_endpoint_path(endpoint).rstrip("/")
+        path = canonical_endpoint_path(endpoint).rstrip("/")
         if path:
             paths.add(path)
     return paths
@@ -2403,7 +2400,7 @@ def _ranked_surface_ledger_skeleton(
     if placeholder_object.get("object_ref"):
         object_scope = "own_object"
     if placeholder_object.get("endpoint"):
-        endpoint = _normalise_endpoint_path(str(placeholder_object.get("endpoint") or ""))
+        endpoint = canonical_endpoint_path(str(placeholder_object.get("endpoint") or ""))
     if placeholder_guidance:
         variant = "id_swap" if placeholder_object.get("endpoint") else "baseline"
     elif baseline_first or context_prereq:
@@ -2849,7 +2846,7 @@ def _is_parent_closure_gap(gap: dict, tested_endpoints: set[str]) -> bool:
 
 
 def _coverage_family_shape(endpoint: str) -> tuple[str, str]:
-    path = _normalise_endpoint_path(endpoint)
+    path = canonical_endpoint_path(endpoint)
     if not path:
         return "", ""
     parts = [part for part in path.strip("/").split("/") if part]
@@ -3374,12 +3371,12 @@ def _next_proposals(
             break
         url = str(item.get("url") or "").strip()
         suggested = str(item.get("suggested") or "").strip()
-        endpoint_path = _normalise_endpoint_path(url)
+        endpoint_path = canonical_endpoint_path(url)
         if url:
             entry = _ranked_surface_entry(ranked_state, item.get("url") or "")
             vuln_hint = _ranked_surface_vuln_hint(entry, url)
             concrete_endpoint = _placeholder_concrete_endpoint(url, case_state)
-            concrete_endpoint_path = _normalise_endpoint_path(concrete_endpoint)
+            concrete_endpoint_path = canonical_endpoint_path(concrete_endpoint)
             placeholder_object_closed = bool(
                 concrete_endpoint_path
                 and _non_concrete_object_segments(url)
@@ -4496,7 +4493,6 @@ def build_checkpoint(
         "next_action_queue": next_action_queue,
         "default_candidate": default_candidate,
         "recommended_executable_action": recommended_executable_action,
-        "commands": _write_back_commands(resolved_target, lead, next_items, dead_ends, handoff),
         "retrospect": f"/retrospect {resolved_target}",
         "apply_status": "proposal only; CLI applies target memory by default (--no-apply-target-memory to skip)",
     }
@@ -4512,25 +4508,6 @@ def build_checkpoint(
 def _quote(text: str) -> str:
     return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
-
-def _write_back_commands(
-    target: str,
-    leads: list[str],
-    next_items: list[str],
-    dead_ends: list[str],
-    handoff: str,
-) -> list[str]:
-    commands: list[str] = []
-    quoted_target = _quote(target)
-    for item in leads[:3]:
-        commands.append(f"python3 tools/target_memory.py lead {_quote(_entry_text(item))} --target {quoted_target}")
-    for item in next_items[:5]:
-        commands.append(f"python3 tools/target_memory.py next {_quote(_entry_text(item))} --target {quoted_target}")
-    for item in dead_ends[:2]:
-        commands.append(f"python3 tools/target_memory.py dead-end {_quote(_entry_text(item))} --target {quoted_target}")
-    if handoff:
-        commands.append(f"python3 tools/target_memory.py handoff {_quote(handoff)} --target {quoted_target}")
-    return commands
 
 
 def _fmt_list(items: list[str]) -> list[str]:
@@ -4733,7 +4710,6 @@ def format_checkpoint(checkpoint: dict) -> str:
             )
             for item in actor_matrix.get("gaps", [])[:5]
         ]),
-        "  - record commands:",
         *_fmt_nested(evidence.get("record_commands", [])[:3]),
         "- Validation runner candidates (advisory; require /validate before report):",
         *_fmt_list(format_validation_runner_candidate_lines(
@@ -4755,7 +4731,6 @@ def format_checkpoint(checkpoint: dict) -> str:
         *_fmt_nested(write_back.get("dead_end", [])),
         f"  - handoff: {write_back.get('handoff', '') or 'none'}",
         "- Commands:",
-        *_fmt_list(checkpoint.get("commands", [])),
         f"- Retrospect: {checkpoint.get('retrospect', '')}",
         f"- Apply status: {checkpoint.get('apply_status', '')}",
     ]

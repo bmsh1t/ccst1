@@ -514,7 +514,6 @@ def load_checkpoint_followup(base_dir: str | Path, target: str, memory_dir: str 
         "next_count": len(write_back.get("next") or []),
         "dead_end_count": len(write_back.get("dead_end") or []),
         "handoff": str(write_back.get("handoff") or ""),
-        "commands": checkpoint.get("commands", [])[:3],
         **control,
     }
 
@@ -711,10 +710,6 @@ def format_resume_output(summary: dict | None, target: str) -> str:
                 f"next={checkpoint.get('next_count', 0)}, "
                 f"dead-end={checkpoint.get('dead_end_count', 0)}"
             )
-            commands = checkpoint.get("commands") or []
-            if commands:
-                lines.append("  Suggested command:")
-                lines.append(f"  {commands[0]}")
         else:
             lines.append(f"  unavailable: {checkpoint.get('error', 'unknown error')}")
 

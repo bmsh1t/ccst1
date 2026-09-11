@@ -165,14 +165,12 @@ CHECKPOINT DECISION
   - actor matrix gaps:
   - red-line unchecked:
   - actor gaps:
-  - record commands:
 - Durable action queue sync:
 - Target write-back:
   - lead:
   - next:
   - dead-end:
   - handoff:
-- Commands:
 - Retrospect:
 - Apply status:
 ```

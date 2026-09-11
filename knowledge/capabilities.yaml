@@ -17,6 +17,18 @@ contracts:
     - on-demand
     - gated
 capabilities:
+  - id: rest-basket
+    kind: card
+    file: knowledge/cards/rest-basket.md
+    layer: case-router
+    load: on-demand
+    purpose: validate
+    triggers:
+      - rest-basket
+      - idor
+      - anonymous-read
+      - object-id
+    note: first /distill target-evidence card (2026-09-11, BOLA basket pattern)
   - id: api-idor
     kind: card
     file: knowledge/cards/api-idor.md
