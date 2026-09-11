@@ -1,0 +1,12 @@
+{"file": ".trellis/tasks/09-11-simple-efficient-refactor/prd.md", "reason": "需求、实测依据（420KB 文档税/三零孤儿/状态机断链/死出口审计）、验收标准与明确不做清单"}
+{"file": ".trellis/tasks/09-11-simple-efficient-refactor/design.md", "reason": "批次设计：概念权威文件落位、/distill 两段式协议、proposal 死活边界修正、拆文件 import 方向、循环依赖斩法"}
+{"file": ".trellis/tasks/09-11-simple-efficient-refactor/implement.md", "reason": "11 个批次的施工顺序、每批验证命令与 commit 边界"}
+{"file": "rules/red-lines.md", "reason": "动作副作用最高优先级规则——所有批次不得放松的安全语义"}
+{"file": "rules/tool-ai-boundary.md", "reason": "工具/AI 职责边界——claim 模板与'谁思考'列的对照契约"}
+{"file": "skills/runtime-protocol.md", "reason": "recall gate 权威定义与共享知识查包协议——零-0 引用收敛的落点"}
+{"file": "docs/architecture-contract.md", "reason": "五平面架构契约——阶段二拆文件的摆放依据与变更准入"}
+{"file": "tests/test_gate_buckets.py", "reason": "151 闸门分桶纪律——批次 4/5 删出口加模板时必须保持绿的专项测试"}
+{"file": "tools/action_queue.py", "reason": "claim/from-evidence 现有实现——批次 5 模板合并优先级的同构基础"}
+{"file": "tools/checkpoint.py", "reason": "proposal 家族与 target_write_back 出口——批次 4 死出口清理的对象"}
+{"file": "tools/knowledge_candidates.py", "reason": "被归档的 _scrub 脱敏实现——批次 3 唯一值得保留的片段来源"}
+{"file": "tools/context_pack.py", "reason": "reviewed_candidate_hints 退役点与 skill_catalog 删除先例"}

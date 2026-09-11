@@ -1,0 +1,7 @@
+{"file": ".trellis/tasks/09-11-simple-efficient-refactor/prd.md", "reason": "验收标准清单（15 条）与全任务净账——check 的最终对照"}
+{"file": ".trellis/tasks/09-11-simple-efficient-refactor/design.md", "reason": "批次边界与回滚单位、风险缓解表——check 逐项核对"}
+{"file": "rules/red-lines.md", "reason": "检查删除/归档批次是否越界放松红线语义"}
+{"file": "rules/tool-ai-boundary.md", "reason": "检查 claim 模板/'谁思考'列是否引入内容门槛（违背自由思考）"}
+{"file": "tests/test_gate_buckets.py", "reason": "151 闸门专项——每批必查；批次 5 加模板负断言"}
+{"file": "docs/architecture-contract.md", "reason": "检查阶段二拆文件后 owner/状态平面是否被破坏"}
+{"file": "implement.md", "reason": "每批次验证命令与全程红线 checklist 的执行依据"}
