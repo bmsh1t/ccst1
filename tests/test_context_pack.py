@@ -378,6 +378,98 @@ def test_explicit_primary_skill_names_precede_generic_validation_words(tmp_path)
         assert pack["skill_route"]["required_dimensions"]
 
 
+def test_native_loaded_skills_leave_pack_recommendation():
+    """S1 pilot (batch 2 of ai-capability-roadmap): bb-methodology loads on
+    demand via the native Claude Code Skill tool, so the pack never recommends
+    it from owner state and instead falls back to the coordinator skill."""
+    from context_pack import NATIVE_LOADED_SKILLS
+
+    assert NATIVE_LOADED_SKILLS == {"bb-methodology"}
+    # Catalog/paths keep all 12 skills: Action Queue route validation and the
+    # explicit-focus path stay untouched during the pilot.
+    assert "bb-methodology" in SKILL_PATHS
+    assert "bb-methodology" in SKILL_CATALOG
+    # The other primary skills stay recommendable from target memory continuity.
+    recommendable = set(SKILL_PATHS) - NATIVE_LOADED_SKILLS
+    assert "bug-bounty" in recommendable
+    assert len(recommendable) == len(SKILL_PATHS) - 1
+
+
+def test_native_loaded_skill_not_recommended_but_listed_in_pack(tmp_path):
+    _seed_recon(tmp_path, "target.com", ["https://api.target.com/"])
+
+    pack = build_context_pack(tmp_path, target="target.com", focus="api idor")
+    output = format_context_pack(pack)
+
+    # Previously this seeded-recon shape recommended bb-methodology
+    # (owner-state default); now the coordinator takes the recommendation slot.
+    assert pack["selected_skill_id"] == "bug-bounty"
+    assert pack["skill_route"]["skill_id"] == "bug-bounty"
+    assert pack["skill_route"]["skill_path"] == "skills/bug-bounty/SKILL.md"
+    # The skill stays visible so the AI knows it is available natively.
+    assert pack["native_skills"] == ["bb-methodology"]
+    assert (
+        "Native-loaded skills (load on demand via the Skill tool, not recommended here): bb-methodology"
+        in output
+    )
+
+
+def test_native_loaded_skill_excluded_from_memory_continuity_recommendation(tmp_path):
+    """Target-memory continuity must not resurrect a native-loaded skill."""
+    _seed_recon(tmp_path, "target.com", ["https://api.target.com/"])
+    _seed_target_memory(tmp_path, "target.com", {
+        "selected_skills": ["bb-methodology"],
+    })
+
+    pack = build_context_pack(tmp_path, target="target.com")
+
+    assert pack["selected_skill_id"] == "bug-bounty"
+    assert pack["native_skills"] == ["bb-methodology"]
+
+
+def test_non_native_memory_skill_still_recommended_for_continuity(tmp_path):
+    """Only the pilot skill is excluded; recorded non-native skills still win."""
+    _seed_recon(tmp_path, "target.com", ["https://api.target.com/"])
+    _seed_target_memory(tmp_path, "target.com", {
+        "selected_skills": ["web2-vuln-classes"],
+    })
+
+    pack = build_context_pack(tmp_path, target="target.com")
+
+    assert pack["selected_skill_id"] == "web2-vuln-classes"
+
+
+def test_explicit_native_skill_focus_is_still_honored(tmp_path):
+    """An explicit user instruction outranks the pilot exclusion: naming
+    bb-methodology in focus returns it as the selected skill."""
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="bb-methodology hypothesis rotation",
+    )
+
+    assert pack["selected_skill_id"] == "bb-methodology"
+    assert pack["selected_skill"] == "skills/bb-methodology/SKILL.md"
+    assert pack["skill_route"]["required_dimensions"] == [
+        "hypothesis", "coverage", "pivot", "stop_condition",
+    ]
+    # native_skills still lists it — the AI loads it via the Skill tool, and
+    # the explicit recommendation is compatibility for consumers that read it.
+    assert pack["native_skills"] == ["bb-methodology"]
+
+
+def test_native_pilot_keeps_pack_recommendation_within_primary_skills(tmp_path):
+    """The pilot must not break the invariant that pack recommendations stay
+    inside the primary (claimable) skill family."""
+    _seed_recon(tmp_path, "target.com", ["https://api.target.com/"])
+
+    for focus in ("api idor", "coverage review", ""):
+        pack = build_context_pack(tmp_path, target="target.com", focus=focus)
+
+        assert pack["selected_skill_id"] in SKILL_PATHS
+        assert pack["skill_route"]["skill_id"] in SKILL_PATHS
+
+
 def test_api_idor_context_pack_selects_vuln_skill_and_cards(tmp_path):
     _seed_recon(tmp_path, "target.com", [
         "https://api.target.com/api/org/123/users?user_id=456",
@@ -393,7 +485,7 @@ def test_api_idor_context_pack_selects_vuln_skill_and_cards(tmp_path):
     # facts only, so a category-naming focus no longer forces the vuln skill.
     # What must hold: the pack publishes the full card catalog and the
     # focus-named card, and the override contract stays visible.
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation"}
     assert "knowledge/cards/api-idor.md" in pack["knowledge_cards"]
     catalog_ids = {item.get("id") for item in pack.get("card_catalog", [])}
     assert "api-idor" in catalog_ids
@@ -989,7 +1081,7 @@ def test_auth_hidden_focus_routes_to_hidden_switch_card(tmp_path):
 
     pack = build_context_pack(tmp_path, target="target.com", focus="auth-hidden login-bypass")
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/auth-hidden-switches.md" in pack["knowledge_cards"]
     assert "knowledge/cards/auth-access.md" in pack["knowledge_cards"]
     assert any("隐藏认证参数" in seed or "自有或测试账号" in seed for seed in pack["hypothesis_seeds"])
@@ -1002,7 +1094,7 @@ def test_auth_sso_focus_routes_to_token_edge_card(tmp_path):
 
     pack = build_context_pack(tmp_path, target="target.com", focus="jwt oauth sso")
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/auth-sso-token-edge-cases.md" in pack["knowledge_cards"]
     assert "knowledge/cards/auth-access.md" in pack["knowledge_cards"]
     assert any("state/nonce/PKCE" in seed or "account-linking" in seed for seed in pack["hypothesis_seeds"])
@@ -1015,7 +1107,7 @@ def test_jwt_unverified_signature_focus_surfaces_claim_tamper_baseline(tmp_path)
         focus="JWT authentication bypass unverified signature session token payload sub role admin",
     )
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/auth-sso-token-edge-cases.md" in pack["knowledge_cards"]
     assert any("claim-only tamper" in seed and "无效签名" in seed for seed in pack["hypothesis_seeds"])
     assert any("key-source" in seed and "JWK/JKU/KID/alg confusion" in seed for seed in pack["hypothesis_seeds"])
@@ -1028,7 +1120,7 @@ def test_access_control_method_focus_routes_to_auth_access_card(tmp_path):
         focus="method-based-access-control referer-based-access-control url-based-access-control",
     )
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/auth-access.md" in pack["knowledge_cards"]
     assert "knowledge/cards/api-idor.md" in pack["knowledge_cards"]
     assert any("GET vs POST" in seed or "X-Original-URL" in seed for seed in pack["hypothesis_seeds"])
@@ -1043,7 +1135,7 @@ def test_presigned_url_routes_to_existing_authz_cards_and_capability_gate(tmp_pa
         focus="S3 presigned upload URL object tenant method expiry content-type",
     )
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/api-idor.md" in pack["knowledge_cards"]
     assert "knowledge/cards/auth-access.md" in pack["knowledge_cards"]
     assert any(
@@ -1068,7 +1160,7 @@ def test_observability_ids_route_to_idor_without_becoming_idor_evidence(tmp_path
         if isinstance(entry, dict)
     }
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/api-idor.md" in all_cards
     assert "knowledge/cards/information-disclosure-source-config.md" in all_cards
     # Cards beyond the selection budget stay visible as signals, never hidden.
@@ -1087,7 +1179,7 @@ def test_opa_cedar_routes_to_existing_authz_cards_and_pdp_pep_gate(tmp_path):
         focus="OPA Cedar authorization policy decision enforcement PDP PEP tenant",
     )
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/auth-access.md" in pack["knowledge_cards"]
     assert "knowledge/cards/api-idor.md" in pack["knowledge_cards"]
     assert any(
@@ -1119,7 +1211,7 @@ def test_missing_parameter_focus_routes_to_discovery_card(tmp_path):
 
     pack = build_context_pack(tmp_path, target="target.com", focus="missing-param parameter-null")
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/missing-parameter-discovery.md" in pack["knowledge_cards"]
     assert any(
         "parameter is null" in seed or "目标特定参数词表" in seed
@@ -1137,7 +1229,7 @@ def test_path_pattern_focus_routes_to_management_exposure_card(tmp_path):
 
     pack = build_context_pack(tmp_path, target="target.com", focus="path-pattern management-exposure")
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/path-pattern-management-exposure.md" in pack["knowledge_cards"]
     assert any("发现类 fuzz" in seed or "管理/监控/日志/统计/配置/记录" in seed for seed in pack["hypothesis_seeds"])
     assert any("不接管云资源" in seed for seed in pack["hypothesis_seeds"])
@@ -1150,7 +1242,7 @@ def test_observed_api_path_routes_to_bounded_ancestor_prefix_cards(tmp_path):
         focus="observed API path https://target.com/prod-api/system/user/list",
     )
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/api-testing-workflow.md" in pack["knowledge_cards"]
     assert "knowledge/cards/path-pattern-management-exposure.md" in pack["knowledge_cards"]
     assert any(
@@ -1229,7 +1321,7 @@ def test_graphql_focus_routes_to_graphql_card(tmp_path):
 
     pack = build_context_pack(tmp_path, target="target.com", focus="graphql")
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/graphql.md" in pack["knowledge_cards"]
 
 
@@ -1240,7 +1332,7 @@ def test_graphql_node_global_id_does_not_route_to_node_runtime_card(tmp_path):
         focus="GraphQL private posts node global ID introspection query fields",
     )
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/graphql.md" in pack["knowledge_cards"]  # exact-list retired: state cards may join
 
 
@@ -1252,7 +1344,7 @@ def test_sqli_focus_routes_to_hidden_surface_card(tmp_path):
 
     pack = build_context_pack(tmp_path, target="target.com", focus="sqli hidden-param")
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/sqli-hidden-surfaces.md" in pack["knowledge_cards"]
     assert any("请求元数据" in seed or "二阶输入" in seed for seed in pack["hypothesis_seeds"])
 
@@ -1264,7 +1356,7 @@ def test_query_semantics_sqli_focus_keeps_visible_input_baseline(tmp_path):
         focus="SQL injection WHERE clause product category filter search sort pagination report export tenant scope hidden products",
     )
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/sqli-hidden-surfaces.md" in pack["knowledge_cards"]
     assert any("显式查询语义输入" in seed and "分页" in seed and "租户" in seed for seed in pack["hypothesis_seeds"])
 
@@ -1276,7 +1368,7 @@ def test_api_price_mutation_focus_pairs_api_with_business_logic(tmp_path):
         focus="API testing unused endpoint product price PATCH method matrix buy checkout item",
     )
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/api-testing-workflow.md" in pack["knowledge_cards"]
     assert "knowledge/cards/business-logic-state-machines.md" in pack["knowledge_cards"]
     assert any("业务逻辑" in seed or "状态机" in seed for seed in pack["hypothesis_seeds"])
@@ -1289,7 +1381,7 @@ def test_api_parameter_pollution_focus_routes_to_api_workflow(tmp_path):
         focus="API server-side parameter pollution HPP duplicate query parameter backend request reset password field truncation",
     )
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/api-testing-workflow.md" in pack["knowledge_cards"]
     assert "knowledge/cards/missing-parameter-discovery.md" in pack["knowledge_cards"]
     assert "knowledge/cards/upload-parser.md" not in pack["knowledge_cards"]
@@ -1303,7 +1395,7 @@ def test_api_mass_assignment_focus_pairs_api_and_business_logic(tmp_path):
         focus="API mass assignment over-posting PATCH user profile role isAdmin plan status verified approved",
     )
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/api-testing-workflow.md" in pack["knowledge_cards"]
     assert "knowledge/cards/business-logic-state-machines.md" in pack["knowledge_cards"]
     assert "knowledge/cards/upload-parser.md" not in pack["knowledge_cards"]
@@ -1328,7 +1420,7 @@ def test_svg_upload_xxe_focus_keeps_conversion_readback_evidence(tmp_path):
         focus="SVG image upload avatar XML parser XXE external entity server image conversion read-back",
     )
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/xxe-xml-parser.md" in pack["knowledge_cards"]
     assert "knowledge/cards/upload-parser.md" in pack["knowledge_cards"]
     assert any(
@@ -1399,7 +1491,7 @@ def test_os_command_injection_focus_surfaces_output_channel_baseline(tmp_path):
         focus="OS command injection simple product stock checker raw output blind timing output redirection OAST",
     )
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/controlled-rce-impact.md" in pack["knowledge_cards"]
     assert any(
         "baseline" in seed and "single separator" in seed and "visible output" in seed
@@ -1423,7 +1515,7 @@ def test_node_prototype_focus_routes_to_node_card(tmp_path):
 
     pack = build_context_pack(tmp_path, target="target.com", focus="node prototype-pollution")
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/node-prototype-pollution.md" in pack["knowledge_cards"]
     assert any("inert marker" in seed or "merge/path-set" in seed for seed in pack["hypothesis_seeds"])
 
@@ -1574,7 +1666,7 @@ def test_ssrf_localhost_admin_focus_routes_to_internal_impact(tmp_path):
         focus="SSRF stock check server-side fetch URL localhost admin internal system",
     )
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/ssrf-internal-impact.md" in pack["knowledge_cards"]
     assert "knowledge/cards/ssrf-url-fetch.md" in pack["knowledge_cards"]
     assert any("SSRF 内部影响" in seed for seed in pack["hypothesis_seeds"])
@@ -1587,7 +1679,7 @@ def test_ssrf_blacklist_filter_focus_surfaces_parser_boundary_seed(tmp_path):
         focus="SSRF blacklist input filter stockApi localhost loopback path encoding double encoding admin status change",
     )
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/ssrf-internal-impact.md" in pack["knowledge_cards"]
     assert "knowledge/cards/ssrf-url-fetch.md" in pack["knowledge_cards"]
     assert any("blocked baseline" in seed and "loopback/别名 host" in seed for seed in pack["hypothesis_seeds"])
@@ -1655,7 +1747,7 @@ def test_candidate_finding_routes_to_triage_validation(tmp_path):
 def test_explicit_focus_survives_when_recon_is_missing(tmp_path):
     pack = build_context_pack(tmp_path, target="target.com", focus="api-idor")
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/api-idor.md" in pack["knowledge_cards"]
     assert "knowledge/cards/auth-access.md" in pack["knowledge_cards"]
 
@@ -1663,14 +1755,14 @@ def test_explicit_focus_survives_when_recon_is_missing(tmp_path):
 def test_explicit_sqli_focus_without_recon_routes_to_vuln_skill(tmp_path):
     pack = build_context_pack(tmp_path, target="target.com", focus="sqli hidden-param")
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/sqli-hidden-surfaces.md" in pack["knowledge_cards"]
 
 
 def test_explicit_nosql_focus_without_recon_routes_to_nosql_card(tmp_path):
     pack = build_context_pack(tmp_path, target="target.com", focus="nosql operator-injection")
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/nosql-query-injection.md" in pack["knowledge_cards"]  # exact-list retired: state cards may join
     assert any("NoSQL" in seed or "operator" in seed for seed in pack["hypothesis_seeds"])
 
@@ -1682,14 +1774,14 @@ def test_nosql_expression_focus_does_not_match_express_node(tmp_path):
         focus="NoSQL MongoDB category filter string expression syntax error boolean pair",
     )
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/nosql-query-injection.md" in pack["knowledge_cards"]  # exact-list retired: state cards may join
 
 
 def test_explicit_xxe_focus_without_recon_routes_to_xml_parser_card(tmp_path):
     pack = build_context_pack(tmp_path, target="target.com", focus="xxe xml-parser xinclude")
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/xxe-xml-parser.md" in pack["knowledge_cards"]  # exact-list retired: state cards may join
     assert any("XML 解析面" in seed or "OAST callback" in seed for seed in pack["hypothesis_seeds"])
 
@@ -1701,7 +1793,7 @@ def test_xxe_error_reflection_focus_keeps_parser_evidence_gate(tmp_path):
         focus="XXE XML parser business field unexpected value reflected error external entity content-type application/xml",
     )
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/xxe-xml-parser.md" in pack["knowledge_cards"]  # exact-list retired: state cards may join
     assert any(
         "错误响应本身不是 XXE 证据" in seed
@@ -1718,7 +1810,7 @@ def test_xxe_metadata_ssrf_focus_routes_to_parser_and_internal_impact(tmp_path):
         focus="XXE XML parser SSRF metadata IAM role credentials external entity reflected business field",
     )
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/xxe-xml-parser.md" in pack["knowledge_cards"]
     assert "knowledge/cards/ssrf-internal-impact.md" in pack["knowledge_cards"]
     assert any("错误响应本身不是 XXE 证据" in seed for seed in pack["hypothesis_seeds"])
@@ -1732,7 +1824,7 @@ def test_xinclude_form_parameter_focus_mentions_assembled_xml_path(tmp_path):
         focus="XInclude form parameter assembled into server-side XML productId stock checker namespace file read",
     )
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/xxe-xml-parser.md" in pack["knowledge_cards"]  # exact-list retired: state cards may join
     assert any("form/JSON" in seed and "组装进 XML" in seed and "XInclude" in seed for seed in pack["hypothesis_seeds"])
 
@@ -1740,7 +1832,7 @@ def test_xinclude_form_parameter_focus_mentions_assembled_xml_path(tmp_path):
 def test_explicit_path_traversal_focus_without_recon_routes_to_file_read_card(tmp_path):
     pack = build_context_pack(tmp_path, target="target.com", focus="path-traversal lfi file-read")
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/path-traversal-file-read.md" in pack["knowledge_cards"]  # exact-list retired: state cards may join
     assert any("文件选择器" in seed or "traversal 变体" in seed for seed in pack["hypothesis_seeds"])
 
@@ -1752,7 +1844,7 @@ def test_explicit_ssti_focus_without_recon_routes_to_template_card(tmp_path):
         focus="ssti template-injection reflected message ERB code context sandbox user-supplied object",
     )
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/server-side-template-injection.md" in pack["knowledge_cards"]
     assert "knowledge/cards/controlled-rce-impact.md" in pack["knowledge_cards"]
     assert any("模板求值 primitive" in seed or "受控影响证明" in seed for seed in pack["hypothesis_seeds"])
@@ -1766,7 +1858,7 @@ def test_explicit_ssti_focus_without_recon_routes_to_template_card(tmp_path):
 def test_explicit_template_engine_focus_routes_to_ssti_card(tmp_path):
     pack = build_context_pack(tmp_path, target="target.com", focus="erb ruby-template")
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/server-side-template-injection.md" in pack["knowledge_cards"]
 
 
@@ -1780,7 +1872,7 @@ def test_template_engine_context_focus_routes_to_ssti_not_node_runtime(tmp_path)
     for focus in focuses:
         pack = build_context_pack(tmp_path, target="target.com", focus=focus)
 
-        assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+        assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
         assert "knowledge/cards/server-side-template-injection.md" in pack["knowledge_cards"]
         assert "knowledge/cards/controlled-rce-impact.md" in pack["knowledge_cards"]
         assert "knowledge/cards/node-prototype-pollution.md" not in pack["knowledge_cards"]
@@ -1790,7 +1882,7 @@ def test_template_engine_context_focus_routes_to_ssti_not_node_runtime(tmp_path)
 def test_explicit_deserialization_focus_without_recon_routes_to_deser_card(tmp_path):
     pack = build_context_pack(tmp_path, target="target.com", focus="deserialization signed-object viewstate")
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     recall_ids = {
         entry.get("id")
         for entry in pack.get("knowledge_card_recall", [])
@@ -1808,7 +1900,7 @@ def test_serialized_session_cookie_deserialization_prioritizes_integrity_and_sta
         focus="insecure deserialization serialized session cookie base64 object admin role privilege escalation",
     )
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     recall_ids = {
         entry.get("id")
         for entry in pack.get("knowledge_card_recall", [])
@@ -1828,7 +1920,7 @@ def test_deserialization_type_and_application_gadget_focus_keeps_minimal_evidenc
         focus="deserialization serialized data types boolean string integer application functionality gadget delete file avatar object",
     )
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     recall_ids = {
         entry.get("id")
         for entry in pack.get("knowledge_card_recall", [])
@@ -1842,7 +1934,7 @@ def test_deserialization_type_and_application_gadget_focus_keeps_minimal_evidenc
 def test_explicit_browser_boundary_focus_without_recon_routes_to_client_card(tmp_path):
     pack = build_context_pack(tmp_path, target="target.com", focus="cors csrf clickjacking dom-xss postmessage")
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/browser-client-boundaries.md" in pack["knowledge_cards"]  # exact-list retired: state cards may join
     assert any("真实浏览器" in seed or "SameSite" in seed for seed in pack["hypothesis_seeds"])
     assert any("CSRF" in seed and "method swap" in seed and "duplicate-cookie" in seed for seed in pack["hypothesis_seeds"])
@@ -1863,7 +1955,7 @@ def test_cors_origin_credentials_focus_does_not_route_to_auth_access(tmp_path):
         focus="CORS trusted origin null origin credentialed read Access-Control-Allow-Credentials",
     )
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/browser-client-boundaries.md" in pack["knowledge_cards"]  # exact-list retired: state cards may join
     assert "knowledge/cards/auth-access.md" not in pack["knowledge_cards"]
     assert "knowledge/cards/api-idor.md" not in pack["knowledge_cards"]
@@ -1876,7 +1968,7 @@ def test_explicit_dom_navigation_focus_routes_to_browser_boundary_card(tmp_path)
         focus="open-redirect client-side-redirect cookie-manipulation dom-clobbering",
     )
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/browser-client-boundaries.md" in pack["knowledge_cards"]  # exact-list retired: state cards may join
     assert any("location.href" in seed or "navigation" in seed for seed in pack["hypothesis_seeds"])
     assert any("Cookie manipulation" in seed and "消费页" in seed for seed in pack["hypothesis_seeds"])
@@ -1888,7 +1980,7 @@ def test_explicit_dom_navigation_focus_routes_to_browser_boundary_card(tmp_path)
 def test_explicit_proxy_cache_focus_without_recon_routes_to_proxy_card(tmp_path):
     pack = build_context_pack(tmp_path, target="target.com", focus="host-header request-smuggling web-cache-poisoning cache-deception")
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/proxy-cache-boundaries.md" in pack["knowledge_cards"]  # exact-list retired: state cards may join
     assert any("cache key" in seed or "smuggling" in seed for seed in pack["hypothesis_seeds"])
     assert any("victim request shape" in seed and "Vary/User-Agent/Accept" in seed for seed in pack["hypothesis_seeds"])
@@ -1921,7 +2013,7 @@ def test_explicit_proxy_cache_focus_without_recon_routes_to_proxy_card(tmp_path)
 def test_explicit_websocket_focus_without_recon_routes_to_realtime_card(tmp_path):
     pack = build_context_pack(tmp_path, target="target.com", focus="websocket cswsh")
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/websocket-realtime-api.md" in pack["knowledge_cards"]  # exact-list retired: state cards may join
     assert any("WebSocket" in seed or "Origin" in seed for seed in pack["hypothesis_seeds"])
     assert any("raw frame" in seed and "CSWSH exfil" in seed and "X-Forwarded-For" in seed for seed in pack["hypothesis_seeds"])
@@ -1934,7 +2026,7 @@ def test_websocket_cswsh_authz_origin_focus_does_not_route_to_idor(tmp_path):
         focus="WebSockets cross-site websocket hijacking CSWSH origin message schema authz",
     )
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/websocket-realtime-api.md" in pack["knowledge_cards"]  # exact-list retired: state cards may join
     assert "knowledge/cards/auth-access.md" not in pack["knowledge_cards"]
     assert "knowledge/cards/api-idor.md" not in pack["knowledge_cards"]
@@ -1943,7 +2035,7 @@ def test_websocket_cswsh_authz_origin_focus_does_not_route_to_idor(tmp_path):
 def test_explicit_information_disclosure_focus_without_recon_routes_to_info_card(tmp_path):
     pack = build_context_pack(tmp_path, target="target.com", focus="information-disclosure source-map debug")
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/information-disclosure-source-config.md" in pack["knowledge_cards"]  # exact-list retired: state cards may join
     assert any("信息泄露" in seed or "source map" in seed for seed in pack["hypothesis_seeds"])
 
@@ -1955,7 +2047,7 @@ def test_information_disclosure_stack_trace_focus_does_not_route_to_race(tmp_pat
         focus="Information disclosure source map backup file debug stack trace config leak",
     )
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/information-disclosure-source-config.md" in pack["knowledge_cards"]  # exact-list retired: state cards may join
     assert "knowledge/cards/race-conditions.md" not in pack["knowledge_cards"]
 
@@ -1963,7 +2055,7 @@ def test_information_disclosure_stack_trace_focus_does_not_route_to_race(tmp_pat
 def test_explicit_xss_focus_without_recon_routes_to_xss_card(tmp_path):
     pack = build_context_pack(tmp_path, target="target.com", focus="xss reflected-xss stored-xss")
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/xss-client-injection.md" in pack["knowledge_cards"]  # exact-list retired: state cards may join
     assert any("XSS" in seed or "真实浏览器执行证据" in seed for seed in pack["hypothesis_seeds"])
     # required_checks is now a fixed skill-based set; per-focus exclusion
@@ -1973,7 +2065,7 @@ def test_explicit_xss_focus_without_recon_routes_to_xss_card(tmp_path):
 def test_explicit_csp_focus_without_recon_routes_to_xss_and_browser_cards(tmp_path):
     pack = build_context_pack(tmp_path, target="target.com", focus="csp content-security-policy sandbox-escape dangling-markup")
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/xss-client-injection.md" in pack["knowledge_cards"]
     assert "knowledge/cards/browser-client-boundaries.md" in pack["knowledge_cards"]
     assert any("CSP" in seed and "script-src-elem" in seed for seed in pack["hypothesis_seeds"])
@@ -1983,7 +2075,7 @@ def test_explicit_csp_focus_without_recon_routes_to_xss_and_browser_cards(tmp_pa
 def test_explicit_api_testing_focus_without_recon_routes_to_api_workflow(tmp_path):
     pack = build_context_pack(tmp_path, target="target.com", focus="api testing rest-api openapi")
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/api-testing-workflow.md" in pack["knowledge_cards"]
     assert "knowledge/cards/api-idor.md" in pack["knowledge_cards"]
     assert any("API testing" in seed or "endpoint+method+auth matrix" in seed for seed in pack["hypothesis_seeds"])
@@ -1996,7 +2088,7 @@ def test_explicit_business_logic_focus_without_recon_routes_to_logic_card(tmp_pa
         focus="business logic state-machine client-side-controls price-tamper",
     )
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/business-logic-state-machines.md" in pack["knowledge_cards"]  # exact-list retired: state cards may join
     assert any("业务逻辑" in seed or "状态机 baseline" in seed for seed in pack["hypothesis_seeds"])
     assert any("业务逻辑无结果" in angle for angle in pack["alternative_angles"])
@@ -2009,7 +2101,7 @@ def test_explicit_password_reset_focus_without_recon_routes_to_auth_recovery_car
         focus="password reset broken-logic username-enumeration credential-attack mfa",
     )
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/auth-credential-recovery-flows.md" in pack["knowledge_cards"]
     assert "knowledge/cards/auth-access.md" in pack["knowledge_cards"]
     assert any("密码重置" in seed or "reset token" in seed for seed in pack["hypothesis_seeds"])
@@ -2019,7 +2111,7 @@ def test_explicit_password_reset_focus_without_recon_routes_to_auth_recovery_car
 def test_explicit_web_llm_focus_without_recon_routes_to_llm_card(tmp_path):
     pack = build_context_pack(tmp_path, target="target.com", focus="web-llm prompt-injection rag")
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     recall_ids = {
         entry.get("id")
         for entry in pack.get("knowledge_card_recall", [])
@@ -2041,7 +2133,7 @@ def test_agent_lifecycle_signals_route_to_web_llm_card(tmp_path):
 
     for signal in signals:
         pack = build_context_pack(tmp_path, target="target.com", focus=f"API testing {signal}")
-        assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}, signal
+        assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}, signal
         recall_ids = {
             entry.get("id")
             for entry in pack.get("knowledge_card_recall", [])
@@ -2088,7 +2180,7 @@ def test_unprotected_admin_access_control_prioritizes_auth_access(tmp_path):
         focus="Unprotected admin functionality unprotected admin panel delete user administrator-panel access control",
     )
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     recall_ids = {
         entry.get("id")
         for entry in pack.get("knowledge_card_recall", [])
@@ -2101,7 +2193,7 @@ def test_unprotected_admin_access_control_prioritizes_auth_access(tmp_path):
 def test_explicit_ssrf_internal_focus_without_recon_routes_to_vuln_skill(tmp_path):
     pack = build_context_pack(tmp_path, target="target.com", focus="ssrf-internal metadata")
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/ssrf-internal-impact.md" in pack["knowledge_cards"]
     assert "knowledge/cards/ssrf-url-fetch.md" in pack["knowledge_cards"]
 
@@ -2109,7 +2201,7 @@ def test_explicit_ssrf_internal_focus_without_recon_routes_to_vuln_skill(tmp_pat
 def test_explicit_oauth_focus_without_recon_routes_to_vuln_skill(tmp_path):
     pack = build_context_pack(tmp_path, target="target.com", focus="oauth sso token-binding account-linking")
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/auth-sso-token-edge-cases.md" in pack["knowledge_cards"]
     assert "knowledge/cards/auth-access.md" in pack["knowledge_cards"]
 
@@ -2360,7 +2452,7 @@ def test_js_and_source_intel_are_loaded_as_context_pack_evidence(tmp_path):
 def test_explicit_cache_focus_without_host_header_routes_to_proxy_card(tmp_path):
     pack = build_context_pack(tmp_path, target="target.com", focus="web-cache-poisoning cache-deception")
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/proxy-cache-boundaries.md" in pack["knowledge_cards"]  # exact-list retired: state cards may join
     assert any("cache key" in seed or "poisoning" in seed for seed in pack["hypothesis_seeds"])
     assert any("victim request shape" in seed and "Vary/User-Agent/Accept" in seed for seed in pack["hypothesis_seeds"])
@@ -2372,7 +2464,7 @@ def test_request_smuggling_capture_focus_ignores_csrf_cookie_evidence_noise(tmp_
         focus="request smuggling capture other users requests CL.TE comment storage CSRF Cookie line Content-Length victim request",
     )
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert "knowledge/cards/proxy-cache-boundaries.md" in pack["knowledge_cards"]  # exact-list retired: state cards may join
     assert "knowledge/cards/browser-client-boundaries.md" not in pack["knowledge_cards"]
     assert "knowledge/cards/web-llm-tool-chains.md" not in pack["knowledge_cards"]
@@ -2624,7 +2716,7 @@ def test_target_memory_runtime_signal_routes_without_explicit_focus(tmp_path):
 
     pack = build_context_pack(tmp_path, target="target.com")
 
-    assert pack["skill_route"]["skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    assert pack["skill_route"]["skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     recall_ids = {
         entry.get("id")
         for entry in pack.get("knowledge_card_recall", [])

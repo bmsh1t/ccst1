@@ -73,6 +73,14 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from target_memory import load_active_file, load_goal_memory  # type: ignore
 
 
+# S1 pilot (batch 2 of ai-capability-roadmap): these skills load on demand via
+# the native Claude Code Skill tool (their frontmatter description is the
+# routing surface), so the pack stops recommending them and instead points the
+# AI at the native loading path. Explicit focus requests are still honored.
+# Batch 3 rolls the remaining skills in; SKILL_PATHS/SKILL_CATALOG keep all 12
+# entries so Action Queue route validation is untouched during the pilot.
+NATIVE_LOADED_SKILLS = {"bb-methodology"}
+
 KNOWN_SKILL_OR_FOCUS = {
     *SKILL_PATHS.keys(),
     "api",
@@ -1370,6 +1378,15 @@ def _explicit_primary_skill(focus: str) -> str:
     return skill if skill in SKILL_PATHS else ""
 
 
+# S1 pilot: when the owner-state default would be a native-loaded skill, fall
+# back to the coordinator skill so the pack still points at a pack-recommended
+# route. Native skills are named in `native_skills` for the AI to load via the
+# Claude Code Skill tool instead.
+_PACK_RECOMMENDABLE_SKILLS = {
+    skill_id for skill_id in SKILL_PATHS if skill_id not in NATIVE_LOADED_SKILLS
+}
+
+
 def _select_skill(focus: str, blob: str, ranked: dict, findings: list[dict], goal_memory: dict) -> tuple[str, str]:
     """Suggest a primary skill from OWNER FACTS only.
 
@@ -1383,7 +1400,9 @@ def _select_skill(focus: str, blob: str, ranked: dict, findings: list[dict], goa
     2. a candidate finding awaits validation (owner fact -> validation gate);
     3. the target memory already recorded a selected skill (continuity);
     4. recon/surface input is missing (owner fact -> recon first);
-    5. otherwise default to the methodology skill for phase judgment.
+    5. otherwise default to the coordinator skill for phase judgment;
+       native-loaded skills (S1 pilot) load on demand via the Skill tool and
+       are excluded from pack recommendation.
     """
     target_memory = goal_memory.get("target") or {}
     selected = [
@@ -1406,9 +1425,12 @@ def _select_skill(focus: str, blob: str, ranked: dict, findings: list[dict], goa
         return "web2-recon", "本地 recon/surface 缓存不足，先补最小攻击面上下文。"
     if selected:
         for item in selected:
-            if item in SKILL_PATHS:
+            if item in _PACK_RECOMMENDABLE_SKILLS:
                 return item, "目标记忆层已记录该 Skill，沿用当前目标上下文。"
-    return "bb-methodology", "无状态信号时默认方法论入口；AI 读取 pack 的 skill 目录与 focus 原文自行选择并写回。"
+    return "bug-bounty", (
+        "无状态信号时默认协调入口；AI 读取 pack 的 skill 目录与 focus 原文自行选择并写回；"
+        "方法论与假设轮换（bb-methodology）按需通过原生 Skill 工具加载。"
+    )
 
 
 def _has_ssrf_internal_signal(text: str) -> bool:
@@ -1846,7 +1868,12 @@ def _select_cards_and_deferred(
     target_memory = goal_memory.get("target") or {}
     if len(target_memory.get("dead_ends") or []) >= 2:
         cards.append("dead-ends")
-    if gaps or skill in {"web2-recon", "bb-methodology"}:
+    # S1 pilot: `skill` here is the pack recommendation. Native-loaded skills
+    # never appear as the recommendation, so the hunt-wide coverage-prompts
+    # trigger follows the recommendation set: recon + coordinator + the
+    # native methodology skill (kept for explicit-focus packs where the skill
+    # can still be named by the user).
+    if gaps or skill in {"web2-recon", "bb-methodology", "bug-bounty"}:
         cards.append("coverage-prompts")
     if not ranked.get("available") and skill != "web2-vuln-classes":
         cards = (cards[:1] + ["coverage-prompts"]) if cards else ["coverage-prompts"]
@@ -3051,6 +3078,10 @@ def build_context_pack(
         "selected_skill_id": skill,
         "why_this_skill": why_skill,
         "skill_route": skill_route(skill, why_skill),
+        # S1 pilot: these skills load on demand via the native Claude Code
+        # Skill tool; the pack does not recommend them but keeps them visible
+        # so the AI knows they are available and how to load them.
+        "native_skills": sorted(NATIVE_LOADED_SKILLS),
         "must_read": must_read,
         "knowledge_cards": cards,
         "card_catalog": _card_catalog(repo, registry=registry),
@@ -3140,6 +3171,7 @@ def format_context_pack(pack: dict) -> str:
         f"- Tech stack: {', '.join(pack.get('tech_stack') or []) or '-'}",
         f"- Recommended skill: {pack['selected_skill']}",
         f"- Why this recommendation: {pack['why_this_skill']}",
+        f"- Native-loaded skills (load on demand via the Skill tool, not recommended here): {', '.join(pack.get('native_skills', [])) or '-'}",
         f"- Recommended test dimensions: {', '.join((pack.get('skill_route') or {}).get('required_dimensions', []))}",
         "- Must read:",
         *_format_list(pack["must_read"]),

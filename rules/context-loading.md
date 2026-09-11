@@ -23,7 +23,8 @@ Context Pack 的默认入口是当前目标状态（如存在 `memory/goals/acti
   证据/Ledger 和证据明确需要的工具引用；推荐的 primary Skill 和最多两张知识卡不在
   `must_read`，由 Claude 根据当前证据显式选择后按需读取。
 - `skills/bb-methodology/SKILL.md` 不是额外常驻核心；只在会话开始、换目标、停滞或需要
-  选择/轮换假设时成为当前按需 Skill。
+  选择/轮换假设时成为当前按需 Skill。S1 试点后它不经 Context Pack 推荐，AI 按需通过
+  原生 Skill 工具加载；pack 的 `native_skills` 字段声明这一加载面。
 - 正式安装面是 `skills/*.md` 和 `skills/*/`；根目录不再提供单文件 Skill 入口。
 - `selected_skill`、`skill_route` 和 `knowledge_cards` 保留为兼容推荐字段，不表示 Claude
   已选择路线，也不直接生成 Queue route。首次 claim 显式选择 Skill；只有替换 action
@@ -104,6 +105,7 @@ CONTEXT PACK
 - Target:
 - Phase:
 - Recommended skill:
+- Native-loaded skills (load on demand via the Skill tool, not recommended here):
 - Must read:
 - Recommended knowledge cards:
 - Required checks:

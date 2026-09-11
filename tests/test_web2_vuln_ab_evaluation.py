@@ -27,8 +27,10 @@ def test_web2_vuln_ab_cases_keep_post_slim_signal_coverage():
     assert not summary["route_gap_cases"]
     # Skill suggestion now comes from owner state, not word lists; every case
     # still routes within the primary skill family the AI can choose from.
+    # bb-methodology left the pack recommendation surface in the S1 pilot
+    # (native Skill-tool loading); the coordinator takes the default slot.
     assert all(
-        row["selected_skill"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+        row["selected_skill"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
         for row in result["rows"]
     )
 

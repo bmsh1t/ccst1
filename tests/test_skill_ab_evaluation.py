@@ -197,7 +197,9 @@ def _run_with_skills(task: SkillEvalTask) -> tuple[str, int, int]:
         skill=str(pack["selected_skill_id"]),
         selected_cards=selected_cards,
     )
-    assert pack["selected_skill_id"] in {"bb-methodology", "web2-recon", "triage-validation", "web2-vuln-classes"}
+    # bb-methodology left the pack recommendation surface in the S1 pilot
+    # (native Skill-tool loading); the coordinator takes the default slot.
+    assert pack["selected_skill_id"] in {"bug-bounty", "web2-recon", "triage-validation", "web2-vuln-classes"}
     assert not [card for card in task.expected_cards if card not in visible_cards]
     assert not [card for card in task.forbidden_cards if card in selected_cards]
     assert not [group for group in task.seed_groups if not _contains_group(seeds, group)]

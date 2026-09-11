@@ -55,7 +55,9 @@ python3 tools/context_pack.py --target <target>
    - `findings/<target>/js_intel/hypotheses.json`
    - `findings/<target>/source_intel/hypotheses.jsonl`
 6. 读取 Evidence Ledger 摘要：`memory/evidence/<target>/ledger.jsonl`。
-7. 推荐一个主 Skill，再推荐 1-2 张知识卡。
+7. 推荐一个主 Skill，再推荐 1-2 张知识卡。原生加载 Skill（当前试点：
+   `bb-methodology`）不进入推荐，改为在 `native_skills` 字段声明，AI 按需通过
+   原生 Skill 工具加载。
 8. 输出证据锚点、假设种子、Actor Matrix 缺口、相邻角度、矛盾点和写回建议。
 
 `selected_skill`、`skill_route` 和 `knowledge_cards` 是兼容推荐字段，不表示已经加载或
@@ -74,6 +76,7 @@ CONTEXT PACK
 - Current hypothesis:
 - Recommended skill:
 - Why this recommendation:
+- Native-loaded skills:
 - Must read:
 - Recommended knowledge cards:
 - Required checks:
