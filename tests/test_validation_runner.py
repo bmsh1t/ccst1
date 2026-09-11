@@ -57,6 +57,149 @@ def _expect_auth_pair_spec() -> dict:
     }
 
 
+def test_request_diff_distinct_bodies_promotes_sub_threshold_cross_user_read(monkeypatch, tmp_path):
+    """V-2: a cross-user read whose body delta is below the 20-byte material
+    threshold is still a different object. distinct_bodies has no threshold,
+    so the Users/24-vs-Users/1 shape (delta ~15 bytes) promotes."""
+
+    def fake_request_once(**kwargs):
+        url = kwargs["url"]
+        if url.endswith("/24"):
+            return _fake_response(url, body='{"data":{"id":24,"email":"me@target.test"}}')
+        return _fake_response(url, body='{"data":{"id":1,"email":"admin@juice-sh.op"}}')
+
+    monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
+    spec = {
+        "schema_version": 1,
+        "baseline_request": {"method": "GET", "url": "https://target.test/api/Users/24"},
+        "variant_request": {"method": "GET", "url": "https://target.test/api/Users/1"},
+        "active_dimension": "path:/api/Users/24",
+        "classifier": "authz_access",
+        "vuln_class": "Authz",
+        "expected": ["distinct_bodies"],
+        "expected_note": "reading another user's record should not return their row",
+        "repeat": 1,
+    }
+    summary = validation_runner.run_request_diff(
+        repo_root=tmp_path,
+        target="https://target.test",
+        request_spec=spec,
+    )
+    assert summary["result"] == "tested_finding"
+    assert summary["candidate_ready"] is True
+    assert summary["expected_check"]["unmet"] == []
+    # The diff-relative threshold fact must NOT hold for this pair.
+    assert summary["expected_check"]["observed"]["distinct_bodies"] is True
+
+
+def test_request_diff_needle_facts_promote_structurally_identical_cross_user_read(monkeypatch, tmp_path):
+    """V-3: a cross-user read whose responses are structurally identical
+    (same JSON shape, same size, different owner) cannot be expressed by any
+    diff-relative fact. The AI declares a needle — the owner identifier — and
+    the runner verifies the substring mechanically."""
+
+    def fake_request_once(**kwargs):
+        url = kwargs["url"]
+        if url.endswith("/7"):
+            return _fake_response(url, body='{"id":7,"UserId":25,"coupon":null}')
+        return _fake_response(url, body='{"id":6,"UserId":24,"coupon":null}')
+
+    monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
+    spec = {
+        "schema_version": 1,
+        "baseline_request": {"method": "GET", "url": "https://target.test/rest/basket/7"},
+        "variant_request": {"method": "GET", "url": "https://target.test/rest/basket/6"},
+        "active_dimension": "path:/rest/basket/7",
+        "classifier": "authz_access",
+        "vuln_class": "Authz",
+        "expected": [
+            'variant_body_contains::"UserId":24',
+            'baseline_body_lacks::"UserId":24',
+        ],
+        "expected_note": "the non-owner basket read must return the other owner's id",
+        "repeat": 2,
+    }
+    summary = validation_runner.run_request_diff(
+        repo_root=tmp_path,
+        target="https://target.test",
+        request_spec=spec,
+    )
+    assert summary["result"] == "tested_finding"
+    assert summary["candidate_ready"] is True
+    assert summary["expected_check"]["unmet"] == []
+    assert summary["expected_check"]["observed"] == {
+        'variant_body_contains::"UserId":24': True,
+        'baseline_body_lacks::"UserId":24': True,
+    }
+
+
+def test_request_diff_needle_fact_contradicted_falls_to_candidate(monkeypatch, tmp_path):
+    """Anti-forgery for needles: declaring a needle that the wire disproves
+    rejects to candidate with the entry named in unmet."""
+
+    def fake_request_once(**kwargs):
+        url = kwargs["url"]
+        if url.endswith("/7"):
+            return _fake_response(url, body='{"id":7,"UserId":25}')
+        return _fake_response(url, body='{"id":6,"UserId":24}')
+
+    monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
+    spec = {
+        "schema_version": 1,
+        "baseline_request": {"method": "GET", "url": "https://target.test/rest/basket/7"},
+        "variant_request": {"method": "GET", "url": "https://target.test/rest/basket/6"},
+        "active_dimension": "path:/rest/basket/7",
+        "classifier": "authz_access",
+        "vuln_class": "Authz",
+        # Both needles are false here: the variant lacks UserId 99 and the
+        # baseline DOES contain the string the declaration says it lacks.
+        "expected": [
+            'variant_body_contains::"UserId":99',
+            'baseline_body_lacks::"UserId":25',
+        ],
+        "repeat": 1,
+    }
+    summary = validation_runner.run_request_diff(
+        repo_root=tmp_path,
+        target="https://target.test",
+        request_spec=spec,
+    )
+    assert summary["result"] == "candidate"
+    assert summary["candidate_ready"] is False
+    assert summary["expected_check"]["unmet"] == [
+        'variant_body_contains::"UserId":99',
+        'baseline_body_lacks::"UserId":25',
+    ]
+
+
+def test_request_pair_needle_fact_validation(tmp_path):
+    """Needle parsing: unknown needle-fact name and out-of-bounds needle
+    length are hard input errors; a valid entry rides the digest."""
+
+    base = {
+        "schema_version": 1,
+        "baseline_request": {"method": "GET", "url": "https://target.test/a"},
+        "variant_request": {"method": "GET", "url": "https://target.test/b"},
+        "active_dimension": "path:/a",
+        "classifier": "generic",
+    }
+    base["baseline_request"]["url"] = "https://target.test/users/1"
+    base["variant_request"]["url"] = "https://target.test/users/2"
+    base["active_dimension"] = "path:/users/1"
+
+    valid = dict(base, expected=['variant_body_contains::"UserId":24'])
+    normalized = validate_request_pair(valid)
+    assert normalized["expected"] == ['variant_body_contains::"UserId":24']
+
+    with pytest.raises(RequestPairError, match="unknown fact name"):
+        validate_request_pair(dict(base, expected=['variant_body_has::"UserId":24']))
+    with pytest.raises(RequestPairError, match="needle"):
+        validate_request_pair(dict(base, expected=['variant_body_contains::abc']))
+    with pytest.raises(RequestPairError, match="needle"):
+        validate_request_pair(dict(base, expected=[f'variant_body_contains::{"x" * 201}']))
+    assert request_pair_digest(valid) != request_pair_digest(dict(base, expected=['variant_body_contains::"UserId":25']))
+
+
 def test_request_pair_expect_auth_parse_and_digest():
     """expect_auth is an AI-declared boolean judgment: the parser carries it
     unchanged (never infers it), and it participates in the operation digest

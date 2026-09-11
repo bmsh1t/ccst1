@@ -14,6 +14,15 @@ class RequestPairError(ValueError):
     """Raised when a request pair is not an exact, single-dimension replay."""
 
 
+# Needle facts carry an AI-supplied literal substring after '::' (e.g.
+# variant_body_contains::"UserId":24). The name is validated against the
+# runner's vocabulary; the needle is kept verbatim.
+NEEDLE_FACT_NAMES = ("variant_body_contains", "baseline_body_lacks")
+NEEDLE_FACT_RE = re.compile(r"^([a-z_]+)::(.+)$", re.S)
+NEEDLE_MIN_CHARS = 4
+NEEDLE_MAX_CHARS = 200
+
+
 def expected_fact_vocabulary() -> frozenset[str]:
     """Return the runner's wire-fact vocabulary used to validate ``expected``.
 
@@ -232,6 +241,25 @@ def validate_request_pair(spec: dict[str, Any]) -> dict[str, Any]:
     for item in expected_raw:
         name = str(item or "").strip()
         if not name:
+            continue
+        # Needle facts: name::needle. The needle is an AI-supplied literal
+        # substring kept verbatim; the runner verifies it mechanically. The
+        # combined entry is the fact identity for reconciliation and digest.
+        needle_match = NEEDLE_FACT_RE.match(name)
+        if needle_match:
+            fact_name, needle = needle_match.group(1), needle_match.group(2)
+            if fact_name not in NEEDLE_FACT_NAMES:
+                raise RequestPairError(
+                    f"expected contains an unknown fact name: {fact_name!r}; "
+                    f"known facts: {', '.join(sorted(vocabulary))}"
+                )
+            if not (NEEDLE_MIN_CHARS <= len(needle) <= NEEDLE_MAX_CHARS):
+                raise RequestPairError(
+                    f"expected needle for {fact_name} must be "
+                    f"{NEEDLE_MIN_CHARS}-{NEEDLE_MAX_CHARS} characters"
+                )
+            if name not in expected:
+                expected.append(name)
             continue
         if name not in vocabulary:
             raise RequestPairError(

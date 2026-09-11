@@ -122,6 +122,13 @@ WIRE_FACT_NAMES = frozenset({
     "identical_success_pair",      # both sides 2xx/3xx with no material diff
     "both_sides_rejected",         # both sides >= 400 with no material diff
     "stable_timing_delta",         # variant consistently slower than baseline across repeats
+    "distinct_bodies",             # baseline and variant body bytes differ (no threshold)
+})
+# Needle facts take the form name::<literal substring>; the AI supplies the
+# needle (judgment), the runner verifies presence mechanically (reconciliation).
+WIRE_NEEDLE_FACT_NAMES = frozenset({
+    "variant_body_contains",       # needle appears in EVERY variant body
+    "baseline_body_lacks",         # needle appears in NO baseline body and EVERY variant body
 })
 
 RUNNER_RESULT_TO_FINDING_STATUS = {
@@ -1910,10 +1917,36 @@ def _run_wire_facts(run: dict[str, Any], baseline_body: str, variant_body: str) 
         "both_sides_rejected": (
             baseline_status >= 400 and variant_status >= 400 and not material
         ),
+        # Absolute content fact: body bytes differ, no size threshold. A
+        # sub-threshold byte delta is still a different object.
+        "distinct_bodies": str(baseline_body or "") != str(variant_body or ""),
         # Timing is aggregated across runs in _compute_wire_facts; a single
         # run never claims it on its own.
         "stable_timing_delta": False,
     }
+
+
+NEEDLE_FACT_RE = re.compile(r"^([a-z_]+)::(.+)$", re.S)
+
+
+def _needle_fact(name: str, needle: str, runs: list[dict[str, Any]], baseline_bodies: list[str], variant_bodies: list[str]) -> bool:
+    """Mechanically verify one needle declaration across all runs.
+
+    ``variant_body_contains``: the needle appears in every variant body.
+    ``baseline_body_lacks``: the needle appears in no baseline body AND in
+    every variant body (variant-only presence). The needle is the AI's
+    judgment of what string proves the point; this function only checks.
+    """
+    if not runs:
+        return False
+    if name == "variant_body_contains":
+        return all(needle in str(variant or "") for variant in variant_bodies)
+    if name == "baseline_body_lacks":
+        return (
+            all(needle not in str(base or "") for base in baseline_bodies)
+            and all(needle in str(variant or "") for variant in variant_bodies)
+        )
+    return False
 
 
 def _compute_wire_facts(
@@ -1946,7 +1979,31 @@ def _compute_wire_facts(
             deltas.append(var_ms - base_ms)
         timing_stable = bool(deltas) and all(delta > 0 for delta in deltas)
     facts["stable_timing_delta"] = timing_stable
+    # Needle facts are evaluated at reconciliation time per declared entry
+    # (they are parameterized), not precomputed here; _declared_fact_holds
+    # routes them to _needle_fact.
     return facts
+
+
+def _declared_fact_holds(
+    declared: str,
+    runs: list[dict[str, Any]],
+    baseline_bodies: list[str],
+    variant_bodies: list[str],
+    facts: dict[str, bool],
+) -> bool:
+    """Resolve one declared expectation entry against the computed facts.
+
+    Plain names look up the aggregated fact; needle entries (name::needle)
+    verify their literal substring mechanically across all runs.
+    """
+    needle_match = NEEDLE_FACT_RE.match(declared)
+    if needle_match:
+        name, needle = needle_match.group(1), needle_match.group(2)
+        if name not in WIRE_NEEDLE_FACT_NAMES:
+            return False
+        return _needle_fact(name, needle, runs, baseline_bodies, variant_bodies)
+    return bool(facts.get(declared))
 
 
 CREDENTIAL_BOUNDARY_HEADER_RE = re.compile(
@@ -2180,12 +2237,16 @@ def run_request_diff(
         declared_expected = ["identical_success_pair"]
     expected_check: dict[str, Any] = {}
     if declared_expected:
-        unmet = [name for name in declared_expected if not wire_facts.get(name)]
+        observed = {
+            name: _declared_fact_holds(name, runs, baseline_bodies, variant_bodies, wire_facts)
+            for name in declared_expected
+        }
+        unmet = [name for name, holds in observed.items() if not holds]
         candidate_ready = not unmet
         expected_check = {
             "declared": declared_expected,
             "unmet": unmet,
-            "observed": {name: bool(wire_facts.get(name)) for name in declared_expected},
+            "observed": observed,
         }
     else:
         candidate_ready = False
