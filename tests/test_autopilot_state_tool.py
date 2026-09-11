@@ -182,6 +182,184 @@ def test_global_review_requires_current_nonempty_target_evidence(tmp_path):
     assert "Re-run closure check" in stale["action_required"]
 
 
+def test_global_review_basis_scoping_survives_unrelated_digest_drift(tmp_path):
+    """A review with claim components stays valid when only non-claim state
+    drifted: the whole snapshot digest changed, but queue/coverage/closure
+    components — the things the review actually attests to — did not."""
+
+    target = "target.com"
+    evidence_ref = "evidence/target.com/review/summary.json"
+    evidence_path = tmp_path / evidence_ref
+    evidence_path.parent.mkdir(parents=True)
+    evidence_path.write_text('{"reviewed":true}\n', encoding="utf-8")
+    queue = {"target": target, "actions": []}
+    components = {
+        "queue_fingerprint": "1" * 64,
+        "coverage_fingerprint": "2" * 64,
+        "closure_state_fingerprint": "3" * 64,
+        # Non-claim components may drift freely.
+        "surface_input_fingerprint": "4" * 64,
+        "checkpoint_queue_fingerprint": "5" * 64,
+        "ledger_status": "valid",
+    }
+
+    result = validate_global_review(
+        tmp_path,
+        target,
+        {
+            "status": "complete",
+            "snapshot_digest": "a" * 64,
+            "basis": {
+                "queue_fingerprint": "1" * 64,
+                "coverage_fingerprint": "2" * 64,
+                "closure_state_fingerprint": "3" * 64,
+            },
+            "evidence_refs": [evidence_ref],
+            "decision": "all current owner views reconciled",
+        },
+        queue,
+        expected_digest="b" * 64,  # whole snapshot drifted — irrelevant here
+        expected_components=components,
+    )
+
+    assert result["status"] == "valid"
+    assert result["review"]["basis"] == {
+        "queue_fingerprint": "1" * 64,
+        "coverage_fingerprint": "2" * 64,
+        "closure_state_fingerprint": "3" * 64,
+    }
+
+
+def test_global_review_basis_reports_stale_component_on_claim_drift(tmp_path):
+    """When a claim component changed, the review reports stale with a
+    per-component state_changes entry naming exactly what moved."""
+
+    target = "target.com"
+    evidence_ref = "evidence/target.com/review/summary.json"
+    evidence_path = tmp_path / evidence_ref
+    evidence_path.parent.mkdir(parents=True)
+    evidence_path.write_text('{"reviewed":true}\n', encoding="utf-8")
+    queue = {"target": target, "actions": []}
+    components = {
+        "queue_fingerprint": "1" * 64,
+        "coverage_fingerprint": "2" * 64,
+        "closure_state_fingerprint": "9" * 64,
+    }
+
+    stale = validate_global_review(
+        tmp_path,
+        target,
+        {
+            "status": "complete",
+            "snapshot_digest": "a" * 64,
+            "basis": {
+                "queue_fingerprint": "1" * 64,
+                "coverage_fingerprint": "2" * 64,
+                "closure_state_fingerprint": "3" * 64,
+            },
+            "evidence_refs": [evidence_ref],
+            "decision": "reviewed",
+        },
+        queue,
+        expected_digest="a" * 64,  # digest matches; basis does not
+        expected_components=components,
+    )
+    assert stale["status"] == "stale"
+    assert stale["reason"] == "global_review_stale"
+    assert stale["state_changes"] == [{
+        "field": "basis.closure_state_fingerprint",
+        "provided": "3" * 64,
+        "current": "9" * 64,
+    }]
+
+    # A review missing basis components entirely reports each missing
+    # component as its own per-component change (empty provided value).
+    missing = validate_global_review(
+        tmp_path,
+        target,
+        {
+            "status": "complete",
+            "snapshot_digest": "a" * 64,
+            "basis": {"queue_fingerprint": "1" * 64},
+            "evidence_refs": [evidence_ref],
+            "decision": "reviewed",
+        },
+        queue,
+        expected_digest="a" * 64,
+        expected_components=components,
+    )
+    assert missing["status"] == "stale"
+    assert missing["reason"] == "global_review_stale"
+    assert missing["state_changes"] == [
+        {
+            "field": "basis.coverage_fingerprint",
+            "provided": "",
+            "current": "2" * 64,
+        },
+        {
+            "field": "basis.closure_state_fingerprint",
+            "provided": "",
+            "current": "9" * 64,
+        },
+    ]
+
+
+def test_global_review_legacy_without_basis_keeps_digest_comparison(tmp_path):
+    """Reviews recorded before basis components exist (or from older state
+    directories) keep the exact legacy whole-digest behavior."""
+
+    target = "target.com"
+    evidence_ref = "evidence/target.com/review/summary.json"
+    evidence_path = tmp_path / evidence_ref
+    evidence_path.parent.mkdir(parents=True)
+    evidence_path.write_text('{"reviewed":true}\n', encoding="utf-8")
+    queue = {"target": target, "actions": []}
+
+    legacy_valid = validate_global_review(
+        tmp_path,
+        target,
+        {
+            "status": "complete",
+            "snapshot_digest": "a" * 64,
+            "evidence_refs": [evidence_ref],
+            "decision": "reviewed",
+        },
+        queue,
+        expected_digest="a" * 64,
+        expected_components={
+            "queue_fingerprint": "1" * 64,
+            "coverage_fingerprint": "2" * 64,
+            "closure_state_fingerprint": "3" * 64,
+        },
+    )
+    assert legacy_valid["status"] == "valid"
+    assert "basis" not in legacy_valid["review"]
+
+    legacy_stale = validate_global_review(
+        tmp_path,
+        target,
+        {
+            "status": "complete",
+            "snapshot_digest": "a" * 64,
+            "evidence_refs": [evidence_ref],
+            "decision": "reviewed",
+        },
+        queue,
+        expected_digest="b" * 64,
+        expected_components={
+            "queue_fingerprint": "1" * 64,
+            "coverage_fingerprint": "2" * 64,
+            "closure_state_fingerprint": "3" * 64,
+        },
+    )
+    assert legacy_stale["status"] == "stale"
+    assert legacy_stale["state_changes"] == [{
+        "field": "snapshot_digest",
+        "provided": "a" * 64,
+        "current": "b" * 64,
+    }]
+
+
 def test_global_review_follow_up_must_bind_active_queue_action(tmp_path):
     target = "target.com"
     evidence_ref = "evidence/target.com/review/summary.json"
@@ -1538,8 +1716,15 @@ def test_residual_global_review_requires_every_token_and_never_restores_exhauste
     witness_path.write_text(json.dumps(witness), encoding="utf-8")
     incomplete = load_closure_projection(str(tmp_path), state, max_lanes_reached=False)
     assert incomplete["verdict"] == "handoff"
-    assert incomplete["reasons"] == ["global_review_invalid"]
+    # The review itself is valid; only its form cannot consume the bounded
+    # residuals (missing scanner token). That is a distinct diagnosis from a
+    # malformed review, and the review's own status stays visible.
+    assert incomplete["reasons"] == ["global_review_form_insufficient"]
     assert incomplete["can_claim_exhausted"] is False
+    review_view = incomplete.get("global_review") or {}
+    assert review_view.get("status") == "form_insufficient"
+    assert review_view.get("review_status") == "complete"
+    assert review_view.get("missing_tokens") == ["scanner:idor_candidates:remaining=12"]
 
     witness["global_review"]["residual_unknowns"].append(
         "scanner:idor_candidates:remaining=12"

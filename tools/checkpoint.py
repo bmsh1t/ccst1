@@ -52,6 +52,7 @@ try:
         select_next_action as action_queue_select_next_action,
     )
     from tools.autopilot_state import (
+        _global_review_basis,
         build_autopilot_state,
         load_closure_projection,
         stagnation_fingerprint,
@@ -100,6 +101,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         select_next_action as action_queue_select_next_action,
     )
     from autopilot_state import (  # type: ignore
+        _global_review_basis,
         build_autopilot_state,
         load_closure_projection,
         stagnation_fingerprint,
@@ -618,6 +620,11 @@ def record_global_review(
                 queue_snapshot=queue_snapshot,
             )
             expected_digest = str(closure.get("snapshot_digest") or "")
+            expected_components = (
+                closure.get("snapshot_components")
+                if isinstance(closure.get("snapshot_components"), dict)
+                else None
+            )
             review = {
                 "status": status,
                 "snapshot_digest": snapshot_digest,
@@ -633,6 +640,7 @@ def record_global_review(
                 review,
                 queue_snapshot,
                 expected_digest=expected_digest,
+                expected_components=expected_components,
             )
             if checked.get("status") != "valid":
                 diagnostics = {
@@ -648,11 +656,18 @@ def record_global_review(
             payload = _load_checkpoint_witness(path)
             if not payload:
                 raise ValueError(f"checkpoint witness missing or invalid: {path}")
-            payload["global_review"] = checked["review"]
+            # The persisted review keeps the whole-snapshot digest for audit
+            # and the claim basis for scoping later validations: unrelated
+            # owner writes (ledger telemetry, witness details) will no longer
+            # invalidate a still-correct review.
+            recorded_review = dict(checked["review"])
+            if expected_components:
+                recorded_review["basis"] = _global_review_basis(expected_components)
+            payload["global_review"] = recorded_review
             _write_json_atomic(path, payload)
             return {
                 "path": str(path),
-                "global_review": checked["review"],
+                "global_review": recorded_review,
                 "snapshot_digest": expected_digest,
             }
 

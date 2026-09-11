@@ -4278,6 +4278,7 @@ _CLOSURE_REASON_PRIORITY = {
     "global_review_required": 62,
     "global_review_stale": 62,
     "global_review_invalid": 62,
+    "global_review_form_insufficient": 62,
     "cidr_continuation_pending": 40,
     "observation_inventory_partial": 70,
     "observation_high_value_pending": 70,
@@ -4330,6 +4331,7 @@ _CLOSURE_REASON_OWNERS = {
     "global_review_required": {"checkpoint"},
     "global_review_stale": {"checkpoint"},
     "global_review_invalid": {"checkpoint"},
+    "global_review_form_insufficient": {"checkpoint"},
     "cidr_continuation_pending": {"recon"},
     "cidr_continuation_invalid": {"recon"},
 }
@@ -4374,7 +4376,12 @@ def _closure_reason_frontier(
             stop_condition="recompute Closure with a stable snapshot or record the owner blocker",
             priority=100,
         )
-    if reason in {"global_review_required", "global_review_stale", "global_review_invalid"}:
+    if reason in {
+        "global_review_required",
+        "global_review_stale",
+        "global_review_invalid",
+        "global_review_form_insufficient",
+    }:
         return _frontier_item(
             owner="checkpoint",
             item_id=reason,
@@ -4755,6 +4762,7 @@ def _closure_action_for_reason(reason: str, state: dict, current: str) -> str:
         "global_review_required": "global-review",
         "global_review_stale": "global-review",
         "global_review_invalid": "global-review",
+        "global_review_form_insufficient": "global-review",
     }
     if reason in exact:
         return exact[reason]
@@ -4793,6 +4801,7 @@ def _finalize_closure_continuation(
         "recon_phase_partial",
         "recon_phase_review_required",
         "scanner_lane_review_required",
+        "global_review_form_insufficient",
         "cidr_continuation_pending",
         "cidr_continuation_invalid",
     }
@@ -5976,6 +5985,25 @@ _SNAPSHOT_VOLATILE_KEYS = frozenset({
 
 _GLOBAL_REVIEW_STATUSES = {"complete", "follow_up"}
 _GLOBAL_REVIEW_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+# The review's decision answers "is the target-wide picture consistent?" —
+# that claim covers exactly these components. Ledger telemetry, checkpoint
+# witness details, surface projections, and target-memory echoes are not part
+# of the claim and must not invalidate a still-correct review.
+_GLOBAL_REVIEW_BASIS_KEYS = (
+    "queue_fingerprint",
+    "coverage_fingerprint",
+    "closure_state_fingerprint",
+)
+
+
+def _global_review_basis(components: dict | None) -> dict[str, str]:
+    """Project closure snapshot components onto the review claim basis."""
+    if not isinstance(components, dict):
+        return {}
+    return {
+        key: str(components.get(key) or "")
+        for key in _GLOBAL_REVIEW_BASIS_KEYS
+    }
 
 
 def _global_review_error(
@@ -5995,6 +6023,11 @@ def _global_review_error(
         ),
         "global_review_stale": (
             "Re-run closure check and resubmit the review with its returned snapshot_digest."
+        ),
+        "global_review_form_insufficient": (
+            "The recorded review is valid but its form cannot close the bounded "
+            "residuals: record a complete-status review that covers the missing "
+            "residual tokens, or resolve the residuals through their owners."
         ),
     }
     return {
@@ -6047,8 +6080,17 @@ def validate_global_review(
     queue: dict,
     *,
     expected_digest: str,
+    expected_components: dict | None = None,
 ) -> dict:
-    """Validate the optional target-wide review witness against current owners."""
+    """Validate the optional target-wide review witness against current owners.
+
+    Validity binds to what the review actually attests to. A review recorded
+    with basis components (queue/coverage/closure-state fingerprints) stays
+    valid while those components match, even when the whole snapshot digest
+    drifted for non-claim reasons (ledger telemetry, witness details, surface
+    projections, target-memory echoes). Reviews without basis components keep
+    the legacy whole-digest comparison.
+    """
     if review in (None, {}):
         return _global_review_error("missing", "global_review_required")
     if not isinstance(review, dict):
@@ -6057,7 +6099,32 @@ def validate_global_review(
     digest = str(review.get("snapshot_digest") or "").strip().lower()
     if status not in _GLOBAL_REVIEW_STATUSES or not _GLOBAL_REVIEW_DIGEST_RE.fullmatch(digest):
         return _global_review_error("invalid", "global_review_invalid")
-    if digest != str(expected_digest or "").strip().lower():
+    basis = review.get("basis") if isinstance(review.get("basis"), dict) else None
+    if basis is not None:
+        # Claim-component scoping: compare only the components the review
+        # reasons over. Missing components project to empty strings, so an
+        # incomplete basis reports per-component entries rather than a
+        # separate structural failure.
+        expected_basis = _global_review_basis(expected_components)
+        if not expected_basis:
+            return _global_review_error("invalid", "global_review_invalid")
+        current = _global_review_basis(basis)
+        changes = [
+            {
+                "field": f"basis.{key}",
+                "provided": str(provided),
+                "current": str(expected_basis[key]),
+            }
+            for key, provided in current.items()
+            if provided != expected_basis[key]
+        ]
+        if changes:
+            return _global_review_error(
+                "stale",
+                "global_review_stale",
+                state_changes=changes,
+            )
+    elif digest != str(expected_digest or "").strip().lower():
         return _global_review_error(
             "stale",
             "global_review_stale",
@@ -6121,6 +6188,10 @@ def validate_global_review(
         "decision": decision,
         "next_action": next_action,
     }
+    if basis is not None:
+        # Preserve the recorded claim basis so later validations re-scope
+        # against the same components instead of the whole snapshot.
+        normalized["basis"] = _global_review_basis(basis)
     if matched_action is not None:
         normalized["next_action_id"] = str(matched_action.get("id") or "")
     return {"status": "valid", "reason": "", "review": normalized}
@@ -6423,6 +6494,7 @@ def load_closure_projection(
         witness.get("global_review"),
         queue,
         expected_digest=snapshot_digest,
+        expected_components=snapshot_components,
     )
     round_progress = closure_state.get("round_progress") if isinstance(closure_state.get("round_progress"), dict) else {}
     residual_review_required = bool(
@@ -6456,11 +6528,32 @@ def load_closure_projection(
                     "actionable_frontier": [],
                 })
             else:
-                global_review = {
-                    "status": "invalid",
-                    "reason": "global_review_invalid",
+                # The review itself is fine; only its FORM cannot consume the
+                # bounded residuals (wrong status, or missing token coverage).
+                # Report the distinct reason and keep the review's own status
+                # and missing tokens visible instead of rewriting it as
+                # invalid — the review author does not need to re-record the
+                # same reasoning, only the missing form.
+                missing_tokens = sorted(required_tokens - reviewed_tokens)
+                form_diagnostics = {
+                    "status": "form_insufficient",
+                    "reason": "global_review_form_insufficient",
+                    "review_status": str(global_review["review"].get("status") or ""),
+                    "missing_tokens": missing_tokens,
+                    "action_required": (
+                        "The recorded review is valid but its form cannot close the "
+                        "bounded residuals: record a complete-status review that covers "
+                        "the missing residual tokens, or resolve the residuals through "
+                        "their owners."
+                    ),
                 }
-                closure["global_review"] = {"status": "invalid"}
+                global_review = dict(form_diagnostics)
+                closure["global_review"] = {
+                    "status": "form_insufficient",
+                    "reason": "global_review_form_insufficient",
+                    "review_status": form_diagnostics["review_status"],
+                    "missing_tokens": missing_tokens,
+                }
     elif review_required:
         reason = str(global_review.get("reason") or "global_review_invalid")
         closure.update({
