@@ -32,6 +32,15 @@ memory/evidence/<target>/ledger.jsonl
 
 如果文件不存在，不要当成“已覆盖”；这表示 actor/object/replay 覆盖还没有结构化记录。
 
+## 谁思考（认知归属）
+
+| 输入 | 谁思考 |
+|---|---|
+| `--result`（tested_clean/lead/dead_end...） | **AI 判断**（观察判定） |
+| `--notes` | **AI 判断** |
+| endpoint/method/actor/variant/evidence_ref/vuln_class | **机器推导**（`--from-probe <event_id>` 从 ledger 复制） |
+| event_id 去重、identity 归并、落账 | **机械** |
+
 ## 显式记录
 
 只有实际完成某个低风险验证后，才 record：

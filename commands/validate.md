@@ -20,6 +20,10 @@ Run full validation on the current finding before writing a report.
 
 ## Inputs
 
+> 谁思考：Q1-Q7 判定、四 gate 布尔、CVSS、影响评估全部是 **AI 判断**（权威
+> 在 `skills/triage-validation/SKILL.md`）；decision JSON 的 schema 校验、
+> canonical 绑定、report 路径约束是 **机械** gate。
+
 - Candidate endpoint, vuln class, impact claim, and reproduction details
 - Exact request/response, browser/frame, state, or OOB evidence when available
 - `findings/<target>/findings.json` and `--finding-id` linkage when present

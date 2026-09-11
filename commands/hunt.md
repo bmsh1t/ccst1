@@ -6,6 +6,18 @@ description: Start active hunting on a target using cached recon, AI-first surfa
 
 Active vulnerability hunting through Claude CLI. Use the scanner as a bounded breadth and candidate sensor when useful; use surface evidence for Claude to choose exact probes and validation.
 
+## 谁思考（认知归属）
+
+参数认知归属见 `rules/tool-ai-boundary.md#谁思考`。本命令的关键分工：
+
+| 输入 | 谁思考 |
+|---|---|
+| 假设选择、路线、验证深度 | **AI 判断** |
+| probe 的 endpoint/method/actor/variant | **机器推导**（`--from-evidence`/`--from-probe`） |
+| claim 的 family/technique/skill_route/risk_tier | **机器推导**（`--template idor-cross-actor` 等） |
+| claim 四件套（hypothesis_id/expected_learning/kill_condition/decision_reason） | **AI 判断**（永不模板化） |
+| target、ledger 落账、锁、witness | **机械** |
+
 ## Run This (the only required step)
 
 Replace `target.com` with the supplied target.

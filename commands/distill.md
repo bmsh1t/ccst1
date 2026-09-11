@@ -17,6 +17,9 @@ description: 从当前目标的原始证据蒸馏知识卡草稿（target-scoped
 
 ## 流程（两段式，机器不能伪造认知）
 
+> 谁思考：①③机器（拉证据/脱敏渲染/可溯源校验）；②三元组（pattern/trigger/
+> action + evidence_refs）是**AI 判断**——机器只出题，不代提。
+
 ```text
 ① AI 运行出题（机器拉证据）：
    python3 tools/distill_target.py prompt --target <target> --typology <t> --json

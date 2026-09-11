@@ -31,6 +31,11 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 try:
+    from tools.contracts import CHECKPOINT_QUEUE_LOCK_ORDER
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from contracts import CHECKPOINT_QUEUE_LOCK_ORDER  # type: ignore
+
+try:
     from tools.autopilot_args import MAX_LANES
     from tools.checkpoint_witness import (
         is_canonical_coverage_lane_evidence_ref,

@@ -56,3 +56,17 @@ CLI/agent/command 文案必须说明它们只是 advisory hints。
 - score/rank/gap/runner result 不会隐藏攻击面或终止探索。
 - raw evidence 仍可追溯。
 - 新证据可以 reopen 旧的 tested/dead-end/n/a 状态。
+
+## 谁思考（认知归属，2026-09-11 单一来源化）
+
+命令参数分三类，命令文档用这三类标注：
+
+- **AI 判断**：临场认知，机器不可推导也不可预填。claim 四件套
+  （hypothesis_id / expected_learning / kill_condition / decision_reason）、
+  result 判定、resolve 决策、报告影响评估。
+- **机器推导**：可从已有事实机械推导或模板预填。endpoint/method/evidence_ref/
+  baseline_ref（`--from-evidence` / `--from-probe`），family/technique/
+  skill_route/risk_tier（`--template`）。
+- **机械**：owner 上下文自动携带。target、repo_root、锁、witness、时间戳。
+
+任何新 gate 不得把 AI 判断字段变成机械字段（分桶纪律的文档面）。

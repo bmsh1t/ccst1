@@ -6,6 +6,15 @@ description: 为当前目标生成 autopilot checkpoint、覆盖摘要和目标�
 
 生成目标 checkpoint。
 
+## 谁思考（认知归属）
+
+| 输入 | 谁思考 |
+|---|---|
+| Global Review 的 decision/next_action、残留 unknowns 判定 | **AI 判断** |
+| evidence_refs/cross_source_links 汇编 | **AI 判断**（人审摘要） |
+| snapshot_digest 绑定、witness、锁序 | **机械** |
+| target_write_back 内容生产 | **机器推导**（state/coverage 投影） |
+
 ## 写回契约（权威定义，autopilot 家族只引用本段）
 
 - checkpoint 写回 = `apply_target_memory`（默认开）：把 `target_write_back.lead/next/
