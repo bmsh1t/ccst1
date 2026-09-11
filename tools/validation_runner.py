@@ -93,12 +93,10 @@ except ImportError:  # pragma: no cover - direct tools/ execution
 
 SCHEMA_VERSION = 1
 MAX_RESPONSE_BYTES = 1024 * 1024
-SQLI_PROBE_RE = re.compile(
-    r"('|--|/\*|\*/|;|\)\)|\b(?:or|and|union|select|where|from|sleep|benchmark|"
-    r"waitfor|pg_sleep|information_schema|null|true|false)\b|\$(?:ne|gt|regex|where)\b|\{\s*\"?\$)",
-    re.I,
-)
-SQLI_ERROR_RE = re.compile(
+# Parser/DB error markers. Category-agnostic: any declared fact that names a
+# DB/parser error marker (``error_marker_variant_only``) is checked with this,
+# regardless of which vulnerability family the AI is testing.
+DB_ERROR_MARKER_RE = re.compile(
     r"SQL syntax|sqlite|mysql|mariadb|postgres|postgresql|psql|oracle|ORA-\d+|"
     r"mssql|SQL Server|ODBC|JDBC|PDOException|SequelizeDatabaseError|"
     r"near ['\"][^'\"]+['\"]: syntax error|unterminated quoted string|"
@@ -1896,8 +1894,8 @@ def _run_wire_facts(run: dict[str, Any], baseline_body: str, variant_body: str) 
     baseline_status = int((run.get("baseline") or {}).get("status") or 0)
     variant_status = int((run.get("variant") or {}).get("status") or 0)
 
-    baseline_marker = bool(SQLI_ERROR_RE.search(str(baseline_body or "")))
-    variant_marker = bool(SQLI_ERROR_RE.search(str(variant_body or "")))
+    baseline_marker = bool(DB_ERROR_MARKER_RE.search(str(baseline_body or "")))
+    variant_marker = bool(DB_ERROR_MARKER_RE.search(str(variant_body or "")))
     material = _request_pair_materiality(run)
 
     return {
