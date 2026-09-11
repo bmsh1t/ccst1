@@ -229,15 +229,11 @@ def test_web_llm_agent_signal_metadata_matches_registry_and_review():
     document = parse_knowledge_document(
         (_repo_root() / "knowledge/cards/web-llm-tool-chains.md").read_text(encoding="utf-8")
     )
-    matrix = json.loads(
-        (_repo_root() / "knowledge/governance/value-review.json").read_text(encoding="utf-8")
-    )
-    review = next(item for item in matrix["cards"] if item["card_id"] == "web-llm-tool-chains")
-
+    # value-review.json（knowledge_value_review 输出）已随零-A 归档，
+    # trigger_tags 一致性收敛为 registry + frontmatter 双源校验
     assert document.metadata is not None
     assert expected <= set(registry["web-llm-tool-chains"]["triggers"])
     assert expected <= set(document.metadata["trigger_tags"])
-    assert expected <= set(review["trigger_tags"])
 
 
 def test_case_router_is_not_bound_to_hackerone_case_corpus():

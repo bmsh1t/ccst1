@@ -24,7 +24,7 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 try:
-    from tools.distill_reports import normalize_report
+    from tools.corpus_projection import normalize_report
     from tools.knowledge_registry import (
         KnowledgeRegistryError,
         REPORT_ID_RE,
@@ -34,7 +34,7 @@ try:
         parse_source_refs,
     )
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from distill_reports import normalize_report  # type: ignore
+    from corpus_projection import normalize_report  # type: ignore
     from knowledge_registry import (  # type: ignore
         KnowledgeRegistryError,
         REPORT_ID_RE,

@@ -196,8 +196,8 @@ case-router 不是默认方法论正文，而是低优先级、按信号加载�
    目标层或 action queue 记录为 lead / next action / dead end / queued action。
 
 正式卡的 active/retired/superseded 状态与 `draft/tested/proven` maturity 分离，由
-`knowledge/governance/events.jsonl` 和 `tools/knowledge_lifecycle.py` 追加式 replay；
-候选的 pending/reviewed/promoted 状态仍只归 `knowledge_candidates.py` 管理。
+卡片治理历史已归档（`archive/knowledge-governance/`）；新经验进入走 `/distill`
+（草稿卡 → 人工 mv 进 cards 即 promote），不再有第二个状态机。
 
 ## 输出要求
 
