@@ -58,8 +58,11 @@ controller and only owner of lane claims/state write-back. Specialists default t
 justified delegation loads
 `docs/autopilot-lanes.md#inline-specialist-propagation` for its single delegation contract
 and bounded questions/mode/batch rules.
-optional `recon-ranker` stays read-only and is never a lane owner. Before a named lane, use the
-literal `state.lane_contract.ref` from `docs/autopilot-lanes.md` and read only that section. Before
+optional `recon-ranker` stays read-only and is never a lane owner. Before a named lane,
+consume bootstrap `state.lane_contract`: it names the lane (`id`, `ref`, `reason`) and, when
+`text_available=true`, already carries that section's text inline — use it directly instead of
+re-reading the doc. Only when `text_available=false` (or when a newly observed evidence signal
+selects a different section) read that one section from `docs/autopilot-lanes.md`. Before
 substantive Queue claim/resolve, read `State And Queue` and consume bootstrap
 `activation_contract`; never reconstruct a second claim schema.
 Before active hunting, load `rules/hunting.md`. Fresh Recon is not active hunting: when
@@ -118,10 +121,12 @@ cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_she
 ```
 Before selecting another substantive lane, run a compact phase gate in the same AI turn:
 what exact target-owned evidence did this lane add, which high-value surface remains unknown
-or was ruled out, and why the next action has better information gain than rotate or stop. Put
-answers in the existing `decision`/`next_action` heartbeat; do not create another state,
-queue, or checklist owner. Without an evidence-backed answer, resolve a bounded
-dead-end/blocker or handoff instead of silently widening work.
+or was ruled out, and why the next action has better information gain than rotate or stop. The
+phase gate runs in-turn; write it into the existing `decision`/`next_action` heartbeat only
+when rotating lanes, hitting a blocker, or stalling — a clean same-lane continuation needs no
+heartbeat write. Do not create another state, queue, or checklist owner. Without an
+evidence-backed answer, resolve a bounded dead-end/blocker or handoff instead of silently
+widening work.
 
 Run a mid-run review when new assets or cross-source evidence arrive, a phase changes, a
 blocker/rotation occurs, or a bounded batch ends. This mid-run review is delta-based, not a
@@ -172,11 +177,13 @@ fit, promotion, reopen, and finish; deterministic owners preserve schema, eviden
 and durable state. Follow `skills/runtime-protocol.md`, `rules/tool-ai-boundary.md`, and
 `rules/hunting.md#broad-scanner-input-and-completion-contract`.
 Use `rules/hunting.md` value-first priorities; scanner quick is an advisory breadth sensor,
-and scanner-negative is not completion. Business Model Read: after fresh Recon starts, write
-or refresh `evidence/<target>/business_model.md` from observed purpose, actors, private
-objects, trust boundaries, sensitive workflows, and crown jewels; a fresh file may be reused
-for 30 days.
-Promote Lead -> Signal -> Candidate -> Validated Finding only with practical, replayable raw
+and scanner-negative is not completion. Business Model Read: after fresh Recon starts, run
+`python3 tools/business_model_stub.py --target <target_shell> --json` — it deterministically
+derives `evidence/<target>/business_model.md` (technology stack, observed endpoint paths and
+parameters) from recon artifacts; then AI reviews the stub and fills the business-judgment
+sections (observed purpose, actors' roles, crown jewels, trust boundaries, sensitive
+workflows). The generator skips when a file is inside its 30-day reuse window; `--refresh`
+regenerates but loses AI-filled sections. Promote Lead -> Signal -> Candidate -> Validated Finding only with practical, replayable raw
 request/response or a locatable evidence ref. Canonical finding writes go through
 `finding_index` and `/validate`; partial/blocked is unresolved, not tested-clean, and
 placeholder reports are not report-ready. Apply the four-layer routing in `skills/runtime-protocol.md`;

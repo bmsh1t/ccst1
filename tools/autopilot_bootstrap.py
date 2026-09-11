@@ -320,9 +320,111 @@ _LANE_CONTRACTS = {
     ),
 }
 
+# Hard bound for an inlined lane section (batch A3). The lane doc's longest
+# section is ~5 KB today; 12 KB is a runaway failsafe, not a sizing decision.
+LANE_CONTRACT_TEXT_MAX_CHARS = 12_000
 
-def _lane_contract_projection(state: dict[str, Any]) -> dict[str, str]:
-    """Return one on-demand lane reference instead of embedding every lane rule."""
+
+def _lane_contract_text(repo_root: Path, ref: str) -> dict[str, Any]:
+    """Inline the referenced lane section as a projection of the single source.
+
+    A3 (ai-capability-roadmap batch 7): the AI no longer re-reads
+    ``docs/autopilot-lanes.md`` per lane; bootstrap carries the exact section
+    text named by ``state.lane_contract.ref``. The doc file stays the single
+    source of truth — this is a read-side projection, so drift is impossible
+    by construction (the text is read from the same file in the same repo).
+    Never raises: an unreadable doc degrades to the previous read-it-yourself
+    contract (``available=false`` with the reason) instead of blocking startup.
+    """
+    result: dict[str, Any] = {
+        "available": False,
+        "ref": ref,
+        "chars": 0,
+        "text": "",
+        "reason": "",
+    }
+    # Only markdown anchors under docs/ may be inlined; the controller lane
+    # points back at the command file and is deliberately left as a ref.
+    raw_ref = str(ref or "")
+    if not raw_ref.startswith("docs/"):
+        result["reason"] = "ref is not a docs/ markdown section; read the ref directly"
+        return result
+    path_part, _, anchor = raw_ref.partition("#")
+    repo = Path(repo_root)
+    source = repo / path_part
+    try:
+        text = source.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        result["reason"] = f"lane contract source unreadable: {exc}"
+        return result
+    if not anchor:
+        result["reason"] = "ref carries no section anchor"
+        return result
+    normalized_anchor = "-".join(anchor.lower().split())
+    lines = text.splitlines()
+    section: list[str] = []
+    started = False
+    anchor_level = 0
+    in_fence = False
+    for line in lines:
+        stripped = line.lstrip()
+        # Track fenced code blocks: a '#' line inside a fence is content, not a
+        # heading — without this the section would be silently truncated at the
+        # first in-fence '#' comment line, violating the exact-text contract.
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_fence = not in_fence
+            if started:
+                section.append(line)
+            continue
+        if in_fence:
+            if started:
+                section.append(line)
+            continue
+        level = len(stripped) - len(stripped.lstrip("#"))
+        heading = line.strip() if level else ""
+        if heading.startswith("#"):
+            title = heading.lstrip("#").strip()
+            normalized_title = "-".join(title.lower().split())
+            if started:
+                # Markdown section semantics: the section runs until the next
+                # heading of the same or higher level — a deeper (###) subsection
+                # belongs to the referenced section and stays inline, matching
+                # what reading that one section from the doc would yield.
+                if level <= anchor_level:
+                    break
+                section.append(line)
+                continue
+            if normalized_title == normalized_anchor:
+                started = True
+                anchor_level = level
+                section.append(line)
+                continue
+        elif started:
+            section.append(line)
+    if not started:
+        result["reason"] = f"section '{anchor}' not found in {path_part}"
+        return result
+    body = "\n".join(section).strip()
+    if len(body) > LANE_CONTRACT_TEXT_MAX_CHARS:
+        # Bounded projection: keep the ref contract instead of shipping an
+        # unbounded blob into the bootstrap prompt.
+        result["reason"] = (
+            "section exceeds the inline bound; read the ref directly"
+        )
+        return result
+    result.update({"available": True, "chars": len(body), "text": body})
+    return result
+
+
+def _lane_contract_projection(state: dict[str, Any]) -> dict[str, Any]:
+    """Return one on-demand lane reference instead of embedding every lane rule.
+
+    The projection additionally inlines the referenced section text
+    (``text``/``available``) when it comes from a bounded ``docs/`` markdown
+    section — A3 keeps the AI from re-reading the lane doc per lane. Existing
+    ``id``/``ref``/``reason`` keys are preserved so older consumers are
+    unaffected.
+    """
     action = str(state.get("next_action") or "")
     if action in {
         "run_recon",
@@ -354,7 +456,17 @@ def _lane_contract_projection(state: dict[str, Any]) -> dict[str, str]:
     else:
         lane = "controller"
     ref, reason = _LANE_CONTRACTS[lane]
-    return {"id": lane, "ref": ref, "reason": reason}
+    projection: dict[str, Any] = {"id": lane, "ref": ref, "reason": reason}
+    # ``repo_root`` rides on the state built by autopilot_state; the compact
+    # projection never synthesizes it, so unit-test states without it simply
+    # fall back to the read-the-ref contract (available=false).
+    repo_root = state.get("repo_root") or str(REPO_ROOT)
+    inlined = _lane_contract_text(Path(repo_root), ref)
+    projection["text"] = inlined["text"]
+    projection["text_available"] = bool(inlined["available"])
+    if not inlined["available"]:
+        projection["text_reason"] = str(inlined["reason"] or "unavailable")
+    return projection
 
 
 def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:

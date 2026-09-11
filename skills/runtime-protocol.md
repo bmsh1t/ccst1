@@ -90,7 +90,10 @@ Evidence-driven depth does not mean evidence-only testing。证据驱动用于�
 - **Validation mode**：Candidate 质量足够时，用最低影响证据证明安全影响并完成
   `/validate` 或报告前 gate。
 
-每次在三种模式之间切换，先做一次 compact transition review：`Evidence state / Next question / Stop condition`。复核结果继续写入现有 Evidence 或 `Action Queue`，不新增 transition 字段或第二套状态机。
+模式切换不需要显式 review 仪式：三种模式是思考框架，AI 在 Evidence / Next question /
+Stop condition 不再匹配当前模式时直接切换；checkpoint 的 round lane 心跳
+（`decision`/`next_action` 字段）已携带该次切换的落地理由，不新增 transition
+字段或第二套状态机。
 
 AI selection / override 是能力上限保护：当前 Skill 可以跳过建议路线、组合知识卡、创建
 新的 action 类型，或局部重排模式顺序；选择必须说明 decision reason、下一步验证动作和
@@ -158,22 +161,30 @@ new shell/tool invocation.
 
 ## 输出契约
 
+5 必填字段由 AI 手打（判断性内容：证据、候选、终态、残余未知、下一步）；
+其余 8 个字段定义保留，但由 checkpoint / pack / queue owner 自动记录，
+AI 无需手打——需要时可引用 owner 已有字段而不是重抄：
+
 ```text
 SKILL RESULT
-- Target:
-- Skill:
-- Phase:
-- Evidence:
-- Hypotheses:
-- Actions taken:
-- Coverage update:
-- Leads / Signals:
-- Candidates:
-- Dead ends:
-- Still unknown:
-- Next actions:
-- Write-back:
+- Evidence:            (必填)
+- Candidates:          (必填)
+- Dead ends:           (必填)
+- Still unknown:       (必填)
+- Next actions:        (必填)
+- Target:              (owner: pack/state 自动记录)
+- Skill:               (owner: queue skill_route 自动记录)
+- Phase:               (owner: state 自动记录)
+- Hypotheses:          (owner: queue hypothesis 字段自动记录)
+- Actions taken:       (owner: queue/ledger 自动记录)
+- Coverage update:     (owner: coverage_matrix 自动记录)
+- Leads / Signals:     (owner: evidence_ledger 自动记录)
+- Write-back:          (owner: 各 owner 写回即记录)
 ```
+
+必填字段的最低标准：Evidence 引用可定位的原始请求/响应或 evidence ref；
+Candidates 不得把 Lead 包装成 Candidate；Dead ends 与 Still unknown 不得用
+"没有发现问题"替代覆盖摘要；Next actions 是可执行的下一步。
 
 ## 禁止事项
 

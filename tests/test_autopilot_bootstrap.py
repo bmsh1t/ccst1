@@ -1286,3 +1286,137 @@ def test_priority_bootstrap_does_not_open_large_artifacts_or_write_target_state(
     assert state["next_action"] == "collect_candidate_evidence"
     assert state["observation_inventory"]["status"] == "summary_missing"
     assert before == after
+
+
+# ---------------------------------------------------------------------------
+# A3 (ai-capability-roadmap batch 7): lane contract text inlined into bootstrap
+# ---------------------------------------------------------------------------
+
+
+def test_lane_contract_inline_is_a_projection_of_the_lane_doc():
+    """state.lane_contract.text is read from docs/autopilot-lanes.md itself.
+
+    The lane doc stays the single source of truth; the inline text is a
+    projection, so the projection and the file cannot drift. Every docs/
+    section referenced by a lane contract must resolve and stay inside the
+    bounded inline size.
+    """
+    from pathlib import Path
+
+    repo_root = Path(autopilot_bootstrap.REPO_ROOT)
+    for lane, (ref, _reason) in autopilot_bootstrap._LANE_CONTRACTS.items():
+        inlined = autopilot_bootstrap._lane_contract_text(repo_root, ref)
+        if ref.startswith("docs/"):
+            assert inlined["available"], (
+                f"lane {lane} references {ref} which no longer resolves; the "
+                "bootstrap inline projection is silently degraded to "
+                "read-the-ref"
+            )
+            assert inlined["chars"] <= autopilot_bootstrap.LANE_CONTRACT_TEXT_MAX_CHARS
+            assert inlined["text"].startswith("##")
+        else:
+            # controller lane points at the command file: deliberately a ref.
+            assert not inlined["available"]
+
+
+def test_compact_state_carries_lane_contract_text():
+    """The compact projection embeds the section text for the selected lane."""
+    compact = autopilot_bootstrap.compact_autopilot_state({"next_action": "run_recon"})
+
+    lane_contract = compact["lane_contract"]
+    assert lane_contract["id"] == "recon-surface"
+    assert lane_contract["ref"] == "docs/autopilot-lanes.md#recon-and-surface"
+    # Backward-compatible keys stay.
+    assert lane_contract["reason"]
+    # New inline keys: the section text itself.
+    assert lane_contract["text_available"] is True
+    assert "## Recon And Surface" in lane_contract["text"]
+    assert "run_recon" in lane_contract["text"]
+
+
+def test_lane_contract_text_degrades_without_crashing(tmp_path, monkeypatch):
+    """An unreadable/missing doc degrades to available=false, never raises."""
+    from pathlib import Path
+
+    missing = autopilot_bootstrap._lane_contract_text(
+        Path(tmp_path), "docs/does-not-exist.md#section"
+    )
+    assert missing["available"] is False
+    assert missing["reason"]
+
+    monkeypatch.setattr(
+        autopilot_bootstrap, "REPO_ROOT", tmp_path, raising=True
+    )
+    compact = autopilot_bootstrap.compact_autopilot_state({"next_action": "run_recon"})
+    lane_contract = compact["lane_contract"]
+    assert lane_contract["id"] == "recon-surface"
+    assert lane_contract["text_available"] is False
+    assert lane_contract["text"] == ""
+    assert lane_contract["text_reason"]
+
+
+def test_lane_contract_text_keeps_fenced_code_blocks(tmp_path):
+    """A '#' line inside a fenced code block is content, not a heading.
+
+    Without fence tracking the section extraction would silently truncate the
+    inlined projection at the first in-fence '#' comment line — violating the
+    exact-section-text contract with no warning anywhere.
+    """
+    from pathlib import Path
+
+    doc = tmp_path / "docs" / "lanes.md"
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text(
+        "# Doc\n\n"
+        "## Target Section\n\n"
+        "Intro line.\n\n"
+        "```yaml\n"
+        "# this hash line is content, not a heading\n"
+        "key: value\n"
+        "```\n\n"
+        "Trailing paragraph.\n\n"
+        "## Next Section\n\n"
+        "Other content.\n",
+        encoding="utf-8",
+    )
+
+    result = autopilot_bootstrap._lane_contract_text(
+        Path(tmp_path), "docs/lanes.md#target-section"
+    )
+
+    assert result["available"] is True
+    assert "# this hash line is content, not a heading" in result["text"]
+    assert "Trailing paragraph." in result["text"]
+    assert "Other content." not in result["text"]
+
+
+def test_lane_contract_text_includes_deeper_subsections(tmp_path):
+    """Markdown section semantics: ### subsections belong to a ## section.
+
+    The inline text must match what reading that one section from the doc
+    yields; dropping an added ### subsection would silently shrink the
+    projection while the doc (and the fallback read) still carries it.
+    """
+    from pathlib import Path
+
+    doc = tmp_path / "docs" / "lanes.md"
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text(
+        "# Doc\n\n"
+        "## Target Section\n\n"
+        "Intro.\n\n"
+        "### Sub Detail\n\n"
+        "Subsection body.\n\n"
+        "## Next Section\n\n"
+        "Other content.\n",
+        encoding="utf-8",
+    )
+
+    result = autopilot_bootstrap._lane_contract_text(
+        Path(tmp_path), "docs/lanes.md#target-section"
+    )
+
+    assert result["available"] is True
+    assert "### Sub Detail" in result["text"]
+    assert "Subsection body." in result["text"]
+    assert "Other content." not in result["text"]

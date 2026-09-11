@@ -2341,3 +2341,323 @@ def test_versioned_resolve_still_requires_continuation_or_kill_for_non_verdict(t
             status="dead-end",
             result="evidence=evidence/target.com/validation/AQ-0001/summary.json",
         )
+
+
+# ---------------------------------------------------------------------------
+# B5 (ai-capability-roadmap batch 7): claim --from-evidence
+# ---------------------------------------------------------------------------
+
+
+def _seed_probe_evidence(tmp_path: Path, target: str = "target.com") -> str:
+    """Write one probe.py-shaped evidence JSON and return its repo-relative ref."""
+    probe_path = tmp_path / "evidence" / target / "probe" / "20260911T000000000Z-deadbeef.json"
+    probe_path.parent.mkdir(parents=True, exist_ok=True)
+    probe_path.write_text(
+        json.dumps(
+            {
+                "kind": "probe",
+                "schema_version": 1,
+                "ts": "2026-09-11T00:00:00Z",
+                "target": target,
+                "request": {
+                    "method": "GET",
+                    "url": f"https://{target}/rest/basket/6",
+                    "headers": {},
+                    "body": "",
+                    "timeout_seconds": 10.0,
+                },
+                "response": {
+                    "status": 200,
+                    "reason": "OK",
+                    "headers": {},
+                    "body": "{}",
+                    "body_sha256": "a" * 64,
+                    "body_retained_bytes": 2,
+                    "body_observed_bytes": 2,
+                    "body_truncated": False,
+                    "final_url": f"https://{target}/rest/basket/6",
+                },
+                "elapsed_ms": 12,
+                "flags": {"state_changing": False, "redline_checked": False},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return str(probe_path.relative_to(tmp_path))
+
+
+def _seed_depth_contract_item(tmp_path: Path) -> str:
+    """Queue one activation_required depth-contract action; return its id."""
+    ingest_checkpoint(
+        tmp_path,
+        "target.com",
+        checkpoint={
+            "next_action_queue": [
+                {
+                    "id": "H-PROBE",
+                    "priority": 95,
+                    "type": "request-pair",
+                    "status": "ready",
+                    "action": "Replay the probe-observed object route.",
+                    "command_hint": "request-diff replay",
+                    "source": "checkpoint",
+                    "source_id": "probe-derived",
+                    "metadata": {
+                        "endpoint": "https://target.com/rest/basket/6",
+                        "method": "GET",
+                        "depth_contract_version": 1,
+                        "activation_required": True,
+                        "max_hypothesis_actions_cap": 4,
+                        "hypothesis_id": "H-probe-basket",
+                        "family": "object-authorization",
+                        "technique": "id-swap-cross-actor",
+                        "active_dimension": "path:/rest/basket/1",
+                        "input_boundary": "path segment: basket id",
+                        "expected_learning": "whether the object id is bound to the caller",
+                        "kill_condition": "peer object rejected, or caller's own object returned",
+                        "decision_reason": "probe lead flagged the object route",
+                        "risk_tier": "medium",
+                    },
+                }
+            ]
+        },
+    )
+    queue = load_queue(tmp_path, "target.com")
+    return str(queue["actions"][0]["id"])
+
+
+_JUDGMENT_ONLY_ACTIVATION = {
+    "depth_contract_version": 1,
+    "hypothesis_id": "H-probe-basket",
+    "family": "object-authorization",
+    "technique": "id-swap-cross-actor",
+    "active_dimension": "path:/rest/basket/1",
+    "input_boundary": "path segment: basket id",
+    "expected_learning": "whether the object id is bound to the caller",
+    "kill_condition": "peer object rejected, or caller's own object returned",
+    "decision_reason": "probe lead flagged the object route",
+    "skill_route": {
+        "skill_id": "web2-vuln-classes",
+        "skill_path": "skills/web2-vuln-classes/SKILL.md",
+        "required_dimensions": ["auth", "object"],
+    },
+    "risk_tier": "medium",
+    "max_hypothesis_actions": 2,
+}
+
+
+def test_claim_from_evidence_derives_mechanical_fields(tmp_path: Path):
+    """--from-evidence fills endpoint/method/evidence_ref/baseline_ref from a probe."""
+    action_id = _seed_depth_contract_item(tmp_path)
+    evidence_ref = _seed_probe_evidence(tmp_path)
+
+    claimed = claim_next_action(
+        tmp_path,
+        "target.com",
+        action_id=action_id,
+        from_evidence=evidence_ref,
+        metadata=dict(_JUDGMENT_ONLY_ACTIVATION),
+    )
+
+    assert claimed["status"] == "running"
+    stored = next(
+        item for item in load_queue(tmp_path, "target.com")["actions"] if item["id"] == action_id
+    )
+    metadata = stored["metadata"]
+    # Mechanical fields were derived from the probe JSON.
+    assert metadata["endpoint"] == "https://target.com/rest/basket/6"
+    assert metadata["method"] == "GET"
+    assert metadata["evidence_ref"] == evidence_ref
+    assert metadata["baseline_ref"] == evidence_ref
+    # The full depth contract still validated (execution key present means the
+    # repeat-fingerprint machinery ran over the derived+judgment metadata).
+    assert metadata["execution_key"].startswith("depth-v1:")
+
+
+def test_claim_from_evidence_metadata_json_overrides_derived_values(tmp_path: Path):
+    """Explicit --metadata-json values win over every derived field."""
+    action_id = _seed_depth_contract_item(tmp_path)
+    evidence_ref = _seed_probe_evidence(tmp_path)
+    # A different target-owned evidence file as the explicit baseline.
+    other = tmp_path / "evidence" / "target.com" / "probe" / "other.json"
+    other.write_text('{"kind": "probe", "request": {"method": "POST", "url": "https://target.com/rest/basket/6"}}', encoding="utf-8")
+    other_ref = str(other.relative_to(tmp_path))
+
+    metadata = dict(_JUDGMENT_ONLY_ACTIVATION)
+    metadata.update({"endpoint": "https://target.com/rest/basket/6?explicit=1", "method": "POST", "baseline_ref": other_ref})
+
+    claimed = claim_next_action(
+        tmp_path,
+        "target.com",
+        action_id=action_id,
+        from_evidence=evidence_ref,
+        metadata=metadata,
+    )
+    assert claimed["status"] == "running"
+    stored = next(
+        item for item in load_queue(tmp_path, "target.com")["actions"] if item["id"] == action_id
+    )
+    assert stored["metadata"]["endpoint"] == "https://target.com/rest/basket/6?explicit=1"
+    assert stored["metadata"]["method"] == "POST"
+    assert stored["metadata"]["baseline_ref"] == other_ref
+    # evidence_ref was not overridden explicitly, so the derived value stands.
+    assert stored["metadata"]["evidence_ref"] == evidence_ref
+
+
+def test_claim_from_evidence_rejects_missing_or_foreign_evidence(tmp_path, monkeypatch):
+    """Anti-forgery: a nonexistent ref or a non-target-owned ref is rejected."""
+    action_id = _seed_depth_contract_item(tmp_path)
+
+    with pytest.raises(ValueError, match="target-owned"):
+        claim_next_action(
+            tmp_path,
+            "target.com",
+            action_id=action_id,
+            from_evidence="evidence/target.com/probe/does-not-exist.json",
+            metadata=dict(_JUDGMENT_ONLY_ACTIVATION),
+        )
+
+    # A file that exists but belongs to another target's storage tree is not
+    # target-owned: the derivation must refuse to adopt it.
+    foreign = tmp_path / "evidence" / "other.test" / "probe" / "foreign.json"
+    foreign.parent.mkdir(parents=True, exist_ok=True)
+    foreign.write_text('{"kind": "probe", "request": {"method": "GET", "url": "https://other.test/x"}}', encoding="utf-8")
+    with pytest.raises(ValueError, match="target-owned"):
+        claim_next_action(
+            tmp_path,
+            "target.com",
+            action_id=action_id,
+            from_evidence=str(foreign.relative_to(tmp_path)),
+            metadata=dict(_JUDGMENT_ONLY_ACTIVATION),
+        )
+
+    # Nothing was claimed: the rejections happen before any queue mutation.
+    queue = load_queue(tmp_path, "target.com")
+    assert queue["actions"][0]["status"] == "queued"
+
+
+def test_claim_from_evidence_does_not_derive_judgment_fields(tmp_path):
+    """The 16-field depth contract stays: judgment fields must come from the AI.
+
+    Passing --from-evidence without the judgment fields must still fail with
+    the activation-fields error — the derivation is format-tax reduction, not
+    gate reduction.
+    """
+    ingest_checkpoint(
+        tmp_path,
+        "target.com",
+        checkpoint={
+            "next_action_queue": [
+                {
+                    "id": "H-PROBE2",
+                    "priority": 95,
+                    "type": "request-pair",
+                    "status": "ready",
+                    "action": "Replay the probe-observed object route.",
+                    "metadata": {
+                        "depth_contract_version": 1,
+                        "activation_required": True,
+                        "max_hypothesis_actions_cap": 4,
+                    },
+                }
+            ]
+        },
+    )
+    evidence_ref = _seed_probe_evidence(tmp_path)
+
+    with pytest.raises(ValueError, match="activation fields"):
+        claim_next_action(
+            tmp_path,
+            "target.com",
+            action_id="AQ-0001",
+            from_evidence=evidence_ref,
+        )
+
+
+def test_activation_contract_projection_documents_from_evidence():
+    """The bootstrap-consumed projection advertises the derivation surface."""
+    projection = action_queue_module.activation_contract_projection()
+    from_evidence = projection["from_evidence"]
+    assert from_evidence["derived_fields"] == [
+        "endpoint",
+        "method",
+        "evidence_ref",
+        "baseline_ref",
+    ]
+    assert "--from-evidence" in from_evidence["flag"]
+
+
+def test_claim_cli_accepts_from_evidence(tmp_path, capsys):
+    """CLI wiring: --from-evidence + --metadata-json claim end to end."""
+    action_id = _seed_depth_contract_item(tmp_path)
+    evidence_ref = _seed_probe_evidence(tmp_path)
+
+    code = main(
+        [
+            "--repo-root", str(tmp_path),
+            "claim",
+            "--target", "target.com",
+            "--id", action_id,
+            "--from-evidence", evidence_ref,
+            "--metadata-json", json.dumps(_JUDGMENT_ONLY_ACTIVATION),
+            "--json",
+        ],
+    )
+
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "running"
+    assert payload["metadata"]["evidence_ref"] == evidence_ref
+    assert payload["metadata"]["baseline_ref"] == evidence_ref
+
+
+def test_claim_from_evidence_non_probe_json_derives_only_evidence_ref(tmp_path):
+    """Non-probe evidence files derive only evidence_ref — baseline is not guessed.
+
+    A probe JSON records the complete request/response pair, so it is its own
+    baseline. A generic evidence JSON (validation summary, observation, etc.)
+    does not carry that guarantee, so endpoint/method/baseline_ref must come
+    from the AI.
+    """
+    action_id = _seed_depth_contract_item(tmp_path)
+    summary = tmp_path / "evidence" / "target.com" / "validation" / "summary.json"
+    summary.parent.mkdir(parents=True, exist_ok=True)
+    summary.write_text(
+        json.dumps({"status": "tested_finding", "notes": "no request pair"}),
+        encoding="utf-8",
+    )
+    summary_ref = str(summary.relative_to(tmp_path))
+
+    with pytest.raises(ValueError, match="target-owned evidence_ref and baseline_ref"):
+        claim_next_action(
+            tmp_path,
+            "target.com",
+            action_id=action_id,
+            from_evidence=summary_ref,
+            metadata=dict(_JUDGMENT_ONLY_ACTIVATION),
+        )
+    # Supplying baseline_ref (and endpoint/method) from the AI completes the
+    # contract: the derived evidence_ref was adopted underneath.
+    metadata = dict(_JUDGMENT_ONLY_ACTIVATION)
+    metadata.update(
+        {
+            "endpoint": "https://target.com/rest/basket/6",
+            "method": "GET",
+            "baseline_ref": "evidence/target.com/validation/baseline.json",
+        }
+    )
+    baseline = tmp_path / "evidence" / "target.com" / "validation" / "baseline.json"
+    baseline.write_text('{"kind": "manual-baseline"}', encoding="utf-8")
+    claimed = claim_next_action(
+        tmp_path,
+        "target.com",
+        action_id=action_id,
+        from_evidence=summary_ref,
+        metadata=metadata,
+    )
+    assert claimed["status"] == "running"
+    stored = next(
+        item for item in load_queue(tmp_path, "target.com")["actions"] if item["id"] == action_id
+    )
+    assert stored["metadata"]["evidence_ref"] == summary_ref
+    assert stored["metadata"]["baseline_ref"] == "evidence/target.com/validation/baseline.json"

@@ -166,6 +166,14 @@ def activation_contract_projection() -> dict[str, Any]:
             "skill_path_template": "skills/{skill_id}/SKILL.md",
         },
         "target_owned_fields": ["evidence_ref", "baseline_ref"],
+        "from_evidence": {
+            "flag": "--from-evidence <target-owned evidence JSON path>",
+            "derived_fields": list(FROM_EVIDENCE_DERIVED_FIELDS),
+            "note": (
+                "probe JSON derives endpoint/method/baseline_ref; explicit "
+                "--metadata-json values always override derived values"
+            ),
+        },
         "optional_fields": list(ACTIVATION_OPTIONAL_FIELDS),
         "conditional_fields": {
             "skill_override_reason": "skill_route_changes",
@@ -1878,15 +1886,92 @@ def select_next_action_for_target(
     return select_next_action(queue if queue is not None else load_queue(repo_root, target))
 
 
+# B5 (ai-capability-roadmap batch 7): claim --from-evidence derives only the
+# mechanical fields of the activation metadata from a target-owned evidence
+# file. Field mapping:
+#
+#   endpoint     <- probe request url
+#   method       <- probe request method (uppercased)
+#   evidence_ref <- the evidence file path itself (repo-relative)
+#   baseline_ref <- the same path when the evidence is a probe JSON (a probe
+#                  records the raw request/response pair, so it is its own
+#                  baseline); for a non-probe evidence file baseline_ref is
+#                  NOT guessed — the AI must name it
+#
+# Everything else in ACTIVATION_REQUIRED_CLAIM_FIELDS stays AI-supplied. This
+# is format-tax reduction, not gate reduction: the 16-field depth contract,
+# execution repeat fingerprint, capability primitives validation, and the
+# anti-forgery checks all run unchanged on the merged metadata.
+FROM_EVIDENCE_DERIVED_FIELDS = ("endpoint", "method", "evidence_ref", "baseline_ref")
+
+
+def _derive_activation_from_evidence(
+    repo_root: Path | str,
+    target: str,
+    evidence_ref: str,
+) -> dict:
+    """Derive mechanical activation fields from a target-owned evidence ref.
+
+    Accepts a probe JSON (``tools/probe.py`` batch-B1 on-disk shape) or any
+    target-owned JSON evidence file. Returns a partial metadata dict with only
+    the fields that are mechanically derivable; AI-supplied values always win
+    because the caller merges ``{**derived, **metadata}``.
+    """
+    resolved_ref = _target_owned_evidence_ref(repo_root, target, evidence_ref)
+    if not resolved_ref:
+        raise ValueError(
+            "Action Queue --from-evidence requires a target-owned, non-empty "
+            f"evidence file: {evidence_ref}"
+        )
+    derived: dict[str, str] = {"evidence_ref": resolved_ref}
+    path = Path(repo_root) / resolved_ref
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            f"Action Queue --from-evidence cannot read evidence JSON {resolved_ref}: {exc}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise ValueError(
+            "Action Queue --from-evidence requires a JSON object: " f"{resolved_ref}"
+        )
+    is_probe = str(payload.get("kind") or "") == "probe"
+    if is_probe:
+        request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+        url = str(request.get("url") or "").strip()
+        method = str(request.get("method") or "").strip().upper()
+        if url:
+            derived["endpoint"] = url
+        if method:
+            derived["method"] = method
+        # A probe file holds the complete request and response: it is its own
+        # baseline for a same-endpoint replay.
+        derived["baseline_ref"] = resolved_ref
+    return derived
+
+
 def claim_next_action(
     repo_root: Path | str,
     target: str,
     *,
     action_id: str = "",
     metadata: dict | None = None,
+    from_evidence: str = "",
 ) -> dict:
-    """Atomically claim queued work or resume the current running action."""
+    """Atomically claim queued work or resume the current running action.
+
+    ``from_evidence`` (B5) pre-fills the mechanical activation fields
+    (endpoint/method/evidence_ref/baseline_ref) from a target-owned probe or
+    evidence JSON; explicitly supplied ``metadata`` values override the
+    derivation. Judgment fields (hypothesis_id, expected_learning,
+    kill_condition, decision_reason, skill_route, ...) are never derived.
+    """
     metadata = _validate_action_metadata(metadata)
+    if from_evidence:
+        derived = _derive_activation_from_evidence(repo_root, target, from_evidence)
+        # Explicit AI-supplied metadata wins over every derived value.
+        metadata = {**derived, **(metadata or {})}
+        metadata = _validate_action_metadata(metadata)
     with queue_mutation_lock(repo_root, target):
         queue = load_queue(repo_root, target)
         wait_action = runtime_wait_action(repo_root, target)
@@ -2241,6 +2326,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Versioned AI activation metadata merged atomically before claim.",
     )
+    claim.add_argument(
+        "--from-evidence",
+        default="",
+        help=(
+            "Target-owned probe/evidence JSON path; derives the mechanical "
+            "fields (endpoint, method, evidence_ref, baseline_ref) before "
+            "merging --metadata-json (explicit values win). Judgment fields "
+            "are never derived."
+        ),
+    )
     claim.add_argument("--json", action="store_true")
 
     resolve = sub.add_parser("resolve", help="Resolve or reclassify one action.")
@@ -2321,6 +2416,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.target,
                 action_id=args.id,
                 metadata=metadata,
+                from_evidence=str(args.from_evidence or ""),
             )
             _print(action if args.json else format_action(action), as_json=args.json)
             return 0 if action else 1

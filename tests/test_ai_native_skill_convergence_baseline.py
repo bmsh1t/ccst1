@@ -154,3 +154,104 @@ def test_autopilot_contract_keeps_selection_authority_with_ai():
     assert "Machine ordering (weights," in skill
     assert "route-kind labels) is advisory input, not a decision" in skill
     assert "never close a cell or block a chosen test" in skill
+
+
+def test_runtime_protocol_dropped_the_transition_review_ritual():
+    """A4 (batch 7): the three modes stay, the switching ritual goes.
+
+    The mode definitions are a thinking framework; what was deleted is only
+    the "compact transition review before every switch" ceremony. The AI
+    selection/override paragraph (capability ceiling protection) must stay.
+    """
+    protocol = (REPO_ROOT / "skills" / "runtime-protocol.md").read_text(encoding="utf-8")
+    # Mode definitions preserved.
+    assert "**Discovery mode**" in protocol
+    assert "**Exploitation mode**" in protocol
+    assert "**Validation mode**" in protocol
+    # The switching ritual is gone.
+    assert "compact transition review" not in protocol
+    assert "先做一次 compact transition review" not in protocol
+    # Replaced by a no-ritual statement anchored at the existing heartbeat.
+    assert "不需要显式 review 仪式" in protocol
+    # AI selection/override (capability ceiling protection) preserved.
+    assert "AI selection / override 是能力上限保护" in protocol
+
+
+def test_runtime_protocol_output_contract_is_five_required_fields():
+    """A7 (batch 7): 13-field template slims to 5 AI-required fields.
+
+    The other 8 field definitions stay (owner-side consumers), but they are
+    marked as owner-recorded so the AI output obligation drops. The four
+    禁止事项 lines must remain unchanged.
+    """
+    protocol = (REPO_ROOT / "skills" / "runtime-protocol.md").read_text(encoding="utf-8")
+    assert "## 输出契约" in protocol
+    # 5 required fields, marked 必填.
+    for field in ("Evidence", "Candidates", "Dead ends", "Still unknown", "Next actions"):
+        assert f"- {field}:" in protocol
+        assert f"- {field}:" in protocol.split("## 输出契约")[1].split("## 禁止事项")[0]
+    # 必填 marks exist exactly for the 5 fields.
+    contract_body = protocol.split("## 输出契约")[1].split("## 禁止事项")[0]
+    assert contract_body.count("(必填)") == 5
+    # The 8 owner-recorded fields are marked, not deleted.
+    for field in (
+        "Target", "Skill", "Phase", "Hypotheses", "Actions taken",
+        "Coverage update", "Leads / Signals", "Write-back",
+    ):
+        assert f"- {field}:" in contract_body
+        assert "owner:" in contract_body.split(f"- {field}:")[1].splitlines()[0]
+    # 禁止事项 intact (security residual).
+    assert "不得跳过目标层直接进入大范围测试" in protocol
+    assert "不得默认全量读取知识库" in protocol
+    assert "不得把 Lead 包装成 Candidate" in protocol
+    assert "不得把推荐字段、单个 seed 或工具输出当成已执行状态" in protocol
+
+
+def test_autopilot_heartbeat_is_conditional():
+    """A8 (batch 7): the heartbeat write only on rotation/blocker/stall.
+
+    The phase gate itself (in-turn reasoning) and every anti-motivation guard
+    (loop-check, hard_gate, Global Review) must stay.
+    """
+    skill = (REPO_ROOT / "commands" / "autopilot.md").read_text(encoding="utf-8")
+    # Conditional heartbeat: only rotation/blocker/stall writes.
+    assert "rotating lanes, hitting a blocker, or stalling" in skill
+    assert "clean same-lane continuation needs no" in skill
+    # The phase-gate reasoning requirement stays.
+    assert "run a compact phase gate in the same AI turn" in skill
+    # Anti-motivation guards preserved verbatim.
+    assert "--loop-check --projection-only --json" in skill
+    assert "Obey `loop_guard.verdict`" in skill
+    assert "run ordered coverage review and read-only verdict" in skill
+    assert "run Global Review over bounded summaries" in skill
+
+
+def test_autopilot_lane_contract_is_inlined_into_bootstrap():
+    """A3 (batch 7): the controller consumes bootstrap lane_contract text."""
+    skill = (REPO_ROOT / "commands" / "autopilot.md").read_text(encoding="utf-8")
+    assert "consume bootstrap `state.lane_contract`" in skill
+    assert "`text_available=true`" in skill
+    # The fallback (read one section) is still bounded.
+    assert "read that one section from `docs/autopilot-lanes.md`" in skill
+
+
+def test_autopilot_business_model_read_uses_the_stub_generator():
+    """B4 (batch 7): Business Model Read routes through the deterministic stub."""
+    skill = (REPO_ROOT / "commands" / "autopilot.md").read_text(encoding="utf-8")
+    assert "tools/business_model_stub.py" in skill
+    assert "deterministically" in skill
+    # The AI-review residual: the generator only stubs; judgment stays with AI.
+    assert "AI reviews the stub and fills" in skill
+    # The 30-day reuse window and the refresh warning survive.
+    assert "30-day reuse window" in skill
+    assert "--refresh" in skill
+
+
+def test_action_queue_lanes_doc_documents_from_evidence():
+    """B5 (batch 7): the lane doc advertises the claim --from-evidence surface."""
+    lanes = (REPO_ROOT / "docs" / "autopilot-lanes.md").read_text(encoding="utf-8")
+    assert "--from-evidence" in lanes
+    assert "derives the mechanical fields" in lanes
+    # Gate reduction guard: the 16-field contract language stays.
+    assert "judgment fields are never derived" in lanes
+    assert "full 16-field depth contract still applies" in lanes
