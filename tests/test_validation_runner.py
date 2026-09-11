@@ -16,6 +16,7 @@ import validation_runner
 from action_queue import ingest_checkpoint, load_queue, save_queue
 from evidence_ledger import ledger_path
 from identity_contract import build_closure_cell
+from request_diff import RequestPairError, request_pair_digest, validate_request_pair
 from tools.auth_session import AuthSession
 
 
@@ -40,6 +41,44 @@ def test_request_diff_uses_canonical_vuln_taxonomy(classifier, explicit, expecte
     actual = validation_runner._classifier_vuln_class(classifier, explicit)
     assert actual == expected
     assert not actual or actual in validation_runner.CLOSURE_FAMILIES
+
+
+def _expect_auth_pair_spec() -> dict:
+    return {
+        "schema_version": 1,
+        "baseline_request": {"method": "GET", "url": "https://target.test/api/users"},
+        "variant_request": {
+            "method": "GET",
+            "url": "https://target.test/api/users",
+            "headers": {"Authorization": "Bearer denied"},
+        },
+        "active_dimension": "header:Authorization",
+        "classifier": "authz",
+    }
+
+
+def test_request_pair_expect_auth_parse_and_digest():
+    """expect_auth is an AI-declared boolean judgment: the parser carries it
+    unchanged (never infers it), and it participates in the operation digest
+    because declaring it makes the replay a different operation."""
+
+    base = _expect_auth_pair_spec()
+    normalized = validate_request_pair(base)
+    assert normalized["expect_auth"] is False
+
+    declared = dict(base, expect_auth=True)
+    assert validate_request_pair(declared)["expect_auth"] is True
+
+    # Absent, null, and empty all mean "no assertion" (legacy behavior).
+    assert validate_request_pair(dict(base, expect_auth=None))["expect_auth"] is False
+    assert validate_request_pair(dict(base, expect_auth=""))["expect_auth"] is False
+
+    # A spec with and without the declaration are different operations.
+    assert request_pair_digest(declared) != request_pair_digest(base)
+
+    # Non-boolean truthy values are hard input errors, not silently coerced.
+    with pytest.raises(RequestPairError):
+        validate_request_pair(dict(base, expect_auth="yes"))
 
 
 def _fake_response(url: str, *, status: int = 200, body: str = "{}") -> dict:
@@ -1548,6 +1587,119 @@ def test_request_diff_credential_pair_both_sides_succeed_stays_candidate_not_cle
         "identical 200 responses across a credential boundary are the evidence "
         "of a missing identity check, not a clean auth boundary"
     )
+
+
+def test_request_diff_missing_auth_expect_auth_pair_promotes_to_tested_finding(monkeypatch, tmp_path):
+    """Identical 200s across a credential boundary plus an explicit
+    expect_auth declaration promote through the missing-auth route: the
+    runner asserts the fact (the endpoint does not differentiate requesters)
+    and leaves the intent judgment to review."""
+
+    def fake_request_once(**kwargs):
+        body = '{"config": {"chatbot": "shared"}}'
+        return _fake_response(kwargs["url"], body=body)
+
+    monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
+    spec = {
+        "schema_version": 1,
+        "baseline_request": {"method": "GET", "url": "https://target.test/rest/admin/application-configuration"},
+        "variant_request": {
+            "method": "GET",
+            "url": "https://target.test/rest/admin/application-configuration",
+            "headers": {"Authorization": "Bearer denied"},
+        },
+        "active_dimension": "header:Authorization",
+        "evidence_shape": "auth_boundary",
+        "classifier": "authz_access",
+        "vuln_class": "Authz",
+        "expect_auth": True,
+        "repeat": 1,
+    }
+    summary = validation_runner.run_request_diff(
+        repo_root=tmp_path,
+        target="https://target.test",
+        request_spec=spec,
+    )
+
+    assert summary["result"] == "tested_finding"
+    assert summary["candidate_ready"] is True
+    assert summary["vuln_class"] == "Authz"
+    rubric = summary.get("evidence_rubric") or {}
+    assert rubric.get("status") == "candidate-ready"
+    ai_next = summary.get("ai_next") or {}
+    assert "missing authentication" in str(ai_next.get("hypothesis", ""))
+    spec_view = summary.get("request_pair") or {}
+    assert spec_view.get("expect_auth") is True
+    led = summary.get("ledger_record") or {}
+    assert led.get("result") == "tested_finding"
+
+
+def test_request_diff_missing_auth_pair_with_3xx_both_sides_promotes(monkeypatch, tmp_path):
+    """The success class is 2xx/3xx: redirects on both sides still count as
+    'the endpoint answered both requesters' for the missing-auth route."""
+
+    def fake_request_once(**kwargs):
+        return _fake_response(kwargs["url"], status=302, body="")
+
+    monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
+    spec = {
+        "schema_version": 1,
+        "baseline_request": {"method": "GET", "url": "https://target.test/api/users"},
+        "variant_request": {
+            "method": "GET",
+            "url": "https://target.test/api/users",
+            "headers": {"Cookie": "session=denied"},
+        },
+        "active_dimension": "cookie:session",
+        "evidence_shape": "auth_boundary",
+        "classifier": "authz_access",
+        "vuln_class": "Authz",
+        "expect_auth": True,
+        "repeat": 1,
+    }
+    summary = validation_runner.run_request_diff(
+        repo_root=tmp_path,
+        target="https://target.test",
+        request_spec=spec,
+    )
+
+    assert summary["result"] == "tested_finding"
+    assert summary["candidate_ready"] is True
+
+
+def test_request_diff_missing_auth_declaration_alone_does_not_override_held_boundary(monkeypatch, tmp_path):
+    """expect_auth is a declaration, not a verdict: when the boundary held
+    (both sides rejected identically) the pair stays tested_clean even with
+    the declaration. The missing-auth route needs the facts, not just the
+    assertion."""
+
+    def fake_request_once(**kwargs):
+        return _fake_response(kwargs["url"], status=401, body='{"error": "unauthorized"}')
+
+    monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
+    spec = {
+        "schema_version": 1,
+        "baseline_request": {"method": "GET", "url": "https://target.test/api/users"},
+        "variant_request": {
+            "method": "GET",
+            "url": "https://target.test/api/users",
+            "headers": {"Cookie": "session=denied"},
+        },
+        "active_dimension": "cookie:session",
+        "evidence_shape": "auth_boundary",
+        "classifier": "authz_access",
+        "vuln_class": "Authz",
+        "expect_auth": True,
+        "repeat": 1,
+    }
+    summary = validation_runner.run_request_diff(
+        repo_root=tmp_path,
+        target="https://target.test",
+        request_spec=spec,
+    )
+
+    assert summary["result"] == "tested_clean"
+    assert summary["candidate_ready"] is False
 
 
 def test_request_diff_credential_pair_both_sides_rejected_is_clean(monkeypatch, tmp_path):

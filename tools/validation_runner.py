@@ -1940,6 +1940,18 @@ def _request_pair_materiality(run: dict[str, Any]) -> bool:
     )
 
 
+def _request_pair_side_succeeded(run: dict[str, Any]) -> bool:
+    """Both sides of one run returned a success-class status (2xx/3xx)."""
+    for side in (run.get("baseline") or {}, run.get("variant") or {}):
+        try:
+            status = int(side.get("status") or 0)
+        except (TypeError, ValueError):
+            return False
+        if not (200 <= status < 400):
+            return False
+    return True
+
+
 CREDENTIAL_BOUNDARY_HEADER_RE = re.compile(
     r"^(authorization|cookie|x-api-key|api-key|x-auth-token|x-session-token|x-csrf-token)$",
     re.I,
@@ -1957,6 +1969,18 @@ def _request_pair_boundary_dimension(spec: dict[str, Any]) -> bool:
     active = str(spec.get("active_dimension") or "").strip()
     if not active:
         return False
+    cookie_match = re.match(r"^cookie:([\w-]+)$", active)
+    if cookie_match:
+        # The pair validator already guarantees the cookie header is the only
+        # request difference, so a changed session/auth cookie value is the
+        # declared credential dimension itself.
+        get_cookie = lambda headers: next(
+            (str(value) for key, value in headers.items() if key.lower() == "cookie"),
+            None,
+        )
+        return get_cookie(dict(spec["baseline_request"].get("headers") or {})) != get_cookie(
+            dict(spec["variant_request"].get("headers") or {})
+        )
     header_match = re.match(r"^header:([\w-]+)$", active)
     if not header_match:
         return False
@@ -1988,6 +2012,7 @@ def _request_pair_spec_view(spec: dict[str, Any]) -> dict[str, Any]:
         "classifier": spec["classifier"],
         "vuln_class": _classifier_vuln_class(spec["classifier"], spec.get("vuln_class", "")),
         "expected_signal": spec.get("expected_signal", ""),
+        "expect_auth": bool(spec.get("expect_auth") is True),
     }
 
 
@@ -2132,11 +2157,18 @@ def run_request_diff(
     ])
     probe_shape = all(bool(run.get("sqli_evidence", {}).get("features")) for run in runs) if classifier == "sqli" else None
     strong = all(bool(run.get("sqli_evidence", {}).get("strong")) for run in runs) if classifier == "sqli" else False
-    # Promotion splits into two independent routes:
+    # Promotion splits into three independent routes:
     # - shape confirmation: the SQLi probe-shape detector confirms the diff form
     #   (kept as a fast lane; other shape detectors may register later);
     # - boundary dimension: the pair's declared active dimension is a
-    #   credential/auth boundary AND the two requests actually differ in it.
+    #   credential/auth boundary AND the two requests actually differ in it;
+    # - missing-auth: the declared active dimension is a credential boundary
+    #   AND no run shows a material diff AND every run has both sides succeeding
+    #   (2xx/3xx) AND the AI declared ``expect_auth``. The runner asserts only
+    #   the fact that the endpoint does not differentiate requesters on the
+    #   declared credential dimension; whether that is a real violation stays
+    #   with the 7-Question/4-gate AI review (the endpoint may be intentionally
+    #   public).
     # The runner only proves the diff is real, stable, and sits on the declared
     # boundary; whether it is an actual authorization violation stays with the
     # 7-Question/4-gate AI review. A material diff never falls to tested_clean.
@@ -2146,10 +2178,20 @@ def run_request_diff(
     # A credential-boundary pair with NO response difference still carries an
     # authz claim to review: when the unauthenticated side also succeeded, the
     # identical responses are themselves the evidence of a missing identity
-    # check. Falling that to tested_clean would invert the meaning. Direction
-    # is AI-declared (baseline may be either the anonymous or the credentialed
-    # side), so "held" is judged per-run as both sides being rejected; if both
-    # sides succeeded the pair stays a reviewable candidate.
+    # check. When the AI additionally declared expect_auth, the missing-auth
+    # fact is mechanically checkable (no material diff, both sides succeeded,
+    # credential dimension is the only declared difference) and the pair
+    # promotes to tested_finding; without that assertion the pair stays a
+    # reviewable candidate. Direction is AI-declared (baseline may be either
+    # the anonymous or the credentialed side), so "held" is judged per-run as
+    # both sides being rejected.
+    missing_auth = bool(
+        boundary_dimension
+        and not any(material)
+        and all(_request_pair_side_succeeded(run) for run in runs)
+        and spec.get("expect_auth") is True
+    )
+    candidate_ready = candidate_ready or missing_auth
     boundary_held = bool(
         boundary_dimension
         and not any(material)
@@ -2171,11 +2213,20 @@ def run_request_diff(
     diff_path = bundle / "diff.json"
     _write_json(diff_path, {"runs": runs, "request_pair": _request_pair_spec_view(spec)})
     diff_summaries = [str(run.get("diff", {}).get("summary") or "") for run in runs]
+    if missing_auth:
+        finding_summary = (
+            f"missing-auth on {spec['active_dimension']}: both sides succeed with "
+            f"identical responses across a credential boundary; expect_auth declared"
+        )
+        finding_raw = "MISSING-AUTH-VERIFIED credential boundary does not differentiate requesters"
+    else:
+        finding_summary = f"baseline vs variant request diff on {spec['active_dimension']}; material={all(material)}"
+        finding_raw = "REQUEST-DIFF-VERIFIED stable controlled replay" if candidate_ready else "controlled request diff requires review"
     finding = {
         "type": str(vuln_class or classifier or "request_diff").lower().replace("-", "_"),
         "url": public_url_shape(baseline["url"]),
-        "summary": f"baseline vs variant request diff on {spec['active_dimension']}; material={all(material)}",
-        "raw": "REQUEST-DIFF-VERIFIED stable controlled replay" if candidate_ready else "controlled request diff requires review",
+        "summary": finding_summary,
+        "raw": finding_raw,
         "confidence": "high" if candidate_ready else "medium",
     }
     rubric = compact_evidence_rubric(evaluate_candidate_evidence(finding))
@@ -2266,11 +2317,19 @@ def run_request_diff(
         "evidence_rubric": rubric,
         "ledger_record": ledger,
         "sqli_evidence": {"strong": bool(strong), "reasons": sqli_reasons, "ambiguous": sqli_ambiguous},
-        "ai_next": {
-            "hypothesis": f"{classifier} classifier may explain a stable response difference on {spec['active_dimension']}",
-            "next_action": "Review raw baseline/variant evidence; use /validate or a dedicated timing/OAST sender only when the signal requires it.",
-            "stop_condition": "No stable material difference across repeats, or the difference is attributable to normal application/WAF behavior.",
-        },
+        "ai_next": (
+            {
+                "hypothesis": "endpoint may be missing authentication: both sides succeed identically across the declared credential boundary",
+                "next_action": "Confirm whether this endpoint is intended to be public; if it should require auth, promote through /validate as a missing-auth finding.",
+                "stop_condition": "Endpoint is documented as public, or the boundary is enforced by a layer the paired replay did not exercise.",
+            }
+            if missing_auth
+            else {
+                "hypothesis": f"{classifier} classifier may explain a stable response difference on {spec['active_dimension']}",
+                "next_action": "Review raw baseline/variant evidence; use /validate or a dedicated timing/OAST sender only when the signal requires it.",
+                "stop_condition": "No stable material difference across repeats, or the difference is attributable to normal application/WAF behavior.",
+            }
+        ),
     }
     summary_path = bundle / "summary.json"
     return _finalize_runner_summary(summary, summary_path, repo_root)

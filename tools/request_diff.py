@@ -195,6 +195,16 @@ def validate_request_pair(spec: dict[str, Any]) -> dict[str, Any]:
     classifier = str(spec.get("classifier") or "generic").strip().lower()
     if not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", classifier):
         raise RequestPairError("classifier must be a simple identifier")
+    # AI-declared judgment: the caller asserts this endpoint is expected to
+    # require authentication. The parser carries the boolean unchanged; it
+    # never infers the expectation from the host, path, or response shape.
+    expect_auth_raw = spec.get("expect_auth", False)
+    if isinstance(expect_auth_raw, bool):
+        expect_auth = expect_auth_raw
+    elif expect_auth_raw in (None, ""):
+        expect_auth = False
+    else:
+        raise RequestPairError("expect_auth must be a boolean when present")
     return {
         "schema_version": 1,
         "baseline_request": copy.deepcopy(baseline),
@@ -204,6 +214,7 @@ def validate_request_pair(spec: dict[str, Any]) -> dict[str, Any]:
         "classifier": classifier,
         "vuln_class": str(spec.get("vuln_class") or "").strip(),
         "expected_signal": str(spec.get("expected_signal") or "").strip(),
+        "expect_auth": expect_auth,
         "repeat": repeat,
     }
 
