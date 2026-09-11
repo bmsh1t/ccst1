@@ -214,8 +214,15 @@ def test_checkpoint_without_recon_recommends_refresh_recon(tmp_path):
     )
     assert "CHECKPOINT DECISION" in output
     assert "Default candidate (compat pointer):" in output
-    assert "Apply status: not applied" in output
-    assert checkpoint["context_pack"]["skill_route"]
+    # B2 (ai-capability-roadmap batch 5): apply-on is the CLI default, so the
+    # build-level status explains the default instead of claiming "not applied".
+    assert "Apply status: proposal only; CLI applies target memory by default" in output
+    # S1 native loading (ai-capability-roadmap batch 3): the pack no longer
+    # recommends a skill; skill_route is an empty compatibility shell carried
+    # through the checkpoint and witness. Skills are selected by the AI via
+    # the native Skill tool.
+    assert checkpoint["context_pack"]["skill_route"] == {}
+    assert checkpoint["context_pack"]["selected_skill"] == ""
     assert all(
         "skill_route" not in (item.get("metadata") or {})
         and "route_required" not in (item.get("metadata") or {})
@@ -5432,3 +5439,246 @@ def test_action_decisions_are_default_projection_ai_overridable_without_hard_gat
         assert field in item
     # AI 覆盖通道: 队列项不带任何强制字段（redline_required 是显式投影不是推断）
     assert item["redline_required"] is False
+
+
+def test_apply_target_memory_flag_defaults_on_with_no_escape():
+    """B2 (ai-capability-roadmap batch 5): --apply-target-memory 默认开启。
+
+    `--no-apply-target-memory` 是显式逃生口；旧 `--apply-target-memory`
+    BooleanOptionalAction 形态仍被接受且不改语义（默认即开启）。
+    """
+    parser = checkpoint_module.build_parser()
+    default_args = parser.parse_args(["--target", "target.com"])
+    assert default_args.apply_target_memory is True
+
+    off_args = parser.parse_args(["--target", "target.com", "--no-apply-target-memory"])
+    assert off_args.apply_target_memory is False
+
+    legacy_args = parser.parse_args(["--target", "target.com", "--apply-target-memory"])
+    assert legacy_args.apply_target_memory is True
+
+
+def test_checkpoint_cli_applies_target_memory_by_default(tmp_path, capsys, monkeypatch):
+    """B2: 不传 flag 时 checkpoint CLI 默认写入目标记忆层。"""
+    state = {"target": "target.com", "resolved_target": "target.com"}
+    monkeypatch.setattr(
+        checkpoint_module, "build_autopilot_state", lambda *_a, **_k: state
+    )
+    monkeypatch.setattr(
+        checkpoint_module,
+        "load_closure_projection",
+        lambda *_a, **_k: {"verdict": "handoff", "reasons": ["next_action_pending"]},
+    )
+
+    exit_code = checkpoint_module.main([
+        "--repo-root", str(tmp_path),
+        "--target", "target.com",
+        "--no-refresh-coverage",
+        "--json",
+    ])
+
+    checkpoint = json.loads(capsys.readouterr().out)
+    memory_path = tmp_path / "memory" / "goals" / "targets" / "target.com.json"
+    assert exit_code == 0
+    assert checkpoint["apply_status"] == "applied target memory"
+    assert memory_path.is_file()
+
+
+def test_checkpoint_cli_no_apply_target_memory_skips_write(tmp_path, capsys, monkeypatch):
+    """B2: 显式 `--no-apply-target-memory` 时不写目标记忆并回显可恢复指引。"""
+    state = {"target": "target.com", "resolved_target": "target.com"}
+    monkeypatch.setattr(
+        checkpoint_module, "build_autopilot_state", lambda *_a, **_k: state
+    )
+    monkeypatch.setattr(
+        checkpoint_module,
+        "load_closure_projection",
+        lambda *_a, **_k: {"verdict": "handoff", "reasons": ["next_action_pending"]},
+    )
+
+    exit_code = checkpoint_module.main([
+        "--repo-root", str(tmp_path),
+        "--target", "target.com",
+        "--no-refresh-coverage",
+        "--no-apply-target-memory",
+        "--json",
+    ])
+
+    checkpoint = json.loads(capsys.readouterr().out)
+    memory_path = tmp_path / "memory" / "goals" / "targets" / "target.com.json"
+    assert exit_code == 0
+    assert checkpoint["apply_status"] == (
+        "not applied; rerun without --no-apply-target-memory to write target memory"
+    )
+    assert "apply_result" not in checkpoint
+    assert not memory_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# B3: browser lane finish auto-imports its focused MCP capture manifest.
+# ---------------------------------------------------------------------------
+
+
+def _write_browser_manifest(repo_root: Path, evidence_ref: str, url: str = "https://target.com/app") -> Path:
+    path = repo_root / evidence_ref
+    path.parent.mkdir(parents=True, exist_ok=True)
+    network = path.parent / "network.json"
+    network.write_text(json.dumps([{"url": url, "method": "GET", "resourceType": "xhr"}]), encoding="utf-8")
+    path.write_text(
+        json.dumps({"target": "target.com", "captures": [{"url": url, "network": str(network)}]}),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_browser_lane_completion_auto_imports_focused_manifest(tmp_path):
+    """B3: browser lane 完成且 evidence_ref 是 manifest 时自动落 browser evidence。"""
+    target = "target.com"
+    lane = "browser:target.com-session-1"
+    manifest_ref = "evidence/target.com/browser/pending-import-manifest.json"
+    begin_round(tmp_path, target, max_lanes=1)
+    record_round_lane(tmp_path, target, lane=lane, max_lanes=1)
+    _write_browser_manifest(tmp_path, manifest_ref)
+
+    result = record_round_lane_result(
+        tmp_path,
+        target,
+        lane=lane,
+        status="completed",
+        decision="browser session captured",
+        evidence_ref=manifest_ref,
+        next_action="review imported surface delta",
+    )
+
+    lane_record = result["lane"]
+    assert result["status"] == "recorded"
+    assert lane_record["browser_import"]["status"] == "ok"
+    assert lane_record["browser_import"]["counts"]["successful"] == 1
+    # The importer wrote the durable browser surface + capture summary.
+    assert (tmp_path / "recon" / "target.com" / "browser" / "xhr_endpoints.txt").is_file()
+    assert (tmp_path / "recon" / "target.com" / "browser" / "context_discovery.json").is_file()
+    assert (tmp_path / "recon" / "target.com" / "browser" / "context_discovery").is_dir()
+
+
+def test_browser_lane_manifest_import_failure_does_not_block_heartbeat(tmp_path, monkeypatch):
+    """B3: 导入失败只记 warning（browser_import.status=failed），不 raise。"""
+    from tools import browser_mcp_import
+
+    def boom(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(browser_mcp_import, "import_focused_mcp_manifest", boom)
+
+    target = "target.com"
+    lane = "browser:target.com-session-2"
+    manifest_ref = "evidence/target.com/browser/pending-import-manifest.json"
+    begin_round(tmp_path, target, max_lanes=1)
+    record_round_lane(tmp_path, target, lane=lane, max_lanes=1)
+    _write_browser_manifest(tmp_path, manifest_ref)
+
+    result = record_round_lane_result(
+        tmp_path,
+        target,
+        lane=lane,
+        status="completed",
+        decision="browser session captured",
+        evidence_ref=manifest_ref,
+        next_action="retry import next invocation",
+    )
+
+    lane_record = result["lane"]
+    assert result["status"] == "recorded"
+    assert lane_record["status"] == "completed"
+    assert lane_record["browser_import"]["status"] == "failed"
+    assert "OSError" in lane_record["browser_import"]["reason"]
+
+
+def test_browser_lane_replay_does_not_reimport_manifest(tmp_path):
+    """B3: `already_recorded` 幂等重放不重复导入（不新建 capture 目录）。"""
+    target = "target.com"
+    lane = "browser:target.com-session-3"
+    manifest_ref = "evidence/target.com/browser/pending-import-manifest.json"
+    begin_round(tmp_path, target, max_lanes=1)
+    record_round_lane(tmp_path, target, lane=lane, max_lanes=1)
+    _write_browser_manifest(tmp_path, manifest_ref)
+
+    first = record_round_lane_result(
+        tmp_path, target, lane=lane, status="completed",
+        decision="browser session captured",
+        evidence_ref=manifest_ref, next_action="review",
+    )
+    replay = record_round_lane_result(
+        tmp_path, target, lane=lane, status="completed",
+        decision="browser session captured",
+        evidence_ref=manifest_ref, next_action="review",
+    )
+    captures = list((tmp_path / "evidence" / "target.com" / "browser").glob("*/summary.json"))
+
+    assert first["status"] == "recorded"
+    assert replay["status"] == "already_recorded"
+    # Exactly one capture directory was created by the fresh terminal transition.
+    assert len(captures) == 1
+
+
+def test_non_browser_lane_and_non_manifest_evidence_do_not_trigger_import(tmp_path):
+    """B3: 非 browser lane 或非 manifest evidence 不触发导入（最小侵入面）。"""
+    target = "target.com"
+    begin_round(tmp_path, target, max_lanes=2)
+    record_round_lane(tmp_path, target, lane="sqli:/api/search", max_lanes=2)
+    record_round_lane(tmp_path, target, lane="browser:target.com-session-4", max_lanes=2)
+    plain_ref = "findings/target.com/poc/sql.json"
+    _write_round_evidence(tmp_path, plain_ref)
+
+    # Non-browser lane: completed evidence is a plain artifact, not a manifest.
+    sqli = record_round_lane_result(
+        tmp_path, target, lane="sqli:/api/search", status="completed",
+        decision="tested clean", evidence_ref=plain_ref, next_action="none",
+    )
+    assert "browser_import" not in sqli["lane"]
+
+    # Browser lane with non-manifest evidence: no captures list -> no import.
+    browser = record_round_lane_result(
+        tmp_path, target, lane="browser:target.com-session-4", status="completed",
+        decision="browser evidence reviewed", evidence_ref=plain_ref, next_action="none",
+    )
+    assert "browser_import" not in browser["lane"]
+    assert not (tmp_path / "recon" / "target.com" / "browser").exists()
+
+
+def test_importer_output_reused_as_lane_evidence_does_not_reimport(tmp_path):
+    """B3: importer 自身产物（context_discovery.json）带 captures 列表，但不能作为
+    manifest 触发再导入——否则重复 capture 目录和多余 context snapshot 会被创建。
+    只有 evidence/<target_key>/browser/ 下的 pending-import manifest 形态 opt-in。
+    """
+    target = "target.com"
+    begin_round(tmp_path, target, max_lanes=1)
+    record_round_lane(tmp_path, target, lane="browser:target.com-session-5", max_lanes=1)
+    importer_output_ref = "recon/target.com/browser/context_discovery.json"
+    importer_output = tmp_path / importer_output_ref
+    importer_output.parent.mkdir(parents=True, exist_ok=True)
+    importer_output.write_text(
+        json.dumps({
+            "target": target,
+            "captures": [
+                {
+                    "url": "https://target.com/app",
+                    "status": "ok",
+                    "new_surface": {},
+                    "actionable": False,
+                }
+            ],
+        }),
+        encoding="utf-8",
+    )
+
+    result = record_round_lane_result(
+        tmp_path, target, lane="browser:target.com-session-5", status="completed",
+        decision="reviewed importer context delta",
+        evidence_ref=importer_output_ref, next_action="none",
+    )
+
+    assert result["status"] == "recorded"
+    assert "browser_import" not in result["lane"]
+    # No capture directory, no extra context snapshot was created.
+    assert not (tmp_path / "evidence" / "target.com" / "browser").exists()
+    assert not (tmp_path / "recon" / "target.com" / "browser" / "context_discovery").exists()

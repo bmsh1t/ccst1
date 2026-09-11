@@ -2,9 +2,12 @@
 """自动生成 Claude CLI 目标 checkpoint 和目标记忆写回建议。
 
 默认输出建议，并写入可派生 coverage、小型 runtime-v2 checkpoint witness，且通过
-`action_queue` owner 幂等同步可执行的 next-action queue。只有传入
-`--apply-target-memory` 时，才会把 lead / next / dead-end / handoff 追加写入目标
-记忆层。知识库、Skills、Rules 永远只给建议，不在这里自动修改。
+`action_queue` owner 幂等同步可执行的 next-action queue。默认会把 lead / next /
+dead-end / handoff 追加写入目标记忆层；传 `--no-apply-target-memory` 显式关闭。
+`browser:` 前缀 round lane 完成时，若其 evidence_ref 指向 focused MCP capture
+manifest（`{"captures": [...]}`），会自动调用 `browser_mcp_import` 的导入函数；
+导入失败只作为 warning 记入 lane 记录，不阻断 heartbeat。知识库、Skills、Rules
+永远只给建议，不在这里自动修改。
 """
 
 from __future__ import annotations
@@ -363,6 +366,65 @@ def record_round_lane(
         }
 
 
+def _browser_lane_import_result(
+    repo_root: Path | str,
+    target: str,
+    lane_id: str,
+    evidence_ref: str,
+) -> dict | None:
+    """Auto-import a focused MCP browser manifest recorded as browser lane evidence.
+
+    Returns ``None`` when the lane/evidence shape does not opt in (lane id not
+    browser-prefixed, or evidence not a ``{"captures": [...]}`` manifest). The
+    import itself is delegated to the ``browser_mcp_import`` owner function
+    (no subprocess); its own duplicate skip keeps repeat imports bounded.
+    Import failure is returned as a ``failed`` status with a reason - it must
+    never raise, because a browser evidence import failure must not make the
+    lane heartbeat fail.
+    """
+    if not lane_id.lower().startswith("browser"):
+        return None
+    repo = Path(repo_root)
+    manifest_path = repo / evidence_ref
+    # Only the documented pending-import manifest shape opts in. The importer's
+    # own output (recon/<target>/browser/context_discovery.json) also carries a
+    # "captures" list; re-feeding it as lane evidence must not re-import (it
+    # would create duplicate capture directories and extra context snapshots).
+    normalized_ref = str(evidence_ref or "").strip().replace("\\", "/").lstrip("./")
+    if not normalized_ref.startswith(
+        f"evidence/{target_storage_key(target)}/browser/"
+    ):
+        return None
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or not isinstance(payload.get("captures"), list):
+        return None
+    try:
+        from tools.browser_mcp_import import import_focused_mcp_manifest
+    except ImportError:  # pragma: no cover - direct tools/ execution
+        from browser_mcp_import import import_focused_mcp_manifest  # type: ignore
+    try:
+        result = import_focused_mcp_manifest(
+            target=target,
+            manifest_path=manifest_path,
+            evidence_root=repo / "evidence",
+            recon_root=repo / "recon",
+            repo_root=repo,
+        )
+    except Exception as exc:  # defensive: the heartbeat above is already durable
+        return {
+            "status": "failed",
+            "reason": " ".join(f"{type(exc).__name__}: {exc}".split())[:400],
+        }
+    return {
+        "status": str(result.get("status") or "unknown"),
+        "artifact": str(result.get("artifact") or ""),
+        "counts": dict(result.get("counts") or {}),
+    }
+
+
 def record_round_lane_result(
     repo_root: Path | str,
     target: str,
@@ -427,6 +489,20 @@ def record_round_lane_result(
             lane_record["updated_at"] = timestamp
             progress["updated_at"] = timestamp
             result_status = "recorded"
+            # B3: browser lane finish auto-imports its focused MCP manifest.
+            # Only fires on the fresh terminal transition: an `already_recorded`
+            # replay must not re-create capture directories. Import failure is
+            # recorded as a warning on the lane, never raised - the heartbeat
+            # itself stays durable even when evidence import fails.
+            if terminal_status == "completed":
+                import_result = _browser_lane_import_result(
+                    repo_root,
+                    target,
+                    lane_id,
+                    terminal_evidence,
+                )
+                if import_result is not None:
+                    lane_record["browser_import"] = import_result
         _write_json_atomic(path, payload)
         return {
             "status": result_status,
@@ -4422,7 +4498,7 @@ def build_checkpoint(
         "recommended_executable_action": recommended_executable_action,
         "commands": _write_back_commands(resolved_target, lead, next_items, dead_ends, handoff),
         "retrospect": f"/retrospect {resolved_target}",
-        "apply_status": "not applied; rerun with --apply-target-memory to write target memory",
+        "apply_status": "proposal only; CLI applies target memory by default (--no-apply-target-memory to skip)",
     }
     witness = write_checkpoint_witness(repo, resolved_target, checkpoint)
     witness_path = Path(witness["path"])
@@ -4693,7 +4769,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--memory-dir", default="")
     parser.add_argument("--note", default="")
     parser.add_argument("--no-refresh-coverage", action="store_true")
-    parser.add_argument("--apply-target-memory", action="store_true")
+    parser.add_argument(
+        "--apply-target-memory",
+        dest="apply_target_memory",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Write target memory from checkpoint suggestions (default: on; use --no-apply-target-memory to skip)",
+    )
     round_operation = parser.add_mutually_exclusive_group()
     round_operation.add_argument("--round-begin", action="store_true")
     round_operation.add_argument("--record-round-lane", action="store_true")
@@ -4821,6 +4903,10 @@ def main(argv: list[str] | None = None) -> int:
         result = apply_target_memory(repo, checkpoint["target"], checkpoint)
         checkpoint["apply_status"] = "applied target memory"
         checkpoint["apply_result"] = result
+    else:
+        checkpoint["apply_status"] = (
+            "not applied; rerun without --no-apply-target-memory to write target memory"
+        )
 
     if args.json:
         print(json.dumps(checkpoint, ensure_ascii=False, indent=2))

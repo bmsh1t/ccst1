@@ -81,8 +81,9 @@ summary:
 python3 tools/checkpoint.py --target target.com
 ```
 
-Only use `--apply-target-memory` when the operator wants the target memory write
-to happen automatically.
+The checkpoint writes target memory automatically; pass
+`--no-apply-target-memory` only when the operator explicitly wants the memory
+write skipped.
 
 Use target memory this way:
 

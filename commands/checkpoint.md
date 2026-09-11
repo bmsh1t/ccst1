@@ -1,5 +1,5 @@
 ---
-description: 为当前目标生成 autopilot checkpoint、覆盖摘要和目标记忆写回建议。用法：/checkpoint <target> [--apply-target-memory]
+description: 为当前目标生成 autopilot checkpoint、覆盖摘要和目标记忆写回。用法：/checkpoint <target> [--no-apply-target-memory]
 ---
 
 # /checkpoint
@@ -7,19 +7,20 @@ description: 为当前目标生成 autopilot checkpoint、覆盖摘要和目标�
 生成目标 checkpoint。
 
 这个命令用于 `/autopilot`、`/hunt`、长会话结束、切换目标、或准备汇报前。
-它不是扫描器，也不是报告器；它把当前目标的状态压缩成可续接的目标记忆建议。
+它不是扫描器，也不是报告器；它把当前目标的状态压缩成可续接的目标记忆。
 
-默认不写 target memory，但会先让 `finding_index` owner 受限地归档有效 root finding
-claim，再刷新派生 coverage、通过 `action_queue` owner 幂等同步可执行 next-action，并原子更新
-`state/<target_key>/checkpoint_latest.json` runtime-v2 witness。只有用户明确要求时，才使用
-`--apply-target-memory` 写入目标记忆层。
+默认把 lead / next / dead-end / handoff 写回目标记忆层，并先让 `finding_index`
+owner 受限地归档有效 root finding claim，再刷新派生 coverage、通过
+`action_queue` owner 幂等同步可执行 next-action，并原子更新
+`state/<target_key>/checkpoint_latest.json` runtime-v2 witness。不希望写目标记忆时
+显式传 `--no-apply-target-memory`。
 
 ## 用法
 
 ```bash
 python3 tools/checkpoint.py --target target.com
 python3 tools/checkpoint.py --target target.com --note "finished API authz pass"
-python3 tools/checkpoint.py --target target.com --apply-target-memory
+python3 tools/checkpoint.py --target target.com --no-apply-target-memory
 python3 tools/checkpoint.py --target target.com --json
 ```
 
@@ -92,14 +93,11 @@ state/<target_key>/action_queue.json（仅同步 checkpoint 已生成的可执�
 evidence/<target_key>/coverage_matrix.json（使用 --no-refresh-coverage 时不写）
 findings/<target_key>/findings.json（仅通过 finding_index 归档有效 root finding claim）
 findings/<target_key>/mutation-events.jsonl（仅记录上述 owner mutation provenance）
-```
-
-传入 `--apply-target-memory` 后额外允许：
-
-```text
 memory/goals/targets/<target>.json
 memory/goals/sessions/<timestamp>-<target>.md
 ```
+
+目标记忆写回随默认执行；传 `--no-apply-target-memory` 时不写上述两个 memory 路径。
 
 禁止自动修改：
 
