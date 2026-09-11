@@ -3661,7 +3661,6 @@ def test_coverage_gap_item_claims_with_claim_time_activation(tmp_path):
         "family": "Authz",
         "technique": "object-boundary replay on redirect parameter",
         "active_dimension": "query:url",
-        "dimension_override_reason": "the redirect url parameter is the boundary under test; route dimensions cover reasoning steps, not the replay variable",
         "expected_learning": "whether /redirect validates the target before redirecting",
         "kill_condition": "endpoint rejects the crafted parameter with a stable response",
         "decision_reason": "coverage-gap item published by the matrix rebuild",

@@ -193,11 +193,95 @@ def test_request_pair_needle_fact_validation(tmp_path):
 
     with pytest.raises(RequestPairError, match="unknown fact name"):
         validate_request_pair(dict(base, expected=['variant_body_has::"UserId":24']))
-    with pytest.raises(RequestPairError, match="needle"):
-        validate_request_pair(dict(base, expected=['variant_body_contains::abc']))
+    # Short needles are valid: the AI judges what string is discriminative
+    # ('49' for a 7*7 render, '7*7' for an unevaluated template).
+    assert validate_request_pair(dict(base, expected=['variant_body_contains::49']))["expected"] == [
+        'variant_body_contains::49'
+    ]
+    assert validate_request_pair(dict(base, expected=['variant_body_contains::7*7']))["expected"] == [
+        'variant_body_contains::7*7'
+    ]
+    with pytest.raises(RequestPairError, match="unknown fact name"):
+        validate_request_pair(dict(base, expected=['variant_body_contains::']))
     with pytest.raises(RequestPairError, match="needle"):
         validate_request_pair(dict(base, expected=[f'variant_body_contains::{"x" * 201}']))
     assert request_pair_digest(valid) != request_pair_digest(dict(base, expected=['variant_body_contains::"UserId":25']))
+
+
+def test_request_pair_declaration_intent_parse_and_digest(tmp_path):
+    base = {
+        "schema_version": 1,
+        "baseline_request": {"method": "GET", "url": "https://target.test/users/1"},
+        "variant_request": {"method": "GET", "url": "https://target.test/users/2"},
+        "active_dimension": "path:/users/1",
+        "classifier": "generic",
+        "expected": ["distinct_bodies"],
+    }
+    # Absent defaults to hazard (today's behavior for every existing spec).
+    assert validate_request_pair(base)["declaration_intent"] == "hazard"
+    assert validate_request_pair(dict(base, declaration_intent="clean"))["declaration_intent"] == "clean"
+    assert validate_request_pair(dict(base, declaration_intent="HAZARD"))["declaration_intent"] == "hazard"
+    with pytest.raises(RequestPairError, match="declaration_intent"):
+        validate_request_pair(dict(base, declaration_intent="maybe"))
+    # Intent rides the digest: a clean declaration is a different operation.
+    assert request_pair_digest(dict(base, declaration_intent="clean")) != request_pair_digest(base)
+
+
+def test_request_diff_clean_intent_confirmed_lands_tested_clean(monkeypatch, tmp_path):
+    """O-1: declaring the CLEAN direction and confirming it yields a
+    mechanically-backed tested_clean (expected_check archived), not a
+    finding-shaped artifact. The runner routes on the declared intent; it
+    never infers direction from the fact names."""
+
+    def fake_request_once(**kwargs):
+        # Redirect-allowlist shape: both sides rejected identically apart from
+        # echoing the input; the boundary holds.
+        return _fake_response(kwargs["url"], status=406, body="refused")
+
+    monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
+    spec = {
+        "schema_version": 1,
+        "baseline_request": {"method": "GET", "url": "https://target.test/redirect?to=ok"},
+        "variant_request": {"method": "GET", "url": "https://target.test/redirect?to=bad"},
+        "active_dimension": "query:to",
+        "evidence_shape": "request_diff",
+        "classifier": "open_redirect",
+        "vuln_class": "OpenRedirect",
+        "expected": ["both_sides_rejected"],
+        "declaration_intent": "clean",
+        "expected_note": "the allowlist should refuse both a valid-but-foreign and an offsite target",
+        "repeat": 2,
+    }
+    summary = validation_runner.run_request_diff(
+        repo_root=tmp_path,
+        target="https://target.test",
+        request_spec=spec,
+    )
+    assert summary["result"] == "tested_clean"
+    assert summary["candidate_ready"] is True
+    assert summary["expected_check"]["unmet"] == []
+    assert summary["declaration_intent"] == "clean"
+
+    # Same pair without intent: hazard default promotes as today (regression).
+    spec.pop("declaration_intent")
+    hazard = validation_runner.run_request_diff(
+        repo_root=tmp_path,
+        target="https://target.test",
+        request_spec=spec,
+    )
+    assert hazard["result"] == "tested_finding"
+
+    # Clean declaration NOT holding: kill-condition failure is signal —
+    # candidate, reaching review.
+    spec["declaration_intent"] = "clean"
+    spec["expected"] = ["distinct_bodies"]
+    unmet = validation_runner.run_request_diff(
+        repo_root=tmp_path,
+        target="https://target.test",
+        request_spec=spec,
+    )
+    assert unmet["result"] == "candidate"
+    assert unmet["expected_check"]["unmet"] == ["distinct_bodies"]
 
 
 def test_request_pair_expect_auth_parse_and_digest():

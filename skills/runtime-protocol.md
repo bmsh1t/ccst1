@@ -49,8 +49,9 @@ Action Queue claim 时显式选择 Skill route；只有替换 action owner 已�
 
 `hypothesis_seeds`、`alternative_angles` 和 `knowledge_card_recall` 只供判断与诊断。
 它们不会凭建议生成 Queue 动作，也不会把首个 seed 记成已选择假设。Action Queue 的
-`selected_knowledge_refs` 可以为空；非空引用必须来自 action 的 `knowledge_refs`，改选
-其它引用时记录 `knowledge_override_reason`。
+`selected_knowledge_refs` 是 AI 的知识判断：可以引用 focus 匹配的任意卡，改选不属于
+默认 refs 的卡不需要理由；唯一的机械校验是引用的卡文件必须真实存在（防笔误与伪造），
+不校验与 item 默认 refs 的子集关系。
 
 ## 决策闭环
 

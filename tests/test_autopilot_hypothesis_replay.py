@@ -180,18 +180,33 @@ def test_versioned_claim_cannot_disable_required_activation(tmp_path):
     assert load_queue(tmp_path, TARGET)["actions"][0]["status"] == "queued"
 
 
-def test_versioned_claim_reports_missing_stored_cap_without_writing(tmp_path):
+def test_versioned_claim_uses_default_cap_when_stored_cap_missing(tmp_path):
+    """K-6: an item without a stored cap (e.g. AI-discovered, added outside the
+    checkpoint path) claims with the default bound. The security property is
+    the bound itself, not the bound's origin; before this fix such items were
+    permanently unclaimable."""
     baseline = f"evidence/{TARGET}/correlation/baseline.json"
     context = _activation_context(baseline)
     context.pop("max_hypothesis_actions_cap")
-    action_id, queue_path = _queued_depth_action(tmp_path, context=context)
-    before = queue_path.read_bytes()
+    action_id, _queue_path = _queued_depth_action(tmp_path, context=context)
 
-    with pytest.raises(ValueError, match="AQ-0001 lacks max_hypothesis_actions_cap"):
-        claim_next_action(tmp_path, TARGET, action_id=action_id, metadata=_activation())
+    claimed = claim_next_action(tmp_path, TARGET, action_id=action_id, metadata=_activation())
 
-    assert queue_path.read_bytes() == before
-    assert load_queue(tmp_path, TARGET)["actions"][0]["status"] == "queued"
+    assert claimed["status"] == "running"
+    # The claim's requested budget (3) was validated against the default (4).
+    assert claimed["metadata"]["max_hypothesis_actions"] == 3
+
+    # A request above the default bound is still rejected.
+    context2 = _activation_context(baseline)
+    context2.pop("max_hypothesis_actions_cap")
+    action_id2, _q2 = _queued_depth_action(tmp_path, context=context2)
+    with pytest.raises(ValueError, match="exceeds the stored hypothesis action cap"):
+        claim_next_action(
+            tmp_path,
+            TARGET,
+            action_id=action_id2,
+            metadata={**_activation(), "max_hypothesis_actions": 99},
+        )
 
 
 def test_versioned_claim_reports_all_missing_activation_fields_without_writing(tmp_path):
@@ -306,6 +321,35 @@ def test_special_candidate_is_not_promoted_to_runner(tmp_path):
     assert selected["status"] == "candidate"
 
 
+def test_selected_knowledge_refs_missing_card_is_rejected_when_cards_root_exists(tmp_path):
+    """Anti-forgery for card selection: when a real knowledge/cards tree is
+    present, a ref naming a non-existent card is a typo or forgery and the
+    claim is rejected naming the card. Judgment about WHICH card is never
+    questioned."""
+    baseline = f"evidence/{TARGET}/correlation/baseline.json"
+    context = _activation_context(baseline)
+    action_id, _queue_path = _queued_depth_action(tmp_path, context=context)
+    cards_root = tmp_path / "knowledge" / "cards"
+    cards_root.mkdir(parents=True)
+    (cards_root / "auth-access.md").write_text("card\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="missing card"):
+        claim_next_action(
+            tmp_path,
+            TARGET,
+            action_id=action_id,
+            metadata={**_activation(), "selected_knowledge_refs": ["knowledge/cards/typo-card.md"]},
+        )
+
+    claimed = claim_next_action(
+        tmp_path,
+        TARGET,
+        action_id=action_id,
+        metadata={**_activation(), "selected_knowledge_refs": ["knowledge/cards/auth-access.md"]},
+    )
+    assert claimed["metadata"]["selected_knowledge_refs"] == ["knowledge/cards/auth-access.md"]
+
+
 def test_claimed_first_skill_route_does_not_require_override_reason(tmp_path):
     baseline = f"evidence/{TARGET}/correlation/baseline.json"
     context = _activation_context(baseline)
@@ -319,29 +363,30 @@ def test_claimed_first_skill_route_does_not_require_override_reason(tmp_path):
     assert claimed["metadata"]["skill_route"] == ROUTE
 
 
-def test_active_dimension_outside_route_requires_explicit_override_reason(tmp_path):
+def test_active_dimension_outside_route_needs_no_override_reason(tmp_path):
+    """K-4: route dimensions name reasoning steps; active_dimension names the
+    replay variable. Membership between the two is a category error, not a
+    gate — any well-formed single-dimension label claims without a reason."""
     action_id, _queue_path = _queued_depth_action(tmp_path)
-
-    with pytest.raises(ValueError, match="dimension_override_reason"):
-        claim_next_action(
-            tmp_path,
-            TARGET,
-            action_id=action_id,
-            metadata={**_activation(), "active_dimension": "parser"},
-        )
 
     claimed = claim_next_action(
         tmp_path,
         TARGET,
         action_id=action_id,
-        metadata={
-            **_activation(),
-            "active_dimension": "parser",
-            "dimension_override_reason": "the response parser is the evidence-linked boundary",
-        },
+        metadata={**_activation(), "active_dimension": "parser"},
     )
     assert claimed["metadata"]["active_dimension"] == "parser"
-    assert "skill_override_reason" not in claimed["metadata"]
+    assert "dimension_override_reason" not in claimed["metadata"]
+
+    # Form validation stays: a multi-word label is malformed, not judgment.
+    action_id2, _q2 = _queued_depth_action(tmp_path)
+    with pytest.raises(ValueError, match="single-dimension label"):
+        claim_next_action(
+            tmp_path,
+            TARGET,
+            action_id=action_id2,
+            metadata={**_activation(), "active_dimension": "two words here"},
+        )
 
 
 def test_claimed_skill_route_override_requires_reason(tmp_path):
@@ -396,17 +441,17 @@ def test_versioned_claim_rejects_malformed_optional_knowledge_refs(
     assert queue_path.read_bytes() == before
 
 
-def test_versioned_claim_requires_reason_for_unrecommended_knowledge_refs(tmp_path):
-    action_id, queue_path = _queued_depth_action(tmp_path)
+def test_versioned_claim_accepts_focus_card_without_override_reason(tmp_path):
+    """K-2: knowledge-card choice is AI judgment. Selecting a focus-matched
+    card beyond the item's default refs records without justification; a ref
+    naming a missing card file is rejected (anti-forgery, not judgment)."""
+    action_id, _queue_path = _queued_depth_action(tmp_path)
     other_card = "knowledge/cards/auth-access.md"
     activation = {**_activation(), "selected_knowledge_refs": [other_card, other_card]}
-    before = queue_path.read_bytes()
 
-    with pytest.raises(ValueError, match="knowledge_override_reason"):
-        claim_next_action(tmp_path, TARGET, action_id=action_id, metadata=activation)
-
-    assert queue_path.read_bytes() == before
-    activation["knowledge_override_reason"] = "current evidence requires the auth boundary card"
+    # No knowledge_override_reason supplied, none required: the claim records
+    # the deduplicated selection as-is (the tmp_path fixture has no
+    # knowledge/cards tree, so the existence check is skipped there).
     claimed = claim_next_action(
         tmp_path,
         TARGET,

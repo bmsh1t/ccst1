@@ -113,6 +113,11 @@ STRUCTURED_METADATA_LIST_FIELDS = {"tested_dimensions", "pivot_hints"}
 RUNNER_OBSERVATION_FIELDS = {"last_outcome", "tested_dimensions", "runner_operation_id"}
 DEPTH_CONTRACT_VERSION = 1
 RISK_TIERS = {"low", "medium", "high", "critical"}
+# The runaway bound for an executing hypothesis. The security property is
+# "an executing hypothesis has a bound", not "the bound was minted by the
+# checkpoint path": an AI-discovered candidate added outside the checkpoint
+# gets the same default bound at claim time instead of being unclaimable.
+DEFAULT_HYPOTHESIS_ACTIONS_CAP = 4
 ACTIVATION_REQUIRED_FIELDS = (
     "hypothesis_id",
     "family",
@@ -164,8 +169,6 @@ def activation_contract_projection() -> dict[str, Any]:
         "optional_fields": list(ACTIVATION_OPTIONAL_FIELDS),
         "conditional_fields": {
             "skill_override_reason": "skill_route_changes",
-            "dimension_override_reason": "active_dimension_outside_skill_route",
-            "knowledge_override_reason": "selected_knowledge_refs_outside_available",
             "repeat_reason": "execution_identity_repeats_with_new_evidence",
         },
         "risk_tiers": sorted(RISK_TIERS),
@@ -400,6 +403,12 @@ def _prepare_claim_metadata(
         )
     for field in ACTIVATION_REQUIRED_FIELDS:
         merged[field] = _bounded_metadata_text(merged.get(field), field)
+    # Form validation only: the active dimension is one replay variable the
+    # AI names (query:/path:/header:/cookie:/body: or a workflow/session
+    # dimension for non-pair lanes). Membership in the route's reasoning
+    # dimensions is not required — different kinds of value.
+    if " " in merged["active_dimension"]:
+        raise ValueError("Action Queue active_dimension must be a single-dimension label")
     merged["endpoint"] = _bounded_metadata_text(
         merged.get("endpoint") or merged.get("url"), "endpoint"
     )
@@ -408,32 +417,26 @@ def _prepare_claim_metadata(
     route = merged.get("skill_route") if isinstance(merged.get("skill_route"), dict) else {}
     if not route:
         raise ValueError("Action Queue depth contract requires a selected skill_route")
-    required_dimensions = [
-        str(value).strip() for value in route.get("required_dimensions", []) if str(value).strip()
-    ]
-    if merged["active_dimension"] not in required_dimensions and not _compact_text(
-        merged.get("dimension_override_reason"), 500
-    ):
-        raise ValueError(
-            "Action Queue active_dimension outside the selected Skill route requires "
-            "dimension_override_reason"
-        )
+    # Route dimensions are advisory context, not a membership gate: they name
+    # reasoning steps while active_dimension names the replay variable — two
+    # different kinds of value. Only the form is validated (a single
+    # non-empty dimension label); which dimension to vary is AI judgment.
     original_route = existing.get("skill_route") if isinstance(existing.get("skill_route"), dict) else {}
     if original_route and route != original_route and not _compact_text(merged.get("skill_override_reason"), 500):
         raise ValueError("Action Queue Skill override requires skill_override_reason")
 
-    available_refs = {
-        str(value).strip() for value in existing.get("knowledge_refs", []) if str(value).strip()
-    }
+    # Knowledge-card choice is AI judgment (trust frame: knowledge). The only
+    # mechanical check is anti-forgery: a selected ref must name an existing
+    # card file. Superseding the item's default refs needs no justification.
     selected_refs = merged.get("selected_knowledge_refs", [])
     if not isinstance(selected_refs, list) or any(not str(value).strip() for value in selected_refs):
         raise ValueError("Action Queue selected_knowledge_refs must be a list of non-empty references")
     selected_refs = list(dict.fromkeys(str(value).strip() for value in selected_refs))
-    knowledge_override_reason = _compact_text(merged.get("knowledge_override_reason"), 500)
-    if selected_refs and not available_refs and not knowledge_override_reason:
-        raise ValueError("Action Queue depth contract requires activation knowledge_refs")
-    if selected_refs and available_refs and not set(selected_refs).issubset(available_refs) and not knowledge_override_reason:
-        raise ValueError("Action Queue knowledge override requires knowledge_override_reason")
+    cards_root = Path(repo_root) / "knowledge" / "cards"
+    if cards_root.is_dir():
+        for ref in selected_refs:
+            if not (Path(repo_root) / ref).is_file():
+                raise ValueError(f"Action Queue selected_knowledge_refs names a missing card: {ref}")
     merged["selected_knowledge_refs"] = selected_refs
 
     evidence_ref = _target_owned_evidence_ref(repo_root, target, merged.get("evidence_ref"))
@@ -451,17 +454,13 @@ def _prepare_claim_metadata(
     stored_cap = existing.get("max_hypothesis_actions_cap")
     if isinstance(cap, bool) or not isinstance(cap, int) or cap < 1:
         raise ValueError("Action Queue depth contract max_hypothesis_actions must be a positive integer")
-    if stored_cap is None:
-        raise ValueError(
-            f"Action Queue queued item {item.get('id', '')} lacks max_hypothesis_actions_cap; "
-            "refresh or re-ingest the queued action before claim"
-        )
-    if isinstance(stored_cap, bool) or not isinstance(stored_cap, int) or stored_cap < 1:
+    if isinstance(stored_cap, bool) or (stored_cap is not None and (not isinstance(stored_cap, int) or stored_cap < 1)):
         raise ValueError(
             f"Action Queue queued item {item.get('id', '')} has invalid max_hypothesis_actions_cap; "
             "preserve it for Action Queue owner repair before claim"
         )
-    if cap > stored_cap:
+    effective_cap = stored_cap if isinstance(stored_cap, int) else DEFAULT_HYPOTHESIS_ACTIONS_CAP
+    if cap > effective_cap:
         raise ValueError("Action Queue depth contract exceeds the stored hypothesis action cap")
 
     hypothesis_id = merged["hypothesis_id"]
@@ -600,13 +599,6 @@ def _versioned_continuation_action(item: dict, metadata: dict, continuation: dic
         "hypothesis_status": "open",
     })
     route = child_metadata.get("skill_route") if isinstance(child_metadata.get("skill_route"), dict) else {}
-    route_dimensions = {
-        str(value).strip()
-        for value in (route.get("required_dimensions") or [])
-        if str(value).strip()
-    }
-    if dimension not in route_dimensions:
-        child_metadata["dimension_override_reason"] = reason
     last_outcome = metadata.get("last_outcome") if isinstance(metadata.get("last_outcome"), dict) else {}
     child_metadata["baseline_ref"] = str(last_outcome.get("summary_ref") or metadata.get("baseline_ref") or "")
     child_metadata["evidence_ref"] = str(last_outcome.get("evidence_ref") or last_outcome.get("summary_ref") or "")

@@ -16,10 +16,11 @@ class RequestPairError(ValueError):
 
 # Needle facts carry an AI-supplied literal substring after '::' (e.g.
 # variant_body_contains::"UserId":24). The name is validated against the
-# runner's vocabulary; the needle is kept verbatim.
+# runner's vocabulary; the needle is kept verbatim. Short needles are valid:
+# the AI judges what string is discriminative ('49' for a 7*7 SSTI render,
+# '7*7' for an unevaluated template); the runner only checks presence.
 NEEDLE_FACT_NAMES = ("variant_body_contains", "baseline_body_lacks")
 NEEDLE_FACT_RE = re.compile(r"^([a-z_]+)::(.+)$", re.S)
-NEEDLE_MIN_CHARS = 4
 NEEDLE_MAX_CHARS = 200
 
 
@@ -253,10 +254,10 @@ def validate_request_pair(spec: dict[str, Any]) -> dict[str, Any]:
                     f"expected contains an unknown fact name: {fact_name!r}; "
                     f"known facts: {', '.join(sorted(vocabulary))}"
                 )
-            if not (NEEDLE_MIN_CHARS <= len(needle) <= NEEDLE_MAX_CHARS):
+            if not needle or len(needle) > NEEDLE_MAX_CHARS:
                 raise RequestPairError(
-                    f"expected needle for {fact_name} must be "
-                    f"{NEEDLE_MIN_CHARS}-{NEEDLE_MAX_CHARS} characters"
+                    f"expected needle for {fact_name} must be a non-empty "
+                    f"string of at most {NEEDLE_MAX_CHARS} characters"
                 )
             if name not in expected:
                 expected.append(name)
@@ -271,6 +272,18 @@ def validate_request_pair(spec: dict[str, Any]) -> dict[str, Any]:
     expected_note = str(spec.get("expected_note") or "").strip()
     if len(expected_note) > 500:
         raise RequestPairError("expected_note must be at most 500 characters")
+    # AI-declared direction of the expectation: "hazard" (default) means the
+    # declared facts are the evidence of a problem; "clean" means they are the
+    # evidence that a boundary holds. The runner routes on this mechanically
+    # (hazard+confirmed -> tested_finding, clean+confirmed -> tested_clean);
+    # it never infers the direction from fact names.
+    intent_raw = spec.get("declaration_intent", "")
+    if intent_raw in (None, ""):
+        declaration_intent = "hazard"
+    elif isinstance(intent_raw, str) and intent_raw.strip().lower() in {"hazard", "clean"}:
+        declaration_intent = intent_raw.strip().lower()
+    else:
+        raise RequestPairError("declaration_intent must be 'hazard' or 'clean' when present")
     return {
         "schema_version": 1,
         "baseline_request": copy.deepcopy(baseline),
@@ -283,6 +296,7 @@ def validate_request_pair(spec: dict[str, Any]) -> dict[str, Any]:
         "expect_auth": expect_auth,
         "expected": expected,
         "expected_note": expected_note,
+        "declaration_intent": declaration_intent,
         "repeat": repeat,
     }
 

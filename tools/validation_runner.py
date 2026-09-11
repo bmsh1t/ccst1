@@ -2259,8 +2259,19 @@ def run_request_diff(
         and not any(material)
         and wire_facts.get("both_sides_rejected")
     )
+    # Intent routing: the AI declares which direction its expectation points
+    # (hazard evidence vs. boundary-holds evidence); the runner routes on the
+    # declaration mechanically and never infers direction from fact names.
+    #   hazard + confirmed  -> tested_finding (a hazard declaration held)
+    #   clean   + confirmed -> tested_clean   (a clean declaration held, with
+    #                                       expected_check archived as evidence)
+    #   either + unmet      -> candidate      (the declaration was wrong — the
+    #                           most signal-rich outcome, must reach review)
+    declaration_intent = str(spec.get("declaration_intent") or "hazard")
     if candidate_ready:
-        result = "tested_finding"
+        # clean-intent confirmation is a mechanically-backed tested_clean;
+        # hazard-intent confirmation is a finding candidate as before.
+        result = "tested_clean" if declaration_intent == "clean" else "tested_finding"
     elif declared_expected:
         result = "candidate"
     elif any(material):
@@ -2278,10 +2289,16 @@ def run_request_diff(
     # expectation is an actual vulnerability stays with the AI review.
     if declared_expected and candidate_ready:
         confirmed = ", ".join(declared_expected)
-        finding_summary = (
-            f"declared expectation confirmed on {spec['active_dimension']}: {confirmed}"
-        )
-        finding_raw = f"EXPECTED-DECLARED-CONFIRMED {confirmed}"
+        if declaration_intent == "clean":
+            finding_summary = (
+                f"declared clean expectation confirmed on {spec['active_dimension']}: {confirmed}"
+            )
+            finding_raw = f"EXPECTED-DECLARED-CLEAN-CONFIRMED {confirmed}"
+        else:
+            finding_summary = (
+                f"declared expectation confirmed on {spec['active_dimension']}: {confirmed}"
+            )
+            finding_raw = f"EXPECTED-DECLARED-CONFIRMED {confirmed}"
     elif declared_expected:
         unmet = ", ".join(expected_check.get("unmet") or [])
         finding_summary = (
@@ -2301,7 +2318,16 @@ def run_request_diff(
         "confidence": "high" if candidate_ready else "medium",
     }
     rubric = compact_evidence_rubric(evaluate_candidate_evidence(finding))
-    if candidate_ready:
+    if candidate_ready and declaration_intent == "clean":
+        # A confirmed clean declaration is mechanically-backed evidence that
+        # the boundary holds: clean rubric, expected_check stays archived.
+        rubric.update({
+            "status": "tested-clean",
+            "ready": False,
+            "score": 0,
+            "summary": f"declared clean expectation confirmed: {', '.join(declared_expected)}",
+        })
+    elif candidate_ready:
         rubric["status"] = "candidate-ready"
     elif result == "candidate":
         rubric["status"] = "candidate"
@@ -2389,6 +2415,7 @@ def run_request_diff(
         "ledger_record": ledger,
         "sqli_evidence": {"strong": bool(sqli_reasons), "reasons": sqli_reasons, "ambiguous": sqli_ambiguous},
         "expected_check": expected_check,
+        "declaration_intent": declaration_intent,
         "expected_note": spec.get("expected_note", ""),
         "ai_next": (
             {

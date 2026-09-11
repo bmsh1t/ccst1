@@ -300,6 +300,18 @@ def test_context_pack_preserves_catalog_exports_and_independent_route_metadata()
         skill_catalog.skill_route("security-arsenal", "reference-only")
 
 
+def test_must_read_omits_absent_target_state_paths(tmp_path):
+    """K-1: after a reset/fresh start, goal-memory files legitimately do not
+    exist. must_read must not point at them — a contract listing missing
+    files gives the reader no way to tell a defect from a fresh start. Repo
+    contract documents stay unconditional."""
+    pack = build_context_pack(tmp_path, target="target.com")
+
+    assert "memory/goals/active.json" not in pack["must_read"]
+    assert "memory/goals/targets/target.com.json" not in pack["must_read"]
+    assert "skills/runtime-protocol.md" in pack["must_read"]
+
+
 def test_recommended_skill_and_cards_stay_advisory_and_outside_must_read(tmp_path):
     pack = build_context_pack(tmp_path, target="target.com", focus="api-idor")
     catalog_paths = {item["path"] for item in SKILL_CATALOG.values()}

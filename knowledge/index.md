@@ -92,6 +92,7 @@ frontmatter 属于 `warning`，允许渐进迁移。需要把迁移债务也纳�
 | `knowledge/cards/xss-client-injection.md` | Reflected/Stored/DOM XSS 的输入面、输出上下文和最小浏览器执行证据 | `web2-vuln-classes`, `triage-validation` |
 | `knowledge/cards/browser-client-boundaries.md` | CORS、CSRF、Clickjacking、DOM/postMessage 的浏览器边界验证 | `web2-vuln-classes`, `triage-validation` |
 | `knowledge/cards/proxy-cache-boundaries.md` | Host header、代理信任、Request smuggling、Cache poisoning/deception | `web2-vuln-classes`, `triage-validation` |
+| `knowledge/cards/cdn-response-differential.md` | CDN/DNS 差分、catch-all 与状态语义判别 | `web2-recon`, `web2-vuln-classes` |
 | `knowledge/cards/websocket-realtime-api.md` | WebSocket、CSWSH、订阅/发布和消息级权限 | `web2-vuln-classes`, `triage-validation` |
 | `knowledge/cards/information-disclosure-source-config.md` | Debug、source map、备份、配置和源码泄露的影响链 | `web2-vuln-classes`, `triage-validation` |
 | `knowledge/cards/public-package-artifact-intelligence.md` | 公开包仓库、容器和历史发布物的归属、provenance 与只读静态审查 | `web2-recon`, `cicd-security` |

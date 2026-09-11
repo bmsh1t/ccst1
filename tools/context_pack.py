@@ -3005,6 +3005,27 @@ def build_context_pack(
     )
     ledger_path = _ledger_relative_path(evidence_summary, repo)
 
+    # Must-read lists only paths that exist: goal memory is legitimately
+    # absent after a reset/fresh start, and a contract that points at missing
+    # files gives the reader no way to tell a defect from a fresh start.
+    # Repo-owned assets (runtime protocol, signal-matched tools) are
+    # unconditional: they live in the repository, not in target state.
+    _REPO_UNCONDITIONAL = {
+        "skills/runtime-protocol.md",
+        "tools/aspnet_viewstate_knownkey.py",
+        "tools/telerik_knownkey.py",
+    }
+
+    def _must_read_candidate(relative: str) -> bool:
+        if not relative:
+            return False
+        if relative in _REPO_UNCONDITIONAL:
+            return True
+        try:
+            return (repo / relative).is_file()
+        except OSError:
+            return False
+
     must_read = _dedupe([
         goal_memory["active_path"],
         goal_memory["target_path"],
@@ -3015,6 +3036,7 @@ def build_context_pack(
         for item in runner_candidates[:6]
         if item.get("summary_path")
     ])
+    must_read = [item for item in must_read if _must_read_candidate(item)]
 
     pack = {
         "target": resolved_target,
