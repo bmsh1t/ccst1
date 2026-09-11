@@ -28,10 +28,12 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 try:
+    from tools.claim_templates import apply_template, resolve_template
     from tools.high_value_signals import classify_high_value_signal
     from tools.runtime_state import runtime_wait_action
     from tools.target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
+    from claim_templates import apply_template, resolve_template  # type: ignore
     from high_value_signals import classify_high_value_signal  # type: ignore
     from runtime_state import runtime_wait_action  # type: ignore
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
@@ -2314,6 +2316,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add.add_argument("--json", action="store_true")
 
+    list_templates = sub.add_parser(
+        "list-templates",
+        help="List available claim templates with one-line applicability notes.",
+    )
+    list_templates.add_argument("--json", action="store_true")
+
     next_cmd = sub.add_parser("next", help="Print the highest-priority active action.")
     next_cmd.add_argument("--target", required=True)
     next_cmd.add_argument("--json", action="store_true")
@@ -2411,6 +2419,8 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "claim":
             metadata = _parse_metadata_json(args.metadata_json)
+            if getattr(args, "template", ""):
+                metadata = apply_template(str(args.template), metadata)
             action = claim_next_action(
                 repo,
                 args.target,
@@ -2436,6 +2446,18 @@ def main(argv: list[str] | None = None) -> int:
                 result if args.json else format_summary(load_queue(repo, args.target), repo_root=repo, target=args.target),
                 as_json=args.json,
             )
+            return 0
+
+        if args.command == "list-templates":
+            from claim_templates import CLAIM_TEMPLATES  # type: ignore
+
+            listing = [
+                {"name": name, "family": tpl.get("family", ""), "technique": tpl.get("technique", "")}
+                for name, tpl in sorted(CLAIM_TEMPLATES.items())
+            ]
+            _print(listing if args.json else "\n".join(
+                f"{item['name']}: {item['family']}/{item['technique']}" for item in listing
+            ), as_json=args.json)
             return 0
 
         if args.command == "summary":
