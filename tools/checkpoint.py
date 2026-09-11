@@ -3645,76 +3645,6 @@ def _target_owned_context_refs(repo: Path, target: str, action: dict, context: d
     return refs
 
 
-def _activation_endpoint(action: dict, *, repo: Path | None = None, refs: list[str] | None = None) -> str:
-    metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
-    endpoint = str(metadata.get("endpoint") or metadata.get("url") or "").strip()
-    if not endpoint:
-        candidates = metadata.get("candidates") if isinstance(metadata.get("candidates"), list) else []
-        if candidates and isinstance(candidates[0], dict):
-            endpoint = str(candidates[0].get("endpoint") or "").strip()
-    if endpoint:
-        return endpoint.rstrip(".,;)")
-    text = " ".join(str(action.get(key) or "") for key in ("action", "command_hint"))
-    match = re.search(r"https?://[^\s,;]+|(?<![A-Za-z0-9])/[A-Za-z0-9][^\s,;]*", text)
-    if match:
-        return match.group(0).rstrip(".,;)")
-    for ref in refs or []:
-        if repo is None:
-            break
-        try:
-            evidence = (repo / ref).read_text(encoding="utf-8", errors="ignore")[:120_000]
-        except OSError:
-            continue
-        match = re.search(r"https?://[^\s\"',;]+|\"(?:path|route|endpoint)\"\s*:\s*\"([^\"]+)\"", evidence)
-        if match:
-            return (match.group(1) or match.group(0)).rstrip(".,;)")
-    return ""
-
-
-def _activation_method(action: dict, *, repo: Path | None = None, refs: list[str] | None = None) -> str:
-    metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
-    method = str(metadata.get("method") or "").strip().upper()
-    text = " ".join(
-        str(value or "")
-        for value in (metadata.get("replay_draft"), action.get("action"), action.get("command_hint"))
-    )
-    if not method:
-        match = re.search(r"(?:--method\s+|\b)(GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD)\b", text, re.I)
-        method = match.group(1).upper() if match else ""
-    if not method and str(action.get("type") or "") == "json-inject-review":
-        method = "POST"
-    if not method and str(action.get("type") or "") == "sql-matrix-review":
-        method = "POST" if str(metadata.get("lane") or "") == "form" else "GET"
-    if not method and "validation_runner.py" in text:
-        method = "GET"
-    if not method:
-        for ref in refs or []:
-            if repo is None:
-                break
-            try:
-                evidence = (repo / ref).read_text(encoding="utf-8", errors="ignore")[:120_000]
-            except OSError:
-                continue
-            match = re.search(r"\"method\"\s*:\s*\"(GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD)\"", evidence, re.I)
-            if match:
-                method = match.group(1).upper()
-                break
-    return method
-
-
-def _activation_input_boundary(action: dict, endpoint: str) -> str:
-    metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
-    for key in ("input_boundary", "field", "object_ref", "backlog_id", "vuln_class"):
-        value = str(metadata.get(key) or "").strip()
-        if value:
-            return value[:160]
-    parsed = urlparse(endpoint)
-    query = parsed.query if parsed.scheme or parsed.netloc else endpoint.partition("?")[2]
-    if query:
-        return query.split("=", 1)[0][:160]
-    return "endpoint" if endpoint else ""
-
-
 def _attach_activation_context(
     actions: list[dict],
     *,
@@ -3722,6 +3652,16 @@ def _attach_activation_context(
     target: str,
     context: dict,
 ) -> list[dict]:
+    """Seed only Queue-owned activation fields; test shape stays AI-declared.
+
+    ``endpoint``/``method``/``input_boundary`` describe HOW the item will be
+    tested — that judgment belongs to the AI at claim time (the depth contract
+    already requires them there). Pre-deriving them from action text was
+    code-guessing-the-test and its failure silently un-seeded the Queue-owned
+    cap, making every such item permanently unclaimable (acceptance finding
+    V-1). The refs gate stays: an item pointing at no resolvable target-owned
+    evidence is not claimable, which is anti-forgery, not judgment.
+    """
     knowledge_refs = [str(value) for value in (context.get("knowledge_cards") or []) if str(value).strip()][:4]
     for action in actions:
         if not isinstance(action, dict) or str(action.get("type") or "") not in _ACTIVATABLE_ACTION_TYPES:
@@ -3730,13 +3670,10 @@ def _attach_activation_context(
         if not isinstance(metadata, dict):
             continue
         refs = _target_owned_context_refs(repo, target, action, context)
-        endpoint = _activation_endpoint(action, repo=repo, refs=refs)
-        method = _activation_method(action, repo=repo, refs=refs)
-        boundary = _activation_input_boundary(action, endpoint)
         action_type = str(action.get("type") or "")
         if action_type == "evidence-convergence" and len(refs) < 2:
             continue
-        if not refs or not endpoint or not method or not boundary:
+        if not refs:
             continue
         metadata.update({
             "activation_required": True,
@@ -3745,9 +3682,6 @@ def _attach_activation_context(
             "evidence_refs": refs,
             "baseline_ref": refs[0],
             "max_hypothesis_actions_cap": 4,
-            "endpoint": endpoint,
-            "method": method,
-            "input_boundary": boundary,
         })
         action["activation_required"] = True
     return actions

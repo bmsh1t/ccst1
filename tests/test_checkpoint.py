@@ -3573,6 +3573,121 @@ def test_checkpoint_queues_cross_evidence_convergence(tmp_path):
     assert len(convergence["metadata"]["evidence_refs"]) >= 2
 
 
+def test_activation_seeding_has_no_ai_field_gates_and_claims_succeed(tmp_path):
+    """V-1 regression: activation seeding must not gate on endpoint/method/
+    input_boundary. Those are AI-declared at claim time; pre-deriving them from
+    action text (HTTP-verb regex) made every coverage-gap/surface-review item
+    permanently unclaimable. Queue-owned fields seed whenever evidence refs
+    resolve."""
+
+    from checkpoint import _attach_activation_context, _ACTIVATABLE_ACTION_TYPES
+
+    repo = tmp_path
+    target = "target.com"
+    key = "target.com"
+    surface = repo / "recon" / key / "surface"
+    surface.mkdir(parents=True)
+    (surface / "summary.json").write_text("{}", encoding="utf-8")
+
+    # coverage-gap action text carries NO HTTP verb and NO endpoint metadata —
+    # the exact shape that was unclaimable before the fix. validation items
+    # previously seeded only when a verb happened to appear in their text.
+    actions = [
+        {
+            "type": "coverage-gap",
+            "action": "Cover high-value matrix gap: /redirect x Authz (weight=3.0). Validation path applies.",
+            "metadata": {"endpoint": "/redirect", "vuln_class": "Authz"},
+        },
+        {
+            "type": "validation",
+            "action": "validate finding on an endpoint with no verb in this sentence",
+            "metadata": {},
+        },
+    ]
+    attached = _attach_activation_context(actions, repo=repo, target=target, context={})
+    for action in attached:
+        m = action["metadata"]
+        assert m["activation_required"] is True
+        assert m["max_hypothesis_actions_cap"] == 4
+        assert m["evidence_refs"], "target-owned refs must seed"
+        assert action["activation_required"] is True
+        # AI-owned fields are NOT pre-derived anymore.
+        assert "method" not in m
+        assert "input_boundary" not in m
+
+    # The refs gate is anti-forgery, not judgment: seeding happens whenever
+    # target-owned evidence resolves (including the default surface summary),
+    # and an item with genuinely no refs (no recon at all) seeds nothing.
+    empty_repo = tmp_path / "empty"
+    empty_repo.mkdir()
+    orphan = [{"type": "coverage-gap", "action": "no refs here", "metadata": {}}]
+    attached_orphan = _attach_activation_context(orphan, repo=empty_repo, target=target, context={})
+    assert "activation_required" not in attached_orphan[0]["metadata"]
+
+
+def test_coverage_gap_item_claims_with_claim_time_activation(tmp_path):
+    """End-to-end V-1: a checkpoint-emitted coverage-gap item seeds its cap and
+    the AI claims it by declaring endpoint/method at claim time."""
+
+    from checkpoint import _attach_activation_context
+    from action_queue import add_manual_action, claim_next_action
+
+    repo = tmp_path
+    target = "target.com"
+    key = "target.com"
+    (repo / "recon" / key / "surface").mkdir(parents=True)
+    (repo / "recon" / key / "surface" / "summary.json").write_text("{}", encoding="utf-8")
+
+    action = {
+        "type": "coverage-gap",
+        "action": "Cover high-value matrix gap: /redirect x Authz (weight=3.0). Validation path applies.",
+        "metadata": {"endpoint": "/redirect", "vuln_class": "Authz"},
+    }
+    [seeded] = _attach_activation_context([action], repo=repo, target=target, context={})
+    add_manual_action(
+        repo,
+        target=target,
+        action_type="coverage-gap",
+        action=seeded["action"],
+        evidence="coverage gap /redirect x Authz from matrix rebuild",
+        next_question="does the redirect endpoint enforce its boundary",
+        stop_condition="boundary enforced or a stable gap with reproducible raw evidence",
+        priority=70,
+        metadata=seeded["metadata"],
+    )
+    activation = {
+        "depth_contract_version": 1,
+        "hypothesis_id": "redirect-authz-boundary",
+        "family": "Authz",
+        "technique": "object-boundary replay on redirect parameter",
+        "active_dimension": "query:url",
+        "dimension_override_reason": "the redirect url parameter is the boundary under test; route dimensions cover reasoning steps, not the replay variable",
+        "expected_learning": "whether /redirect validates the target before redirecting",
+        "kill_condition": "endpoint rejects the crafted parameter with a stable response",
+        "decision_reason": "coverage-gap item published by the matrix rebuild",
+        "input_boundary": "single query parameter, GET only, one replay",
+        "endpoint": "http://target.com/redirect?url=example.org",
+        "method": "GET",
+        "skill_route": {
+            "skill_id": "bb-methodology",
+            "skill_path": "skills/bb-methodology/SKILL.md",
+            "required_dimensions": ["hypothesis", "coverage", "pivot", "stop_condition"],
+        },
+        "evidence_ref": f"recon/{key}/surface/summary.json",
+        "baseline_ref": f"recon/{key}/surface/summary.json",
+        "risk_tier": "low",
+        "max_hypothesis_actions": 3,
+    }
+    queue = load_queue(repo, target)
+    item_id = next(
+        a["id"] for a in queue["actions"] if a.get("type") == "coverage-gap"
+    )
+    claimed = claim_next_action(repo, target=target, action_id=item_id, metadata=activation)
+    assert claimed["status"] == "running"
+    assert claimed["metadata"]["endpoint"] == "http://target.com/redirect?url=example.org"
+    assert claimed["metadata"]["method"] == "GET"
+
+
 def test_next_proposals_skip_ranked_surface_when_endpoint_already_has_tested_finding():
     proposals = _next_proposals(
         state={

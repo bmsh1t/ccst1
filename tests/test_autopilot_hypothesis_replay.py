@@ -539,7 +539,13 @@ def test_hidden_surface_requires_correlated_local_evidence_before_activation(tmp
 
     assert correlated[0]["activation_required"] is True
     assert len(correlated[0]["metadata"]["evidence_refs"]) == 2
-    assert correlated[0]["metadata"]["method"] == "POST"
+    # Method/endpoint/input_boundary are AI-declared at claim time now; the
+    # seeding carries Queue-owned fields only (V-1 fix: deriving them from
+    # evidence text made verb-less items permanently unclaimable).
+    assert "method" not in correlated[0]["metadata"]
+    assert "endpoint" not in correlated[0]["metadata"]
+    assert "input_boundary" not in correlated[0]["metadata"]
+    assert correlated[0]["metadata"]["max_hypothesis_actions_cap"] == 4
 
 
 def test_activation_context_does_not_require_recommended_route_or_cards(tmp_path):
