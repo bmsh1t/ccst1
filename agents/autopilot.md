@@ -43,9 +43,11 @@ Do not become a passive scanner wrapper. Turn recon, browser behavior, source/JS
 
 ## Four-Layer Runtime
 
-`commands/autopilot.md` is canonical for loop, state, queue, and finish semantics; read only
-the matching section of `docs/autopilot-lanes.md` for lane mechanics. Run `python3 tools/autopilot_state.py --target <target> --bounded` exactly once before choosing fresh, existing, or batch behavior. Obey `hard_gate` and preserve Scope/Auth plus owner write-back. Missing, stale, or partial state remains unresolved, never clean.
-For a URL-form input, keep canonical host state but inspect the exact path/query seed before historical focus or score hints. Pass a supplied `--auth-file` to hunt/recon/scan commands.
+四层路由与状态 owner 契约见 `skills/runtime-protocol.md`；loop/state/finish 语义的权威
+定义在 `commands/autopilot.md`；lane 机制只读 `docs/autopilot-lanes.md` 对应 section。
+子代理补充规则：bounded state 一次读、服从 `hard_gate`、缺/stale/partial 状态保持
+unresolved 不许 clean；URL 形态输入保持 canonical host 状态但先查 path/query seed；
+`--auth-file` 透传 hunt/recon/scan。
 
 For a readable text list or schema-v1 JSON Scope manifest, run bounded batch recon, read `recon/<list-stem>/ai_handoff.md` and `surface_ranking.txt`, select one completed `in_scope` asset, then create an owner continuation with `python3 tools/autopilot_continuation.py create --parent-target <scope_ref> --selected-target <domain> [--auth-file <path>]` and invoke `/autopilot <domain> --context-file=<returned-path>`. Bootstrap validates the parent `scope_ref/scope_hash` and private Auth ref before bounded state or target I/O. Never scan or actively hunt the batch index; unlisted assets remain context/review and explicit `out_of_scope` wins. `invalid_batch_target` and `batch_failed` are terminal until input/evidence changes.
 
@@ -91,7 +93,10 @@ This applies broadly: known software versions, exposed routes, browser XHR/API c
 
 Do not overfit this contract into a fixed checklist. Normalize evidence, choose the next safe action, execute or resolve it, then update state to `tested`, `dead-end`, `blocked`, `lead`, `signal`, or `candidate`.
 
-`tools/checkpoint.py` automatically syncs executable proposals to the durable queue; use `tools/action_queue.py next --target <target>` and resolve with `tools/action_queue.py resolve --target <target> --id <id> --status tested --evidence "<short evidence>"`. `tools/action_queue.py ingest-checkpoint --target <target>` is legacy/manual recovery only. Candidate-only scanner lanes expose their input, selected, and remaining counts without claiming execution; only the retained timing/workflow runners own resumable cursors. In-scope requests execute through the selected medium, AuthSession headers remain origin-scoped, and candidate/partial generations enter the existing Action Queue through checkpoint.
+`tools/checkpoint.py` automatically syncs executable proposals to the durable queue; the
+authoritative claim/resolve command shapes live in `docs/autopilot-lanes.md#state-and-queue`
+(`action_queue.py next` / `resolve`; `ingest-checkpoint` is legacy/manual recovery only).
+Candidate-only scanner lanes expose their input, selected, and remaining counts without claiming execution; only the retained timing/workflow runners own resumable cursors. In-scope requests execute through the selected medium, AuthSession headers remain origin-scoped, and candidate/partial generations enter the existing Action Queue through checkpoint.
 
 Do not end a run merely because a primary lane is blocked. Checkpoint/finish is allowed only after the remaining high-value lanes have been executed, blocked, dead-end, or clearly not applicable. When auth, WAF, or manual-browser blockers appear, expand into the smallest applicable adjacent high-value lane before considering closure. Examples include auth bootstrap (register, invite, reset, verification), controlled credential access when its prerequisites exist, edge/WAF lanes, and public-side JS/source/version/metadata/sibling-route continuation.
 ## Compact Transition Gate

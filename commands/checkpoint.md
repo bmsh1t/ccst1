@@ -6,6 +6,19 @@ description: 为当前目标生成 autopilot checkpoint、覆盖摘要和目标�
 
 生成目标 checkpoint。
 
+## 写回契约（权威定义，autopilot 家族只引用本段）
+
+- checkpoint 写回 = `apply_target_memory`（默认开）：把 `target_write_back.lead/next/
+  dead_end/handoff` 机器直写 `memory/goals/targets/<target>.json`，并同步
+  `state/<target_key>/checkpoint_latest.json` witness、action queue 同步与 coverage
+  刷新。`--no-apply-target-memory` 跳过 memory 两路，其余 owner 写回不变。
+- 时机由 `checkpoint_trigger`（paranoid/normal/yolo）决定；paranoid = 每个实质状态
+  变更后，normal = 每个 lane batch 后，yolo = 仅 blocker/handoff/finish。
+- 写回后必须刷新 bounded state（owner 写回是 fresh-snapshot 信号）。
+
+autopilot.md / autopilot-round.md / pickup.md / agents/autopilot.md 等文档提到
+"checkpoint 写回 / owner write-back"时指本段契约，不再各自维护完整定义。
+
 这个命令用于 `/autopilot`、`/hunt`、长会话结束、切换目标、或准备汇报前。
 它不是扫描器，也不是报告器；它把当前目标的状态压缩成可续接的目标记忆。
 

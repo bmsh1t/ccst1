@@ -92,13 +92,11 @@ python3 tools/validate.py --target <target> --finding-id <canonical-id> \
 ```
 
 `--target` resolves only `findings/<target-key>`; `--findings-dir` is the
-equivalent explicit path. The decision JSON must use `schema_version: 2` and
-include `target`, `finding_id`, `endpoint`, `vuln_class`, `method`, `impact`,
-four explicit `gates.gate1..gate4.passed` booleans with notes, complete Q1–Q7
-statuses/bases in `seven_question_gate.questions`, `cvss.score`/`vector`, an
-`evidence.summary`, `evidence.runner_summary`, non-empty existing
-`evidence.refs` containing that summary, and
-`report.path`/`report.content`. The target, ID, endpoint and class must match
+equivalent explicit path. The decision JSON schema (schema_version, gate1–gate4,
+Q1–Q7, cvss, evidence, report fields) is owned by `tools/validate.py`
+(`MACHINE_DECISION_SCHEMA_VERSION` and its preflight errors) — do not
+hand-reconstruct it; build the JSON, then verify it with `--preflight` before
+applying. The target, ID, endpoint and class must match
 the canonical row before any write occurs; the report path stays below that
 row's `findings/<target>/` directory.
 

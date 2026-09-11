@@ -91,14 +91,11 @@ Coverage taxonomy, from evidence and unknowns. `knowledge_cards` are
 context, never conclusions; Case State/Queue `vuln_class` is a compatibility string. Only an
 owner-backed Matrix terminal state or complete evidence-backed identity candidate closes
 canonical Coverage; unknown/incomplete work stays open.
-After bootstrap and the bounded state read, use the shared recall gate in
-`skills/runtime-protocol.md#shared-knowledge-recall` before a boundary-specific action.
-For a substantive Queue item with a concrete boundary or `vuln_class`, this checkpoint is
-mandatory before claim: reuse a matching Context Pack already present in this turn; otherwise
-run `python3 tools/context_pack.py --target TARGET --focus FOCUS`, then read the selected Skill
-and any needed card before the action. Target memory alone is not a Context Pack. Refresh when
-target, focus, or material evidence changes; pure explanation and non-substantive state work
-remain exempt.
+After bootstrap and the bounded state read, apply the shared recall gate in
+`skills/runtime-protocol.md#shared-knowledge-recall` (the authoritative definition — reuse,
+refresh, and exemption semantics all live there). Autopilot adds one hardening: for a
+substantive Queue item with a concrete boundary or `vuln_class`, the gate is mandatory
+before claim.
 Keep each iteration explicit:
 `inspect candidate/context -> AI choose and activate one hypothesis -> claim -> execute one
 bounded action -> read Runner observation -> AI resolve one continuation or kill -> refresh
@@ -169,8 +166,9 @@ incomplete cursor resumable.
 Named action mechanics, replay, recon continuation, list selection, and owner write-back live
 in the selected lane section. Claim durable Queue work before replay; prose or a raw endpoint
 is never evidence. If `state.root_claim_next` exists, run `/checkpoint` so `finding_index`
-creates the canonical candidate and Queue action before using its ID. Refresh after every
-owner write-back.
+creates the canonical candidate and Queue action before using its ID. Write-back contract
+(what checkpoint writes where, default-on apply, cadence semantics) is defined once in
+`commands/checkpoint.md#写回契约权威定义`.
 ## Execution Invariants
 Expert Hunter Autopilot is AI-first: the current AI session judges priority, impact, chain
 fit, promotion, reopen, and finish; deterministic owners preserve schema, evidence, replay,
@@ -236,19 +234,10 @@ relations and `chain_context`; Browser/JS/Source/Intel artifacts; Scope Review, 
 dependencies, and blocked items; residual unknowns, including unconfirmed high-value candidates.
 Do not load all raw files at once. AI may re-rank or add hypotheses, but only unresolved
 target-owned work can block closure; external/uncertain/unrelated relation context remains
-passive. Record the review through the Checkpoint owner with
-`--record-global-review`, returned `closure.snapshot_digest`, at least one current
-target-owned non-empty `evidence_refs`, the decision, and `complete` or `follow_up` mapped to
-an active Queue action. Missing/stale/invalid review yields `global_review_required`,
-`global_review_stale`, or `global_review_invalid`; prose/new state cannot replace it. Valid
-`follow_up` keeps Queue active. Checkpoint shape:
-```bash
-python3 tools/checkpoint.py --target <target_shell> --record-global-review \
-  --review-status complete --snapshot-digest <closure.snapshot_digest> \
-  --evidence-refs-json '["evidence/<target_key>/review/summary.json"]' \
-  --cross-source-links-json '["browser -> JS -> Source"]' \
-  --residual-unknowns-json '[]' --decision "<decision>" --json
-```
+passive. Record the review through the Checkpoint owner `--record-global-review`
+(authoritative CLI shape and stale/invalid semantics live in `commands/checkpoint.md`):
+it binds `closure.snapshot_digest`, current target-owned `evidence_refs`, the decision,
+and `complete`/`follow_up` to a Queue action. Valid `follow_up` keeps Queue active.
 
 Reaching `max_lanes` ends target work for this invocation; Closure recomputes from
 owners and the budget alone never requires another round. Pending report is closure asset;
