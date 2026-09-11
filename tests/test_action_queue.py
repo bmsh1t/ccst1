@@ -2121,3 +2121,101 @@ def test_action_queue_cli_reports_corrupt_state(tmp_path, capsys):
     error = capsys.readouterr().err
     assert "invalid action queue JSON" in error
     assert str(path) in error
+
+
+def _seed_running_versioned_hypothesis(tmp_path, *, status: str = "running") -> dict:
+    """Queue one depth-contract action and move it to the requested status."""
+    ingest_checkpoint(
+        tmp_path,
+        "target.com",
+        checkpoint={
+            "next_action_queue": [
+                {
+                    "id": "H-BOLA",
+                    "priority": 95,
+                    "type": "request-pair",
+                    "status": "ready",
+                    "action": "Replay the object-id swap for the peer basket.",
+                    "command_hint": "request-diff replay",
+                    "source": "checkpoint",
+                    "source_id": "bola-basket",
+                    "metadata": {
+                        "endpoint": "https://target.com/rest/basket/6",
+                        "method": "GET",
+                        "depth_contract_version": 1,
+                        "activation_required": True,
+                        "max_hypothesis_actions_cap": 4,
+                        "hypothesis_id": "H-bola-basket",
+                        "family": "object-authorization",
+                        "technique": "id-swap-cross-actor",
+                        "active_dimension": "path:/rest/basket/1",
+                        "input_boundary": "path segment: basket id",
+                        "expected_learning": "whether the object id is bound to the caller",
+                        "kill_condition": "peer object rejected, or caller's own object returned",
+                        "decision_reason": "object route flagged by surface planning",
+                        "risk_tier": "medium",
+                    },
+                }
+            ]
+        },
+    )
+    queue = load_queue(tmp_path, "target.com")
+    item = queue["actions"][0]
+    item["status"] = status
+    summary = tmp_path / "evidence" / "target.com" / "validation" / "AQ-0001" / "summary.json"
+    summary.parent.mkdir(parents=True, exist_ok=True)
+    summary.write_text("{}\n", encoding="utf-8")
+    diff = tmp_path / "evidence" / "target.com" / "validation" / "AQ-0001" / "diff.json"
+    diff.write_text("{}\n", encoding="utf-8")
+    item.setdefault("metadata", {}).update(
+        {
+            "tested_dimensions": ["path:/rest/basket/1"],
+            "runner_operation_id": "runner:deadbeef",
+            "last_outcome": {
+                "status": "tested_finding",
+                "summary_ref": "evidence/target.com/validation/AQ-0001/summary.json",
+                "evidence_ref": "evidence/target.com/validation/AQ-0001/diff.json",
+                "observed_difference": "body_length 154 -> 1310 | body_length 154 -> 1310",
+                "observation_kind": "controlled_difference",
+                "operation_id": "runner:deadbeef",
+                "at": "2026-09-11T00:00:00Z",
+            },
+        }
+    )
+    save_queue(tmp_path, "target.com", queue)
+    return item
+
+
+def test_versioned_resolve_accepts_validation_verdict_without_continuation(tmp_path):
+    """A validation verdict is the terminal decision; it must not need a pivot."""
+    _seed_running_versioned_hypothesis(tmp_path)
+    summary_path = tmp_path / "findings" / "target.com" / "AQ-0001-abc.validation-summary.json"
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    summary_path.write_text("{}\n", encoding="utf-8")
+
+    resolved = resolve_action(
+        tmp_path,
+        target="target.com",
+        action_id="AQ-0001",
+        status="validated",
+        result="validation-summary=findings/target.com/AQ-0001-abc.validation-summary.json",
+    )
+
+    assert resolved["status"] == "validated"
+    stored = next(item for item in load_queue(tmp_path, "target.com")["actions"] if item["id"] == "AQ-0001")
+    assert stored["metadata"]["hypothesis_status"] == "closed"
+    assert stored["metadata"]["kill_reason"]
+
+
+def test_versioned_resolve_still_requires_continuation_or_kill_for_non_verdict(tmp_path):
+    """The AI-owned resolve path keeps its exactly-one-decision contract."""
+    _seed_running_versioned_hypothesis(tmp_path)
+
+    with pytest.raises(ValueError, match="exactly one continuation or supported kill"):
+        resolve_action(
+            tmp_path,
+            target="target.com",
+            action_id="AQ-0001",
+            status="dead-end",
+            result="evidence=evidence/target.com/validation/AQ-0001/summary.json",
+        )

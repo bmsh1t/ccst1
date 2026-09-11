@@ -653,16 +653,24 @@ def _versioned_terminal_plan(
 
     kill = incoming.get("kill_condition_met") is True
     continuation = incoming.get("continuation") if isinstance(incoming.get("continuation"), dict) else None
-    if kill == bool(continuation):
+    # A validation verdict is itself the terminal decision for the hypothesis:
+    # the validation owner resolved this action as validated/reported with its
+    # own evidence, so there is nothing left for the AI to declare. Requiring a
+    # continuation or kill here would block the validation write-back path.
+    verdict_terminal = normalized_status in {"validated", "reported"} and not kill and not continuation
+    if kill == bool(continuation) and not verdict_terminal:
         raise ValueError("Action Queue versioned resolve requires exactly one continuation or supported kill")
     if kill and str(outcome.get("observation_kind") or "").strip().lower() == "baseline_only":
         raise ValueError("Action Queue baseline-only observation requires a continuation before kill")
     merged["capability_primitives"] = _validate_capability_primitives(
         repo_root, target, incoming.get("capability_primitives", merged.get("capability_primitives"))
     )
-    if kill:
+    if kill or verdict_terminal:
         merged["kill_reason"] = _bounded_metadata_text(
-            incoming.get("kill_reason") or incoming.get("decision_reason"), "kill_reason"
+            incoming.get("kill_reason") or incoming.get("decision_reason") or (
+                f"hypothesis resolved by validation verdict {normalized_status}" if verdict_terminal else ""
+            ),
+            "kill_reason",
         )
         return {"decision": "kill"}
 
@@ -2013,7 +2021,10 @@ def _resolve_action_in_queue(
         item["updated_at"] = now_utc()
         item["result"] = _compact_text(result or item.get("result", ""), 1000)
         item["notes"] = _compact_text(notes or item.get("notes", ""), 1000)
-        if metadata and merged_metadata != item.get("metadata"):
+        if merged_metadata != item.get("metadata"):
+            # Terminal plans can derive owner-side metadata (kill_reason,
+            # hypothesis_status) even when the caller passes no incoming
+            # metadata, so persist whenever the merge changed anything.
             item["metadata"] = merged_metadata
         if previous != "running" and normalized in {"running", "tested", "dead-end", "blocked", "lead", "signal", "candidate", "validated"}:
             item["attempts"] = int(item.get("attempts", 0) or 0) + 1
