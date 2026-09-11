@@ -694,6 +694,7 @@ def test_request_diff_replays_post_json_with_sql_classifier(monkeypatch, tmp_pat
             "evidence_shape": "request_diff",
             "classifier": "sqli",
             "vuln_class": "SQLi",
+            "expected": ["count_delta_positive"],
             "repeat": 2,
         },
         finding_id="SQLI-POST-JSON",
@@ -705,6 +706,8 @@ def test_request_diff_replays_post_json_with_sql_classifier(monkeypatch, tmp_pat
     assert summary["evidence_shape"] == "request_diff"
     assert summary["classifier"] == "sqli"
     assert summary["result"] == "tested_finding"
+    assert summary["candidate_ready"] is True
+    assert summary["expected_check"]["unmet"] == []
     assert summary["ledger_record"]["write_status"] in {"written", "deduplicated", "updated"}
     assert validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)["ledger"]["status"] in {
         "written",
@@ -1443,6 +1446,9 @@ def test_request_diff_credential_boundary_dimension_promotes_without_shape_detec
         {},
         {"Authorization": "Bearer admin"},
     )
+    # Declared expectation: the credential dimension differentiates the
+    # requesters (status delta observed). Reconciliation, not a vocabulary.
+    spec["expected"] = ["status_delta"]
     summary = validation_runner.run_request_diff(
         repo_root=tmp_path,
         target="https://target.test",
@@ -1451,8 +1457,18 @@ def test_request_diff_credential_boundary_dimension_promotes_without_shape_detec
 
     assert summary["result"] == "tested_finding"
     assert summary["candidate_ready"] is True
+    assert summary["expected_check"]["unmet"] == []
     led = summary.get("ledger_record") or {}
     assert led.get("result") == "tested_finding"
+
+    # Undeclared, the same pair keeps the legacy conservative outcome.
+    spec.pop("expected")
+    undeclared = validation_runner.run_request_diff(
+        repo_root=tmp_path,
+        target="https://target.test",
+        request_spec=spec,
+    )
+    assert undeclared["result"] == "candidate"
 
 
 def test_request_diff_declared_boundary_without_actual_difference_stays_candidate(monkeypatch, tmp_path):
@@ -1627,9 +1643,11 @@ def test_request_diff_missing_auth_expect_auth_pair_promotes_to_tested_finding(m
     rubric = summary.get("evidence_rubric") or {}
     assert rubric.get("status") == "candidate-ready"
     ai_next = summary.get("ai_next") or {}
-    assert "missing authentication" in str(ai_next.get("hypothesis", ""))
+    assert "remaining judgment" in str(ai_next.get("hypothesis", ""))
     spec_view = summary.get("request_pair") or {}
     assert spec_view.get("expect_auth") is True
+    assert summary["expected_check"]["declared"] == ["identical_success_pair"]
+    assert summary["expected_check"]["unmet"] == []
     led = summary.get("ledger_record") or {}
     assert led.get("result") == "tested_finding"
 
@@ -1685,6 +1703,141 @@ def test_request_diff_expect_auth_trusts_arbitrary_declared_dimension(monkeypatc
     assert summary_undeclared["candidate_ready"] is False
 
 
+def test_request_diff_expected_declaration_is_category_agnostic(monkeypatch, tmp_path):
+    """The same error-marker declaration promotes a NoSQLi pair and a
+    SQLi pair through the identical channel — and would promote an SSTI or
+    command-injection pair the same way. classifier is metadata only."""
+
+    def fake_request_once(**kwargs):
+        body = kwargs["body"]
+        query = body.get("q", "") if isinstance(body, dict) else ""
+        if query != "apple":
+            return _fake_response(
+                kwargs["url"], status=500, body='{"error": "MongoError: CastError in query"}'
+            )
+        return _fake_response(kwargs["url"], body='{"data": []}')
+
+    monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
+    for classifier, vuln_class, variant_query in (
+        ("nosqli", "NoSQLi", '{"$ne": null}'),
+        ("sqli", "SQLi", "' || true || '"),
+        ("ssti", "RCE", "{{7*7}}"),
+    ):
+        spec = {
+            "schema_version": 1,
+            "baseline_request": {
+                "method": "POST",
+                "url": "https://target.test/api/search",
+                "headers": {"Content-Type": "application/json"},
+                "body": {"q": "apple"},
+            },
+            "variant_request": {
+                "method": "POST",
+                "url": "https://target.test/api/search",
+                "headers": {"Content-Type": "application/json"},
+                "body": {"q": variant_query},
+            },
+            "active_dimension": "body:/q",
+            "evidence_shape": "request_diff",
+            "classifier": classifier,
+            "vuln_class": vuln_class,
+            "expected": ["error_marker_variant_only"],
+            "repeat": 1,
+        }
+        summary = validation_runner.run_request_diff(
+            repo_root=tmp_path,
+            target="https://target.test",
+            request_spec=spec,
+            finding_id=f"EXPECTED-AGNOSTIC-{classifier}",
+        )
+        assert summary["result"] == "tested_finding", classifier
+        assert summary["candidate_ready"] is True
+        assert summary["expected_check"]["unmet"] == []
+
+
+def test_request_diff_declared_expectation_contradicted_falls_to_candidate(monkeypatch, tmp_path):
+    """Anti-forgery: the AI declares a count expansion, the wire shows none —
+    the declaration is rejected, the unmet fact is archived, and the result
+    never becomes tested_finding on an unconfirmed declaration."""
+
+    def fake_request_once(**kwargs):
+        return _fake_response(kwargs["url"], body='{"data": [{"id": 1}]}')
+
+    monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
+    spec = {
+        "schema_version": 1,
+        "baseline_request": {"method": "GET", "url": "https://target.test/search?q=apple"},
+        "variant_request": {"method": "GET", "url": "https://target.test/search?q=zzz"},
+        "active_dimension": "query:q",
+        "evidence_shape": "request_diff",
+        "classifier": "sqli",
+        "expected": ["count_delta_positive", "fields_added"],
+        "repeat": 1,
+    }
+    summary = validation_runner.run_request_diff(
+        repo_root=tmp_path,
+        target="https://target.test",
+        request_spec=spec,
+    )
+
+    assert summary["result"] == "candidate"
+    assert summary["candidate_ready"] is False
+    assert summary["expected_check"]["unmet"] == ["count_delta_positive", "fields_added"]
+    assert summary["expected_check"]["observed"] == {
+        "count_delta_positive": False,
+        "fields_added": False,
+    }
+
+
+def test_request_diff_unknown_expected_fact_name_is_rejected(tmp_path):
+    """A typo in a declared fact name is a hard input error, never silently
+    ignored — a silently-dropped declaration would silently demote the pair."""
+
+    spec = {
+        "schema_version": 1,
+        "baseline_request": {"method": "GET", "url": "https://target.test/search?q=apple"},
+        "variant_request": {"method": "GET", "url": "https://target.test/search?q=zzz"},
+        "active_dimension": "query:q",
+        "classifier": "sqli",
+        "expected": ["count_delta_postive"],  # typo
+        "repeat": 1,
+    }
+    with pytest.raises(validation_runner.RequestPairError, match="unknown fact name"):
+        validation_runner.run_request_diff(
+            repo_root=tmp_path,
+            target="https://target.test",
+            request_spec=spec,
+        )
+
+
+def test_request_diff_expected_note_and_digest_distinction(tmp_path):
+    """expected/expected_note ride the normalized spec: declaring an
+    expectation makes the replay a distinct operation, and the note is
+    archived verbatim without being interpreted."""
+
+    base = {
+        "schema_version": 1,
+        "baseline_request": {"method": "GET", "url": "https://target.test/a"},
+        "variant_request": {"method": "GET", "url": "https://target.test/b"},
+        "active_dimension": "path:",
+        "classifier": "generic",
+    }
+    # path: dimension needs different paths
+    base["baseline_request"]["url"] = "https://target.test/users/1"
+    base["variant_request"]["url"] = "https://target.test/users/2"
+    base["active_dimension"] = "path:/users/1"
+    normalized = validate_request_pair(base)
+    assert normalized["expected"] == []
+    assert normalized["expected_note"] == ""
+
+    declared = dict(base, expected=["material_diff_any"], expected_note="owner swap should change the row")
+    normalized_declared = validate_request_pair(declared)
+    assert normalized_declared["expected"] == ["material_diff_any"]
+    assert normalized_declared["expected_note"] == "owner swap should change the row"
+
+    assert request_pair_digest(declared) != request_pair_digest(base)
+
+
 def test_request_diff_missing_auth_pair_with_3xx_both_sides_promotes(monkeypatch, tmp_path):
     """The success class is 2xx/3xx: redirects on both sides still count as
     'the endpoint answered both requesters' for the missing-auth route."""
@@ -1720,9 +1873,10 @@ def test_request_diff_missing_auth_pair_with_3xx_both_sides_promotes(monkeypatch
 
 def test_request_diff_missing_auth_declaration_alone_does_not_override_held_boundary(monkeypatch, tmp_path):
     """expect_auth is a declaration, not a verdict: when the boundary held
-    (both sides rejected identically) the pair stays tested_clean even with
-    the declaration. The missing-auth route needs the facts, not just the
-    assertion."""
+    (both sides rejected identically) the declared identical-success fact is
+    CONTRADICTED on the wire, so the pair falls to candidate with the unmet
+    fact archived — the declaration never manufactures a finding, and the
+    contradiction is surfaced instead of silently cleaned."""
 
     def fake_request_once(**kwargs):
         return _fake_response(kwargs["url"], status=401, body='{"error": "unauthorized"}')
@@ -1749,8 +1903,10 @@ def test_request_diff_missing_auth_declaration_alone_does_not_override_held_boun
         request_spec=spec,
     )
 
-    assert summary["result"] == "tested_clean"
+    assert summary["result"] == "candidate"
     assert summary["candidate_ready"] is False
+    assert summary["expected_check"]["declared"] == ["identical_success_pair"]
+    assert summary["expected_check"]["unmet"] == ["identical_success_pair"]
 
 
 def test_request_diff_credential_pair_both_sides_rejected_is_clean(monkeypatch, tmp_path):

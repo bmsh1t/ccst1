@@ -18,6 +18,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -104,6 +105,24 @@ SQLI_ERROR_RE = re.compile(
     r"MongoError|CastError|BSON|NoSQL",
     re.I,
 )
+
+# Wire-fact vocabulary: the complete set of mechanically checkable facts the
+# AI may declare in ``expected``. The runner knows these predicates over raw
+# replay observations; it does NOT know vulnerability classes. Any category
+# (SQLi, NoSQLi, SSTI, IDOR, missing-auth, ...) uses the same vocabulary.
+WIRE_FACT_NAMES = frozenset({
+    "error_marker_variant_only",   # variant body shows a DB/parser error marker, baseline does not
+    "count_delta_positive",        # variant JSON count is greater than baseline
+    "count_delta_negative",        # variant JSON count is smaller than baseline
+    "fields_added",                # variant response added JSON fields
+    "fields_removed",              # variant response removed JSON fields
+    "body_length_delta",           # material body-length difference beyond noise threshold
+    "status_delta",                # status codes differ between the sides
+    "material_diff_any",           # any material response difference
+    "identical_success_pair",      # both sides 2xx/3xx with no material diff
+    "both_sides_rejected",         # both sides >= 400 with no material diff
+    "stable_timing_delta",         # variant consistently slower than baseline across repeats
+})
 
 RUNNER_RESULT_TO_FINDING_STATUS = {
     # validation_runner 只证明候选证据包，不代表 /validate gate 已通过。
@@ -1502,6 +1521,7 @@ def request_once(
         session=session,
         sensitive_header_names={name.lower() for name in headers},
     )
+    started = time.monotonic()
     try:
         opener = urllib.request.build_opener(redirect_handler)
         with opener.open(request, timeout=timeout) as response:
@@ -1518,6 +1538,7 @@ def request_once(
         reason = str(exc.reason or "")
         response_headers = {str(k): str(v) for k, v in exc.headers.items()}
         final_url = str(exc.geturl() or url)
+    elapsed_ms = int((time.monotonic() - started) * 1000)
     if not url_belongs_to_target(final_url, target):
         raise ValueError(f"validation response left target scope: {public_url_shape(final_url)}")
     body_text = raw.decode("utf-8", errors="replace")
@@ -1532,6 +1553,7 @@ def request_once(
         "reason": reason,
         "headers": response_headers,
         "body": body_text,
+        "elapsed_ms": elapsed_ms,
         "body_retained_bytes": len(raw),
         "body_observed_bytes": observed_bytes,
         "body_truncated": truncated,
@@ -1596,111 +1618,6 @@ def _response_diff(baseline: dict[str, Any], variant: dict[str, Any]) -> dict[st
     payload["baseline"] = _response_snapshot(baseline)
     payload["variant"] = _response_snapshot(variant)
     return payload
-
-
-def looks_like_sqli_probe(value: str) -> bool:
-    """Return True when the perturbation is injection-shaped, not ordinary search text."""
-    return bool(SQLI_PROBE_RE.search(str(value or "")))
-
-
-def _sqli_probe_features(value: str) -> set[str]:
-    """Classify the perturbation shape for SQLi evidence gating.
-
-    A quote or comment is a useful probe, but it is not by itself proof of SQLi:
-    search/filter endpoints often return fewer rows for odd punctuation.  The
-    runner therefore separates probe shape from promotion evidence.
-    """
-    text = str(value or "").lower()
-    features: set[str] = set()
-    if re.search(r"['\"`]|--|/\*|\*/|\)\)", text):
-        features.add("syntax-breaker")
-    if re.search(r"\bunion\b|\bselect\b|\binformation_schema\b|\bfrom\b", text):
-        features.add("union-or-select")
-    if re.search(r"\b(?:or|and)\b|(?:\b|\D)[01]\s*=\s*[01](?:\D|$)|\btrue\b|\bfalse\b", text):
-        features.add("boolean")
-    if re.search(r"\bsleep\s*\(|benchmark\s*\(|pg_sleep\s*\(|waitfor\b", text):
-        features.add("time-delay")
-    if re.search(r"\$(?:ne|gt|regex|where)\b|\{\s*\"?\$", text):
-        features.add("nosql-operator")
-    if ";" in text:
-        features.add("stacked-or-separator")
-    return features
-
-
-def _sqli_run_evidence(
-    *,
-    variant_value: str,
-    baseline_body: str,
-    variant_body: str,
-    diff: dict[str, Any],
-) -> dict[str, Any]:
-    """Return lane-specific SQLi promotion evidence for one replay run.
-
-    Strong evidence is deliberately narrower than a material diff.  This keeps
-    the runner from promoting ordinary search-result changes, while still
-    preserving the diff and next-action guidance for Claude to reason about.
-    """
-    features = _sqli_probe_features(variant_value)
-    changed = diff.get("changed") or {}
-    count_delta = (diff.get("json_count") or {}).get("delta")
-    body_delta = int((diff.get("body_length") or {}).get("delta", 0) or 0)
-    fields_added = list((diff.get("json_fields") or {}).get("added") or [])
-    fields_removed = list((diff.get("json_fields") or {}).get("removed") or [])
-    status = diff.get("status") or {}
-    status_changed = bool(changed.get("status"))
-    baseline_status = int(status.get("baseline") or 0)
-    variant_status = int(status.get("variant") or 0)
-
-    reasons: list[str] = []
-    ambiguous: list[str] = []
-
-    baseline_has_sql_error = bool(SQLI_ERROR_RE.search(str(baseline_body or "")))
-    variant_has_sql_error = bool(SQLI_ERROR_RE.search(str(variant_body or "")))
-    if variant_has_sql_error and not baseline_has_sql_error:
-        reasons.append("variant-only database/parser error marker")
-
-    if isinstance(count_delta, int) and count_delta > 0 and features & {
-        "boolean",
-        "union-or-select",
-        "nosql-operator",
-        "syntax-breaker",
-    }:
-        reasons.append(f"injection-shaped probe expanded JSON result count by {count_delta}")
-
-    if fields_added and features & {"boolean", "union-or-select", "nosql-operator"}:
-        reasons.append("injection-shaped probe added JSON fields: " + ",".join(fields_added[:5]))
-
-    if status_changed and variant_status >= 500 and baseline_status < 500:
-        if variant_has_sql_error:
-            reasons.append(f"variant changed status {baseline_status}->{variant_status} with DB error marker")
-        else:
-            ambiguous.append(
-                f"variant changed status {baseline_status}->{variant_status} without DB error marker"
-            )
-
-    if "time-delay" in features and not reasons:
-        ambiguous.append("time-shaped probe needs a timing runner, not body diff alone")
-
-    if not reasons and (changed.get("json_count") or changed.get("json_fields") or abs(body_delta) > 20):
-        if isinstance(count_delta, int) and count_delta < 0:
-            ambiguous.append(
-                "variant reduced result count; ordinary search/filter/parser behavior is possible"
-            )
-        elif fields_removed and not fields_added:
-            ambiguous.append(
-                "variant only removed JSON fields; this is not enough for SQLi promotion"
-            )
-        else:
-            ambiguous.append(
-                "material response diff lacks DB error, result expansion, or boolean/union/nosql confirmation"
-            )
-
-    return {
-        "strong": bool(reasons),
-        "features": sorted(features),
-        "reasons": reasons,
-        "ambiguous": ambiguous,
-    }
 
 
 def _is_success_status(status: int) -> bool:
@@ -1952,6 +1869,86 @@ def _request_pair_side_succeeded(run: dict[str, Any]) -> bool:
     return True
 
 
+def _run_wire_facts(run: dict[str, Any], baseline_body: str, variant_body: str) -> dict[str, bool]:
+    """Compute every declarable wire fact for one replay run.
+
+    Category-free by construction: these are predicates over raw observations
+    (status codes, body markers, JSON shape, diff numbers). No vulnerability
+    class, header vocabulary, or framework assumption participates.
+    """
+    diff = run.get("diff") if isinstance(run.get("diff"), dict) else {}
+    changed = diff.get("changed") or {}
+    count = diff.get("json_count") or {}
+    base_count = count.get("baseline")
+    var_count = count.get("variant")
+    count_delta = count.get("delta")
+    fields = diff.get("json_fields") or {}
+    fields_added = list(fields.get("added") or [])
+    fields_removed = list(fields.get("removed") or [])
+    body_delta = int((diff.get("body_length") or {}).get("delta", 0) or 0)
+    baseline_status = int((run.get("baseline") or {}).get("status") or 0)
+    variant_status = int((run.get("variant") or {}).get("status") or 0)
+
+    baseline_marker = bool(SQLI_ERROR_RE.search(str(baseline_body or "")))
+    variant_marker = bool(SQLI_ERROR_RE.search(str(variant_body or "")))
+    material = _request_pair_materiality(run)
+
+    return {
+        "error_marker_variant_only": variant_marker and not baseline_marker,
+        "count_delta_positive": isinstance(count_delta, int) and count_delta > 0,
+        "count_delta_negative": isinstance(count_delta, int) and count_delta < 0,
+        "fields_added": bool(fields_added),
+        "fields_removed": bool(fields_removed),
+        "body_length_delta": abs(body_delta) > 20,
+        "status_delta": bool(changed.get("status")),
+        "material_diff_any": material,
+        "identical_success_pair": (
+            200 <= baseline_status < 400
+            and 200 <= variant_status < 400
+            and not material
+        ),
+        "both_sides_rejected": (
+            baseline_status >= 400 and variant_status >= 400 and not material
+        ),
+        # Timing is aggregated across runs in _compute_wire_facts; a single
+        # run never claims it on its own.
+        "stable_timing_delta": False,
+    }
+
+
+def _compute_wire_facts(
+    runs: list[dict[str, Any]],
+    baseline_bodies: list[str],
+    variant_bodies: list[str],
+) -> dict[str, bool]:
+    """Aggregate per-run facts: a fact holds when it holds in EVERY run.
+
+    ``stable_timing_delta`` is the one cross-run fact: the variant must be
+    slower than the baseline in every run (sign stability). Magnitude
+    judgment stays with the AI review; the runner only checks the stable
+    direction.
+    """
+    per_run = [
+        _run_wire_facts(run, base, var)
+        for run, base, var in zip(runs, baseline_bodies, variant_bodies)
+    ]
+    facts: dict[str, bool] = {}
+    for name in WIRE_FACT_NAMES:
+        if name == "stable_timing_delta":
+            continue
+        facts[name] = bool(per_run) and all(item.get(name) for item in per_run)
+    timing_stable = False
+    if runs:
+        deltas: list[int] = []
+        for run in runs:
+            base_ms = int((run.get("baseline") or {}).get("elapsed_ms") or 0)
+            var_ms = int((run.get("variant") or {}).get("elapsed_ms") or 0)
+            deltas.append(var_ms - base_ms)
+        timing_stable = bool(deltas) and all(delta > 0 for delta in deltas)
+    facts["stable_timing_delta"] = timing_stable
+    return facts
+
+
 CREDENTIAL_BOUNDARY_HEADER_RE = re.compile(
     r"^(authorization|cookie|x-api-key|api-key|x-auth-token|x-session-token|x-csrf-token)$",
     re.I,
@@ -2105,6 +2102,8 @@ def run_request_diff(
     write_private_json(private_bundle / "inputs.json", spec)
     repeat_count = max(1, int(repeat if repeat is not None else spec["repeat"]))
     runs: list[dict[str, Any]] = []
+    baseline_bodies: list[str] = []
+    variant_bodies: list[str] = []
     for idx in range(1, repeat_count + 1):
         base_headers = _merge_request_headers(baseline, headers)
         variant_headers = _merge_request_headers(variant, headers)
@@ -2145,71 +2144,64 @@ def run_request_diff(
             },
             **diff,
         }
-        if spec["classifier"] == "sqli":
-            run["sqli_evidence"] = _sqli_run_evidence(
-                variant_value=_request_pair_active_value(spec, variant),
-                baseline_body=base["body"],
-                variant_body=variant_response["body"],
-                diff=diff["diff"],
-            )
         runs.append(run)
+        baseline_bodies.append(str(base.get("body") or ""))
+        variant_bodies.append(str(variant_response.get("body") or ""))
 
     material = [_request_pair_materiality(run) for run in runs]
     classifier = spec["classifier"]
+    # Wire facts are computed uniformly for every category; the legacy
+    # sqli_evidence projection is preserved for downstream readers as a
+    # projection of the same error-marker regex, not a behavior branch.
+    wire_facts = _compute_wire_facts(runs, baseline_bodies, variant_bodies)
     sqli_reasons = _dedupe_keep_order([
-        reason for run in runs for reason in (run.get("sqli_evidence", {}).get("reasons") or [])
+        "variant-only database/parser error marker"
+        for run, base_body, var_body in zip(runs, baseline_bodies, variant_bodies)
+        if _run_wire_facts(run, base_body, var_body)["error_marker_variant_only"]
     ])
     sqli_ambiguous = _dedupe_keep_order([
-        reason for run in runs for reason in (run.get("sqli_evidence", {}).get("ambiguous") or [])
+        str(run.get("diff", {}).get("summary") or "")
+        for run in runs
+        if not _request_pair_materiality(run) and str(run.get("diff", {}).get("summary") or "") != "no material response difference"
     ])
-    probe_shape = all(bool(run.get("sqli_evidence", {}).get("features")) for run in runs) if classifier == "sqli" else None
-    strong = all(bool(run.get("sqli_evidence", {}).get("strong")) for run in runs) if classifier == "sqli" else False
-    # Promotion splits into three independent routes:
-    # - shape confirmation: the SQLi probe-shape detector confirms the diff form
-    #   (kept as a fast lane; other shape detectors may register later);
-    # - boundary dimension: the pair's declared active dimension is a
-    #   credential/auth boundary AND the two requests actually differ in it;
-    # - missing-auth: the declared active dimension is a credential boundary
-    #   AND no run shows a material diff AND every run has both sides succeeding
-    #   (2xx/3xx) AND the AI declared ``expect_auth``. The runner asserts only
-    #   the fact that the endpoint does not differentiate requesters on the
-    #   declared credential dimension; whether that is a real violation stays
-    #   with the 7-Question/4-gate AI review (the endpoint may be intentionally
-    #   public).
-    # The runner only proves the diff is real, stable, and sits on the declared
-    # boundary; whether it is an actual authorization violation stays with the
-    # 7-Question/4-gate AI review. A material diff never falls to tested_clean.
-    shape_confirmed = bool(classifier == "sqli" and probe_shape and strong)
+    # Reconciliation replaces the former enumerated promotion routes (SQLi
+    # shape, credential-boundary diff, missing-auth). The runner does not know
+    # vulnerability classes; it only reconciles the AI's declared expectation
+    # against the wire facts:
+    #   - declared expectation fully holds on the wire -> tested_finding
+    #   - declared expectation contradicted -> candidate, unmet facts archived
+    #   - no declaration -> legacy conservative fallbacks (unchanged outcomes)
+    # What the evidence MEANS stays with the 7-Question/4-gate AI review; the
+    # runner only verifies the AI did not declare something the wire disproves.
+    declared_expected = list(spec.get("expected") or [])
+    if not declared_expected and spec.get("expect_auth") is True:
+        # Sugar: expect_auth is the missing-auth declaration expressed as a
+        # boolean; expand to its fact form so both spellings reconcile alike.
+        declared_expected = ["identical_success_pair"]
+    expected_check: dict[str, Any] = {}
+    if declared_expected:
+        unmet = [name for name in declared_expected if not wire_facts.get(name)]
+        candidate_ready = not unmet
+        expected_check = {
+            "declared": declared_expected,
+            "unmet": unmet,
+            "observed": {name: bool(wire_facts.get(name)) for name in declared_expected},
+        }
+    else:
+        candidate_ready = False
+    # Legacy undeclared fallbacks keep today's outcomes exactly: a material
+    # diff is always reviewable; a well-known credential dimension that did
+    # not hold is a candidate; only an enforced-or-irrelevant pair is clean.
     boundary_dimension = _request_pair_boundary_dimension(spec)
-    candidate_ready = bool(all(material) and (shape_confirmed or boundary_dimension))
-    # A credential-boundary pair with NO response difference still carries an
-    # authz claim to review: when the unauthenticated side also succeeded, the
-    # identical responses are themselves the evidence of a missing identity
-    # check. When the AI additionally declared expect_auth, the missing-auth
-    # fact is mechanically checkable (no material diff, both sides succeeded,
-    # credential dimension is the only declared difference) and the pair
-    # promotes to tested_finding; without that assertion the pair stays a
-    # reviewable candidate. Direction is AI-declared (baseline may be either
-    # the anonymous or the credentialed side), so "held" is judged per-run as
-    # both sides being rejected.
-    missing_auth = bool(
-        boundary_dimension
-        and not any(material)
-        and all(_request_pair_side_succeeded(run) for run in runs)
-        and spec.get("expect_auth") is True
-    )
-    candidate_ready = candidate_ready or missing_auth
     boundary_held = bool(
         boundary_dimension
         and not any(material)
-        and all(
-            int(run.get("baseline", {}).get("status") or 0) >= 400
-            and int(run.get("variant", {}).get("status") or 0) >= 400
-            for run in runs
-        )
+        and wire_facts.get("both_sides_rejected")
     )
     if candidate_ready:
         result = "tested_finding"
+    elif declared_expected:
+        result = "candidate"
     elif any(material):
         result = "candidate"
     elif boundary_dimension and not boundary_held:
@@ -2220,12 +2212,23 @@ def run_request_diff(
     diff_path = bundle / "diff.json"
     _write_json(diff_path, {"runs": runs, "request_pair": _request_pair_spec_view(spec)})
     diff_summaries = [str(run.get("diff", {}).get("summary") or "") for run in runs]
-    if missing_auth:
+    # The finding states the declared expectation and the wire facts that
+    # confirmed it — never a violation conclusion. Whether the confirmed
+    # expectation is an actual vulnerability stays with the AI review.
+    if declared_expected and candidate_ready:
+        confirmed = ", ".join(declared_expected)
         finding_summary = (
-            f"missing-auth on {spec['active_dimension']}: both sides succeed with "
-            f"identical responses across a credential boundary; expect_auth declared"
+            f"declared expectation confirmed on {spec['active_dimension']}: {confirmed}"
         )
-        finding_raw = "MISSING-AUTH-VERIFIED credential boundary does not differentiate requesters"
+        finding_raw = f"EXPECTED-DECLARED-CONFIRMED {confirmed}"
+    elif declared_expected:
+        unmet = ", ".join(expected_check.get("unmet") or [])
+        finding_summary = (
+            f"declared expectation not confirmed on {spec['active_dimension']}: unmet={unmet}"
+            if unmet
+            else f"declared expectation not confirmed on {spec['active_dimension']}"
+        )
+        finding_raw = "controlled request diff requires review"
     else:
         finding_summary = f"baseline vs variant request diff on {spec['active_dimension']}; material={all(material)}"
         finding_raw = "REQUEST-DIFF-VERIFIED stable controlled replay" if candidate_ready else "controlled request diff requires review"
@@ -2323,18 +2326,40 @@ def run_request_diff(
         "artifacts": {"diff": _rel(diff_path, repo_root)},
         "evidence_rubric": rubric,
         "ledger_record": ledger,
-        "sqli_evidence": {"strong": bool(strong), "reasons": sqli_reasons, "ambiguous": sqli_ambiguous},
+        "sqli_evidence": {"strong": bool(sqli_reasons), "reasons": sqli_reasons, "ambiguous": sqli_ambiguous},
+        "expected_check": expected_check,
+        "expected_note": spec.get("expected_note", ""),
         "ai_next": (
             {
-                "hypothesis": "endpoint may be missing authentication: both sides succeed identically across the declared credential boundary",
-                "next_action": "Confirm whether this endpoint is intended to be public; if it should require auth, promote through /validate as a missing-auth finding.",
-                "stop_condition": "Endpoint is documented as public, or the boundary is enforced by a layer the paired replay did not exercise.",
+                "hypothesis": (
+                    f"declared expectation ({', '.join(declared_expected)}) was confirmed on the wire; "
+                    "what it means for this target is the remaining judgment"
+                ),
+                "next_action": (
+                    "Confirm the confirmed expectation is an actual vulnerability for this target "
+                    "(intended behavior, compensating layer, real impact); promote through /validate if it is."
+                ),
+                "stop_condition": (
+                    "The expectation is the target's intended behavior, or the effect is enforced by a "
+                    "layer the paired replay did not exercise."
+                ),
             }
-            if missing_auth
+            if declared_expected and candidate_ready
             else {
-                "hypothesis": f"{classifier} classifier may explain a stable response difference on {spec['active_dimension']}",
-                "next_action": "Review raw baseline/variant evidence; use /validate or a dedicated timing/OAST sender only when the signal requires it.",
-                "stop_condition": "No stable material difference across repeats, or the difference is attributable to normal application/WAF behavior.",
+                "hypothesis": (
+                    f"declared expectation ({', '.join(declared_expected)}) was not fully observed on the wire"
+                    if declared_expected
+                    else f"{classifier} classifier may explain a stable response difference on {spec['active_dimension']}"
+                ),
+                "next_action": (
+                    "Reconcile the unmet facts against the raw evidence; adjust the declaration or the "
+                    "hypothesis, then replay."
+                    if declared_expected
+                    else "Review raw baseline/variant evidence; use /validate or a dedicated timing/OAST sender only when the signal requires it."
+                ),
+                "stop_condition": (
+                    "The declared facts never hold on the wire, or the difference is attributable to normal application/WAF behavior."
+                ),
             }
         ),
     }

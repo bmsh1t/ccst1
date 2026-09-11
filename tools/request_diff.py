@@ -14,6 +14,18 @@ class RequestPairError(ValueError):
     """Raised when a request pair is not an exact, single-dimension replay."""
 
 
+def expected_fact_vocabulary() -> frozenset[str]:
+    """Return the runner's wire-fact vocabulary used to validate ``expected``.
+
+    The vocabulary lives here (parser side) so the parser stays knowledge-free:
+    it validates names, never interprets them. The runner computes the facts.
+    """
+    # Imported lazily to avoid a parser->runner dependency cycle at import time.
+    from validation_runner import WIRE_FACT_NAMES
+
+    return WIRE_FACT_NAMES
+
+
 _UNSUPPORTED_CONTENT_TYPES = (
     "multipart/",
     "application/grpc",
@@ -205,6 +217,32 @@ def validate_request_pair(spec: dict[str, Any]) -> dict[str, Any]:
         expect_auth = False
     else:
         raise RequestPairError("expect_auth must be a boolean when present")
+    # AI-declared expectation: the caller states which wire facts it expects
+    # the replay to show. The parser validates the names against the runner's
+    # vocabulary (a typo is a hard input error, never silently ignored) and
+    # carries them unchanged; interpreting facts is the runner's job and
+    # interpreting the evidence is the AI review's job.
+    expected_raw = spec.get("expected", [])
+    if expected_raw in (None, ""):
+        expected_raw = []
+    if not isinstance(expected_raw, (list, tuple)):
+        raise RequestPairError("expected must be a list of fact names when present")
+    vocabulary = expected_fact_vocabulary()
+    expected: list[str] = []
+    for item in expected_raw:
+        name = str(item or "").strip()
+        if not name:
+            continue
+        if name not in vocabulary:
+            raise RequestPairError(
+                f"expected contains an unknown fact name: {name!r}; "
+                f"known facts: {', '.join(sorted(vocabulary))}"
+            )
+        if name not in expected:
+            expected.append(name)
+    expected_note = str(spec.get("expected_note") or "").strip()
+    if len(expected_note) > 500:
+        raise RequestPairError("expected_note must be at most 500 characters")
     return {
         "schema_version": 1,
         "baseline_request": copy.deepcopy(baseline),
@@ -215,6 +253,8 @@ def validate_request_pair(spec: dict[str, Any]) -> dict[str, Any]:
         "vuln_class": str(spec.get("vuln_class") or "").strip(),
         "expected_signal": str(spec.get("expected_signal") or "").strip(),
         "expect_auth": expect_auth,
+        "expected": expected,
+        "expected_note": expected_note,
         "repeat": repeat,
     }
 
