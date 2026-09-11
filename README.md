@@ -425,8 +425,6 @@ documents the preferred model class for each role.
 - **Recon pipeline.** `recon_engine.sh` can add an optional nuclei phase when
   the tool is present.
 - **AI-first technique policy.** General technique knowledge stays in the model; `skills/runtime-protocol.md` owns shared loading and execution contracts, while `skills/security-arsenal/SKILL.md` remains an on-demand reference entry. See `skills/README.md` for role boundaries.
-  distills quick-check tables from HowToHunt, HolyTips, AllAboutBugBounty, and
-  KingOfBugBountyTips.
 
 <details>
 <summary><b>Autonomous Hunt Loop</b> — <code>/autopilot</code></summary>

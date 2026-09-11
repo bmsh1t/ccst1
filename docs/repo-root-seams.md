@@ -17,7 +17,6 @@ was previously fixed to `BASE_DIR`.
 | `resume` | `repo-root-dependent` | `load_resume_summary` / `load_pickup_summary` runtime artifacts | `main --repo-root` |
 | `scanner_pass_writer` | `narrow-root-injected` | `write_scanner_pass(findings_dir, recon_dir, out_path)` | existing explicit paths |
 | `source_hunt` | `repo-root-dependent` | `_exposure_dir` / `run_source_hunt(repo_root=...)` | `main --repo-root` |
-| `vision_browser` | `narrow-root-injected` | `find_latest_screenshot` / `list_screenshots(evidence_root=...)` | none |
 
 `hunt.py` is an adapter rather than a candidate. It retains its existing
 `BASE_DIR` execution root and passes the selected root to the new source-hunt

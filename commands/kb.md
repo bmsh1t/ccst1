@@ -24,7 +24,6 @@ description: 使用知识库层为当前 Skill 补充思路、案例和停止条
 /kb cases from-card <card-id> [--report-id <id>] [--full]
 /kb cases search --class <weakness> [--limit N]
 /kb promote
-/kb lifecycle audit
 ```
 
 ## 子命令语义
@@ -94,99 +93,17 @@ python3 tools/case_corpus.py search --class <weakness> --limit 20 --json
 python3 tools/case_corpus.py build --input distill/work/batch_000.jsonl
 ```
 
-### `/kb promote`
+### `/kb promote`（经 /distill）
 
-把目标记忆或复盘中的可复用经验晋升到知识库。候选状态由
-`tools/knowledge_candidates.py` 的追加式 lifecycle log 维护，不能直接把 markdown
-复制到 `knowledge/cards/`。
-
-从带 evidence refs 的目标经验创建候选：
-
-```bash
-python3 tools/target_memory.py pattern "两角色只读差异可复用" \
-  --kind validation-technique \
-  --evidence-ref memory/evidence/example/ledger.jsonl#L3 \
-  --target example.com
-python3 tools/knowledge_candidates.py stage \
-  --kind validation-technique \
-  --title "两角色只读差异验证" \
-  --summary "保留 baseline/variant 和响应差异，先确认权限边界再进入报告门。" \
-  --source example.com <entry-id>
-```
-
-跨目标经验可重复 `--source TARGET ENTRY_ID`；每个来源都必须有可定位证据。
-报告蒸馏候选由 `/distill --ingest` 自动登记到同一 pending 队列。
-
-```bash
-python3 tools/knowledge_candidates.py list
-python3 tools/knowledge_candidates.py review <candidate-id> \
-  --reviewer human --reason "已在两个目标复核，补齐停止条件"
-python3 tools/knowledge_candidates.py review <candidate-id> \
-  --reviewer human --reason "已确认可跨目标提示" \
-  --recall-signal "hidden binder" --recall-signal "隐藏参数"
-python3 tools/knowledge_candidates.py corroborate <candidate-id> \
-  --target second.example --entry-id <target-memory-entry-id>
-python3 tools/knowledge_candidates.py promote <candidate-id> \
-  --card-id <registered-card-id> \
-  --reviewer human --reason "正式卡已注册并通过严格知识质量门"
-python3 tools/knowledge_candidates.py reject <candidate-id> \
-  --reviewer human --reason "只适用于单个目标，无法迁移"
-python3 tools/knowledge_candidates.py supersede <candidate-id> \
-  --replacement <new-candidate-or-card> \
-  --reviewer human --reason "新卡覆盖范围更完整"
-python3 tools/knowledge_candidates.py audit --strict
-```
-
-状态只能按 `pending -> reviewed -> promoted|rejected|superseded` 迁移；`promote`
-会检查正式卡存在、registry 登记和 `knowledge_audit.py --strict`，不会覆盖同名卡。
-
-`--recall-signal` 是可选的人工确认信号，最多 8 个。只有 `reviewed` Candidate 且当前
-Context Pack 证据命中信号、来源不包含当前目标时，才显示最多一条 advisory；它不进入
-`must_read`、正式 Card 预算、Action、Finding 或 Closure。没有信号的旧 Candidate 仍可按
-原流程 review/promote，但不会运行时提示。
-
-`corroborate` 只向同一 lifecycle JSONL 追加尚未出现的独立目标来源和 evidence refs，保持
-`pending`/`reviewed` 状态；重复目标、缺证据、损坏日志和终态 Candidate 会拒绝且不写入。
-它不会自动 review、promote、修改 Card maturity 或修改 Skill/Rules。Context Pack 会显示
-reviewed pool、匹配数和选中数，便于区分没有候选与未命中信号。
-
-候选晋升后，正式卡另有独立的治理日志，不复用 candidate 状态：
-
-```bash
-python3 tools/knowledge_lifecycle.py audit
-python3 tools/knowledge_lifecycle.py review <card-id> \
-  --maturity tested --reviewer human --reason "可复跑证据" \
-  --model-profile claude-cli/profile --evidence-ref tests/fixtures/review.md#L1
-python3 tools/knowledge_lifecycle.py retire <card-id> \
-  --reviewer human --reason "被更完整卡替代"
-python3 tools/knowledge_lifecycle.py supersede <old-card> \
-  --replacement <active-card> --reviewer human --reason "范围合并"
-```
-
-`knowledge/governance/events.jsonl` 是 append-only 事实来源；`maturity` 与 active/retired/
-superseded 生命周期分离。工具只检查 reviewer、model profile、证据引用和 replacement
-完整性，不自动判断知识价值、合并对象或晋升 verdict。
+经验晋升走 `/distill <target>` 直线流程：机器出题 → AI 提三元组 → 草稿卡写入
+`knowledge/candidates/` → 人工 `mv` 进 `knowledge/cards/` 即 promote、`rm` 即
+reject（git 即生命周期，不再有第二个状态机）。
 
 晋升前必须读取：
 
 ```text
 knowledge/promotion-rules.md
 knowledge/card-template.md
-```
-
-新增或更新知识卡时，默认按 `knowledge/card-template.md` 的经验压缩库结构：
-
-```text
-能力定位
-触发信号
-思路分支
-技巧家族 / Payload 家族
-补充 Checklist
-最小验证
-常见误判 / 死路
-关联 Skills
-晋升到 Skill / Queue 的条件
-可晋升经验
 ```
 
 不要晋升：

@@ -21,7 +21,6 @@ CLASSIFICATIONS = {
     "resume": "repo-root-dependent",
     "scanner_pass_writer": "narrow-root-injected",
     "source_hunt": "repo-root-dependent",
-    "vision_browser": "narrow-root-injected",
 }
 
 ROOT_SYMBOLS = {
@@ -47,10 +46,6 @@ NARROW_SYMBOLS = {
     },
     "scanner_pass_writer": {
         "write_scanner_pass": {"findings_dir", "recon_dir", "out_path"},
-    },
-    "vision_browser": {
-        "find_latest_screenshot": {"evidence_root"},
-        "list_screenshots": {"evidence_root"},
     },
 }
 

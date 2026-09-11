@@ -135,15 +135,7 @@ Context Pack 固定只读 `reviewed` Candidate，排除来源包含当前目标�
 且不占正式 Card 预算；不暴露来源目标、Candidate 路径或 evidence refs，并标记需要当前目标
 证据。它不会直接生成 Action、Finding 或 Closure。
 
-后续目标出现同一可复用模式时，使用 `knowledge_candidates.py corroborate` 将目标记忆条目和
-evidence refs 追加到原 Candidate。该操作只扩展来源链，状态保持 `pending` 或 `reviewed`；重复
-目标、缺证据、损坏 lifecycle 和终态 Candidate 均拒绝。仍需人工决定是否 review、promote 或
-提升正式 Card maturity。
-
-正式卡晋升后的治理不写回 candidate lifecycle：
-
-- `knowledge/candidates/lifecycle.jsonl` 只回答候选是否 pending/reviewed/promoted。
-- `knowledge/governance/events.jsonl` 只回答正式卡是否 active、被替代/退休/恢复，以及
-  maturity 是否有 reviewer、model profile 和可复跑证据。
-- `tested` / `proven` 必须通过 `tools/knowledge_lifecycle.py review` 记录证据；没有证据的
-  历史声明保守保持或降为 `draft`，不能用 `legacy` 绕过门禁。
+跨目标经验的进入路径是 `/distill`（直线）：草稿卡写入 `knowledge/candidates/`，
+人工 `mv` 进 `knowledge/cards/` 即 promote、`rm` 即 reject——git 即生命周期。
+`maturity` 是 frontmatter 展示字段，人眼与 `git log` 审计；`tested`/`proven`
+的声明必须在草稿里带可复跑 evidence refs，否则保守标 `draft`。
