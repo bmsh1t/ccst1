@@ -2849,6 +2849,7 @@ def build_context_pack(
     surface_state: dict | None = None,
     coverage_state: tuple[list[dict], dict] | None = None,
     validation_runner_candidates: list[dict] | None = None,
+    ledger_diagnostics: dict | None = None,
 ) -> dict:
     repo = Path(repo_root)
     resolved_target = canonical_target_value(target)
@@ -2903,6 +2904,7 @@ def build_context_pack(
         target=resolved_target,
         focus_endpoints=_focus_endpoints_for_ledger(ranked, gaps, local_intel),
         vuln_classes=_owner_backed_vuln_classes(gaps),
+        _diagnostics=ledger_diagnostics,
     )
     ledger_path = _ledger_relative_path(evidence_summary, repo)
 

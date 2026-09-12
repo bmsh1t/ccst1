@@ -69,7 +69,7 @@ try:
     from tools.context_pack import build_context_pack
     from tools.coverage_matrix import VULN_CLASSES, _route_template, class_relevance, coverage_gaps_with_observed_evidence, high_risk_lane_summary, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, normalize_vuln_class, rebuild_matrix, save_matrix, save_matrix_projection
     from tools.evidence_rubric import evaluate_candidate_evidence, first_missing_action
-    from tools.evidence_ledger import ACTOR_MATRIX_VULN_CLASSES, build_summary as build_evidence_summary, record_command as evidence_record_command
+    from tools.evidence_ledger import ACTOR_MATRIX_VULN_CLASSES, build_summary as build_evidence_summary, load_entries_diagnostic, record_command as evidence_record_command
     from tools.case_state_seed import build_case_state_seed
     from tools.closure_resolver import ClosureResolver, canonical_endpoint_identity, canonical_endpoint_path, extract_endpoint_path
     from tools.finding_index import list_root_finding_claims, reconcile_root_finding_claims
@@ -118,7 +118,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from context_pack import build_context_pack  # type: ignore
     from coverage_matrix import VULN_CLASSES, _route_template, actionable_coverage_gaps, class_relevance, high_risk_lane_summary, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, normalize_vuln_class, rebuild_matrix, save_matrix, save_matrix_projection  # type: ignore
     from evidence_rubric import evaluate_candidate_evidence, first_missing_action  # type: ignore
-    from evidence_ledger import ACTOR_MATRIX_VULN_CLASSES, build_summary as build_evidence_summary, record_command as evidence_record_command  # type: ignore
+    from evidence_ledger import ACTOR_MATRIX_VULN_CLASSES, build_summary as build_evidence_summary, load_entries_diagnostic, record_command as evidence_record_command  # type: ignore  # type: ignore
     from case_state_seed import build_case_state_seed  # type: ignore
     from closure_resolver import ClosureResolver, canonical_endpoint_identity, canonical_endpoint_path, extract_endpoint_path  # type: ignore
     from finding_index import list_root_finding_claims, reconcile_root_finding_claims  # type: ignore
@@ -4275,6 +4275,10 @@ def build_checkpoint(
         elif matrix_is_fresh(coverage_target, matrix, repo_root=repo):
             save_matrix_projection(coverage_target, matrix, repo_root=repo)
     gaps = list(matrix.get("_coverage_gaps") or _matrix_gaps(matrix))
+    # 同一 ledger.jsonl 只读盘一次：checkpoint 自己的 summary 与 context_pack 内部的
+    # summary 共享同一份解析诊断（实测 2026-09-12：一次 checkpoint 触发 3 次 ledger
+    # 读取/2 次 summary）。快照生命周期 = 本次构建；owner 写入后下次调用自然失效。
+    ledger_diagnostics = load_entries_diagnostic(repo, resolved_target)
     context = build_context_pack(
         repo,
         target=resolved_target,
@@ -4286,6 +4290,7 @@ def build_checkpoint(
             if isinstance(state.get("validation_runner_candidates"), list)
             else None
         ),
+        ledger_diagnostics=ledger_diagnostics,
     )
     coverage_summary = _matrix_summary(matrix, gaps)
     evidence_summary = build_evidence_summary(
@@ -4293,6 +4298,7 @@ def build_checkpoint(
         target=resolved_target,
         focus_endpoints=_evidence_focus_endpoints(state, gaps),
         vuln_classes=_evidence_vuln_classes(gaps, case_state, queue_snapshot),
+        _diagnostics=ledger_diagnostics,
     )
     actor_gaps = _actor_gaps(evidence_summary)
     case_state_proposal = _case_state_proposal(case_state)

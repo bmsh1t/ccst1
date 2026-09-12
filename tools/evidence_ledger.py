@@ -713,14 +713,37 @@ def _entry_matches_requirement(entry: dict, requirement: dict) -> bool:
     )
 
 
+def _entry_requirement_key(entry: dict) -> tuple[str, str, str, str, str, str]:
+    """One requirement-matching key per entry (single canonicalize per entry)."""
+    return (
+        _canonicalize_endpoint(str(entry.get("endpoint") or "")),
+        str(entry.get("method") or "GET").upper(),
+        str(entry.get("vuln_class") or ""),
+        str(entry.get("actor") or ""),
+        str(entry.get("object_scope") or ""),
+        str(entry.get("variant") or ""),
+    )
+
+
 def actor_matrix_status(entries: list[dict], requirements: list[dict]) -> list[dict]:
+    # 单次调用内建索引：每个 entry 只 canonicalize 一次，requirement 查 dict。
+    # 语义与逐对 _entry_matches_requirement 完全一致（latest-wins：同 key 的
+    # 后写条目覆盖先写），owner 写入后随调用结束失效，无持久缓存。
+    indexed: dict[tuple[str, str, str, str, str, str], dict] = {}
+    for entry in entries:
+        indexed[_entry_requirement_key(entry)] = entry
     rows: list[dict] = []
     for requirement in requirements:
-        matches = [entry for entry in entries if _entry_matches_requirement(entry, requirement)]
+        latest = indexed.get((
+            requirement["endpoint"],
+            requirement["method"],
+            requirement["vuln_class"],
+            requirement["actor"],
+            requirement["object_scope"],
+            requirement["variant"],
+        ))
         status = "missing"
-        latest: dict = {}
-        if matches:
-            latest = matches[-1]
+        if latest:
             result = str(latest.get("result") or "")
             if result in COVERING_RESULTS:
                 status = "covered"
@@ -992,9 +1015,17 @@ def build_summary(
     vuln_classes: list[str] | None = None,
     method: str = "GET",
     _include_aggregate: bool = True,
+    _diagnostics: dict | None = None,
 ) -> dict:
     resolved_target = canonical_target_value(target)
-    diagnostics = load_entries_diagnostic(repo_root, resolved_target)
+    # 同一调用方（如 checkpoint → context_pack → build_summary → 自身 aggregate）
+    # 可传入已解析的诊断快照，避免同一 ledger.jsonl 被重复读盘+解码。
+    # 快照只在单次构建内有效；owner 写入后由下次调用自然失效。
+    diagnostics = (
+        _diagnostics
+        if isinstance(_diagnostics, dict) and _diagnostics.get("entries") is not None
+        else load_entries_diagnostic(repo_root, resolved_target)
+    )
     entries = list(diagnostics.get("entries") or [])
     path = ledger_path(repo_root, resolved_target)
     endpoints = _focus_endpoint_values(focus_endpoints, entries)
