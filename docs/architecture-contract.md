@@ -78,14 +78,45 @@ An ordinary capability change should not touch a durable owner. If it does, the 
 
 Memory is retention and recall policy, not a universal state owner.
 
-| Layer | Authority | Recall/retention boundary |
+The four-layer memory model (sensory → working → episodic → semantic, cf.
+Generative Agents arXiv:2304.03442 and MemGPT arXiv:2310.08560) is the design
+principle for information lifecycle. The five planes own software
+responsibilities; these four layers own information lifecycle. The layers map
+onto existing owners — no new memory modules:
+
+| Layer | Purpose | Existing owner |
 |---|---|---|
-| working context | Context Pack and bounded views | disposable; rebuild from owners |
-| operational facts | Runtime, Queue, Case, Observation, Evidence, Finding | canonical; restart-safe |
-| target episodic memory | `tools/target_memory.py` | goals, hypotheses, leads/dead ends, next intent, handoff; advisory |
-| cross-target experience | sanitized Knowledge candidates | evidence-linked and reviewed before promotion |
-| semantic memory | Skills, Knowledge, Rules | governed, on-demand, bounded by registry |
-| audit memory | journal/audit JSONL | append-only and rotated; not default context |
+| L1 transient observation | new observations; Claude judges what is worth attention; raw evidence stays in the Ledger | Observation Inventory, probe/runner outputs |
+| L2 working memory | only the current hypothesis, key evidence, constraints, next step | Claude's context + Context Pack (disposable; rebuild from owners) |
+| L3 episodic (per-target) | what was done, why it failed, where to continue | `tools/target_memory.py` goals/hypotheses/leads/handoff |
+| L4 semantic (cross-target) | reusable methods, applicability conditions, counterexamples | Knowledge Cards + `/distill` + `/retrospect` review |
+
+| Retention authority | Recall/retention boundary |
+|---|---|
+| working context (Context Pack and bounded views) | disposable; rebuild from owners |
+| operational facts (Runtime, Queue, Case, Observation, Evidence, Finding) | canonical; restart-safe |
+| target episodic memory (`tools/target_memory.py`) | goals, hypotheses, leads/dead ends, next intent, handoff; advisory |
+| cross-target experience (sanitized Knowledge candidates) | evidence-linked and reviewed before promotion |
+| semantic memory (Skills, Knowledge, Rules) | governed, on-demand, bounded by registry |
+| audit memory (journal/audit JSONL) | append-only and rotated; not default context |
+
+### Layer-flow rules (efficiency mechanisms)
+
+1. **Working-set compression.** Do not push every observation, history row,
+   or knowledge card into context. Claude retains what the current decision
+   needs; everything else stays a queryable pointer (owner file path, ledger
+   row, card reference). Bounded views and `--projection-only` output are the
+   default read shape; full artifacts are expanded only by reference.
+2. **Consolidate at meaningful nodes only.** Distillation to L3/L4 happens
+   when a hypothesis is falsified, a stable conclusion is reached, a phase
+   changes, or a session pauses/hands off — the checkpoint cadence already
+   names these nodes. Every observation must NOT be forced through an
+   add→classify→commit pipeline; ordinary observations stay in the Ledger.
+3. **Question-driven recall.** Read the current task and per-target
+   experience first (`skills/runtime-protocol.md#shared-knowledge-recall`);
+   consult L4 only when that is insufficient. Recalled experience carries
+   applicability conditions — it prevents re-walking dead ends without
+   freezing old conclusions into permanent rules.
 
 `hunt-memory/targets/<target>.json` is a compatibility/read projection. It cannot authorize validation, report readiness, coverage closure, or global completion. New features must not add duplicate finding, tested-endpoint, or lifecycle facts to it. Target-specific secrets, credentials, tokens, personal data, and customer data never enter cross-target or semantic memory. Retrospective output may propose a Knowledge candidate, Skill change, or Rule change, but only the existing review/lifecycle owners can promote it.
 

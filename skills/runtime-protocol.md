@@ -64,6 +64,13 @@ Target context -> evidence-backed route -> smallest bounded action
               -> owner write-back -> next question / stop / reopen
 ```
 
+记忆分层契约见 `docs/architecture-contract.md#memory-contract`：L1 观察、
+L2 工作集、L3 目标经验、L4 跨目标知识都落在既有 owner 上。运行时遵守
+三条层间流转：工作集只保留当前决策所需（其余留指针按引用展开）；只在
+重要节点（假设证伪、稳定结论、阶段切换、会话暂停/handoff）做 L3/L4 巩固
+写回——普通观察进 Ledger 即止，不强制走提炼管线；召回以当前问题为驱动，
+先目标经验后跨目标知识，经验必须带适用条件。
+
 ### 1. Target layer
 
 先读取 `memory/goals/active.json`，或运行 `python3 tools/target_memory.py show`，确认
