@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "review": "lab-r5",
+  "date": "2026-09-12",
+  "scope": "memory-loop verification round: queue drain with source attribution + new sibling finding",
+  "queue": "23/23 terminal (7 validated, 6 tested, 5 dead-end, 5 n/a); 0 active",
+  "new_finding": "basketitem-bola-1: /api/BasketItems/<id> cross-actor read (owner/peer byte-identical 200 on id=1, item belongs to another user's basket). Answers AQ-0022 sibling question: missing ownership check extends beyond /rest/basket to the Sequelize /api surface.",
+  "validated_this_round": [
+    "claim_fb02b676f9a7 (template claim narrowed to /rest/basket/4 witness)",
+    "request_diff-rest_basket_2 (own witness)",
+    "basketitem-bola-1 (new sibling witness)"
+  ],
+  "source_attribution_first_live_use": "pattern_calibration.jsonl:5091-5093 record knowledge/cards/rest-basket.md -> helped for both validations; breakpoint-C mechanism (46462a5) verified end-to-end in a real validation flow",
+  "contract_boundaries_hit": [
+    "template endpoint (<id>) cannot bind runner runs — resolved by narrowing claim_fb02b676f9a7 canonical url to /rest/basket/4",
+    "finding.type (scanner vocabulary auth_bypass) vs runner vuln_class (closure vocabulary Authz) mismatch blocked sync — normalized canonical rows to Authz",
+    "versioned resolve requires runner-owned last_outcome; claim-after-run ordering issue worked around via empty-finding-id endpoint-matched rerun",
+    "duplicate-execution guard correctly refused re-claiming AQ-0023 with parent's evidence ref"
+  ],
+  "surface_probes": "Recycles/1 200 cross-user rows; Feedbacks/Deliverys public; Complaints/SecurityQuestions 401; Quantitys 403 (admin gate)",
+  "residuals": "recon all remaining=0; coverage matrix tracks unassessed lanes (SSRF/Race/GraphQL no surface on this lab target)"
+}
