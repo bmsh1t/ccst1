@@ -99,8 +99,18 @@ python3 tools/validate.py --target <target> --finding-id <canonical-id> \
 equivalent explicit path. The decision JSON schema (schema_version, gate1–gate4,
 Q1–Q7, cvss, evidence, report fields) is owned by `tools/validate.py`
 (`MACHINE_DECISION_SCHEMA_VERSION` and its preflight errors) — do not
-hand-reconstruct it; build the JSON, then verify it with `--preflight` before
-applying. The target, ID, endpoint and class must match
+hand-reconstruct it from scratch; generate the skeleton, fill only the judgment
+fields, then verify it with `--preflight` before applying:
+
+```bash
+python3 tools/validate.py --target <target> --finding-id <canonical-id> --scaffold --json
+```
+
+The scaffold machine-fills every mechanical field (schema_version, target,
+finding_id, endpoint, runner summary bound to the latest owner-bound run, unique
+report path) and leaves `impact`/`gates`/`seven_question_gate`/`cvss` empty for
+AI judgment. Hand-writing the full JSON remains valid; the scaffold is an
+output-only generator, validation code is unchanged. The target, ID, endpoint and class must match
 the canonical row before any write occurs; the report path stays below that
 row's `findings/<target>/` directory.
 

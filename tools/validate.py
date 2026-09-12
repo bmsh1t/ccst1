@@ -1701,17 +1701,35 @@ def _validate_machine_runner_witness(
     if recorded_summary != summary_path:
         raise ValueError("runner summary_path does not point to the supplied runner summary")
     if canonical_target_value(str(runner.get("target") or "")) != decision_target:
-        raise ValueError("runner target does not match decision.target")
+        raise ValueError(
+            "runner target does not match decision.target — fix: "
+            "re-run the request-diff lane against this target, or point runner_summary "
+            "at a run recorded under this target"
+        )
     if str(runner.get("finding_id") or "").strip() != finding_id:
-        raise ValueError("runner finding_id does not match decision.finding_id")
+        raise ValueError(
+            f"runner finding_id does not match decision.finding_id — fix: re-run "
+            f"`tools/validation_runner.py request-diff --finding-id {finding_id}` "
+            "so the run is owner-bound, or point runner_summary at a run recorded "
+            "under this finding id"
+        )
     runner_endpoints = [runner.get(key) for key in ("url", "endpoint", "raw_endpoint")]
     if not any(_machine_endpoints_match(decision_endpoint, str(value or "")) for value in runner_endpoints):
-        raise ValueError("runner endpoint does not match decision.endpoint")
+        raise ValueError(
+            "runner endpoint does not match decision.endpoint — fix: endpoint matching is "
+            "EXACT (template placeholders like <id> cannot bind a concrete run); "
+            "re-run the runner against the finding's canonical endpoint, or regenerate "
+            "the decision with `tools/validate.py --finding-id <id> --scaffold`"
+        )
     runner_method = normalize_http_method(runner.get("method") or "GET")
     if runner_method != decision_method:
-        raise ValueError("runner method does not match decision.method")
+        raise ValueError("runner method does not match decision.method — fix: align decision.method with the run's method")
     if runner.get("result") != "tested_finding" or runner.get("candidate_ready") is not True:
-        raise ValueError("runner summary must be a candidate-ready tested_finding")
+        raise ValueError(
+            "runner summary must be a candidate-ready tested_finding — fix: the recorded "
+            "run did not prove the single-variable difference; re-run the request-diff "
+            "lane with distinct expected signals until it reports candidate-ready"
+        )
     operation_id = _required_text(runner.get("operation_id"), "evidence.runner_summary.operation_id")
 
     bindings = runner.get("artifact_bindings")
@@ -1853,7 +1871,10 @@ def _resolve_machine_report(
     try:
         report_path.relative_to(findings_dir.resolve())
     except ValueError as exc:
-        raise ValueError("decision.report.path must stay under the bound findings directory") from exc
+        raise ValueError(
+            "decision.report.path must stay under the bound findings directory — fix: "
+            f"use {findings_dir.resolve()}/<finding-id>-report.md"
+        ) from exc
     content = _required_text(raw.get("content"), "report.content")
     return report_path, content
 
@@ -1892,6 +1913,8 @@ def _assert_machine_report_path_available(
         raise ValueError(
             "decision report path is already owned by another finding: "
             + ", ".join(sorted(other_owners))
+            + " — fix: each finding owns its own report; use "
+            f"findings/<target>/<finding-id>-report.md"
         )
     if not report_path.exists() or finding_id in owners:
         return
@@ -2014,6 +2037,52 @@ def _build_machine_validation_input(
         info[f"{key}_pass"] = gate_passed[key]
         info[f"{key}_notes"] = gate_notes[key]
     return info, prefill, findings_dir, report_path, report_content
+
+
+def run_scaffold(args: argparse.Namespace) -> dict[str, Any]:
+    """Load the canonical finding and emit the machine-filled decision skeleton."""
+    try:
+        from tools.decision_scaffold import build_validate_scaffold
+    except ImportError:  # pragma: no cover - direct tools/ execution
+        from decision_scaffold import build_validate_scaffold  # type: ignore
+
+    if args.findings_dir:
+        findings_dir = Path(args.findings_dir).expanduser()
+        if not findings_dir.is_absolute():
+            findings_dir = (Path.cwd() / findings_dir).resolve()
+    elif args.target:
+        findings_dir = BASE_DIR / "findings" / target_storage_key(args.target)
+    else:
+        raise ValidationInputUnavailable("--scaffold requires --target or --findings-dir")
+    prefill = load_finding_prefill(
+        str(findings_dir),
+        args.finding_id,
+        migrate_legacy=False,
+        include_canonical=True,
+    )
+    if not prefill:
+        raise ValidationInputUnavailable(
+            f"finding id not found in findings.json: {args.finding_id}"
+        )
+    canonical = (
+        prefill.get("_canonical_finding")
+        if isinstance(prefill.get("_canonical_finding"), dict)
+        else {}
+    )
+    finding = canonical or {
+        "id": prefill.get("finding_id"),
+        "url": prefill.get("endpoint"),
+        "endpoint": prefill.get("endpoint"),
+        "type": prefill.get("vuln_type"),
+    }
+    # findings_dir 恒为 <repo_root>/findings/<key>——从它上溯，兼容仓库外 --findings-dir（测试/只读挂载）
+    repo_root = findings_dir.parent.parent
+    return build_validate_scaffold(
+        repo_root,
+        Path(findings_dir),
+        finding,
+        target=str(prefill.get("target") or ""),
+    )
 
 
 def run_machine_preflight(args: argparse.Namespace) -> dict[str, Any]:
@@ -2207,6 +2276,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Explicit machine-readable non-TTY validation decision bound to --finding-id.",
     )
     parser.add_argument(
+        "--scaffold",
+        action="store_true",
+        help=(
+            "Emit a machine-filled decision JSON skeleton for --finding-id "
+            "(mechanical fields pre-filled: endpoint/runner_summary/refs/report "
+            "path; judgment fields left empty). Pipe to a file, fill the "
+            "judgment fields, then run --preflight."
+        ),
+    )
+    parser.add_argument(
         "--preflight",
         action="store_true",
         help="Read-only machine decision validation; aggregate errors without writing state.",
@@ -2220,6 +2299,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
+        if args.scaffold:
+            if not args.finding_id:
+                raise ValidationInputUnavailable("--scaffold requires --finding-id")
+            result = run_scaffold(args)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 0
         if args.preflight:
             if not args.decision_json:
                 raise MachineDecisionPreflightError(("--preflight requires --decision-json",))

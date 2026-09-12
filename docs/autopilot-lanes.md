@@ -112,7 +112,7 @@ already recorded anything.
   It never changes running, validation, candidate, report, or Closure priority.
 - `wait_recon` / `wait_scan`: wait or poll, then refresh state. Runtime phase locks are the final duplicate-launch guard.
 - `validate_finding`: call `/validate` only when state returns `validate_finding`. The non-TTY owner is `python3 tools/validate.py --target <target_shell> --finding-id <id> --decision-json <json_file_shell> --json`; the JSON file path is never inline.
-- `resume_action_queue`: run `python3 tools/action_queue.py claim --target <target_shell>`, perform the claimed or resumed durable replay, then run `python3 tools/action_queue.py resolve --target <target_shell> --id <id> --status <state> --evidence <why>` and refresh.
+- `resume_action_queue`: run `python3 tools/action_queue.py claim --target <target_shell>`, perform the claimed or resumed durable replay, then run `python3 tools/action_queue.py resolve --target <target_shell> --id <id> --status <state> --evidence <why>` and refresh. For continuation resolves, generate the four-field skeleton first (`resolve --id <id> --scaffold`): `dimension` is prefilled from action metadata, `question`/`expected_learning`/`reason` stay AI-written.
 - State-read discipline (lab-e2e measured): at most ONE full state read per
   iteration. Bootstrap already carries the bounded state; when more is needed,
   combine flags (`--bounded --closure --loop-check --json`) into one call.
