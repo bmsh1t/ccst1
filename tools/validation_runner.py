@@ -2482,6 +2482,11 @@ def build_parser() -> argparse.ArgumentParser:
     request_diff.add_argument("--browser-observed", action="store_true")
     add_request_facts(request_diff)
     request_diff.add_argument("--no-ledger", action="store_true")
+    request_diff.add_argument(
+        "--json",
+        action="store_true",
+        help="Print only the summary JSON (same output shape; kept for CLI symmetry with sibling tools)",
+    )
 
 
     return parser
@@ -2539,6 +2544,8 @@ def main(argv: list[str] | None = None) -> int:
             # exact persisted witness consumed by non-interactive validation.
             _sync_finding_status(summary, repo_root=repo_root)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
+    # --json is accepted for CLI symmetry; the default output is already the
+    # machine-readable summary JSON (no human-only trailing block exists).
     return 0
 
 
