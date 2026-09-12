@@ -77,11 +77,23 @@ Complete this template:
 Use the supplied target as the active target record. Use observed exploitability,
 evidence, and reproducibility as the validation basis.
 
-Common tiers:
-- **Critical**: Any-user ATO without interaction, RCE, SQLi with data exfil, admin auth bypass
-- **High**: Mass PII exfil, privilege escalation, internal SSRF with data, stored XSS all users
-- **Medium**: IDOR on specific user non-critical data, XSS on sensitive page requiring click
-- **Low**: Non-sensitive info disclosure, clickjacking with PoC
+Common tiers — each tier carries an evidence bar, not just examples. The bar
+gates the tier: below the bar, downgrade to whatever IS demonstrated:
+
+- **Critical** — bar: attacker-controlled execution or full-account takeover
+  demonstrated without unrealistic preconditions (any-user ATO without
+  interaction, RCE, SQLi with data exfil, admin auth bypass).
+- **High** — bar: demonstrated access to other users' or the company's real
+  data at scale, or privilege escalation that works from a low-priv identity
+  (mass PII exfil, internal SSRF with data, stored XSS reaching other users).
+- **Medium** — bar: exploit chain completed but impact bounded to a single
+  user or non-critical data, or requires meaningful conditions (IDOR on
+  specific user non-critical data, XSS on sensitive page requiring click).
+- **Low** — bar: real but small blast radius or complex preconditions
+  (non-sensitive info disclosure, clickjacking with PoC on a sensitive action).
+
+A tier claim must be able to answer "what did the attacker actually get/do,
+shown in evidence?" — "possibly could" answers never meet a bar.
 
 **If the impact is still vague or only theoretical → DO NOT REPORT.**
 
@@ -249,6 +261,32 @@ Missing HttpOnly / Secure cookie flags alone
 Broken external links
 Autocomplete on password fields
 Pre-account takeover (usually — very specific conditions required)
+```
+
+Noise classes — none of these enter a report, and none are chain-eligible:
+
+```text
+# Unrealistic-precondition "vulnerabilities"
+Requires victim click + specific login state + specific browser + time window
+Requires admin access to "escalate" to admin
+Requires physical access or an already-compromised device
+Requires MITM on a site with HSTS preload
+
+# Scanner boilerplate without a demonstrated signal
+"Possible SQLi" with no reflection, no time-blind behavior, sqlmap clean
+"Possible XSS" with output escaped, CSP blocking, no bypass shown
+"SSRF" where the target resolves names but issues no requests
+CVE matched but target version patched / vulnerable code path not invoked
+
+# Information-only noise
+Open port by itself (unless the service is unauthenticated and harmful)
+Directory listing with no sensitive files inside
+Error page without credentials, paths, or exploitable stack content
+Public OSINT data (emails, employee names) already findable elsewhere
+Framework version from whatweb/wappalyzer without a verified usable nday
+
+# Compliance, not security
+Privacy-policy wording, cookie banners, footer ICP filing numbers
 ```
 
 ---
