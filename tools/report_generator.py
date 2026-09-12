@@ -29,7 +29,7 @@ try:
     from target_paths import target_storage_key
     from target_paths import canonical_target_value, url_belongs_to_target
     from closure_resolver import canonical_vuln_class
-    from validation_runner import _artifact_digest_material, _runner_operation_id
+    from contracts import artifact_digest_material, runner_operation_id
     from runner_witness import (
         RUNNER_SUMMARY_SCHEMA_VERSION,
         _canonical_runner_witness,
@@ -50,7 +50,7 @@ except ImportError:  # pragma: no cover - package import path
     from tools.target_paths import target_storage_key
     from tools.target_paths import canonical_target_value, url_belongs_to_target
     from tools.closure_resolver import canonical_vuln_class
-    from tools.validation_runner import _artifact_digest_material, _runner_operation_id
+    from tools.contracts import artifact_digest_material, runner_operation_id
     from tools.runner_witness import (
         RUNNER_SUMMARY_SCHEMA_VERSION,
         _canonical_runner_witness,

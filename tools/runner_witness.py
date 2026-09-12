@@ -12,11 +12,11 @@ from urllib.parse import parse_qsl, urlparse
 try:
     from .closure_resolver import canonical_vuln_class
     from .target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
-    from .validation_runner import _artifact_digest_material, _runner_operation_id
+    from .contracts import artifact_digest_material, runner_operation_id
 except ImportError:  # pragma: no cover - direct tools/ execution
     from closure_resolver import canonical_vuln_class  # type: ignore
     from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # type: ignore
-    from validation_runner import _artifact_digest_material, _runner_operation_id  # type: ignore
+    from contracts import artifact_digest_material, runner_operation_id  # type: ignore
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -277,14 +277,14 @@ def canonical_runner_witness(finding, *, findings_dir, target):
         if not isinstance(operation_material, dict):
             errors.append("runner operation material is missing")
             continue
-        expected_material = _artifact_digest_material(bindings)
+        expected_material = artifact_digest_material(bindings)
         if operation_material.get("artifact_bindings") != expected_material:
             errors.append("runner operation material artifact binding mismatch")
             continue
         if canonical_target_value(str(operation_material.get("target") or "")) != expected_target:
             errors.append("runner operation material target mismatch")
             continue
-        if _runner_operation_id(operation_material) != operation_id:
+        if runner_operation_id(operation_material) != operation_id:
             errors.append("runner operation ID does not match canonical material")
             continue
         ledger = _runner_ledger_row(repo_root, expected_target, runner, refs)

@@ -32,6 +32,7 @@ if str(BASE_DIR) not in sys.path:
 
 try:
     from tools.auth_session import AuthSession, add_cli_args, session_from_args
+    from tools.contracts import artifact_digest_material, runner_operation_id
     from tools.action_queue import (
         ACTIVE_STATUSES,
         _dedupe_key,
@@ -61,6 +62,7 @@ try:
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
 except ImportError:  # pragma: no cover - direct tools/ execution
     from auth_session import AuthSession, add_cli_args, session_from_args  # type: ignore
+    from contracts import artifact_digest_material, runner_operation_id  # type: ignore
     from action_queue import (  # type: ignore
         ACTIVE_STATUSES,
         _dedupe_key,
@@ -297,30 +299,14 @@ def _artifact_bindings(summary: dict[str, Any], repo_root: Path) -> list[dict[st
     return [bindings[key] for key in sorted(bindings)]
 
 
-def _artifact_digest_material(bindings: list[dict[str, Any]]) -> list[dict[str, str]]:
-    """Return path-independent artifact identity for operation hashing."""
-    material = []
-    for binding in bindings:
-        if not isinstance(binding, dict):
-            continue
-        kind = str(binding.get("kind") or "").strip().lower()
-        digest = str(binding.get("sha256") or "").strip().lower()
-        # Only wire request/response artifacts define an operation. Derived
-        # diff/identity files often contain per-run paths and would break
-        # replay idempotency without adding evidence strength.
-        if kind and digest and (
-            kind == "request"
-            or kind.endswith("_request")
-            or kind == "response"
-            or kind.endswith("_response")
-        ):
-            material.append({"kind": kind, "sha256": digest})
-    return sorted(material, key=lambda item: (item["kind"], item["sha256"]))
+def _runner_operation_id_compat(material: dict[str, Any]) -> str:
+    # 已上移 tools/contracts.runner_operation_id（证据消费方不再反向依赖执行器）；
+    # 旧私有名保留为兼容导出，tests/历史调用不破坏。
+    return runner_operation_id(material)
 
 
-def _runner_operation_id(material: dict[str, Any]) -> str:
-    encoded = json.dumps(material, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
-    return f"runner:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()[:24]}"
+_artifact_digest_material = artifact_digest_material
+_runner_operation_id = _runner_operation_id_compat
 
 
 def _stable_operation_material(value: Any) -> Any:

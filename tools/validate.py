@@ -38,9 +38,9 @@ except ImportError:  # pragma: no cover - package import path
     )
 
 try:
-    from validation_runner import _artifact_digest_material, _runner_operation_id
+    from contracts import artifact_digest_material, runner_operation_id
 except ImportError:  # pragma: no cover - package import path
-    from tools.validation_runner import _artifact_digest_material, _runner_operation_id
+    from tools.contracts import artifact_digest_material, runner_operation_id
 
 try:
     from runner_witness import canonical_runner_witness
@@ -1778,11 +1778,11 @@ def _validate_machine_runner_witness(
     operation_material = runner.get("operation_material")
     if not isinstance(operation_material, dict):
         raise ValueError("runner summary operation_material must be an object")
-    if operation_material.get("artifact_bindings") != _artifact_digest_material(bindings):
+    if operation_material.get("artifact_bindings") != artifact_digest_material(bindings):
         raise ValueError("runner operation material artifact binding mismatch")
     if canonical_target_value(str(operation_material.get("target") or "")) != decision_target:
         raise ValueError("runner operation material target does not match decision.target")
-    if _runner_operation_id(operation_material) != operation_id:
+    if runner_operation_id(operation_material) != operation_id:
         raise ValueError("runner operation_id does not match canonical operation material")
     return summary_path
 
