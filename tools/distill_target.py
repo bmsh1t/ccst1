@@ -220,6 +220,10 @@ def render_candidate_card(target: str, triple: dict, refs: list[str]) -> str:
     """渲染 card-template.md 形态的草稿卡（maturity: draft）。"""
     typology = triple["typology"]
     evidence_lines = "\n".join(f"- `{r}`" for r in refs)
+    # source_refs 必须满足 knowledge_registry 的 target-evidence 契约
+    # （type/target/refs 列表形态）；旧的 json.dumps 内联形态 promote 后
+    # 无法通过 audit（记忆复核断点 A，2026-09-12 修复）。
+    ref_lines = "\n".join(f"      - {json.dumps(r, ensure_ascii=False)}" for r in refs)
     return f"""---
 id: {triple['slug']}
 type: technique-card
@@ -232,7 +236,8 @@ load_priority: low
 source_refs:
   - type: target-evidence
     target: {canonical_target_value(target)}
-    refs: {json.dumps(refs, ensure_ascii=False)}
+    refs:
+{ref_lines}
 updated: {datetime.now(timezone.utc).date().isoformat()}
 ---
 

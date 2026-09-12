@@ -20,6 +20,12 @@ REGISTRY_RELATIVE_PATH = Path("knowledge/capabilities.yaml")
 SOURCE_REF_TYPE = "corpus-report"
 SOURCE_REF_CORPUS = "hackerone-disclosed-reports"
 REPORT_ID_RE = re.compile(r"^[1-9][0-9]*$")
+# 蒸馏卡来源（/distill 草稿）：来源是目标名下的真实证据文件，不是案例 corpus。
+# 契约：type=target-evidence + target=<canonical target> + refs=<target-owned paths>。
+# 草稿 mv 进 cards/ 后与 corpus-report 卡同等通过 audit（闭环修复 2026-09-12
+# 记忆复核断点 A：原契约只认 corpus-report，蒸馏卡 promote 即 audit 报错）。
+TARGET_EVIDENCE_REF_TYPE = "target-evidence"
+TARGET_EVIDENCE_CORPUS = "target-distilled-evidence"
 
 
 class KnowledgeRegistryError(RuntimeError):
@@ -99,42 +105,89 @@ def parse_source_refs(
 
     refs: list[KnowledgeSourceRef] = []
     seen: set[tuple[str, str, str]] = set()
-    required_keys = {"type", "corpus", "id"}
     for index, raw_ref in enumerate(raw_refs):
         location = f"{source_path}: source_refs[{index}]"
         if not isinstance(raw_ref, dict):
             raise KnowledgeRegistryError(f"{location} 必须是对象")
-        unknown = set(raw_ref) - required_keys
-        missing = required_keys - set(raw_ref)
-        if unknown:
+        ref_type = raw_ref.get("type")
+        if ref_type == SOURCE_REF_TYPE:
+            ref = _parse_corpus_report_ref(raw_ref, location=location)
+        elif ref_type == TARGET_EVIDENCE_REF_TYPE:
+            ref = _parse_target_evidence_ref(raw_ref, location=location)
+        else:
             raise KnowledgeRegistryError(
-                f"{location} 含未知字段: {sorted(unknown)}"
+                f"{location}.type 必须为 {SOURCE_REF_TYPE!r} 或 {TARGET_EVIDENCE_REF_TYPE!r}"
             )
-        if missing:
-            raise KnowledgeRegistryError(
-                f"{location} 缺少字段: {sorted(missing)}"
-            )
-        ref_type = raw_ref["type"]
-        corpus = raw_ref["corpus"]
-        report_id = raw_ref["id"]
-        if ref_type != SOURCE_REF_TYPE:
-            raise KnowledgeRegistryError(
-                f"{location}.type 必须为 {SOURCE_REF_TYPE!r}"
-            )
-        if corpus != SOURCE_REF_CORPUS:
-            raise KnowledgeRegistryError(
-                f"{location}.corpus 必须为 {SOURCE_REF_CORPUS!r}"
-            )
-        if not isinstance(report_id, str) or not REPORT_ID_RE.fullmatch(report_id):
-            raise KnowledgeRegistryError(
-                f"{location}.id 必须是非零十进制字符串"
-            )
-        identity = (ref_type, corpus, report_id)
+        identity = (ref.type, ref.corpus, ref.id)
         if identity in seen:
-            raise KnowledgeRegistryError(f"{location} 与前序来源重复: {report_id}")
+            raise KnowledgeRegistryError(f"{location} 与前序来源重复: {ref.id}")
         seen.add(identity)
-        refs.append(KnowledgeSourceRef(*identity))
+        refs.append(ref)
     return tuple(refs)
+
+
+def _parse_corpus_report_ref(
+    raw_ref: dict[str, Any],
+    *,
+    location: str,
+) -> KnowledgeSourceRef:
+    """v1 corpus-report 契约：type/corpus/id 三字段，id 是非零十进制报告号。"""
+    required_keys = {"type", "corpus", "id"}
+    unknown = set(raw_ref) - required_keys
+    missing = required_keys - set(raw_ref)
+    if unknown:
+        raise KnowledgeRegistryError(
+            f"{location} 含未知字段: {sorted(unknown)}"
+        )
+    if missing:
+        raise KnowledgeRegistryError(
+            f"{location} 缺少字段: {sorted(missing)}"
+        )
+    corpus = raw_ref["corpus"]
+    report_id = raw_ref["id"]
+    if corpus != SOURCE_REF_CORPUS:
+        raise KnowledgeRegistryError(
+            f"{location}.corpus 必须为 {SOURCE_REF_CORPUS!r}"
+        )
+    if not isinstance(report_id, str) or not REPORT_ID_RE.fullmatch(report_id):
+        raise KnowledgeRegistryError(
+            f"{location}.id 必须是非零十进制字符串"
+        )
+    return KnowledgeSourceRef(SOURCE_REF_TYPE, SOURCE_REF_CORPUS, report_id)
+
+
+def _parse_target_evidence_ref(
+    raw_ref: dict[str, Any],
+    *,
+    location: str,
+) -> KnowledgeSourceRef:
+    """蒸馏卡来源契约：type/target/refs。
+
+    id 规范化为 `<canonical-target>|<ref1>;...`，与 corpus-report 的
+    (type, corpus, id) 身份结构对齐；corpus 固定为 target-distilled-evidence。
+    校验 target 非空、refs 为非空字符串列表。
+    """
+    required_keys = {"type", "target", "refs"}
+    unknown = set(raw_ref) - required_keys
+    missing = required_keys - set(raw_ref)
+    if unknown:
+        raise KnowledgeRegistryError(
+            f"{location} 含未知字段: {sorted(unknown)}"
+        )
+    if missing:
+        raise KnowledgeRegistryError(
+            f"{location} 缺少字段: {sorted(missing)}"
+        )
+    target = raw_ref["target"]
+    refs_list = raw_ref["refs"]
+    if not isinstance(target, str) or not target.strip():
+        raise KnowledgeRegistryError(f"{location}.target 必须是非空字符串")
+    if not isinstance(refs_list, list) or not refs_list:
+        raise KnowledgeRegistryError(f"{location}.refs 必须是非空字符串列表")
+    if any(not isinstance(item, str) or not item.strip() for item in refs_list):
+        raise KnowledgeRegistryError(f"{location}.refs 必须是非空字符串列表")
+    stable_id = target.strip() + "|" + ";".join(ref.strip() for ref in refs_list)
+    return KnowledgeSourceRef(TARGET_EVIDENCE_REF_TYPE, TARGET_EVIDENCE_CORPUS, stable_id)
 
 
 @dataclass(frozen=True)

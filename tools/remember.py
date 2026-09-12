@@ -288,18 +288,48 @@ def remember_finding(
 
     pattern_saved = False
     effective_tech_stack = profile.get("tech_stack", [])
-    if result == "confirmed" and payout and payout > 0 and technique and effective_tech_stack:
-        pattern = make_pattern_entry(
-            target=canonical_target,
-            vuln_class=vuln_class,
-            technique=technique,
-            tech_stack=effective_tech_stack,
-            endpoint=normalized_endpoint,
-            payout=payout,
-            notes=notes,
-            tags=tags,
-        )
-        pattern_saved = pattern_db.save(pattern)
+    # 经验写入门槛（记忆复核断点 B 修复，2026-09-12）：confirmed+payout>0 走原路径
+    # （outcome=helped）；失败反例（false-positive）与未付费有效经验（no-signal）
+    # 只要有 technique 和 tech_stack 也写入模式索引，获得跨目标召回。
+    # 旧四条件门把这三类经验挡在外面，patterns.jsonl 只剩"成功付费"一种视角。
+    if technique and effective_tech_stack:
+        if result == "confirmed" and payout and payout > 0:
+            pattern = make_pattern_entry(
+                target=canonical_target,
+                vuln_class=vuln_class,
+                technique=technique,
+                tech_stack=effective_tech_stack,
+                endpoint=normalized_endpoint,
+                payout=payout,
+                notes=notes,
+                tags=tags,
+                outcome="helped",
+            )
+            pattern_saved = pattern_db.save(pattern)
+        elif result in ("rejected", "false-positive", "dead-end"):
+            pattern = make_pattern_entry(
+                target=canonical_target,
+                vuln_class=vuln_class,
+                technique=technique,
+                tech_stack=effective_tech_stack,
+                endpoint=normalized_endpoint,
+                notes=notes,
+                tags=tags,
+                outcome="false-positive",
+            )
+            pattern_saved = pattern_db.save(pattern)
+        else:
+            pattern = make_pattern_entry(
+                target=canonical_target,
+                vuln_class=vuln_class,
+                technique=technique,
+                tech_stack=effective_tech_stack,
+                endpoint=normalized_endpoint,
+                notes=notes,
+                tags=tags,
+                outcome="no-signal",
+            )
+            pattern_saved = pattern_db.save(pattern)
 
     return {
         "target": requested_target,

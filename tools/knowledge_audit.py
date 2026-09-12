@@ -810,6 +810,10 @@ def _audit_document(
                 except ImportError:  # pragma: no cover - direct tools/ execution
                     from case_corpus import get_case  # type: ignore
                 for source_ref in source_refs:
+                    if source_ref.type != "corpus-report":
+                        # target-evidence 来源指向目标名下证据文件，不在案例 corpus
+                        # 内；其存在性由 /distill commit 时的可溯源 gate 保证。
+                        continue
                     resolved = get_case(
                         source_ref.id,
                         corpus_dir=corpus_dir,

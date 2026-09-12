@@ -18,8 +18,13 @@ JOURNAL_OPTIONAL = {"severity", "payout", "technique", "notes", "tags", "session
 JOURNAL_ALL = JOURNAL_REQUIRED | JOURNAL_OPTIONAL
 
 PATTERN_REQUIRED = {"ts", "target", "vuln_class", "technique", "tech_stack", "schema_version"}
-PATTERN_OPTIONAL = {"endpoint", "payout", "notes", "tags", "session_id"}
+PATTERN_OPTIONAL = {"endpoint", "payout", "notes", "tags", "session_id", "outcome"}
 PATTERN_ALL = PATTERN_REQUIRED | PATTERN_OPTIONAL
+# 经验结果标记（记忆复核断点 B 修复，2026-09-12）：patterns.jsonl 原先只有
+# confirmed+payout>0 的经验能写入，失败反例和未付费有效经验进不了模式索引，
+# 得不到跨目标召回。outcome 区分经验性质，match() 的 payout 排序天然把
+# helped 放前、失败经验放后——都可被召回，但优先级不同。
+PATTERN_OUTCOMES = {"helped", "no-signal", "false-positive"}
 
 
 def _current_session_id() -> str | None:
@@ -144,6 +149,12 @@ def validate_pattern_entry(entry: dict) -> dict:
     if not isinstance(entry["technique"], str) or not entry["technique"].strip():
         raise SchemaError("Pattern entry: 'technique' must be a non-empty string")
 
+    if "outcome" in entry:
+        if entry["outcome"] not in PATTERN_OUTCOMES:
+            raise SchemaError(
+                f"Pattern entry: 'outcome' must be one of {sorted(PATTERN_OUTCOMES)}"
+            )
+
     if "session_id" in entry:
         if not isinstance(entry["session_id"], str) or not entry["session_id"].strip():
             raise SchemaError("Pattern entry: 'session_id' must be a non-empty string")
@@ -231,6 +242,7 @@ def make_pattern_entry(
     notes: str | None = None,
     tags: list[str] | None = None,
     session_id: str | None = None,
+    outcome: str | None = None,
 ) -> dict:
     """Create and validate a new pattern entry with current timestamp."""
     entry = {
@@ -253,6 +265,8 @@ def make_pattern_entry(
         session_id = _current_session_id()
     if session_id is not None:
         entry["session_id"] = session_id
+    if outcome is not None:
+        entry["outcome"] = outcome
 
     return validate_pattern_entry(entry)
 

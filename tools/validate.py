@@ -687,6 +687,10 @@ def build_validation_summary(info: dict, *, all_pass: bool, report_path: str | P
             ],
             "runner_summary": str(machine_decision.get("runner_summary") or ""),
         }
+    # 源归因透传：calibration 回写要读 summary.source_knowledge_refs。
+    adopted_sources = info.get("source_knowledge_refs")
+    if isinstance(adopted_sources, list) and adopted_sources:
+        summary["source_knowledge_refs"] = [str(item) for item in adopted_sources]
 
     return summary
 
@@ -1410,13 +1414,29 @@ def record_validation_calibration(
             "vuln_class": vuln_class,
             "technique": str(summary.get("technique", "") or ""),
         })
-        return record_outcome(
+        written = record_outcome(
             pattern_id=pid,
             outcome=outcome,
             session_id=session_id,
             target=target,
             path=path,
         )
+        # 源归因（记忆复核断点 C 修复）：经验被跨目标采用时，反馈必须记到
+        # 被采用的来源上（PatternDB 复合 ID 或知识卡路径），否则源经验的
+        # helped/false_positive 统计永远拿不到数据。当前 target 的复合 ID
+        # 照记（本地模式行为不变），来源行额外追加。
+        source_refs = summary.get("source_knowledge_refs")
+        if isinstance(source_refs, list):
+            for source_ref in source_refs:
+                if isinstance(source_ref, str) and source_ref.strip() and source_ref != pid:
+                    record_outcome(
+                        pattern_id=source_ref.strip(),
+                        outcome=outcome,
+                        session_id=session_id,
+                        target=target,
+                        path=path,
+                    )
+        return written
     except Exception:
         return None
 
@@ -1644,6 +1664,34 @@ def _resolve_machine_evidence_refs(values: Any, *, repo_root: Path) -> list[str]
             raise ValueError(f"decision evidence ref is not a readable file: {raw}")
         resolved.append(str(path))
     return resolved
+
+
+def _parse_source_knowledge_refs(values: Any) -> list[str]:
+    """Optional adopted-experience pointers for calibration attribution.
+
+    接受两类值：知识卡相对路径（knowledge/cards/... 或 knowledge/candidates/...，
+    必须真实存在，防笔误）或 PatternDB 复合 ID（含 '|' 的字符串原样保留）。
+    其他形态一律拒绝——归因错误比缺省更糟。
+    """
+    if values is None:
+        return []
+    if not isinstance(values, list):
+        raise ValueError("decision.source_knowledge_refs must be a list")
+    refs: list[str] = []
+    for value in values:
+        raw = _required_text(value, "source_knowledge_refs[]")
+        if "|" in raw:
+            refs.append(raw)
+            continue
+        path = Path(raw)
+        if not path.is_absolute():
+            path = BASE_DIR / path
+        if not path.is_file():
+            raise ValueError(
+                f"decision.source_knowledge_refs names a missing card: {raw}"
+            )
+        refs.append(raw)
+    return refs
 
 
 def _resolve_machine_repo_file(value: Any, field: str, *, repo_root: Path) -> Path:
@@ -2025,6 +2073,10 @@ def _build_machine_validation_input(
         "finding_summary": prefill.get("summary", ""),
         "evidence_rubric": prefill.get("rubric", {}),
         "seven_question_gate": seven_questions,
+        # 源归因（记忆复核断点 C 修复）：AI 声明本次验证实际采用的经验来源
+        # （知识卡路径或 PatternDB 模式 ID）。缺省时回退当前 target 的复合 ID，
+        # 行为与旧版完全一致。
+        "source_knowledge_refs": _parse_source_knowledge_refs(decision.get("source_knowledge_refs")),
         "machine_decision": {
             "schema_version": MACHINE_DECISION_SCHEMA_VERSION,
             "source": str(decision_path),
