@@ -701,6 +701,11 @@ REPORT_VULN_TYPE_ALIASES = {
     "authentication_bypass": "auth_bypass",
     "auth_bypass": "auth_bypass",
     "authorization_bypass": "auth_bypass",
+    # closure 词汇（validation_runner/closure_resolver 用 Authz 归一）；
+    # 词汇统一（310c9ef）后 canonical type 可能为 Authz——报告模板同义。
+    "authz": "auth_bypass",
+    "authorization": "auth_bypass",
+    "access_control": "auth_bypass",
     "remote_code_execution": "rce",
     "command_injection": "rce",
     "os_command_injection": "rce",

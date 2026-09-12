@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "review": "lab-r6",
+  "date": "2026-09-12",
+  "scope": "post-convergence lab round: report generation + observation inventory consumption",
+  "reports": "5 generated (4 basket-family BOLA + 1 new users-enumeration-1); all validated findings at report_status=generated",
+  "new_finding": "users-enumeration-1: /api/Users returns full user table (24 accounts, admin emails, roles, lastLoginIp) to any authenticated customer. Owner/peer byte-identical 6920B; anonymous 401.",
+  "finding_count": "6 validated total: AQ-0002, request_diff-rest_basket_2, claim_fb02b676f9a7, basketitem-bola-1, users-enumeration-1 (+ generalized claim folded)",
+  "observations": "184 total, 6 reviewed (high-value read-only probes: users table, admin config, change-password, whoami); 178 remain untouched (mostly JS chunks and static assets)",
+  "contract_boundaries_hit": [
+    "report_generator REPORT_VULN_TYPE_ALIASES lacked closure-vocabulary Authz -> findings fell to misconfig template; fixed by aliasing authz/authorization/access_control -> auth_bypass (310c9ef followup)",
+    "pointer-tear pattern: runner sync updates runner_operation_id but validation_summary/runner_summary_path keep the older run -> witness 'runner operation is not bound'; resolved per-finding by owner-API pointer alignment + fresh decision",
+    "Exposure not a closure family: users-enumeration ledger write skipped until rerun with vuln_class=Authz"
+  ],
+  "residuals": "178 untouched observations are mostly JS/static; admin application-configuration readable by customer token recorded as reviewed-note (candidate surface for a future round); report content still template-based (AI-body wiring is the known P1 item)"
+}

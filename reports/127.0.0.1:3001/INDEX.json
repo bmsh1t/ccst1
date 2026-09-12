@@ -1,0 +1,83 @@
+{
+  "target": "127.0.0.1:3001",
+  "generated_at": "2026-09-12T17:53:17.709005",
+  "total_reports": 5,
+  "reports": [
+    {
+      "id": "auth_bypass_001",
+      "finding_id": "AQ-0002",
+      "title": "Candidate Authz on http://127.0.0.1:3001/rest/basket/6",
+      "severity": "medium",
+      "url": "http://127.0.0.1:3001/rest/basket/6",
+      "file": "/root/tool/ccst(rename-_Ya66f2)/ccst/reports/127.0.0.1:3001/auth_bypass_001.md",
+      "type": "auth_bypass",
+      "source_file": "evidence/127.0.0.1:3001/validation/AQ-0002/20260911T074639340963Z-316e3411/summary.json",
+      "confidence": "confirmed",
+      "queue_sync": {
+        "status": "skipped",
+        "reason": "no matching report action"
+      }
+    },
+    {
+      "id": "misconfig_001",
+      "finding_id": "request_diff-rest_basket_2",
+      "title": "Candidate Authz on http://127.0.0.1:3001/rest/basket/2",
+      "severity": "medium",
+      "url": "http://127.0.0.1:3001/rest/basket/2",
+      "file": "/root/tool/ccst(rename-_Ya66f2)/ccst/reports/127.0.0.1:3001/misconfig_001.md",
+      "type": "Authz",
+      "source_file": "evidence/127.0.0.1:3001/validation/request_diff-rest_basket_2/20260912T034508920025Z-b068f1b5/summary.json",
+      "confidence": "high",
+      "queue_sync": {
+        "status": "skipped",
+        "reason": "no matching report action"
+      }
+    },
+    {
+      "id": "misconfig_002",
+      "finding_id": "claim_fb02b676f9a7",
+      "title": "Generalized bidirectional BOLA on /rest/basket/<id> \u2014 every basket id readable by any authenticated user",
+      "severity": "medium",
+      "url": "http://127.0.0.1:3001/rest/basket/4",
+      "file": "/root/tool/ccst(rename-_Ya66f2)/ccst/reports/127.0.0.1:3001/misconfig_002.md",
+      "type": "Authz",
+      "source_file": "/root/tool/ccst(rename-_Ya66f2)/ccst/findings/127.0.0.1:3001/basket-bola-generalized.claim.json",
+      "confidence": "high",
+      "queue_sync": {
+        "status": "skipped",
+        "reason": "no matching report action"
+      }
+    },
+    {
+      "id": "auth_bypass_002",
+      "finding_id": "basketitem-bola-1",
+      "title": "Candidate Authz on http://127.0.0.1:3001/api/BasketItems/1",
+      "severity": "medium",
+      "url": "http://127.0.0.1:3001/api/BasketItems/1",
+      "file": "/root/tool/ccst(rename-_Ya66f2)/ccst/reports/127.0.0.1:3001/auth_bypass_002.md",
+      "type": "Authz",
+      "source_file": "evidence/127.0.0.1:3001/validation/basketitem-bola-1/20260912T152622238934Z-522c3c6c/summary.json",
+      "confidence": "confirmed",
+      "queue_sync": {
+        "status": "skipped",
+        "reason": "no matching report action"
+      }
+    },
+    {
+      "id": "auth_bypass_003",
+      "finding_id": "users-enumeration-1",
+      "title": "Authentication/Authorization Bypass on 127.0.0.1:3001",
+      "severity": "medium",
+      "url": "http://127.0.0.1:3001/api/Users",
+      "file": "/root/tool/ccst(rename-_Ya66f2)/ccst/reports/127.0.0.1:3001/auth_bypass_003.md",
+      "type": "auth_bypass",
+      "source_file": "evidence/127.0.0.1:3001/validation/users-enumeration-1/20260912T175051084009Z-a8d893c0/summary.json",
+      "confidence": "high",
+      "queue_sync": {
+        "status": "skipped",
+        "reason": "no matching report action"
+      },
+      "canonical_lifecycle": true
+    }
+  ]
+}
