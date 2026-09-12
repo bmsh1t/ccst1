@@ -490,6 +490,21 @@ def _runner_sync_gate_updates(
     }
 
 
+def _classes_equivalent(existing_class: str, vuln_class: str) -> bool:
+    """Two vulnerability-class spellings denote the same closure family.
+
+    经 closure 词汇 owner（canonical_vuln_class）归一后比较：scanner 词汇
+    （auth_bypass/idor）与 closure 词汇（Authz/IDOR）是同一概念的两套拼写。
+    未知类（canonical_vuln_class 返回 ""）回退不区分大小写的裸比较，保持
+    fail-open——裸比较已经接受过任何同形拼写。
+    """
+    existing_canonical = canonical_vuln_class(existing_class)
+    incoming_canonical = canonical_vuln_class(vuln_class)
+    if existing_canonical and incoming_canonical:
+        return existing_canonical == incoming_canonical
+    return existing_class.strip().lower() == vuln_class.strip().lower()
+
+
 def _runner_finding_type(vuln_class: str, lane: str) -> str:
     value = str(vuln_class or "").strip().lower()
     lane_value = str(lane or "").strip().lower()
@@ -803,7 +818,9 @@ def _sync_finding_status(summary: dict[str, Any], *, repo_root: Path) -> dict[st
             existing_class
             and not class_incomplete
             and vuln_class
-            and existing_class.lower() != vuln_class.lower()
+            # 经 closure 词汇 owner（canonical_vuln_class）归一后比较；
+            # 未知类（返回 ""）回退裸比较，保持 fail-open。
+            and not _classes_equivalent(existing_class, vuln_class)
         ):
             return {
                 "status": "skipped",

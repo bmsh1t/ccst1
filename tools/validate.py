@@ -48,6 +48,11 @@ except ImportError:  # pragma: no cover - package import path
     from tools.runner_witness import canonical_runner_witness
 
 try:
+    from closure_resolver import canonical_vuln_class
+except ImportError:  # pragma: no cover - package import path
+    from tools.closure_resolver import canonical_vuln_class
+
+try:
     from target_paths import (
         canonical_target_value,
         resolve_target_url,
@@ -2022,7 +2027,15 @@ def _build_machine_validation_input(
         raise ValueError("decision.endpoint does not match the canonical finding endpoint")
     decision_vuln_class = _normalize_vuln_class(_required_text(decision.get("vuln_class"), "vuln_class"))
     indexed_vuln_class = _normalize_vuln_class(prefill.get("vuln_type"))
-    if not decision_vuln_class or decision_vuln_class != indexed_vuln_class:
+    # 与 preflight 同规则：closure 词汇 owner 归一后比较（scanner 词汇
+    # auth_bypass 与 closure 词汇 Authz 是同一概念）；未知类回退裸比较。
+    decision_canonical = canonical_vuln_class(decision_vuln_class)
+    indexed_canonical = canonical_vuln_class(indexed_vuln_class)
+    if decision_canonical and indexed_canonical:
+        classes_match = decision_canonical == indexed_canonical
+    else:
+        classes_match = decision_vuln_class == indexed_vuln_class
+    if not decision_vuln_class or not classes_match:
         raise ValueError("decision.vuln_class does not match the canonical finding class")
 
     gate_passed, gate_notes = _parse_machine_gates(decision.get("gates"))
@@ -2198,7 +2211,17 @@ def run_machine_preflight(args: argparse.Namespace) -> dict[str, Any]:
     )
     if prefill and decision_vuln_class is not None:
         indexed_vuln_class = _normalize_vuln_class(prefill.get("vuln_type"))
-        if not decision_vuln_class or decision_vuln_class != indexed_vuln_class:
+        # 经 closure 词汇 owner 归一后比较：prefill 的 type 来自 scanner 词汇
+        # （auth_bypass），runner/decision 用 closure 词汇（Authz）——同一概念的
+        # 两套拼写不应判为不匹配（lab-r5 实测撞墙根因）。未知类回退裸比较。
+        decision_canonical = canonical_vuln_class(decision_vuln_class)
+        indexed_canonical = canonical_vuln_class(indexed_vuln_class)
+        classes_match = (
+            (decision_canonical and indexed_canonical and decision_canonical == indexed_canonical)
+            if (decision_canonical and indexed_canonical)
+            else (decision_vuln_class == indexed_vuln_class)
+        )
+        if not decision_vuln_class or not classes_match:
             errors.append("decision.vuln_class does not match the canonical finding class")
 
     capture(lambda: _parse_machine_gates(decision.get("gates")))
