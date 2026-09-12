@@ -2341,6 +2341,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Versioned AI activation metadata merged atomically before claim.",
     )
     claim.add_argument(
+        "--template",
+        default="",
+        help=(
+            "Claim template name (run `list-templates` to enumerate): pre-fills "
+            "category-stable activation fields (family/technique/dimension/"
+            "skill_route/risk_tier). Judgment fields are never templated; "
+            "explicit --metadata-json values always win."
+        ),
+    )
+    claim.add_argument(
         "--from-evidence",
         default="",
         help=(
