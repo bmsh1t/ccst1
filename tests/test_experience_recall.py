@@ -107,7 +107,7 @@ def test_kind_restriction(tmp_path):
     assert view["counts"]["knowledge_cards"] == 0
 
 
-def test_missing_target_memory_degrades_to_cross_target_only(tmp_path):
+def test_missing_target_memory_degrades_to_empty_view(tmp_path):
     (tmp_path / "hunt-memory").mkdir()
     (tmp_path / "hunt-memory" / "patterns.jsonl").write_text(
         json.dumps({"ts": "t", "target": "x.example", "vuln_class": "v",

@@ -41,7 +41,6 @@ except ImportError:
         summarize_structured_findings,
     )
 from memory.hunt_journal import HuntJournal
-from memory.pattern_db import PatternDB
 from memory.target_profile import default_memory_dir, load_target_profile
 try:
     from tools.finding_index import load_finding_index
@@ -342,22 +341,11 @@ def load_resume_summary(
     confirmed_payout = round(sum(float(entry.get("payout", 0) or 0) for entry in confirmed_entries), 2)
     latest_session = latest_session_summary(entries)
 
-    pattern_db = PatternDB(memory_dir / "patterns.jsonl")
-    pattern_matches = []
-    seen = set()
-    for pattern in pattern_db.match(tech_stack=profile.get("tech_stack", [])):
-        if pattern.get("target") == profile_target:
-            continue
-        key = (pattern.get("target", ""), pattern.get("technique", ""), pattern.get("vuln_class", ""))
-        if key in seen:
-            continue
-        seen.add(key)
-        pattern_matches.append({
-            "target": pattern.get("target", ""),
-            "technique": pattern.get("technique", ""),
-            "vuln_class": pattern.get("vuln_class", ""),
-            "payout": pattern.get("payout", 0),
-        })
+    # 跨目标模式匹配已移除（2026-09-12 收敛裁定）：按 tech_stack 自动带入
+    # 其他目标的历史现场经验，相关性难保证且易带入过期条件。本目标模式经
+    # experience_recall 统一入口读取；跨项目复用唯一通道 = 人工审核晋升的
+    # 知识卡（/distill -> promote）。
+    pattern_matches: list[dict] = []
 
     findings = (
         owner_projection.get("findings", [])
@@ -742,15 +730,7 @@ def format_resume_output(summary: dict | None, target: str) -> str:
     lines.append("Memory Suggestions:")
     if summary["tech_stack"]:
         lines.append(f"  Tech stack: [{', '.join(summary['tech_stack'])}]")
-    if summary["pattern_matches"]:
-        lines.append(f"  Matches {summary['matched_targets']} past targets:")
-        for item in summary["pattern_matches"][:3]:
-            payout = f" (${item['payout']:.0f})" if item.get("payout") else ""
-            lines.append(
-                f"  - {item['target']}: {item['technique']} [{item['vuln_class']}]{payout}"
-            )
-    else:
-        lines.append("  No cross-target pattern matches yet.")
+    # 跨目标 pattern 建议已移除（收敛裁定）；本目标经验走 experience_recall。
 
     scene = _scene_summary(summary)
     if scene:

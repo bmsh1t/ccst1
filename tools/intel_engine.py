@@ -405,20 +405,9 @@ def prioritize_intel(results: list[dict], memory: dict) -> dict:
     memory_context["tested_endpoints_count"] = len(tested_endpoints)
     memory_context["tested_cves_count"] = len(tested_cves)
 
-    # Find matching patterns from other targets
-    matching_patterns = []
-    target_tech = set(t.lower() for t in memory.get("tech_stack", []))
-    for pattern in memory.get("patterns", []):
-        pattern_tech = set(t.lower() for t in pattern.get("tech_stack", []))
-        if target_tech & pattern_tech:
-            matching_patterns.append({
-                "target": pattern.get("target", ""),
-                "technique": pattern.get("technique", ""),
-                "vuln_class": pattern.get("vuln_class", ""),
-                "payout": pattern.get("payout", 0),
-            })
-    if matching_patterns:
-        memory_context["matching_patterns"] = matching_patterns
+    # 跨目标模式匹配已移除（2026-09-12 收敛裁定）：不按 tech_stack 自动带入
+    # 其他目标的现场经验。本目标模式经 experience_recall 读取；跨项目复用
+    # 唯一通道 = 人工审核晋升的知识卡。
 
     return {
         "critical": critical,
@@ -1384,12 +1373,6 @@ def format_output(target: str, intel: dict) -> str:
             lines.append(f"  Tech stack: {', '.join(mc['tech_stack'])}")
         lines.append(f"  Tested endpoints: {mc.get('tested_endpoints_count', 0)}")
         lines.append(f"  Tested CVEs: {mc.get('tested_cves_count', 0)}")
-
-        if mc.get("matching_patterns"):
-            lines.append(f"  {CYAN}Cross-target patterns:{RESET}")
-            for p in mc["matching_patterns"][:3]:
-                payout = f" (${p['payout']})" if p.get("payout") else ""
-                lines.append(f"    • {p['target']}: {p['technique']} [{p['vuln_class']}]{payout}")
 
     lines.append("")
 

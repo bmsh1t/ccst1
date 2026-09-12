@@ -20,7 +20,6 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
-from memory.pattern_db import PatternDB  # noqa: E402
 from memory.target_profile import default_memory_dir, load_target_profile  # noqa: E402
 from tools.target_memory import load_goal_memory  # noqa: E402
 try:
@@ -1814,29 +1813,12 @@ def load_surface_context(
     observation_inventory = _sync_observation_inventory(repo_root, target)
 
     profile = None
-    pattern_matches = []
+    pattern_matches: list[dict] = []
     if memory_dir:
         profile = load_target_profile(memory_dir, target)
-        tech_stack = profile.get("tech_stack", []) if profile else []
-        if tech_stack:
-            pattern_db = PatternDB(Path(memory_dir) / "patterns.jsonl")
-            # B12d R5 — /surface ranking auto-deprioritises low-precision
-            # patterns by passing calibrated=True; PatternDB.match() consults
-            # hunt-memory/pattern_calibration.jsonl and excludes patterns
-            # with samples>=5 AND precision<0.2.
-            for pattern in pattern_db.match(
-                tech_stack=tech_stack,
-                calibrated=True,
-                calibration_path=Path(memory_dir) / "pattern_calibration.jsonl",
-            ):
-                if pattern.get("target") == target:
-                    continue
-                pattern_matches.append({
-                    "target": pattern.get("target", ""),
-                    "technique": pattern.get("technique", ""),
-                    "vuln_class": pattern.get("vuln_class", ""),
-                    "payout": pattern.get("payout", 0),
-                })
+        # 跨目标模式计分已移除（2026-09-12 收敛裁定）：其他目标的现场经验
+        # 不自动进入本目标的 surface 排序。本目标模式经 experience_recall
+        # 读取；跨项目复用唯一通道 = 人工审核晋升的知识卡。
 
     # Per-page JS loading map (PR-19). Empty when no browser captures yet.
     # We build closures over the loaded map so callers can answer

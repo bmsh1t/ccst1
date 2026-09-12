@@ -69,8 +69,8 @@ class TestResumeSummary:
         assert summary["confirmed_findings"] == 1
         assert summary["confirmed_payout"] == 1500
         assert summary["untested_endpoints"] == ["/api/v2/users/{id}/export"]
-        assert summary["matched_targets"] == 1
-        assert summary["pattern_matches"][0]["target"] == "alpha.com"
+        assert summary["matched_targets"] == 0  # 跨目标匹配已移除
+        assert summary["pattern_matches"] == []  # 跨目标模式匹配已移除（收敛裁定）
         assert summary["latest_session_summary"]["session_id"] == "sess-777"
         assert summary["latest_session_summary"]["findings_count"] == 1
         assert "recon" in summary["latest_session_summary"]["vuln_classes"]
@@ -573,7 +573,7 @@ class TestResumeFormatting:
         assert "PICKUP: target.com" in output
         assert "1 confirmed ($1500 total)" in output
         assert "2 endpoints from last recon" in output
-        assert "alpha.com: id_swap [idor] ($800)" in output
+        assert "alpha.com" not in output  # 跨目标模式建议已移除
         assert "Latest Session Snapshot:" in output
         assert "Session: sess-777" in output
         assert "Tried: recon, idor" in output
