@@ -63,7 +63,7 @@ def test_view_aggregates_three_sources_with_counts(tmp_path):
     _seed(tmp_path)
     view = build_recall_view(tmp_path, target="t.example")
     assert view["counts"]["target_entries"] == 4  # 2 leads + 1 dead-end + 1 next
-    assert view["counts"]["pattern_db"] == 2
+    assert view["counts"]["pattern_db"] == 1  # 只收当前目标；跨目标行被隔离
     assert view["counts"]["knowledge_cards"] == 1
     kinds = {e["kind"] for e in view["target_entries"]}
     assert kinds == {"lead", "dead_end", "next_action"}
@@ -74,10 +74,10 @@ def test_isolation_excludes_other_targets_private_episodes(tmp_path):
     view = build_recall_view(tmp_path, target="t.example", query="BOLA basket")
     all_text = " ".join(e["text"] for e in view["target_entries"])
     assert "other target private lead" not in all_text
-    # 跨目标脱敏技术经验在无 query 视图中可见（PatternDB 是共享经验面），
-    # query 只做词项粗筛，不构成隔离边界
+    # 跨项目现场记忆不自动带入（2026-09-12 收敛裁定）：jwt none 属于
+    # third.example，只能通过人工晋升的知识卡通道复用，不能从 pattern_db 混入
     full = build_recall_view(tmp_path, target="t.example")
-    assert any(e["text"].startswith("jwt none") for e in full["pattern_db"])
+    assert not any("jwt none" in e["text"] for e in full["pattern_db"])
 
 
 def test_query_filters_and_matches_structured_fields(tmp_path):
@@ -116,7 +116,7 @@ def test_missing_target_memory_degrades_to_cross_target_only(tmp_path):
     )
     view = build_recall_view(tmp_path, target="never-seen.example")
     assert view["counts"]["target_entries"] == 0
-    assert view["counts"]["pattern_db"] == 1
+    assert view["counts"]["pattern_db"] == 0  # 他目标 pattern 行不进入本目标视图
 
 
 def test_pattern_db_entries_carry_outcome_and_composite_id(tmp_path):
@@ -125,7 +125,7 @@ def test_pattern_db_entries_carry_outcome_and_composite_id(tmp_path):
     by_id = {e["entry_id"]: e for e in view["pattern_db"]}
     assert "t.example|idor|numeric id swap" in by_id
     assert "outcome=helped" in by_id["t.example|idor|numeric id swap"]["text"]
-    assert "outcome=false-positive" in by_id["third.example|idor|jwt none alg"]["text"]
+    assert "third.example|idor|jwt none alg" not in by_id  # 跨目标行被隔离
 
 
 def test_cli_json_roundtrip(tmp_path, capsys):
@@ -143,6 +143,6 @@ def test_cli_human_readable_contains_sources(tmp_path, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "当前目标经验" in out
-    assert "跨目标技术经验" in out
+    assert "本目标技术经验" in out
     assert "已晋升知识卡" in out
     assert "basket-idor.md" in out

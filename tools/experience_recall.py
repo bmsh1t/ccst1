@@ -9,8 +9,9 @@
 索引等跨目标条目超过 ~500 或视图超预算时再启动（架构契约
 memory-contract 的"以真实规模决定"原则）。
 
-目标隔离（评审硬边界）：默认只返回当前目标 + 已晋升跨目标经验；
-其他目标的私有情节（leads/handoff）绝不因"召回不足"混入。
+目标隔离（评审硬边界 + 2026-09-12 收敛裁定）：默认只返回当前目标的
+情节与技术经验；其他目标的私有情节和 pattern 行都不因"召回不足"混入。
+跨项目复用唯一通道 = 人工审核晋升的知识卡。
 
 查询是 Claude 侧语义判断的辅助过滤：--query 做词项交集粗筛（缩小视图），
 相关性判断由 Claude 读聚合结果完成，不在本工具里模拟语义检索。
@@ -134,11 +135,12 @@ def _collect_target_entries(
 
 
 def _collect_pattern_db(repo_root: Path, target: str, query_tokens: set[str]) -> list[dict]:
-    """PatternDB 经验：默认当前目标 + 全部跨目标（含三类 outcome）。
+    """PatternDB 经验：默认只收当前目标（项目内经验沉淀）。
 
-    patterns.jsonl 的条目本来就是脱敏技术经验（无目标私有 payload），
-    跨目标复用是它存在的目的；false-positive/no-signal 带 outcome 标记，
-    Claude 自行判断参考价值。
+    跨项目自动带入现场记忆不作为默认能力（2026-09-12 收敛裁定）：相关性
+    难保证，容易带入过期条件。确有值得复用的跨项目经验，人工审核后晋升
+    知识卡（/distill → promote），由 knowledge_cards 通道按需读取——那是
+    知识复用，不是项目状态共享。
     """
     path = repo_root / "hunt-memory" / "patterns.jsonl"
     if not path.is_file():
@@ -158,7 +160,10 @@ def _collect_pattern_db(repo_root: Path, target: str, query_tokens: set[str]) ->
             continue
         if not isinstance(row, dict):
             continue
-        # 当前目标的条目与跨目标经验都收；查询粗筛对 technique/notes/tags 生效
+        # 目标隔离：只收当前目标的模式行（跨项目经验走知识卡通道）
+        if str(row.get("target", "")).strip() != target:
+            continue
+        # 查询粗筛对 technique/notes/tags 生效
         haystack = " ".join(str(row.get(k, "") or "") for k in ("technique", "notes", "vuln_class"))
         haystack += " " + " ".join(str(t) for t in row.get("tags", []))
         if query_tokens and not (_tokenize(haystack) & query_tokens):
@@ -240,9 +245,10 @@ def build_recall_view(
         "target": canonical,
         "query": query,
         "isolation": {
-            "rule": "current-target episodes + promoted cross-target knowledge only; "
-                    "other targets' private episodes never included",
-            "cross_target_sources": ["patterns.jsonl (sanitized techniques)", "knowledge/cards"],
+            "rule": "current-target episodes and patterns only; cross-project reuse "
+                    "happens through human-reviewed knowledge cards, not automatic "
+                    "recall of other targets' field memory",
+            "cross_target_sources": ["knowledge/cards (reviewed only)"],
         },
         "counts": {
             "target_entries": len(target_entries),
@@ -298,7 +304,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  evidence: {', '.join(entry['evidence_refs'][:3])}")
         print()
     if view["pattern_db"]:
-        print("## 跨目标技术经验（PatternDB）")
+        print("## 本目标技术经验（PatternDB）")
         for entry in view["pattern_db"]:
             stack = ",".join(entry.get("tech_stack", [])[:4])
             print(f"- [{entry['target']}] {entry['text']}" + (f" (stack: {stack})" if stack else ""))
