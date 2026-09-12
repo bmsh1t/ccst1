@@ -318,6 +318,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=sorted(TYPOLOGIES),
         help="distillation typology (pattern / target-vuln / failure / bypass)",
     )
+    p_prompt.add_argument("--json", action="store_true")
     p_commit = sub.add_parser("commit", help="machine: scrub AI triple and render the draft card")
     p_commit.add_argument("--target", required=True)
     p_commit.add_argument(

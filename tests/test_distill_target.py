@@ -145,3 +145,26 @@ def test_slugify_bounds_and_normalizes():
     assert _slugify("REST Basket 越权!! PATTERN") == "rest-basket-pattern"
     assert _slugify("") == "untitled"
     assert len(_slugify("a" * 200)) <= 48
+
+
+def test_prompt_subcommand_accepts_json_flag(tmp_path, capsys):
+    """回归：prompt 分支必须接受 --json（与 commit 对称；曾漏定义）。"""
+    from tools.distill_target import main
+
+    _seed_target(tmp_path, "t.example")
+    rc = main(["--repo-root", str(tmp_path), "prompt", "--target", "t.example", "--typology", "pattern", "--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["typology"] == "pattern"
+    assert payload["evidence_counts"]["ledger"] == 1
+
+
+def test_both_subcommands_expose_json_flag():
+    from tools.distill_target import build_parser
+
+    parser = build_parser()
+    for cmd in ("prompt", "commit"):
+        sub = next(
+            a for a in parser._subparsers._group_actions[0].choices[cmd]._actions if a.dest == "json"
+        )
+        assert sub is not None, cmd
