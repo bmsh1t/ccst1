@@ -24,8 +24,9 @@ is the explicit, focused path for **known CVEs**, which:
   on legacy enterprise hosts).
 - Lets you re-scan one or two URLs without rerunning the full pipeline.
 
-The integrated scanner can opt into its bounded origin pass for compatibility with
-`BBHUNT_ENABLE_NUCLEI_CVES=1`; prefer this command when the AI has selected a
+The integrated scanner runs its bounded origin Nuclei pass by default
+(`NUCLEI_CVE_ENABLED=1`; opt out with `BBHUNT_DISABLE_NUCLEI_CVES=1`); prefer
+this command when the AI has selected a
 reachable component, version, or advisory. SQLi and SSRF are handled by their
 dedicated probes/OAST routes and do not use Nuclei by default.
 

@@ -296,10 +296,12 @@ def build_capability_profile(
         ),
         _lane_record(
             "workflow",
+            {"ai-http-transport": curl_available or browser_mcp_import_ready},
             evidence_required=("ordered-same-target-requests",),
         ),
         _lane_record(
             "timing",
+            {"ai-http-transport": curl_available or browser_mcp_import_ready},
             evidence_required=("time-shaped-candidate",),
         ),
         _lane_record(

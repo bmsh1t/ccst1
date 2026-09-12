@@ -364,9 +364,7 @@ echo "  Recon: $RECON_DIR"
 echo "  Findings: $FINDINGS_DIR"
 echo "  Mode: $SCAN_MODE"
 echo "  Skip: ${SKIP_CHECKS:-none}"
-if [ -n "$DEFAULT_SKIP_CHECKS" ]; then
-    echo "  Default skip: $DEFAULT_SKIP_CHECKS (XSS is handled by recon/validation)"
-fi
+echo "  Nuclei CVE supplement: ${NUCLEI_CVE_STATUS} (BBHUNT_DISABLE_NUCLEI_CVES=1 to disable)"
 bb_auth_active && bb_auth_banner
 echo "============================================="
 echo ""

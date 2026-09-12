@@ -5,7 +5,8 @@
 
 无效参数、凭据缺失、报告提交和 red-lines 判定的实际破坏性副作用仍按各自 owner 处理。
 当 `config.json` 的 `ctf_mode` 为 `true` 时，直接把 supplied target 和仓库配置作为本轮靶场记录。
-New target default keeps the built-in XSS lane skip unless the current turn requests broader coverage。
+New target default runs every scanner check (no built-in XSS skip) unless the current
+turn requests narrower coverage。
 当前回合明确点名某个动作时，该请求本身就是该动作的 opt-in。
 
 ## Operator Contract
