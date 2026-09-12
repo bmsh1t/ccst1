@@ -132,8 +132,10 @@ source_refs:
 - 没有真实来源时保持 `source_refs: []`，不得用示例数字、猜测 ID 或模型记忆填充来源。
 - `case-router` 表示按信号加载的路由层，与 HackerOne 或任何单一案例库无绑定；只有确实来自
   当前 resolver 支持的案例 corpus 时才填写 `source_refs`。
-- active 卡的正式生命周期由 `knowledge/governance/events.jsonl` 维护；`maturity` 只表示
-  证据强度，不能代替 `reviewed/retired/superseded/restored` 状态。
+- 卡片生命周期由 git 即状态机管理（`/distill` 两段式：草稿落
+  `knowledge/candidates/`，promote = 人工 `mv` 到 `knowledge/cards/` 并更新
+  `maturity`，reject = 删除草稿）；`maturity` 表示证据强度
+  （draft/tested/proven），`git log` 是治理审计。没有独立的事件存储状态机。
 - 不保存真实凭证、个人数据、客户数据或未经脱敏的响应正文。
 
 ## 提交前质量门

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,7 +13,24 @@ from context_pack import build_context_pack
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SKILL_VALIDATOR = Path("/root/.codex/skills/.system/skill-creator/scripts/quick_validate.py")
+
+
+def _skill_validator_path() -> Path | None:
+    """Locate the external skill-creator quick_validate via CODEX_HOME.
+
+    CODEX_HOME 为空/未设置时回退 ~/.codex；找不到校验器返回 None（测试明确
+    skip）。不做任何安装或复制。曾写死 /root/.codex 用户路径——换宿主即挂。
+    """
+    home = os.environ.get("CODEX_HOME") or str(Path.home() / ".codex")
+    for candidate in (
+        Path(home) / "skills" / ".system" / "skill-creator" / "scripts" / "quick_validate.py",
+    ):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+SKILL_VALIDATOR = _skill_validator_path()
 CARD = "knowledge/cards/{}"
 
 
@@ -221,11 +240,57 @@ def _run_without_skills_baseline(task: SkillEvalTask) -> tuple[str, int, int]:
     return task.name, score, max_score
 
 
+def test_skill_validator_path_resolution_is_not_hardcoded():
+    """路径解析契约：路径必须从 CODEX_HOME/HOME 派生，不得写死具体用户名。
+
+    CI 没装外部校验器时集成测试会 skip，本回归保证 skip 掩盖不了
+    硬编码复发（曾写死 /root/.codex——换宿主即挂）。
+    """
+    import importlib
+
+    # 空值回退：CODEX_HOME 为空串时按 ~/.codex 解析（本机存在校验器时应命中，
+    # 不存在时为 None——两种都是合法回退，关键是不抛异常、不落到 CWD/空串）
+    probe = REPO_ROOT / ".tmp-codex-home-probe"
+    os.environ["CODEX_HOME"] = ""
+    try:
+        mod = importlib.reload(importlib.import_module("test_skill_ab_evaluation"))
+        fallback = mod._skill_validator_path()
+        assert fallback is None or fallback == Path.home() / ".codex" / "skills" / ".system" / "skill-creator" / "scripts" / "quick_validate.py"
+        # 指向不存在目录 → None（不抛异常、不落到其他位置）
+        os.environ["CODEX_HOME"] = str(probe)
+        mod = importlib.reload(importlib.import_module("test_skill_ab_evaluation"))
+        assert mod.SKILL_VALIDATOR is None
+        assert mod._skill_validator_path() is None
+        # 含空格的自定义 CODEX_HOME 也能解析
+        spaced = REPO_ROOT / ".tmp codx home with spaces"
+        (spaced / "skills" / ".system" / "skill-creator" / "scripts").mkdir(parents=True, exist_ok=True)
+        validator = spaced / "skills" / ".system" / "skill-creator" / "scripts" / "quick_validate.py"
+        validator.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+        os.environ["CODEX_HOME"] = str(spaced)
+        mod = importlib.reload(importlib.import_module("test_skill_ab_evaluation"))
+        assert mod.SKILL_VALIDATOR == validator
+        validator.unlink()
+    finally:
+        os.environ.pop("CODEX_HOME", None)
+        importlib.reload(importlib.import_module("test_skill_ab_evaluation"))
+        globals()["SKILL_VALIDATOR"] = importlib.import_module("test_skill_ab_evaluation").SKILL_VALIDATOR
+        import shutil
+        shutil.rmtree(probe, ignore_errors=True)
+        shutil.rmtree(REPO_ROOT / ".tmp codx home with spaces", ignore_errors=True)
+
+
 def test_project_skills_pass_skill_creator_quick_validate():
+    if SKILL_VALIDATOR is None:
+        import pytest
+
+        pytest.skip(
+            "external skill-creator quick_validate not found "
+            f"(looked under CODEX_HOME={os.environ.get('CODEX_HOME') or '~/.codex'})"
+        )
     failures = []
     for skill_md in sorted((REPO_ROOT / "skills").glob("*/SKILL.md")):
         result = subprocess.run(
-            ["python3", str(SKILL_VALIDATOR), str(skill_md.parent)],
+            [sys.executable, str(SKILL_VALIDATOR), str(skill_md.parent)],
             cwd=REPO_ROOT,
             text=True,
             capture_output=True,

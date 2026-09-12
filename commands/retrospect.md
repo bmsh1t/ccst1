@@ -38,24 +38,31 @@ knowledge/index.md
 先解析目标。优先使用 `$ARGUMENTS`；没有参数时读取 `memory/goals/active.json`。
 仍然没有目标时，停止并要求用户指定目标。
 
-有目标后先读取这些低风险上下文：
+有目标后按缺口消费，不预拉全量状态：
 
 ```bash
 python3 tools/target_memory.py show <target>
 python3 tools/checkpoint.py --target <target> --json
-python3 tools/autopilot_state.py --target <target> --json
-python3 tools/surface.py --target <target> --json
-python3 tools/coverage_matrix.py rebuild --target <target>
-python3 tools/coverage_matrix.py find-gaps --target <target>
+```
+
+`checkpoint.py` 是目标层写回建议的主来源（写回契约见
+`commands/checkpoint.md#写回契约权威定义`），其输出已携带 coverage、decision、
+surface 摘要和 retrospect 建议。先消费这两个视图；只有 checkpoint 输出确实
+缺字段时，才按需补读对应 owner：
+
+```bash
+python3 tools/autopilot_state.py --target <target> --json    # 需要 lane/route 状态时
+python3 tools/surface.py --target <target> --json            # 需要逐 endpoint 表面时
+python3 tools/coverage_matrix.py find-gaps --target <target> # 需要语义 gap 视图时
 ```
 
 复盘中的 `find-gaps` 默认是语义 gap 视图；需要核对完整 endpoint x vuln_class
 窗口时使用 `python3 tools/coverage_matrix.py find-gaps --target <target> --all`。
+`coverage_matrix.py rebuild` 仅在矩阵过期且复盘要写回时执行。
 
-`checkpoint.py` 是目标层写回建议的主来源（写回契约见
-`commands/checkpoint.md#写回契约权威定义`）。复盘时优先使用它输出的
-`target_write_back`、`coverage`、`decision` 和 `retrospect` 字段，再判断哪些
-经验需要晋升到知识库（走 `/distill`）、Skills 或 Rules。
+复盘时优先使用 checkpoint 输出的 `target_write_back`、`coverage`、`decision`
+和 `retrospect` 字段，再判断哪些经验需要晋升到知识库（走 `/distill`）、
+Skills 或 Rules。
 
 如果存在文件，再读取：
 
