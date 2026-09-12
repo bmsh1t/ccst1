@@ -798,3 +798,14 @@ capabilities:
       - ssrf-to-rce
       - deserialization-rce
       - ssti-rce
+  - id: rest-numeric-id-cross-actor
+    kind: card
+    file: knowledge/cards/rest-numeric-id-cross-actor.md
+    layer: case-router
+    load: on-demand
+    purpose: validate
+    triggers:
+      - rest-numeric-id-cross-actor
+      - idor
+      - cross-actor
+      - bola

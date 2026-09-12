@@ -1,12 +1,14 @@
 ---
 id: rest-numeric-id-cross-actor
 type: technique-card
-related_skills: []
+related_skills:
+  - web2-vuln-classes
 trigger_tags:
   - rest-numeric-id-cross-actor
 risk: low
 maturity: draft
 load_priority: low
+deep_refs: []
 source_refs:
   - type: target-evidence
     target: 127.0.0.1:3001
@@ -32,6 +34,21 @@ updated: 2026-09-12
 - 原始证据：
 - `evidence/127.0.0.1:3001/probe/20260912T003757450Z-352c60e6.json`
 - `evidence/127.0.0.1:3001/probe/20260912T003757670Z-352c60e6.json`
+
+## Quick Recall
+
+- 触发：anonymous GET 401，owner 与 peer 带各自凭证 GET 同一对象返回完全相同的 body。
+- 判定条件：资源非公开、对象归属字段证明跨主体、其他身份凭据无法解释访问，三者齐备才成立对象级越权。
+- 停止：服务端对 peer 稳定拒绝（401/403），或响应仅含请求者自身数据。
+
+## 常见误判 / 死路
+
+- 仅状态码相同（全 200）不构成证据——必须比对 body sha256；状态码全 401 时认证层存在，不能推出对象归属校验存在或缺失。
+- 响应体内容差异但对象归属字段相同 → 可能是模板/缓存差异。
+
+## 下一步或晋升
+
+- 两个以上独立目标命中后再升 proven；泛化到其他资源族前先在当前目标验证 2-3 个资源。
 
 ## 人工审核（review 后改这里）
 
