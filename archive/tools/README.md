@@ -13,3 +13,11 @@
   `distill_reports.py`（499，活函数族已迁 `tools/corpus_projection.py`）+ 对应测试
 - `../distill_rubrics/`：corpus 蒸馏提示词（零外部引用，随蒸馏管线退役）
 - `../knowledge-governance/value-review.json`：knowledge_value_review 输出数据
+
+## 2026-09-12 归档（marker-replay lane）
+
+- `marker_replay_lane.py`：run_marker_replay + CLI/分发块。零路由证据：evidence/
+  全历史零 marker run。队列同步的 _endpoint_markers/_legacy_marker_match/
+  _action_matches_legacy_marker 是通用匹配原语（留 runner），target_case_state
+  的 backlog 数据形状保留存量兼容。8 个纯 marker 测试随源归档，5 个通用 gate
+  测试改 request-diff 载体（语义对齐：expected 声明 + distinct_bodies）。

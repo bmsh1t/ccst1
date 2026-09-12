@@ -63,36 +63,6 @@ active dimension is a credential boundary (e.g. `header:authorization`) that
 the two requests actually differ in. Whether a boundary diff is a real
 authorization violation stays with the 7-Question/4-gate AI review.
 
-### Marker replay
-
-用于 RCE/SSTI/template/command-injection 等需要惰性 marker 的安全证明。marker 必须是低影响、可解释、可重复的 inert 输出。
-
-```bash
-python3 tools/validation_runner.py marker-replay \
-  --target <target> \
-  --url '<exact-url>' \
-  --expect-marker '<inert-marker>' \
-  --vuln-class RCE \
-  --repeat 2 \
-  --browser-observed
-```
-
-For a stronger marker claim, add a target-owned neutral control. The runner
-records baseline absence and rejects weak or naturally present markers without
-turning the observation into `tested_clean`:
-
-```bash
-python3 tools/validation_runner.py marker-replay \
-  --target <target> \
-  --baseline-url '<neutral-control-url>' \
-  --url '<marker-request-url>' \
-  --expect-marker '<unique-inert-marker>' \
-  --vuln-class RCE
-```
-
-The neutral control must finish with a successful, non-truncated response. An
-error or truncated control keeps the replay as a `candidate` signal so it
-cannot become either `tested_finding` or `tested_clean`.
 
 ### Request smuggling capability gate
 

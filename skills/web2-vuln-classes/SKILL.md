@@ -139,9 +139,9 @@ Candidate。
 
 ### JWT / Token AI-Owned Lane
 
-令牌伪造类证据的机器证明通道：`marker-replay`（伪造凭据 + 同凭据控制基线，
-见 `knowledge/cards/auth-sso-token-edge-cases.md`）或 `request-diff` 保存精确
-请求对；身份/权限 delta 之外的差异（可 decode、状态/长度、反射 marker）保持
+令牌伪造类证据的机器证明通道：`request-diff` 保存精确
+请求对（见 `knowledge/cards/auth-sso-token-edge-cases.md`）；
+身份/权限 delta 之外的差异（可 decode、状态/长度、反射 marker）保持
 Signal/Candidate。
 
 ### Java Deserialization Lane

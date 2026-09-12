@@ -345,19 +345,31 @@ def _runner_reconciliation_fixture(monkeypatch, tmp_path):
         ),
         encoding="utf-8",
     )
-    monkeypatch.setattr(
-        validation_runner,
-        "request_once",
-        lambda **kwargs: _fake_response(
+    def _fixture_request_once(**kwargs):
+        headers = kwargs.get("headers") or {}
+        if any("Bearer" in str(v) for v in headers.values()):
+            return _fake_response(
+                kwargs["url"],
+                body=json.dumps({"config": {"googleOauth": {"clientId": "leaked.apps.test"}}}),
+            )
+        return _fake_response(
             kwargs["url"],
             body=json.dumps({"config": {"googleOauth": {"clientId": "client.apps.test"}}}),
-        ),
-    )
-    summary = validation_runner.run_marker_replay(
+        )
+
+    monkeypatch.setattr(validation_runner, "request_once", _fixture_request_once)
+    summary = validation_runner.run_request_diff(
         repo_root=tmp_path,
         target=target,
-        url=url,
-        expect_marker="googleOauth",
+        request_spec={
+            "schema_version": 1,
+            "baseline_request": {"method": "GET", "url": url},
+            "variant_request": {"method": "GET", "url": url, "headers": {"Authorization": "Bearer denied"}},
+            "active_dimension": "header:Authorization",
+            "classifier": "authz",
+            "expected": ["distinct_bodies"],
+            "declaration_intent": "hazard",
+        },
         finding_id=finding_id,
     )
     return summary, queue_dir / "action_queue.json", key
@@ -657,21 +669,42 @@ def test_runner_sync_does_not_downgrade_validated_finding(monkeypatch, tmp_path,
         "request_once",
         lambda **kwargs: _fake_response(
             kwargs["url"],
-            body=json.dumps({"config": {"application": {"name": "Shop"}, "googleOauth": {"clientId": "x"}}}),
+            body=(
+                json.dumps({"config": {"application": {"name": "Shop-Private"}, "googleOauth": {"clientId": "leaked"}}})
+                if any("Bearer" in str(v) for v in (kwargs.get("headers") or {}).values())
+                else json.dumps({"config": {"application": {"name": "Shop"}, "googleOauth": {"clientId": "x"}}})
+            ),
         ),
     )
 
+    spec_path = tmp_path / "pair-spec.json"
+    spec_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "baseline_request": {"method": "GET", "url": url},
+                "variant_request": {
+                    "method": "GET",
+                    "url": url,
+                    "headers": {"Authorization": "Bearer denied"},
+                },
+                "active_dimension": "header:Authorization",
+                "classifier": "authz",
+                "expected": ["distinct_bodies"],
+                "declaration_intent": "hazard",
+            }
+        ),
+        encoding="utf-8",
+    )
     rc = validation_runner.main(
         [
-            "marker-replay",
+            "request-diff",
             "--repo-root",
             str(tmp_path),
             "--target",
             target,
-            "--url",
-            url,
-            "--expect-marker",
-            "googleOauth",
+            "--request-spec",
+            str(spec_path),
             "--finding-id",
             "AUTHZ-VALIDATED",
         ]
@@ -1020,223 +1053,6 @@ def test_request_diff_replay_keeps_operation_id_and_one_ledger_event(monkeypatch
     assert len(ledger.read_text(encoding="utf-8").splitlines()) == 1
 
 
-def test_marker_replay_creates_bundle_and_ledger(monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        validation_runner,
-        "request_once",
-        lambda **kwargs: _fake_response(kwargs["url"], body="rendered value: CCST_MARKER_42"),
-    )
-
-    summary = validation_runner.run_marker_replay(
-        repo_root=tmp_path,
-        target="https://target.test",
-        url="https://target.test/render?name={{safe_calc}}",
-        expect_marker="CCST_MARKER_42",
-        finding_id="RCE-MARKER-1",
-        vuln_class="SSTI",
-        repeat=2,
-        browser_observed=True,
-    )
-
-    key = _target_key("https://target.test")
-    bundle = (tmp_path / summary["summary_path"]).parent
-    ledger = tmp_path / "memory" / "evidence" / key / "ledger.jsonl"
-    assert summary["lane"] == "marker_replay"
-    assert summary["result"] == "tested_finding"
-    assert summary["candidate_ready"] is True
-    assert all(run["marker_found"] for run in summary["runs"])
-    assert (tmp_path / summary["runs"][0]["artifacts"]["request"]).is_file()
-    assert (tmp_path / summary["runs"][1]["artifacts"]["response"]).is_file()
-    assert (bundle / "summary.json").is_file()
-    entry = json.loads(ledger.read_text(encoding="utf-8").splitlines()[-1])
-    assert entry["vuln_class"] == "RCE"
-    assert entry["result"] == "tested_finding"
-    assert entry["browser_observed"] is True
-
-
-def test_marker_replay_without_marker_is_clean(monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        validation_runner,
-        "request_once",
-        lambda **kwargs: _fake_response(kwargs["url"], body="ordinary render output"),
-    )
-
-    summary = validation_runner.run_marker_replay(
-        repo_root=tmp_path,
-        target="https://target.test",
-        url="https://target.test/render?name=test",
-        expect_marker="CCST_MARKER_42",
-        finding_id="RCE-MARKER-CLEAN",
-        vuln_class="RCE",
-    )
-
-    assert summary["result"] == "tested_clean"
-    assert summary["candidate_ready"] is False
-    assert summary["runs"][0]["marker_found"] is False
-
-
-def test_marker_replay_ignores_stderr_marker(monkeypatch, tmp_path):
-    marker = "CCST_STDERR_MARKER_42"
-
-    def fake_request_once(**kwargs):
-        response = _fake_response(kwargs["url"], body="ordinary output")
-        response["stderr"] = f"diagnostic: {marker}"
-        return response
-
-    monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
-    summary = validation_runner.run_marker_replay(
-        repo_root=tmp_path,
-        target="https://target.test",
-        url="https://target.test/render",
-        expect_marker=marker,
-        finding_id="MARKER-STDERR-ONLY",
-        no_ledger=True,
-    )
-
-    assert summary["result"] == "tested_clean"
-    assert summary["candidate_ready"] is False
-    assert summary["runs"][0]["marker_found"] is False
-    assert summary["runs"][0]["marker_occurrences"] == 0
-
-
-def test_marker_replay_control_proves_baseline_absence(monkeypatch, tmp_path):
-    marker = "CCST_UNIQUE_MARKER_42"
-
-    def fake_request_once(**kwargs):
-        return _fake_response(
-            kwargs["url"],
-            body="ordinary output" if "neutral" in kwargs["url"] else f"rendered {marker}",
-        )
-
-    monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
-    summary = validation_runner.run_marker_replay(
-        repo_root=tmp_path,
-        target="https://target.test",
-        url=f"https://target.test/render?q={marker}",
-        baseline_url="https://target.test/render?q=neutral",
-        expect_marker=marker,
-        finding_id="MARKER-ORACLE-PASS",
-        vuln_class="SSTI",
-        no_ledger=True,
-    )
-
-    assert summary["result"] == "tested_finding"
-    assert summary["marker_oracle"]["status"] == "passed"
-    assert summary["marker_oracle"]["baseline_absent"] is True
-    assert summary["runs"][0]["baseline_marker_found"] is False
-
-
-def test_marker_replay_valid_control_without_marker_is_clean(monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        validation_runner,
-        "request_once",
-        lambda **kwargs: _fake_response(kwargs["url"], body="ordinary output"),
-    )
-
-    summary = validation_runner.run_marker_replay(
-        repo_root=tmp_path,
-        target="https://target.test",
-        url="https://target.test/render?q=neutral",
-        baseline_url="https://target.test/render?q=control",
-        expect_marker="CCST_UNIQUE_MARKER_42",
-        finding_id="MARKER-ORACLE-CLEAN",
-        no_ledger=True,
-    )
-
-    assert summary["result"] == "tested_clean"
-    assert summary["marker_oracle"]["status"] == "rejected"
-    assert summary["marker_oracle"]["baseline_valid"] is True
-
-
-def test_marker_replay_control_rejects_natural_marker_and_weak_token(monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        validation_runner,
-        "request_once",
-        lambda **kwargs: _fake_response(kwargs["url"], body="already contains MARKER"),
-    )
-
-    summary = validation_runner.run_marker_replay(
-        repo_root=tmp_path,
-        target="https://target.test",
-        url="https://target.test/render?q=MARKER",
-        baseline_url="https://target.test/render?q=neutral",
-        expect_marker="MARKER",
-        finding_id="MARKER-ORACLE-REJECT",
-        no_ledger=True,
-    )
-
-    assert summary["result"] == "candidate"
-    assert summary["candidate_ready"] is False
-    assert summary["marker_oracle"]["status"] == "rejected"
-    assert summary["marker_oracle"]["baseline_absent"] is False
-    assert summary["marker_oracle"]["marker_quality"]["sufficient"] is False
-
-
-@pytest.mark.parametrize("invalid_kind", ["status", "truncated"])
-def test_marker_replay_invalid_control_never_returns_tested_terminal(
-    monkeypatch, tmp_path, invalid_kind
-):
-    marker = "CCST_UNIQUE_MARKER_42"
-
-    def fake_request_once(**kwargs):
-        if "neutral" in kwargs["url"]:
-            response = _fake_response(
-                kwargs["url"],
-                status=500 if invalid_kind == "status" else 200,
-                body="ordinary output",
-            )
-            if invalid_kind == "truncated":
-                response["body_truncated"] = True
-            return response
-        return _fake_response(kwargs["url"], body=f"rendered {marker}")
-
-    monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
-    summary = validation_runner.run_marker_replay(
-        repo_root=tmp_path,
-        target="https://target.test",
-        url=f"https://target.test/render?q={marker}",
-        baseline_url="https://target.test/render?q=neutral",
-        expect_marker=marker,
-        finding_id=f"MARKER-INVALID-{invalid_kind}",
-        no_ledger=True,
-    )
-
-    assert summary["result"] == "candidate"
-    assert summary["candidate_ready"] is False
-    assert summary["marker_oracle"]["status"] == "invalid_control"
-    assert summary["marker_oracle"]["baseline_valid"] is False
-
-
-def test_xss_marker_reflection_stays_open_signal_until_browser_context(monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        validation_runner,
-        "request_once",
-        lambda **kwargs: _fake_response(kwargs["url"], body="reflected CCST_XSS_MARKER"),
-    )
-
-    summary = validation_runner.run_marker_replay(
-        repo_root=tmp_path,
-        target="https://target.test",
-        url="https://target.test/reflected?q=CCST_XSS_MARKER",
-        expect_marker="CCST_XSS_MARKER",
-        finding_id="XSS-MARKER-SIGNAL",
-        vuln_class="XSS",
-        repeat=2,
-    )
-
-    ledger = tmp_path / "memory" / "evidence" / _target_key("https://target.test") / "ledger.jsonl"
-    entry = json.loads(ledger.read_text(encoding="utf-8").splitlines()[-1])
-
-    assert summary["result"] == "tested_finding"
-    # The oracle is the single promotion authority: the advisory rubric may
-    # still score the reflection evidence low, but the ledger row must never
-    # disagree with the runner result the witness compares.
-    assert summary["evidence_rubric"]["ready"] is False
-    assert entry["result"] == "tested_finding"
-    assert "reflected" in summary["ai_next"]["hypothesis"]
-    assert "browser execution context" in summary["ai_next"]["next_action"]
-
-
 def test_request_once_rejects_off_target_before_open(monkeypatch):
     called = False
 
@@ -1399,15 +1215,30 @@ def test_cli_auth_file_builds_session_and_raw_header_keeps_precedence(monkeypatc
         captured.update(kwargs)
         return {"result": "tested_clean"}
 
-    monkeypatch.setattr(validation_runner, "run_marker_replay", fake_run)
+    spec_path = tmp_path / "check-spec.json"
+    spec_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "baseline_request": {"method": "GET", "url": "https://target.test/check"},
+                "variant_request": {
+                    "method": "GET",
+                    "url": "https://target.test/check",
+                    "headers": {"Authorization": "Bearer denied"},
+                },
+                "active_dimension": "header:Authorization",
+                "classifier": "generic",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(validation_runner, "run_request_diff", fake_run)
     assert validation_runner.main([
-        "marker-replay",
+        "request-diff",
         "--target",
         "target.test",
-        "--url",
-        "https://target.test/check",
-        "--expect-marker",
-        "SAFE",
+        "--request-spec",
+        str(spec_path),
         "--auth-file",
         str(auth),
         "--header",
@@ -1556,12 +1387,16 @@ def test_state_changing_without_redline_fails_before_request(monkeypatch, tmp_pa
 
     monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
     with pytest.raises(ValueError, match="requires --redline-checked"):
-        validation_runner.run_marker_replay(
+        validation_runner.run_request_diff(
             repo_root=tmp_path,
             target="target.test",
-            url="https://target.test/submit",
-            expect_marker="MARKER",
-            method="POST",
+            request_spec={
+                "schema_version": 1,
+                "baseline_request": {"method": "POST", "url": "https://target.test/submit", "body": "a"},
+                "variant_request": {"method": "POST", "url": "https://target.test/submit", "body": "b"},
+                "active_dimension": "body:",
+                "classifier": "generic",
+            },
             state_changing=True,
             redline_checked=False,
         )
@@ -1580,12 +1415,16 @@ def test_patch_without_explicit_state_fact_is_not_redline_blocked(
         return _fake_response(kwargs["url"], body="MARKER")
 
     monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
-    summary = validation_runner.run_marker_replay(
+    summary = validation_runner.run_request_diff(
         repo_root=tmp_path,
         target="target.test",
-        url="https://target.test/submit",
-        expect_marker="MARKER",
-        method="PATCH",
+        request_spec={
+            "schema_version": 1,
+            "baseline_request": {"method": "PATCH", "url": "https://target.test/submit", "body": "a"},
+            "variant_request": {"method": "PATCH", "url": "https://target.test/submit", "body": "b"},
+            "active_dimension": "body:",
+            "classifier": "generic",
+        },
         state_changing=state_changing,
         no_ledger=True,
     )
@@ -1603,14 +1442,26 @@ def test_post_defaults_to_unknown_state_and_private_unique_runs(monkeypatch, tmp
     )
 
     summaries = [
-        validation_runner.run_marker_replay(
+        validation_runner.run_request_diff(
             repo_root=tmp_path,
             target="target.test",
-            url=f"https://target.test/submit?token={secret}",
-            expect_marker=secret,
-            method="POST",
-            headers={"Authorization": f"Bearer {secret}"},
-            body=secret,
+            request_spec={
+                "schema_version": 1,
+                "baseline_request": {
+                    "method": "POST",
+                    "url": "https://target.test/submit",
+                    "headers": {"Authorization": f"Bearer {secret}"},
+                    "body": secret,
+                },
+                "variant_request": {
+                    "method": "POST",
+                    "url": f"https://target.test/submit?token={secret}",
+                    "headers": {"Authorization": f"Bearer {secret}"},
+                    "body": secret,
+                },
+                "active_dimension": "query:token",
+                "classifier": "generic",
+            },
             finding_id="MARKER-PRIVATE",
             no_ledger=True,
         )
