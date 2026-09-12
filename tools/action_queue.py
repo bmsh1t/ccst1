@@ -130,7 +130,10 @@ ACTIVATION_REQUIRED_FIELDS = (
     "decision_reason",
     "input_boundary",
 )
-ACTIVATION_ROUTE_FIELDS = ("skill_id", "skill_path", "required_dimensions")
+# skill_path is derived from skill_id (skills/{skill_id}/SKILL.md) and is no
+# longer a required claim input; it is tolerated when present for backward
+# compatibility with recorded queue states.
+ACTIVATION_ROUTE_FIELDS = ("skill_id", "required_dimensions")
 ACTIVATION_REQUIRED_CLAIM_FIELDS = (
     "depth_contract_version",
     *ACTIVATION_REQUIRED_FIELDS,
@@ -253,16 +256,15 @@ def _validate_action_metadata(metadata: dict | None) -> dict:
                 "Skill frontmatter name"
             )
         expected_path = f"skills/{skill_id}/SKILL.md"
-        if not skill_path:
-            raise ValueError(
-                "Action Queue metadata skill_route requires "
-                f"skill_path={expected_path}"
-            )
-        if skill_path != expected_path:
+        if skill_path and skill_path != expected_path:
             raise ValueError(
                 "Action Queue metadata skill_route skill_path must be "
-                f"{expected_path}"
+                f"{expected_path} (or omitted — it is derived from skill_id)"
             )
+        # Normalize: always store the derived path so consumers and identity
+        # hashing see one canonical form regardless of whether the caller
+        # supplied it.
+        route["skill_path"] = expected_path
         # Route dimensions are advisory context, not a membership gate; only
         # the form (a non-empty list of non-empty labels) is validated.
         if not isinstance(dimensions, list) or not dimensions or any(not str(item).strip() for item in dimensions):

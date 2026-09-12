@@ -30,7 +30,6 @@ CLAIM_TEMPLATES: dict[str, dict] = {
         "active_dimension": "object_access",
         "skill_route": {
             "skill_id": "web2-vuln-classes",
-            "skill_path": "skills/web2-vuln-classes/SKILL.md",
             "required_dimensions": ["object_access", "actor_diff"],
         },
         "risk_tier": "medium",
@@ -43,7 +42,6 @@ CLAIM_TEMPLATES: dict[str, dict] = {
         "active_dimension": "input_parser",
         "skill_route": {
             "skill_id": "web2-vuln-classes",
-            "skill_path": "skills/web2-vuln-classes/SKILL.md",
             "required_dimensions": ["input_parser", "error_oracle"],
         },
         "risk_tier": "high",
@@ -56,7 +54,6 @@ CLAIM_TEMPLATES: dict[str, dict] = {
         "active_dimension": "actor_diff",
         "skill_route": {
             "skill_id": "web2-vuln-classes",
-            "skill_path": "skills/web2-vuln-classes/SKILL.md",
             "required_dimensions": ["actor_diff", "object_access"],
         },
         "risk_tier": "medium",
@@ -69,7 +66,6 @@ CLAIM_TEMPLATES: dict[str, dict] = {
         "active_dimension": "url_fetch",
         "skill_route": {
             "skill_id": "web2-vuln-classes",
-            "skill_path": "skills/web2-vuln-classes/SKILL.md",
             "required_dimensions": ["url_fetch", "internal_reach"],
         },
         "risk_tier": "high",
@@ -82,7 +78,6 @@ CLAIM_TEMPLATES: dict[str, dict] = {
         "active_dimension": "actor_diff",
         "skill_route": {
             "skill_id": "credential-attack",
-            "skill_path": "skills/credential-attack/SKILL.md",
             "required_dimensions": ["actor_diff", "auth_boundary"],
         },
         "risk_tier": "high",

@@ -67,12 +67,16 @@ def test_unknown_template_rejected_with_available_list():
 
 
 def test_template_skill_routes_point_at_real_skill_files():
+    """skill_path 已从模板移除（claim 校验层从 skill_id 推导归一化）；
+    这里改为验证 skill_id 本身指向真实 Skill。"""
     from pathlib import Path
 
     repo = Path(__file__).resolve().parents[1]
     for name, template in CLAIM_TEMPLATES.items():
         route = template["skill_route"]
-        assert (repo / route["skill_path"]).is_file(), (name, route["skill_path"])
+        expected = Path("skills") / route["skill_id"] / "SKILL.md"
+        assert (repo / expected).is_file(), (name, str(expected))
+        assert "skill_path" not in route  # 冗余字段不再进模板
 
 
 def test_claim_via_cli_template_fills_stable_fields(tmp_path, capsys):

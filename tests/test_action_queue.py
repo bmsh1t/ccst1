@@ -1314,24 +1314,23 @@ def test_action_queue_accepts_skill_route_with_required_dimensions(tmp_path, mon
     assert action["metadata"]["skill_route"]["skill_id"] == "web2-vuln-classes"
 
 
-def test_action_queue_reports_the_exact_missing_skill_path():
-    with pytest.raises(
-        ValueError,
-        match=r"skill_path=skills/web2-vuln-classes/SKILL\.md",
-    ):
-        build_action(
-            target="api.target.com",
-            action_type="hypothesis",
-            evidence="Observed an API object path.",
-            next_question="Can a peer actor read it?",
-            action="Replay the object path with a peer actor.",
-            metadata={
-                "skill_route": {
-                    "skill_id": "web2-vuln-classes",
-                    "required_dimensions": ["auth", "object"],
-                },
-            },
-        )
+def test_skill_path_is_derived_from_skill_id_when_omitted():
+    """skill_path 不再是必填：省略时从 skill_id 推导并归一化存储。"""
+    action = build_action(
+        target="api.target.com",
+        action_type="hypothesis",
+        evidence="Observed an API object path.",
+        next_question="Can a peer actor read it?",
+        action="Replay the object path with a peer actor.",
+        metadata={
+            "skill_route": {
+                "skill_id": "web2-vuln-classes",
+                "required_dimensions": ["object_access"],
+            }
+        },
+    )
+    route = action["metadata"]["skill_route"]
+    assert route["skill_path"] == "skills/web2-vuln-classes/SKILL.md"
 
 
 @pytest.mark.parametrize("skill_id", ["made-up", "../outside", "skills/evil"])
