@@ -31,7 +31,11 @@ def expected_fact_vocabulary() -> frozenset[str]:
     it validates names, never interprets them. The runner computes the facts.
     """
     # Imported lazily to avoid a parser->runner dependency cycle at import time.
-    from validation_runner import WIRE_FACT_NAMES
+    # Dual path (bare + package) matches the validate.py/report_generator.py convention.
+    try:
+        from validation_runner import WIRE_FACT_NAMES
+    except ImportError:  # pragma: no cover - package import path
+        from tools.validation_runner import WIRE_FACT_NAMES  # type: ignore
 
     return WIRE_FACT_NAMES
 

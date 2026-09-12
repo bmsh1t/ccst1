@@ -99,7 +99,6 @@ def test_ci_actions_and_dependency_lock_are_immutable_inputs() -> None:
 
     normalized = lock_text.lower()
     for direct in (
-        "anthropic",
         "badsecrets",
         "requests",
         "pyyaml",
@@ -108,6 +107,9 @@ def test_ci_actions_and_dependency_lock_are_immutable_inputs() -> None:
         "pyarrow",
     ):
         assert re.search(rf"(?m)^{direct}==[^\s\\]+", normalized)
+    # anthropic 已删除（2026-09-12 优化评审确认无活跃引用；宿主 Claude Code
+    # 自带模型调用，本仓不需要 Python SDK）。锁文件不得再把它拉回来。
+    assert not re.search(r"(?m)^anthropic==", normalized)
 
 
 def test_requirements_lock_rejects_source_content_drift(tmp_path, monkeypatch, capsys) -> None:
