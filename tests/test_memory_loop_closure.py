@@ -50,7 +50,9 @@ _TRIPLE = {
 
 
 def test_distilled_card_source_refs_pass_registry_contract(tmp_path):
-    from distill_target import commit_triple
+    """AI 直写草稿（2026-09-13 后契约）：卡片 frontmatter 的 target-evidence
+    source_refs 必须能通过 registry 契约解析——commit 中转退役后，这个契约
+    由 AI 按 card-template 直写时遵守，由 audit 在晋升门检查。"""
     from knowledge_registry import (
         TARGET_EVIDENCE_CORPUS,
         TARGET_EVIDENCE_REF_TYPE,
@@ -59,13 +61,31 @@ def test_distilled_card_source_refs_pass_registry_contract(tmp_path):
     )
 
     _seed_target_repo(tmp_path)
-    result = commit_triple(
-        tmp_path, "t.example",
-        json.dumps({**_TRIPLE, "evidence_refs": ["evidence/t.example/probe/probe-1.json"]}),
+    # AI 直写形态的草稿卡（即新 /distill 第②步的产物）
+    card_path = tmp_path / "knowledge" / "candidates" / "t-card.md"
+    card_path.parent.mkdir(parents=True, exist_ok=True)
+    card_path.write_text(
+        "---\n"
+        "id: t-card\n"
+        "type: technique-card\n"
+        "related_skills: []\n"
+        "trigger_tags:\n  - t-card\n"
+        "risk: low\n"
+        "maturity: draft\n"
+        "load_priority: low\n"
+        "source_refs:\n"
+        "  - type: target-evidence\n"
+        "    target: t.example\n"
+        "    refs:\n"
+        '      - "evidence/t.example/probe/probe-1.json"\n'
+        "updated: 2026-09-13\n"
+        "---\n\n"
+        "# T\n\n## Quick Recall\n\n- 触发：t\n- 判定条件：c\n- 停止：s\n",
+        encoding="utf-8",
     )
-    card = Path(tmp_path, result["path"]).read_text(encoding="utf-8")
+    card = card_path.read_text(encoding="utf-8")
     parsed = parse_knowledge_document(card)
-    refs = parse_source_refs(parsed.metadata, source_path=result["path"])
+    refs = parse_source_refs(parsed.metadata, source_path=str(card_path))
     assert len(refs) == 1
     assert refs[0].type == TARGET_EVIDENCE_REF_TYPE
     assert refs[0].corpus == TARGET_EVIDENCE_CORPUS

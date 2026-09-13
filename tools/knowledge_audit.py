@@ -24,6 +24,7 @@ try:
         parse_knowledge_document,
         parse_source_refs,
     )
+    from tools.target_paths import target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
     from knowledge_registry import (  # type: ignore
         KnowledgeRegistry,
@@ -32,6 +33,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         parse_knowledge_document,
         parse_source_refs,
     )
+    from target_paths import target_storage_key  # type: ignore
 
 
 Severity = Literal["error", "warning"]
@@ -563,6 +565,102 @@ def _audit_registry(
     return document_entries
 
 
+def _audit_target_evidence_refs(report, repo_root: Path, file_path: str, source_ref) -> None:
+    """target-evidence 来源 refs 的可溯源校验（迁移自 distill commit gate）。
+
+    KnowledgeSourceRef 把 target-evidence 归一为
+    `<canonical-target>|<ref1>;...` 的 composite id（corpus 固定
+    target-distilled-evidence）；从这里拆回 target 与 refs 列表。
+    """
+    stable_id = str(getattr(source_ref, "id", "") or "").strip()
+    if not stable_id or "|" not in stable_id:
+        return
+    target, _, refs_blob = stable_id.partition("|")
+    refs = [part.strip() for part in refs_blob.split(";") if part.strip()]
+    if not target or not refs:
+        return
+    key = target_storage_key(target)
+    allowed_prefixes = (f"evidence/{key}/", f"findings/{key}/", f"state/{key}/")
+    for ref in refs:
+        ref_str = str(ref).strip()
+        if not ref_str.startswith(allowed_prefixes):
+            _add(
+                report,
+                "error",
+                "target-evidence-ref-unowned",
+                file_path,
+                f"evidence_ref {ref_str!r} 不在声明目标 {target!r} 名下（必须以 "
+                f"{allowed_prefixes} 之一开头）",
+            )
+            continue
+        if not (repo_root / ref_str).exists():
+            _add(
+                report,
+                "error",
+                "target-evidence-ref-missing",
+                file_path,
+                f"evidence_ref {ref_str!r} 在磁盘上不存在",
+            )
+
+
+def _audit_card_scrub(report, file_path: str, body: str) -> None:
+    """卡正文脱敏红线：裸 IPv4 / credential 形态文本是硬错误。
+
+    迁移自 distill_target._scrub_triple（2026-09-13）：/distill 直写草稿后，
+    该保护必须活在正式晋升/审计边界，而不是只活在被退役的中转协议里。
+    与原协议一致的分界：evidence 路径行（evidence/findings/state 前缀引用）
+    与"来源目标"行承载机器路径/显式标注，不在判断正文范围内。
+    """
+    # 剔除机器路径行与来源目标行后检查判断正文
+    prose_lines = [
+        line for line in body.splitlines()
+        if "evidence/" not in line and "findings/" not in line and "state/" not in line
+        and not line.strip().startswith("- 来源目标")
+    ]
+    prose = "\n".join(prose_lines)
+    # 技术/保留地址（0.0.0.0、127.x、10.x、192.168.x、172.16-31.x）是
+    # 讲解概念或实验靶场，不是目标 IP 泄露；具体公网地址才是红线。
+    for m in re.finditer(r"\b(\d{1,3}(?:\.\d{1,3}){3})\b", prose):
+        octets = [int(part) for part in m.group(1).split(".")]
+        if octets[0] in (0, 10, 127) or (
+            octets[0] == 192 and octets[1] == 168
+        ) or (
+            octets[0] == 172 and 16 <= octets[1] <= 31
+        ):
+            continue
+        _add(
+            report,
+            "error",
+            "card-bare-ipv4",
+            file_path,
+            f"卡正文含裸公网 IPv4 地址（{m.group(1)}）；正文保持脱敏，机器路径留在 evidence refs",
+        )
+        break
+    # 值为占位符（<...>、{...}）的教学示例不算 credential 文本；
+    # 字面量值（token=abc123 形态）才是。
+    # 值形态检查：占位符（<...>/{...}）与权限声明（id-token: write 等纯
+    # 小写单词值，常带 markdown 反引号）不是凭据；混合大小写/数字/符号的
+    # 字面量值才是。
+    for m in re.finditer(
+        r"\b(?:password|secret|api[_-]?key|token)\s*[:=](?![=>])\s*([^\s`，、；;]+)",
+        prose,
+        re.I,
+    ):
+        value = m.group(1)
+        if value.startswith(("<", "{")):
+            continue
+        if re.fullmatch(r"[a-z]+", value):
+            continue
+        _add(
+            report,
+            "error",
+            "card-credential-text",
+            file_path,
+            f"卡正文含 credential 形态文本（{m.group(0).split('=')[0].split(':')[0]}=...）；移除后再晋升",
+        )
+        break
+
+
 def _headings(body: str) -> list[str]:
     return [
         re.sub(r"[`*_]", "", heading).strip().casefold()
@@ -795,6 +893,10 @@ def _audit_document(
     else:
         _audit_frontmatter(report, repo_root, entry, parsed.metadata)
         if kind == "card":
+            # 脱敏红线（原 distill_target._scrub_triple 的保护，随蒸馏中转
+            # 退役迁入正式审计边界——原生能力审计 2026-09-13 步骤 3）：
+            # 卡正文不得含裸 IPv4 或 credential 形态文本。
+            _audit_card_scrub(report, file_path, parsed.body)
             source_error = False
             try:
                 source_refs = parse_source_refs(parsed.metadata, source_path=file_path)
@@ -802,6 +904,12 @@ def _audit_document(
                 source_error = True
                 _add(report, "error", "source-refs-invalid", file_path, str(exc))
                 source_refs = ()
+            if source_refs:
+                # target-evidence refs 的可溯源校验独立于案例 corpus：
+                # 它检查目标名下文件存在性，不需要 corpus。
+                for source_ref in source_refs:
+                    if source_ref.type != "corpus-report":
+                        _audit_target_evidence_refs(report, repo_root, file_path, source_ref)
             if source_refs and source_mode != "off" and corpus_status.get("status") == "available":
                 # resolver 是案例存在性的唯一判断入口；audit 只把 dangling 结果变成硬门，
                 # 不把案例内容或工具结果升级成漏洞结论。
@@ -811,8 +919,12 @@ def _audit_document(
                     from case_corpus import get_case  # type: ignore
                 for source_ref in source_refs:
                     if source_ref.type != "corpus-report":
-                        # target-evidence 来源指向目标名下证据文件，不在案例 corpus
-                        # 内；其存在性由 /distill commit 时的可溯源 gate 保证。
+                        # target-evidence 来源指向目标名下证据文件（原
+                        # _validate_evidence_refs 的可溯源 gate，2026-09-13 迁入
+                        # 正式审计边界——蒸馏直写后该保护必须活在晋升门，而不是
+                        # 只活在被退役的 commit 中转里）：每条 ref 必须在
+                        # 声明的 target 名下且磁盘上真实存在。
+                        _audit_target_evidence_refs(report, repo_root, file_path, source_ref)
                         continue
                     resolved = get_case(
                         source_ref.id,

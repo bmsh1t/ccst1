@@ -13,8 +13,7 @@
 
 - `python3 tools/action_queue.py claim --target <t> --id <id> [--from-evidence <ref>] --metadata-json '<obj>'`（类别模板已退役 2026-09-13：family/technique/skill_route/risk_tier 由 AI 按当前假设填写）
 - `python3 tools/evidence_ledger.py record --target <t> --from-probe <event_id> --result <r> [--notes <n>]`
-- `python3 tools/distill_target.py prompt --target <t> --typology <pattern|target-vuln|failure|bypass> --json`
-- `python3 tools/distill_target.py commit --target <t> --triple-json <file-or-json> [--slug-hint <s>] --json`
+- `python3 tools/distill_target.py evidence --target <t> --json`（出题-三元组中转已退役 2026-09-13：AI 读视图直写草稿；脱敏/可溯源 gate 迁入 knowledge_audit）
 - `python3 tools/target_memory.py lead --target <t> --structured-json '{"hypothesis":...,"evidence_ref":...,"next":...,"stop_condition":...}'`
 - `ingest_checkpoint(repo_root, target, *, checkpoint: dict)` — checkpoint 必填（不再懒加载）
 
@@ -29,16 +28,17 @@
   投影族留在 state（深耦合 30+ 状态构建函数，搬动会反向循环）。
 - **依赖单向**：checkpoint → action_queue（模块加载期 aq 不得 import ck）；
   contracts.py 零 import（纯常量）。
-- **/distill 两段式**：机器出题（拉 ledger/findings/case_state 原始证据）→
-  AI 提三元组 → 机器 scrub（裸 IPv4/credential 形态拒绝写入）+ evidence_refs
-  目标名下可溯源校验 → 草稿卡 `knowledge/candidates/<slug>.md`；mv 即 promote。
+- **/distill 直写式（2026-09-13）**：机器出有界证据视图（ledger/findings/
+  case_state）→ AI 按 card-template 直写完整草稿（含前提/反例/停止条件）→
+  晋升门（knowledge_promote → strict audit）做脱敏红线（裸公网 IPv4/credential
+  形态拒绝）+ target-evidence refs 可溯源校验 → `knowledge/candidates/<slug>.md`。
 
 ### 4. Validation & Error Matrix
 
 - --from-probe 未知 event_id → `ValueError("--from-probe event_id ... not found")`
-- 三元组含裸 IPv4 → `ValueError("triple contains a bare IPv4 address...")`
-- 三元组含 credential 形态文本 → `ValueError("triple contains credential-shaped text...")`
-- evidence_ref 非目标名下/不存在 → `ValueError("not target-owned" / "does not exist")`
+- 卡正文判断段含裸公网 IPv4 → audit error `card-bare-ipv4`
+- 卡正文含 credential 形态值 → audit error `card-credential-text`
+- target-evidence ref 非目标名下/不存在 → audit error `target-evidence-ref-unowned` / `target-evidence-ref-missing`
 - structured-json 缺任一四字段 → `SystemExit("requires all of: ...")`
 - `ingest_checkpoint(checkpoint=None)` → `ValueError("requires an explicit checkpoint dict")`
 
@@ -50,7 +50,7 @@
 
 ### 6. Tests Required
 
-- `tests/test_distill_target.py`（13 项：两段式/脱敏负测试/可溯源/slug 冲突）
+- `tests/test_distill_target.py`（evidence 视图契约 + 旧中转 API 退役断言）
 - `tests/test_stage_one_ux.py`（9 项：from-probe/summary 一致性/结构化 leads）
 - `tests/test_contracts.py`（4 项：契约同步/零 import 纪律）
 

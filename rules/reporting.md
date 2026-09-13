@@ -89,12 +89,19 @@ infer severity from a bug-class name or a scanner label.
 Use the NEVER SUBMIT list and Q7 chain precedence in
 `skills/triage-validation/SKILL.md`; do not maintain a second class list here.
 
-## 6. VERIFY DATA ISN'T ALREADY PUBLIC
+## 6. VERIFY DATA ISN'T EXPECTED PUBLIC
 
-Before submitting an information disclosure finding:
+Before submitting an information disclosure finding, check whether the data is
+genuinely intended to be public — public reachability is not the same as
+expected exposure:
 1. Open the target in an incognito browser (not logged in)
 2. Can you see the same data without authentication?
-3. If yes → not a bug
+3. If yes, do NOT stop there: check business expectation — object ownership,
+   role design, whether the same data is shown in any authenticated UI, docs,
+   or API contract. Data that should be private (other users' records,
+   internal config, tokens) reachable anonymously is a finding even though it
+   "is visible without login".
+4. Only conclude not-a-bug when the data is intended to be public by design.
 
 ## 7. TWO TEST ACCOUNTS FOR IDOR
 

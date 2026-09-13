@@ -25,7 +25,7 @@
 | legacy target profile | `hunt-memory/targets/<target>.json` | `memory/target_profile.py` | resume/intel 的 scope、endpoint、finding 和 session 历史；缺失可创建，损坏必须 fail-fast |
 | request telemetry | `hunt-memory/guards/<target>.json` | `tools/request_guard.py` | advisory rate/breaker 历史；缺失表示尚未采样，损坏必须 fail-fast，不是执行授权 owner |
 | audit/journal/patterns | `hunt-memory/*.jsonl` | `memory/audit_log.py` 等 | 追加式跨会话日志，带轮换 |
-| knowledge candidate draft | `knowledge/candidates/<slug>.md` | `tools/distill_target.py` | /distill 草稿卡（card-template 形态，maturity: draft）；人工 mv 即 promote，git log 即审计。原 lifecycle.jsonl 状态机已归档 |
+| knowledge candidate draft | `knowledge/candidates/<slug>.md` | `tools/distill_target.py evidence` | /distill AI 直写草稿卡（card-template 形态，maturity: draft）；`knowledge_promote.py` 是 promote（mv+登记+audit），git log 即审计。原 lifecycle.jsonl 状态机与三元组中转已归档 |
 | corpus projection | （纯函数，无落盘） | `tools/corpus_projection.py` | 案例白名单投影（normalize_report/dedupe_by_id），case_corpus 消费 |
 | knowledge value review | `knowledge/governance/value-review.json` | `tools/knowledge_value_review.py` | 全 active 卡的可重建 advisory 复核投影，不是 runtime 状态 |
 | local case corpus | `distill/corpus/{reports.jsonl,index.json,manifest.json}` | `tools/case_corpus.py` | 可选、gitignored 的规范化案例数据与 byte-offset 索引 |

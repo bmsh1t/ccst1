@@ -57,7 +57,7 @@ controller 或 session/state 语义。
    `knowledge/capabilities.yaml`，并通过 `tools/knowledge_audit.py --strict`。
 6. **知识状态分层**：卡片来源 frontmatter 解析归 `tools/knowledge_registry.py`，本地案例
    查询归 `tools/case_corpus.py`（规范化投影在 `tools/corpus_projection.py`）。
-   候选晋升走 `/distill` 直线流程（`tools/distill_target.py` 出题-收卷；草稿在
+   候选晋升走 `/distill` 直线流程（`tools/distill_target.py evidence` 出有界视图，AI 直写草稿；草稿在
    `knowledge/candidates/`，人工 `mv` 进 cards 即 promote——git 即生命周期，
    无第二个状态机；原 candidates/lifecycle 状态机 2026-09-11 随
    09-11-simple-efficient-refactor 零-B 归档）。

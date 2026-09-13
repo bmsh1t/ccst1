@@ -1,4 +1,11 @@
-"""distill_target: straight-line target-scoped knowledge distillation contracts."""
+"""distill_target: AI-direct-write distillation contracts (post-2026-09-13 audit).
+
+旧的 prompt/commit 三元组中转已退役；本文件锁住新契约：
+- evidence 视图是唯一机器步骤（拉 ledger/findings/case_state 出有界视图）
+- 旧 CLI 子命令（prompt/commit）不再存在
+- 机械保护（脱敏、target-owned refs）活在 knowledge_audit 晋升门
+  （见 tests/test_knowledge_audit.py 的对应覆盖）
+"""
 
 from __future__ import annotations
 
@@ -7,14 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.distill_target import (
-    TYPOLOGIES,
-    build_prompt,
-    commit_triple,
-    _scrub_triple,
-    _slugify,
-    _validate_evidence_refs,
-)
+from tools.distill_target import build_evidence_view, build_parser
 
 
 def _seed_target(repo: Path, target: str) -> None:
@@ -44,127 +44,49 @@ def _seed_target(repo: Path, target: str) -> None:
     )
 
 
-def _triple(ref: str, **overrides) -> dict:
-    base = {
-        "typology": "pattern",
-        "pattern": "REST basket anonymous read",
-        "trigger": "GET /rest/basket/<id> without auth returns other user data",
-        "action": "three-way diff: anonymous / owner / peer id_swap",
-        "evidence_refs": [ref],
-    }
-    base.update(overrides)
-    return base
-
-
-def test_prompt_pulls_ledger_and_emits_typology_question(tmp_path):
+def test_evidence_view_pulls_ledger_and_points_to_direct_write(tmp_path):
     _seed_target(tmp_path, "t.example")
-    result = build_prompt(tmp_path, "t.example", "pattern")
-    assert result["typology"] == "pattern"
+    result = build_evidence_view(tmp_path, "t.example")
+
+    assert result["schema_version"] == 2
     assert result["evidence_counts"]["ledger"] == 1
-    assert "pattern" in result["question"]
-    assert "/rest/basket/1" in result["question"]
-    assert "evidence/t.example/probe/probe-1.json" in result["question"]
+    assert "/rest/basket/1" in result["view"]
+    assert "evidence/t.example/probe/probe-1.json" in result["view"]
+    # next 指向直写契约（不再有 triple/commit 中转）
+    assert "knowledge/candidates/" in result["next"]
+    assert "card-template" in result["next"]
+    assert "knowledge_promote" in result["next"]
+    assert "triple" not in result["next"]
 
 
-def test_prompt_rejects_unknown_typology(tmp_path):
-    with pytest.raises(ValueError, match="unknown typology"):
-        build_prompt(tmp_path, "t.example", "nope")
+def test_evidence_view_degrades_without_evidence(tmp_path):
+    result = build_evidence_view(tmp_path, "never-seen.example")
+    assert result["evidence_counts"]["ledger"] == 0
+    assert result["view"] == "(no target-owned evidence found)"
 
 
-def test_commit_writes_draft_card_with_evidence_refs(tmp_path):
-    _seed_target(tmp_path, "t.example")
-    ref = "evidence/t.example/probe/probe-1.json"
-    result = commit_triple(tmp_path, "t.example", json.dumps(_triple(ref)))
-    assert result["status"] == "draft_written"
-    card = Path(tmp_path, result["path"])
-    text = card.read_text(encoding="utf-8")
-    assert "maturity: draft" in text
-    assert "type: technique-card" in text
-    assert ref in text
-    assert card.parent.name == "candidates"
+def test_retired_intermediate_api_is_gone():
+    """旧出题/三元组中转不得回归（原生能力审计 2026-09-13 第 3 步）。"""
+    import tools.distill_target as dt
+
+    for name in ("build_prompt", "commit_triple", "_scrub_triple",
+                 "_validate_evidence_refs", "render_candidate_card", "TYPOLOGIES"):
+        assert not hasattr(dt, name), name
 
 
-def test_commit_scrubs_emails_and_tokens(tmp_path):
-    scrubbed = _scrub_triple(
-        _triple("x", pattern="contact admin@example.com with token ABCDEFGHIJKLMNOPQRSTUVWXYZ123456")
-    )
-    assert "admin@example.com" not in scrubbed["pattern"]
-    assert "[email-redacted]" in scrubbed["pattern"]
-    assert "[token-redacted]" in scrubbed["pattern"]
-
-
-def test_commit_rejects_bare_ipv4_in_prose(tmp_path):
-    _seed_target(tmp_path, "t.example")
-    triple = _triple("evidence/t.example/probe/probe-1.json", pattern="server at 10.0.0.5 leaks data")
-    with pytest.raises(ValueError, match="IPv4"):
-        commit_triple(tmp_path, "t.example", json.dumps(triple))
-
-
-def test_commit_rejects_credential_shaped_text(tmp_path):
-    triple = _triple("x", action="send password: hunter2 to endpoint")
-    with pytest.raises(ValueError, match="credential"):
-        _scrub_triple(triple)
-
-
-def test_commit_rejects_off_target_evidence_ref(tmp_path):
-    _seed_target(tmp_path, "t.example")
-    with pytest.raises(ValueError, match="not target-owned"):
-        _validate_evidence_refs(tmp_path, "t.example", ["evidence/other.example/probe/x.json"])
-
-
-def test_commit_rejects_missing_evidence_file(tmp_path):
-    _seed_target(tmp_path, "t.example")
-    with pytest.raises(ValueError, match="does not exist"):
-        _validate_evidence_refs(tmp_path, "t.example", ["evidence/t.example/probe/missing.json"])
-
-
-def test_commit_rejects_empty_evidence_refs(tmp_path):
-    with pytest.raises(ValueError, match="at least one"):
-        _validate_evidence_refs(tmp_path, "t.example", [])
-
-
-def test_commit_requires_all_triple_fields(tmp_path):
-    with pytest.raises(ValueError, match="'pattern' is required"):
-        commit_triple(tmp_path, "t.example", json.dumps({"trigger": "t", "action": "a", "evidence_refs": []}))
-
-
-def test_commit_slug_conflict_gets_serial_suffix(tmp_path):
-    _seed_target(tmp_path, "t.example")
-    ref = "evidence/t.example/probe/probe-1.json"
-    first = commit_triple(tmp_path, "t.example", json.dumps(_triple(ref)))
-    second = commit_triple(tmp_path, "t.example", json.dumps(_triple(ref)))
-    assert first["path"] != second["path"]
-    assert "-2" in second["path"]
-
-
-def test_typologies_cover_vuln_memory_quartet():
-    assert set(TYPOLOGIES) == {"pattern", "target-vuln", "failure", "bypass"}
-
-
-def test_slugify_bounds_and_normalizes():
-    assert _slugify("REST Basket 越权!! PATTERN") == "rest-basket-pattern"
-    assert _slugify("") == "untitled"
-    assert len(_slugify("a" * 200)) <= 48
-
-
-def test_prompt_subcommand_accepts_json_flag(tmp_path, capsys):
-    """回归：prompt 分支必须接受 --json（与 commit 对称；曾漏定义）。"""
+def test_cli_only_supports_evidence_subcommand(tmp_path, capsys):
     from tools.distill_target import main
 
     _seed_target(tmp_path, "t.example")
-    rc = main(["--repo-root", str(tmp_path), "prompt", "--target", "t.example", "--typology", "pattern", "--json"])
+    rc = main(["evidence", "--target", "t.example", "--json"])
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["typology"] == "pattern"
-    assert payload["evidence_counts"]["ledger"] == 1
+    assert payload["schema_version"] == 2
 
-
-def test_both_subcommands_expose_json_flag():
-    from tools.distill_target import build_parser
-
-    parser = build_parser()
-    for cmd in ("prompt", "commit"):
-        sub = next(
-            a for a in parser._subparsers._group_actions[0].choices[cmd]._actions if a.dest == "json"
-        )
-        assert sub is not None, cmd
+    # 旧子命令必须被 argparse 拒绝
+    with pytest.raises(SystemExit) as exc:
+        main(["prompt", "--target", "t.example"])
+    assert exc.value.code == 2
+    with pytest.raises(SystemExit) as exc:
+        main(["commit", "--target", "t.example", "--triple-json", "{}"])
+    assert exc.value.code == 2

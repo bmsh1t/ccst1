@@ -1045,13 +1045,62 @@ def _reproduction_steps_block(finding, validation, url):
     return "\n".join(lines)
 
 
+def _native_report_body(finding, *, repo_root=None) -> str:
+    """Return the Claude-written report body saved by /validate, if any.
+
+    decision.report.content 经 _write_machine_report 写入
+    validation_report_path（绑定 findings/<target>/<finding-id>-report.md）。
+    读取失败或不存在时返回空串——调用方回退到兼容模板叙述。
+    """
+    path_str = str(finding.get("validation_report_path") or "").strip()
+    if not path_str:
+        return ""
+    path = Path(path_str)
+    if not path.is_absolute():
+        repo = Path(repo_root) if repo_root else Path(BASE_DIR)
+        path = repo / path
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    return text.strip()
+
+
+def _title_from_native_body(body: str) -> str:
+    """Extract the H1 title line from a native report body."""
+    for line in body.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("# ") and not stripped.startswith("## "):
+            return stripped[2:].strip()
+        if stripped:
+            break
+    return ""
+
+
 def generate_report(finding, vuln_type, target_name=None, *, repo_root=None):
-    """Generate a HackerOne-formatted report for a finding."""
+    """Generate a HackerOne-formatted report for a finding.
+
+    Native-body-first（原生能力审计 2026-09-13）：/validate 已保存 Claude
+    撰写的报告正文（decision.report.content → validation_report_path）。
+    该正文是第一选择——生成器不再从类别模板重写 Summary/Impact/
+    Remediation。模板叙述仅在没有原生正文时作为兼容回退（legacy 草稿、
+    手动路径），且类别默认值不得覆盖已验证的 canonical CVSS/severity。
+    """
     template = VULN_TEMPLATES.get(vuln_type, VULN_TEMPLATES["misconfig"])
 
     url = finding.get("url", "N/A")
     domain = extract_domain(url) if url != "N/A" else (target_name or "unknown")
     validation = _load_validation_summary(finding, repo_root=repo_root)
+
+    native_body = _native_report_body(finding, repo_root=repo_root)
+    if native_body:
+        return native_body, _title_from_native_body(native_body) or (
+            template["title"].format(
+                domain=domain,
+                cve_id=finding.get("template_id", "Unknown CVE"),
+            )
+        )
+
     narrative = _auth_bypass_narrative(finding, validation) if vuln_type == "auth_bypass" else {}
 
     # Build title
