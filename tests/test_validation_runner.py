@@ -2016,3 +2016,123 @@ def test_request_diff_credential_pair_both_sides_rejected_is_clean(monkeypatch, 
     )
 
     assert summary["result"] == "tested_clean"
+
+
+def test_request_pair_rejects_unknown_vuln_class_before_replay(tmp_path):
+    """Exposure/未知拼写必须在 spec 校验期硬失败，而不是 replay 后静默跳写 Ledger。"""
+    spec = {
+        "schema_version": 1,
+        "baseline_request": {"method": "GET", "url": "https://target.test/rest/basket/1"},
+        "variant_request": {
+            "method": "GET",
+            "url": "https://target.test/rest/basket/2",
+        },
+        "active_dimension": "path:/rest/basket/2",
+        "classifier": "authz_access",
+        "vuln_class": "Exposure",
+        "expected": ["identical_success_pair"],
+    }
+    with pytest.raises(RequestPairError, match="vuln_class must be a canonical closure family"):
+        validate_request_pair(spec)
+    # 已知拼写（含别名形态）照常通过，并原样进入归一化 spec。
+    spec["vuln_class"] = "authz"
+    normalized = validate_request_pair(spec)
+    assert normalized["vuln_class"] == "authz"
+
+
+def test_runner_sync_preserving_validated_finality_keeps_coherent_pointers(
+    monkeypatch, tmp_path, capsys
+):
+    """保留 validated 终态时，validation_summary 与 runner_operation_id 必须同源。
+
+    指针撕裂回归：旧代码保留旧 validation_summary 但写入新 run 的
+    runner_operation_id，三个指针跨两个 run，canonical runner witness 拒绝。
+    """
+    target = "https://target.test"
+    url = "https://target.test/rest/admin/application-configuration"
+    key = _target_key(target)
+    findings_dir = tmp_path / "findings" / key
+    findings_dir.mkdir(parents=True)
+    (findings_dir / "findings.json").write_text(
+        json.dumps(
+            {
+                "target": target,
+                "total": 1,
+                "findings": [
+                    {
+                        "id": "AUTHZ-VALIDATED",
+                        "type": "auth_bypass",
+                        "severity": "high",
+                        "confidence": "confirmed",
+                        "url": url,
+                        "validation_status": "validated",
+                        "validation_summary": "validated/validation-summary.json",
+                        "runner_operation_id": "op-original",
+                        "report_status": "not_generated",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    validation_runner.update_finding_status(
+        findings_dir,
+        "AUTHZ-VALIDATED",
+        validation_status="validated",
+        report_status="not_generated",
+    )
+    findings_before = json.loads((findings_dir / "findings.json").read_text(encoding="utf-8"))
+    bound_op_before = findings_before["findings"][0]["runner_operation_id"]
+
+    monkeypatch.setattr(
+        validation_runner,
+        "request_once",
+        lambda **kwargs: _fake_response(kwargs["url"], body='{"config": {}}'),
+    )
+
+    spec_path = tmp_path / "pair-spec.json"
+    spec_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "baseline_request": {"method": "GET", "url": url},
+                "variant_request": {
+                    "method": "GET",
+                    "url": url,
+                    "headers": {"Authorization": "Bearer denied"},
+                },
+                "active_dimension": "header:Authorization",
+                "classifier": "authz",
+                "vuln_class": "Authz",
+                "expected": ["distinct_bodies"],
+                "declaration_intent": "hazard",
+            }
+        ),
+        encoding="utf-8",
+    )
+    rc = validation_runner.main(
+        [
+            "request-diff",
+            "--repo-root",
+            str(tmp_path),
+            "--target",
+            target,
+            "--request-spec",
+            str(spec_path),
+            "--finding-id",
+            "AUTHZ-VALIDATED",
+        ]
+    )
+    summary = json.loads(capsys.readouterr().out)
+    findings_after = json.loads((findings_dir / "findings.json").read_text(encoding="utf-8"))
+    row = findings_after["findings"][0]
+
+    assert rc == 0
+    assert summary["sync"]["finding"]["validation_status"] == "validated"
+    assert row["validation_status"] == "validated"
+    # 保留终态 = 保留同源指针集：新旧 run 的 operation id 不得混写。
+    assert row["runner_operation_id"] == bound_op_before
+    assert row["runner_operation_id"] != summary["operation_id"]
+    assert row["validation_summary"] == "validated/validation-summary.json"

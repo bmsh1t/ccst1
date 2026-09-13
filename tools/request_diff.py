@@ -221,6 +221,21 @@ def validate_request_pair(spec: dict[str, Any]) -> dict[str, Any]:
     classifier = str(spec.get("classifier") or "generic").strip().lower()
     if not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", classifier):
         raise RequestPairError("classifier must be a simple identifier")
+    # vuln_class 必须是 closure 词汇 owner 认识的家族拼写（Authz/IDOR/...）。
+    # Ledger 绑定要求 canonical family，错拼（如 Exposure）以前只在 replay
+    # 跑完后以 "no canonical Ledger family" 静默跳写——整轮重跑。与 expected
+    # facts 同一哲学：拼写错误是硬输入错误，在花钱前拦截，绝不静默忽略。
+    vuln_class_raw = str(spec.get("vuln_class") or "").strip()
+    if vuln_class_raw:
+        try:
+            from tools.closure_resolver import canonical_vuln_class
+        except ImportError:  # pragma: no cover - direct tools/ execution
+            from closure_resolver import canonical_vuln_class  # type: ignore
+        if not canonical_vuln_class(vuln_class_raw):
+            raise RequestPairError(
+                "vuln_class must be a canonical closure family (e.g. Authz, IDOR, "
+                "SQLi) when present; unknown spellings cannot bind a Ledger family"
+            )
     # AI-declared judgment: the caller asserts this endpoint is expected to
     # require authentication. The parser carries the boolean unchanged; it
     # never infers the expectation from the host, path, or response shape.

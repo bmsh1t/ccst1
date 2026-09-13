@@ -452,12 +452,19 @@ def _runner_sync_gate_updates(
     target: str,
     validation_summary: str,
     validated_at: str,
-) -> dict[str, str]:
+) -> tuple[dict[str, str], bool]:
     """Return gate fields for runner sync without downgrading /validate.
 
     validation_runner creates candidate evidence only.  Re-running it after
     `/validate` should refresh raw evidence/rubric, not erase report readiness
     or replace the final validation-summary pointer with a runner summary.
+
+    Returns ``(updates, preserved_finality)``: when a still-valid validated
+    finality is preserved, the caller must also keep the existing
+    ``runner_operation_id`` binding — mixing the preserved summary pointers
+    with the new run's operation id tears the pointer set across two runs and
+    the canonical runner witness rejects the finding.  Re-binding to a fresh
+    run goes through ``/validate``, which rewrites every pointer coherently.
     """
     existing = _find_existing_finding(findings_dir, finding_id, target=target)
     if str(existing.get("validation_status") or "") == "validated" and status == "candidate":
@@ -471,10 +478,11 @@ def _runner_sync_gate_updates(
                 "validation_status": "validated",
                 "validation_summary": str(existing.get("validation_summary") or validation_summary),
                 "validated_at": str(existing.get("validated_at") or validated_at),
-            }
+            }, True
         # The runner has fresh raw evidence, but a direct prior finality claim
         # cannot preserve report readiness. Rewrite the lifecycle as a
-        # candidate through the owner API below.
+        # candidate through the owner API below; the new run's pointers are
+        # then written coherently.
         updates = {
             "validation_status": status,
             "validation_summary": validation_summary,
@@ -482,12 +490,12 @@ def _runner_sync_gate_updates(
         }
         if str(existing.get("report_status") or "").strip().lower() in {"generated", "reported"}:
             updates["report_status"] = "not_generated"
-        return updates
+        return updates, False
     return {
         "validation_status": status,
         "validation_summary": validation_summary,
         "validated_at": validated_at,
-    }
+    }, False
 
 
 def _classes_equivalent(existing_class: str, vuln_class: str) -> bool:
@@ -839,7 +847,7 @@ def _sync_finding_status(summary: dict[str, Any], *, repo_root: Path) -> dict[st
             identity_updates["incomplete_fields"] = incomplete
             identity_updates["claim_status"] = "complete" if not incomplete else "incomplete"
 
-    gate_updates = _runner_sync_gate_updates(
+    gate_updates, preserved_finality = _runner_sync_gate_updates(
         findings_dir,
         finding_id,
         status,
@@ -858,7 +866,14 @@ def _sync_finding_status(summary: dict[str, Any], *, repo_root: Path) -> dict[st
         vuln_class=vuln_class,
         evidence_rubric=summary.get("evidence_rubric") or {},
         confidence=confidence,
-        runner_operation_id=operation_id,
+        # 指针撕裂修复：保留终态时同时保留旧的 operation 绑定，validation_summary
+        # 与 runner_operation_id 必须来自同一个 run；只有重写生命周期的分支才
+        # 绑定新 run 的 operation id。
+        **(
+            {"runner_operation_id": str(existing.get("runner_operation_id") or operation_id)}
+            if preserved_finality
+            else {"runner_operation_id": operation_id}
+        ),
     )
     if not updated:
         finding_type = _runner_finding_type(vuln_class, str(summary.get("lane") or ""))
@@ -883,7 +898,7 @@ def _sync_finding_status(summary: dict[str, Any], *, repo_root: Path) -> dict[st
                     "requested_finding_id": finding_id,
                     "operation_id": operation_id,
                 }
-            gate_updates = _runner_sync_gate_updates(
+            gate_updates, preserved_finality = _runner_sync_gate_updates(
                 findings_dir,
                 existing_id,
                 status,
@@ -894,6 +909,7 @@ def _sync_finding_status(summary: dict[str, Any], *, repo_root: Path) -> dict[st
             confidence = "confirmed" if gate_updates["validation_status"] == "validated" else (
                 "high" if result == "tested_finding" else ""
             )
+            matched_existing = _find_existing_finding(findings_dir, existing_id, target=target)
             updated = update_finding_status(
                 findings_dir,
                 existing_id,
@@ -901,7 +917,11 @@ def _sync_finding_status(summary: dict[str, Any], *, repo_root: Path) -> dict[st
                 vuln_class=vuln_class,
                 evidence_rubric=summary.get("evidence_rubric") or {},
                 confidence=confidence,
-                runner_operation_id=operation_id,
+                **(
+                    {"runner_operation_id": str(matched_existing.get("runner_operation_id") or operation_id)}
+                    if preserved_finality
+                    else {"runner_operation_id": operation_id}
+                ),
                 method=observed_method,
             )
             if updated:
