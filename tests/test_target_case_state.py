@@ -533,15 +533,16 @@ def test_next_prefers_ready_item_over_higher_priority_missing_evidence(tmp_path)
     target_case_state.add_backlog(
         tmp_path,
         TARGET,
-        runner="marker-replay",
+        runner="request-diff",
         priority="critical",
     )
     ready = target_case_state.add_backlog(
         tmp_path,
         TARGET,
-        runner="marker-replay",
-        endpoint=f"{TARGET}/api/ready",
-        expect_marker="MARKER",
+        runner="request-diff",
+        request_spec_ref="evidence/target.test/pairs/ready.json",
+        active_dimension="header:authorization",
+        classifier="authz",
         priority="high",
     )
 
@@ -549,12 +550,20 @@ def test_next_prefers_ready_item_over_higher_priority_missing_evidence(tmp_path)
 
     assert next_item["backlog_id"] == ready["id"]
     assert next_item["ready"] is True
-    assert next_item["backlog_id"] == ready["id"]
-    assert "--expect-marker" in shlex.split(next_item["command"])
+    assert "--request-spec" in shlex.split(next_item["command"])
+    # 审计 F1：命令只含真实 parser 支持的参数；--url/--method 已不再发出。
+    assert "--url" not in next_item["command"]
+    assert "--method" not in next_item["command"]
 
 
-def test_marker_runner_builds_complete_command_when_contract_is_satisfied(tmp_path):
-    ready = target_case_state.add_backlog(
+def test_retired_marker_replay_runner_fails_closed(tmp_path):
+    """审计 F1：marker-replay lane 已归档，不得再宣布 ready。
+
+    真实 parser 只有 request-diff；一个 marker-replay backlog 即使字段
+    齐全也必须落到 enrich_case_state，命令为空——否则 ready 命令会被
+    argparse 以 exit 2 拒绝。
+    """
+    target_case_state.add_backlog(
         tmp_path,
         TARGET,
         runner="marker-replay",
@@ -567,12 +576,10 @@ def test_marker_runner_builds_complete_command_when_contract_is_satisfied(tmp_pa
 
     next_item = target_case_state.next_action(tmp_path, TARGET)
 
-    assert next_item["backlog_id"] == ready["id"]
-    assert next_item["ready"] is True
-    assert "--expect-marker MARKER" in next_item["command"]
-    assert f"--baseline-url {TARGET}/api/neutral" in next_item["command"]
-    assert next_item["baseline_url"] == f"{TARGET}/api/neutral"
-    assert "--method POST" in next_item["command"]
+    assert next_item["ready"] is False
+    assert next_item["command"] == ""
+    assert next_item["next_action"] == "enrich_case_state"
+    assert any("unsupported runner" in value for value in next_item["missing_evidence"])
 
 
 def test_request_diff_runner_uses_spec_reference_without_copying_request_values(tmp_path):
@@ -611,9 +618,11 @@ def test_candidate_routes_to_enrichment_without_replay(tmp_path):
     candidate = target_case_state.add_backlog(
         tmp_path,
         TARGET,
-        runner="marker-replay",
+        runner="request-diff",
+        request_spec_ref="evidence/target.test/pairs/candidate.json",
+        active_dimension="header:authorization",
+        classifier="authz",
         endpoint=f"{TARGET}/api/candidate",
-        expect_marker="MARKER",
         priority="critical",
         status="candidate",
     )
@@ -913,3 +922,41 @@ def test_cli_next_outputs_json(tmp_path, capsys):
     assert rc == 0
     assert payload["runner"] == "request-diff"
     assert payload["next_action"] == "run_validation_runner"
+
+
+def test_ready_command_parses_in_real_runner(tmp_path, monkeypatch):
+    """审计 F1 跨模块测试：ready 命令必须能通过真实 runner parser。
+
+    结构校验（ready=true、命令字符串拼接）不证明消费者可执行；这里把
+    next_action 输出的命令原样送进 validation_runner 的 argparse，任何
+    参数错误都应让本测试失败。
+    """
+    import shlex
+    import sys
+    from pathlib import Path
+
+    import validation_runner
+
+    target_case_state.add_backlog(
+        tmp_path,
+        TARGET,
+        runner="request-diff",
+        request_spec_ref="evidence/target.test/pairs/spec.json",
+        active_dimension="header:authorization",
+        classifier="authz",
+        priority="high",
+    )
+    next_item = target_case_state.next_action(tmp_path, TARGET)
+    assert next_item["ready"] is True
+    command = next_item["command"]
+
+    # 命令形态：python3 tools/validation_runner.py request-diff --target ... --request-spec ...
+    parts = shlex.split(command)
+    assert parts[0] == "python3"
+    # 真实 parser：构造与 CLI 相同的 subparsers，把参数送进去。
+    # main() 会执行网络请求，所以这里只做 parse 阶段。
+    parser = validation_runner.build_parser()
+    argv = parts[2:]  # drop python3 + script path
+    args = parser.parse_args(argv)
+    assert args.lane == "request-diff"
+    assert args.request_spec.endswith("spec.json")

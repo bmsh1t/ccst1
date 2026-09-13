@@ -51,3 +51,61 @@ def test_expected_fact_vocabulary_from_outside_cwd():
         env={"PYTHONDONTWRITEBYTECODE": "1", "PATH": "/usr/bin:/bin"},
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_request_pair_rejects_undeclared_second_axis_for_query_and_path():
+    """审计 F2：query:/path: 分支必须校验整份请求差异集合，不是只查 URL 内部。
+
+    - query:id + Authorization 同时变化 -> 拒绝（差异归因要求单变量）
+    - path:/x + body 同时变化 -> 拒绝
+    - 重复 query key 的未声明首项变化 -> 拒绝（dict 折叠会掩盖）
+    """
+    import pytest
+    from request_diff import RequestPairError, validate_request_pair
+
+    dual_axis_query = {
+        "schema_version": 1,
+        "baseline_request": {"method": "GET", "url": "https://t.test/rest/basket/1?id=2",
+                             "headers": {"Authorization": "Bearer A"}},
+        "variant_request": {"method": "GET", "url": "https://t.test/rest/basket/1?id=9",
+                            "headers": {"Authorization": "Bearer B"}},
+        "active_dimension": "query:id",
+        "classifier": "authz",
+        "vuln_class": "Authz",
+    }
+    with pytest.raises(RequestPairError, match="only request difference"):
+        validate_request_pair(dual_axis_query)
+
+    dual_axis_path = {
+        "schema_version": 1,
+        "baseline_request": {"method": "POST", "url": "https://t.test/api/x/1", "body": '{"a":1}'},
+        "variant_request": {"method": "POST", "url": "https://t.test/api/x/2", "body": '{"a":2}'},
+        "active_dimension": "path:x",
+        "classifier": "authz",
+        "vuln_class": "Authz",
+    }
+    with pytest.raises(RequestPairError, match="only request difference"):
+        validate_request_pair(dual_axis_path)
+
+    repeated_key_hidden = {
+        "schema_version": 1,
+        "baseline_request": {"method": "GET", "url": "https://t.test/search?a=1&a=2&b=3"},
+        "variant_request": {"method": "GET", "url": "https://t.test/search?a=9&a=2&b=4"},
+        "active_dimension": "query:b",
+        "classifier": "authz",
+        "vuln_class": "Authz",
+    }
+    with pytest.raises(RequestPairError, match="only URL difference"):
+        validate_request_pair(repeated_key_hidden)
+
+    # 声明了重复 key 的变化（改的是重复组的首项且声明该 key）仍可表达。
+    repeated_key_declared = {
+        "schema_version": 1,
+        "baseline_request": {"method": "GET", "url": "https://t.test/search?a=1&a=2&b=3"},
+        "variant_request": {"method": "GET", "url": "https://t.test/search?a=1&a=2&b=4"},
+        "active_dimension": "query:b",
+        "classifier": "authz",
+        "vuln_class": "Authz",
+    }
+    normalized = validate_request_pair(repeated_key_declared)
+    assert normalized["active_dimension"] == "query:b"

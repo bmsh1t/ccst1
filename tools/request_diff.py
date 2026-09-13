@@ -122,9 +122,23 @@ def _body_leaf_paths(value: Any, prefix: str = "body", content_type: str = "") -
 
 
 def _normalized_url(url: str) -> str:
+    # 重复 query key 保持序列语义（urlencode 对 list 序列化保序），
+    # 不用 dict 折叠——a=1&a=2 与 a=2 是不同的请求形状，折叠会掩盖
+    # 未声明的第一项变化（审计 F2）。
     parsed = urlsplit(url)
-    pairs = sorted(parse_qsl(parsed.query, keep_blank_values=True))
-    return urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), parsed.path or "/", urlencode(pairs), ""))
+    pairs = parse_qsl(parsed.query, keep_blank_values=True)
+    return urlunsplit(
+        (parsed.scheme.lower(), parsed.netloc.lower(), parsed.path or "/", urlencode(pairs), "")
+    )
+
+
+def _query_multivalue(url: str) -> dict[str, list[str]]:
+    """保留重复 key 的多值视图：key -> 有序值列表。"""
+    pairs = parse_qsl(urlsplit(url).query, keep_blank_values=True)
+    out: dict[str, list[str]] = {}
+    for key, value in pairs:
+        out.setdefault(key, []).append(value)
+    return out
 
 
 def _difference_paths(baseline: dict[str, Any], variant: dict[str, Any]) -> list[str]:
@@ -171,6 +185,9 @@ def validate_request_pair(spec: dict[str, Any]) -> dict[str, Any]:
         raise RequestPairError("active_dimension is required")
     # Query/path dimensions are represented by URL; body/header dimensions keep
     # their exact path so a pair cannot silently mutate multiple inputs.
+    # query:/path: 分支必须同时校验整份请求的差异集合（审计 F2）：URL 内
+    # 校验只约束 URL 自身，其他维度的变化（header/body）也构成未声明
+    # 变量，与 header:/body: 分支同样拒绝。
     if active.startswith("query:"):
         base_url = urlsplit(baseline["url"])
         variant_url = urlsplit(variant["url"])
@@ -178,12 +195,22 @@ def validate_request_pair(spec: dict[str, Any]) -> dict[str, Any]:
             variant_url.scheme.lower(), variant_url.netloc.lower(), variant_url.path, variant_url.fragment
         ):
             raise RequestPairError("active query dimension cannot change path or origin")
+        if "url" not in differences:
+            raise RequestPairError("active query dimension must change the query string")
         name = active[6:].strip()
-        base_query = dict(parse_qsl(base_url.query, keep_blank_values=True))
-        variant_query = dict(parse_qsl(variant_url.query, keep_blank_values=True))
+        # 多值视图：重复 key 的第一项变化也是该 key 的变化，不因 dict
+        # 折叠而消失。
+        base_query = _query_multivalue(baseline["url"])
+        variant_query = _query_multivalue(variant["url"])
         changed_keys = sorted(key for key in set(base_query) | set(variant_query) if base_query.get(key) != variant_query.get(key))
         if changed_keys != [name]:
             raise RequestPairError("active query dimension must be the only URL difference")
+        other_differences = [item for item in differences if item != "url"]
+        if other_differences:
+            raise RequestPairError(
+                "active query dimension must be the only request difference "
+                f"(also changed: {', '.join(other_differences)})"
+            )
     elif active.startswith("path:"):
         base_url = urlsplit(baseline["url"])
         variant_url = urlsplit(variant["url"])
@@ -191,6 +218,14 @@ def validate_request_pair(spec: dict[str, Any]) -> dict[str, Any]:
             variant_url.scheme.lower(), variant_url.netloc.lower(), variant_url.query, variant_url.fragment
         ) or base_url.path == variant_url.path:
             raise RequestPairError("active path dimension must be the only URL difference")
+        if "url" not in differences:
+            raise RequestPairError("active path dimension must change the URL")
+        other_differences = [item for item in differences if item != "url"]
+        if other_differences:
+            raise RequestPairError(
+                "active path dimension must be the only request difference "
+                f"(also changed: {', '.join(other_differences)})"
+            )
     elif active.startswith(("header:", "cookie:")):
         if len(differences) != 1 or not differences[0].startswith("header:"):
             raise RequestPairError("active header dimension must be the only request difference")

@@ -2224,3 +2224,113 @@ def test_non_source_finding_rejection_remains_compatible(tmp_path):
 
     assert updated is not None
     assert updated["validation_status"] == "rejected"
+
+
+def _f3_fixture(monkeypatch, tmp_path):
+    """审计 F3 夹具：一个 validated+generated 的 finding + 真实 owner provenance。"""
+    findings_dir = tmp_path / "findings" / "example.com"
+    findings_dir.mkdir(parents=True, exist_ok=True)
+    validation_dir = tmp_path / "evidence" / "example.com" / "validation" / "f3-1"
+    validation_dir.mkdir(parents=True, exist_ok=True)
+    validation_summary = validation_dir / "validation-summary.json"
+    validation_summary.write_text(
+        json.dumps(
+            {
+                "all_gates_passed": True,
+                "four_validation_gates_passed": True,
+                "seven_question_gate_passed": True,
+                "seven_question_gate_decision": "pass",
+                "evidence_rubric": {"summary": "f3 evidence"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (findings_dir / "findings.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "target": "example.com",
+                "total": 1,
+                "findings": [
+                    {
+                        "id": "f3_finding",
+                        "type": "sqli",
+                        "category": "sqli",
+                        "title": "SQLi on item",
+                        "summary": "verified sqli",
+                        "url": "https://example.com/item?id=1",
+                        "severity": "high",
+                        "confidence": "confirmed",
+                        "validation_status": "validated",
+                        "validation_summary": str(validation_summary),
+                        "report_status": "not_generated",
+                        "source_file": "sqli/manual_ai_candidates.txt",
+                        "raw": "[SQLI-POC-VERIFIED] https://example.com/item?id=1",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    _record_owner_provenance(findings_dir, "f3_finding")
+    monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
+    return findings_dir, tmp_path / "reports" / "example.com"
+
+
+def test_report_generator_regenerates_missing_report_file(monkeypatch, tmp_path):
+    """审计 F3-1：已登记 generated 但文件被删 -> 重跑必须恢复，而不是空计 1 份。"""
+    findings_dir, report_dir = _f3_fixture(monkeypatch, tmp_path)
+    total, _ = report_generator.process_findings_dir(str(findings_dir))
+    assert total == 1
+    report_file = Path(
+        json.loads((findings_dir / "findings.json").read_text(encoding="utf-8"))
+        ["findings"][0]["report_file"]
+    )
+    assert report_file.is_file()
+    # 模拟产物丢失（如误删/崩溃后清理）
+    report_file.unlink()
+
+    total2, index2 = report_generator.process_findings_dir(str(findings_dir))
+
+    assert total2 == 1
+    assert report_file.is_file(), "missing report file must be regenerated"
+    assert any(item["finding_id"] == "f3_finding" for item in index2)
+    findings_row = json.loads((findings_dir / "findings.json").read_text(encoding="utf-8"))["findings"][0]
+    assert findings_row["report_status"] == "generated"
+
+
+def test_report_generator_recovers_partial_crash_artifact(monkeypatch, tmp_path):
+    """审计 F3-2：崩溃残片（只写到 Finding ID 行）-> 重跑原子替换为完整报告。"""
+    findings_dir, report_dir = _f3_fixture(monkeypatch, tmp_path)
+    total, _ = report_generator.process_findings_dir(str(findings_dir))
+    findings_row = json.loads((findings_dir / "findings.json").read_text(encoding="utf-8"))["findings"][0]
+    report_file = Path(findings_row["report_file"])
+    # 模拟 open('x') 写到一半崩溃：保留 Finding ID 行但缺少终结标记
+    truncated = f"# Broken report\n\n- **Finding ID:** f3_finding\n"
+    report_file.write_text(truncated, encoding="utf-8")
+
+    total2, _ = report_generator.process_findings_dir(str(findings_dir))
+
+    assert total2 == 1
+    recovered = report_file.read_text(encoding="utf-8")
+    assert recovered != truncated, "partial artifact must be replaced"
+    assert report_generator._REPORT_TERMINATOR in recovered, "recovered report must be complete"
+
+
+def test_report_generator_idempotent_rerun_keeps_complete_report(monkeypatch, tmp_path):
+    """审计 F3-3：完整报告重复运行不重建、不产生重复索引行。"""
+    findings_dir, report_dir = _f3_fixture(monkeypatch, tmp_path)
+    total, _ = report_generator.process_findings_dir(str(findings_dir))
+    report_file = Path(
+        json.loads((findings_dir / "findings.json").read_text(encoding="utf-8"))
+        ["findings"][0]["report_file"]
+    )
+    before = report_file.read_text(encoding="utf-8")
+    mtime_before = report_file.stat().st_mtime_ns
+
+    total2, index2 = report_generator.process_findings_dir(str(findings_dir))
+
+    assert total2 == total
+    assert len(index2) == total2
+    assert report_file.read_text(encoding="utf-8") == before
+    assert report_file.stat().st_mtime_ns == mtime_before, "complete report must not be rewritten"

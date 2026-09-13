@@ -68,9 +68,11 @@ HIGH_IMPACT_OBJECT_TYPES = {
 # Only runners implemented by validation_runner are eligible for a ready
 # command.  Required values are public request facts; session headers remain
 # in the private Case State session store.
+# marker-replay lane 已退役（archive/tools/，2026-09-12：全历史零 marker run）：
+# 真实 parser 只有 request-diff，这里不得再为已归档 lane 宣布 ready——
+# 否则 next_action=run_validation_runner 会把不可执行命令送进 exit 2。
 RUNNER_CONTRACTS = {
     "request-diff": ("request_spec_ref", "active_dimension", "classifier"),
-    "marker-replay": ("endpoint", "expect_marker"),
 }
 
 HYPOTHESIS_METADATA_KEYS = (
@@ -749,18 +751,17 @@ def _readiness(
 
 
 def _build_generic_command(target: str, item: dict[str, Any], details: dict[str, Any]) -> str:
-    endpoint = details.get("endpoint") or item.get("endpoint") or ""
+    """Build the ready command with ONLY flags the real runner parser accepts.
+
+    审计 F1：request-diff parser 接受 --request-spec/--header/--timeout/
+    --repeat/--no-ledger 等，不接受 --url/--method（请求形状来自 spec 文件，
+    method 由 spec 的 baseline/variant 携带）。多发的参数会被 argparse 以
+    exit 2 拒绝，把 ready 的 backlog 推进到不可执行动作。
+    """
     runner = str(item.get("runner") or "").strip()
     parts = ["python3", "tools/validation_runner.py", runner, "--target", target]
-    if endpoint:
-        parts.extend(["--url", endpoint])
-    parts.extend(["--method", str(item.get("method") or "GET").upper()])
     if runner == "request-diff":
         parts.extend(["--request-spec", item.get("request_spec_ref") or ""])
-    elif runner == "marker-replay":
-        if str(item.get("baseline_url") or ""):
-            parts.extend(["--baseline-url", item.get("baseline_url")])
-        parts.extend(["--expect-marker", item.get("expect_marker") or ""])
     return " ".join(_quote(part) for part in parts if part != "")
 
 

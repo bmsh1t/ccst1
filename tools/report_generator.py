@@ -1157,7 +1157,10 @@ def _is_reportable_structured_finding(
     if validation_status != "validated":
         return bool(allow_legacy_draft and not validation_status and report_status != "generated")
     if report_status == "generated":
-        return False
+        # 审计 F3：登记状态不能替代产物存在。已登记 generated 但报告文件
+        # 缺失或不完整（崩溃残片）时回到生成路径恢复——文件级证据优先于
+        # 状态字段，否则一次崩溃会让该报告永远无法恢复。
+        return not _registered_report_artifact_is_intact(finding)
     # A direct JSON edit is not enough to enter report generation.  The
     # report writer is a lifecycle consumer, so require the same owner
     # provenance that runtime state and checkpoint use.
@@ -1195,6 +1198,35 @@ def _report_file_matches_finding(report_file, finding):
     except OSError:
         return False
     return f"- **Finding ID:** {finding_id}" in text
+
+
+_REPORT_TERMINATOR = "*Scanner: Automated Bug Bounty Pipeline*"
+
+
+def _report_artifact_is_complete(report_file) -> bool:
+    """产物完整性：报告必须写到终结标记，崩溃残片不算完整。
+
+    报告正文以 "*Scanner: Automated Bug Bounty Pipeline*" 结尾；只写到
+    Finding ID 行的半份文件（审计 F3 的 776 字节残片）不含该标记。
+    """
+    try:
+        text = Path(report_file).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return _REPORT_TERMINATOR in text and text.rstrip().endswith("*")
+
+
+def _registered_report_artifact_is_intact(finding) -> bool:
+    """已登记 generated 的报告产物是否完整可用（缺失/残片 -> 需要恢复）。"""
+    report_file = str(finding.get("report_file") or "").strip()
+    if not report_file:
+        return False
+    path = Path(report_file)
+    if not path.is_absolute():
+        # report_file 由 owner 写入时是绝对路径；相对形态（历史行或测试
+        # 夹具）按 REPORTS_DIR 根解析，与生成路径一致。
+        path = Path(REPORTS_DIR) / Path(report_file).name
+    return _report_artifact_is_complete(path)
 
 
 def _occupied_report_ids(structured_findings, report_dir):
@@ -1264,16 +1296,25 @@ def _next_report_id(vuln_type, finding, report_dir, occupied):
 
 
 def _create_or_reuse_report(report_file, report_content, finding):
-    """Create without overwrite, or reuse a same-finding crash artifact."""
+    """Create without overwrite, or recover a same-finding crash artifact.
+
+    审计 F3：文件已存在时区分三种情况——
+    - 完整且属于同一 finding：复用（幂等重跑）。
+    - 属于同一 finding 但不完整（崩溃残片）：原子替换为完整内容（恢复）。
+    - 属于其他 finding 或无法确认归属：拒绝（raise），不覆盖人工产物。
+    """
     path = Path(report_file)
     try:
         with path.open("x", encoding="utf-8") as handle:
             handle.write(report_content)
         return "created"
     except FileExistsError:
-        if _report_file_matches_finding(path, finding):
+        if not _report_file_matches_finding(path, finding):
+            raise
+        if _report_artifact_is_complete(path):
             return "reused"
-        raise
+        _write_text_atomic(path, report_content)
+        return "recovered"
 
 
 def process_findings_dir(findings_dir, *, allow_legacy_drafts=False):
@@ -1500,6 +1541,10 @@ def _existing_structured_report_entries(
         if not isinstance(finding, dict):
             continue
         if str(finding.get("report_status") or "").strip().lower() != "generated":
+            continue
+        # 审计 F3：产物缺失/残片的 generated 行不进存量索引——它要走的
+        # 是下面的恢复路径（重新生成），不是当作已有报告计入。
+        if not _registered_report_artifact_is_intact(finding):
             continue
         provenance = verify_finalized_finding_owner_provenance(
             findings_dir,
