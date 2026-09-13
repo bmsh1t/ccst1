@@ -125,12 +125,10 @@ already recorded anything.
 - `request-diff` is the shared request-pair primitive. AI supplies the exact
   baseline/variant and `active_dimension`; SQLi/NoSQLi/etc. are classifiers, not
   separate fixed-input lanes. Unsupported wire formats remain `manual_required`.
-- Command-count discipline (lab-e2e measured): any same-endpoint comparison of
-  2+ actors/variants is ONE `request-diff` invocation, never repeated
-  single-shot probes — each probe row costs a command plus a manual ledger
-  reconcile that the runner already does. `tools/probe.py` is for single-point
-  reconnaissance (one request, one question), not for building a comparison
-  matrix by hand.
+- `request-diff` is optional. Claude chooses browser, native HTTP, MCP or an
+  existing runner to fit the experiment; comparisons are not forced into a
+  same-method pair. Retain raw evidence and use the existing owner interfaces.
+  Undeclared or unmet expectations stay candidates, not automatic clean results.
 - Explicitly state-changing Scanner probes, currently the retained HTTP method
   tampering check, require `ALLOW_UNSAFE_HTTP_TESTS=1`. Without that opt-in the
   request is skipped and recorded in `manual_review/unsafe_skipped.txt`; the

@@ -753,37 +753,6 @@ def _known_snapshot_hashes(browser_root: Path) -> set[str]:
     }
 
 
-def _focused_signal(url: str, delta: dict[str, list[str]]) -> dict[str, Any]:
-    try:
-        from tools.high_value_signals import classify_high_value_signal
-    except ImportError:  # pragma: no cover - direct tools/ execution
-        from high_value_signals import classify_high_value_signal  # type: ignore
-
-    candidates = [(url, [])]
-    for kind, lines in delta.items():
-        for line in lines:
-            key = line.split(" :: ", 1)[1] if kind == "browser_params" and " :: " in line else ""
-            candidates.append((_line_url(line), [key] if key else []))
-    signals = []
-    for candidate, extra_keys in candidates:
-        parsed = urlparse(candidate)
-        signals.append(
-            classify_high_value_signal(
-                path=parsed.path or "/",
-                query_keys=[
-                    *[key for key, _value in parse_qsl(parsed.query, keep_blank_values=True)],
-                    *extra_keys,
-                ],
-                evidence="browser context discovery",
-            )
-        )
-    return {
-        "score": max((signal.score for signal in signals), default=0),
-        "classes": list(dict.fromkeys(value for signal in signals for value in signal.classes)),
-        "reasons": list(dict.fromkeys(value for signal in signals for value in signal.reasons)),
-    }
-
-
 def _resolve_manifest_artifact(value: Any) -> str:
     if not isinstance(value, str) or not value.strip():
         return ""
@@ -973,10 +942,8 @@ def import_focused_mcp_manifest(
         repeated_shape = bool(snapshot_hash and snapshot_hash in known_hashes)
         if snapshot_hash:
             known_hashes.add(snapshot_hash)
-        signal = _focused_signal(url, delta)
         is_actionable = bool(
             summary.get("success")
-            and signal["score"] > 0
             and (any(delta.values()) or (snapshot_hash and not repeated_shape))
         )
         capture = {
@@ -987,7 +954,6 @@ def import_focused_mcp_manifest(
             "snapshot_sha256": snapshot_hash,
             "repeated_shape": repeated_shape if snapshot_hash else None,
             "new_surface": delta,
-            "high_value": signal,
             "actionable": is_actionable,
         }
         captures.append(capture)
@@ -1050,7 +1016,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--har", default="", help="Optional HAR artifact kept private; also used as network input when needed")
     parser.add_argument("--focused-manifest", default="", help="Import a bounded file-backed MCP capture manifest")
     parser.add_argument("--max-urls", type=int, default=DEFAULT_FOCUSED_LIMIT, help="Focused manifest URL budget")
-    parser.add_argument("--no-enqueue", action="store_true", help="Do not add focused high-value deltas to Action Queue")
+    parser.add_argument("--no-enqueue", action="store_true", help="Do not add newly observed deltas to Action Queue")
     parser.add_argument("--label", default="mcp", help="Capture label suffix")
     parser.add_argument("--source", default="mcp", help="Source label, e.g. chrome-devtools-mcp or playwright-mcp")
     parser.add_argument("--evidence-root", default=str(DEFAULT_EVIDENCE_ROOT), help="Evidence root directory")

@@ -7,78 +7,50 @@ import json
 from pathlib import Path
 
 try:
-    from tools.target_paths import resolve_target_url, url_belongs_to_target
+    from tools.target_paths import resolve_target_url
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from target_paths import resolve_target_url, url_belongs_to_target  # type: ignore
+    from target_paths import resolve_target_url  # type: ignore
 
 
 EMPTY_SOURCE_INTEL = {
     "available": False,
-    "hypotheses": [],
+    "signals": [],
     "routes": [],
     "graphql_operations": [],
 }
 
-_SOURCE_PRIORITY = {
-    "auth-bypass": "high",
-    "idor": "high",
-    "business-logic": "high",
-    "graphql": "medium",
-    "websocket": "high",
-    "oauth": "high",
-    "ssrf": "medium",
-    "upload": "medium",
-    "webhook": "medium",
-    "framework-intel": "medium",
-    "csrf": "low",
-}
-_PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}
 
-
-def load_source_intel_hypotheses(findings_dir: Path) -> dict:
-    """Load source_intel hypotheses and routes, if present, for surface review."""
+def load_source_intel(findings_dir: Path) -> dict:
+    """Read source observations; old generated prose never controls selection."""
     source_dir = findings_dir / "source_intel"
-    hypotheses_path = source_dir / "hypotheses.jsonl"
     routes_path = source_dir / "routes.json"
-
-    hypotheses = []
-    if hypotheses_path.is_file():
+    try:
+        payload = json.loads(routes_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    routes = [item for item in payload.get("routes", []) if isinstance(item, dict) and item.get("route")]
+    # Recover exact route facts from legacy caches, not their predicted classes.
+    if not routes_path.is_file():
+        legacy_path = source_dir / "hypotheses.jsonl"
         try:
-            for line in hypotheses_path.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if not line:
+            for line in legacy_path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
                     continue
                 item = json.loads(line)
-                if isinstance(item, dict) and item.get("candidate"):
-                    hypotheses.append(item)
+                candidate = str(item.get("candidate") or "") if isinstance(item, dict) else ""
+                if candidate.startswith(("/", "http://", "https://", "ws://", "wss://")):
+                    routes.append({"route": candidate, "method": str(item.get("method") or ""), "source": str(legacy_path)})
         except (OSError, json.JSONDecodeError):
-            hypotheses = []
-
-    routes = []
-    graphql_operations = []
-    if routes_path.is_file():
-        try:
-            payload = json.loads(routes_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            payload = {}
-        if isinstance(payload, dict):
-            routes = [
-                item for item in payload.get("routes", [])
-                if isinstance(item, dict) and item.get("route")
-            ]
-            graphql_operations = [
-                item for item in payload.get("graphql_operations", [])
-                if isinstance(item, dict)
-            ]
-
-    if not hypotheses and not routes and not graphql_operations:
-        return dict(EMPTY_SOURCE_INTEL)
-
+            pass
+    operations = [item for item in payload.get("graphql_operations", []) if isinstance(item, dict)]
+    signals = [item for item in payload.get("signals", []) if isinstance(item, dict)]
     return {
-        "available": True,
-        "hypotheses": hypotheses,
+        "available": bool(routes or operations or signals),
         "routes": routes,
-        "graphql_operations": graphql_operations,
+        "graphql_operations": operations,
+        "signals": signals,
     }
 
 
@@ -86,88 +58,27 @@ def _endpoint_to_url(endpoint_path: str, default_host: str) -> str:
     return resolve_target_url(endpoint_path, default_host)
 
 
-def build_source_intel_urls(source_intel: dict, default_host: str, known_urls: list[str] | None = None) -> dict[str, list[dict]]:
-    """Map source_intel route/hypothesis output to rankable URLs."""
-    known_urls = known_urls or []
+def build_source_intel_urls(source_intel: dict, default_host: str) -> dict[str, list[dict]]:
+    """Make every extracted route discoverable without a class/keyword gate."""
     urls: dict[str, list[dict]] = {}
-    graphql_urls = []
-
     for route in source_intel.get("routes", []):
-        route_value = str(route.get("route", "")).strip()
-        if not route_value:
+        if not isinstance(route, dict):
             continue
-        url = _endpoint_to_url(route_value, default_host)
-        if "graphql" in url.lower():
-            graphql_urls.append(url)
-
-    for url in known_urls:
-        if "graphql" in str(url).lower():
-            graphql_urls.append(str(url))
-
-    dedup_graphql_urls = []
-    seen_graphql = set()
-    for url in graphql_urls:
-        if not url or url in seen_graphql:
+        value = str(route.get("route") or "").strip()
+        if not value.startswith(("/", "http://", "https://", "ws://", "wss://")):
             continue
-        seen_graphql.add(url)
-        dedup_graphql_urls.append(url)
-
-    for hypothesis in source_intel.get("hypotheses", []):
-        candidate = str(hypothesis.get("candidate", "")).strip()
-        if not candidate:
-            continue
-        if candidate.startswith(("http://", "https://", "ws://", "wss://")) or candidate.startswith("/"):
-            url = _endpoint_to_url(candidate, default_host)
-            urls.setdefault(url, []).append(hypothesis)
-            continue
-        if hypothesis.get("type") == "business-logic":
-            for url in dedup_graphql_urls:
-                urls.setdefault(url, []).append(hypothesis)
-
+        url = _endpoint_to_url(value, default_host)
+        if url:
+            urls.setdefault(url, []).append(route)
     return urls
 
 
 def source_intel_counts(source_intel: dict) -> dict:
     """Return compact source_intel counters for formatted surface output."""
     return {
-        "hypothesis_count": len(source_intel.get("hypotheses", [])),
+        "signal_count": len(source_intel.get("signals", [])),
         "route_count": len(source_intel.get("routes", [])),
         "graphql_count": len(source_intel.get("graphql_operations", [])),
     }
 
 
-def build_source_lead_hints(
-    source_intel: dict,
-    *,
-    target: str = "",
-    default_host: str = "",
-) -> list[dict]:
-    """Return compact actionable source-intel leads for surface/autopilot views."""
-    leads = []
-    for item in source_intel.get("hypotheses", []):
-        candidate = str(item.get("candidate", "") or "").strip()
-        vuln_type = str(item.get("type", "") or "other").strip().lower()
-        reason = str(item.get("reason", "") or "").strip()
-        if not candidate:
-            continue
-        if target and not url_belongs_to_target(resolve_target_url(candidate, default_host), target):
-            continue
-        next_action = reason or f"verify {candidate} with a focused {vuln_type} test"
-        leads.append({
-            "source": "source_intel",
-            "title": candidate,
-            "category": vuln_type,
-            "priority": _SOURCE_PRIORITY.get(vuln_type, "medium"),
-            "next_action": next_action,
-            "rationale": reason,
-            "evidence": str(item.get("source", "") or "").strip(),
-        })
-
-    leads.sort(
-        key=lambda item: (
-            _PRIORITY_ORDER.get(item["priority"], 3),
-            item["category"],
-            item["title"],
-        )
-    )
-    return leads[:5]

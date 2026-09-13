@@ -716,7 +716,7 @@ def test_runner_sync_does_not_downgrade_validated_finding(monkeypatch, tmp_path,
     assert summary["sync"]["finding"]["validation_status"] == "validated"
     assert findings["findings"][0]["validation_status"] == "validated"
     assert findings["findings"][0]["validation_summary"] == "validated/validation-summary.json"
-    assert findings["findings"][0]["evidence_rubric"]["status"] == "candidate-ready"
+    assert "evidence_rubric" not in summary
 
 
 def test_runner_replay_does_not_reopen_finalized_queue_action(monkeypatch, tmp_path):
@@ -1002,6 +1002,48 @@ def test_request_diff_without_canonical_ledger_family_keeps_sync_skipped(monkeyp
     assert sync["status"] == "skipped"
     assert sync["ledger"]["status"] == "skipped"
     assert "error" not in sync["ledger"]
+
+
+def test_request_diff_partial_failure_keeps_saved_baseline_material(monkeypatch, tmp_path):
+    """第二请求失败时：已保存的 baseline 材料必须保留，结果为不可晋升的 partial。
+
+    request-diff-optimization 验收第 4 条：第一份响应成功、第二次请求失败，
+    第一份材料仍保留，相关工作未完成（不得 clean/finding）。
+    """
+    import urllib.error
+
+    calls = {"n": 0}
+
+    def partial_fail_request(**kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _fake_response(kwargs["url"], body='{"data":"baseline"}')
+        raise urllib.error.URLError("synthetic variant transport failure")
+
+    monkeypatch.setattr(validation_runner, "request_once", partial_fail_request)
+    summary = validation_runner.run_request_diff(
+        repo_root=tmp_path,
+        target="https://target.test",
+        request_spec={
+            "baseline_request": {"method": "GET", "url": "https://target.test/api/basket/1", "headers": {"Authorization": "Bearer owner"}},
+            "variant_request": {"method": "GET", "url": "https://target.test/api/basket/1", "headers": {"Authorization": "Bearer peer"}},
+            "active_dimension": "header:Authorization",
+            "classifier": "idor",
+        },
+        finding_id="PARTIAL-KEEP",
+    )
+
+    assert summary["result"] == "partial"
+    assert summary["candidate_ready"] is False
+    assert summary["error"]["side"] == "variant"
+    # 已取得的 baseline 材料落盘且被 summary 绑定
+    bundle = tmp_path / ".private" / "validation" / _target_key("https://target.test") / "PARTIAL-KEEP"
+    summaries = list((tmp_path / "evidence" / _target_key("https://target.test") / "validation" / "PARTIAL-KEEP").glob("*/summary.json"))
+    assert summaries, "partial summary must be written"
+    saved = summary["runs"][0]["artifacts"]
+    assert saved.get("baseline_response"), "baseline response artifact must be recorded"
+    baseline_path = tmp_path / str(saved["baseline_response"])
+    assert baseline_path.is_file(), "baseline raw response must remain on disk"
 
 
 def test_request_diff_marks_multipart_manual_required_without_request(monkeypatch, tmp_path):
@@ -1718,10 +1760,8 @@ def test_request_diff_missing_auth_expect_auth_pair_promotes_to_tested_finding(m
     assert summary["result"] == "tested_finding"
     assert summary["candidate_ready"] is True
     assert summary["vuln_class"] == "Authz"
-    rubric = summary.get("evidence_rubric") or {}
-    assert rubric.get("status") == "candidate-ready"
-    ai_next = summary.get("ai_next") or {}
-    assert "remaining judgment" in str(ai_next.get("hypothesis", ""))
+    assert "evidence_rubric" not in summary
+    assert "ai_next" not in summary
     spec_view = summary.get("request_pair") or {}
     assert spec_view.get("expect_auth") is True
     assert summary["expected_check"]["declared"] == ["identical_success_pair"]
@@ -1777,7 +1817,7 @@ def test_request_diff_expect_auth_trusts_arbitrary_declared_dimension(monkeypatc
         target="https://target.test",
         request_spec=spec,
     )
-    assert summary_undeclared["result"] == "tested_clean"
+    assert summary_undeclared["result"] == "candidate"
     assert summary_undeclared["candidate_ready"] is False
 
 
@@ -1987,9 +2027,8 @@ def test_request_diff_missing_auth_declaration_alone_does_not_override_held_boun
     assert summary["expected_check"]["unmet"] == ["identical_success_pair"]
 
 
-def test_request_diff_credential_pair_both_sides_rejected_is_clean(monkeypatch, tmp_path):
-    """Anonymous 401 + invalid-credential 401 with identical bodies means the
-    auth boundary held; that pair is a genuine tested_clean."""
+def test_request_diff_equal_rejections_require_explicit_clean_declaration(monkeypatch, tmp_path):
+    """Equal rejections remain unresolved unless a clean expectation was declared."""
 
     def fake_request_once(**kwargs):
         return _fake_response(kwargs["url"], status=401, body='{"error": "unauthorized"}')
@@ -2015,7 +2054,12 @@ def test_request_diff_credential_pair_both_sides_rejected_is_clean(monkeypatch, 
         request_spec=spec,
     )
 
-    assert summary["result"] == "tested_clean"
+    assert summary["result"] == "candidate"
+    spec["expected"] = ["both_sides_rejected"]
+    spec["declaration_intent"] = "clean"
+    declared = validation_runner.run_request_diff(repo_root=tmp_path, target="https://target.test", request_spec=spec)
+    assert declared["result"] == "tested_clean"
+    assert declared["expected_check"]["unmet"] == []
 
 
 def test_request_pair_rejects_unknown_vuln_class_before_replay(tmp_path):

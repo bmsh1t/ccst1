@@ -46,7 +46,6 @@ try:
         summarize_queue,
     )
     from tools.evidence_ledger import record_entry
-    from tools.evidence_rubric import compact_evidence_rubric, evaluate_candidate_evidence
     from tools.finding_index import (
         load_finding_index,
         update_finding_status,
@@ -76,7 +75,6 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         summarize_queue,
     )
     from evidence_ledger import record_entry  # type: ignore
-    from evidence_rubric import compact_evidence_rubric, evaluate_candidate_evidence  # type: ignore
     from finding_index import (  # type: ignore
         load_finding_index,
         update_finding_status,
@@ -451,7 +449,7 @@ def _runner_sync_gate_updates(
     """Return gate fields for runner sync without downgrading /validate.
 
     validation_runner creates candidate evidence only.  Re-running it after
-    `/validate` should refresh raw evidence/rubric, not erase report readiness
+    `/validate` should refresh raw evidence, not erase report readiness
     or replace the final validation-summary pointer with a runner summary.
 
     Returns ``(updates, preserved_finality)``: when a still-valid validated
@@ -522,14 +520,6 @@ def _runner_finding_type(vuln_class: str, lane: str) -> str:
     return value.replace("-", "_") or "exposure"
 
 
-def _runner_finding_severity(finding_type: str) -> str:
-    if finding_type in {"sqli", "ssti", "auth_bypass"}:
-        return "high"
-    if finding_type in {"idor", "exposure"}:
-        return "medium"
-    return "medium"
-
-
 def _create_runner_finding(
     findings_dir: Path,
     summary: dict[str, Any],
@@ -556,17 +546,14 @@ def _create_runner_finding(
         "type": finding_type,
         "category": finding_type,
         "title": f"{lifecycle_label} {vuln_class or finding_type} on {url or target}",
-        "summary": str((summary.get("evidence_rubric") or {}).get("summary") or summary.get("result") or "")[:240],
+        "summary": str(summary.get("result") or "")[:240],
         "url": url,
-        "severity": _runner_finding_severity(finding_type),
+        "severity": str(summary.get("severity") or "unknown"),
         "confidence": confidence,
         "source_file": str(summary.get("summary_path") or ""),
         "line_number": 0,
         "template_id": "",
         "raw": f"validation_runner:{lane}:{finding_id}",
-        # 保留 runner 的证据 rubric，供 /validate 和 checkpoint 展示。
-        # /validate 仍是最终报告 gate；这里不是把 runner 证据当最终结论。
-        "evidence_rubric": summary.get("evidence_rubric") or {},
         "validation_status": validation_status,
         "validation_summary": validation_summary,
         "validated_at": str(summary.get("generated_at") or now_utc()),
@@ -843,7 +830,6 @@ def _sync_finding_status(summary: dict[str, Any], *, repo_root: Path) -> dict[st
         **gate_updates,
         **identity_updates,
         vuln_class=vuln_class,
-        evidence_rubric=summary.get("evidence_rubric") or {},
         confidence=confidence,
         # 指针撕裂修复：保留终态时同时保留旧的 operation 绑定，validation_summary
         # 与 runner_operation_id 必须来自同一个 run；只有重写生命周期的分支才
@@ -894,7 +880,6 @@ def _sync_finding_status(summary: dict[str, Any], *, repo_root: Path) -> dict[st
                 existing_id,
                 **gate_updates,
                 vuln_class=vuln_class,
-                evidence_rubric=summary.get("evidence_rubric") or {},
                 confidence=confidence,
                 **(
                     {"runner_operation_id": str(matched_existing.get("runner_operation_id") or operation_id)}
@@ -942,72 +927,20 @@ def _sync_finding_status(summary: dict[str, Any], *, repo_root: Path) -> dict[st
 
 
 def _candidate_queue_followup(summary: dict[str, Any]) -> dict[str, Any]:
-    """把 runner 的 candidate 结果转成下一步补证据动作。
-
-    candidate 说明“同一条 replay 已经跑完，但证据还不够报告”。如果 action_queue
-    仍保留原 surface-review 文案，下一轮会重复执行同一 runner。这里把动作降维成
-    evidence-gap，让 Claude 补 policy/object/private-marker/impact，而不是机械重放。
-    """
-    rubric = summary.get("evidence_rubric") if isinstance(summary.get("evidence_rubric"), dict) else {}
-    missing = [
-        str(item).strip()
-        for item in (rubric.get("missing_labels") or rubric.get("missing") or [])
-        if str(item).strip()
-    ]
-    next_step = ""
-    for item in rubric.get("next_actions") or []:
-        next_step = str(item or "").strip()
-        if next_step:
-            break
-    next_step = next_step.rstrip(".")
+    """Keep completed replay evidence visible without choosing the next test."""
     finding_id = str(summary.get("finding_id") or "").strip()
     url = str(summary.get("url") or summary.get("endpoint") or "").strip()
     summary_ref = str(summary.get("summary_path") or "").strip()
-    rubric_status = str(rubric.get("status") or "candidate").strip()
-    lane = str(summary.get("lane") or "").strip()
-
-    ready = bool(rubric.get("ready")) and not missing
-    if ready:
-        action = (
-            "Runner candidate evidence for {id} on {url}: rubric={status}. "
-            "Next evidence step: run /validate to apply the seven-question and four-gate report-readiness audit. "
-            "Evidence summary: {summary_ref}. Do not treat runner output as report-ready by itself."
-        ).format(
-            id=finding_id or "-",
-            url=url or "-",
-            status=rubric_status,
-            summary_ref=summary_ref or "-",
-        )
-        next_question = "Run /validate or downgrade after AI review; do not report from runner output alone."
-        command_hint = "/validate"
-    else:
-        action = (
-            "Candidate evidence gap for {id} on {url}: rubric={status}, missing={missing}. "
-            "Next evidence step: {step}. Evidence summary: {summary_ref}. "
-            "Do not rerun the same replay unless new actor/object/policy evidence changes the test."
-        ).format(
-            id=finding_id or "-",
-            url=url or "-",
-            status=rubric_status,
-            missing=", ".join(missing[:4]) or "candidate evidence",
-            step=next_step or "fill the missing candidate evidence item, then rerun /validate if reportable",
-            summary_ref=summary_ref or "-",
-        )
-        next_question = "Fill the missing evidence or downgrade this candidate; do not repeat the same replay blindly."
-        command_hint = "fill missing rubric evidence, then /validate"
     return {
         "type": "candidate-evidence-gap",
-        "action": action,
-        "next_question": next_question,
-        "command_hint": command_hint,
+        "action": f"Review recorded candidate {finding_id or '-'} on {url or '-'}; evidence={summary_ref or '-'}. AI chooses the next action.",
+        "next_question": "What does the recorded evidence establish, and what remains unknown?",
+        "command_hint": "",
         "metadata": {
             "finding_id": finding_id,
             "url": url,
             "summary_path": summary_ref,
-            "runner": lane,
-            "rubric_status": rubric_status,
-            "missing_evidence": missing,
-            "next_evidence_step": next_step or ("run /validate report-readiness audit" if ready else ""),
+            "runner": str(summary.get("lane") or "").strip(),
         },
     }
 
@@ -1842,57 +1775,6 @@ def _declared_fact_holds(
     return bool(facts.get(declared))
 
 
-CREDENTIAL_BOUNDARY_HEADER_RE = re.compile(
-    r"^(authorization|cookie|x-api-key|api-key|x-auth-token|x-session-token|x-csrf-token)$",
-    re.I,
-)
-
-
-def _request_pair_boundary_dimension(spec: dict[str, Any]) -> bool:
-    """Return whether the pair's single active dimension is a credential boundary.
-
-    ``expect_auth`` is the AI's judgment that this endpoint should require
-    authentication; when it is declared, the declared active dimension IS the
-    credential boundary (the pair validator already guarantees it is the only
-    request difference), and the runner does not second-guess the header name
-    with a fixed vocabulary. The well-known-header regex below only serves
-    the undeclared default path so a legacy pair still recognizes common
-    credential dimensions without an explicit assertion.
-    """
-    active = str(spec.get("active_dimension") or "").strip()
-    if not active:
-        return False
-    if spec.get("expect_auth") is True:
-        # Declared boundary: any single header/cookie/query dimension the AI
-        # named is trusted as the credential boundary.
-        return active.startswith(("header:", "cookie:", "query:"))
-    cookie_match = re.match(r"^cookie:([\w-]+)$", active)
-    if cookie_match:
-        # The pair validator already guarantees the cookie header is the only
-        # request difference, so a changed session/auth cookie value is the
-        # declared credential dimension itself.
-        get_cookie = lambda headers: next(
-            (str(value) for key, value in headers.items() if key.lower() == "cookie"),
-            None,
-        )
-        return get_cookie(dict(spec["baseline_request"].get("headers") or {})) != get_cookie(
-            dict(spec["variant_request"].get("headers") or {})
-        )
-    header_match = re.match(r"^header:([\w-]+)$", active)
-    if not header_match:
-        return False
-    if not CREDENTIAL_BOUNDARY_HEADER_RE.match(header_match.group(1)):
-        return False
-    header_name = header_match.group(1)
-    baseline_headers = dict(spec["baseline_request"].get("headers") or {})
-    variant_headers = dict(spec["variant_request"].get("headers") or {})
-    find = lambda headers: next(
-        (value for key, value in headers.items() if key.lower() == header_name.lower()),
-        None,
-    )
-    return find(baseline_headers) != find(variant_headers)
-
-
 def _request_pair_spec_view(spec: dict[str, Any]) -> dict[str, Any]:
     def view(request: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -1949,18 +1831,12 @@ def run_request_diff(
             "manual_required": str(exc),
             "evidence_shape": "request_diff",
             "classifier": str(request_spec.get("classifier") or "generic") if isinstance(request_spec, dict) else "generic",
-            "ai_next": {
-                "hypothesis": "request requires a sender that preserves its wire representation",
-                "next_action": "Use a reviewed sender or browser/manual replay and retain raw evidence.",
-                "stop_condition": "Do not mark unsupported wire input as tested_clean.",
-            },
         }
         return _finalize_runner_summary(summary, bundle / "summary.json", repo_root)
 
     baseline = spec["baseline_request"]
     variant = spec["variant_request"]
     effective_state = _validate_request_facts(state_changing, redline_checked)
-    _validate_request_facts(state_changing, redline_checked)
     if not url_belongs_to_target(baseline["url"], target) or not url_belongs_to_target(variant["url"], target):
         raise ValueError("request pair contains an off-target URL")
     finding_id = finding_id or _default_finding_id(lane, baseline["url"])
@@ -1979,72 +1855,52 @@ def run_request_diff(
     for idx in range(1, repeat_count + 1):
         base_headers = _merge_request_headers(baseline, headers)
         variant_headers = _merge_request_headers(variant, headers)
-        base = request_once(
-            target=target,
-            url=baseline["url"],
-            method=baseline["method"],
-            headers=base_headers,
-            body=baseline["body"],
-            timeout=timeout,
-            session=session,
-        )
-        variant_response = request_once(
-            target=target,
-            url=variant["url"],
-            method=variant["method"],
-            headers=variant_headers,
-            body=variant["body"],
-            timeout=timeout,
-            session=session,
-        )
         prefix = "" if repeat_count == 1 else f"{idx}."
-        base_artifacts = _write_raw_http(private_bundle, f"{prefix}baseline.", base, repo_root)
-        variant_artifacts = _write_raw_http(private_bundle, f"{prefix}variant.", variant_response, repo_root)
-        diff = _response_diff(base, variant_response)
         run: dict[str, Any] = {
             "iteration": idx,
             "baseline_url": public_url_shape(baseline["url"]),
             "variant_url": public_url_shape(variant["url"]),
             "active_dimension": spec["active_dimension"],
-            "artifacts": {
-                "baseline_request": base_artifacts["request"],
-                "baseline_response": base_artifacts["response"],
-                "baseline_identity": base_artifacts["identity"],
-                "variant_request": variant_artifacts["request"],
-                "variant_response": variant_artifacts["response"],
-                "variant_identity": variant_artifacts["identity"],
-            },
-            **diff,
+            "artifacts": {},
         }
         runs.append(run)
+        side = "baseline"
+        try:
+            base = request_once(
+                target=target, url=baseline["url"], method=baseline["method"],
+                headers=base_headers, body=baseline["body"], timeout=timeout, session=session,
+            )
+            artifacts = _write_raw_http(private_bundle, f"{prefix}baseline.", base, repo_root)
+            run["artifacts"].update({f"baseline_{key}": value for key, value in artifacts.items()})
+            run["baseline"] = _response_snapshot(base)
+            side = "variant"
+            variant_response = request_once(
+                target=target, url=variant["url"], method=variant["method"],
+                headers=variant_headers, body=variant["body"], timeout=timeout, session=session,
+            )
+            artifacts = _write_raw_http(private_bundle, f"{prefix}variant.", variant_response, repo_root)
+            run["artifacts"].update({f"variant_{key}": value for key, value in artifacts.items()})
+        except (OSError, urllib.error.URLError) as exc:
+            run["error"] = {"side": side, "type": type(exc).__name__}
+            return _finalize_runner_summary({
+                "schema_version": SCHEMA_VERSION, "lane": lane,
+                "target": canonical_target_value(target), "finding_id": finding_id,
+                "url": public_url_shape(baseline["url"]), "method": baseline["method"],
+                "generated_at": now_utc(), "result": "partial", "status": "partial",
+                "candidate_ready": False, "runs": runs, "repeat": repeat_count,
+                "request_pair": _request_pair_spec_view(spec), "request_spec_sha256": pair_digest,
+                "state_changing": effective_state, "redline_checked": redline_checked,
+                "classifier": spec["classifier"], "vuln_class": spec.get("vuln_class", ""),
+                "error": run["error"],
+            }, bundle / "summary.json", repo_root)
+        run.update(_response_diff(base, variant_response))
         baseline_bodies.append(str(base.get("body") or ""))
         variant_bodies.append(str(variant_response.get("body") or ""))
 
     material = [_request_pair_materiality(run) for run in runs]
     classifier = spec["classifier"]
-    # Wire facts are computed uniformly for every category; the legacy
-    # sqli_evidence projection is preserved for downstream readers as a
-    # projection of the same error-marker regex, not a behavior branch.
+    # These predicates only verify explicit declarations; they never select a test.
     wire_facts = _compute_wire_facts(runs, baseline_bodies, variant_bodies)
-    sqli_reasons = _dedupe_keep_order([
-        "variant-only database/parser error marker"
-        for run, base_body, var_body in zip(runs, baseline_bodies, variant_bodies)
-        if _run_wire_facts(run, base_body, var_body)["error_marker_variant_only"]
-    ])
-    sqli_ambiguous = _dedupe_keep_order([
-        str(run.get("diff", {}).get("summary") or "")
-        for run in runs
-        if not _request_pair_materiality(run) and str(run.get("diff", {}).get("summary") or "") != "no material response difference"
-    ])
-    # Reconciliation replaces the former enumerated promotion routes (SQLi
-    # shape, credential-boundary diff, missing-auth). The runner does not know
-    # vulnerability classes; it only reconciles the AI's declared expectation
-    # against the wire facts:
-    #   - declared expectation fully holds on the wire -> tested_finding
-    #   - declared expectation contradicted -> candidate, unmet facts archived
-    #   - no declaration -> legacy conservative fallbacks (unchanged outcomes)
-    # What the evidence MEANS stays with the 7-Question/4-gate AI review; the
-    # runner only verifies the AI did not declare something the wire disproves.
     declared_expected = list(spec.get("expected") or [])
     if not declared_expected and spec.get("expect_auth") is True:
         # Sugar: expect_auth is the missing-auth declaration expressed as a
@@ -2065,15 +1921,6 @@ def run_request_diff(
         }
     else:
         candidate_ready = False
-    # Legacy undeclared fallbacks keep today's outcomes exactly: a material
-    # diff is always reviewable; a well-known credential dimension that did
-    # not hold is a candidate; only an enforced-or-irrelevant pair is clean.
-    boundary_dimension = _request_pair_boundary_dimension(spec)
-    boundary_held = bool(
-        boundary_dimension
-        and not any(material)
-        and wire_facts.get("both_sides_rejected")
-    )
     # Intent routing: the AI declares which direction its expectation points
     # (hazard evidence vs. boundary-holds evidence); the runner routes on the
     # declaration mechanically and never infers direction from fact names.
@@ -2087,75 +1934,13 @@ def run_request_diff(
         # clean-intent confirmation is a mechanically-backed tested_clean;
         # hazard-intent confirmation is a finding candidate as before.
         result = "tested_clean" if declaration_intent == "clean" else "tested_finding"
-    elif declared_expected:
-        result = "candidate"
-    elif any(material):
-        result = "candidate"
-    elif boundary_dimension and not boundary_held:
-        result = "candidate"
     else:
-        result = "tested_clean"
+        # An undeclared or unmet expectation is unresolved, never an automatic clean.
+        result = "candidate"
     vuln_class = _classifier_vuln_class(classifier, spec.get("vuln_class", ""))
     diff_path = bundle / "diff.json"
     _write_json(diff_path, {"runs": runs, "request_pair": _request_pair_spec_view(spec)})
     diff_summaries = [str(run.get("diff", {}).get("summary") or "") for run in runs]
-    # The finding states the declared expectation and the wire facts that
-    # confirmed it — never a violation conclusion. Whether the confirmed
-    # expectation is an actual vulnerability stays with the AI review.
-    if declared_expected and candidate_ready:
-        confirmed = ", ".join(declared_expected)
-        if declaration_intent == "clean":
-            finding_summary = (
-                f"declared clean expectation confirmed on {spec['active_dimension']}: {confirmed}"
-            )
-            finding_raw = f"EXPECTED-DECLARED-CLEAN-CONFIRMED {confirmed}"
-        else:
-            finding_summary = (
-                f"declared expectation confirmed on {spec['active_dimension']}: {confirmed}"
-            )
-            finding_raw = f"EXPECTED-DECLARED-CONFIRMED {confirmed}"
-    elif declared_expected:
-        unmet = ", ".join(expected_check.get("unmet") or [])
-        finding_summary = (
-            f"declared expectation not confirmed on {spec['active_dimension']}: unmet={unmet}"
-            if unmet
-            else f"declared expectation not confirmed on {spec['active_dimension']}"
-        )
-        finding_raw = "controlled request diff requires review"
-    else:
-        finding_summary = f"baseline vs variant request diff on {spec['active_dimension']}; material={all(material)}"
-        finding_raw = "REQUEST-DIFF-VERIFIED stable controlled replay" if candidate_ready else "controlled request diff requires review"
-    finding = {
-        "type": str(vuln_class or classifier or "request_diff").lower().replace("-", "_"),
-        "url": public_url_shape(baseline["url"]),
-        "summary": finding_summary,
-        "raw": finding_raw,
-        "confidence": "high" if candidate_ready else "medium",
-    }
-    rubric = compact_evidence_rubric(evaluate_candidate_evidence(finding))
-    if candidate_ready and declaration_intent == "clean":
-        # A confirmed clean declaration is mechanically-backed evidence that
-        # the boundary holds: clean rubric, expected_check stays archived.
-        rubric.update({
-            "status": "tested-clean",
-            "ready": False,
-            "score": 0,
-            "summary": f"declared clean expectation confirmed: {', '.join(declared_expected)}",
-        })
-    elif candidate_ready:
-        rubric["status"] = "candidate-ready"
-    elif result == "candidate":
-        rubric["status"] = "candidate"
-        rubric["ready"] = False
-        rubric["summary"] = f"{classifier}:candidate material response difference requires AI classification"
-    else:
-        rubric.update({
-            "status": "tested-clean",
-            "ready": False,
-            "score": 0,
-            "missing": ["stable_material_diff"],
-            "missing_labels": ["stable material response diff"],
-        })
     if vuln_class in CLOSURE_FAMILIES:
         ledger = _record_ledger_if_needed(
             repo_root=repo_root,
@@ -2226,45 +2011,10 @@ def run_request_diff(
         "material_runs": sum(1 for item in material if item),
         "runs": runs,
         "artifacts": {"diff": _rel(diff_path, repo_root)},
-        "evidence_rubric": rubric,
         "ledger_record": ledger,
-        "sqli_evidence": {"strong": bool(sqli_reasons), "reasons": sqli_reasons, "ambiguous": sqli_ambiguous},
         "expected_check": expected_check,
         "declaration_intent": declaration_intent,
         "expected_note": spec.get("expected_note", ""),
-        "ai_next": (
-            {
-                "hypothesis": (
-                    f"declared expectation ({', '.join(declared_expected)}) was confirmed on the wire; "
-                    "what it means for this target is the remaining judgment"
-                ),
-                "next_action": (
-                    "Confirm the confirmed expectation is an actual vulnerability for this target "
-                    "(intended behavior, compensating layer, real impact); promote through /validate if it is."
-                ),
-                "stop_condition": (
-                    "The expectation is the target's intended behavior, or the effect is enforced by a "
-                    "layer the paired replay did not exercise."
-                ),
-            }
-            if declared_expected and candidate_ready
-            else {
-                "hypothesis": (
-                    f"declared expectation ({', '.join(declared_expected)}) was not fully observed on the wire"
-                    if declared_expected
-                    else f"{classifier} classifier may explain a stable response difference on {spec['active_dimension']}"
-                ),
-                "next_action": (
-                    "Reconcile the unmet facts against the raw evidence; adjust the declaration or the "
-                    "hypothesis, then replay."
-                    if declared_expected
-                    else "Review raw baseline/variant evidence; use /validate or a dedicated timing/OAST sender only when the signal requires it."
-                ),
-                "stop_condition": (
-                    "The declared facts never hold on the wire, or the difference is attributable to normal application/WAF behavior."
-                ),
-            }
-        ),
     }
     summary_path = bundle / "summary.json"
     return _finalize_runner_summary(summary, summary_path, repo_root)
@@ -2369,7 +2119,7 @@ def main(argv: list[str] | None = None) -> int:
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     # --json is accepted for CLI symmetry; the default output is already the
     # machine-readable summary JSON (no human-only trailing block exists).
-    return 0
+    return 1 if summary.get("result") == "partial" else 0
 
 
 if __name__ == "__main__":

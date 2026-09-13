@@ -1037,8 +1037,7 @@ def _build_priority_frontier(
             ),
             evidence_ref=str(runner.get("summary_path") or runner.get("evidence_ref") or ""),
             expected_information_gain=str(
-                runner.get("rubric_summary")
-                or runner.get("classifier")
+                runner.get("classifier")
                 or "determine whether the runner evidence supports canonical validation"
             ),
             stop_condition="validate through the Finding owner or record a bounded downgrade",
@@ -1330,31 +1329,10 @@ def _describe_next_step(state: dict) -> str:
         memory_candidate = state.get("memory_candidate_next") or {}
         root_claim = state.get("root_finding_claim_next") or {}
         candidate = followup if followup else (root_claim if root_claim else memory_candidate)
-        rubric = followup.get("rubric") if isinstance(followup.get("rubric"), dict) else {}
-        missing = [
-            str(item).strip()
-            for item in (rubric.get("missing_labels") or [])[:3]
-            if str(item).strip()
-        ]
-        evidence_step = next(
-            (
-                str(item).strip()
-                for item in rubric.get("next_actions") or []
-                if str(item).strip()
-            ),
-            "fill the first missing candidate evidence item",
-        )
         if followup:
             return (
-                "collect candidate evidence for finding {id} on {url}; rubric={status}, "
-                "missing={missing}. Next evidence step: {step}. Rerun state before /validate.".format(
-                    id=candidate.get("id", "-"),
-                    url=compact_url(candidate.get("url", "")),
-                    status=rubric.get("status", "needs-evidence"),
-                    missing=", ".join(missing) or "candidate evidence",
-                    step=evidence_step,
-                )
-            )
+                "review candidate {id} on {url}; inspect its recorded evidence and decide the next action."
+            ).format(id=candidate.get("id", "-"), url=compact_url(candidate.get("url", "")))
         if root_claim:
             return (
                 "inspect root JSON finding claim {id} at {source}; capture locatable raw "

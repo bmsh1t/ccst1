@@ -23,11 +23,9 @@ from typing import Any
 
 try:
     from tools.closure_resolver import canonical_endpoint_identity
-    from tools.evidence_rubric import rubric_for
     from tools.target_paths import canonical_target_value, url_belongs_to_target
 except ImportError:  # pragma: no cover - top-level tools/ import
     from closure_resolver import canonical_endpoint_identity
-    from evidence_rubric import rubric_for
     from target_paths import canonical_target_value, url_belongs_to_target
 
 SCHEMA_VERSION = 1
@@ -831,37 +829,6 @@ def _root_claim_id(relative_path: str) -> str:
     return f"claim_{digest}"
 
 
-def _claim_rubric(vuln_type: str) -> dict[str, Any]:
-    """Build an explicitly incomplete rubric for an unindexed claim.
-
-    A root JSON may contain a natural-language PoC or copied response snippets,
-    but it is not a linked raw request/response or `/validate` result.  Do not
-    feed those prose fields to the keyword rubric, otherwise self-described
-    evidence could accidentally become candidate-ready.
-    """
-    rubric = rubric_for(vuln_type)
-    missing = [
-        {"id": requirement.id, "label": requirement.label}
-        for requirement in rubric.requirements
-    ]
-    return {
-        "rubric_id": rubric.id,
-        "title": rubric.title,
-        "status": "needs-evidence",
-        "ready": False,
-        "score": 0,
-        "satisfied_count": 0,
-        "total": len(rubric.requirements),
-        "satisfied": [],
-        "missing": missing,
-        "missing_labels": [item["label"] for item in missing],
-        "next_actions": [requirement.next_action for requirement in rubric.requirements],
-        "strong_evidence": False,
-        "summary": (
-            f"{rubric.id}:needs-evidence score=0 satisfied=0/{len(rubric.requirements)} "
-            "(root JSON claim is not linked validation evidence)"
-        ),
-    }
 
 
 def _claim_value(payload: dict[str, Any], *keys: str) -> str:
@@ -1033,7 +1000,6 @@ def _root_claim_from_json(
         "raw": f"root-finding-claim:{relative_path}",
         "validation_status": "candidate",
         "report_status": "not_generated",
-        "evidence_rubric": _claim_rubric(normalized_type),
     }
 
 
@@ -1103,7 +1069,7 @@ def reconcile_root_finding_claims(
     """Persist direct root JSON claims through the canonical finding owner.
 
     The operation is idempotent.  It intentionally creates only an
-    ``candidate`` with an explicitly incomplete evidence rubric; it never
+    ``candidate`` requiring linked evidence and canonical validation; it never
     upgrades a prose claim to ``validated`` or report-ready.
     """
     root = Path(findings_dir)

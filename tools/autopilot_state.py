@@ -138,7 +138,7 @@ try:
         STATUS_VALUES,
         VULN_CLASSES,
         _route_template,
-        class_relevance,
+        coverage_gaps_with_observed_evidence,
         coverage_gaps_with_observed_evidence,
         high_value_gaps_from_matrix,
         _is_auto_applicability_na,
@@ -155,7 +155,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         STATUS_VALUES,
         VULN_CLASSES,
         _route_template,
-        class_relevance,
+        coverage_gaps_with_observed_evidence,
         coverage_gaps_with_observed_evidence,
         high_value_gaps_from_matrix,
         _is_auto_applicability_na,
@@ -835,15 +835,6 @@ def _pick_next_action(
         return "revalidate_finding_owner"
     next_validation = structured_findings.get("next_validation") or {}
     if next_validation:
-        rubric = (
-            next_validation.get("rubric")
-            if isinstance(next_validation, dict)
-            and isinstance(next_validation.get("rubric"), dict)
-            else {}
-        )
-        # 旧状态可能没有 rubric；只在显式 non-ready 时改走补证据流程。
-        if rubric and "ready" in rubric and not bool(rubric.get("ready")):
-            return "collect_candidate_evidence"
         return "validate_finding"
     if root_finding_claim_next:
         # 根目录裸 JSON 是人工/AI 的临时 claim，不是 canonical lifecycle。
@@ -1289,7 +1280,7 @@ def _build_ranker_advisory_hint(
     for section, keys in (
         ("browser", ("xhr_count", "api_count")),
         ("js_intel", ("endpoint_count", "lead_count", "graphql_count")),
-        ("source_intel", ("hypothesis_count", "route_count", "graphql_count")),
+        ("source_intel", ("signal_count", "route_count", "graphql_count")),
         ("scanner", ("finding_count",)),
         ("intel", ("signal_count",)),
     ):
@@ -1372,7 +1363,7 @@ def _build_enrichment_hints(
     }
     source_intel_ready = _has_any_artifact(
         os.path.join(findings_dir, "source_intel", "summary.md"),
-        os.path.join(findings_dir, "source_intel", "hypotheses.jsonl"),
+        os.path.join(findings_dir, "source_intel", "routes.json"),
     )
     browser_pending = not browser_ready and _has_browser_mcp_signal(surface_context, ranked)
     source_pending = repo_source_available and not source_intel_ready
@@ -1658,15 +1649,7 @@ def _is_substantive_queue_action(item: dict) -> bool:
         vuln_class = str(metadata.get("vuln_class") or "").strip()
         if not endpoint or not vuln_class:
             return True
-        observed_params = metadata.get("observed_params")
-        params = observed_params if isinstance(observed_params, list) else []
-        relevance = class_relevance(endpoint, vuln_class, params)
-        if int(relevance.get("relevance_score", 0) or 0) > 0:
-            return True
-        # Legacy checkpoint actions may have lost parameter names. Preserve a
-        # parameter-backed action until the next checkpoint refresh can rewrite
-        # its structured metadata instead of retiring a real input surface.
-        return "parameter" in str(metadata.get("relevance_reason") or "").lower()
+        return bool(coverage_gaps_with_observed_evidence([metadata]))
     if status == "queued" and action_type in {"surface-review", "ranked-surface"}:
         metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
         return "validation_runner.py" in " ".join(
@@ -3533,7 +3516,6 @@ def _semantic_coverage_fingerprint(matrix: dict | None) -> str:
                 "endpoint",
                 "vuln_class",
                 "observed_params",
-                "relevance_score",
                 "identity_v2",
             )
             if key in gap

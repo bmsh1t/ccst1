@@ -27,8 +27,8 @@ from checkpoint import (
     _actor_gap_enrichment_proposal,
     _capability_chain_review_item,
     _checkpoint_coverage_gaps,
-    _coverage_gap_validation_path,
     _decision_for_action,
+    _declared_surface_vuln_hint,
     _dead_end_proposals,
     _dedupe_artifact_category_items,
     _entry_text,
@@ -45,8 +45,6 @@ from checkpoint import (
     _project_knowledge_effect_trace,
     _sibling_queue_item,
     _workflow_lead_queue_items,
-    _ranked_surface_replay_draft,
-    _ranked_surface_vuln_hint,
     _select_default_candidate,
     _sql_matrix_queue_items,
     apply_target_memory,
@@ -1592,7 +1590,7 @@ def test_checkpoint_cli_reconciles_root_json_claim_and_links_durable_actions(tmp
     assert exit_code == 0
     assert checkpoint["root_finding_claim_sync"]["status"] == "updated"
     assert finding["validation_status"] == "candidate"
-    assert finding["evidence_rubric"]["ready"] is False
+    assert finding["report_status"] == "not_generated"
     assert any(
         (item.get("metadata") or {}).get("finding_id") == finding["id"]
         for item in queue["actions"]
@@ -1658,7 +1656,7 @@ def test_checkpoint_root_claim_replays_each_durable_boundary(
     interrupted_actions = [
         item
         for item in load_queue(tmp_path, target)["actions"]
-        if item.get("type") == "candidate-evidence-gap"
+        if item.get("type") == "validation"
         and (item.get("metadata") or {}).get("finding_id") == finding["id"]
     ]
     assert len(interrupted_actions) == (0 if failure_point == "finding" else 1)
@@ -1677,7 +1675,7 @@ def test_checkpoint_root_claim_replays_each_durable_boundary(
     actions = [
         item
         for item in queue["actions"]
-        if item.get("type") == "candidate-evidence-gap"
+        if item.get("type") == "validation"
         and (item.get("metadata") or {}).get("finding_id") == finding["id"]
     ]
     witness = json.loads(
@@ -1805,8 +1803,8 @@ def test_checkpoint_prioritizes_pending_validation(tmp_path):
     assert checkpoint["decision"] == "validate"
     assert checkpoint["structured_findings"]["pending_validation"] == 1
     assert any("F-1" in item for item in checkpoint["target_write_back"]["next"])
-    assert checkpoint["recommended_executable_action"]["type"] == "candidate-evidence-gap"
-    assert checkpoint["recommended_executable_action"]["command_hint"] == "fill missing rubric evidence, then /validate"
+    assert checkpoint["recommended_executable_action"]["type"] == "validation"
+    assert checkpoint["recommended_executable_action"]["command_hint"] == "/validate"
     assert any(
         item["type"] == "validation"
         for item in checkpoint["next_action_queue"]
@@ -2418,7 +2416,7 @@ def test_checkpoint_keeps_validate_action_when_only_runner_marked_validated(tmp_
     assert filtered == [item]
 
 
-def test_checkpoint_queues_candidate_evidence_gap_before_validate(tmp_path):
+def test_checkpoint_hands_candidate_to_validation_without_guessed_gaps(tmp_path):
     findings_dir = tmp_path / "findings" / "target.com"
     findings_dir.mkdir(parents=True)
     (findings_dir / "findings.json").write_text(
@@ -2442,13 +2440,13 @@ def test_checkpoint_queues_candidate_evidence_gap_before_validate(tmp_path):
     checkpoint = build_checkpoint(tmp_path, target="target.com")
 
     assert any(
-        "Candidate evidence gap for finding SQLI-1" in item
+        "Run /validate for finding SQLI-1" in item
         for item in checkpoint["target_write_back"]["next"]
     )
-    assert checkpoint["recommended_executable_action"]["type"] == "candidate-evidence-gap"
+    assert checkpoint["recommended_executable_action"]["type"] == "validation"
 
 
-def test_checkpoint_treats_candidate_ready_with_missing_labels_as_evidence_gap(tmp_path):
+def test_checkpoint_ignores_contradictory_legacy_rubric(tmp_path):
     findings_dir = tmp_path / "findings" / "target.com"
     findings_dir.mkdir(parents=True)
     (findings_dir / "findings.json").write_text(
@@ -2481,9 +2479,9 @@ def test_checkpoint_treats_candidate_ready_with_missing_labels_as_evidence_gap(t
     checkpoint = build_checkpoint(tmp_path, target="target.com")
 
     assert checkpoint["decision"] == "validate"
-    assert checkpoint["recommended_executable_action"]["type"] == "candidate-evidence-gap"
-    assert "target-owned business impact" in checkpoint["recommended_executable_action"]["action"]
-    assert checkpoint["next_action_queue"][0]["type"] == "candidate-evidence-gap"
+    assert checkpoint["recommended_executable_action"]["type"] == "validation"
+    assert "target-owned business impact" not in checkpoint["recommended_executable_action"]["action"]
+    assert checkpoint["next_action_queue"][0]["type"] == "validation"
 
 
 def test_checkpoint_queues_secret_verification_lane_from_repo_source_summary(tmp_path):
@@ -2501,7 +2499,7 @@ def test_checkpoint_queues_secret_verification_lane_from_repo_source_summary(tmp
     checkpoint = build_checkpoint(tmp_path, target="target.com")
 
     assert any(
-        "Secret verification lane" in item
+        "secret scanner record(s)" in item
         for item in checkpoint["target_write_back"]["next"]
     )
     assert any(
@@ -2764,7 +2762,7 @@ def test_checkpoint_surfaces_high_value_coverage_gaps(tmp_path):
     assert checkpoint["decision"] == "continue"
     assert checkpoint["coverage"]["summary"]["high_value_gaps_count"] > 0
     assert any(
-        "Cover high-value matrix gap" in item
+        "Review coverage gap" in item
         for item in checkpoint["target_write_back"]["next"]
     )
     assert checkpoint["next_action_queue"]
@@ -2797,8 +2795,7 @@ def test_checkpoint_surfaces_high_value_coverage_gaps(tmp_path):
         if item["type"] == "coverage-gap"
     )
     assert coverage_action["metadata"]["endpoint"] == "/api/v1/admin/users"
-    assert "Validation path:" in coverage_action["action"]
-    assert coverage_action["metadata"]["validation_path"]
+    assert "AI chooses the experiment" in coverage_action["action"]
     assert (tmp_path / "evidence" / "target.com" / "coverage_matrix.json").is_file()
 
 
@@ -2845,16 +2842,21 @@ def test_high_risk_review_groups_techniques_without_truncating_canonical_familie
         evidence_summary={},
     )
 
-    review_entry = next(item for item in proposals if _entry_text(item).startswith("High-risk lane review:"))
-    review = _entry_text(review_entry)
-    assert "SQLi[BooleanBlind]=unassessed" in review
-    assert "RCE[SSTI,CommandInjection,Deserialization]=unassessed" in review
-    assert "Path[LFI,RFI]=unassessed" in review
+    # High-risk lane review 固定提案已退役（原生能力清理）：lane dispositions
+    # 是事实投影，保留在 coverage summary（matrix_summary 输出
+    # high_risk_lanes）；不再按类别生成固定测试配方提案。断言事实投影
+    # 完整保留、提案不重复生成。
+    summary = _matrix_summary({"endpoints": [{"endpoint": "/api"}], "high_risk_lanes": lanes}, [])
+    lanes = summary["high_risk_lanes"]
+    assert lanes["SQLi"]["disposition"] == "unassessed"
+    assert lanes["SQLi"].get("techniques") == ["BooleanBlind"]
+    assert lanes["RCE"]["disposition"] == "unassessed"
+    assert lanes["Path"]["disposition"] == "unassessed"
     assert all(
-        f"{name}=" in review
-        for name in ("Authz", "GraphQL", "OAuth", "JWT", "CSRF", "Race", "Webhook", "XSS")
+        name in lanes
+        for name in ("Authz", "GraphQL", "OAuth", "JWT", "CSRF", "Race", "Webhook", "XSS", "NoSQLi")
     )
-    assert "NoSQLi=unassessed" in review
+    assert not any(_entry_text(item).startswith("High-risk lane review:") for item in proposals)
 
 
 def test_checkpoint_still_queues_semantically_relevant_coverage_gap():
@@ -2878,9 +2880,12 @@ def test_checkpoint_still_queues_semantically_relevant_coverage_gap():
     )
     queue = _build_next_action_queue(proposals, "target.com")
 
-    assert any("Cover high-value matrix gap" in _entry_text(item) for item in proposals)
+    # 观察事实支撑的 gap（source_count=1, sources=js）必须进入队列窗口；
+    # 旧的词表 relevance_score 已退役，事实 metadata（sources）保留。
+    assert any("Review coverage gap" in _entry_text(item) for item in proposals)
     coverage_action = next(item for item in queue if item["type"] == "coverage-gap")
-    assert coverage_action["metadata"]["relevance_score"] == 3
+    assert coverage_action["metadata"]["endpoint"] == "/rest/order-history"
+    assert coverage_action["metadata"]["sources"] == ["js"]
 
 
 def test_checkpoint_keeps_folded_coverage_and_replay_identities_separate():
@@ -2913,18 +2918,29 @@ def test_checkpoint_keeps_folded_coverage_and_replay_identities_separate():
 
 
 def test_path_only_authz_coverage_gap_is_baseline_first():
-    validation_path = _coverage_gap_validation_path({
-        "endpoint": "/rest/admin",
-        "vuln_class": "Authz",
-        "weight": 5.0,
-        "relevance_score": 5,
-        "relevance_reason": "admin/internal path",
-        "observed_params": [],
-    })
-
-    assert "baseline GET or observed-method replay" in validation_path
-    assert "request-diff" in validation_path
-    assert "two-actor" not in validation_path
+    # _coverage_gap_validation_path 的固定验证路径配方已退役（原生能力
+    # 清理）：gap 提案只携带事实，验证路径由 AI 选择。断言 gap 仍可见
+    # 且不含旧配方话术。
+    proposals = _next_proposals(
+        state={"has_recon": True, "recommended_targets": []},
+        coverage_gaps=[
+            {
+                "endpoint": "/rest/admin",
+                "vuln_class": "Authz",
+                "weight": 5.0,
+                "observed_params": [],
+                "source_count": 1,
+                "sources": ["active"],
+            }
+        ],
+        matrix={"endpoints": []},
+        target="target.com",
+        context_pack={},
+        evidence_summary={},
+    )
+    gap_text = next(_entry_text(item) for item in proposals if item["type"] == "coverage-gap" or _entry_text(item).startswith("Review coverage gap"))
+    assert "/rest/admin x Authz" in gap_text
+    assert "baseline GET or observed-method replay" not in gap_text
 
 
 def test_checkpoint_skips_parent_only_authz_gap_when_child_validated():
@@ -2961,8 +2977,9 @@ def test_checkpoint_skips_parent_only_authz_gap_when_child_validated():
         evidence_summary={},
     )
 
-    assert not any("Cover high-value matrix gap: /rest/admin x Authz" in _entry_text(item) for item in proposals)
-    assert any("Cover high-value matrix gap: /api/v1/admin/users x Authz" in _entry_text(item) for item in proposals)
+    # 父前缀 gap 由已验证子端点代表的 family 折叠去重；子 gap 仍可见。
+    assert not any("/rest/admin x Authz" in _entry_text(item) for item in proposals if item["type"] == "coverage-gap")
+    assert any("/api/v1/admin/users x Authz" in _entry_text(item) for item in proposals if item["type"] == "coverage-gap")
 
 
 def test_checkpoint_skips_coverage_gap_closed_by_evidence_ledger():
@@ -3769,7 +3786,27 @@ def test_next_proposals_skip_ranked_surface_when_ledger_has_tested_clean():
     )
 
 
-def test_next_proposals_emit_bounded_viewstate_integrity_review():
+def test_next_proposals_emit_bounded_viewstate_integrity_review(tmp_path):
+    # 固定 ViewState 测试配方提案已退役（原生能力清理）：viewstate 事实仍由
+    # context_pack 的 source_summary 投影，测试方法选择归 AI。断言两点：
+    # (1) 事实投影契约——探测到 viewstate 痕迹时 Pack 必须置位 viewstate_signal；
+    # (2) checkpoint 不再重复生成固定测试话术。
+    import context_pack as context_pack_module
+
+    repo = tmp_path
+    pack = context_pack_module.build_context_pack(
+        repo, target="target.com", focus="", surface_state={
+            "review_pool": [
+                {
+                    "url": "https://target.com/login.aspx",
+                    "reasons": ["browser"],
+                    "suggested": "page exposes __VIEWSTATE hidden field",
+                }
+            ],
+        },
+    )
+    assert pack["source_summary"]["viewstate_signal"] is True
+
     proposals = _next_proposals(
         state={"has_recon": True, "surface": {}, "recommended_targets": []},
         coverage_gaps=[],
@@ -3782,19 +3819,10 @@ def test_next_proposals_emit_bounded_viewstate_integrity_review():
         },
         evidence_summary={},
     )
-
-    review_entry = next(item for item in proposals if _entry_text(item).startswith("ViewState integrity review:"))
-    review = _entry_text(review_entry)
-    assert "tools/aspnet_viewstate_knownkey.py" in review
-    assert "single-byte __VIEWSTATE tamper" in review
-    assert "without submitting a business action" in review
-    assert "cannot make ViewState/deserialization N/A" in review
-    # Entry now carries type/priority/command_hint structurally; the legacy
-    # classify path is a single safe default for external plain strings.
-    assert review_entry["type"] == "viewstate-integrity-review"
-    assert review_entry["priority"] == 93
-    assert "machineKey" in review_entry["command_hint"]
-    assert "Telerik absence is not N/A" in review_entry["command_hint"]
+    assert all(
+        not _entry_text(item).startswith("ViewState integrity review:")
+        for item in proposals
+    )
 
 
 def test_capability_chain_review_projection_has_stable_identity_and_bounded_lineage(tmp_path):
@@ -3962,8 +3990,19 @@ def test_next_proposals_rolls_past_covered_ranked_surfaces():
             ],
             "surface": {
                 "p1": [
-                    {"url": covered_finding, "suggested": "prioritize authz checks"},
-                    {"url": covered_ledger, "suggested": "prioritize authz checks"},
+                    # 已关闭 cell 的去重按 scanner/source 声明的类型判定
+                    # （事实来源）；旧的 class_relevance 路径词推断已退役，
+                    # 所以 covered 条目必须携带声明的 scanner 类型。
+                    {
+                        "url": covered_finding,
+                        "suggested": "prioritize authz checks",
+                        "scanner_findings": [{"type": "auth_bypass"}],
+                    },
+                    {
+                        "url": covered_ledger,
+                        "suggested": "prioritize authz checks",
+                        "scanner_findings": [{"type": "auth_bypass"}],
+                    },
                     {"url": fresh, "suggested": "baseline authz and business-logic checks"},
                 ],
                 "workflow_leads": [],
@@ -4258,7 +4297,7 @@ def test_checkpoint_family_projection_keeps_all_members_and_leaves_ai_override_v
         context_pack={},
         evidence_summary={},
     )
-    proposal = next(item for item in proposals if _entry_text(item).startswith("Cover high-value matrix gap:"))
+    proposal = next(item for item in proposals if _entry_text(item).startswith("Review coverage gap:"))
     proposal_text = _entry_text(proposal)
     assert "Queue projection only" in proposal_text
     assert "does not assert family equivalence" in proposal_text
@@ -4311,7 +4350,7 @@ def test_checkpoint_family_projection_bounds_preview_without_hiding_family_size(
         context_pack={},
         evidence_summary={},
     )
-    proposal = next(item for item in proposals if _entry_text(item).startswith("Cover high-value matrix gap:"))
+    proposal = next(item for item in proposals if _entry_text(item).startswith("Review coverage gap:"))
     proposal_text = _entry_text(proposal)
     assert "preview is incomplete" in proposal_text
     assert "raw Coverage gap window" in proposal_text
@@ -4389,7 +4428,8 @@ def test_checkpoint_family_metadata_preserves_delimiters_in_reason_and_paths():
         "/api/orders/search.json",
         "/api/orders/export.json",
     ]
-    assert action["metadata"]["relevance_reason"] == reason
+    # relevance_reason（词表评分理由）已退役；分隔符保全契约由 family_key
+    # 的原样保留覆盖（分号/大括号/冒号不截断）。
 
 
 def test_checkpoint_family_projection_refreshes_queued_action_without_duplicate(tmp_path):
@@ -4735,12 +4775,13 @@ def test_ranked_surface_proposal_includes_replay_draft_and_metadata():
     )
 
     ranked_text = next(_entry_text(item) for item in proposals if _entry_text(item).startswith("Review surface candidate "))
-    assert "Replay draft:" in ranked_text
-    assert "Ledger skeleton:" in ranked_text
-    assert "browser-observed request/response baseline first" in ranked_text
-    assert "prefer POST replay" in ranked_text
-    assert "First capture/register actor, session, and object context" in ranked_text
-    assert "two-actor replay evidence" in ranked_text
+    # Replay draft / Ledger skeleton 固定配方已退役（原生能力清理）：提案
+    # 携带事实（URL、观察、evidence_refs、request_shapes），测试方法、
+    # actor/variant 组合和 ledger 命令由 AI 在执行时构造。
+    assert url in ranked_text
+    assert "AI chooses the test" in ranked_text
+    assert "Replay draft:" not in ranked_text
+    assert "Ledger skeleton:" not in ranked_text
 
     entry = next(item for item in proposals if _entry_text(item).startswith("Review surface candidate "))
     queue = _build_next_action_queue([entry], "target.com")
@@ -4748,18 +4789,10 @@ def test_ranked_surface_proposal_includes_replay_draft_and_metadata():
     assert ranked_action["type"] == "surface-review"
     assert ranked_action["metadata"]["url"] == url
     assert ranked_action["metadata"]["endpoint"] == "/api/admin/export"
-    assert "browser-observed request/response baseline first" in ranked_action["metadata"]["replay_draft"]
-    assert "Ledger skeleton:" not in ranked_action["metadata"]["replay_draft"]
-    skeleton = ranked_action["metadata"]["ledger_record_skeleton"]
-    assert "python3 tools/evidence_ledger.py record" in skeleton
-    assert "--endpoint \"/api/admin/export\"" in skeleton
-    assert "--method \"POST\"" in skeleton
-    assert "--vuln-class \"IDOR\"" in skeleton
-    assert "--actor \"anonymous\"" in skeleton
-    assert "--variant \"baseline\"" in skeleton
-    assert "--browser-observed" in skeleton
-    assert "--state-changing" not in skeleton
-    assert "--redline-checked" not in skeleton
+    assert "replay_draft" not in ranked_action["metadata"]
+    assert "ledger_record_skeleton" not in ranked_action["metadata"]
+    # 事实通道仍通：request_shapes 从 surface entry 透传（无配方加工）。
+    assert isinstance(ranked_action["metadata"].get("request_shapes"), list)
 
 
 @pytest.mark.parametrize(
@@ -4771,14 +4804,15 @@ def test_ranked_surface_proposal_includes_replay_draft_and_metadata():
     ],
 )
 def test_ranked_dom_surfaces_prefer_xss_over_server_side_or_auth_noise(url):
+    # 路径词→XSS 的词表推断（_ranked_surface_vuln_hint 的 class_relevance
+    # 后备）已退役：没有 scanner/source 声明类型时不再猜测类别，候选保持
+    # 可见，方法选择归 AI。断言事实规则：无声明→无类别过滤。
     entry = {"url": url}
     state = {"surface": {"p1": [entry], "p2": []}, "recommended_targets": [entry]}
 
-    assert _ranked_surface_vuln_hint(entry, url) == "XSS"
-    draft = _ranked_surface_replay_draft(state, entry, target="target.com")
-    assert "focus XSS evidence" in draft
-    assert "parameter-behavior-first" not in draft
-    assert "browser-state-first page route" not in draft
+    assert _declared_surface_vuln_hint(entry) == ""
+    entry_with_declaration = {"url": url, "scanner_findings": [{"type": "xss"}]}
+    assert _declared_surface_vuln_hint(entry_with_declaration) == "XSS"
 
 
 def test_ranked_surface_role_replay_when_case_state_ready():
@@ -4815,14 +4849,15 @@ def test_ranked_surface_role_replay_when_case_state_ready():
 
     entry = next(item for item in proposals if _entry_text(item).startswith("Review surface candidate "))
     ranked_text = _entry_text(entry)
-    assert "request-diff" in ranked_text
-    assert "use registered case_state owner/peer sessions" in ranked_text
-    assert "First capture/register actor, session, and object context" not in ranked_text
+    # 固定 replay draft / ledger skeleton 已退役：提案只携带事实
+    # （URL、evidence_refs、request_shapes），方法选择归 AI。
+    assert url in ranked_text
+    assert "AI chooses the test" in ranked_text
 
     action = _build_next_action_queue([entry], "target.com")[0]
-    skeleton = action["metadata"]["ledger_record_skeleton"]
-    assert "--actor \"owner\"" in skeleton
-    assert "--variant \"role_diff\"" in skeleton
+    assert action["type"] == "surface-review"
+    assert action["metadata"]["url"] == url
+    assert action["metadata"]["endpoint"] == "/api/admin/export"
 
 
 def test_ranked_surface_auth_workflow_requires_exact_request_before_role_replay():
@@ -4856,16 +4891,14 @@ def test_ranked_surface_auth_workflow_requires_exact_request_before_role_replay(
 
     entry = next(item for item in proposals if _entry_text(item).startswith("Review surface candidate "))
     ranked_text = _entry_text(entry)
-    assert "auth-workflow endpoint; exact method/body required before replay" in ranked_text
-    assert "Capture the exact auth workflow request first" in ranked_text
-    assert "request-diff" not in ranked_text
-    assert "default GET role replay" in ranked_text
+    # 旧测试断言 auth-workflow 固定配方；配方已退役，候选保持可见，
+    # 由 AI 决定先捕获精确请求还是直接分类。
+    assert url in ranked_text
+    assert "AI chooses the test" in ranked_text
 
     action = _build_next_action_queue([entry], "target.com")[0]
-    skeleton = action["metadata"]["ledger_record_skeleton"]
-    assert "--variant \"baseline\"" in skeleton
-    assert "--actor \"anonymous\"" in skeleton
-    assert "capture exact observed method" in skeleton
+    assert action["type"] == "surface-review"
+    assert action["metadata"]["endpoint"] == "/rest/user/login"
 
 
 def test_ranked_surface_redirect_parameter_uses_parameter_behavior_first():
@@ -4898,14 +4931,13 @@ def test_ranked_surface_redirect_parameter_uses_parameter_behavior_first():
     )
 
     ranked_text = next(_entry_text(item) for item in proposals if _entry_text(item).startswith("Review surface candidate "))
-    assert "parameter-behavior-first redirect/url input; avoid role replay" in ranked_text
-    assert "Run parameter-behavior validation first" in ranked_text
-    assert "request-diff" not in ranked_text
-    assert "owner/peer role replay" in ranked_text
+    # parameter-behavior 固定配方已退役；URL 参数（to=）作为事实仍在提案里。
+    assert url in ranked_text
+    assert "AI chooses the test" in ranked_text
 
     entry = next(item for item in proposals if _entry_text(item).startswith("Review surface candidate "))
     action = _build_next_action_queue([entry], "target.com")[0]
-    assert "Ledger skeleton:" not in ranked_text
+    assert action["type"] == "surface-review"
     assert "ledger_record_skeleton" not in action["metadata"]
 
 
@@ -4935,13 +4967,14 @@ def test_ranked_surface_parent_prefix_uses_route_prefix_triage():
     )
 
     ranked_text = next(_entry_text(item) for item in proposals if _entry_text(item).startswith("Review surface candidate "))
-    assert "route-prefix-first parent path; validate concrete child handlers" in ranked_text
-    assert "possible route-prefix/container path" in ranked_text
-    assert "request-diff" not in ranked_text
+    # route-prefix 固定配方已退役；父路径候选保持可见，由 AI 对照
+    # matrix 中的具体子端点决定 triage。
+    assert url in ranked_text
+    assert "AI chooses the test" in ranked_text
 
     entry = next(item for item in proposals if _entry_text(item).startswith("Review surface candidate "))
     action = _build_next_action_queue([entry], "target.com")[0]
-    assert "Ledger skeleton:" not in ranked_text
+    assert action["type"] == "surface-review"
     assert "ledger_record_skeleton" not in action["metadata"]
 
 
@@ -4974,8 +5007,8 @@ def test_ranked_surface_parent_prefix_uses_matrix_child_paths_when_surface_windo
     )
 
     ranked_text = next(_entry_text(item) for item in proposals if _entry_text(item).startswith("Review surface candidate "))
-    assert "route-prefix-first parent path; validate concrete child handlers" in ranked_text
-    assert "request-diff" not in ranked_text
+    assert "route-prefix-first parent path; validate concrete child handlers" not in ranked_text
+    assert "AI chooses the test" in ranked_text
 
 
 def test_ranked_surface_generic_api_uses_role_replay_when_case_state_ready():
@@ -5008,9 +5041,9 @@ def test_ranked_surface_generic_api_uses_role_replay_when_case_state_ready():
     )
 
     ranked_text = next(_entry_text(item) for item in proposals if _entry_text(item).startswith("Review surface candidate "))
-    assert "request-diff" in ranked_text
-    assert "owner/peer" in ranked_text or "--request-spec" in ranked_text
+    # 固定 request-diff 建议已退役；候选可见 + endpoint 事实正确。
     assert "https://app.target.com/api/Orders" in ranked_text
+    assert "AI chooses the test" in ranked_text
 
 
 def test_ranked_surface_placeholder_object_uses_case_state_object():
@@ -5057,15 +5090,16 @@ def test_ranked_surface_placeholder_object_uses_case_state_object():
     )
 
     ranked_text = next(_entry_text(item) for item in proposals if _entry_text(item).startswith("Review surface candidate "))
-    assert "non-concrete object value NaN" in ranked_text
-    assert "do not replay it directly" in ranked_text
-    assert "request-diff pair" in ranked_text and "header:authorization" in ranked_text
-    assert "basket_6" in ranked_text
-    assert "request-diff" in ranked_text
+    # placeholder 替换配方已退役；NaN 占位符候选保持可见，case_state 的
+    # 具体 object（basket_6）仍在 AI 的可查上下文中。
+    assert url in ranked_text
+    assert "AI chooses the test" in ranked_text
+    # case_state 事实仍可被消费方读取（object_samples 不因配方退役而丢失）。
+    assert case_state["object_samples"][0]["object_ref"] == "basket_6"
 
     entry = next(item for item in proposals if _entry_text(item).startswith("Review surface candidate "))
     action = _build_next_action_queue([entry], "target.com")[0]
-    assert "Ledger skeleton:" not in ranked_text
+    assert action["type"] == "surface-review"
     assert "ledger_record_skeleton" not in action["metadata"]
 
 
@@ -5177,17 +5211,14 @@ def test_ranked_surface_spa_page_route_uses_browser_state_first_with_case_state_
     )
 
     ranked_text = next(_entry_text(item) for item in proposals if _entry_text(item).startswith("Review surface candidate "))
-    assert "browser-state-first page route" in ranked_text
-    assert "underlying API" in ranked_text
-    assert "authz-role-replay --target" not in ranked_text
-    assert "raw SPA HTML shell" in ranked_text
+    # browser-state-first 固定配方已退役；SPA 路由候选保持可见。
+    assert url in ranked_text
+    assert "AI chooses the test" in ranked_text
 
     entry = next(item for item in proposals if _entry_text(item).startswith("Review surface candidate "))
     action = _build_next_action_queue([entry], "target.com")[0]
-    skeleton = action["metadata"]["ledger_record_skeleton"]
-    assert "--actor \"owner\"" in skeleton
-    assert "--variant \"browser_observed\"" in skeleton
-    assert "browser-state-first page route" in skeleton
+    assert action["type"] == "surface-review"
+    assert action["metadata"]["endpoint"] == "/orders"
 
 
 def test_ranked_surface_defers_repeated_authz_baselines_when_case_state_missing():
@@ -5294,14 +5325,13 @@ def test_ranked_surface_path_only_authz_uses_baseline_first():
 
     entry = next(item for item in proposals if _entry_text(item).startswith("Review surface candidate "))
     ranked_text = _entry_text(entry)
-    assert "baseline GET or observed-method replay" in ranked_text
+    # baseline-first 固定配方已退役；候选可见，方法选择归 AI。
+    assert "AI chooses the test" in ranked_text
     assert "Build a two-actor" not in ranked_text
 
     action = _build_next_action_queue([entry], "target.com")[0]
-    skeleton = action["metadata"]["ledger_record_skeleton"]
-    assert '--actor "anonymous"' in skeleton
-    assert '--object-scope "none"' in skeleton
-    assert '--variant "baseline"' in skeleton
+    assert action["type"] == "surface-review"
+    assert "ledger_record_skeleton" not in action["metadata"]
 
 
 def test_checkpoint_surfaces_context_contradictions_without_queueing_them(tmp_path):

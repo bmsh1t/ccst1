@@ -1083,7 +1083,7 @@ def _load_local_intel(repo_root: Path, target_key: str) -> dict:
         item for item in source_routes_payload.get("graphql_operations", [])
         if isinstance(item, dict)
     ]
-    source_hypotheses = _read_jsonl_objects(source_dir / "hypotheses.jsonl", limit=50)
+    source_signals = [item for item in source_routes_payload.get("signals", []) if isinstance(item, dict)]
 
     return {
         "browser": {
@@ -1112,11 +1112,10 @@ def _load_local_intel(repo_root: Path, target_key: str) -> dict:
             ]),
         },
         "source_intel": {
-            "hypotheses": source_hypotheses,
+            "signals": source_signals,
             "routes": source_routes,
             "graphql_operations": source_graphql,
             "paths": _dedupe([
-                _artifact_path(source_dir / "hypotheses.jsonl", repo_root),
                 _artifact_path(source_dir / "routes.json", repo_root),
                 _artifact_path(source_dir / "summary.md", repo_root),
             ]),
@@ -1218,12 +1217,6 @@ def _local_intel_blob(local_intel: dict) -> list[str]:
         ])
 
     source_intel = local_intel.get("source_intel") or {}
-    for hypothesis in (source_intel.get("hypotheses") or [])[:10]:
-        pieces.extend([
-            str(hypothesis.get("type") or ""),
-            str(hypothesis.get("candidate") or ""),
-            str(hypothesis.get("reason") or ""),
-        ])
     for route in (source_intel.get("routes") or [])[:10]:
         pieces.extend([
             str(route.get("method") or ""),
@@ -1432,16 +1425,13 @@ def _gap_anchor(gap: dict) -> str:
 def _runner_candidate_anchors(candidates: list[dict]) -> list[str]:
     anchors: list[str] = []
     for item in candidates[:4]:
-        rubric = str(item.get("rubric_status") or "").strip()
-        rubric_suffix = f" rubric={rubric}" if rubric else ""
         anchors.append(
-            "Runner candidate evidence: {lane}/{result} {method} {url}{rubric}; "
+            "Runner candidate evidence: {lane}/{result} {method} {url}; "
             "requires /validate gates before report".format(
                 lane=item.get("lane", ""),
                 result=item.get("result", ""),
                 method=item.get("method", "GET"),
                 url=compact_url(item.get("url", "")),
-                rubric=rubric_suffix,
             )
         )
     return anchors
@@ -1484,13 +1474,8 @@ def _local_intel_anchors(local_intel: dict) -> list[str]:
             anchors.append(f"JS-reader lead [{category}]: {title}")
 
     source_intel = local_intel.get("source_intel") or {}
-    for hypothesis in (source_intel.get("hypotheses") or [])[:3]:
-        vuln_type = str(hypothesis.get("type") or "source").strip()
-        candidate = str(hypothesis.get("candidate") or "").strip()
-        reason = str(hypothesis.get("reason") or "").strip()
-        if candidate:
-            suffix = f" -> {reason[:120]}" if reason else ""
-            anchors.append(f"Source-intel hypothesis [{vuln_type}]: {candidate}{suffix}")
+    for signal in (source_intel.get("signals") or [])[:3]:
+        anchors.append(f"Source marker [{signal.get('kind', '')}]: {signal.get('source', '')} :: {signal.get('evidence', '')}")
     for route in (source_intel.get("routes") or [])[:2]:
         route_value = str(route.get("route") or "").strip()
         method = str(route.get("method") or "").strip()
@@ -1732,7 +1717,7 @@ def _local_intel_source_summary(local_intel: dict) -> dict:
         "js_intel_endpoints": len(js_intel.get("endpoints") or []),
         "js_intel_leads": len(js_intel.get("leads") or []),
         "js_intel_graphql": len(js_intel.get("graphql_operations") or []),
-        "source_intel_hypotheses": len(source_intel.get("hypotheses") or []),
+        "source_intel_signals": len(source_intel.get("signals") or []),
         "source_intel_routes": len(source_intel.get("routes") or []),
         "source_intel_graphql": len(source_intel.get("graphql_operations") or []),
     }
@@ -1751,8 +1736,8 @@ def _focus_endpoints_for_ledger(ranked: dict, gaps: list[dict], local_intel: dic
     for endpoint in (js_intel.get("endpoints") or [])[:3]:
         endpoints.append(str(endpoint.get("path") or ""))
     source_intel = local_intel.get("source_intel") or {}
-    for hypothesis in (source_intel.get("hypotheses") or [])[:3]:
-        endpoints.append(str(hypothesis.get("candidate") or ""))
+    for route in (source_intel.get("routes") or [])[:3]:
+        endpoints.append(str(route.get("route") or ""))
     return _dedupe(endpoints)[:8]
 
 

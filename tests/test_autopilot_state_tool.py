@@ -723,7 +723,7 @@ def test_asset_scope_workflow_review_is_substantive_but_other_advisory_leads_are
     )
 
 
-def test_legacy_checkpoint_coverage_action_rechecks_current_relevance():
+def test_legacy_checkpoint_coverage_action_uses_observation_not_word_scores():
     base = {
         "status": "queued",
         "type": "coverage-gap",
@@ -745,6 +745,7 @@ def test_legacy_checkpoint_coverage_action_rechecks_current_relevance():
         "metadata": {
             "endpoint": "/api/jobs/123/run",
             "vuln_class": "RCE",
+            "observed_params": ["input"],
         },
     })
 
@@ -5132,7 +5133,7 @@ class TestAutopilotState:
         assert "cached recon/browser/JS/source evidence" in output
         assert "residential" not in output.lower()
 
-    def test_pending_structured_finding_collects_missing_candidate_evidence(self, tmp_path):
+    def test_pending_structured_finding_is_visible_without_keyword_evaluation(self, tmp_path):
         repo_root = tmp_path
         recon_dir = repo_root / "recon" / "target.com"
         (recon_dir / "live").mkdir(parents=True)
@@ -5192,10 +5193,9 @@ class TestAutopilotState:
         state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(memory_dir))
         output = format_autopilot_state(state)
 
-        assert state["next_action"] == "collect_candidate_evidence"
-        assert "collect candidate evidence for finding sqli_pending" in output
-        assert "missing=paired baseline and probe, stable response difference" in output
-        assert "Next evidence step: capture a paired baseline/probe response diff" in output
+        assert state["next_action"] == "validate_finding"
+        assert "rubric" not in state["structured_findings"]["next_validation"]
+        assert "Next evidence step:" not in output
         assert "Structured findings: total=1, pending_validation=1" in output
         assert "Next validation: sqli_pending [high/confirmed] sqli https://api.target.com/search?q=1" in output
         assert state["next_tool_hint"] == ""
@@ -5234,7 +5234,7 @@ class TestAutopilotState:
 
         assert state["next_action"] == "collect_candidate_evidence"
         assert state["root_finding_claim_next"]["claim_source_file"] == "manual-claim.json"
-        assert state["root_finding_claim_next"]["evidence_rubric"]["ready"] is False
+        assert state["root_finding_claim_next"]["validation_status"] == "candidate"
         assert not (findings_dir / "findings.json").exists()
         assert "Unreconciled root finding claims (not validated):" in output
         assert "Do not call it validated or report-ready from the claim alone." in output
@@ -5592,7 +5592,7 @@ class TestAutopilotState:
         assert "Next: run /recon target.com first." in output
         assert "Next report: mfa_report [medium/high] mfa https://api.target.com/mfa" in output
 
-    def test_weak_generic_pending_does_not_mask_validated_report(self, tmp_path):
+    def test_generic_candidate_and_validated_report_both_remain_visible(self, tmp_path):
         repo_root = tmp_path
         findings_dir = repo_root / "findings" / "target.com"
         findings_dir.mkdir(parents=True)
@@ -5633,11 +5633,10 @@ class TestAutopilotState:
         output = format_autopilot_state(state)
 
         assert state["structured_findings"]["pending_validation"] == 1
-        assert "next_validation" not in state["structured_findings"]
-        assert state["next_action"] == "run_recon"
-        assert "Next: run /recon target.com first." in output
+        assert state["structured_findings"]["next_validation"]["id"] == "metrics"
+        assert state["next_action"] == "validate_finding"
         assert "Next report: admin_config [high/confirmed] auth_bypass" in output
-        assert "Next validation:" not in output
+        assert "Next validation: metrics" in output
 
     def test_validated_report_does_not_preempt_live_surface_review(self, tmp_path):
         repo_root = tmp_path

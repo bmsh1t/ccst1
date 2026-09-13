@@ -124,7 +124,7 @@ CONTEXT PACK
 - 验证后发现：`/remember`
 
 能力增强必须按 `knowledge/promotion-rules.md` 的落位规则分层：
-经验/技巧/bypass 进知识库，判断进 `evidence_rubric.py`，路由进 `context_pack.py`，
-下一步进 `checkpoint.py`，重复执行动作进 `tools/`，结果进 Evidence Ledger。
+经验与适用条件进知识库；证据解释、路线和下一步由 Claude 判断。
+工具只负责必要的解析、检索、执行、证据落盘和 owner 校验，不实现关键词评分或固定测试套路。
 
 其余输入也遵守同一边界：不要把扫描日志当作上下文包主体，或在没有目标层上下文时直接开始复杂任务；不要用上下文包替代覆盖基线。

@@ -23,7 +23,7 @@ if BASE_DIR not in sys.path:
 from memory.target_profile import default_memory_dir, load_target_profile  # noqa: E402
 from tools.target_memory import load_goal_memory  # noqa: E402
 try:
-    from tools.closure_resolver import ClosureResolver, canonical_endpoint_path
+    from tools.closure_resolver import canonical_endpoint_path
     from tools.coverage_matrix import load_matrix
     from tools.evidence_ledger import (
         build_current_cell_projection,
@@ -75,7 +75,7 @@ try:
         url_belongs_to_target,
     )
 except ImportError:  # pragma: no cover - top-level tools/ import
-    from closure_resolver import ClosureResolver, canonical_endpoint_path  # type: ignore
+    from closure_resolver import canonical_endpoint_path  # type: ignore
     from coverage_matrix import load_matrix  # type: ignore
     from evidence_ledger import (  # type: ignore
         build_current_cell_projection,
@@ -104,7 +104,6 @@ except ImportError:  # pragma: no cover - top-level tools/ import
     )
 try:
     from tools.browser_surface import public_url_shape
-    from tools.high_value_signals import classify_high_value_signal, summarize_high_value_signal
     from tools.intel_artifact import advisory_is_actionable, normalize_advisory_applicability
     from tools.surface_js_intel import (
         build_js_lead_hints,
@@ -113,14 +112,12 @@ try:
         load_js_intel_hypotheses,
     )
     from tools.surface_source_intel import (
-        build_source_lead_hints,
         build_source_intel_urls,
-        load_source_intel_hypotheses,
+        load_source_intel,
         source_intel_counts,
     )
 except ImportError:  # pragma: no cover - top-level tools/ import
     from browser_surface import public_url_shape  # type: ignore
-    from high_value_signals import classify_high_value_signal, summarize_high_value_signal
     from intel_artifact import advisory_is_actionable, normalize_advisory_applicability  # type: ignore
     from surface_js_intel import (
         build_js_lead_hints,
@@ -129,9 +126,8 @@ except ImportError:  # pragma: no cover - top-level tools/ import
         load_js_intel_hypotheses,
     )
     from surface_source_intel import (
-        build_source_lead_hints,
         build_source_intel_urls,
-        load_source_intel_hypotheses,
+        load_source_intel,
         source_intel_counts,
     )
 
@@ -951,60 +947,6 @@ def _read_httpx_hosts(recon_dir: Path, target: str = "") -> tuple[dict[str, dict
     return hosts, status403
 
 
-CONTEXTUAL_NUMERIC_ID_RE = re.compile(
-    r"/(?:users?|accounts?|profiles?|members?|customers?|orgs?|organizations?|tenants?|workspaces?|"
-    r"orders?|invoices?|tickets?|messages?|comments?|files?|addresses?|carts?|products?|items?)/"
-    r"\d{1,8}(?:/|$)",
-    re.I,
-)
-
-WEBSOCKET_ENDPOINT_RE = re.compile(r"(?:^|/)(?:ws|websocket)(?:/|$)", re.I)
-
-
-def _has_contextual_numeric_id(path: str) -> bool:
-    """Return true for numeric IDs with resource context, not bare `/<number>` pages."""
-    return bool(CONTEXTUAL_NUMERIC_ID_RE.search(str(path or "")))
-
-
-def _is_websocket_endpoint(path: str) -> bool:
-    """Return true for an explicit WebSocket path segment, not a substring."""
-    raw = str(path or "").strip()
-    if not raw:
-        return False
-    parsed = urlparse(raw)
-    candidate = parsed.path or raw.split("?", 1)[0].split("#", 1)[0]
-    return bool(WEBSOCKET_ENDPOINT_RE.search(candidate))
-
-
-def _candidate_reason(path: str, query_keys: list[str]) -> tuple[str, str]:
-    lower = path.lower()
-    if "graphql" in lower:
-        return "GraphQL surface", "field-level auth checks and mutation abuse"
-    if _is_websocket_endpoint(path):
-        return "WebSocket candidate", "authorization checks on subscribe/send actions"
-    if any(key in {"id", "user_id", "account_id", "order_id"} or key.endswith("_id") for key in query_keys):
-        return "ID-bearing parameter", "ID swap and sibling endpoint access control checks"
-    if _has_contextual_numeric_id(path):
-        return "Sequential object reference", "numeric ID swap on GET/PUT/DELETE"
-    if query_keys:
-        return "Parameterized endpoint", "input tampering and auth boundary checks"
-    return "API endpoint", "baseline authz and business-logic checks"
-
-
-INTEL_KEYWORDS = {
-    "graphql": ("graphql", "introspection", "mutation"),
-    "idor": ("idor", "insecure direct object", "object reference", "account id", "user id"),
-    "ssrf": ("ssrf", "server-side request forgery", "webhook", "callback"),
-    "oauth": ("oauth", "oidc", "redirect_uri", "pkce", "state"),
-    "redirect": ("open redirect", "return_to", "next="),
-    "upload": ("upload", "file upload", "unrestricted file"),
-    "sqli": ("sqli", "sql injection", "injection"),
-    "xss": ("xss", "cross-site scripting"),
-    "saml": ("saml", "sso", "assertion"),
-    "mfa": ("mfa", "2fa", "otp", "totp"),
-}
-
-
 SCORE_SOURCE_LABELS = {
     "attack_value": "attack",
     "browser": "browser",
@@ -1016,35 +958,8 @@ SCORE_SOURCE_LABELS = {
     "js_intel": "js",
 }
 
-BROWSER_VALUE_KEYWORDS = (
-    "graphql",
-    "mutation",
-    "export",
-    "download",
-    "account",
-    "order",
-    "user",
-    "admin",
-    "approve",
-    "submit",
-    "update",
-    "delete",
-    "invite",
-)
 
 REVIEW_POOL_LIMIT = 16
-REVIEW_SIGNAL_GROUPS = (
-    ("client-side", frozenset({"xss"})),
-    ("auth", frozenset({"auth", "oauth", "saml", "secret"})),
-    ("admin", frozenset({"admin", "internal"})),
-    ("payment", frozenset({"billing", "payment"})),
-    ("upload", frozenset({"upload"})),
-    ("api", frozenset({"api"})),
-    ("graphql", frozenset({"graphql", "websocket"})),
-    ("file", frozenset({"file", "export", "download"})),
-    ("server-side", frozenset({"server-side", "callback", "webhook"})),
-    ("object", frozenset({"id-ref", "sequential", "tenant", "workspace", "account", "order"})),
-)
 
 
 def _add_score_breakdown(
@@ -1170,44 +1085,6 @@ def _has_actionable_review_evidence(item: dict) -> bool:
     return False
 
 
-def _review_signal_groups(item: dict) -> tuple[str, ...]:
-    """返回候选覆盖的高价值业务类别，不改变原始 URL identity。"""
-    raw_url = str(item.get("url") or "").strip()
-    parsed = urlparse(raw_url)
-    path = parsed.path or "/"
-    query_keys = [key.lower() for key in re.findall(r"[?&]([^=&]+)=", raw_url)]
-    evidence = " ".join(
-        str(value or "")
-        for value in (item.get("suggested"), *(item.get("reasons") or []))
-    )
-    classes = set(
-        classify_high_value_signal(
-            path=path,
-            query_keys=query_keys,
-            evidence=evidence,
-        ).classes
-    )
-    return tuple(
-        group
-        for group, members in REVIEW_SIGNAL_GROUPS
-        if classes.intersection(members)
-    )
-
-
-def _category_review_reason(item: dict, groups: tuple[str, ...]) -> str:
-    if item.get("evidence_convergence"):
-        return "cross-evidence convergence"
-    if item.get("browser_observed"):
-        return "browser-observed API/workflow"
-    if item.get("js_intel_observed") or item.get("source_intel_observed"):
-        return "JS/source-inferred surface"
-    if item.get("scanner_findings"):
-        return "scanner lead requiring AI triage"
-    if item.get("target_memory_hits"):
-        return "target-memory continuation"
-    return "high-value category: " + "/".join(groups[:4])
-
-
 def _candidate_semantic_shape(item: dict) -> dict:
     """Build a semantic identity from URL plus optional observed request metadata."""
     observed = item.get("request_shapes") if isinstance(item.get("request_shapes"), list) else []
@@ -1266,15 +1143,6 @@ def _build_review_pool(
             if len(pool) == 2:
                 break
 
-    # 先保留各业务类别的最高分代表，避免大量同源 search/facet 路径占满 16 条。
-    represented_groups: set[str] = set()
-    for item in unresolved:
-        groups = _review_signal_groups(item)
-        if not groups or represented_groups.issuperset(groups):
-            continue
-        if _add_review_item(pool, seen, item, _category_review_reason(item, groups), shape_counts):
-            represented_groups.update(groups)
-
     for item in unresolved:
         if item.get("evidence_convergence"):
             _add_review_item(pool, seen, item, "cross-evidence convergence", shape_counts)
@@ -1295,22 +1163,10 @@ def _build_review_pool(
             _add_review_item(pool, seen, item, "top advisory score", shape_counts)
     for item in ffuf_candidates or []:
         _add_review_item(pool, seen, item, "ffuf-observed route; AI triage required", shape_counts)
-    if not pool:
-        for item in unresolved:
-            _add_review_item(pool, seen, item, "top advisory score (low-evidence fallback)", shape_counts)
-        for item in unresolved:
-            _add_review_item(pool, seen, item, "top advisory score (low-evidence fallback)")
-    else:
-        eligible = [
-            item
-            for item in unresolved
-            if not (item.get("new_observation") and not _has_actionable_review_evidence(item))
-            and (_review_signal_groups(item) or _has_actionable_review_evidence(item))
-        ]
-        for item in eligible:
-            _add_review_item(pool, seen, item, "top advisory score", shape_counts)
-        for item in eligible:
-            _add_review_item(pool, seen, item, "top advisory score")
+    for item in unresolved:
+        _add_review_item(pool, seen, item, "observed surface; AI review", shape_counts)
+    for item in unresolved:
+        _add_review_item(pool, seen, item, "observed surface; AI review")
     return pool
 
 
@@ -1381,48 +1237,8 @@ def _load_intel_context(recon_dir: Path) -> dict:
     review_items = [
         item for item in projection.get("review_items") or [] if isinstance(item, dict)
     ]
-    signals = []
-    seen = set()
-    for item in review_items:
-        if not isinstance(item, dict) or not advisory_is_actionable(item):
-            continue
-        component = item.get("component") if isinstance(item.get("component"), dict) else {}
-        haystack = " ".join(
-            str(item.get(key, ""))
-            for key in (
-                "id",
-                "source",
-                "source_names",
-                "tech",
-                "severity",
-                "summary",
-                "note",
-                "applicability",
-            )
-        ).lower()
-        haystack += " " + " ".join(
-            str(component.get(key, "")) for key in ("name", "display_name", "version")
-        ).lower()
-        for vuln_class, keywords in INTEL_KEYWORDS.items():
-            if any(keyword in haystack for keyword in keywords):
-                severity = str(item.get("severity", "INFO")).upper()
-                key = (vuln_class, str(item.get("id", "")), str(item.get("summary", ""))[:120])
-                if key in seen:
-                    continue
-                seen.add(key)
-                source_names = item.get("source_names") if isinstance(item.get("source_names"), list) else []
-                signals.append({
-                    "class": vuln_class,
-                    "severity": severity,
-                    "source": ",".join(str(value) for value in source_names if value)
-                    or item.get("source", "intel"),
-                    "id": item.get("id", ""),
-                    "summary": item.get("summary", ""),
-                    "applicability": normalize_advisory_applicability(item.get("applicability")),
-                    "score_hint": item.get("score_hint", 0),
-                    "kev": bool(item.get("kev")),
-                    "epss": item.get("epss"),
-                })
+    # Preserve the original advisory records; Claude interprets applicability.
+    signals = [item for item in review_items if advisory_is_actionable(item)]
     sources = [item for item in projection.get("sources") or [] if isinstance(item, dict)]
     degraded_sources = [
         {
@@ -1448,72 +1264,10 @@ def _load_intel_context(recon_dir: Path) -> dict:
     }
 
 
-def _intel_signal_matches(signal: dict, raw_url: str, path: str, query_keys: list[str], tech_stack: list[str]) -> bool:
-    """Return whether an intel signal is relevant to a surface candidate."""
-    klass = signal.get("class", "")
-    lower_url = raw_url.lower()
-    lower_path = path.lower()
-    keys = set(query_keys)
-    tech = {item.lower() for item in tech_stack}
-
-    if klass == "graphql":
-        return "graphql" in lower_url or "graphql" in tech
-    if klass == "idor":
-        return (
-            bool(keys & {"id", "user_id", "account_id", "order_id"})
-            or any(key.endswith("_id") for key in keys)
-            or _has_contextual_numeric_id(lower_path)
-        )
-    if klass == "ssrf":
-        return bool(keys & {"url", "uri", "dest", "destination", "callback", "webhook", "target", "next", "return"})
-    if klass == "oauth":
-        return "oauth" in lower_url or "oidc" in lower_url or bool(keys & {"redirect_uri", "state", "code", "client_id"})
-    if klass == "redirect":
-        return bool(keys & {"redirect", "redirect_uri", "return", "return_to", "next", "url", "continue", "callback"})
-    if klass == "upload":
-        return "upload" in lower_url or "file" in lower_url or "avatar" in lower_url or "media" in lower_url
-    if klass == "sqli":
-        return bool(query_keys)
-    if klass == "xss":
-        return bool(query_keys) or "search" in lower_url
-    if klass == "saml":
-        return "saml" in lower_url or "sso" in lower_url
-    if klass == "mfa":
-        return any(token in lower_url for token in ("mfa", "2fa", "otp", "totp", "verify"))
-    return False
-
-
-def _intel_signal_bonus(signal: dict) -> int:
-    severity = str(signal.get("severity", "INFO")).upper()
-    if severity == "CRITICAL":
-        return 6
-    if severity == "HIGH":
-        return 5
-    if severity in {"MEDIUM", "MODERATE"}:
-        return 3
-    return 1
-
-
-def _intel_candidate_bonus(signal: dict, query_keys: list[str]) -> int:
-    """Boost stronger URL-level matches for an intel signal."""
-    klass = signal.get("class", "")
-    keys = set(query_keys)
-    if klass == "oauth" and keys & {"redirect_uri", "state", "code", "client_id"}:
-        return 4
-    if klass == "redirect" and keys & {"redirect", "redirect_uri", "return", "return_to", "next", "url", "continue", "callback"}:
-        return 3
-    if klass == "ssrf" and keys & {"url", "uri", "dest", "destination", "callback", "webhook", "target"}:
-        return 3
-    if klass in {"idor", "sqli", "xss"} and query_keys:
-        return 2
-    return 0
-
-
 def _finding_score_bonus(finding: dict) -> int:
     """Return deterministic score boost from scanner finding confidence."""
     severity = (finding.get("severity") or "").lower()
     confidence = (finding.get("confidence") or "").lower()
-    vuln_type = (finding.get("type") or finding.get("category") or "").lower()
     validation_status = (finding.get("validation_status") or "").lower()
     report_status = (finding.get("report_status") or "").lower()
 
@@ -1536,11 +1290,6 @@ def _finding_score_bonus(finding: dict) -> int:
         score += 4
     elif confidence == "medium":
         score += 2
-
-    if vuln_type in {"sqli", "ssti", "upload", "saml", "auth_bypass"}:
-        score += 2
-    elif vuln_type in {"mfa", "ssrf", "idor"}:
-        score += 1
 
     if validation_status == "validated":
         score += 3
@@ -1596,65 +1345,6 @@ def _project_untrusted_finality_as_candidate(
     return projected
 
 
-def _source_intel_score_bonus(hypothesis: dict) -> int:
-    """Return deterministic score boost from source_intel hypothesis type."""
-    hypothesis_type = str(hypothesis.get("type", "")).lower()
-    if hypothesis_type == "idor":
-        return 5
-    if hypothesis_type == "auth-bypass":
-        return 4
-    if hypothesis_type == "business-logic":
-        return 4
-    if hypothesis_type in {"websocket", "oauth", "ssrf"}:
-        return 4
-    if hypothesis_type in {"upload", "webhook"}:
-        return 3
-    if hypothesis_type in {"framework-intel", "csrf"}:
-        return 2
-    return 2
-
-
-def _source_intel_suggestion(hypotheses: list[dict], fallback: str) -> str:
-    """Suggest next action for a source-intel-backed surface candidate."""
-    types = {
-        str(item.get("type", "")).lower()
-        for item in hypotheses
-        if item.get("type")
-    }
-    if "idor" in types:
-        return "prioritize ID swap, sibling object access, and role-diff checks from source_intel"
-    if "auth-bypass" in types:
-        return "probe auth/role/tenant boundary checks from source_intel before broad fuzzing"
-    if "business-logic" in types:
-        return "replay the workflow or GraphQL mutation sequence from source_intel with authz/state diffs"
-    if "websocket" in types:
-        return "capture WS handshake/frames, then compare Origin and frame-level authz across owned roles"
-    if "oauth" in types:
-        return "review OAuth/OIDC redirect/state/session binding and email-normalization before generic auth tests"
-    if "ssrf" in types:
-        return "prove server-side fetch with a controlled callback before internal/metadata follow-up"
-    if "upload" in types:
-        return "inspect upload/import parser and authorization boundaries with minimal benign samples"
-    if "webhook" in types:
-        return "review webhook signature, replay, ownership, and SSRF-adjacent URL handling"
-    if "csrf" in types:
-        return "analyze CSRF token/SameSite binding; do not perform state-changing proof by default"
-    return fallback
-
-
-def _scanner_suggestion(finding: dict, fallback: str) -> str:
-    """Suggest next action for a scanner-backed surface candidate."""
-    vuln_type = (finding.get("type") or finding.get("category") or "").lower()
-    confidence = (finding.get("confidence") or "").lower()
-    source = finding.get("source_file") or "findings.json"
-    report_status = (finding.get("report_status") or "").lower()
-    if report_status == "generated":
-        return "already reported/generated; avoid repeating unless new evidence changes impact or scope"
-    if confidence in {"confirmed", "high"}:
-        return f"validate {vuln_type or 'scanner'} evidence from {source}, then prepare report"
-    return f"review scanner candidate from {source}; {fallback}"
-
-
 def _action_queue_final_endpoints(actions: list[dict]) -> dict[str, str]:
     """Return endpoint-level queue history for advisory display only.
 
@@ -1676,25 +1366,6 @@ def _action_queue_final_endpoints(actions: list[dict]) -> dict[str, str]:
         if endpoint:
             endpoints[endpoint] = status
     return endpoints
-
-
-def _surface_vuln_hint(path: str, suggested: str, query_keys: list[str]) -> str:
-    """Best-effort vuln class for matching a surface candidate to ledger facts."""
-    text = f"{path} {suggested}".lower()
-    if "sqli" in text or "sql injection" in text:
-        return "SQLi"
-    if "ssrf" in text or any(
-        key in {"url", "uri", "dest", "destination", "callback", "webhook", "target"}
-        for key in query_keys
-    ):
-        return "SSRF"
-    if "id swap" in text or "idor" in text or any(key.endswith("_id") for key in query_keys):
-        return "IDOR"
-    if "authz" in text or "authorization" in text or "auth boundary" in text or "access control" in text:
-        return "Authz"
-    if any(token in text for token in ("admin", "account", "order", "payment", "tenant", "user")):
-        return "Authz"
-    return ""
 
 
 def load_surface_context(
@@ -1807,7 +1478,7 @@ def load_surface_context(
     intel_signals = intel_context["signals"]
     ffuf_summary = ReconAdapter(recon_dir).get_ffuf_summary()
     js_intel = load_js_intel_hypotheses(findings_dir)
-    source_intel = load_source_intel_hypotheses(findings_dir)
+    source_intel = load_source_intel(findings_dir)
     scanner_manual_review = _load_scanner_manual_review(findings_dir, target)
     manual_review_leads = _build_manual_review_lead_hints(findings_dir, storage_key)
     observation_inventory = _sync_observation_inventory(repo_root, target)
@@ -1996,10 +1667,6 @@ class _SurfaceCandidateFrontiers:
                 "actionable",
             )
         }
-        self.categories = {
-            name: _BoundedCandidateFrontier(1)
-            for name, _members in REVIEW_SIGNAL_GROUPS
-        }
         self.ffuf_urls = ffuf_urls
         self.ffuf_matches: dict[str, tuple[int, dict]] = {}
         self.new_observations: list[tuple[int, dict]] = []
@@ -2024,8 +1691,6 @@ class _SurfaceCandidateFrontiers:
             self.review["target_memory"].add(item, sequence)
         if _has_actionable_review_evidence(item):
             self.review["actionable"].add(item, sequence)
-        for category in _review_signal_groups(item):
-            self.categories[category].add(item, sequence)
         url = str(item.get("url") or "")
         if url in self.ffuf_urls:
             self.ffuf_matches[url] = (sequence, item)
@@ -2036,7 +1701,7 @@ class _SurfaceCandidateFrontiers:
 
     def review_candidates(self) -> list[dict]:
         by_url: dict[str, tuple[int, dict]] = {}
-        frontiers = [*self.review.values(), *self.categories.values(), self.overall]
+        frontiers = [*self.review.values(), self.overall]
         for frontier in frontiers:
             for sequence, item in frontier.values():
                 url = str(item.get("url") or "")
@@ -2291,7 +1956,6 @@ def rank_surface(context: dict) -> dict:
     # compatibility while also matching their canonical path.
     tested_endpoints |= {item.split("?", 1)[0] for item in tested_endpoints if "?" in item}
     untested_endpoints |= {item.split("?", 1)[0] for item in untested_endpoints if "?" in item}
-    profile_tech = {tech.lower() for tech in profile.get("tech_stack", [])}
 
     # 跨目标 pattern 解码已移除（审计 F9）：loader 不再产生 pattern_matches
     # （2026-09-12 收敛裁定），pattern_suggestions 恒为空列表（兼容字段保留，
@@ -2316,10 +1980,16 @@ def rank_surface(context: dict) -> dict:
         if not url:
             continue
         scanner_findings_by_url.setdefault(url, []).append(finding)
-    closure_resolver = ClosureResolver(
-        context.get("ledger_summary") or {},
-        context.get("coverage_matrix") or {},
-    )
+    ledger_history_by_endpoint: dict[str, list[dict]] = {}
+    ledger_summary = context.get("ledger_summary") or {}
+    for cell in [*(ledger_summary.get("closed_cells") or []), *(ledger_summary.get("closed_cells_v2") or [])]:
+        if not isinstance(cell, dict):
+            continue
+        endpoint = canonical_endpoint_path(str(cell.get("endpoint") or ""))
+        if endpoint:
+            history = {key: cell[key] for key in ("vuln_class", "result", "identity_v2") if key in cell}
+            if history not in ledger_history_by_endpoint.setdefault(endpoint, []):
+                ledger_history_by_endpoint[endpoint].append(history)
     action_queue_final_endpoints = _action_queue_final_endpoints(
         context.get("action_queue_entries") or []
     )
@@ -2332,13 +2002,7 @@ def rank_surface(context: dict) -> dict:
     source_intel_urls = build_source_intel_urls(
         context.get("source_intel") or {},
         default_host,
-        list(js_intel_urls.keys()),
     )
-    business_logic_hypotheses = [
-        item
-        for item in (context.get("source_intel") or {}).get("hypotheses", [])
-        if isinstance(item, dict) and item.get("type") == "business-logic"
-    ]
     ffuf_summary = context.get("ffuf_summary") or {}
     ffuf_urls = {
         str(item.get("url") or "")
@@ -2380,25 +2044,7 @@ def rank_surface(context: dict) -> dict:
         score = 0
         score_breakdown = []
         reasons = []
-        reason_label, suggested = _candidate_reason(path, query_keys)
-        reasons.append(reason_label)
-        high_value_signal = classify_high_value_signal(
-            path=path,
-            query_keys=query_keys,
-            # Hostname 只是归属信息，不能因为其中偶然含 rce/ci/cd 等短串
-            # 就成为漏洞价值证据；path/query 已通过结构化参数传入。
-            evidence=path,
-        )
-        if high_value_signal.score:
-            score += _add_score_breakdown(
-                score_breakdown,
-                "attack_value",
-                summarize_high_value_signal(high_value_signal),
-                high_value_signal.score,
-                ", ".join(high_value_signal.reasons[:3]),
-            )
-            reasons.append("high-value signal: " + "+".join(high_value_signal.classes[:3]))
-
+        suggested = ""
         if browser_observed:
             score += _add_score_breakdown(
                 score_breakdown,
@@ -2408,34 +2054,6 @@ def rank_surface(context: dict) -> dict:
                 path,
             )
             reasons.append("browser-observed surface")
-            suggested = "prioritize authenticated/browser-observed authz and workflow checks"
-            if any(token in path.lower() for token in BROWSER_VALUE_KEYWORDS):
-                score += _add_score_breakdown(
-                    score_breakdown,
-                    "browser",
-                    "High-value browser workflow",
-                    4,
-                    path,
-                )
-        if "graphql" in path.lower() or _is_websocket_endpoint(path):
-            score += _add_score_breakdown(
-                score_breakdown,
-                "attack_value",
-                "GraphQL/WebSocket surface",
-                8,
-                path,
-            )
-        if _has_contextual_numeric_id(path) or any(
-            key in {"id", "user_id", "account_id", "order_id"} or key.endswith("_id")
-            for key in query_keys
-        ):
-            score += _add_score_breakdown(
-                score_breakdown,
-                "attack_value",
-                "ID-bearing or sequential object reference",
-                5,
-                ", ".join(query_keys) or path,
-            )
         matching_js_intel_endpoints = js_intel_urls.get(raw_url, [])
         if matching_js_intel_endpoints:
             methods = _dedupe_keep_order([
@@ -2447,55 +2065,27 @@ def rank_surface(context: dict) -> dict:
             score += _add_score_breakdown(
                 score_breakdown,
                 "js_intel",
-                "JS-reader endpoint hypothesis",
+                "JS-reader endpoint observation",
                 5,
                 evidence,
             )
-            reasons.append("js-reader endpoint hypothesis")
-            suggested = "probe JS-reader endpoint hypothesis with authz and workflow checks"
-            if any(token in path.lower() for token in BROWSER_VALUE_KEYWORDS):
-                score += _add_score_breakdown(
-                    score_breakdown,
-                    "js_intel",
-                    "JS-reader high-value workflow",
-                    3,
-                    path,
-                )
-        matching_source_intel_hypotheses = list(source_intel_urls.get(raw_url, []))
-        if "graphql" in raw_url.lower() and business_logic_hypotheses:
-            for hypothesis in business_logic_hypotheses:
-                if hypothesis not in matching_source_intel_hypotheses:
-                    matching_source_intel_hypotheses.append(hypothesis)
-        if matching_source_intel_hypotheses:
+            reasons.append("js-reader endpoint observation")
+        matching_source_routes = list(source_intel_urls.get(raw_url, []))
+        if matching_source_routes:
             convergence_source_intel_urls[raw_url] = list(
-                matching_source_intel_hypotheses
+                matching_source_routes
             )
-            source_types = _dedupe_keep_order([
-                str(item.get("type", "")).lower()
-                for item in matching_source_intel_hypotheses
-                if item.get("type")
-            ])
-            source_bonus = sum(
-                _source_intel_score_bonus(item)
-                for item in matching_source_intel_hypotheses[:5]
-            )
-            evidence = ", ".join(source_types[:3]) or path
             score += _add_score_breakdown(
-                score_breakdown,
-                "intel",
-                "Source-intel hypothesis: " + ", ".join(source_types[:3] or ["candidate"]),
-                source_bonus,
-                evidence,
+                score_breakdown, "intel", "Source route observation", 5, path,
             )
-            reasons.append("source-intel hypothesis: " + ", ".join(source_types[:3]) + f" (+{source_bonus})")
-            suggested = _source_intel_suggestion(matching_source_intel_hypotheses, suggested)
+            reasons.append("source route observation")
 
         convergence_sources = []
         if browser_observed:
             convergence_sources.append("browser")
         if matching_js_intel_endpoints:
             convergence_sources.append("js")
-        if matching_source_intel_hypotheses:
+        if matching_source_routes:
             convergence_sources.append("source")
         if len(convergence_sources) >= 2:
             convergence_bonus = 10 if len(convergence_sources) >= 3 else 6
@@ -2507,13 +2097,9 @@ def rank_surface(context: dict) -> dict:
                 "+".join(convergence_sources),
             )
             reasons.append("cross-evidence convergence: " + "+".join(convergence_sources))
-            suggested = (
-                "replay browser-observed flow with JS/source-informed parameters, "
-                "then compare authz, object, role, and workflow behavior"
-            )
             if browser_observed:
                 convergence_browser_urls.add(raw_url)
-        if api_observed or "/api/" in path.lower():
+        if api_observed:
             score += _add_score_breakdown(
                 score_breakdown,
                 "recon",
@@ -2522,36 +2108,7 @@ def rank_surface(context: dict) -> dict:
                 "api_endpoints.txt" if api_observed else path,
             )
         if query_keys:
-            score += _add_score_breakdown(
-                score_breakdown,
-                "attack_value",
-                "Parameterized endpoint",
-                2,
-                ", ".join(query_keys),
-            )
-        if host and ":" in host:
-            port = host.rsplit(":", 1)[-1]
-            if port not in {"80", "443"}:
-                score += _add_score_breakdown(
-                    score_breakdown,
-                    "recon",
-                    "Non-standard port",
-                    2,
-                    port,
-                )
-                reasons.append("non-standard port")
-
-        host_tech = set(context["hosts"].get(host, {}).get("tech_stack", []))
-        if profile_tech and host_tech & profile_tech:
-            score += _add_score_breakdown(
-                score_breakdown,
-                "memory",
-                "Tech stack overlap",
-                2,
-                ", ".join(sorted(host_tech & profile_tech)),
-            )
-            reasons.append("tech stack overlap")
-
+            reasons.append("observed query parameters: " + ", ".join(query_keys))
         if path in untested_endpoints:
             score += _add_score_breakdown(
                 score_breakdown,
@@ -2618,9 +2175,7 @@ def rank_surface(context: dict) -> dict:
         # （2026-09-12 收敛裁定后 loader 不再产生），此分支不可达。
 
         scanner_findings = scanner_findings_by_url.get(raw_url, [])
-        top_scanner_finding = None
         if scanner_findings:
-            top_scanner_finding = max(scanner_findings, key=_finding_score_bonus)
             scanner_bonus = sum(_finding_score_bonus(item) for item in scanner_findings)
             scanner_types = _dedupe_keep_order([
                 item.get("type") or item.get("category") or "scanner"
@@ -2648,7 +2203,6 @@ def rank_surface(context: dict) -> dict:
                 + f" status={','.join(scanner_statuses[:3])}"
                 + f" (+{scanner_bonus})"
             )
-            suggested = _scanner_suggestion(top_scanner_finding, suggested)
 
         observed_request_shapes = list(
             browser_request_shapes.get(public_url_shape(raw_url), [])
@@ -2663,7 +2217,7 @@ def rank_surface(context: dict) -> dict:
                     "resource_type": "js",
                     "body": endpoint.get("body_shape") if isinstance(endpoint.get("body_shape"), dict) else {},
                 })
-        for hypothesis in matching_source_intel_hypotheses:
+        for hypothesis in matching_source_routes:
             method = str(hypothesis.get("method") or "").upper()
             if method:
                 observed_request_shapes.append({
@@ -2716,6 +2270,8 @@ def rank_surface(context: dict) -> dict:
                 f"findings/{target_storage_key(context['target'])}/js_intel/hypotheses.json",
                 f"findings/{target_storage_key(context['target'])}/js_intel/materials.json",
             ])
+        if matching_source_routes:
+            evidence_refs.append(f"findings/{target_storage_key(context['target'])}/source_intel/routes.json")
         if evidence_refs:
             entry["evidence_refs"] = _dedupe_keep_order(evidence_refs)
         new_observation = new_observations.get(raw_url)
@@ -2747,16 +2303,15 @@ def rank_surface(context: dict) -> dict:
                 }
                 for item in matching_js_intel_endpoints[:5]
             ]
-        if matching_source_intel_hypotheses:
+        if matching_source_routes:
             entry["source_intel_observed"] = True
-            entry["source_intel_hypotheses"] = [
+            entry["source_intel_routes"] = [
                 {
-                    "type": item.get("type", ""),
-                    "candidate": item.get("candidate", ""),
-                    "reason": item.get("reason", ""),
+                    "route": item.get("route", ""),
+                    "method": item.get("method", ""),
                     "source": item.get("source", ""),
                 }
-                for item in matching_source_intel_hypotheses[:5]
+                for item in matching_source_routes[:5]
             ]
         if len(convergence_sources) >= 2:
             entry["evidence_convergence"] = convergence_sources
@@ -2774,75 +2329,9 @@ def rank_surface(context: dict) -> dict:
                 for item in scanner_findings[:5]
             ]
 
-        matching_intel = [
-            signal for signal in context.get("intel_signals", [])
-            if _intel_signal_matches(signal, raw_url, path, query_keys, entry["tech_stack"])
-        ]
-        if matching_intel:
-            intel_bonus = sum(_intel_signal_bonus(signal) + _intel_candidate_bonus(signal, query_keys) for signal in matching_intel[:5])
-            intel_classes = _dedupe_keep_order([signal.get("class", "intel") for signal in matching_intel])
-            intel_evidence = _dedupe_keep_order([
-                str(signal.get("id") or signal.get("summary") or signal.get("source") or "")
-                for signal in matching_intel[:5]
-            ])
-            score += _add_score_breakdown(
-                score_breakdown,
-                "intel",
-                "Intel signal: " + ", ".join(intel_classes[:3]),
-                intel_bonus,
-                ", ".join(item for item in intel_evidence[:3] if item),
-            )
-            entry["score"] = score
-            reasons.append("intel signal: " + ", ".join(intel_classes[:3]) + f" (+{intel_bonus})")
-            entry["reasons"] = reasons
-            entry["score_breakdown"] = score_breakdown
-            entry["intel_signals"] = [
-                {
-                    "class": signal.get("class", ""),
-                    "severity": signal.get("severity", ""),
-                    "source": signal.get("source", ""),
-                    "id": signal.get("id", ""),
-                    "summary": signal.get("summary", ""),
-                    "applicability": signal.get("applicability", "unknown"),
-                    "score_hint": signal.get("score_hint", 0),
-                    "kev": bool(signal.get("kev")),
-                    "epss": signal.get("epss"),
-                }
-                for signal in matching_intel[:5]
-            ]
-
         endpoint_path = canonical_endpoint_path(raw_url) or "/"
-        ledger_vuln_hint = _surface_vuln_hint(path, suggested, query_keys)
-        if ledger_vuln_hint:
-            # Keep the best-effort lane hint with the bounded candidate so
-            # closure can distinguish Authz/IDOR/SQLi outcomes on one path.
-            entry["vuln_class"] = ledger_vuln_hint
-        ledger_result = closure_resolver.closed_result(endpoint_path, ledger_vuln_hint)
-        if ledger_result:
-            # 终态只说明这个精确 lane 已处理，不代表 endpoint 无其他攻击面。
-            # 保留轻量历史提示，不把 raw surface 从 AI Review Pool 移除。
-            penalty = -3
-            score += _add_score_breakdown(
-                score_breakdown,
-                "memory",
-                f"Evidence ledger final: {ledger_vuln_hint} {ledger_result}",
-                penalty,
-                endpoint_path,
-            )
-            entry["score"] = score
-            entry["score_breakdown"] = score_breakdown
-            reasons.append(f"evidence-ledger {ledger_vuln_hint} {ledger_result}")
-            entry["reasons"] = reasons
-            entry["ledger_history"] = {
-                "endpoint": endpoint_path,
-                "vuln_class": ledger_vuln_hint,
-                "result": ledger_result,
-            }
-            suggested = (
-                f"ledger shows {ledger_vuln_hint}={ledger_result}; avoid repeating that exact lane, "
-                "but keep the endpoint open for a different class or fresh browser/source evidence"
-            )
-            entry["suggested"] = suggested
+        if endpoint_path in ledger_history_by_endpoint:
+            entry["ledger_history"] = ledger_history_by_endpoint[endpoint_path]
         queue_status = action_queue_final_endpoints.get(endpoint_path)
         if queue_status:
             reasons.append(f"action-queue history {queue_status}")
@@ -2880,11 +2369,6 @@ def rank_surface(context: dict) -> dict:
             total_count=external_context_count,
         )
         + build_js_lead_hints(js_intel)
-        + build_source_lead_hints(
-            context.get("source_intel") or {},
-            target=context["target"],
-            default_host=default_host,
-        )
         + list(context.get("manual_review_leads") or [])
     )
     workflow_leads = _dedupe_keep_order([

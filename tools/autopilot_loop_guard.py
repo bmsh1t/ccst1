@@ -218,7 +218,7 @@ def _stagnation_obligation(item: object, *, kind: str) -> dict:
         "id": _stagnation_text(item.get("id") or item.get("finding_id") or item.get("backlog_id"), limit=160),
         "status": {
             key: _stagnation_text(item.get(key) or metadata.get(key), limit=120)
-            for key in ("status", "validation_status", "report_status", "evidence_status", "rubric_status")
+            for key in ("status", "validation_status", "report_status", "evidence_status")
             if _stagnation_text(item.get(key) or metadata.get(key), limit=120)
         },
         "action": _stagnation_text(

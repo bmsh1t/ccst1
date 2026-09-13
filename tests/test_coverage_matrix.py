@@ -15,7 +15,6 @@ import pytest
 
 import coverage_matrix as coverage_matrix_module
 from coverage_matrix import (
-    DEFAULT_MIN_WEIGHT,
     STATUS_VALUES,
     VULN_CLASS_ALIASES,
     VULN_CLASSES,
@@ -23,7 +22,6 @@ from coverage_matrix import (
     _route_template,
     _compute_summary,
     _empty_matrix,
-    class_relevance,
     find_high_value_gaps,
     load_matrix,
     load_matrix_projection,
@@ -61,20 +59,6 @@ def test_readme_names_the_canonical_web2_closure_taxonomy():
     section = text.split(heading, 1)[1].split("</details>", 1)[0]
     assert all(f"**{vuln_class}**" in section for vuln_class in VULN_CLASSES)
     assert "20 Web2 Bug Classes" not in text
-
-
-def test_weak_content_path_words_do_not_promote_high_value_server_side_classes():
-    assert class_relevance("/news/process", "RCE", [])["relevance_score"] == 0
-    assert class_relevance("/careers/job-life", "RCE", [])["relevance_score"] == 0
-    assert class_relevance("/careers/job-details", "RCE", [])["relevance_score"] == 0
-    assert class_relevance("/reports/annual-report", "SQLi", [])["relevance_score"] == 0
-    assert class_relevance("/news/feed", "SSRF", [])["relevance_score"] == 0
-    assert class_relevance("/news/rss", "XXE", [])["relevance_score"] == 0
-    assert class_relevance("/api/execute", "RCE", [])["relevance_score"] > 0
-    assert class_relevance("/api/jobs/process", "RCE", [])["relevance_score"] > 0
-    assert class_relevance("/api/jobs/123/run", "RCE", [])["relevance_score"] > 0
-    assert class_relevance("/api/job/{id}/dispatch", "RCE", [])["relevance_score"] > 0
-    assert class_relevance("/api/import", "SSRF", ["url"])["relevance_score"] > 0
 
 
 def test_default_xss_skip_is_visible_without_closing_coverage(tmp_path):
@@ -258,7 +242,7 @@ class TestRouteTemplate:
         assert matrix["endpoints"][0]["observation_count"] == 3
         gap = next(
             item
-            for item in find_high_value_gaps("x.com", repo_root=tmp_path, min_weight=0)
+            for item in find_high_value_gaps("x.com", repo_root=tmp_path)
             if item["vuln_class"] == "IDOR"
         )
         assert gap["endpoint"] == "/users/{id}"
@@ -590,8 +574,8 @@ class TestRebuildMatrix:
         endpoints = [ep["endpoint"] for ep in matrix["endpoints"]]
         # High-value paths must be in matrix
         assert "/api/v1/admin/users" in endpoints
-        # Low-weight path filtered at default min_weight_to_include=1.0
-        assert "/blog/post-1" not in endpoints
+        # Unfamiliar and static-looking paths remain visible too.
+        assert "/blog/post-1" in endpoints
 
     def test_rebuild_normalizes_attack_probe_without_losing_surface(self, tmp_path):
         _seed_recon(tmp_path, "x.com", [
@@ -611,7 +595,7 @@ class TestRebuildMatrix:
         admin_ep = by_endpoint["/rest/admin"]
         assert "route_prefix_candidate" in admin_ep["auto_hints"]
         assert admin_ep["source_count"] == 1
-        assert admin_ep["weight"] >= 3.0
+        assert "weight" not in admin_ep
 
     def test_rebuild_uses_filtered_view_when_legacy_raw_backstop_exists(self, tmp_path):
         _seed_recon_with_filtered(
@@ -663,7 +647,7 @@ class TestRebuildMatrix:
         assert "/i.visualViewport.scale/i.document.do" not in endpoints
         assert "/rest/admin/application-configuration" in endpoints
 
-    def test_static_and_public_metadata_are_not_direct_vuln_matrix_gaps(self, tmp_path):
+    def test_static_and_public_metadata_stay_visible_without_predicted_value(self, tmp_path):
         _seed_recon(tmp_path, "x.com", [
             "https://x.com/assets/public/images/logo.png",
             "https://x.com/.well-known/csaf/provider-metadata.json",
@@ -679,13 +663,13 @@ class TestRebuildMatrix:
         static_ep = by_endpoint["/assets/public/images/logo.png"]
         assert static_ep["endpoint_kind"] == "untriaged"
         assert "static_asset_shape" in static_ep["auto_hints"]
-        assert static_ep["weight"] == 0.0
+        assert "weight" not in static_ep
         assert {cell["status"] for cell in static_ep["cells"].values()} == {"untested"}
 
         metadata_ep = by_endpoint["/.well-known/csaf/provider-metadata.json"]
         assert metadata_ep["endpoint_kind"] == "untriaged"
         assert "public_metadata_path" in metadata_ep["auto_hints"]
-        assert metadata_ep["weight"] == 0.0
+        assert "weight" not in metadata_ep
         assert {cell["status"] for cell in metadata_ep["cells"].values()} == {"untested"}
 
         for endpoint in (
@@ -694,16 +678,16 @@ class TestRebuildMatrix:
             "/.well-known/oauth-protected-resource",
         ):
             assert "public_metadata_path" in by_endpoint[endpoint]["auto_hints"]
-            assert by_endpoint[endpoint]["weight"] == 0.0
+            assert "weight" not in by_endpoint[endpoint]
 
         save_matrix("x.com", matrix, repo_root=tmp_path)
-        gaps = find_high_value_gaps("x.com", repo_root=tmp_path, min_weight=3.0)
+        gaps = find_high_value_gaps("x.com", repo_root=tmp_path)
         gap_endpoints = {gap["endpoint"] for gap in gaps}
-        assert "/assets/public/images/logo.png" not in gap_endpoints
-        assert "/.well-known/csaf/provider-metadata.json" not in gap_endpoints
-        assert "/__/firebase/init.json" not in gap_endpoints
-        assert "/.well-known/oauth-authorization-server" not in gap_endpoints
-        assert "/.well-known/oauth-protected-resource" not in gap_endpoints
+        assert "/assets/public/images/logo.png" in gap_endpoints
+        assert "/.well-known/csaf/provider-metadata.json" in gap_endpoints
+        assert "/__/firebase/init.json" in gap_endpoints
+        assert "/.well-known/oauth-authorization-server" in gap_endpoints
+        assert "/.well-known/oauth-protected-resource" in gap_endpoints
 
     def test_route_prefix_like_endpoint_stays_visible_for_ai_judgement(self, tmp_path):
         _seed_recon(tmp_path, "x.com", [
@@ -720,7 +704,7 @@ class TestRebuildMatrix:
         assert "api_like_path" in prefix_ep["auto_hints"]
         assert "route_prefix_candidate" in prefix_ep["auto_hints"]
         assert prefix_ep["source_count"] == 1
-        assert prefix_ep["weight"] >= 3.0
+        assert "weight" not in prefix_ep
         assert prefix_ep["cells"]["Authz"]["status"] == "untested"
         assert child_ep["endpoint_kind"] == "untriaged"
         assert child_ep["cells"]["Authz"]["status"] == "untested"
@@ -749,7 +733,7 @@ class TestRebuildMatrix:
         assert {cell["status"] for cell in by_endpoint["/rest/admin"]["cells"].values()} == {"n_a"}
         assert by_endpoint["/rest/admin/application-configuration"]["cells"]["Authz"]["status"] == "untested"
 
-        gaps = find_high_value_gaps("x.com", repo_root=tmp_path, min_weight=3.0)
+        gaps = find_high_value_gaps("x.com", repo_root=tmp_path)
         gap_endpoints = {gap["endpoint"] for gap in gaps}
         assert "/rest/admin" not in gap_endpoints
         assert "/rest/admin/application-configuration" in gap_endpoints
@@ -944,31 +928,34 @@ class TestRebuildMatrix:
 
 
 class TestFindGaps:
-    def test_returns_untested_cells_above_threshold(self, tmp_path):
+    def test_returns_untested_cells_without_word_scores(self, tmp_path):
         _seed_recon(tmp_path, "x.com", [
             "/api/v1/admin/users",   # weight high
             "/api/v1/orders/123",     # weight medium
         ])
         matrix = rebuild_matrix("x.com", repo_root=tmp_path)
         save_matrix("x.com", matrix, repo_root=tmp_path)
-        gaps = find_high_value_gaps("x.com", repo_root=tmp_path, min_weight=3.0)
+        gaps = find_high_value_gaps("x.com", repo_root=tmp_path)
         # Every gap has an endpoint, vuln_class, and weight >= 3.0
         for gap in gaps:
             assert "endpoint" in gap
             assert "vuln_class" in gap
-            assert gap["weight"] >= 3.0
+            assert "weight" not in gap
+            assert "relevance_score" not in gap
 
-    def test_filter_respects_min_weight(self, tmp_path):
-        _seed_recon(tmp_path, "x.com", ["/api/v1/admin/users", "/api/v1/anything/1"])
-        matrix = rebuild_matrix("x.com", repo_root=tmp_path)
+    def test_legacy_weight_cannot_hide_untested_cells(self, tmp_path):
+        matrix = _empty_matrix("x.com")
+        matrix["endpoints"] = [
+            {"endpoint": "/plain", "weight": 0, "cells": {"SQLi": {"status": "untested"}}},
+            {"endpoint": "/admin", "weight": 100, "cells": {"Authz": {"status": "tested_clean"}}},
+        ]
         save_matrix("x.com", matrix, repo_root=tmp_path)
-        high_only = find_high_value_gaps("x.com", repo_root=tmp_path, min_weight=5.0)
-        all_above_1 = find_high_value_gaps("x.com", repo_root=tmp_path, min_weight=1.0)
-        # min_weight=5.0 yields fewer-or-equal gaps than min_weight=1.0
-        assert len(high_only) <= len(all_above_1)
+        gaps = find_high_value_gaps("x.com", repo_root=tmp_path)
+        assert [(g["endpoint"], g["vuln_class"]) for g in gaps] == [("/plain", "SQLi")]
+        assert "weight" not in gaps[0]
 
     def test_empty_matrix_yields_empty_gaps(self, tmp_path):
-        gaps = find_high_value_gaps("ghost.com", repo_root=tmp_path, min_weight=3.0)
+        gaps = find_high_value_gaps("ghost.com", repo_root=tmp_path)
         assert gaps == []
 
     def test_cli_limit_is_presentation_only_and_reports_total(self, tmp_path, monkeypatch, capsys):
@@ -1003,39 +990,23 @@ class TestFindGaps:
         assert limited["returned"] == 1
         assert limited["truncated"] is True
 
-    def test_cli_defaults_to_semantic_gaps_but_all_keeps_raw_matrix(self, tmp_path, capsys):
-        _seed_recon(tmp_path, "x.com", [
-            "https://x.com/plain/path",
-            "https://x.com/api/import?url=http://127.0.0.1/",
-        ])
-        save_matrix("x.com", rebuild_matrix("x.com", repo_root=tmp_path), repo_root=tmp_path)
-
-        assert coverage_matrix_module.main([
-            "find-gaps", "--target", "x.com", "--repo-root", str(tmp_path),
-        ]) == 0
-        semantic = json.loads(capsys.readouterr().out)
-
-        assert coverage_matrix_module.main([
-            "find-gaps", "--target", "x.com", "--repo-root", str(tmp_path), "--all",
-        ]) == 0
-        complete = json.loads(capsys.readouterr().out)
-
-        # Both views now return the same gap set: qualification by word
-        # lists is retired and --all is kept as a compat no-op. Every gap
-        # carries its relevance annotation for AI visibility.
-        assert semantic
-        assert len(complete) == len(semantic)
-        assert any(item["relevance_score"] == 0 for item in complete)
+    def test_cli_default_keeps_unfamiliar_and_keyword_named_routes(self, tmp_path, capsys):
+        _seed_recon(tmp_path, "x.com", ["https://x.com/plain/path", "https://x.com/api/import?url=one"])
+        rebuild_matrix("x.com", repo_root=tmp_path)
+        assert coverage_matrix_module.main(["find-gaps", "--target", "x.com", "--repo-root", str(tmp_path)]) == 0
+        gaps = json.loads(capsys.readouterr().out)
+        assert {item["endpoint"] for item in gaps} == {"/plain/path", "/api/import"}
+        assert all("relevance_score" not in item and "weight" not in item for item in gaps)
 
 
-    def test_semantic_ranking_prioritizes_authz_over_generic_idor(self, tmp_path):
+    def test_parameter_names_do_not_choose_a_vulnerability_class(self, tmp_path):
         _seed_recon(tmp_path, "x.com", [
             "https://api.target.com/api/admin/users?isAdmin=true&userId=1001",
         ])
         matrix = rebuild_matrix("x.com", repo_root=tmp_path)
         save_matrix("x.com", matrix, repo_root=tmp_path)
 
-        gaps = find_high_value_gaps("x.com", repo_root=tmp_path, min_weight=3.0)
+        gaps = find_high_value_gaps("x.com", repo_root=tmp_path)
         endpoint_gaps = [g for g in gaps if g["endpoint"] == "/api/admin/users"]
 
         # Fact-ordered ranking: ordering follows route-kind/params/weight/impact,
@@ -1044,7 +1015,8 @@ class TestFindGaps:
         # relevance annotation intact (visible to AI, outside the ordering).
         assert endpoint_gaps
         assert {g["vuln_class"] for g in endpoint_gaps} >= {"Authz", "IDOR"}
-        assert any(g["vuln_class"] == "Authz" and g["relevance_score"] > 0 for g in endpoint_gaps)
+        assert {g["vuln_class"] for g in endpoint_gaps} == set(VULN_CLASSES)
+        assert all("relevance_score" not in g for g in endpoint_gaps)
         ep = load_matrix("x.com", repo_root=tmp_path)["endpoints"][0]
         assert set(ep["observed_params"]) == {"isAdmin", "userId"}
 
@@ -1057,14 +1029,14 @@ class TestFindGaps:
             ("https://api.target.com/api/search?q=test&sort=created_at", "SQLi"),
         ],
     )
-    def test_semantic_ranking_maps_common_high_value_surfaces(self, tmp_path, url, expected_class):
+    def test_class_named_routes_keep_every_canonical_family(self, tmp_path, url, expected_class):
         _seed_recon(tmp_path, "x.com", [url])
         matrix = rebuild_matrix("x.com", repo_root=tmp_path)
         save_matrix("x.com", matrix, repo_root=tmp_path)
 
         endpoint = _canonicalize_endpoint(url)
         gaps = [
-            g for g in find_high_value_gaps("x.com", repo_root=tmp_path, min_weight=1.0)
+            g for g in find_high_value_gaps("x.com", repo_root=tmp_path)
             if g["endpoint"] == endpoint
         ]
 
@@ -1072,15 +1044,9 @@ class TestFindGaps:
         # positive relevance annotation the AI can read.
         assert gaps
         assert expected_class in {g["vuln_class"] for g in gaps}
-        assert any(
-            g["vuln_class"] == expected_class and int(g.get("relevance_score", 0) or 0) > 0
-            for g in gaps
-        )
+        assert {g["vuln_class"] for g in gaps} == set(VULN_CLASSES)
+        assert all("relevance_score" not in g for g in gaps)
 
-    def test_class_relevance_is_soft_signal_not_na(self):
-        rel = class_relevance("/plain/path", "RCE", [])
-        assert rel["relevance_score"] == 0
-        assert rel["relevance_reason"] == ""
 
     def test_sqli_semantics_require_real_query_signals_not_resource_words(self, tmp_path):
         """`select` / `order` 资源名不应单靠路径触发 SQLi 高价值 gap。"""
@@ -1092,29 +1058,14 @@ class TestFindGaps:
         matrix = rebuild_matrix("x.com", repo_root=tmp_path)
         save_matrix("x.com", matrix, repo_root=tmp_path)
 
-        gaps = find_high_value_gaps("x.com", repo_root=tmp_path, min_weight=3.0)
+        gaps = find_high_value_gaps("x.com", repo_root=tmp_path)
         gap_pairs = {(gap["endpoint"], gap["vuln_class"]) for gap in gaps}
         top_gap_pairs = {(gap["endpoint"], gap["vuln_class"]) for gap in gaps[:5]}
 
         assert ("/rest/order-history", "SQLi") not in top_gap_pairs
-        assert ("/address/select", "SQLi") not in gap_pairs
+        assert ("/address/select", "SQLi") in gap_pairs
         assert ("/rest/products/search", "SQLi") in gap_pairs
 
-        assert class_relevance("/rest/order-history", "SQLi", [])["relevance_score"] == 0
-        assert class_relevance("/address/select", "SQLi", [])["relevance_score"] == 0
-        assert class_relevance("/rest/products/search", "SQLi", ["q"])["relevance_score"] > 0
-
-    def test_dom_sources_and_script_names_do_not_promote_server_side_classes(self):
-        assert class_relevance("/urldom/location/hash/fetch", "SSRF", [])["relevance_score"] == 0
-        assert class_relevance("/urldom/location/hash/fetch", "XSS", [])["relevance_score"] > 0
-        assert class_relevance("/dom/window/name/fetch", "SSRF", [])["relevance_score"] == 0
-        assert class_relevance(
-            "/urldom/location/hash/fetch", "SSRF", ["target_url"]
-        )["relevance_score"] > 0
-        assert class_relevance(
-            "/reflected/filteredstrings/body/caseSensitive/script", "RCE", ["q"]
-        )["relevance_score"] == 0
-        assert class_relevance("/api/template/render", "RCE", ["template"])["relevance_score"] > 0
 
     def test_payload_shaped_dom_paths_rank_as_xss_not_ssrf_or_rce(self, tmp_path):
         _seed_recon(tmp_path, "x.com", [
@@ -1124,7 +1075,7 @@ class TestFindGaps:
         matrix = rebuild_matrix("x.com", repo_root=tmp_path)
         save_matrix("x.com", matrix, repo_root=tmp_path)
 
-        gaps = find_high_value_gaps("x.com", repo_root=tmp_path, min_weight=3.0)
+        gaps = find_high_value_gaps("x.com", repo_root=tmp_path)
         classes_by_endpoint = {}
         for gap in gaps:
             classes_by_endpoint.setdefault(gap["endpoint"], set()).add(gap["vuln_class"])
@@ -1168,7 +1119,7 @@ class TestFindGaps:
         assert not any(endpoint.startswith("/articles/") for endpoint in endpoints)
         assert "/api/fetch" in endpoints
 
-    def test_bare_numeric_path_not_promoted_as_high_value_idor_gap(self, tmp_path):
+    def test_numeric_paths_are_not_dropped_by_value_words(self, tmp_path):
         _seed_recon(tmp_path, "x.com", [
             "https://app.target.com/16",
             "https://app.target.com/orders/16",
@@ -1177,12 +1128,12 @@ class TestFindGaps:
         save_matrix("x.com", matrix, repo_root=tmp_path)
 
         endpoints = {ep["endpoint"]: ep for ep in load_matrix("x.com", repo_root=tmp_path)["endpoints"]}
-        gaps = find_high_value_gaps("x.com", repo_root=tmp_path, min_weight=3.0)
+        gaps = find_high_value_gaps("x.com", repo_root=tmp_path)
         gap_pairs = {(gap["endpoint"], gap["vuln_class"]) for gap in gaps}
 
-        assert "/16" not in endpoints
+        assert "/16" in endpoints
         assert "/orders/16" in endpoints
-        assert ("/16", "IDOR") not in gap_pairs
+        assert ("/16", "IDOR") in gap_pairs
 
     def test_race_semantics_require_state_transition_not_state_resource_words(self, tmp_path):
         """`order` / `balance` 资源名不应单靠路径触发 Race 高价值 gap。"""
@@ -1196,22 +1147,14 @@ class TestFindGaps:
         matrix = rebuild_matrix("x.com", repo_root=tmp_path)
         save_matrix("x.com", matrix, repo_root=tmp_path)
 
-        gaps = find_high_value_gaps("x.com", repo_root=tmp_path, min_weight=3.0)
+        gaps = find_high_value_gaps("x.com", repo_root=tmp_path)
         gap_pairs = {(gap["endpoint"], gap["vuln_class"]) for gap in gaps}
 
-        assert ("/rest/order-history", "Race") not in gap_pairs
-        assert ("/rest/track-order", "Race") not in gap_pairs
-        assert ("/rest/wallet/balance", "Race") not in gap_pairs
+        assert ("/rest/order-history", "Race") in gap_pairs
+        assert ("/rest/track-order", "Race") in gap_pairs
+        assert ("/rest/wallet/balance", "Race") in gap_pairs
         assert ("/api/cart/checkout", "Race") in gap_pairs
         assert ("/api/payment/confirm", "Race") in gap_pairs
-
-        assert class_relevance("/rest/order-history", "Race", [])["relevance_score"] == 0
-        assert class_relevance("/rest/track-order", "Race", [])["relevance_score"] == 0
-        assert class_relevance("/rest/wallet/balance", "Race", [])["relevance_score"] == 0
-        assert class_relevance("/rest/wallet/balance", "BusinessLogic", [])["relevance_score"] == 0
-        assert class_relevance("/api/cart/checkout", "Race", [])["relevance_score"] > 0
-        assert class_relevance("/api/cart/checkout", "BusinessLogic", [])["relevance_score"] > 0
-        assert class_relevance("/api/orders", "Race", ["coupon"])["relevance_score"] > 0
 
 
 def test_high_value_gap_preserves_explicit_closure_identity(tmp_path):
@@ -1241,7 +1184,7 @@ def test_high_value_gap_preserves_explicit_closure_identity(tmp_path):
 
     gap = next(
         item
-        for item in find_high_value_gaps("x.com", repo_root=tmp_path, min_weight=1.0)
+        for item in find_high_value_gaps("x.com", repo_root=tmp_path)
         if item["vuln_class"] == "SQLi"
     )
     assert gap["identity_v2"] == identity
@@ -1562,11 +1505,12 @@ class TestCoverageGateSemanticGapDuty:
         assert "解释义务落在默认（AI-actionable）视图上" in md
         assert "`--all` 是审计视图，人不背它的逐格" in md
 
-    def test_all_flag_still_exists_in_tool(self):
-        """The --all escape hatch the duty split relies on still exists."""
-        import inspect
-        source = inspect.getsource(coverage_matrix_module)
-        assert '"--all"' in source
+    def test_weight_and_noop_all_flags_are_retired(self, tmp_path):
+        for option in (["--min-weight", "3"], ["--all"]):
+            with pytest.raises(SystemExit) as exc:
+                coverage_matrix_module.main(["find-gaps", "--target", "x.com", "--repo-root", str(tmp_path), *option])
+            assert exc.value.code == 2
+        assert not (tmp_path / "evidence").exists()
 
 
 class TestF3InvariantActivation:
@@ -1916,7 +1860,7 @@ class TestRouteKindQualification:
         assert payment_gaps, "client_route stays in the matrix, never dropped"
         assert all(g.get("route_kind") == "client_route" for g in payment_gaps)
         # All gaps are returned; ordering prefers server-backed first.
-        assert coverage_matrix_module.actionable_coverage_gaps(payment_gaps) == payment_gaps
+        assert set(VULN_CLASSES) == {gap["vuln_class"] for gap in payment_gaps}
         server_gaps = [g for g in gaps if g.get("route_kind") == "json_api"]
         assert server_gaps
         ordered = sorted(gaps, key=coverage_matrix_module._gap_sort_key)

@@ -28,11 +28,9 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 try:
-    from tools.high_value_signals import classify_high_value_signal
     from tools.runtime_state import runtime_wait_action
     from tools.target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from high_value_signals import classify_high_value_signal  # type: ignore
     from runtime_state import runtime_wait_action  # type: ignore
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
 
@@ -1179,30 +1177,9 @@ def _action_sort_key(action: dict) -> tuple:
         priority = int(action.get("priority", 50) or 50)
     except (TypeError, ValueError):
         priority = 50
-    evidence = " ".join([
-        str(action.get("type") or ""),
-        str(action.get("evidence_type") or ""),
-        str(action.get("evidence") or ""),
-        str(action.get("next_question") or ""),
-        str(action.get("action") or ""),
-        str(action.get("command_hint") or ""),
-    ])
-    metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
-    high_value = classify_high_value_signal(
-        path=str(metadata.get("endpoint") or action.get("action") or ""),
-        query_keys=[],
-        item_type=str(metadata.get("vuln_class") or action.get("type") or ""),
-        evidence=evidence,
-    )
-    try:
-        relevance = int(metadata.get("relevance_score", 0) or 0)
-    except (TypeError, ValueError):
-        relevance = 0
     return (
         _status_rank(str(action.get("status") or "queued")),
         -priority,
-        -relevance,
-        -high_value.score,
         str(action.get("created_at") or ""),
         str(action.get("id") or ""),
     )

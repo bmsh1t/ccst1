@@ -12,7 +12,7 @@ import json
 
 import pytest
 
-from tools import action_queue, high_value_signals, noise_filter, runtime_config, target_memory, target_paths
+from tools import action_queue, noise_filter, runtime_config, target_memory, target_paths
 
 
 def test_resolve_target_url_preserves_protocol_relative_authority():
@@ -332,22 +332,12 @@ def test_target_memory_fact_upserts_by_key_and_renders_digest(tmp_path, monkeypa
         )
 
 
-def test_high_value_signal_combines_action_path_query_and_evidence():
-    signal = high_value_signals.classify_high_value_signal(
-        path="/api/v2/admin/orders/42/export",
-        query_keys=["user_id", "redirect_uri"],
-        item_type="candidate-evidence-gap",
-        evidence="GraphQL resolver hints at IDOR and secret export",
-    )
-
-    assert signal.score >= 20
-    assert "candidate-evidence-gap" in signal.classes
-    assert "api" in signal.classes
-    assert "id-ref" in signal.classes
-    assert "server-side" in signal.classes
-    summary = high_value_signals.summarize_high_value_signal(signal)
-    assert summary.startswith("high-value:")
-    assert f"(+{signal.score})" in summary
+def test_action_queue_ignores_keyword_value_and_legacy_relevance_scores():
+    first = {"id": "a", "status": "queued", "priority": 70, "action": "Review observed input", "created_at": "2026-09-01"}
+    second = {"id": "b", "status": "queued", "priority": 70, "action": "admin GraphQL secret SQLi RCE", "created_at": "2026-09-02", "metadata": {"relevance_score": 999}}
+    assert action_queue.select_next_action({"actions": [second, first]})["id"] == "a"
+    second["priority"] = 80
+    assert action_queue.select_next_action({"actions": [first, second]})["id"] == "b"
 
 
 def test_action_queue_priority_precedes_relevance_for_next_action():

@@ -4,7 +4,7 @@
 Responsibilities:
   1) Collect cached JS file paths from recon output
   2) Skip vendor / minified / oversize files
-  3) Reuse source_intel hypotheses when present
+  3) Reuse source_intel route/marker observations when present
   4) Read recon-extracted endpoints / secrets / JS URL lists
   5) Write materials.json plus a markdown summary for the js-reader agent
 
@@ -22,8 +22,10 @@ from pathlib import Path
 
 try:
     from tools.target_paths import target_storage_key
+    from tools.surface_source_intel import load_source_intel
 except ImportError:  # pragma: no cover - direct tools/ execution
     from target_paths import target_storage_key
+    from surface_source_intel import load_source_intel
 
 TOOLS_DIR = Path(__file__).resolve().parent
 BASE_DIR = TOOLS_DIR.parent
@@ -75,62 +77,6 @@ def _list_cached_js_paths(target: str, repo_root: Path) -> list[Path]:
         candidates,
         key=lambda path: (not path.is_relative_to(packer_dir), str(path)),
     )
-
-
-def _load_source_intel_hypothesis(target: str, repo_root: Path) -> dict | None:
-    """Reuse source_intel output when present.
-
-    The current primary source_intel artifact is JSONL. Keep legacy JSON
-    compatibility so existing caches remain usable.
-    """
-    source_dir = repo_root / "findings" / target / "source_intel"
-
-    hypotheses_jsonl = source_dir / "hypotheses.jsonl"
-    if hypotheses_jsonl.is_file():
-        hypotheses = []
-        try:
-            for line in hypotheses_jsonl.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                hypotheses.append(json.loads(line))
-        except (json.JSONDecodeError, OSError):
-            hypotheses = []
-        if hypotheses:
-            summary_path = source_dir / "summary.md"
-            summary = ""
-            if summary_path.is_file():
-                try:
-                    summary = summary_path.read_text(encoding="utf-8", errors="replace")[:4000]
-                except OSError:
-                    summary = ""
-            return {
-                "format": "jsonl",
-                "hypotheses": hypotheses,
-                "summary": summary,
-            }
-
-    for p in (
-        source_dir / "hypotheses.json",
-        source_dir / "summary.json",
-    ):
-        if p.is_file():
-            try:
-                return json.loads(p.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                continue
-
-    summary_md = source_dir / "summary.md"
-    if summary_md.is_file():
-        try:
-            return {
-                "format": "summary",
-                "hypotheses": [],
-                "summary": summary_md.read_text(encoding="utf-8", errors="replace")[:4000],
-            }
-        except OSError:
-            return None
-    return None
 
 
 def _read_recon_extracted(target: str, repo_root: Path) -> dict[str, list[str]]:
@@ -227,7 +173,7 @@ def prepare_materials(
             break
 
     recon_extracted = _read_recon_extracted(safe_target, repo_root)
-    source_intel = _load_source_intel_hypothesis(safe_target, repo_root)
+    source_intel = load_source_intel(repo_root / "findings" / safe_target)
 
     materials = {
         "target": safe_target,
@@ -241,7 +187,7 @@ def prepare_materials(
         "skipped_js_files": skipped,
         "hash_states": hash_states,
         "recon_extracted": recon_extracted,
-        "source_intel_present": source_intel is not None,
+        "source_intel_present": bool(source_intel.get("available")),
         "source_intel": source_intel,
     }
 
@@ -261,7 +207,7 @@ def prepare_materials(
         "unchanged_count": hash_states["unchanged"],
         "changed_count": hash_states["changed"],
         "recon_artifacts_present": any(v for v in recon_extracted.values()),
-        "source_intel_present": source_intel is not None,
+        "source_intel_present": bool(source_intel.get("available")),
         "artifacts": {
             "materials": str(materials_path),
             "summary": str(summary_path),

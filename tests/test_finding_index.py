@@ -693,8 +693,7 @@ def test_root_json_claim_reconciles_only_as_incomplete_candidate(tmp_path):
     assert finding["validation_status"] == "candidate"
     assert finding["report_status"] == "not_generated"
     assert finding["confidence"] == "needs_review"
-    assert finding["evidence_rubric"]["ready"] is False
-    assert finding["evidence_rubric"]["status"] == "needs-evidence"
+    assert "evidence_rubric" not in finding
 
 
 def test_root_json_claim_reconciliation_is_idempotent_and_ignores_summaries(tmp_path):
@@ -784,7 +783,7 @@ def test_root_claim_reconciliation_ignores_per_finding_validation_summary(tmp_pa
     assert after is not None
     assert after["validation_status"] == "validated"
     assert after["vuln_class"] == before["vuln_class"] == "JWT"
-    assert after["evidence_rubric"] == before["evidence_rubric"]
+    assert "evidence_rubric" not in after
     assert after["claim_sources"] == before["claim_sources"]
 
 
@@ -820,7 +819,8 @@ def test_incomplete_root_json_claim_is_recoverable_without_fabricating_endpoint(
     assert persisted["url"] == ""
     assert persisted["claim_source_file"] == "jwt-unverified-signature.json"
     assert persisted["validation_status"] == "candidate"
-    assert persisted["evidence_rubric"]["ready"] is False
+    assert "evidence_rubric" not in persisted
+    assert persisted["report_status"] == "not_generated"
 
 
 def test_root_claim_classifier_rejects_status_json_and_unknown_kind(tmp_path):
@@ -1999,11 +1999,10 @@ def test_validate_prefill_loads_finding_candidate(tmp_path):
     assert prefill["finding_id"] == "mfa_abc123"
     assert prefill["source_file"] == "mfa/findings.txt"
     assert prefill["summary"] == "[MFA-NO-RATE-LIMIT] https://example.com/mfa/verify"
-    assert prefill["rubric"]["rubric_id"] == "authz"
-    assert prefill["rubric"]["status"] in {"needs-evidence", "candidate-ready", "signal-only"}
+    assert "rubric" not in prefill
 
 
-def test_validate_prefill_uses_runner_evidence_rubric(tmp_path, monkeypatch):
+def test_validate_prefill_keeps_source_and_ignores_legacy_rubric(tmp_path, monkeypatch):
     monkeypatch.setattr(validate, "BASE_DIR", tmp_path)
     summary_path = tmp_path / "evidence" / "target.com" / "validation" / "sqli-search" / "summary.json"
     summary_path.parent.mkdir(parents=True)
@@ -2044,9 +2043,8 @@ def test_validate_prefill_uses_runner_evidence_rubric(tmp_path, monkeypatch):
 
     prefill = validate.load_finding_prefill(str(findings_dir), "sqli-search")
 
-    assert prefill["rubric"]["rubric_id"] == "sqli"
-    assert prefill["rubric"]["status"] == "candidate-ready"
-    assert prefill["rubric"]["score"] == 100
+    assert "rubric" not in prefill
+    assert prefill["source_file"] == "evidence/target.com/validation/sqli-search/summary.json"
 
 
 def _seed_source_rejection(tmp_path: Path) -> tuple[Path, Path, Path]:

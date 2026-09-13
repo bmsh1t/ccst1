@@ -41,9 +41,8 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
 
 
-# Bump when URL normalization changes; old projections must be rebuilt rather
-# than replayed with a stale derived surface.
-SCHEMA_VERSION = 2
+# Bump when selection semantics change; stale derived decisions must not replay.
+SCHEMA_VERSION = 3
 PROJECTION_KIND = "surface_projection"
 MANIFEST_KIND = "surface_input_manifest"
 

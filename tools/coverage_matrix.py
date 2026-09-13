@@ -19,8 +19,7 @@ Purpose:
 Design notes:
     - Schema per design.md Contract 4 (Phase 3): endpoints array
       with nested cells per vuln class.
-    - Only endpoints with value_weight >= 1.0 enter the matrix
-      (Risk R-E: avoid bloat on huge recon outputs).
+    - Every observed route stays discoverable; bounded projections limit context, not coverage.
     - rebuild operates incrementally — re-runs preserve operator
       annotations (n_a reasons, etc.) unless --force-clean is set.
     - All cell values are typed enums INTERNALLY (4 statuses) but
@@ -111,7 +110,6 @@ try:
     )
     from tools.route_kinds import load_observations as load_route_kind_observations
     from tools.surface_index import iter_surface_index, load_surface_index_status
-    from tools.surface_weights import value_weight
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
 except ImportError:  # pragma: no cover - top-level tools/ import
     from attack_probe_filter import is_attack_probe, sanitize_attack_probe_url  # type: ignore
@@ -129,7 +127,6 @@ except ImportError:  # pragma: no cover - top-level tools/ import
     )
     from route_kinds import load_observations as load_route_kind_observations  # type: ignore
     from surface_index import iter_surface_index, load_surface_index_status  # type: ignore
-    from surface_weights import value_weight  # type: ignore
     from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # type: ignore
 
 VULN_CLASSES = CANONICAL_VULN_CLASSES
@@ -142,8 +139,8 @@ HIGH_RISK_LANE_TECHNIQUES = {
     "RCE": ("SSTI", "CommandInjection", "Deserialization"),
     "Path": ("LFI", "RFI"),
 }
-COVERAGE_BUILD_VERSION = 4
-COVERAGE_PROJECTION_SCHEMA_VERSION = 2
+COVERAGE_BUILD_VERSION = 5
+COVERAGE_PROJECTION_SCHEMA_VERSION = 3
 COVERAGE_PROJECTION_KIND = "coverage_matrix_projection"
 COVERAGE_PROJECTION_GAP_LIMIT = 1000
 
@@ -171,7 +168,6 @@ def normalize_vuln_class(name: str) -> str:
 
 STATUS_VALUES = ("tested_clean", "tested_finding", "untested", "n_a")
 
-DEFAULT_MIN_WEIGHT = 3.0
 
 ENDPOINT_KIND_VALUES = (
     "untriaged",
@@ -190,87 +186,17 @@ FINAL_ENDPOINT_KIND_SOURCES = {"ai_triage", "manual", "operator"}
 # 用于 gaps 排序的漏洞类型基础优先级。它不是覆盖范围过滤器，只在
 # endpoint/参数没有明显语义命中时做轻量 tie-break，避免默认永远从
 # VULN_CLASSES 的第一个 IDOR 开始。
-CLASS_IMPACT_PRIORITY = {
-    "RCE": 90,
-    "SQLi": 82,
-    "SSRF": 80,
-    "Authz": 76,
-    "IDOR": 72,
-    "Path": 70,
-    "XXE": 68,
-    "Upload": 64,
-    "GraphQL": 62,
-    "OAuth": 60,
-    "JWT": 58,
-    "Webhook": 55,
-    "Race": 52,
-    "XSS": 45,
-    "CSRF": 40,
-    "NoSQLi": 80,
-    "PrototypePollution": 50,
-    "OpenRedirect": 42,
-    "BusinessLogic": 74,
-}
 
 
 # endpoint/参数语义到漏洞类型的软关联。这里的职责是“排序和提示更准”，
 # 不是把某类漏洞排除掉；未命中的 cell 仍然保留在矩阵里。
 #
 # 规则保持短而通用：只使用路径段和参数名，不沉淀特定目标 payload。
-_RELEVANCE_RULES: tuple[tuple[str, int, re.Pattern, str], ...] = (
-    ("Authz", 8, re.compile(r"\b(isadmin|is_admin|isstaff|is_staff|issuperuser|is_superuser|role|roles|permission|permissions|privilege|privileges|scope|scopes|acl|policy|owner|superadmin)\b", re.I), "privilege/role parameter"),
-    ("Authz", 5, re.compile(r"/(?:admin|staff|internal|backoffice|console|manage|management)(?:/|$|\b)", re.I), "admin/internal path"),
-    ("IDOR", 6, re.compile(r"\b(userid|user_id|accountid|account_id|orgid|org_id|organizationid|organization_id|tenantid|tenant_id|workspaceid|workspace_id|customerid|customer_id|memberid|member_id|orderid|order_id|invoiceid|invoice_id|objectid|object_id|ownerid|owner_id)\b", re.I), "object/tenant identifier parameter"),
-    ("IDOR", 3, re.compile(r"\b(id|uid|uuid|guid|account|accounts|tenant|tenants|org|organization|workspace|customer|customers|order|orders|invoice|invoices|user|users|member|members|profile|profiles)\b", re.I), "object reference path/parameter"),
-    ("SSRF", 8, re.compile(r"\b(url|uri|callback|callbackurl|callback_url|webhook|fetch|proxy|target|targeturl|target_url|host|hostname|domain|remote|endpoint|imageurl|image_url|avatarurl|avatar_url|oembed|importurl|import_url|sourceurl|source_url)\b", re.I), "server-side fetch candidate parameter"),
-    ("SSRF", 5, re.compile(r"/(?:fetch|proxy|webhook|callback|oembed|import|integrations?)(?:/|$|\b)", re.I), "server-side fetch/webhook path"),
-    ("Path", 8, re.compile(r"\b(file|filepath|file_path|filename|file_name|path|dir|directory|download|export|include|include_path|template|theme|locale|doc|document|attachment|archive)\b", re.I), "file/path selector"),
-    ("Path", 6, re.compile(r"/(?:download|export|file|files|attachment|attachments|include|static|assets|preview)(?:/|$|\b)", re.I), "file download/read path"),
-    ("RCE", 9, re.compile(r"\b(cmd|command|exec|execute|shell|template|render|ssti|deserialize|deserialise|unserialize|pickle|yaml|workflow)\b", re.I), "code/template/deserialization execution candidate"),
-    ("RCE", 6, re.compile(r"/(?:render|template|preview|execute|exec|worker|debug)(?:/|$|\b)", re.I), "render/execution path"),
-    ("RCE", 6, re.compile(r"/(?:job|jobs)(?:/[^/?#]+)?/(?:run|process|dispatch|trigger)(?:/|$|\b)", re.I), "job execution path"),
-    ("XXE", 8, re.compile(r"\b(xml|soap|wsdl|saml|xinclude|xxe|doctype|docx|xlsx|svg)\b", re.I), "XML/parser surface"),
-    ("Upload", 8, re.compile(r"\b(upload|import|file|filename|attachment|avatar|media|document|csv|xlsx|zip|archive)\b", re.I), "upload/import file surface"),
-    ("GraphQL", 9, re.compile(r"\b(graphql|gql|query|mutation|operationname|operation_name|variables)\b|/graphql(?:/|$|\b)", re.I), "GraphQL operation surface"),
-    ("OAuth", 8, re.compile(r"\b(oauth|oidc|saml|sso|redirecturi|redirect_uri|clientid|client_id|state|nonce|pkce|scope|callback)\b", re.I), "OAuth/OIDC/SAML flow surface"),
-    ("JWT", 7, re.compile(r"\b(jwt|token|access_token|refresh_token|id_token|kid|jwks|jwk|jws|bearer|authorization)\b", re.I), "token/JWT surface"),
-    ("Webhook", 8, re.compile(r"\b(webhook|hook|callback|signature|hmac|event|secret)\b|/(?:webhook|hook|callback)(?:/|$|\b)", re.I), "webhook/signature surface"),
-    ("XSS", 8, re.compile(r"/(?:[a-z0-9_-]*dom|reflected)(?:/|$|\b)", re.I), "reflection/DOM execution path"),
-    ("XSS", 5, re.compile(r"\b(html|content|message|comment|title|name|callback|redirect|return|next|search|q)\b", re.I), "reflection/DOM input surface"),
-    ("CSRF", 5, re.compile(r"\b(csrf|xsrf|state|token|update|change|invite|delete|remove|submit)\b", re.I), "session state-change surface"),
-    ("NoSQLi", 8, re.compile(r"\b(filter|where|selector|query|operator|mongodb|mongo|document)\b", re.I), "document-query input surface"),
-    ("PrototypePollution", 9, re.compile(r"\b(__proto__|prototype|constructor)\b", re.I), "prototype mutation input"),
-    ("OpenRedirect", 8, re.compile(r"\b(redirect|return|return_to|next|continue|dest|destination|callback)\b", re.I), "redirect destination input"),
-)
 
 # SQLi 需要把“路径段语义”和“参数名语义”分开：
 # - `/address/select`、`/rest/order-history` 里的 select/order 是资源命名，
 #   不是天然的查询入口，不应仅凭路径就被抬进高价值 SQLi 队列。
 # - `/search?q=`、`?filter=`、`?order=` 这类参数名仍是高信号，应保持高优先级。
-_SQLI_PATH_PATTERN = re.compile(
-    r"/(?:search|query|filter|filters|lookup)(?:/|$|\b)",
-    re.I,
-)
-_SQLI_PARAM_PATTERN = re.compile(
-    r"\b(q|query|search|filter|filters|sort|order|orderby|order_by|where|select|keyword|term|report|lookup|condition)\b",
-    re.I,
-)
-_SQLI_LOOKUP_PARAM_PATTERN = re.compile(
-    r"\b(id|uid|uuid|name|email|username)\b",
-    re.I,
-)
-_RACE_ACTION_PATH_PATTERN = re.compile(
-    r"/(?:checkout|payment|payments|pay|refund|refunds|redeem|transfer|transfers|withdraw|withdrawals|payout|payouts|confirm|approve|capture|charge|charges|subscribe|subscription|subscriptions)(?:/|$|\b)",
-    re.I,
-)
-_RACE_STATE_PARAM_PATTERN = re.compile(
-    r"\b(coupon|coupon_code|promo|promo_code|voucher|quantity|qty|amount|credits|credit|points|reward|rewards|balance|wallet|seat|seats|quota|limit|otp|totp|token|idempotency|idempotency_key)\b",
-    re.I,
-)
-_BUSINESS_LOGIC_PARAM_PATTERN = re.compile(
-    r"\b(amount|price|quantity|coupon|balance|state|status|transition|step)\b",
-    re.I,
-)
 
 STATIC_ASSET_EXTENSIONS = {
     ".js", ".mjs", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg",
@@ -410,8 +336,6 @@ def load_matrix(target: str, repo_root: Path | str | None = None) -> dict:
 def coverage_source_fingerprint(
     target: str,
     repo_root: Path | str | None = None,
-    *,
-    min_weight_to_include: float = 1.0,
 ) -> str:
     """Bind a rebuilt matrix to its inputs without reading large bodies."""
     repo = Path(repo_root) if repo_root else BASE_DIR
@@ -455,7 +379,6 @@ def coverage_source_fingerprint(
         })
     payload = {
         "build_version": COVERAGE_BUILD_VERSION,
-        "min_weight_to_include": float(min_weight_to_include),
         "inputs": items,
         "surface_index": surface_binding,
     }
@@ -467,13 +390,10 @@ def matrix_is_fresh(
     target: str,
     matrix: dict,
     repo_root: Path | str | None = None,
-    *,
-    min_weight_to_include: float = 1.0,
 ) -> bool:
     expected = coverage_source_fingerprint(
         target,
         repo_root,
-        min_weight_to_include=min_weight_to_include,
     )
     return bool(matrix.get("source_fingerprint")) and matrix.get("source_fingerprint") == expected
 
@@ -643,19 +563,14 @@ def _compute_summary(matrix: dict) -> dict:
     total = 0
     high_gaps = 0
     for ep in matrix.get("endpoints", []):
-        weight = _coerce_weight(ep.get("weight", 1.0))
         for cell in ep.get("cells", {}).values():
             total += 1
             status = cell.get("status", "untested")
             if status in counts:
                 counts[status] += 1
-            if status == "untested" and weight >= DEFAULT_MIN_WEIGHT:
+            if status == "untested":
                 high_gaps += 1
-    actionable_gaps = sum(
-        1
-        for gap in _iter_high_value_gaps(matrix)
-        if actionable_coverage_gaps([gap])
-    )
+    actionable_gaps = high_gaps
     return {
         "total_cells": total,
         **counts,
@@ -892,13 +807,6 @@ def _na_cell(reason: str) -> dict[str, str]:
     return {"status": "n_a", "reason": reason}
 
 
-def _coerce_weight(value: object, default: float = 1.0) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
-
-
 def _empty_cells(
     endpoint: str = "",
     *,
@@ -1034,191 +942,18 @@ def _load_js_path_artifact_urls(urls_dir: Path) -> set[str]:
     return artifacts
 
 
-def _normalise_signal(value: str) -> str:
-    return re.sub(r"[^a-z0-9_/-]+", " ", str(value or "").lower())
-
-
-def _sqli_relevance(endpoint: str, params: list[str]) -> dict:
-    """单独处理 SQLi 语义，避免路径词误伤。
-
-    目标是保留真正的 query/search/filter surface，同时避免 `/select`
-    `/order-history` 这类资源路径因为单词撞名被错误升权。
-    """
-    score = 0
-    reasons: list[str] = []
-    params_blob = _normalise_signal(" ".join(params))
-
-    if _SQLI_PATH_PATTERN.search(str(endpoint or "")):
-        score += 7
-        reasons.append("query/filter/search path")
-    if _SQLI_PARAM_PATTERN.search(params_blob):
-        score += 7
-        reasons.append("query/filter/search parameter")
-    if _SQLI_LOOKUP_PARAM_PATTERN.search(params_blob):
-        score += 3
-        reasons.append("database-backed lookup parameter")
-
-    return {
-        "relevance_score": min(score, 20),
-        "relevance_reason": "; ".join(reasons[:3]),
-    }
-
-
-def _race_relevance(endpoint: str, params: list[str]) -> dict:
-    """单独处理 Race 语义，避免状态对象名被当成状态变更动作。
-
-    `order-history`、`track-order`、`wallet/balance` 更像读取/查询资源；
-    竞态优先级应由 checkout/refund/redeem/transfer/confirm 等动作路径，
-    或 coupon/quantity/amount/quota 等状态变更参数驱动。
-    """
-    score = 0
-    reasons: list[str] = []
-    params_blob = _normalise_signal(" ".join(params))
-
-    if _RACE_ACTION_PATH_PATTERN.search(str(endpoint or "")):
-        score += 7
-        reasons.append("state-transition action path")
-    if _RACE_STATE_PARAM_PATTERN.search(params_blob):
-        score += 5
-        reasons.append("state/value-changing parameter")
-
-    return {
-        "relevance_score": min(score, 20),
-        "relevance_reason": "; ".join(reasons[:3]),
-    }
-
-
-def _business_logic_relevance(endpoint: str, params: list[str]) -> dict:
-    """Prioritize explicit transitions or invariant-bearing inputs, not resource names."""
-    score = 0
-    reasons: list[str] = []
-    params_blob = _normalise_signal(" ".join(params))
-
-    if _RACE_ACTION_PATH_PATTERN.search(str(endpoint or "")):
-        score += 7
-        reasons.append("workflow state-transition path")
-    if _BUSINESS_LOGIC_PARAM_PATTERN.search(params_blob):
-        score += 7
-        reasons.append("workflow/business invariant parameter")
-
-    return {
-        "relevance_score": min(score, 20),
-        "relevance_reason": "; ".join(reasons[:3]),
-    }
-
-
-def class_relevance(endpoint: str, vuln_class: str, observed_params: object | None = None) -> dict:
-    """Score how naturally a vuln class fits an endpoint.
-
-    This is a soft prioritisation helper for `find-gaps` and checkpoint
-    queues. A score of 0 does NOT mean N/A; it only means “no obvious
-    semantic hint, still untested”.
-    """
-    params: list[str] = []
-    if isinstance(observed_params, list):
-        params = [str(item) for item in observed_params if str(item or "").strip()]
-    elif isinstance(observed_params, (set, tuple)):
-        params = [str(item) for item in observed_params if str(item or "").strip()]
-
-    if vuln_class == "SQLi":
-        return _sqli_relevance(endpoint, params)
-    if vuln_class == "Race":
-        return _race_relevance(endpoint, params)
-    if vuln_class == "BusinessLogic":
-        return _business_logic_relevance(endpoint, params)
-
-    if vuln_class == "SSRF" and re.search(
-        r"/(?:url)?dom(?:/|$)|/location/(?:hash|search)(?:/|$)|/window/(?:name|open)(?:/|$)",
-        str(endpoint or ""),
-        re.I,
-    ):
-        # These paths name browser-side sources/sinks.  Keep the endpoint in
-        # coverage, but do not promote it as server-side SSRF without an
-        # independently observed URL-like request parameter.
-        params_blob = _normalise_signal(" ".join(params))
-        if not re.search(
-            r"\b(url|uri|callbackurl|callback_url|webhook|proxy|target|targeturl|target_url|host|hostname|remote|endpoint|imageurl|image_url|importurl|import_url|sourceurl|source_url)\b",
-            params_blob,
-            re.I,
-        ):
-            return {"relevance_score": 0, "relevance_reason": ""}
-
-    blob = _normalise_signal(" ".join([endpoint, *params]))
-    score = 0
-    reasons: list[str] = []
-    for klass, points, pattern, reason in _RELEVANCE_RULES:
-        if klass != vuln_class:
-            continue
-        if pattern.search(blob):
-            score += points
-            if reason not in reasons:
-                reasons.append(reason)
-
-    return {
-        "relevance_score": min(score, 20),
-        "relevance_reason": "; ".join(reasons[:3]),
-    }
-
-
-def _semantic_weight_floor(endpoint: str, observed_params: object | None = None) -> float:
-    """Promote obviously high-risk semantic surfaces into high-value gaps.
-
-    Without this, `/api/fetch?url=...` or `/search?q=...` may sit at a
-    generic path weight and never reach the default high-value threshold.
-    The floor is intentionally modest and only affects prioritisation.
-    """
-    max_relevance = 0
-    for vuln_class in VULN_CLASSES:
-        rel = class_relevance(endpoint, vuln_class, observed_params)
-        max_relevance = max(max_relevance, int(rel.get("relevance_score", 0) or 0))
-    if max_relevance >= 7:
-        return DEFAULT_MIN_WEIGHT
-    if max_relevance >= 5:
-        return 2.0
-    return 0.0
-
-
 def _gap_sort_key(gap: dict) -> tuple:
-    """Order gaps by OBSERVED facts first; word-list scores stay visible but
-    exit the ordering.
-
-    Ordering is presentation, never qualification: a low rank means "less
-    observed evidence so far", not "do not test". Route-kind facts rank
-    server-backed handlers (a live handler was observed) ahead of unprobed
-    surfaces, and both ahead of SPA-shell/static GETs; the AI remains free
-    to pick any gap in any order.
-    """
+    """Stable presentation by recorded request facts, never predicted class value."""
     vuln_class = str(gap.get("vuln_class") or "")
-    try:
-        weight = _coerce_weight(gap.get("weight", 1.0))
-    except (TypeError, ValueError):
-        weight = 1.0
-    impact = int(CLASS_IMPACT_PRIORITY.get(vuln_class, 0) or 0)
     class_index = VULN_CLASSES.index(vuln_class) if vuln_class in VULN_CLASSES else len(VULN_CLASSES)
     route_kind = str(gap.get("route_kind") or "").strip()
-    if route_kind in SERVER_BACKED_ROUTE_KINDS:
-        route_bucket = 0  # live server handler observed
-    elif route_kind in {"client_route", "static_asset"}:
-        route_bucket = 2  # SPA shell / static GET observed
-    else:
-        route_bucket = 1  # unknown / not probed yet
-    has_params = 1 if gap.get("observed_params") else 0
-
-    effective = (weight * 5.0) + (impact / 10.0)
-    return (
-        route_bucket,
-        -has_params,
-        -effective,
-        -weight,
-        -impact,
-        str(gap.get("endpoint") or ""),
-        class_index,
-    )
+    route_bucket = 0 if route_kind in SERVER_BACKED_ROUTE_KINDS else 2 if route_kind in {"client_route", "static_asset"} else 1
+    return (route_bucket, -bool(gap.get("observed_params")), str(gap.get("endpoint") or ""), class_index)
 
 
-def high_value_gaps_from_matrix(matrix: dict, min_weight: float = DEFAULT_MIN_WEIGHT) -> list[dict]:
-    """Return sorted untested high-value cells from an in-memory matrix."""
-    gaps = list(_iter_high_value_gaps(matrix, min_weight=min_weight))
+def high_value_gaps_from_matrix(matrix: dict) -> list[dict]:
+    """Return sorted untested cells from an in-memory matrix."""
+    gaps = list(_iter_high_value_gaps(matrix))
     gaps.sort(key=_gap_sort_key)
     return gaps
 
@@ -1268,27 +1003,10 @@ def coverage_gaps_with_observed_evidence(gaps: list[dict], matrix: dict | None =
     return evidence_gaps
 
 
-def actionable_coverage_gaps(gaps: list[dict]) -> list[dict]:
-    """Deprecated qualification filter; kept as a passthrough for callers.
-
-    Selection authority moved to the AI: every untested high-value cell is a
-    gap, none is blocked by word-list relevance or code-defined "replayable
-    evidence" rules. Ordering (not qualification) is handled by
-    _gap_sort_key, which ranks observed route kinds ahead of shell routes.
-    """
-    return [gap for gap in gaps if isinstance(gap, dict)]
-
-
-def _iter_high_value_gaps(matrix: dict, min_weight: float = DEFAULT_MIN_WEIGHT):
-    """Yield untested high-value cells without materializing the full result."""
+def _iter_high_value_gaps(matrix: dict):
+    """Yield untested cells without materializing the full result."""
     for ep in matrix.get("endpoints", []):
         if not isinstance(ep, dict):
-            continue
-        try:
-            weight = _coerce_weight(ep.get("weight", 1.0))
-        except (TypeError, ValueError):
-            weight = 1.0
-        if weight < min_weight:
             continue
         endpoint = str(ep.get("endpoint") or "")
         observed_params = ep.get("observed_params") or []
@@ -1298,7 +1016,6 @@ def _iter_high_value_gaps(matrix: dict, min_weight: float = DEFAULT_MIN_WEIGHT):
             gap = {
                 "endpoint": endpoint,
                 "vuln_class": vc,
-                "weight": weight,
                 # 只存参数名和来源/观察计数，不存参数值。checkpoint 需要这些
                 # 轻量信号来区分“真实可重放输入面”和“仅路径命中的语义 gap”。
                 "observed_params": list(observed_params),
@@ -1314,25 +1031,20 @@ def _iter_high_value_gaps(matrix: dict, min_weight: float = DEFAULT_MIN_WEIGHT):
                 gap["representative_endpoint"] = representative
             if isinstance(cell.get("identity_v2"), dict):
                 gap["identity_v2"] = cell["identity_v2"]
-            gap.update(class_relevance(endpoint, vc, observed_params))
             yield gap
 
 
 def high_value_gap_window_from_matrix(
     matrix: dict,
     *,
-    min_weight: float = DEFAULT_MIN_WEIGHT,
     limit: int,
-    actionable_only: bool = False,
 ) -> tuple[list[dict], int]:
     """Return a ranked gap window and exact count for the selected view."""
     if limit < 0:
         raise ValueError("limit must be >= 0")
     total = 0
     selected: list[tuple[tuple, int, dict]] = []
-    for index, gap in enumerate(_iter_high_value_gaps(matrix, min_weight=min_weight)):
-        if actionable_only and not actionable_coverage_gaps([gap]):
-            continue
+    for index, gap in enumerate(_iter_high_value_gaps(matrix)):
         total += 1
         if limit:
             key = _gap_sort_key(gap)
@@ -1347,8 +1059,6 @@ def high_value_gap_window_from_matrix(
 
 def high_risk_lane_summary(
     matrix: dict,
-    *,
-    min_weight: float = DEFAULT_MIN_WEIGHT,
 ) -> dict[str, dict]:
     """Project an explicit disposition for every canonical high-risk family.
 
@@ -1357,16 +1067,6 @@ def high_risk_lane_summary(
     must never be treated as clean or N/A by closure.
     """
     endpoints = [item for item in matrix.get("endpoints", []) if isinstance(item, dict)]
-    relevant_by_class: dict[str, int] = {}
-    for gap in _iter_high_value_gaps(matrix, min_weight=min_weight):
-        try:
-            relevance = int(gap.get("relevance_score", 0) or 0)
-        except (TypeError, ValueError):
-            relevance = 0
-        if relevance > 0:
-            vuln_class = str(gap.get("vuln_class") or "")
-            relevant_by_class[vuln_class] = relevant_by_class.get(vuln_class, 0) + 1
-
     result: dict[str, dict] = {}
     for vuln_class in VULN_CLASSES:
         cells = [
@@ -1399,17 +1099,13 @@ def high_risk_lane_summary(
         elif counts["untested"] == 0:
             disposition = "tested"
             reason = "every endpoint cell has an evidence-grade terminal state"
-        elif relevant_by_class.get(vuln_class) or counts["scanner_swept"]:
-            disposition = "queued"
-            reason = "family-shaped surface remains, or scanner context needs focused validation"
         else:
             disposition = "unassessed"
-            reason = "no family-specific input evidence; AI must triage N/A versus a focused lane"
+            reason = "untested cells remain; AI chooses applicability and the next experiment"
         result[vuln_class] = {
             "disposition": disposition,
             "reason": reason,
             "endpoint_count": total,
-            "relevant_gap_count": relevant_by_class.get(vuln_class, 0),
             **counts,
         }
         techniques = HIGH_RISK_LANE_TECHNIQUES.get(vuln_class)
@@ -1418,7 +1114,7 @@ def high_risk_lane_summary(
     return result
 
 
-def _ensure_endpoint(matrix: dict, endpoint: str, weight: float) -> dict:
+def _ensure_endpoint(matrix: dict, endpoint: str) -> dict:
     """Return the endpoint entry dict; create if missing."""
     for ep in matrix.get("endpoints", []):
         if ep.get("endpoint") == endpoint:
@@ -1427,7 +1123,6 @@ def _ensure_endpoint(matrix: dict, endpoint: str, weight: float) -> dict:
     auto_hints = _endpoint_auto_hints(endpoint)
     new_ep = {
         "endpoint": endpoint,
-        "weight": weight,
         "endpoint_kind": kind,
         "auto_hints": auto_hints,
         "observed_params": [],
@@ -1444,7 +1139,6 @@ def rebuild_matrix(
     repo_root: Path | str | None = None,
     *,
     force_clean: bool = False,
-    min_weight_to_include: float = 1.0,
 ) -> dict:
     """Rebuild and publish Coverage atomically for one target.
 
@@ -1458,7 +1152,6 @@ def rebuild_matrix(
             target,
             repo_root=repo,
             force_clean=force_clean,
-            min_weight_to_include=min_weight_to_include,
         )
         _save_matrix_unlocked(target, matrix, repo)
         return matrix
@@ -1469,22 +1162,18 @@ def _rebuild_matrix_unlocked(
     repo_root: Path | str | None = None,
     *,
     force_clean: bool = False,
-    min_weight_to_include: float = 1.0,
 ) -> dict:
     """Populate the matrix from cached recon URLs + findings.
 
     Two endpoint sources are scanned:
-      1. recon/<target>/urls/all.txt — filtered Active discovery surface, gated
-         by `min_weight_to_include` (default 1.0) to avoid bloat from
-         marketing/CDN URLs.
+      1. recon/<target>/urls/all.txt — observed discovery surface,
+         without path-keyword qualification.
       2. findings/<target>/findings.json — endpoints discovered
          through working_hypothesis exploration that may not have
          appeared in bulk recon (e.g. WordPress REST API paths,
          /wp-json/* endpoints surfaced via JS inspection). These
          endpoints are added to the matrix REGARDLESS of recon
-         presence; their value_weight is computed at insertion time
-         and they bypass the min_weight_to_include filter (because a
-         finding by definition makes the endpoint relevant).
+         presence; they carry their original evidence reference.
 
     For an endpoint discovered through Claude's hypothesis-driven
     workflow to land in the matrix on rebuild, it must either:
@@ -1497,8 +1186,7 @@ def _rebuild_matrix_unlocked(
     Operator annotations (n_a reasons) and historical endpoint rows are
     preserved unless force_clean=True. A historical row that is absent from
     the current Recon input remains visible as retained coverage state; it is
-    not treated as current Recon evidence. Recon URLs below
-    min_weight_to_include are skipped to avoid bloat (Risk R-E).
+    not treated as current Recon evidence. Path words never suppress a row.
     """
     repo = Path(repo_root) if repo_root else BASE_DIR
     matrix = _empty_matrix(target) if force_clean else load_matrix(target, repo)
@@ -1552,10 +1240,7 @@ def _rebuild_matrix_unlocked(
     else:
         source_rows = ((raw, ("active",)) for raw in dict.fromkeys(urls))
 
-    # Build endpoint set with weights and lightweight param-name signals.
-    # The canonical matrix key remains path-only, but the sorting layer can
-    # now distinguish `/api/admin/users?isAdmin=true` from a generic users
-    # endpoint and avoid always proposing IDOR first.
+    # Keep observed routes, parameter names and source provenance.
     js_path_artifacts = _load_js_path_artifact_urls(urls_dir)
     # Route-kind observations are keyed by full URL (query stripped); index
     # them by path so both full URLs and bare paths can pick the fact up.
@@ -1595,14 +1280,11 @@ def _rebuild_matrix_unlocked(
             continue
         params = _param_names_from_url(raw)
         path_query = _path_with_query(raw) or path
-        weight = max(value_weight(path), value_weight(path_query))
         meta = seen.setdefault(path, {
-            "weight": 0.0,
             "params": set(),
             "sources": set(),
             "observation_count": 0,
         })
-        meta["weight"] = max(_coerce_weight(meta.get("weight", 0.0), 0.0), weight)
         meta["params"].update(params)
         meta["sources"].update(sources)
         meta["observation_count"] = int(meta.get("observation_count", 0) or 0) + 1
@@ -1629,12 +1311,10 @@ def _rebuild_matrix_unlocked(
             else endpoint
         )
         current = compacted_seen.setdefault(key, {
-            "weight": 0.0,
             "params": set(),
             "sources": set(),
             "observation_count": 0,
         })
-        current["weight"] = max(current["weight"], _coerce_weight(meta.get("weight", 0.0), 0.0))
         current["params"].update(meta.get("params") or [])
         current["sources"].update(meta.get("sources") or [])
         current["observation_count"] += int(meta.get("observation_count", 0) or 0)
@@ -1655,28 +1335,13 @@ def _rebuild_matrix_unlocked(
             )
     seen = compacted_seen
 
-    # Apply a small semantic weight floor after all params for an endpoint
-    # have been merged. This lets high-risk query surfaces participate in
-    # the high-value queue even when their path alone is generic.
+    # Merge request facts without suppressing unfamiliar or static-looking routes.
     all_seen_endpoints = set(seen)
     filtered_seen: dict[str, dict] = {}
     for endpoint, meta in seen.items():
         params = sorted(meta.get("params") or [])
         auto_hints = _endpoint_auto_hints(endpoint, params, all_endpoints=all_seen_endpoints)
-        weight = max(
-            _coerce_weight(meta.get("weight", 1.0)),
-            _semantic_weight_floor(endpoint, params),
-        )
-        structural_noise_hints = STRUCTURAL_NOISE_HINTS - {"route_prefix_candidate"}
-        if any(hint in auto_hints for hint in structural_noise_hints):
-            weight = 0.0
-        elif "route_prefix_candidate" in auto_hints and not meta.get("sources"):
-            weight = 0.0
-        if weight < min_weight_to_include:
-            if not any(hint in auto_hints for hint in {"static_asset_shape", "public_metadata_path"}):
-                continue
         filtered_seen[endpoint] = {
-            "weight": weight,
             "params": params,
             "source_count": len(meta.get("sources") or []),
             "sources": sorted(meta.get("sources") or []),
@@ -1698,7 +1363,6 @@ def _rebuild_matrix_unlocked(
     # Merge: keep existing cells, add new endpoints with untested cells
     new_endpoints: list[dict] = []
     for endpoint, meta in filtered_seen.items():
-        weight = _coerce_weight(meta.get("weight", 1.0))
         existing_ep = existing.get(endpoint)
         kind = _effective_endpoint_kind(existing_ep, endpoint)
         auto_hints = list(meta.get("auto_hints") or _endpoint_auto_hints(
@@ -1708,9 +1372,6 @@ def _rebuild_matrix_unlocked(
         ))
         if endpoint in existing:
             ep = existing_ep or existing[endpoint]
-            ep["weight"] = max(_coerce_weight(ep.get("weight", weight), weight), weight)
-            if any(hint in auto_hints for hint in STRUCTURAL_NOISE_HINTS):
-                ep["weight"] = weight
             ep["endpoint_kind"] = kind
             ep["auto_hints"] = auto_hints
             ep["observed_params"] = sorted(set(ep.get("observed_params") or []) | set(meta.get("params") or []))
@@ -1736,7 +1397,6 @@ def _rebuild_matrix_unlocked(
         else:
             new_endpoint = {
                 "endpoint": endpoint,
-                "weight": weight,
                 "endpoint_kind": kind,
                 "auto_hints": auto_hints,
                 "observed_params": list(meta.get("params") or []),
@@ -1822,10 +1482,6 @@ def _rebuild_matrix_unlocked(
                             ep.get("observed_params") or [],
                             all_endpoints=all_seen_endpoints,
                         )
-                        ep["weight"] = max(
-                            _coerce_weight(ep.get("weight", value_weight(coverage_path)), value_weight(coverage_path)),
-                            _semantic_weight_floor(coverage_path, ep.get("observed_params") or []),
-                        )
                         ep["endpoint_kind"] = kind
                         _apply_endpoint_applicability(ep, kind)
                         ep["cells"][vc] = {
@@ -1854,11 +1510,6 @@ def _rebuild_matrix_unlocked(
                         all_endpoints=all_seen_endpoints,
                     )
                     ep["endpoint"] = coverage_path
-                    ep["weight"] = max(
-                        _coerce_weight(ep.get("weight", value_weight(coverage_path)), value_weight(coverage_path)),
-                        value_weight(coverage_path),
-                        _semantic_weight_floor(coverage_path, ep.get("observed_params") or []),
-                    )
                     ep["endpoint_kind"] = kind
                     ep["auto_hints"] = auto_hints
                     ep["source_count"] = int(ep.get("source_count", 0) or 0)
@@ -1878,12 +1529,13 @@ def _rebuild_matrix_unlocked(
     # operator marks may do that.
     _apply_scanner_pass(target_key, repo, new_endpoints)
 
+    for endpoint in new_endpoints:
+        endpoint.pop("weight", None)
     matrix["endpoints"] = new_endpoints
     matrix["policy_skips"] = _xss_policy_skip(repo, target_key, new_endpoints)
     matrix["source_fingerprint"] = coverage_source_fingerprint(
         target,
         repo,
-        min_weight_to_include=min_weight_to_include,
     )
     return matrix
 
@@ -1959,7 +1611,6 @@ def _apply_scanner_pass(
             auto_hints = _endpoint_auto_hints(endpoint, all_endpoints=all_endpoints)
             new_ep = {
                 "endpoint": endpoint,
-                "weight": value_weight(endpoint),
                 "endpoint_kind": kind,
                 "auto_hints": auto_hints,
                 "observed_params": [],
@@ -2048,14 +1699,11 @@ def _xss_policy_skip(repo: Path, target_key: str, endpoints: list[dict]) -> dict
 def find_high_value_gaps(
     target: str,
     repo_root: Path | str | None = None,
-    min_weight: float = DEFAULT_MIN_WEIGHT,
-    *,
-    actionable_only: bool = False,
 ) -> list[dict]:
-    """Return untested high-value cells, optionally limited to semantic matches."""
+    """Return untested cells, without a path or class-value filter."""
     matrix = load_matrix(target, repo_root)
-    gaps = high_value_gaps_from_matrix(matrix, min_weight=min_weight)
-    return actionable_coverage_gaps(gaps) if actionable_only else gaps
+    gaps = high_value_gaps_from_matrix(matrix)
+    return gaps
 
 
 def needs_endpoint_triage(
@@ -2086,7 +1734,6 @@ def needs_endpoint_triage(
             "endpoint": endpoint,
             "endpoint_kind": str(ep.get("endpoint_kind") or "untriaged"),
             "auto_hints": auto_hints,
-            "weight": _coerce_weight(ep.get("weight", 1.0)),
             "observed_params": observed_params,
             "source_count": int(ep.get("source_count", 0) or 0),
             "observation_count": int(ep.get("observation_count", 0) or 0),
@@ -2094,7 +1741,6 @@ def needs_endpoint_triage(
         })
 
     items.sort(key=lambda item: (
-        -_coerce_weight(item.get("weight", 0.0), 0.0),
         -int(item.get("source_count", 0) or 0),
         str(item.get("endpoint") or ""),
     ))
@@ -2127,7 +1773,7 @@ def mark_endpoint_kind(
     with coverage_matrix_mutation_lock(repo, target):
         matrix = load_matrix(target, repo)
         endpoint = _canonicalize_endpoint(endpoint)
-        ep = _ensure_endpoint(matrix, endpoint, value_weight(endpoint))
+        ep = _ensure_endpoint(matrix, endpoint)
         observed_params = list(ep.get("observed_params") or [])
         ep["endpoint_kind"] = kind
         ep["kind_source"] = source
@@ -2170,8 +1816,7 @@ def mark_cell(
     with coverage_matrix_mutation_lock(repo, target):
         matrix = load_matrix(target, repo)
         endpoint = _canonicalize_endpoint(endpoint)
-        weight = value_weight(endpoint)
-        ep = _ensure_endpoint(matrix, endpoint, weight)
+        ep = _ensure_endpoint(matrix, endpoint)
         cell = {"status": status}
         if reason:
             cell["reason"] = reason
@@ -2223,26 +1868,16 @@ def _run_command(argv: list[str] | None = None) -> int:
     p_rebuild.add_argument("--target", required=True)
     p_rebuild.add_argument("--repo-root", default=str(BASE_DIR))
     p_rebuild.add_argument("--force-clean", action="store_true")
-    p_rebuild.add_argument("--min-weight-to-include", type=float, default=1.0)
 
     p_gaps = sub.add_parser("find-gaps", help="list high-value untested cells")
     p_gaps.add_argument("--target", required=True)
     p_gaps.add_argument("--repo-root", default=str(BASE_DIR))
-    p_gaps.add_argument("--min-weight", type=float, default=DEFAULT_MIN_WEIGHT)
     p_gaps.add_argument(
         "--limit",
         type=int,
         default=None,
         help="presentation limit; output includes total/truncated metadata",
     )
-    p_gaps.add_argument(
-        "--all",
-        dest="actionable_only",
-        action="store_false",
-        help="include generic endpoint x class cells without semantic evidence",
-    )
-    p_gaps.set_defaults(actionable_only=True)
-
     p_needs_triage = sub.add_parser(
         "needs-triage",
         help="list endpoints whose kind should be decided by Claude/operator",
@@ -2288,7 +1923,6 @@ def _run_command(argv: list[str] | None = None) -> int:
                 args.target,
                 existing,
                 repo_root=repo,
-                min_weight_to_include=args.min_weight_to_include,
             ):
                 matrix = existing
                 reused = True
@@ -2297,7 +1931,6 @@ def _run_command(argv: list[str] | None = None) -> int:
                 args.target,
                 repo_root=repo,
                 force_clean=args.force_clean,
-                min_weight_to_include=args.min_weight_to_include,
             )
             out = save_matrix(args.target, matrix, repo)
         elif load_matrix_projection(args.target, repo) is None:
@@ -2317,8 +1950,6 @@ def _run_command(argv: list[str] | None = None) -> int:
             payload = find_high_value_gaps(
                 args.target,
                 args.repo_root,
-                args.min_weight,
-                actionable_only=args.actionable_only,
             )
         else:
             if args.limit < 0:
@@ -2326,9 +1957,7 @@ def _run_command(argv: list[str] | None = None) -> int:
             matrix = load_matrix(args.target, args.repo_root)
             items, total = high_value_gap_window_from_matrix(
                 matrix,
-                min_weight=args.min_weight,
                 limit=args.limit,
-                actionable_only=args.actionable_only,
             )
             payload = {
                 "target": args.target,
@@ -2337,7 +1966,7 @@ def _run_command(argv: list[str] | None = None) -> int:
                 "returned": len(items),
                 "truncated": len(items) < total,
                 "limit": args.limit,
-                "scope": "actionable" if args.actionable_only else "all",
+                "scope": "all",
             }
         print(json.dumps(payload, indent=2))
         return 0

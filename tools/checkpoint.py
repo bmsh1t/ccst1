@@ -67,8 +67,7 @@ try:
         validate_global_review,
     )
     from tools.context_pack import build_context_pack
-    from tools.coverage_matrix import VULN_CLASSES, _route_template, class_relevance, coverage_gaps_with_observed_evidence, high_risk_lane_summary, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, normalize_vuln_class, rebuild_matrix, save_matrix, save_matrix_projection
-    from tools.evidence_rubric import evaluate_candidate_evidence, first_missing_action
+    from tools.coverage_matrix import VULN_CLASSES, _route_template, coverage_gaps_with_observed_evidence, high_risk_lane_summary, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, normalize_vuln_class, rebuild_matrix, save_matrix, save_matrix_projection
     from tools.evidence_ledger import ACTOR_MATRIX_VULN_CLASSES, build_summary as build_evidence_summary, load_entries_diagnostic, record_command as evidence_record_command
     from tools.case_state_seed import build_case_state_seed
     from tools.closure_resolver import ClosureResolver, canonical_endpoint_identity, canonical_endpoint_path, extract_endpoint_path
@@ -116,8 +115,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         validate_global_review,
     )
     from context_pack import build_context_pack  # type: ignore
-    from coverage_matrix import VULN_CLASSES, _route_template, actionable_coverage_gaps, class_relevance, high_risk_lane_summary, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, normalize_vuln_class, rebuild_matrix, save_matrix, save_matrix_projection  # type: ignore
-    from evidence_rubric import evaluate_candidate_evidence, first_missing_action  # type: ignore
+    from coverage_matrix import VULN_CLASSES, _route_template, coverage_gaps_with_observed_evidence, high_risk_lane_summary, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, normalize_vuln_class, rebuild_matrix, save_matrix, save_matrix_projection  # type: ignore
     from evidence_ledger import ACTOR_MATRIX_VULN_CLASSES, build_summary as build_evidence_summary, load_entries_diagnostic, record_command as evidence_record_command  # type: ignore  # type: ignore
     from case_state_seed import build_case_state_seed  # type: ignore
     from closure_resolver import ClosureResolver, canonical_endpoint_identity, canonical_endpoint_path, extract_endpoint_path  # type: ignore
@@ -854,8 +852,8 @@ def _json_list(items: object) -> list[dict]:
     return out
 
 
-def _matrix_gaps(matrix: dict, min_weight: float = 3.0) -> list[dict]:
-    return high_value_gaps_from_matrix(matrix, min_weight=min_weight)
+def _matrix_gaps(matrix: dict) -> list[dict]:
+    return high_value_gaps_from_matrix(matrix)
 
 
 def _actionable_coverage_gaps(coverage_gaps: list[dict]) -> list[dict]:
@@ -875,62 +873,6 @@ def _gap_observed_params(gap: dict) -> list[str]:
     if not isinstance(params, list):
         return []
     return [str(item).strip() for item in params if str(item or "").strip()]
-
-
-def _is_path_only_authz_gap(gap: dict) -> bool:
-    """Return true for Authz gaps backed only by path semantics.
-
-    `/admin`-like paths are useful leads, but without an observed parameter,
-    exact browser request, existing finding, or body evidence they are not yet a
-    two-actor replay candidate. Treat them as baseline-classification work so
-    checkpoint does not turn every admin-looking parent path into a noisy
-    authorization task.
-    """
-    vuln_class = str(gap.get("vuln_class") or "").strip().lower()
-    if vuln_class != "authz" or _gap_observed_params(gap):
-        return False
-    reason = str(gap.get("relevance_reason") or "").lower()
-    try:
-        relevance = int(gap.get("relevance_score", 0) or 0)
-    except (TypeError, ValueError):
-        relevance = 0
-    return "admin/internal path" in reason or relevance <= 5
-
-
-def _coverage_gap_validation_path(gap: dict) -> str:
-    """Return the first evidence-producing step for a coverage gap.
-
-    Coverage gaps are discovery tasks, but autopilot should immediately know
-    what proof would promote the lead to a candidate.  Reuse the same evidence
-    rubric that `/validate` uses so discovery and validation stay aligned.
-    """
-    vuln_class = str(gap.get("vuln_class") or "").strip()
-    endpoint = str(
-        gap.get("representative_endpoint") or gap.get("endpoint") or ""
-    ).strip()
-    reason = str(gap.get("relevance_reason") or "").strip()
-    if not vuln_class:
-        return ""
-    if _is_path_only_authz_gap(gap):
-        return (
-            "First run an anonymous baseline GET or observed-method replay and "
-            "classify status/body before any role-diff work. If 200 with "
-            "body-backed sensitive/admin/config markers, preserve it as a "
-            "request-diff pair (anonymous vs same request with a denied/empty "
-            "credential dimension) via "
-            "`python3 tools/validation_runner.py request-diff --target "
-            "<target> --request-spec <spec>` and let the AI review config "
-            "exposure. If 401/403, record the auth boundary. If "
-            "404/5xx/framework error or SPA fallback, record "
-            "tested_clean/dead-end and pivot to browser-observed sibling "
-            "endpoints."
-        ).format(endpoint=endpoint)
-    evaluation = evaluate_candidate_evidence({
-        "type": vuln_class,
-        "url": endpoint,
-        "summary": reason,
-    })
-    return first_missing_action(evaluation)
 
 
 def _matrix_summary(matrix: dict, gaps: list[dict]) -> dict:
@@ -1724,16 +1666,20 @@ def _lead_proposals(
                 metadata=wf_metadata,
             ))
 
+    covered_cells = _ledger_covered_cells(evidence_summary or {})
     for item in (surface.get("p1") or [])[:2]:
         url = str(item.get("url") or "").strip()
         reasons = ", ".join(str(reason) for reason in (item.get("reasons") or [])[:2])
         suggested = str(item.get("suggested") or "").strip()
         if url:
-            endpoint_path = canonical_endpoint_path(url)
-            vuln_hint = _ranked_surface_vuln_hint(item, url)
-            if _ledger_covers_cell(
-                _ledger_covered_cells(evidence_summary or {}),
-                endpoint_path,
+            # 已关闭 cell 去重是事实性过滤，不是认知判断：endpoint × 明确
+            # vuln_class 已有终态时不重复入队。vuln hint 只取 scanner/source
+            # 声明的类型等事实来源；没有事实类型就不按类别过滤（保持候选
+            # 可见），不再用词表评分推断类别。
+            vuln_hint = _declared_surface_vuln_hint(item)
+            if vuln_hint and _ledger_covers_cell(
+                covered_cells,
+                canonical_endpoint_path(url),
                 vuln_hint,
                 item.get("identity_v2"),
             ):
@@ -1741,11 +1687,10 @@ def _lead_proposals(
             proposals.append(_proposal_entry(
                 "Evidence: Surface review candidate {url} ({reasons}). Why it matters: "
                 "interesting attack-surface evidence from cached recon/browser/source signals. "
-                "Next action: {suggested}. Stop condition: no authz/data/state "
-                "difference after minimal replay.".format(
+                "Next action: {suggested}. Keep unassessed behavior open until evidence or an explicit disposition.".format(
                     url=url,
                     reasons=reasons or "ranked surface",
-                    suggested=suggested or "run focused authz and workflow checks",
+                    suggested=suggested or "review recorded observations and choose the experiment",
                 ),
                 action_type="surface-review",
                 priority=70,
@@ -1759,738 +1704,35 @@ def _lead_proposals(
     return _dedupe(proposals)[:3]
 
 
+def _declared_surface_vuln_hint(entry: dict) -> str:
+    """Return the vuln class explicitly declared on a surface entry, or "".
+
+    只取 scanner/source 声明的类型这一事实来源；没有声明返回空串，
+    调用方据此跳过类别过滤（已删除的 class_relevance 词表推断不在此列）。
+    """
+    for key in ("scanner_findings", "source_intel_hypotheses"):
+        for item in entry.get(key) or []:
+            if isinstance(item, dict):
+                declared = str(item.get("type") or "").strip()
+                if declared:
+                    try:
+                        return normalize_vuln_class(declared)
+                    except (ValueError, KeyError):
+                        return declared
+    return ""
+
+
 def _canonicalize_url_path(value: str) -> str:
     return extract_endpoint_path(value)
 
 
-
-PLACEHOLDER_OBJECT_SEGMENTS = {"nan", "undefined", "null", "none", "object", "[object object]"}
-
-
-def _path_segments(value: str) -> list[str]:
-    path = _canonicalize_url_path(value)
-    return [segment for segment in path.split("/") if segment]
-
-
-def _non_concrete_object_segments(value: str) -> list[str]:
-    """Return high-confidence placeholder path segments that must not be replayed directly."""
-    out: list[str] = []
-    for segment in _path_segments(value):
-        lowered = segment.strip().lower()
-        if lowered in PLACEHOLDER_OBJECT_SEGMENTS:
-            out.append(segment)
-        elif lowered.startswith(":") or (lowered.startswith("{") and lowered.endswith("}")):
-            out.append(segment)
-        elif lowered.startswith("<") and lowered.endswith(">"):
-            out.append(segment)
-    return out
-
-
-def _case_state_object_for_surface(url: str, case_state: dict | None) -> dict:
-    """Find a concrete case_state object whose type appears in the surface path."""
-    if not isinstance(case_state, dict):
-        return {}
-    samples = case_state.get("object_samples") if isinstance(case_state.get("object_samples"), list) else []
-    segments = [segment.lower().replace("_", "-") for segment in _path_segments(url)]
-    for obj in samples:
-        if not isinstance(obj, dict):
-            continue
-        object_type = str(obj.get("type") or "").strip().lower().replace("_", "-")
-        if not object_type:
-            continue
-        aliases = {object_type, f"{object_type}s"}
-        if object_type == "basket":
-            aliases.add("cart")
-        if object_type == "cart":
-            aliases.add("basket")
-        if aliases.intersection(segments):
-            return obj
-    return {}
-
-
-def _placeholder_object_replay_guidance(url: str, case_state: dict | None, target: str = "") -> str:
-    placeholders = _non_concrete_object_segments(url)
-    if not placeholders:
-        return ""
-    matched = _case_state_object_for_surface(url, case_state)
-    placeholder_text = ", ".join(placeholders)
-    if matched and matched.get("endpoint"):
-        target_arg = _quote(target or "<target>")
-        object_ref = str(matched.get("object_ref") or "")
-        endpoint = str(matched.get("endpoint") or "")
-        command = ""
-        if object_ref:
-            command = (
-                "replay the object request as an owner/peer request-diff pair "
-                "(active_dimension=header:authorization) using the case_state "
-                f"actor sessions for {target_arg} and object {object_ref}"
-            )
-        return (
-            f"observed URL contains non-concrete object value {placeholder_text}; "
-            f"do not replay it directly. Substitute case_state object {object_ref or matched.get('type')} "
-            f"endpoint {endpoint} and run {command or 'owner/peer replay on the concrete endpoint'}"
-        )
-    return (
-        f"observed URL contains non-concrete object value {placeholder_text}; do not replay it directly. "
-        "First capture a browser/MCP request with a real object ID or register a concrete "
-        "case_state object, then replay the underlying API"
-    )
-
-
-def _placeholder_concrete_endpoint(url: str, case_state: dict | None) -> str:
-    if not _non_concrete_object_segments(url):
-        return ""
-    matched = _case_state_object_for_surface(url, case_state)
-    return str(matched.get("endpoint") or "").strip() if matched else ""
-
-
-def _is_parent_endpoint(parent: str, child: str) -> bool:
-    parent_path = canonical_endpoint_path(parent)
-    child_path = canonical_endpoint_path(child)
-    if not parent_path or not child_path or parent_path == "/" or parent_path == child_path:
-        return False
-    return child_path.startswith(parent_path + "/")
-
-
 def _ranked_surface_entry(state: dict, url: str) -> dict:
     surface = state.get("surface") or {}
-    for bucket in ("p1", "p2"):
+    for bucket in ("review_pool", "p1", "p2"):
         for item in (surface.get(bucket) or []):
             if isinstance(item, dict) and str(item.get("url") or "").strip() == str(url or "").strip():
                 return item
     return {}
-
-
-def _ranked_surface_query_keys(url: str) -> list[str]:
-    return [key.lower() for key in re.findall(r"[?&]([^=&]+)=", str(url or ""))]
-
-
-def _path_only_authz_gap_for_url(url: str, vuln_hint: str = "Authz") -> dict:
-    endpoint = _canonicalize_url_path(url)
-    query_keys = _ranked_surface_query_keys(url)
-    rel = class_relevance(endpoint, "Authz", query_keys)
-    return {
-        "endpoint": endpoint,
-        "vuln_class": vuln_hint,
-        "weight": "",
-        "relevance_score": rel.get("relevance_score", 0),
-        "relevance_reason": rel.get("relevance_reason", ""),
-        "observed_params": query_keys,
-    }
-
-
-def _ranked_surface_vuln_hint(entry: dict, url: str) -> str:
-    scanner_types = [
-        str(item.get("type") or "").strip()
-        for item in (entry.get("scanner_findings") or [])
-        if isinstance(item, dict) and str(item.get("type") or "").strip()
-    ]
-    if scanner_types:
-        return scanner_types[0]
-
-    source_types = [
-        str(item.get("type") or "").strip()
-        for item in (entry.get("source_intel_hypotheses") or [])
-        if isinstance(item, dict) and str(item.get("type") or "").strip()
-    ]
-    if source_types:
-        return source_types[0]
-
-    endpoint = _canonicalize_url_path(url)
-    query_keys = _ranked_surface_query_keys(url)
-    candidates = ["Authz", "IDOR", "SQLi", "SSRF", "Race", "Upload", "GraphQL", "RCE"]
-    if re.search(r"/(?:[a-z0-9_-]*dom|reflected)(?:/|$)", endpoint, re.I):
-        candidates.append("XSS")
-    scored = [
-        (klass, class_relevance(endpoint, klass, query_keys))
-        for klass in candidates
-    ]
-    scored.sort(key=lambda item: int(item[1].get("relevance_score", 0) or 0), reverse=True)
-    best_class, best_rel = scored[0]
-    if int(best_rel.get("relevance_score", 0) or 0) > 0:
-        return best_class
-    return "generic"
-
-
-def _canonical_vuln_for_ledger(vuln_hint: str) -> str:
-    try:
-        return normalize_vuln_class(vuln_hint)
-    except ValueError:
-        return ""
-
-
-def _case_state_has_role_replay_context(case_state: dict | None) -> bool:
-    return (
-        _case_state_count(case_state, "actors") >= 2
-        and _case_state_count(case_state, "sessions") >= 2
-        and _case_state_count(case_state, "objects") >= 1
-    )
-
-
-def _ranked_surface_needs_role_context(vuln_class: str, baseline_first: bool) -> bool:
-    if baseline_first:
-        return False
-    return vuln_class in {"IDOR", "Authz", "GraphQL", "CSRF"}
-
-
-def _ranked_surface_role_replay_ready(vuln_class: str, baseline_first: bool, case_state: dict | None) -> bool:
-    return (
-        _ranked_surface_needs_role_context(vuln_class, baseline_first)
-        and _case_state_has_role_replay_context(case_state)
-    )
-
-
-def _ranked_surface_browser_state_first(url: str, vuln_class: str, query_keys: list[str]) -> bool:
-    """Return true for client-side page routes where raw GET replay is low-value.
-
-    页面路由不能丢：`/orders`、`/order-summary` 这类入口经常是复杂链路的门。
-    但直接对 SPA shell 做 owner/peer HTTP GET replay 通常只得到同一份 HTML。
-    这里仅改变下一步执行方式：先抓浏览器态真实 XHR/对象 ID，再 replay 底层 API。
-    """
-    if vuln_class not in {"Authz", "IDOR"}:
-        return False
-    if query_keys:
-        return False
-    path = urlparse(str(url or "")).path.lower() or "/"
-    api_prefixes = (
-        "/api",
-        "/rest",
-        "/graphql",
-        "/socket.io",
-        "/oauth",
-        "/.well-known",
-    )
-    if any(path == prefix or path.startswith(prefix + "/") for prefix in api_prefixes):
-        return False
-    # 静态资源/下载类路径保留普通 replay；无扩展或 .html 更像客户端路由。
-    suffix = Path(path).suffix.lower()
-    return suffix in {"", ".html", ".htm"}
-
-
-def _ranked_surface_auth_workflow_first(url: str, js_methods: list[str]) -> bool:
-    """Auth workflow actions need exact method/body before replay.
-
-    Login/reset/token 类端点通常不是 GET 资源读面；没有浏览器/source 捕获到
-    method、body、CSRF/CAPTCHA、会话语义前，默认 owner/peer GET 只会制造
-    dead-end 噪声。这里不裁剪攻击面，只把下一步改为 exact-request capture。
-    """
-    path = urlparse(str(url or "")).path.lower()
-    if not path:
-        return False
-    segments = [segment for segment in re.split(r"[/._-]+", path) if segment]
-    action_terms = {
-        "login",
-        "logout",
-        "signin",
-        "signout",
-        "register",
-        "signup",
-        "reset",
-        "forgot",
-        "password",
-        "change",
-        "token",
-        "session",
-        "authenticate",
-        "authentication",
-    }
-    if not any(term in segments for term in action_terms):
-        return False
-    # 已有明确 GET/HEAD 观测时，按真实观测走；否则先捕获真实 workflow 请求。
-    return not any(method in {"GET", "HEAD"} for method in js_methods)
-
-
-def _ranked_surface_parameter_behavior_first(url: str, query_keys: list[str]) -> bool:
-    """URL/redirect/fetch 参数应先做参数行为验证，而不是 role replay。"""
-    path = urlparse(str(url or "")).path.lower()
-    keys = {str(key or "").lower().replace("-", "_") for key in query_keys}
-    redirect_keys = {
-        "to",
-        "url",
-        "uri",
-        "redirect",
-        "redirect_url",
-        "redirect_uri",
-        "return",
-        "return_url",
-        "next",
-        "continue",
-        "callback",
-        "target",
-        "dest",
-        "destination",
-    }
-    if keys & redirect_keys:
-        return True
-    return any(segment in {"redirect", "callback"} for segment in path.split("/") if segment)
-
-
-def _matrix_endpoint_paths(matrix: dict) -> set[str]:
-    """提取 coverage matrix 中的端点路径，供 checkpoint 做父子关系 hint。
-
-    这里不是用 matrix 给端点下结论，只补足 ranked surface 窗口看不到的
-    child endpoint。最终仍只生成 route-prefix triage 建议，由 AI/操作者
-    根据 baseline/body/browser 证据决定是否 mark-endpoint-kind。
-    """
-    paths: set[str] = set()
-    for item in matrix.get("endpoints") or []:
-        if not isinstance(item, dict):
-            continue
-        endpoint = str(item.get("endpoint") or "").strip()
-        if not endpoint:
-            continue
-        path = canonical_endpoint_path(endpoint).rstrip("/")
-        if path:
-            paths.add(path)
-    return paths
-
-
-def _ranked_surface_state_with_matrix_paths(state: dict, matrix: dict) -> dict:
-    """给 ranked-surface 判读补充 matrix 端点全集，避免窗口截断误导。"""
-    paths = _matrix_endpoint_paths(matrix)
-    if not paths:
-        return state
-    enriched = dict(state)
-    existing = enriched.get("_matrix_endpoint_paths")
-    merged = set(existing) if isinstance(existing, (set, list, tuple)) else set()
-    merged.update(paths)
-    enriched["_matrix_endpoint_paths"] = merged
-    return enriched
-
-
-def _ranked_surface_route_prefix_first(state: dict, url: str, query_keys: list[str]) -> bool:
-    """父级容器路径先做 handler/triage，不直接进入 role replay。"""
-    if query_keys:
-        return False
-    path = _canonicalize_url_path(url).rstrip("/")
-    if not path or path == "/":
-        return False
-    suffix = Path(path).suffix.lower()
-    if suffix:
-        return False
-    child_paths: set[str] = set()
-    surface = state.get("surface") if isinstance(state.get("surface"), dict) else {}
-    for bucket in ("p1", "p2"):
-        for item in surface.get(bucket) or []:
-            if isinstance(item, dict):
-                child_paths.add(_canonicalize_url_path(str(item.get("url") or "")).rstrip("/"))
-    for item in state.get("recommended_targets") or []:
-        if isinstance(item, dict):
-            child_paths.add(_canonicalize_url_path(str(item.get("url") or "")).rstrip("/"))
-    extra_paths = state.get("_matrix_endpoint_paths")
-    if isinstance(extra_paths, (set, list, tuple)):
-        child_paths.update(str(item or "").rstrip("/") for item in extra_paths if str(item or "").strip())
-    return any(child and child != path and child.startswith(path + "/") for child in child_paths)
-
-
-def _ranked_surface_context_prereq(state: dict, item: dict, case_state: dict | None = None) -> bool:
-    url = str(item.get("url") or "").strip()
-    if not url:
-        return False
-    entry = _ranked_surface_entry(state, url)
-    vuln_hint = _ranked_surface_vuln_hint(entry, url)
-    vuln_class = _canonical_vuln_for_ledger(vuln_hint)
-    if not vuln_class:
-        return False
-    authz_gap = _path_only_authz_gap_for_url(url, vuln_hint)
-    baseline_first = _is_path_only_authz_gap(authz_gap)
-    return (
-        _ranked_surface_needs_role_context(vuln_class, baseline_first)
-        and not _case_state_has_role_replay_context(case_state)
-    )
-
-
-def _recent_anonymous_authz_clean_count(evidence_summary: dict) -> int:
-    count = 0
-    for entry in evidence_summary.get("recent_entries") or []:
-        if not isinstance(entry, dict):
-            continue
-        result = str(entry.get("result") or "")
-        vuln_class = _canonical_vuln_for_ledger(str(entry.get("vuln_class") or ""))
-        actor = str(entry.get("actor") or "").strip().lower()
-        object_scope = str(entry.get("object_scope") or "").strip().lower()
-        if (
-            result in {"tested_clean", "dead_end", "not_applicable"}
-            and vuln_class == "Authz"
-            and actor == "anonymous"
-            and object_scope in {"none", ""}
-        ):
-            count += 1
-    return count
-
-
-def _case_state_acquisition_proposal(deferred_count: int, clean_count: int) -> dict:
-    return _proposal_entry(
-        (
-            "Case-state acquisition lead: {clean_count} recent anonymous Authz "
-            "baseline(s) are already clean, and {deferred_count} ranked role/object "
-            "surface(s) need runtime actor/session/object context before meaningful "
-            "owner/peer replay. Next: capture a real browser session or create test-owned "
-            "actors where authorized, then register actors/sessions/objects with "
-            "tools/target_case_state.py; if no authorized session path exists, record "
-            "no-auth-context and pivot to unauth/source-intel lanes instead of testing "
-            "more identical 401 baselines."
-        ).format(clean_count=clean_count, deferred_count=deferred_count),
-        action_type="case-state-enrichment",
-        priority=66,
-        command_hint="capture/register actors, sessions, and owned objects with tools/target_case_state.py",
-        metadata={
-            "clean_authz_baselines": clean_count,
-            "deferred_role_surfaces": deferred_count,
-            "missing_evidence": ["actor", "session", "business object"],
-        },
-    )
-
-
-# Downgradable approach hints: observed-shape heuristics that suggest (not
-# gate) the next replay approach. All applicable hints stay visible in queue
-# metadata so the AI keeps override authority; the first hint picks the
-# default replay draft / ledger skeleton, preserving prior if/elif semantics.
-RANKED_SURFACE_APPROACH_HINTS = {
-    "browser_state_first": "browser-state-first page route",
-    "auth_workflow_first": "auth-workflow endpoint; exact method/body required",
-    "parameter_behavior_first": "parameter-behavior-first redirect/url input",
-    "route_prefix_first": "route-prefix-first parent path",
-}
-
-
-def _ranked_surface_fact_block(
-    state: dict,
-    item: dict,
-    case_state: dict | None,
-    *,
-    target: str = "",
-) -> dict:
-    """Compute the ranked-surface fact block once for all its consumers.
-
-    Facts stay deterministic code (observed query keys, JS methods, case-state
-    counts, placeholder segments, matrix child paths). The four downgradable
-    first-predicates become an ordered approach_hints list; identity
-    preconditions (needs_role_context / context_prereq / role_replay_ready)
-    remain hard constraints because they gate the ledger skeleton's actor
-    value and prevent uncredentialed two-actor claims.
-    """
-    url = str(item.get("url") or "").strip()
-    entry = _ranked_surface_entry(state, url)
-    query_keys = _ranked_surface_query_keys(url)
-    js_methods = list(dict.fromkeys([
-        str(js.get("method") or "").upper()
-        for js in (entry.get("js_intel_endpoints") or [])
-        if isinstance(js, dict) and str(js.get("method") or "").strip()
-    ]))
-    source_types = list(dict.fromkeys([
-        str(src.get("type") or "").lower()
-        for src in (entry.get("source_intel_hypotheses") or [])
-        if isinstance(src, dict) and str(src.get("type") or "").strip()
-    ]))
-    vuln_hint = _ranked_surface_vuln_hint(entry, url)
-    vuln_class = _canonical_vuln_for_ledger(vuln_hint)
-    authz_gap = _path_only_authz_gap_for_url(url, vuln_hint)
-    baseline_first = _is_path_only_authz_gap(authz_gap)
-    browser_state_first = _ranked_surface_browser_state_first(url, vuln_class, query_keys)
-    auth_workflow_first = _ranked_surface_auth_workflow_first(url, js_methods)
-    parameter_behavior_first = (
-        vuln_class != "XSS"
-        and _ranked_surface_parameter_behavior_first(url, query_keys)
-    )
-    route_prefix_first = _ranked_surface_route_prefix_first(state, url, query_keys)
-    placeholder_guidance = _placeholder_object_replay_guidance(url, case_state, target)
-    context_prereq = _ranked_surface_context_prereq(state, item, case_state)
-    role_replay_ready = (
-        _ranked_surface_role_replay_ready(vuln_class, baseline_first, case_state)
-        and not browser_state_first
-        and not auth_workflow_first
-        and not parameter_behavior_first
-        and not route_prefix_first
-        and not placeholder_guidance
-    )
-    # Ordered exactly like the retired if/elif ladder so the first hint keeps
-    # choosing the same default replay draft as before.
-    approach_hints: list[str] = []
-    if browser_state_first:
-        approach_hints.append("browser_state_first")
-    if auth_workflow_first:
-        approach_hints.append("auth_workflow_first")
-    if parameter_behavior_first:
-        approach_hints.append("parameter_behavior_first")
-    if route_prefix_first:
-        approach_hints.append("route_prefix_first")
-    return {
-        "url": url,
-        "entry": entry,
-        "query_keys": query_keys,
-        "js_methods": js_methods,
-        "source_types": source_types,
-        "vuln_hint": vuln_hint,
-        "vuln_class": vuln_class,
-        "authz_gap": authz_gap,
-        "baseline_first": baseline_first,
-        "browser_state_first": browser_state_first,
-        "auth_workflow_first": auth_workflow_first,
-        "parameter_behavior_first": parameter_behavior_first,
-        "route_prefix_first": route_prefix_first,
-        "placeholder_guidance": placeholder_guidance,
-        "context_prereq": context_prereq,
-        "role_replay_ready": role_replay_ready,
-        "approach_hints": approach_hints,
-    }
-
-
-def _ranked_surface_replay_draft(
-    state: dict,
-    item: dict,
-    case_state: dict | None = None,
-    *,
-    target: str = "",
-    fact_block: dict | None = None,
-) -> str:
-    facts = fact_block if fact_block is not None else _ranked_surface_fact_block(state, item, case_state, target=target)
-    url = facts["url"]
-    if not url:
-        return ""
-    entry = facts["entry"]
-    query_keys = facts["query_keys"]
-    js_methods = facts["js_methods"]
-    source_types = facts["source_types"]
-    vuln_hint = facts["vuln_hint"]
-    evidence_text = " ".join([
-        str(entry.get("suggested") or item.get("suggested") or ""),
-        " ".join(query_keys),
-        " ".join(source_types),
-        "browser observed" if entry.get("browser_observed") else "",
-        " ".join(js_methods),
-    ])
-    authz_gap = facts["authz_gap"]
-    vuln_class = facts["vuln_class"]
-    baseline_first = facts["baseline_first"]
-    browser_state_first = facts["browser_state_first"]
-    auth_workflow_first = facts["auth_workflow_first"]
-    parameter_behavior_first = facts["parameter_behavior_first"]
-    route_prefix_first = facts["route_prefix_first"]
-    placeholder_guidance = facts["placeholder_guidance"]
-    role_replay_ready = facts["role_replay_ready"]
-    context_prereq = facts["context_prereq"]
-    if placeholder_guidance:
-        validation_path = placeholder_guidance
-    elif baseline_first:
-        validation_path = _coverage_gap_validation_path(authz_gap)
-    elif browser_state_first:
-        validation_path = (
-            "Use browser-state first for this page route: open it as owner and peer, "
-            "capture/import MCP browser artifacts, extract the real XHR/object IDs, "
-            "then replay the underlying API as an owner/peer request-diff pair on the "
-            "underlying API instead of replaying the raw SPA HTML shell"
-        )
-    elif auth_workflow_first:
-        validation_path = (
-            "Capture the exact auth workflow request first: browser/source observed "
-            "method, headers, body, CSRF/CAPTCHA/session state, and success/failure "
-            "signal; then choose authn/business-logic/credential-lane or bounded "
-            "marker replay. Do not run default GET role replay on this action endpoint"
-        )
-    elif parameter_behavior_first:
-        validation_path = (
-            "Run parameter-behavior validation first: anonymous baseline vs controlled "
-            "variant for the observed URL/redirect parameter, compare status, Location "
-            "header, body reflection, and target normalization; then choose open-redirect, "
-            "SSRF, cache, or browser-boundary lane. Do not run owner/peer role replay "
-            "until a real auth boundary appears"
-        )
-    elif route_prefix_first:
-        validation_path = (
-            "Treat this as a possible route-prefix/container path: run one anonymous "
-            "handler baseline, compare it to concrete child endpoints, and if it is "
-            "only a prefix or 404/500 container, mark endpoint_kind=route_prefix and "
-            "focus replay on concrete child handlers. Do not run owner/peer role replay "
-            "against the parent prefix"
-        )
-    elif role_replay_ready:
-        target_arg = _quote(target or "<target>")
-        url_arg = _quote(url)
-        validation_path = (
-            "Run an authenticated owner/peer request-diff pair from case_state: "
-            f"`python3 tools/validation_runner.py request-diff --target {target_arg} "
-            f"--request-spec <spec>` with the owner and peer session headers as "
-            "the active header:authorization dimension; compare anonymous/owner/peer "
-            "status, JSON shape, and body diff; only promote body-backed public exposure "
-            "or role/object-specific authorization delta"
-        )
-    elif context_prereq:
-        validation_path = (
-            "First capture/register actor, session, and object context in "
-            "tools/target_case_state.py; until owner/peer context exists, only run "
-            "anonymous or exact browser baseline classification and do not claim "
-            "two-actor replay evidence"
-        )
-    else:
-        validation_path = first_missing_action(evaluate_candidate_evidence({
-            "type": vuln_hint,
-            "url": url,
-            "summary": evidence_text,
-        }))
-
-    parts: list[str] = []
-    if entry.get("browser_observed"):
-        parts.append("capture the exact browser-observed request/response baseline first")
-    if js_methods:
-        parts.append("prefer " + "/".join(js_methods[:2]) + " replay")
-    if query_keys:
-        parts.append("reuse observed parameters: " + ", ".join(query_keys[:4]))
-    if source_types:
-        parts.append("follow source hints: " + ", ".join(source_types[:3]))
-    if vuln_hint and vuln_hint != "generic":
-        parts.append(f"focus {vuln_hint} evidence")
-    if role_replay_ready:
-        parts.append("use registered case_state owner/peer sessions")
-    if browser_state_first:
-        parts.append("browser-state-first page route; avoid treating identical SPA HTML as clean")
-    if auth_workflow_first:
-        parts.append("auth-workflow endpoint; exact method/body required before replay")
-    if parameter_behavior_first:
-        parts.append("parameter-behavior-first redirect/url input; avoid role replay")
-    if route_prefix_first:
-        parts.append("route-prefix-first parent path; validate concrete child handlers")
-    if placeholder_guidance:
-        parts.append("placeholder object path; require concrete object ID before replay")
-    if validation_path:
-        parts.append(validation_path)
-    return "; ".join(parts)
-
-
-def _ranked_surface_ledger_skeleton(
-    state: dict,
-    item: dict,
-    target: str,
-    replay_draft: str,
-    case_state: dict | None = None,
-    fact_block: dict | None = None,
-) -> str:
-    """Build a copyable ledger record command for the suggested ranked-surface replay.
-
-    This is intentionally a skeleton, not an auto-write: the operator/agent should
-    run it after the replay and adjust `--result` / `--evidence-ref` to the actual
-    evidence captured.
-    """
-    facts = fact_block if fact_block is not None else _ranked_surface_fact_block(state, item, case_state, target=target)
-    url = facts["url"]
-    if not url:
-        return ""
-    entry = facts["entry"]
-    endpoint = _canonicalize_url_path(url)
-    js_methods = facts["js_methods"]
-    method = next((value for value in js_methods if value), "GET")
-    vuln_hint = facts["vuln_hint"]
-    vuln_class = facts["vuln_class"]
-    if not vuln_class:
-        return ""
-    baseline_first = facts["baseline_first"]
-    context_prereq = facts["context_prereq"]
-    browser_state_first = facts["browser_state_first"]
-    auth_workflow_first = facts["auth_workflow_first"]
-    parameter_behavior_first = facts["parameter_behavior_first"]
-    route_prefix_first = facts["route_prefix_first"]
-    placeholder_guidance = facts["placeholder_guidance"]
-    placeholder_object = _case_state_object_for_surface(url, case_state) if placeholder_guidance else {}
-    role_replay_ready = facts["role_replay_ready"]
-    actor = (
-        "anonymous"
-        if baseline_first or context_prereq or auth_workflow_first or parameter_behavior_first or route_prefix_first
-        else "owner"
-    )
-    object_scope = (
-        "none"
-        if baseline_first or context_prereq or auth_workflow_first or parameter_behavior_first or route_prefix_first
-        else "unknown"
-    )
-    if placeholder_object.get("object_ref"):
-        object_scope = "own_object"
-    if placeholder_object.get("endpoint"):
-        endpoint = canonical_endpoint_path(str(placeholder_object.get("endpoint") or ""))
-    if placeholder_guidance:
-        variant = "id_swap" if placeholder_object.get("endpoint") else "baseline"
-    elif baseline_first or context_prereq:
-        variant = "baseline"
-    elif browser_state_first:
-        variant = "browser_observed"
-    elif auth_workflow_first:
-        variant = "baseline"
-    elif parameter_behavior_first:
-        variant = "replay"
-    elif route_prefix_first:
-        variant = "baseline"
-    elif role_replay_ready:
-        variant = "role_diff"
-    else:
-        variant = "browser_observed" if entry.get("browser_observed") else "replay"
-    evidence_ref = ""
-    if entry.get("browser_observed"):
-        evidence_ref = f"recon/{target_storage_key(canonical_target_value(target))}/browser/xhr_endpoints.txt"
-    notes = (
-        "Checkpoint ranked-surface replay skeleton; update result/evidence-ref "
-        "after baseline/variant evidence is captured."
-    )
-    if context_prereq:
-        notes = (
-            "Checkpoint ranked-surface context prerequisite; register actor/session/object "
-            "before owner/peer replay, or update this record after baseline classification."
-        )
-    elif placeholder_guidance:
-        notes = (
-            "Checkpoint ranked-surface placeholder object path; do not replay the observed "
-            "placeholder URL directly. Replace it with a concrete case_state/browser object "
-            "endpoint before recording final result."
-        )
-    elif browser_state_first:
-        notes = (
-            "Checkpoint ranked-surface browser-state-first page route; capture/import MCP "
-            "browser artifacts, extract underlying XHR/object IDs, then replay the API."
-        )
-    elif auth_workflow_first:
-        notes = (
-            "Checkpoint ranked-surface auth workflow; capture exact observed method, "
-            "headers, body, CSRF/CAPTCHA/session state, and success/failure signal before "
-            "recording replay or role-diff evidence."
-        )
-    elif parameter_behavior_first:
-        notes = (
-            "Checkpoint ranked-surface URL/redirect parameter behavior; compare anonymous "
-            "baseline and controlled variants for status, Location, reflection, and target "
-            "normalization before choosing open-redirect/SSRF/browser-boundary follow-up."
-        )
-    elif route_prefix_first:
-        notes = (
-            "Checkpoint ranked-surface route prefix triage; run one anonymous handler "
-            "baseline and, if this is only a parent/container path, mark endpoint_kind="
-            "route_prefix and focus concrete child endpoints."
-        )
-    elif role_replay_ready:
-        notes = (
-            "Checkpoint ranked-surface authenticated role replay; run validation_runner "
-            "request-diff pair and update result/evidence-ref from the generated summary."
-        )
-    parts = [
-        "python3 tools/evidence_ledger.py record",
-        "--target", _quote(target),
-        "--endpoint", _quote(endpoint),
-        "--method", _quote(method),
-        "--vuln-class", _quote(vuln_class),
-        "--actor", _quote(actor),
-        "--object-scope", _quote(object_scope),
-        "--variant", _quote(variant),
-        "--source", _quote("checkpoint-ranked-surface"),
-        "--result", _quote("signal"),
-        "--replayed",
-    ]
-    if entry.get("browser_observed"):
-        parts.append("--browser-observed")
-    if entry.get("state_changing") is True:
-        parts.append("--state-changing")
-    if entry.get("redline_checked") is True:
-        parts.append("--redline-checked")
-    if evidence_ref:
-        parts.extend(["--evidence-ref", _quote(evidence_ref)])
-    parts.extend(["--notes", _quote(notes)])
-    return " ".join(parts)
 
 
 def _tested_finding_endpoints(matrix: dict) -> set[str]:
@@ -2790,15 +2032,13 @@ def _runner_candidate_proposals(state: dict, *, limit: int = 2) -> list[str]:
         method = str(item.get("method") or "GET").strip().upper()
         url = str(item.get("url") or "").strip()
         evidence_ref = str(item.get("summary_path") or "").strip()
-        rubric = str(item.get("rubric_status") or "").strip()
         missing = ", ".join(str(value) for value in (item.get("missing_evidence") or [])[:3])
         if not url:
             continue
-        rubric_suffix = f" rubric={rubric}" if rubric else ""
         missing_suffix = f" missing={missing}" if missing else ""
         evidence_suffix = f" Evidence={evidence_ref}." if evidence_ref else ""
         runner_text = (
-            "Review validation-runner candidate {id} [{lane}] {method} {url}.{rubric}{missing} "
+            "Review validation-runner candidate {id} [{lane}] {method} {url}.{missing} "
             "AI task: read raw request/response evidence, impact, replayability, and policy context; "
             "then run /validate if reportable, or record tested_clean/dead_end in evidence ledger."
             "{evidence} Stop condition: validated finding, tested_clean, dead_end, or blocked_redline is recorded.".format(
@@ -2806,7 +2046,6 @@ def _runner_candidate_proposals(state: dict, *, limit: int = 2) -> list[str]:
                 lane=lane or "runner",
                 method=method,
                 url=url,
-                rubric=rubric_suffix,
                 missing=missing_suffix,
                 evidence=evidence_suffix,
             )
@@ -2818,8 +2057,6 @@ def _runner_candidate_proposals(state: dict, *, limit: int = 2) -> list[str]:
             "lane": lane,
             "summary_path": evidence_ref,
         }
-        if rubric:
-            runner_metadata["rubric_status"] = rubric
         if missing:
             runner_metadata["missing_evidence"] = [
                 str(value).strip()
@@ -2834,20 +2071,6 @@ def _runner_candidate_proposals(state: dict, *, limit: int = 2) -> list[str]:
             metadata=runner_metadata,
         ))
     return proposals
-
-
-def _is_parent_closure_gap(gap: dict, tested_endpoints: set[str]) -> bool:
-    """Return true when a path-only gap is only a parent of validated evidence.
-
-    If `/rest/admin/application-configuration` is already validated, the parent
-    `/rest/admin` may still be interesting as a route-enumeration clue, but it
-    should not consume the immediate checkpoint queue as another Authz replay
-    unless it has its own params/body/browser evidence.
-    """
-    endpoint = str(gap.get("endpoint") or "").strip()
-    if not endpoint or not _is_path_only_authz_gap(gap):
-        return False
-    return any(_is_parent_endpoint(endpoint, tested) for tested in tested_endpoints)
 
 
 def _coverage_family_shape(endpoint: str) -> tuple[str, str]:
@@ -2925,8 +2148,6 @@ def _checkpoint_coverage_gaps(coverage_gaps: list[dict], matrix: dict, limit: in
     tested_endpoints = _tested_finding_endpoints(matrix)
     eligible: list[dict] = []
     for gap in _actionable_coverage_gaps(coverage_gaps):
-        if _is_parent_closure_gap(gap, tested_endpoints):
-            continue
         eligible.append(gap)
 
     template_count: dict[str, int] = {}
@@ -3025,50 +2246,9 @@ def _next_proposals(
             },
         ))
     if next_validation:
-        rubric = next_validation.get("rubric") if isinstance(next_validation.get("rubric"), dict) else {}
-        missing_items = []
-        if rubric:
-            missing_items = [
-                str(item)
-                for item in (rubric.get("missing_labels") or rubric.get("missing") or [])[:3]
-                if str(item).strip()
-            ]
-        if rubric and (not rubric.get("ready", False) or missing_items):
-            missing = ", ".join(missing_items)
-            evidence_step = ""
-            for action in rubric.get("next_actions") or []:
-                evidence_step = str(action or "").strip()
-                if evidence_step:
-                    break
-            gap_text = (
-                "Candidate evidence gap for finding {id} on {url}: rubric={status}, "
-                "missing={missing}. Next evidence step: {step}. Then rerun /validate "
-                "when the smallest replayable impact proof is captured.".format(
-                    id=next_validation.get("id", "-"),
-                    url=next_validation.get("url", ""),
-                    status=rubric.get("status", "needs-evidence"),
-                    missing=missing or "candidate evidence",
-                    step=evidence_step or "fill the missing candidate evidence item",
-                )
-            )
-            gap_metadata: dict = {
-                "finding_id": str(next_validation.get("id") or "-"),
-                "url": str(next_validation.get("url") or ""),
-            }
-            if missing_items:
-                gap_metadata["missing_evidence"] = missing_items
-            if evidence_step:
-                gap_metadata["validation_path"] = evidence_step
-            proposals.append(_proposal_entry(
-                gap_text,
-                action_type="candidate-evidence-gap",
-                priority=105,
-                command_hint="fill missing rubric evidence, then /validate",
-                metadata=gap_metadata,
-            ))
         validate_text = (
             "Run /validate for finding {id} on {url}; verify replay, A/B diff, "
-            "impact, evidence rubric, and red-line safety before report.".format(
+            "impact, source provenance, and red-line safety before report.".format(
                 id=next_validation.get("id", "-"),
                 url=next_validation.get("url", ""),
             )
@@ -3143,35 +2323,17 @@ def _next_proposals(
     )
     covered_ledger_cells = _ledger_covered_cells(evidence_summary, matrix)
 
-    source_summary = (
-        context_pack.get("source_summary")
-        if isinstance(context_pack.get("source_summary"), dict)
-        else {}
-    )
-    if source_summary.get("viewstate_signal") is True:
-        proposals.append(_proposal_entry(
-            "ViewState integrity review: browser evidence exposes __VIEWSTATE. "
-            "Save one target-owned fresh same-page GET baseline with __VIEWSTATEGENERATOR/__EVENTVALIDATION; first run tools/aspnet_viewstate_knownkey.py offline, then replay only a format control and single-byte __VIEWSTATE tamper without submitting a business action. "
-            "Telerik absence only closes the Telerik branch and cannot make ViewState/deserialization N/A. Stop condition: the known-key branch has no match and tamper is uniformly rejected with no repeatable consume/state difference.",
-            action_type="viewstate-integrity-review",
-            priority=93,
-            command_hint="offline project machineKey check, then one format control and one-byte ViewState tamper; Telerik absence is not N/A",
-            metadata={"browser_signal": "viewstate"},
-        ))
-
     repo_source_summary = state.get("repo_source_summary") or {}
     secret_findings = int(repo_source_summary.get("secret_findings", 0) or 0)
     if secret_findings > 0:
         proposals.append(_proposal_entry(
-            "Secret verification lane: repo/source artifacts contain {count} secret "
-            "finding(s). Triage provider/type/source ownership, then run only the "
-            "minimal safe identity/capability check or record a verification blocker; "
-            "promote to Candidate only with validity/usability and impact path.".format(
+            "Review {count} secret scanner record(s): source, provider, and any actual verification result. "
+            "AI judges ownership and impact from evidence; scanner text is not proof.".format(
                 count=secret_findings,
             ),
             action_type="secret-verification",
             priority=86,
-            command_hint="python3 tools/secret_triage.py --file findings/<target>/exposure/repo_secrets.json",
+            command_hint="review the recorded secret scan artifacts",
             metadata={"secret_findings": secret_findings},
         ))
 
@@ -3197,39 +2359,6 @@ def _next_proposals(
                 metadata={"lead_title": title[:180], "lead_category": evidence[:80]},
             ))
 
-    lane_summary = matrix.get("high_risk_lanes")
-    if not isinstance(lane_summary, dict):
-        lane_summary = high_risk_lane_summary(matrix)
-    lane_order = VULN_CLASSES
-    lane_review = []
-    for name in lane_order:
-        lane = lane_summary.get(name)
-        if (
-            not isinstance(lane, dict)
-            or lane.get("disposition") not in {"queued", "unassessed", "not_observed", "blocked"}
-        ):
-            continue
-        techniques = [str(value) for value in lane.get("techniques", []) if str(value).strip()]
-        label = f"{name}[{','.join(techniques)}]" if techniques else name
-        lane_review.append(f"{label}={lane.get('disposition')}")
-    if lane_review and state.get("has_recon") and matrix.get("endpoints"):
-        proposals.append(_proposal_entry(
-            "High-risk lane review: {lanes}. For every listed family, use the smallest "
-            "evidence-producing interface test (SQLi/NoSQLi, SSRF URL-fetch/OAST, "
-            "XXE XML parser, RCE/SSTI/command/deserialization/upload, authz/IDOR, "
-            "GraphQL/OAuth/JWT, Path/LFI/RFI, CSRF/Race/Webhook/XSS) or record an "
-            "explicit blocked/not_applicable reason; never treat unassessed as clean."
-            .format(lanes=", ".join(lane_review)),
-            action_type="high-risk-lane-review",
-            priority=92,
-            command_hint="focused interface test or explicit blocked/not_applicable disposition",
-            metadata={"lane_dispositions": dict(
-                (part.split("=", 1)[0], part.split("=", 1)[1])
-                for part in lane_review
-                if "=" in part
-            )},
-        ))
-
     for gap in _checkpoint_coverage_gaps(coverage_gaps, matrix):
         if _ledger_covers_cell(
             covered_ledger_cells,
@@ -3238,15 +2367,6 @@ def _next_proposals(
             gap.get("identity_v2"),
         ):
             continue
-        relevance = ""
-        if int(gap.get("relevance_score", 0) or 0) > 0:
-            reason = str(gap.get("relevance_reason") or "").strip()
-            relevance = ", relevance={score}{reason}".format(
-                score=gap.get("relevance_score", 0),
-                reason=f": {reason}" if reason else "",
-            )
-        validation_path = _coverage_gap_validation_path(gap)
-        validation_suffix = f" Validation path: {validation_path}" if validation_path else ""
         coverage_endpoint = str(gap.get("endpoint") or "")
         endpoint = str(gap.get("representative_endpoint") or coverage_endpoint)
         coverage_suffix = (
@@ -3283,31 +2403,25 @@ def _next_proposals(
                 )
             )
         gap_text = (
-            "Cover high-value matrix gap: {endpoint} x {vuln_class} "
-            "(weight={weight}{coverage_suffix}{relevance}).{validation_suffix} If concrete side-effect risk appears, mark blocked "
+            "Review coverage gap: {endpoint} x {vuln_class}{coverage_suffix}. "
+            "AI chooses the experiment. If concrete side-effect risk appears, mark blocked "
             "and use low-risk evidence instead.{family_suffix}".format(
                 endpoint=endpoint,
                 vuln_class=gap.get("vuln_class", ""),
-                weight=gap.get("weight", ""),
                 coverage_suffix=coverage_suffix,
-                relevance=relevance,
-                validation_suffix=validation_suffix,
                 family_suffix=family_suffix,
             )
         )
         gap_metadata: dict = {
             "endpoint": endpoint,
             "vuln_class": str(gap.get("vuln_class") or ""),
-            "weight": str(gap.get("weight") or ""),
+            "observed_params": list(gap.get("observed_params") or []),
+            "sources": list(gap.get("sources") or []),
+            "source_count": int(gap.get("source_count", 0) or 0),
+            "route_kind": str(gap.get("route_kind") or ""),
         }
-        if int(gap.get("relevance_score", 0) or 0) > 0:
-            gap_metadata["relevance_score"] = int(gap.get("relevance_score", 0) or 0)
-            if str(gap.get("relevance_reason") or "").strip():
-                gap_metadata["relevance_reason"] = str(gap.get("relevance_reason")).strip()
         if endpoint != coverage_endpoint:
             gap_metadata["coverage_endpoint"] = coverage_endpoint
-        if validation_path:
-            gap_metadata["validation_path"] = validation_path
         if family:
             gap_metadata["family_key"] = str(family.get("key") or "family")
             gap_metadata["family_projection"] = str(family.get("kind") or "route-template")
@@ -3359,85 +2473,43 @@ def _next_proposals(
     if actor_enrichment:
         proposals.append(actor_enrichment)
 
-    clean_authz_baselines = _recent_anonymous_authz_clean_count(evidence_summary)
-    defer_role_ranked = (
-        clean_authz_baselines >= 3
-        and not _case_state_has_role_replay_context(case_state)
-    )
-    deferred_role_ranked = 0
     ranked_surface_added = 0
-    ranked_state = _ranked_surface_state_with_matrix_paths(state, matrix)
-    for item in (ranked_state.get("recommended_targets") or []):
-        # Generate a small candidate window, not just the first two. Persistent
-        # action_queue final-state filtering happens after this function; if
-        # the first P1 items were already closed, we still need fresh ranked
-        # surfaces behind them so /autopilot does not hand off prematurely.
+    covered_ranked_cells = _ledger_covered_cells(evidence_summary, matrix)
+    for item in state.get("recommended_targets") or []:
         if ranked_surface_added >= 4:
             break
         url = str(item.get("url") or "").strip()
-        suggested = str(item.get("suggested") or "").strip()
-        endpoint_path = canonical_endpoint_path(url)
-        if url:
-            entry = _ranked_surface_entry(ranked_state, item.get("url") or "")
-            vuln_hint = _ranked_surface_vuln_hint(entry, url)
-            concrete_endpoint = _placeholder_concrete_endpoint(url, case_state)
-            concrete_endpoint_path = canonical_endpoint_path(concrete_endpoint)
-            placeholder_object_closed = bool(
-                concrete_endpoint_path
-                and _non_concrete_object_segments(url)
-                and _ledger_covers_cell(covered_ledger_cells, concrete_endpoint_path, "IDOR")
-            )
-            if (
-                _ledger_covers_cell(covered_ledger_cells, endpoint_path, vuln_hint)
-                or _ledger_covers_cell(covered_ledger_cells, concrete_endpoint_path, vuln_hint)
-                or placeholder_object_closed
-            ):
-                continue
-            if defer_role_ranked and _ranked_surface_context_prereq(ranked_state, item, case_state):
-                deferred_role_ranked += 1
-                continue
-            facts = _ranked_surface_fact_block(ranked_state, item, case_state, target=target)
-            replay_draft = _ranked_surface_replay_draft(ranked_state, item, case_state, target=target, fact_block=facts)
-            replay_suffix = f". Replay draft: {replay_draft.rstrip('.')}" if replay_draft else ""
-            ledger_skeleton = _ranked_surface_ledger_skeleton(ranked_state, item, target, replay_draft, case_state, fact_block=facts)
-            ledger_suffix = f". Ledger skeleton: {ledger_skeleton}" if ledger_skeleton else ""
-            reason = str(item.get("review_reason") or "advisory surface evidence").strip()
-            surface_text = (
-                f"Review surface candidate {url}: {suggested}. "
-                f"Reason: {reason}. AI decision required: choose the exact lane, "
-                f"capture missing browser/source/actor evidence, or defer with evidence"
-                f"{replay_suffix}{ledger_suffix}"
-            )
-            surface_metadata: dict = {
-                "url": url,
-                "endpoint": _canonicalize_url_path(url),
-            }
-            # Upstream (next_validation / autopilot_state) embeds the finding id
-            # in the suggested prose. Keep promoting it to structured metadata so
-            # action_queue identity/dedupe can match persisted final actions.
-            finding_id_match = re.search(r"for finding\s+([A-Za-z0-9_-]+)", suggested)
-            if finding_id_match:
-                surface_metadata["finding_id"] = finding_id_match.group(1)
-            if replay_draft:
-                surface_metadata["replay_draft"] = replay_draft
-            if ledger_skeleton:
-                surface_metadata["ledger_record_skeleton"] = ledger_skeleton
-            if facts["approach_hints"]:
-                surface_metadata["approach_hints"] = list(facts["approach_hints"])
-            if facts["context_prereq"]:
-                surface_metadata["role_context_prereq"] = True
-            if facts["placeholder_guidance"]:
-                surface_metadata["placeholder_object_path"] = True
-            proposals.append(_proposal_entry(
-                surface_text,
-                action_type="surface-review",
-                priority=70,
-                command_hint="AI reviews surface evidence, then chooses the exact lane",
-                metadata=surface_metadata,
-            ))
-            ranked_surface_added += 1
-    if deferred_role_ranked:
-        proposals.append(_case_state_acquisition_proposal(deferred_role_ranked, clean_authz_baselines))
+        if not url:
+            continue
+        entry = _ranked_surface_entry(state, url)
+        # 已关闭 cell 去重是事实性过滤：与 p1 循环同规则，只按 scanner/
+        # source 声明的类别判定，没有事实类型不过滤。
+        ranked_hint = _declared_surface_vuln_hint(entry)
+        if ranked_hint and _ledger_covers_cell(
+            covered_ranked_cells,
+            canonical_endpoint_path(url),
+            ranked_hint,
+            entry.get("identity_v2"),
+        ):
+            continue
+        metadata = {
+            "url": url,
+            "endpoint": _canonicalize_url_path(url),
+            "evidence_refs": list(entry.get("evidence_refs") or []),
+            "request_shapes": list(entry.get("request_shapes") or []),
+        }
+        finding_id = str(item.get("finding_id") or entry.get("finding_id") or "").strip()
+        if finding_id:
+            metadata["finding_id"] = finding_id
+        reason = str(item.get("review_reason") or "recorded surface observation").strip()
+        proposals.append(_proposal_entry(
+            f"Review surface candidate {url}. Observations: {reason}. AI chooses the test and required context.",
+            action_type="surface-review",
+            priority=70,
+            command_hint="review linked evidence and choose the next action",
+            metadata=metadata,
+        ))
+        ranked_surface_added += 1
     # 先按 action 类型保留代表，再填满窗口；同类 finding/runner 条目不能把
     # coverage、actor 或 ranked-surface 永久挤出 durable queue。
     return _bounded_next_proposals(proposals, target)
@@ -4518,7 +3590,6 @@ def build_checkpoint(
 
 def _quote(text: str) -> str:
     return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
-
 
 
 def _fmt_list(items: list[str]) -> list[str]:

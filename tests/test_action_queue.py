@@ -1837,7 +1837,7 @@ def test_resolve_cli_accepts_evidence_alias(tmp_path):
     assert resolved["result"] == "Evidence is strong enough to promote to candidate."
 
 
-def test_high_value_actions_sort_ahead_of_generic_actions(tmp_path):
+def test_keyword_value_does_not_override_same_priority_queue_order(tmp_path):
     queue = load_queue(tmp_path, "target.com")
     queue["actions"] = [
         {
@@ -1868,7 +1868,7 @@ def test_high_value_actions_sort_ahead_of_generic_actions(tmp_path):
         },
     ]
 
-    assert select_next_action(queue)["id"] == "AQ-0002"
+    assert select_next_action(queue)["id"] == "AQ-0001"
 
 
 def test_legacy_active_action_gets_stable_id_on_claim_and_resolve(tmp_path):
@@ -2084,7 +2084,7 @@ def test_ingest_checkpoint_reopens_runner_only_validated_action(tmp_path):
     assert "runner evidence is candidate-only" in saved["actions"][0]["notes"]
 
 
-def test_relevance_metadata_breaks_same_endpoint_coverage_ties(tmp_path):
+def test_legacy_relevance_does_not_break_same_priority_coverage_ties(tmp_path):
     queue = load_queue(tmp_path, "target.com")
     common = {
         "status": "queued",
@@ -2122,7 +2122,7 @@ def test_relevance_metadata_breaks_same_endpoint_coverage_ties(tmp_path):
         },
     ]
 
-    assert select_next_action(queue)["id"] == "AQ-0002"
+    assert select_next_action(queue)["id"] == "AQ-0001"
 
 
 def test_action_identities_keep_vulnerability_and_auth_context_lanes_distinct():

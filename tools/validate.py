@@ -83,10 +83,6 @@ try:
 except ImportError:  # pragma: no cover - package import path
     from tools.runtime_config import load_runtime_config
 
-try:
-    from evidence_rubric import evaluate_candidate_evidence, first_missing_action
-except ImportError:  # pragma: no cover - package import path
-    from tools.evidence_rubric import evaluate_candidate_evidence, first_missing_action
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -665,18 +661,6 @@ def build_validation_summary(info: dict, *, all_pass: bool, report_path: str | P
     if scanner_confidence and scanner_confidence != "unknown":
         summary["scanner_confidence"] = scanner_confidence
 
-    evidence_rubric = info.get("evidence_rubric")
-    if isinstance(evidence_rubric, dict) and evidence_rubric:
-        summary["evidence_rubric"] = {
-            "rubric_id": evidence_rubric.get("rubric_id", ""),
-            "status": evidence_rubric.get("status", ""),
-            "ready": bool(evidence_rubric.get("ready", False)),
-            "score": int(evidence_rubric.get("score", 0) or 0),
-            "missing_labels": list(evidence_rubric.get("missing_labels", []) or [])[:4],
-            "next_actions": list(evidence_rubric.get("next_actions", []) or [])[:4],
-            "summary": evidence_rubric.get("summary", ""),
-        }
-
     machine_decision = info.get("machine_decision")
     if isinstance(machine_decision, dict) and machine_decision:
         # Keep the auditable decision binding and evidence pointers, never the
@@ -959,20 +943,6 @@ def upsert_ad_hoc_validated_finding(summary: dict, summary_path: str | Path, *, 
         "report_draft_path": str(summary.get("report_path") or ""),
         "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     }
-    if all_pass:
-        vuln_class = str(summary.get("vuln_class") or "validation")
-        finding["evidence_rubric"] = {
-            "rubric_id": vuln_class.lower(),
-            "status": "validated",
-            "ready": True,
-            "score": 100,
-            "satisfied_count": 4,
-            "total": 4,
-            "missing": [],
-            "missing_labels": [],
-            "next_actions": [],
-            "summary": f"{vuln_class.lower()}:validated via /validate gates",
-        }
     result = upsert_finding(findings_dir, finding, target=target)
     persisted = result.get("finding") or finding
     return {"status": "updated", "path": result.get("path", ""), "id": persisted["id"]}
@@ -1453,10 +1423,10 @@ def update_runtime_state_after_validate(
     repo_root: str | Path | None = None,
 ) -> None:
     """Best-effort runtime state refresh after validation finishes."""
+    owner_root = Path(repo_root) if repo_root is not None else _validation_repo_root(findings_dir)
     target = str(summary.get("target", "") or "").strip()
     if not target:
         return
-    owner_root = Path(repo_root) if repo_root is not None else _validation_repo_root(findings_dir)
     # (P5-W1 R5) Record calibration outcome alongside runtime state refresh.
     record_validation_calibration(
         summary,
@@ -1502,7 +1472,6 @@ def load_finding_prefill(
     repo_root: str | Path | None = None,
 ) -> dict:
     """Load defaults from findings.json, optionally without legacy write-back."""
-    owner_root = Path(repo_root) if repo_root is not None else _validation_repo_root(findings_dir)
     payload = load_finding_index(findings_dir, migrate_legacy=migrate_legacy)
     finding = next(
         (
@@ -1514,23 +1483,6 @@ def load_finding_prefill(
     )
     if not finding:
         return {}
-    rubric = finding.get("evidence_rubric") if isinstance(finding.get("evidence_rubric"), dict) else {}
-    if not rubric:
-        source_file = str(finding.get("source_file") or "")
-        source_path = Path(source_file)
-        if source_file and not source_path.is_absolute():
-            source_path = owner_root / source_file
-        if source_path.is_file() and source_path.suffix == ".json":
-            try:
-                source_payload = json.loads(source_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                source_payload = {}
-            source_rubric = source_payload.get("evidence_rubric") if isinstance(source_payload, dict) else {}
-            if isinstance(source_rubric, dict):
-                rubric = source_rubric
-    if not rubric:
-        rubric = evaluate_candidate_evidence(finding)
-
     prefill = {
         "target": payload.get("target") or Path(findings_dir).name,
         "vuln_type": (finding.get("type") or "").upper(),
@@ -1538,7 +1490,6 @@ def load_finding_prefill(
         "finding_id": finding.get("id") or finding_id,
         "source_file": finding.get("source_file") or "",
         "summary": finding.get("summary") or finding.get("raw") or "",
-        "rubric": rubric,
         "validation_report_path": finding.get("validation_report_path") or "",
         "report_draft_path": finding.get("report_draft_path") or "",
         "report_file": finding.get("report_file") or "",
@@ -2084,7 +2035,6 @@ def _build_machine_validation_input(
         "finding_id": finding_id,
         "finding_source_file": prefill.get("source_file", ""),
         "finding_summary": prefill.get("summary", ""),
-        "evidence_rubric": prefill.get("rubric", {}),
         "seven_question_gate": seven_questions,
         # 源归因（记忆复核断点 C 修复）：AI 声明本次验证实际采用的经验来源
         # （知识卡路径或 PatternDB 模式 ID）。缺省时回退当前 target 的复合 ID，

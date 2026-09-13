@@ -997,9 +997,6 @@ def _validation_evidence_block(validation):
         lines.append(f"**Baseline Request:** `{artifacts['baseline_request']}`")
     if artifacts.get("baseline_response"):
         lines.append(f"**Baseline Response:** `{artifacts['baseline_response']}`")
-    rubric = validation.get("evidence_rubric") if isinstance(validation.get("evidence_rubric"), dict) else {}
-    if rubric.get("summary"):
-        lines.append(f"**Evidence Rubric:** `{rubric['summary']}`")
     return "\n".join(lines)
 
 

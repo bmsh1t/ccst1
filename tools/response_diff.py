@@ -3,7 +3,7 @@
 
 这里不是漏洞判断器，只把 baseline / variant 响应转成 Claude 可以继续推理的
 结构化差异：状态码、长度、JSON 数量、字段集合和简短摘要。漏洞类型的证据门槛
-仍由 evidence_rubric / validation_runner 决定。
+由 Claude 结合原始证据判断；本模块只提供差异事实。
 """
 
 from __future__ import annotations

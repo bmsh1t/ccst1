@@ -349,11 +349,15 @@ def test_evidence_counterexamples_recall_existing_boundary_cards(tmp_path):
 
     for focus, observation, expected_card in cases:
         target = f"{focus}.test"
-        evidence_ref = f"findings/{target}/source_intel/hypotheses.jsonl"
+        # source_intel 发现入口现为 routes.json（事实路由）；旧生成的
+        # hypotheses.jsonl 不再控制选择，但事实观察通过 routes 进入 Pack。
+        evidence_ref = f"findings/{target}/source_intel/routes.json"
         evidence = tmp_path / evidence_ref
         evidence.parent.mkdir(parents=True)
         evidence.write_text(
-            json.dumps({"candidate": observation, "reason": "synthetic boundary counterexample"}) + "\n",
+            json.dumps({
+                "routes": [{"route": "/api/sessions", "method": "GET", "note": observation}],
+            }, ensure_ascii=False),
             encoding="utf-8",
         )
 
@@ -368,22 +372,21 @@ def test_distilled_router_cards_are_discoverable_from_real_evidence_indexes(tmp_
         target = card_name.removesuffix(".md")
         source_dir = tmp_path / "findings" / target / "source_intel"
         source_dir.mkdir(parents=True)
-        (source_dir / "hypotheses.jsonl").write_text(
+        # 发现入口为 routes.json；蒸馏出的路由事实作为原始 route 进入索引。
+        (source_dir / "routes.json").write_text(
             json.dumps({
-                "type": "distilled-lab",
-                "candidate": evidence,
-                "reason": "synthetic lab evidence index pressure test",
-            }, ensure_ascii=False) + "\n",
+                "routes": [{"route": evidence if evidence.startswith("/") else f"/{evidence}", "method": "GET"}],
+            }, ensure_ascii=False),
             encoding="utf-8",
         )
 
         pack = build_context_pack(tmp_path, target=target)
 
-        # Evidence-index word signals surface as recall annotations (visible
-        # to the AI through the signal channel), not auto-selected cards.
+        # The full card catalog is the discovery surface; AI selects cards by
+        # information gap (semantic routing retired).
         catalog_files = {
             str(item.get("file") or "")
             for item in pack.get("card_catalog", [])
         }
         assert f"knowledge/cards/{card_name}" in catalog_files
-        assert f"findings/{target}/source_intel/hypotheses.jsonl" in pack["must_read"]
+        assert f"findings/{target}/source_intel/routes.json" in pack["must_read"]

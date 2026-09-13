@@ -761,7 +761,7 @@ def test_capability_profile_failure_is_advisory(monkeypatch, tmp_path):
     assert payload["capabilities"] == autopilot_bootstrap.unknown_capability_profile("profile-error")
 
 
-def test_bootstrap_projects_only_bounded_candidate_rubric():
+def test_bootstrap_keeps_candidate_identity_without_rubric():
     state = _state("/tmp/repo", "example.test")
     state["next_action"] = "collect_candidate_evidence"
     state["structured_findings"] = {
@@ -794,16 +794,6 @@ def test_bootstrap_projects_only_bounded_candidate_rubric():
     assert compact["structured_next"] == {
         "id": "idor-orders",
         "url": "https://example.test/api/orders/7",
-        "rubric": {
-            "rubric_id": "authz",
-            "status": "needs-evidence",
-            "ready": False,
-            "score": 50,
-            "satisfied_count": 2,
-            "total": 5,
-            "missing_labels": ["actor A", "actor B", "response diff"],
-            "next_actions": ["compare the same object with two owned actors"],
-        },
     }
     encoded = json.dumps(compact)
     assert "raw_request" not in encoded
@@ -1026,16 +1016,6 @@ def test_bootstrap_projects_recovery_and_draft_completion_handoffs():
         "source_file": "/tmp/repo/findings/example.test/manual-sqli.json",
         "validation_status": "candidate",
         "report_status": "not_generated",
-        "rubric": {
-            "rubric_id": "sqli",
-            "status": "needs-evidence",
-            "ready": False,
-            "score": 0,
-            "satisfied_count": 0,
-            "total": 4,
-            "missing_labels": ["baseline", "stable diff", "impact"],
-            "next_actions": ["capture a baseline and controlled perturbation"],
-        },
     }
     encoded = json.dumps(compact)
     assert "do-not-project" not in encoded
@@ -1094,7 +1074,7 @@ def test_compact_state_never_calls_full_surface_or_full_recon_inspection(monkeyp
     )
 
     assert state["has_recon"] is True
-    assert state["next_action"] == "collect_candidate_evidence"
+    assert state["next_action"] == "validate_finding"
     assert state["surface_projection"]["status"] == "missing"
 
 
@@ -1283,7 +1263,7 @@ def test_priority_bootstrap_does_not_open_large_artifacts_or_write_target_state(
         if path.is_file()
     }
 
-    assert state["next_action"] == "collect_candidate_evidence"
+    assert state["next_action"] == "validate_finding"
     assert state["observation_inventory"]["status"] == "summary_missing"
     assert before == after
 
