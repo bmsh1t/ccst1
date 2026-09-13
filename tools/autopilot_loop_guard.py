@@ -24,14 +24,6 @@ except ImportError:  # pragma: no cover - direct tools/ execution
 
 HIGH_VALUE_OBSERVATION_KINDS = frozenset({"exposure", "infra"})
 _ROTATION_OUTCOMES = {"tested_clean", "dead_end"}
-_LOOP_GUARD_ROTATABLE_ACTIONS = {
-    "handoff",
-    "continue_last_focus",
-    "resume_untested",
-    "hunt_p1",
-    "hunt_p2",
-    "guard_safe_pivot",
-}
 _STAGNANT_REASONS = {
     "browser_evidence_partial",
     "browser_evidence_required",
@@ -58,7 +50,13 @@ _UUID_SEGMENT_RE = re.compile(
 )
 _VARIABLE_PATH_SEGMENT_RE = re.compile(r"^(?:\d+|[0-9a-f]{12,})$", re.IGNORECASE)
 
-def _rotation_hint(entries: list[dict]) -> dict:
+def _recent_homogeneous_outcomes(entries: list[dict]) -> dict:
+    """报告最近同 family/class 的重复终态事实（无裁决）。
+
+    原生能力审计（2026-09-13）第 4 步：这是旧 _rotation_hint 的事实部分，
+    不再输出 rotate 决定或代选目标——继续/换路的判断由 AI 结合当前假设的
+    信息增量做出。
+    """
     recent = entries[-3:]
     if len(recent) != 3 or not all(isinstance(item, dict) for item in recent):
         return {}
@@ -70,33 +68,13 @@ def _rotation_hint(entries: list[dict]) -> dict:
     vuln_classes = {str(item.get("vuln_class") or "").strip() for item in recent}
     if outcomes <= _ROTATION_OUTCOMES and len(families) == len(vuln_classes) == 1 and next(iter(vuln_classes)):
         return {
-            "reason": "three_homogeneous_clean_outcomes",
+            "observed": "three_homogeneous_clean_outcomes",
             "endpoint_family": next(iter(families)),
             "vuln_class": next(iter(vuln_classes)),
-            "action": "rotate_to_adjacent_high_value_lane",
+            "note": "repetition fact only; continue-or-rotate is an AI information-gain judgment",
         }
     return {}
 
-def _rotation_target(state: dict, blocked_family: str) -> dict:
-    """Choose one bounded adjacent Surface candidate without changing its rank."""
-    candidates = state.get("surface_review_candidates") or state.get("recommended_targets") or []
-    target = str(state.get("resolved_target") or state.get("target") or "")
-    eligible = [
-        item
-        for item in candidates
-        if isinstance(item, dict)
-        and (url := str(item.get("url") or "").strip())
-        and url_belongs_to_target(url, target)
-        and _endpoint_family(url) != blocked_family
-    ]
-    if not eligible:
-        return {}
-    candidate = next((item for item in eligible if item.get("new_observation")), eligible[0])
-    return {
-        key: candidate[key]
-        for key in ("url", "host", "suggested", "score", "review_reason", "new_observation")
-        if key in candidate
-    }
 
 def _loop_guard_authoritative_reason(state: dict) -> str:
     """Keep a stale handoff from rotating past durable control-plane work."""
@@ -162,38 +140,21 @@ def build_loop_guard_projection(state: dict, ledger_entries: list[dict] | None =
         if ledger_health:
             result["ledger_health"] = ledger_health
         return result
-    hint = _rotation_hint(ledger_entries or [])
-    if not hint:
-        result = {
-            "verdict": "continue",
-            "reason": "insufficient_homogeneous_outcomes",
-            "endpoint_family": "",
-            "vuln_class": "",
-            "next_action": action,
-            "rotation_target": {},
-        }
-        if ledger_health:
-            result["ledger_health"] = ledger_health
-        return result
-    if action not in _LOOP_GUARD_ROTATABLE_ACTIONS:
-        result = {
-            "verdict": "continue",
-            "reason": "authoritative_next_action",
-            "endpoint_family": hint["endpoint_family"],
-            "vuln_class": hint["vuln_class"],
-            "next_action": action,
-            "rotation_target": {},
-        }
-        if ledger_health:
-            result["ledger_health"] = ledger_health
-        return result
+    # 原生能力审计（2026-09-13）第 4 步：固定换路裁决与目标代选已退役——
+    # "连续三条同 family/class 即 rotate" 用计数代替信息增量判断（实测三条
+    # 不同 actor 的 clean 检查也触发）。工具现在输出重复事实，是否换路由
+    # AI 结合当前假设的信息增量决定；真正的预算、幂等、锁和恢复不变。
+    recent = _recent_homogeneous_outcomes(ledger_entries or [])
     result = {
-        "verdict": "rotate",
-        "reason": hint["reason"],
-        "endpoint_family": hint["endpoint_family"],
-        "vuln_class": hint["vuln_class"],
-        "next_action": hint["action"],
-        "rotation_target": _rotation_target(state, hint["endpoint_family"]),
+        "verdict": "continue",
+        "reason": (
+            "repetition_facts_reported"
+            if recent
+            else "insufficient_homogeneous_outcomes"
+        ),
+        "next_action": action,
+        "repetition_facts": recent,
+        "rotation_target": {},
     }
     if ledger_health:
         result["ledger_health"] = ledger_health

@@ -230,7 +230,9 @@ def test_autopilot_heartbeat_is_conditional():
     assert "run a compact phase gate in the same AI turn" in skill
     # Anti-motivation guards preserved verbatim.
     assert "--loop-check --projection-only --json" in skill
-    assert "Obey `loop_guard.verdict`" in skill
+    # 2026-09-13 native audit step 4: fixed rotation verdict retired;
+    # repetition facts feed an AI information-gain judgment.
+    assert "Consume `loop_guard.repetition_facts` as facts, not verdicts" in skill
     assert "run ordered coverage review and read-only verdict" in skill
     assert "run Global Review over bounded summaries" in skill
 

@@ -203,7 +203,6 @@ except ImportError:  # pragma: no cover - direct tools/ execution
 try:
     from tools.autopilot_loop_guard import (  # noqa: F401
         HIGH_VALUE_OBSERVATION_KINDS,
-        _LOOP_GUARD_ROTATABLE_ACTIONS,
         _ROTATION_OUTCOMES,
         _STAGNANT_REASONS,
         _endpoint_family,
@@ -212,8 +211,7 @@ try:
         _load_loop_guard_projection,
         _loop_control_projection,
         _loop_guard_authoritative_reason,
-        _rotation_hint,
-        _rotation_target,
+        _recent_homogeneous_outcomes,
         _stagnation_continuation,
         _stagnation_dimensions,
         _stagnation_obligation,
@@ -226,7 +224,6 @@ try:
 except ImportError:  # pragma: no cover - direct tools/ execution
     from autopilot_loop_guard import (  # type: ignore  # noqa: F401
         HIGH_VALUE_OBSERVATION_KINDS,
-        _LOOP_GUARD_ROTATABLE_ACTIONS,
         _ROTATION_OUTCOMES,
         _STAGNANT_REASONS,
         _endpoint_family,
@@ -235,8 +232,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         _load_loop_guard_projection,
         _loop_control_projection,
         _loop_guard_authoritative_reason,
-        _rotation_hint,
-        _rotation_target,
+        _recent_homogeneous_outcomes,
         _stagnation_continuation,
         _stagnation_dimensions,
         _stagnation_obligation,
@@ -3476,7 +3472,7 @@ def build_closure_projection(
         "recon_budget_partial": recon_budget_partial,
         "reasons": reasons[:3],
         "next_action": action,
-        "rotation_hint": _rotation_hint(ledger_entries or []),
+        "rotation_hint": _recent_homogeneous_outcomes(ledger_entries or []),
         "surface_review": surface_review,
         "actionable_frontier": actionable_frontier,
         "identity_v2": {

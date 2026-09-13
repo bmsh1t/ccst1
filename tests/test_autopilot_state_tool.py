@@ -4032,11 +4032,12 @@ def test_closure_rotation_hint_never_changes_the_verdict():
     closure = build_closure_projection({"next_action": "handoff"}, _closure_matrix(), entries)
 
     assert closure["verdict"] == "finish"
+    # 裁决退役（2026-09-13）：rotation_hint 只报事实，不再携带 rotate 动作
     assert closure["rotation_hint"] == {
-        "reason": "three_homogeneous_clean_outcomes",
+        "observed": "three_homogeneous_clean_outcomes",
         "endpoint_family": "/api/orders/:id",
         "vuln_class": "IDOR",
-        "action": "rotate_to_adjacent_high_value_lane",
+        "note": "repetition fact only; continue-or-rotate is an AI information-gain judgment",
     }
 
 
@@ -4055,14 +4056,14 @@ def test_loop_guard_rotates_only_three_matching_recent_outcomes():
         [*entries[:2], {**entries[2], "vuln_class": "Authz"}],
     )
 
-    assert rotate == {
-        "verdict": "rotate",
-        "reason": "three_homogeneous_clean_outcomes",
-        "endpoint_family": "/api/orders/:id",
-        "vuln_class": "IDOR",
-        "next_action": "rotate_to_adjacent_high_value_lane",
-        "rotation_target": {},
-    }
+    # 固定换路裁决已退役（2026-09-13）：同型终态报事实，AI 决定继续或换路
+    assert rotate["verdict"] == "continue"
+    assert rotate["reason"] == "repetition_facts_reported"
+    assert rotate["repetition_facts"]["observed"] == "three_homogeneous_clean_outcomes"
+    assert rotate["repetition_facts"]["endpoint_family"] == "/api/orders/:id"
+    assert rotate["repetition_facts"]["vuln_class"] == "IDOR"
+    assert rotate["rotation_target"] == {}
+    assert "rotate_to_adjacent_high_value_lane" not in str(rotate)
     assert mixed["verdict"] == "continue"
     assert mixed["reason"] == "insufficient_homogeneous_outcomes"
     assert mixed["rotation_target"] == {}
@@ -4155,7 +4156,10 @@ def test_unreadable_ledger_is_visible_and_blocks_closure(tmp_path, monkeypatch):
     assert "ledger_unreadable" in closure["reasons"]
 
 
-def test_loop_guard_rotation_target_excludes_blocked_family_and_prefers_new_observation():
+def test_loop_guard_rotation_target_selection_is_retired():
+    """目标代选已退役（原生能力审计 2026-09-13 第 4 步）：换到哪里是
+    AI 结合当前假设的信息增量判断，不是工具按 new_observation/score
+    代选的机械结果。guard 只报重复事实。"""
     entries = [
         {"endpoint": f"/api/orders/{value}", "vuln_class": "IDOR", "result": "tested_clean"}
         for value in ("1", "2", "3")
@@ -4167,47 +4171,18 @@ def test_loop_guard_rotation_target_excludes_blocked_family_and_prefers_new_obse
             "surface_review_candidates": [
                 {"url": "https://target.com/api/orders/99", "score": 20},
                 {"url": "https://target.com/api/settings", "score": 10},
-                {
-                    "url": "https://target.com/api/profile",
-                    "score": 1,
-                    "new_observation": True,
-                    "review_reason": "new observation representative (neutral)",
-                },
             ],
         },
         entries,
     )
 
-    assert guard["verdict"] == "rotate"
-    assert guard["rotation_target"] == {
-        "url": "https://target.com/api/profile",
-        "score": 1,
-        "review_reason": "new observation representative (neutral)",
-        "new_observation": True,
-    }
+    assert guard["verdict"] == "continue"
+    assert guard["repetition_facts"]["observed"] == "three_homogeneous_clean_outcomes"
+    assert guard["rotation_target"] == {}
+    import tools.autopilot_loop_guard as alg
 
-
-def test_loop_guard_rotation_target_ignores_off_target_frontier_entries():
-    entries = [
-        {"endpoint": f"/api/orders/{value}", "vuln_class": "IDOR", "result": "tested_clean"}
-        for value in ("1", "2", "3")
-    ]
-    guard = build_loop_guard_projection(
-        {
-            "target": "target.com",
-            "next_action": "hunt_p1",
-            "surface_review_candidates": [
-                {"url": "https://external.example/api/profile", "new_observation": True},
-                {"url": "https://target.com/api/settings", "score": 10},
-            ],
-        },
-        entries,
-    )
-
-    assert guard["rotation_target"] == {
-        "url": "https://target.com/api/settings",
-        "score": 10,
-    }
+    assert not hasattr(alg, "_rotation_target"), "target selection must not return"
+    assert not hasattr(alg, "_rotation_hint"), "rotation verdict must not return"
 
 
 def test_loop_guard_never_overrides_authoritative_next_actions():
@@ -4215,10 +4190,11 @@ def test_loop_guard_never_overrides_authoritative_next_actions():
         {"endpoint": f"/api/orders/{value}", "vuln_class": "IDOR", "result": "tested_clean"}
         for value in ("1", "2", "3")
     ]
+    # 裁决退役后任何动作都不被代选覆盖：guard 保持 continue 并保留 AI 的 next_action
     for action in ("wait_recon", "wait_scan", "validate_finding", "complete_report_draft", "resume_action_queue"):
         guard = build_loop_guard_projection({"next_action": action}, entries)
         assert guard["verdict"] == "continue"
-        assert guard["reason"] == "authoritative_next_action"
+        assert guard["reason"] == "repetition_facts_reported"
         assert guard["next_action"] == action
         assert guard["rotation_target"] == {}
 

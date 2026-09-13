@@ -202,11 +202,13 @@ After every substantive lane, request the explicit read-only loop guard with
 This projection also returns bounded `control` (`hard_gate`, `priority_frontier`,
 `next_action`, and `fallback_action`); use it as the post-lane state refresh and do not
 run a second ordinary state read unless a later owner write requires a fresh snapshot.
-Obey `loop_guard.verdict`. On `rotate`, do not continue the reported `endpoint_family` ×
-`vuln_class` in this invocation; prefer its bounded `rotation_target` when present.
-`continue` preserves owner state. The guard never overrides `state.hard_gate`, an
-already-claimed lane, or any selected item's evidence/owner constraints; otherwise
-select from the returned `control.priority_frontier`.
+Consume `loop_guard.repetition_facts` as facts, not verdicts: when it reports
+repeated same-family/same-class terminal outcomes, weigh the information gain of
+another check on that family against the current hypothesis — continuing is right
+when a distinct dimension (actor, variant, object) is still untested; rotating is
+right when the family is exhausted for now. The guard never overrides
+`state.hard_gate`, an already-claimed lane, or any selected item's evidence/owner
+constraints; select from the returned `control.priority_frontier`.
 
 `--deep` is a value-first comprehensive depth flag, not a checklist or favorite bug class.
 With `invocation_batch.bounded`, execute at most `max_lanes` named substantive lanes; after lane N do not execute a newly discovered queue item. Evidence import, owner write-back, cleanup, checkpoint, and closure are not new lanes and must still complete; Newly discovered work becomes next-invocation work. Finish on evidence state, not a tool checklist:
