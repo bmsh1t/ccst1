@@ -2349,7 +2349,7 @@ def build_parser() -> argparse.ArgumentParser:
     resolve = sub.add_parser("resolve", help="Resolve or reclassify one action.")
     resolve.add_argument("--target", required=True)
     resolve.add_argument("--id", required=True)
-    resolve.add_argument("--status", default="", choices=[""] + sorted(ALLOWED_STATUSES | set(STATUS_ALIASES), key=str), help="terminal/interim status; required unless --scaffold")
+    resolve.add_argument("--status", required=True, choices=sorted(ALLOWED_STATUSES | set(STATUS_ALIASES), key=str), help="terminal/interim status")
     resolve.add_argument("--result", default="")
     resolve.add_argument(
         "--evidence",
@@ -2436,8 +2436,6 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if action else 1
 
         if args.command == "resolve":
-            if not str(args.status or "").strip():
-                parser.error("--status is required")
             metadata = _parse_metadata_json(args.metadata_json)
             result = resolve_action(
                 repo,

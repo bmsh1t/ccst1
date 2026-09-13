@@ -7,13 +7,11 @@
 ### 1. Scope / Trigger
 
 修改 `tools/autopilot_state*.py`、`tools/autopilot_gate.py`、`tools/autopilot_loop_guard.py`、
-`tools/claim_templates.py`、`tools/distill_target.py`、`tools/contracts.py` 或
-`action_queue.ingest_checkpoint` 时读取。
+`tools/contracts.py` 或 `action_queue.ingest_checkpoint` 时读取。
 
 ### 2. Signatures
 
-- `python3 tools/action_queue.py claim --target <t> --id <id> [--template <name>] [--from-evidence <ref>] --metadata-json '<obj>'`
-- `python3 tools/action_queue.py list-templates [--json]`
+- `python3 tools/action_queue.py claim --target <t> --id <id> [--from-evidence <ref>] --metadata-json '<obj>'`（类别模板已退役 2026-09-13：family/technique/skill_route/risk_tier 由 AI 按当前假设填写）
 - `python3 tools/evidence_ledger.py record --target <t> --from-probe <event_id> --result <r> [--notes <n>]`
 - `python3 tools/distill_target.py prompt --target <t> --typology <pattern|target-vuln|failure|bypass> --json`
 - `python3 tools/distill_target.py commit --target <t> --triple-json <file-or-json> [--slug-hint <s>] --json`
@@ -22,9 +20,10 @@
 
 ### 3. Contracts
 
-- **claim 模板合并优先级**：`final = {**template, **from_evidence_derived, **metadata_json}`；
-  AI 显式值永远赢；四判断字段（hypothesis_id/expected_learning/kill_condition/
-  decision_reason）永不进模板（`tests/test_claim_templates.py` 负断言）。
+- **claim 激活输入**：`final = {**from_evidence_derived, **metadata_json}`；类别模板
+  已退役（原生能力审计 2026-09-13：预设 technique/risk_tier 复制的是类别判断）。
+  四判断字段（hypothesis_id/expected_learning/kill_condition/decision_reason）必须
+  由 AI 显式给出。
 - **模块拆分与 re-export**：autopilot_gate/loop_guard/state_read 被 autopilot_state
   全量 re-export——外部 import 只从 `tools.autopilot_state` 走；closure/decision
   投影族留在 state（深耦合 30+ 状态构建函数，搬动会反向循环）。
@@ -36,7 +35,6 @@
 
 ### 4. Validation & Error Matrix
 
-- 未知模板名 → `ValueError("unknown claim template ...; available: ...")`
 - --from-probe 未知 event_id → `ValueError("--from-probe event_id ... not found")`
 - 三元组含裸 IPv4 → `ValueError("triple contains a bare IPv4 address...")`
 - 三元组含 credential 形态文本 → `ValueError("triple contains credential-shaped text...")`
@@ -46,13 +44,12 @@
 
 ### 5. Good/Base/Bad Cases
 
-- Good：`claim --template idor-cross-actor --from-evidence probe.json --metadata-json '{四判断字段+覆盖值}'` 一条命令完成激活
+- Good：`claim --from-evidence probe.json --metadata-json '{family/technique/skill_route/risk_tier + 四判断字段}'` 一条命令完成激活
 - Base：`record --from-probe <event_id> --result tested_clean`（机械字段全复制）
-- Bad：模板里出现 hypothesis_id（内容门槛回潮，负断言测试会红）
+- Bad：把 family/technique/risk_tier 重新做成类别预设表（退役回潮；判断字段归 AI）
 
 ### 6. Tests Required
 
-- `tests/test_claim_templates.py`（9 项：预填/优先级/负断言/深度契约版本一致性）
 - `tests/test_distill_target.py`（13 项：两段式/脱敏负测试/可溯源/slug 冲突）
 - `tests/test_stage_one_ux.py`（9 项：from-probe/summary 一致性/结构化 leads）
 - `tests/test_contracts.py`（4 项：契约同步/零 import 纪律）
@@ -61,13 +58,12 @@
 
 #### Wrong
 ```python
-# 模板里预填判断字段（把 AI 判断变成机械字段）
-CLAIM_TEMPLATES["x"] = {"hypothesis_id": "auto", ...}
+# 重造类别预设表（把 AI 判断变成机械字段）
+CLAIM_TEMPLATES["x"] = {"family": "IDOR", "technique": "...", "risk_tier": "medium", ...}
 ```
 #### Correct
 ```python
-# 模板只放类别稳定字段；判断字段必须每次由 AI 显式给出
-CLAIM_TEMPLATES["x"] = {"family": "IDOR", "risk_tier": "medium", ...}
+# family/technique/skill_route/risk_tier 由 AI 在 --metadata-json 里按当前假设给出；
 # 缺 hypothesis_id 时 Queue 的 FORMAT gate 照样拒绝
 ```
 

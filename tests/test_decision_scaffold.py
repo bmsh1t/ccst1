@@ -137,3 +137,29 @@ def test_validate_cli_scaffold_roundtrip(tmp_path, capsys):
     assert payload["finding_id"] == "F-1"
     assert payload["schema_version"] == 2
     assert payload["evidence"]["runner_summary"]
+
+
+def test_resolve_cli_rejects_missing_and_empty_status():
+    """Step-1 收尾回归：resolve 缺 --status 或传空串必须 argparse 拒绝。
+
+    旧代码在 main() 里引用已不存在的 parser 局部变量，实际抛
+    NameError 而非干净的用法错误（审计 step1-review #1）。
+    """
+    import subprocess
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    tools_dir = _Path(__file__).resolve().parent.parent / "tools"
+    for argv in (
+        ["resolve", "--target", "t.example", "--id", "AQ-1"],
+        ["resolve", "--target", "t.example", "--id", "AQ-1", "--status", ""],
+    ):
+        result = subprocess.run(
+            [_sys.executable, str(tools_dir / "action_queue.py"), *argv],
+            capture_output=True,
+            text=True,
+            env={"PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+        assert result.returncode == 2, f"expected argparse rejection for {argv}"
+        assert "NameError" not in result.stderr
+        assert "--status" in result.stderr

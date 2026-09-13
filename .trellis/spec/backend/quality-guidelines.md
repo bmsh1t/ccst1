@@ -247,5 +247,5 @@ gate（依赖 12）纯搬动成功；closure/decision 投影族（依赖 30+ 状
 **常见错误**：新模块漏 import（NameError 在运行时而非收集期暴露）——
 搬完立刻 `python -c "import <module>"` + 全量 pytest。
 
-**禁忌**：claim_templates ↔ action_queue 的 DEPTH_CONTRACT_VERSION 循环
-import——常量在低层模块硬编码 + 一致性测试绑定（`tests/test_claim_templates.py`）。
+**禁忌**：模块间契约常量循环 import——常量在低层模块硬编码 + 一致性测试绑定。
+（claim_templates 及其循环 import 已随类别模板退役删除，2026-09-13。）
