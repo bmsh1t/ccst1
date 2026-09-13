@@ -94,11 +94,6 @@ def _write_text_atomic(path: str | Path, content: str) -> None:
         raise
 
 
-def _report_action_matches(action, finding, report_file):
-    """Return whether an active queue item represents this generated report."""
-    return _report_action_match_kind(action, finding, report_file) is not None
-
-
 def _legacy_token_match(token: str, haystack: str) -> bool:
     if not token:
         return False

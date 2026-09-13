@@ -74,7 +74,7 @@ and partial/unavailable output remains open. Concrete JS gaps may select
 helper is a baseline lane.
 
 Invoke setup helpers on demand: self-owned test-account email verification uses
-`/root/tool/aitool/zocom/mail_receiver.py`; Cloudflare clearance uses `tools/cf_solver.py`.
+`/root/tool/aitool/zocom/mail_receiver.py` (environment-provided helper, not part of this repo — if absent, use any self-owned mailbox and keep the raw evidence); Cloudflare clearance uses `tools/cf_solver.py`.
 Persist results through private AuthSession/Case State; failures remain `blocked`/`partial` and
 never become clean.
 

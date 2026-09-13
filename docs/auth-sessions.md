@@ -39,6 +39,7 @@ When a lab or authorized target requires email verification for a self-owned tes
 account, use the local receiver helper as an optional setup aid:
 
 ```bash
+# mail_receiver.py 是环境提供的辅助工具（不在本仓库内）；缺失时用任意自有邮箱手动收码。
 python3 /root/tool/aitool/zocom/mail_receiver.py --generate --prefix ccst-test
 python3 /root/tool/aitool/zocom/mail_receiver.py --poll ccst-test@example.test --code --timeout 120
 python3 /root/tool/aitool/zocom/mail_receiver.py --poll ccst-test@example.test --regex 'https?://[^\s<>"]+' --timeout 120

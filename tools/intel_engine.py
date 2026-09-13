@@ -103,7 +103,7 @@ def load_memory_context(
     """Load hunt memory context for a target.
 
     Returns:
-        Dict with tested_endpoints, findings, tech_stack, last_hunted, patterns.
+        Dict with tested_endpoints, findings, tech_stack, last_hunted, tested_cves.
     """
     context = {
         "tested_endpoints": [],
@@ -111,7 +111,6 @@ def load_memory_context(
         "tech_stack": [],
         "last_hunted": None,
         "hunt_sessions": 0,
-        "patterns": [],
         "tested_cves": [],
     }
 
@@ -156,22 +155,9 @@ def load_memory_context(
         except OSError:
             pass
 
-    # Load patterns
-    patterns_path = os.path.join(memory_dir, "patterns.jsonl")
-    if os.path.isfile(patterns_path):
-        try:
-            with open(patterns_path) as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        pattern = json.loads(line)
-                        context["patterns"].append(pattern)
-                    except json.JSONDecodeError:
-                        continue
-        except OSError:
-            pass
+    # 跨目标 PatternDB 加载已移除（审计 F9 / 2026-09-12 收敛裁定）：
+    # context["patterns"] 曾全量解码后无任何消费者，只是浪费；跨目标经验
+    # 复用唯一通道 = 人工晋升知识卡。
 
     return context
 

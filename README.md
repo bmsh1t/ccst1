@@ -65,7 +65,7 @@ Claude Bug Bounty is an **agent harness** — not just scripts. It reasons about
 |:---|:---|
 | Run scripts manually, hope for the best | AI orchestrates 25+ tools in the right order |
 | Write reports from scratch (45 min each) | Report-writer agent generates submission-ready reports in 60s |
-| Forget what worked last month | Persistent memory — patterns from target A inform target B |
+| Forget what worked last month | Persistent memory — per-target episodes plus human-reviewed knowledge cards |
 | Can't see live traffic from Claude | Burp/Caido MCP integration — Claude reads your proxy history |
 | Hunt one endpoint at a time | `/autopilot` runs full hunt loops with safety checkpoints |
 
@@ -450,7 +450,7 @@ Those helper controls stay in **advisory audit/replay** behavior for the supplie
 - **Journal** — append-only JSONL log of every hunt action (concurrent-safe writes)
 - **Pattern DB** — what technique worked on which tech stack, sorted by payout
 - **Target profiles** — tested/untested endpoints, tech stack, findings
-- **Cross-target learning** — patterns from target A suggested when hunting target B
+- **Knowledge promotion** — cross-project reuse only through human-reviewed knowledge cards (`/distill` → `knowledge_promote.py`)
 
 </details>
 
@@ -592,7 +592,6 @@ closeable only after mapping to one of the canonical coverage cells above.
 
 | Tool | Target |
 |:---|:---|
-| `zero_day_fuzzer.py` | Logic bugs, edge cases, access control |
 | `vuln_scanner.sh` | Breadth scanner and candidate/accounting producer; active validation is AI-selected |
 | `validation_runner.py` | Optional exact-request replay, diff, raw evidence, and canonical write-back |
 
@@ -626,7 +625,7 @@ JSHook remains an explicit runtime-evidence integration. See
 | Module | What It Does |
 |:---|:---|
 | `hunt_journal.py` | Append-only JSONL hunt log (concurrent-safe via `fcntl.flock`) |
-| `pattern_db.py` | Cross-target pattern DB — matches by vuln class + tech stack |
+| `pattern_db.py` | Per-target pattern store (2026-09-12 scoping ruling: no automatic cross-target recall) |
 | `audit_log.py` | Every outbound request logged + advisory per-host pacing/breaker telemetry |
 | `schemas.py` | Schema validation for all entry types (versioned) |
 

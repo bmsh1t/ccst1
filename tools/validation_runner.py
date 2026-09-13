@@ -223,11 +223,6 @@ def _private_bundle_dir(repo_root: Path, target: str, bundle: Path) -> Path:
     return private_artifact_dir(repo_root, "validation", target_key, str(relative))
 
 
-def _write_text(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
-
-
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -695,22 +690,6 @@ def _action_matches_legacy_marker(action: dict[str, Any], markers: list[str]) ->
     return any(_legacy_marker_match(haystack, marker) for marker in markers)
 
 
-def _queue_action_matches_summary(action: dict[str, Any], summary: dict[str, Any]) -> bool:
-    """兼容旧调用方的单条匹配判断；自动 closure 使用下方的分级选择。"""
-    backlog_id = _summary_backlog_id(summary)
-    finding_id = str(summary.get("finding_id") or "").strip()
-    endpoint = _normalized_endpoint_identity(str(summary.get("url") or summary.get("endpoint") or ""))
-    markers = _endpoint_markers(str(summary.get("url") or summary.get("endpoint") or ""))
-    if finding_id:
-        markers.append(finding_id)
-    return (
-        _action_matches_backlog(action, backlog_id)
-        or _action_matches_finding(action, finding_id)
-        or _action_matches_endpoint(action, endpoint)
-        or _action_matches_legacy_marker(action, markers)
-    )
-
-
 def _select_queue_actions_for_summary(
     queue: dict[str, Any],
     summary: dict[str, Any],
@@ -1031,30 +1010,6 @@ def _candidate_queue_followup(summary: dict[str, Any]) -> dict[str, Any]:
             "next_evidence_step": next_step or ("run /validate report-readiness audit" if ready else ""),
         },
     }
-
-
-def _patch_candidate_queue_followup(
-    repo_root: Path,
-    *,
-    target: str,
-    action_id: str,
-    summary: dict[str, Any],
-) -> dict[str, Any]:
-    """把已匹配 action 改写为 candidate-evidence-gap 并保存。"""
-    with queue_mutation_lock(repo_root, target):
-        queue = load_queue(repo_root, target)
-        response = _patch_candidate_queue_followup_in_queue(
-            queue,
-            action_id=action_id,
-            summary=summary,
-        )
-        if not response["patched"]:
-            return response
-        path = save_queue(repo_root, target, queue)
-        response["path"] = str(path)
-        response["next"] = select_next_action(queue)
-        response["summary"] = summarize_queue(queue)
-        return response
 
 
 def _patch_candidate_queue_followup_in_queue(
@@ -1647,28 +1602,8 @@ def _response_diff(baseline: dict[str, Any], variant: dict[str, Any]) -> dict[st
     return payload
 
 
-def _is_success_status(status: int) -> bool:
-    return 200 <= int(status or 0) < 300
-
-
 def _is_denied_status(status: int) -> bool:
     return int(status or 0) in {401, 403, 404}
-
-
-def _is_blocked_or_denied_response(status: int, body: str = "") -> bool:
-    if _is_denied_status(status):
-        return True
-    text = str(body or "").lower()
-    return int(status or 0) == 400 and any(
-        marker in text
-        for marker in (
-            "malicious activity detected",
-            "unauthorized",
-            "forbidden",
-            "not allowed",
-            "access denied",
-        )
-    )
 
 
 def _record_ledger_if_needed(
@@ -1753,10 +1688,6 @@ def _record_ledger_if_needed(
         }
 
 
-def _normalized_json_key(value: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
-
-
 def _merge_request_headers(request: dict[str, Any], extra: dict[str, str] | None) -> dict[str, str]:
     headers = {str(key): str(value) for key, value in (request.get("headers") or {}).items()}
     for key, value in (extra or {}).items():
@@ -1779,18 +1710,6 @@ def _request_pair_materiality(run: dict[str, Any]) -> bool:
         or changed.get("json_fields")
         or abs(int(run.get("diff", {}).get("body_length", {}).get("delta", 0) or 0)) > 20
     )
-
-
-def _request_pair_side_succeeded(run: dict[str, Any]) -> bool:
-    """Both sides of one run returned a success-class status (2xx/3xx)."""
-    for side in (run.get("baseline") or {}, run.get("variant") or {}):
-        try:
-            status = int(side.get("status") or 0)
-        except (TypeError, ValueError):
-            return False
-        if not (200 <= status < 400):
-            return False
-    return True
 
 
 def _run_wire_facts(run: dict[str, Any], baseline_body: str, variant_body: str) -> dict[str, bool]:
@@ -1992,27 +1911,6 @@ def _request_pair_spec_view(spec: dict[str, Any]) -> dict[str, Any]:
         "expected_signal": spec.get("expected_signal", ""),
         "expect_auth": bool(spec.get("expect_auth") is True),
     }
-
-
-def _request_pair_active_value(spec: dict[str, Any], request: dict[str, Any]) -> str:
-    dimension = str(spec.get("active_dimension") or "")
-    if dimension.startswith("query:"):
-        name = dimension[6:].strip()
-        values = urllib.parse.parse_qs(
-            urllib.parse.urlsplit(request["url"]).query,
-            keep_blank_values=True,
-        ).get(name, [""])
-        return str(values[0] if values else "")
-    if dimension.startswith("cookie:"):
-        name = dimension[7:].strip()
-        cookie_header = next((str(value) for key, value in request.get("headers", {}).items() if key.lower() == "cookie"), "")
-        return next((value.strip() for item in cookie_header.split(";") if "=" in item for key, value in [item.split("=", 1)] if key.strip() == name), "")
-    if dimension.startswith("header:"):
-        name = dimension[7:].strip().lower()
-        return next((str(value) for key, value in request.get("headers", {}).items() if key.lower() == name), "")
-    if dimension.startswith("path:"):
-        return urllib.parse.urlsplit(request["url"]).path
-    return _request_body_text(request.get("body", ""), request.get("headers", {}))
 
 
 def run_request_diff(

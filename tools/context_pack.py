@@ -1904,30 +1904,6 @@ def _select_cards_and_deferred(
     return selected, deferred, recall
 
 
-def _select_cards(
-    blob: str,
-    ranked: dict,
-    gaps: list[dict],
-    goal_memory: dict,
-    focus: str,
-    findings: list[dict],
-    repo_root: Path | str = BASE_DIR,
-    *,
-    card_paths: dict[str, str] | None = None,
-) -> list[str]:
-    selected, _, _ = _select_cards_and_deferred(
-        blob,
-        ranked,
-        gaps,
-        goal_memory,
-        focus,
-        findings,
-        repo_root,
-        card_paths=card_paths,
-    )
-    return selected
-
-
 def _required_checks(blob: str, has_candidate: bool) -> list[str]:
     # Platform startup owns action safety; Context Pack only emits route checks.
     # Skill recommendation is retired (S1 native loading): the reporting rule
@@ -2830,14 +2806,6 @@ def _ledger_source_summary(summary: dict) -> dict:
         "evidence_candidates": int(result_counts.get("candidate", 0) or 0),
         "evidence_redline_unchecked": int(summary.get("redline_unchecked_count") or 0),
     }
-
-
-def _redact_candidate_source_targets(value: str, targets: list[str]) -> str:
-    redacted = str(value or "")
-    for target in sorted(set(targets), key=len, reverse=True):
-        if target:
-            redacted = re.sub(re.escape(target), "[source-target]", redacted, flags=re.I)
-    return redacted
 
 
 def build_context_pack(

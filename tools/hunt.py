@@ -334,14 +334,6 @@ def _count_target_list_entries(path):
     return len(target_list_entries(path))
 
 
-def _target_list_entries(path, limit=None):
-    """Return usable primary-domain entries from a target list file."""
-    if not os.path.isfile(path):
-        raise OSError(f"target list is not readable: {path}")
-    items = target_list_entries(path, preserve_wildcards=True)
-    return items[:limit] if limit else items
-
-
 def _write_text_lines(path, lines):
     """Write deduped lines to a UTF-8 text file."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -350,13 +342,6 @@ def _write_text_lines(path, lines):
         if unique_lines:
             f.write("\n".join(unique_lines) + "\n")
     return unique_lines
-
-
-def _append_text(path, text):
-    """Append text to a file, creating parent directories as needed."""
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(text)
 
 
 def _extract_generated_report_count(output):
@@ -1146,42 +1131,6 @@ def _finalize_interrupted_scan(domain):
         log("warn", f"Unable to preserve interrupted scanner candidates for {target}: {exc}")
         return
     log("warn", f"Preserved {payload['total']} interrupted scanner candidate(s) in {findings_dir}")
-
-
-def _run_nuclei_scan(urls, *, tags, output_path, severity=None, rate_limit=20, concurrency=10):
-    """Run nuclei against a URL list and write findings to output_path."""
-    urls = _dedupe_keep_order(urls)
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    if not urls or not _command_exists("nuclei"):
-        return False
-
-    with tempfile.NamedTemporaryFile(
-        "w",
-        encoding="utf-8",
-        dir=os.path.dirname(output_path),
-        prefix="_nuclei_targets_",
-        suffix=".txt",
-        delete=False,
-    ) as handle:
-        input_path = handle.name
-        handle.write("".join(f"{url}\n" for url in urls))
-    try:
-        cmd = ["nuclei", "-l", input_path, "-tags", tags]
-        if severity:
-            cmd.extend(["-severity", severity])
-        cmd.extend([
-            "-silent",
-            "-rate-limit", str(rate_limit),
-            "-concurrency", str(concurrency),
-            "-output", output_path,
-        ])
-        success, _ = run_argv(cmd, cwd=BASE_DIR, timeout=600)
-    finally:
-        try:
-            os.unlink(input_path)
-        except FileNotFoundError:
-            pass
-    return success and os.path.exists(output_path)
 
 
 def _extract_js_endpoints(js_text):

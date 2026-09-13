@@ -902,36 +902,6 @@ def _httpx_technology_signals(line: str) -> list[str]:
     return sorted(set(signals))
 
 
-def _iter_asset_relation_observations(source: Path):
-    """Yield valid raw relation observations without applying candidate limits."""
-    if not source.is_file():
-        return
-    try:
-        with source.open("rb") as handle:
-            while True:
-                raw = handle.readline(MAX_ASSET_RELATION_LINE_BYTES + 1)
-                if not raw:
-                    break
-                oversized = len(raw) > MAX_ASSET_RELATION_LINE_BYTES
-                if oversized and not raw.endswith(b"\n"):
-                    while True:
-                        chunk = handle.readline(MAX_ASSET_RELATION_LINE_BYTES + 1)
-                        if not chunk or chunk.endswith(b"\n"):
-                            break
-                    continue
-                if oversized:
-                    continue
-                text = raw.decode("utf-8", errors="replace").strip()
-                if not text:
-                    continue
-                try:
-                    yield _normalize_asset_relation_observation(json.loads(text))
-                except (json.JSONDecodeError, ValueError):
-                    continue
-    except OSError:
-        return
-
-
 def _iter_asset_relation_ranking_observations(source: Path):
     """Read network values from raw relation rows without candidate list caps."""
     if not source.is_file():

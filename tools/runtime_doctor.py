@@ -162,10 +162,6 @@ def _runtime_files(
     }
 
 
-def _disabled_command_name(relative_path: str) -> str:
-    return f"{DISABLED_COMMAND_PREFIX}{relative_path}"
-
-
 def _intentional_disabled_runtime_files(runtime_files: dict[str, Path], kind: str) -> dict[str, Path]:
     if kind != "commands":
         return {}

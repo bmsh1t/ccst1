@@ -699,18 +699,6 @@ def add_backlog(
     return _mutate_case_state(repo_root, target, mutate)
 
 
-def _session_for_actor(state: dict[str, Any], actor: str) -> tuple[str, dict[str, Any]] | tuple[None, None]:
-    for session_id, session in state.get("sessions", {}).items():
-        if session.get("actor") != actor:
-            continue
-        if str(session.get("validity") or "unknown").lower() in SESSION_INVALID:
-            continue
-        if not session.get("headers") and (not session.get("header_name") or not session.get("header_value")):
-            continue
-        return str(session_id), session
-    return None, None
-
-
 def _impact_weight(state: dict[str, Any], item: dict[str, Any]) -> int:
     obj = state.get("objects", {}).get(item.get("object_ref") or "", {})
     object_type = str(obj.get("type") or "").lower()

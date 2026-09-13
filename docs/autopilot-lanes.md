@@ -194,7 +194,7 @@ already recorded anything.
 ## Access Limit
 
 - A path/proxy/framework/sibling/normalization signal may trigger an AI-selected exact request for any 401/403/404/405/415 access boundary; WAF is context, not a prerequisite. Execute through browser/curl/raw sender, and use `validation_runner.py request-diff` only when its one-dimension contract fits. Preserve raw evidence and let checkpoint/validate own classification; a status change alone is not proof.
-- Invoke setup helpers on demand: `/root/tool/aitool/zocom/mail_receiver.py` for self-owned test-account email verification, or `tools/cf_solver.py` for Cloudflare clearance. Persist results through private AuthSession/Case State and keep failures `blocked`/`partial`.
+- Invoke setup helpers on demand: `/root/tool/aitool/zocom/mail_receiver.py` (environment-provided helper, not part of this repo) for self-owned test-account email verification, or `tools/cf_solver.py` for Cloudflare clearance. Persist results through private AuthSession/Case State and keep failures `blocked`/`partial`.
 
 ## Workflow Timing And Case State
 

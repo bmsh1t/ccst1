@@ -2293,17 +2293,11 @@ def rank_surface(context: dict) -> dict:
     untested_endpoints |= {item.split("?", 1)[0] for item in untested_endpoints if "?" in item}
     profile_tech = {tech.lower() for tech in profile.get("tech_stack", [])}
 
-    pattern_matches = [
-        json.loads(item) if isinstance(item, str) else item
-        for item in context.get("pattern_matches", [])
-    ]
-    pattern_techniques = []
-    for item in pattern_matches:
-        technique = item.get("technique", "")
-        vuln_class = item.get("vuln_class", "")
-        payout = item.get("payout", 0)
-        suffix = f" (${payout:.0f})" if payout else ""
-        pattern_techniques.append(f"{item.get('target', '')}: {technique} [{vuln_class}]{suffix}")
+    # 跨目标 pattern 解码已移除（审计 F9）：loader 不再产生 pattern_matches
+    # （2026-09-12 收敛裁定），pattern_suggestions 恒为空列表（兼容字段保留，
+    # 旧投影消费方 context_pack 已在消费边界拒绝跨目标行）。
+    pattern_matches: list[dict] = []
+    pattern_techniques: list[str] = []
 
     browser_urls = set(context.get("browser_xhr_urls", []) + context.get("browser_api_urls", []))
     browser_request_shapes = context.get("browser_request_shapes") or {}
@@ -2620,16 +2614,8 @@ def rank_surface(context: dict) -> dict:
             reasons.append("target-memory dead end")
             suggested = f"avoid repeating remembered dead end unless new evidence changed: {first[:120]}"
 
-        for item in pattern_matches:
-            if item.get("technique") and profile_tech:
-                score += _add_score_breakdown(
-                    score_breakdown,
-                    "memory",
-                    "Historical pattern match",
-                    1,
-                    item.get("technique", ""),
-                )
-                break
+        # 跨目标 pattern 计分分支已移除（审计 F9）：pattern_matches 恒为空
+        # （2026-09-12 收敛裁定后 loader 不再产生），此分支不可达。
 
         scanner_findings = scanner_findings_by_url.get(raw_url, [])
         top_scanner_finding = None

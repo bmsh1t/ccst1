@@ -135,17 +135,6 @@ def classify_route_kind(probe: dict, shell: dict) -> str:
     return "unknown"
 
 
-def _merge_url(raw: str, scheme_host: str) -> str:
-    url = raw.strip()
-    if not url:
-        return ""
-    if url.startswith(("http://", "https://")):
-        return url
-    if url.startswith("/"):
-        return f"{scheme_host}{url}"
-    return ""
-
-
 def _load_endpoint_urls(repo_root: Path, target: str, limit: int) -> list[str]:
     """Candidate endpoints from the Active URL view and surface index; no ranking."""
     storage_key = target_storage_key(target)

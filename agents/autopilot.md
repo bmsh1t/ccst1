@@ -76,7 +76,7 @@ If checkpoint exposes `case-state-validation` or `case-state-enrichment`, prefer
 
 Use case state as working memory:
 
-- Ready backlog -> run the `validation_runner.py ... --from-case-state` replay or resolve it with evidence.
+- Ready backlog -> run the `validation_runner.py request-diff --request-spec <ref>` replay emitted by `next_action.command` (the command carries only parser-supported flags) or resolve it with evidence.
 - Missing evidence -> collect the named actor/session/object/private marker, then rerun checkpoint.
 - Linked blocked backlog -> follow `recover_hypothesis` with an empty replay command; record the recovery step before creating a fresh backlog and never replay the blocked runner implicitly.
 - Empty case state + object IDs in cached artifacts -> run `case_state_seed.py --target <target> --json` and review suggested commands.

@@ -139,24 +139,6 @@ def _semantic_evidence_ledger(repo_root: Path, target: str) -> dict:
     }
 
 
-def _semantic_pattern_calibration(path: Path) -> dict:
-    """Project only the calibration decisions that can change Surface ranking."""
-    try:
-        try:
-            from tools.pattern_calibration import excluded_pattern_ids
-        except ImportError:  # pragma: no cover - direct tools/ execution
-            from pattern_calibration import excluded_pattern_ids  # type: ignore
-        excluded = sorted(str(pattern_id) for pattern_id in excluded_pattern_ids(path))
-    except Exception:
-        # PatternDB.match(calibrated=True) treats an unreadable optional
-        # calibration file as no exclusions; keep the manifest equivalent.
-        excluded = []
-    return {
-        "kind": "pattern_calibration_effective_projection",
-        "excluded_pattern_ids": excluded,
-    }
-
-
 def _now_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -222,7 +204,10 @@ def _manifest_roots(
         roots.extend(
             [
                 (memory_root / "targets" / f"{storage_key}.json", frozenset()),
-                (memory_root / "patterns.jsonl", frozenset()),
+                # patterns.jsonl 已移出输入指纹（审计 F9）：surface 排序自
+                # 2026-09-12 收敛裁定后不再消费跨目标 pattern（loader、
+                # 计分分支均已删），其他目标写入 pattern 不再使本目标投影
+                # 无效——这是输出不变的确定性收益，也消除无谓重建。
             ]
         )
     return roots
@@ -242,21 +227,9 @@ def build_surface_input_manifest(
         f"state/{storage_key}/action_queue.json": _semantic_action_queue,
         f"memory/evidence/{storage_key}/ledger.jsonl": _semantic_evidence_ledger,
     }
-    calibration_path: Path | None = None
-    if memory_dir:
-        calibration_path = Path(memory_dir).resolve() / "pattern_calibration.jsonl"
-        # Directory creation is a runtime side effect, not a ranking input.
-        # Bind only effective exclusions; empty/below-threshold calibration
-        # rows do not change ranking and must not invalidate a projection.
-        if (
-            not calibration_path.is_file()
-            or not _semantic_pattern_calibration(calibration_path).get("excluded_pattern_ids")
-        ):
-            calibration_path = None
-    if calibration_path is not None:
-        semantic_paths[_path_label(repo, calibration_path)] = (
-            lambda _repo, _target, path=calibration_path: _semantic_pattern_calibration(path)
-        )
+    # pattern_calibration 绑定已移除（审计 F9）：calibrated pattern 排除只
+    # 影响已被删除的跨目标 PatternDB 匹配，surface 排序不再消费该文件；
+    # 保留绑定只会让校准行写入无谓地使投影失效。
     items: list[dict] = []
     seen: set[str] = set()
     for root, skip_parts in _manifest_roots(repo, resolved, memory_dir=memory_dir):
