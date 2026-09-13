@@ -111,13 +111,12 @@ def promote(
     if rel_dst in set(existing.values()):
         raise SystemExit(f"file {rel_dst} already registered under another id")
 
-    # 1) mv（draft 卡的 maturity 由人工按证据强度决定是否同步修改）
-    dst.write_bytes(src.read_bytes())
-    src.unlink()
-
     # 2) registry 追加（保持 yaml 真源；不引入第二登记状态）。
     # capabilities 是 block sequence，追加到列表末尾；yaml 不允许在同一
     # mapping 里混用缩进级别，所以直接定位最后一个 capability 条目之后。
+    # 原文读取和 new_text 计算都在 mv 之前完成——registry 读取异常发生在
+    # 任何文件被改动前，保护圈从"无副作用"状态开始，不留 mv 后读取失败
+    # 的半完成窗口。
     trigger_lines = "".join(f"\n      - {t}" for t in (triggers or [card_id]))
     entry = (
         f"  - id: {card_id}\n"
@@ -135,7 +134,6 @@ def promote(
 
     match = _re.search(r"(?ms)^capabilities:.*?(?=^\S|\Z)", text)
     if not match:
-        _rollback(src=src, dst=dst, registry_path=registry_path, original=text)
         raise SystemExit("capabilities.yaml has no capabilities: block to append to")
     block = match.group(0)
     if "[]" in block.split("\n")[0]:
@@ -146,6 +144,10 @@ def promote(
         new_text = text[: match.start()] + "capabilities:\n" + entry + text[match.end():]
     else:
         new_text = text[: match.end()] + entry + text[match.end():]
+
+    # 1) mv（draft 卡的 maturity 由人工按证据强度决定是否同步修改）
+    dst.write_bytes(src.read_bytes())
+    src.unlink()
 
     # 2a) 从这里起到 audit 通过为止，任何异常（包括 registry 读写 OSError、
     # audit 子进程启动失败）都必须回到 candidate + registry 原状——

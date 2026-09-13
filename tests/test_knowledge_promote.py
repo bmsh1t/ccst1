@@ -228,3 +228,38 @@ def test_promote_rolls_back_on_audit_process_start_failure(tmp_path, monkeypatch
     assert (tmp_path / "knowledge" / "candidates" / "t-cross-actor.md").is_file()
     assert not (tmp_path / "knowledge" / "cards" / "t-cross-actor.md").exists()
     assert (tmp_path / "knowledge" / "capabilities.yaml").read_text(encoding="utf-8") == registry_before
+
+
+def test_promote_fails_cleanly_when_registry_read_fails(tmp_path, monkeypatch):
+    """故障注入：registry 原文读取失败时，不得有任何文件被改动。
+
+    读取和 new_text 计算已前移到 mv 之前：保护圈从无副作用状态开始，
+    registry 读取异常发生在任何文件被修改前。
+    """
+    import knowledge_promote
+
+    _seed_candidate(tmp_path)
+    registry_path = tmp_path / "knowledge" / "capabilities.yaml"
+    registry_before = registry_path.read_text(encoding="utf-8")
+
+    def fail_read(path, *args, **kwargs):
+        if Path(path) == registry_path:
+            raise OSError("injected registry read failure")
+        return original_read(path, *args, **kwargs)
+
+    original_read = Path.read_text
+    monkeypatch.setattr(Path, "read_text", fail_read)
+    try:
+        promote(tmp_path, card_id="t-cross-actor")
+    except (OSError, Exception) as exc:
+        # registry 读取异常可能被包装为 KnowledgeRegistryError；无论哪种，
+        # 都必须在 mv 之前发生——见下方无副作用断言。
+        assert "injected registry read failure" in str(exc)
+    else:
+        raise AssertionError("expected registry read failure to abort promote")
+
+    monkeypatch.undo()
+    # 无副作用：候选仍在原位，cards 无新卡，registry 未变
+    assert (tmp_path / "knowledge" / "candidates" / "t-cross-actor.md").is_file()
+    assert not (tmp_path / "knowledge" / "cards" / "t-cross-actor.md").exists()
+    assert registry_path.read_text(encoding="utf-8") == registry_before

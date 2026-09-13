@@ -136,6 +136,9 @@ Context Pack 固定只读 `reviewed` Candidate，排除来源包含当前目标�
 证据。它不会直接生成 Action、Finding 或 Closure。
 
 跨目标经验的进入路径是 `/distill`（直线）：草稿卡写入 `knowledge/candidates/`，
-人工 `mv` 进 `knowledge/cards/` 即 promote、`rm` 即 reject——git 即生命周期。
+人工内容审核通过后运行 `python3 tools/knowledge_promote.py --id <slug>` 完成
+promote（mv + registry 登记 + strict audit + Pack 目录可发现，失败原子回滚）、
+`rm` 即 reject——git 即生命周期。裸 `mv` 不登记 registry，未登记的卡 Pack
+不可见。
 `maturity` 是 frontmatter 展示字段，人眼与 `git log` 审计；`tested`/`proven`
 的声明必须在草稿里带可复跑 evidence refs，否则保守标 `draft`。

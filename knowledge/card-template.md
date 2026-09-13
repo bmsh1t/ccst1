@@ -136,9 +136,11 @@ source_refs:
 - `case-router` 表示按信号加载的路由层，与 HackerOne 或任何单一案例库无绑定；只有确实来自
   当前 resolver 支持的案例 corpus 时才填写 `source_refs`。
 - 卡片生命周期由 git 即状态机管理（`/distill` 两段式：草稿落
-  `knowledge/candidates/`，promote = 人工 `mv` 到 `knowledge/cards/` 并更新
-  `maturity`，reject = 删除草稿）；`maturity` 表示证据强度
+  `knowledge/candidates/`，promote = 人工审核后运行
+  `python3 tools/knowledge_promote.py --id <slug>`（mv + registry 登记 + strict
+  audit 一条命令，失败原子回滚）并更新 `maturity`，reject = 删除草稿）；`maturity` 表示证据强度
   （draft/tested/proven），`git log` 是治理审计。没有独立的事件存储状态机。
+  裸 `mv` 不登记 registry——未登记的卡 Pack 不可见，过不了 strict audit。
 - 不保存真实凭证、个人数据、客户数据或未经脱敏的响应正文。
 
 ## 提交前质量门
