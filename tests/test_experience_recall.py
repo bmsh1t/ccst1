@@ -50,11 +50,23 @@ def _seed(repo: Path, *, target: str = "t.example", other: str = "other.example"
                       "outcome": "false-positive"}) + "\n",
         encoding="utf-8",
     )
-    # 知识卡
+    # 知识卡（审计 F5：准入走 registry，不再 glob 目录）
     cards = repo / "knowledge" / "cards"
     cards.mkdir(parents=True, exist_ok=True)
     (cards / "basket-idor.md").write_text(
         "---\nid: basket-idor\nmaturity: tested\ntrigger_tags:\n  - basket\n  - idor\n---\nbody",
+        encoding="utf-8",
+    )
+    (repo / "knowledge" / "capabilities.yaml").write_text(
+        "schema_version: 1\n"
+        "contracts:\n"
+        "  max_core_cards: 20\n  default_cards_max: 8\n"
+        "  card_layers:\n    - core\n    - reference\n    - case-router\n"
+        "  load_modes:\n    - default\n    - signal-or-default\n    - signal-only\n    - on-demand\n    - gated\n"
+        "capabilities:\n"
+        "  - id: basket-idor\n    kind: card\n    file: knowledge/cards/basket-idor.md\n"
+        "    layer: case-router\n    load: on-demand\n    purpose: validate\n"
+        "    triggers:\n      - basket\n      - idor\n",
         encoding="utf-8",
     )
 
@@ -146,3 +158,29 @@ def test_cli_human_readable_contains_sources(tmp_path, capsys):
     assert "本目标技术经验" in out
     assert "已晋升知识卡" in out
     assert "basket-idor.md" in out
+
+
+def test_knowledge_cards_require_registry_registration(tmp_path):
+    """审计 F5：目录里未登记的卡不得进入召回（准入 = registry，不是目录位置）。"""
+    _seed(tmp_path)
+    cards = tmp_path / "knowledge" / "cards"
+    # 未登记 sentinel：与登记卡同目录、frontmatter 齐全，但不在 registry。
+    (cards / "unregistered-sentinel.md").write_text(
+        "---\nid: unregistered-sentinel\nmaturity: tested\ntrigger_tags:\n  - basket\n---\nbody",
+        encoding="utf-8",
+    )
+    view = build_recall_view(tmp_path, target="t.example")
+    refs = [e["ref"] for e in view["knowledge_cards"]]
+    assert "knowledge/cards/basket-idor.md" in refs
+    assert not any("unregistered-sentinel" in r for r in refs), (
+        "unregistered card leaked into recall as reviewed knowledge"
+    )
+
+
+def test_knowledge_cards_empty_registry_returns_no_cards(tmp_path):
+    """registry 缺失/为空：返回空知识列表，不退回 glob 目录。"""
+    _seed(tmp_path)
+    (tmp_path / "knowledge" / "capabilities.yaml").unlink()
+    view = build_recall_view(tmp_path, target="t.example")
+    assert view["counts"]["knowledge_cards"] == 0
+    assert not any("basket-idor" in e.get("ref", "") for e in view["knowledge_cards"])

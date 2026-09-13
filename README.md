@@ -685,6 +685,7 @@ sudo apt install golang python3 nodejs jq
 git clone https://github.com/shuvonsec/claude-bug-bounty.git
 cd claude-bug-bounty
 chmod +x install.sh && ./install.sh     # Install skills + commands into ~/.claude/
+pip install -r requirements.txt         # Python runtime deps (requests, PyYAML, badsecrets)
 bash install_tools.sh                    # Install recon/scan tools + sisakulint
 ```
 

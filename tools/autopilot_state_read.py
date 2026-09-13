@@ -119,8 +119,18 @@ def _load_json_inject_projection(repo_root: str, target: str) -> dict:
         return projection
     status = str(payload.get("status") or "partial")
     fingerprint = str(payload.get("input_fingerprint") or "")
+    try:
+        schema_version = int(payload.get("schema_version", 0) or 0)
+    except (TypeError, ValueError):
+        # 审计 F10：可选旧摘要的字段类型错误降级为 partial（带修复指针），
+        # 不升级为整个状态视图读取失败。可选材料损坏 ≠ 状态不可用。
+        projection.update({
+            "status": "partial",
+            "reason": "invalid_schema_version",
+        })
+        return projection
     if (
-        int(payload.get("schema_version", 0) or 0) < 2
+        schema_version < 2
         or status not in {"complete_no_hit", "candidate_pending", "partial", "invalid_input"}
         or not re.fullmatch(r"[0-9a-f]{64}", fingerprint)
         or (

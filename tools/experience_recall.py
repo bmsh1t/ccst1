@@ -184,33 +184,47 @@ def _collect_pattern_db(repo_root: Path, target: str, query_tokens: set[str]) ->
 
 
 def _collect_knowledge_cards(repo_root: Path, query_tokens: set[str]) -> list[dict]:
-    """已晋升跨目标知识卡：按 trigger_tags/id 粗筛，正文由 Claude 按引用展开。"""
-    cards_dir = repo_root / "knowledge" / "cards"
-    if not cards_dir.is_dir():
+    """已晋升跨目标知识卡：按 trigger_tags/id 粗筛，正文由 Claude 按引用展开。
+
+    准入走正式登记边界（审计 F5）：只有 registry（capabilities.yaml）里
+    登记的卡才算"已晋升、已审核"——目录位置不是与 registry 并列的第二
+    准入来源。未登记的 cards/*.md（晋升中途残留、手工放置）不进召回，
+    它们要么走 knowledge_promote 完成登记，要么留在 candidates/。
+    """
+    try:
+        from tools.knowledge_registry import load_registry, parse_knowledge_document
+    except ImportError:  # pragma: no cover - direct tools/ execution
+        from knowledge_registry import load_registry, parse_knowledge_document  # type: ignore
+
+    try:
+        registry = load_registry(repo_root)
+        registered_paths = registry.card_paths()
+    except Exception:
+        # registry 缺失/损坏：没有已登记知识可召回，返回空而不是绕过边界
+        # 去 glob 目录（那会把未登记卡当已审核知识输出）。
         return []
     entries: list[dict] = []
-    for card_path in sorted(cards_dir.glob("*.md")):
+    for card_id, rel_path in sorted(registered_paths.items()):
+        card_path = repo_root / rel_path
         try:
             text = card_path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        if not text.startswith("---"):
-            continue
+        parsed = parse_knowledge_document(text)
+        metadata = parsed.metadata if isinstance(parsed.metadata, dict) else {}
         # 只取 frontmatter 的轻量字段做粗筛，不解析全文
-        frontmatter = text.split("---", 2)[1] if text.count("---") >= 2 else ""
-        head = frontmatter + "\n" + card_path.stem.replace("-", " ")
+        head = " ".join(
+            str(item) for item in (metadata.get("trigger_tags") or [])
+        ) + "\n" + card_path.stem.replace("-", " ")
         if query_tokens and not (_tokenize(head) & query_tokens):
             continue
-        maturity = ""
-        maturity_match = re.search(r"^maturity:\s*(\S+)", frontmatter, re.M)
-        if maturity_match:
-            maturity = maturity_match.group(1)
+        maturity = str(metadata.get("maturity") or "")
         entries.append({
             "kind": "knowledge_card",
             "target": "",  # 跨目标
             "ts": "",
             "text": card_path.stem,
-            "ref": f"knowledge/cards/{card_path.name}",
+            "ref": rel_path,
             "maturity": maturity,
         })
         if len(entries) >= DEFAULT_LIMITS["knowledge_card"]:

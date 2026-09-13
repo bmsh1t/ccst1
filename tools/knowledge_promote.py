@@ -145,20 +145,37 @@ def promote(
     else:
         new_text = text[: match.end()] + entry + text[match.end():]
 
-    # 1) mv（draft 卡的 maturity 由人工按证据强度决定是否同步修改）
-    dst.write_bytes(src.read_bytes())
-    src.unlink()
+    # 1) mv 进保护圈（审计 F4）：dst 复制、registry 追加、src 删除全部在
+    # 同一异常恢复范围内——任何一步失败都回到 candidate + registry 原状。
+    # 顺序刻意为 copy -> register -> unlink：unlink 放在 registry 写成功
+    # 之后，失败点在更早阶段时 candidate 从未消失，无需"复活"逻辑。
+    try:
+        dst.write_bytes(src.read_bytes())
+    except OSError as exc:
+        # dst 可能留半份：立即清掉，candidate 未动。
+        try:
+            dst.unlink()
+        except FileNotFoundError:
+            pass
+        raise SystemExit(f"card copy to cards/ failed (candidate kept): {exc}") from exc
 
-    # 2a) 从这里起到 audit 通过为止，任何异常（包括 registry 读写 OSError、
-    # audit 子进程启动失败）都必须回到 candidate + registry 原状——
-    # 半完成态（卡已删未登记 / 已登记未审核）比失败更糟，因为 registry
-    # 消费方会直接吃进未审核知识。
+    # 2a) registry 追加到 audit 通过为止，任何异常都必须回到
+    # candidate + registry 原状——半完成态（卡已删未登记 / 已登记未审核）
+    # 比失败更糟，因为 registry 消费方会直接吃进未审核知识。
     try:
         _atomic_write_text(registry_path, new_text)
         reloaded_check = load_registry(repo_root)
     except Exception as exc:
         _rollback(src=src, dst=dst, registry_path=registry_path, original=text)
         raise SystemExit(f"registry append failed (rolled back): {exc}") from exc
+
+    # 1b) registry 写成功后才删除 candidate：此刻 cards 有卡、registry 已
+    # 登记，剩下任何失败都由 _rollback 复原（含把 candidate 写回）。
+    try:
+        src.unlink()
+    except OSError as exc:
+        _rollback(src=src, dst=dst, registry_path=registry_path, original=text)
+        raise SystemExit(f"candidate removal failed (rolled back): {exc}") from exc
 
     # 3) 验收：audit 必须通过（document-unregistered / source-refs / section 契约）。
     # audit 脚本从本仓库执行（repo 用 --repo-root 指向），tmp/只读挂载也能跑。

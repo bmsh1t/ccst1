@@ -102,6 +102,8 @@ else
     [[ $PHASE_675 -eq 0 ]] && echo "  - Phase 6.7.5 declaration"
     [[ $FILTER_CALLS -eq 0 ]] && echo "  - recon_filters.py calls"
     [[ $VALIDATE_CALLS -eq 0 ]] && echo "  - validate_api_candidates.sh calls"
+    # 审计 F7：INCOMPLETE 必须以非零退出，否则 CI 把失败当成功。
+    exit 1
 fi
 
 echo ""

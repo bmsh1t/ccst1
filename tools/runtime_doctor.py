@@ -4,6 +4,7 @@ import argparse
 import filecmp
 import hashlib
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -28,7 +29,14 @@ def _repo_root(path: str | Path | None = None) -> Path:
 
 
 def _runtime_root(path: str | Path | None = None) -> Path:
-    return Path(path).expanduser().resolve() if path else (Path.home() / ".claude").resolve()
+    if path:
+        return Path(path).expanduser().resolve()
+    # 环境覆盖（测试隔离，审计 F6）：让干净环境/CI 能指向一个准备好的
+    # 临时 runtime，而不是依赖开发者真实 ~/.claude 安装。生产缺省不变。
+    override = os.environ.get("CCST_RUNTIME_ROOT", "")
+    if override:
+        return Path(override).expanduser().resolve()
+    return (Path.home() / ".claude").resolve()
 
 
 def load_critical_runtime_manifest(repo_root: str | Path | None = None) -> dict:

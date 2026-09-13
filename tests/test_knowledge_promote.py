@@ -263,3 +263,64 @@ def test_promote_fails_cleanly_when_registry_read_fails(tmp_path, monkeypatch):
     assert (tmp_path / "knowledge" / "candidates" / "t-cross-actor.md").is_file()
     assert not (tmp_path / "knowledge" / "cards" / "t-cross-actor.md").exists()
     assert registry_path.read_text(encoding="utf-8") == registry_before
+
+
+def test_promote_fails_cleanly_on_candidate_unlink_failure(tmp_path, monkeypatch):
+    """审计 F4 故障注入：src.unlink 失败 -> 回滚，cards/registry 复原，重试可行。"""
+    import knowledge_promote
+
+    _seed_candidate(tmp_path)
+    original_unlink = Path.unlink
+
+    def fail_unlink(self, *args, **kwargs):
+        if self.name == "t-cross-actor.md" and self.parent.name == "candidates":
+            raise OSError("injected candidate unlink failure")
+        return original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_unlink)
+    try:
+        promote(tmp_path, card_id="t-cross-actor")
+    except SystemExit as exc:
+        assert "candidate removal failed" in str(exc)
+    else:
+        raise AssertionError("expected unlink failure to abort promote")
+    monkeypatch.undo()
+
+    # 复原：候选仍在，cards 无卡，registry 无 promote 条目
+    assert (tmp_path / "knowledge" / "candidates" / "t-cross-actor.md").is_file()
+    assert not (tmp_path / "knowledge" / "cards" / "t-cross-actor.md").exists()
+    assert "id: t-cross-actor" not in (tmp_path / "knowledge" / "capabilities.yaml").read_text(encoding="utf-8")
+    # 重试不被 'destination already exists' 卡死
+    result = promote(tmp_path, card_id="t-cross-actor")
+    assert result["promoted"] == "t-cross-actor"
+
+
+def test_promote_fails_cleanly_on_partial_card_write(tmp_path, monkeypatch):
+    """审计 F4 故障注入：dst 半写失败 -> 清理半份卡，candidate 未动，重试可行。"""
+    import knowledge_promote
+
+    _seed_candidate(tmp_path)
+    original_write = Path.write_bytes
+
+    def fail_write(self, data):
+        if self.name == "t-cross-actor.md" and self.parent.name == "cards":
+            # 模拟写一半崩溃：先写 17 字节再抛异常
+            original_write(self, b"x" * 17)
+            raise OSError("injected partial card write")
+        return original_write(self, data)
+
+    monkeypatch.setattr(Path, "write_bytes", fail_write)
+    try:
+        promote(tmp_path, card_id="t-cross-actor")
+    except SystemExit as exc:
+        assert "card copy to cards/ failed" in str(exc)
+    else:
+        raise AssertionError("expected partial write failure to abort promote")
+    monkeypatch.undo()
+
+    # 复原：半份卡被清掉，candidate 未动，registry 未动
+    assert (tmp_path / "knowledge" / "candidates" / "t-cross-actor.md").is_file()
+    assert not (tmp_path / "knowledge" / "cards" / "t-cross-actor.md").exists()
+    assert "id: t-cross-actor" not in (tmp_path / "knowledge" / "capabilities.yaml").read_text(encoding="utf-8")
+    result = promote(tmp_path, card_id="t-cross-actor")
+    assert result["promoted"] == "t-cross-actor"

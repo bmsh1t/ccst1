@@ -10,6 +10,8 @@ targets/
 config.json
 !mcp/fofamap-client/config.json
 !mcp/jshook-client/config.json
+!mcp/burp-mcp-client/config.json
+!mcp/caido-mcp-client/config.json
 *.burp
 *.json.bak
 
