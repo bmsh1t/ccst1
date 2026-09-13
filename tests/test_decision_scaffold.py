@@ -9,7 +9,6 @@ import pytest
 
 from tools.decision_scaffold import (
     VALIDATE_AI_FIELDS_NOTE,
-    build_resolve_scaffold,
     build_validate_scaffold,
 )
 from tools.validate import SEVEN_QUESTION_DEFINITIONS
@@ -107,18 +106,13 @@ def test_validate_scaffold_ignores_mismatched_runner_finding_id(tmp_path):
     assert scaffold["evidence"]["runner_summary"] == ""
 
 
-def test_resolve_scaffold_prefills_dimension_from_metadata():
-    action = {"id": "AQ-1", "metadata": {"active_dimension": "path:/rest/basket/1"}}
-    scaffold = build_resolve_scaffold(action)
-    assert scaffold["continuation"]["dimension"] == "path:/rest/basket/1"
-    assert scaffold["continuation"]["question"] == ""
-    assert scaffold["continuation"]["expected_learning"] == ""
-    assert scaffold["continuation"]["reason"] == ""
+def test_resolve_scaffold_is_retired():
+    """原生能力审计（2026-09-13）：resolve 空白骨架已退役——回显几个空字段
+    并预选 kind=sibling 是在替 AI 起草判断，AI 按 Queue 已发布的 schema
+    直接提交 continuation。"""
+    import tools.decision_scaffold as ds
 
-
-def test_resolve_scaffold_degrades_without_metadata():
-    scaffold = build_resolve_scaffold({"id": "AQ-1"})
-    assert scaffold["continuation"]["dimension"] == ""
+    assert not hasattr(ds, "build_resolve_scaffold")
 
 
 def test_validate_cli_scaffold_roundtrip(tmp_path, capsys):

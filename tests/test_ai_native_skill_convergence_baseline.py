@@ -235,16 +235,16 @@ def test_autopilot_lane_contract_is_inlined_into_bootstrap():
     assert "read that one section from `docs/autopilot-lanes.md`" in skill
 
 
-def test_autopilot_business_model_read_uses_the_stub_generator():
-    """B4 (batch 7): Business Model Read routes through the deterministic stub."""
+def test_autopilot_business_model_read_is_native():
+    """Native-capability audit (2026-09-13): Business Model Read no longer routes
+    through a deterministic stub generator. AI writes and edits the note directly
+    from bounded evidence; the generator (five blank AI sections, 30-day mtime
+    freshness, refresh losing AI judgment) was a re-implementation of native work."""
     skill = (REPO_ROOT / "commands" / "autopilot.md").read_text(encoding="utf-8")
-    assert "tools/business_model_stub.py" in skill
-    assert "deterministically" in skill
-    # The AI-review residual: the generator only stubs; judgment stays with AI.
-    assert "AI reviews the stub and fills" in skill
-    # The 30-day reuse window and the refresh warning survive.
-    assert "30-day reuse window" in skill
-    assert "--refresh" in skill
+    assert "tools/business_model_stub.py" not in skill
+    assert "maintain" in skill and "business_model.md" in skill
+    assert "AI writes and edits" in skill
+    assert "do not\nregenerate or overwrite" in skill
 
 
 def test_action_queue_lanes_doc_documents_from_evidence():

@@ -14,7 +14,7 @@ Active vulnerability hunting through Claude CLI. Use the scanner as a bounded br
 |---|---|
 | 假设选择、路线、验证深度 | **AI 判断** |
 | probe 的 endpoint/method/actor/variant | **机器推导**（`--from-evidence`/`--from-probe`） |
-| claim 的 family/technique/skill_route/risk_tier | **机器推导**（`--template idor-cross-actor` 等） |
+| claim 的 family/technique/skill_route/risk_tier | **AI 判断**（按当前假设填写 activation metadata；类别模板已退役） |
 | claim 四件套（hypothesis_id/expected_learning/kill_condition/decision_reason） | **AI 判断**（永不模板化） |
 | target、ledger 落账、锁、witness | **机械** |
 

@@ -28,12 +28,10 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 try:
-    from tools.claim_templates import apply_template, resolve_template
     from tools.high_value_signals import classify_high_value_signal
     from tools.runtime_state import runtime_wait_action
     from tools.target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from claim_templates import apply_template, resolve_template  # type: ignore
     from high_value_signals import classify_high_value_signal  # type: ignore
     from runtime_state import runtime_wait_action  # type: ignore
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
@@ -2324,12 +2322,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add.add_argument("--json", action="store_true")
 
-    list_templates = sub.add_parser(
-        "list-templates",
-        help="List available claim templates with one-line applicability notes.",
-    )
-    list_templates.add_argument("--json", action="store_true")
-
     next_cmd = sub.add_parser("next", help="Print the highest-priority active action.")
     next_cmd.add_argument("--target", required=True)
     next_cmd.add_argument("--json", action="store_true")
@@ -2341,16 +2333,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--metadata-json",
         default=None,
         help="Versioned AI activation metadata merged atomically before claim.",
-    )
-    claim.add_argument(
-        "--template",
-        default="",
-        help=(
-            "Claim template name (run `list-templates` to enumerate): pre-fills "
-            "category-stable activation fields (family/technique/dimension/"
-            "skill_route/risk_tier). Judgment fields are never templated; "
-            "explicit --metadata-json values always win."
-        ),
     )
     claim.add_argument(
         "--from-evidence",
@@ -2367,15 +2349,6 @@ def build_parser() -> argparse.ArgumentParser:
     resolve = sub.add_parser("resolve", help="Resolve or reclassify one action.")
     resolve.add_argument("--target", required=True)
     resolve.add_argument("--id", required=True)
-    resolve.add_argument(
-        "--scaffold",
-        action="store_true",
-        help=(
-            "Emit the continuation/metadata skeleton for this action "
-            "(dimension pre-filled from metadata; reason/question/"
-            "expected_learning left for AI judgment). No state is written."
-        ),
-    )
     resolve.add_argument("--status", default="", choices=[""] + sorted(ALLOWED_STATUSES | set(STATUS_ALIASES), key=str), help="terminal/interim status; required unless --scaffold")
     resolve.add_argument("--result", default="")
     resolve.add_argument(
@@ -2452,8 +2425,6 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "claim":
             metadata = _parse_metadata_json(args.metadata_json)
-            if getattr(args, "template", ""):
-                metadata = apply_template(str(args.template), metadata)
             action = claim_next_action(
                 repo,
                 args.target,
@@ -2465,28 +2436,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if action else 1
 
         if args.command == "resolve":
-            if getattr(args, "scaffold", False):
-                queue = load_queue(repo, args.target)
-                action = next(
-                    (
-                        item
-                        for index, item in enumerate(queue.get("actions", []))
-                        if isinstance(item, dict)
-                        and _action_identity(item, index) == args.id
-                    ),
-                    None,
-                )
-                if action is None:
-                    print(f"action_queue: no action {args.id!r} for {args.target}", file=sys.stderr)
-                    return 1
-                try:
-                    from tools.decision_scaffold import build_resolve_scaffold
-                except ImportError:  # pragma: no cover - direct tools/ execution
-                    from decision_scaffold import build_resolve_scaffold  # type: ignore
-                _print(build_resolve_scaffold(action), as_json=True)
-                return 0
             if not str(args.status or "").strip():
-                parser.error("--status is required unless --scaffold")
+                parser.error("--status is required")
             metadata = _parse_metadata_json(args.metadata_json)
             result = resolve_action(
                 repo,
@@ -2501,18 +2452,6 @@ def main(argv: list[str] | None = None) -> int:
                 result if args.json else format_summary(load_queue(repo, args.target), repo_root=repo, target=args.target),
                 as_json=args.json,
             )
-            return 0
-
-        if args.command == "list-templates":
-            from claim_templates import CLAIM_TEMPLATES  # type: ignore
-
-            listing = [
-                {"name": name, "family": tpl.get("family", ""), "technique": tpl.get("technique", "")}
-                for name, tpl in sorted(CLAIM_TEMPLATES.items())
-            ]
-            _print(listing if args.json else "\n".join(
-                f"{item['name']}: {item['family']}/{item['technique']}" for item in listing
-            ), as_json=args.json)
             return 0
 
         if args.command == "summary":

@@ -1,18 +1,16 @@
 #!/usr/bin/env python3
 """Decision-JSON scaffolds: machine-generated input skeletons for AI judgment.
 
-validate.py / action_queue resolve 的 decision JSON 契约深（schema_version、
-runner 绑定、七问键名、continuation 四字段）——AI 手写时格式试错占验证命令的
-一半以上（lab e2e 2026-09-12 实测 6 次撞墙）。本模块把全部机械字段预填成
-骨架，AI 只填判断字段：
+validate.py 的 decision JSON 契约深（schema_version、runner 绑定、七问键名）
+——AI 手写时格式试错占验证命令的一半以上（lab e2e 2026-09-12 实测 6 次撞墙）。
+本模块把全部机械字段预填成骨架，AI 只填判断字段：
 
   validate --scaffold   → gates/seven_question_gate/cvss/impact 留空待判，
                           其余（target/finding_id/endpoint/runner_summary/
                           refs/report path）全部机器预填合规值
-  resolve --scaffold    → continuation 四字段的骨架（dimension 从 metadata 预填）
 
 scaffold 是输出器不是入口：校验代码零改动，AI 可以随时手写全量 JSON。
-判断字段永远不出现在预填里（与 claim 模板同一分桶纪律）。
+判断字段永远不出现在预填里。
 """
 
 from __future__ import annotations
@@ -123,21 +121,3 @@ def build_validate_scaffold(
     return scaffold
 
 
-def build_resolve_scaffold(action: dict[str, Any]) -> dict[str, Any]:
-    """Continuation skeleton with dimension pre-filled from action metadata."""
-    metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
-    return {
-        "_scaffold_note": (
-            "continuation 四字段中 reason/expected_learning/question 是 AI 判断字段；"
-            "dimension 从 action metadata 预填可覆盖"
-        ),
-        "continuation": {
-            "kind": "sibling",
-            "dimension": str(metadata.get("active_dimension") or ""),
-            "question": "",
-            "expected_learning": "",
-            "reason": "",
-        },
-        "result": "",
-        "evidence": "",
-    }

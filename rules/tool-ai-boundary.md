@@ -64,9 +64,11 @@ CLI/agent/command 文案必须说明它们只是 advisory hints。
 - **AI 判断**：临场认知，机器不可推导也不可预填。claim 四件套
   （hypothesis_id / expected_learning / kill_condition / decision_reason）、
   result 判定、resolve 决策、报告影响评估。
-- **机器推导**：可从已有事实机械推导或模板预填。endpoint/method/evidence_ref/
-  baseline_ref（`--from-evidence` / `--from-probe`），family/technique/
-  skill_route/risk_tier（`--template`）。
+- **机器推导**：可从已有事实机械推导。endpoint/method/evidence_ref/
+  baseline_ref（`--from-evidence` / `--from-probe`）。
+- **AI 判断（2026-09-13 修订）**：family/technique/skill_route/risk_tier 依据当前
+  假设由 AI 填写——类别模板已退役；这些不是可凭类别机械推导的事实，风险标签
+  也不构成危险操作的许可。
 - **机械**：owner 上下文自动携带。target、repo_root、锁、witness、时间戳。
 
 任何新 gate 不得把 AI 判断字段变成机械字段（分桶纪律的文档面）。

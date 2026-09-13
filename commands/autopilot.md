@@ -175,13 +175,13 @@ fit, promotion, reopen, and finish; deterministic owners preserve schema, eviden
 and durable state. Follow `skills/runtime-protocol.md`, `rules/tool-ai-boundary.md`, and
 `rules/hunting.md#broad-scanner-input-and-completion-contract`.
 Use `rules/hunting.md` value-first priorities; scanner quick is an advisory breadth sensor,
-and scanner-negative is not completion. Business Model Read: after fresh Recon starts, run
-`python3 tools/business_model_stub.py --target <target_shell> --json` — it deterministically
-derives `evidence/<target>/business_model.md` (technology stack, observed endpoint paths and
-parameters) from recon artifacts; then AI reviews the stub and fills the business-judgment
+and scanner-negative is not completion. Business Model Read: after fresh Recon starts, read the bounded recon/evidence facts
+(technology inventory, observed endpoints, parameters) and maintain
+`evidence/<target>/business_model.md` directly — AI writes and edits the business-judgment
 sections (observed purpose, actors' roles, crown jewels, trust boundaries, sensitive
-workflows). The generator skips when a file is inside its 30-day reuse window; `--refresh`
-regenerates but loses AI-filled sections. Promote Lead -> Signal -> Candidate -> Validated Finding only with practical, replayable raw
+workflows) from current evidence. When new recon facts arrive, edit the same note; do not
+regenerate or overwrite it. Existing notes are the source of truth for the target's
+business context. Promote Lead -> Signal -> Candidate -> Validated Finding only with practical, replayable raw
 request/response or a locatable evidence ref. Canonical finding writes go through
 `finding_index` and `/validate`; partial/blocked is unresolved, not tested-clean, and
 placeholder reports are not report-ready. Apply the four-layer routing in `skills/runtime-protocol.md`;
