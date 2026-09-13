@@ -52,9 +52,13 @@ description: 从当前目标的原始证据蒸馏知识卡草稿（target-scoped
 
 草稿写入 `knowledge/candidates/<slug>.md`（frontmatter `maturity: draft`）后：
 
-- **promote** = 人工 `mv knowledge/candidates/<slug>.md knowledge/cards/<slug>.md`
+- **promote** = 人工审核通过后运行
+  `python3 tools/knowledge_promote.py --id <slug>`（mv + registry 登记 + strict audit
+  + Pack 目录可发现四步一条命令完成，失败原子回滚）。**裸 `mv` 不等于 promote**：
+  未登记的卡在 Pack 不可见，audit 的 document-unregistered 是硬错误。
 - **reject** = `rm knowledge/candidates/<slug>.md`
-- **review** = 人眼看草稿（trigger 可观察？action 最小？误判边界清楚？）
+- **review** = 人眼看草稿（trigger 可观察？action 最小？误判边界清楚？）；内容审核
+  仍归人工，promote 命令只负责机械步骤
 - promote 时把 frontmatter `maturity` 改为 `tested`/`proven`（有可复跑证据才可改）
 
 没有第二个状态机；`git log` 就是治理审计。

@@ -487,6 +487,9 @@ def test_context_pack_does_not_fallback_from_malformed_target_registry(tmp_path)
 
 
 def test_context_pack_exposes_bounded_historical_patterns_as_advisory(tmp_path):
+    # 2026-09-12 收敛裁定：historical_patterns 只保留当前目标 provenance 的
+    # 建议。旧断言期望其他目标建议进入 Pack（升级前跨目标召回），现在消费
+    # 边界必须拒绝它们——包括旧 surface 投影缓存里残留的跨目标行。
     pack = build_context_pack(
         tmp_path,
         target="target.com",
@@ -508,15 +511,15 @@ def test_context_pack_exposes_bounded_historical_patterns_as_advisory(tmp_path):
     )
 
     assert pack["historical_patterns"] == [
-        "numeric ID swap [IDOR]",
-        "sibling export replay [IDOR]",
-        "tenant header pivot [Authz]",
+        "current target replay [IDOR]",
     ]
-    assert pack["source_summary"]["historical_patterns"] == 3
+    assert pack["source_summary"]["historical_patterns"] == 1
     output = format_context_pack(pack)
     assert "Historical patterns (advisory; require current-target evidence):" in output
     historical_output = output.split("- Historical patterns", 1)[1].split("- Required checks", 1)[0]
-    assert not any(domain in historical_output for domain in ("target.com", "alpha.com", "beta.com", "gamma.com", "delta.com"))
+    assert not any(domain in historical_output for domain in ("alpha.com", "beta.com", "gamma.com", "delta.com"))
+    # 跨目标建议被消费边界拒绝，而不是被剥掉 provenance 后放行。
+    assert "numeric ID swap" not in historical_output
 
 
 def test_context_pack_defers_extra_case_router_cards_instead_of_dropping(tmp_path):

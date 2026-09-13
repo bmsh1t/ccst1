@@ -2870,6 +2870,10 @@ def build_context_pack(
     viewstate_signal = bool(re.search(r"\bviewstate\b|__viewstate", blob, re.I))
     has_candidate = any(_finding_is_candidate(item) for item in findings)
     historical_patterns = []
+    # 2026-09-12 收敛裁定：跨目标现场经验不自动进入本目标的 Pack。
+    # surface 新计算路径已不再产生跨目标 pattern_suggestions，但升级前的
+    # 旧 v2 投影在输入 owner 未变时仍被判 valid——这里的消费边界负责拒绝
+    # 任何非当前目标 provenance 的残留建议，缓存与真源（新计算）双侧闭合。
     for item in ((ranked.get("memory") or {}).get("pattern_suggestions") or []):
         lesson = str(item).strip()
         provenance, separator, stripped_lesson = lesson.partition(": ")
@@ -2878,7 +2882,8 @@ def build_context_pack(
                 same_target = canonical_target_value(provenance).casefold() == resolved_target.casefold()
             except ValueError:
                 same_target = False
-            if same_target:
+            if not same_target:
+                # 其他目标的残留建议（旧投影缓存）：跳过，不进 historical_patterns。
                 continue
             lesson = stripped_lesson.strip()
         if lesson and lesson not in historical_patterns:

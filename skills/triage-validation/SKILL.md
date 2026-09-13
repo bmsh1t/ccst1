@@ -263,14 +263,20 @@ Autocomplete on password fields
 Pre-account takeover (usually — very specific conditions required)
 ```
 
-Noise classes — none of these enter a report, and none are chain-eligible:
+Noise classes — none of these enter a report without demonstrated evidence.
+Apply Q4 to the precondition rows: a demanding precondition lowers reachability
+and usually the tier, but it is not by itself a rejection; only an actually
+unreachable or disproven precondition closes the claim:
 
 ```text
-# Unrealistic-precondition "vulnerabilities"
-Requires victim click + specific login state + specific browser + time window
-Requires admin access to "escalate" to admin
-Requires physical access or an already-compromised device
-Requires MITM on a site with HSTS preload
+# Demanding preconditions — evaluate reachability per Q4, do not auto-reject.
+# These are noise ONLY when the precondition is unrealistic for the in-scope
+# attacker or the chain cannot be demonstrated; a reachable, demonstrated
+# flow stays a Lead/Candidate at its evidenced tier.
+Victim click + specific login state + specific browser + time window
+Admin access needed to "escalate" to admin
+Physical access or an already-compromised device
+MITM on a site with HSTS preload
 
 # Scanner boilerplate without a demonstrated signal
 "Possible SQLi" with no reflection, no time-blind behavior, sqlmap clean

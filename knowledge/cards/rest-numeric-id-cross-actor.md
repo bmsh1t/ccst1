@@ -26,7 +26,7 @@ updated: 2026-09-12
 
 ## 思路分支 / 最小验证
 
-- 最小验证：同 URL 三对照（anonymous 无头 / owner 自己凭证 / peer 他人凭证），比对 body sha256 而非仅状态码；状态码全 200 时哈希相同即证明缺少对象级归属校验
+- 最小验证：同 URL 三对照（anonymous 无头 / owner 自己凭证 / peer 他人凭证），比对 body sha256 而非仅状态码。owner/peer 哈希相同只是差异比较信号，不单独证明缺少对象级归属校验——两个主体拿到相同公开资源、按设计共享的资源或相同通用错误对象都会满足这个现象。成立对象级越权需三者齐备：资源非公开且归属受限、对象归属字段证明跨主体、其他身份凭据无法解释该访问（与 Quick Recall 判定条件一致）。
 
 ## 证据
 
@@ -52,5 +52,5 @@ updated: 2026-09-12
 
 ## 人工审核（review 后改这里）
 
-- mv 进 `knowledge/cards/` 即 promote；rm 即 reject；git log 即审计。
+- 审核通过后 `python3 tools/knowledge_promote.py --id <slug>` 即 promote（mv + 登记 + audit 一条命令，失败回滚）；rm 即 reject；git log 即审计。
 - promote 前检查：trigger 是否可观察、action 是否最小、误判边界是否写清。

@@ -149,16 +149,21 @@ def test_promote_rejects_missing_and_duplicate(tmp_path):
 
 
 def test_promoted_card_is_pack_catalog_discoverable(tmp_path):
-    """端到端验收：晋升后的卡必须出现在 Pack 的卡片目录里（复核点 2）。"""
+    """端到端验收：晋升后的卡必须出现在 Pack 的卡片目录里（复核点 2）。
+
+    子进程必须能加载真实的 context_pack（repo 的 tools/ 在 sys.path）；
+    失败即失败——旧版在非零返回时降级为只查 registry，实际是
+    ModuleNotFoundError 假绿，保护不了真实加载链。
+    """
     import subprocess
 
     _seed_candidate(tmp_path)
     promote(tmp_path, card_id="t-cross-actor")
+    tools_dir = Path(__file__).resolve().parent.parent / "tools"
     code = (
-        "import sys; sys.path.insert(0, '.')\n"
-        "from context_pack import _card_catalog\n"
-        "import json\n"
-        "cat = _card_catalog('" + str(tmp_path) + "')\n"
+        "import sys; sys.path.insert(0, " + repr(str(tools_dir)) + ")\n"
+        "import context_pack\n"
+        "cat = context_pack._card_catalog('" + str(tmp_path) + "')\n"
         "ids = [row.get('id') for row in (cat if isinstance(cat, list) else cat.get('cards', []))]\n"
         "assert 't-cross-actor' in ids, ids\n"
         "print('ok')\n"
@@ -167,11 +172,59 @@ def test_promoted_card_is_pack_catalog_discoverable(tmp_path):
         [sys.executable, "-c", code], cwd=tmp_path, capture_output=True, text=True,
         env={"PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"},
     )
-    # context_pack 的 BASE_DIR 与 tmp repo 不同时用 repo 参数；失败时降级验证
-    # registry 目录（Pack 目录的真实来源）。
-    if result.returncode != 0:
-        from knowledge_registry import load_registry
+    assert result.returncode == 0, f"pack catalog subprocess failed:\n{result.stderr}"
+    assert "ok" in result.stdout
 
-        assert "t-cross-actor" in load_registry(tmp_path).card_paths()
+
+def test_promote_rolls_back_on_registry_write_failure(tmp_path, monkeypatch):
+    """故障注入：registry 原子写抛 OSError 时，candidate 与 registry 必须复原。"""
+    import knowledge_promote
+
+    _seed_candidate(tmp_path)
+    original = knowledge_promote._atomic_write_text
+    calls = {"n": 0}
+
+    def fail_first_write(path, content):
+        # 只让 registry 的追加写失败；回滚自身也要能写。
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("injected registry write failure")
+        return original(path, content)
+
+    monkeypatch.setattr(knowledge_promote, "_atomic_write_text", fail_first_write)
+    try:
+        promote(tmp_path, card_id="t-cross-actor")
+    except SystemExit as exc:
+        assert "registry append failed" in str(exc)
     else:
-        assert "ok" in result.stdout
+        raise AssertionError("expected registry write failure to abort promote")
+
+    # 复原：候选仍在，cards 无新卡，registry 无 promote 条目
+    assert (tmp_path / "knowledge" / "candidates" / "t-cross-actor.md").is_file()
+    assert not (tmp_path / "knowledge" / "cards" / "t-cross-actor.md").exists()
+    yaml_text = (tmp_path / "knowledge" / "capabilities.yaml").read_text(encoding="utf-8")
+    assert "id: t-cross-actor" not in yaml_text
+
+
+def test_promote_rolls_back_on_audit_process_start_failure(tmp_path, monkeypatch):
+    """故障注入：audit 子进程启动失败时，candidate 与 registry 必须复原。"""
+    import knowledge_promote
+
+    _seed_candidate(tmp_path)
+    registry_before = (tmp_path / "knowledge" / "capabilities.yaml").read_text(encoding="utf-8")
+
+    def fail_run(*args, **kwargs):
+        raise OSError("injected subprocess launch failure")
+
+    monkeypatch.setattr(knowledge_promote.subprocess, "run", fail_run)
+    try:
+        promote(tmp_path, card_id="t-cross-actor")
+    except SystemExit as exc:
+        assert "audit process failed to start" in str(exc)
+    else:
+        raise AssertionError("expected audit launch failure to abort promote")
+
+    # 复原：候选仍在，cards 无新卡，registry 逐字节恢复
+    assert (tmp_path / "knowledge" / "candidates" / "t-cross-actor.md").is_file()
+    assert not (tmp_path / "knowledge" / "cards" / "t-cross-actor.md").exists()
+    assert (tmp_path / "knowledge" / "capabilities.yaml").read_text(encoding="utf-8") == registry_before

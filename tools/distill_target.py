@@ -261,7 +261,7 @@ updated: {datetime.now(timezone.utc).date().isoformat()}
 
 ## 人工审核（review 后改这里）
 
-- mv 进 `knowledge/cards/` 即 promote；rm 即 reject；git log 即审计。
+- 审核通过后 `python3 tools/knowledge_promote.py --id <slug>` 即 promote（mv + 登记 + audit 一条命令，失败回滚）；rm 即 reject；git log 即审计。裸 mv 不登记 registry，Pack 不可见。
 - promote 前检查：trigger 是否可观察、action 是否最小、误判边界是否写清。
 """
 
@@ -305,8 +305,9 @@ def commit_triple(
         "typology": scrubbed["typology"],
         "evidence_refs": refs,
         "review": (
-            f"人工审核后 `mv {path.relative_to(repo)} knowledge/cards/{path.name}` 即 promote；"
-            f"`rm` 即 reject。frontmatter 的 maturity 保持 draft 直到 promote。"
+            f"人工审核后运行 `python3 tools/knowledge_promote.py --id {path.stem}` 即 promote；"
+            f"`rm {path.relative_to(repo)}` 即 reject。frontmatter 的 maturity 保持 draft 直到 promote。"
+            "（裸 mv 不登记 registry，未登记的卡 Pack 不可见。）"
         ),
     }
 

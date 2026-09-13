@@ -197,7 +197,8 @@ case-router 不是默认方法论正文，而是低优先级、按信号加载�
 
 正式卡的 active/retired/superseded 状态与 `draft/tested/proven` maturity 分离，由
 卡片治理历史已归档（`archive/knowledge-governance/`）；新经验进入走 `/distill`
-（草稿卡 → 人工 mv 进 cards 即 promote），不再有第二个状态机。
+（草稿卡 → 人工审核 + `python3 tools/knowledge_promote.py --id <slug>` 完成登记
+与 audit），不再有第二个状态机。
 
 ## 输出要求
 

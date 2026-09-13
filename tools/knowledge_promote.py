@@ -18,8 +18,10 @@
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -38,13 +40,40 @@ def _slug_to_id(slug: str) -> str:
     return Path(slug).stem
 
 
+def _atomic_write_text(path: Path, content: str) -> None:
+    """原子替换文本文件（tmp 同目录 + fsync + rename），中途崩溃不留半文件。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=str(path.parent),
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temp_path.replace(path)
+    except Exception:
+        if temp_path is not None:
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
+        raise
+
+
 def _rollback(src: Path, dst: Path, registry_path: Path, original: str) -> None:
     """Restore candidate + registry after a failed promote."""
     if dst.exists():
         src.parent.mkdir(parents=True, exist_ok=True)
         src.write_bytes(dst.read_bytes())
         dst.unlink()
-    registry_path.write_text(original, encoding="utf-8")
+    _atomic_write_text(registry_path, original)
 
 
 def promote(
@@ -106,6 +135,7 @@ def promote(
 
     match = _re.search(r"(?ms)^capabilities:.*?(?=^\S|\Z)", text)
     if not match:
+        _rollback(src=src, dst=dst, registry_path=registry_path, original=text)
         raise SystemExit("capabilities.yaml has no capabilities: block to append to")
     block = match.group(0)
     if "[]" in block.split("\n")[0]:
@@ -116,21 +146,30 @@ def promote(
         new_text = text[: match.start()] + "capabilities:\n" + entry + text[match.end():]
     else:
         new_text = text[: match.end()] + entry + text[match.end():]
-    registry_path.write_text(new_text, encoding="utf-8")
+
+    # 2a) 从这里起到 audit 通过为止，任何异常（包括 registry 读写 OSError、
+    # audit 子进程启动失败）都必须回到 candidate + registry 原状——
+    # 半完成态（卡已删未登记 / 已登记未审核）比失败更糟，因为 registry
+    # 消费方会直接吃进未审核知识。
     try:
+        _atomic_write_text(registry_path, new_text)
         reloaded_check = load_registry(repo_root)
     except Exception as exc:
         _rollback(src=src, dst=dst, registry_path=registry_path, original=text)
-        raise SystemExit(f"registry append produced invalid yaml (rolled back): {exc}") from exc
+        raise SystemExit(f"registry append failed (rolled back): {exc}") from exc
 
     # 3) 验收：audit 必须通过（document-unregistered / source-refs / section 契约）。
     # audit 脚本从本仓库执行（repo 用 --repo-root 指向），tmp/只读挂载也能跑。
-    audit = subprocess.run(
-        [sys.executable, str(BASE_DIR / "tools" / "knowledge_audit.py"), "--strict", "--repo-root", str(repo_root)],
-        capture_output=True,
-        text=True,
-        cwd=repo_root,
-    )
+    try:
+        audit = subprocess.run(
+            [sys.executable, str(BASE_DIR / "tools" / "knowledge_audit.py"), "--strict", "--repo-root", str(repo_root)],
+            capture_output=True,
+            text=True,
+            cwd=repo_root,
+        )
+    except OSError as exc:
+        _rollback(src=src, dst=dst, registry_path=registry_path, original=text)
+        raise SystemExit(f"audit process failed to start (rolled back): {exc}") from exc
     if audit.returncode != 0:
         _rollback(src=src, dst=dst, registry_path=registry_path, original=text)
         raise SystemExit(f"audit failed after promote (rolled back):\n{audit.stdout}\n{audit.stderr}")
