@@ -103,10 +103,12 @@ baseline and change one boundary at a time.
 
 ## Signal Routing
 
-Once a hypothesis is selected, apply
+Once a hypothesis is selected, follow the recall gate in
 `skills/runtime-protocol.md#shared-knowledge-recall` before a boundary-specific
-action. Use its recommended Skill/card paths; this strategy Skill does not keep
-another signal-to-card map.
+action: recall follows the information gap (current target/scope/owner facts are
+mandatory reads; generic judgment needs no card lookup). The card catalog is
+published in the Context Pack for AI-side selection; this strategy Skill keeps
+no signal-to-card map.
 
 Error, timing, OAST, Boolean,
 browser, source, and role-diff observations are alternatives, not a

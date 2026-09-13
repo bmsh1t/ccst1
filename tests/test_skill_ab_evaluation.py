@@ -188,23 +188,26 @@ def _score(task: SkillEvalTask, *, cards: list[str], seeds: list[str], checks: l
     # the suggestion comes from owner state, not word lists.
     auto_selected = selected_cards if selected_cards is not None else cards
     score = 0
-    max_score = len(task.expected_cards) + len(task.forbidden_cards) + len(task.seed_groups) + len(task.expected_checks)
+    # Catalog is the visible set by design (selection retired); forbidden-card
+    # noise scoring only applies when auto-selection exists. Seeds are retired
+    # (static generation removed); scoring now covers discoverability+checks.
+    max_score = len(task.expected_cards) + len(task.forbidden_cards) + len(task.expected_checks)
     score += sum(card in cards for card in task.expected_cards)
     score += sum(card not in auto_selected for card in task.forbidden_cards)
-    score += sum(_contains_group(seeds, group) for group in task.seed_groups)
     score += sum(check in checks for check in task.expected_checks)
     return score, max_score
 
 
 def _run_with_skills(task: SkillEvalTask) -> tuple[str, int, int]:
     pack = build_context_pack(REPO_ROOT, target="eval.test", focus=task.focus)
-    # Word-list routing retired: expected cards may surface as selected OR as
-    # signal annotations; forbidden applies to auto-selection only.
+    # Keyword routing retired (2026-09-13 native audit): selection authority
+    # is the AI's. The eval surface is catalog discoverability — expected
+    # cards must be present in the published catalog for the AI to pull.
     selected_cards = list(pack["knowledge_cards"])
-    visible_cards = selected_cards + [
-        str(entry.get("file") or "")
-        for entry in pack.get("knowledge_card_recall", []) or []
-        if isinstance(entry, dict)
+    visible_cards = [
+        str(item.get("file") or "")
+        for item in pack.get("card_catalog", [])
+        if isinstance(item, dict)
     ]
     seeds = list(pack["hypothesis_seeds"])
     checks = list(pack["required_checks"])
@@ -223,7 +226,9 @@ def _run_with_skills(task: SkillEvalTask) -> tuple[str, int, int]:
     assert pack["skill_route"] == {}
     assert not [card for card in task.expected_cards if card not in visible_cards]
     assert not [card for card in task.forbidden_cards if card in selected_cards]
-    assert not [group for group in task.seed_groups if not _contains_group(seeds, group)]
+    # Static seeds are retired (2026-09-13): the knowledge they carried lives
+    # in the card bodies, which the catalog makes discoverable.
+    assert seeds == []
     assert not [check for check in task.expected_checks if check not in checks]
     return task.name, score, max_score
 

@@ -28,11 +28,13 @@ Claude Code CLI 当前主会话保留最终路线判断权。本协议、推荐 
   evidence、queue 写回）；纯解释、规划、复盘不触发召回。
 - recall 跟随信息缺口，不跟随每个思维步骤：新现象、条件变化、旧假设受挫时召回；
   相关材料已在上下文中就直接思考，不重复调用。查包与否以信息增量为唯一判据，
-  不引入“什么算基础知识”的类别判断：当前上下文已覆盖该 focus 的卡片
-  推荐与卡片正文（查包无新信息）即免重查，直接动手；尚未覆盖时按当前证据确定
-  focus，按 `commands/context-pack.md` 调用
-  `python3 tools/context_pack.py --target TARGET --focus FOCUS`。目标记忆或磁盘目录
-  不能代替 Pack。宽泛目标先沿既有目标上下文/发现入口补证据，不预选专项卡。
+  不引入“什么算基础知识”的类别判断。通用判断不需要先找到一张卡来证明可以
+  思考——但当前目标、范围和 owner 事实（目标记忆、surface、coverage）仍必须
+  读取/恢复，不能用通用知识猜测现场状态。需要目标状态或事实投影时按
+  `commands/context-pack.md` 调用
+  `python3 tools/context_pack.py --target TARGET --focus FOCUS`（卡片目录在
+  Pack 中全量发布，选择权在 AI）。宽泛目标先沿既有目标上下文/发现入口补证据，
+  不预选专项卡。
 - 经验与当前证据冲突时，重新验证经验的适用条件，不默认任何一边。
 - 所有用户可控输入（URL 参数、body、header、cookie、路径、JSON 字段、文件名……）
   都进入覆盖视野，不因历史经验只提到某些位置而忽略其他输入；验证顺序由当前证据

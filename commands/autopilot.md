@@ -93,9 +93,10 @@ owner-backed Matrix terminal state or complete evidence-backed identity candidat
 canonical Coverage; unknown/incomplete work stays open.
 After bootstrap and the bounded state read, apply the shared recall gate in
 `skills/runtime-protocol.md#shared-knowledge-recall` (the authoritative definition — reuse,
-refresh, and exemption semantics all live there). Autopilot adds one hardening: for a
-substantive Queue item with a concrete boundary or `vuln_class`, the gate is mandatory
-before claim.
+refresh, and exemption semantics all live there). Recall follows the information gap:
+current target/scope/owner facts must be read or restored (never guessed from generic
+knowledge), but generic judgment needs no card lookup to proceed, and no Queue item
+requires a forced pre-claim Pack call — the card catalog is published for AI-side pull.
 Keep each iteration explicit:
 `inspect candidate/context -> AI choose and activate one hypothesis -> claim -> execute one
 bounded action -> read Runner observation -> AI resolve one continuation or kill -> refresh

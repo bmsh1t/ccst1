@@ -67,8 +67,9 @@ Hypothesis selection, evidence-driven rotation, and stopping live in
 ## Evidence-Selected Handoffs
 
 Choose the narrower Skill from the stage and evidence. Before a boundary-specific
-action, apply `skills/runtime-protocol.md#shared-knowledge-recall`; use the returned
-card paths instead of maintaining a coordinator-side card map. A handoff keeps
+action, follow the recall gate in `skills/runtime-protocol.md#shared-knowledge-recall`
+(recall follows the information gap; the card catalog in the Context Pack is the
+selection surface — no coordinator-side card map). A handoff keeps
 the target/auth context, evidence references, and the concrete question to answer.
 The selected Skill and card own the detailed branch and evidence requirements.
 

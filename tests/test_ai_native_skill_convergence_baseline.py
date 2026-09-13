@@ -111,7 +111,10 @@ def test_runtime_protocol_has_single_substantive_criterion():
     assert "纯解释、规划、复盘不触发" in protocol
     # A1': information-gain criterion replaces the unconditional re-query.
     assert "以信息增量为唯一判据" in protocol
-    assert "免重查，直接动手" in protocol
+    # A4 (2026-09-13 native audit): generic judgment needs no card lookup;
+    # target/scope/owner facts remain mandatory reads.
+    assert "通用判断不需要先找到一张卡来证明可以" in protocol
+    assert "不能用通用知识猜测现场状态" in protocol
     # "什么算基础知识" must stay a rejected proxy, not a reintroduced rule.
     assert "不引入“什么算基础知识”的类别判断" in protocol
     # Recommended path is not the same as file read: contents still must be loaded.
@@ -132,14 +135,20 @@ def test_runtime_protocol_invalidates_pack_recommendations_after_compaction():
 
 
 def test_focus_recall_pulls_deserialization_cards():
-    """The pull channel (focus-based recall) must reach the execution-chain cards."""
+    """The pull channel must reach the execution-chain cards via the catalog.
+
+    Focus-based keyword selection is retired (2026-09-13 native audit): the
+    pack publishes the full card catalog as the discovery surface and the AI
+    pulls cards by information gap. What must hold: the execution-chain cards
+    are discoverable in the catalog."""
     sys.path.insert(0, str(REPO_ROOT / "tools"))
     from context_pack import build_context_pack
 
     pack = build_context_pack(REPO_ROOT, target="127.0.0.1:3001", focus="java deserialization fastjson")
-    cards = " ".join(str(item) for item in pack.get("knowledge_cards") or [])
-    assert "insecure-deserialization.md" in cards
-    assert "controlled-rce-impact.md" in cards
+    catalog = " ".join(str(item.get("file")) for item in pack.get("card_catalog") or [])
+    assert "insecure-deserialization.md" in catalog
+    assert "controlled-rce-impact.md" in catalog
+    assert pack.get("knowledge_cards") == []
 
 
 def test_autopilot_contract_keeps_selection_authority_with_ai():

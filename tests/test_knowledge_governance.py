@@ -312,17 +312,23 @@ def test_context_loading_prefers_evidence_and_case_pointers_over_methodology_pro
 
 
 def test_distilled_router_cards_are_discoverable_by_context_pack(tmp_path):
+    # Keyword selection retired (2026-09-13): discoverability means the card
+    # is in the published catalog for AI-side pull.
     for card_name, focus in DISTILLED_ROUTER_TRIGGER_CASES.items():
         pack = build_context_pack(tmp_path, target="target.test", focus=focus)
 
-        assert f"knowledge/cards/{card_name}" in pack["knowledge_cards"]
+        assert f"knowledge/cards/{card_name}" in [
+            item.get("file") for item in pack.get("card_catalog", [])
+        ]
 
 
 def test_absorbed_distilled_patterns_route_to_kept_base_cards(tmp_path):
     for focus, expected_card in ABSORBED_DISTILLED_TRIGGER_CASES:
         pack = build_context_pack(tmp_path, target="target.test", focus=focus)
 
-        assert expected_card in pack["knowledge_cards"]
+        assert expected_card in [
+            item.get("file") for item in pack.get("card_catalog", [])
+        ]
 
 
 def test_evidence_counterexamples_recall_existing_boundary_cards(tmp_path):
@@ -353,8 +359,7 @@ def test_evidence_counterexamples_recall_existing_boundary_cards(tmp_path):
 
         pack = build_context_pack(tmp_path, target=target, focus=focus)
 
-        assert expected_card in pack["knowledge_cards"]
-        assert len(pack["knowledge_cards"]) <= 2
+        assert expected_card in [item.get("file") for item in pack.get("card_catalog", [])]
         assert evidence_ref in pack["must_read"]
 
 
@@ -376,12 +381,9 @@ def test_distilled_router_cards_are_discoverable_from_real_evidence_indexes(tmp_
 
         # Evidence-index word signals surface as recall annotations (visible
         # to the AI through the signal channel), not auto-selected cards.
-        recall_files = {
-            str(entry.get("file") or "")
-            for entry in pack.get("knowledge_card_recall", [])
-            if isinstance(entry, dict)
+        catalog_files = {
+            str(item.get("file") or "")
+            for item in pack.get("card_catalog", [])
         }
-        assert f"knowledge/cards/{card_name}" in (
-            recall_files | set(pack["knowledge_cards"])
-        )
+        assert f"knowledge/cards/{card_name}" in catalog_files
         assert f"findings/{target}/source_intel/hypotheses.jsonl" in pack["must_read"]

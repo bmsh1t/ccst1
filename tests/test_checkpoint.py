@@ -4112,13 +4112,13 @@ def test_context_pack_hypothesis_seed_and_recall_do_not_materialize_queue(
         entry.get("file"): entry.get("status")
         for entry in context["knowledge_card_recall"]
     }
-    assert recall_entries.get(ssti_path) == "signal"
+    # Static seeds + word-list routing retired (native-capability audit
+    # 2026-09-13): recall may be empty; the catalog is the discovery surface.
     assert any(
         entry.get("id") == "server-side-template-injection"
         for entry in context.get("card_catalog", [])
     )
-    assert context["hypothesis_seeds"]
-    assert context["knowledge_card_recall"]
+    assert context["hypothesis_seeds"] == []
     assert checkpoint["next_action_queue"] == []
 
     sync_checkpoint_action_queue(tmp_path, checkpoint)
@@ -4133,8 +4133,9 @@ def test_context_pack_hypothesis_seed_and_recall_do_not_materialize_queue(
         witness["context_pack"]["knowledge_card_recall"]
         == context["knowledge_card_recall"]
     )
-    assert checkpoint["knowledge_effect_trace"]["action"] == "pending"
-    assert "server-side-template-injection" in checkpoint["knowledge_effect_trace"]["suggestion"]
+    # 语义选卡退役后 knowledge_cards 恒为空兼容投影：无选中卡时
+    # knowledge_effect_trace 为空 dict（没有建议就没有效果追踪）。
+    assert checkpoint["knowledge_effect_trace"] == {}
 
 
 def test_legacy_knowledge_signal_review_remains_resolvable(tmp_path):
@@ -4488,8 +4489,9 @@ def test_checkpoint_preserves_ssti_recall_after_rce_family_closure(
         item["type"] == "knowledge-signal-review"
         for item in load_queue(tmp_path, "target.com")["actions"]
     )
+    # 效果追踪消费 context 的 knowledge_cards 字段本身（monkeypatch 注入了
+    # 选中卡）：语义选卡器退役不改变这一消费契约。
     assert checkpoint["knowledge_effect_trace"]["suggestion"].startswith(card)
-    assert checkpoint["knowledge_effect_trace"]["action"] == "pending"
 
 
 def test_artifact_backed_high_workflow_leads_become_durable_queue_items(tmp_path):
