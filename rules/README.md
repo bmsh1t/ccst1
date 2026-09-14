@@ -5,8 +5,9 @@ the source of truth; commands and Skills only route to them.
 
 ## Default Read
 
-Claude Code already loads the action-safety rule through `CLAUDE.md`. The
-context pack adds only route-specific checks:
+Claude Code already loads the action-safety rule (`rules/red-lines.md`) through
+`CLAUDE.md`; it is resident on every session and takes precedence over the rules
+below. The context pack adds only route-specific checks:
 
 - `rules/context-loading.md` — minimal context assembly.
 - `rules/coverage-gate.md` — coverage states and completion claims.
