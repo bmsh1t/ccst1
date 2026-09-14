@@ -223,3 +223,31 @@ def test_kb_card_rejects_unknown_card(tmp_path: Path) -> None:
 
     with pytest.raises(SystemExit, match="no such card"):
         read_card(tmp_path, name="missing-card")
+
+
+def test_retire_atomic_on_block_scan_failure(tmp_path: Path) -> None:
+    """P2-5 回归（2026-09-14 审计）：registry 条目块被顶格注释截断时，
+    旧实现先写盘再 post-write 校验——发现卡仍 active 后报错退出但原文件
+    字节已改不恢复。新实现 pre-write 探针校验：拒绝且原文件原样。"""
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from tools.knowledge_retire import retire
+
+    reg = tmp_path / "knowledge" / "capabilities.yaml"
+    reg.parent.mkdir(parents=True)
+    cards = tmp_path / "knowledge" / "cards"
+    cards.mkdir()
+    (cards / "t-card.md").write_text("---\nid: t-card\n---\nbody\n", encoding="utf-8")
+    reg.write_text(
+        "schema_version: 1\ncapabilities:\n"
+        "  - id: t-card\n    kind: card\n    file: knowledge/cards/t-card.md\n"
+        "    layer: core\n    triggers:\n      - s\n"
+        "# top-level comment cuts the block scan\n"
+        "    status: active\n",
+        encoding="utf-8",
+    )
+    before = reg.read_bytes()
+    with pytest.raises(SystemExit, match="pre-write check failed"):
+        retire(tmp_path, card_id="t-card", reason="audit")
+    assert reg.read_bytes() == before  # 原子性：拒绝时零改动

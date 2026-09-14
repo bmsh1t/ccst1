@@ -53,8 +53,9 @@ Context Pack 的默认入口是当前目标状态（如存在 `memory/goals/acti
 
 一次只加载 1-2 张知识卡。只有当当前证据继续扩展时，才加载更多。
 
-`knowledge/index.md` 是按需目录，不是每轮全文必读项；先使用
-`knowledge_card_recall` 和推荐 Card，只有召回无法解释当前证据时才读取目录。
+`knowledge/index.md` 是按需目录，不是每轮全文必读项；先使用 Context Pack 的
+卡片目录（`card_catalog`）按证据选择，目录无法解释当前证据时再读取
+`knowledge/index.md`。
 
 这些召回和 seed 不自动生成 Action Queue 工作；Claude 先结合目标证据选择假设，再通过现有
 owner 创建或激活正常动作。

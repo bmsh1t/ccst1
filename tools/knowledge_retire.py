@@ -138,6 +138,49 @@ def _apply_status(
     lines[start:end] = new_block
     new_text = "".join(lines)
 
+    # Pre-write validation（2026-09-14 审计修复）：先在内存里验证新文本
+    # 语义正确（registry 可解析、目标卡状态已切换），再落盘。旧顺序是
+    # 先写盘再 post-write 校验——块定位被顶格注释截断时，status 行插在
+    # 块外，写入后才发现卡仍 active，原文件字节已改且不恢复。
+    # 探针目录：只放候选 registry（名为 capabilities.yaml），load_registry
+    # 按 <root>/knowledge/capabilities.yaml 解析。
+    import tempfile as _tempfile
+
+    probe_dir: Path | None = None
+    try:
+        probe_dir = Path(_tempfile.mkdtemp(dir=str(registry_path.parent), prefix=".retire-probe."))
+        probe_registry_dir = probe_dir / "knowledge"
+        probe_registry_dir.mkdir(exist_ok=True)
+        (probe_registry_dir / registry_path.name).write_text(new_text, encoding="utf-8")
+        try:
+            probe_registry = load_registry(probe_dir)
+        except KnowledgeRegistryError as exc:
+            raise SystemExit(
+                f"knowledge_retire: rewritten registry unparseable (nothing written): {exc}"
+            ) from exc
+        probe_visible = probe_registry.card_paths()
+        probe_all = probe_registry.card_paths(include_retired=True)
+        if card_id not in probe_all:
+            raise SystemExit(
+                f"knowledge_retire: rewritten registry lost card {card_id} (nothing written) — "
+                "entry block is likely cut by a top-level comment; inspect the registry manually"
+            )
+        if status == "retired" and card_id in probe_visible:
+            raise SystemExit(
+                "knowledge_retire: pre-write check failed (card still active after rewrite; "
+                "nothing written) — entry block is likely cut by a top-level comment"
+            )
+        if status == "active" and card_id not in probe_visible:
+            raise SystemExit(
+                "knowledge_retire: pre-write check failed (card not active after unretire rewrite; "
+                "nothing written)"
+            )
+    finally:
+        if probe_dir is not None:
+            import shutil as _shutil
+
+            _shutil.rmtree(probe_dir, ignore_errors=True)
+
     # Atomic write (same envelope as knowledge_promote).
     import os
     import tempfile

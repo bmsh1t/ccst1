@@ -47,8 +47,11 @@ for shared_skill_file in "${SCRIPT_DIR}"/skills/*.md; do
     echo "✓ Installed shared skill file: $(basename "$shared_skill_file")"
 done
 
-# Install skills: rsync-style mirror (no --delete) so removed skills vanish from
-# the platform surface too, while any foreign content stays untouched.
+# Install skills: rsync mirror per skill directory. This syncs edited and
+# added files, but it does NOT remove an installed skill whose source
+# directory was deleted (no repo-wide --delete over the shared
+# ~/.claude/skills). Retiring a whole skill in this repo requires removing
+# its installed directory manually.
 if command -v rsync >/dev/null 2>&1; then
     for skill_dir in "${SCRIPT_DIR}"/skills/*/; do
         skill_name=$(basename "$skill_dir")
@@ -99,7 +102,7 @@ echo "Done! Skills installed to ${INSTALL_DIR}"
 echo "Commands installed to ${COMMANDS_DIR}"
 echo "Agents installed to ${AGENTS_DIR}"
 echo "Re-run this installer after pulling updates so Claude Code sees the latest slash commands."
-echo "Skill installs are mirrors: edited or removed skill files sync on the next run."
+echo "Skill mirrors sync edits/additions only; a skill deleted from this repo stays installed until removed manually."
 echo "For drift checks without a full reinstall, use: python3 tools/runtime_doctor.py"
 echo ""
 

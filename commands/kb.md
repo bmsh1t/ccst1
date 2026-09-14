@@ -127,12 +127,12 @@ registry 标 `status: retired`（卡文件保留，git 历史即审计）；Pack
 
 ### `/kb promote`（经 /distill）
 
-经验晋升走 `/distill <target>` 直线流程：机器出题 → AI 提三元组 → 草稿卡写入
-`knowledge/candidates/` → 人工内容审核通过后运行
-`python3 tools/knowledge_promote.py --id <slug>` 完成 promote（mv + registry
-登记 + strict audit + Pack 目录可发现，失败原子回滚）、`rm` 即 reject
-（git 即生命周期，不再有第二个状态机）。**裸 `mv` 不是 promote**——未登记的卡
-Pack 不可见且过不了 strict audit。
+经验晋升走 `/distill <target>` 直线流程：机器出有界证据视图 → AI 直接写完整
+草稿卡（含 digest 引用）→ 草稿写入 `knowledge/candidates/` → 人工内容审核
+通过后运行 `python3 tools/knowledge_promote.py --id <slug>` 完成 promote
+（mv + registry 登记 + strict audit + Pack 目录可发现，失败原子回滚）、
+`rm` 即 reject（git 即生命周期，不再有第二个状态机）。**裸 `mv` 不是
+promote**——未登记的卡 Pack 不可见且过不了 strict audit。
 
 晋升前必须读取：
 
