@@ -26,6 +26,13 @@
   path-pattern-management-exposure / cdn-response-differential /
   custom-protocol-state-recovery。触发：pull 数据积累 30 天后（约 2026-10-14）。
   判据：`python3 tools/kb_review.py` 看 pulls。
+- **全量卡惰性复检**（判据升级，2026-09-14 借自 skill-based-architecture）
+  pull 数只测可达性，测不了惰性。复审时每张卡过两问：
+  (a) 正常路径上不找就能命中吗（不可达→退）；
+  (b) 命中后下一个动作改变吗——现在读的文件/跑的检查/跳过的步
+  （读完行为不变 = 惰性→退；"触发信号+停止条件+动作改变"形态 = 留）。
+  与 pull 数据并用：pull>0 但惰性 → 退；pull=0 但激活 → 留。
+  与 5 张 borderline 复审同一窗口执行。
 
 ## 低优先（记录在案）
 
