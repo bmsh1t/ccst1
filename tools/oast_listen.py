@@ -682,12 +682,22 @@ def cmd_markers(target: str, vuln_class: str, label: str) -> int:
         _log_err(f"invalid --label '{label}': lowercase alnum/hyphen, <=41 chars")
         return 2
     marker_id = _new_marker_id()
-    marker_host = f"{label}-{marker_id}.{url.rstrip('/')}"
+    # 域名型 backend（interactsh）：唯一子域标记，callback 的 host 携带 marker。
+    # URL 型 backend（webhook.site）：子域物理不可能，改用路径段标记——
+    # marker 记在 URL path 里，poll 归因按 path 匹配（2026-09-14 审计缺口 2）。
+    if "://" in url:
+        base = url.rstrip("/")
+        marker_host = f"{base}/{label}-{marker_id}"
+        marker_kind = "url-path"
+    else:
+        marker_host = f"{label}-{marker_id}.{url.rstrip('/')}"
+        marker_kind = "host-subdomain"
     markers = _load_markers(paths)
     markers.append({"marker_id": marker_id, "label": label, "vuln_class": klass,
-                    "marker_host": marker_host, "registered_at": int(time.time())})
+                    "marker_host": marker_host, "marker_kind": marker_kind,
+                    "registered_at": int(time.time())})
     _save_markers(paths, markers)
-    _log_ok(f"marker registered: class={klass} label={label}")
+    _log_ok(f"marker registered: class={klass} label={label} kind={marker_kind}")
     sys.stdout.write(marker_host + "\n")
     sys.stdout.write(
         "\n## CLAUDE_HINT\n"
@@ -695,8 +705,9 @@ def cmd_markers(target: str, vuln_class: str, label: str) -> int:
         f"target: {target}\n"
         f"marker_host: {marker_host}\n"
         f"vuln_class: {klass}\n"
+        f"marker_kind: {marker_kind}\n"
         "next_priority_action: build the payload around marker_host with your own "
-        "technique, fire it at the sink, then poll — callbacks carrying this host "
+        "technique, fire it at the sink, then poll — callbacks carrying this marker "
         "attribute to this marker\n"
     )
     return 0
@@ -706,12 +717,18 @@ def _attribute_callback(normalized: dict, markers: list[dict]) -> dict:
     """Attach `marker` attribution fields to one normalized callback record.
 
     Match rule: the marker's unique id appears in the callback host (interactsh
-    `full-id`/`unique-id` field) — unique across the session, so the first hit
-    wins. No markers registered -> callback passes through unattributed.
+    `full-id` field — preferred over `unique-id`, which never carries the
+    marker) or, for URL-path markers (webhook.site backends), in the callback
+    path. Unique across the session, so the first hit wins. No markers
+    registered -> callback passes through unattributed.
     """
     host = str(normalized.get("name") or "").lower()
+    path = str(normalized.get("path") or "").lower()
     for m in markers:
-        if m.get("marker_id") and str(m["marker_id"]) in host:
+        if not m.get("marker_id"):
+            continue
+        marker_id = str(m["marker_id"])
+        if marker_id in host or (m.get("marker_kind") == "url-path" and marker_id in path):
             normalized["marker_id"] = m["marker_id"]
             normalized["marker_label"] = m.get("label", "")
             normalized["marker_vuln_class"] = m.get("vuln_class", "")
@@ -728,7 +745,10 @@ def _normalize_callback(record: dict) -> dict:
         "ts_unix": _iso_to_unix(ts_iso),
         "protocol": record.get("protocol", ""),
         "source_ip": record.get("remote-address") or record.get("source-ip") or record.get("ip") or "",
-        "name": record.get("unique-id") or record.get("full-id") or record.get("name") or "",
+        # full-id 优先：它携带用户 payload 的完整 host（含 marker 子域），
+        # unique-id 是 interactsh 自分配短 id、不含 marker——优先它会让
+        # 归因永远看不到 marker（2026-09-14 审计缺口 1）。
+        "name": record.get("full-id") or record.get("unique-id") or record.get("name") or "",
         "path": record.get("request") or record.get("path") or "",
         "raw": (record.get("raw-request") or json.dumps(record))[:1024],
     }

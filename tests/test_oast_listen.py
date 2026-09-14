@@ -173,3 +173,47 @@ def test_attribution_is_pure_function():
     assert hit["marker_vuln_class"] == "xxe"
     miss = oast_listen._attribute_callback({"name": "other.oast.fun"}, markers)
     assert "marker_id" not in miss
+
+
+def test_full_id_wins_over_unique_id_for_attribution():
+    """缺口1回归（2026-09-14 审计）：回调同时带 unique-id 与含 marker 的
+    full-id 时，归因必须看到 full-id——unique-id 是 interactsh 自分配短
+    id，优先它会让归因永远丢失。"""
+    rec = {"timestamp": "2026-09-14T10:00:00Z", "protocol": "http",
+           "unique-id": "abc123.oast.fun",
+           "full-id": "img-fetch-a1b2c3d4e5.abc123.oast.fun"}
+    markers = [{"marker_id": "a1b2c3d4e5", "label": "img-fetch", "vuln_class": "ssrf",
+                "marker_kind": "host-subdomain"}]
+    normalized = oast_listen._normalize_callback(rec)
+    attributed = oast_listen._attribute_callback(normalized, markers)
+    assert attributed.get("marker_id") == "a1b2c3d4e5"
+    assert attributed.get("marker_vuln_class") == "ssrf"
+
+
+def test_url_backend_marker_uses_path_segment(isolated_findings, capsys):
+    """缺口2回归（2026-09-14 审计）：URL 型 backend（webhook.site）的子域
+    标记物理不可能——marker 改用 URL 路径段，poll 归因按 path 匹配。"""
+    import io
+    import contextlib
+    from unittest.mock import patch
+
+    _seed_url("urlbk.local", "https://webhook.site/f3d2c1b0-token")
+    paths = oast_listen._paths("urlbk.local")
+    with patch.object(oast_listen, "_paths", return_value=paths):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = oast_listen.main(
+                ["markers", "--target", "urlbk.local", "--vuln-class", "ssrf", "--label", "probe"]
+            )
+    assert rc == 0
+    marker_url = buf.getvalue().splitlines()[0]
+    assert marker_url.startswith("https://webhook.site/f3d2c1b0-token/probe-")
+    assert "https://" not in marker_url.split("token/")[-1].split("probe-")[0]  # 没有嵌套 scheme
+
+    markers = json.loads(paths["markers"].read_text())
+    assert markers[0]["marker_kind"] == "url-path"
+    # 路径归因：webhook.site 回调的 path 携带 marker id
+    cb = {"name": "https://webhook.site/f3d2c1b0-token",
+          "path": f"/f3d2c1b0-token/probe-{markers[0]['marker_id']}", "protocol": "http"}
+    attributed = oast_listen._attribute_callback(cb, markers)
+    assert attributed.get("marker_id") == markers[0]["marker_id"]
