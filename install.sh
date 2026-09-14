@@ -47,13 +47,22 @@ for shared_skill_file in "${SCRIPT_DIR}"/skills/*.md; do
     echo "✓ Installed shared skill file: $(basename "$shared_skill_file")"
 done
 
-# Copy all skills
-for skill_dir in "${SCRIPT_DIR}"/skills/*/; do
-    skill_name=$(basename "$skill_dir")
-    mkdir -p "${INSTALL_DIR}/${skill_name}"
-    cp -a "${skill_dir}." "${INSTALL_DIR}/${skill_name}/"
-    echo "✓ Installed skill: ${skill_name}"
-done
+# Install skills: rsync-style mirror (no --delete) so removed skills vanish from
+# the platform surface too, while any foreign content stays untouched.
+if command -v rsync >/dev/null 2>&1; then
+    for skill_dir in "${SCRIPT_DIR}"/skills/*/; do
+        skill_name=$(basename "$skill_dir")
+        rsync -a --delete "${skill_dir}" "${INSTALL_DIR}/${skill_name}"
+        echo "✓ Installed skill (mirrored): ${skill_name}"
+    done
+else
+    for skill_dir in "${SCRIPT_DIR}"/skills/*/; do
+        skill_name=$(basename "$skill_dir")
+        mkdir -p "${INSTALL_DIR}/${skill_name}"
+        cp -a "${skill_dir}." "${INSTALL_DIR}/${skill_name}/"
+        echo "✓ Installed skill (copied): ${skill_name}"
+    done
+fi
 
 # Install commands
 COMMANDS_DIR="${HOME}/.claude/commands"
@@ -90,6 +99,7 @@ echo "Done! Skills installed to ${INSTALL_DIR}"
 echo "Commands installed to ${COMMANDS_DIR}"
 echo "Agents installed to ${AGENTS_DIR}"
 echo "Re-run this installer after pulling updates so Claude Code sees the latest slash commands."
+echo "Skill installs are mirrors: edited or removed skill files sync on the next run."
 echo "For drift checks without a full reinstall, use: python3 tools/runtime_doctor.py"
 echo ""
 

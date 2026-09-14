@@ -23,7 +23,7 @@ Context Pack 的默认入口是当前目标状态（如存在 `memory/goals/acti
   证据/Ledger 和证据明确需要的工具引用；Skill 由原生 Skill 工具按 frontmatter 自主加载，最多两张知识卡不在
   `must_read`，由 Claude 根据当前证据显式选择后按需读取。
 - Skill 加载走 Claude 原生 Skill 工具（S1 铺开后全部 12 个）：frontmatter description 是
-  路由面，pack 只发布磁盘上的 skill 目录（id + path + description），不做推荐；
+  路由面，可发现性由平台技能面原生持有；pack 不发布 skill 目录、不做推荐；
   `selected_skill`/`skill_route` 保留为空兼容字段。
 - 正式安装面是 `skills/*.md` 和 `skills/*/`；根目录不再提供单文件 Skill 入口。
 - `selected_skill`、`skill_route` 和 `knowledge_cards` 保留为兼容推荐字段（S1 铺开后

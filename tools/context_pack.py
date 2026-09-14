@@ -59,10 +59,10 @@ except ImportError:  # pragma: no cover - direct tools/ execution
 
 # S1 native skill loading (ai-capability-roadmap batch 3): every skill loads
 # on demand via the native Claude Code Skill tool (frontmatter description is
-# the routing surface). The pack no longer recommends a single skill; it
-# publishes the on-disk skill catalog (id + path + description) and the AI
-# selects and loads skills itself. `selected_skill` / `skill_route` /
-# `selected_skill_id` / `why_this_skill` remain as empty compatibility shells
+# the routing surface). The pack neither recommends a skill nor publishes a
+# skill catalog — discoverability belongs to the platform skill surface.
+# `selected_skill` / `skill_route` / `selected_skill_id` / `why_this_skill`
+# remain as empty compatibility shells
 # for old checkpoint/witness readers.
 
 KNOWN_SKILL_OR_FOCUS = {
