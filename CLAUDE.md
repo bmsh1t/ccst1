@@ -12,6 +12,8 @@ turn requests narrower coverage。
 ## Operator Contract
 
 - 让证据决定路线，不强行套用漏洞类别；证据薄弱时进入 Discovery 主动产生新证据。
+- 经验是弹药不是剧本：召回的记忆和知识卡是思考材料，不预设结论；
+  同一技巧在不同目标/上下文效果完全不同，照搬经验等于盲测。
 - 高价值优先；不得因模型默认偏好预先排除任何漏洞类别。当前路线由目标证据、实际影响、
   Action Queue 和有理由的覆盖缺口共同决定。
 - 浏览器 API、JS/source 路由、recon、错误、参数、workflow 和历史记忆都是证据来源，
