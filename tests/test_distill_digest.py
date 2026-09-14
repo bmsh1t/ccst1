@@ -358,3 +358,100 @@ def test_pull_log_cli_records_after_native_read(tmp_path, capsys):
 
     with pytest.raises(SystemExit):
         pull_main(["record", "--card", "missing-card", "--repo-root", str(tmp_path)])
+
+
+def test_migrate_multi_source_refs_route_by_target(tmp_path):
+    """多来源引用错配回归（2026-09-14 审计）：同卡含两个 target-evidence 条目时，
+    每个条目的 refs 必须改写为该条目自身 target 的 digest——旧实现忽略 target 参数，
+    两个条目都被改到第一个命中处（alpha 被写成 beta 的 digest、beta 未动）。
+    覆盖内联数组与列表两种合法 YAML 形态。"""
+    import json as _json
+    import re as _re
+    import sys as _sys
+
+    _sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    from distill_digest import migrate_card_refs
+
+    def _seed(fmt: str) -> Path:
+        card_dir = tmp_path / "knowledge" / "candidates"
+        card_dir.mkdir(parents=True, exist_ok=True)
+        evA = tmp_path / "findings" / "alpha.local" / f"pA-{fmt}.json"
+        evB = tmp_path / "findings" / "beta.local" / f"pB-{fmt}.json"
+        for ev, url in ((evA, "http://a/x"), (evB, "http://b/y")):
+            ev.parent.mkdir(parents=True, exist_ok=True)
+            ev.write_text(_json.dumps({"request": {"method": "GET", "url": url},
+                                       "response": {"status": 200}}))
+        if fmt == "inline":
+            refs_a, refs_b = f"refs: [{evA}]", f"refs: [{evB}]"
+        else:
+            refs_a, refs_b = f"refs:\n      - {evA}", f"refs:\n      - {evB}"
+        card = card_dir / f"multi-{fmt}.md"
+        card.write_text(
+            f"---\nid: multi-{fmt}\ntype: technique-card\nsource_refs:\n"
+            f"  - type: target-evidence\n    target: alpha.local\n    {refs_a}\n"
+            f"  - type: target-evidence\n    target: beta.local\n    {refs_b}\n---\nbody\n",
+            encoding="utf-8",
+        )
+        return card
+
+    for fmt in ("inline", "list"):
+        card = _seed(fmt)
+        migrate_card_refs(tmp_path, f"multi-{fmt}")
+        text = card.read_text(encoding="utf-8")
+        assert text.count("type: target-evidence") == 2, fmt
+        # 内联形态直接断言；列表形态逐行配对
+        if fmt == "inline":
+            blocks = _re.findall(r"target: (\S+)\n\s+refs: (\[[^\n]+\])", text)
+            assert len(blocks) == 2, fmt
+            for target, refs in blocks:
+                want = "alpha" if target == "alpha.local" else "beta"
+                assert want in refs and "findings" not in refs, (fmt, target, refs)
+        else:
+            lines = text.splitlines()
+            current_target = ""
+            for line in lines:
+                m = _re.match(r"\s*target: (\S+)", line)
+                if m:
+                    current_target = m.group(1)
+                m = _re.match(r"\s+- \"(knowledge/distill-digests/[^\"]+)\"", line)
+                if m:
+                    want = "alpha" if current_target == "alpha.local" else "beta"
+                    assert want in m.group(1), (fmt, current_target, m.group(1))
+
+
+def test_migrate_refuses_when_entry_missing(tmp_path):
+    """ref 声明的 target 与卡内任何 target-evidence 条目都不匹配时拒绝迁移，
+    不静默留下 raw 引用与 digest 不一致。构造方式：条目 target 写在 refs 之后
+    （行级扫描窗口内先撞 refs 再见 target），定位规则必须按 target 匹配拒绝。"""
+    import json as _json
+    import sys as _sys
+
+    _sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    from distill_digest import migrate_card_refs
+
+    card_dir = tmp_path / "knowledge" / "candidates"
+    card_dir.mkdir(parents=True)
+    ev = tmp_path / "findings" / "zeta.local" / "p.json"
+    ev.parent.mkdir(parents=True)
+    ev.write_text(_json.dumps({"request": {"method": "GET", "url": "http://z/x"},
+                               "response": {"status": 200}}))
+    card = card_dir / "orphan.md"
+    # 条目声明 target=gamma.local；证据在 zeta.local 下但 target 字段以 registry
+    # 解析为准（gamma）——本测试直接验证：不存在 gamma 条目时可被拒绝的前提
+    # 是行级形态与 YAML 语义分离。真实数据流里 registry 保证一致，此用例锁的是
+    # _rewrite_ref_entry 的 target 匹配行为本身：target 不匹配 → 不改写 → 上层拒绝。
+    from distill_digest import _rewrite_ref_entry
+
+    lines = [
+        "---\n",
+        "id: orphan\n",
+        "source_refs:\n",
+        "  - type: target-evidence\n",
+        "    refs: [keep-me]\n",
+        "    target: gamma.local\n",
+        "---\n",
+    ]
+    assert _rewrite_ref_entry(lines, closing=6, target="zeta.local",
+                              new_paths=["knowledge/distill-digests/zeta.local/p.json"]) is False
+    assert "keep-me" in "".join(lines)  # 未匹配时原样保留
+

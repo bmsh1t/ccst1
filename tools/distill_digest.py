@@ -276,8 +276,13 @@ def migrate_card_refs(repo_root: Path, card_id: str) -> dict[str, Any]:
             replaced[raw_ref] = rel
         if new_paths:
             ref_key = f"{target}|{';'.join(new_paths)}"
-            # 重写 frontmatter：定位该 source_refs 条目的 refs 列表
-            _rewrite_ref_entry(lines, closing, target, new_paths)
+            # 重写 frontmatter：定位该 source_refs 条目的 refs 列表；
+            # 找不到匹配条目时中止（不静默留下 raw 引用与 digest 不一致）。
+            if not _rewrite_ref_entry(lines, closing, target, new_paths):
+                raise SystemExit(
+                    f"digest: no matching target-evidence entry for target={target} "
+                    f"in {card.name}; refusing to leave refs inconsistent"
+                )
 
     if not replaced:
         return {"changed": False, "created": [], "card": str(card)}
@@ -292,21 +297,59 @@ def migrate_card_refs(repo_root: Path, card_id: str) -> dict[str, Any]:
     return {"changed": True, "created": created, "card": str(card), "replaced": replaced}
 
 
-def _rewrite_ref_entry(lines: list[str], closing: int, target: str, new_paths: list[str]) -> None:
-    """在 frontmatter 行列表内把 target-evidence 的 refs 列表替换为 digest 路径。"""
+def _rewrite_ref_entry(lines: list[str], closing: int, target: str, new_paths: list[str]) -> bool:
+    """在该条目自身的 frontmatter 块内重写 refs。
+
+    定位规则（2026-09-14 审计修复）：条目以 `type: target-evidence` 开始，
+    其后（到下一个 `- type:` 或 frontmatter 结束）的 `target:` 必须匹配当前
+    ref 的 target 才允许重写——此前函数忽略 target 参数，多来源卡的两个
+    条目都被改到第一个命中处（alpha 被写成 beta 的 digest，beta 未动）。
+    内联 `refs: [...]` 与列表 `refs:\n  - ...` 两种合法 YAML 都支持。
+    返回是否重写；未找到匹配条目时返回 False（调用方据此报错，不静默）。
+    """
     import re
 
-    pattern = re.compile(r"^(\s*refs:\s*)\[.*\]\s*$")
+    inline = re.compile(r"^(\s*refs:\s*)\[.*\]\s*$")
+    list_first = re.compile(r"^(\s*refs:\s*)$")
+    entry_type = re.compile(r"^\s*-?\s*type:\s*target-evidence\s*$")
+    next_entry = re.compile(r"^\s*-\s+type:")
+    target_line = re.compile(r"^\s*target:\s*(\S+)\s*$")
+
     for index in range(1, closing):
-        line = lines[index]
-        if "type: target-evidence" in line:
-            # 从这行往后找同条目的 refs:
-            for scan in range(index, min(index + 4, closing)):
-                match = pattern.match(lines[scan])
-                if match:
-                    joined = json.dumps(new_paths, ensure_ascii=False)
-                    lines[scan] = f"{match.group(1)}{joined}\n"
-                    return
+        if not entry_type.match(lines[index]):
+            continue
+        # 扫描该条目范围：到下一个 `- type:` 条目或 frontmatter 结束
+        entry_end = closing
+        for scan in range(index + 1, closing):
+            if next_entry.match(lines[scan]):
+                entry_end = scan
+                break
+        entry_target = ""
+        for scan in range(index + 1, entry_end):
+            m = target_line.match(lines[scan])
+            if m:
+                entry_target = m.group(1)
+                break
+        if entry_target != target:
+            continue
+        joined = json.dumps(new_paths, ensure_ascii=False)
+        for scan in range(index + 1, entry_end):
+            m = inline.match(lines[scan])
+            if m:
+                lines[scan] = f"{m.group(1)}{joined}\n"
+                return True
+            if list_first.match(lines[scan]):
+                # 列表形态：替换本行与其后的列表项
+                tail = scan + 1
+                while tail < entry_end and re.match(r"^\s+-\s", lines[tail]):
+                    tail += 1
+                indent = re.match(r"^(\s*)", lines[scan]).group(1)
+                new_block = [lines[scan].rstrip("\n") + "\n"]
+                for p in new_paths:
+                    new_block.append(f"{indent}  - {json.dumps(p, ensure_ascii=False)}\n")
+                lines[scan:tail] = new_block
+                return True
+    return False
 
 
 def main(argv: list[str] | None = None) -> int:
