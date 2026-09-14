@@ -18,7 +18,7 @@ Intelligence -> AI Decision -> Deterministic Kernel -> Execution
 
 ### AI decision plane
 
-The inline model chooses hypotheses, route, ROI, and runtime test inputs from bounded owner-backed projections. It requests work through the existing `tools/action_queue.py` activation metadata (`activation_contract_projection()`); no parallel intent schema is permitted. The model cannot write owner files or declare lifecycle finality.
+The inline model chooses hypotheses, route, ROI, and runtime test inputs from bounded owner-backed projections. It requests work through explicit `tools/action_queue.py claim --id` writes (dumb queue interface, 2026-09-14: the selector, judgment-field merge, 16-field activation gate, and `activation_contract_projection()` are retired; six mechanical write-time invariants remain — flock/atomic write, execution_key dedup, runner-field anti-forgery, target-evidence binding, hypothesis cap counting, runner-observation preservation); no parallel intent schema is permitted. The model cannot write owner files or declare lifecycle finality.
 
 ### Deterministic kernel
 

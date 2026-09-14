@@ -29,6 +29,7 @@ try:
         queue_path,
         queue_fingerprint,
         select_next_action,
+        active_action_ids,
     )
 except ImportError:  # pragma: no cover - direct tools/ execution
     from action_queue import (  # type: ignore
@@ -606,8 +607,8 @@ def _checkpoint_queue_health(witness: dict, queue: dict) -> dict:
     expected_fingerprint = str(recorded.get("fingerprint") or "").strip()
     if expected_fingerprint:
         if expected_fingerprint != current_fingerprint:
-            current_next = str((select_next_action(queue) or {}).get("id") or "").strip()
-            if not current_next and recorded_action_is_final():
+            active = active_action_ids(queue)
+            if not active and recorded_action_is_final():
                 return {
                     "status": "valid",
                     "fingerprint": current_fingerprint,
@@ -621,8 +622,10 @@ def _checkpoint_queue_health(witness: dict, queue: dict) -> dict:
             }
         return {"status": "valid", "fingerprint": current_fingerprint}
 
+    # Legacy cursor comparison (pre-fingerprint checkpoints): the recorded
+    # head must still be the stable-order head of the active list.
     expected_next = str(recorded.get("next_id") or "").strip()
-    current_next = str((select_next_action(queue) or {}).get("id") or "").strip()
+    current_next = (active_action_ids(queue) or [""])[0]
     if expected_next and expected_next != current_next:
         if not current_next and recorded_action_is_final():
             return {

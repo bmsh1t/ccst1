@@ -143,12 +143,14 @@ When the selected action is `run_recon`, immediately run the selected Recon comm
 lane contract with `arguments.recon_flags`, then refresh bounded state. This is mechanical
 dispatch: the next tool call starts Recon; preparation belongs there and polling/refreshing
 comes only after dispatch.
-For substantive candidates, apply the lane's evidence-backed activation contract
-and claim the exact action before replay:
+For substantive candidates, claim the exact action by id before replay (dumb queue
+interface: `--id` required, the queue never selects for you):
 ```bash
-cd -- <repo_root_shell> && python3 tools/action_queue.py claim --target <target_shell> --id <id> --metadata-json '<activation-object>'
+cd -- <repo_root_shell> && python3 tools/action_queue.py claim --target <target_shell> --id <id> --metadata-json '<metadata-object>'
 ```
-Queue owns activation caps, identity/dedup, Runner fields, continuation lineage, and keeps
+The metadata object is your full judgment write (no required-field gate); the Queue
+enforces only mechanical write-time invariants — activation caps, runner-field
+anti-forgery, identity/dedup, continuation lineage — and keeps
 sensitive values out of state/logs. On claim failure inspect stderr/stored state once;
 never guess or retry. Runner observation leaves the action `running`; resolve it with one
 primary continuation or supported kill. Independent follow-ups need separately claimed

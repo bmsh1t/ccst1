@@ -210,20 +210,21 @@ def test_versioned_claim_uses_default_cap_when_stored_cap_missing(tmp_path):
 
 
 def test_versioned_claim_reports_all_missing_activation_fields_without_writing(tmp_path):
+    """The 16-field required gate is retired (2026-09-14 dumb-queue refactor):
+    a claim missing judgment fields succeeds and stores exactly what the AI
+    supplied — nothing is fabricated, nothing is demanded."""
     baseline = f"evidence/{TARGET}/correlation/baseline.json"
     context = _activation_context(baseline)
     context.pop("input_boundary")
     action_id, queue_path = _queued_depth_action(tmp_path, context=context)
-    before = queue_path.read_bytes()
     activation = _activation()
     activation.pop("decision_reason")
 
-    with pytest.raises(ValueError, match="decision_reason, input_boundary"):
-        claim_next_action(tmp_path, TARGET, action_id=action_id, metadata=activation)
+    claimed = claim_next_action(tmp_path, TARGET, action_id=action_id, metadata=activation)
 
-    assert queue_path.read_bytes() == before
-    assert load_queue(tmp_path, TARGET)["actions"][0]["status"] == "queued"
-
+    assert claimed["metadata"]["hypothesis_id"] == activation["hypothesis_id"]
+    assert "decision_reason" not in claimed["metadata"]
+    assert "input_boundary" not in claimed["metadata"]
 
 def test_versioned_claim_cannot_override_queue_owned_cap(tmp_path):
     action_id, queue_path = _queued_depth_action(tmp_path)
@@ -390,20 +391,17 @@ def test_active_dimension_outside_route_needs_no_override_reason(tmp_path):
 
 
 def test_claimed_skill_route_override_requires_reason(tmp_path):
+    """Skill-route override justification is AI judgment now, not a write-time
+    gate: a different route on an identified action replaces it wholesale."""
     baseline = f"evidence/{TARGET}/correlation/baseline.json"
     context = {**_activation_context(baseline), "skill_route": ALT_ROUTE}
     action_id, queue_path = _queued_depth_action(tmp_path, context=context)
     activation = {**_activation(), "skill_route": ROUTE}
     before = queue_path.read_bytes()
 
-    with pytest.raises(ValueError, match="skill_override_reason"):
-        claim_next_action(tmp_path, TARGET, action_id=action_id, metadata=activation)
-
-    assert queue_path.read_bytes() == before
-    activation["skill_override_reason"] = "current target evidence supports the authorization route"
     claimed = claim_next_action(tmp_path, TARGET, action_id=action_id, metadata=activation)
     assert claimed["metadata"]["skill_route"] == ROUTE
-
+    assert queue_path.read_bytes() != before
 
 @pytest.mark.parametrize("selection", ["missing", "empty"])
 def test_versioned_claim_accepts_optional_knowledge_refs(tmp_path, selection):
@@ -423,7 +421,10 @@ def test_versioned_claim_accepts_optional_knowledge_refs(tmp_path, selection):
         metadata=activation,
     )
 
-    assert claimed["metadata"]["selected_knowledge_refs"] == []
+    if selection == "missing":
+        assert "selected_knowledge_refs" not in claimed["metadata"]
+    else:
+        assert claimed["metadata"]["selected_knowledge_refs"] == []
 
 
 @pytest.mark.parametrize("selected_refs", [None, CARD, [""]])
@@ -796,8 +797,9 @@ def test_evidence_skill_hypothesis_result_continuation_and_kill_replay(tmp_path)
     action_id = added["queue"]["actions"][0]["id"]
     before = (tmp_path / "state" / TARGET / "action_queue.json").read_bytes()
 
-    with pytest.raises(ValueError, match="depth_contract_version=1"):
-        claim_next_action(tmp_path, TARGET, action_id=action_id)
+    # Dumb interface: a bare claim (no --id) is refused outright.
+    with pytest.raises(ValueError, match="requires --id"):
+        claim_next_action(tmp_path, TARGET)
     assert (tmp_path / "state" / TARGET / "action_queue.json").read_bytes() == before
 
     preclaim = _runner_summary(tmp_path, "operation-0", "runner must not activate a queued hypothesis")

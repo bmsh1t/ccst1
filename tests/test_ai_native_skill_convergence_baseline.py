@@ -263,6 +263,8 @@ def test_action_queue_lanes_doc_documents_from_evidence():
     lanes = (REPO_ROOT / "docs" / "autopilot-lanes.md").read_text(encoding="utf-8")
     assert "--from-evidence" in lanes
     assert "derives the mechanical fields" in lanes
-    # Gate reduction guard: the 16-field contract language stays.
+    # Dumb-interface contract (2026-09-14): the 16-field gate is retired;
+    # the doc must state --id is required and judgment fields stay AI-written.
     assert "judgment fields are never derived" in lanes
-    assert "full 16-field depth contract still applies" in lanes
+    assert "`--id` is REQUIRED" in lanes
+    assert "no 16-field" in lanes

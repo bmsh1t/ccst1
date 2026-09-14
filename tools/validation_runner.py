@@ -42,7 +42,6 @@ try:
         load_queue,
         queue_mutation_lock,
         save_queue,
-        select_next_action,
         summarize_queue,
     )
     from tools.evidence_ledger import record_entry
@@ -71,7 +70,6 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         load_queue,
         queue_mutation_lock,
         save_queue,
-        select_next_action,
         summarize_queue,
     )
     from evidence_ledger import record_entry  # type: ignore

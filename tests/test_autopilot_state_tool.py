@@ -813,7 +813,8 @@ def test_queue_resolution_rebuilds_state_from_durable_owner_facts(tmp_path):
         }),
         encoding="utf-8",
     )
-    claim = claim_next_action(tmp_path, target)
+    from action_queue import select_next_action
+    claim = claim_next_action(tmp_path, target, action_id=select_next_action(load_queue(tmp_path, target))["id"])
     resolved = resolve_action(
         tmp_path,
         target=target,
@@ -825,7 +826,7 @@ def test_queue_resolution_rebuilds_state_from_durable_owner_facts(tmp_path):
 
     assert before["next_action"] == "resume_action_queue"
     assert before["action_queue_next"]["id"] == claim["id"]
-    assert resolved["next"] == {}
+    assert resolved["active"] == []
     assert after["action_queue_next"] == {}
     assert after["next_action"] != "resume_action_queue"
     closure = load_closure_projection(str(tmp_path), after, max_lanes_reached=False)

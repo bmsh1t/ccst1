@@ -18,6 +18,7 @@
 | [目录结构](./directory-structure.md) | Claude 命令、工具、状态、知识和测试的职责边界 | 已完成 |
 | [持久化与状态](./database-guidelines.md) | JSON/JSONL schema、身份、原子写和迁移 | 已完成 |
 | [错误处理](./error-handling.md) | 入口、核心逻辑、持久化和 CLI 出口 | 已完成 |
+| [Action Queue 哑接口](./action-queue-dumb-interface.md) | claim 显式 --id、六项机械写时不变量、排序引擎退役决策 | 已完成 |
 | [质量规范](./quality-guidelines.md) | 所有 backend 改动都读取：通用质量、AI/工具边界和专题索引 | 已完成 |
 | [Runtime 与 Autopilot](./contracts/runtime-autopilot.md) | 修改 Claude CLI、启动、打包、长任务或子进程执行时读取 | 已完成 |
 | [Recon 与 Surface](./contracts/recon-surface.md) | 修改 Recon、scanner 语料、coverage、Surface 或知识路由时读取 | 已完成 |

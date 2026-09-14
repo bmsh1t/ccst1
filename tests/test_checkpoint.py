@@ -1992,7 +1992,10 @@ def test_checkpoint_ignores_off_target_direct_finding_followup(tmp_path):
 
     checkpoint = build_checkpoint(tmp_path, target="target.com")
 
-    assert checkpoint["decision"] == "refresh-recon"
+    # The selector that steered decision away from report is retired; with a
+    # validated finding pending report and no other evidence-backed candidate,
+    # "report" is the honest default-candidate decision.
+    assert checkpoint["decision"] == "report"
     assert checkpoint["structured_findings"]["pending_validation"] == 0
     assert checkpoint["structured_findings"]["validated_pending_report"] == 1
     assert checkpoint["structured_findings"]["next_report"]["id"] == "TARGET-AUTHZ"
@@ -2170,6 +2173,9 @@ def test_report_action_stays_above_advisory_surface_review_but_below_high_value_
 
 
 def test_default_candidate_uses_action_queue_selection_for_executable_surface_review():
+    """The heuristic picker died with the selector: recommended_executable_action
+    is now the stable-order first item — an advisory compat pointer, not a
+    recommendation. The AI reads the full queue and chooses."""
     queue = _build_next_action_queue(
         [
             _proposal_entry(
@@ -2194,12 +2200,8 @@ def test_default_candidate_uses_action_queue_selection_for_executable_surface_re
         "target.com",
     )
 
-    assert queue[0]["type"] == "report"  # checkpoint 原始候选仍按 priority 排序。
     selected = _select_default_candidate("target.com", queue)
-
-    assert selected["type"] == "surface-review"
-    assert selected["metadata"]["endpoint"] == "/api/users"
-
+    assert selected["type"] == "report"  # stable order: first item, no heuristic
 
 def test_default_candidate_keeps_report_above_advisory_surface_review():
     queue = _build_next_action_queue(
@@ -2260,7 +2262,7 @@ def test_checkpoint_default_preserves_explicitly_claimed_priority_override(tmp_p
     assert state["action_queue_next"]["id"] == selected["id"]
     assert checkpoint["default_candidate"]["id"] == selected["id"]
     assert checkpoint["recommended_executable_action"]["id"] == selected["id"]
-    assert checkpoint["action_queue_sync"]["next"]["id"] == selected["id"]
+    assert selected["id"] in checkpoint["action_queue_sync"]["active"]
 
 
 def test_checkpoint_replaces_replay_with_existing_candidate_evidence_gap(tmp_path):
@@ -2334,8 +2336,9 @@ def test_checkpoint_keeps_unmatched_active_candidate_evidence_gap(tmp_path):
     selected = _select_default_candidate(target, filtered)
 
     assert any(item["type"] == "candidate-evidence-gap" for item in filtered)
-    assert selected["type"] == "candidate-evidence-gap"
-    assert "api/users" in selected["action"]
+    # Stable-order default (no heuristic): the first item, while the gap
+    # stays visible for the AI to weigh.
+    assert selected["type"] == "next-action"
 
 
 def test_checkpoint_drops_active_candidate_superseded_by_validated_endpoint(tmp_path):

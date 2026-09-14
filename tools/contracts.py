@@ -13,8 +13,9 @@ import json
 from typing import Any
 
 # --- Queue ↔ Checkpoint：激活字段与版本 ------------------------------------
-# 权威定义在 tools/action_queue.py（ACTIVATION_REQUIRED_CLAIM_FIELDS）；此处
-# 收编为共享常量，owner 与消费方 import 同一份。tests 断言两边一致。
+# ACTIVATION_REQUIRED_CLAIM_FIELDS 已随 16 字段必填闸退役（2026-09-14
+# dumb-queue refactor）：claim 是显式 --id 写入 + 六项机械写时不变量，
+# 不再有需要共享的 claim schema。
 
 # --- validate ↔ queue：终态契约 --------------------------------------------
 # validate.py 的 canonical finding 终态与 queue resolve 的允许状态必须使用

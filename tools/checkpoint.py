@@ -56,7 +56,6 @@ try:
         load_queue as load_action_queue,
         queue_mutation_lock,
         queue_fingerprint as action_queue_fingerprint,
-        select_next_action as action_queue_select_next_action,
     )
     from tools.autopilot_state import (
         _global_review_basis,
@@ -104,7 +103,6 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         load_queue as load_action_queue,
         queue_mutation_lock,
         queue_fingerprint as action_queue_fingerprint,
-        select_next_action as action_queue_select_next_action,
     )
     from autopilot_state import (  # type: ignore
         _global_review_basis,
@@ -554,7 +552,7 @@ def write_checkpoint_witness(
             except ValueError:
                 pass
         stats = queue_sync.get("stats") if isinstance(queue_sync.get("stats"), dict) else {}
-        next_action = queue_sync.get("next") if isinstance(queue_sync.get("next"), dict) else {}
+        active_ids = queue_sync.get("active") if isinstance(queue_sync.get("active"), list) else []
         expected_fingerprint = str(
             queue_sync.get("fingerprint")
             or (queue_sync.get("summary") or {}).get("fingerprint")
@@ -572,7 +570,7 @@ def write_checkpoint_witness(
             "path": queue_path,
             "added": int(stats.get("added", 0) or 0),
             "updated": int(stats.get("updated", 0) or 0),
-            "next_id": str(next_action.get("id") or ""),
+            "active_ids": [str(value) for value in active_ids],
             "fingerprint": expected_fingerprint,
         }
     with checkpoint_witness_lock(repo, resolved_target):
@@ -774,7 +772,11 @@ def sync_checkpoint_action_queue(
     queue_summary = queue_sync.setdefault("summary", {})
     queue_summary["fingerprint"] = action_queue_fingerprint(queue)
     queue_sync["fingerprint"] = queue_summary["fingerprint"]
-    queue_sync["next"] = action_queue_select_next_action(queue)
+    # Stable-order active ids (no recommendation) replace the retired
+    # selector headline; the AI applies its own selection criteria.
+    from tools.action_queue import active_action_ids as _active_ids  # local: selector retired
+
+    queue_sync["active"] = _active_ids(queue)
     checkpoint["knowledge_effect_trace"] = _project_knowledge_effect_trace(
         checkpoint,
         queue.get("actions", []),
@@ -2915,32 +2917,15 @@ def _filter_final_action_queue_items(
 
 
 def _select_default_candidate(target: str, items: list[dict]) -> dict:
-    """用 action_queue 的真实选择规则挑 checkpoint 默认项。
+    """稳定序首项填充 recommended_executable_action 兼容字段。
 
-    checkpoint 的 `next_action_queue` 是候选集；`recommended_executable_action`
-    只是兼容字段。如果这里单纯取 priority 最高项，report 会因为分数高而压过
-    已有 replay 草案的 surface-review，和 `/autopilot` 的“report 是阶段收束”
-    规则冲突。这里复用 action_queue 的选择器，只把选中的 queue action 映射回
-    原始 checkpoint item，避免两套排序语义漂移。
+    选择器启发式已随 dumb-queue refactor 退役（2026-09-14）：不再按
+    priority/report-vs-review 规则“挑默认项”——那是替 AI 做的预排序。
+    该字段降级为候选集稳定序首项，仅供旧消费方兼容显示；真正的选择
+    权在 AI（autopilot.md priority_frontier 契约）。
     """
     if not items:
         return {}
-    try:
-        converted: list[dict] = []
-        by_key: dict[str, dict] = {}
-        for item in items:
-            queue_item = action_queue_checkpoint_item_to_action(target, item)
-            key = str(queue_item.get("dedupe_key") or action_queue_dedupe_key(queue_item))
-            converted.append(queue_item)
-            by_key.setdefault(key, item)
-        selected = action_queue_select_next_action({"actions": converted})
-        if selected:
-            selected_key = str(selected.get("dedupe_key") or action_queue_dedupe_key(selected))
-            if selected_key in by_key:
-                return by_key[selected_key]
-    except Exception:
-        # checkpoint 必须保持 best-effort；选择器异常时退回旧行为。
-        pass
     return items[0]
 
 

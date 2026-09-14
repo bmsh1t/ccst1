@@ -63,9 +63,11 @@ Claude-facing 文案应优先使用：
 
 命令参数分三类，命令文档用这三类标注：
 
-- **AI 判断**：临场认知，机器不可推导也不可预填。claim 四件套
-  （hypothesis_id / expected_learning / kill_condition / decision_reason）、
-  result 判定、resolve 决策、报告影响评估。
+- **AI 判断**：临场认知，机器不可推导也不可预填。claim 元数据全部判断字段
+  （hypothesis_id / family / technique / expected_learning / kill_condition /
+  decision_reason / skill_route / risk_tier；2026-09-14 起 `--id` 必填、无
+  必填字段闸，AI 全量写、Queue 只验机械不变量）、result 判定、resolve 决策、
+  报告影响评估。
 - **机器推导**：可从已有事实机械推导。endpoint/method/evidence_ref/
   baseline_ref（`--from-evidence` / `--from-probe`）。
 - **AI 判断（2026-09-13 修订）**：family/technique/skill_route/risk_tier 依据当前

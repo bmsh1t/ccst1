@@ -22,7 +22,7 @@ from action_queue import (
     resolve_action,
     save_queue,
     select_next_action,
-    select_next_action_for_target,
+    active_action_ids,
     summarize_queue,
 )
 from coverage_matrix import load_matrix, mark_cell
@@ -46,7 +46,8 @@ def _resolve_unsafe_review_worker(repo_root, target, action_id, output):
 
 def _claim_action_worker(repo_root, target, output):
     try:
-        claimed = claim_next_action(repo_root, target)
+        action_id = select_next_action(load_queue(repo_root, target)).get("id", "")
+        claimed = claim_next_action(repo_root, target, action_id=action_id)
         output.put((claimed.get("id", ""), claimed.get("claim_status", ""), ""))
     except Exception as exc:  # pragma: no cover - surfaced through parent assertion
         output.put(("", "error", str(exc)))
@@ -106,15 +107,14 @@ def test_ingest_checkpoint_persists_and_prioritizes(tmp_path):
     result = ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
 
     assert result["stats"]["added"] == 2
-    assert result["next"]["type"] in {"known-software-intel", "coverage-gap"}
-    assert result["next"]["type"] != "generic-follow-up"
+    assert set(result["active"]) == {"AQ-0001", "AQ-0002"}
 
     queue = load_queue(tmp_path, "target.com")
     assert summarize_queue(queue)["active"] == 2
     assert (tmp_path / "state" / "target.com" / "action_queue.json").is_file()
     assert {root: _snapshot_files(root) for root in owner_snapshots} == owner_snapshots
 
-    claimed = claim_next_action(tmp_path, "target.com")
+    claimed = claim_next_action(tmp_path, "target.com", action_id=result["active"][0])
     resolve_action(
         tmp_path,
         target="target.com",
@@ -128,8 +128,8 @@ def test_ingest_checkpoint_persists_and_prioritizes(tmp_path):
 def test_claim_is_atomic_and_resumes_running_before_new_queued_work(tmp_path):
     ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
 
-    first = claim_next_action(tmp_path, "target.com")
-    first_id = first["id"]
+    first_id = select_next_action(load_queue(tmp_path, "target.com"))["id"]
+    first = claim_next_action(tmp_path, "target.com", action_id=first_id)
     queued_id = next(
         item["id"]
         for item in load_queue(tmp_path, "target.com")["actions"]
@@ -143,7 +143,7 @@ def test_claim_is_atomic_and_resumes_running_before_new_queued_work(tmp_path):
         notes="preserve replay context",
     )
 
-    resumed = claim_next_action(tmp_path, "target.com")
+    resumed = claim_next_action(tmp_path, "target.com", action_id=first_id)
     queue = load_queue(tmp_path, "target.com")
     running = next(item for item in queue["actions"] if item["id"] == first_id)
 
@@ -291,8 +291,14 @@ add_manual_action(
 
 
 def test_target_next_honors_scan_wait_marker_without_deleting_queue(tmp_path):
+    """Wait-marker preemption died with the selector; the queue survives waits.
+
+    A scan phase lock is visible to the AI via runtime state, but the queue
+    file keeps its active actions untouched — nothing is retired, reordered,
+    or hidden while a long phase runs.
+    """
     ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
-    queued_before = select_next_action(load_queue(tmp_path, "target.com"))
+    queued_ids_before = set(active_action_ids(load_queue(tmp_path, "target.com")))
     update_runtime_state(
         tmp_path,
         "target.com",
@@ -301,13 +307,8 @@ def test_target_next_honors_scan_wait_marker_without_deleting_queue(tmp_path):
     )
 
     with runtime_phase_lock(tmp_path, "target.com", "scan"):
-        selected = select_next_action_for_target(tmp_path, "target.com")
         queue = load_queue(tmp_path, "target.com")
-
-        assert selected["type"] == "wait_scan"
-        assert selected["id"] == "runtime-wait"
-        assert summarize_queue(queue, repo_root=tmp_path, target="target.com")["next_id"] == "runtime-wait"
-        assert select_next_action(queue)["id"] == queued_before["id"]
+        assert set(active_action_ids(queue)) == queued_ids_before
         assert summarize_queue(queue)["active"] == 2
 
     update_runtime_state(
@@ -316,13 +317,12 @@ def test_target_next_honors_scan_wait_marker_without_deleting_queue(tmp_path):
         mode="scan_only",
         last_executed_workflow="run_vuln_scan",
     )
-    assert select_next_action_for_target(tmp_path, "target.com")["id"] == queued_before["id"]
-
+    assert set(active_action_ids(load_queue(tmp_path, "target.com"))) == queued_ids_before
 
 def test_target_next_ignores_orphan_scan_marker_and_keeps_queue_selectable(tmp_path):
-    """被终止的后台 scanner 释放锁后不能继续掩盖已持久化的下一步。"""
+    """A released scan lock leaves the persisted queue exactly as it was."""
     ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
-    queued_before = select_next_action(load_queue(tmp_path, "target.com"))
+    queued_ids_before = set(active_action_ids(load_queue(tmp_path, "target.com")))
     update_runtime_state(
         tmp_path,
         "target.com",
@@ -330,15 +330,12 @@ def test_target_next_ignores_orphan_scan_marker_and_keeps_queue_selectable(tmp_p
         last_executed_workflow="run_scan_started",
     )
 
-    selected = select_next_action_for_target(tmp_path, "target.com")
-
-    assert selected["id"] == queued_before["id"]
-    assert selected["type"] != "wait_scan"
-
+    assert set(active_action_ids(load_queue(tmp_path, "target.com"))) == queued_ids_before
 
 def test_target_next_honors_recon_wait_marker_without_deleting_queue(tmp_path):
+    """Recon wait does not touch the persisted queue (selector preemption retired)."""
     ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
-    queued_before = select_next_action(load_queue(tmp_path, "target.com"))
+    queued_ids_before = set(active_action_ids(load_queue(tmp_path, "target.com")))
     update_runtime_state(
         tmp_path,
         "target.com",
@@ -347,11 +344,7 @@ def test_target_next_honors_recon_wait_marker_without_deleting_queue(tmp_path):
     )
 
     with runtime_phase_lock(tmp_path, "target.com", "recon"):
-        selected = select_next_action_for_target(tmp_path, "target.com")
-
-        assert selected["type"] == "wait_recon"
-        assert selected["id"] == "runtime-wait"
-        assert select_next_action(load_queue(tmp_path, "target.com"))["id"] == queued_before["id"]
+        assert set(active_action_ids(load_queue(tmp_path, "target.com"))) == queued_ids_before
 
     update_runtime_state(
         tmp_path,
@@ -359,10 +352,10 @@ def test_target_next_honors_recon_wait_marker_without_deleting_queue(tmp_path):
         mode="recon_only",
         last_executed_workflow="run_recon",
     )
-    assert select_next_action_for_target(tmp_path, "target.com")["id"] == queued_before["id"]
-
+    assert set(active_action_ids(load_queue(tmp_path, "target.com"))) == queued_ids_before
 
 def test_action_queue_cli_next_honors_runtime_wait_marker(tmp_path, capsys):
+    """The retired `next` subcommand is gone; `list` shows the queue as-is during waits."""
     ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
     update_runtime_state(
         tmp_path,
@@ -374,20 +367,20 @@ def test_action_queue_cli_next_honors_runtime_wait_marker(tmp_path, capsys):
     with runtime_phase_lock(tmp_path, "target.com", "scan"):
         code = main([
             "--repo-root", str(tmp_path),
-            "next",
+            "list",
             "--target", "target.com",
             "--json",
         ])
         output = json.loads(capsys.readouterr().out)
 
         assert code == 0
-        assert output["type"] == "wait_scan"
-        assert output["status"] == "transient"
-
+        # No wait_scan pointer is synthesized: the durable queue is the truth.
+        assert all(item.get("id") != "runtime-wait" for item in output)
+        assert len(output) == 2
 
 def test_ingest_checkpoint_runtime_wait_does_not_retire_existing_queue(tmp_path):
     ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
-    queued_before = select_next_action(load_queue(tmp_path, "target.com"))
+    queued_ids_before = set(active_action_ids(load_queue(tmp_path, "target.com")))
     update_runtime_state(
         tmp_path,
         "target.com",
@@ -404,12 +397,12 @@ def test_ingest_checkpoint_runtime_wait_does_not_retire_existing_queue(tmp_path)
         queue = load_queue(tmp_path, "target.com")
 
         assert result["stats"]["retired_stale"] == 0
-        assert result["next"]["type"] == "wait_scan"
+        assert set(active_action_ids(queue)) == queued_ids_before
         assert summarize_queue(queue)["active"] == 2
-        assert select_next_action(queue)["id"] == queued_before["id"]
-
 
 def test_report_action_does_not_preempt_active_validation_work(tmp_path):
+    """Selector preemption died: a report action and active validation work
+    are both simply present in the stable active list; the AI weighs them."""
     checkpoint = {
         "next_action_queue": [
             {
@@ -422,30 +415,17 @@ def test_report_action_does_not_preempt_active_validation_work(tmp_path):
             },
             {
                 "id": "V1",
-                "priority": 80,
-                "type": "ranked-surface",
-                "action": "Continue browser-observed API role replay.",
-                "command_hint": "python3 tools/validation_runner.py authz-role-replay ...",
-                "redline_required": False,
+                "priority": 50,
+                "type": "versioned-endpoint",
+                "action": "Replay the validated difference.",
+                "metadata": {"depth_contract_version": 1},
             },
         ]
     }
-
     ingest_checkpoint(tmp_path, "target.com", checkpoint=checkpoint)
     queue = load_queue(tmp_path, "target.com")
-
-    assert select_next_action(queue)["type"] == "ranked-surface"
-
-    validation = next(item for item in queue["actions"] if item["type"] == "ranked-surface")
-    resolve_action(
-        tmp_path,
-        target="target.com",
-        action_id=validation["id"],
-        status="tested",
-        result="Role replay completed; no additional delta.",
-    )
-    assert select_next_action(load_queue(tmp_path, "target.com"))["type"] == "report"
-
+    types = {item["type"] for item in queue["actions"]}
+    assert {"report", "versioned-endpoint"} <= types
 
 def test_surface_review_does_not_preempt_report_when_no_substantive_work(tmp_path):
     checkpoint = {
@@ -483,6 +463,8 @@ def test_surface_review_does_not_preempt_report_when_no_substantive_work(tmp_pat
     ],
 )
 def test_capability_chain_review_never_preempts_existing_owner_work(other_type, other_status):
+    """Advisory preemption semantics retired: chain review and owner work
+    coexist in the active list; selection is the AI's judgment."""
     review = build_action(
         target="target.com",
         action_type="capability-chain-review",
@@ -502,10 +484,13 @@ def test_capability_chain_review_never_preempts_existing_owner_work(other_type, 
     )
     other.update({"id": "AQ-OWNER", "status": other_status})
 
-    assert select_next_action({"actions": [review, other]})["id"] == other["id"]
+    assert set(active_action_ids({"actions": [review, other]})) == {"AQ-REVIEW", "AQ-OWNER"}
 
 
 def test_surface_review_with_runner_replay_preempts_report(tmp_path):
+    """Preemption semantics retired: report and a surface review carrying an
+    exact runner replay both stay in the active list — the AI weighs closure
+    against new evidence itself."""
     checkpoint = {
         "next_action_queue": [
             {
@@ -536,13 +521,12 @@ def test_surface_review_with_runner_replay_preempts_report(tmp_path):
     }
 
     ingest_checkpoint(tmp_path, "target.com", checkpoint=checkpoint)
-    selected = select_next_action(load_queue(tmp_path, "target.com"))
-
-    assert selected["type"] == "surface-review"
-    assert selected["metadata"]["endpoint"] == "/rest/user"
-
+    types = {item["type"] for item in load_queue(tmp_path, "target.com")["actions"]}
+    assert {"report", "surface-review"} <= types
 
 def test_legacy_ranked_surface_without_runner_is_advisory(tmp_path):
+    """Legacy ranked-surface items stay visible in the active list; hiding
+    or steering them was selector behavior that died with the selector."""
     checkpoint = {
         "next_action_queue": [
             {
@@ -563,12 +547,13 @@ def test_legacy_ranked_surface_without_runner_is_advisory(tmp_path):
             },
         ]
     }
-
     ingest_checkpoint(tmp_path, "target.com", checkpoint=checkpoint)
-    assert select_next_action(load_queue(tmp_path, "target.com"))["type"] == "report"
-
+    types = {item["type"] for item in load_queue(tmp_path, "target.com")["actions"]}
+    assert {"report", "ranked-surface"} <= types
 
 def test_current_surface_review_beats_stale_legacy_ranked_surface_when_only_advisory(tmp_path):
+    """Both advisory reviews stay listed; preferring one was selector
+    behavior. The AI reads both and picks."""
     checkpoint = {
         "next_action_queue": [
             {
@@ -591,12 +576,12 @@ def test_current_surface_review_beats_stale_legacy_ranked_surface_when_only_advi
     }
 
     ingest_checkpoint(tmp_path, "target.com", checkpoint=checkpoint)
-    selected = select_next_action(load_queue(tmp_path, "target.com"))
-    assert selected["type"] == "surface-review"
-    assert "current" in selected["action"]
-
+    types = {item["type"] for item in load_queue(tmp_path, "target.com")["actions"]}
+    assert {"ranked-surface", "surface-review"} <= types
 
 def test_low_evidence_top_advisory_surface_review_does_not_drive_next(tmp_path):
+    """Score-only surface reviews stay visible (the exclusion filter died
+    with the selector); the AI judges their evidential weight itself."""
     queue = load_queue(tmp_path, "target.com")
     queue["actions"] = [
         {
@@ -631,8 +616,7 @@ def test_low_evidence_top_advisory_surface_review_does_not_drive_next(tmp_path):
         }
     ]
 
-    assert select_next_action(queue) == {}
-
+    assert active_action_ids(queue) == ["AQ-0001"]
 
 def test_low_evidence_surface_review_with_exact_runner_stays_selectable(tmp_path):
     queue = load_queue(tmp_path, "target.com")
@@ -1063,12 +1047,10 @@ def test_manual_action_cli_writes_metadata_and_preserves_duplicate_queue_behavio
         "hypothesis_id": "H-42",
         "family": "custom-template-chain",
         "chain": ["template", "sandbox", "execution"],
-        "tested_dimensions": ["sibling endpoint", "low-role actor"],
         "expected_learning": "A role difference should reveal object scoping.",
         "kill_condition": "Responses remain identical across both actors.",
         "next_question": "Does the sibling endpoint enforce the same object check?",
         "attempts": 2,
-        "last_outcome": "anonymous baseline returned 403",
     }
     argv = [
         "--repo-root", str(tmp_path),
@@ -1090,16 +1072,18 @@ def test_manual_action_cli_writes_metadata_and_preserves_duplicate_queue_behavio
     assert queue["actions"][0]["metadata"] == metadata
 
 
-def test_resolve_cli_merges_structured_metadata_idempotently(tmp_path):
+def test_resolve_cli_merges_structured_metadata_idempotently(tmp_path, capsys):
+    """Dumb-interface resolve: AI writes judgment fields wholesale; runner
+    fields are rejected (anti-forgery) and preserved when unsupplied."""
     initial_metadata = {
         "hypothesis_id": "H-42",
-        "tested_dimensions": ["sibling endpoint"],
         "expected_learning": "A role difference should reveal object scoping.",
         "kill_condition": "Responses remain identical across both actors.",
         "next_question": "Can the sibling endpoint be replayed?",
-        "last_outcome": {"status": "running", "evidence_ref": "evidence/trace.json"},
         "pivot_hints": ["try export"],
     }
+    # Runner observations enter only through the runner's locked internal
+    # path; simulate that by seeding the queue file directly.
     assert main([
         "--repo-root", str(tmp_path),
         "add",
@@ -1112,12 +1096,31 @@ def test_resolve_cli_merges_structured_metadata_idempotently(tmp_path):
         "--json",
     ]) == 0
 
+    # Runner-owned fields in an AI resolve are rejected outright.
+    runner_update = {
+        "next_question": "Does the export endpoint enforce the same object check?",
+        "last_outcome": {"status": "blocked", "notes": "peer session expired"},
+    }
+    argv_runner = [
+        "--repo-root", str(tmp_path),
+        "resolve",
+        "--target", "api.target.com",
+        "--id", "AQ-0001",
+        "--status", "blocked",
+        "--evidence", "peer session expired",
+        "--metadata-json", json.dumps(runner_update),
+        "--json",
+    ]
+    # CLI main() converts ValueError to exit code 2 + stderr.
+    assert main(argv_runner) == 2
+    assert "Runner-owned observation fields" in capsys.readouterr().err
+
+    # Judgment-field writes are wholesale (last write wins) and idempotent;
+    # unsupplied runner fields are preserved, not wiped.
     update = {
-        "tested_dimensions": ["sibling endpoint", "low-role actor"],
         "next_question": "Does the export endpoint enforce the same object check?",
         "expected_learning": "Export responses should preserve object scoping.",
         "kill_condition": "Both export actors receive the same object body.",
-        "last_outcome": {"status": "blocked", "notes": "peer session expired"},
         "pivot_hints": ["try export", "try GraphQL"],
     }
     argv = [
@@ -1136,15 +1139,9 @@ def test_resolve_cli_merges_structured_metadata_idempotently(tmp_path):
     action = load_queue(tmp_path, "api.target.com")["actions"][0]
     assert action["metadata"] == {
         "hypothesis_id": "H-42",
-        "tested_dimensions": ["sibling endpoint", "low-role actor"],
         "expected_learning": "Export responses should preserve object scoping.",
         "kill_condition": "Both export actors receive the same object body.",
         "next_question": "Does the export endpoint enforce the same object check?",
-        "last_outcome": {
-            "status": "blocked",
-            "evidence_ref": "evidence/trace.json",
-            "notes": "peer session expired",
-        },
         "pivot_hints": ["try export", "try GraphQL"],
     }
 
@@ -1152,7 +1149,6 @@ def test_resolve_cli_merges_structured_metadata_idempotently(tmp_path):
 def test_resolve_negative_hypothesis_generates_idempotent_pivots(tmp_path):
     metadata = {
         "hypothesis_id": "H-7",
-        "tested_dimensions": ["baseline"],
         "pivot_hints": ["sibling endpoint", "encoding", "baseline"],
         "expected_learning": "A sibling or encoding variant may differ.",
         "kill_condition": "Both actor and encoding variants preserve the denial.",
@@ -1174,10 +1170,12 @@ def test_resolve_negative_hypothesis_generates_idempotent_pivots(tmp_path):
         status="tested",
         result="baseline denied",
     )
-    assert first["hypothesis_continuation"]["added"] == 2
+    # tested_dimensions is a runner-owned observation now; without a runner
+    # record nothing counts as tested, so every distinct hint projects a pivot.
+    assert first["hypothesis_continuation"]["added"] == 3
     queue = load_queue(tmp_path, "api.target.com")
     pivots = [item for item in queue["actions"] if item["type"] == "hypothesis-pivot"]
-    assert {item["metadata"]["pivot_hint"] for item in pivots} == {"sibling endpoint", "encoding"}
+    assert {item["metadata"]["pivot_hint"] for item in pivots} == {"sibling endpoint", "encoding", "baseline"}
 
     second = resolve_action(
         tmp_path,
@@ -1187,7 +1185,7 @@ def test_resolve_negative_hypothesis_generates_idempotent_pivots(tmp_path):
         result="baseline denied",
     )
     assert "hypothesis_continuation" not in second
-    assert len([item for item in load_queue(tmp_path, "api.target.com")["actions"] if item["type"] == "hypothesis-pivot"]) == 2
+    assert len([item for item in load_queue(tmp_path, "api.target.com")["actions"] if item["type"] == "hypothesis-pivot"]) == 3
 
 
 def test_resolve_kill_condition_closes_hypothesis_without_pivots(tmp_path):
@@ -1792,7 +1790,8 @@ def test_resolve_tested_requires_locatable_evidence(tmp_path):
             ]
         },
     )
-    action = claim_next_action(tmp_path, "target.com")
+    action_id = select_next_action(load_queue(tmp_path, "target.com"))["id"]
+    action = claim_next_action(tmp_path, "target.com", action_id=action_id)
 
     with pytest.raises(ValueError, match="locatable evidence"):
         resolve_action(
@@ -1992,7 +1991,11 @@ def test_superseded_candidate_gap_does_not_steer_next_action(tmp_path):
         },
     ]
 
-    assert select_next_action(queue)["id"] == "AQ-0003"
+    # The superseded-candidate exclusion died with the selector: the head of
+    # the stable active order is simply the first active action. The AI reads
+    # the full list and applies its own dedup judgment.
+    assert select_next_action(queue)["id"] == "AQ-0001"
+    assert set(active_action_ids(queue)) >= {"AQ-0001", "AQ-0003"}
 
 
 def test_ingest_checkpoint_retires_superseded_candidate_gap(tmp_path):
@@ -2080,7 +2083,7 @@ def test_ingest_checkpoint_reopens_runner_only_validated_action(tmp_path):
     assert second["stats"]["updated"] == 1
     assert second["stats"]["skipped_final"] == 0
     assert saved["actions"][0]["status"] == "queued"
-    assert second["next"]["id"] == saved["actions"][0]["id"]
+    assert saved["actions"][0]["id"] in second["active"]
     assert "runner evidence is candidate-only" in saved["actions"][0]["notes"]
 
 
@@ -2536,11 +2539,12 @@ def test_claim_from_evidence_rejects_missing_or_foreign_evidence(tmp_path, monke
 
 
 def test_claim_from_evidence_does_not_derive_judgment_fields(tmp_path):
-    """The 16-field depth contract stays: judgment fields must come from the AI.
+    """Dumb-interface claim: derivation stays mechanical, judgment stays AI's.
 
-    Passing --from-evidence without the judgment fields must still fail with
-    the activation-fields error — the derivation is format-tax reduction, not
-    gate reduction.
+    --from-evidence fills only the mechanical fields; the claim succeeds
+    without any judgment fields (the 16-field gate is retired — the queue is
+    a locked file, not a router), and the stored metadata must NOT contain
+    any AI judgment the caller did not supply.
     """
     ingest_checkpoint(
         tmp_path,
@@ -2564,26 +2568,22 @@ def test_claim_from_evidence_does_not_derive_judgment_fields(tmp_path):
     )
     evidence_ref = _seed_probe_evidence(tmp_path)
 
-    with pytest.raises(ValueError, match="activation fields"):
-        claim_next_action(
-            tmp_path,
-            "target.com",
-            action_id="AQ-0001",
-            from_evidence=evidence_ref,
-        )
-
-
-def test_activation_contract_projection_documents_from_evidence():
-    """The bootstrap-consumed projection advertises the derivation surface."""
-    projection = action_queue_module.activation_contract_projection()
-    from_evidence = projection["from_evidence"]
-    assert from_evidence["derived_fields"] == [
-        "endpoint",
-        "method",
-        "evidence_ref",
-        "baseline_ref",
-    ]
-    assert "--from-evidence" in from_evidence["flag"]
+    claimed = claim_next_action(
+        tmp_path,
+        "target.com",
+        action_id="AQ-0001",
+        from_evidence=evidence_ref,
+    )
+    stored = claimed["metadata"]
+    # 机械字段已派生
+    assert stored["evidence_ref"] == evidence_ref
+    assert stored["baseline_ref"] == evidence_ref
+    assert stored["endpoint"] == "https://target.com/rest/basket/6"
+    assert stored["method"] == "GET"
+    # 判断字段不被伪造
+    for judgment in ("hypothesis_id", "family", "technique", "expected_learning",
+                     "kill_condition", "decision_reason"):
+        assert judgment not in stored
 
 
 def test_claim_cli_accepts_from_evidence(tmp_path, capsys):
@@ -2627,16 +2627,19 @@ def test_claim_from_evidence_non_probe_json_derives_only_evidence_ref(tmp_path):
     )
     summary_ref = str(summary.relative_to(tmp_path))
 
-    with pytest.raises(ValueError, match="target-owned evidence_ref and baseline_ref"):
-        claim_next_action(
-            tmp_path,
-            "target.com",
-            action_id=action_id,
-            from_evidence=summary_ref,
-            metadata=dict(_JUDGMENT_ONLY_ACTIVATION),
-        )
+    # Dumb interface: a non-probe file derives only evidence_ref; the claim
+    # succeeds (no required-fields gate) and baseline_ref is NOT guessed.
+    derived_only = claim_next_action(
+        tmp_path,
+        "target.com",
+        action_id=action_id,
+        from_evidence=summary_ref,
+        metadata=dict(_JUDGMENT_ONLY_ACTIVATION),
+    )
+    assert derived_only["metadata"]["evidence_ref"] == summary_ref
+    assert "baseline_ref" not in derived_only["metadata"]
     # Supplying baseline_ref (and endpoint/method) from the AI completes the
-    # contract: the derived evidence_ref was adopted underneath.
+    # mechanical fields: the derived evidence_ref was adopted underneath.
     metadata = dict(_JUDGMENT_ONLY_ACTIVATION)
     metadata.update(
         {
@@ -2660,3 +2663,202 @@ def test_claim_from_evidence_non_probe_json_derives_only_evidence_ref(tmp_path):
     )
     assert stored["metadata"]["evidence_ref"] == summary_ref
     assert stored["metadata"]["baseline_ref"] == "evidence/target.com/validation/baseline.json"
+
+
+# ---- 2026-09-14 chimera regression: the queue never selects or re-identifies ----
+
+
+def test_claim_without_id_is_rejected(tmp_path):
+    """The 2026-09-14 chimera came from an --id-less claim silently merging a
+    new hypothesis into whatever the selector picked. That path is gone."""
+    ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
+    with pytest.raises(ValueError, match="requires --id"):
+        claim_next_action(tmp_path, "target.com")
+
+
+def test_claim_cannot_reidentify_existing_action_hypothesis(tmp_path):
+    """A different hypothesis_id/family/technique on an already-identified
+    action must not overwrite the stored identity (the chimera's field-level
+    mechanism, now guarded even though explicit --id is required)."""
+    ingest_checkpoint(
+        tmp_path,
+        "target.com",
+        checkpoint={
+            "next_action_queue": [
+                {
+                    "id": "EXISTING",
+                    "priority": 80,
+                    "type": "case-state-enrichment",
+                    "action": "Register actor/session/object context.",
+                    "metadata": {
+                        "hypothesis_id": "bola-basket",
+                        "family": "object-authorization",
+                        "technique": "id-swap-cross-actor",
+                        "endpoint": "https://target.com/rest/basket/1",
+                    },
+                }
+            ]
+        },
+    )
+    queue = load_queue(tmp_path, "target.com")
+    action_id = queue["actions"][0]["id"]
+
+    # An AI claiming this action with a DIFFERENT hypothesis identity is the
+    # chimera shape: refuse unless a repeat_reason documents the change.
+    foreign = {
+        "depth_contract_version": 1,
+        "hypothesis_id": "sqli-products-search",
+        "family": "injection",
+        "technique": "union-select-data-extraction",
+        "endpoint": "https://target.com/rest/products/search?q=x",
+        "method": "GET",
+        "active_dimension": "parameter:q",
+        "evidence_ref": "evidence/target.com/probe/p.json",
+        "baseline_ref": "evidence/target.com/probe/p.json",
+        "skill_route": {
+            "skill_id": "web2-vuln-classes",
+            "required_dimensions": ["vulnerability_family"],
+        },
+    }
+    probe = tmp_path / "evidence" / "target.com" / "probe" / "p.json"
+    probe.parent.mkdir(parents=True)
+    probe.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="re-identify"):
+        claim_next_action(tmp_path, "target.com", action_id=action_id, metadata=foreign)
+
+    # Same identity (or a documented repeat) passes through.
+    same = dict(foreign)
+    same.update({
+        "hypothesis_id": "bola-basket",
+        "family": "object-authorization",
+        "technique": "id-swap-cross-actor",
+        "endpoint": "https://target.com/rest/basket/1",
+    })
+    claimed = claim_next_action(tmp_path, "target.com", action_id=action_id, metadata=same)
+    assert claimed["metadata"]["hypothesis_id"] == "bola-basket"
+
+
+def test_claim_runner_fields_rejected_on_all_paths(tmp_path):
+    """Anti-forgery is unconditional: AI metadata carrying runner-owned
+    fields is rejected on claim (not just on versioned claims)."""
+    ingest_checkpoint(
+        tmp_path,
+        "target.com",
+        checkpoint={
+            "next_action_queue": [
+                {
+                    "id": "V1",
+                    "priority": 80,
+                    "type": "versioned-endpoint",
+                    "action": "Replay the observed difference.",
+                }
+            ]
+        },
+    )
+    queue = load_queue(tmp_path, "target.com")
+    action_id = queue["actions"][0]["id"]
+    with pytest.raises(ValueError, match="Runner-owned observation fields"):
+        claim_next_action(
+            tmp_path,
+            "target.com",
+            action_id=action_id,
+            metadata={"last_outcome": {"status": "tested_finding"}},
+        )
+
+
+def test_update_preserves_unsupplied_runner_observation(tmp_path):
+    """Stale-read protection: an AI update that does not carry runner fields
+    must not wipe a persisted runner observation."""
+    ingest_checkpoint(
+        tmp_path,
+        "target.com",
+        checkpoint={
+            "next_action_queue": [
+                {
+                    "id": "V1",
+                    "priority": 80,
+                    "type": "versioned-endpoint",
+                    "action": "Replay the observed difference.",
+                    "metadata": {
+                        "last_outcome": {
+                            "status": "tested_finding",
+                            "evidence_ref": "evidence/target.com/validation/summary.json",
+                        },
+                        "runner_operation_id": "runner:abc123",
+                    },
+                }
+            ]
+        },
+    )
+    queue = load_queue(tmp_path, "target.com")
+    action_id = queue["actions"][0]["id"]
+
+    resolve_action(
+        tmp_path,
+        target="target.com",
+        action_id=action_id,
+        status="running",
+        notes="continuing under the same hypothesis",
+        metadata={"next_question": "Does the sibling object deny the peer actor?"},
+    )
+    stored = load_queue(tmp_path, "target.com")["actions"][0]["metadata"]
+    assert stored["last_outcome"]["status"] == "tested_finding"
+    assert stored["runner_operation_id"] == "runner:abc123"
+    assert stored["next_question"].startswith("Does the sibling")
+
+
+def test_hypothesis_cap_still_enforced_at_write_time(tmp_path):
+    """Runaway bound survives the gate removal: per-hypothesis action counts
+    are still enforced when the AI writes metadata."""
+    ingest_checkpoint(
+        tmp_path,
+        "target.com",
+        checkpoint={
+            "next_action_queue": [
+                {
+                    "id": "C1",
+                    "priority": 80,
+                    "type": "hypothesis-continuation",
+                    "action": "Continue the hypothesis.",
+                    "metadata": {
+                        "hypothesis_id": "H-CAP",
+                        "max_hypothesis_actions": 1,
+                    },
+                },
+                {
+                    "id": "C2",
+                    "priority": 79,
+                    "type": "hypothesis-continuation",
+                    "action": "Second action under a fresh hypothesis.",
+                    "metadata": {},
+                },
+            ]
+        },
+    )
+    queue = load_queue(tmp_path, "target.com")
+    first_id = next(item["id"] for item in queue["actions"] if item["metadata"].get("hypothesis_id") == "H-CAP")
+    second_id = next(item["id"] for item in queue["actions"] if item["id"] != first_id)
+
+    claimed = claim_next_action(
+        tmp_path, "target.com", action_id=first_id,
+        metadata={
+            "hypothesis_id": "H-CAP", "max_hypothesis_actions": 1,
+            "endpoint": "https://target.com/rest/basket/1", "method": "GET",
+            "family": "object-authorization", "technique": "id-swap",
+            "active_dimension": "path:/rest/basket/1",
+        },
+    )
+    assert claimed["claim_status"] == "claimed"
+
+    # Claiming the second action under the same exhausted hypothesis is refused.
+    with pytest.raises(ValueError, match="budget is exhausted"):
+        claim_next_action(
+            tmp_path, "target.com", action_id=second_id,
+            metadata={
+                "hypothesis_id": "H-CAP", "max_hypothesis_actions": 1,
+                "endpoint": "https://target.com/rest/basket/2", "method": "GET",
+                "family": "object-authorization", "technique": "id-swap",
+                "active_dimension": "path:/rest/basket/2",
+            },
+        )
