@@ -1412,18 +1412,6 @@ def format_context_pack(pack: dict) -> str:
             )
             for item in pack.get("card_catalog", [])
         ]),
-        "- Retired card projections (kept empty for compatibility):",
-        *_format_list([
-            "knowledge_cards", "deferred_knowledge_cards", "knowledge_card_recall",
-        ]),
-        "- Reference hints (retired; generic technique detail comes from the model):",
-        *_format_list([
-            "{path} — {when}".format(
-                path=item.get("path", ""),
-                when=item.get("when", ""),
-            )
-            for item in pack.get("reference_hints", [])
-        ]),
         "- Historical patterns (advisory; require current-target evidence):",
         *_format_list(pack.get("historical_patterns", [])),
         "- Required checks:",
@@ -1435,10 +1423,6 @@ def format_context_pack(pack: dict) -> str:
             pack.get("validation_runner_candidates", []),
             limit=6,
         )),
-        "- Hypothesis seeds:",
-        *_format_list(pack["hypothesis_seeds"]),
-        "- Alternative angles:",
-        *_format_list(pack["alternative_angles"]),
         "- Unknowns:",
         *_format_list(pack["unknowns"]),
         "- Actor matrix gaps:",

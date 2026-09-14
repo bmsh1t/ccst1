@@ -172,6 +172,9 @@ is never evidence. If `state.root_claim_next` exists, run `/checkpoint` so `find
 creates the canonical candidate and Queue action before using its ID. Write-back contract
 (what checkpoint writes where, default-on apply, cadence semantics) is defined once in
 `commands/checkpoint.md#写回契约权威定义`.
+Memory responsibility is mode-independent: apply
+`skills/runtime-protocol.md#shared-memory-continuity`; cadence controls batching,
+not whether important progress is retained.
 ## Execution Invariants
 Expert Hunter Autopilot is AI-first: the current AI session judges priority, impact, chain
 fit, promotion, reopen, and finish; deterministic owners preserve schema, evidence, replay,

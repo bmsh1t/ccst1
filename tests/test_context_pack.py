@@ -349,6 +349,33 @@ def test_native_pilot_recommendation_surface_fully_retired(tmp_path):
     assert "Skill recommendation retired (S1 native loading)" in output
 
 
+def test_retired_context_sections_are_json_only(tmp_path):
+    pack = build_context_pack(tmp_path, target="target.com")
+    pack["facts"] = [{"key": "confirmed", "text": "Keep this confirmed fact"}]
+    before = json.dumps(pack, sort_keys=True)
+
+    for key in (
+        "knowledge_cards", "deferred_knowledge_cards", "knowledge_card_recall",
+        "reference_hints", "hypothesis_seeds", "alternative_angles",
+    ):
+        assert pack[key] == []
+
+    output = format_context_pack(pack)
+
+    for heading in (
+        "- Retired card projections", "- Reference hints",
+        "- Hypothesis seeds:", "- Alternative angles:",
+    ):
+        assert heading not in output
+    for heading in (
+        "- Knowledge card catalog:", "- Required checks:",
+        "- Evidence anchors:", "- Unknowns:", "- Write-back:",
+    ):
+        assert heading in output
+    assert "Keep this confirmed fact" in output
+    assert json.dumps(pack, sort_keys=True) == before
+
+
 def test_memory_continuity_no_longer_drives_recommendation(tmp_path):
     """Target-memory `selected_skills` is historical continuity data; with the
     recommendation layer retired it can no longer put a skill into the pack's

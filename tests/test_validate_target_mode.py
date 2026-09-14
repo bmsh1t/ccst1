@@ -1014,6 +1014,74 @@ def test_machine_validation_rejects_report_path_owned_by_another_finding(
     )["finding_id"] == "sqli-one"
 
 
+@pytest.mark.parametrize("initial_status", ["validated", "partial"])
+def test_machine_validation_retries_same_runner_witness(
+    tmp_path, monkeypatch, capsys, initial_status,
+):
+    target, finding_id, findings_dir, decision_path = _seed_machine_preflight(tmp_path)
+    monkeypatch.setattr(validate, "BASE_DIR", tmp_path, raising=False)
+    decision = json.loads(decision_path.read_text(encoding="utf-8"))
+    decision["gates"]["gate4"]["passed"] = initial_status == "validated"
+    decision_path.write_text(json.dumps(decision), encoding="utf-8")
+    decision_bytes = decision_path.read_bytes()
+    runner_path = Path(decision["evidence"]["runner_summary"])
+    runner_bytes = runner_path.read_bytes()
+    operation_id = json.loads(runner_bytes)["operation_id"]
+    args = [
+        "--target", target, "--finding-id", finding_id,
+        "--decision-json", str(decision_path), "--json",
+    ]
+
+    assert validate.main(args) == 0
+    first = json.loads(capsys.readouterr().out)
+    finding = finding_index.find_finding(findings_dir, finding_id)
+    assert finding["validation_status"] == initial_status
+    assert finding["validation_summary"] == first["summary_path"]
+    assert Path(finding["validation_summary"]) != runner_path
+
+    before = _file_snapshot(tmp_path)
+    assert validate.main([*args, "--preflight"]) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "preflight_ok"
+    assert _file_snapshot(tmp_path) == before
+    assert validate.main(args) == 0
+    assert json.loads(capsys.readouterr().out)["summary_path"] == first["summary_path"]
+    assert finding_index.find_finding(findings_dir, finding_id)["validation_status"] == initial_status
+    assert decision_path.read_bytes() == decision_bytes
+
+    if initial_status == "partial":
+        decision["gates"]["gate4"]["passed"] = True
+        decision_path.write_text(json.dumps(decision), encoding="utf-8")
+        assert validate.main(args) == 0
+        capsys.readouterr()
+
+    finding = finding_index.find_finding(findings_dir, finding_id)
+    assert finding["validation_status"] == "validated"
+    assert finding["runner_operation_id"] == operation_id
+    assert Path(finding["runner_summary_path"]) == runner_path
+    assert runner_path.read_bytes() == runner_bytes
+    assert canonical_runner_witness(finding, findings_dir=findings_dir, target=target)["valid"] is True
+    assert finding_index.verify_finding_owner_provenance(findings_dir, finding, target=target)["valid"] is True
+
+
+def test_machine_validation_rejects_missing_runner_ledger_before_writes(tmp_path, monkeypatch, capsys):
+    target, finding_id, _, decision_path = _seed_machine_preflight(tmp_path)
+    monkeypatch.setattr(validate, "BASE_DIR", tmp_path, raising=False)
+    (tmp_path / "memory" / "evidence" / target / "ledger.jsonl").unlink()
+    before = _file_snapshot(tmp_path)
+    args = [
+        "--target", target, "--finding-id", finding_id,
+        "--decision-json", str(decision_path), "--json",
+    ]
+
+    assert validate.main([*args, "--preflight"]) == 2
+    assert any("runner ledger replay binding is missing" in error
+               for error in json.loads(capsys.readouterr().out)["errors"])
+    assert _file_snapshot(tmp_path) == before
+    assert validate.main(args) == 2
+    assert "runner ledger replay binding is missing" in capsys.readouterr().err
+    assert _file_snapshot(tmp_path) == before
+
+
 def test_machine_validation_rejects_rerun_without_runner_owner_handoff(
     tmp_path,
     monkeypatch,
@@ -1075,7 +1143,7 @@ def test_machine_validation_rejects_rerun_without_runner_owner_handoff(
         "--finding-id", finding_id,
         "--decision-json", str(second_path),
     ]) == 2
-    assert "canonical finding validation_summary does not match runner summary" in capsys.readouterr().err
+    assert "canonical finding runner_operation_id does not match runner summary" in capsys.readouterr().err
     assert (tmp_path / report_rel).read_text(encoding="utf-8") == "# Finding rerun 1\n"
     finding = find_finding(findings_dir, finding_id)
     assert finding is not None

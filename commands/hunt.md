@@ -77,13 +77,15 @@ Do not become a passive scanner wrapper. Start with the most concrete evidence a
 
 ## Four-Layer Write-Back
 
-During `/hunt`, write back concise state instead of relying on chat history:
+Apply `skills/runtime-protocol.md#shared-memory-continuity`, as in ordinary
+conversation and autopilot. Claude saves important progress without waiting for
+a user reminder; bind each write to the current target:
 
 ```bash
-python3 tools/target_memory.py lead "..."
-python3 tools/target_memory.py next "..."
-python3 tools/target_memory.py dead-end "..."
-python3 tools/target_memory.py handoff "..."
+python3 tools/target_memory.py lead "..." --target TARGET
+python3 tools/target_memory.py next "..." --target TARGET
+python3 tools/target_memory.py dead-end "..." --target TARGET
+python3 tools/target_memory.py handoff "..." --target TARGET
 ```
 
 At the end of a meaningful hunt pass, prefer checkpoint automation over manual
@@ -96,13 +98,6 @@ python3 tools/checkpoint.py --target target.com
 Checkpoint writes target memory automatically (see
 `commands/checkpoint.md#写回契约权威定义`); pass `--no-apply-target-memory` only
 when the operator explicitly wants the memory write skipped.
-
-Use target memory this way:
-
-- new plausible direction -> `lead`
-- exact next evidence action -> `next`
-- disproven or low-value lane -> `dead-end`
-- stopping point or context-length risk -> `handoff`
 
 Reusable lessons should be promoted through `/retrospect`, not copied directly
 from a target into the knowledge base without review.

@@ -44,6 +44,7 @@ from memory.hunt_journal import HuntJournal
 from memory.target_profile import default_memory_dir, load_target_profile
 try:
     from tools.finding_index import load_finding_index
+    from tools.target_memory import load_goal_memory
     from tools.target_paths import (
         canonical_target_value,
         compact_url,
@@ -52,6 +53,7 @@ try:
     )
 except ImportError:  # pragma: no cover - direct tools/ execution
     from finding_index import load_finding_index
+    from target_memory import load_goal_memory
     from target_paths import canonical_target_value, compact_url, target_storage_key, url_belongs_to_target
 
 _SESSION_SUMMARY_RE = re.compile(
@@ -323,6 +325,7 @@ def load_resume_summary(
     profile = profile if isinstance(profile, dict) else {}
 
     profile_target = str(profile.get("target") or canonical_target or requested_target)
+    target_memory = load_goal_memory(root, profile_target)["target"]
     owner_projection = derive_owner_projection(root, profile_target)
     owner_key = target_storage_key(profile_target)
     canonical_owner_paths = {
@@ -335,7 +338,7 @@ def load_resume_summary(
     ]
     journal = HuntJournal(memory_dir / "journal.jsonl")
     entries = journal.query(target=profile_target)
-    if not profile and not owner_projection.get("available") and not canonical_sources and not entries:
+    if not profile and not owner_projection.get("available") and not canonical_sources and not entries and not target_memory:
         return None
     confirmed_entries = [entry for entry in entries if entry.get("result") == "confirmed"]
     confirmed_payout = round(sum(float(entry.get("payout", 0) or 0) for entry in confirmed_entries), 2)
@@ -378,6 +381,7 @@ def load_resume_summary(
     return {
         "target": requested_target,
         "resolved_target": profile_target,
+        "target_memory_path": str(root / "memory/goals/targets" / f"{owner_key}.json") if target_memory else "",
         "sessions": int(profile.get("hunt_sessions", 0)),
         "last_hunted": profile.get("last_hunted", ""),
         "total_time_minutes": round(float(profile.get("total_time_minutes", 0) or 0), 2),
@@ -529,17 +533,8 @@ def load_pickup_summary(
 
 
 def _target_active_leads(repo_root: Path, target: str) -> list:
-    """Bounded read of the target-memory active leads for the scene summary."""
-    try:
-        from tools.target_memory import load_target_memory
-
-        memory = load_target_memory(target)
-    except Exception:  # pragma: no cover - memory is optional context
-        return []
-    if not isinstance(memory, dict):
-        return []
-    leads = memory.get("active_leads")
-    return leads if isinstance(leads, list) else []
+    """Read active leads through the root- and target-bound memory owner."""
+    return load_goal_memory(repo_root, target)["target"].get("active_leads", [])
 
 
 def format_resume_output(summary: dict | None, target: str) -> str:
@@ -567,6 +562,9 @@ def format_resume_output(summary: dict | None, target: str) -> str:
         )
     else:
         lines.append("  Findings:    0 confirmed")
+
+    if summary.get("target_memory_path"):
+        lines.extend(["", f"Target Memory: {summary['target_memory_path']}"])
 
     if summary["finding_titles"]:
         lines.append("")
@@ -791,7 +789,10 @@ def main() -> None:
 
     repo_root = Path(args.repo_root) if args.repo_root else Path(BASE_DIR)
     memory_dir = args.memory_dir or str(default_memory_dir(repo_root))
-    summary = load_pickup_summary(memory_dir, args.target, repo_root=repo_root)
+    try:
+        summary = load_pickup_summary(memory_dir, args.target, repo_root=repo_root)
+    except (OSError, ValueError) as exc:
+        parser.exit(2, f"pickup state read failed: {exc}\n")
 
     if args.json:
         print(json.dumps({"summary": summary}, indent=2))

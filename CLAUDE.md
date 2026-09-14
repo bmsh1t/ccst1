@@ -74,8 +74,11 @@ Command discovery comes from `commands/`, not a hand-maintained list here.
 
 ## Context and Evidence Discipline
 
-- 无 authoritative bootstrap 时，复杂任务先读取目标记忆并运行 `/context-pack`；一轮只选一个主 Skill，
-  知识卡与加载边界按 `rules/context-loading.md` 执行。
+- 所有目标工作共用 `skills/runtime-protocol.md#shared-memory-continuity`；普通模式同样由
+  Claude 主动恢复记忆、按需召回、重要节点写回，不等待用户提醒。
+- 无 authoritative bootstrap 时，复杂任务先恢复当前目标事实；缺少所需信息时运行
+  `/context-pack`，已读且有效的上下文直接复用。一轮只选一个主 Skill，加载边界按
+  `rules/context-loading.md` 执行。
 - 提示词或证据命中具体类别/边界时，实质动作（包括离线验证）前先读取
   `skills/runtime-protocol.md#shared-knowledge-recall`，按其中的判断完成查包/读卡。
 - 先复用摘要、索引和缓存证据；原始响应只按引用展开，Validation gate 只用于 Candidate。

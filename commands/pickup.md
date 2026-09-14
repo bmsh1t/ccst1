@@ -8,6 +8,10 @@ description: Continue a previous hunt on a target — shows hunt history, untest
 
 Continue a previous hunt on a target.
 
+Apply `skills/runtime-protocol.md#shared-memory-continuity`. Saved target memory
+is sufficient to resume; a previous autopilot run or legacy hunt profile is not
+required. This command restores context, not permission to start extra testing.
+
 ## Use When
 
 - You want to see where a target left off before continuing
@@ -22,16 +26,19 @@ Continue a previous hunt on a target.
 
 ## Inputs
 
+- `memory/goals/targets/<target_key>.json`
 - `hunt-memory/targets/<target>.json`
 - `hunt-memory/journal.jsonl`
 - `findings/<target>/findings.json`
 - `state/<target>/session.json`
 - Cached recon health and repo-source summary when present
-- Checkpoint summary from `python3 tools/checkpoint.py --target <target> --no-refresh-coverage`;
-  this updates only the bounded runtime-v2 checkpoint witness
+- Checkpoint follow-up built internally through `build_checkpoint(..., refresh_coverage=False)`;
+  this updates only the bounded runtime-v2 checkpoint witness and its lock, not
+  the target-memory/Queue write-back performed by the standalone checkpoint CLI
 
 ## Outputs
 
+- Target-memory source path and available structured leads
 - Hunt history
 - Untested surface summary
 - Pending validation/report suggestions
@@ -49,6 +56,10 @@ Continue a previous hunt on a target.
 - Target-level memory and structured findings
 - Runtime state and recon cache health
 
+Use the returned `target_memory_path` to restore saved goals, facts, next actions,
+dead ends and handoff when they are not already in context. The scene preview is
+not the full memory. Reading `/pickup` does not change the active-target pointer.
+
 `/pickup` reads target-level memory and structured findings. It does **not** replay
 temporary operator preferences such as skipped scanner modules, focus
 lanes, or "ignore this bug class" instructions; those must be restated in the
@@ -63,12 +74,12 @@ current turn if you really want them.
 
 ## What This Does
 
-1. Reads the target profile from `hunt-memory/targets/<target>.json`
+1. Reads current-target memory and the legacy hunt profile when present
 2. Shows hunt history (sessions, findings, payouts)
 3. Lists untested endpoints from last recon
 4. Shows structured finding follow-up from `findings/<target>/findings.json`
 5. Suggests the next validation or report command when a candidate is pending
-6. Suggests techniques based on tech stack + pattern DB
+6. Provides the target-memory reference; Claude recalls relevant experience as needed
 7. Shows the current action, recent evidence, blocker, next action, and
    target-memory write-back proposal while recording only the bounded
    runtime-v2 witness
@@ -78,6 +89,11 @@ current turn if you really want them.
 
 ```text
 /pickup target.com
+```
+
+```bash
+python3 tools/resume.py --target TARGET
+python3 tools/resume.py --target TARGET --json
 ```
 
 ## Output
@@ -99,7 +115,8 @@ current state. It may contain:
   `Target write-back proposals`, and an optional `Suggested command`.
   Checkpoint data is read-only here; target write-back remains explicit.
 - Untested Surface with the cached endpoint count/list or an empty-cache notice.
-- Memory Suggestions from available target-compatible memory and pattern hints.
+- Memory Suggestions with available tech-stack context; use the target-memory
+  reference or shared recall for relevant experience.
 - Actions: [r] Continue hunting untested endpoints; [c] Run checkpoint write-back when ready; [n] Re-run recon first (surface may have changed); and [s] Show full hunt journal for this target.
 
 ## If No Previous Hunt

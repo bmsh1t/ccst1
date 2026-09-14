@@ -79,6 +79,16 @@ Target context -> evidence-backed route -> smallest bounded action
               -> owner write-back -> next question / stop / reopen
 ```
 
+## Shared Memory Continuity
+
+普通对话、`/hunt`、`/pickup` 与 `/autopilot` 共用本节的记忆责任：Claude 主动恢复、
+按需召回并在重要节点写回，不等待用户输入“记住”或记忆命令。模式只决定是否持续自主
+推进任务，不降低记忆能力，也不因保存记忆而扩大本轮执行范围；明确只读或预览时不写回。
+
+开始、切换或续接目标工作时，从当前目标 owner 恢复事实、目标、假设、线索、下一步和
+交接；已在上下文且仍有效的信息直接复用。摘要或 `/pickup` 的场景预览不替代真源，缺少
+判断条件时按返回的目标记忆路径展开，不凭“没有运行历史”推断目标没有经验。
+
 记忆分层契约见 `docs/architecture-contract.md#memory-contract`：L1 观察、
 L2 工作集、L3 目标经验、L4 跨目标知识都落在既有 owner 上。运行时遵守
 三条层间流转：工作集只保留当前决策所需（其余留指针按引用展开）；只在
@@ -89,13 +99,16 @@ L2 工作集、L3 目标经验、L4 跨目标知识都落在既有 owner 上。�
 回写区分认知状态：观察、假设、已验证结论各有 owner（Ledger / queue 假设
 字段 / validation+finding），不把猜测写成事实，也不把一次失败固化成永久
 禁区（dead-end 带适用条件和重开条件）。关键证据即时保存；通用经验经复盘
-晋升（/distill → promote）。
+和人工审核晋升（/distill → promote）。暂停、切换目标或主动压缩上下文前，将尚未保存的
+重要进展及下一步写入现有 owner/handoff；不逐条聊天入库，不新增后台记忆提取流程。
 
 ### 1. Target layer
 
-先读取 `memory/goals/active.json`，或运行 `python3 tools/target_memory.py show`，确认
-target、mode/phase、active goal、current hypothesis、leads、next actions 和 dead ends。
-没有 active target 时，先建立目标上下文，不直接进入大范围动作。
+以本轮明确的目标运行 `python3 tools/target_memory.py show TARGET`，或读取其 owner 文件，
+确认 target、mode/phase、active goal、current hypothesis、leads、next actions 和 dead ends。
+写回显式传 `--target TARGET`；需要无参入口时先用 `target_memory.py set TARGET` 设置正确的
+active target。`/pickup` 与 Context Pack 是读取入口，不会替你切换 active target。
+目标尚未明确时先确认，不用旧 active target 替代当前用户意图。
 
 ### 2. Skill layer
 

@@ -1765,9 +1765,6 @@ def _validate_machine_runner_witness(
     canonical = prefill.get("_canonical_finding")
     if not isinstance(canonical, dict):
         raise ValueError("canonical finding is unavailable for runner owner binding")
-    canonical_summary = _resolved_repo_path(canonical.get("validation_summary"), repo_root=repo_root)
-    if canonical_summary != summary_path:
-        raise ValueError("canonical finding validation_summary does not match runner summary")
     if str(canonical.get("runner_operation_id") or "").strip() != operation_id:
         raise ValueError("canonical finding runner_operation_id does not match runner summary")
     canonical_method = str(canonical.get("method") or "").strip()
@@ -1788,6 +1785,15 @@ def _validate_machine_runner_witness(
         raise ValueError("runner operation material target does not match decision.target")
     if runner_operation_id(operation_material) != operation_id:
         raise ValueError("runner operation_id does not match canonical operation material")
+    # validation_summary points at the validation result after the first run.
+    witness = canonical_runner_witness(canonical, findings_dir=findings_dir, target=decision_target)
+    if not witness.get("valid"):
+        raise ValueError(
+            "canonical runner witness required before machine validation: "
+            f"{witness.get('reason') or 'missing witness'}"
+        )
+    if witness.get("summary_path") != summary_path:
+        raise ValueError("canonical runner witness does not match supplied runner summary")
     return summary_path
 
 
