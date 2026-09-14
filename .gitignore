@@ -6,6 +6,10 @@ evidence/*
 # Whitelist Cadence trigger validation labs (test infrastructure, not per-target evidence)
 !evidence/cadence-labs/
 evidence/cadence-labs/__pycache__/
+# Scrubbed fact digests for card target-evidence refs (no headers/bodies;
+# reproducibility contract: git-tracked cards must reference git-reachable files)
+!knowledge/distill-digests/
+knowledge/distill-digests/.*.tmp
 targets/
 config.json
 !mcp/fofamap-client/config.json

@@ -1,0 +1,17 @@
+{
+  "facts": {
+    "actor": "id=25 role=customer",
+    "body_bytes": 1310,
+    "body_sha256": "352c60e6ffcc4ff6a51aefa7220fc6613ddb89ff90b7a3530e419aae10bad980",
+    "method": "GET",
+    "path": "/rest/basket/1",
+    "status": 200,
+    "ts": "2026-09-12T00:37:57Z"
+  },
+  "kind": "distill-digest",
+  "note": "scrubbed fact digest; no headers/bodies. Verify locally with raw_sha256 when raw evidence exists.",
+  "raw_path": "evidence/127.0.0.1:3001/probe/20260912T003757670Z-352c60e6.json",
+  "raw_sha256": "26a34728c76c4d1c1088d2831f7ef39d1f28d8ad67611f9b20f0fce6d6a0e1c7",
+  "schema_version": 1,
+  "target": "127.0.0.1:3001"
+}

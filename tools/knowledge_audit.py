@@ -565,12 +565,43 @@ def _audit_registry(
     return document_entries
 
 
+def _ref_is_git_ignored(repo_root: Path, ref_str: str) -> bool | None:
+    """ref 目标是否被 gitignore 命中（= clone 后不可达）。
+
+    判据用 git check-ignore 而非 git ls-files：ls-files 只答"当前是否
+    tracked"（刚 add 未 commit、trackable 未 stage 都会误判），check-ignore
+    直接回答"clone 后是否还在"。非 git 仓库（exit 128，tmp_path 测试
+    夹具/裸目录部署）返回 None——该环境不承诺版本控制，回退到磁盘
+    存在性判定，保持既有测试夹具行为。
+    """
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "check-ignore", "-q", "--", ref_str],
+            cwd=str(repo_root),
+            capture_output=True,
+        )
+    except OSError:
+        return None
+    if result.returncode == 0:
+        return True
+    if result.returncode == 1:
+        return False
+    return None
+
+
 def _audit_target_evidence_refs(report, repo_root: Path, file_path: str, source_ref) -> None:
     """target-evidence 来源 refs 的可溯源校验（迁移自 distill commit gate）。
 
     KnowledgeSourceRef 把 target-evidence 归一为
     `<canonical-target>|<ref1>;...` 的 composite id（corpus 固定
     target-distilled-evidence）；从这里拆回 target 与 refs 列表。
+
+    可复现契约（2026-09-14）：git 仓库内，ref 目标被 gitignore 命中 =
+    git-tracked 卡引用 clone 后不存在的文件。target-evidence refs 应指向
+    knowledge/distill-digests/ 下的脱敏 digest（promote 自动迁移），
+    raw evidence 只作为 digest.raw_sha256 的本机校验对象。
     """
     stable_id = str(getattr(source_ref, "id", "") or "").strip()
     if not stable_id or "|" not in stable_id:
@@ -580,7 +611,12 @@ def _audit_target_evidence_refs(report, repo_root: Path, file_path: str, source_
     if not target or not refs:
         return
     key = target_storage_key(target)
-    allowed_prefixes = (f"evidence/{key}/", f"findings/{key}/", f"state/{key}/")
+    allowed_prefixes = (
+        f"evidence/{key}/",
+        f"findings/{key}/",
+        f"state/{key}/",
+        "knowledge/distill-digests/",
+    )
     for ref in refs:
         ref_str = str(ref).strip()
         if not ref_str.startswith(allowed_prefixes):
@@ -600,6 +636,18 @@ def _audit_target_evidence_refs(report, repo_root: Path, file_path: str, source_
                 "target-evidence-ref-missing",
                 file_path,
                 f"evidence_ref {ref_str!r} 在磁盘上不存在",
+            )
+            continue
+        ignored = _ref_is_git_ignored(repo_root, ref_str)
+        if ignored:
+            _add(
+                report,
+                "error",
+                "target-evidence-ref-ignored",
+                file_path,
+                f"evidence_ref {ref_str!r} 被 gitignore 命中：git-tracked 卡引用 "
+                "clone 后不可达的文件。用 tools/distill_digest.py generate "
+                "--card-id <id> 把 refs 迁移到 knowledge/distill-digests/ 脱敏 digest",
             )
 
 

@@ -12,7 +12,7 @@ deep_refs: []
 source_refs:
   - type: target-evidence
     target: 127.0.0.1:3001
-    refs: ["evidence/127.0.0.1:3001/probe/20260912T003757450Z-352c60e6.json", "evidence/127.0.0.1:3001/probe/20260912T003757670Z-352c60e6.json"]
+    refs: ["knowledge/distill-digests/127.0.0.1_3001/20260912T003757450Z-352c60e6.json", "knowledge/distill-digests/127.0.0.1_3001/20260912T003757670Z-352c60e6.json"]
 updated: 2026-09-12
 ---
 
@@ -32,8 +32,8 @@ updated: 2026-09-12
 
 - 来源目标：127.0.0.1:3001（脱敏后写入）
 - 原始证据：
-- `evidence/127.0.0.1:3001/probe/20260912T003757450Z-352c60e6.json`
-- `evidence/127.0.0.1:3001/probe/20260912T003757670Z-352c60e6.json`
+- `knowledge/distill-digests/127.0.0.1_3001/20260912T003757450Z-352c60e6.json`
+- `knowledge/distill-digests/127.0.0.1_3001/20260912T003757670Z-352c60e6.json`
 
 ## Quick Recall
 

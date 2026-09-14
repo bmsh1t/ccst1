@@ -45,9 +45,14 @@ description: 从当前目标的原始证据直接写知识卡草稿（target-sco
 - **脱敏红线**（`knowledge_audit._audit_card_scrub`）：卡正文判断段含裸公网
   IPv4 或 credential 形态文本 → 硬错误（保留地址/占位符/权限声明语法豁免；
   evidence 路径行不在判断正文范围）
-- **可溯源**（`knowledge_audit._audit_target_evidence_refs`）：`source_refs` 的
-  refs 必须指向声明 target 名下（`evidence/<target>/`、`findings/<target>/`、
-  `state/<target>/` 前缀）且磁盘真实存在的文件
+- **可溯源与可复现**（`knowledge_audit._audit_target_evidence_refs`）：
+  `source_refs` 的 refs 必须指向声明 target 名下且磁盘真实存在的文件；
+  **git 仓库内还必须不被 gitignore 命中**（git-tracked 卡引用 clone 后
+  不存在的文件 = 可复现契约违反）。raw evidence（gitignored）由
+  promote 自动迁移为 `knowledge/distill-digests/` 下的脱敏 digest
+  （最小事实：method/path/status/body_sha256/actor 指纹 + raw_sha256
+  绑定；无 headers、无 body——真实目标响应可能含 PII）。溯源链到
+  digest 为止：本机有 raw 时用 raw_sha256 双向校验，没有就到此为止。
 - **section 契约**：Quick Recall / 触发信号 / 思路分支 / 证据 / 常见误判 /
   下一步等 v2 section 完整
 - **登记边界**：未登记的卡 Pack 不可见；document-unregistered 是硬错误

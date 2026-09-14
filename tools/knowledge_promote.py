@@ -67,13 +67,22 @@ def _atomic_write_text(path: Path, content: str) -> None:
         raise
 
 
-def _rollback(src: Path, dst: Path, registry_path: Path, original: str) -> None:
-    """Restore candidate + registry after a failed promote."""
+def _rollback(src: Path, dst: Path, registry_path: Path, original: str, new_digests: list[str] | None = None) -> None:
+    """Restore candidate + registry after a failed promote.
+
+    new_digests 是本次 promote 新生成的 distill digest 文件（仓库相对
+    路径）——回滚时一并删除，不留孤儿 digest（复用的既有 digest 不删）。
+    """
     if dst.exists():
         src.parent.mkdir(parents=True, exist_ok=True)
         src.write_bytes(dst.read_bytes())
         dst.unlink()
     _atomic_write_text(registry_path, original)
+    for rel in new_digests or []:
+        try:
+            (BASE_DIR / rel).unlink()
+        except (FileNotFoundError, OSError):
+            pass
 
 
 def promote(
@@ -145,6 +154,22 @@ def promote(
     else:
         new_text = text[: match.end()] + entry + text[match.end():]
 
+    # 0) target-evidence refs 迁移到脱敏 digest（可复现契约 2026-09-14）：
+    # git-tracked 卡不得引用 gitignored raw evidence。digest 是从 raw 确定性
+    # 派生（扫 refs -> 提事实 -> 算 sha -> 写文件，零判断），与 registry 登记
+    # 同类的机械步骤。迁移发生在任何文件移动之前：失败时 candidate 未动。
+    # digest 文件本身在 mv 之前已落盘——新建清单传给 _rollback 以便失败清理。
+    new_digests: list[str] = []
+    try:
+        from tools.distill_digest import migrate_card_refs
+
+        migration = migrate_card_refs(repo_root, card_id)
+        new_digests = list(migration.get("created") or [])
+    except SystemExit:
+        raise
+    except Exception as exc:
+        raise SystemExit(f"digest migration failed (candidate kept): {exc}") from exc
+
     # 1) mv 进保护圈（审计 F4）：dst 复制、registry 追加、src 删除全部在
     # 同一异常恢复范围内——任何一步失败都回到 candidate + registry 原状。
     # 顺序刻意为 copy -> register -> unlink：unlink 放在 registry 写成功
@@ -166,7 +191,7 @@ def promote(
         _atomic_write_text(registry_path, new_text)
         reloaded_check = load_registry(repo_root)
     except Exception as exc:
-        _rollback(src=src, dst=dst, registry_path=registry_path, original=text)
+        _rollback(src=src, dst=dst, registry_path=registry_path, original=text, new_digests=new_digests)
         raise SystemExit(f"registry append failed (rolled back): {exc}") from exc
 
     # 1b) registry 写成功后才删除 candidate：此刻 cards 有卡、registry 已
@@ -174,7 +199,7 @@ def promote(
     try:
         src.unlink()
     except OSError as exc:
-        _rollback(src=src, dst=dst, registry_path=registry_path, original=text)
+        _rollback(src=src, dst=dst, registry_path=registry_path, original=text, new_digests=new_digests)
         raise SystemExit(f"candidate removal failed (rolled back): {exc}") from exc
 
     # 3) 验收：audit 必须通过（document-unregistered / source-refs / section 契约）。
@@ -187,10 +212,10 @@ def promote(
             cwd=repo_root,
         )
     except OSError as exc:
-        _rollback(src=src, dst=dst, registry_path=registry_path, original=text)
+        _rollback(src=src, dst=dst, registry_path=registry_path, original=text, new_digests=new_digests)
         raise SystemExit(f"audit process failed to start (rolled back): {exc}") from exc
     if audit.returncode != 0:
-        _rollback(src=src, dst=dst, registry_path=registry_path, original=text)
+        _rollback(src=src, dst=dst, registry_path=registry_path, original=text, new_digests=new_digests)
         raise SystemExit(f"audit failed after promote (rolled back):\n{audit.stdout}\n{audit.stderr}")
 
     # 4) Pack 可发现验收：登记后的卡必须出现在目录里
