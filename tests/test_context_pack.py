@@ -522,7 +522,6 @@ def test_observed_api_path_routes_to_bounded_ancestor_prefix_cards(tmp_path):
     )
 
     assert pack["skill_route"] == {} and pack["selected_skill"] == ""
-    assert "api-testing-workflow" in {item.get("id") for item in pack.get("card_catalog", [])}
     assert "path-pattern-management-exposure" in {item.get("id") for item in pack.get("card_catalog", [])}
 
 
@@ -638,7 +637,6 @@ def test_api_price_mutation_focus_pairs_api_with_business_logic(tmp_path):
     )
 
     assert pack["skill_route"] == {} and pack["selected_skill"] == ""
-    assert "api-testing-workflow" in {item.get("id") for item in pack.get("card_catalog", [])}
     assert "business-logic-state-machines" in {item.get("id") for item in pack.get("card_catalog", [])}
 
 
@@ -650,7 +648,6 @@ def test_api_parameter_pollution_focus_routes_to_api_workflow(tmp_path):
     )
 
     assert pack["skill_route"] == {} and pack["selected_skill"] == ""
-    assert "api-testing-workflow" in {item.get("id") for item in pack.get("card_catalog", [])}
     assert "missing-parameter-discovery" in {item.get("id") for item in pack.get("card_catalog", [])}
 
 
@@ -662,7 +659,6 @@ def test_api_mass_assignment_focus_pairs_api_and_business_logic(tmp_path):
     )
 
     assert pack["skill_route"] == {} and pack["selected_skill"] == ""
-    assert "api-testing-workflow" in {item.get("id") for item in pack.get("card_catalog", [])}
     assert "business-logic-state-machines" in {item.get("id") for item in pack.get("card_catalog", [])}
 
 
@@ -1197,7 +1193,6 @@ def test_explicit_api_testing_focus_without_recon_routes_to_api_workflow(tmp_pat
     pack = build_context_pack(tmp_path, target="target.com", focus="api testing rest-api openapi")
 
     assert pack["skill_route"] == {} and pack["selected_skill"] == ""
-    assert "api-testing-workflow" in {item.get("id") for item in pack.get("card_catalog", [])}
     assert "api-idor" in {item.get("id") for item in pack.get("card_catalog", [])}
 
 

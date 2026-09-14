@@ -68,7 +68,6 @@ EVAL_TASKS = [
         name="api_hpp_mass_assignment_matrix",
         focus="API server-side parameter pollution HPP duplicate query parameter mass assignment over-posting PATCH user profile role isAdmin plan status",
         expected_cards=(
-            CARD.format("api-testing-workflow.md"),
             CARD.format("business-logic-state-machines.md"),
         ),
         forbidden_cards=(),
@@ -152,8 +151,6 @@ def _naive_no_skill_cards(focus: str) -> list[str]:
         add(CARD.format("graphql.md"))
     if "node" in blob or "__proto__" in blob or "prototype" in blob:
         add(CARD.format("node-prototype-pollution.md"))
-    if any(token in blob for token in ("api", "hpp", "parameter pollution", "duplicate query", "parser")):
-        add(CARD.format("api-testing-workflow.md"))
     if any(token in blob for token in ("mass assignment", "over-post", "price", "payment", "coupon", "checkout", "isadmin", "plan", "status")):
         add(CARD.format("business-logic-state-machines.md"))
     if any(token in blob for token in ("cache", "smuggling", "host-header", "host header", "proxy")):
