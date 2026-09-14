@@ -69,6 +69,7 @@ branch when the observed evidence justifies it.
 | ASP.NET `__VIEWSTATE` / ViewState / machineKey | Insecure deserialization / ViewState integrity |
 | IIS/ASP.NET server fingerprint | IIS short filename (~1) enumeration lane — `shortscan` is the tool (the scanner auto-runs it on detected IIS hosts; missing tool degrades to a manual review hint); enumerated filenames feed path/secrets discovery |
 | JSON body with `@type`/type-field shape, Java/fastjson/Jackson/Shiro stack signal | Insecure deserialization (Java) |
+| Signed/anti-bot header (sign/sig/hmac/nonce/X-Sensor) blocks replay | Client signer lane — recover the signer only enough to replay the request; reversed signing alone is N/A, hunt the IDOR/authz/business-logic bug on the endpoint the signature was guarding |
 | CL/TE, host header, proxy trust, cache key, unkeyed header | Proxy/cache/smuggling |
 | Origin, postMessage, DOM, CORS, clickjacking | Browser boundary |
 | WS handshake/frame/subscription | WebSocket / realtime API |
