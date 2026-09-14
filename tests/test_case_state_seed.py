@@ -10,7 +10,7 @@ import case_state_seed
 import target_case_state
 
 
-def test_case_state_seed_suggests_order_object_and_idor_backlog(tmp_path):
+def test_case_state_seed_keeps_object_without_inventing_actors_or_tests(tmp_path):
     target = "http://127.0.0.1:3002"
     browser_dir = tmp_path / "recon" / "127.0.0.1:3002" / "browser"
     browser_dir.mkdir(parents=True)
@@ -23,25 +23,15 @@ def test_case_state_seed_suggests_order_object_and_idor_backlog(tmp_path):
 
     assert payload["status"] == "suggestions"
     assert payload["artifact_endpoints"] == 1
-    assert payload["suggested_actors"] == [
-        {"actor": "user_a", "role": "user", "label": "owner account candidate"},
-        {"actor": "user_b", "role": "user", "label": "peer account candidate"},
-    ]
-    assert payload["suggested_objects"][0]["object_ref"] == "order_123"
-    assert payload["suggested_objects"][0]["type"] == "order"
-    assert payload["suggested_objects"][0]["object_id"] == "123"
-    assert payload["suggested_backlog"][0]["runner"] == "request-diff"
-    assert payload["suggested_backlog"][0]["object_ref"] == "order_123"
-    assert payload["suggested_backlog"][0]["priority"] == "high"
-    assert payload["suggested_backlog"][0]["request_spec_ref"].endswith(
-        "/validation/order_123/spec.json"
-    )
-    assert payload["suggested_backlog"][0]["missing"] == ["request pair spec"]
-    assert any("add-object" in command and "order_123" in command for command in payload["commands"])
-    assert any(
-        "add-backlog" in command and "request-diff" in command and "--priority high" in command
-        for command in payload["commands"]
-    )
+    obj = payload["suggested_objects"][0]
+    assert obj["object_ref"] == "order_123"
+    assert obj["type"] == "order"
+    assert obj["object_id"] == "123"
+    assert obj["source"].endswith("browser/xhr_endpoints.txt")
+    assert not {"suggested_actors", "suggested_backlog", "commands"} & payload.keys()
+    assert not {"owner_actor", "private_marker", "runner", "confidence"} & obj.keys()
+    assert not (tmp_path / "state").exists()
+    assert "request-diff" not in case_state_seed.format_seed(payload)
 
 
 def test_case_state_seed_extracts_query_object_from_browser_params(tmp_path):
@@ -73,10 +63,10 @@ def test_case_state_seed_does_not_seed_external_protocol_relative_objects(tmp_pa
     assert payload["artifact_endpoints"] == 1
     assert payload["status"] == "no_seed_candidates"
     assert payload["suggested_objects"] == []
-    assert payload["suggested_backlog"] == []
+    assert "suggested_backlog" not in payload
 
 
-def test_raw_unknown_query_id_is_retained_as_low_confidence(tmp_path):
+def test_raw_unknown_query_id_is_retained_without_a_confidence_verdict(tmp_path):
     urls_dir = tmp_path / "recon" / "target.com" / "urls"
     urls_dir.mkdir(parents=True)
     (urls_dir / "with_params.txt").write_text(
@@ -88,7 +78,7 @@ def test_raw_unknown_query_id_is_retained_as_low_confidence(tmp_path):
 
     assert payload["status"] == "suggestions"
     assert payload["suggested_objects"][0]["object_ref"] == "item_0"
-    assert payload["suggested_objects"][0]["confidence"] == "low"
+    assert "confidence" not in payload["suggested_objects"][0]
 
 
 def test_case_state_seed_extracts_objects_from_browser_json_artifacts(tmp_path):
@@ -132,22 +122,13 @@ def test_case_state_seed_extracts_objects_from_browser_json_artifacts(tmp_path):
     assert objects["order_4cf8-fc54260b56afa3ce"]["endpoint"].endswith(
         "/rest/track-order/4cf8-fc54260b56afa3ce"
     )
-    assert objects["order_4cf8-fc54260b56afa3ce"]["private_marker"] == "4cf8-fc54260b56afa3ce"
+    assert objects["order_4cf8-fc54260b56afa3ce"]["object_id"] == "4cf8-fc54260b56afa3ce"
+    assert all("private_marker" not in item for item in objects.values())
     assert "json field" in objects["address_7"]["reason"]
-    address_backlog = next(
-        item for item in payload["suggested_backlog"]
-        if item["object_ref"] == "address_7"
-    )
-    assert "object endpoint" in address_backlog["missing"]
-    order_backlog = next(
-        item for item in payload["suggested_backlog"]
-        if item["object_ref"] == "order_4cf8-fc54260b56afa3ce"
-    )
-    assert "owner private marker" not in order_backlog["missing"]
-    assert any("--private-marker" in command for command in payload["commands"])
+    assert objects["address_7"]["endpoint"] == ""
 
 
-def test_case_state_seed_reuses_existing_custom_actor_sessions(tmp_path):
+def test_case_state_seed_does_not_infer_ownership_from_existing_actor_sessions(tmp_path):
     target = "target.com"
     target_case_state.add_actor(tmp_path, target, actor="owner_account", role="user")
     target_case_state.add_actor(tmp_path, target, actor="peer_account", role="user")
@@ -174,13 +155,15 @@ def test_case_state_seed_reuses_existing_custom_actor_sessions(tmp_path):
         encoding="utf-8",
     )
 
+    before = target_case_state.load_case_state(tmp_path, target)
     payload = case_state_seed.build_case_state_seed(tmp_path, target)
 
-    assert payload["suggested_actors"] == []
-    assert payload["suggested_backlog"][0]["owner_actor"] == "owner_account"
-    assert payload["suggested_backlog"][0]["peer_actor"] == "peer_account"
-    assert payload["suggested_backlog"][0]["missing"] == ["object endpoint", "request pair spec"]
-    assert any("--owner-actor owner_account" in command for command in payload["commands"])
+    assert payload["suggested_objects"][0]["object_ref"] == "address_7"
+    assert payload["suggested_objects"][0]["endpoint"] == ""
+    assert "suggested_actors" not in payload and "suggested_backlog" not in payload
+    assert "owner_actor" not in payload["suggested_objects"][0]
+    assert "commands" not in payload
+    assert target_case_state.load_case_state(tmp_path, target) == before
 
 
 def test_case_state_seed_ignores_socket_session_ids(tmp_path):
@@ -196,11 +179,11 @@ def test_case_state_seed_ignores_socket_session_ids(tmp_path):
 
     assert payload["status"] == "no_seed_candidates"
     assert payload["suggested_objects"] == []
-    assert payload["suggested_backlog"] == []
-    assert payload["commands"] == []
+    assert "suggested_backlog" not in payload
+    assert "commands" not in payload
 
 
-def test_case_state_seed_uses_existing_actors_and_sessions_for_missing_matrix(tmp_path):
+def test_case_state_seed_does_not_choose_a_peer_for_a_single_session(tmp_path):
     target = "target.com"
     target_case_state.add_actor(tmp_path, target, actor="user_a", role="user")
     target_case_state.add_actor(tmp_path, target, actor="user_b", role="user")
@@ -221,9 +204,9 @@ def test_case_state_seed_uses_existing_actors_and_sessions_for_missing_matrix(tm
 
     payload = case_state_seed.build_case_state_seed(tmp_path, target)
 
-    assert payload["suggested_actors"] == []
+    assert "suggested_actors" not in payload and "suggested_backlog" not in payload
     assert payload["suggested_objects"][0]["object_ref"] == "account_42"
-    assert payload["suggested_backlog"][0]["missing"] == ["request pair spec"]
+    assert "peer_actor" not in payload["suggested_objects"][0]
 
 
 def test_case_state_seed_skips_existing_objects_and_backlogs(tmp_path):
@@ -258,8 +241,8 @@ def test_case_state_seed_skips_existing_objects_and_backlogs(tmp_path):
 
     assert payload["status"] == "no_seed_candidates"
     assert payload["suggested_objects"] == []
-    assert payload["suggested_backlog"] == []
-    assert payload["commands"] == []
+    assert "suggested_backlog" not in payload
+    assert "commands" not in payload
 
 
 def test_case_state_seed_reads_js_and_source_intel(tmp_path):

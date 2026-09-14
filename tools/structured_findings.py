@@ -15,8 +15,6 @@ except ImportError:  # pragma: no cover - package import path
     from tools.target_paths import canonical_target_value, target_storage_key
 
 
-
-
 def _load_validation_summary_payload(finding: dict) -> tuple[dict, bool]:
     """Load validation_summary JSON and report whether a summary path was present."""
     value = str(finding.get("validation_summary") or "").strip()
@@ -397,8 +395,6 @@ def _validation_needs_draft_completion(finding: dict) -> bool:
     return status == "incomplete"
 
 
-
-
 def finding_rank_key(finding: dict) -> tuple[int, int]:
     """Order findings by their recorded severity and confidence, never keyword scores."""
     severity_rank = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
@@ -409,8 +405,6 @@ def finding_rank_key(finding: dict) -> tuple[int, int]:
         severity_rank.get(severity, 0),
         confidence_rank.get(confidence, 0),
     )
-
-
 
 
 def compact_structured_finding(finding: dict, findings_dir: Path) -> dict:

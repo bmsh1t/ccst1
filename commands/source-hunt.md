@@ -34,7 +34,7 @@ findings/<target>/exposure/repo_secrets.json
 findings/<target>/exposure/repo_ci_findings.json
 findings/<target>/exposure/repo_summary.md
 findings/<target>/source_intel/summary.md
-findings/<target>/source_intel/hypotheses.jsonl
+findings/<target>/source_intel/routes.json
 ```
 
 ## Use When

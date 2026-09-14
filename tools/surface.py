@@ -104,7 +104,7 @@ except ImportError:  # pragma: no cover - top-level tools/ import
     )
 try:
     from tools.browser_surface import public_url_shape
-    from tools.intel_artifact import advisory_is_actionable, normalize_advisory_applicability
+    from tools.intel_artifact import advisory_is_actionable
     from tools.surface_js_intel import (
         build_js_lead_hints,
         build_js_intel_urls,
@@ -118,7 +118,7 @@ try:
     )
 except ImportError:  # pragma: no cover - top-level tools/ import
     from browser_surface import public_url_shape  # type: ignore
-    from intel_artifact import advisory_is_actionable, normalize_advisory_applicability  # type: ignore
+    from intel_artifact import advisory_is_actionable  # type: ignore
     from surface_js_intel import (
         build_js_lead_hints,
         build_js_intel_urls,
@@ -302,9 +302,7 @@ def _build_exposure_lead_hints(recon_artifacts: dict, target: str) -> list[dict]
     postman = _count_recon_artifact(recon_artifacts, "postman_leaks")
     postleaks = _count_recon_artifact(recon_artifacts, "postleaks_urls")
     swagger = _count_recon_artifact(recon_artifacts, "swagger_leaks")
-    openapi_specs = _count_recon_artifact(recon_artifacts, "openapi_specs")
     openapi_operations = _count_recon_artifact(recon_artifacts, "openapi_operations")
-    openapi_public = _count_recon_artifact(recon_artifacts, "openapi_public_operations")
     openapi_auth = _count_recon_artifact(recon_artifacts, "openapi_auth_boundary_candidates")
     platform_metadata = _count_recon_artifact(recon_artifacts, "platform_metadata")
     config = _count_recon_artifact(recon_artifacts, "config_exposures")
@@ -347,14 +345,6 @@ def _build_exposure_lead_hints(recon_artifacts: dict, target: str) -> list[dict]
             "category": "verified-secret",
             "priority": "critical",
             "artifact": f"recon/{storage_key}/exposure/api_leak_trufflehog_verified.jsonl",
-            "next_action": (
-                f"inspect recon/{storage_key}/exposure/api_leak_trufflehog_verified.jsonl "
-                "and perform minimal-impact credential usability validation only"
-            ),
-            "rationale": (
-                "Verified secret artifacts are high-signal, but they still need scoped, "
-                "minimal-impact validation before becoming a finding."
-            ),
             "evidence": f"{verified} verified line(s)",
         })
 
@@ -364,17 +354,6 @@ def _build_exposure_lead_hints(recon_artifacts: dict, target: str) -> list[dict]
             else "operations.jsonl" if openapi_operations > 0
             else "platform_metadata.jsonl"
         )
-        if openapi_operations > 0 or openapi_auth > 0:
-            semantic_next_action = (
-                f"review recon/{storage_key}/api_specs/{semantic_artifact} and select high-value "
-                "operations for anonymous baseline plus controlled authentication, role, and "
-                "object differential evidence"
-            )
-        else:
-            semantic_next_action = (
-                f"review recon/{storage_key}/api_specs/platform_metadata.jsonl and use advertised "
-                "authorization servers or endpoints to form scoped authentication hypotheses"
-            )
         leads.append({
             "source": "recon_exposure",
             "title": (
@@ -385,12 +364,6 @@ def _build_exposure_lead_hints(recon_artifacts: dict, target: str) -> list[dict]
             "category": "openapi-semantics",
             "priority": "high" if openapi_auth > 0 else "medium",
             "artifact": f"recon/{storage_key}/api_specs/{semantic_artifact}",
-            "next_action": semantic_next_action,
-            "rationale": (
-                f"specs={openapi_specs}, operations={openapi_operations}, public_or_optional={openapi_public}, "
-                f"auth_boundaries={openapi_auth}, platform_metadata={platform_metadata}; "
-                "schema declarations are discovery facts, not proof of authorization behavior."
-            ),
             "evidence": f"{openapi_operations + platform_metadata} structured discovery fact(s)",
         })
 
@@ -399,15 +372,8 @@ def _build_exposure_lead_hints(recon_artifacts: dict, target: str) -> list[dict]
             "source": "recon_exposure",
             "title": "API leak candidates from Postman/OpenAPI discovery",
             "category": "api-leak",
+            "artifact": f"recon/{storage_key}/exposure/api_leak_candidates.txt",
             "priority": "high",
-            "next_action": (
-                f"review recon/{storage_key}/exposure/api_leak_candidates.txt; "
-                "identify imported specs/collections, high-impact verbs, and auth boundaries"
-            ),
-            "rationale": (
-                f"candidate={api_leaks}, swagger={swagger}, postman={postman}, "
-                f"postleaks={postleaks}; leaked collections/specs often expose hidden workflows."
-            ),
             "evidence": f"{api_leaks + postman + postleaks + swagger} exposure line(s)",
         })
 
@@ -416,12 +382,8 @@ def _build_exposure_lead_hints(recon_artifacts: dict, target: str) -> list[dict]
             "source": "recon_exposure",
             "title": "OpenAPI/Swagger/API documentation candidates discovered",
             "category": "api-docs",
+            "artifact": f"recon/{storage_key}/exposure/api_doc_candidates.txt",
             "priority": "high",
-            "next_action": (
-                f"review recon/{storage_key}/exposure/api_doc_candidates.txt for auth model, "
-                "hidden endpoints, admin paths, and GraphQL mutations"
-            ),
-            "rationale": "API documentation often reveals routes and auth assumptions before broad scanning.",
             "evidence": f"{api_docs} candidate line(s)",
         })
 
@@ -431,14 +393,6 @@ def _build_exposure_lead_hints(recon_artifacts: dict, target: str) -> list[dict]
             "title": "Config/cloud exposure candidates discovered",
             "category": "config-cloud",
             "priority": "medium",
-            "next_action": (
-                f"review recon/{storage_key}/exposure/config_files.txt and cloud candidate files; "
-                "verify ownership and permissions before deeper cloud testing"
-            ),
-            "rationale": (
-                f"config={config}, cloud={cloud}, s3={s3}, external_hosts={external_hosts}; "
-                "these are ownership and access-control hypotheses, not conclusions."
-            ),
             "evidence": f"{config + cloud + s3 + external_hosts} candidate line(s)",
         })
 
@@ -447,15 +401,8 @@ def _build_exposure_lead_hints(recon_artifacts: dict, target: str) -> list[dict]
             "source": "recon_exposure",
             "title": "Identity/cloud intel signals discovered",
             "category": "identity-cloud",
+            "artifact": f"recon/{storage_key}/exposure/identity_intel/summary.md",
             "priority": "medium",
-            "next_action": (
-                f"review recon/{storage_key}/exposure/identity_intel/summary.md before "
-                "SSO, reset-flow, invite, tenant, or cloud ownership hypotheses"
-            ),
-            "rationale": (
-                f"emails={emails}, LeakSearch={leaksearch}, cloud_enum={cloud_enum}; "
-                "use these to focus hypotheses rather than to force a live exploit path."
-            ),
             "evidence": f"{emails + leaksearch + cloud_enum} signal line(s)",
         })
 
@@ -466,15 +413,6 @@ def _build_exposure_lead_hints(recon_artifacts: dict, target: str) -> list[dict]
             "category": "host-pivot",
             "priority": "high",
             "artifact": f"recon/{storage_key}/exposure/host_pivot_candidates.jsonl",
-            "next_action": (
-                f"review recon/{storage_key}/exposure/host_pivot_candidates.jsonl; select only "
-                "evidence-backed Host Header, SNI, or VirtualHost differentials and keep a "
-                "default-vhost/CDN/error-page control"
-            ),
-            "rationale": (
-                f"{host_pivots} low-cost candidate(s) were derived from existing origin, shared-IP, "
-                "CNAME, or certificate facts; no active pivot has been validated yet."
-            ),
             "evidence": f"{host_pivots} candidate row(s)",
         })
 
@@ -485,16 +423,6 @@ def _build_exposure_lead_hints(recon_artifacts: dict, target: str) -> list[dict]
             "category": "host-collision-observation",
             "priority": "high",
             "artifact": f"recon/{storage_key}/exposure/host_collision_observations.jsonl",
-            "next_action": (
-                f"review recon/{storage_key}/exposure/host_collision_observations.jsonl; "
-                "replay only target-owned host/SNI/default-vhost controls and keep response "
-                "differences as candidates until independently validated"
-            ),
-            "rationale": (
-                f"{host_collision_observations} bounded read-only response observation(s) were "
-                "recorded from existing Host pivot candidates; no observation is a finding or "
-                "scope expansion."
-            ),
             "evidence": f"{host_collision_observations} observation row(s)",
         })
 
@@ -505,14 +433,6 @@ def _build_exposure_lead_hints(recon_artifacts: dict, target: str) -> list[dict]
             "category": "ai-asset",
             "priority": "high",
             "artifact": f"recon/{storage_key}/exposure/ai_asset_candidates.jsonl",
-            "next_action": (
-                f"review recon/{storage_key}/exposure/ai_asset_candidates.jsonl and route selected "
-                "Chat/RAG/model/API/upload/tool-use evidence through web-llm-tool-chains"
-            ),
-            "rationale": (
-                f"{ai_assets} title/tech/path/schema/browser/source candidate(s) were observed; "
-                "product strings and status codes are discovery facts, not vulnerability proof."
-            ),
             "evidence": f"{ai_assets} candidate row(s)",
         })
 
@@ -581,12 +501,6 @@ def _build_manual_review_lead_hints(findings_dir: Path, storage_key: str) -> lis
                 "unsafe_skipped_id": first_id,
                 "unsafe_skipped_ids": [unsafe_skipped_id(line) for line in unresolved[:20]],
                 "artifact": unsafe_display_path,
-                "next_action": (
-                    f"review {unsafe_display_path} before rerunning the upload canary"
-                ),
-                "rationale": (
-                    "The upload canary was deferred. Treat it as a Lead, not a tested-clean result."
-                ),
                 "evidence": f"{len(unresolved)} unresolved skipped probe line(s)",
             })
 
@@ -600,14 +514,6 @@ def _build_manual_review_lead_hints(findings_dir: Path, storage_key: str) -> lis
             "category": "open-200-api-review",
             "priority": "medium",
             "artifact": display_path,
-            "next_action": (
-                f"review {display_path}; sample the highest-value response bodies, identify structured data, "
-                "and promote only body-backed authz/config/secret/business-impact evidence to validation"
-            ),
-            "rationale": (
-                "The scanner kept non-obvious anonymous 200 responses as discovery leads instead of dropping them "
-                "or auto-promoting them as auth bypass findings."
-            ),
             "evidence": f"{len(open_200)} anonymous substantial 200 response(s)",
         })
 
@@ -621,14 +527,6 @@ def _build_manual_review_lead_hints(findings_dir: Path, storage_key: str) -> lis
             "category": "public-metadata",
             "priority": "low",
             "artifact": display_path,
-            "next_action": (
-                f"review {display_path} only when you suspect unusual field content or a chain pivot; "
-                "default posture is informative, not reportable"
-            ),
-            "rationale": (
-                "These endpoints matched known public metadata schemas (for example OIDC discovery, JWKS, CSAF, security.txt) "
-                "without separate high-value body evidence."
-            ),
             "evidence": f"{len(public_metadata)} demoted metadata line(s)",
         })
 
@@ -709,18 +607,7 @@ def _target_memory_entry_matches(item: dict, raw_url: str, path: str) -> bool:
     if any(_memory_token_matches(token, haystack) for token in path_tokens):
         return True
 
-    stopwords = {
-        "about", "accounts", "after", "already", "before", "continue", "owned",
-        "target", "tested", "validated", "with", "without",
-    }
-    keywords = [
-        word for word in re.findall(r"[a-z0-9_]{4,}", text)
-        if word not in stopwords
-    ]
-    # Host-level tokens (scheme words, bare ports, the target host itself) match
-    # every URL on the target, so keyword evidence is accepted only when the
-    # word appears in the path — never in the raw URL's scheme/host segments.
-    return bool(keywords and any(word in path.lower() for word in keywords[:8]))
+    return False
 
 
 def _matching_target_memory_entries(
@@ -878,19 +765,12 @@ def _build_evidence_convergence_leads(
         if len(sources) < 2:
             continue
 
-        source_types = _dedupe_keep_order([
-            str(item.get("type", "")).lower()
-            for item in source_intel_urls.get(url, [])[:3]
-            if item.get("type")
-        ])
         js_methods = _dedupe_keep_order([
             str(item.get("method", "")).upper()
             for item in js_intel_urls.get(url, [])[:3]
             if item.get("method")
         ])
         action_bits = []
-        if source_types:
-            action_bits.append("source hypotheses: " + ", ".join(source_types[:3]))
         if js_methods:
             action_bits.append("JS methods: " + ", ".join(js_methods[:3]))
         leads.append({
@@ -898,14 +778,6 @@ def _build_evidence_convergence_leads(
             "title": url,
             "category": "+".join(sources),
             "priority": "critical" if len(sources) >= 3 else "high",
-            "next_action": (
-                "replay the browser-observed endpoint with JS/source-informed "
-                "parameters and compare authz, object, role, and workflow behavior"
-            ),
-            "rationale": (
-                " / ".join(sources)
-                + " evidence converges on the same endpoint; this is stronger than any single source."
-            ),
             "evidence": "; ".join(action_bits) or ", ".join(sources),
         })
     return leads[:5]
@@ -1045,17 +917,6 @@ def _is_final_surface_item(item: dict) -> bool:
     return bool(item.get("surface_identity_final"))
 
 
-ACTIONABLE_REVIEW_SOURCES = {
-    "attack_value",
-    "browser",
-    "evidence_convergence",
-    "intel",
-    "js_intel",
-    "scanner",
-    "target_memory",
-}
-
-
 def _has_actionable_review_evidence(item: dict) -> bool:
     """Return true when a candidate has enough evidence to lead Claude's review.
 
@@ -1078,10 +939,6 @@ def _has_actionable_review_evidence(item: dict) -> bool:
         )
     ):
         return True
-    for part in item.get("score_breakdown") or []:
-        source = str(part.get("source", ""))
-        if source in ACTIONABLE_REVIEW_SOURCES and int(part.get("score", 0) or 0) > 0:
-            return True
     return False
 
 
@@ -1117,12 +974,9 @@ def _build_review_pool(
 ) -> list[dict]:
     """Build an AI-first review pool without treating score as a verdict.
 
-    `p1` / `p2` remain for backward-compatible callers. This pool is the
-    preferred Claude-facing surface, so it starts with evidence-rich sources
-    that are hard for regex scoring to judge correctly. Score-only candidates
-    stay visible in p1/p2, but only become a fallback pool when no actionable
-    evidence exists. That keeps tools from steering Claude toward generic
-    recon/memory-only paths before real browser/source/scanner evidence.
+    `p1` / `p2` remain for compatibility. Source-backed and new observations
+    lead the bounded view; remaining routes fill it with shape diversity.
+    The complete index stays queryable, regardless of position in this window.
     """
     pool: list[dict] = []
     seen: set[str] = set()
@@ -2728,7 +2582,7 @@ def format_surface_output(ranked: dict, target: str) -> str:
             if item.get("js_intel_observed"):
                 lines.append("   Source: js-reader hypotheses")
             if item.get("source_intel_observed"):
-                lines.append("   Source: source-intel hypotheses")
+                lines.append("   Source: source-intel route observations")
             if item.get("evidence_convergence"):
                 lines.append("   Source: cross-evidence convergence (" + "+".join(item["evidence_convergence"]) + ")")
             if item.get("target_memory_hits"):
@@ -2750,7 +2604,7 @@ def format_surface_output(ranked: dict, target: str) -> str:
             if item.get("js_intel_observed"):
                 lines.append("   Source: js-reader hypotheses")
             if item.get("source_intel_observed"):
-                lines.append("   Source: source-intel hypotheses")
+                lines.append("   Source: source-intel route observations")
             if item.get("evidence_convergence"):
                 lines.append("   Source: cross-evidence convergence (" + "+".join(item["evidence_convergence"]) + ")")
             if item.get("target_memory_hits"):
@@ -2902,14 +2756,14 @@ def format_surface_output(ranked: dict, target: str) -> str:
 
     lines.extend(["", "Source Intel:"])
     source_counts = ranked.get("source_intel", {})
-    if source_counts.get("hypothesis_count") or source_counts.get("route_count") or source_counts.get("graphql_count"):
+    if source_counts.get("signal_count") or source_counts.get("route_count") or source_counts.get("graphql_count"):
         lines.append(
-            f"- Source-intel hypotheses: {source_counts.get('hypothesis_count', 0)}, "
+            f"- Source-intel markers: {source_counts.get('signal_count', 0)}, "
             f"routes: {source_counts.get('route_count', 0)}, "
             f"GraphQL operations: {source_counts.get('graphql_count', 0)}"
         )
     else:
-        lines.append("- No source-intel hypotheses yet.")
+        lines.append("- No source observations yet.")
 
     lines.extend(["", "JS Reader Intel:"])
     js_counts = ranked.get("js_intel", {})

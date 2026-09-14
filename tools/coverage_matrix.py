@@ -24,10 +24,8 @@ Design notes:
       annotations (n_a reasons, etc.) unless --force-clean is set.
     - All cell values are typed enums INTERNALLY (4 statuses) but
       the cell shape is data, NOT a Claude-facing options[] menu.
-      Claude reads the semantic `find-gaps` window by default; `--all` keeps
-      the complete endpoint × vuln class view available when raw coverage
-      inspection is needed. Neither output is a "pick one of these statuses"
-      prompt.
+      `find-gaps` exposes all unresolved cells; --limit only bounds output.
+      The grid is not a prescribed test sequence.
 
 VULN_CLASSES taxonomy (ordering is stable and append-only
 on extension; positional consumers may rely on the prefix):
@@ -182,21 +180,6 @@ ENDPOINT_KIND_VALUES = (
 )
 
 FINAL_ENDPOINT_KIND_SOURCES = {"ai_triage", "manual", "operator"}
-
-# 用于 gaps 排序的漏洞类型基础优先级。它不是覆盖范围过滤器，只在
-# endpoint/参数没有明显语义命中时做轻量 tie-break，避免默认永远从
-# VULN_CLASSES 的第一个 IDOR 开始。
-
-
-# endpoint/参数语义到漏洞类型的软关联。这里的职责是“排序和提示更准”，
-# 不是把某类漏洞排除掉；未命中的 cell 仍然保留在矩阵里。
-#
-# 规则保持短而通用：只使用路径段和参数名，不沉淀特定目标 payload。
-
-# SQLi 需要把“路径段语义”和“参数名语义”分开：
-# - `/address/select`、`/rest/order-history` 里的 select/order 是资源命名，
-#   不是天然的查询入口，不应仅凭路径就被抬进高价值 SQLi 队列。
-# - `/search?q=`、`?filter=`、`?order=` 这类参数名仍是高信号，应保持高优先级。
 
 STATIC_ASSET_EXTENSIONS = {
     ".js", ".mjs", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg",

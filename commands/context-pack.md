@@ -8,7 +8,7 @@ description: 为当前目标装配最小上下文包，避免全量读取 Skills
 
 这个命令不执行测试、不扫描目标、不写目标记忆。它只读取本地目标记忆、
 surface 排名、覆盖矩阵、findings 索引、Evidence Ledger，以及 browser/JS/source
-的小型证据索引，决定 Claude 本轮应该读哪些文件、不要读哪些文件、结束后写回哪里。
+的小型证据索引，提供来源、目录和写回入口；Claude 决定本轮需要哪些信息。
 
 ## 必读规则
 
@@ -46,124 +46,47 @@ python3 tools/context_pack.py --target <target>
 
 1. 读取目标层：`memory/goals/active.json` 和 `memory/goals/targets/<target>.json`。
 2. 只读调用 surface review pack，提取 AI Review Pool、advisory score hints、Workflow Leads 和 target memory 线索。
-3. 读取覆盖矩阵 high-value gaps。
+3. 读取覆盖矩阵未处置格的有界预览，不按关键词过滤。
 4. 读取 `findings/<target>/findings.json` 索引。
 5. 读取小型 browser/JS/source 证据索引：
    - `recon/<target>/browser/xhr_endpoints.txt`
    - `recon/<target>/browser/api_endpoints.txt`
    - `recon/<target>/browser/browser_params.txt`
    - `findings/<target>/js_intel/hypotheses.json`
-   - `findings/<target>/source_intel/hypotheses.jsonl`
+   - `findings/<target>/source_intel/routes.json`
 6. 读取 Evidence Ledger 摘要：`memory/evidence/<target>/ledger.jsonl`。
-7. 发布磁盘上的 skill 目录（id + path + description，来自 SKILL.md frontmatter），
-   并推荐 1-2 张知识卡。S1 铺开后 pack 不再推荐单一 Skill——AI 通过原生 Skill 工具
-   按需加载，frontmatter description 是路由面；`selected_skill`/`skill_route` 为空兼容字段。
-8. 输出证据锚点、假设种子、Actor Matrix 缺口、相邻角度、矛盾点和写回建议。
+7. 从 `knowledge/capabilities.yaml` 发布知识卡目录；Skill 发现使用 Claude Code 原生目录。
+8. 输出证据锚点、已记录的 Actor Matrix 缺口、未知项、矛盾点和 owner 写回入口。
 
-`selected_skill`（空壳）、`knowledge_cards` 是兼容/事实字段，不表示已经加载或选择；Context Pack
-不会自动读取这些文件。Claude 根据当前证据显式选择适用 Skill / 知识卡，
-再读取实际需要的文件，并保留覆盖检查。
-`hypothesis_seeds`、`alternative_angles` 和 `knowledge_card_recall` 也只是建议/诊断，
-不会由 Checkpoint 自动变成 Queue 动作或已选择假设。
+`selected_skill`、`skill_route`、`knowledge_cards`、`deferred_knowledge_cards`、
+`knowledge_card_recall`、`hypothesis_seeds`、`alternative_angles` 是空兼容字段，
+不表示已加载知识，也不会生成假设或测试路线。Claude 可直接运用已有知识；需要补充时
+按目录读取完整判断单元，不要求先跑 Pack 才能思考或选择方法。
 
-## 输出格式
-
-```text
-CONTEXT PACK
-- Target:
-- Phase:
-- Active goal:
-- Current hypothesis:
-- Skill recommendation retired (S1 native loading): select and load skills on demand via the Claude Code Skill tool. On-disk skill catalog:
-- Must read:
-- Recommended knowledge cards:
-- Required checks:
-- Evidence anchors:
-- Hypothesis seeds:
-- Alternative angles:
-- Unknowns:
-- Actor matrix gaps:
-- Contradictions:
-- Do not load:
-- Write-back:
-- AI override:
-```
-
-## 示例：API IDOR
-
-运行：
+## 输出与使用
 
 ```bash
-python3 tools/context_pack.py --target example.com --focus api-idor
+python3 tools/context_pack.py --target TARGET --focus '当前需要回答的边界问题'
+python3 tools/context_pack.py --target TARGET --json
 ```
 
-```text
-CONTEXT PACK
-- Target: example.com
-- Phase: hunt
-- Active goal: Find high-value API authorization issues
-- Current hypothesis: org_id may be user-controlled
-- Skill recommendation retired (S1 native loading): select and load skills on demand via the Claude Code Skill tool. On-disk skill catalog:
-  - web2-vuln-classes — Use when evidence or focus names a concrete Web/API bug-class lane...
-  - bug-bounty — Use when work spans more than one stage...
-- Must read:
-  - memory/goals/active.json
-  - memory/goals/targets/example.com.json
-  - skills/runtime-protocol.md
-- Recommended knowledge cards:
-  - knowledge/cards/api-idor.md
-  - knowledge/cards/auth-access.md
-- Required checks:
-  - rules/coverage-gate.md
-- Evidence anchors:
-  - Surface review https://api.example.com/api/org/123/users score_hint=...
-  - Browser XHR/API: https://app.example.com/api/admin/export?order_id=42
-  - JS-reader endpoint: POST /api/accounts/42/export source=recon/example.com/js/admin.js auth=true
-  - Source-intel hypothesis [idor]: /api/accounts/:id/export -> route contains account object id
-  - Actor gap: /api/accounts/42/export x IDOR peer/other_object_same_org/id_swap expected=deny_or_no_data status=missing
-  - Coverage gap: /api/org/123/users x IDOR weight=...
-- Hypothesis seeds:
-  - 对象/组织/租户 ID 是否只在前端约束，服务端是否重新绑定当前身份。
-  - 浏览器观察到的 XHR/API 优先按原始请求/参数形态做登录态、角色、租户差异对比。
-  - export/download/report 类接口是否可通过 ID 或筛选条件读取其他主体数据。
-- Alternative angles:
-  - 用 Playwright/浏览器复用登录态重放关键页面，只看 Network/Console 差异和只读响应变化。
-  - 从 REST IDOR 横向扩展到导出、报表、批量查询、成员管理和 invite 流程。
-- Unknowns:
-  - No browser-observed XHR/API context loaded.
-- Actor matrix gaps:
-  - /api/accounts/42/export x IDOR: peer/other_object_same_org/id_swap expected=deny_or_no_data status=missing
-- Contradictions:
-  - None detected.
-- Do not load:
-  - full skills/* tree
-  - full knowledge/cards/* tree
-  - raw large recon logs, full JSONL, full HTML responses, or unrelated historical sessions
-  - raw browser capture requests/console/storage unless validating one exact replay path
-- Write-back:
-  - python3 tools/target_memory.py lead "Evidence: ... Why it matters: ... Next action: ... Stop condition: ..." --target example.com
-- AI override: Skill/Card fields are advisory; Claude explicitly selects the route at Action Queue claim...
-```
-
-`knowledge/index.md` remains an on-demand catalog when the recommended Card or
-recall reason is insufficient; it is not part of the default `Must read` set.
+文本与 JSON 均提供知识卡目录、目标事实和证据锚点。短卡按需全文读；长卡读取完整的
+相关机制，包括前提、证据门、反例与停止条件，再按需展开来源。`knowledge/index.md`
+仍是可直接读取的目录，不是额外必过步骤。
 
 ## Skill / Focus 路由
 
-`focus` 表达当前证据要回答的边界问题。S1 铺开后 pack 不再做 Skill 推荐：skill 目录从
-Skill 路由交给原生 Skill 工具（frontmatter 即路由面），知识卡路径来自
-`knowledge/capabilities.yaml`。Skill 的选择与加载由 AI 通过原生 Skill 工具完成，
-frontmatter description 是路由面。本命令不维护另一张固定映射表。
+`focus` 记录当前证据要回答的问题，不触发关键词自动选路。Skill 的选择与加载由 Claude
+通过原生 Skill 工具完成；知识卡路径来自 registry。本命令不维护另一张固定映射表。
 
 ## 纪律
 
-- S1 铺开后 Context Pack 不推荐主 Skill，只发布磁盘 skill 目录；Claude 通过原生
-  Skill 工具按需加载并说明选择原因。
-- Context Pack 一次最多推荐 1-2 张知识卡，Claude 只读取当前证据需要的卡。
+- Context Pack 不推荐主 Skill；Claude 通过原生 Skill 工具按需加载。
+- 上下文窗口限制新增读取量，不限制知识访问；已读且未变的内容复用当前会话。
 - Context Pack 不生成动作安全门禁。
 - 结束前必须加入 `rules/coverage-gate.md`。
-- 上下文包不是结论；它只是执行前的加载计划。
-- seed/recall 不是动作；Claude 选择假设后才通过现有 owner 创建或激活正常 Queue action。
+- 上下文包不是结论或必过步骤；它是可按需读取的事实和引用视图。
+- 目录或观察不自动生成动作；Claude 选择假设后通过现有 owner 创建或激活 Queue action。
 - 每次 substantive lane 在 Action Queue claim 时由 Claude 显式选择 `skill_route`；
   `required_dimensions` 必须写入对应 metadata。首次选择不是 override；替换 action
   owner 已有 route 时必须记录 `skill_override_reason`。

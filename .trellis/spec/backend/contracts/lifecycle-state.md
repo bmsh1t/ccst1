@@ -634,10 +634,11 @@ is runtime target memory, not knowledge-card content.
   discovery, browser/JS/source enrichment, ranked-surface hunting, or AI
   chain pivots. New evidence should enrich or supersede case state instead of
   being forced through an old backlog.
-- `tools/case_state_seed.py` is suggestion-only. It may read cached
-  recon/browser/JS/source artifacts and emit `add-actor`, `add-object`, and
-  `add-backlog` command drafts, but it must not auto-write case state or claim
-  candidate/finding status.
+- `tools/case_state_seed.py` projects object-shaped observations and source
+  references from cached recon/browser/JS/source artifacts. It does not infer
+  owners, private markers, confidence, or priorities, choose actors/runners,
+  generate registration/backlog commands, or create Queue actions. Claude
+  interprets the observations and uses the existing Case State mutation API.
 - Case-state public sessions contain metadata and a private header reference.
   `load_case_state()` hydrates the full `headers` map in memory for validation;
   `header_name` / `header_value` remain compatibility fields only and must never
@@ -684,9 +685,8 @@ is runtime target memory, not knowledge-card content.
   but do not block replay. The runner may return `candidate` or `tested_clean`;
   only marker-backed or exact non-trivial owner-body-match evidence can become
   `tested_finding`.
-- Base: `/orders/123` in browser/recon/source artifacts creates a suggested
-  `order_123` object and IDOR backlog draft, but the operator still supplies
-  sessions and private markers.
+- Base: `/orders/123` in cached artifacts stays an `order_123` object-shaped
+  observation with its source, not an ownership claim or an IDOR backlog.
 - Base: `.private/user-a.json` contains Cookie, CSRF, tenant, and custom auth
   headers; `target_case_state.py add-session --auth-file` stores all of them in
   a private session artifact, and `validation_runner.py --from-case-state`
@@ -695,8 +695,8 @@ is runtime target memory, not knowledge-card content.
   `knowledge/`, `skills/`, or tracked docs.
 - Bad: replay only the first Cookie/Bearer header from case state when the
   actor context also needs CSRF, tenant, org, or custom auth headers.
-- Bad: seed tool auto-applies generic `user_a` / `user_b` or marks a backlog as
-  validated just because an endpoint contains an ID.
+- Bad: seed tool invents `user_a` / `user_b`, assigns a private marker from an
+  ordinary ID, or chooses a runner just because an endpoint contains an ID.
 - Bad: treat a blocked backlog's recovery text as an executable runner command,
   or create a second queue to store hypothesis history.
 
@@ -729,8 +729,8 @@ is runtime target memory, not knowledge-card content.
 - `tests/test_checkpoint.py` must cover both ready case-state backlog
   prioritization and enrichment-mode backlog surfacing.
 - `tests/test_case_state_seed.py` must cover object extraction from paths/query
-  params, source/JS artifacts, existing-state de-duplication, missing evidence
-  labels, and CLI JSON output.
+  params, source/JS artifacts, existing-state de-duplication, unchanged owner
+  state, absent actor/runner/private-marker guesses, and CLI JSON output.
 
 ### 7. Wrong vs Correct
 
@@ -896,10 +896,10 @@ reporting, and handoff state converge without repeated TODO loops.
 
 ### 3. Contracts
 
-- `checkpoint.py` may expose broad coverage statistics, but it should only
-  promote a coverage gap into `next_action_queue` when the gap has concrete
-  semantic fit (`relevance_score > 0`) from path, parameter, browser, source, or
-  finding evidence.
+- `checkpoint.py` exposes unresolved target-owned coverage with its source
+  facts and bounded previews, without a semantic-score threshold. A gap is not
+  a test instruction or evidence of readiness; Claude selects the method and
+  supplies the action contract before execution.
 - Action queue reads return an empty schema only when the file is absent. Bad
   JSON, non-object payloads, wrong schema versions, and non-list `actions` fail
   fast with the queue path; checkpoint must surface that failure instead of

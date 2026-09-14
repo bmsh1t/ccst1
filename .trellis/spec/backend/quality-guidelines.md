@@ -121,7 +121,7 @@
 - AI 负责假设生成、攻击面取舍、跨证据组合、误判解释和升级/降级决策。
 - 工具负责稳定 replay、diff、raw evidence、ledger 写入和格式一致性。
 - 新增执行工具不能只输出 pass/fail；必须保留 baseline、variant、证据路径、停止条件和
-  Claude 可继续推理的下一步建议。
+  Claude 可继续推理的原始观察与引用，不生成固定测试建议。
 - AI identity enrichment may propose a vulnerability family, semantic
   dimensions, aliases, and follow-up tests, but the candidate is untrusted
   until `tools/identity_contract.py` validates completeness, confidence,
@@ -176,10 +176,8 @@ backend change crosses a layer:
 
 ## Testing Requirements
 
-<!-- What level of testing is expected -->
-
-- New routing, seed, or knowledge-card behavior needs focused regression tests that
-  prove the expected card selection and de-noising behavior.
+- Knowledge projection changes need focused regression tests for catalog discovery,
+  complete references, and preserved facts, not keyword-based card selection.
 - A security finding is not considered stable project capability unless the
   evidence path is reproducible and raw request/response artifacts can be traced.
 
@@ -224,7 +222,7 @@ not an `/autopilot` startup preflight.
 
 Required regressions include a passing audit for the current repository, legacy warning
 compatibility, malformed/duplicate/orphan fixtures, frontmatter and reference failures,
-CLI exit modes, and preservation of context-pack card selection and case-router budget.
+CLI exit modes, and preservation of context-pack catalog discovery and bounded output.
 
 ## 大文件拆分纪律（2026-09-11 实测教训）
 

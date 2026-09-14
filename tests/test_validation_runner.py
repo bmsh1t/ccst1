@@ -57,6 +57,44 @@ def _expect_auth_pair_spec() -> dict:
     }
 
 
+def test_undeclared_same_size_body_change_remains_candidate(monkeypatch, tmp_path):
+    bodies = iter(['{"value":"first"}', '{"value":"other"}'])
+    monkeypatch.setattr(validation_runner, "request_once", lambda **kw: _fake_response(kw["url"], body=next(bodies)))
+    summary = validation_runner.run_request_diff(repo_root=tmp_path, target="target.test", request_spec=_expect_auth_pair_spec())
+    assert summary["result"] == "candidate"
+    assert summary["candidate_ready"] is False
+    run = summary["runs"][0]
+    assert run["baseline"]["body_length"] == run["variant"]["body_length"]
+    assert run["baseline"]["body_sha256"] != run["variant"]["body_sha256"]
+    assert run["diff"]["changed_any"] is True
+    assert run["diff"]["changed"]["body_sha256"] is True
+    facts = validation_runner._run_wire_facts(run, '{"value":"first"}', '{"value":"other"}')
+    assert facts["identical_success_pair"] is False
+
+
+def test_partial_pair_preserves_first_response_without_promoting(monkeypatch, tmp_path):
+    calls = []
+
+    def request(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 2:
+            raise OSError("synthetic transport failure")
+        return _fake_response(kwargs["url"], body='{"observation":"retained"}')
+
+    monkeypatch.setattr(validation_runner, "request_once", request)
+    summary = validation_runner.run_request_diff(repo_root=tmp_path, target="target.test", request_spec=_expect_auth_pair_spec())
+    assert summary["result"] == "partial"
+    assert summary["candidate_ready"] is False
+    assert summary["error"] == {"side": "variant", "type": "OSError"}
+    artifacts = summary["runs"][0]["artifacts"]
+    assert "retained" in (tmp_path / artifacts["baseline_response"]).read_text(encoding="utf-8")
+    assert "variant_response" not in artifacts
+    assert summary["artifact_bindings"]
+    validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)
+    assert not (tmp_path / "findings" / "target.test" / "findings.json").exists()
+    assert len(calls) == 2
+
+
 def test_request_diff_distinct_bodies_promotes_sub_threshold_cross_user_read(monkeypatch, tmp_path):
     """V-2: a cross-user read whose body delta is below the 20-byte material
     threshold is still a different object. distinct_bodies has no threshold,
@@ -1002,48 +1040,6 @@ def test_request_diff_without_canonical_ledger_family_keeps_sync_skipped(monkeyp
     assert sync["status"] == "skipped"
     assert sync["ledger"]["status"] == "skipped"
     assert "error" not in sync["ledger"]
-
-
-def test_request_diff_partial_failure_keeps_saved_baseline_material(monkeypatch, tmp_path):
-    """第二请求失败时：已保存的 baseline 材料必须保留，结果为不可晋升的 partial。
-
-    request-diff-optimization 验收第 4 条：第一份响应成功、第二次请求失败，
-    第一份材料仍保留，相关工作未完成（不得 clean/finding）。
-    """
-    import urllib.error
-
-    calls = {"n": 0}
-
-    def partial_fail_request(**kwargs):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            return _fake_response(kwargs["url"], body='{"data":"baseline"}')
-        raise urllib.error.URLError("synthetic variant transport failure")
-
-    monkeypatch.setattr(validation_runner, "request_once", partial_fail_request)
-    summary = validation_runner.run_request_diff(
-        repo_root=tmp_path,
-        target="https://target.test",
-        request_spec={
-            "baseline_request": {"method": "GET", "url": "https://target.test/api/basket/1", "headers": {"Authorization": "Bearer owner"}},
-            "variant_request": {"method": "GET", "url": "https://target.test/api/basket/1", "headers": {"Authorization": "Bearer peer"}},
-            "active_dimension": "header:Authorization",
-            "classifier": "idor",
-        },
-        finding_id="PARTIAL-KEEP",
-    )
-
-    assert summary["result"] == "partial"
-    assert summary["candidate_ready"] is False
-    assert summary["error"]["side"] == "variant"
-    # 已取得的 baseline 材料落盘且被 summary 绑定
-    bundle = tmp_path / ".private" / "validation" / _target_key("https://target.test") / "PARTIAL-KEEP"
-    summaries = list((tmp_path / "evidence" / _target_key("https://target.test") / "validation" / "PARTIAL-KEEP").glob("*/summary.json"))
-    assert summaries, "partial summary must be written"
-    saved = summary["runs"][0]["artifacts"]
-    assert saved.get("baseline_response"), "baseline response artifact must be recorded"
-    baseline_path = tmp_path / str(saved["baseline_response"])
-    assert baseline_path.is_file(), "baseline raw response must remain on disk"
 
 
 def test_request_diff_marks_multipart_manual_required_without_request(monkeypatch, tmp_path):

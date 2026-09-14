@@ -44,8 +44,10 @@ Claude-facing 文案应优先使用：
 - `scanner-negative = complete`
 - `No high-value matrix gap remains`
 
-兼容旧 JSON 字段时，可以保留 `score`、`P1/P2`、`ranked-surface` 等字段，但
-CLI/agent/command 文案必须说明它们只是 advisory hints。
+兼容旧 JSON 字段时，可以容忍 `score`、`P1/P2`、`ranked-surface` 等字段。
+新排序只使用已有来源事实、显式优先级或已记录状态，不再由路径词推测价值。
+旧 rubric/关键词分数不能决定候选可见性、方法、补证要求或报告资格；仅改称
+“advisory”不算删除。证据解释、角色组合和方法选择交给 Claude。
 
 ## 回归要求
 

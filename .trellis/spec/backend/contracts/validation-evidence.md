@@ -109,24 +109,19 @@ bounded AI-selected evidence actions instead of promoting them to lanes.
 
 ### 2. Signatures
 
-- `python3 tools/validation_runner.py authz-public-exposure --target <target> --url <url> [--method GET] [--header 'Name: value'] [--body <text>] [--browser-observed] [--no-ledger]`
 - `python3 tools/validation_runner.py request-diff --target <target> --request-spec <spec.json> [--repeat N] [--browser-observed] [--no-ledger]`
-- `python3 tools/validation_runner.py marker-replay --target <target> --url <url> --expect-marker <inert-marker> [--baseline-url <neutral-control-url>] [--baseline-body <text>] [--vuln-class RCE] [--method GET] [--body <text>] [--repeat N] [--browser-observed] [--state-changing] [--no-ledger]`
-- `python3 tools/validation_runner.py idor-actor-pair --target <target> --url <same-object-url> --owner-header 'Authorization: ...' --peer-header 'Authorization: ...' [--expect-marker <owner-private-marker>] [--repeat N] [--browser-observed] [--state-changing] [--no-ledger]`
-- `python3 tools/validation_runner.py idor-actor-pair --target <target> --from-case-state --backlog-id <val_id> [--repeat N]`
-- `python3 tools/validation_runner.py idor-actor-pair --target <target> --from-case-state --owner-actor <actor> --peer-actor <actor> --object-ref <ref> [--repeat N]`
-- `python3 tools/validation_runner.py idor-actor-pair --target <target> --from-case-state --backlog-id <val_id> --complete-case-state [--repeat N]`
 - Shared auth inputs: `[--auth-file <json-or-env>] [--header 'Name: value']`;
   explicit raw headers override AuthSession only on the initial URL.
 
 ### 3. Contracts
 
-Runner output must include:
+Runner verifies explicit expectations, not keyword evidence scores or inferred impact.
+Unspecified/unmet expectations stay candidates; partial transport preserves earlier
+responses without allowing validation finality. Runner output must include:
 
-- `result`: `tested_finding`, `candidate`, `tested_clean`, or `dead_end`
+- `result`: `tested_finding`, `candidate`, `tested_clean`, `dead_end`, `partial`, or `manual_required`
 - `candidate_ready`: boolean
 - raw request/response artifact paths under `evidence/<target_key>/validation/<finding-id>/`
-- `evidence_rubric` where applicable
 - `ledger_record` unless `--no-ledger`
 - stable `operation_id`; Ledger rows also carry the derived `event_id`
 - persisted path-independent `operation_material`; consumers recompute
@@ -135,7 +130,6 @@ Runner output must include:
 - deterministic `artifact_bindings[]` for existing raw artifacts, with `kind`,
   repo-owned `ref`, and SHA-256; request/response bindings are mandatory for a
   runner witness consumed by non-TTY `/validate`
-- `ai_next.hypothesis`, `ai_next.next_action`, and `ai_next.stop_condition`
 - `sync` unless `--no-sync`: ordered Ledger -> Finding -> Action Queue owner
   reconciliation. Each owner reports `updated|deduplicated|skipped|error`; any
   owner error makes top-level `status=partial`, and replay fills only missing work.

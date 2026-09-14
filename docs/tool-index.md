@@ -103,7 +103,7 @@ identity, and cloud signals without re-enumerating everything.
 | `tools/surface_projection.py` | Bootstrap/context consumers need a fast ranked view | Manifest-bound bounded cache; only exact hits are consumable, stale/missing remains explicit refresh work |
 | `tools/surface_finalizer.py` | Recon completed or derived surface needs recovery | Shared non-fatal recon post-processor for exact index, full streaming rank, inventory summary, and projection |
 | `tools/surface_js_intel.py` | After js-reader has run | Feed js-reader hypotheses into `surface.py` |
-| `tools/surface_source_intel.py` | After source_intel has run | Feed source-intel hypotheses into `surface.py` |
+| `tools/surface_source_intel.py` | After source_intel has run | Feed source route observations into `surface.py` |
 | `tools/finding_index.py` | Listing/querying structured findings | Structured finding index store + query API |
 | `tools/structured_findings.py` | Reading single finding | Helpers to rank/load structured findings |
 
@@ -135,7 +135,7 @@ identity, and cloud signals without re-enumerating everything.
 | `tools/observation_inventory.py` | Large/resumed recon corpus | Persist neutral untouched/stale observations; stat-bound summary and revision cursor; never routes a Skill |
 | `tools/action_queue.py` | Actionable evidence exists or checkpoint has next actions | Persistent action queue: ingest, choose next, resolve, summarize |
 | `tools/target_case_state.py` | Multi-actor/object validation state | Actor/session/object registry; private auth refs; next validation |
-| `tools/case_state_seed.py` | Browser/recon/JS/source artifacts reveal object IDs but case state is empty | Suggest add-actor/add-object/add-backlog commands; no auto-write |
+| `tools/case_state_seed.py` | Browser/recon/JS/source artifacts reveal object IDs but case state is empty | Read object-shaped observations and sources; no actor/runner selection or auto-write |
 | `tools/coverage_matrix.py` | Checking high-value untested cells | Endpoint × vuln-class matrix; emits auto-hints and lets Claude mark endpoint kind |
 | `tools/resume.py` | Continuing previous target work | `/pickup` backend — summarize prior session+untested endpoints |
 | `tools/remember.py` | Logging finding to hunt memory | `/remember` backend — write to journal/pattern DB |
@@ -159,7 +159,7 @@ identity, and cloud signals without re-enumerating everything.
 |---|---|
 | Concrete signal plus unresolved next verification question | smallest safe lookup/replay/diff/enrichment/probe, then checkpoint state |
 | Need to remember user_a/user_b sessions, owned objects, private markers, or IDOR backlog | `target_case_state.py summary/next` |
-| `/orders/123`, `/invoices/42`, `/addresses/7`, `account_id`, `tenantId` appears in cached artifacts | `case_state_seed.py --target <target> --json`, then review suggested commands |
+| `/orders/123`, `/invoices/42`, `/addresses/7`, `account_id`, `tenantId` appears in cached artifacts | `case_state_seed.py --target <target> --json`, then interpret the source-backed observations |
 | Concrete CMS/plugin/theme/library version observed, or network product/CPE identified | `/intel` → `tools/intel_engine.py`; add `/scan-cves` only after AI selects a reachable advisory |
 | 401/403 on interesting endpoint | AI direct browser/curl/raw request; optional `validation_runner.py request-diff` |
 | Anonymous `application-configuration` `200` | AI body review (config/oauth/security-answer content vs ordinary listing); preserve as a request-diff pair when promoting |

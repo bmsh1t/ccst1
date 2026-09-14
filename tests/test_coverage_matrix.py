@@ -1500,10 +1500,10 @@ class TestCoverageGateSemanticGapDuty:
         assert "矩阵不是唯一真相，而是防偷懒的 evidence hint ledger" in md
         assert "未解释的 AI-actionable `find-gaps` 非空：只能 checkpoint 或继续，不能声称全面完成。" in md
 
-    def test_default_view_carries_the_duty_all_is_audit_view(self):
+    def test_full_view_does_not_impose_a_test_menu(self):
         md = self._gate_md()
-        assert "解释义务落在默认（AI-actionable）视图上" in md
-        assert "`--all` 是审计视图，人不背它的逐格" in md
+        assert "解释义务落在 AI 判断值得关注但选择不追的 gap 上" in md
+        assert "矩阵枚举不等于逐格实测清单" in md
 
     def test_weight_and_noop_all_flags_are_retired(self, tmp_path):
         for option in (["--min-weight", "3"], ["--all"]):
@@ -1906,4 +1906,3 @@ class TestRouteKindQualification:
         assert not coverage_matrix_module.matrix_is_fresh(target, matrix, repo_root=tmp_path), (
             "a new route_kinds.json generation must invalidate the cached matrix"
         )
-

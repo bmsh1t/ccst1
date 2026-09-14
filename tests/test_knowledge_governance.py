@@ -349,15 +349,11 @@ def test_evidence_counterexamples_recall_existing_boundary_cards(tmp_path):
 
     for focus, observation, expected_card in cases:
         target = f"{focus}.test"
-        # source_intel 发现入口现为 routes.json（事实路由）；旧生成的
-        # hypotheses.jsonl 不再控制选择，但事实观察通过 routes 进入 Pack。
         evidence_ref = f"findings/{target}/source_intel/routes.json"
         evidence = tmp_path / evidence_ref
         evidence.parent.mkdir(parents=True)
         evidence.write_text(
-            json.dumps({
-                "routes": [{"route": "/api/sessions", "method": "GET", "note": observation}],
-            }, ensure_ascii=False),
+            json.dumps({"signals": [{"kind": "observation", "evidence": observation, "source": "fixture"}]}) + "\n",
             encoding="utf-8",
         )
 
@@ -372,18 +368,17 @@ def test_distilled_router_cards_are_discoverable_from_real_evidence_indexes(tmp_
         target = card_name.removesuffix(".md")
         source_dir = tmp_path / "findings" / target / "source_intel"
         source_dir.mkdir(parents=True)
-        # 发现入口为 routes.json；蒸馏出的路由事实作为原始 route 进入索引。
         (source_dir / "routes.json").write_text(
-            json.dumps({
-                "routes": [{"route": evidence if evidence.startswith("/") else f"/{evidence}", "method": "GET"}],
-            }, ensure_ascii=False),
+            json.dumps({"signals": [{
+                "kind": "observation", "evidence": evidence, "source": "fixture",
+            }]}, ensure_ascii=False) + "\n",
             encoding="utf-8",
         )
 
         pack = build_context_pack(tmp_path, target=target)
 
-        # The full card catalog is the discovery surface; AI selects cards by
-        # information gap (semantic routing retired).
+        # Evidence-index word signals surface as recall annotations (visible
+        # to the AI through the signal channel), not auto-selected cards.
         catalog_files = {
             str(item.get("file") or "")
             for item in pack.get("card_catalog", [])

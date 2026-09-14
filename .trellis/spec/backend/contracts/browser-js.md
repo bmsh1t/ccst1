@@ -40,8 +40,8 @@ Focused manifest 为 `{"target":"...","captures":[{"url":"https://...","source":
   不能解释为 tested-clean。
 - capture `summary.json` 必须先发布，再刷新 page→JS map；否则当前 capture 的 JS 会延迟到
   下一页面并错误归因。Surface 差分包含 XHR、API、参数和 JS。
-- 只有高价值且出现新 target-owned Surface 或非重复 snapshot shape 的批次，才以 generation
-  幂等写入既有 Action Queue。
+- 只有采集成功且出现新 target-owned Surface 或非重复 snapshot shape 的批次，才以 generation
+  幂等写入既有 Action Queue，不做关键词价值过滤。
 
 ### 4. Validation & Error Matrix
 

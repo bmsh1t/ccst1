@@ -132,7 +132,7 @@ bash tools/vuln_scanner.sh <recon_dir> [--quick|--full] [--skip <modules>]
   `findings/<target_key>/graphql/<run-id>/`, publishes a bounded `run-summary.json`
   with target identity, operation ID, signal list, and artifact digests, and sends
   positive signals through `finding_index.upsert_finding()`. The resulting row is
-  always `candidate` with an incomplete GraphQL evidence rubric; introspection,
+  always `candidate` pending canonical evidence validation; introspection,
   suggestions, batching, status codes, and tool output never become validated or
   report-ready without canonical protocol replay and `/validate`.
 - Gate records include a small `artifact_binding` for concrete artifacts.
@@ -546,111 +546,21 @@ Wrong: any occurrence of `credential-attack` -> explicit Skill override
 Correct: first normalized focus token is a primary Skill -> explicit override; otherwise preserve old routing
 ```
 
-## Scenario: Context Pack historical pattern recall
+## Context Pack 历史兼容与观察投影
 
-### 1. Scope / Trigger
+- Surface 不再从跨目标 PatternDB 自动推荐经验，`pattern_suggestions` 保持空兼容字段。
+  新经验经既有 `/distill` 草稿和人工晋升进入知识卡，不恢复跨目标现场自动匹配。
+- Context Pack 读取旧投影时只兼容无跨目标来源的建议，过滤其它目标残留；
+  `historical_patterns` 不产生 Finding、Queue 动作或完成态，也不回读全量历史库。
 
-When Context Pack is built from a valid ranked Surface, it may expose the existing
-cross-target pattern suggestions as bounded advisory context.
-
-### 2. Signatures
-
-```python
-build_context_pack(...)["historical_patterns"] -> list[str]
-build_context_pack(...)["source_summary"]["historical_patterns"] -> int
-```
-
-### 3. Contracts
-
-- Surface remains the pattern-recall owner: it loads the target profile only for
-  episodic/technology context, calls `PatternDB.match(..., calibrated=True)`,
-  excludes the current target, and returns at most three
-  `memory.pattern_suggestions`. Current findings and endpoint test state come
-  from `runtime_state.derive_owner_projection()`; the legacy profile is a
-  compatibility fallback only.
-- Context Pack excludes a current-target suggestion, strips cross-target
-  provenance labels, then deduplicates and projects the first three reusable
-  lessons. It does not read `patterns.jsonl`, rerank patterns, expose historical
-  target domains, or use them as evidence/finality.
-- Formatted output labels the suggestions advisory and requires current-target evidence.
-
-Candidate advisory (`reviewed_candidate_hints` family) was retired with the
-knowledge-governance state machines (2026-09-11, zero-B): the pack no longer
-carries candidate-hint fields, and `historical_patterns` stays the only
-cross-target advisory channel. New cross-target knowledge enters via `/distill`
-draft cards promoted into `knowledge/cards/`.
-or formal-card selection.
-
-### 4. Validation & Error Matrix
-
-| Input | Context Pack result |
-|---|---|
-| missing Surface memory | `historical_patterns=[]`, count `0` |
-| current-target suggestion | omitted |
-| cross-target `target: lesson` suggestion | target prefix removed |
-| duplicate suggestions | first occurrence retained |
-| more than three suggestions | first three retained |
-| stale Surface projection | existing Surface refresh/rebuild path runs before recall |
-
-### 5. Good/Base/Bad Cases
-
-- Good: valid Surface provides calibrated cross-target suggestions; Context Pack shows
-  three advisory lines after knowledge/reference routing.
-- Base: no target profile or matching pattern produces an empty list.
-- Bad: Context Pack scans `hunt-memory/patterns.jsonl` or treats a historical payout as
-  current-target evidence.
-
-### 6. Tests Required
-
-- `tests/test_context_pack.py` asserts current-target exclusion, provenance
-  stripping, dedupe, the three-item limit, advisory formatting, and the
-  source-summary count.
-- Candidate routing tests also assert English and Chinese explicit signals,
-  reviewed-only filtering, corrupt/legacy fail-closed behavior, one-item cap,
-  and formal-card budget non-regression.
-- PatternDB/Surface owner tests retain responsibility for calibration, tech-stack match,
-  current-target exclusion, and corrupted-row behavior.
-
-### 7. Wrong vs Correct
-
-```text
-Wrong: historical pattern -> candidate/finding/terminal state
-Correct: historical pattern -> bounded advisory recall -> current-target evidence action
-```
-
-- Endpoint→漏洞类型的语义打分不得把路径段和参数名简单拼成一个
-  regex blob 后统一匹配，尤其是依赖“查询语义”的 lane（如 SQLi）。
-  资源名里的 `order`、`select`、`report` 可能只是 REST path 命名，
-  不是查询入口；应把 path-only 强信号和 observed-params 强信号分开打分。
-  最少保留一组“真查询面 + 假资源名”的回归对照，例如：
-  - Good: `/rest/products/search?q=test` 允许命中 SQLi query semantics
-  - Bad: `/rest/order-history`、`/address/select` 不能仅靠路径词被抬进
-    SQLi 的前排 coverage gap
-- Discovery 阶段产出的高价值 queue item 不得只给“去测某 endpoint × 某漏洞类”
-  这种抽象 TODO；必须尽量同时附带**最小验证路径**，并与 `/validate`
-  使用同一套 evidence rubric。
-  - Good: coverage-gap 同时给出 “Validation path: two-actor replay /
-    exact replayable request / baseline-vs-perturbation / bounded synchronized
-    replay ...”
-  - Bad: 只有 “test this for IDOR/SQLi/Race” 而没有下一条可执行证据动作
-  - 目标：让 discovery→candidate→validate 是同一条链，不让代理在发现后
-    再重新猜“下一步该怎么证明”
+- Surface 和 Coverage 保留原始路径、实际参数、请求形态、来源与已记录状态；不按路径词
+  预测类别、价值或测试方法，也不以词法分数决定哪些观察值得进入上下文。
+- Checkpoint 发布当前 target 的未处置事实、来源和 owner 入口。Claude 判断假设和下一步，
+  不生成统一的补证话术、代选 actor/object 或预填尚未执行的 replay 结论。
+- 同一页面返回 SPA HTML 不能据此判 clean。页面与底层接口的关系由浏览器、源码和实际响应
+  支持；Claude 选择需要的观察或验证方法，不强制 browser-first 或某个 runner。
 - AI/工具职责统一遵守[质量规范](../quality-guidelines.md#ai-与工具边界)；本分册只定义
   Recon 和 Surface 的具体证据、排序与 continuation 契约。
-- 对 browser-observed / ranked surface，AI 的优势应用在“生成最小 replay 草案”，
- 不是只输出排序结果。
-  - Good: `Continue top ranked surface ... Replay draft: capture exact browser baseline;
-    prefer POST replay; reuse observed params; follow source hints; focus Authz evidence`
-  - Bad: 只有 `continue top ranked surface <url>`，没有 method、参数、角色差异、
-    baseline、验证方向
-  - 数据来源优先级：browser 真实请求形态 > JS method/param hints > source-intel
-    hypotheses > semantic relevance tie-break
-  - 目标：把 AI 的归纳/联想能力落到“下一条可执行 replay”上，而不是停留在描述层
-- Ranked surface 里的无扩展页面路由（如 `/orders`、`/order-summary`）不能因为
-  raw GET 返回同一份 SPA HTML 就判 clean。case_state 存在时也应优先
-  browser-state-first：用 MCP/浏览器捕获 owner/peer 真实 XHR、对象 ID 和状态，
-  再把底层 API 交给 `validation_runner.py authz-role-replay` 或
-  `idor-actor-pair`。页面路由是链路入口，不是最终 replay 目标。
 - AI/operator-confirmed endpoint kind is allowed to change direct coverage
   applicability, but auto hints are not. For example, `route_prefix_candidate`
   only stays a hint; after Claude explicitly marks `/rest/admin` as
@@ -1281,7 +1191,7 @@ coverage feedback.
 - Only deterministic validation runners, evidence ledger resolution, or
   explicit operator `mark` commands may close a cell as `tested_clean`.
 - Scanner-positive output is still only `lead` / `signal` / `candidate` until
-  validated with exact replay and evidence rubric.
+  validated through canonical replay evidence and the `/validate` gates.
 
 ### 4. Validation & Error Matrix
 
@@ -1324,68 +1234,22 @@ coverage feedback.
 {"SQLi": {"status": "untested", "scanner_swept": true, "scanner_module": "vuln_scanner.sqli"}}
 ```
 
-## Surface Ranking Hint Contracts
+## Surface Observation and Coverage Contracts
 
-### 1. Scope / Trigger
-
-Use this contract whenever `tools/surface.py`, `tools/surface_weights.py`, or
-shared high-value signal helpers rank, demote, or label discovered hosts/URLs.
-
-### 2. Signatures
-
-- `python3 tools/surface.py --target <target>`
-- `python3 tools/recon_candidates.py --target TARGET` publishes the rebuildable
-  `recon/<target_key>/exposure/host_ranking.jsonl` attention view; it retains every
-  observed host and never changes scope, Coverage, Finding, or Queue state.
-
-### 3. Contracts
-
-- Path/host/title regexes are ranking hints only.
-- Low-priority host output must be phrased as a hint, not a kill/exclusion
-  verdict.
-- Docs/status/blog/static/CDN-looking hosts may be deprioritized, but must
-  remain revisitable when browser, auth, Cloudflare clearance, source, secret,
-  webhook, OAuth/JWKS, CDN, or integration evidence changes.
-- Surface ranking may suggest where to start; it must not claim a host, URL, or
-  lane is out of scope, tested clean, or not applicable.
-
-### 4. Validation & Error Matrix
-
-- 403-only host + CF bypass active -> emit refresh/bypass hint, not low-priority
-  host hint.
-- Docs/static/status-looking host -> low-priority hint only.
-- New target-owned browser/source evidence for a low-priority host -> ranking
-  can promote it back to P1/P2.
-
-### 5. Good/Base/Bad Cases
-
-- Good: `docs.example.com` appears under "Low-priority host hints" with a
-  reason and can be revisited if source/secret/OAuth context appears.
-- Bad: display "Kill List (skip)" and train Claude to ignore a target-owned
-  host permanently.
-
-### 6. Tests Required
-
-- Surface tests must assert low-priority host hints do not remove ranked target
-  URLs.
-- Formatting tests should prefer "low-priority hint" language over "kill" or
-  "skip" wording.
-
-### 7. Wrong vs Correct
-
-#### Wrong
-
-```text
-Kill List (skip):
-- docs.example.com — likely docs/static/support host
-```
-
-#### Correct
-
-```text
-Low-priority host hints (not exclusion):
-- docs.example.com — possible docs/static/support host
-```
+- `surface.py` and `coverage_matrix.py` expose observations, source references,
+  request shapes and explicit owner states; path words do not assign value,
+  a vulnerability class, a preferred method, or closure.
+- Coverage keeps every observed valid route. `find-gaps --limit N` bounds the
+  presentation and reports total/truncated; the retired weight/semantic filters
+  are not alternate discovery paths.
+- Surface retains full indexing and pagination, bounded shape diversity and
+  recorded source facts. A bounded review window must not become the scope.
+- `recon_candidates.py` may retain its all-host source-count attention view;
+  it never changes Scope, Coverage, Finding or Queue state.
+- Previously finalized evidence stays historical context. One class outcome
+  never closes an entire untyped endpoint; new evidence can reopen work.
+- Tests cover unknown/static-looking routes, ignored legacy keyword scores,
+  exact references, finite windows, full counts and owner-state preservation.
 
 ## Scenario: 通用 case-router 与可选案例来源
 
@@ -1542,165 +1406,49 @@ stable input digest -> bounded batch -> atomic summary + cursor -> explicit --re
 
 ---
 
-## Scenario: 框架信号复用既有知识 owner
+## Scenario: 原生知识发现与完整判断单元
 
 ### 1. Scope / Trigger
 
-新增框架、协议或产品特征的知识路由时，先判断它是独立攻击边界，还是既有漏洞类型的触发信号。
-Next.js、Spring、ASP.NET 等框架名本身不构成新的 finding 类型，也不应默认扩张 Skill 数量。
+框架、协议和跨组件机制知识由卡片维护。Context Pack 提供发现目录和目标事实，Claude
+根据当前信息缺口选择知识，不把框架词、字段名或 parser 特征硬编码为必读路线。
 
 ### 2. Signatures
 
 ```python
-# tools/context_pack.py
-DISTILLED_TOKEN_TO_CARDS = (
-    (FRAMEWORK_BOUNDARY_RE, ("EXISTING_OWNER_CARD",)),
-)
+build_context_pack(...)["card_catalog"]
 ```
 
-```yaml
-# 只有独立 query/protocol boundary 才登记 signal-only reference 卡
-- id: BOUNDARY_CARD
-  kind: card
-  layer: reference
-  load: signal-only
-```
+目录来自 `knowledge/capabilities.yaml` 和现有 registry owner；不新增关键词到卡片的映射表。
+`knowledge_cards`、`deferred_knowledge_cards`、`knowledge_card_recall` 保持空兼容投影，
+不表示已选择或已读取卡片。
 
 ### 3. Contracts
 
-- 框架特征能够由现有漏洞 owner 表达时，必须路由到现有卡和 Skill；不得新增
-  `hunt-nextjs`、`hunt-springboot`、`hunt-aspnet` 一类固定框架 Skill。
-- 路由信号必须指向具体边界，而不是普通技术栈标签。例如 `/_next/image` 指向 SSRF fetch gate，
-  `/_next/data` 指向 IDOR identity diff，Actuator 指向管理响应形态，ViewState 指向完整性和真实消费，
-  legacy auth 指向同账号策略差异。
-- OData、LDAP/XPath 等现有 owner 无法准确表达的独立 query context，才允许新增
-  `reference + signal-only` 卡；卡只保存边界、最小证据和停止条件。
-- HTTP 200、operator 可用、格式可识别、端点可达只能形成 Signal。Candidate 必须由现有
-  evidence/finding owner 按可复现影响晋升。
-- `context_pack` 仍遵守最多 1-2 张卡的预算；未选卡进入既有 deferred 路径，不创建第二套路由状态。
+- 复用已有卡片与 Skill，不因框架名新增固定 `hunt-*` Skill、Lane 或知识状态 owner。
+- 卡片保存适用条件、机制、必要证据、反例和停止条件；注册表保存登记与加载角色。
+  框架机制与跨组件视图差异继续在现有卡片中维护，不复制成 Python 规则或强制提示词。
+- Claude 可直接运用已有知识。存在信息缺口时，短卡一次读完；长卡读取包含前提、方法、
+  证据门、反例和停止条件的完整机制单元，再按需展开附录与来源。
+- 预算限制本轮新增上下文，不限制可访问的知识。没有两张卡的硬上限，也不强制先摘要再正文；
+  已读且未变化的内容复用当前会话，不新增持久化已加载状态。
+- 目录命中、HTTP 状态、格式可识别或 parser 差异都不直接创建 Finding 或关闭覆盖状态。
+  正式结果仍经过 canonical evidence/finding owner 与 `/validate`。
 
 ### 4. Validation & Error Matrix
 
 | 条件 | 正确行为 |
 |---|---|
-| 普通 `Next.js homepage` | 不加载 SSRF/IDOR 专项卡 |
-| `/_next/image` 且出现 fetch/URL 边界 | 加载 `ssrf-url-fetch`，HTTP 200 保持 Signal |
-| `/_next/data` 且出现对象/身份边界 | 加载 `api-idor`，要求 anonymous/owner/peer/cross-tenant 对照 |
-| 普通 `Active Directory login` | 不加载 LDAP/XPath query 卡 |
-| LDAP filter/DN/XPath parser 或 query error | 加载 `ldap-xpath-query-boundaries` |
-| 同一信号命中多张卡 | 按既有预算选 1-2 张，其余进入 deferred |
+| 普通框架名或字段名 | 保留目标事实，不自动选卡、选类别或生成动作 |
+| 存在机制信息缺口 | Claude 查目录并读取完整判断单元 |
+| 需要更多知识 | 继续查卡片与来源，不因默认上下文窗口丢弃能力 |
+| 只有响应状态或解析差异 | 保留观察，不自动晋升 |
 
-### 5. Good / Base / Bad Cases
+### 5. Tests Required
 
-- Good：`/_next/image?url=` 命中 SSRF owner，seed 明确要求唯一 OAST 或 upstream/internal 差异。
-- Good：LDAP filter error 命中 query boundary 卡，但登录页只有 AD 品牌字样时不加载。
-- Base：只观察到 Actuator 路径 200，保持 Signal，先排除登录页、Whitelabel 和 SPA fallback。
-- Bad：看到 `Next.js` 就加载 SSRF/IDOR，或为每个框架复制一个 `hunt-*` Skill。
-
-### 6. Tests Required
-
-- `tests/test_selective_knowledge_distillation.py`：框架正向信号命中既有 owner，并携带 negative gate。
-- 同文件必须覆盖普通 Next.js homepage 和普通 Active Directory login 的负向路由。
-- knowledge audit 验证新增独立边界卡为 `reference + signal-only`，且 core/default 预算不增长。
-- context-pack 回归断言 `knowledge_cards <= 2`，deferred 行为不丢失。
-- collision 回归必须覆盖具体正向、近似和宽泛负向信号，并断言 `knowledge_card_recall` 排序、
-  reason、去重和预算在重复构建时保持稳定。
-
-### 7. Wrong vs Correct
-
-#### Wrong
-
-```text
-framework keyword -> dedicated hunt-* Skill -> HTTP 200 -> Candidate
-```
-
-#### Correct
-
-```text
-specific boundary signal -> existing owner / signal-only reference
-                         -> negative gate + reproducible evidence
-                         -> canonical evidence/finding lifecycle
-```
-
----
-
-## Scenario: 跨组件结构化值的测试前视图差异召回
-
-### 1. Scope / Trigger
-
-当 Context Pack 看到尚未验证的表面证据同时表明“可写结构化输入”、“安全敏感字段”和
-“存储/转发/校验后由第二组件消费”时，必须在测试前把它路由到既有
-`view-differential` Card。这样模型能生成最小 A/B 验证，而不是只能在已经观察到 parser
-差异后复核。该路由不新增 Lane、状态 owner 或固定输入字典。
-
-### 2. Signatures
-
-```python
-# tools/context_pack.py
-def _has_json_view_differential_candidate_signal(text: str) -> bool: ...
-
-# Existing owner and budget path
-_select_cards_and_deferred(blob, skill, ranked, gaps, goal_memory, focus, repo)
-```
-
-### 3. Contracts
-
-- 前置候选必须同时满足：JSON/API/request body 等结构化边界、role/tenant/permission/status/
-  amount 等安全敏感字段、以及存储/转发/校验与 read-back/consumer/worker/backend/admin/
-  permission 的跨组件关系；任一条件缺失不得加载该 Card。
-- 同一规则同时用于显式 `focus` 和聚合后的 target evidence `blob`，但只是知识召回和验证假设，
-  不能写入 finding、覆盖完成态或 action queue 终态。
-- 已观察到的 raw `\\ud800`-`\\udfff` 未配对 escape、重复 JSON key、规范化/截断和
-  parse/serialize 差异可直接命中该 Card；有效 high+low surrogate pair 不是该信号。
-- `view-differential` 与 `type-confusion` 等同层 Card 仍复用既有 selected/deferred 预算；
-  不因主动召回创建第二个预算或绕过 `knowledge_card_recall[]`。
-- 具体字段和值必须由目标 schema 和基线请求派生。示例角色名不能成为 router 条件或固定测试
-  向量；Card 只要求 baseline、单变量候选、近似负例和最终影响对照。
-
-### 4. Validation & Error Matrix
-
-| 条件 | 正确行为 |
-|---|---|
-| 可写 JSON role 字段先持久化，再由 permission/admin API 读取 | 测试前加载 `view-differential` 并生成视图对照假设 |
-| 普通 JSON API 响应或普通 profile `role` 字段 | 不加载 `view-differential` |
-| `\\ud888` 等未配对 escape 与消费侧截断证据 | 直接加载 `view-differential`，不误路由 `upload-parser` |
-| 有效 surrogate pair 表示普通昵称 | 不加载该 Card |
-| 同时命中 scalar/object 与 view 差异信号 | 选择一个 case-router，另一个进入 deferred |
-| 两侧严格 parser 在入口拒绝输入 | 记录测试结果/停止，不把错误响应提升为 Candidate |
-
-### 5. Good / Base / Bad Cases
-
-- Good：从 API 文档或 read-back 路径看到可写租户字段被 worker 和权限接口消费，先构造
-  baseline、单边界变体和 read-back 对照。
-- Base：已有未配对 surrogate 或重复键分叉证据时，加载 Card 并确认实际库版本、配置和
-  Content-Type。
-- Bad：看到任意 JSON、角色字符串或单个 `400/500` 就加载 Card，或用示例角色名枚举所有字段。
-
-### 6. Tests Required
-
-- `tests/test_context_pack.py` 必须覆盖英文和中文的测试前正向信号。
-- 同文件必须覆盖普通 JSON、普通 role 字段、有效 surrogate pair 的负向路由。
-- 同文件必须断言 raw 未配对 escape 不被 `upload-parser` 抢占，case-router overflow 进入
-  `deferred_knowledge_cards`，且 Card 预算稳定。
-- `python3 tools/knowledge_audit.py --strict` 和完整 Context Pack 回归必须通过。
-
-### 7. Wrong vs Correct
-
-#### Wrong
-
-```text
-ordinary JSON -> always load parser Card
-observed parser difference -> only then think about view differential
-```
-
-#### Correct
-
-```text
-structured input + sensitive field + multiple processing views
-  -> bounded view-differential hypothesis
-  -> baseline + one variant + negative control + read-back
-  -> evidence/finding owner decides final result
-```
+- `tests/test_context_pack.py`：目录投影、空兼容字段、目标事实与引用、JSON/文本一致性。
+- `tests/test_knowledge_governance.py`：registry 身份、引用和卡片结构；不测试词法自动选路。
+- 卡片或 registry 有实质修改时运行 `python3 tools/knowledge_audit.py --strict`。
 
 ---
 

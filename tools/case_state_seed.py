@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""Suggest Target Case State seeds from existing recon/browser/source artifacts.
+"""Read object-shaped observations from cached recon/browser/source artifacts.
 
-This tool is suggestion-only by default: it reads cached artifacts, extracts
-concrete object-shaped endpoints, and emits copyable `target_case_state.py`
-commands.  It does not write runtime state unless a future explicit apply mode
-is added.
+Object identity, ownership, privacy, and test methods remain Claude's judgment.
+This projection neither writes Case State nor generates registration commands.
 """
 
 from __future__ import annotations
@@ -12,7 +10,6 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import shlex
 import sys
 from pathlib import Path
 from typing import Any
@@ -82,24 +79,6 @@ JSON_OBJECT_FIELD_TYPES = {
     "user-id": "user",
 }
 
-HIGH_PRIORITY_TYPES = {
-    "order",
-    "invoice",
-    "address",
-    "report",
-    "export",
-    "organization",
-    "tenant",
-    "workspace",
-    "payment",
-    "billing",
-    "file",
-    "basket",
-    "cart",
-    "account",
-    "user",
-}
-
 GENERIC_ID_KEYS = {"id", "uuid", "guid"}
 NON_OBJECT_QUERY_KEYS = {
     "_",
@@ -124,10 +103,6 @@ ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,80}$")
 NUMERIC_OR_UUID_RE = re.compile(
     r"^(?:\d{1,12}|[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}|[0-9a-fA-F]{16,64})$"
 )
-
-
-def _quote(value: Any) -> str:
-    return shlex.quote(str(value or ""))
 
 
 def _read_lines(path: Path) -> list[str]:
@@ -177,31 +152,13 @@ def _dedupe_objects(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
             merged[ref] = dict(item)
             order.append(ref)
             continue
-        # Prefer candidates with concrete endpoints/private markers/sources.
-        for field in ("endpoint", "private_marker", "source"):
+        # Preserve observed endpoints and source references.
+        for field in ("endpoint", "source"):
             if not current.get(field) and item.get(field):
                 current[field] = item[field]
-        confidence_rank = {"high": 3, "medium": 2, "low": 1}
-        if confidence_rank.get(str(item.get("confidence") or ""), 0) > confidence_rank.get(
-            str(current.get("confidence") or ""), 0
-        ):
-            current["confidence"] = item["confidence"]
         if item.get("reason") and item["reason"] not in str(current.get("reason") or ""):
             current["reason"] = f"{current.get('reason', '')}; {item['reason']}".strip("; ")
     return [merged[ref] for ref in order]
-
-
-def _sort_object_candidates(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Order seed candidates by actionability without dropping any surface."""
-    confidence_rank = {"high": 0, "medium": 1, "low": 2}
-
-    def key(item: dict[str, Any]) -> tuple[int, int, int, str]:
-        has_endpoint = 0 if item.get("endpoint") else 1
-        high_value_type = 0 if item.get("type") in HIGH_PRIORITY_TYPES else 1
-        confidence = confidence_rank.get(str(item.get("confidence") or "").lower(), 3)
-        return (has_endpoint, high_value_type, confidence, str(item.get("object_ref") or ""))
-
-    return sorted(items, key=key)
 
 
 def _default_host(target: str) -> str:
@@ -424,8 +381,6 @@ def _json_object_candidates(
                         "type": object_type,
                         "object_id": object_id,
                         "endpoint": _match_endpoint_for_object(object_type, object_id, endpoints),
-                        "private_marker": object_id,
-                        "confidence": "medium",
                         "reason": "json field {!r} carries concrete {} id {!r}".format(
                             ".".join(current_path),
                             object_type,
@@ -495,7 +450,6 @@ def object_candidates_from_endpoint(endpoint: str, source: str = "") -> list[dic
                 "type": object_type,
                 "object_id": object_id,
                 "endpoint": endpoint,
-                "confidence": "high",
                 "reason": f"path segment {segment!r} is adjacent to concrete object id {object_id!r}",
                 "source": source,
             })
@@ -514,13 +468,6 @@ def object_candidates_from_endpoint(endpoint: str, source: str = "") -> list[dic
             "type": object_type,
             "object_id": object_id,
             "endpoint": endpoint,
-            "confidence": (
-                "high"
-                if object_type in HIGH_PRIORITY_TYPES
-                else "medium"
-                if any(token in source for token in ("/browser/", "source_intel", "js_intel", "api_endpoints"))
-                else "low"
-            ),
             "reason": f"query parameter {key!r} carries concrete object id {object_id!r}",
             "source": source,
         })
@@ -528,164 +475,13 @@ def object_candidates_from_endpoint(endpoint: str, source: str = "") -> list[dic
     return _dedupe_by_key(candidates, "object_ref")
 
 
-def _existing_actor_ids(state: dict[str, Any]) -> set[str]:
-    actors = state.get("actors") if isinstance(state.get("actors"), dict) else {}
-    return {str(actor_id) for actor_id in actors.keys()}
-
-
-def _existing_session_actors(state: dict[str, Any]) -> set[str]:
-    sessions = state.get("sessions") if isinstance(state.get("sessions"), dict) else {}
-    actors: set[str] = set()
-    for session in sessions.values():
-        headers = session.get("headers") if isinstance(session, dict) and isinstance(session.get("headers"), dict) else {}
-        has_header = bool(headers) or bool(isinstance(session, dict) and session.get("header_value"))
-        if isinstance(session, dict) and session.get("actor") and has_header:
-            actors.add(str(session.get("actor")))
-    return actors
-
-
 def _existing_object_refs(state: dict[str, Any]) -> set[str]:
     objects = state.get("objects") if isinstance(state.get("objects"), dict) else {}
     return {str(object_ref) for object_ref in objects.keys()}
 
 
-def _existing_backlog_keys(state: dict[str, Any]) -> set[tuple[str, str]]:
-    keys: set[tuple[str, str]] = set()
-    for item in state.get("validation_backlog", []) or []:
-        if not isinstance(item, dict):
-            continue
-        keys.add((str(item.get("runner") or ""), str(item.get("object_ref") or "")))
-    return keys
-
-
-def _actor_suggestions(state: dict[str, Any], has_object_candidates: bool) -> list[dict[str, str]]:
-    if not has_object_candidates:
-        return []
-    existing = _existing_actor_ids(state)
-    if len(existing) >= 2:
-        return []
-    suggestions = []
-    if not existing:
-        suggestions.append({"actor": "user_a", "role": "user", "label": "owner account candidate"})
-        suggestions.append({"actor": "user_b", "role": "user", "label": "peer account candidate"})
-    elif "user_a" in existing and "user_b" not in existing:
-        suggestions.append({"actor": "user_b", "role": "user", "label": "peer account candidate"})
-    elif "user_b" in existing and "user_a" not in existing:
-        suggestions.append({"actor": "user_a", "role": "user", "label": "owner account candidate"})
-    else:
-        suggestions.append({"actor": "user_b", "role": "user", "label": "peer account candidate"})
-    return suggestions
-
-
-def _choose_actor_pair(
-    state: dict[str, Any],
-    actor_suggestions: list[dict[str, str]],
-) -> tuple[str, str]:
-    """Choose owner/peer actors from real target memory before defaults.
-
-    Case-state suggestions should extend the target's existing actor matrix.
-    Hard-coding `user_a/user_b` when custom actors already exist creates noisy
-    duplicate setup commands and hides that usable sessions are already present.
-    """
-    existing = sorted(_existing_actor_ids(state))
-    session_backed = sorted(_existing_session_actors(state))
-    suggested = [str(item.get("actor") or "") for item in actor_suggestions]
-    candidates = [*session_backed, *existing, *suggested]
-    ordered: list[str] = []
-    for actor in candidates:
-        if actor and actor not in ordered:
-            ordered.append(actor)
-    owner_actor = ordered[0] if ordered else ""
-    peer_actor = ""
-    for actor in ordered[1:]:
-        if actor != owner_actor:
-            peer_actor = actor
-            break
-    return owner_actor, peer_actor
-
-
-def _actor_command(target: str, actor: dict[str, str]) -> str:
-    return " ".join([
-        "python3",
-        "tools/target_case_state.py",
-        "add-actor",
-        "--target",
-        _quote(target),
-        "--actor",
-        _quote(actor.get("actor", "")),
-        "--role",
-        _quote(actor.get("role", "user")),
-        "--label",
-        _quote(actor.get("label", "")),
-    ])
-
-
-def _object_command(target: str, item: dict[str, Any], owner_actor: str) -> str:
-    parts = [
-        "python3",
-        "tools/target_case_state.py",
-        "add-object",
-        "--target",
-        _quote(target),
-        "--object",
-        _quote(item.get("object_ref", "")),
-        "--type",
-        _quote(item.get("type", "")),
-        "--object-id",
-        _quote(item.get("object_id", "")),
-        "--endpoint",
-        _quote(item.get("endpoint", "")),
-    ]
-    if owner_actor:
-        parts.extend(["--owner-actor", _quote(owner_actor)])
-    if item.get("private_marker"):
-        parts.extend(["--private-marker", _quote(item.get("private_marker", ""))])
-    return " ".join(parts)
-
-
-def _request_spec_ref(target: str, object_ref: str) -> str:
-    """Suggested private spec path; the AI writes the real pair there first."""
-    return f"evidence/{target_storage_key(canonical_target_value(target))}/validation/{object_ref}/spec.json"
-
-
-def _backlog_command(target: str, item: dict[str, Any], owner_actor: str, peer_actor: str) -> str:
-    priority = str(item.get("priority") or ("high" if item.get("type") in HIGH_PRIORITY_TYPES else "medium"))
-    object_ref = str(item.get("object_ref") or "")
-    return " ".join([
-        "python3",
-        "tools/target_case_state.py",
-        "add-backlog",
-        "--target",
-        _quote(target),
-        "--runner",
-        "request-diff",
-        "--endpoint",
-        _quote(item.get("endpoint", "")),
-        "--request-spec-ref",
-        _quote(_request_spec_ref(target, object_ref)),
-        "--active-dimension",
-        _quote("header:authorization"),
-        "--classifier",
-        _quote("authz"),
-        "--owner-actor",
-        _quote(owner_actor),
-        "--peer-actor",
-        _quote(peer_actor),
-        "--object-ref",
-        _quote(object_ref),
-        "--priority",
-        _quote(priority),
-        "--required-evidence",
-        _quote("request pair spec"),
-        "--stop-condition",
-        _quote("peer 403/404 or no owner-private material"),
-        "--chain-extension",
-        _quote("try export/report/mobile/API sibling for the same object"),
-    ])
-
-
 def build_case_state_seed(repo_root: str | Path, target: str, *, limit: int = 8) -> dict[str, Any]:
-    """Build suggestion-only case_state seed payload."""
+    """Project unregistered object observations without choosing actors or tests."""
     repo = Path(repo_root)
     resolved = canonical_target_value(target)
     state = load_case_state(repo, resolved)
@@ -712,60 +508,27 @@ def build_case_state_seed(repo_root: str | Path, target: str, *, limit: int = 8)
         item for item in object_candidates
         if str(item.get("object_ref") or "") not in existing_objects
     ]
-    object_candidates = _sort_object_candidates(object_candidates)[:limit]
-
-    actor_suggestions = _actor_suggestions(state, bool(object_candidates))
-    owner_actor, peer_actor = _choose_actor_pair(state, actor_suggestions)
-    existing_backlogs = _existing_backlog_keys(state)
-
-    backlog_candidates = []
-    for item in object_candidates:
-        object_ref = str(item.get("object_ref") or "")
-        if ("request-diff", object_ref) in existing_backlogs:
-            continue
-        missing = []
-        if not item.get("endpoint"):
-            missing.append("object endpoint")
-        missing.append("request pair spec")
-        backlog_candidates.append({
-            "runner": "request-diff",
-            "owner_actor": owner_actor or "user_a",
-            "peer_actor": peer_actor or "user_b",
-            "object_ref": object_ref,
-            "endpoint": str(item.get("endpoint") or ""),
-            "request_spec_ref": _request_spec_ref(resolved, object_ref),
-            "priority": "high" if item.get("type") in HIGH_PRIORITY_TYPES else "medium",
-            "missing": list(dict.fromkeys(missing)),
-            "reason": f"{item.get('type')} object candidate from {item.get('source') or 'cached artifact'}",
-        })
-
-    commands = []
-    for actor in actor_suggestions:
-        commands.append(_actor_command(resolved, actor))
-    for item in object_candidates:
-        commands.append(_object_command(resolved, item, owner_actor or "user_a"))
-    for item in backlog_candidates:
-        commands.append(_backlog_command(resolved, item, item["owner_actor"], item["peer_actor"]))
+    object_candidates = sorted(
+        object_candidates,
+        key=lambda item: (not bool(item.get("endpoint")), str(item.get("object_ref") or "")),
+    )[:limit]
 
     return {
         "target": resolved,
         "target_key": target_storage_key(resolved),
-        "status": "suggestions" if (object_candidates or backlog_candidates or actor_suggestions) else "no_seed_candidates",
+        "status": "suggestions" if object_candidates else "no_seed_candidates",
         "artifact_endpoints": len(endpoints),
-        "suggested_actors": actor_suggestions,
         "suggested_objects": object_candidates,
-        "suggested_backlog": backlog_candidates,
-        "commands": commands,
         "notes": [
-            "Suggestion-only output; review commands before applying.",
-            "Private markers and real sessions must come from observed owner-controlled evidence.",
+            "Observed ID shapes are not proof of ownership, private content, or a finding.",
+            "Claude selects actors, hypotheses, and test methods from the referenced evidence.",
         ],
     }
 
 
 def format_seed(payload: dict[str, Any]) -> str:
     lines = [
-        "CASE STATE SEED SUGGESTIONS",
+        "CASE STATE OBJECT OBSERVATIONS",
         f"- Target: {payload.get('target', '')}",
         f"- Status: {payload.get('status', '')}",
         f"- Artifact endpoints reviewed: {payload.get('artifact_endpoints', 0)}",
@@ -783,32 +546,11 @@ def format_seed(payload: dict[str, Any]) -> str:
                 reason=item.get("reason", ""),
             )
         )
-    lines.append("- Suggested backlog:")
-    backlog = payload.get("suggested_backlog") or []
-    if not backlog:
-        lines.append("  - none")
-    for item in backlog:
-        missing = ", ".join(item.get("missing") or [])
-        lines.append(
-            "  - {runner} object={object_ref} owner={owner} peer={peer} missing={missing}".format(
-                runner=item.get("runner", ""),
-                object_ref=item.get("object_ref", ""),
-                owner=item.get("owner_actor", ""),
-                peer=item.get("peer_actor", ""),
-                missing=missing or "-",
-            )
-        )
-    lines.append("- Commands:")
-    commands = payload.get("commands") or []
-    if not commands:
-        lines.append("  - none")
-    for command in commands:
-        lines.append(f"  - {command}")
     return "\n".join(lines)
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Suggest target_case_state seeds from cached artifacts.")
+    parser = argparse.ArgumentParser(description="Read object observations from cached artifacts without choosing actors or tests.")
     parser.add_argument("--target", required=True)
     parser.add_argument("--repo-root", default=str(BASE_DIR))
     parser.add_argument("--limit", type=int, default=8)

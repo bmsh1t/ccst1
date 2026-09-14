@@ -12,14 +12,6 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from target_paths import resolve_target_url  # type: ignore
 
 
-EMPTY_SOURCE_INTEL = {
-    "available": False,
-    "signals": [],
-    "routes": [],
-    "graphql_operations": [],
-}
-
-
 def load_source_intel(findings_dir: Path) -> dict:
     """Read source observations; old generated prose never controls selection."""
     source_dir = findings_dir / "source_intel"
@@ -30,22 +22,27 @@ def load_source_intel(findings_dir: Path) -> dict:
         payload = {}
     if not isinstance(payload, dict):
         payload = {}
-    routes = [item for item in payload.get("routes", []) if isinstance(item, dict) and item.get("route")]
+    for field in ("routes", "graphql_operations", "signals"):
+        if not isinstance(payload.get(field), list):
+            payload[field] = []
+    routes = [item for item in (payload.get("routes") or []) if isinstance(item, dict) and item.get("route")]
     # Recover exact route facts from legacy caches, not their predicted classes.
     if not routes_path.is_file():
         legacy_path = source_dir / "hypotheses.jsonl"
         try:
-            for line in legacy_path.read_text(encoding="utf-8").splitlines():
-                if not line.strip():
-                    continue
+            lines = legacy_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            lines = []
+        for line in lines:
+            try:
                 item = json.loads(line)
-                candidate = str(item.get("candidate") or "") if isinstance(item, dict) else ""
-                if candidate.startswith(("/", "http://", "https://", "ws://", "wss://")):
-                    routes.append({"route": candidate, "method": str(item.get("method") or ""), "source": str(legacy_path)})
-        except (OSError, json.JSONDecodeError):
-            pass
-    operations = [item for item in payload.get("graphql_operations", []) if isinstance(item, dict)]
-    signals = [item for item in payload.get("signals", []) if isinstance(item, dict)]
+            except json.JSONDecodeError:
+                continue
+            candidate = str(item.get("candidate") or "") if isinstance(item, dict) else ""
+            if candidate.startswith(("/", "http://", "https://", "ws://", "wss://")):
+                routes.append({"route": candidate, "method": str(item.get("method") or ""), "source": str(legacy_path)})
+    operations = [item for item in (payload.get("graphql_operations") or []) if isinstance(item, dict)]
+    signals = [item for item in (payload.get("signals") or []) if isinstance(item, dict)]
     return {
         "available": bool(routes or operations or signals),
         "routes": routes,
@@ -80,5 +77,3 @@ def source_intel_counts(source_intel: dict) -> dict:
         "route_count": len(source_intel.get("routes", [])),
         "graphql_count": len(source_intel.get("graphql_operations", [])),
     }
-
-

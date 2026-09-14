@@ -98,6 +98,7 @@ def diff_snapshots(baseline: dict[str, Any], variant: dict[str, Any]) -> dict[st
     changed = {
         "status": baseline.get("status") != variant.get("status"),
         "body_length": base_len != var_len,
+        "body_sha256": baseline.get("body_sha256") != variant.get("body_sha256"),
         "json_count": base_count != var_count,
         "json_fields": base_fields != var_fields,
     }

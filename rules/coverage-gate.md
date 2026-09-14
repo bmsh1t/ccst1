@@ -152,10 +152,10 @@ python3 tools/coverage_matrix.py rebuild --target <target>
 python3 tools/coverage_matrix.py find-gaps --target <target>
 ```
 
-`find-gaps` 默认是有语义证据的 AI-actionable 视图；需要核对完整 raw endpoint x
-vuln_class 矩阵时使用同一命令追加 `--all`。两者都只读，Closure 仍以完整矩阵为准。
-**解释义务落在默认（AI-actionable）视图上**：`--all` 是审计视图，人不背它的逐格
-解释义务。
+`find-gaps` 返回全部未处置的覆盖格；`--limit N` 只限制展示窗口并返回总数。
+不再按路径词或类别分数过滤，也不另设 `--all` 视图。哪些缺口值得追、如何测试，
+由 Claude 根据原始证据和目标语义判断；矩阵枚举不等于逐格实测清单。
+**解释义务落在 AI 判断值得关注但选择不追的 gap 上**，不是所有自动组合。
 
 矩阵不是唯一真相，而是防偷懒的 evidence hint ledger：
 

@@ -24,7 +24,6 @@ import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlparse
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 if str(BASE_DIR) not in sys.path:
@@ -67,10 +66,10 @@ try:
         validate_global_review,
     )
     from tools.context_pack import build_context_pack
-    from tools.coverage_matrix import VULN_CLASSES, _route_template, coverage_gaps_with_observed_evidence, high_risk_lane_summary, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, normalize_vuln_class, rebuild_matrix, save_matrix, save_matrix_projection
+    from tools.coverage_matrix import _route_template, coverage_gaps_with_observed_evidence, high_risk_lane_summary, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, rebuild_matrix, save_matrix, save_matrix_projection
     from tools.evidence_ledger import ACTOR_MATRIX_VULN_CLASSES, build_summary as build_evidence_summary, load_entries_diagnostic, record_command as evidence_record_command
     from tools.case_state_seed import build_case_state_seed
-    from tools.closure_resolver import ClosureResolver, canonical_endpoint_identity, canonical_endpoint_path, extract_endpoint_path
+    from tools.closure_resolver import ClosureResolver, canonical_endpoint_path, extract_endpoint_path
     from tools.finding_index import list_root_finding_claims, reconcile_root_finding_claims
     from tools.structured_findings import format_validation_runner_candidate_lines
     from tools.target_case_state import summary as build_case_state_summary
@@ -115,10 +114,10 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         validate_global_review,
     )
     from context_pack import build_context_pack  # type: ignore
-    from coverage_matrix import VULN_CLASSES, _route_template, coverage_gaps_with_observed_evidence, high_risk_lane_summary, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, normalize_vuln_class, rebuild_matrix, save_matrix, save_matrix_projection  # type: ignore
+    from coverage_matrix import _route_template, coverage_gaps_with_observed_evidence, high_risk_lane_summary, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, rebuild_matrix, save_matrix, save_matrix_projection  # type: ignore
     from evidence_ledger import ACTOR_MATRIX_VULN_CLASSES, build_summary as build_evidence_summary, load_entries_diagnostic, record_command as evidence_record_command  # type: ignore  # type: ignore
     from case_state_seed import build_case_state_seed  # type: ignore
-    from closure_resolver import ClosureResolver, canonical_endpoint_identity, canonical_endpoint_path, extract_endpoint_path  # type: ignore
+    from closure_resolver import ClosureResolver, canonical_endpoint_path, extract_endpoint_path  # type: ignore
     from finding_index import list_root_finding_claims, reconcile_root_finding_claims  # type: ignore
     from structured_findings import format_validation_runner_candidate_lines  # type: ignore
     from target_case_state import summary as build_case_state_summary  # type: ignore
@@ -868,13 +867,6 @@ def _actionable_coverage_gaps(coverage_gaps: list[dict]) -> list[dict]:
     return coverage_gaps_with_observed_evidence(coverage_gaps)
 
 
-def _gap_observed_params(gap: dict) -> list[str]:
-    params = gap.get("observed_params") or []
-    if not isinstance(params, list):
-        return []
-    return [str(item).strip() for item in params if str(item or "").strip()]
-
-
 def _matrix_summary(matrix: dict, gaps: list[dict]) -> dict:
     endpoints = matrix.get("endpoints") or []
     lane_summary = matrix.get("high_risk_lanes")
@@ -1083,15 +1075,11 @@ def _secondary_sweep_proposals(
                 title=title[:180],
                 artifact=artifact,
                 rationale=(rationale or evidence or category)[:220],
-                next_action=(next_action or "inspect the raw manual_review artifact for chain, secret, or pivot signals")[:220],
+                next_action=(next_action or "review the raw observations and choose the next action")[:220],
             ),
             action_type="secondary-sweep",
             priority=52 if demoted else 72,
-            command_hint=(
-                "review public metadata only for unusual fields or chain pivots"
-                if demoted
-                else "review demoted raw artifact; re-promote only with concrete secret/chain evidence"
-            ),
+            command_hint="review the recorded artifact; AI judges significance and next steps",
             metadata={
                 "lead_category": category,
                 "lead_title": title[:180],
@@ -1198,13 +1186,10 @@ def _actionable_actor_gaps(evidence_summary: dict, case_state: dict | None = Non
 def _actor_gap_enrichment_proposal(
     evidence_summary: dict,
     case_state: dict | None = None,
-    ignored_endpoints: set[str] | None = None,
 ) -> str:
-    ignored = ignored_endpoints or set()
     blocked = [
         gap for gap in _actor_gaps(evidence_summary)
         if not _actor_gap_ready(gap, case_state)
-        and canonical_endpoint_identity(str(gap.get("endpoint") or "")) not in ignored
     ]
     if not blocked:
         return ""
@@ -1457,104 +1442,12 @@ def _case_state_proposal(case_state: dict) -> dict:
 
 
 def _case_state_seed_summary(repo_root: Path | str, target: str) -> dict:
-    """Load suggestion-only case_state seed opportunities."""
+    """Load read-only object observations; they do not generate Queue actions."""
     try:
         payload = build_case_state_seed(repo_root, target, limit=3)
     except Exception:
         return {}
     return payload if isinstance(payload, dict) else {}
-
-
-def _case_state_seed_proposal(seed: dict) -> str:
-    if str(seed.get("status") or "") != "suggestions":
-        return ""
-    raw_objects = seed.get("suggested_objects") if isinstance(seed.get("suggested_objects"), list) else []
-    raw_backlog = seed.get("suggested_backlog") if isinstance(seed.get("suggested_backlog"), list) else []
-    actionable_refs = {
-        str(item.get("object_ref") or "")
-        for item in raw_objects
-        if isinstance(item, dict) and str(item.get("confidence") or "") != "low"
-    }
-    objects = [
-        item for item in raw_objects
-        if isinstance(item, dict) and str(item.get("object_ref") or "") in actionable_refs
-    ]
-    backlog = [
-        item for item in raw_backlog
-        if isinstance(item, dict) and str(item.get("object_ref") or "") in actionable_refs
-    ]
-    if not objects and not backlog:
-        return ""
-    selected_index = 0
-    for index, item in enumerate(backlog):
-        if not isinstance(item, dict):
-            continue
-        missing = {str(value).strip().lower() for value in item.get("missing") or []}
-        if "object endpoint" not in missing:
-            selected_index = index
-            break
-    first_object = objects[selected_index] if selected_index < len(objects) and isinstance(objects[selected_index], dict) else {}
-    first_backlog = backlog[selected_index] if selected_index < len(backlog) and isinstance(backlog[selected_index], dict) else {}
-    target = str(seed.get("target") or "").strip()
-    command = f"python3 tools/case_state_seed.py --target {_quote(target)} --json" if target else "python3 tools/case_state_seed.py --target <target> --json"
-    missing = ", ".join(str(item) for item in (first_backlog.get("missing") or [])[:4])
-    endpoint = str(first_object.get("endpoint") or "").strip()
-    if "object endpoint" in {part.strip().lower() for part in (first_backlog.get("missing") or [])}:
-        return _proposal_entry(
-            (
-                "Case-state endpoint discovery lead: Found object candidate {object_ref} "
-                "type={object_type} endpoint=<missing>. Runner: {runner}. "
-                "Missing evidence: {missing}. Next action: identify a concrete "
-                "object-specific endpoint from browser XHR, source routes, or MCP "
-                "observations before adding IDOR backlog. Seed command: {command}. "
-                "Stop condition: no endpoint can be tied to the object ID without "
-                "substring or collection-only guessing."
-            ).format(
-                object_ref=first_object.get("object_ref", "-"),
-                object_type=first_object.get("type", "-"),
-                runner=first_backlog.get("runner", "request-diff"),
-                missing=missing or "object endpoint",
-                command=command,
-            ),
-            action_type="case-state-enrichment",
-            priority=66,
-            command_hint="identify concrete object endpoint from browser/source evidence, then update case_state",
-            metadata={
-                "object_ref": first_object.get("object_ref", "-"),
-                "object_type": first_object.get("type", "-"),
-                "runner": first_backlog.get("runner", "request-diff"),
-                "missing_evidence": [part.strip() for part in (missing or "object endpoint").split(",") if part.strip() and part.strip() != "review required"],
-                "seed_command": command,
-                "endpoint_missing": True,
-            },
-        )
-    return _proposal_entry(
-        (
-            "Case-state seed opportunity: Found object candidate {object_ref} "
-            "type={object_type} endpoint={endpoint}. Runner: {runner}. "
-            "Missing evidence: {missing}. Next: {command}. "
-            "Review suggested add-actor/add-object/add-backlog commands; do not treat "
-            "seed suggestions as validated findings."
-        ).format(
-            object_ref=first_object.get("object_ref", "-"),
-            object_type=first_object.get("type", "-"),
-            endpoint=endpoint or "-",
-            runner=first_backlog.get("runner", "request-diff"),
-            missing=missing or "review required",
-            command=command,
-        ),
-        action_type="case-state-seed",
-        priority=99,
-        command_hint=command,
-        metadata={
-            "object_ref": first_object.get("object_ref", "-"),
-            "object_type": first_object.get("type", "-"),
-            "endpoint": endpoint or "-",
-            "runner": first_backlog.get("runner", "request-diff"),
-            "missing_evidence": [part.strip() for part in (missing or "review required").split(",") if part.strip() and part.strip() != "review required"],
-            "seed_command": command,
-        },
-    )
 
 
 ACTION_DECISIONS = {
@@ -1666,24 +1559,11 @@ def _lead_proposals(
                 metadata=wf_metadata,
             ))
 
-    covered_cells = _ledger_covered_cells(evidence_summary or {})
     for item in (surface.get("p1") or [])[:2]:
         url = str(item.get("url") or "").strip()
         reasons = ", ".join(str(reason) for reason in (item.get("reasons") or [])[:2])
         suggested = str(item.get("suggested") or "").strip()
         if url:
-            # 已关闭 cell 去重是事实性过滤，不是认知判断：endpoint × 明确
-            # vuln_class 已有终态时不重复入队。vuln hint 只取 scanner/source
-            # 声明的类型等事实来源；没有事实类型就不按类别过滤（保持候选
-            # 可见），不再用词表评分推断类别。
-            vuln_hint = _declared_surface_vuln_hint(item)
-            if vuln_hint and _ledger_covers_cell(
-                covered_cells,
-                canonical_endpoint_path(url),
-                vuln_hint,
-                item.get("identity_v2"),
-            ):
-                continue
             proposals.append(_proposal_entry(
                 "Evidence: Surface review candidate {url} ({reasons}). Why it matters: "
                 "interesting attack-surface evidence from cached recon/browser/source signals. "
@@ -1704,24 +1584,6 @@ def _lead_proposals(
     return _dedupe(proposals)[:3]
 
 
-def _declared_surface_vuln_hint(entry: dict) -> str:
-    """Return the vuln class explicitly declared on a surface entry, or "".
-
-    只取 scanner/source 声明的类型这一事实来源；没有声明返回空串，
-    调用方据此跳过类别过滤（已删除的 class_relevance 词表推断不在此列）。
-    """
-    for key in ("scanner_findings", "source_intel_hypotheses"):
-        for item in entry.get(key) or []:
-            if isinstance(item, dict):
-                declared = str(item.get("type") or "").strip()
-                if declared:
-                    try:
-                        return normalize_vuln_class(declared)
-                    except (ValueError, KeyError):
-                        return declared
-    return ""
-
-
 def _canonicalize_url_path(value: str) -> str:
     return extract_endpoint_path(value)
 
@@ -1733,23 +1595,6 @@ def _ranked_surface_entry(state: dict, url: str) -> dict:
             if isinstance(item, dict) and str(item.get("url") or "").strip() == str(url or "").strip():
                 return item
     return {}
-
-
-def _tested_finding_endpoints(matrix: dict) -> set[str]:
-    endpoints: set[str] = set()
-    for endpoint in matrix.get("endpoints") or []:
-        if not isinstance(endpoint, dict):
-            continue
-        path = str(endpoint.get("endpoint") or "").strip()
-        cells = endpoint.get("cells") or {}
-        if not path or not isinstance(cells, dict):
-            continue
-        if any(
-            isinstance(cell, dict) and str(cell.get("status") or "") == "tested_finding"
-            for cell in cells.values()
-        ):
-            endpoints.add(path)
-    return endpoints
 
 
 def _ledger_covered_cells(evidence_summary: dict, matrix: dict | None = None) -> ClosureResolver:
@@ -2117,14 +1962,13 @@ def _coverage_family_shape(endpoint: str) -> tuple[str, str]:
 def _coverage_family_key(gap: dict, template_count: dict[str, int]) -> tuple:
     endpoint = str(gap.get("endpoint") or "").strip()
     vuln_class = str(gap.get("vuln_class") or "").strip().casefold()
-    reason = re.sub(r"\s+", " ", str(gap.get("relevance_reason") or "")).strip().casefold()
     template = _route_template(endpoint)
     if template_count.get(template, 0) > 1:
-        return ("route-template", vuln_class, reason, template)
+        return ("route-template", vuln_class, template)
     shape, prefix = _coverage_family_shape(endpoint)
-    if not vuln_class or not reason or not shape or not prefix:
+    if not vuln_class or not shape or not prefix:
         return ()
-    return ("structural", vuln_class, reason, shape, prefix)
+    return ("structural", vuln_class, shape, prefix)
 
 
 _STRUCTURAL_COVERAGE_FAMILY_MIN_MEMBERS = 3
@@ -2138,17 +1982,14 @@ def _checkpoint_coverage_gaps(coverage_gaps: list[dict], matrix: dict, limit: in
     FACT-CARRYING WINDOW, not a filter: every untested high-value cell stays
     AI-selectable in the matrix, ordering comes from observed route kinds,
     and the lane budget (not this window) bounds how many get executed.
-    It still skips parent-only Authz closure gaps that are already represented by a
-    validated child endpoint, and emits one representative for an existing
-    route-template or high-volume structural family. This prevents noisy loops
+    It emits one representative for an existing route-template or high-volume
+    structural family without inferring a test or closure from path words.
+    This bounds context
     while preserving other high-signal gaps for Claude to reason over. The
     ``_projection_family`` field is advisory queue metadata; it never mutates a
     sibling Matrix cell or changes exact Action Queue identity.
     """
-    tested_endpoints = _tested_finding_endpoints(matrix)
-    eligible: list[dict] = []
-    for gap in _actionable_coverage_gaps(coverage_gaps):
-        eligible.append(gap)
+    eligible = _actionable_coverage_gaps(coverage_gaps)
 
     template_count: dict[str, int] = {}
     for gap in eligible:
@@ -2208,7 +2049,6 @@ def _next_proposals(
     evidence_summary: dict,
     case_state: dict | None = None,
     repo_root: Path | None = None,
-    ignored_actor_gap_endpoints: set[str] | None = None,
 ) -> list[str]:
     proposals: list[str] = []
     # Contradictions are Claude-facing advisory context, not executable work.
@@ -2351,7 +2191,7 @@ def _next_proposals(
                 "blocked, dead-end, signal, or candidate after focused replay.".format(
                     title=title,
                     evidence=evidence[:180],
-                    next_action=next_action[:180] or "focused replay with source/JS/browser evidence",
+                    next_action=next_action[:180] or "review the linked observations and choose an experiment",
                 ),
                 action_type="evidence-convergence",
                 priority=98,
@@ -2468,13 +2308,11 @@ def _next_proposals(
     actor_enrichment = _actor_gap_enrichment_proposal(
         evidence_summary,
         case_state,
-        ignored_actor_gap_endpoints,
     )
     if actor_enrichment:
         proposals.append(actor_enrichment)
 
     ranked_surface_added = 0
-    covered_ranked_cells = _ledger_covered_cells(evidence_summary, matrix)
     for item in state.get("recommended_targets") or []:
         if ranked_surface_added >= 4:
             break
@@ -2482,16 +2320,6 @@ def _next_proposals(
         if not url:
             continue
         entry = _ranked_surface_entry(state, url)
-        # 已关闭 cell 去重是事实性过滤：与 p1 循环同规则，只按 scanner/
-        # source 声明的类别判定，没有事实类型不过滤。
-        ranked_hint = _declared_surface_vuln_hint(entry)
-        if ranked_hint and _ledger_covers_cell(
-            covered_ranked_cells,
-            canonical_endpoint_path(url),
-            ranked_hint,
-            entry.get("identity_v2"),
-        ):
-            continue
         metadata = {
             "url": url,
             "endpoint": _canonicalize_url_path(url),
@@ -3375,14 +3203,6 @@ def build_checkpoint(
     actor_gaps = _actor_gaps(evidence_summary)
     case_state_proposal = _case_state_proposal(case_state)
     case_state_seed = _case_state_seed_summary(repo, resolved_target) if not case_state_proposal else {}
-    case_state_seed_proposal = _case_state_seed_proposal(case_state_seed)
-    ignored_actor_gap_endpoints = {
-        canonical_endpoint_identity(str(item.get("endpoint") or ""))
-        for item in case_state_seed.get("suggested_objects") or []
-        if isinstance(item, dict)
-        and str(item.get("confidence") or "").lower() == "low"
-        and item.get("endpoint")
-    }
 
     lead = _lead_proposals(
         state,
@@ -3401,12 +3221,9 @@ def build_checkpoint(
         evidence_summary,
         case_state,
         repo_root=repo,
-        ignored_actor_gap_endpoints=ignored_actor_gap_endpoints,
     )
     if case_state_proposal:
         next_items = [case_state_proposal, *next_items]
-    elif case_state_seed_proposal:
-        next_items = [case_state_seed_proposal, *next_items]
     next_action_queue = _build_next_action_queue(next_items, resolved_target)
     case_top = _case_state_top_next(case_state)
     case_metadata = case_top.get("metadata") if isinstance(case_top.get("metadata"), dict) else {}
@@ -3549,7 +3366,6 @@ def build_checkpoint(
         "case_state_seed": {
             "status": case_state_seed.get("status", ""),
             "suggested_objects": (case_state_seed.get("suggested_objects") or [])[:3],
-            "suggested_backlog": (case_state_seed.get("suggested_backlog") or [])[:3],
         },
         "evidence_ledger": {
             "path": evidence_summary.get("path", ""),

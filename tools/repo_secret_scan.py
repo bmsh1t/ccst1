@@ -61,8 +61,6 @@ def _mask_secret(value: str) -> str:
     return f"{compact[:4]}...{compact[-4:]}"
 
 
-
-
 def _append_finding(findings: list[RepoFinding], **kwargs) -> None:
     findings.append(RepoFinding(**kwargs))
 

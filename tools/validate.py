@@ -1423,10 +1423,10 @@ def update_runtime_state_after_validate(
     repo_root: str | Path | None = None,
 ) -> None:
     """Best-effort runtime state refresh after validation finishes."""
-    owner_root = Path(repo_root) if repo_root is not None else _validation_repo_root(findings_dir)
     target = str(summary.get("target", "") or "").strip()
     if not target:
         return
+    owner_root = Path(repo_root) if repo_root is not None else _validation_repo_root(findings_dir)
     # (P5-W1 R5) Record calibration outcome alongside runtime state refresh.
     record_validation_calibration(
         summary,

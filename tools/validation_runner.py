@@ -116,8 +116,8 @@ WIRE_FACT_NAMES = frozenset({
     "body_length_delta",           # material body-length difference beyond noise threshold
     "status_delta",                # status codes differ between the sides
     "material_diff_any",           # any material response difference
-    "identical_success_pair",      # both sides 2xx/3xx with no material diff
-    "both_sides_rejected",         # both sides >= 400 with no material diff
+    "identical_success_pair",      # same successful status and complete retained response body
+    "both_sides_rejected",         # same rejected status and complete retained response body
     "stable_timing_delta",         # variant consistently slower than baseline across repeats
     "distinct_bodies",             # baseline and variant body bytes differ (no threshold)
 })
@@ -1535,10 +1535,6 @@ def _response_diff(baseline: dict[str, Any], variant: dict[str, Any]) -> dict[st
     return payload
 
 
-def _is_denied_status(status: int) -> bool:
-    return int(status or 0) in {401, 403, 404}
-
-
 def _record_ledger_if_needed(
     *,
     repo_root: Path,
@@ -1636,6 +1632,7 @@ def _classifier_vuln_class(classifier: str, explicit: str = "") -> str:
 
 
 def _request_pair_materiality(run: dict[str, Any]) -> bool:
+    """Check the explicit threshold predicate; never decide a default outcome."""
     changed = run.get("diff", {}).get("changed", {})
     return bool(
         changed.get("json_count")
@@ -1668,6 +1665,12 @@ def _run_wire_facts(run: dict[str, Any], baseline_body: str, variant_body: str) 
     baseline_marker = bool(DB_ERROR_MARKER_RE.search(str(baseline_body or "")))
     variant_marker = bool(DB_ERROR_MARKER_RE.search(str(variant_body or "")))
     material = _request_pair_materiality(run)
+    identical = (
+        baseline_status == variant_status
+        and baseline_body == variant_body
+        and not (run.get("baseline") or {}).get("body_truncated")
+        and not (run.get("variant") or {}).get("body_truncated")
+    )
 
     return {
         "error_marker_variant_only": variant_marker and not baseline_marker,
@@ -1681,10 +1684,10 @@ def _run_wire_facts(run: dict[str, Any], baseline_body: str, variant_body: str) 
         "identical_success_pair": (
             200 <= baseline_status < 400
             and 200 <= variant_status < 400
-            and not material
+            and identical
         ),
         "both_sides_rejected": (
-            baseline_status >= 400 and variant_status >= 400 and not material
+            baseline_status >= 400 and variant_status >= 400 and identical
         ),
         # Absolute content fact: body bytes differ, no size threshold. A
         # sub-threshold byte delta is still a different object.
@@ -1897,7 +1900,6 @@ def run_request_diff(
         baseline_bodies.append(str(base.get("body") or ""))
         variant_bodies.append(str(variant_response.get("body") or ""))
 
-    material = [_request_pair_materiality(run) for run in runs]
     classifier = spec["classifier"]
     # These predicates only verify explicit declarations; they never select a test.
     wire_facts = _compute_wire_facts(runs, baseline_bodies, variant_bodies)
@@ -2008,7 +2010,6 @@ def run_request_diff(
         "auth_session_id": auth_session_id,
         "request_pair": _request_pair_spec_view(spec),
         "repeat": repeat_count,
-        "material_runs": sum(1 for item in material if item),
         "runs": runs,
         "artifacts": {"diff": _rel(diff_path, repo_root)},
         "ledger_record": ledger,

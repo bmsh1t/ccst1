@@ -315,7 +315,7 @@ def _validate(
             failures.append("cold finalizer exceeded time budget")
         if cold.get("peak_rss_mib", 999999) > max_rss_mib:
             failures.append("cold finalizer exceeded RSS budget")
-        if legacy and legacy.get("next_action") != "collect_candidate_evidence":
+        if legacy and legacy.get("next_action") != "validate_finding":
             failures.append("priority bootstrap did not short-circuit legacy large artifacts")
         if legacy and legacy.get("seconds", 999) > max_bootstrap_seconds:
             failures.append("legacy priority bootstrap exceeded time budget")

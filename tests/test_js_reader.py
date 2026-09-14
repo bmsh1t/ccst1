@@ -165,9 +165,7 @@ def test_recovered_packer_source_precedes_old_cache_at_file_cap(
 def test_loads_source_intel_when_present(repo_root: Path) -> None:
     target = "intel.app"
     _write(repo_root / "recon" / target / "js_dump" / "app.js")
-    # source_intel 现以 routes.json（事实路由）为主入口；旧生成的
-    # hypotheses prose 不再控制选择。
-    intel = {"routes": [{"route": "/api/users/{id}", "method": "GET"}]}
+    intel = {"routes": [{"route": "/opaque", "method": "POST", "source": "repo:app.js"}], "graphql_operations": []}
     _write(
         repo_root / "findings" / target / "source_intel" / "routes.json",
         json.dumps(intel),
@@ -177,15 +175,13 @@ def test_loads_source_intel_when_present(repo_root: Path) -> None:
 
     assert result["source_intel_present"] is True
     materials = json.loads(Path(result["artifacts"]["materials"]).read_text(encoding="utf-8"))
-    assert materials["source_intel"]["available"] is True
     assert materials["source_intel"]["routes"] == intel["routes"]
+    assert "hypotheses" not in materials["source_intel"]
 
 
-def test_loads_current_source_intel_jsonl(repo_root: Path) -> None:
+def test_recovers_legacy_source_routes_without_class_predictions(repo_root: Path) -> None:
     target = "jsonl-intel.app"
     _write(repo_root / "recon" / target / "js_dump" / "app.js")
-    # 旧 hypotheses.jsonl 只作 legacy 恢复：candidate 路由以原始事实
-    # （route/method）恢复，不再携带预测的 type 分类。
     _write(
         repo_root / "findings" / target / "source_intel" / "hypotheses.jsonl",
         json.dumps({"type": "idor", "candidate": "/api/users/{id}"}) + "\n"
@@ -200,13 +196,10 @@ def test_loads_current_source_intel_jsonl(repo_root: Path) -> None:
 
     assert result["source_intel_present"] is True
     materials = json.loads(Path(result["artifacts"]["materials"]).read_text(encoding="utf-8"))
-    routes = materials["source_intel"]["routes"]
-    assert [item["route"] for item in routes] == [
-        "/api/users/{id}",
-        "/api/orders/approve",
+    assert [item["route"] for item in materials["source_intel"]["routes"]] == [
+        "/api/users/{id}", "/api/orders/approve",
     ]
-    # 预测分类不随路由恢复（词表类别已退役）。
-    assert all("type" not in item or not item.get("type") for item in routes)
+    assert all("type" not in item for item in materials["source_intel"]["routes"])
 
 
 def test_target_safe_path_normalization(repo_root: Path) -> None:

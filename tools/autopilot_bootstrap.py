@@ -131,6 +131,7 @@ def _compact_candidate(item: dict[str, Any]) -> dict[str, Any]:
         "evidence_available",
         "claim_source_file",
         "source_file",
+        "validation_summary",
         "claim_target",
         "claim_status",
         "incomplete_fields",

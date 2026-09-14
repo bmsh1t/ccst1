@@ -57,11 +57,13 @@ JSON as JSON, and never paste a manually double-encoded value into a second
 layer. The runner records the exact pair; it does not rewrite malformed input
 or infer a vulnerability from an encoding-only response change.
 
-Promotion is fact-based: a stable material diff promotes to `tested_finding`
-when the SQLi probe-shape detector confirms the diff form, or when the declared
-active dimension is a credential boundary (e.g. `header:authorization`) that
-the two requests actually differ in. Whether a boundary diff is a real
-authorization violation stays with the 7-Question/4-gate AI review.
+Only explicit `expected` assertions are mechanically checked. A confirmed
+`declaration_intent=hazard` becomes `tested_finding` (a candidate, not a final
+finding); a confirmed `clean` declaration becomes `tested_clean`. Undeclared or
+unmet expectations remain `candidate`, including equal responses. Claude judges
+business meaning through the existing seven-question/four-gate validation.
+Each successful response is saved immediately; a later transport failure keeps
+those artifacts and returns `partial`, never clean or report-ready.
 
 
 ### Request smuggling capability gate
@@ -75,7 +77,8 @@ handoff, not evidence of a vulnerability.
 
 ### Target case state
 
-只在 actor/session/object/private marker 连续性有价值时使用。
+只在 actor/session/object/private marker 连续性有价值时使用。`case_state_seed` 只读对象线索，
+不代选身份、标记私有数据、生成测试路线或登记命令。
 
 ```bash
 python3 tools/target_case_state.py summary --target <target> --json

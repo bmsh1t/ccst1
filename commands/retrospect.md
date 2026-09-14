@@ -53,11 +53,10 @@ surface 摘要和 retrospect 建议。先消费这两个视图；只有 checkpoi
 ```bash
 python3 tools/autopilot_state.py --target <target> --json    # 需要 lane/route 状态时
 python3 tools/surface.py --target <target> --json            # 需要逐 endpoint 表面时
-python3 tools/coverage_matrix.py find-gaps --target <target> # 需要语义 gap 视图时
+python3 tools/coverage_matrix.py find-gaps --target <target> # 需要未处置覆盖格预览时
 ```
 
-复盘中的 `find-gaps` 默认是语义 gap 视图；需要核对完整 endpoint x vuln_class
-窗口时使用 `python3 tools/coverage_matrix.py find-gaps --target <target> --all`。
+`find-gaps` 不做语义过滤；按需提高 `--limit` 或读取完整矩阵，不把有界预览当作全部覆盖。
 `coverage_matrix.py rebuild` 仅在矩阵过期且复盘要写回时执行。
 
 复盘时优先使用 checkpoint 输出的 `target_write_back`、`coverage`、`decision`

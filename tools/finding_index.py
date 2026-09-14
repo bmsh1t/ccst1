@@ -829,8 +829,6 @@ def _root_claim_id(relative_path: str) -> str:
     return f"claim_{digest}"
 
 
-
-
 def _claim_value(payload: dict[str, Any], *keys: str) -> str:
     """Read the first scalar claim field without copying arbitrary payload data."""
     for key in keys:

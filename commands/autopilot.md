@@ -222,9 +222,9 @@ cd -- <repo_root_shell> && python3 tools/coverage_matrix.py rebuild --target <ta
 cd -- <repo_root_shell> && python3 tools/coverage_matrix.py find-gaps --target <target_shell> --limit 50
 cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded --closure --projection-only --json
 ```
-Bounded `find-gaps --limit 50` is semantic-gap review (`relevance_score > 0`); use `--all`
-for raw endpoint x class coverage. View only; `total`/`truncated` are advisory, complete matrix remains the closure owner
-input, and a truncated window never means coverage is complete.
+`find-gaps --limit 50` previews unresolved endpoint x class cells without semantic filtering.
+View only; `total`/`truncated` describe the window, and the complete matrix remains the closure owner
+input. Expand the limit or inspect the matrix as needed; a truncated window never proves completion.
 Read `closure.verdict`, `closure.can_claim_exhausted`, `closure.reasons`, and advisory
 `closure.rotation_hint`. Only `verdict=finish` with `can_claim_exhausted=true` permits a
 `finish/complete/exhausted` claim; `handoff` preserves durable work and `blocked` records

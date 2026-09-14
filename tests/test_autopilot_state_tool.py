@@ -6961,13 +6961,13 @@ def test_target_memory_entry_matches_ignores_host_level_keyword_tokens():
         "http://127.0.0.1:3001/anything",
         "/anything",
     )
-    # 路径级 token 与业务词绑定保持不变。
+    # 明确路径仍可定位；普通业务词不能替 Claude 把记忆绑定到端点。
     assert surface_module._target_memory_entry_matches(
         {"text": validate_prose},
         "http://127.0.0.1:3001/api/Users",
         "/api/users",
     )
-    assert surface_module._target_memory_entry_matches(
+    assert not surface_module._target_memory_entry_matches(
         {"text": "the orders export workflow needs replay"},
         "https://app.target.com/api/orders/export",
         "/api/orders/export",

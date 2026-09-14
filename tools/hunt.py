@@ -1226,7 +1226,7 @@ def run_repo_source_hunt(domain, repo_url="", repo_path="", allow_large_repo=Fal
 
 
 def run_source_intel(domain, repo_path="", repo_url=""):
-    """Extract source-level route and business-logic hypotheses."""
+    """Extract source-level routes and source-marker observations."""
     if repo_url and not repo_path:
         log("warn", "run_source_intel does not clone repo_url directly; pass --repo-path or run source-hunt first.")
 
@@ -1242,9 +1242,9 @@ def run_source_intel(domain, repo_path="", repo_url=""):
         "Source intel: "
         f"{result.get('route_count', 0)} routes, "
         f"{result.get('graphql_count', 0)} GraphQL ops, "
-        f"{result.get('hypothesis_count', 0)} hypotheses",
+        f"{result.get('signal_count', 0)} source markers",
     )
-    return bool(result.get("source_count") or result.get("hypothesis_count"))
+    return bool(result.get("source_count") or result.get("route_count"))
 
 
 def read_source_intel(domain):
