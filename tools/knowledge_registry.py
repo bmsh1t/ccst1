@@ -220,12 +220,20 @@ class KnowledgeRegistry:
     def by_kind(self, kind: str) -> tuple[dict[str, Any], ...]:
         return tuple(item for item in self.capabilities if item.get("kind") == kind)
 
-    def card_paths(self) -> dict[str, str]:
-        """返回 card ID -> repo-relative file，重复或缺失身份时 fail-fast。"""
+    def card_paths(self, *, include_retired: bool = False) -> dict[str, str]:
+        """返回 card ID -> repo-relative file，重复或缺失身份时 fail-fast。
+
+        出库治理（2026-09-14）：registry 条目可带 ``status: retired``。
+        默认过滤 retired（Pack 可见性自动收敛，消费方无需逐个改）；
+        ``include_retired=True`` 供 /kb review 与 audit 看全量。缺省无
+        status 字段 = active（现有 registry 向后兼容，无需迁移）。
+        """
         result: dict[str, str] = {}
         seen_files: set[str] = set()
         for item in self.by_kind("card"):
             capability_id = item.get("id")
+            if not include_retired and str(item.get("status") or "").strip().lower() == "retired":
+                continue
             file_path = item.get("file")
             if not isinstance(capability_id, str) or not capability_id:
                 raise KnowledgeRegistryError(f"{self.path}: card 缺少字符串 `id`")

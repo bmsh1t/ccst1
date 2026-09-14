@@ -23,6 +23,8 @@ description: 使用知识库层为当前 Skill 补充思路、案例和停止条
 /kb cases get <report-id> [--full]
 /kb cases from-card <card-id> [--report-id <id>] [--full]
 /kb cases search --class <weakness> [--limit N]
+/kb review
+/kb retire <card-id> --reason "<三问结论>"
 /kb promote
 ```
 
@@ -92,6 +94,34 @@ python3 tools/case_corpus.py search --class <weakness> --limit 20 --json
 ```bash
 python3 tools/case_corpus.py build --input distill/work/batch_000.jsonl
 ```
+
+### `/kb review`
+
+出库治理的入口。运行事实清单（机械，零判断）：
+
+```bash
+python3 tools/kb_review.py --json
+```
+
+输出每张卡：card / layer / maturity / status / pulls / last_pull，
+`pulls=0` 置顶。基于清单做**三问试金石**判定（AI 判断，逐卡出
+keep/retire/borderline 建议 + 理由），**人最终裁决**：
+
+1. **模型见过吗？**（公开知识/训练数据——公开靶场漏洞、教科书技巧）→ 见过不是增量
+2. **从当前证据可推理吗？**（模型拿到现场证据能当场推出）→ 能推不是增量
+3. **需要真实成本才知道吗？**（踩过的死路、文档没写的怪癖、省重复探测的坑）→ 只有这类是真增量
+
+### `/kb retire <card-id>`
+
+人审裁决后执行退役：
+
+```bash
+python3 tools/knowledge_retire.py --id <slug> --reason "<三问结论>"
+python3 tools/knowledge_retire.py --id <slug> --unretire   # 撤销
+```
+
+registry 标 `status: retired`（卡文件保留，git 历史即审计）；Pack 可见性
+自动收敛，audit 不误报。**review 出建议、人拍板、retire 执行**——不自动退役。
 
 ### `/kb promote`（经 /distill）
 

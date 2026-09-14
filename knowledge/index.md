@@ -200,6 +200,14 @@ case-router 不是默认方法论正文，而是低优先级、按信号加载�
 （草稿卡 → 人工审核 + `python3 tools/knowledge_promote.py --id <slug>` 完成登记
 与 audit），不再有第二个状态机。
 
+**出库（2026-09-14 起）**：卡片使用经 `knowledge/pull-log.jsonl` 记录遥测
+（claim/resolve 的 `selected_knowledge_refs` 自动记）；`/kb review`
+（`tools/kb_review.py`）出事实清单（pulls=0 置顶），AI 按三问试金石
+（见过吗/可推理吗/真实成本吗）逐卡出 keep/retire 建议，**人裁决**后
+`python3 tools/knowledge_retire.py --id <slug> --reason "<三问结论>"` 落
+retire（registry `status: retired`，卡文件保留，Pack 可见性自动收敛；
+`--unretire` 可撤销）。入库出库同用三问，方向相反。
+
 ## 输出要求
 
 使用知识库生成新思路时，必须同时给出：

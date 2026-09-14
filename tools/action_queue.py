@@ -332,6 +332,25 @@ def _validate_execution_repeat(queue: dict, item: dict, metadata: dict) -> None:
             raise ValueError("Action Queue depth contract requires repeat_reason for changed evidence")
 
 
+def _record_card_pulls(repo_root: Path | str, target: str, refs: list[str]) -> None:
+    """Record knowledge-card pulls for outbound governance telemetry.
+
+    Mechanical fact only (card pulled via selected_knowledge_refs); the pull
+    log never blocks the queue path — recording failures degrade to a stderr
+    note, not an exception.
+    """
+    if not refs:
+        return
+    try:
+        from tools.knowledge_pull_log import record_pull
+    except ImportError:  # pragma: no cover - direct tools/ execution
+        from knowledge_pull_log import record_pull  # type: ignore
+    for ref in refs:
+        card_id = Path(ref).stem
+        if not record_pull(repo_root, card=card_id, target=target, source="selected_knowledge_refs"):
+            print(f"action_queue: pull-log append failed for {card_id}", file=sys.stderr)
+
+
 def _validate_write_time_invariants(
     repo_root: Path | str,
     target: str,
@@ -438,6 +457,7 @@ def _validate_write_time_invariants(
                 if not (Path(repo_root) / ref).is_file():
                     raise ValueError(f"Action Queue selected_knowledge_refs names a missing card: {ref}")
         merged["selected_knowledge_refs"] = deduped
+        _record_card_pulls(repo_root, target, deduped)
     if merged.get("active_dimension") and " " in str(merged["active_dimension"]):
         raise ValueError("Action Queue active_dimension must be a single-dimension label")
 
