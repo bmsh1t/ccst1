@@ -28,7 +28,6 @@ try:
         load_queue,
         queue_path,
         queue_fingerprint,
-        select_next_action,
         active_action_ids,
     )
 except ImportError:  # pragma: no cover - direct tools/ execution
@@ -39,7 +38,6 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         load_queue,
         queue_path,
         queue_fingerprint,
-        select_next_action,
     )
 try:
     from tools.checkpoint_witness import (
@@ -1727,9 +1725,17 @@ def _load_substantive_action_queue_next(
     *,
     queue_snapshot: dict | None = None,
 ) -> dict:
-    """复用 action_queue 的公开 selector，不复制其排序与去重规则。"""
+    """稳定序首项作为 frontier 的 action_queue owner 代表（无推荐语义）。
+
+    排序器已随 dumb-queue refactor 退役（2026-09-14）：这里不做价值排序，
+    取 substantive 过滤后的创建序首项。substantive 过滤保留——它防止
+    已验证工作被 fresh recon 清掉，是防误删语义而非排序。选择权在 AI
+    （autopilot.md priority_frontier 契约）。
+    """
     queue = dict(_queue_snapshot_for_target(repo_root, target, queue_snapshot))
-    queue["actions"] = [
+    # 过滤方向与旧实现一致：非 active（终态）动作保留参与判定，active 的
+    # 只留 substantive——这个方向决定 "final 之后 frontier 是否为空"。
+    candidates = [
         item
         for item in queue.get("actions", [])
         if isinstance(item, dict)
@@ -1738,8 +1744,13 @@ def _load_substantive_action_queue_next(
             or _is_substantive_queue_action(item)
         )
     ]
-    selected = select_next_action(queue)
-    return selected if isinstance(selected, dict) else {}
+    if not candidates:
+        return {}
+    active_view = [item for item in candidates if str(item.get("status") or "queued") in ACTIVE_STATUSES]
+    if not active_view:
+        return {}
+    active_view.sort(key=lambda item: (str(item.get("created_at") or ""), str(item.get("id") or "")))
+    return active_view[0]
 
 
 def _recon_completed_without_live_hosts(

@@ -63,8 +63,8 @@ consume bootstrap `state.lane_contract`: it names the lane (`id`, `ref`, `reason
 `text_available=true`, already carries that section's text inline — use it directly instead of
 re-reading the doc. Only when `text_available=false` (or when a newly observed evidence signal
 selects a different section) read that one section from `docs/autopilot-lanes.md`. Before
-substantive Queue claim/resolve, read `State And Queue` and consume bootstrap
-`activation_contract`; never reconstruct a second claim schema.
+substantive Queue claim/resolve, read `State And Queue`; claims are explicit
+`--id` writes with AI-owned metadata — there is no claim schema to reconstruct.
 Before active hunting, load `rules/hunting.md`. Fresh Recon is not active hunting: when
 `state.hard_gate.action=run_recon` (and when `state.next_action=run_recon` for older readers), execute the
 selected lane directly and refresh after completion; the default context pack does not load
