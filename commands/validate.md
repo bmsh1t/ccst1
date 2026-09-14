@@ -147,9 +147,7 @@ without creating report, finding, queue or runtime state.
 During validation, prove that a real user can reproduce the behavior in the
 current state:
 
-- Use chrome-devtools MCP for deep live DevTools, Network, Console, DOM, performance, and runtime inspection.
-- Use Playwright MCP for page interaction, authenticated sessions, forms, screenshots, and multi-actor workflows.
-- Import useful MCP artifacts with `tools/browser_mcp_import.py --target <target> --network-json <file> --url <page-url>` so `/surface`, `/checkpoint`, `/autopilot`, and validation summaries reuse the same observed API surface.
+- Browser evidence follows the shared browser lane contract in `commands/hunt.md` (chrome-devtools for live inspection, Playwright for interaction/sessions/multi-actor, `tools/browser_mcp_import.py` for artifact import) so `/surface`, `/checkpoint`, `/autopilot`, and validation summaries reuse the same observed API surface.
 - Exact non-browser requests can use `curl` / `urllib` / local helpers for lightweight replay.
 - Burp/Caido history is auxiliary replay and comparison context; missing Burp/Caido should not block validation.
 
