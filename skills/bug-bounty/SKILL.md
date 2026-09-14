@@ -1,6 +1,6 @@
 ---
 name: bug-bounty
-description: Use when work spans more than one stage — recon, learning, hunting, validation, or reporting — or when choosing which stage runs next. Coordinates target isolation, Skill routing, chain handoff, and report preparation without duplicating narrower Skills, Rules, or cards; for a single well-defined lane, load that lane's Skill instead.
+description: Use when work spans more than one stage — recon, learning, hunting, validation, or reporting — or when choosing which stage runs next. Coordinates target isolation, Skill routing, chain handoff, and report preparation without duplicating narrower Skills, Rules, or cards; hypothesis selection inside an active hunting lane belongs to bb-methodology, and a single well-defined lane should load that lane's Skill instead.
 ---
 
 # Bug Bounty Workflow Coordinator

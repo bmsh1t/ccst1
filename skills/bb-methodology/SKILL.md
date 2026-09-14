@@ -1,6 +1,6 @@
 ---
 name: bb-methodology
-description: Use at the start of a bug bounty session, when switching targets, or when progress stalls. Selects the next hypothesis, applies boundary-first reasoning, and decides when to continue, rotate, stop, or reopen a lane.
+description: Use when hunting or analysis is underway (a lane active, or the session just started) and the open question is which concrete endpoint or hypothesis to test next, when to rotate or stop, or when to reopen a lane. Selects the next hypothesis, applies boundary-first reasoning, and decides when to continue, rotate, stop, or reopen a lane. Stage-to-stage routing and cross-stage handoff belong to bug-bounty.
 ---
 
 # Bug Bounty Methodology

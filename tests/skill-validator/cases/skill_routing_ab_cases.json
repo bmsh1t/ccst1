@@ -1,0 +1,95 @@
+{
+  "meta": {
+    "purpose": "Routing A/B: given a natural-language session moment, does the model pick the intended skill from the 12 descriptions alone (no body)? Wrong-skill routing wastes context or skips the right contract.",
+    "ground_truth_source": "skills/*/SKILL.md frontmatter descriptions after the 2026-09-14 disambiguation (bug-bounty/bb-methodology mutual boundary, signing lane added to web2-vuln-classes, preflight HOW-leak removed from credential-attack)",
+    "skills": [
+      "bb-methodology",
+      "bug-bounty",
+      "cicd-security",
+      "credential-attack",
+      "meme-coin-audit",
+      "mobile-pentest",
+      "report-writing",
+      "security-arsenal",
+      "triage-validation",
+      "web2-recon",
+      "web2-vuln-classes",
+      "web3-audit"
+    ],
+    "scoring": "expected skill exact match = 1pt; every distractor listed must NOT be picked (its presence tests a known confusion pair); per case max 1pt, distractor hit is a hard fail for that case"
+  },
+  "cases": [
+    {
+      "moment": "Recon finished an hour ago; three endpoints have odd responses and I don't know which one to dig into first.",
+      "expected": "bb-methodology",
+      "distractors": ["bug-bounty"],
+      "why": "Active hunting lane, hypothesis-priority question — not cross-stage coordination."
+    },
+    {
+      "moment": "The hunt is validated and written; now decide whether to run reporting or a new recon pass on the next asset.",
+      "expected": "bug-bounty",
+      "distractors": ["bb-methodology"],
+      "why": "Stage-to-stage transition (validate -> report/recon), the coordinator's exact trigger."
+    },
+    {
+      "moment": "A GraphQL endpoint appeared in the crawl output; introspection is on and I want the lane's evidence gates.",
+      "expected": "web2-vuln-classes",
+      "distractors": ["triage-validation", "web2-recon"],
+      "why": "Evidence names a bug-class lane; validation is premature, recon already produced this evidence."
+    },
+    {
+      "moment": "I have a candidate: SSRF with an internal service response. Before any report claim I need the seven questions.",
+      "expected": "triage-validation",
+      "distractors": ["report-writing", "web2-vuln-classes"],
+      "why": "Candidate-quality validation gate; report-writing requires validation passed first."
+    },
+    {
+      "moment": "Validation passed with CVSS 8.1; draft the HackerOne submission from the finding and evidence ledger.",
+      "expected": "report-writing",
+      "distractors": ["triage-validation", "bug-bounty"],
+      "why": "Post-validation delivery rendering is report-writing's only trigger."
+    },
+    {
+      "moment": "Every request to the API returns 403 because of a sign/hmac header the browser computes; I need to replay them.",
+      "expected": "web2-vuln-classes",
+      "distractors": ["mobile-pentest", "security-arsenal"],
+      "why": "Client signing lane (2026-09-14 addition); web target, not a mobile artifact; arsenal is reference-only."
+    },
+    {
+      "moment": "New target, nothing known yet: find subdomains, live hosts, and the URL surface.",
+      "expected": "web2-recon",
+      "distractors": ["bug-bounty", "bb-methodology"],
+      "why": "Attack-surface discovery is web2-recon's entry; the coordinator and methodology trigger only when a stage-choice or hypothesis question exists."
+    },
+    {
+      "moment": "The target's public GitHub org has Actions workflows that reference secrets in run blocks.",
+      "expected": "cicd-security",
+      "distractors": ["web2-vuln-classes", "security-arsenal"],
+      "why": "Explicit CI/CD asset in scope — the direct-only trigger."
+    },
+    {
+      "moment": "The APK in scope talks to an API the web app never exposes; compare auth behavior between the two clients.",
+      "expected": "mobile-pentest",
+      "distractors": ["web2-vuln-classes", "web2-recon"],
+      "why": "Mobile artifact in scope with client-boundary question; hands off to web2 lanes after the differential is captured."
+    },
+    {
+      "moment": "The login form accepts a known employee email; plan a bounded credential review with a lockout plan.",
+      "expected": "credential-attack",
+      "distractors": ["bb-methodology", "security-arsenal"],
+      "why": "Real login form + bounded review warrant — preparation-only lane."
+    },
+    {
+      "moment": "I don't know which owner accepts a validation-runner result or how dependent steps keep the session.",
+      "expected": "security-arsenal",
+      "distractors": ["web2-vuln-classes", "bug-bounty"],
+      "why": "Shared project contract lookup — its reference-only trigger."
+    },
+    {
+      "moment": "A Solidity vault upgrade split the accounting across two implementations; review the invariant before recommending.",
+      "expected": "web3-audit",
+      "distractors": ["web2-vuln-classes", "meme-coin-audit"],
+      "why": "Smart-contract target in scope with an invariant question."
+    }
+  ]
+}
