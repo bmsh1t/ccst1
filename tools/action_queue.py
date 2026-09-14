@@ -2154,16 +2154,22 @@ def build_parser() -> argparse.ArgumentParser:
     claim.add_argument(
         "--metadata-json",
         default=None,
-        help="Versioned AI activation metadata merged atomically before claim.",
+        help=(
+            "Full AI judgment write, applied wholesale to the action's "
+            "metadata (no required-field gate). Only the six mechanical "
+            "write-time invariants are enforced (runner-field rejection, "
+            "identity guard, hypothesis cap, evidence binding, execution "
+            "dedup, sensitive-value rejection)."
+        ),
     )
     claim.add_argument(
         "--from-evidence",
         default="",
         help=(
             "Target-owned probe/evidence JSON path; derives the mechanical "
-            "fields (endpoint, method, evidence_ref, baseline_ref) before "
-            "merging --metadata-json (explicit values win). Judgment fields "
-            "are never derived."
+            "fields (endpoint, method, evidence_ref, baseline_ref). "
+            "Explicit --metadata-json values override derived values; "
+            "judgment fields are never derived."
         ),
     )
     claim.add_argument("--json", action="store_true")
