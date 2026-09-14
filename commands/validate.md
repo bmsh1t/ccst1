@@ -245,3 +245,13 @@ above; local/lab external checks are `not applicable`, not a blocker.
 **DO_NOT_REPORT:** "Q[N] fails because [reason]. Do not report this candidate. Move on or demote only with a concrete next evidence action."
 
 **DOWNGRADE:** "Q6 only shows a boundary signal. Use the lowest-risk missing differential, then re-triage the claimed impact."
+
+## Source-Rejection Cite-Check（机器契约）
+
+对于源码支持的 Candidate，只用文字声称 guard 存在不足以构成反证。canonical owner 写入
+`validation_status=rejected` 前，必须绑定 `result=rejected` 的 validation summary，并在
+`source_guard` 中记录真实 `source_file`、从 1 开始的 `line_number` 和单行精确 `quote`。
+quote 必须是该行可执行、具有 guard 形态的代码；文件缺失、注释、转述或仅引用共同 token
+时，Candidate 必须保持开放。该 cite-check（`tools/finding_index.py` 的 rejection gate
+机械执行）只证明引用的 guard 确实存在；验证记录仍需单独解释它为何阻断所声称的
+source-to-sink 路径。

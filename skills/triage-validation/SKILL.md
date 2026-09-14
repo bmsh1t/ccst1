@@ -15,17 +15,6 @@ impact, and reproducibility required by that gate are present. Elapsed time alon
 preserve the current evidence and next action when a bounded review is
 interrupted.
 
-## 四层记忆接入
-
-本 Skill 是 Candidate 到 Validated Finding 的质量 gate。执行时遵守 `skills/runtime-protocol.md`：
-
-1. 先读取目标层，确认 Candidate 对应的 target、surface、evidence 和 next action。
-2. 只验证 Candidate，不把普通 Lead 强行包装成报告。
-3. 如需补充漏洞类别判断，按需读取 `knowledge/index.md` 和相关知识卡。
-4. 验证失败时写回目标层为 lead、dead-end 或 next action；验证通过后再进入 `/remember` 和报告流程。
-
----
-
 ## SCOPE OF THIS SKILL
 
 Use this skill when a possible issue is being promoted toward a report:
@@ -192,40 +181,23 @@ Use `session_id` / audit artifacts to confirm the same request under each identi
 
 ## 4 PRE-SUBMISSION GATES
 
-Run in sequence. Every applicable gate must pass. Gate 2 is delivery-mode
-conditional: external bounty metadata is required only for external submission;
-local/lab validation must still record the target-local documentation checks.
+Run in sequence after Q1-Q7; every applicable gate must pass. Gates reuse the
+Q answers rather than re-checking them — each gate below only adds what the
+questions do not already cover:
 
-### Gate 0: Reality Check
-Use Q1's reproduction record as the source of truth: require a target-bound replayable artifact,
-target match, fresh reproducibility, and the appropriate
-evidence medium. Do not repeat the Q1 template here.
-
-### Gate 1: Impact Validation
-```
-[ ] Can answer: "What can attacker DO that they couldn't before?"
-[ ] Answer is more than "see non-sensitive data" (unless program pays for info disclosure)
-[ ] Real victim: another user's data, company's data, financial loss
-[ ] Not relying on victim doing something unlikely
-```
-
-### Gate 2: Deduplication Check
-```
-[ ] External submission: searched the program's disclosed reports and target-repo
-    security issues for this endpoint and bug class
-[ ] All modes: checked changelog, API/design docs, and recorded whether behavior
-    is documented or intentionally accepted
-[ ] Local/lab: external bounty checks recorded as not applicable, not as a blocker
-```
-
-### Gate 3: Report Quality
-```
-[ ] Title and delivery structure follow skills/report-writing/SKILL.md
-[ ] Steps to Reproduce: exact replayable artifact (HTTP when applicable; browser, frame, state, or OOB equivalent otherwise)
-[ ] Evidence: target-bound artifact showing the actual impact (not just a status code)
-[ ] Severity: matches the recorded `cvss.version`/`cvss.score`/`cvss.vector` and program definitions
-[ ] NEVER used "could potentially" or "may allow"
-```
+- **Gate 0 — Reality Check**: Q1's reproduction record is the source of truth.
+  No additional check beyond Q1; a failed Q1 is a failed Gate 0.
+- **Gate 1 — Impact Validation**: the Q2 answer names a real victim and a
+  concrete "attacker can now DO X"; "see non-sensitive data" fails unless the
+  program pays for info disclosure.
+- **Gate 2 — Deduplication**: the Q5 search record must exist for this
+  endpoint and bug class (external: disclosed reports + target-repo issues;
+  all modes: changelog/API/design docs; local/lab: record external checks as
+  not applicable). Gate 2 is Q5's audit trail, not a second search.
+- **Gate 3 — Report Quality**: title/delivery structure follow
+  `skills/report-writing/SKILL.md`; steps are the replayable artifact;
+  severity matches the recorded CVSS; the wording never contains
+  "could potentially" / "may allow".
 
 ---
 
@@ -360,24 +332,9 @@ If later replay disproves a report-ready or validated Candidate:
 5. Reopen only when new evidence directly addresses the recorded cause, and link the old and new evidence.
 
 Retraction is an auditable correction, not silent removal of an inconvenient result.
-
-对于源码支持的 Candidate，只用文字声称 guard 存在不足以构成反证。canonical owner 写入
-`validation_status=rejected` 前，必须绑定 `result=rejected` 的 validation summary，并在
-`source_guard` 中记录真实 `source_file`、从 1 开始的 `line_number` 和单行精确 `quote`。
-quote 必须是该行可执行、具有 guard 形态的代码；文件缺失、注释、转述或仅引用共同 token
-时，Candidate 必须保持开放。该 cite-check 只证明引用的 guard 确实存在；验证记录仍需单独
-解释它为何阻断所声称的 source-to-sink 路径。
-
----
-
-## FAST NO-REPORT RULES
-
-Use the gates above as the detailed check. The short form is:
-
-1. **Evidence-completeness rule**: an incomplete Q1 stays a Candidate with a next evidence action.
-2. **Precondition and impact**: record reachability and a tangible demonstrated outcome.
-3. **Admin/design checks**: admin-only behavior or documented behavior is not a report by itself.
-4. **Repeated bounded failure**: a repeated progress fingerprint without a reproducible PoC stops the report path and records what would reopen it.
+The source-rejection cite-check (a rejected Candidate backed by source code must
+record an exact `source_guard` file/line/quote) is the machine contract of
+`tools/finding_index.py`'s rejection gate; see `commands/validate.md`.
 
 ---
 
