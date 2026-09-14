@@ -58,6 +58,10 @@ branch when the observed evidence justifies it.
 
 ### Pattern Map
 
+When several lanes match at once, rank by the value-first surface order in
+`rules/hunting.md` (payment/auth/export/admin before low-value surfaces); the
+map below routes, it does not prioritize.
+
 | Signal | Route |
 |---|---|
 | Object ID, tenant/org/user/account/invoice/order IDs | IDOR / object authorization |
