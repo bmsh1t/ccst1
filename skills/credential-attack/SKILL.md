@@ -1,6 +1,6 @@
 ---
 name: credential-attack
-description: Use when a real login form or credential path (including admin/back-office) is observed and a bounded credential review is warranted. Builds the AI shortlist from target evidence and binds preflight — endpoint, reviewed users, decidable signal, lockout plan, dry-run, stop conditions — before any live execution; deterministic tools own requests, pacing, redaction, evidence, and resume. It prepares and queues, it never authorizes a live spray by itself.
+description: Use when a real login form or credential path (including admin/back-office) is observed and a bounded credential review is warranted. Prepares and queues the review — it never authorizes a live spray by itself; deterministic tools own requests, pacing, redaction, evidence, and resume.
 ---
 
 # Credential Attack Pipeline
