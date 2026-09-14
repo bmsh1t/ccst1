@@ -437,9 +437,15 @@ def _validate_write_time_invariants(
                 isinstance(action, dict)
                 and str((action.get("metadata") or {}).get("hypothesis_id") or "") == hypothesis_id
                 and str(action.get("id") or "") != str(item.get("id") or "")
+                and str(action.get("status") or "") in {"queued", "running", "lead", "signal", "candidate"}
                 for action in queue.get("actions", [])
             )
-            if not existing.get("hypothesis_id") and current_count >= cap:
+            # The pre-population guard (`not existing.get("hypothesis_id")`) covered
+            # the normal claim path, but an add that already carried hypothesis_id
+            # skipped the budget check entirely — a cap of 2 admitted a 3rd running
+            # action (2026-09-14 audit). Count non-terminal actions regardless of
+            # whether this item's identity was set at add or claim time.
+            if current_count >= cap:
                 raise ValueError("Action Queue hypothesis action budget is exhausted")
 
     # 3b. Knowledge-card and skill anti-forgery (mechanical, not judgment):

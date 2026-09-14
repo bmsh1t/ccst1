@@ -273,3 +273,88 @@ def test_promote_migrates_refs_and_rolls_back_digests(tmp_path: Path) -> None:
     assert "knowledge/distill-digests/" in text
     assert raw_ref not in text
     assert (tmp_path / "knowledge" / "distill-digests" / "t.test" / "p1.json").is_file()
+
+
+# ─── 脱敏回归（2026-09-14 审计：字符串身份与路径令牌原样进知识目录）──────────
+
+def test_actor_fingerprint_hashes_string_identity(tmp_path):
+    """JWT payload 的 id 是 email/用户名时，digest 只留短哈希（可对比、无原文）。"""
+    import base64
+    import json as _json
+    import sys as _sys
+
+    _sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    from distill_digest import _actor_fingerprint
+
+    payload = base64.urlsafe_b64encode(
+        _json.dumps({"data": {"id": "admin@company.com", "role": "admin"}}).encode()
+    ).decode().rstrip("=")
+    fp = _actor_fingerprint(
+        {"request": {"headers": {"Authorization": f"Bearer abc.{payload}.def"}}}
+    )
+    assert "company.com" not in fp
+    assert fp.startswith("id=hash:")
+    # role 是权限名不是身份，保留对比度
+    assert fp.endswith("role=admin")
+
+
+def test_actor_fingerprint_keeps_numeric_identity():
+    """数字 id 原样保留——对象身份对比的事实本体。"""
+    import base64
+    import json as _json
+    import sys as _sys
+
+    _sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    from distill_digest import _actor_fingerprint
+
+    payload = base64.urlsafe_b64encode(
+        _json.dumps({"data": {"id": 25, "role": "customer"}}).encode()
+    ).decode().rstrip("=")
+    fp = _actor_fingerprint(
+        {"request": {"headers": {"Authorization": f"Bearer abc.{payload}.def"}}}
+    )
+    assert fp == "id=25 role=customer"
+
+
+def test_probe_facts_redacts_token_path_segments(tmp_path):
+    """路径里的 token/secret 形态段替换为占位符；对象 ID 与常规路径不受影响。"""
+    import json as _json
+    import sys as _sys
+
+    _sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    from distill_digest import _probe_facts
+
+    def _facts(url):
+        p = tmp_path / f"probe-{abs(hash(url))}.json"
+        p.write_text(_json.dumps({
+            "request": {"method": "GET", "url": url},
+            "response": {"status": 200}, "ts": "t",
+        }))
+        return _probe_facts(p, tmp_path)["path"]
+
+    assert "SECRET" not in _facts("https://t.com/api/verify/SECRET-TOKEN-XYZ123456")
+    assert _facts("https://t.com/api/verify/SECRET-TOKEN-XYZ123456").endswith("<secret-redacted>")
+    assert _facts("https://t.com/rest/basket/1") == "/rest/basket/1"
+    assert _facts("https://t.com/api/v2/admin/users/export") == "/api/v2/admin/users/export"
+
+
+def test_pull_log_cli_records_after_native_read(tmp_path, capsys):
+    """薄 CLI：record 记录一条 kb-card-read；卡不存在时拒绝。"""
+    import sys as _sys
+
+    _sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    from knowledge_pull_log import main as pull_main, pull_stats
+
+    cards = tmp_path / "knowledge" / "cards"
+    cards.mkdir(parents=True)
+    (cards / "demo-card.md").write_text("body", encoding="utf-8")
+
+    rc = pull_main(["record", "--card", "demo-card", "--target", "t.local",
+                    "--repo-root", str(tmp_path)])
+    assert rc == 0
+    stats = pull_stats(tmp_path)
+    assert stats["demo-card"]["pulls"] == 1
+    assert stats["demo-card"]["last_pull"]
+
+    with pytest.raises(SystemExit):
+        pull_main(["record", "--card", "missing-card", "--repo-root", str(tmp_path)])

@@ -64,6 +64,49 @@ def _sha256_of(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _scrub_identity_value(value: Any) -> str:
+    """身份值脱敏：字符串身份（email/用户名）哈希化，数字/布尔原样。
+
+    digest 的消费者只需要"两个 actor 不同"的区分度，不需要身份原文
+    （docstring 红线：不含 token/email）。非数字身份一律走短哈希——
+    保持可对比性（同 id 同哈希）的同时不把 email/用户名写进知识目录。
+    """
+    text = str(value).strip()
+    if not text:
+        return ""
+    if isinstance(value, (int, float)) or (isinstance(value, str) and text.isdigit()):
+        return text
+    return "hash:" + hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+
+
+def _scrub_path_tokens(path: str) -> str:
+    """路径段脱敏：像 token/secret 的段替换为占位符。
+
+    判据是形态不是字典：段长 ≥16 且混合字符类（字母+数字），或匹配
+    common token 参数名。数字段（对象 ID）保留——它们是 IDOR 分析的
+    事实本体，不是凭据。
+    """
+    import re
+
+    TOKEN_PARAM = re.compile(
+        r"(token|secret|key|password|signature|nonce|session|jwt|otp|code)",
+        re.IGNORECASE,
+    )
+    LONG_RANDOM = re.compile(r"^(?=.*[A-Za-z])(?=.*\d).{16,}$")
+    segs = []
+    for seg in path.split("/"):
+        if not seg:
+            segs.append(seg)
+            continue
+        if TOKEN_PARAM.search(seg) and LONG_RANDOM.match(seg):
+            segs.append(f"<{TOKEN_PARAM.search(seg).group(1).lower()}-redacted>")
+        elif LONG_RANDOM.match(seg) and not seg.isdigit():
+            segs.append("<opaque-redacted>")
+        else:
+            segs.append(seg)
+    return "/".join(segs)
+
+
 def _actor_fingerprint(probe: dict[str, Any]) -> str:
     """actor 指纹：身份对比所需的最小区分信息，不含 token/email。
 
@@ -91,7 +134,13 @@ def _actor_fingerprint(probe: dict[str, Any]) -> str:
         role = data.get("role")
         if ident is None and not role:
             return ""
-        return f"id={ident} role={role}" if role else f"id={ident}"
+        ident = _scrub_identity_value(ident)
+        # role 是权限角色名（customer/admin），不是个人身份——保留短纯字母角色
+        # 保持"低权 vs 高权"对比度；只对长/混合角色串（可能携带身份）脱敏。
+        role_text = str(role).strip() if role is not None else ""
+        if role_text and not (role_text.isalnum() or set(role_text) <= set("abcdefghijklmnopqrstuvwxyz-")) or len(role_text) > 24:
+            role_text = _scrub_identity_value(role_text)
+        return f"id={ident} role={role_text}" if role_text else f"id={ident}"
     except Exception:
         return ""
 
@@ -110,7 +159,7 @@ def _probe_facts(ref_path: Path, repo_root: Path) -> dict[str, Any]:
     parsed = urlparse(url)
     return {
         "method": str(request.get("method") or ""),
-        "path": parsed.path or url,
+        "path": _scrub_path_tokens(parsed.path or url),
         "status": response.get("status"),
         "body_sha256": str(response.get("body_sha256") or ""),
         "body_bytes": response.get("body_retained_bytes")

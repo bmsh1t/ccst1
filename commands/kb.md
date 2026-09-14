@@ -48,15 +48,16 @@ description: 使用知识库层为当前 Skill 补充思路、案例和停止条
 
 ### `/kb card <name>`
 
-读取指定知识卡。用带遥测的入口（主动查阅 = 出库 review 的中信号；
-被动装载刻意不记）：
+读取指定知识卡。**默认直接 Read `knowledge/cards/<slug>.md`**（原生能力，
+零包装）；读完补一行遥测（主动查阅 = 出库 review 的中信号；被动装载刻意不记）：
 
 ```bash
-python3 tools/kb_card.py --name api-idor --target <target_shell>
+# 先 Read 卡片正文，然后：
+python3 tools/knowledge_pull_log.py record --card api-idor --target <target_shell>
 ```
 
-也可直接 Read `knowledge/cards/<slug>.md`，但绕过 pull 记录——
-该卡在 /kb review 里会显得"从未被查"，优先用上面的命令。
+不使用包装命令读卡——不为计数绕开原生 Read。`tools/kb_card.py` 仅保留给
+脚本化管道（需要在一次调用里读+记且无交互的场景）。
 
 输出时必须包含：
 

@@ -91,3 +91,40 @@ def pull_stats(repo_root: Path | str) -> dict[str, dict[str, Any]]:
     except OSError:
         return {}
     return stats
+
+
+def main(argv: list[str] | None = None) -> int:
+    """薄 CLI：record 一条 kb-card-read 拉取（配合原生 Read 使用）。
+
+    契约：先 Read `knowledge/cards/<slug>.md`（原生能力），再用本命令记
+    遥测——不为计数绕开原生 Read。验证卡文件存在，不存在拒绝记录
+    （防笔误污染出库数据）。
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="knowledge_pull_log.py",
+        description="Record one knowledge-card pull (source=kb-card-read) after a native Read.",
+    )
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    p_record = sub.add_parser("record", help="record one card read")
+    p_record.add_argument("--card", required=True, help="card slug")
+    p_record.add_argument("--target", default="", help="current target storage key")
+    p_record.add_argument("--repo-root", default=str(Path(__file__).resolve().parent.parent))
+    args = parser.parse_args(argv)
+
+    if args.cmd == "record":
+        slug = args.card.strip()
+        if slug.endswith(".md"):
+            slug = slug[:-3]
+        card_path = Path(args.repo_root) / "knowledge" / "cards" / f"{slug}.md"
+        if not card_path.is_file():
+            raise SystemExit(f"knowledge_pull_log: no such card: {card_path}")
+        record_pull(args.repo_root, card=slug, target=args.target, source="kb-card-read")
+        return 0
+    parser.error(f"unknown command {args.cmd}")
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -2862,3 +2862,57 @@ def test_hypothesis_cap_still_enforced_at_write_time(tmp_path):
                 "active_dimension": "path:/rest/basket/2",
             },
         )
+
+
+def test_hypothesis_cap_binds_pre_populated_add(tmp_path):
+    """cap 回归（2026-09-14 审计）：add 时 metadata 已带 hypothesis_id 的动作，
+    claim 不得跳过预算检查——cap=2 下第 3 个 running 必须被拒，且终态动作
+    不占预算（tested 后释放）。"""
+    import json as _json
+    from action_queue import add_manual_action, claim_next_action, load_queue, resolve_action
+
+    T = "cap-regression.local"
+    base = {
+        "schema_version": 4, "hypothesis_id": "H1", "family": "fam", "technique": "tech",
+        "active_dimension": "input:body", "expected_learning": "learn", "kill_condition": "kc",
+        "decision_reason": "why", "input_boundary": "param", "endpoint": "/e", "method": "GET",
+        "skill_route": {"skill_id": "web2-vuln-classes", "required_dimensions": ["input:body"]},
+        "risk_tier": "low", "max_hypothesis_actions": 2,
+    }
+
+    def _ev(i):
+        p = tmp_path / "findings" / T / f"probe{i}.json"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(_json.dumps({"i": i}))
+        return f"findings/{T}/probe{i}.json"
+
+    claimed = []
+    for i, ep in enumerate(["/e1", "/e2"], 1):
+        r = add_manual_action(tmp_path, target=T, action_type="probe", evidence=f"ev{i}",
+                               next_question=f"q{i}", action=f"act{i}", priority=50, source="test")
+        aid = r["queue"]["actions"][-1]["id"]
+        claim_next_action(tmp_path, T, action_id=aid,
+                          metadata=dict(base, endpoint=ep, evidence_ref=_ev(i), baseline_ref=_ev(i)))
+        claimed.append(aid)
+
+    # 攻击路径：add 的 metadata 自带 hypothesis_id → 旧代码跳过 cap
+    r3 = add_manual_action(tmp_path, target=T, action_type="probe", evidence="ev3",
+                           next_question="q3", action="act3", priority=50, source="test",
+                           metadata=dict(base, endpoint="/e3", family="fam3",
+                                         evidence_ref=_ev(3), baseline_ref=_ev(3)))
+    aid3 = r3["queue"]["actions"][-1]["id"]
+    with pytest.raises(ValueError, match="hypothesis action budget"):
+        claim_next_action(tmp_path, T, action_id=aid3,
+                          metadata=dict(base, endpoint="/e3", family="fam3",
+                                        evidence_ref=_ev(3), baseline_ref=_ev(3)))
+    running = [a for a in load_queue(tmp_path, T)["actions"] if a["status"] == "running"]
+    assert len(running) == 2
+
+    # 终态释放：第一个 tested 后，第三个动作可 claim
+    resolve_action(tmp_path, target=T, action_id=claimed[0], status="tested",
+                   result=f"done; evidence={_ev(1)}", notes="n")
+    claim_next_action(tmp_path, T, action_id=aid3,
+                      metadata=dict(base, endpoint="/e3", family="fam3",
+                                    evidence_ref=_ev(3), baseline_ref=_ev(3)))
+    running = [a for a in load_queue(tmp_path, T)["actions"] if a["status"] == "running"]
+    assert len(running) == 2
