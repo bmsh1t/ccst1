@@ -190,3 +190,36 @@ def test_retire_is_atomic_on_registry_error(tmp_path: Path) -> None:
     assert registry_path.read_text(encoding="utf-8") == "capabilities: ["
     registry_path.write_text(original, encoding="utf-8")
     assert "victim-card" in load_registry(tmp_path).card_paths()
+
+
+# ---- kb_card read telemetry ----
+
+
+def test_kb_card_read_records_pull(tmp_path: Path) -> None:
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    from kb_card import read_card
+
+    cards_root = tmp_path / "knowledge" / "cards"
+    cards_root.mkdir(parents=True)
+    (cards_root / "api-idor.md").write_text("---\nid: api-idor\n---\ncard body\n", encoding="utf-8")
+
+    text = read_card(tmp_path, name="api-idor", target="t.example")
+    assert "card body" in text
+
+    stats = pull_stats(tmp_path)
+    assert stats["api-idor"]["pulls"] == 1
+    # source 区分: 主动查阅 vs 假设依据
+    path = pull_log_path(tmp_path)
+    event = json.loads(path.read_text(encoding="utf-8").strip().splitlines()[-1])
+    assert event["source"] == "kb-card-read"
+    assert event["target"] == "t.example"
+
+
+def test_kb_card_rejects_unknown_card(tmp_path: Path) -> None:
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    from kb_card import read_card
+
+    with pytest.raises(SystemExit, match="no such card"):
+        read_card(tmp_path, name="missing-card")
