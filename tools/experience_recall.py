@@ -126,28 +126,23 @@ def _collect_target_entries(
         ]
         # 最近优先（列表本身按时间追加，尾部最新）；同文去重（dict 形态与
         # 纯文本形态可能记录同一事件）
+        limit = DEFAULT_LIMITS[kind]
         seen_texts: set[str] = set()
+        emitted = 0
+        truncated = False
         for entry in reversed(matched):
             text = _entry_text(entry)
             if not text or text in seen_texts:
                 continue
             seen_texts.add(text)
-            if len([e for e in entries if e["kind"] == kind]) >= DEFAULT_LIMITS[kind]:
-                # 有界视图提示（2026-09-14 审计）：截断必须可见——存 7 条
-                # 只返 5 条时，读者要知道这是窗口不是全部，且能去 owner
-                # 文件展开（原生 Read，不另造分页服务）。
-                if len(matched) > len(seen_texts):
-                    entries.append({
-                        "kind": kind,
-                        "target": target,
-                        "ts": "",
-                        "text": f"(truncated: {kind} window reached — read the owner file for full history)",
-                        "entry_id": "",
-                        "evidence_refs": [],
-                        "structured": None,
-                        "truncated": True,
-                    })
+            # 有界视图提示（2026-09-14 审计 + 三轮边界修复）：截断必须可见——
+            # 窗口填满后仍有未输出条目才追加提示，提示本身不是一条记录
+            # （不进 counts，也不占用窗口）。旧写法在恰好 6 条时不提示、
+            # 7 条时把提示计入记录数。
+            if emitted >= limit:
+                truncated = True
                 break
+            emitted += 1
             structured = entry.get("structured") if isinstance(entry.get("structured"), dict) else None
             entries.append({
                 "kind": kind,
@@ -157,6 +152,17 @@ def _collect_target_entries(
                 "entry_id": entry.get("entry_id", ""),
                 "evidence_refs": entry.get("evidence_refs", []),
                 "structured": structured,
+            })
+        if truncated:
+            entries.append({
+                "kind": kind,
+                "target": target,
+                "ts": "",
+                "text": f"(truncated: {kind} window reached — read the owner file for full history)",
+                "entry_id": "",
+                "evidence_refs": [],
+                "structured": None,
+                "truncated": True,
             })
     return entries
 
@@ -292,9 +298,10 @@ def build_recall_view(
             "cross_target_sources": ["knowledge/cards (reviewed only)"],
         },
         "counts": {
-            "target_entries": len(target_entries),
+            "target_entries": sum(1 for e in target_entries if not e.get("truncated")),
             "pattern_db": len(pattern_entries),
             "knowledge_cards": len(card_entries),
+            "truncated_windows": sum(1 for e in target_entries if e.get("truncated")),
         },
         "target_entries": target_entries,
         "pattern_db": pattern_entries,

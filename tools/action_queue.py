@@ -448,13 +448,18 @@ def _validate_write_time_invariants(
                 and str(action.get("status") or "") in {"running", "lead", "signal", "candidate"}
                 for action in queue.get("actions", [])
             )
-            # A claim transitioning THIS item from queued to running must fit
-            # inside the budget together with the already-admitted set.
-            claiming_into_running = str(incoming.get("status") or "running") == "running" and str(
-                (existing.get("status") or "queued")
-            ) in {"", "queued"}
-            effective = current_count + (1 if claiming_into_running else 0)
-            if effective > cap:
+            # The claimed item always occupies the budget after the claim:
+            # `queued` becomes `running`, and every other active status
+            # (running/lead/signal/candidate) already occupies. `current_count`
+            # excludes this item by id, so the claimed item is always +1.
+            #
+            # Never derive this from AI-writable metadata: an earlier revision
+            # asked `incoming["status"]`/`existing["status"]` (metadata, not
+            # queue state) and a claim carrying `{"status": "queued"}` skipped
+            # the +1 — cap=2 admitted a 3rd running action (2026-09-14
+            # third-pass audit). Queue status is Queue-owned; only the stored
+            # per-action `status` is readable here.
+            if current_count + 1 > cap:
                 raise ValueError("Action Queue hypothesis action budget is exhausted")
 
     # 3b. Knowledge-card and skill anti-forgery (mechanical, not judgment):

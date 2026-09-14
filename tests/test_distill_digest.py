@@ -533,3 +533,95 @@ def test_rewrite_same_target_two_entries(tmp_path):
     assert len(blocks) == 2, text
     assert blocks[0].endswith("t.test/p1.json"), blocks  # 第一条目 → p1 digest
     assert blocks[1].endswith("t.test/p2.json"), blocks  # 第二条目 → p2 digest
+
+
+def test_publishable_digest_guard_rejects_wrong_target_and_body(tmp_path):
+    """三轮审计回归 2：已有摘要不能仅凭 `kind` 就复用。目标错误、facts 缺失、
+    夹带 body/headers 的文件都不是可发布摘要——旧实现直接复用它们，未校验
+    就留在 git-tracked 知识目录。"""
+    import json as _json
+    import sys as _sys
+
+    _sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    from distill_digest import FACT_FIELDS, _is_publishable_digest, write_digest
+
+    T = "t.test"
+    full_facts = {k: "" for k in FACT_FIELDS}
+    base = {"schema_version": 1, "kind": "distill-digest", "target": T,
+            "raw_path": "findings/t.test/p.json", "raw_sha256": "0" * 64,
+            "facts": full_facts, "note": "n"}
+
+    assert _is_publishable_digest(base, T)
+    assert not _is_publishable_digest({**base, "target": "other.test"}, T)
+    assert not _is_publishable_digest({**base, "body": "SECRET"}, T)
+    assert not _is_publishable_digest({**base, "headers": {"cookie": "x"}}, T)
+    assert not _is_publishable_digest({**base, "facts": {"method": "GET"}}, T)
+    assert not _is_publishable_digest([base], T)
+
+    # 端到端：目标错误的既有摘要不再被静默复用（拒绝自写而不是当 raw 重提取）
+    bad = tmp_path / "knowledge" / "distill-digests" / T / "p.json"
+    bad.parent.mkdir(parents=True)
+    bad.write_text(_json.dumps({**base, "target": "other.test"}), encoding="utf-8")
+    with pytest.raises(SystemExit, match="refusing to rewrite"):
+        write_digest(tmp_path, T, str(bad.relative_to(tmp_path)))
+
+
+def test_scrub_cross_segment_token_values(tmp_path):
+    """三轮审计回归 2b：关键词与取值分处两段时同样脱敏。
+    `/api/token/abcdefghijklmnopqrst`、`/reset-password/AbCdEfGhIjKlMnOpQrSt`
+    旧实现整段明文进 git（关键词必须与值同段才触发）。同时不得过度清洗
+    真实路由词（application-configuration / security-question / SecurityQuestions）。"""
+    import sys as _sys
+
+    _sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    from distill_digest import _scrub_path_tokens
+
+    for path in ("/api/token/abcdefghijklmnopqrst",
+                 "/reset-password/AbCdEfGhIjKlMnOpQrSt",
+                 "/api/session/abcdefghijkl",
+                 "/v/abcdefghijklmnop",
+                 "/t/AbCdEfGhIjKlMnOp"):
+        assert "redacted" in _scrub_path_tokens(path), path
+    for path in ("/api/verification", "/rest/user/login", "/rest/basket/1",
+                 "/users/12345", "/auth/reset-password",
+                 "/api/application-configuration", "/api/security-question",
+                 "/api/SecurityQuestions", "/api/order-history", "/api/data-export"):
+        assert _scrub_path_tokens(path) == path, path
+
+
+def test_migrate_combined_sources_is_idempotent(tmp_path):
+    """三轮审计回归 3：组合来源重复迁移不得丢引用。两组引用 [p1,p2] 与 [p2]
+    在同 target 下，旧实现的"包含任一引用"匹配让第二组又改写第一组，重跑后
+    两组都变成 [p2]，第一组的 p1 引用丢失。精确字面量匹配 + 条目消费记录
+    后重跑幂等。"""
+    import json as _json
+    import re as _re
+    import sys as _sys
+
+    _sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    from distill_digest import migrate_card_refs
+
+    ev = tmp_path / "findings" / "t.test"
+    ev.mkdir(parents=True)
+    for n in (1, 2):
+        (ev / f"p{n}.json").write_text(
+            _json.dumps({"request": {"method": "GET", "url": f"http://t/{n}"},
+                         "response": {"status": 200}}), encoding="utf-8")
+    card_dir = tmp_path / "knowledge" / "candidates"
+    card_dir.mkdir(parents=True)
+    card = card_dir / "combo.md"
+    card.write_text(
+        f"---\nid: combo\ntype: technique-card\nsource_refs:\n"
+        f"  - type: target-evidence\n    target: t.test\n    refs: [{ev}/p1.json; {ev}/p2.json]\n"
+        f"  - type: target-evidence\n    target: t.test\n    refs: [{ev}/p2.json]\n---\nbody\n",
+        encoding="utf-8",
+    )
+    migrate_card_refs(tmp_path, "combo")
+    first = card.read_text(encoding="utf-8")
+    blocks = _re.findall(r"refs: \[(.*?)\]", first)
+    assert len(blocks) == 2, first
+    assert "p1.json" in blocks[0] and "p2.json" in blocks[0], blocks
+    assert "p2.json" in blocks[1] and "p1.json" not in blocks[1], blocks
+
+    migrate_card_refs(tmp_path, "combo")
+    assert card.read_text(encoding="utf-8") == first  # 重跑幂等，不丢引用

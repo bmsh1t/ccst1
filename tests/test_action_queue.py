@@ -2916,3 +2916,42 @@ def test_hypothesis_cap_binds_pre_populated_add(tmp_path):
                                     evidence_ref=_ev(3), baseline_ref=_ev(3)))
     running = [a for a in load_queue(tmp_path, T)["actions"] if a["status"] == "running"]
     assert len(running) == 2
+
+
+def test_hypothesis_budget_ignores_writable_metadata_status(tmp_path):
+    """三轮审计回归 1：预算不得从 AI 可写的 metadata 推导。旧实现用
+    `incoming/existing` 里的 `status` 判断"本次 claim 会不会推进到
+    running"，claim 带上 `{"status": "queued"}` 即可让 cap=2 放行第 3 个
+    running。预算只看 Queue 拥有的 per-action `status`。"""
+    T = "cap-bypass.local"
+    base = {
+        "schema_version": 4, "hypothesis_id": "H1", "family": "fam", "technique": "tech",
+        "active_dimension": "input:body", "expected_learning": "learn", "kill_condition": "kc",
+        "decision_reason": "why", "input_boundary": "param", "endpoint": "/e", "method": "GET",
+        "skill_route": {"skill_id": "web2-vuln-classes", "required_dimensions": ["input:body"]},
+        "risk_tier": "low", "max_hypothesis_actions": 2,
+    }
+
+    def _ev(i):
+        p = tmp_path / "findings" / T / f"probe{i}.json"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({"i": i}))
+        return f"findings/{T}/probe{i}.json"
+
+    ids = []
+    for i in (1, 2, 3):
+        r = add_manual_action(tmp_path, target=T, action_type="probe", evidence=f"ev{i}",
+                              next_question=f"q{i}", action=f"act{i}", priority=50, source="test")
+        ids.append(r["queue"]["actions"][-1]["id"])
+
+    for i, aid in enumerate(ids[:2], 1):
+        claim_next_action(tmp_path, T, action_id=aid,
+                          metadata=dict(base, endpoint=f"/e{i}", evidence_ref=_ev(i), baseline_ref=_ev(i)))
+
+    # 攻击路径：claim 元数据里塞一个 running 之外的 status
+    with pytest.raises(ValueError, match="budget is exhausted"):
+        claim_next_action(tmp_path, T, action_id=ids[2],
+                          metadata=dict(base, endpoint="/e3", evidence_ref=_ev(3),
+                                        baseline_ref=_ev(3), status="queued"))
+    running = [a for a in load_queue(tmp_path, T)["actions"] if a["status"] == "running"]
+    assert len(running) == 2

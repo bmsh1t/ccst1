@@ -206,3 +206,26 @@ def test_load_target_memory_rejects_misfiled_target(tmp_path: Path) -> None:
     }))
     memory = _load_target_memory(tmp_path, "alpha.test")
     assert memory.get("active_leads") in (None, [])  # 归属不符 → 空
+
+
+def test_truncation_marker_boundary_is_exact(tmp_path: Path) -> None:
+    """三轮审计回归 4：截断提示的边界。旧实现存 6 条只返 5 条且不提示
+    （提示条件 `len(matched) > len(seen_texts)` 在恰好 6 时假），存 7 条
+    又把提示本身当成一条记录（counts 偏大）。正确语义：窗口填满后仍有
+    未输出条目才出现提示，提示不占窗口、不计入 counts。"""
+    for stored, want_count, want_marker in ((5, 5, 0), (6, 5, 1), (7, 5, 1)):
+        repo = tmp_path / f"n{stored}"
+        goals = repo / "memory" / "goals" / "targets"
+        goals.mkdir(parents=True)
+        (goals / "t.example.json").write_text(json.dumps({
+            "schema_version": 1, "target": "t.example",
+            "active_leads": [{"ts": f"2026-09-11T0{i}:00:00Z", "text": f"lead {i}"}
+                             for i in range(stored)],
+            "dead_ends": [], "useful_patterns": [], "next_actions": [], "facts": {},
+        }), encoding="utf-8")
+        view = build_recall_view(repo, target="t.example", kinds=["lead"])
+        entries = view["target_entries"]
+        markers = [e for e in entries if e.get("truncated")]
+        assert len(markers) == want_marker, (stored, markers)
+        assert view["counts"]["target_entries"] == want_count, stored
+        assert view["counts"]["truncated_windows"] == want_marker, stored
