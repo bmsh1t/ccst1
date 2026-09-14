@@ -29,6 +29,9 @@ capabilities:
       - anonymous-read
       - object-id
     note: first /distill target-evidence card (2026-09-11, BOLA basket pattern)
+    status: retired
+    retired_at: 2026-09-14T05:54:25Z
+    retired_reason: "three-question fail (2026-09-14 audit): single-target juice-shop observation (public lab, model-seen q1) whose generalized form is fully covered by rest-numeric-id-cross-actor (trigger/boundary/counterexample/digest provenance intact there); duplicate with no increment"
   - id: api-idor
     kind: card
     file: knowledge/cards/api-idor.md
@@ -51,6 +54,9 @@ capabilities:
       - xhr
       - schema
       - mobile-api
+    status: retired
+    retired_at: 2026-09-14T05:54:25Z
+    retired_reason: "three-question fail (2026-09-14 audit): generic API-testing methodology (merge docs/JS/XHR/mobile surfaces) is model-common knowledge (q1) and inferable by any competent model during API work (q2); no boundary, no stop condition, no real-cost increment (q3)"
   - id: auth-access
     kind: card
     file: knowledge/cards/auth-access.md
@@ -478,6 +484,9 @@ capabilities:
       - dead-end
       - low-value
       - stop-condition
+    status: retired
+    retired_at: 2026-09-14T05:54:25Z
+    retired_reason: "three-question fail (2026-09-14 audit): trigger and stop conditions are a subset of triage-validation Skill's noise classification (precondition-unrealistic / information-only), inferable from that contract (q2); card body contains no concrete case material requiring migration (verified on re-read)"
   - id: missing-parameter-discovery
     kind: card
     file: knowledge/cards/missing-parameter-discovery.md
