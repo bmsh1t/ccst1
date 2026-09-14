@@ -15,7 +15,7 @@
 
 ```python
 finish_run(context, status=..., stop_reason=..., counters=..., exit_code=...)
-python3 tools/oast_listen.py start|poll|stop --target <target>
+python3 tools/oast_listen.py start|markers|poll|stop --target <target>
 ```
 
 ### 3. Contracts
@@ -31,6 +31,13 @@ python3 tools/oast_listen.py start|poll|stop --target <target>
 - OAST `start` 创建当前监听代次的活动 `oast-callback`；`poll` 无回调保持活动，有回调
   转为 `candidate` 并记录 callback artifact/count；`stop` 无回调转为 `dead-end`，已有
   callback 不得关闭 candidate。最终认领仍由人工处理。
+- OOB marker 归因（2026-09-14）：`markers` 只铸造唯一标记 host
+  （`<label>-<uid>.<oast-domain>`，uid 为 10 hex，注册于
+  `findings/<target>/oast/markers.json`，原子写），不生成 payload——payload 本体由 AI
+  临场构造（input-agnostic 契约，db4c930 不复活模板库）。`poll` 对每条 drained
+  callback 做 host 匹配，命中即在记录上附 `marker_id`/`marker_label`/
+  `marker_vuln_class`；无 marker 注册时 callback 原样通过。归因不改变 queue
+  disposition（回调仍是 candidate-only 证据）。
 
 ### 4. Validation & Error Matrix
 
@@ -42,6 +49,10 @@ python3 tools/oast_listen.py start|poll|stop --target <target>
 | valid credential/token | queue `candidate`，只引用私有 evidence/summary |
 | OAST poll callback | queue `candidate`，保存 callback artifact/count |
 | OAST stop without callback | queue `dead-end`，不声明 takeover/漏洞 |
+| markers 未 start | CLI exit 2 + stderr 提示，不写 markers.json |
+| markers 空 --vuln-class / 非法 --label | CLI exit 2，不写 markers.json |
+| poll 回调 host 命中 marker_id | 记录附 marker_id/label/vuln_class，disposition 不变 |
+| poll 无注册 marker | 回调原样通过，无归因字段 |
 
 ### 5. Good / Base / Bad Cases
 
@@ -56,8 +67,8 @@ python3 tools/oast_listen.py start|poll|stop --target <target>
 - `tests/test_spray_contract.py`：summary/queue 投影、幂等、candidate 不降级、同步失败 warning。
 - `tests/test_spray_http_form.py`：跨 Scope CSRF 拒绝。
 - `tests/test_spray_oauth.py`：跨 Scope redirect 拒绝和 guarded 分类。
-- `tests/test_oast_listen.py`：start/poll candidate、stop dead-end、队列路径隔离和 webhook
-  callback artifact。
+- `tests/test_oast_listen.py`：markers 铸造/校验/唯一性、poll 归因命中与无 marker 透传
+  （start/poll candidate、stop dead-end 的生命周期断言在 hypothesis_replay/spray 套件中）。
 
 ### 7. Wrong vs Correct
 

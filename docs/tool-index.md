@@ -124,7 +124,7 @@ identity, and cloud signals without re-enumerating everything.
 
 | Tool | When to use | One-line function |
 |---|---|---|
-| `tools/oast_listen.py` | Blind SSRF/XXE/RCE/SQLi suspected | **interactsh wrapper** — start/poll/stop callback listener (R4 new) |
+| `tools/oast_listen.py` | Blind SSRF/XXE/RCE/SQLi suspected | **interactsh wrapper + OOB marker attribution** — start/markers/poll/stop; `markers` mints a unique `<label>-<uid>.<oast-host>` to embed in your payload, `poll` attributes callbacks back to the payload and class |
 
 ## 7. Hunt orchestration & state
 

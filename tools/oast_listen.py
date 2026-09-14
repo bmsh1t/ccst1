@@ -25,14 +25,16 @@ Design choices:
 
 Subcommands:
   start    Launch listener; print callback URL.
-  poll     Drain new callbacks since the last poll (or all if --since 0).
+  markers  Register one OOB marker and get back the marker host to embed.
+  poll     Drain new callbacks since the last poll (or all if --since 0);
+           each drained callback is attributed to its marker when one matches.
   stop     Terminate listener (SIGTERM then SIGKILL after 3s).
   cleanup  Stop every repository-recorded listener (used at session end).
   status   List all known OAST instances and their liveness.
 
 Usage examples:
   python3 tools/oast_listen.py start    --target shop.com
-  python3 tools/oast_listen.py --start --provider interactsh  # legacy alias; uses target=default
+  python3 tools/oast_listen.py markers  --target shop.com --vuln-class ssrf
   python3 tools/oast_listen.py poll     --target shop.com
   python3 tools/oast_listen.py stop     --target shop.com
   python3 tools/oast_listen.py status
@@ -101,6 +103,7 @@ def _paths(target: str) -> dict[str, Path]:
         "backend": base / "backend.txt",
         "callbacks": base / "callbacks.jsonl",
         "since": base / "since.txt",
+        "markers": base / "markers.json",
     }
 
 
@@ -415,6 +418,7 @@ def cmd_poll(target: str, since_ts: int) -> int:
         return 0
     drained = 0
     last_ts = since_ts
+    markers = _load_markers(paths)
     for line in paths["callbacks"].read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
@@ -422,14 +426,14 @@ def cmd_poll(target: str, since_ts: int) -> int:
             record = json.loads(line)
         except json.JSONDecodeError:
             continue
-        normalized = _normalize_callback(record)
+        normalized = _attribute_callback(_normalize_callback(record), markers)
         if normalized["ts_unix"] < since_ts:
             continue
         sys.stdout.write(json.dumps(normalized) + "\n")
         drained += 1
         last_ts = max(last_ts, normalized["ts_unix"])
     paths["since"].write_text(str(last_ts))
-    _emit_poll_hint(target, drained=drained)
+    _emit_poll_hint(target, drained=drained, markers=len(markers))
     try:
         _sync_poll_action(target, paths=paths, callbacks=drained)
     except (OSError, ValueError, KeyError, TypeError) as exc:
@@ -452,21 +456,25 @@ def _poll_webhook_site(target: str, paths: dict[str, Path], since_ts: int) -> in
         return -1
     drained = 0
     last_ts = since_ts
+    markers = _load_markers(paths)
     for req in payload.get("data", []) or []:
         ts_iso = req.get("created_at", "")
         ts_unix = _iso_to_unix(ts_iso)
         if ts_unix < since_ts:
             continue
-        normalized = {
-            "ts": ts_iso,
-            "ts_unix": ts_unix,
-            "protocol": "http",
-            "source_ip": req.get("ip", ""),
-            "name": url,
-            "path": req.get("url", ""),
-            "method": req.get("method", ""),
-            "raw": json.dumps(req)[:1024],
-        }
+        normalized = _attribute_callback(
+            {
+                "ts": ts_iso,
+                "ts_unix": ts_unix,
+                "protocol": "http",
+                "source_ip": req.get("ip", ""),
+                "name": url,
+                "path": req.get("url", ""),
+                "method": req.get("method", ""),
+                "raw": json.dumps(req)[:1024],
+            },
+            markers,
+        )
         paths["base"].mkdir(parents=True, exist_ok=True)
         with paths["callbacks"].open("a", encoding="utf-8") as callback_log:
             callback_log.write(json.dumps(normalized, ensure_ascii=False) + "\n")
@@ -474,21 +482,23 @@ def _poll_webhook_site(target: str, paths: dict[str, Path], since_ts: int) -> in
         drained += 1
         last_ts = max(last_ts, ts_unix)
     paths["since"].write_text(str(last_ts))
-    _emit_poll_hint(target, drained=drained)
+    _emit_poll_hint(target, drained=drained, markers=len(markers))
     return drained
 
 
-def _emit_poll_hint(target: str, *, drained: int) -> None:
+def _emit_poll_hint(target: str, *, drained: int, markers: int = 0) -> None:
     next_action = (
         "no new callbacks — keep the selected test input in flight, poll again later"
         if drained == 0
-        else "review drained callbacks; correlate source_ip/path with the selected input"
+        else "review drained callbacks; attributed ones carry marker_id/"
+        "marker_vuln_class — tie them to the exact payload, then validate"
     )
     sys.stdout.write(
         "\n## CLAUDE_HINT\n"
         "phase: oast_poll\n"
         f"target: {target}\n"
         f"new_callbacks: {drained}\n"
+        f"registered_markers: {markers}\n"
         f"next_priority_action: {next_action}\n"
     )
 
@@ -600,6 +610,115 @@ def cmd_cleanup() -> int:
     return 1 if failures else 0
 
 
+# ─── Marker registry (OOB attribution) ─────────────────────────────────────
+# A marker is a unique left-label the AI embeds in its own payload (e.g.
+# `ssrf-<uid>.<oast-host>`). The tool never writes payloads — it mints the
+# unique label, remembers which vuln class claimed it, and later matches
+# callback hosts back to the exact payload that caused them.
+
+MARKER_LABEL_RE = r"^[a-z0-9][a-z0-9-]{0,40}$"
+
+
+def _new_marker_id() -> str:
+    return hashlib.sha256(os.urandom(16)).hexdigest()[:10]
+
+
+def _load_markers(paths: dict[str, Path]) -> list[dict]:
+    p = paths["markers"]
+    if not p.is_file():
+        return []
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return data if isinstance(data, list) else []
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def _save_markers(paths: dict[str, Path], markers: list[dict]) -> None:
+    """Atomic write, same envelope as the rest of the tool's state files."""
+    import tempfile
+
+    paths["base"].mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(
+        dir=str(paths["base"]), prefix=".markers.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(markers, ensure_ascii=False, indent=1))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, paths["markers"])
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def cmd_markers(target: str, vuln_class: str, label: str) -> int:
+    """Register one OOB marker; print the marker host to embed in a payload.
+
+    The AI constructs the actual payload around the returned host — the tool
+    contributes identity (unique label) and bookkeeping (class attribution),
+    never payload content (input-agnostic contract, db4c930).
+    """
+    paths = _paths(target)
+    url = paths["url"].read_text(encoding="utf-8").strip() if paths["url"].is_file() else ""
+    if not url:
+        _log_err(
+            f"no OAST URL recorded for {target}. "
+            f"Run `python3 tools/oast_listen.py start --target {target}` first."
+        )
+        return 2
+    klass = (vuln_class or "").strip().lower()
+    if not klass:
+        _log_err("--vuln-class is required (free-form, e.g. ssrf / xxe / sqli / rce)")
+        return 2
+    import re as _re
+
+    label = (label or "").strip().lower() or f"{klass}-x"
+    if not _re.match(MARKER_LABEL_RE, label):
+        _log_err(f"invalid --label '{label}': lowercase alnum/hyphen, <=41 chars")
+        return 2
+    marker_id = _new_marker_id()
+    marker_host = f"{label}-{marker_id}.{url.rstrip('/')}"
+    markers = _load_markers(paths)
+    markers.append({"marker_id": marker_id, "label": label, "vuln_class": klass,
+                    "marker_host": marker_host, "registered_at": int(time.time())})
+    _save_markers(paths, markers)
+    _log_ok(f"marker registered: class={klass} label={label}")
+    sys.stdout.write(marker_host + "\n")
+    sys.stdout.write(
+        "\n## CLAUDE_HINT\n"
+        "phase: oast_markers\n"
+        f"target: {target}\n"
+        f"marker_host: {marker_host}\n"
+        f"vuln_class: {klass}\n"
+        "next_priority_action: build the payload around marker_host with your own "
+        "technique, fire it at the sink, then poll — callbacks carrying this host "
+        "attribute to this marker\n"
+    )
+    return 0
+
+
+def _attribute_callback(normalized: dict, markers: list[dict]) -> dict:
+    """Attach `marker` attribution fields to one normalized callback record.
+
+    Match rule: the marker's unique id appears in the callback host (interactsh
+    `full-id`/`unique-id` field) — unique across the session, so the first hit
+    wins. No markers registered -> callback passes through unattributed.
+    """
+    host = str(normalized.get("name") or "").lower()
+    for m in markers:
+        if m.get("marker_id") and str(m["marker_id"]) in host:
+            normalized["marker_id"] = m["marker_id"]
+            normalized["marker_label"] = m.get("label", "")
+            normalized["marker_vuln_class"] = m.get("vuln_class", "")
+            break
+    return normalized
+
+
 # ─── Callback normalization ─────────────────────────────────────────────────
 def _normalize_callback(record: dict) -> dict:
     """Produce a stable schema across interactsh and webhook.site sources."""
@@ -652,6 +771,22 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help="Unix timestamp filter; 0 returns the full log (default 0).",
+    )
+
+    p_markers = sub.add_parser(
+        "markers",
+        help="Register one OOB marker; print the unique marker host to embed in a payload.",
+    )
+    p_markers.add_argument("--target", required=True)
+    p_markers.add_argument(
+        "--vuln-class",
+        required=True,
+        help="Free-form class for attribution (ssrf / xxe / sqli / rce / ...).",
+    )
+    p_markers.add_argument(
+        "--label",
+        default="",
+        help="Optional human label embedded in the marker host (default: <vuln-class>-x).",
     )
 
     p_stop = sub.add_parser("stop", help="Terminate listener (SIGTERM then SIGKILL).")
@@ -720,6 +855,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_start(args.target, args.allow_external)
     if args.cmd == "poll":
         return cmd_poll(args.target, args.since_ts)
+    if args.cmd == "markers":
+        return cmd_markers(args.target, args.vuln_class, args.label)
     if args.cmd == "stop":
         return cmd_stop(args.target)
     if args.cmd == "cleanup":

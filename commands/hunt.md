@@ -144,11 +144,16 @@ Browser-state surfaces should use the shared browser evidence lane:
 ## Blind/OAST Workflow
 
 ```bash
-python3 tools/oast_listen.py start --target target.com
-python3 tools/oast_listen.py poll --target target.com
+python3 tools/oast_listen.py start   --target target.com
+python3 tools/oast_listen.py markers --target target.com --vuln-class ssrf --label img-fetch
+python3 tools/oast_listen.py poll    --target target.com
 ```
 
-A callback is a Signal. Promote to Candidate only after you can tie it to a specific sink, request, and impact path.
+Build your own payload around the marker host the `markers` command prints —
+the tool contributes the unique identity, not the payload content. A callback
+is a Signal; a callback carrying your marker_id attributes to the exact payload
+and vuln class. Promote to Candidate only after you can tie it to a specific
+sink, request, and impact path.
 
 ## Scanner Controls
 

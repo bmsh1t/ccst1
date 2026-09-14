@@ -6,10 +6,6 @@
 
 ## 工程
 
-- **OOB marker 归因**（claude-bug-bounty 唯一幸存借鉴项，2026-09-08 对比审阅）
-  `tools/oast_listen.py` 加 `payloads` 子命令：payload 内嵌唯一子域
-  （如 `ssrf-{uid}.{oob}`）→ 回连 host 匹配归因到漏洞类+具体 payload。
-  ~150 行。验收：发 payload 后 poll 能报出"哪个回连来自哪个 payload"。
 - **intel_engine components 采集 bug**（2026-09 juice-shop 3001 靶场实测）
   components:[] 空解析——指纹已到位但组件未入 artifact。孤立 bug，碰
   intel lane 或顺路时修。
