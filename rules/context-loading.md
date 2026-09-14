@@ -19,7 +19,7 @@ Context Pack 的默认入口是当前目标状态（如存在 `memory/goals/acti
 - `CLAUDE.md` 由平台常驻加载，不重复列入 `must_read`；Context Pack、Queue 和 runner
   不把平台安全契约变成第二个 `must_read` 或执行门禁。
 - `must_read` 只包含目标状态、`skills/runtime-protocol.md`、当前证据/Ledger 和证据
-  明确需要的工具引用。Skill 的选择与加载、空壳推荐字段、claim 时的显式 route 选择
+  明确需要的工具引用。Skill 的选择与加载、claim 时的显式 route 选择
   与 `skill_override_reason` 适用条件：权威定义在 `skills/runtime-protocol.md`。
 - 正式安装面是 `skills/*.md` 和 `skills/*/`；根目录不再提供单文件 Skill 入口。
 

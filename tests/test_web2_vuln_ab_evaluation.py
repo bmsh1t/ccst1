@@ -26,10 +26,10 @@ def test_web2_vuln_ab_cases_keep_post_slim_signal_coverage():
     assert not summary["cases_missing_even_enhanced"]
     assert not summary["route_gap_cases"]
     # S1 native loading (batch 3): the pack's skill recommendation slot is
-    # retired (empty shell); this eval scores card/signal recall quality,
-    # which is unchanged. The rows keep the empty selected_skill for display.
+    # removed; this eval scores card/signal recall quality, which is unchanged.
+    # Rows now carry no skill value at all.
     assert all(
-        row["selected_skill"] == ""
+        row["selected_skill"] in ("", None)
         for row in result["rows"]
     )
 

@@ -61,8 +61,9 @@ except ImportError:  # pragma: no cover - direct tools/ execution
 # on demand via the native Claude Code Skill tool (frontmatter description is
 # the routing surface). The pack neither recommends a skill nor publishes a
 # skill catalog — discoverability belongs to the platform skill surface.
-# `selected_skill` / `skill_route` / `selected_skill_id` / `why_this_skill`
-# remain as empty compatibility shells
+# The former `selected_skill` / `skill_route` / `selected_skill_id` /
+# `why_this_skill` shell fields were removed; readers treat them as absent
+# (checkpoint/resume use .get with defaults, so old checkpoints still parse).
 # for old checkpoint/witness readers.
 
 KNOWN_SKILL_OR_FOCUS = {
@@ -1315,15 +1316,6 @@ def build_context_pack(
         "facts": _target_facts_projection(goal_memory),
         "focus": focus,
         "tech_stack": tech_stack,
-        # Compatibility shells (S1 native skill loading, batch 3): the pack no
-        # longer recommends a skill. Empty values stay schema-compatible with
-        # old checkpoint/witness readers. Skills are selected and loaded by
-        # the AI via the native Skill tool; the platform's skill listing is
-        # the routing surface, the pack does not duplicate it.
-        "selected_skill": "",
-        "selected_skill_id": "",
-        "why_this_skill": "",
-        "skill_route": {},
         "must_read": must_read,
         "knowledge_cards": cards,
         "card_catalog": _card_catalog(repo, registry=registry),

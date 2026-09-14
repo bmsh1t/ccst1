@@ -213,14 +213,14 @@ def _run_with_skills(task: SkillEvalTask) -> tuple[str, int, int]:
         cards=visible_cards,
         seeds=seeds,
         checks=checks,
-        skill=str(pack["selected_skill_id"]),
+        skill="",
         selected_cards=selected_cards,
     )
     # S1 native loading (batch 3): the pack's skill recommendation slot is
     # retired (empty shell); skills are selected by the AI via the native
     # Skill tool. This eval scores card recall quality, which is unchanged.
-    assert pack["selected_skill_id"] == ""
-    assert pack["skill_route"] == {}
+    assert "selected_skill_id" not in pack
+    assert "skill_route" not in pack
     assert not [card for card in task.expected_cards if card not in visible_cards]
     assert not [card for card in task.forbidden_cards if card in selected_cards]
     # Static seeds are retired (2026-09-13): the knowledge they carried lives

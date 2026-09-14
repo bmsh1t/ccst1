@@ -54,5 +54,5 @@ def test_direct_only_skills_have_domain_contracts_and_stay_manual(tmp_path):
     # on-disk SKILL.md frontmatter) is the single routing surface.
     for skill_id in DIRECT_ONLY:
         pack = build_context_pack(tmp_path, target="target.com", focus=f"{skill_id} review")
-        assert pack["selected_skill_id"] == ""
+        assert "selected_skill_id" not in pack
         assert "skill_catalog" not in pack

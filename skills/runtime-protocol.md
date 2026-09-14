@@ -55,9 +55,9 @@ Claude Code CLI 当前主会话保留最终路线判断权。本协议、推荐 
 
 卡片保持独立，提供模式、反例和证据提示；Skill 保留路线和证据门，不复制卡片正文。
 
-Context Pack 的 `selected_skill`、`skill_route` 和 `knowledge_cards` 是兼容推荐字段
-（S1 原生加载铺开后 skill 两个字段为空；pack 不发布 skill 目录，可发现性由平台技能面
-原生持有），不是已选择的执行
+Context Pack 的 `knowledge_cards` 是兼容推荐字段；skill 推荐壳字段
+（`selected_skill`/`skill_route`/`selected_skill_id`/`why_this_skill`）已删除，
+skill 可发现性由平台技能面原生持有，pack 不发布 skill 目录。它们从来不是已选择的执行
 状态，也不进入默认 `must_read` 或自动写入 Queue。Skill 的选择与加载由 AI 通过原生
 Skill 工具完成（frontmatter description 是路由面）；Claude 在实质 Action Queue claim 时
 显式选择 Skill route；只有替换 action owner 已有 route 时才需要
