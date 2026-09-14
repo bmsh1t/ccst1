@@ -572,6 +572,11 @@ def show(args: argparse.Namespace) -> str:
     if not target:
         return "No active target. Run: python3 tools/target_memory.py set <target>"
     target_memory = load_target_memory(target)
+    # Explicit-target reads must not bleed the global active record into
+    # another target's summary (2026-09-14 audit): the active fields are
+    # only authoritative when the shown target IS the active target.
+    if args.target and active.get("target") and args.target != active.get("target"):
+        active = {}
     return format_summary("TARGET MEMORY", active, target_memory)
 
 

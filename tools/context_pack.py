@@ -1393,6 +1393,11 @@ def format_context_pack(pack: dict) -> str:
         f"- Active goal: {pack.get('active_goal') or '-'}",
         f"- Current hypothesis: {pack.get('current_hypothesis') or '-'}",
         f"- Tech stack: {', '.join(pack.get('tech_stack') or []) or '-'}",
+        "- Facts (from the target's goal memory):",
+        *_format_list([
+            "{text}".format(text=str(item.get("text") or item.get("fact") or ""))
+            for item in pack.get("facts", [])
+        ] if pack.get("facts") else ["-"]),
         "- Skill recommendation retired (S1 native loading): select and load skills on demand via the Claude Code Skill tool (the platform's skill listing is the routing surface).",
         "- Must read:",
         *_format_list(pack["must_read"]),

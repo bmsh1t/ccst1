@@ -19,6 +19,8 @@ def _seed(repo: Path, *, target: str = "t.example", other: str = "other.example"
     goals = repo / "memory" / "goals" / "targets"
     goals.mkdir(parents=True, exist_ok=True)
     (goals / f"{tkey}.json").write_text(json.dumps({
+        "schema_version": 1,
+        "target": target,
         "active_leads": [
             {"ts": "2026-09-11T00:00:00Z", "text": "basket BOLA anonymous read",
              "structured": {"hypothesis": "basket BOLA", "evidence_ref": "evidence/x.json"}},
@@ -35,6 +37,8 @@ def _seed(repo: Path, *, target: str = "t.example", other: str = "other.example"
     }), encoding="utf-8")
     # 另一个目标的私有情节——绝不能出现在 t.example 的视图里
     (goals / f"{okey}.json").write_text(json.dumps({
+        "schema_version": 1,
+        "target": other,
         "active_leads": [{"ts": "2026-09-11T00:00:00Z", "text": "other target private lead about BOLA basket"}],
         "dead_ends": [], "useful_patterns": [], "next_actions": [], "facts": {},
     }), encoding="utf-8")
@@ -184,3 +188,21 @@ def test_knowledge_cards_empty_registry_returns_no_cards(tmp_path):
     view = build_recall_view(tmp_path, target="t.example")
     assert view["counts"]["knowledge_cards"] == 0
     assert not any("basket-idor" in e.get("ref", "") for e in view["knowledge_cards"])
+
+
+def test_load_target_memory_rejects_misfiled_target(tmp_path: Path) -> None:
+    """二轮审计回归：beta 记录误放进 alpha 文件名时，recall 通过 canonical
+    loader 拒绝（归属不符返回空），不再把 beta 内容标成 alpha 返回。"""
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from tools.experience_recall import _load_target_memory
+
+    misfiled = tmp_path / "memory" / "goals" / "targets" / "alpha.test.json"
+    misfiled.parent.mkdir(parents=True, exist_ok=True)
+    misfiled.write_text(json.dumps({
+        "schema_version": 1, "target": "beta.test",  # 文件名 alpha，内容 beta
+        "active_leads": [{"ts": "t", "text": "beta private lead"}],
+    }))
+    memory = _load_target_memory(tmp_path, "alpha.test")
+    assert memory.get("active_leads") in (None, [])  # 归属不符 → 空

@@ -82,25 +82,30 @@ def _scrub_identity_value(value: Any) -> str:
 def _scrub_path_tokens(path: str) -> str:
     """路径段脱敏：像 token/secret 的段替换为占位符。
 
-    判据是形态不是字典：段长 ≥16 且混合字符类（字母+数字），或匹配
-    common token 参数名。数字段（对象 ID）保留——它们是 IDOR 分析的
-    事实本体，不是凭据。
+    判据是形态不是字典：命中敏感参数名（含 reset/verify/auth 场景词），
+    或段呈现高熵形态（≥12 混合字符类，或 ≥20 纯字母长串——纯字母
+    token 同样可携带凭据，2026-09-14 二轮审计负例）。数字段（对象 ID）
+    保留——它们是 IDOR 分析的事实本体，不是凭据。发布边界原则：未命中
+    形态正则不等于可以公开，对可疑段保守处理。
     """
     import re
 
     TOKEN_PARAM = re.compile(
-        r"(token|secret|key|password|signature|nonce|session|jwt|otp|code)",
+        r"(token|secret|key|password|signature|nonce|session|jwt|otp|code|reset|verify|auth)",
         re.IGNORECASE,
     )
-    LONG_RANDOM = re.compile(r"^(?=.*[A-Za-z])(?=.*\d).{16,}$")
+    MIXED_RANDOM = re.compile(r"^(?=.*[A-Za-z])(?=.*\d).{12,}$")
+    # 字母开头的长标识符（含下划线/连字符 token 形态）；19+ 避免误伤
+    # reset/verify 这类场景词段本身（它们是路由词不是凭据值）。
+    LONG_ALPHA = re.compile(r"^[A-Za-z][A-Za-z_-]{14,}$")
     segs = []
     for seg in path.split("/"):
         if not seg:
             segs.append(seg)
             continue
-        if TOKEN_PARAM.search(seg) and LONG_RANDOM.match(seg):
+        if TOKEN_PARAM.search(seg) and (MIXED_RANDOM.match(seg) or LONG_ALPHA.match(seg)):
             segs.append(f"<{TOKEN_PARAM.search(seg).group(1).lower()}-redacted>")
-        elif LONG_RANDOM.match(seg) and not seg.isdigit():
+        elif MIXED_RANDOM.match(seg) and not seg.isdigit():
             segs.append("<opaque-redacted>")
         else:
             segs.append(seg)
@@ -198,13 +203,39 @@ def build_digest(repo_root: Path, target: str, ref: str) -> dict[str, Any]:
 
 
 def write_digest(repo_root: Path, target: str, ref: str) -> tuple[Path, bool]:
-    """写一条 digest；已存在且内容一致则幂等复用。返回 (path, created)。"""
+    """写一条 digest；已存在且内容一致则幂等复用。返回 (path, created)。
+
+    digest 身份守卫（2026-09-14 审计）：ref 本身已是一个合法 digest 时，
+    复用原文件——不得把它当 raw probe 重新提取（promote 二次运行会把
+    已有摘要的 facts 覆盖成空值并形成 raw_path 自引用）。
+    """
     try:
         from tools.target_paths import target_storage_key
     except ImportError:  # pragma: no cover
         sys.path.insert(0, str(BASE_DIR))
         from target_paths import target_storage_key  # type: ignore
+
+    ref_path = Path(ref)
+    if ref_path.suffix == ".json" and "distill-digests" in ref_path.parts:
+        existing = Path(repo_root) / ref if not ref_path.is_absolute() else ref_path
+        if existing.is_file():
+            try:
+                payload = json.loads(existing.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                payload = None
+            if isinstance(payload, dict) and payload.get("kind") == "distill-digest":
+                return existing, False  # 已是合法 digest：复用，不重提取
+
     digest_path = digest_path_for(repo_root, target_storage_key(target), ref)
+    # 源=目的守卫：ref 解析出的目标路径就是自身时拒绝（防自引用破坏）。
+    try:
+        if Path(digest_path) == (Path(repo_root) / ref if not Path(ref).is_absolute() else Path(ref)):
+            raise SystemExit(
+                f"digest: refusing to rewrite {ref} onto itself — pass the raw probe, "
+                "not an already-generated digest"
+            )
+    except OSError:
+        pass
     payload = build_digest(repo_root, target, ref)
     text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     if digest_path.is_file() and digest_path.read_text(encoding="utf-8") == text:
@@ -276,11 +307,14 @@ def migrate_card_refs(repo_root: Path, card_id: str) -> dict[str, Any]:
             replaced[raw_ref] = rel
         if new_paths:
             ref_key = f"{target}|{';'.join(new_paths)}"
-            # 重写 frontmatter：定位该 source_refs 条目的 refs 列表；
+            # 重写 frontmatter：按条目当前 refs 内容（raw 路径指纹）定位，
+            # 而非只按 target——同 target 的两个条目各自持有不同 raw 引用，
+            # 只按 target 会让两个 ref 都改到第一个条目（2026-09-14 二轮审计）。
             # 找不到匹配条目时中止（不静默留下 raw 引用与 digest 不一致）。
-            if not _rewrite_ref_entry(lines, closing, target, new_paths):
+            if not _rewrite_ref_entry(lines, closing, target, new_paths, raw_refs=[r for r in refs_blob.split(";") if r.strip()]):
                 raise SystemExit(
                     f"digest: no matching target-evidence entry for target={target} "
+                    f"(raw refs {[r for r in refs_blob.split(';') if r.strip()]}) "
                     f"in {card.name}; refusing to leave refs inconsistent"
                 )
 
@@ -297,13 +331,15 @@ def migrate_card_refs(repo_root: Path, card_id: str) -> dict[str, Any]:
     return {"changed": True, "created": created, "card": str(card), "replaced": replaced}
 
 
-def _rewrite_ref_entry(lines: list[str], closing: int, target: str, new_paths: list[str]) -> bool:
+def _rewrite_ref_entry(lines: list[str], closing: int, target: str, new_paths: list[str],
+                       raw_refs: list[str] | None = None) -> bool:
     """在该条目自身的 frontmatter 块内重写 refs。
 
-    定位规则（2026-09-14 审计修复）：条目以 `type: target-evidence` 开始，
-    其后（到下一个 `- type:` 或 frontmatter 结束）的 `target:` 必须匹配当前
-    ref 的 target 才允许重写——此前函数忽略 target 参数，多来源卡的两个
-    条目都被改到第一个命中处（alpha 被写成 beta 的 digest，beta 未动）。
+    定位规则（2026-09-14 审计修复 + 二轮）：条目以 `type: target-evidence`
+    开始，其 `target:` 匹配当前 ref 的 target；**当同一 target 有多个条目时，
+    进一步用条目当前 refs 内容匹配 raw 路径指纹**——只按 target 定位会让同
+    target 的两个条目都被改到第一个（一轮跨 target 错配，二轮同 target 错配）。
+    raw_refs 为空时退化为纯 target 匹配（兼容单条目卡）。
     内联 `refs: [...]` 与列表 `refs:\n  - ...` 两种合法 YAML 都支持。
     返回是否重写；未找到匹配条目时返回 False（调用方据此报错，不静默）。
     """
@@ -313,7 +349,7 @@ def _rewrite_ref_entry(lines: list[str], closing: int, target: str, new_paths: l
     list_first = re.compile(r"^(\s*refs:\s*)$")
     entry_type = re.compile(r"^\s*-?\s*type:\s*target-evidence\s*$")
     next_entry = re.compile(r"^\s*-\s+type:")
-    target_line = re.compile(r"^\s*target:\s*(\S+)\s*$")
+    target_line = re.compile(r"^\s*target:\s*(\S+)\s*$")  # 值可带 YAML 引号，匹配前剥掉
 
     for index in range(1, closing):
         if not entry_type.match(lines[index]):
@@ -325,12 +361,18 @@ def _rewrite_ref_entry(lines: list[str], closing: int, target: str, new_paths: l
                 entry_end = scan
                 break
         entry_target = ""
+        entry_refs_text = ""
         for scan in range(index + 1, entry_end):
             m = target_line.match(lines[scan])
-            if m:
-                entry_target = m.group(1)
-                break
+            if m and not entry_target:
+                entry_target = m.group(1).strip("\"'")
+                continue
+            if "refs:" in lines[scan]:
+                entry_refs_text = "".join(lines[scan:entry_end])
         if entry_target != target:
+            continue
+        # 同 target 多条目：条目 refs 内容必须含本轮 raw 引用之一才可改写
+        if raw_refs and not any(raw in entry_refs_text for raw in raw_refs):
             continue
         joined = json.dumps(new_paths, ensure_ascii=False)
         for scan in range(index + 1, entry_end):

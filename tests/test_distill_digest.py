@@ -455,3 +455,81 @@ def test_migrate_refuses_when_entry_missing(tmp_path):
                               new_paths=["knowledge/distill-digests/zeta.local/p.json"]) is False
     assert "keep-me" in "".join(lines)  # 未匹配时原样保留
 
+
+
+def test_write_digest_reuses_existing_digest(tmp_path):
+    """二轮审计回归 1：ref 已是合法 digest 时复用，不当 raw 重新提取——
+    promote 二次运行曾把已有摘要的 facts 覆盖成空值并形成自引用。"""
+    import json as _json
+    import sys as _sys
+
+    _sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    from distill_digest import write_digest
+
+    raw = tmp_path / "findings" / "t.test" / "p.json"
+    raw.parent.mkdir(parents=True)
+    raw.write_text(_json.dumps({"request": {"method": "GET", "url": "http://t/rest/basket/1"},
+                                "response": {"status": 200}, "ts": "t"}))
+    p1, created1 = write_digest(tmp_path, "t.test", str(raw))
+    facts1 = _json.loads(p1.read_text())["facts"]
+    assert created1
+
+    p2, created2 = write_digest(tmp_path, "t.test", str(p1.relative_to(tmp_path)))
+    assert p2 == p1 and not created2
+    assert _json.loads(p2.read_text())["facts"] == facts1  # facts 未被空值覆盖
+
+
+def test_scrub_path_catches_pure_alpha_tokens(tmp_path):
+    """二轮审计回归 2：无数字的路径 token（RESET_FIXTURE_VALUE）同样脱敏——
+    旧正则要求字母+数字混合，纯字母凭据完全绕过。"""
+    import json as _json
+    import sys as _sys
+
+    _sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    from distill_digest import _probe_facts
+
+    p = tmp_path / "neg.json"
+    p.write_text(_json.dumps({"request": {"method": "GET",
+                                          "url": "http://t/reset/RESET_FIXTURE_VALUE"},
+                              "response": {"status": 200}, "ts": "t"}))
+    assert "RESET" not in _probe_facts(p, tmp_path)["path"]
+    # 场景词路由段不误伤
+    p2 = tmp_path / "ok.json"
+    p2.write_text(_json.dumps({"request": {"method": "GET",
+                                           "url": "http://t/api/verification"},
+                               "response": {"status": 200}, "ts": "t"}))
+    assert _probe_facts(p2, tmp_path)["path"] == "/api/verification"
+
+
+def test_rewrite_same_target_two_entries(tmp_path):
+    """二轮审计回归 3：同 target 两个来源条目各自路由——只按 target 定位
+    会让两个 ref 都改写第一个条目（第一个换成第二个的 digest，第二个
+    保留 raw）。带引号 target 值同测。"""
+    import json as _json
+    import re as _re
+    import sys as _sys
+
+    _sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    from distill_digest import migrate_card_refs
+
+    card_dir = tmp_path / "knowledge" / "candidates"
+    card_dir.mkdir(parents=True)
+    ev1 = tmp_path / "findings" / "t.test" / "p1.json"
+    ev2 = tmp_path / "findings" / "t.test" / "p2.json"
+    ev1.parent.mkdir(parents=True)
+    for ev, n in ((ev1, 1), (ev2, 2)):
+        ev.write_text(_json.dumps({"request": {"method": "GET", "url": f"http://t/{n}"},
+                                   "response": {"status": 200}}))
+    card = card_dir / "same-t.md"
+    card.write_text(
+        f"---\nid: same-t\ntype: technique-card\nsource_refs:\n"
+        f"  - type: target-evidence\n    target: t.test\n    refs: [{ev1}]\n"
+        f"  - type: target-evidence\n    target: \"t.test\"\n    refs: [{ev2}]\n---\nbody\n",
+        encoding="utf-8",
+    )
+    migrate_card_refs(tmp_path, "same-t")
+    text = card.read_text(encoding="utf-8")
+    blocks = _re.findall(r"refs: \[\"([^\"]+)\"\]", text)
+    assert len(blocks) == 2, text
+    assert blocks[0].endswith("t.test/p1.json"), blocks  # 第一条目 → p1 digest
+    assert blocks[1].endswith("t.test/p2.json"), blocks  # 第二条目 → p2 digest

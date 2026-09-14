@@ -91,10 +91,23 @@ def _entry_matches(entry: dict, query_tokens: set[str]) -> bool:
 
 
 def _load_target_memory(repo_root: Path, target: str) -> dict:
-    path = repo_root / "memory" / "goals" / "targets" / f"{target_storage_key(target)}.json"
+    """Load one target's memory through the canonical owner.
+
+    2026-09-14 审计修复：此前直接 json.loads 目标文件，绕过
+    ``normalize_target_memory`` 的归属校验——beta 记录被误放进 alpha
+    文件名时，正式 owner 拒绝而 recall 照读并把 beta 内容标成 alpha
+    返回。现在复用 ``load_target_memory_file``：归属不符返回空，
+    recall 不再成为绕过校验的第二读入口。
+    """
+    from tools.target_memory import canonical_target_value, load_target_memory_file
+
+    canonical = canonical_target_value(target)
+    path = repo_root / "memory" / "goals" / "targets" / f"{target_storage_key(canonical)}.json"
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        return load_target_memory_file(path, expected_target=canonical)
+    except ValueError:
+        # 归属不符（文件内容与文件名指向不同目标）：按缺失处理，不把
+        # 别的目标内容当本目标返回。
         return {}
 
 
@@ -120,6 +133,20 @@ def _collect_target_entries(
                 continue
             seen_texts.add(text)
             if len([e for e in entries if e["kind"] == kind]) >= DEFAULT_LIMITS[kind]:
+                # 有界视图提示（2026-09-14 审计）：截断必须可见——存 7 条
+                # 只返 5 条时，读者要知道这是窗口不是全部，且能去 owner
+                # 文件展开（原生 Read，不另造分页服务）。
+                if len(matched) > len(seen_texts):
+                    entries.append({
+                        "kind": kind,
+                        "target": target,
+                        "ts": "",
+                        "text": f"(truncated: {kind} window reached — read the owner file for full history)",
+                        "entry_id": "",
+                        "evidence_refs": [],
+                        "structured": None,
+                        "truncated": True,
+                    })
                 break
             structured = entry.get("structured") if isinstance(entry.get("structured"), dict) else None
             entries.append({
@@ -316,6 +343,19 @@ def main(argv: list[str] | None = None) -> int:
             print(f"- ({entry['kind']} {ts}){entry_id} {entry['text']}")
             if entry.get("evidence_refs"):
                 print(f"  evidence: {', '.join(entry['evidence_refs'][:3])}")
+            # structured 判断单元的关键字段必须进入默认文本（2026-09-14
+            # 审计）：JSON 保留了它们而文本不显示——压缩/接手后默认视图
+            # 丢失证据引用、下一步和停止条件，恢复时不得不再读原文件。
+            structured = entry.get("structured") if isinstance(entry.get("structured"), dict) else None
+            if structured:
+                for field, label in (
+                    ("evidence_ref", "evidence_ref"),
+                    ("next", "next"),
+                    ("stop_condition", "stop"),
+                ):
+                    value = str(structured.get(field) or "").strip()
+                    if value:
+                        print(f"  {label}: {value}")
         print()
     if view["pattern_db"]:
         print("## 本目标技术经验（PatternDB）")

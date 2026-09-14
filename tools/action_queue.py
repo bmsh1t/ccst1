@@ -433,19 +433,28 @@ def _validate_write_time_invariants(
             raise ValueError("Action Queue metadata exceeds the stored hypothesis action cap")
         hypothesis_id = str(merged.get("hypothesis_id") or "")
         if hypothesis_id:
+            # Budget counts EXECUTION admissions, not queue presence: only
+            # actions that are running or already produced evidence (lead/
+            # signal/candidate) occupy the hypothesis budget. Purely `queued`
+            # actions with pre-populated identity do NOT — a batch of 3 queued
+            # under cap=2 would otherwise see each other as spent budget and
+            # none could start (2026-09-14 second-pass audit). The cap still
+            # holds mechanically: claim admits at most cap running actions, and
+            # every later claim re-checks against the running/produced set.
             current_count = sum(
                 isinstance(action, dict)
                 and str((action.get("metadata") or {}).get("hypothesis_id") or "") == hypothesis_id
                 and str(action.get("id") or "") != str(item.get("id") or "")
-                and str(action.get("status") or "") in {"queued", "running", "lead", "signal", "candidate"}
+                and str(action.get("status") or "") in {"running", "lead", "signal", "candidate"}
                 for action in queue.get("actions", [])
             )
-            # The pre-population guard (`not existing.get("hypothesis_id")`) covered
-            # the normal claim path, but an add that already carried hypothesis_id
-            # skipped the budget check entirely — a cap of 2 admitted a 3rd running
-            # action (2026-09-14 audit). Count non-terminal actions regardless of
-            # whether this item's identity was set at add or claim time.
-            if current_count >= cap:
+            # A claim transitioning THIS item from queued to running must fit
+            # inside the budget together with the already-admitted set.
+            claiming_into_running = str(incoming.get("status") or "running") == "running" and str(
+                (existing.get("status") or "queued")
+            ) in {"", "queued"}
+            effective = current_count + (1 if claiming_into_running else 0)
+            if effective > cap:
                 raise ValueError("Action Queue hypothesis action budget is exhausted")
 
     # 3b. Knowledge-card and skill anti-forgery (mechanical, not judgment):

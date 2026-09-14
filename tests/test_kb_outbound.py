@@ -251,3 +251,36 @@ def test_retire_atomic_on_block_scan_failure(tmp_path: Path) -> None:
     with pytest.raises(SystemExit, match="pre-write check failed"):
         retire(tmp_path, card_id="t-card", reason="audit")
     assert reg.read_bytes() == before  # 原子性：拒绝时零改动
+
+
+def test_show_explicit_target_does_not_bleed_active(tmp_path: Path) -> None:
+    """二轮审计回归：active 是 beta 时显式 show alpha，摘要不得显示 beta
+    的 Goal/Hypothesis（此前 format_summary 从 active 记录取这些字段）。"""
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    import target_memory as tm
+
+    goals = tmp_path / "memory" / "goals"
+    targets = goals / "targets"
+    targets.mkdir(parents=True)
+    (goals / "active.json").write_text(json.dumps({
+        "target": "beta.test", "active_goal": "BETA-GOAL",
+        "current_hypothesis": "BETA-HYP", "phase": "hunt"}))
+    (targets / "alpha.test.json").write_text(json.dumps({
+        "schema_version": 1, "target": "alpha.test",
+        "active_goal": "ALPHA-GOAL", "current_hypothesis": "ALPHA-HYP",
+        "active_leads": [{"ts": "t", "text": "alpha lead"}]}))
+
+    orig_active, orig_targets = tm.ACTIVE_PATH, tm.TARGETS_DIR
+    tm.ACTIVE_PATH = goals / "active.json"
+    tm.TARGETS_DIR = targets
+    try:
+        import argparse
+
+        out = tm.show(argparse.Namespace(target="alpha.test"))
+        assert "BETA" not in out
+        assert "ALPHA-GOAL" in out
+        assert "ALPHA-HYP" in out
+    finally:
+        tm.ACTIVE_PATH, tm.TARGETS_DIR = orig_active, orig_targets
