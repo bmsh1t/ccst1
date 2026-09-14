@@ -67,6 +67,7 @@ branch when the observed evidence justifies it.
 | Upload, import, convert, preview, SVG/Office/XML | Upload parser; safe verification and read-back before storage, access, and execution proof |
 | Template syntax, command output, shell primitive | SSTI/command/controlled RCE |
 | ASP.NET `__VIEWSTATE` / ViewState / machineKey | Insecure deserialization / ViewState integrity |
+| IIS/ASP.NET server fingerprint | IIS short filename (~1) enumeration lane — `shortscan` is the tool (the scanner auto-runs it on detected IIS hosts; missing tool degrades to a manual review hint); enumerated filenames feed path/secrets discovery |
 | JSON body with `@type`/type-field shape, Java/fastjson/Jackson/Shiro stack signal | Insecure deserialization (Java) |
 | CL/TE, host header, proxy trust, cache key, unkeyed header | Proxy/cache/smuggling |
 | Origin, postMessage, DOM, CORS, clickjacking | Browser boundary |

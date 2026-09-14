@@ -140,7 +140,6 @@ Browser-state surfaces should use the shared browser evidence lane:
 - **JWT/OIDC/SAML/OAuth**: decode and inspect issuer/JWKS/callback/state/session binding signals before probing.
 - **SQL/NoSQL JSON body**: use the target-observed body or parameter shape and let Claude choose a bounded direct request. Optionally use `validation_runner.py request-diff` for an exact same-method pair; time-shaped candidates use AI interleaved sampling with a stable trend. Keep baseline/variant evidence and stop on transport, WAF, or ordinary application noise; do not invoke a fixed matrix or encoder catalogue.
 - **API leak / Swagger / Postman**: review `recon/<target>/exposure/` before widening.
-- **IIS short filename**: when IIS is detected, use `shortscan <url> -s -p 1`; if `shortscan` is missing, keep a manual review hint instead of failing.
 
 ## Blind/OAST Workflow
 
