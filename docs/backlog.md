@@ -36,6 +36,13 @@
 
 ## 低优先（记录在案）
 
+- **fingerprint 机械记录**（2026-09-14 终审）
+  Rotation 判定依据（progress fingerprint：hypothesis + surface + actor/state +
+  observation kind + evidence reference）只在 prose 里，resolve 时不落盘——
+  长跑压缩后 stall 判定靠回忆。修法约 20 行（resolve 时写入 action 记录）。
+  触发条件：实战出现一次压缩后 stall 误判再上（imagined-pain 判据）；
+  届时大概率是 checkpoint 投影加字段，不是新机制。
+
 - **vuln_memory L3 compaction 召回缺口**（四层记忆系统对比）
   长会话 target_memory 压缩时线索丢失风险；ccst 对应物是 checkpoint 交接。
 - **/stop 叙事对齐**（四层记忆系统对比）

@@ -98,6 +98,10 @@ For the selected hypothesis, ask only the lenses that fit its evidence:
 - **Connector**: what turns the primitive into data access, account impact,
   privileged state change, or controlled execution impact?
 
+These lenses are prompts, not an exhaustive taxonomy — evidence may demand a
+dimension not listed; invent it rather than forcing the question into one of
+the five.
+
 Developer inconsistencies are useful hypotheses, not proof. Preserve a normal
 baseline and change one boundary at a time.
 
