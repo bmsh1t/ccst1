@@ -1,8 +1,24 @@
 {
   "target": "127.0.0.1:3001",
-  "generated_at": "2026-09-14T01:39:33.056285",
-  "total_reports": 6,
+  "generated_at": "2026-09-15T05:24:27.202079",
+  "total_reports": 8,
   "reports": [
+    {
+      "id": "sqli_001",
+      "finding_id": "AQ-0034",
+      "title": "Unauthenticated SQL Injection \u2014 Full Database Read via Product Search",
+      "severity": "critical",
+      "url": "http://127.0.0.1:3001/rest/products/search?q=",
+      "file": "/root/tool/ccst(rename-_Ya66f2)/ccst/reports/127.0.0.1:3001/sqli_001.md",
+      "type": "sqli",
+      "source_file": "evidence/127.0.0.1:3001/validation/AQ-0034/20260914T044933921058Z-74d3a47a/summary.json",
+      "confidence": "high",
+      "queue_sync": {
+        "status": "skipped",
+        "reason": "no matching report action"
+      },
+      "canonical_lifecycle": true
+    },
     {
       "id": "auth_bypass_001",
       "finding_id": "AQ-0002",
@@ -42,7 +58,7 @@
       "file": "/root/tool/ccst(rename-_Ya66f2)/ccst/reports/127.0.0.1:3001/misconfig_002.md",
       "type": "Authz",
       "source_file": "/root/tool/ccst(rename-_Ya66f2)/ccst/findings/127.0.0.1:3001/basket-bola-generalized.claim.json",
-      "confidence": "high",
+      "confidence": "confirmed",
       "queue_sync": {
         "status": "updated",
         "id": "AQ-0027",
@@ -83,16 +99,35 @@
     {
       "id": "auth_bypass_004",
       "finding_id": "request_diff-rest_basket_1",
-      "title": "BOLA: cross-actor basket read on /rest/basket/<id> (witness /rest/basket/1)",
+      "title": "Candidate Authz on http://127.0.0.1:3001/rest/basket/1",
       "severity": "medium",
       "url": "http://127.0.0.1:3001/rest/basket/1",
       "file": "/root/tool/ccst(rename-_Ya66f2)/ccst/reports/127.0.0.1:3001/auth_bypass_004.md",
       "type": "auth_bypass",
       "source_file": "evidence/127.0.0.1:3001/validation/request_diff-rest_basket_1/20260913T131017168484Z-2de454f1/summary.json",
-      "confidence": "high",
+      "confidence": "confirmed",
       "queue_sync": {
         "status": "skipped",
         "reason": "no matching report action"
+      }
+    },
+    {
+      "id": "auth_bypass_005",
+      "finding_id": "ftp-nullbyte-bypass",
+      "title": "Unauthenticated /ftp/ access-control bypass",
+      "severity": "medium",
+      "url": "http://127.0.0.1:3001/ftp/package.json.bak",
+      "file": "/root/tool/ccst(rename-_Ya66f2)/ccst/reports/127.0.0.1:3001/auth_bypass_005.md",
+      "type": "auth_bypass",
+      "source_file": "evidence/127.0.0.1:3001/validation/ftp-nullbyte-bypass/",
+      "confidence": "high",
+      "queue_sync": {
+        "status": "ambiguous",
+        "reason": "multiple report actions match the same identity",
+        "ids": [
+          "AQ-0040",
+          "AQ-0042"
+        ]
       },
       "canonical_lifecycle": true
     }

@@ -6,9 +6,14 @@
 
 ## 工程
 
-- **intel_engine components 采集 bug**（2026-09 juice-shop 3001 靶场实测）
-  components:[] 空解析——指纹已到位但组件未入 artifact。孤立 bug，碰
-  intel lane 或顺路时修。
+（"intel_engine components 采集 bug"条目已裁决关闭，2026-09-15：
+诊断不成立——`-tech-detect` 已在 httpx 调用中，`technology_inventory`
+解析器对无 tech 字段的行为正确；真实情况是 httpx 默认 Wappalyzer 指纹
+对无 Server 头的 SPA 不命中。版本化 advisory 查询需要精确版本与
+PACKAGE_MAPPINGS 映射，两者都是设计边界：读锁文件/package.json.bak 提取
+版本属于目标特定证据，由 AI 按发现驱动，不硬编码进采集管道。
+3001 实战已按此路径闭环：AI 发现 /ftp/package.json.bak 可读 → 12 组件
++ KEV 落盘 intel.json。）
 
 ## 内容搬运
 
