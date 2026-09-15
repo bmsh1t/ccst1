@@ -2332,3 +2332,77 @@ def test_report_generator_idempotent_rerun_keeps_complete_report(monkeypatch, tm
     assert len(index2) == total2
     assert report_file.read_text(encoding="utf-8") == before
     assert report_file.stat().st_mtime_ns == mtime_before, "complete report must not be rewritten"
+
+
+def test_runner_endpoint_slots_collect_pair_sides():
+    """request-diff 记录了两个 URL；槽位收集必须含 request_pair 的 baseline/variant。"""
+    from tools.runner_witness import _runner_endpoint_slots
+
+    runner = {
+        "url": "https://target.example/api/own/7",
+        "request_pair": {
+            "baseline": {"url": "https://target.example/api/own/7"},
+            "variant": {"url": "https://target.example/api/admin/3"},
+        },
+    }
+    slots = _runner_endpoint_slots(runner)
+    assert "https://target.example/api/admin/3" in slots
+    assert "https://target.example/api/own/7" in slots
+    # 缺失/畸形 request_pair 时安全回退到顶层槽位
+    assert _runner_endpoint_slots({"url": "https://target.example/x"}) == [
+        "https://target.example/x"
+    ]
+    assert _runner_endpoint_slots({"request_pair": "not-a-dict"}) == []
+
+
+def test_report_runner_witness_accepts_variant_side_endpoint(tmp_path):
+    """finding 绑定 variant 侧端点也算命中：run 确实逐字打到了该 URL。
+
+    2026-09-15 实战：request-diff summary 顶层 url 只记 baseline，导致绑定
+    variant 实例的 claim 无法通过 witness，即使证据完整记录在 request_pair。
+    """
+    findings_dir = tmp_path / "findings" / "example.com"
+    created = finding_index.upsert_finding(
+        findings_dir,
+        {
+            "id": "variant-bound-finding",
+            "type": "idor",
+            "url": "https://example.com/api/Addresss/3",
+            "method": "PUT",
+            "validation_status": "validated",
+            "report_status": "not_generated",
+        },
+        target="example.com",
+    )
+    _bind_report_runner_witness(findings_dir, created["finding"])
+    finding = finding_index.find_finding(findings_dir, "variant-bound-finding")
+    assert finding is not None
+    summary_path = tmp_path / finding["runner_summary"]
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary["request_pair"] = {
+        "baseline": {"url": "https://example.com/api/Addresss/7"},
+        "variant": {"url": "https://example.com/api/Addresss/3"},
+    }
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+    witness = report_generator._canonical_runner_witness(
+        finding,
+        findings_dir=findings_dir,
+        target="example.com",
+    )
+    assert witness["valid"] is True, witness.get("reason")
+
+    # 未记录的端点仍然拒绝：匹配面只是"run 打过的槽位"，不引入模板匹配
+    summary["url"] = "https://example.com/api/Addresss/7"
+    summary["request_pair"] = {
+        "baseline": {"url": "https://example.com/api/Addresss/7"},
+        "variant": {"url": "https://example.com/api/Addresss/8"},
+    }
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+    witness = report_generator._canonical_runner_witness(
+        finding,
+        findings_dir=findings_dir,
+        target="example.com",
+    )
+    assert witness["valid"] is False
+    assert "runner endpoint mismatch" in witness["reason"]

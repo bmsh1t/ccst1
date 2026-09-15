@@ -43,9 +43,9 @@ except ImportError:  # pragma: no cover - package import path
     from tools.contracts import artifact_digest_material, runner_operation_id
 
 try:
-    from runner_witness import canonical_runner_witness
+    from runner_witness import canonical_runner_witness, _runner_endpoint_slots
 except ImportError:  # pragma: no cover - package import path
-    from tools.runner_witness import canonical_runner_witness
+    from tools.runner_witness import canonical_runner_witness, _runner_endpoint_slots  # type: ignore
 
 try:
     from closure_resolver import canonical_vuln_class
@@ -1717,17 +1717,15 @@ def _validate_machine_runner_witness(
             "so the run is owner-bound, or point runner_summary at a run recorded "
             "under this finding id"
         )
-    runner_endpoints = [runner.get(key) for key in ("url", "endpoint", "raw_endpoint")]
+    runner_endpoints = _runner_endpoint_slots(runner)
     if not any(_machine_endpoints_match(decision_endpoint, str(value or "")) for value in runner_endpoints):
         raise ValueError(
             "runner endpoint does not match decision.endpoint — fix: endpoint matching is "
-            "EXACT (template placeholders like <id> cannot bind a concrete run); "
-            "the runner summary records the BASELINE request url, so put the finding's "
-            "canonical endpoint in the baseline slot of the pair "
-            "(for a claim, rebind its url to the runner-proven instance, run checkpoint "
-            "reconcile, then re-run the runner so its sync updates the canonical "
-            "runner_operation_id); "
-            "or regenerate the decision with `tools/validate.py --finding-id <id> --scaffold`"
+            "EXACT against every endpoint the run recorded (top-level url plus the "
+            "request_pair baseline/variant urls; template placeholders like <id> cannot "
+            "bind a concrete run); re-run the runner so the finding's canonical endpoint "
+            "is one of the pair's URLs, or regenerate the decision with "
+            "`tools/validate.py --finding-id <id> --scaffold`"
         )
     runner_method = normalize_http_method(runner.get("method") or "GET")
     if runner_method != decision_method:

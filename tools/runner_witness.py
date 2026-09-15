@@ -99,6 +99,31 @@ def _endpoint_identity(value: str) -> str:
     return raw
 
 
+def _runner_endpoint_slots(runner):
+    """Collect every endpoint the run actually recorded.
+
+    A request-diff pair hits two URLs (baseline and variant); the summary's
+    top-level ``url`` only carries the baseline. A finding may legitimately
+    bind to the variant side, so exact matching must consider all recorded
+    slots — this widens the checked surface to what the run verbatim hit,
+    never to shape/template matching.
+    """
+    slots = []
+    for key in ("url", "endpoint", "raw_endpoint"):
+        value = str(runner.get(key) or "").strip()
+        if value:
+            slots.append(value)
+    pair = runner.get("request_pair")
+    if isinstance(pair, dict):
+        for side in ("baseline", "variant"):
+            request = pair.get(side)
+            if isinstance(request, dict):
+                value = str(request.get("url") or "").strip()
+                if value:
+                    slots.append(value)
+    return slots
+
+
 def _runner_endpoint_matches(expected, candidate, target):
     if not expected or not candidate:
         return False
@@ -111,7 +136,6 @@ def _runner_endpoint_matches(expected, candidate, target):
             return False
     if _endpoint_identity(expected) == _endpoint_identity(candidate):
         return True
-
     # Runner summaries use ``public_url_shape`` and intentionally redact query
     # values. Preserve endpoint identity by requiring the same path and
     # ordered parameter names; only an empty runner-side value may differ.
@@ -184,10 +208,13 @@ def _runner_ledger_row(repo_root, target, runner, artifact_refs):
             return None
         if str(entry.get("result") or "") != str(runner.get("result") or ""):
             return None
-        if not _runner_endpoint_matches(
-            str(runner.get("url") or runner.get("endpoint") or ""),
-            str(entry.get("raw_endpoint") or entry.get("endpoint") or ""),
-            target,
+        if not any(
+            _runner_endpoint_matches(
+                slot,
+                str(entry.get("raw_endpoint") or entry.get("endpoint") or ""),
+                target,
+            )
+            for slot in _runner_endpoint_slots(runner)
         ):
             return None
         runner_class = _runner_class(runner.get("vuln_class"))
@@ -225,10 +252,9 @@ def canonical_runner_witness(finding, *, findings_dir, target):
         if str(runner.get("finding_id") or "").strip() != expected_id:
             errors.append("runner finding mismatch")
             continue
-        if not _runner_endpoint_matches(
-            expected_endpoint,
-            str(runner.get("url") or runner.get("endpoint") or runner.get("raw_endpoint") or ""),
-            expected_target,
+        if not any(
+            _runner_endpoint_matches(expected_endpoint, slot, expected_target)
+            for slot in _runner_endpoint_slots(runner)
         ):
             errors.append("runner endpoint mismatch")
             continue
