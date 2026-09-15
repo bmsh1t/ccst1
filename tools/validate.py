@@ -1722,8 +1722,12 @@ def _validate_machine_runner_witness(
         raise ValueError(
             "runner endpoint does not match decision.endpoint — fix: endpoint matching is "
             "EXACT (template placeholders like <id> cannot bind a concrete run); "
-            "re-run the runner against the finding's canonical endpoint, or regenerate "
-            "the decision with `tools/validate.py --finding-id <id> --scaffold`"
+            "the runner summary records the BASELINE request url, so put the finding's "
+            "canonical endpoint in the baseline slot of the pair "
+            "(for a claim, rebind its url to the runner-proven instance, run checkpoint "
+            "reconcile, then re-run the runner so its sync updates the canonical "
+            "runner_operation_id); "
+            "or regenerate the decision with `tools/validate.py --finding-id <id> --scaffold`"
         )
     runner_method = normalize_http_method(runner.get("method") or "GET")
     if runner_method != decision_method:
