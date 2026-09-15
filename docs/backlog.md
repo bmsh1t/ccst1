@@ -15,6 +15,22 @@ PACKAGE_MAPPINGS 映射，两者都是设计边界：读锁文件/package.json.b
 3001 实战已按此路径闭环：AI 发现 /ftp/package.json.bak 可读 → 12 组件
 + KEV 落盘 intel.json。）
 
+- **记忆写回的措辞级重复**（2026-09-15 治理后第二轮实战实测）
+  `_append_unique_entries` 按整文本精确去重，surface hint 的括号注记
+  （"target-memory next action" vs "target-memory active lead"）变化即
+  视为新条目——同一线索 2 轮写了 2 条近似 lead。与嵌套污染同构的诱因
+  （把记忆自身身份编进回写文本）但危害低、有窗口上限自限。
+  触发条件：同一签名近似条目 ≥3 时再修；修法方向是按 URL/端点签名
+  归一去重，不是引入语义机制。
+
+- **Evidence Ledger 与 target memory 的 dead-end 不互通**（2026-09-15 实测）
+  `/redirect` SSRF 在 ledger 记了 dead_end，target memory 的
+  `dead_ends` 仍为 0——checkpoint 的 `target_write_back.dead_end` 只从
+  coverage gaps 生成，不读 ledger 终态。危害：`/pickup` 时 AI 看不到
+  "此路不通"教训，可能重复探测已死路线。触发条件：实战出现一次
+  因记忆缺 dead-end 导致的重复探测再修；修法方向是 checkpoint 投影
+  合并 ledger 的 dead_end 终态。
+
 ## 内容搬运
 
 - **vuln-report 报告纪律**（四层记忆系统对比，2026-09 确认）
