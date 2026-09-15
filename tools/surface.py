@@ -21,7 +21,7 @@ if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
 from memory.target_profile import default_memory_dir, load_target_profile  # noqa: E402
-from tools.target_memory import load_goal_memory  # noqa: E402
+from tools.target_memory import load_goal_memory, text_is_polluted  # noqa: E402
 try:
     from tools.closure_resolver import canonical_endpoint_path
     from tools.coverage_matrix import load_matrix
@@ -579,7 +579,12 @@ def _target_memory_summary(target_goal_memory: dict) -> dict:
 
 
 def _target_memory_text(item: dict) -> str:
-    return str(item.get("text", "") or "").strip()
+    text = str(item.get("text", "") or "").strip()
+    if text_is_polluted(text):
+        # 存量嵌套污染（2026-09-15 治理）：宁可空，不把残缺 repr 透传进
+        # workflow lead 的 title/next_action——那正是污染放大的入口。
+        return ""
+    return text
 
 
 def _memory_token_matches(token: str, haystack: str) -> bool:

@@ -31,9 +31,11 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 try:
     from tools.target_paths import canonical_target_value, target_storage_key
+    from tools.target_memory import text_is_polluted
 except ImportError:  # pragma: no cover - direct tools/ execution
     sys.path.insert(0, str(BASE_DIR))
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
+    from target_memory import text_is_polluted  # type: ignore
 
 
 # 每类条目的默认上限：聚合视图是工作集压缩的读形态，不是全量 dump
@@ -62,20 +64,25 @@ def _tokenize(text: str) -> set[str]:
 
 
 def _entry_text(entry: dict) -> str:
-    """Normalize entry text: plain string, dict, or legacy stringified dict."""
+    """Normalize entry text: plain string, dict, or legacy stringified dict.
+
+    存量嵌套污染（2026-09-15 治理）：能干净解出的用解出值；解出后仍含
+    结构外壳（内嵌形态，边界已被有损截断破坏）返回空——不用残缺文本
+    伪装正常记忆。
+    """
     text = entry.get("text", "")
     if isinstance(text, dict):
-        return str(text.get("text", "") or "")
+        text = str(text.get("text", "") or "")
     raw = str(text or "")
-    # 历史写入方曾把 dict 的 repr 存成 text（"{'schema_version': 1, ...}"）。
-    # 提取内层 'text': '...' 的值；解析失败保持原文。
-    if raw.startswith("{'") and "'text': '" in raw:
+    if text_is_polluted(raw):
+        # 历史写入方曾把 dict 的 repr 存成 text；尝试解出内层 text。
         try:
             parsed = ast.literal_eval(raw)
-            if isinstance(parsed, dict):
-                return str(parsed.get("text", "") or raw)
+            inner = str(parsed.get("text", "") or "") if isinstance(parsed, dict) else ""
         except (ValueError, SyntaxError):
-            pass
+            inner = ""
+        # 内嵌形态解不出干净文本（title[:140] 截断破坏了边界）——返回空
+        return inner if (inner and not text_is_polluted(inner)) else ""
     return raw
 
 

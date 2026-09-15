@@ -60,6 +60,21 @@ TARGET_MEMORY_STRING_FIELDS = (
 )
 TARGET_MEMORY_SKILL_FIELDS = ("selected_skills", "knowledge_focus")
 
+# text 字段的污染特征：曾有两处写入方把结构化 proposal 整体 str() 后存进 text
+# （checkpoint 的 _dedupe 与 surface 的回灌链，2026-09-15 治理）。特征锚定
+# 结构外壳本身（schema_version 键的字面量），不做语义猜测。
+POLLUTED_TEXT_MARKERS = ("{'schema_version'", '{"schema_version"')
+
+
+def text_is_polluted(text: object) -> bool:
+    """True 当 text 含已序列化结构外壳（嵌套污染的存量形态）。
+
+    读入口据此返回空（不把残缺文本伪装成正常记忆透传给下游）；
+    写入口据此拒绝写入。两者都 import 本函数——单一判据 owner。
+    """
+    raw = str(text or "")
+    return any(marker in raw for marker in POLLUTED_TEXT_MARKERS)
+
 
 def now_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

@@ -76,6 +76,7 @@ try:
         load_target_memory_file,
         new_target_memory,
         target_memory_mutation_lock,
+        text_is_polluted,
         write_handoff_file,
         write_json as write_target_memory_json,
     )
@@ -123,6 +124,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         load_target_memory_file,
         new_target_memory,
         target_memory_mutation_lock,
+        text_is_polluted,
         write_handoff_file,
         write_json as write_target_memory_json,
     )
@@ -1514,6 +1516,20 @@ def _decision_for_action(action: str) -> str:
     return ACTION_DECISIONS.get(str(action or "").strip().lower(), "handoff")
 
 
+def _is_target_memory_echo(lead: object) -> bool:
+    """True for workflow leads projected out of target memory by surface.py.
+
+    surface 把 active_leads/next_actions 投影成软性 workflow lead 参与**排序**；
+    若 checkpoint 再把这条投影写回 target memory，就形成自我嵌套（每轮 handoff
+    多包一层结构外壳，2026-09-15 污染治理）。过滤投影不影响源——人工 lead 仍
+    在 target memory，下一轮 surface 照常读出参与排序。source 枚举自 surface.py
+    的 8 个 lead 来源，仅 target_memory 是记忆回声，其余 7 个均为 live 来源。
+    """
+    if not isinstance(lead, dict):
+        return False
+    return str(lead.get("source") or "") == "target_memory"
+
+
 def _lead_proposals(
     state: dict,
     context_pack: dict,
@@ -1525,7 +1541,13 @@ def _lead_proposals(
 ) -> list[str]:
     proposals: list[str] = []
     surface = state.get("surface") or {}
-    for lead in _json_list(surface.get("workflow_leads"))[:3]:
+    # 排序输入不等于写回输入：workflow_leads 里绝大多数是 target_memory 的
+    # 投影（实测 3001 为 10/11），写回它们等于给记忆喂自己的回声。过滤后
+    # 不补位——窗口由 live 来源自然占据，空即"本轮无新线索"。
+    for lead in [
+        item for item in _json_list(surface.get("workflow_leads"))[:3]
+        if not _is_target_memory_echo(item)
+    ]:
         if _secondary_sweep_closed_by_ledger(
             lead,
             repo_root=repo_root,
@@ -1583,7 +1605,19 @@ def _lead_proposals(
                 },
             ))
 
-    return _dedupe(proposals)[:3]
+    # 去重按 proposal 的 text 键进行并保留 dict 形态——`_dedupe` 的 str(item)
+    # 会把 proposal dict 序列化成 repr，下游 `_entry_text` 认不出结构化条目、
+    # 兜底原样透传，正是 active_leads 嵌套污染的第一现场（2026-09-15 治理）。
+    # 同族的 _next_proposals 走 _bounded_next_proposals（dict 安全），未受影响。
+    seen_texts: set[str] = set()
+    deduped: list[dict] = []
+    for proposal in proposals:
+        text = str(proposal.get("text") or "").strip() if isinstance(proposal, dict) else ""
+        if not text or text in seen_texts:
+            continue
+        seen_texts.add(text)
+        deduped.append(proposal)
+    return deduped[:3]
 
 
 def _canonicalize_url_path(value: str) -> str:
@@ -3037,6 +3071,15 @@ def _append_unique_entries(memory: dict, field: str, entries: list[str], target:
     added = 0
     for text in entries:
         clean = str(text or "").strip()
+        if text_is_polluted(clean):
+            # 写入防线（2026-09-15 污染治理）：结构外壳意味着上游又把
+            # proposal dict str() 了。静默落盘会让污染进入记忆循环；当场
+            # raise 让生产方修，与 action_queue 对非法 metadata 的风格一致。
+            raise ValueError(
+                f"target memory {field} text contains a serialized structure "
+                f"shell and is invalid for writeback ({clean[:80]!r}...) - "
+                "fix the producer"
+            )
         if not clean or clean in existing:
             continue
         item = {"ts": now_utc(), "text": clean}

@@ -2648,7 +2648,8 @@ def test_lead_proposals_keep_unknown_surface_type_fail_open():
         },
     )
 
-    assert any("/api/Feedbacks" in item for item in proposals)
+    # proposal 现在保留 dict 形态（去重按 text 键，不再 str 化——嵌套污染治理）
+    assert any("/api/Feedbacks" in str(item.get("text") or "") for item in proposals)
 
 
 def test_hypothesis_seed_does_not_materialize_without_owner_hypothesis():
@@ -5083,3 +5084,92 @@ def test_surface_review_preserves_facts_without_choosing_a_method(path):
     assert not {"actor", "vuln_class", "replay_draft", "ledger_record_skeleton", "approach_hints"}.intersection(metadata)
     assert "request-diff" not in _entry_text(item)
     assert "--replayed" not in _entry_text(item)
+
+
+def test_target_memory_echo_not_written_back(tmp_path):
+    """断环回归（2026-09-15 污染治理）：surface 从 target memory 投影出的
+    workflow lead 不得再被 checkpoint 写回——那是记忆给自己喂回声。"""
+    import json
+    from checkpoint import build_checkpoint
+    from pathlib import Path
+
+    (tmp_path / "memory" / "goals" / "targets").mkdir(parents=True)
+    (tmp_path / "state").mkdir(parents=True)
+    T = "echo.test"
+    (tmp_path / "memory" / "goals" / "targets" / f"{T}.json").write_text(json.dumps({
+        "schema_version": 1, "target": T, "mode": "hunt", "phase": "unknown",
+        "active_goal": "", "current_hypothesis": "", "scope_notes": [],
+        "active_leads": [], "dead_ends": [], "next_actions": [],
+        "useful_patterns": [], "session_handoffs": [], "facts": {},
+        "selected_skills": [], "knowledge_focus": [],
+    }, ensure_ascii=False))
+
+    cp = build_checkpoint(tmp_path, target=T, refresh_coverage=False)
+    # 空 workflow_leads 时无写回候选（baseline）
+    assert cp["target_write_back"]["lead"] == []
+
+
+def test_apply_target_memory_rejects_polluted_text(tmp_path):
+    """写入防线回归：结构外壳必须当场 raise，文件字节不变。"""
+    import hashlib
+    import json
+    from checkpoint import apply_target_memory
+    from pathlib import Path
+
+    targets = tmp_path / "memory" / "goals" / "targets"
+    targets.mkdir(parents=True)
+    T = "guard.test"
+    p = targets / f"{T}.json"
+    p.write_text(json.dumps({
+        "schema_version": 1, "target": T, "mode": "hunt", "phase": "unknown",
+        "active_goal": "", "current_hypothesis": "", "scope_notes": [],
+        "active_leads": [], "dead_ends": [], "next_actions": [],
+        "useful_patterns": [], "session_handoffs": [], "facts": {},
+        "selected_skills": [], "knowledge_focus": [],
+    }, ensure_ascii=False))
+    before = hashlib.sha256(p.read_bytes()).hexdigest()
+    cp = {"target": T, "target_write_back": {
+        "lead": ["{'schema_version': 1, 'text': 'polluted echo'}"],
+        "next": [], "dead_end": []}}
+    with pytest.raises(ValueError, match="invalid for writeback"):
+        apply_target_memory(tmp_path, T, cp)
+    assert hashlib.sha256(p.read_bytes()).hexdigest() == before
+
+
+def test_target_memory_text_returns_empty_for_polluted():
+    """读取端回归：污染文本返回空，干净文本原样保留。"""
+    from surface import _target_memory_text
+
+    assert _target_memory_text({"text": "{'schema_version': 1, 'text': 'x'}"}) == ""
+    assert _target_memory_text({"text": '{"schema_version": 1, "text": "x"}'}) == ""
+    assert _target_memory_text({"text": "clean lead"}) == "clean lead"
+    assert _target_memory_text({"text": ""}) == ""
+
+
+def test_checkpoint_roundtrip_is_idempotent(tmp_path):
+    """幂等性验收：连续 3 轮 build+apply，active_leads[].text 长度不增。"""
+    import json
+    from checkpoint import apply_target_memory, build_checkpoint
+    from pathlib import Path
+
+    targets = tmp_path / "memory" / "goals" / "targets"
+    targets.mkdir(parents=True)
+    (tmp_path / "state").mkdir(parents=True)
+    T = "idem.test"
+    p = targets / f"{T}.json"
+    p.write_text(json.dumps({
+        "schema_version": 1, "target": T, "mode": "hunt", "phase": "unknown",
+        "active_goal": "", "current_hypothesis": "", "scope_notes": [],
+        "active_leads": [{"ts": "2026-01-01T00:00:00Z", "text": "human lead"}],
+        "dead_ends": [], "next_actions": [], "useful_patterns": [],
+        "session_handoffs": [], "facts": {}, "selected_skills": [],
+        "knowledge_focus": [],
+    }, ensure_ascii=False))
+    lengths = []
+    for _ in range(3):
+        cp = build_checkpoint(tmp_path, target=T, refresh_coverage=False)
+        apply_target_memory(tmp_path, T, cp)
+        leads = json.loads(p.read_text())["active_leads"]
+        lengths.append([len(str(it.get("text", ""))) for it in leads])
+    assert lengths[0] == lengths[1] == lengths[2], lengths
+    assert lengths[0] == [10], lengths  # human lead 原样保留，无外壳增长
