@@ -71,6 +71,14 @@ before touching it.
 9. VALIDATE Use `/validate` only when a Candidate is ready for report-quality proof
 ```
 
+A signal with replayable evidence becomes a candidate finding through
+`finding_index` in step 7 — without waiting for the operator to ask. Prose or a
+raw probe alone is not a finding; `/validate` in step 9 can only run against a
+finding that already exists in `findings/<target>/findings.json`. This mirrors
+autopilot's promotion contract (Lead -> Signal -> Candidate -> Validated Finding
+through `finding_index` and `/validate`), so hunting outside autopilot does not
+silently drop candidates at session end.
+
 Do not become a passive scanner wrapper. Start with the most concrete evidence available.
 `/hunt` does not generate report drafts by default; use `/report` or
 `python3 tools/hunt.py --target target.com --report-only` after validation.
