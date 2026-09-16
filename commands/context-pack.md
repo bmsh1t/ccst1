@@ -58,7 +58,7 @@ python3 tools/context_pack.py --target <target>
 7. 从 `knowledge/capabilities.yaml` 发布知识卡目录；Skill 发现使用 Claude Code 原生目录。
 8. 输出证据锚点、已记录的 Actor Matrix 缺口、未知项、矛盾点和 owner 写回入口。
 
-`selected_skill`、`skill_route`、`knowledge_cards`、`deferred_knowledge_cards`、
+`knowledge_cards`、`deferred_knowledge_cards`、
 `knowledge_card_recall`、`hypothesis_seeds`、`alternative_angles` 是空兼容字段，
 不表示已加载知识，也不会生成假设或测试路线。Claude 可直接运用已有知识；需要补充时
 按目录读取完整判断单元，不要求先跑 Pack 才能思考或选择方法。

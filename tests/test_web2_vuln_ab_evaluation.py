@@ -27,11 +27,8 @@ def test_web2_vuln_ab_cases_keep_post_slim_signal_coverage():
     assert not summary["route_gap_cases"]
     # S1 native loading (batch 3): the pack's skill recommendation slot is
     # removed; this eval scores card/signal recall quality, which is unchanged.
-    # Rows now carry no skill value at all.
-    assert all(
-        row["selected_skill"] in ("", None)
-        for row in result["rows"]
-    )
+    # Rows carry no skill value, and the retired field is gone entirely.
+    assert all("selected_skill" not in row for row in result["rows"])
 
 
 def test_web2_vuln_ab_report_mentions_interpretation():
@@ -41,4 +38,6 @@ def test_web2_vuln_ab_report_mentions_interpretation():
     assert "Deterministic local A/B" in report
     assert "future live LLM A/B" in report
     assert "post-slim regression baseline" in report
-    assert "| Case | Lane | Selected Skill |" in report
+    assert "| Case | Lane | Baseline |" in report
+    # The retired skill slot no longer publishes a report column.
+    assert "Selected Skill" not in report

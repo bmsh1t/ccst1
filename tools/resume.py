@@ -499,7 +499,6 @@ def load_checkpoint_followup(base_dir: str | Path, target: str, memory_dir: str 
         "available": True,
         "decision": checkpoint.get("decision", ""),
         "next_action": checkpoint.get("next_action", ""),
-        "selected_skill": (checkpoint.get("context_pack") or {}).get("selected_skill", ""),
         "knowledge_cards": (checkpoint.get("context_pack") or {}).get("knowledge_cards", []),
         "high_value_gaps_count": int(coverage_summary.get("high_value_gaps_count", 0) or 0),
         "lead_count": len(write_back.get("lead") or []),
@@ -701,9 +700,6 @@ def format_resume_output(summary: dict | None, target: str) -> str:
             evidence = checkpoint.get("recent_evidence") or []
             lines.append(f"  Recent evidence: {evidence[0] if evidence else 'none'}")
             lines.append(f"  Blocker: {checkpoint.get('blocker') or 'none'}")
-            selected_skill = str(checkpoint.get("selected_skill") or "").strip()
-            if selected_skill:
-                lines.append(f"  Recommended skill: {selected_skill}")
             lines.append(f"  High-value gaps: {checkpoint.get('high_value_gaps_count', 0)}")
             lines.append(
                 "  Target write-back proposals: "

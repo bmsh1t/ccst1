@@ -663,7 +663,6 @@ class TestResumeFormatting:
                 "current_action": {"type": "validation", "action": "Replay the evidence lane."},
                 "recent_evidence": ["evidence/target.com/summary.json"],
                 "blocker": "red-line evidence remains unchecked",
-                "selected_skill": "skills/web2-vuln-classes/SKILL.md",
                 "high_value_gaps_count": 3,
                 "lead_count": 1,
                 "next_count": 2,
@@ -682,6 +681,7 @@ class TestResumeFormatting:
         assert "Current action: Replay the evidence lane." in output
         assert "Recent evidence: evidence/target.com/summary.json" in output
         assert "Blocker: red-line evidence remains unchecked" in output
-        assert "Recommended skill: skills/web2-vuln-classes/SKILL.md" in output
+        # The retired pack skill slot no longer produces a resume recommendation.
+        assert "Recommended skill:" not in output
         assert "High-value gaps: 3" in output
         assert "Target write-back proposals: lead=1, next=2, dead-end=0" in output

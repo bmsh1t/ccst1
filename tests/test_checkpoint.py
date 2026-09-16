@@ -219,7 +219,6 @@ def test_checkpoint_without_recon_recommends_refresh_recon(tmp_path):
     # through the checkpoint and witness. Skills are selected by the AI via
     # the native Skill tool.
     assert checkpoint["context_pack"]["skill_route"] == {}
-    assert checkpoint["context_pack"]["selected_skill"] == ""
     assert all(
         "skill_route" not in (item.get("metadata") or {})
         and "route_required" not in (item.get("metadata") or {})
@@ -227,7 +226,6 @@ def test_checkpoint_without_recon_recommends_refresh_recon(tmp_path):
     )
     assert checkpoint["runtime_witness"]["path"] == "state/target.com/checkpoint_latest.json"
     assert witness["kind"] == "autopilot_checkpoint_witness"
-    assert witness["context_pack"]["selected_skill"] == checkpoint["context_pack"]["selected_skill"]
 
 
 def test_record_global_review_persists_checkpoint_witness(tmp_path, monkeypatch):
@@ -1043,7 +1041,7 @@ def test_checkpoint_witness_atomic_replace_failure_preserves_previous_bytes(tmp_
     first = checkpoint_module.write_checkpoint_witness(
         tmp_path,
         target,
-        {"context_pack": {"selected_skill": "skills/web2-recon/SKILL.md"}},
+        {"context_pack": {"knowledge_cards": []}},
     )
     path = Path(first["path"])
     previous = path.read_bytes()
@@ -1060,7 +1058,7 @@ def test_checkpoint_witness_atomic_replace_failure_preserves_previous_bytes(tmp_
         checkpoint_module.write_checkpoint_witness(
             tmp_path,
             target,
-            {"context_pack": {"selected_skill": "skills/web2-vuln-classes/SKILL.md"}},
+            {"context_pack": {"knowledge_cards": []}},
         )
 
     assert path.read_bytes() == previous
@@ -1081,7 +1079,7 @@ def test_checkpoint_witness_validates_preserved_round_before_rewrite(tmp_path):
     written = checkpoint_module.write_checkpoint_witness(
         tmp_path,
         target,
-        {"context_pack": {"selected_skill": "skills/web2-recon/SKILL.md"}},
+        {"context_pack": {"knowledge_cards": []}},
     )
     path = Path(written["path"])
 
@@ -1096,7 +1094,7 @@ def test_checkpoint_witness_validates_preserved_round_before_rewrite(tmp_path):
         checkpoint_module.write_checkpoint_witness(
             tmp_path,
             target,
-            {"context_pack": {"selected_skill": "skills/web2-vuln-classes/SKILL.md"}},
+            {"context_pack": {"knowledge_cards": []}},
         )
 
     assert path.read_bytes() == previous
@@ -2083,7 +2081,7 @@ def test_checkpoint_handoff_next_action_does_not_reuse_stale_runtime_state(tmp_p
     monkeypatch.setattr(
         checkpoint_module,
         "build_context_pack",
-        lambda *args, **kwargs: {"phase": "recon", "selected_skill": "", "knowledge_cards": []},
+        lambda *args, **kwargs: {"phase": "recon", "knowledge_cards": []},
     )
     monkeypatch.setattr(checkpoint_module, "rebuild_matrix", lambda *args, **kwargs: {"endpoints": []})
     monkeypatch.setattr(checkpoint_module, "save_matrix", lambda *args, **kwargs: None)
@@ -4413,7 +4411,6 @@ def test_checkpoint_preserves_ssti_recall_after_rce_family_closure(
         "build_context_pack",
         lambda *_args, **_kwargs: {
             "phase": "hunt",
-            "selected_skill": "skills/web2-vuln-classes/SKILL.md",
             "skill_route": {},
             "knowledge_cards": [card],
             "knowledge_card_recall": [{

@@ -52,7 +52,6 @@ def _write_passing_run(repo: Path, target: str = "demo.test") -> None:
         target,
         {
             "context_pack": {
-                "selected_skill": "skills/web2-vuln-classes/SKILL.md",
                 "knowledge_cards": ["knowledge/cards/server-side-template-injection.md"],
                 "reference_hints": [],
             }
@@ -128,7 +127,10 @@ def test_missing_context_pack_artifact_fails_context_check(tmp_path):
     assert result["grade"] == "needs_review"
     assert result["checks"]["context_pack"]["passed"] is False
     assert result["checks"]["context_pack"]["score"] == 0
-    assert "selected_skill" in result["checks"]["context_pack"]["missing"]
+    assert result["checks"]["context_pack"]["missing"] == [
+        "context_pack_used",
+        "knowledge_cards_or_reference_hints",
+    ]
 
 
 def test_runtime_v2_session_remains_minimal_and_witness_supplies_context(tmp_path):
@@ -143,7 +145,9 @@ def test_runtime_v2_session_remains_minimal_and_witness_supplies_context(tmp_pat
     assert session["schema_version"] == 2
     assert "context_pack" not in session
     assert witness["kind"] == "autopilot_checkpoint_witness"
-    assert witness["context_pack"]["selected_skill"] == "skills/web2-vuln-classes/SKILL.md"
+    assert witness["context_pack"]["knowledge_cards"] == [
+        "knowledge/cards/server-side-template-injection.md"
+    ]
     assert check_autopilot_run.check_run(tmp_path, "demo.test")["passed"] is True
 
 
@@ -162,7 +166,6 @@ def test_real_checkpoint_projection_satisfies_runtime_v2_context_contract(tmp_pa
 
     assert result["passed"] is True
     assert result["checks"]["context_pack"]["score"] == 30
-    assert witness["context_pack"]["selected_skill"] == checkpoint["context_pack"]["selected_skill"]
     assert witness["context_pack"]["knowledge_cards"] == checkpoint["context_pack"]["knowledge_cards"]
 
 

@@ -531,7 +531,6 @@ def write_checkpoint_witness(
         "target": resolved_target,
         "target_key": target_storage_key(resolved_target),
         "context_pack": {
-            "selected_skill": context.get("selected_skill", ""),
             "skill_route": context.get("skill_route", {}),
             "knowledge_cards": context.get("knowledge_cards", []),
             "card_catalog": context.get("card_catalog", []),
@@ -3350,7 +3349,6 @@ def build_checkpoint(
         # checkpoint so compaction/resume rebuilds intent, not just state.
         "user_intent": note.strip()[:2000] if note.strip() else "",
         "context_pack": {
-            "selected_skill": context.get("selected_skill", ""),
             "skill_route": context.get("skill_route", {}),
             "knowledge_cards": context.get("knowledge_cards", []),
             "card_catalog": context.get("card_catalog", []),
@@ -3563,7 +3561,6 @@ def format_checkpoint(checkpoint: dict) -> str:
         f"- Phase: {checkpoint.get('phase', '')}",
         f"- Decision: {checkpoint.get('decision', '')}",
         f"- Next action: {checkpoint.get('next_action', '')}",
-        f"- Recommended skill: {context.get('selected_skill', '')}",
         "- Recommended knowledge cards:",
         *_fmt_list([str(item) for item in context.get("knowledge_cards", [])]),
         "- Knowledge effect: {suggestion} -> {action} -> {result}".format(

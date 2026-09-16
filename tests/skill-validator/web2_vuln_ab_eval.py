@@ -160,7 +160,6 @@ def evaluate_cases(repo_root: Path = BASE_DIR, cases_path: Path = DEFAULT_CASES)
         rows.append({
             "id": case["id"],
             "lane": case["lane"],
-            "selected_skill": pack.get("selected_skill_id"),
             "expected_skill": case.get("expected_skill"),
             "knowledge_cards": cards,
             "reference_hints": pack.get("reference_hints", []) or [],
@@ -240,8 +239,8 @@ def format_markdown(result: dict) -> str:
         "",
         "## Per-case results",
         "",
-        "| Case | Lane | Selected Skill | Baseline | Enhanced | Delta | Skill-only checks | Route/card gap | Enhanced missing |",
-        "|---|---|---|---:|---:|---:|---|---|---|",
+        "| Case | Lane | Baseline | Enhanced | Delta | Skill-only checks | Route/card gap | Enhanced missing |",
+        "|---|---|---:|---:|---:|---|---|---|",
     ])
     for row in result["rows"]:
         route_gap = []
@@ -250,10 +249,9 @@ def format_markdown(result: dict) -> str:
         if row["route_forbidden_cards_present"]:
             route_gap.append("present: " + ", ".join(row["route_forbidden_cards_present"]))
         lines.append(
-            "| {id} | {lane} | {skill} | {base}/{max_score} | {enh}/{max_score} | +{delta} | {only} | {route_gap} | {missing} |".format(
+            "| {id} | {lane} | {base}/{max_score} | {enh}/{max_score} | +{delta} | {only} | {route_gap} | {missing} |".format(
                 id=row["id"],
                 lane=row["lane"],
-                skill=row["selected_skill"],
                 base=row["baseline_score"],
                 enh=row["enhanced_score"],
                 max_score=row["max_score"],

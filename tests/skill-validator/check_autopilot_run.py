@@ -303,7 +303,6 @@ def _discover_context_artifacts(repo_root: Path, target_key: str) -> list[tuple[
 def _check_context_pack(repo_root: Path, target_key: str) -> dict:
     artifacts = _discover_context_artifacts(repo_root, target_key)
     context_pack_used = False
-    selected_skill = None
     route_detail = None
     evidence: list[str] = []
 
@@ -313,10 +312,6 @@ def _check_context_pack(repo_root: Path, target_key: str) -> dict:
             if _find_nonempty_key(data, {"context_pack"}):
                 context_pack_used = True
                 evidence.append(f"{label}: context_pack")
-            selected = _find_nonempty_key(data, {"selected_skill"})
-            if selected:
-                selected_skill = selected
-                evidence.append(f"{label}: selected_skill={_compact(selected)}")
             detail = _find_nonempty_key(data, {"knowledge_cards", "reference_hints"})
             if detail:
                 route_detail = detail
@@ -326,19 +321,14 @@ def _check_context_pack(repo_root: Path, target_key: str) -> dict:
         if "tools/context_pack.py" in lowered or "context_pack.py" in lowered:
             context_pack_used = True
             evidence.append(f"{label}: context_pack command")
-        if not selected_skill and re.search(r'"?selected_skill"?\s*[:=]\s*["\']?[^"\'\n,}]+', text):
-            selected_skill = "text-marker"
-            evidence.append(f"{label}: selected_skill marker")
         if not route_detail and ("reference_hints" in text or "knowledge_cards" in text):
             route_detail = "text-marker"
             evidence.append(f"{label}: route detail marker")
 
-    passed = bool(context_pack_used and selected_skill and route_detail)
+    passed = bool(context_pack_used and route_detail)
     missing = []
     if not context_pack_used:
         missing.append("context_pack_used")
-    if not selected_skill:
-        missing.append("selected_skill")
     if not route_detail:
         missing.append("knowledge_cards_or_reference_hints")
     return {
@@ -500,15 +490,13 @@ def _check_queue_resolution_and_stop(queue: dict) -> dict:
 
 
 def _score_context_pack(check: dict) -> int:
-    """Context routing has three independently useful breadcrumbs."""
+    """Context routing has two independently useful breadcrumbs."""
     missing = set(check.get("missing") or [])
     score = 30
     if "context_pack_used" in missing:
-        score -= 10
-    if "selected_skill" in missing:
-        score -= 10
+        score -= 15
     if "knowledge_cards_or_reference_hints" in missing:
-        score -= 10
+        score -= 15
     return max(score, 0)
 
 
