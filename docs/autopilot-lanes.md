@@ -109,14 +109,6 @@ do not replay merely to fit request-diff or fabricate runner-owned fields.
   JSON object, preserves `next_question`, `expected_learning`, `kill_condition`,
   `pivot_hints`, and other compatible structured fields, and rejects credentials
   or authorization headers. Versioned AI metadata never fabricates Runner fields.
-- An action may carry a validated owner-provided `skill_route` and
-  `required_dimensions`; the Queue accepts only a real `primary` entry from the
-  shared `SKILL_CATALOG` and its exact repository Skill path. Otherwise Claude
-  selects the route explicitly at claim time. Required dimensions are non-empty
-  route context selected by the AI; an `active_dimension` outside that list must
-  carry `dimension_override_reason`. Replacing an existing owner route records
-  the replacement route/reason. Hand-written advisory items remain compatible
-  without `route_required`.
 - `capability-chain-review` is advisory. Materialize one normal versioned chain
   action with persisted lineage when executable; otherwise resolve blocked/dead-end.
   It never changes running, validation, candidate, report, or Closure priority.
