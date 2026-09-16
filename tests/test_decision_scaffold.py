@@ -93,6 +93,30 @@ def test_validate_scaffold_warns_without_runner_run(tmp_path):
     assert "--finding-id F-1" in scaffold["_scaffold_warnings"][0]
 
 
+def test_validate_scaffold_preserves_canonical_finding_method(tmp_path):
+    """method 是机械字段：canonical finding 记录什么，scaffold 预填什么。
+
+    硬编码 GET 会让 record-evidence 登记的原生 POST 发现永远过不了 validate
+    的 runner method 比对。
+    """
+    findings_dir = _seed_finding(tmp_path)
+    scaffold = build_validate_scaffold(
+        tmp_path,
+        findings_dir,
+        {"id": "F-1", "url": "http://t.example/rest/orders/1", "type": "auth_bypass", "method": "POST"},
+        target="t.example",
+    )
+    assert scaffold["method"] == "POST"
+
+
+def test_validate_scaffold_falls_back_to_get_without_recorded_method(tmp_path):
+    findings_dir = _seed_finding(tmp_path)
+    scaffold = build_validate_scaffold(
+        tmp_path, findings_dir, {"id": "F-1", "url": "http://t.example/x", "type": "auth_bypass"}, target="t.example"
+    )
+    assert scaffold["method"] == "GET"
+
+
 def test_validate_scaffold_ignores_mismatched_runner_finding_id(tmp_path):
     """finding_id 不匹配的 run 不绑（防挑错 run）。"""
     findings_dir = _seed_finding(tmp_path)

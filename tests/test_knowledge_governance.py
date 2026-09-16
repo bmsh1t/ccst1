@@ -387,3 +387,28 @@ def test_distilled_router_cards_are_discoverable_from_real_evidence_indexes(tmp_
         }
         assert f"knowledge/cards/{card_name}" in catalog_files
         assert f"findings/{target}/source_intel/routes.json" in pack["must_read"]
+
+
+def test_default_knowledge_surface_never_recommends_retired_cards(tmp_path):
+    """退役卡（registry status: retired）不得出现在默认召回面。
+
+    record-evidence 收敛轮加入：retire 后卡文件保留、Pack 可见性自动收敛，
+    消费方无需逐个改动——这里固定该契约，防止后续消费者重新把 retired 卡
+    当作推荐项。
+    """
+    repo = _repo_root()
+    registry = load_registry(repo)
+    retired = set(registry.card_paths(include_retired=True)) - set(registry.card_paths())
+
+    assert retired, "registry 应至少有一张 retired 卡作为该契约的活样本"
+
+    pack = build_context_pack(repo, target="retired-contract.test", focus="idor")
+
+    for field in ("card_catalog", "knowledge_card_recall"):
+        surfaced = {
+            str(item.get("id") or "")
+            for item in pack.get(field, [])
+            if isinstance(item, dict)
+        }
+        assert not (surfaced & retired), f"{field} 泄露了退役卡: {sorted(surfaced & retired)}"
+    assert not (set(pack.get("knowledge_cards") or []) & retired)

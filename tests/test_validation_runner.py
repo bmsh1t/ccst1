@@ -2470,3 +2470,106 @@ def test_record_evidence_sync_updates_finding_and_queue(tmp_path):
     assert finding["runner_operation_id"] == summary["operation_id"]
     # the candidate now carries a machine-readable witness that /validate can bind
     assert finding["validation_summary"].endswith(summary["summary_path"])
+
+
+def test_record_evidence_rejects_malformed_evidence_json(tmp_path, capsys):
+    """--evidence-json 指向非 JSON 文件：CLI 报错，不写任何状态。"""
+    target, finding_id, _ = _native_fixture(tmp_path)
+    bad = tmp_path / "not-json.json"
+    bad.write_text("this is not json {", encoding="utf-8")
+
+    with pytest.raises(SystemExit) as excinfo:
+        validation_runner.main([
+            "record-evidence",
+            "--repo-root", str(tmp_path),
+            "--target", target,
+            "--finding-id", finding_id,
+            "--evidence-json", str(bad),
+        ])
+
+    assert excinfo.value.code == 2
+    assert "record-evidence" in capsys.readouterr().err
+    assert not (tmp_path / "evidence").exists()
+
+
+def test_record_evidence_rejects_state_changing_without_redline_confirmation(tmp_path):
+    """state_changing 需要显式 redline 确认；未确认时不得登记。"""
+    target, finding_id, evidence = _native_fixture(tmp_path)
+    with pytest.raises(ValueError, match="redline-checked"):
+        validation_runner.record_native_evidence(
+            repo_root=tmp_path, target=target, finding_id=finding_id, evidence=evidence,
+            state_changing=True, redline_checked=False,
+        )
+    assert not (tmp_path / "evidence").exists()
+
+
+def test_record_evidence_resumes_after_interrupted_sync(tmp_path):
+    """同步中断后按同一 material 重跑：复用 operation/summary，不产生第二份证据。"""
+    target, finding_id, evidence = _native_fixture(tmp_path, finding_id="NATIVE-RESUME")
+    first = validation_runner.record_native_evidence(
+        repo_root=tmp_path, target=target, finding_id=finding_id, evidence=evidence,
+        state_changing=True, redline_checked=True,
+    )
+    # 模拟 owner 同步在写 findings.json 前中断：摘要已落盘，finding 仍是初始 candidate
+    #（无 runner_operation_id / validation_summary），与真实中断后的现场一致。
+    summary_file = tmp_path / first["summary_path"]
+    assert summary_file.is_file()
+    resumed = validation_runner.record_native_evidence(
+        repo_root=tmp_path, target=target, finding_id=finding_id, evidence=evidence,
+        state_changing=True, redline_checked=True,
+    )
+    assert resumed["operation_id"] == first["operation_id"]
+    assert resumed["summary_path"] == first["summary_path"]
+    # 重跑后 owner 同步可补齐：第二次 sync 必须把 finding 绑到同一 witness
+    sync = validation_runner.sync_runner_artifacts(resumed, repo_root=tmp_path)
+    assert sync["finding"]["status"] == "updated"
+    key = _target_key(target)
+    finding = next(
+        f for f in json.loads((tmp_path / "findings" / key / "findings.json").read_text())["findings"]
+        if f["id"] == finding_id
+    )
+    assert finding["runner_operation_id"] == first["operation_id"]
+    # 只有一份原生证据摘要（重复登记不复制原始材料）
+    assert len(list((tmp_path / "evidence").rglob("summary.json"))) == 1
+
+
+def test_record_evidence_versioned_queue_writes_last_outcome_without_resolving(tmp_path):
+    """versioned（activation_required）action：runner 只写观察，仍保持 running。"""
+    target, finding_id, evidence = _native_fixture(tmp_path, finding_id="NATIVE-VERSIONED")
+    key = _target_key(target)
+    queue_dir = tmp_path / "state" / key
+    queue_dir.mkdir(parents=True, exist_ok=True)
+    endpoint = "https://target.test/rest/orders/1"
+    (queue_dir / "action_queue.json").write_text(
+        json.dumps({
+            "schema_version": 1,
+            "target": target,
+            "actions": [{
+                "id": "AQ-NATIVE-V",
+                "status": "running",
+                "type": "validation",
+                "metadata": {
+                    "finding_id": finding_id,
+                    "endpoint": endpoint,
+                    "depth_contract_version": 1,
+                    "active_dimension": "object-ownership",
+                },
+            }],
+        }),
+        encoding="utf-8",
+    )
+
+    summary = validation_runner.record_native_evidence(
+        repo_root=tmp_path, target=target, finding_id=finding_id, evidence=evidence,
+        state_changing=True, redline_checked=True,
+    )
+    sync = validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)
+
+    assert sync["action_queue"]["status"] == "updated"
+    assert sync["action_queue"]["action_status"] == "running"
+    action = load_queue(tmp_path, target)["actions"][0]
+    assert action["status"] == "running"
+    outcome = action["metadata"]["last_outcome"]
+    assert outcome["status"] == "tested_finding"
+    assert outcome["operation_id"] == summary["operation_id"]
+    assert action["metadata"]["tested_dimensions"] == ["object-ownership"]

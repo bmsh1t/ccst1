@@ -1972,3 +1972,93 @@ def test_update_runtime_state_after_validate_tracks_progress(tmp_path, monkeypat
     from runtime_state import derive_state_view
     view = derive_state_view(tmp_path, "target.com")
     assert view["findings"]["validated_pending_report"] == 1
+
+
+def test_native_record_evidence_closes_through_scaffold_preflight_and_validate(tmp_path, monkeypatch, capsys):
+    """原生闭环：record-evidence 登记 → scaffold 预填 → preflight → validate 定级 → 可报告。
+
+    这是 record-evidence 的存在理由：不重放请求的原生观察必须能走到正式验证。
+    """
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from test_validation_runner import _native_fixture
+
+    target, finding_id, evidence = _native_fixture(
+        tmp_path, url="https://target.test/rest/orders/1", finding_id="NATIVE-E2E"
+    )
+    evidence_path = tmp_path / "native-evidence.json"
+    evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+
+    monkeypatch.setattr(validate, "BASE_DIR", tmp_path, raising=False)
+    monkeypatch.setattr(validate.sys.stdin, "isatty", lambda: False)
+
+    # 1) 登记已执行的原生观察（不发请求）
+    assert validation_runner.main([
+        "record-evidence", "--repo-root", str(tmp_path), "--target", target,
+        "--finding-id", finding_id, "--evidence-json", str(evidence_path),
+        "--state-changing", "--redline-checked",
+    ]) == 0
+    capsys.readouterr()
+
+    # 2) scaffold 预填机械字段，method 跟随 canonical finding（POST）
+    assert validate.main(["--target", target, "--finding-id", finding_id, "--scaffold"]) == 0
+    scaffold = json.loads(capsys.readouterr().out)
+    assert scaffold["method"] == "POST"
+    assert scaffold["endpoint"] == "https://target.test/rest/orders/1"
+    assert scaffold["evidence"]["runner_summary"]
+    assert Path(tmp_path / scaffold["evidence"]["runner_summary"]).is_file()
+
+    # 3) AI 只填判断字段
+    scaffold["impact"] = "Peer actor mutated state owned by the recorded identity."
+    for key in validate.MACHINE_DECISION_GATE_KEYS:
+        scaffold["gates"][key] = {"passed": True, "notes": {"source": "native-run"}}
+    for key, _ in validate.SEVEN_QUESTION_DEFINITIONS:
+        scaffold["seven_question_gate"]["questions"][key] = {
+            "status": "pass", "basis": "Native observation recorded from the browser session.",
+        }
+    scaffold["cvss"] = {
+        "score": 7.5,
+        "vector": "CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:H/VI:L/VA:N/SC:N/SI:N/SA:N",
+        "params": {"AV": "N", "AC": "L", "PR": "L", "VC": "H"},
+    }
+    scaffold["evidence"]["summary"] = "Native observations recorded from the browser session."
+    scaffold["report"]["content"] = (
+        "# Native state transition\n\nA peer actor mutated state owned by the recorded identity.\n"
+        + "Recorded artifacts are bound to the run summary. " * 5
+    )
+    decision_path = tmp_path / "native-decision.json"
+    decision_path.write_text(json.dumps(scaffold), encoding="utf-8")
+
+    # 4) preflight 只读通过
+    assert validate.main([
+        "--target", target, "--finding-id", finding_id,
+        "--decision-json", str(decision_path), "--preflight", "--json",
+    ]) == 0
+    preflight = json.loads(capsys.readouterr().out)
+    assert preflight["status"] == "preflight_ok"
+    assert preflight["read_only"] is True
+
+    # 5) validate 定级：native witness 与 request-diff witness 走同一条绑定
+    assert validate.main([
+        "--target", target, "--finding-id", finding_id,
+        "--decision-json", str(decision_path), "--json",
+    ]) == 0
+    result = json.loads(capsys.readouterr().out)
+
+    findings_dir = tmp_path / "findings" / validation_runner.target_storage_key(
+        validation_runner.canonical_target_value(target)
+    )
+    finding = finding_index.find_finding(findings_dir, finding_id, migrate_legacy=False)
+    assert result["finding_id"] == finding_id
+    assert finding["validation_status"] == "validated"
+    assert finding["method"] == "POST"
+    assert finding_index.verify_finding_owner_provenance(
+        findings_dir, finding, target=target
+    )["valid"] is True
+
+    # 6) 报告端消费同一 witness
+    import report_generator
+    assert report_generator._canonical_runner_witness(
+        finding, findings_dir=findings_dir, target=target
+    ).get("valid") is True

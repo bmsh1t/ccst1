@@ -87,7 +87,10 @@ def build_validate_scaffold(
         "finding_id": finding_id,
         "endpoint": canonical_endpoint,
         "vuln_class": str(finding.get("type") or ""),
-        "method": "GET",
+        # method 是机械字段：canonical finding 已记录真实 verb，scaffold 照抄。
+        # 硬编码 GET 会让原生 POST 发现（record-evidence 路径）永远过不了
+        # validate 的 runner method 比对。
+        "method": str(finding.get("method") or "GET").strip().upper() or "GET",
         "_scaffold_note": VALIDATE_AI_FIELDS_NOTE,
         "impact": "",
         "gates": {
