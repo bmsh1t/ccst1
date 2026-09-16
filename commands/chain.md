@@ -14,6 +14,14 @@ current validation result says a connector is required or could change impact.
 Do not use this command to turn a theory, scanner match, or static clue into a
 finding.
 
+Two triggers reach this command: a validation result of `chain_required`
+(Q7 has a concrete connector but the end-to-end path is unproven), and a
+`capability-chain-review` action that checkpoint projected from a reusable
+`capability_primitives` recorded at resolve time. The second is proactive: even
+when a resolved primitive passed on its own, weigh whether it combines with
+another recorded primitive into a higher-impact path before treating it as a
+standalone result.
+
 ## Inputs
 
 - Canonical finding ID and its validation summary
