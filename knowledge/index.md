@@ -31,26 +31,23 @@ python3 tools/knowledge_audit.py
 frontmatter 属于 `warning`，允许渐进迁移。需要把迁移债务也纳入门禁时使用
 `python3 tools/knowledge_audit.py --strict`。完整 JSON 报告可用 `--json` 输出。
 
-质量门是显式治理命令和 pytest 回归，不进入每次 `/autopilot` 启动 preflight；运行时仍由
-`context_pack` 根据目标证据和 registry 元数据选择有限卡片。
+质量门是显式治理命令和 pytest 回归，不进入每次 `/autopilot` 启动 preflight。
+`context_pack` 从 registry 发布 active 卡片目录；Claude 按当前信息缺口自行选择。
 
 | 能力类型 | 落位 |
 |---|---|
 | 项目经验 / 边界思路 | `knowledge/cards/` |
-| 判断标准 | `tools/evidence_rubric.py` |
-| 路由触发 | `tools/context_pack.py` |
-| 下一步动作 | `tools/checkpoint.py` |
+| 判断标准 | `skills/triage-validation/SKILL.md` 与 `rules/` |
+| 路线选择 | Claude 与当前 Skill |
+| 下一步意图 | Claude 经 Target Memory / Action Queue owner 写回 |
 | 稳定执行 | `tools/validation_runner.py` |
 | 结果证据 | `tools/evidence_ledger.py` |
 | 目标状态 | `tools/target_case_state.py` |
 | 跨步骤流程 | Skill / command 文案 |
 
-加载预算默认按 registry 执行：
-
-```text
-最多 2 张知识卡总数，其中最多 1 个 case-router；
-验证 playbook 仅在验证阶段按需读取，不计入知识卡预算
-```
+加载遵守 `skills/runtime-protocol.md#shared-knowledge-recall`：已有材料不重复读，
+默认少量读取不是卡片总数硬上限；有信息缺口时按引用补读完整判断单元。
+验证 playbook 仅在当前验证问题需要时读取。
 
 降级不是删除：`case-router`、`out-of-target-intel`、`public-metadata` 等低优先级线索
 保留 raw artifact 和回捞路径，只是不污染主 finding 队列。
@@ -63,7 +60,7 @@ frontmatter 属于 `warning`，允许渐进迁移。需要把迁移债务也纳�
 ## 核心决策知识卡（参考层）
 
 这些卡片是当前 Skill 的有限参考：可提供 route、证据门、停止条件和覆盖提醒，但不拥有路线或目标状态。
-每次 context-pack 仍只推荐 1-2 张，避免把知识库平铺进上下文；Claude 选择后才按需读取。
+Context Pack 不再语义选卡；本表只描述用途，active/retired 状态以 registry 为准。
 
 | 知识卡 | 作用 | 推荐关联 Skill |
 |---|---|---|
@@ -71,7 +68,6 @@ frontmatter 属于 `warning`，允许渐进迁移。需要把迁移债务也纳�
 | `knowledge/cards/auth-hidden-switches.md` | 登录隐藏分支选择器、认证状态机切换和低风险 ATO 验证思路 | `web2-vuln-classes`, `bb-methodology`, `triage-validation` |
 | `knowledge/cards/auth-credential-recovery-flows.md` | 密码重置、账号恢复、用户名枚举、MFA/OTP、remember-me 和受控凭证测试 | `web2-vuln-classes`, `triage-validation` |
 | `knowledge/cards/auth-sso-token-edge-cases.md` | JWT/JWE/JWKS、OAuth/OIDC、SAML/SSO、token/account binding 边界异常 | `web2-vuln-classes`, `bb-methodology`, `triage-validation` |
-| `knowledge/cards/api-testing-workflow.md` | API docs/schema、浏览器 XHR、JS/source、mobile/旧版本和 parser/auth matrix 的补漏流程 | `web2-recon`, `web2-vuln-classes`, `triage-validation` |
 | `knowledge/cards/odata-query-boundaries.md` | OData entity/field/navigation/batch 的查询授权与 parser 边界 | `web2-recon`, `web2-vuln-classes`, `triage-validation` |
 | `knowledge/cards/business-logic-state-machines.md` | 业务逻辑、状态机、客户端信任、流程重排和异常输入验证思路 | `bb-methodology`, `web2-vuln-classes`, `triage-validation` |
 | `knowledge/cards/api-idor.md` | API 对象级越权和多租户访问控制 | `web2-vuln-classes`, `bb-methodology`, `triage-validation` |
@@ -110,7 +106,6 @@ frontmatter 属于 `warning`，允许渐进迁移。需要把迁移债务也纳�
 | `knowledge/cards/k8s-control-plane-boundaries.md` | Kubernetes API、kubelet、RBAC、service-account 与 subresource 边界 | `web2-recon`, `web2-vuln-classes`, `triage-validation` |
 | `knowledge/cards/race-conditions.md` | 并发状态差异和 race 风险的低风险建模 | `bb-methodology`, `web2-vuln-classes`, `triage-validation` |
 | `knowledge/cards/coverage-prompts.md` | 覆盖基线漏测提醒 | `bb-methodology`, `web2-recon`, `web2-vuln-classes` |
-| `knowledge/cards/dead-ends.md` | 常见低价值方向和停止条件 | `bb-methodology`, `triage-validation` |
 
 ## 按需 Router 知识卡
 

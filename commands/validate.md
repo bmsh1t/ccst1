@@ -75,9 +75,8 @@ condensed checklist below must not override those rules.
 
 `tools/validate.py` records the 7-Question Gate in the current finding's
 `<artifact-key>.validation-summary.json`.
-If Claude/operator already made an explicit Q1-Q7 judgment, save it as JSON and
-pass `--seven-question-json <file>`; otherwise the script stores a coarse
-`derived_from_4_gates` audit block so the report path remains reviewable.
+Claude supplies explicit Q1-Q7 and four-gate judgments in `--decision-json`.
+The tool does not prompt interactively or infer missing judgments.
 
 ## Usage
 
@@ -119,6 +118,19 @@ The runner summary must be a candidate-ready `tested_finding` from
 match the decision; its self path, stable operation ID, request/response
 artifact SHA-256 bindings, canonical Finding summary/operation binding, and
 Finding owner provenance must all verify before preflight succeeds.
+
+For already-executed browser, probe, raw or multi-step evidence, first register
+the saved observations against this Candidate without sending requests again:
+
+```bash
+python3 tools/validation_runner.py record-evidence --target <target> \
+  --finding-id <canonical-id> --evidence-json /tmp/native-observations.json --json
+```
+
+The observation fields and side-effect flags are documented in
+`docs/evidence-runners.md#native-evidence-registration`. Registration uses the
+same schema-v1 witness; then use the scaffold/preflight/decision path above.
+Request-diff is optional, not the admission test for a valid experiment.
 
 To check a decision before applying it, add `--preflight`. This reads the
 decision and canonical finding, reports all independent schema/binding errors,
@@ -185,7 +197,7 @@ launched with `--finding-id`.
 Subsequent `/surface` or direct `findings.json` review shows the
 validation/report status for each structured candidate.
 
-Describe the finding when prompted. Include:
+Include in the explicit decision:
 - The endpoint
 - The bug class
 - What the PoC shows

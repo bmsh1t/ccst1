@@ -1707,14 +1707,14 @@ def _validate_machine_runner_witness(
     if canonical_target_value(str(runner.get("target") or "")) != decision_target:
         raise ValueError(
             "runner target does not match decision.target — fix: "
-            "re-run the request-diff lane against this target, or point runner_summary "
+            "record the native evidence or replay against this target, or point runner_summary "
             "at a run recorded under this target"
         )
     if str(runner.get("finding_id") or "").strip() != finding_id:
         raise ValueError(
-            f"runner finding_id does not match decision.finding_id — fix: re-run "
-            f"`tools/validation_runner.py request-diff --finding-id {finding_id}` "
-            "so the run is owner-bound, or point runner_summary at a run recorded "
+            f"runner finding_id does not match decision.finding_id — fix: use "
+            f"`tools/validation_runner.py record-evidence --finding-id {finding_id}` "
+            "for saved native observations, or replay with that finding id; point runner_summary at a run recorded "
             "under this finding id"
         )
     runner_endpoints = _runner_endpoint_slots(runner)
@@ -1723,8 +1723,8 @@ def _validate_machine_runner_witness(
             "runner endpoint does not match decision.endpoint — fix: endpoint matching is "
             "EXACT against every endpoint the run recorded (top-level url plus the "
             "request_pair baseline/variant urls; template placeholders like <id> cannot "
-            "bind a concrete run); re-run the runner so the finding's canonical endpoint "
-            "is one of the pair's URLs, or regenerate the decision with "
+            "bind a concrete run); register or replay the finding's canonical endpoint "
+            "as the recorded anchor, or regenerate the decision with "
             "`tools/validate.py --finding-id <id> --scaffold`"
         )
     runner_method = normalize_http_method(runner.get("method") or "GET")
@@ -1733,8 +1733,8 @@ def _validate_machine_runner_witness(
     if runner.get("result") != "tested_finding" or runner.get("candidate_ready") is not True:
         raise ValueError(
             "runner summary must be a candidate-ready tested_finding — fix: the recorded "
-            "run did not prove the single-variable difference; re-run the request-diff "
-            "lane with distinct expected signals until it reports candidate-ready"
+            "run is not marked candidate-ready; review the raw observations and collect "
+            "missing evidence before registering a finding-grade assessment or replaying"
         )
     operation_id = _required_text(runner.get("operation_id"), "evidence.runner_summary.operation_id")
 

@@ -29,7 +29,7 @@ knowledge/
     auth-access.md
     api-idor.md
     ssrf-url-fetch.md
-    dead-ends.md
+    business-logic-state-machines.md
   payloads/
     sqli-low-risk-probes.md
     command-execution-probes.md
@@ -50,9 +50,8 @@ knowledge/
    Skill 流程。
 4. 从目标记忆晋升到知识库前，必须满足 `promotion-rules.md`。
    经验/技巧/bypass 进知识库；判断由 AI 在当前证据上临场完成
-   （不落判断器文件）；路由进 `tools/context_pack.py`；下一步进
-   `tools/checkpoint.py`；可重复执行的 replay/diff/证据保存动作进
-   `tools/`；结果进 Evidence Ledger。
+   （不落判断器文件）；路线由 Claude 与当前 Skill 选择，下一步经目标记忆或
+   Action Queue owner 写回。执行优先复用原生能力和现有工具；结果进 Evidence Ledger。
 5. 如果知识卡和 `rules/` 冲突，以 `rules/` 为准。
 
 ## 沉淀原则

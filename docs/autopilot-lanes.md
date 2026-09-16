@@ -66,6 +66,12 @@ already recorded anything.
 
 ## State And Queue
 
+Already-executed browser/native/multi-step evidence uses
+`validation_runner.py record-evidence` against an existing Candidate, then the
+same `/validate` path (`docs/evidence-runners.md#native-evidence-registration`).
+Registration sends no requests and uses existing Ledger/Finding/Queue owners;
+do not replay merely to fit request-diff or fabricate runner-owned fields.
+
 - Every substantive candidate is claimed before replay with
   `python3 tools/action_queue.py claim --target <target_shell> --id <id> [--from-evidence <probe-or-evidence-json>] --metadata-json '<metadata-object>'`.
   Dumb queue interface (2026-09-14): `--id` is REQUIRED — the queue never
@@ -189,7 +195,7 @@ already recorded anything.
 
 - `live/wafw00f_hits.txt` is sampled host-level context. AI chooses the target-observed POST/JSON/query/form shape and exact test input, then uses browser/MCP/curl/raw sender directly.
 - Use `validation_runner.py request-diff` only for an exact same-method, one-dimension HTTP pair that benefits from stable replay, response diff, and canonical evidence. Time-shaped candidates use AI interleaved sampling with a stable median/MAD trend. `429`, transport failure, block pages, and WAF observations are not findings; never run a fixed matrix merely because parameters or a WAF exist.
-- Direct or browser evidence that does not fit a Runner remains raw evidence or a target-owned `finding_claim`; checkpoint owns the lifecycle handoff.
+- Direct or browser evidence that does not fit request-diff remains raw evidence or a target-owned `finding_claim` until ready; persist the Candidate and use `record-evidence` for formal validation. Checkpoint owns the lifecycle handoff.
 
 ## Access Limit
 

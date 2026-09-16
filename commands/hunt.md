@@ -79,6 +79,11 @@ autopilot's promotion contract (Lead -> Signal -> Candidate -> Validated Finding
 through `finding_index` and `/validate`), so hunting outside autopilot does not
 silently drop candidates at session end.
 
+Already-executed native/browser/multi-step evidence enters the same validation
+path through `validation_runner.py record-evidence` after Candidate persistence
+(contract: `docs/evidence-runners.md#native-evidence-registration`). Do not rerun
+the experiment just to make it fit request-diff.
+
 Do not become a passive scanner wrapper. Start with the most concrete evidence available.
 `/hunt` does not generate report drafts by default; use `/report` or
 `python3 tools/hunt.py --target target.com --report-only` after validation.
@@ -137,7 +142,7 @@ Browser-state surfaces should use the shared browser evidence lane:
 
 - **Auth / IDOR / role diff**: compare A/B users, object IDs, tenant/account IDs, export/download/report results.
 - **403 / auth boundary**: when a target-owned 401/403 has path, proxy, framework, or sibling evidence, let Claude select the exact path/header/method representation and execute it through browser, curl, or a raw sender. Use `validation_runner.py request-diff` only when the same-method one-dimension pair fits; otherwise retain raw evidence or a target-owned `finding_claim` for checkpoint. A status change alone is not proof.
-- **GraphQL**: inspect schema/operation names, compare auth on `query`, `node(id)`, and safe read operations; mutation execution requires explicit operator intent.
+- **GraphQL**: inspect schema/operation names and compare object/field authorization. Assess mutations by the actual side effects under `rules/red-lines.md` and current operator intent; test-owned reversible flows are not excluded merely because they use mutations.
 - **SSRF / webhook / async**: use `tools/oast_listen.py` only when a URL-fetch or webhook sink exists.
 - **Upload/import/export**: confirm parser/authorization paths with minimal samples; record state-changing leads separately.
 - **JWT/OIDC/SAML/OAuth**: decode and inspect issuer/JWKS/callback/state/session binding signals before probing.

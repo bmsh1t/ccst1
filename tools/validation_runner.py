@@ -4,6 +4,7 @@
 Validation Runner v1 intentionally stays small:
 
 - request-diff: AI-supplied exact baseline/variant replay across one input dimension.
+- record-evidence: register already-executed native observations without replay.
 
 AI 仍负责选择 hypothesis、解释业务影响、决定是否升级/降级；本工具只负责稳定
 执行 replay / diff / evidence bundle / ledger 写入。
@@ -38,14 +39,17 @@ try:
         _dedupe_key,
         _resolve_action_in_queue,
         _target_owned_evidence_ref,
+        _target_owned_nonempty_evidence_ref,
         _validate_observed_difference,
+        _write_json_atomic as _write_json,
         load_queue,
         queue_mutation_lock,
         save_queue,
         summarize_queue,
     )
-    from tools.evidence_ledger import record_entry
+    from tools.evidence_ledger import normalize_actor, normalize_object_scope, normalize_variant, record_entry
     from tools.finding_index import (
+        find_finding,
         load_finding_index,
         update_finding_status,
         upsert_finding,
@@ -53,6 +57,7 @@ try:
         verify_finalized_finding_owner_provenance,
     )
     from tools.response_diff import diff_responses, snapshot_response
+    from tools.runner_witness import _runner_endpoint_matches
     from tools.request_diff import RequestPairError, request_pair_digest, validate_request_pair
     from tools.browser_surface import public_url_shape
     from tools.closure_resolver import CLOSURE_FAMILIES, canonical_vuln_class
@@ -66,14 +71,17 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         _dedupe_key,
         _resolve_action_in_queue,
         _target_owned_evidence_ref,
+        _target_owned_nonempty_evidence_ref,
         _validate_observed_difference,
+        _write_json_atomic as _write_json,
         load_queue,
         queue_mutation_lock,
         save_queue,
         summarize_queue,
     )
-    from evidence_ledger import record_entry  # type: ignore
+    from evidence_ledger import normalize_actor, normalize_object_scope, normalize_variant, record_entry  # type: ignore
     from finding_index import (  # type: ignore
+        find_finding,
         load_finding_index,
         update_finding_status,
         upsert_finding,
@@ -81,6 +89,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         verify_finalized_finding_owner_provenance,
     )
     from response_diff import diff_responses, snapshot_response  # type: ignore
+    from runner_witness import _runner_endpoint_matches  # type: ignore
     from request_diff import RequestPairError, request_pair_digest, validate_request_pair  # type: ignore
     from browser_surface import public_url_shape  # type: ignore
     from closure_resolver import CLOSURE_FAMILIES, canonical_vuln_class  # type: ignore
@@ -217,11 +226,6 @@ def _private_bundle_dir(repo_root: Path, target: str, bundle: Path) -> Path:
     target_key = target_storage_key(canonical_target_value(target))
     relative = bundle.relative_to(repo_root / "evidence" / target_key / "validation")
     return private_artifact_dir(repo_root, "validation", target_key, str(relative))
-
-
-def _write_json(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def _read_json_object(path: Path) -> dict[str, Any]:
@@ -2019,13 +2023,158 @@ def run_request_diff(
     return _finalize_runner_summary(summary, summary_path, repo_root)
 
 
+def record_native_evidence(
+    *,
+    repo_root: Path,
+    target: str,
+    finding_id: str,
+    evidence: dict[str, Any],
+    state_changing: bool | None = None,
+    redline_checked: bool = False,
+    identity_v2: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Bind existing raw observations to the same witness as request-diff.
+
+    Result and meaning are explicitly AI-assessed, not inferred from bytes.
+    This operation verifies references and records evidence; it executes nothing.
+    """
+    target = canonical_target_value(target)
+    if not isinstance(evidence, dict) or type(evidence.get("schema_version")) is not int or evidence["schema_version"] != SCHEMA_VERSION:
+        raise ValueError("native evidence must be a schema-v1 JSON object")
+
+    def required_text(value: Any, field: str) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"native evidence {field} must be a non-empty string")
+        return value.strip()
+
+    finding = find_finding(_findings_dir(repo_root, target), finding_id, migrate_legacy=False)
+    if not finding:
+        raise ValueError("record-evidence requires an existing canonical finding; save the Candidate through finding_index first")
+    for key, expected in (("target", target), ("finding_id", finding_id)):
+        if key in evidence and evidence[key] != expected:
+            raise ValueError(f"native evidence {key} does not match the selected finding")
+    url = required_text(finding.get("url") or finding.get("endpoint"), "canonical finding URL")
+    if not url_belongs_to_target(url, target):
+        raise ValueError("canonical finding URL is off target")
+    method = str(finding.get("method") or "GET").strip().upper()
+    vuln_class = canonical_vuln_class(str(finding.get("vuln_class") or finding.get("type") or ""))
+    if not vuln_class:
+        raise ValueError("canonical finding.vuln_class must use the existing Ledger taxonomy")
+    result = required_text(evidence.get("result"), "result")
+    if result not in {*RUNNER_RESULT_TO_FINDING_STATUS, "partial"}:
+        raise ValueError("native evidence result must be tested_finding, candidate, tested_clean, dead_end, or partial")
+    source = required_text(evidence.get("source"), "source")
+    observed_difference = _validate_observed_difference(
+        required_text(evidence.get("observed_difference"), "observed_difference")
+    )
+    captured_at = datetime.fromisoformat(required_text(evidence.get("generated_at"), "generated_at").replace("Z", "+00:00"))
+    if captured_at.tzinfo is None:
+        raise ValueError("native evidence generated_at must be an ISO-8601 timestamp with a timezone")
+    effective_state = _validate_request_facts(state_changing, redline_checked)
+    raw_runs = evidence.get("runs")
+    if not isinstance(raw_runs, list) or not raw_runs:
+        raise ValueError("native evidence runs must contain the recorded execution steps")
+    runs = []
+    anchor = None
+    for index, raw_run in enumerate(raw_runs):
+        if not isinstance(raw_run, dict):
+            raise ValueError(f"native evidence runs[{index}] must be an object")
+        run_url = required_text(raw_run.get("url"), f"runs[{index}].url")
+        run_method = required_text(raw_run.get("method"), f"runs[{index}].method").upper()
+        if not url_belongs_to_target(run_url, target):
+            raise ValueError(f"native evidence runs[{index}].url is off-target")
+        if not re.fullmatch(r"[A-Z][A-Z0-9_-]*", run_method):
+            raise ValueError(f"native evidence runs[{index}].method is invalid")
+        artifacts = raw_run.get("artifacts")
+        if not isinstance(artifacts, dict) or "request" not in artifacts:
+            raise ValueError(f"native evidence runs[{index}] requires a request artifact")
+        if result != "partial" and ("response" not in artifacts or raw_run.get("error") or raw_run.get("body_truncated")):
+            raise ValueError("incomplete native evidence requires result=partial, never candidate-ready")
+        refs = {}
+        for kind, value in artifacts.items():
+            ref = _target_owned_nonempty_evidence_ref(repo_root, target, value)
+            if not ref:
+                raise ValueError(f"native evidence runs[{index}].artifacts.{kind} must reference a non-empty target-owned file")
+            refs[kind] = ref
+        run = {
+            key: raw_run[key]
+            for key in ("actor", "object_scope", "variant", "summary", "error", "body_truncated")
+            if key in raw_run
+        }
+        for key, normalize in (("actor", normalize_actor), ("object_scope", normalize_object_scope), ("variant", normalize_variant)):
+            if key in run:
+                run[key] = normalize(required_text(run[key], f"runs[{index}].{key}"))
+        run.update(url=public_url_shape(run_url), method=run_method, artifacts=refs)
+        runs.append(run)
+        if run_method == method and _runner_endpoint_matches(url, run_url, target):
+            anchor = run
+    if anchor is None:
+        raise ValueError("native evidence must include the canonical finding's exact endpoint and method")
+    actor = normalize_actor(required_text(anchor.get("actor"), "canonical execution actor"))
+    summary = {
+        "schema_version": SCHEMA_VERSION,
+        "lane": "native_evidence",
+        "evidence_shape": "native",
+        "assessment_source": "ai",
+        "source": source,
+        "target": target,
+        "finding_id": finding_id,
+        "url": url,
+        "method": method,
+        "vuln_class": vuln_class,
+        "generated_at": captured_at.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "result": result,
+        "candidate_ready": result == "tested_finding",
+        "observed_difference": observed_difference,
+        "state_changing": effective_state,
+        "redline_checked": redline_checked,
+        "identity_v2": identity_v2,
+        "runs": runs,
+    }
+    bindings = _artifact_bindings(summary, repo_root)
+    digests = {(item["kind"], item["ref"]): item["sha256"] for item in bindings}
+    for run in runs:
+        # Bind each artifact to its execution step, not only to the bundle's
+        # unordered set of hashes (order matters for native stateful evidence).
+        run["artifact_sha256"] = {
+            kind: digests[(kind, ref)] for kind, ref in run["artifacts"].items()
+        }
+    material = _stable_operation_material(summary)
+    material["artifact_bindings"] = _artifact_digest_material(bindings)
+    # Re-registering identical material resumes the same operation and path,
+    # including a previous partial owner sync; raw observations are not copied.
+    operation_id = _runner_operation_id(material)
+    summary_path = (
+        repo_root / "evidence" / target_storage_key(target)
+        / "validation" / _safe_id(finding_id, "finding")
+        / f"native-{operation_id.split(':')[-1]}" / "summary.json"
+    )
+    if result == "partial":
+        summary["status"] = "partial"
+        summary["ledger_record"] = None
+    else:
+        summary["ledger_record"] = _record_ledger_if_needed(
+            repo_root=repo_root, no_ledger=False, target=target, endpoint=url,
+            method=method, vuln_class=vuln_class,
+            actor=actor,
+            object_scope=str(anchor.get("object_scope") or "unknown"),
+            variant=str(anchor.get("variant") or "replay"), result=result,
+            source=f"native-evidence:{source}", evidence_ref=anchor["artifacts"]["response"],
+            notes=observed_difference, browser_observed=False,
+            redline_checked=redline_checked, state_changing=effective_state,
+            identity_v2=identity_v2, operation_material=material,
+            artifact_bindings=bindings, finding_id=finding_id,
+        )
+    return _finalize_runner_summary(summary, summary_path, repo_root)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run deterministic validation evidence lanes")
     sub = parser.add_subparsers(dest="lane", required=True)
 
-    def add_common(p: argparse.ArgumentParser) -> None:
+    def add_common(p: argparse.ArgumentParser, *, finding_required: bool = False) -> None:
         p.add_argument("--target", required=True)
-        p.add_argument("--finding-id", default="")
+        p.add_argument("--finding-id", default="", required=finding_required)
         p.add_argument("--repo-root", default=str(BASE_DIR))
         p.add_argument("--no-sync", action="store_true", help="Do not sync runner result into findings/action_queue state")
         p.add_argument(
@@ -2059,7 +2208,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print only the summary JSON (same output shape; kept for CLI symmetry with sibling tools)",
     )
-
+    record = sub.add_parser("record-evidence", help="Register already-executed native evidence without sending requests")
+    add_common(record, finding_required=True)
+    record.add_argument("--evidence-json", required=True, help="Schema-v1 observations with runs[].artifacts, source, generated_at, result and observed_difference")
+    add_request_facts(record)
+    record.add_argument("--json", action="store_true")
 
     return parser
 
@@ -2079,8 +2232,8 @@ def main(argv: list[str] | None = None) -> int:
         except (json.JSONDecodeError, TypeError, ValueError, KeyError) as exc:
             parser.error(f"--identity-v2-json must contain a valid ClosureCellKey v2: {exc}")
     repo_root = Path(args.repo_root)
-    auth_session = session_from_args(args).bind_target(args.target)
     if args.lane == "request-diff":
+        auth_session = session_from_args(args).bind_target(args.target)
         try:
             request_spec = json.loads(Path(args.request_spec).read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
@@ -2102,6 +2255,16 @@ def main(argv: list[str] | None = None) -> int:
             headers=parse_headers(args.header),
             session=auth_session,
         )
+    elif args.lane == "record-evidence":
+        try:
+            evidence = json.loads(Path(args.evidence_json).read_text(encoding="utf-8"))
+            summary = record_native_evidence(
+                repo_root=repo_root, target=args.target, finding_id=args.finding_id,
+                evidence=evidence, state_changing=args.state_changing,
+                redline_checked=args.redline_checked, identity_v2=identity_v2,
+            )
+        except (OSError, ValueError) as exc:
+            parser.error(f"record-evidence: {exc}")
     else:
         raise ValueError(f"unknown lane: {args.lane}")
     if identity_v2 is not None and summary.get("ledger_record") is None:
@@ -2118,7 +2281,7 @@ def main(argv: list[str] | None = None) -> int:
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     # --json is accepted for CLI symmetry; the default output is already the
     # machine-readable summary JSON (no human-only trailing block exists).
-    return 1 if summary.get("result") == "partial" else 0
+    return 1 if summary.get("result") == "partial" or (summary.get("sync") or {}).get("status") == "partial" else 0
 
 
 if __name__ == "__main__":

@@ -287,9 +287,11 @@ def test_knowledge_index_preserves_card_layering_contract():
 
     assert "## Capability Registry" in index
     assert "knowledge/capabilities.yaml" in index
-    assert "最多 2 张知识卡总数" in index
-    assert "最多 1 个 case-router" in index
-    assert "验证 playbook 仅在验证阶段按需读取" in index
+    # 2026-09-16 native-capability 收敛：卡片总数硬上限文案退役，加载契约
+    # 归 shared-knowledge-recall（默认少量读取不是硬上限，按引用补读）。
+    assert "skills/runtime-protocol.md#shared-knowledge-recall" in index
+    assert "默认少量读取不是卡片总数硬上限" in index
+    assert "验证 playbook 仅在当前验证问题需要时读取" in index
     assert "## 核心决策知识卡" in index
     assert "## 按需 Router 知识卡" in index
     assert "case-router 与 HackerOne 或任何单一案例库无绑定" in index

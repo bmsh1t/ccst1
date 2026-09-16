@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -2176,3 +2177,296 @@ def test_runner_sync_preserving_validated_finality_keeps_coherent_pointers(
     assert row["runner_operation_id"] == bound_op_before
     assert row["runner_operation_id"] != summary["operation_id"]
     assert row["validation_summary"] == "validated/validation-summary.json"
+
+
+# ---------------------------------------------------------------------------
+# record-evidence: register already-executed native observations
+# ---------------------------------------------------------------------------
+
+
+def _native_fixture(tmp_path, *, url="https://target.test/rest/orders/1", finding_id="NATIVE-EVID-1"):
+    """Create a canonical candidate finding + recorded raw artifacts for native registration."""
+    target = "https://target.test"
+    key = _target_key(target)
+    findings_dir = tmp_path / "findings" / key
+    finding_index.upsert_finding(
+        findings_dir,
+        {
+            "id": finding_id,
+            "type": "Authz",
+            "vuln_class": "Authz",
+            "url": url,
+            "method": "POST",
+            "validation_status": "candidate",
+            "report_status": "not_generated",
+        },
+        target=target,
+    )
+    artifacts_dir = tmp_path / ".private" / "validation" / key / finding_id
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    artifacts = {}
+    for name, body in (
+        ("control.request.txt", "POST /rest/orders/1 HTTP/1.1\r\n\r\n"),
+        ("control.response.txt", "HTTP/1.1 200 OK\r\n\r\n{}"),
+        ("transition.request.bin", "POST /rest/orders/1 HTTP/1.1\r\nX-Actor: peer\r\n\r\n"),
+        ("transition.response.txt", "HTTP/1.1 200 OK\r\n\r\n{\"state\":\"mutated\"}"),
+    ):
+        path = artifacts_dir / name
+        path.write_text(body, encoding="utf-8")
+        artifacts[name.split(".")[0]] = str(path.relative_to(tmp_path))
+    evidence = {
+        "schema_version": 1,
+        "source": "browser",
+        "generated_at": "2026-09-16T10:00:00Z",
+        "result": "tested_finding",
+        "observed_difference": "Peer actor transitioned the recorded state; the control did not.",
+        "runs": [
+            {
+                "url": url,
+                "method": "POST",
+                "actor": "owner",
+                "artifacts": {
+                    "request": artifacts["control"],
+                    "response": artifacts["control"],
+                },
+            },
+            {
+                "url": url,
+                "method": "POST",
+                "actor": "peer",
+                "object_scope": "other_object_same_org",
+                "variant": "replay",
+                "artifacts": {
+                    "request": artifacts["transition"],
+                    "response": artifacts["transition"],
+                },
+            },
+        ],
+    }
+    return target, finding_id, evidence
+
+
+def test_record_evidence_binds_native_observation_to_runner_witness(tmp_path):
+    target, finding_id, evidence = _native_fixture(tmp_path)
+    summary = validation_runner.record_native_evidence(
+        repo_root=tmp_path, target=target, finding_id=finding_id, evidence=evidence,
+        state_changing=True, redline_checked=True,
+    )
+    assert summary["lane"] == "native_evidence"
+    assert summary["evidence_shape"] == "native"
+    assert summary["assessment_source"] == "ai"
+    assert summary["result"] == "tested_finding"
+    assert summary["candidate_ready"] is True
+    assert summary["url"] == "https://target.test/rest/orders/1"
+    assert summary["method"] == "POST"
+    # artifacts stay raw; they are not rewritten into a request-diff pair
+    assert summary["runs"][0]["method"] == "POST"
+    assert summary["runs"][0]["artifact_sha256"]["request"]
+    assert Path(tmp_path / summary["summary_path"]).is_file()
+
+
+def test_record_evidence_requires_existing_canonical_finding(tmp_path):
+    target, _, evidence = _native_fixture(tmp_path)
+    with pytest.raises(ValueError, match="existing canonical finding"):
+        validation_runner.record_native_evidence(
+            repo_root=tmp_path, target=target, finding_id="GHOST-FINDING", evidence=evidence,
+        )
+
+
+def test_record_evidence_rejects_nonv1_schema(tmp_path):
+    target, finding_id, evidence = _native_fixture(tmp_path)
+    evidence["schema_version"] = 2
+    with pytest.raises(ValueError, match="schema-v1"):
+        validation_runner.record_native_evidence(
+            repo_root=tmp_path, target=target, finding_id=finding_id, evidence=evidence,
+        )
+
+
+def test_record_evidence_rejects_off_target_canonical_url(tmp_path):
+    target, finding_id, _ = _native_fixture(tmp_path, url="https://target.test/rest/orders/1")
+    # retarget finding to an off-target host
+    key = _target_key(target)
+    payload = json.loads((tmp_path / "findings" / key / "findings.json").read_text())
+    payload["findings"][0]["url"] = "https://other.test/rest/orders/1"
+    (tmp_path / "findings" / key / "findings.json").write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="off target"):
+        validation_runner.record_native_evidence(
+            repo_root=tmp_path, target=target, finding_id=finding_id,
+            evidence={"schema_version": 1, "runs": [{}]},
+        )
+
+
+def test_record_evidence_rejects_off_target_run_url(tmp_path):
+    target, finding_id, evidence = _native_fixture(tmp_path)
+    evidence["runs"][0]["url"] = "https://other.test/rest/orders/1"
+    with pytest.raises(ValueError, match="off-target"):
+        validation_runner.record_native_evidence(
+            repo_root=tmp_path, target=target, finding_id=finding_id, evidence=evidence,
+        )
+
+
+def test_record_evidence_rejects_missing_anchor_endpoint(tmp_path):
+    """runs must contain the finding's exact endpoint+method (the anchor)."""
+    target, finding_id, evidence = _native_fixture(tmp_path)
+    # finding method is POST; make all runs GET -> no anchor
+    for run in evidence["runs"]:
+        run["method"] = "GET"
+    with pytest.raises(ValueError, match="exact endpoint and method"):
+        validation_runner.record_native_evidence(
+            repo_root=tmp_path, target=target, finding_id=finding_id, evidence=evidence,
+        )
+
+
+def test_record_evidence_rejects_incomplete_run_as_finding_grade(tmp_path):
+    """A run with error/body_truncated or no response must register as partial only."""
+    target, finding_id, evidence = _native_fixture(tmp_path)
+    del evidence["runs"][1]["artifacts"]["response"]
+    with pytest.raises(ValueError, match="result=partial"):
+        validation_runner.record_native_evidence(
+            repo_root=tmp_path, target=target, finding_id=finding_id, evidence=evidence,
+        )
+
+
+def test_record_evidence_partial_result_is_not_candidate_ready(tmp_path):
+    target, finding_id, evidence = _native_fixture(tmp_path)
+    evidence["result"] = "partial"
+    del evidence["runs"][1]["artifacts"]["response"]
+    evidence["runs"][1]["error"] = "connection reset"
+    summary = validation_runner.record_native_evidence(
+        repo_root=tmp_path, target=target, finding_id=finding_id, evidence=evidence,
+    )
+    assert summary["result"] == "partial"
+    assert summary["candidate_ready"] is False
+    assert summary["status"] == "partial"
+
+
+def test_record_evidence_rejects_invalid_result_word(tmp_path):
+    target, finding_id, evidence = _native_fixture(tmp_path)
+    evidence["result"] = "definitely-hacked"
+    with pytest.raises(ValueError, match="result"):
+        validation_runner.record_native_evidence(
+            repo_root=tmp_path, target=target, finding_id=finding_id, evidence=evidence,
+        )
+
+
+def test_record_evidence_requires_timezone_in_generated_at(tmp_path):
+    target, finding_id, evidence = _native_fixture(tmp_path)
+    evidence["generated_at"] = "2026-09-16 10:00:00"
+    with pytest.raises(ValueError, match="timezone"):
+        validation_runner.record_native_evidence(
+            repo_root=tmp_path, target=target, finding_id=finding_id, evidence=evidence,
+        )
+
+
+def test_record_evidence_rejects_missing_or_empty_artifact_file(tmp_path):
+    target, finding_id, evidence = _native_fixture(tmp_path)
+    empty = tmp_path / ".private" / "validation" / _target_key(target) / finding_id / "empty.txt"
+    empty.write_text("", encoding="utf-8")
+    evidence["runs"][0]["artifacts"]["request"] = str(empty.relative_to(tmp_path))
+    with pytest.raises(ValueError, match="non-empty target-owned file"):
+        validation_runner.record_native_evidence(
+            repo_root=tmp_path, target=target, finding_id=finding_id, evidence=evidence,
+        )
+
+
+def test_record_evidence_rejects_off_target_artifact_ref(tmp_path):
+    """Artifacts must live under the target's own evidence tree."""
+    target, finding_id, evidence = _native_fixture(tmp_path)
+    outside = tmp_path / "elsewhere" / "leak.txt"
+    outside.parent.mkdir(parents=True)
+    outside.write_text("x", encoding="utf-8")
+    evidence["runs"][0]["artifacts"]["request"] = str(outside.relative_to(tmp_path))
+    with pytest.raises(ValueError, match="target-owned"):
+        validation_runner.record_native_evidence(
+            repo_root=tmp_path, target=target, finding_id=finding_id, evidence=evidence,
+        )
+
+
+def test_record_evidence_idempotent_reregistration_reuses_operation(tmp_path):
+    target, finding_id, evidence = _native_fixture(tmp_path)
+    first = validation_runner.record_native_evidence(
+        repo_root=tmp_path, target=target, finding_id=finding_id, evidence=evidence,
+        state_changing=True, redline_checked=True,
+    )
+    second = validation_runner.record_native_evidence(
+        repo_root=tmp_path, target=target, finding_id=finding_id, evidence=evidence,
+        state_changing=True, redline_checked=True,
+    )
+    assert first["operation_id"] == second["operation_id"]
+    assert first["summary_path"] == second["summary_path"]
+    assert Path(tmp_path / first["summary_path"]).is_file()
+    # summary file is valid JSON after atomic rewrite (no half-write observable)
+    json.loads((tmp_path / second["summary_path"]).read_text())
+
+
+def test_record_evidence_raw_files_not_modified(tmp_path):
+    target, finding_id, evidence = _native_fixture(tmp_path)
+    key = _target_key(target)
+    req = tmp_path / ".private" / "validation" / key / finding_id / "transition.request.bin"
+    before = req.read_bytes()
+    validation_runner.record_native_evidence(
+        repo_root=tmp_path, target=target, finding_id=finding_id, evidence=evidence,
+        state_changing=True, redline_checked=True,
+    )
+    assert req.read_bytes() == before
+
+
+def test_record_evidence_normalizes_actor_vocabulary(tmp_path):
+    """Invalid Ledger vocabulary is rejected before anything is written."""
+    target, finding_id, evidence = _native_fixture(tmp_path)
+    evidence["runs"][1]["actor"] = "test-owned-actor"
+    with pytest.raises(ValueError, match="actor"):
+        validation_runner.record_native_evidence(
+            repo_root=tmp_path, target=target, finding_id=finding_id, evidence=evidence,
+        )
+
+
+def test_record_evidence_different_method_runs_allowed_across_steps(tmp_path):
+    """Native multi-step flows may legitimately change method between runs."""
+    target, finding_id, evidence = _native_fixture(tmp_path)
+    # step 1: GET state baseline (different method is fine, it is not the anchor)
+    evidence["runs"][0]["method"] = "GET"
+    summary = validation_runner.record_native_evidence(
+        repo_root=tmp_path, target=target, finding_id=finding_id, evidence=evidence,
+        state_changing=True, redline_checked=True,
+    )
+    assert summary["result"] == "tested_finding"
+    assert summary["runs"][0]["method"] == "GET"
+    # anchor remains the canonical POST step
+    assert any(r["method"] == "POST" for r in summary["runs"])
+
+
+def test_record_evidence_sync_updates_finding_and_queue(tmp_path):
+    target, finding_id, evidence = _native_fixture(tmp_path, finding_id="NATIVE-SYNC-1")
+    key = _target_key(target)
+    queue_dir = tmp_path / "state" / key
+    queue_dir.mkdir(parents=True, exist_ok=True)
+    (queue_dir / "action_queue.json").write_text(
+        json.dumps({
+            "schema_version": 1,
+            "target": target,
+            "actions": [
+                {
+                    "id": "AQ-NATIVE",
+                    "status": "queued",
+                    "type": "validation",
+                    "metadata": {"finding_id": finding_id, "url": "https://target.test/rest/orders/1"},
+                }
+            ],
+        }),
+        encoding="utf-8",
+    )
+    summary = validation_runner.record_native_evidence(
+        repo_root=tmp_path, target=target, finding_id=finding_id, evidence=evidence,
+        state_changing=True, redline_checked=True,
+    )
+    sync = validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)
+    assert sync["finding"]["status"] == "updated"
+    payload = json.loads((tmp_path / "findings" / key / "findings.json").read_text())
+    finding = next(f for f in payload["findings"] if f["id"] == finding_id)
+    # runner sync lands the candidate-grade witness; the "validated" finality
+    # itself still belongs to /validate (tested_finding -> candidate here).
+    assert finding["validation_status"] == "candidate"
+    assert finding["runner_operation_id"] == summary["operation_id"]
+    # the candidate now carries a machine-readable witness that /validate can bind
+    assert finding["validation_summary"].endswith(summary["summary_path"])
