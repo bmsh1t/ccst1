@@ -102,7 +102,9 @@ do not replay merely to fit request-diff or fabricate runner-owned fields.
   `identity`, `object`, `parser`, `transport`, `workflow`, `chain`, `rotation`, or
   `blocked`) or supported `kill_condition_met=true`. At most one child preserves
   parent/hypothesis/evidence lineage; independent follow-ups are separate claimed
-  actions within the batch budget. Missing outcome/decision blocks closure.
+  actions within the batch budget. Missing outcome/decision blocks closure. If the
+  action produced a reusable primitive, record it as `capability_primitives`
+  (capability + target-owned evidence_ref) so checkpoint can chain it.
 - Legacy/versionless `action_queue.py add/resolve --metadata-json` accepts only a
   JSON object, preserves `next_question`, `expected_learning`, `kill_condition`,
   `pivot_hints`, and other compatible structured fields, and rejects credentials
