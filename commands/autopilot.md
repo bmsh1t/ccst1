@@ -155,14 +155,7 @@ sensitive values out of state/logs. On claim failure inspect stderr/stored state
 never guess or retry. Runner observation leaves the action `running`; resolve it with one
 primary continuation or supported kill. Independent follow-ups need separately claimed
 actions within the batch budget; missing outcome/decision remains recoverable and blocks
-closure. When a resolved versioned action yielded a reusable primitive (an object selector,
-token/session behavior, server-side fetch, parser/deserialization step, exposed config, or
-any capability that could connect to a different boundary), record it in the resolve
-metadata as `capability_primitives` (at most 3 objects, each `capability` +
-target-owned `evidence_ref` + optional `continuation_hint`); checkpoint projects the
-unreviewed ones into a `capability-chain-review` that blocks closure until you materialize
-one versioned chain action or record dead-end/blocked. A standalone low-value primitive that
-still combines with another is a chain seed, not a clean result — do not skip this record. In deep mode, a concrete API/browser-XHR surface needs an evidence-linked depth pack
+closure. In deep mode, a concrete API/browser-XHR surface needs an evidence-linked depth pack
 from target-observed request shapes; one passive observation is not API completion. Negative
 results record the next evidence-linked dimension/question in Queue; partial cursors or
 unused dimensions remain resumable, not tested-clean.

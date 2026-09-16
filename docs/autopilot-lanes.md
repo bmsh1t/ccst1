@@ -102,10 +102,7 @@ do not replay merely to fit request-diff or fabricate runner-owned fields.
   `identity`, `object`, `parser`, `transport`, `workflow`, `chain`, `rotation`, or
   `blocked`) or supported `kill_condition_met=true`. At most one child preserves
   parent/hypothesis/evidence lineage; independent follow-ups are separate claimed
-  actions within the batch budget. Missing outcome/decision blocks closure. Record any
-  reusable primitive the action produced as `capability_primitives` in the resolve
-  metadata (capability + target-owned evidence_ref + optional continuation_hint);
-  checkpoint projects each unreviewed primitive into a `capability-chain-review`.
+  actions within the batch budget. Missing outcome/decision blocks closure.
 - Legacy/versionless `action_queue.py add/resolve --metadata-json` accepts only a
   JSON object, preserves `next_question`, `expected_learning`, `kill_condition`,
   `pivot_hints`, and other compatible structured fields, and rejects credentials
@@ -121,9 +118,6 @@ do not replay merely to fit request-diff or fabricate runner-owned fields.
 - `capability-chain-review` is advisory. Materialize one normal versioned chain
   action with persisted lineage when executable; otherwise resolve blocked/dead-end.
   It never changes running, validation, candidate, report, or Closure priority.
-  It is projected from the `capability_primitives` recorded on finalized versioned
-  actions; without that input no chain review is generated, so recording a reusable
-  capability at resolve time is what keeps this lane alive.
 - `wait_recon` / `wait_scan`: wait or poll, then refresh state. Runtime phase locks are the final duplicate-launch guard.
 - `validate_finding`: call `/validate` only when state returns `validate_finding`. The non-TTY owner is `python3 tools/validate.py --target <target_shell> --finding-id <id> --decision-json <json_file_shell> --json`; the JSON file path is never inline.
 - `resume_action_queue`: read the queue with `python3 tools/action_queue.py list --target <target_shell> --status running` (or `list --status queued`), choose the action your evidence supports, claim it explicitly with `--id`, perform the durable replay, then run `python3 tools/action_queue.py resolve --target <target_shell> --id <id> --status <state> --evidence <why>` and refresh. For continuation resolves, submit the continuation object (`kind`/`dimension`/`question`/`expected_learning`/`reason`) directly in the resolve metadata — AI writes it from the current hypothesis per the published Queue schema; the blank-skeleton generator is retired.
