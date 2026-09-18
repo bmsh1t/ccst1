@@ -42,6 +42,7 @@ and lowest reversible cost. Branches are alternatives, not a mandatory order.
 | Upload, URL fetch, GraphQL, realtime, import/export, or payment evidence appears | Preserve the request shape and route to the matching card/validation lane | `/surface`, selected Knowledge card, `/validate` |
 | Exposure, component, source, or CI/CD artifact appears | Record provenance and test applicability before any active follow-up; a concrete framework/version fingerprint makes `/intel` the immediate next step, not a deferred one | `/intel`, source or CI/CD tool |
 | Bot-manager or anti-bot challenge blocks content (challenge page instead of real content, or transport-dependent resets) | Do not deepen URL collection against a challenge wall; compare the same path across available transports and choose one that returns real content before any further recon phase | browser lane |
+| A third-party-hosted host or service carries multiple page, behavioral, or brand evidence points tying it to the target organization | Record the ownership observation at `confidence: high` with multiple `sources`, so it routes to `scope-review` with a forced in-scope/external/excluded decision; ownership evidence never expands authorization, and only an explicit target set makes it testable | `tools/recon_candidates.py`, `/surface`, `/scope` |
 | Recon is low-signal but still underexplored | Run one bounded discovery action with a reopen condition; keep unknowns open | `/recon`, browser/source evidence, or a targeted tool |
 
 ### Target-specific Branching
