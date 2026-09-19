@@ -24,8 +24,8 @@ this file keeps project-specific routing, evidence gates, and lifecycle boundari
 ## Four-Layer Memory Hooks
 
 Use `skills/runtime-protocol.md#shared-knowledge-recall` for card recall from either
-entrypoint. Context Pack selects cards; this Skill supplies the boundary decision and
-evidence gate. A recommendation is not a file read, and this Skill keeps no card map.
+entrypoint. Context Pack publishes the card catalog; the AI selects by current
+information gap. A catalog path is not a file read, and this Skill keeps no card map.
 
 Cards provide patterns, counterexamples, and evidence prompts. They do not own
 the target state or force an execution sequence.
@@ -44,8 +44,10 @@ branch when the observed evidence justifies it.
 
 ### Target Profile First Branch
 
-从目标画像出发的注意力分布，不是决策树也不排除任何类别；每一行只是
-"这类目标的历史高价报告集中在哪里"，模型保留完整的选择与倒序自由。
+这是一个由目标、证据和信息缺口驱动的动态决策树，而非固定流程或类别白名单。
+登录态、技术栈、功能形态和 ROI 只是可用示例；版本、租户关系、数据流、错误语义、
+部署边界或模型提出的其它维度同样可以采用，维度可以交叉、跳过、重开或替换。
+表格只保留历史高价报告中的注意力线索，不能生成强制探测顺序、机器准入或排除其它类别。
 
 | 目标特征 | 高危面分布（按历史高价报告） |
 |---|---|
@@ -58,9 +60,10 @@ branch when the observed evidence justifies it.
 
 ### Pattern Map
 
-When several lanes match at once, rank by the value-first surface order in
-`rules/hunting.md` (payment/auth/export/admin before low-value surfaces); the
-map below routes, it does not prioritize.
+When several lanes match at once, compare the observed evidence, expected
+information gain, plausible impact, reversibility, ownership, and cost. The map
+below offers route clues; it does not impose a category order or require every
+matching lane to be tested.
 
 | Signal | Route |
 |---|---|
@@ -133,8 +136,11 @@ controlled `/spray` run with lockout, rate limits, and stop conditions.
 
 ### GraphQL Lane
 
-发现 GraphQL endpoint 后做有界 introspection（schema/operation 名称、`node(id)`
-可枚举性），双角色对象对照用 `validation_runner.py request-diff` owner/peer 对；批量/alias 只测最小次数，订单生命周期 mutation 只记录不执行。
+发现 GraphQL endpoint 后按当前信息缺口选择有界 introspection（schema/operation 名称、
+`node(id)` 可枚举性）或双角色对象对照；精确 HTTP 操作用
+`validation_runner.py request-diff` owner/peer 对。批量、alias 和 mutation 都要先看
+实际副作用：对测试自有且可回滚的资源，可以在 `rules/red-lines.md` 允许的最小范围内
+验证；真实订单生命周期或不可逆动作只记录为 Lead，并保留后续安全验证条件。
 
 ### Workflow Perturbation Lane
 

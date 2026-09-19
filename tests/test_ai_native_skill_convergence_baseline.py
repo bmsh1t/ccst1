@@ -69,7 +69,11 @@ def test_web2_vuln_pattern_map_keeps_java_deserialization_and_webhook_routes():
     assert "JSON body with `@type`" in skill
     # First branch: target profile -> high-value surface distribution (direction only).
     assert "Target Profile First Branch" in skill
-    assert "不是决策树也不排除任何类别" in skill
+    assert "动态决策树" in skill
+    assert "固定流程或类别白名单" in skill
+    assert "版本、租户关系、数据流" in skill
+    assert "Context Pack publishes the card catalog" in skill
+    assert "Context Pack selects cards" not in skill
     # Lane notes stay direction-only (no how-to-test methodology): entry
     # condition + card pointer, nothing more.
     assert "Java Deserialization Lane" in skill
@@ -77,6 +81,16 @@ def test_web2_vuln_pattern_map_keeps_java_deserialization_and_webhook_routes():
     assert "版本指纹先行" not in skill  # methodology stays in the model, not the skill
     # Webhook lane covers the SSRF / signature / concurrency triple.
     assert "Webhook / Callback Lane" in skill
+
+    router = (REPO_ROOT / "rules" / "playbook-router.md").read_text(encoding="utf-8")
+    assert "测试自有且可回滚资源可在红线控制内验证" in router
+    assert "订单生命周期 mutation 只记录不执行" not in router
+
+
+def test_race_card_does_not_treat_serial_negative_as_parallel_proof():
+    card = (REPO_ROOT / "knowledge" / "cards" / "race-conditions.md").read_text(encoding="utf-8")
+    assert "串行阴性只约束已观察的串行路径" in card
+    assert "不能排除并发交错窗口" in card
 
 
 def test_phase0_and_intel_route_keep_selection_reason_and_urgency():

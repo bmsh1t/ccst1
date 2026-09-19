@@ -22,12 +22,13 @@ methods owned by narrower Skills, Rules, Cards, or deterministic tools.
 
 1. Read the current target state and bounded Context Pack; keep one target and
    auth context active.
-2. Honor live runtime waits and resume owner-selected Queue/Candidate work before
-   inventing another route.
+2. Honor live runtime waits and locks. Treat resumable owner-selected
+   Queue/Candidate work as one candidate to compare with new evidence; resume is
+   not automatically preferred and never bypasses the owner or runtime gate.
 3. Ask `skills/bb-methodology/SKILL.md` for the next hypothesis when selection or
    rotation is unclear.
-4. Load one narrower Skill plus only the Cards/references selected by current
-   evidence.
+4. Load one narrower Skill plus only the Cards/references that answer the current
+   evidence gap; the AI chooses from the bounded Context Pack catalog.
 5. Execute the bounded action through the existing tool/MCP path and preserve raw
    target-owned evidence.
 6. Write Leads, Signals, Candidates, actions, and coverage through their canonical

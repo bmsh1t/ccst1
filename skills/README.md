@@ -1,6 +1,6 @@
 # Skills 层
 
-Skills 是按需加载的执行契约。Claude Code CLI 主会话根据当前目标、阶段和证据保留路线选择权，Skill 提供所选路径的输入、观察、检查和写回协议。
+Skills 是按需加载的执行契约。Claude Code CLI 主会话根据当前目标、证据和信息缺口保留路线选择权，Skill 提供可组合的输入、观察、检查和写回协议。文档中的维度和分支是动态决策树的可选视角，不是固定流程、顺序或穷举清单；模型可以跳过、组合或提出新的判断维度。
 
 ## 职责分层
 
@@ -26,8 +26,8 @@ Skills 是按需加载的执行契约。Claude Code CLI 主会话根据当前目
 
 | 模式 | 含义 |
 |---|---|
-| `primary` | 可成为 Context Pack 的主推荐，并供 Action Queue 校验路由 |
-| `direct-only` | 用于显式专项工作，不进入自动主推荐 |
+| `primary` | 可作为主会话路由候选，并供 Action Queue 校验路由；最终分支由 AI 依据目标证据选择 |
+| `direct-only` | 仅用于显式专项工作，不作为通用主路线候选 |
 | `reference-only` | 支持当前工作，不拥有主路线 |
 | `report-only` | 只处理已验证结果的报告表达 |
 
@@ -44,6 +44,6 @@ Skills 是按需加载的执行契约。Claude Code CLI 主会话根据当前目
 
 - 改假设策略：修改 `bb-methodology`；改阶段交接：修改 `bug-bounty`。
 - 改领域判断：修改对应专项 Skill；改经验或反例：修改已有知识卡。
-- 改召回选择：修改 `tools/context_pack.py`，卡片路径继续来自知识 registry。
+- 改召回目录或引用投影：修改 `tools/context_pack.py`，卡片路径继续来自知识 registry；Context Pack 提供有界目录和引用，卡片选择由 AI 按当前信息缺口完成。
 - 改验证裁决：修改 `triage-validation` 及相关执行 owner；改报告格式：只修改 `report-writing`。
 - 改公共契约：修改对应协议或 Rules，消费者保留触发入口，不复制正文。

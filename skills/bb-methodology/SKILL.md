@@ -14,8 +14,9 @@ next?** It is not a lifecycle, coverage, tool, or reporting owner.
 - 按需加载 `rules/hunting.md`; its value-first coverage and
   `rules/hunting.md#high-intensity-hunting-posture` are canonical.
 - Use `rules/coverage-gate.md` for coverage/completion.
-- Use the Context Pack's selected cards and references. Do not load the full
-  knowledge index merely to look for ideas.
+- Use the bounded card catalog and references exposed by the Context Pack; the
+  AI selects whichever cards answer the current information gap. Do not load the
+  full knowledge index merely to look for ideas.
 
 高强度 hunt 采用高价值漏洞族覆盖模型，不固定偏向某几个漏洞类别。深度来自证据循环、
 角色/对象差异、边界推理和复盘。
