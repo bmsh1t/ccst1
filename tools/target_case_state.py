@@ -34,14 +34,16 @@ try:
     from tools.closure_resolver import canonical_endpoint_identity
     from tools.finding_index import load_finding_index, verify_finalized_finding_owner_provenance
     from tools.private_artifacts import private_artifact_dir, write_private_json
-    from tools.target_paths import canonical_target_value, target_storage_key
+    from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
+    from tools.request_diff import RequestPairError, validate_request_pair
 except ImportError:  # pragma: no cover - direct tools/ execution
     from action_queue import SENSITIVE_OBSERVATION_VALUE_RE  # type: ignore
     from auth_session import AuthSession  # type: ignore
     from closure_resolver import canonical_endpoint_identity  # type: ignore
     from finding_index import load_finding_index, verify_finalized_finding_owner_provenance  # type: ignore
     from private_artifacts import private_artifact_dir, write_private_json  # type: ignore
-    from target_paths import canonical_target_value, target_storage_key  # type: ignore
+    from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # type: ignore
+    from request_diff import RequestPairError, validate_request_pair  # type: ignore
 
 
 SCHEMA_VERSION = 1
@@ -714,6 +716,9 @@ def _impact_weight(state: dict[str, Any], item: dict[str, Any]) -> int:
 def _readiness(
     state: dict[str, Any],
     item: dict[str, Any],
+    *,
+    repo_root: Path | None = None,
+    target: str = "",
 ) -> tuple[int, list[str], dict[str, Any]]:
     missing: list[str] = []
     optional_gaps: list[str] = []
@@ -735,6 +740,29 @@ def _readiness(
             missing.append(field)
         else:
             details[field] = str(value)
+    if runner == "request-diff" and "request_spec_ref" not in missing and repo_root is not None:
+        raw_ref = str(item.get("request_spec_ref") or "").strip()
+        spec_path = Path(raw_ref).expanduser()
+        if not spec_path.is_absolute():
+            spec_path = repo_root.resolve() / spec_path
+        details["request_spec_path"] = str(spec_path)
+        if not spec_path.is_file():
+            missing.append(f"request_spec_ref is not a readable file: {raw_ref}")
+        else:
+            try:
+                payload = json.loads(spec_path.read_text(encoding="utf-8"))
+                spec = validate_request_pair(payload)
+            except (OSError, UnicodeError) as exc:
+                missing.append(f"request_spec_ref cannot be read: {type(exc).__name__}")
+            except (json.JSONDecodeError, RequestPairError, TypeError, ValueError) as exc:
+                reason = str(exc).splitlines()[0][:160] or type(exc).__name__
+                missing.append(f"request_spec_ref is invalid: {reason}")
+            else:
+                if target:
+                    for request_name in ("baseline_request", "variant_request"):
+                        url = spec[request_name]["url"]
+                        if not url_belongs_to_target(url, target):
+                            missing.append(f"{request_name}.url is outside target scope")
     return max(0, 30 - 10 * len(missing)), missing, details
 
 
@@ -749,7 +777,10 @@ def _build_generic_command(target: str, item: dict[str, Any], details: dict[str,
     runner = str(item.get("runner") or "").strip()
     parts = ["python3", "tools/validation_runner.py", runner, "--target", target]
     if runner == "request-diff":
-        parts.extend(["--request-spec", item.get("request_spec_ref") or ""])
+        parts.extend([
+            "--request-spec", details.get("request_spec_path") or item.get("request_spec_ref") or "",
+            "--repo-root", details.get("repo_root") or str(BASE_DIR),
+        ])
     return " ".join(_quote(part) for part in parts if part != "")
 
 
@@ -767,8 +798,14 @@ def _chain_context(state: dict[str, Any], item: dict[str, Any], details: dict[st
     return context
 
 
-def _score_backlog_item(state: dict[str, Any], item: dict[str, Any]) -> tuple[int, list[str], dict[str, Any]]:
-    readiness_score, missing, details = _readiness(state, item)
+def _score_backlog_item(
+    state: dict[str, Any],
+    item: dict[str, Any],
+    *,
+    repo_root: Path | None = None,
+    target: str = "",
+) -> tuple[int, list[str], dict[str, Any]]:
+    readiness_score, missing, details = _readiness(state, item, repo_root=repo_root, target=target)
     priority = PRIORITY_SCORE.get(str(item.get("priority") or "medium").lower(), 50)
     impact = _impact_weight(state, item)
     chain_potential = 10 * len(item.get("chain_extensions_if_blocked") or [])
@@ -927,9 +964,12 @@ def next_action(
             "reason": "no active validation backlog or open hypothesis",
         }
 
+    target_value = state.get("target") or canonical_target_value(target)
     ranked: list[tuple[int, list[str], dict[str, Any], dict[str, Any]]] = []
     for item in active:
-        score, missing, details = _score_backlog_item(state, item)
+        score, missing, details = _score_backlog_item(
+            state, item, repo_root=Path(repo_root), target=target_value
+        )
         ranked.append((score, missing, details, item))
     # 可执行项优先；candidate 即使已有部分证据也必须先补证据，避免同一 replay
     # 在没有新上下文时被反复执行。
@@ -947,8 +987,9 @@ def next_action(
     linked_hypothesis = _linked_hypothesis(state, item)
     recovering_hypothesis = backlog_status == "blocked" and bool(linked_hypothesis)
     ready = not missing and backlog_status not in {"candidate", "blocked"}
-    target_value = state.get("target") or canonical_target_value(target)
     runner = item.get("runner")
+    if ready:
+        details["repo_root"] = str(Path(repo_root).resolve())
     command = _build_generic_command(target_value, item, details) if ready else ""
     redacted_command = command
     obj = details.get("object") or {}

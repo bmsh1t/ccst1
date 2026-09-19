@@ -15,6 +15,38 @@ from target_paths import target_storage_key
 TARGET = "http://127.0.0.1:3002"
 
 
+def _write_request_spec(
+    repo_root: Path,
+    relative: str,
+    *,
+    target: str = TARGET,
+    active_dimension: str = "header:authorization",
+    classifier: str = "authz",
+) -> Path:
+    path = repo_root / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "schema_version": 1,
+        "baseline_request": {
+            "method": "POST" if active_dimension.startswith("body:") else "GET",
+            "url": f"{target}/api/item",
+            "headers": {"Authorization": "Bearer owner-token", "Content-Type": "application/json"}
+            if active_dimension.startswith("body:") else {"Authorization": "Bearer owner-token"},
+            "body": {"filter": {"name": "one"}} if active_dimension.startswith("body:") else "",
+        },
+        "variant_request": {
+            "method": "POST" if active_dimension.startswith("body:") else "GET",
+            "url": f"{target}/api/item",
+            "headers": {"Authorization": "Bearer owner-token", "Content-Type": "application/json"}
+            if active_dimension.startswith("body:") else {"Authorization": "Bearer peer-token"},
+            "body": {"filter": {"name": "two"}} if active_dimension.startswith("body:") else "",
+        },
+        "active_dimension": active_dimension,
+        "classifier": classifier,
+    }), encoding="utf-8")
+    return path
+
+
 def _build_idor_state(tmp_path):
     target_case_state.add_actor(tmp_path, TARGET, actor="user_a", role="user", label="owner")
     target_case_state.add_actor(tmp_path, TARGET, actor="user_b", role="user", label="peer")
@@ -339,6 +371,7 @@ def test_add_session_requires_existing_actor(tmp_path):
 
 def test_add_hypothesis_and_backlog_then_next_outputs_ai_orchestration(tmp_path):
     _build_idor_state(tmp_path)
+    _write_request_spec(tmp_path, f"evidence/{target_storage_key(TARGET)}/validation/order-idor-pair/spec.json")
     hypothesis = target_case_state.add_hypothesis(
         tmp_path,
         TARGET,
@@ -354,7 +387,7 @@ def test_add_hypothesis_and_backlog_then_next_outputs_ai_orchestration(tmp_path)
         TARGET,
         runner="request-diff",
         endpoint=f"{TARGET}/rest/order-history/123",
-        request_spec_ref="evidence/%s/validation/order-idor-pair/spec.json" % TARGET,
+        request_spec_ref=f"evidence/{target_storage_key(TARGET)}/validation/order-idor-pair/spec.json",
         active_dimension="header:authorization",
         classifier="authz",
         owner_actor="user_a",
@@ -506,12 +539,13 @@ def test_next_blocks_when_peer_session_missing(tmp_path):
         endpoint=f"{TARGET}/rest/order-history/123",
         private_marker="owner@example.test",
     )
+    _write_request_spec(tmp_path, f"evidence/{target_storage_key(TARGET)}/validation/order-idor-pair/spec.json")
     target_case_state.add_backlog(
         tmp_path,
         TARGET,
         runner="request-diff",
         endpoint=f"{TARGET}/rest/order-history/123",
-        request_spec_ref="evidence/%s/validation/order-idor-pair/spec.json" % TARGET,
+            request_spec_ref=f"evidence/{target_storage_key(TARGET)}/validation/order-idor-pair/spec.json",
         active_dimension="header:authorization",
         classifier="authz",
         owner_actor="user_a",
@@ -536,6 +570,7 @@ def test_next_prefers_ready_item_over_higher_priority_missing_evidence(tmp_path)
         runner="request-diff",
         priority="critical",
     )
+    _write_request_spec(tmp_path, "evidence/target.test/pairs/ready.json")
     ready = target_case_state.add_backlog(
         tmp_path,
         TARGET,
@@ -583,6 +618,10 @@ def test_retired_marker_replay_runner_fails_closed(tmp_path):
 
 
 def test_request_diff_runner_uses_spec_reference_without_copying_request_values(tmp_path):
+    _write_request_spec(
+        tmp_path, "evidence/target.test/request-pair.json",
+        active_dimension="body:/filter/name", classifier="sqli",
+    )
     target_case_state.add_backlog(
         tmp_path,
         TARGET,
@@ -595,7 +634,7 @@ def test_request_diff_runner_uses_spec_reference_without_copying_request_values(
     )
     item = target_case_state.next_action(tmp_path, TARGET)
     assert item["ready"] is True
-    assert "--request-spec evidence/target.test/request-pair.json" in item["command"]
+    assert f"--request-spec {tmp_path / 'evidence/target.test/request-pair.json'}" in item["command"]
     assert "PAYLOAD" not in json.dumps(item)
 
 
@@ -615,6 +654,7 @@ def test_retired_payment_race_runner_fails_closed(tmp_path):
 
 
 def test_candidate_routes_to_enrichment_without_replay(tmp_path):
+    _write_request_spec(tmp_path, "evidence/target.test/pairs/candidate.json", target=TARGET)
     candidate = target_case_state.add_backlog(
         tmp_path,
         TARGET,
@@ -682,12 +722,13 @@ def test_next_allows_replay_without_private_marker_as_optional_gap(tmp_path):
         owner_actor="user_a",
         endpoint=f"{TARGET}/rest/order-history/123",
     )
+    _write_request_spec(tmp_path, f"evidence/{target_storage_key(TARGET)}/validation/order-idor-pair/spec.json")
     target_case_state.add_backlog(
         tmp_path,
         TARGET,
         runner="request-diff",
         endpoint=f"{TARGET}/rest/order-history/123",
-        request_spec_ref="evidence/%s/validation/order-idor-pair/spec.json" % TARGET,
+        request_spec_ref=f"evidence/{target_storage_key(TARGET)}/validation/order-idor-pair/spec.json",
         active_dimension="header:authorization",
         classifier="authz",
         owner_actor="user_a",
@@ -715,7 +756,7 @@ def test_complete_backlog_writes_result_and_evidence_ref(tmp_path):
         TARGET,
         runner="request-diff",
         endpoint=f"{TARGET}/rest/order-history/123",
-        request_spec_ref="evidence/%s/validation/order-idor-pair/spec.json" % TARGET,
+        request_spec_ref=f"evidence/{target_storage_key(TARGET)}/validation/order-idor-pair/spec.json",
         active_dimension="header:authorization",
         classifier="authz",
         owner_actor="user_a",
@@ -902,12 +943,13 @@ def test_case_state_rejects_duplicate_durable_ids(tmp_path):
 
 def test_cli_next_outputs_json(tmp_path, capsys):
     _build_idor_state(tmp_path)
+    _write_request_spec(tmp_path, f"evidence/{target_storage_key(TARGET)}/validation/order-idor-pair/spec.json")
     target_case_state.add_backlog(
         tmp_path,
         TARGET,
         runner="request-diff",
         endpoint=f"{TARGET}/rest/order-history/123",
-        request_spec_ref="evidence/%s/validation/order-idor-pair/spec.json" % TARGET,
+        request_spec_ref=f"evidence/{target_storage_key(TARGET)}/validation/order-idor-pair/spec.json",
         active_dimension="header:authorization",
         classifier="authz",
         owner_actor="user_a",
@@ -937,6 +979,7 @@ def test_ready_command_parses_in_real_runner(tmp_path, monkeypatch):
 
     import validation_runner
 
+    _write_request_spec(tmp_path, "evidence/target.test/pairs/spec.json")
     target_case_state.add_backlog(
         tmp_path,
         TARGET,
@@ -960,3 +1003,102 @@ def test_ready_command_parses_in_real_runner(tmp_path, monkeypatch):
     args = parser.parse_args(argv)
     assert args.lane == "request-diff"
     assert args.request_spec.endswith("spec.json")
+    assert args.repo_root == str(tmp_path.resolve())
+
+
+def test_ready_command_keeps_spec_path_when_repo_root_is_relative(tmp_path, monkeypatch):
+    import validation_runner
+
+    relative_root = Path("fixture")
+    repo_root = tmp_path / relative_root
+    _write_request_spec(repo_root, "pairs/spec.json")
+    target_case_state.add_backlog(
+        repo_root,
+        TARGET,
+        runner="request-diff",
+        request_spec_ref="pairs/spec.json",
+        active_dimension="header:authorization",
+        classifier="authz",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    item = target_case_state.next_action(relative_root, TARGET)
+    args = validation_runner.build_parser().parse_args(shlex.split(item["command"])[2:])
+
+    assert item["ready"] is True
+    assert args.repo_root == str(repo_root.resolve())
+    assert args.request_spec == str((repo_root / "pairs/spec.json").resolve())
+
+
+@pytest.mark.parametrize(
+    "kind",
+    ["missing", "directory", "invalid-utf8", "invalid-json", "non-object", "invalid-pair", "off-target"],
+)
+def test_request_diff_readiness_fails_closed_for_unusable_spec(tmp_path, kind):
+    relative = "evidence/target.test/pairs/spec.json"
+    path = tmp_path / relative
+    if kind == "directory":
+        path.mkdir(parents=True)
+    elif kind == "invalid-utf8":
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"\xff\xfe")
+    elif kind == "invalid-json":
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{broken", encoding="utf-8")
+    elif kind == "non-object":
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("[]", encoding="utf-8")
+    elif kind == "invalid-pair":
+        _write_request_spec(tmp_path, relative, target="target.test")
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["variant_request"] = payload["baseline_request"]
+        path.write_text(json.dumps(payload), encoding="utf-8")
+    elif kind == "off-target":
+        _write_request_spec(tmp_path, relative, target="other.test")
+
+    target_case_state.add_backlog(
+        tmp_path,
+        "target.test",
+        runner="request-diff",
+        request_spec_ref=relative,
+        active_dimension="header:authorization",
+        classifier="authz",
+        endpoint="https://target.test/api/item",
+    )
+    state_path = tmp_path / "state" / target_storage_key("target.test") / "case_state.json"
+    before = state_path.read_bytes()
+
+    item = target_case_state.next_action(tmp_path, "target.test")
+
+    assert item["ready"] is False
+    assert item["next_action"] == "enrich_case_state"
+    assert item["command"] == ""
+    assert any("request_spec_ref" in value or ".url" in value for value in item["missing_evidence"])
+    assert state_path.read_bytes() == before
+
+
+@pytest.mark.parametrize("anonymous", [False, True])
+def test_request_diff_readiness_ignores_unrelated_session(tmp_path, anonymous):
+    target_case_state.add_actor(tmp_path, "target.test", actor="old_actor", role="user")
+    target_case_state.add_session(
+        tmp_path, "target.test", session="old_session", actor="old_actor", kind="bearer",
+        header_value="Bearer old-token", validity="expired",
+    )
+    path = _write_request_spec(tmp_path, "pairs/independent.json", target="https://target.test")
+    if anonymous:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["baseline_request"]["headers"] = {}
+        payload["variant_request"]["headers"] = {}
+        payload["variant_request"]["url"] += "?view=other"
+        payload["active_dimension"] = "query:view"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+    target_case_state.add_backlog(
+        tmp_path, "target.test", runner="request-diff", request_spec_ref="pairs/independent.json",
+        active_dimension="query:view" if anonymous else "header:authorization", classifier="authz",
+    )
+
+    item = target_case_state.next_action(tmp_path, "target.test")
+
+    assert item["ready"] is True
+    assert item["next_action"] == "run_validation_runner"
+    assert str(path) in item["command"]
