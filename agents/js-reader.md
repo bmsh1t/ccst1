@@ -76,7 +76,10 @@ file lists:
 - `selected_js_files`: paths to JS files (already size-filtered, vendor-filtered) with `sha256` and
   `content_status` (`new`, `changed`, or `unchanged`) — prioritize new/changed files and
   compare unchanged files with existing hypotheses before rereading them
-- `skipped_js_files`: paths skipped (vendor / oversize) — for transparency only, do not read
+- `skipped_js_files`: paths omitted by the default budget (vendor / oversize / file cap) with reasons.
+  They are not marked clean or forbidden: when a current hypothesis needs one, use native
+  Read/Bash on that exact local path with a bounded range, or rerun `js_reader.py` with an
+  explicit larger cap or `--no-skip-vendor`.
 - `recon_extracted`: pre-grep results from LinkFinder / SecretFinder (endpoints, raw hits, potential secrets, js_urls)
 - `source_intel`: hypotheses from a prior source intelligence run (may be `null`)
 
@@ -89,11 +92,9 @@ file lists:
    there is no matching prior evidence or a new recon/source signal requires
    context. Preserve prior entries when writing the new report; merge changes
    instead of replacing the report with only this run's files.
-3. Pick at most 10–15 of the most promising JS files. Prefer filenames with
-   intent: `auth.js`, `api.js`, `admin.js`, `oauth.js`, `user.js`,
-   `oidc.js`, `sso.js`, `csrf.js`, `socket.js`, `realtime.js`, `graphql.js`,
-   `dashboard.js`, `next*.js`, `nuxt*.js` — over generic `app.js` /
-   `main.js` / `index.js`
+3. Pick at most 10–15 files that answer the current question. Intent-rich names are useful
+   hints, not a ranking rule: `app.js`, `main.js`, `index.js`, vendor bundles, and oversized
+   files may be the right choice when the evidence points there.
 4. Use the Read tool only on new/changed files and the small subset of
    unchanged files needed to resolve a current hypothesis.
 5. For each file, scan for:

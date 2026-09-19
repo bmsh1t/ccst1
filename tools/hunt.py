@@ -1277,7 +1277,11 @@ def run_js_read(domain):
         f"{result['skipped_count']} skipped, "
         f"source_intel={result['source_intel_present']}",
     )
-    return bool(result.get("selected_count") or result.get("recon_artifacts_present"))
+    return bool(
+        result.get("selected_count")
+        or result.get("skipped_count")
+        or result.get("recon_artifacts_present")
+    )
 
 
 def read_js_intel(domain):

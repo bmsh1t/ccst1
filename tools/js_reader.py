@@ -17,6 +17,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import stat
+import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -70,7 +74,7 @@ def _list_cached_js_paths(target: str, repo_root: Path) -> list[Path]:
             candidates.extend(
                 path
                 for path in sorted(p.rglob("*"))
-                if path.is_file() and path.suffix.lower() in READABLE_SOURCE_SUFFIXES
+                if path.suffix.lower() in READABLE_SOURCE_SUFFIXES
             )
     # 动态恢复文件是本轮新增证据，不能被旧缓存先占满读取预算。
     return sorted(
@@ -109,6 +113,31 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _write_text_atomic(path: Path, content: str) -> None:
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=str(path.parent),
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(path)
+    except Exception:
+        if temporary is not None:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+        raise
+
+
 def _previous_js_hashes(path: Path) -> dict[str, str]:
     """Read the previous material inventory; malformed cache is ignored."""
     try:
@@ -134,6 +163,10 @@ def prepare_materials(
     skip_vendor: bool = True,
 ) -> dict:
     """Collect LLM-reading materials under findings/<target>/js_intel/."""
+    if max_files <= 0:
+        raise ValueError("max_files must be positive")
+    if max_file_bytes <= 0:
+        raise ValueError("max_file_bytes must be positive")
     safe_target = _safe_target(target)
     output_dir = repo_root / "findings" / safe_target / "js_intel"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -147,17 +180,29 @@ def prepare_materials(
 
     for p in cached_js:
         try:
-            size = p.stat().st_size
+            path_stat = p.stat()
         except OSError:
+            skipped.append({"path": str(p.relative_to(repo_root)), "size": None, "reason": "stat_error"})
             continue
         rel_path = str(p.relative_to(repo_root))
+        if not stat.S_ISREG(path_stat.st_mode):
+            skipped.append({"path": rel_path, "size": None, "reason": "not_file"})
+            continue
+        size = path_stat.st_size
         if skip_vendor and _looks_like_vendor(p):
             skipped.append({"path": rel_path, "size": size, "reason": "vendor"})
             continue
         if size > max_file_bytes:
             skipped.append({"path": rel_path, "size": size, "reason": f"oversize_{size}"})
             continue
-        digest = _sha256(p)
+        if len(selected) >= max_files:
+            skipped.append({"path": rel_path, "size": size, "reason": "file_cap"})
+            continue
+        try:
+            digest = _sha256(p)
+        except OSError:
+            skipped.append({"path": rel_path, "size": size, "reason": "hash_error"})
+            continue
         previous = previous_hashes.get(rel_path)
         content_status = (
             "new" if previous is None else "unchanged" if previous == digest else "changed"
@@ -169,8 +214,6 @@ def prepare_materials(
             "sha256": digest,
             "content_status": content_status,
         })
-        if len(selected) >= max_files:
-            break
 
     recon_extracted = _read_recon_extracted(safe_target, repo_root)
     source_intel = load_source_intel(repo_root / "findings" / safe_target)
@@ -185,19 +228,17 @@ def prepare_materials(
         },
         "selected_js_files": selected,
         "skipped_js_files": skipped,
+        "omitted_count": len(skipped),
         "hash_states": hash_states,
         "recon_extracted": recon_extracted,
         "source_intel_present": bool(source_intel.get("available")),
         "source_intel": source_intel,
     }
 
-    materials_path.write_text(
-        json.dumps(materials, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    _write_text_atomic(materials_path, json.dumps(materials, indent=2, ensure_ascii=False))
 
     summary_path = output_dir / "materials_summary.md"
-    summary_path.write_text(_format_materials_summary(materials), encoding="utf-8")
+    _write_text_atomic(summary_path, _format_materials_summary(materials))
 
     return {
         "target": safe_target,
@@ -228,6 +269,7 @@ def _format_materials_summary(materials: dict) -> str:
         f"- content hashes: new={materials['hash_states']['new']}, "
         f"unchanged={materials['hash_states']['unchanged']}, "
         f"changed={materials['hash_states']['changed']}",
+        f"- omitted files: {materials['omitted_count']} (see full skipped_js_files in materials.json)",
         "",
         "## Selected JS files",
         f"({len(materials['selected_js_files'])} files)",
@@ -236,7 +278,11 @@ def _format_materials_summary(materials: dict) -> str:
         lines.append(f"- `{item['path']}` ({item['size']} bytes)")
     if len(materials["selected_js_files"]) > 20:
         lines.append(f"- ... and {len(materials['selected_js_files']) - 20} more")
-    if not materials["selected_js_files"] and not any(materials["recon_extracted"].values()):
+    if (
+        not materials["selected_js_files"]
+        and not materials["skipped_js_files"]
+        and not any(materials["recon_extracted"].values())
+    ):
         lines.extend([
             "",
             "No cached JS or recon-extracted JS artifacts were found.",
@@ -247,7 +293,7 @@ def _format_materials_summary(materials: dict) -> str:
         lines.extend([
             "",
             "## Skipped (with reason)",
-            f"({len(materials['skipped_js_files'])} files)",
+            f"({len(materials['skipped_js_files'])} files; all remain addressable by path)",
         ])
         for item in materials["skipped_js_files"][:10]:
             lines.append(f"- `{item['path']}` — {item['reason']}")
@@ -284,15 +330,19 @@ def main() -> int:
     parser.add_argument("--no-skip-vendor", dest="skip_vendor", action="store_false", help="Do not skip vendor JS bundles")
     args = parser.parse_args()
 
-    result = prepare_materials(
-        target=args.target,
-        repo_root=Path(args.repo_root),
-        max_files=args.max_files,
-        max_file_bytes=args.max_file_bytes,
-        skip_vendor=args.skip_vendor,
-    )
-    print(Path(result["artifacts"]["summary"]).read_text(encoding="utf-8"))
-    return 0
+    try:
+        result = prepare_materials(
+            target=args.target,
+            repo_root=Path(args.repo_root),
+            max_files=args.max_files,
+            max_file_bytes=args.max_file_bytes,
+            skip_vendor=args.skip_vendor,
+        )
+        print(Path(result["artifacts"]["summary"]).read_text(encoding="utf-8"))
+        return 0
+    except (OSError, ValueError) as exc:
+        print(f"js_reader: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
 
 from tools.js_reader import (
     DEFAULT_MAX_FILES,
+    _write_text_atomic,
     _looks_like_vendor,
+    main,
     prepare_materials,
 )
 from tools.target_paths import target_storage_key
@@ -125,6 +128,97 @@ def test_max_files_cap_is_respected(repo_root: Path) -> None:
     result = prepare_materials(target, repo_root=repo_root, max_files=5)
 
     assert result["selected_count"] == 5
+    omitted = {item["path"]: item["reason"] for item in result["materials"]["skipped_js_files"]}
+    assert len(omitted) == 10
+    assert set(omitted.values()) == {"file_cap"}
+    assert result["materials"]["omitted_count"] == 10
+
+
+def test_skipped_materials_remain_addressable_and_hunt_can_continue(repo_root: Path) -> None:
+    target = "all-skipped.app"
+    base = repo_root / "recon" / target / "js_dump"
+    _write(base / "app.js", "x" * (300 * 1024))
+    _write(base / "react.production.min.js", "vendor business route")
+
+    result = prepare_materials(target, repo_root=repo_root)
+    materials = result["materials"]
+    skipped = {item["path"]: item for item in materials["skipped_js_files"]}
+    assert result["selected_count"] == 0
+    assert result["skipped_count"] == 2
+    assert materials["omitted_count"] == 2
+    assert skipped[f"recon/{target}/js_dump/app.js"]["reason"].startswith("oversize_")
+    assert skipped[f"recon/{target}/js_dump/react.production.min.js"]["reason"] == "vendor"
+    summary = Path(result["artifacts"]["summary"]).read_text(encoding="utf-8")
+    assert "all remain addressable by path" in summary
+    assert "No cached JS or recon-extracted JS artifacts were found" not in summary
+
+
+def test_stat_and_hash_failures_skip_only_the_failed_file(repo_root: Path, monkeypatch) -> None:
+    import tools.js_reader as js_reader
+
+    target = "partial-read.app"
+    base = repo_root / "recon" / target / "js_dump"
+    good = base / "good.js"
+    bad_hash = base / "bad-hash.js"
+    missing = base / "missing.js"
+    _write(good)
+    _write(bad_hash)
+    monkeypatch.setattr(js_reader, "_list_cached_js_paths", lambda *_args: [good, bad_hash, missing])
+    real_sha256 = js_reader._sha256
+
+    def flaky_sha256(path: Path) -> str:
+        if path == bad_hash:
+            raise OSError("simulated read failure")
+        return real_sha256(path)
+
+    monkeypatch.setattr(js_reader, "_sha256", flaky_sha256)
+
+    result = prepare_materials(target, repo_root=repo_root)
+
+    assert [item["path"] for item in result["materials"]["selected_js_files"]] == [
+        f"recon/{target}/js_dump/good.js"
+    ]
+    reasons = {item["path"]: item["reason"] for item in result["materials"]["skipped_js_files"]}
+    assert reasons[f"recon/{target}/js_dump/bad-hash.js"] == "hash_error"
+    assert reasons[f"recon/{target}/js_dump/missing.js"] == "stat_error"
+
+
+def test_atomic_write_preserves_existing_file_on_replace_failure(tmp_path: Path, monkeypatch) -> None:
+    destination = tmp_path / "materials.json"
+    destination.write_text('{"old": true}\n', encoding="utf-8")
+    original = destination.read_bytes()
+
+    def fail_replace(self: Path, target: Path) -> Path:
+        raise OSError("simulated replace failure")
+
+    monkeypatch.setattr(Path, "replace", fail_replace)
+
+    with pytest.raises(OSError, match="replace failure"):
+        _write_text_atomic(destination, '{"new": true}\n')
+    assert destination.read_bytes() == original
+
+
+def test_cli_rejects_non_positive_budget_without_traceback(repo_root: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["js_reader.py", "--target", "budget.app", "--repo-root", str(repo_root), "--max-files", "0"],
+    )
+
+    assert main() == 2
+    captured = capsys.readouterr()
+    assert "max_files must be positive" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_hunt_run_js_read_continues_when_all_files_are_skipped(repo_root: Path, monkeypatch) -> None:
+    import tools.hunt as hunt
+
+    target = "hunt-skipped.app"
+    _write(repo_root / "recon" / target / "js_dump" / "huge.js", "x" * (300 * 1024))
+    monkeypatch.setattr(hunt, "BASE_DIR", str(repo_root))
+
+    assert hunt.run_js_read(target) is True
 
 
 def test_materials_marks_unchanged_and_changed_bundle_hashes(repo_root: Path) -> None:
