@@ -324,13 +324,19 @@ Correct: component-leading numeric branch sentence + exact observed branch/versi
     conditions and boundaries. Strip all target-bound details before storing.
 - Context assets must be layered by runtime value, not by volume:
   - Core knowledge cards are decision aids for route selection, evidence gates,
-    stop conditions, and coverage; keep `context_pack.py` bounded to 1-2 cards.
-  - Context Pack keeps `selected_skill`, `skill_route`, and `knowledge_cards` as
-    compatibility recommendations. They do not enter `must_read`, represent an
-    AI selection, or bind Checkpoint Queue actions. Shared runtime, target state,
-    Ledger, and evidence-specific tool/artifact refs remain mandatory inputs;
-    Claude explicitly loads the chosen Skill/Card and records the actual route
-    when claiming a substantive action.
+    stop conditions, and coverage. `context_pack.py` publishes the bounded card
+    catalog metadata, not a semantic 1-2 card selection.
+  - Context Pack keeps `selected_skill` and `skill_route` as compatibility
+    recommendations. `knowledge_cards`, `deferred_knowledge_cards`, and
+    `knowledge_card_recall` remain empty compatibility projections; they do not
+    enter `must_read`, represent an AI selection, or bind Checkpoint Queue actions.
+    Shared runtime, target state, Ledger, and evidence-specific tool/artifact refs
+    remain mandatory inputs; Claude selects and reads a catalog card by current
+    information gap and records actual refs when claiming substantive action.
+  - Login state, stack, function, ROI, version, tenant, data flow, and deployment
+    boundaries are non-exhaustive decision dimensions. Claude may combine, skip,
+    reopen, or introduce dimensions from new evidence; no fixed category order or
+    example list becomes a whitelist or automatic Queue/Finding decision.
   - `skills/runtime-protocol.md#shared-knowledge-recall` owns the recall decision
     for natural-language and Autopilot entries. Reuse a matching in-session Pack;
     otherwise call the existing `context_pack.py --target TARGET --focus FOCUS`.
@@ -344,17 +350,11 @@ Correct: component-leading numeric branch sentence + exact observed branch/versi
     tests, not proof of model discovery or reading. Live acceptance requires actual
     lookup/read tool results before the relevant action; a path mention, fake-model
     response, unavailable login, or zero-token run is not a passing observation.
-  - 新增 signal-only 路由必须覆盖“精确信号 + 宽泛背景”回归，并让精确信号卡先于
-    同源的通用卡进入预算；否则 1-2 卡上限会把已命中的专用上下文静默挤掉。显式 focus
-    仍可优先于只存在于 target memory/recon 的背景信号。
-  - Context Pack 的 `knowledge_card_recall[]` 必须按稳定候选顺序投影 selected/deferred Card，
-    每项包含 `file`、`id`、`status`、`rank` 和有界 `reason`。reason 只解释现有 focus、路由、
-    fallback 与 Card/case-router 预算，不创建第二套路由状态，也不改变 `knowledge_cards` 或
-    `deferred_knowledge_cards` 的选择语义。
-  - `hypothesis_seeds`、`alternative_angles` 和 `knowledge_card_recall[]` 只提供有界建议与诊断；
-    Context Pack 保留三者，Checkpoint 保留有界 seed/recall 投影，但不得因建议存在而生成 Queue
-    动作或已选择的 activation hypothesis。ViewState 等专项投影必须读取原始 `source_summary`
-    证据信号，不能把 seed 文本当成证据 owner。
+  - 新增 signal-only 路由必须覆盖“精确信号 + 宽泛背景”回归，并保证相关卡片在 catalog 中
+    可发现；不得重新引入关键词选卡、selected/deferred 预算或自动读取顺序。
+  - `hypothesis_seeds` 和 `alternative_angles` 只提供有界建议与诊断；Checkpoint 可保留其有界
+    投影，但不得因建议存在而生成 Queue 动作或已选择的 activation hypothesis。ViewState 等
+    专项投影必须读取原始 `source_summary` 证据信号，不能把 seed 文本当成证据 owner。
   - 已观察 API path 的祖先前缀补漏只处理同目标、去除 query/fragment 的路径：
     每个 seed 最多 3 个非根前缀、每轮最多 12 个候选，API 文档优先，management
     候选需要框架证据。保留 `seed_refs` 和派生字段，并用 soft-404/响应结构门禁；
@@ -418,8 +418,8 @@ Correct: component-leading numeric branch sentence + exact observed branch/versi
 - Skill changes require validation before acceptance:
   - Run `skill-creator/scripts/quick_validate.py` for every changed Skill and
     periodically for the full `skills/*/SKILL.md` set.
-  - CVSS 示例只要同时给出 score 与 vector，就必须用标准公式回归逐行计算 score，
-    并校验 severity 阈值；禁止手工维护互相漂移的“分数 + 向量”表。
+  - CVSS 只作为按需外部报告字段；不得把 score/vector 设为 Skill 或核心能力验收门槛，
+    不新增评分器或依赖，历史值不得重算。保留的外部交付示例必须明确其校准用途。
   - For capability claims, keep a reproducible A/B task suite that compares the
     current Skill/context-pack route against a no-Skill keyword baseline.
   - A useful Skill should improve route precision, de-noising, evidence gates,
@@ -498,7 +498,7 @@ audit_governance(
   执行、生命周期与恢复。Claude 当前主会话保留最终路线判断权。
 - Claude Code CLI 自动加载项目 `CLAUDE.md`；Context Pack 的 `must_read` 包含
   `runtime-protocol`、目标状态、Ledger 和证据专用引用，不包含推荐的 primary Skill/Card。
-  `selected_skill`、`skill_route` 和 `knowledge_cards` 字段继续提供有界兼容推荐。根
+  `selected_skill` 和 `skill_route` 字段继续提供有界兼容推荐；Card 选择字段保持空。根
   `SKILL.md` 只用于旧单文件直装，不由正式 `install.sh` 安装，也不进入 Context Pack。
 
 ### 4. Validation & Error Matrix
@@ -528,12 +528,11 @@ audit_governance(
 - `tests/test_capability_governance.py`：五个 section 分别失败都 exit `1`；strict warning、optional
   corpus skipped、只读文件快照、12/12 catalog、6 primary 和 collision advisory 均有断言。
 - `tests/test_context_pack.py`：六个 primary 首词显式可达且优先于 validation；既有 skill/route
-  fixtures必须全量通过，证明混合 focus、隐式顺序和卡片预算未回归。
-- `test_command_and_autopilot_state_recall_share_candidates` covers the shared
-  focus routes, selected/deferred candidates, recall diagnostics, and advisory
-  budget using isolated local state. `tests/test_context_pack_docs.py` checks
+  fixtures必须全量通过，证明混合 focus、隐式顺序和完整 card catalog 未回归。
+- Context Pack tests must assert semantic Card selection fields stay empty while
+  the full catalog remains discoverable. `tests/test_context_pack_docs.py` checks
   shared entry references without locking complete prose sentences. Live
-  discovery, read ordering, and continuation reuse are reported separately.
+  discovery, AI-chosen reads, and continuation reuse are reported separately.
 - `tests/test_knowledge_value_review.py`：checked-out matrix 必须 `cards == registry_cards == 57`。
 
 ### 7. Wrong vs Correct

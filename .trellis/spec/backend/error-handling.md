@@ -52,9 +52,10 @@
   不匹配必须 fail-fast 且不得发布新 manifest/projection；不能退回首 N URL、stale cache 或
   materialized 全量 set 来伪装成功。
 - `validate.py` 的 non-TTY 无 `--decision-json`、decision target/finding/endpoint/vuln class
-  不绑定、四 gate/Q1-Q7/CVSS/evidence/report 任一缺失或 evidence ref 不可定位，均是写入前
+  不绑定、四 gate/Q1-Q7/impact/evidence/report 任一缺失或 evidence ref 不可定位，均是写入前
   的参数/契约错误：stderr 输出恢复动作、返回 `2`，且不得创建 report、summary、ledger、queue、
   runtime 或 canonical finding mutation。
+  `decision.cvss` 是可选的外部交付字段；缺失不得制造错误或默认分值。
 - 已存在的 action queue 若为坏 JSON、非 object、错误 schema 或 `actions` 非 list，owner 和 CLI
   必须 fail-fast 并在错误中包含 queue 路径；只有文件缺失可以投影为空 queue。
 - 不允许 broad `except Exception: pass`。只有明确标注的 best-effort 派生、清理或日志

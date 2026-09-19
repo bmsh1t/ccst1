@@ -379,10 +379,23 @@ def generate_report_skeleton(info: dict) -> str:
     target     = info.get("target", "TARGET")
     endpoint   = info.get("endpoint", "ENDPOINT")
     impact     = info.get("impact", "IMPACT_DESCRIPTION")
-    score      = info.get("cvss_score", 0.0)
-    vector     = info.get("cvss_vector", "CVSS:4.0/...")
-    sev        = severity_from_score(score)
+    score      = info.get("cvss_score")
+    vector     = info.get("cvss_vector", "")
+    sev        = severity_from_score(float(score)) if score is not None else str(info.get("severity") or "MEDIUM").upper()
     date       = datetime.now().strftime("%Y-%m-%d")
+    cvss_section = ""
+    if score is not None or str(vector).strip():
+        cvss_section = f"""
+## CVSS (optional external delivery field)
+
+**Vector:** `{vector}`
+**Score:** {score} ({sev})
+"""
+    severity_display = (
+        f"{sev} ({score}) — {vector}"
+        if score is not None or str(vector).strip()
+        else sev
+    )
 
     return f"""# {vuln_type} on {endpoint} — [fill in specific impact]
 
@@ -391,7 +404,7 @@ def generate_report_skeleton(info: dict) -> str:
 > bracketed evidence placeholders below are replaced with target-specific proof.
 
 **Program:** {target}
-**Severity:** {sev} ({score}) — {vector}
+**Severity:** {severity_display}
 **Date Found:** {date}
 
 ---
@@ -444,24 +457,7 @@ the attack], an attacker can [describe the concrete impact].
 
 ---
 
-## CVSS 4.0
-
-**Vector:** `{vector}`
-**Score:** {score} ({sev})
-
-| Metric | Value | Rationale |
-|---|---|---|
-| Attack Vector | {info.get('cvss_params', {}).get('AV', '?')} | [explain] |
-| Attack Complexity | {info.get('cvss_params', {}).get('AC', '?')} | [explain] |
-| Attack Requirements | {info.get('cvss_params', {}).get('AT', '?')} | [explain] |
-| Privileges Required | {info.get('cvss_params', {}).get('PR', '?')} | [explain] |
-| User Interaction | {info.get('cvss_params', {}).get('UI', '?')} | [explain] |
-| Vulnerable System Confidentiality | {info.get('cvss_params', {}).get('VC', '?')} | [explain] |
-| Vulnerable System Integrity | {info.get('cvss_params', {}).get('VI', '?')} | [explain] |
-| Vulnerable System Availability | {info.get('cvss_params', {}).get('VA', '?')} | [explain] |
-| Subsequent System Confidentiality | {info.get('cvss_params', {}).get('SC', '?')} | [explain] |
-| Subsequent System Integrity | {info.get('cvss_params', {}).get('SI', '?')} | [explain] |
-| Subsequent System Availability | {info.get('cvss_params', {}).get('SA', '?')} | [explain] |
+{cvss_section}
 
 ---
 
@@ -586,7 +582,15 @@ def _canonical_runner_witness_for_finding(
 def build_validation_summary(info: dict, *, all_pass: bool, report_path: str | Path) -> dict:
     """Build a compact JSON summary that /remember can import later."""
     vuln_class = (info.get("vuln_type") or "").strip().lower()
-    severity = severity_from_score(float(info.get("cvss_score", 0.0) or 0.0)).lower()
+    cvss_score = info.get("cvss_score")
+    severity = str(info.get("severity") or "").strip().lower()
+    if severity not in {"info", "low", "medium", "high", "critical"}:
+        # Legacy direct callers may still provide only a score; machine
+        # decisions always carry the canonical Finding severity above.
+        if cvss_score is not None:
+            severity = severity_from_score(float(cvss_score)).lower()
+        else:
+            severity = "medium"
     gate_info = dict(info)
     if not any(key in gate_info for key in ("gate1_pass", "gate2_pass", "gate3_pass", "gate4_pass")):
         gate_info.update({
@@ -621,8 +625,6 @@ def build_validation_summary(info: dict, *, all_pass: bool, report_path: str | P
         "severity": severity,
         "notes": (info.get("impact") or "").strip(),
         "impact": (info.get("impact") or "").strip(),
-        "cvss_score": float(info.get("cvss_score", 0.0) or 0.0),
-        "cvss_vector": info.get("cvss_vector", ""),
         "all_gates_passed": report_ready,
         "four_validation_gates_passed": bool(all_pass),
         "seven_question_gate_passed": bool(seven_question_gate.get("passed")),
@@ -635,6 +637,9 @@ def build_validation_summary(info: dict, *, all_pass: bool, report_path: str | P
         "report_path": str(report_path),
         "validated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
+    if cvss_score is not None:
+        summary["cvss_score"] = float(cvss_score)
+        summary["cvss_vector"] = str(info.get("cvss_vector") or "")
 
     finding_linkage = {
         "finding_id": info.get("finding_id"),
@@ -699,6 +704,12 @@ def build_submission_notes(summary: dict) -> str:
     validation_summary_name = Path(
         str(summary.get("validation_summary_path") or "validation-summary.json")
     ).name
+    cvss_line = ""
+    if "cvss_score" in summary or str(summary.get("cvss_vector") or "").strip():
+        cvss_line = (
+            f"- CVSS: `{summary.get('cvss_score', '')}` "
+            f"`{summary.get('cvss_vector', '')}`\n"
+        )
 
     return f"""# Submission Notes
 
@@ -708,7 +719,7 @@ def build_submission_notes(summary: dict) -> str:
 - Report draft: `{summary.get('report_path', '')}`
 - Result: `{summary.get('result', '')}`
 - Severity: `{summary.get('severity', '')}`
-- CVSS: `{summary.get('cvss_score', '')}` `{summary.get('cvss_vector', '')}`
+{cvss_line.rstrip()}
 
 ## Evidence checklist
 
@@ -821,6 +832,8 @@ def mark_finding_validated(findings_dir: str, finding_id: str, summary: dict, su
         "validation_report_path": str(summary.get("report_path") or ""),
         "validated_at": summary.get("validated_at", ""),
     }
+    if str(summary.get("machine_decision", {}).get("source") or "").strip():
+        updates["severity"] = summary["severity"]
     if runner_witness and runner_witness.get("summary_path"):
         updates["runner_summary_path"] = str(runner_witness["summary_path"])
         runner_summary = runner_witness.get("summary")
@@ -1848,8 +1861,17 @@ def _parse_machine_seven_questions(raw: Any) -> dict[str, Any]:
     return {"source": "machine_decision", "questions": questions}
 
 
-def _parse_machine_cvss(raw: Any) -> tuple[float, str, dict[str, str]]:
-    """Validate an explicit CVSS decision without interactive score prompts."""
+def _parse_machine_severity(raw: Any) -> str:
+    severity = str(raw or "").strip().lower()
+    if severity not in {"info", "low", "medium", "high", "critical"}:
+        raise ValueError("decision.severity must be info, low, medium, high, or critical")
+    return severity
+
+
+def _parse_machine_cvss(raw: Any) -> tuple[float, str, dict[str, str]] | None:
+    """Validate optional legacy CVSS metadata when a decision supplies it."""
+    if raw is None:
+        return None
     if not isinstance(raw, dict):
         raise ValueError("decision.cvss must be an object")
     score = raw.get("score")
@@ -1999,8 +2021,10 @@ def _build_machine_validation_input(
 
     gate_passed, gate_notes = _parse_machine_gates(decision.get("gates"))
     seven_questions = _parse_machine_seven_questions(decision.get("seven_question_gate"))
-    cvss_score, cvss_vector, cvss_params = _parse_machine_cvss(decision.get("cvss"))
+    _parse_machine_cvss(decision.get("cvss"))
     impact = _required_text(decision.get("impact"), "impact")
+    canonical_severity = (prefill.get("_canonical_finding") or {}).get("severity") or "medium"
+    severity = _parse_machine_severity(decision.get("severity", canonical_severity))
     decision_method = normalize_http_method(decision.get("method") or "GET")
     evidence = decision.get("evidence")
     if not isinstance(evidence, dict):
@@ -2037,9 +2061,7 @@ def _build_machine_validation_input(
         "endpoint": decision_endpoint,
         "method": decision_method,
         "impact": impact,
-        "cvss_score": cvss_score,
-        "cvss_vector": cvss_vector,
-        "cvss_params": cvss_params,
+        "severity": severity,
         "finding_id": finding_id,
         "finding_source_file": prefill.get("source_file", ""),
         "finding_summary": prefill.get("summary", ""),
@@ -2186,6 +2208,8 @@ def run_machine_preflight(args: argparse.Namespace) -> dict[str, Any]:
     capture(lambda: _parse_machine_seven_questions(decision.get("seven_question_gate")))
     capture(lambda: _parse_machine_cvss(decision.get("cvss")))
     capture(lambda: _required_text(decision.get("impact"), "impact"))
+    if "severity" in decision:
+        capture(lambda: _parse_machine_severity(decision["severity"]))
     decision_method = capture(lambda: normalize_http_method(decision.get("method") or "GET"))
 
     evidence = decision.get("evidence")

@@ -2,7 +2,7 @@
 name: report-writer
 description: >-
   Renders local, formal, and optional bounty-platform reports from validated
-  findings. Preserves target-bound evidence and recorded CVSS fields, keeps
+  findings. Preserves target-bound evidence and optional recorded CVSS fields, keeps
   report output concise and factual, and never creates a parallel lifecycle.
   Use after the 7-Question Gate and 4 validation gates pass.
 tools: Read, Write, Bash
@@ -26,8 +26,11 @@ Require all of the following before drafting a standalone report:
 
 - `seven_question_gate_passed: true`;
 - `four_validation_gates_passed: true`;
-- `all_gates_passed: true`; and
-- a structured `cvss` object with `version`, `score`, and `vector`.
+- `all_gates_passed: true`.
+
+CVSS is not a validation-summary precondition. If the destination requires it
+and no value was recorded, fill only the delivered report per that platform's
+current rules; do not rewrite canonical state.
 
 For `chain_required`, `needs_review`, or `kill`, write the missing evidence or
 connector as the next action instead of a standalone report.
@@ -42,8 +45,8 @@ invent endpoint, actor, response, severity, or quantity.
 Load `skills/report-writing/SKILL.md` for the requested formal, local/lab, or
 bounty-platform chapters and rendering. Keep the same canonical finding and
 evidence references. The title and first sentence state demonstrated action or
-data, and `cvss.version`, `cvss.score`, and `cvss.vector` are copied unchanged
-from the validation summary; never calculate a score here.
+data. If present, `cvss.version`, `cvss.score`, and `cvss.vector` are copied
+unchanged from the validation summary; never calculate a score here.
 
 ## Evidence Handling
 
@@ -69,7 +72,7 @@ TARGET: [target identity]
 FINDING: [canonical finding ID]
 FORMAT: [local / formal / requested platform]
 EVIDENCE: [artifact refs and observed result]
-CVSS: [version, score, vector copied from validation summary]
+CVSS: [optional; copy recorded version, score, vector when required]
 STATUS: [drafted / blocked by missing evidence]
 ```
 

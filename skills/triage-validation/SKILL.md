@@ -196,7 +196,7 @@ questions do not already cover:
   not applicable). Gate 2 is Q5's audit trail, not a second search.
 - **Gate 3 — Report Quality**: title/delivery structure follow
   `skills/report-writing/SKILL.md`; steps are the replayable artifact;
-  severity matches the recorded CVSS; the wording never contains
+  severity matches the demonstrated impact or any recorded external severity; the wording never contains
   "could potentially" / "may allow".
 
 ---
@@ -296,9 +296,9 @@ Build the chain first, prove it works end to end, THEN report.
 
 ## Scoring Reference
 
-`tools/validate.py` writes the structured `cvss` result consumed by reports.
-Calibration rows and metric guidance live in `rules/reporting.md`; this Skill
-only decides whether the demonstrated impact is ready for scoring.
+CVSS is optional external delivery metadata. When present, reports preserve it
+unchanged; this Skill decides whether demonstrated impact and evidence are ready
+for reporting and does not require or calculate a score.
 
 ---
 

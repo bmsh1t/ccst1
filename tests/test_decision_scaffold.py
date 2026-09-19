@@ -67,7 +67,7 @@ def test_validate_scaffold_leaves_judgment_fields_empty(tmp_path):
     assert scaffold["impact"] == ""
     assert all(item["passed"] is None for item in scaffold["gates"].values())
     assert all(item["basis"] == "" for item in scaffold["seven_question_gate"]["questions"].values())
-    assert scaffold["cvss"]["score"] == 0.0
+    assert "cvss" not in scaffold
     assert scaffold["report"]["content"] == ""
 
 

@@ -53,21 +53,24 @@ Escalated proof requirements:
 A "technically possible" finding without PoC is an Informational at best; an
 unnecessarily invasive PoC is also a bad report.
 
-## 4. STRUCTURED CVSS IS THE SCORING OWNER
+## 4. CVSS IS OPTIONAL EXTERNAL DELIVERY METADATA
 
 Don't claim Critical for a Medium bug. Triagers trust you less for every overclaim.
 Don't claim Medium for a Critical — you're leaving money on the table.
 
-`tools/validate.py` is the only scoring producer. Reports must render the
-selected finding's recorded `cvss.version`, `cvss.score`, and `cvss.vector` from
-its validation summary. Legacy CVSS 3.1 records remain readable, but prose,
-templates, and model estimates must not recalculate or overwrite a stored
-result. Any examples elsewhere are calibration references only.
+CVSS does not gate discovery, validation, evidence, Finding, Queue, or local
+report generation. When a destination platform requires it, preserve any
+recorded `cvss.version`, `cvss.score`, and `cvss.vector` unchanged. Legacy CVSS
+records remain readable, but prose, templates, and model estimates must not
+recalculate or overwrite a stored result. If none was recorded, supply only
+the destination's required report field under its current rules, without writing
+canonical validation state. Examples below are external delivery calibration
+references only.
 
 ### CVSS 3.1 Calibration Reference
 
-These examples calibrate common claims only. They never override the structured
-score recorded by `tools/validate.py`.
+These examples calibrate optional external delivery fields only. They never
+create or override core validation state.
 
 | Finding | Score | Severity | Vector |
 |---|---:|---|---|
@@ -81,8 +84,8 @@ score recorded by `tools/validate.py`.
 | GraphQL auth bypass | 8.1 | High | AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N |
 | JWT none algorithm | 9.8 | Critical | AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H |
 
-Use the observed preconditions and demonstrated impact to select metrics; do not
-infer severity from a bug-class name or a scanner label.
+When the destination requires CVSS, use observed preconditions and demonstrated
+impact to select metrics; do not infer severity from a bug-class name or scanner label.
 
 ## 5. NEVER SUBMIT FROM THE ALWAYS-REJECTED LIST
 
@@ -117,4 +120,5 @@ private object. Use an equivalent artifact when the boundary is not HTTP.
 
 Use `skills/report-writing/SKILL.md` for platform structure, title wording,
 length, independent submissions, and clarification responses. Delivery choices
-do not change the validation result, recorded CVSS, or evidence requirements.
+do not change the validation result or evidence requirements; optional recorded
+CVSS remains read-only metadata.

@@ -30,7 +30,7 @@ Never write a report before validating. N/A submissions hurt your validity ratio
 
 Use the exact summary path stored in the selected canonical row, or the path
 returned by that finding's `/validate` invocation, as starting context and
-include its gate status and structured `cvss` object in the evidence section.
+include its gate status plus any recorded CVSS object when the destination requires it.
 `findings/last-validate.json`
 is only a latest pointer and must not bind a report to a finding. If no matching
 summary exists, ask the user for the missing endpoint, evidence, impact, and
@@ -86,8 +86,10 @@ Provide when prompted:
 ## Report Contract
 
 This command only selects the validated source and invokes the generator.
-Render the recorded `cvss.version`, `cvss.score`, and
-`cvss.vector`; do not calculate a score here or copy a static calibration table.
+Render recorded `cvss.version`, `cvss.score`, and `cvss.vector` only when present
+and required by the destination. If the platform requires CVSS and none was
+recorded, fill its report field per current platform rules without rewriting
+the validation summary or copying a static calibration table.
 
 Use the protocol-appropriate replayable artifact: HTTP when applicable, or a
 browser, frame, stream, state, callback, or equivalent target-bound record for

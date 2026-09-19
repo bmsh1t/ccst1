@@ -1,6 +1,6 @@
 ---
 name: report-writing
-description: Use only after validation has selected a canonical finding (seven-question and four-gate checks passed) and a report must be drafted. Renders the requested delivery format from the existing finding, Evidence Ledger, and validation summary with evidence traceability and canonical CVSS fields intact; it does not create a second finding lifecycle or replace structured validation with model judgment.
+description: Use only after validation has selected a canonical finding (seven-question and four-gate checks passed) and a report must be drafted. Renders the requested delivery format from the existing finding, Evidence Ledger, and validation summary with evidence traceability; CVSS is optional external delivery metadata and never replaces structured validation.
 ---
 
 # REPORT WRITING
@@ -18,8 +18,11 @@ summary from its canonical `validation_summary` field or the matching
 
 - `seven_question_gate_passed: true`;
 - `four_validation_gates_passed: true`;
-- `all_gates_passed: true`; and
-- a structured `cvss` object with `version`, `score`, and `vector`.
+- `all_gates_passed: true`.
+
+CVSS is not a validation-summary precondition. If the destination platform
+requires it and the summary lacks it, the Agent follows that platform's current
+requirements in the delivered report without rewriting the canonical summary.
 
 If the result is `chain_required`, `needs_review`, or `kill`, keep the missing
 evidence or connector as the next action. Do not produce a standalone report.
@@ -34,7 +37,7 @@ Use the existing owners as read-only report inputs:
 |---|---|
 | Finding Index | finding ID, target, type, lifecycle, and report binding |
 | Evidence Ledger | operation identity, actors, artifacts, timestamps, and hashes |
-| Validation summary | gate results, demonstrated impact, and structured CVSS |
+| Validation summary | gate results and demonstrated impact; historical CVSS is optional read-only metadata |
 | Target/Case State | scope, roles, objects, session and workflow context |
 | Report Index | cumulative report ID and file mapping |
 
@@ -89,12 +92,13 @@ Use the medium that preserves the tested state:
 Do not convert a non-HTTP test into a fabricated HTTP request. Do not treat a
 status code, scanner match, model explanation, or generic output as impact proof.
 
-## CVSS Rendering
+## Optional CVSS Rendering
 
-`tools/validate.py` is the only scoring producer. Copy the selected finding's
-`cvss.version`, `cvss.score`, and `cvss.vector` unchanged from its validation
-summary. This Skill does not calculate, infer, or override CVSS from prose,
-platform examples, or a static table.
+When a destination platform requires CVSS, copy any recorded `cvss.version`,
+`cvss.score`, and `cvss.vector` unchanged; if none were recorded, supply the
+platform-specific field only in the delivered report based on its current rules.
+Do not rewrite historical values or the canonical validation summary. Missing
+CVSS does not block core validation or local reporting.
 
 ## Evidence and Redaction
 
@@ -139,7 +143,7 @@ or overwrite the canonical finding lifecycle.
 [ ] Target, operation, actors, preconditions, and artifact references match
 [ ] Protocol-appropriate replayable artifact and observed result are included
 [ ] Demonstrated impact is separated from untested or theoretical impact
-[ ] Recorded cvss.version, cvss.score, and cvss.vector are copied unchanged
+[ ] If requested by the destination platform, recorded CVSS fields are copied unchanged
 [ ] Evidence manifest has path, UTC time, source, purpose, SHA-256, and redaction note
 [ ] No raw secrets, unrelated customer data, or second lifecycle state is created
 ```

@@ -590,6 +590,15 @@ is runtime target memory, not knowledge-card content.
 - Persisted backlog items naming an unsupported or retired runner remain
   readable but project `next_action=enrich_case_state` with an empty command;
   they must never execute through a guessed replacement runner.
+- A `request-diff` backlog is ready only when `request_spec_ref`, resolved
+  relative to `repo_root`, names a readable regular JSON file accepted by the
+  shared `request_diff.validate_request_pair()` contract and both baseline and
+  variant URLs belong to the current target. The emitted command must use that
+  same resolved path and explicitly pass `--repo-root` to the runner. Missing,
+  directory, malformed, invalid-shape, or off-target
+  specs project `ready=false`, `next_action=enrich_case_state`, and an empty
+  command without mutating Case State. Readiness is a local material check; it
+  does not probe the server, token validity, or unrelated session freshness.
 - `tools/checkpoint.py` should ingest the active `top_next_action` from case
   state and surface it ahead of generic coverage-gap / actor-gap follow-ups.
   Ready backlog items should expose exact replay drafts; not-ready backlog items
@@ -666,6 +675,8 @@ is runtime target memory, not knowledge-card content.
 - Missing peer session -> not ready; return missing evidence.
 - Missing private marker with owner/peer/object ready -> ready replay plus
   `optional_evidence_gaps=["owner private marker"]`.
+- `request-diff` with a valid target-bound request pair -> ready command using
+  the resolved spec path; missing/invalid/off-target spec -> enrichment with no command.
 - Completing backlog moves it out of active `next` selection.
 - Completing a linked backlog with `blocked` keeps a durable recovery pointer
   but returns `ready=false`, `next_action=recover_hypothesis`, and no replay
@@ -691,6 +702,11 @@ is runtime target memory, not knowledge-card content.
   headers; `target_case_state.py add-session --auth-file` stores all of them in
   a private session artifact, and `validation_runner.py --from-case-state`
   replays the full set from the hydrated owner state.
+- Good: `request_spec_ref=fixtures/order-diff.json` resolves under `repo_root`,
+  validates through the shared request-pair parser, stays on target, and the
+  readiness command cites that exact resolved file.
+- Bad: mark a request-diff item ready because the reference string is non-empty,
+  or let a missing/bad/off-target spec emit an executable command.
 - Bad: store target-specific sessions, object IDs, or private markers in
   `knowledge/`, `skills/`, or tracked docs.
 - Bad: replay only the first Cookie/Bearer header from case state when the
@@ -731,6 +747,10 @@ is runtime target memory, not knowledge-card content.
 - `tests/test_case_state_seed.py` must cover object extraction from paths/query
   params, source/JS artifacts, existing-state de-duplication, unchanged owner
   state, absent actor/runner/private-marker guesses, and CLI JSON output.
+- `tests/test_target_case_state.py` must cover request-diff missing files,
+  directories, malformed JSON, invalid request pairs, off-target URLs, exact
+  resolved-path command output, unrelated session independence, and zero-write
+  failure behavior.
 
 ### 7. Wrong vs Correct
 
@@ -764,6 +784,11 @@ keyword and use that inference to close or manufacture Coverage work.
 
 Correct: persist the AI's free hypothesis in Case State/Queue, then project only
 complete owner-backed evidence through the existing identity and Closure owners.
+
+Wrong: treat a non-empty `request_spec_ref` as executable readiness.
+
+Correct: resolve and validate the actual target-bound request pair through the
+shared parser, then emit a command only from that verified local material.
 
 ---
 
@@ -1439,8 +1464,10 @@ Python 入口保持 `parse_autopilot_args(argv, *, round_defaults=False)` 和
 
 - non-TTY `/validate` 没有 `--decision-json` 必须在任何 target-owned write 前失败。decision
   必须绑定 canonical target、finding ID、endpoint、漏洞类，包含四个显式 bool gate、完整
-  Q1–Q7 basis、CVSS、impact、至少一个存在的 raw evidence ref 及受 bound findings dir 约束的
-  report path/content。
+  Q1–Q7 basis、impact、至少一个存在的 raw evidence ref 及受 bound findings dir 约束的
+  report path/content。`decision.severity` 可选（显式值只能是 info/low/medium/high/critical，
+  不提供时沿用 Finding 已记录值）；`decision.cvss` 可省略，若存在只作兼容输入校验，
+  不写入新摘要或参与核心证据门禁。报告生成不能从历史 CVSS 重算并写回 Finding severity。
 - machine binding 必须通过 `migrate_legacy=False` 只读加载 canonical/legacy payload；target、
   ID、endpoint、class、evidence 和 report ownership 全部通过后，才允许迁移或首次写入。
 - machine decision 的成功路径只能调用既有 `finding_index` owner。行内
@@ -1866,27 +1893,29 @@ Correct: Checkpoint proposes; AI activates at Queue claim; Runner records only
 ```
 ```
 
-## Scenario: Keep evidence-specific knowledge recall advisory after family closure
+## Scenario: Keep AI-selected knowledge refs advisory after family closure
 
 ### 1. Scope / Trigger
 
-Use when Context Pack recalls a concrete knowledge card, including after the
-related canonical family is `tested` or `not_applicable`.
+Use when the Context Pack publishes its card catalog and an owner-backed action
+later records a card selected by the AI, including after the related canonical
+family is `tested` or `not_applicable`.
 
 ### 2. Signatures
 
-- Context input: `knowledge_card_recall[{file,id,status,rank,reason}]`
-- Checkpoint/witness output: bounded `context_pack.knowledge_card_recall[]`
+- Context input: `card_catalog[{file,id,layer,load,purpose}]`
+- Compatibility projection: `knowledge_cards=[]`, `deferred_knowledge_cards=[]`,
+  `knowledge_card_recall=[]`
+- Claim input: `selected_knowledge_refs[]`
 - Diagnostic output: `_project_knowledge_effect_trace(checkpoint, actions) -> dict`
 
 ### 3. Contracts
 
-- Preserve the Context Pack's stable selected/deferred recall order and bounded
-  reasons in Checkpoint and its runtime witness.
-- `knowledge_card_recall`, `hypothesis_seeds`, and `alternative_angles` remain
-  diagnostic/advisory context. Checkpoint preserves its bounded seed/recall
-  projection; none of these suggestions may create an Action Queue row or an
-  activation `hypothesis_seed` by presence alone.
+- Preserve the card catalog as a discovery surface; do not turn catalog order
+  into selected/deferred recall or an automatic read order.
+- `hypothesis_seeds` and `alternative_angles` remain diagnostic/advisory context.
+  None of these suggestions or catalog entries may create an Action Queue row or
+  an activation `hypothesis_seed` by presence alone.
 - A normal owner-backed action may expose recommended `knowledge_refs`, but only
   the AI claim records `selected_knowledge_refs` and turns the effect trace from
   `pending` into a selected action/result.
@@ -1899,16 +1928,16 @@ related canonical family is `tested` or `not_applicable`.
 
 | Input | Result |
 |---|---|
-| Seed/recall exists without an owner action | keep advisory projection; Queue unchanged |
-| Several selected/deferred recalls | preserve stable bounded recall in checkpoint/witness |
+| Catalog/seed exists without an owner action | keep advisory projection; Queue unchanged |
+| Context Pack is built | Card selection/recall compatibility fields remain empty |
 | AI selects a recommended card on claim | effect trace links the selected action/result |
-| Family disposition is terminal | disposition remains unchanged; recall stays visible |
+| Family disposition is terminal | disposition remains unchanged; selected ref stays auditable |
 | Historical `knowledge-signal-review` exists | restore and resolve through compatibility path |
 
 ### 5. Good/Base/Bad Cases
 
-- Good: RCE is `tested`; a later SSTI recall remains visible in the checkpoint
-  and effect trace without reopening RCE or creating work.
+- Good: RCE is `tested`; a later AI-selected SSTI card ref remains visible in
+  the claim/effect trace without reopening RCE or creating work.
 - Base: an owner-backed SQL action can carry recommended context while its
   actual card selection remains an AI claim decision.
 - Bad: a seed or unselected card creates a Queue item, activation hypothesis,
@@ -1916,17 +1945,17 @@ related canonical family is `tested` or `not_applicable`.
 
 ### 6. Tests Required
 
-- `tests/test_checkpoint.py` must run a real Context Pack -> Checkpoint -> Queue
-  path proving seeds/recall remain visible while no action is fabricated, and
-  must preserve recall after terminal family dispositions.
+- Context Pack/Checkpoint tests must prove the catalog and seeds remain visible,
+  semantic Card selection fields stay empty, and no action is fabricated.
+- Claim/effect-trace tests must preserve AI-selected refs after terminal family dispositions.
 - Effect-trace tests must cover pending, selected, and terminal result stages.
 
 ### 7. Wrong vs Correct
 
 ```text
-Wrong: unselected seed/card -> generated durable Queue review.
-Correct: keep the suggestion in checkpoint/witness/effect trace; only an
-AI-selected, owner-backed action enters the Queue.
+Wrong: catalog/seed -> generated durable Queue review or automatic selected card.
+Correct: keep the catalog/suggestion advisory; only an AI-selected,
+owner-backed action records the card ref and enters the Queue.
 ```
 
 ## Scenario: Invocation-local Autopilot owner projections

@@ -208,6 +208,7 @@ def _seed_machine_preflight(tmp_path):
             "url": "https://target.com/rest/products/search?q=test",
             "summary": "Candidate response difference.",
             "source_file": str(evidence_ref),
+            "severity": "high",
             "validation_status": "candidate",
         },
         target=target,
@@ -246,6 +247,9 @@ def test_non_tty_validate_without_decision_fails_closed_before_state_write(tmp_p
 
 def test_machine_decision_preflight_success_is_read_only(tmp_path, monkeypatch, capsys):
     target, finding_id, findings_dir, decision_path = _seed_machine_preflight(tmp_path)
+    decision = json.loads(decision_path.read_text(encoding="utf-8"))
+    decision.pop("cvss")
+    decision_path.write_text(json.dumps(decision), encoding="utf-8")
     before = _file_snapshot(tmp_path)
     monkeypatch.setattr(validate, "BASE_DIR", tmp_path, raising=False)
 
@@ -410,6 +414,7 @@ def test_non_tty_machine_decision_binds_canonical_finding_and_uses_owner(tmp_pat
             "url": "https://target.com/rest/products/search?q=test",
             "summary": "Candidate response difference.",
             "source_file": str(evidence_ref),
+            "severity": "high",
             "validation_status": "candidate",
             "report_status": "not_generated",
         },
@@ -425,6 +430,8 @@ def test_non_tty_machine_decision_binds_canonical_finding_and_uses_owner(tmp_pat
         report_path=report_relative,
         evidence_ref=str(evidence_ref),
     )
+    decision.pop("cvss")
+    decision["severity"] = "critical"
     decision_path = tmp_path / "machine-decision.json"
     decision_path.write_text(json.dumps(decision), encoding="utf-8")
     monkeypatch.setattr(validate, "BASE_DIR", tmp_path, raising=False)
@@ -454,6 +461,11 @@ def test_non_tty_machine_decision_binds_canonical_finding_and_uses_owner(tmp_pat
     assert summary["machine_decision"]["schema_version"] == 2
     assert summary["machine_decision"]["evidence_refs"] == [decision["evidence"]["runner_summary"]]
     assert summary["machine_decision"]["runner_summary"] == decision["evidence"]["runner_summary"]
+    assert summary["severity"] == "critical"
+    assert created["finding"]["severity"] == "high"
+    assert persisted["severity"] == "critical"
+    assert "cvss_score" not in summary
+    assert "cvss_vector" not in summary
 
 
 def test_machine_validation_explicit_findings_dir_owns_all_artifacts(tmp_path, monkeypatch, capsys):
@@ -1224,6 +1236,24 @@ def test_validation_summary_preserves_explicit_method(tmp_path):
     summary = validate.build_validation_summary(info, all_pass=True, report_path=report_path)
 
     assert summary["method"] == "POST"
+
+
+def test_validation_summary_without_cvss_keeps_recorded_severity(tmp_path):
+    report_path = tmp_path / "findings" / "target-program-idor" / "report.md"
+    info = {
+        "target": "target-program",
+        "vuln_type": "IDOR",
+        "endpoint": "https://api.target.com/orders/42",
+        "impact": "A peer actor can read the recorded private order.",
+        "severity": "high",
+    }
+
+    summary = validate.build_validation_summary(info, all_pass=True, report_path=report_path)
+
+    assert summary["severity"] == "high"
+    assert "cvss_score" not in summary
+    assert "cvss_vector" not in summary
+    assert "CVSS:" not in validate.build_submission_notes(summary)
 
 
 def test_generated_skeleton_separates_validation_evidence_from_report_readiness(tmp_path):

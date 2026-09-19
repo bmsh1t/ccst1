@@ -20,7 +20,7 @@ Run full validation on the current finding before writing a report.
 
 ## Inputs
 
-> 谁思考：Q1-Q7 判定、四 gate 布尔、CVSS、影响评估全部是 **AI 判断**（权威
+> 谁思考：Q1-Q7 判定、四 gate 布尔、影响评估全部是 **AI 判断**（权威
 > 在 `skills/triage-validation/SKILL.md`）；decision JSON 的 schema 校验、
 > canonical 绑定、report 路径约束是 **机械** gate。
 
@@ -96,7 +96,7 @@ python3 tools/validate.py --target <target> --finding-id <canonical-id> \
 
 `--target` resolves only `findings/<target-key>`; `--findings-dir` is the
 equivalent explicit path. The decision JSON schema (schema_version, gate1–gate4,
-Q1–Q7, cvss, evidence, report fields) is owned by `tools/validate.py`
+Q1–Q7, impact, evidence, report fields; optional `cvss` metadata) is owned by `tools/validate.py`
 (`MACHINE_DECISION_SCHEMA_VERSION` and its preflight errors) — do not
 hand-reconstruct it from scratch; generate the skeleton, fill only the judgment
 fields, then verify it with `--preflight` before applying:
@@ -107,8 +107,13 @@ python3 tools/validate.py --target <target> --finding-id <canonical-id> --scaffo
 
 The scaffold machine-fills every mechanical field (schema_version, target,
 finding_id, endpoint, runner summary bound to the latest owner-bound run, unique
-report path) and leaves `impact`/`gates`/`seven_question_gate`/`cvss` empty for
-AI judgment. Hand-writing the full JSON remains valid; the scaffold is an
+report path) and leaves `impact`/`gates`/`seven_question_gate` empty for
+AI judgment. The scaffold omits CVSS; legacy `decision.cvss`, if supplied, is
+validated but not written to a new summary. A destination-specific CVSS field
+belongs in the external report when that platform requires it.
+Claude may set `severity` explicitly from the demonstrated impact; if omitted,
+the existing Finding severity is carried forward, not inferred from CVSS.
+Hand-writing the full JSON remains valid; the scaffold is an
 output-only generator, validation code is unchanged. The target, ID, endpoint and class must match
 the canonical row before any write occurs; the report path stays below that
 row's `findings/<target>/` directory.

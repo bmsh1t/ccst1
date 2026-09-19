@@ -5,7 +5,7 @@ validate.py 的 decision JSON 契约深（schema_version、runner 绑定、七�
 ——AI 手写时格式试错占验证命令的一半以上（lab e2e 2026-09-12 实测 6 次撞墙）。
 本模块把全部机械字段预填成骨架，AI 只填判断字段：
 
-  validate --scaffold   → gates/seven_question_gate/cvss/impact 留空待判，
+  validate --scaffold   → gates/seven_question_gate/impact 留空待判，
                           其余（target/finding_id/endpoint/runner_summary/
                           refs/report path）全部机器预填合规值
 
@@ -41,7 +41,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
 
 # validate scaffold 里永远留给 AI 的字段（判断字段，机器不预填值）
 VALIDATE_AI_FIELDS_NOTE = (
-    "impact / gates / seven_question_gate / cvss 是 AI 判断字段——"
+    "impact / gates / seven_question_gate 是 AI 判断字段——"
     "本骨架留空占位，必须由 AI 显式填写后才可通过 preflight"
 )
 
@@ -103,7 +103,6 @@ def build_validate_scaffold(
                 for key, _question in SEVEN_QUESTION_DEFINITIONS
             }
         },
-        "cvss": {"score": 0.0, "vector": ""},
         "evidence": {
             "summary": "",
             "runner_summary": runner_summary,
@@ -122,5 +121,4 @@ def build_validate_scaffold(
             "first, then regenerate the scaffold"
         ]
     return scaffold
-
 

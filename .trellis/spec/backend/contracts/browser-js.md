@@ -196,6 +196,12 @@ shuji --version  # pinned operator contract: 0.8.0
 - `.js/.mjs/.cjs/.map/.ts/.tsx/.vue` 恢复文件都必须由现有 `js_reader.py` 消费，大小/vendor 预算
   继续在 reader 侧统一执行。`js_reader` 达到文件上限时优先选择 `js_dump/packer/` 的恢复文件，
   不能让旧缓存先占满预算。
+- `selected_js_files` 只是进入当前材料包的候选，不代表已经审阅。所有发现但未选文件必须在
+  `skipped_js_files` 中保留 `path`、`size`、`reason`，并由 `omitted_count` 汇总；原因至少覆盖
+  `file_cap`、vendor、oversize、stat error 和 hash error。skipped 不等于 clean 或 forbidden。Claude 可以用
+  原生 Read/Bash 对明确本地路径做有界补读，或显式提高现有 cap/关闭 vendor skip；默认预算不变。
+- `max_files <= 0` 或 `max_file_bytes <= 0` 必须 fail-fast。selected 为 0 但仍有 skipped 文件或
+  recon artifacts 时，Hunt 继续暴露可补读材料；只有真实空 inventory 才报告 no material。
 - worker 成功退出但未恢复 source 时必须为 `partial`；`partial`/`unavailable` 不关闭现有
   `deep-js-review` action。
 - Packer 的 Source Map 私有 helper 只允许在隔离 worker 内替换为 `shuji@0.8.0`。调用前必须
@@ -221,6 +227,8 @@ shuji --version  # pinned operator contract: 0.8.0
 | Source Map 含绝对路径、`../`、Windows path、query 或重复 basename | 生成唯一平面名，所有输出留在 worker workspace |
 | 需要 Source Map 且 `shuji` 缺失/非零退出 | Source Map 为 `unavailable/error`；其它 Packer source 存在时整体 `partial` |
 | 同一 Source Map 在单个 worker 内重复命中 | 已恢复文件算可复用成功，不因新增文件数为 0 误报失败 |
+| reader 文件/字节预算非正数 | 参数错误，不生成误导性空摘要 |
+| reader 全部候选被 cap/vendor/oversize/stat 跳过 | selected 为空但 skipped/reason/count 保留，Hunt 仍允许精确补读 |
 
 ### 5. Good / Base / Bad Cases
 
@@ -228,6 +236,8 @@ shuji --version  # pinned operator contract: 0.8.0
   `js_reader.py` 消费。
 - Base：page entry 只得到 HTML/SQLite 或工具缺失，manifest 保留 `partial/unavailable`，原始
   deep-JS 候选仍在。
+- Base：默认 cap 只选前 N 个文件，后续路径以 `file_cap` 进入 skipped；Claude 根据证据精确
+  Read 某个 omitted 文件，不把默认 cap 当成已审结论。
 - Good：恶意 `sourceRoot=../../` 和多个 `index.js` 被归一成不同安全文件名，Shuji 恢复结果
   仍经现有哈希发布和 `js_reader.py` 消费。
 - Bad：把全部 JS inventory 投给恢复工具；继承认证 Cookie；或让外部 Source Map/重定向绕过
@@ -242,6 +252,9 @@ shuji --version  # pinned operator contract: 0.8.0
   missing tool、多扩展名 js-reader 消费、Source Map v3/indexed shape、安全唯一文件名、真实 Shuji
   argv、缺工具/非零退出状态以及单 worker 重复恢复。
 - `tests/test_js_reader.py` 必须覆盖旧缓存达到文件上限时，Packer 恢复文件仍进入读取材料。
+- `tests/test_js_reader.py` 还必须覆盖 cap 尾部/all-skipped 的完整 reason/count、vendor/oversize/
+  stat failure、非正预算 fail-fast，以及 selected 不等于 reviewed 的摘要语义。
+- `tools/hunt.py` 回归必须覆盖 selected 为 0 但 skipped/recon material 存在时继续建议有界补读。
 - 使用临时 localhost fixture 验证 bundle 恢复、page 模式和原子 manifest；不得依赖真实目标或
   `~/.claude`。
 - 修改命令/skill 文案时，固定 Autopilot、`/js-read` 和 `web2-recon` 都只描述证据触发及
@@ -267,3 +280,7 @@ concrete runtime evidence + target-owned bounded URL -> anonymous scoped child
 Source Map: v3 parse -> safe unique flat sources -> shuji@0.8.0 without --preserve
 -> explicit source_map_status -> existing hash publication
 ```
+
+Wrong: `selected_js_files=[]` -> “没有 JS 材料”或“其余文件安全”。
+
+Correct: selected + skipped(reason/count/path) -> Claude 按证据精确补读或显式调整现有预算。

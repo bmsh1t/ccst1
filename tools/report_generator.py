@@ -834,23 +834,31 @@ def _validation_cvss_score(validation):
     return None
 
 
-def _severity_from_cvss(score):
-    if score >= 9.0:
-        return "critical"
-    if score >= 7.0:
-        return "high"
-    if score >= 4.0:
-        return "medium"
-    if score > 0.0:
-        return "low"
-    return "info"
+def _validation_cvss_labels(validation):
+    """Return recorded CVSS version/vector text without deriving new values."""
+    if not isinstance(validation, dict):
+        return "", ""
+    cvss = validation.get("cvss")
+    nested = cvss if isinstance(cvss, dict) else {}
+    data = nested.get("cvssData") if isinstance(nested.get("cvssData"), dict) else {}
+    version = str(
+        validation.get("cvss_version")
+        or nested.get("version")
+        or data.get("version")
+        or ""
+    ).strip()
+    vector = str(
+        validation.get("cvss_vector")
+        or nested.get("vector")
+        or nested.get("vectorString")
+        or data.get("vectorString")
+        or ""
+    ).strip()
+    return version, vector
 
 
 def _report_severity(finding, validation, template):
-    """Resolve one severity for report prose, index rows, and persistence."""
-    score = _validation_cvss_score(validation)
-    if score is not None:
-        return _severity_from_cvss(score)
+    """Reuse recorded severity without recalculating it from legacy CVSS."""
     summary_severity = str((validation or {}).get("severity") or "").strip().lower()
     if summary_severity in SEVERITY_MAP:
         return summary_severity
@@ -1107,9 +1115,16 @@ def generate_report(finding, vuln_type, target_name=None, *, repo_root=None):
     )
 
     severity = _report_severity(finding, validation, template)
-    severity_info = SEVERITY_MAP.get(severity, SEVERITY_MAP["medium"])
     cvss_score = _validation_cvss_score(validation)
-    cvss_label = f"{cvss_score:g}" if cvss_score is not None else severity_info["cvss_range"]
+    cvss_version, cvss_vector = _validation_cvss_labels(validation)
+    severity_label = f"**{severity.upper()}**"
+    if cvss_score is not None:
+        severity_label += f" (CVSS: {cvss_score:g})"
+    cvss_details = ""
+    if cvss_version:
+        cvss_details += f"\nCVSS Version: `{cvss_version}`"
+    if cvss_vector:
+        cvss_details += f"\nCVSS Vector: `{cvss_vector}`"
     finding_reference = format_finding_reference(finding)
     validation_evidence = _validation_evidence_block(validation)
     reproduction_steps = _reproduction_steps_block(finding, validation, url)
@@ -1119,7 +1134,7 @@ def generate_report(finding, vuln_type, target_name=None, *, repo_root=None):
     report = f"""# {title}
 
 ## Severity
-**{severity.upper()}** (CVSS: {cvss_label})
+{severity_label}{cvss_details}
 
 ## Vulnerability Type
 {template.get('cwe', 'N/A')} — {vuln_type.upper()}
@@ -1455,8 +1470,6 @@ def process_findings_dir(findings_dir, *, allow_legacy_drafts=False):
                     "report_file": report_file,
                     "report_id": report_id,
                 }
-                if report_severity != str(finding.get("severity") or "").strip().lower():
-                    updates["severity"] = report_severity
                 updated = update_finding_status(
                     findings_dir,
                     finding.get("id", ""),

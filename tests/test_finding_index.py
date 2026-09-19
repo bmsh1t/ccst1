@@ -1719,9 +1719,10 @@ def test_report_generator_uses_validation_summary_for_auth_bypass_narrative(monk
     assert "secret-like" in report_text
     assert "Validation Summary" in report_text
     assert "Baseline Response" in report_text
+    assert "(CVSS:" not in report_text
 
 
-def test_report_generator_uses_validation_cvss_for_severity(monkeypatch, tmp_path):
+def test_report_generator_preserves_legacy_cvss_without_regrading(monkeypatch, tmp_path):
     findings_dir = tmp_path / "findings" / "example.com"
     findings_dir.mkdir(parents=True)
     validation_dir = tmp_path / "evidence" / "example.com" / "validation" / "cvss-critical"
@@ -1734,6 +1735,8 @@ def test_report_generator_uses_validation_cvss_for_severity(monkeypatch, tmp_pat
                 "seven_question_gate_passed": True,
                 "four_validation_gates_passed": True,
                 "cvss_score": 9.8,
+                "cvss_version": "3.1",
+                "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
                 "severity": "medium",
             }
         ),
@@ -1766,16 +1769,22 @@ def test_report_generator_uses_validation_cvss_for_severity(monkeypatch, tmp_pat
         encoding="utf-8",
     )
     _record_owner_provenance(findings_dir, "cvss-critical")
+    original_summary = validation_summary.read_bytes()
+    original_digest = finding_index.find_finding(findings_dir, "cvss-critical").get("validation_summary_sha256")
     monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
     monkeypatch.setattr(report_generator, "BASE_DIR", str(tmp_path))
 
     total, index = report_generator.process_findings_dir(str(findings_dir))
 
     assert total == 1
-    assert index[0]["severity"] == "critical"
+    assert index[0]["severity"] == "medium"
     report_text = Path(index[0]["file"]).read_text(encoding="utf-8")
-    assert "**CRITICAL** (CVSS: 9.8)" in report_text
-    assert finding_index.find_finding(findings_dir, "cvss-critical")["severity"] == "critical"
+    assert "**MEDIUM** (CVSS: 9.8)" in report_text
+    assert "CVSS Version: `3.1`" in report_text
+    assert "CVSS Vector: `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`" in report_text
+    assert finding_index.find_finding(findings_dir, "cvss-critical")["severity"] == "medium"
+    assert validation_summary.read_bytes() == original_summary
+    assert finding_index.find_finding(findings_dir, "cvss-critical").get("validation_summary_sha256") == original_digest
 
 
 def test_report_generator_uses_write_sink_auth_bypass_narrative(monkeypatch, tmp_path):
