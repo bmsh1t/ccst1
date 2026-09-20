@@ -59,8 +59,10 @@ Do not introduce a universal `RuntimeStore`, a second result/intent schema, or a
 Skill roles and content owners are described in `skills/README.md`; they are
 separate from the catalog's routing modes. Route admission and governance import
 `tools/skill_catalog.py` directly, without depending on Context Pack's evidence
-assembly. `tools/context_pack.py` re-exports the existing catalog constants and
-`skill_route` for compatibility; it does not maintain a second registry.
+assembly. `tools/context_pack.py` does not emit `selected_skill`/`skill_route`
+fields: skill discovery is native to the platform Skill surface, and
+`skill_route` appears only as AI-authored Queue metadata at claim time. It
+does not maintain a second registry.
 
 ## Change Classification
 

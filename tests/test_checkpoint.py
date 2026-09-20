@@ -91,6 +91,32 @@ def _write_round_evidence(repo_root: Path, evidence_ref: str, content: str = "{}
     return path
 
 
+def _write_request_spec(repo_root: Path, relative: str, *, target: str) -> Path:
+    """创建 request-diff backlog 引用的真实 spec 文件。
+
+    919dd15 后 _readiness 要求 request_spec_ref 指向可读且 target-owned 的
+    spec 文件;只写引用不建文件会把 backlog 降级为 enrichment。
+    """
+    path = repo_root / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "schema_version": 1,
+        "baseline_request": {
+            "method": "GET",
+            "url": f"https://{target}/rest/order-history/123",
+            "headers": {"Authorization": "Bearer owner-token"},
+        },
+        "variant_request": {
+            "method": "GET",
+            "url": f"https://{target}/rest/order-history/123",
+            "headers": {"Authorization": "Bearer peer-token"},
+        },
+        "active_dimension": "header:authorization",
+        "classifier": "authz",
+    }), encoding="utf-8")
+    return path
+
+
 def _seed_capability_parent(
     repo_root: Path,
     *,
@@ -3244,6 +3270,11 @@ def test_checkpoint_prioritizes_case_state_validation_backlog(tmp_path):
     _seed_recon(tmp_path, "target.com", [
         "https://api.target.com/rest/order-history/123",
     ])
+    _write_request_spec(
+        tmp_path,
+        "evidence/target.com/validation/order-idor-pair/spec.json",
+        target="target.com",
+    )
     add_actor(tmp_path, "target.com", actor="user_a", role="user", label="owner")
     add_actor(tmp_path, "target.com", actor="user_b", role="user", label="peer")
     add_session(
@@ -3384,6 +3415,11 @@ def test_checkpoint_surfaces_optional_case_state_marker_gap_without_blocking_rep
     _seed_recon(tmp_path, "target.com", [
         "https://api.target.com/rest/order-history/123",
     ])
+    _write_request_spec(
+        tmp_path,
+        "evidence/target.com/validation/order-idor-pair/spec.json",
+        target="target.com",
+    )
     add_actor(tmp_path, "target.com", actor="user_a", role="user", label="owner")
     add_actor(tmp_path, "target.com", actor="user_b", role="user", label="peer")
     add_session(tmp_path, "target.com", session="sess_owner", actor="user_a", kind="bearer", header_value="Bearer owner-token")

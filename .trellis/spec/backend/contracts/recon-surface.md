@@ -326,10 +326,14 @@ Correct: component-leading numeric branch sentence + exact observed branch/versi
   - Core knowledge cards are decision aids for route selection, evidence gates,
     stop conditions, and coverage. `context_pack.py` publishes the bounded card
     catalog metadata, not a semantic 1-2 card selection.
-  - Context Pack keeps `selected_skill` and `skill_route` as compatibility
-    recommendations. `knowledge_cards`, `deferred_knowledge_cards`, and
-    `knowledge_card_recall` remain empty compatibility projections; they do not
-    enter `must_read`, represent an AI selection, or bind Checkpoint Queue actions.
+  - Context Pack does not emit `selected_skill`, `skill_route`,
+    `selected_skill_id`, or `why_this_skill`: the skill discovery surface is the
+    platform Skill tool, and route admission/governance import
+    `tools/skill_catalog.py` directly. `knowledge_cards`,
+    `deferred_knowledge_cards`, and `knowledge_card_recall` remain empty
+    compatibility projections; they do not enter `must_read`, represent an AI
+    selection, or bind Checkpoint Queue actions. `skill_route` appears only as
+    AI-authored Queue metadata at claim time, never as a Context Pack field.
     Shared runtime, target state, Ledger, and evidence-specific tool/artifact refs
     remain mandatory inputs; Claude selects and reads a catalog card by current
     information gap and records actual refs when claiming substantive action.
@@ -498,7 +502,9 @@ audit_governance(
   执行、生命周期与恢复。Claude 当前主会话保留最终路线判断权。
 - Claude Code CLI 自动加载项目 `CLAUDE.md`；Context Pack 的 `must_read` 包含
   `runtime-protocol`、目标状态、Ledger 和证据专用引用，不包含推荐的 primary Skill/Card。
-  `selected_skill` 和 `skill_route` 字段继续提供有界兼容推荐；Card 选择字段保持空。根
+  `selected_skill`/`skill_route`/`selected_skill_id`/`why_this_skill` 已从 Context Pack
+  输出中退役（平台 Skill 工具是发现面），不再作为兼容推荐字段；`skill_route` 只在 AI 写入
+  Queue metadata 时出现。Card 选择字段保持空。根
   `SKILL.md` 只用于旧单文件直装，不由正式 `install.sh` 安装，也不进入 Context Pack。
 
 ### 4. Validation & Error Matrix

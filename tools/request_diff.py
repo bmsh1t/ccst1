@@ -171,7 +171,11 @@ def validate_request_pair(spec: dict[str, Any]) -> dict[str, Any]:
     """
     if not isinstance(spec, dict):
         raise RequestPairError("request spec must be an object")
-    if int(spec.get("schema_version", 1) or 1) != 1:
+    try:
+        schema_version = int(spec.get("schema_version", 1) or 1)
+    except (TypeError, ValueError) as exc:
+        raise RequestPairError("request spec schema_version must be 1") from exc
+    if schema_version != 1:
         raise RequestPairError("request spec schema_version must be 1")
     baseline = _request(spec.get("baseline_request"), "baseline_request")
     variant = _request(spec.get("variant_request"), "variant_request")
@@ -252,7 +256,10 @@ def validate_request_pair(spec: dict[str, Any]) -> dict[str, Any]:
             raise RequestPairError("active body dimension must be the only request difference")
     else:
         raise RequestPairError("active_dimension must use query:, path:, header:, cookie:, or body:")
-    repeat = max(1, int(spec.get("repeat", 1) or 1))
+    try:
+        repeat = max(1, int(spec.get("repeat", 1) or 1))
+    except (TypeError, ValueError) as exc:
+        raise RequestPairError("repeat must be a positive integer") from exc
     classifier = str(spec.get("classifier") or "generic").strip().lower()
     if not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", classifier):
         raise RequestPairError("classifier must be a simple identifier")

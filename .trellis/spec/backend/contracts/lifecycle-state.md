@@ -433,9 +433,11 @@ Queue, controller, or state machine is introduced.
 - Every successful checkpoint atomically replaces a small witness containing
   `schema_version`, `kind=autopilot_checkpoint_witness`, `generated_at`,
   `target`, `target_key`, and `context_pack` recommendation fields.
-- Witness context includes advisory `selected_skill`, `knowledge_cards`,
+- Witness context includes the card catalog, card recall compatibility fields,
   `reference_hints`, and `required_checks`; it does not duplicate full surface,
-  finding, evidence, or queue bodies.
+  finding, evidence, or queue bodies. Context Pack no longer emits
+  `selected_skill`/`skill_route`; `skill_route` is AI-authored Queue metadata at
+  claim time, while the checkpoint keeps only its empty legacy shell.
 - A successful checkpoint preserves the prior `global_review` witness while
   owner writes change its digest; Closure then reports it stale until the
   current snapshot is reviewed again.

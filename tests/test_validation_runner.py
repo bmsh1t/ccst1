@@ -2573,3 +2573,81 @@ def test_record_evidence_versioned_queue_writes_last_outcome_without_resolving(t
     assert outcome["status"] == "tested_finding"
     assert outcome["operation_id"] == summary["operation_id"]
     assert action["metadata"]["tested_dimensions"] == ["object-ownership"]
+
+
+def test_request_diff_invalid_spec_exits_two_without_request(tmp_path, monkeypatch, capsys):
+    """invalid request spec 必须 exit 2，且不得发任何请求 (validation-evidence.md:38)。
+
+    构造缺 active_dimension 的 spec：validate_request_pair 在发请求前就抛
+    RequestPairError。main() 的 request-diff 分支应捕获并 return 2，任何
+    build_opener 都不应被调用。
+    """
+    spec = tmp_path / "spec.json"
+    spec.write_text(json.dumps({
+        "schema_version": 1,
+        "baseline_request": {"method": "GET", "url": "https://target.test/api"},
+        "variant_request": {"method": "GET", "url": "https://target.test/api"},
+        "classifier": "authz",
+    }), encoding="utf-8")
+    called = False
+
+    def fail_if_called(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("request must not be sent for an invalid spec")
+
+    monkeypatch.setattr(validation_runner.urllib.request, "build_opener", fail_if_called)
+    code = validation_runner.main([
+        "request-diff",
+        "--repo-root", str(tmp_path),
+        "--target", "target.test",
+        "--request-spec", str(spec),
+    ])
+
+    assert code == 2
+    assert called is False
+    assert "invalid request spec" in capsys.readouterr().err
+
+
+def test_request_diff_execution_value_error_is_partial(monkeypatch, tmp_path):
+    """Execution-time scope errors remain partial evidence, not input errors."""
+    monkeypatch.setattr(
+        validation_runner,
+        "request_once",
+        lambda **_kwargs: (_ for _ in ()).throw(ValueError("validation response left target scope")),
+    )
+
+    summary = validation_runner.run_request_diff(
+        repo_root=tmp_path,
+        target="target.test",
+        request_spec=_expect_auth_pair_spec(),
+    )
+
+    assert summary["result"] == "partial"
+    assert summary["status"] == "partial"
+    assert summary["error"]["type"] == "ValueError"
+
+
+def test_request_diff_invalid_repeat_exits_two_without_request(tmp_path, monkeypatch, capsys):
+    spec = tmp_path / "spec.json"
+    payload = _expect_auth_pair_spec()
+    payload["repeat"] = "not-an-integer"
+    spec.write_text(json.dumps(payload), encoding="utf-8")
+    called = False
+
+    def fail_if_called(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("request must not be sent for an invalid repeat")
+
+    monkeypatch.setattr(validation_runner.urllib.request, "build_opener", fail_if_called)
+    code = validation_runner.main([
+        "request-diff",
+        "--repo-root", str(tmp_path),
+        "--target", "target.test",
+        "--request-spec", str(spec),
+    ])
+
+    assert code == 2
+    assert called is False
+    assert "invalid request spec" in capsys.readouterr().err

@@ -99,6 +99,12 @@ except ImportError:  # pragma: no cover - direct tools/ execution
 
 SCHEMA_VERSION = 1
 MAX_RESPONSE_BYTES = 1024 * 1024
+
+
+class RequestPreflightError(ValueError):
+    """Reject a request pair before any network I/O."""
+
+
 # Parser/DB error markers. Category-agnostic: any declared fact that names a
 # DB/parser error marker (``error_marker_variant_only``) is checked with this,
 # regardless of which vulnerability family the AI is testing.
@@ -1486,7 +1492,9 @@ def _validate_request_facts(
     # The red-line rule is about the concrete effect.  The HTTP verb is only
     # recorded evidence and must not create a second gate in the runner.
     if state_changing is True and not redline_checked:
-        raise ValueError("state-changing validation requires --redline-checked before any request")
+        raise RequestPreflightError(
+            "state-changing validation requires --redline-checked before any request"
+        )
     return state_changing
 
 
@@ -1843,7 +1851,7 @@ def run_request_diff(
     variant = spec["variant_request"]
     effective_state = _validate_request_facts(state_changing, redline_checked)
     if not url_belongs_to_target(baseline["url"], target) or not url_belongs_to_target(variant["url"], target):
-        raise ValueError("request pair contains an off-target URL")
+        raise RequestPreflightError("request pair contains an off-target URL")
     finding_id = finding_id or _default_finding_id(lane, baseline["url"])
     bundle = _bundle_dir(repo_root, target, finding_id)
     private_bundle = _private_bundle_dir(repo_root, target, bundle)
@@ -1885,7 +1893,7 @@ def run_request_diff(
             )
             artifacts = _write_raw_http(private_bundle, f"{prefix}variant.", variant_response, repo_root)
             run["artifacts"].update({f"variant_{key}": value for key, value in artifacts.items()})
-        except (OSError, urllib.error.URLError) as exc:
+        except (OSError, urllib.error.URLError, ValueError) as exc:
             run["error"] = {"side": side, "type": type(exc).__name__}
             return _finalize_runner_summary({
                 "schema_version": SCHEMA_VERSION, "lane": lane,
@@ -2240,21 +2248,26 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(f"--request-spec must point to a JSON object: {exc}")
         if not isinstance(request_spec, dict):
             parser.error("--request-spec must contain a JSON object")
-        summary = run_request_diff(
-            repo_root=repo_root,
-            target=args.target,
-            request_spec=request_spec,
-            timeout=args.timeout,
-            finding_id=args.finding_id,
-            repeat=args.repeat,
-            no_ledger=args.no_ledger,
-            browser_observed=args.browser_observed,
-            state_changing=args.state_changing,
-            redline_checked=args.redline_checked,
-            identity_v2=identity_v2,
-            headers=parse_headers(args.header),
-            session=auth_session,
-        )
+        try:
+            summary = run_request_diff(
+                repo_root=repo_root,
+                target=args.target,
+                request_spec=request_spec,
+                timeout=args.timeout,
+                finding_id=args.finding_id,
+                repeat=args.repeat,
+                no_ledger=args.no_ledger,
+                browser_observed=args.browser_observed,
+                state_changing=args.state_changing,
+                redline_checked=args.redline_checked,
+                identity_v2=identity_v2,
+                headers=parse_headers(args.header),
+                session=auth_session,
+            )
+        except (RequestPairError, RequestPreflightError) as exc:
+            # Invalid input must fail before any network I/O.
+            print(f"request-diff: invalid request spec: {exc}", file=sys.stderr)
+            return 2
     elif args.lane == "record-evidence":
         try:
             evidence = json.loads(Path(args.evidence_json).read_text(encoding="utf-8"))
