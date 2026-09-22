@@ -209,6 +209,128 @@ def _stable_id(*parts: Any) -> str:
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
 
 
+# Keep quarantine identity independent of report ordering and unbounded text.
+_QUARANTINE_ID_FIELDS = (
+    "owner", "reason", "path", "event_id", "id", "endpoint", "evidence_ref",
+    "line", "status", "family", "result", "declared_target", "expected_target", "report_index",
+)
+_SAFE_DISPOSITION_DECISIONS = frozenset({
+    "preserve_verdict", "permanent_quarantine", "operator_review",
+})
+_PLACEHOLDER_DECISION_REFS = frozenset({"", "pending", "todo", "tbd", "none", "null"})
+
+
+def quarantine_id(row: dict[str, Any]) -> str:
+    """Return the stable ID used by a migration disposition ledger."""
+    bounded = {field: row.get(field, "") for field in _QUARANTINE_ID_FIELDS}
+    material = json.dumps(bounded, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
+
+
+def _load_disposition_ledger(value: Any) -> tuple[dict[str, Any] | None, str]:
+    """Load a disposition ledger from a path or an already parsed object."""
+    if value in (None, ""):
+        return None, ""
+    if isinstance(value, dict):
+        payload = value
+        encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    else:
+        path = Path(value)
+        try:
+            encoded = path.read_text(encoding="utf-8")
+            payload = json.loads(encoded)
+        except (OSError, ValueError, TypeError) as exc:
+            raise StoreError(f"disposition ledger is unreadable: {path}") from exc
+    if not isinstance(payload, dict):
+        raise StoreError("disposition ledger must be a JSON object")
+    items = payload.get("items")
+    if not isinstance(items, list):
+        raise StoreError("disposition ledger items must be a list")
+    return payload, hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _apply_disposition_ledger(
+    report: dict[str, Any],
+    ledger: dict[str, Any] | None,
+    ledger_digest: str,
+    canonical: str,
+    source_manifest_sha256: str,
+) -> None:
+    """Validate and apply fact-preserving quarantine decisions."""
+    if ledger is None:
+        return
+    _validate_disposition_binding(ledger, canonical, source_manifest_sha256)
+
+    expected_rows = list(report.get("quarantined") or [])
+    expected: dict[str, dict[str, Any]] = {}
+    for row_index, row in enumerate(expected_rows):
+        identity = dict(row)
+        if not any(_text(identity.get(field)) for field in ("event_id", "id", "line")):
+            identity["report_index"] = row_index
+        item_id = quarantine_id(identity)
+        if item_id in expected:
+            raise StoreError("migration produced duplicate quarantine IDs")
+        expected[item_id] = identity
+    seen: set[str] = set()
+    validated: list[dict[str, Any]] = []
+    for item in ledger.get("items", []):
+        if not isinstance(item, dict):
+            raise StoreError("disposition ledger item must be an object")
+        item_id = _text(item.get("quarantine_id"))
+        if not item_id or item_id in seen:
+            raise StoreError("disposition ledger contains a missing or duplicate quarantine ID")
+        if item_id not in expected:
+            raise StoreError(f"disposition ledger references unknown quarantine ID: {item_id}")
+        item_identity = dict(item)
+        if not any(_text(item_identity.get(field)) for field in ("event_id", "id", "line")):
+            item_identity["report_index"] = expected[item_id].get("report_index")
+        if item_id != quarantine_id(item_identity):
+            raise StoreError(f"disposition ledger row does not match quarantine ID: {item_id}")
+        decision = _text(item.get("decision")).lower()
+        if decision not in _SAFE_DISPOSITION_DECISIONS:
+            raise StoreError(f"unsupported quarantine disposition: {decision or '<empty>'}")
+        operator = _text(item.get("operator"))
+        if operator.lower() in _PLACEHOLDER_DECISION_REFS:
+            raise StoreError("quarantine disposition requires a non-placeholder operator")
+        decision_ref = _text(item.get("decision_ref"))
+        if decision_ref.lower() in _PLACEHOLDER_DECISION_REFS:
+            raise StoreError("quarantine disposition requires a non-placeholder decision_ref")
+        allowed = item.get("allowed_decisions")
+        if isinstance(allowed, list) and allowed and decision not in {str(value).strip().lower() for value in allowed}:
+            raise StoreError(f"quarantine disposition is not allowed for {item_id}: {decision}")
+        seen.add(item_id)
+        validated.append({**item, "quarantine_id": item_id, "decision": decision})
+
+    missing = sorted(set(expected) - seen)
+    metadata = {
+        "target": canonical,
+        "source_manifest_sha256": source_manifest_sha256,
+        "ledger_sha256": ledger_digest,
+        "count": len(validated),
+        "missing": missing,
+        "status": "complete" if not missing and all(row["decision"] != "pending" for row in validated) else "partial",
+    }
+    report["disposition_ledger"] = metadata
+    if missing:
+        return
+    report["dispositioned_quarantine"] = validated
+    report["quarantined"] = []
+    report["status"] = "ready"
+
+
+def _validate_disposition_binding(
+    ledger: dict[str, Any] | None,
+    canonical: str,
+    source_manifest_sha256: str,
+) -> None:
+    if ledger is None:
+        return
+    if _text(ledger.get("target")) != canonical:
+        raise StoreError("disposition ledger target does not match migration target")
+    if _text(ledger.get("source_manifest_sha256")) != source_manifest_sha256:
+        raise StoreError("disposition ledger source manifest does not match migration input")
+
+
 def _evidence_path(root: Path, ref: str) -> Path:
     path = Path(ref)
     return path if path.is_absolute() else root / path
@@ -746,6 +868,8 @@ def import_target_staged(
     source_root: str | Path,
     destination_root: str | Path,
     target: str,
+    *,
+    disposition_ledger: str | Path | dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Import into a new private staging root, leaving source untouched."""
     source = Path(source_root).resolve()
@@ -761,12 +885,19 @@ def import_target_staged(
         raise StoreError(f"destination already exists: {destination}")
     canonical = canonical_target_value(target)
     manifest = _migration_manifest(source, canonical)
+    disposition_payload, disposition_digest = _load_disposition_ledger(disposition_ledger)
+    _validate_disposition_binding(disposition_payload, canonical, manifest["sha256"])
     destination.parent.mkdir(parents=True, exist_ok=True)
     staging = destination
     staging.mkdir(mode=0o700)
     try:
         _copy_target_inputs(source, staging, canonical)
-        result = import_target(staging, canonical)
+        result = import_target(
+            staging,
+            canonical,
+            disposition_ledger=disposition_ledger,
+            source_manifest_sha256=manifest["sha256"],
+        )
         store = TargetStore(staging, canonical, allow_preview=True)
         context = store.context(limit=1)
         receipt = {
@@ -780,6 +911,11 @@ def import_target_staged(
             "source_manifest": manifest,
             "imported": result["imported"],
         }
+        if disposition_payload is not None:
+            receipt["disposition_ledger"] = result.get("disposition_ledger", {
+                "ledger_sha256": disposition_digest,
+                "status": "partial",
+            })
         receipt_path = staging / "state" / target_storage_key(canonical) / "migration-receipt.json"
         receipt_path.parent.mkdir(parents=True, exist_ok=True)
         receipt_path.write_text(json.dumps(receipt, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
@@ -1765,9 +1901,20 @@ def _carry_case_backlog(
             report["legacy"]["case_backlog_conflicts"].append(conflict)
 
 
-def import_target(repo_root: str | Path, target: str, *, initialize: bool = False) -> dict[str, Any]:
+def import_target(
+    repo_root: str | Path,
+    target: str,
+    *,
+    initialize: bool = False,
+    disposition_ledger: str | Path | dict[str, Any] | None = None,
+    source_manifest_sha256: str = "",
+) -> dict[str, Any]:
     root = Path(repo_root).resolve()
     canonical = canonical_target_value(target)
+    disposition_payload, disposition_digest = _load_disposition_ledger(disposition_ledger)
+    expected_manifest = _migration_manifest(root, canonical)
+    expected_manifest_sha256 = source_manifest_sha256 or expected_manifest["sha256"]
+    _validate_disposition_binding(disposition_payload, canonical, expected_manifest_sha256)
     sources = _legacy_sources(root, canonical)
     report = _empty_report(canonical, sources)
     report["legacy"]["report_artifacts"] = _report_artifact_inventory(root, target_storage_key(canonical))
@@ -1897,6 +2044,13 @@ def import_target(repo_root: str | Path, target: str, *, initialize: bool = Fals
     }
     if report["quarantined"]:
         report["status"] = "partial"
+    _apply_disposition_ledger(
+        report,
+        disposition_payload,
+        disposition_digest,
+        canonical,
+        expected_manifest_sha256,
+    )
     return report
 
 
@@ -1907,6 +2061,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--import-source", default="", help="Explicit source root for an isolated staged import")
     parser.add_argument("--destination-root", default="", help="New destination root for staging or publish")
     parser.add_argument("--publish-staging", default="", help="Publish an existing completed staging root")
+    parser.add_argument("--disposition-ledger", default="", help="JSON disposition ledger for staged import")
     parser.add_argument("--promote", action="store_true", help="Explicitly activate a published preview as primary")
     parser.add_argument("--restore-legacy", action="store_true", help="Explicitly restore pre-primary legacy metadata from the archive")
     parser.add_argument("--source-manifest-sha256", default="")
@@ -1928,7 +2083,12 @@ def main(argv: list[str] | None = None) -> int:
         elif args.import_source:
             if not args.destination_root:
                 parser.error("--destination-root is required with --import-source")
-            result = import_target_staged(args.import_source, args.destination_root, args.target)
+            result = import_target_staged(
+                args.import_source,
+                args.destination_root,
+                args.target,
+                disposition_ledger=args.disposition_ledger or None,
+            )
         else:
             result = preview_target(args.repo_root, args.target)
     except (OSError, ValueError, StoreError) as exc:

@@ -8,11 +8,13 @@ import pytest
 from tools.target_migration import (
     import_target,
     import_target_staged,
+    quarantine_id,
     preview_target,
     publish_preview,
     promote_target,
     restore_legacy_metadata,
 )
+import tools.target_migration as migration
 from tools.action_queue import load_queue, save_queue
 from tools.evidence_ledger import record_entry
 from tools.finding_index import upsert_finding
@@ -199,7 +201,6 @@ def test_promote_recovers_after_primary_commit_before_archive_activation(tmp_pat
 
 def test_archive_freeze_interruption_is_pending_and_explicitly_recoverable(tmp_path, monkeypatch):
     from pathlib import Path
-    import tools.target_migration as migration
 
     source = tmp_path / "source"
     target = _fixture(source, actions=[{
@@ -469,6 +470,122 @@ def test_fence_written_before_activation_blocks_preview_fallback(tmp_path):
         promote_target(published, target)
 
 
+def test_complete_disposition_ledger_clears_quarantine_and_completes_staged_receipt(tmp_path):
+    source = tmp_path / "source"
+    target = _fixture(source, actions=[{
+        "id": "AQ-terminal", "status": "validated", "action": "historical verdict",
+        "metadata": {"endpoint": "https://target.test/api/object", "vuln_class": "Authz"},
+    }])
+    manifest = migration._migration_manifest(source, target)
+    row = {
+        "owner": "queue",
+        "id": "AQ-terminal",
+        "reason": "legacy status validated is a terminal verdict with no unambiguous mapping into the action state machine; intent and verdict preserved",
+    }
+    items = []
+    items.append({
+        **{field: row.get(field, "") for field in migration._QUARANTINE_ID_FIELDS},
+        "quarantine_id": quarantine_id(row),
+        "allowed_decisions": ["preserve_verdict"],
+        "decision": "preserve_verdict",
+        "operator": "OWNER",
+        "decision_ref": "migration-review-1",
+    })
+    ledger = {
+        "schema_version": 1,
+        "kind": "target_cutover_quarantine_disposition_ledger",
+        "target": target,
+        "source_manifest_sha256": manifest["sha256"],
+        "items": items,
+    }
+
+    result = import_target_staged(source, tmp_path / "staging", target, disposition_ledger=ledger)
+
+    assert result["status"] == "ready"
+    assert result["quarantined"] == []
+    assert result["dispositioned_quarantine"]
+    assert result["receipt"]["status"] == "complete"
+    assert result["receipt"]["disposition_ledger"]["status"] == "complete"
+    assert TargetStore(tmp_path / "staging", target).page("actions")["items"] == []
+
+    incomplete_item = {**items[0], "operator": "OWNER", "decision_ref": "PENDING"}
+    with pytest.raises(StoreError, match="non-placeholder decision_ref"):
+        import_target(source, target, disposition_ledger={**ledger, "items": [incomplete_item]})
+
+
+def test_missing_disposition_row_keeps_import_partial(tmp_path):
+    target = _fixture(tmp_path, actions=[{
+        "id": "AQ-terminal", "status": "validated", "action": "historical verdict",
+        "metadata": {"endpoint": "https://target.test/api/object", "vuln_class": "Authz"},
+    }])
+    manifest = migration._migration_manifest(tmp_path, target)
+    result = import_target(tmp_path, target, disposition_ledger={
+        "target": target,
+        "source_manifest_sha256": manifest["sha256"],
+        "items": [],
+    })
+    assert result["status"] == "partial"
+    assert result["quarantined"]
+    assert result["disposition_ledger"]["missing"]
+
+
+def test_disposition_ledger_rejects_pending_and_binding_mismatch(tmp_path):
+    target = _fixture(tmp_path, actions=[{
+        "id": "AQ-terminal", "status": "validated", "action": "historical verdict",
+        "metadata": {"endpoint": "https://target.test/api/object", "vuln_class": "Authz"},
+    }])
+    manifest = migration._migration_manifest(tmp_path, target)
+    row = {
+        "owner": "queue",
+        "id": "AQ-terminal",
+        "reason": "legacy status validated is a terminal verdict with no unambiguous mapping into the action state machine; intent and verdict preserved",
+    }
+    item = {
+        **{field: row.get(field, "") for field in migration._QUARANTINE_ID_FIELDS},
+        "quarantine_id": quarantine_id(row),
+        "decision": "PENDING",
+        "decision_ref": "PENDING",
+    }
+    with pytest.raises(StoreError, match="unsupported quarantine disposition"):
+        import_target(tmp_path, target, disposition_ledger={
+            "target": target,
+            "source_manifest_sha256": manifest["sha256"],
+            "items": [item],
+        })
+    with pytest.raises(StoreError, match="target does not match"):
+        import_target(tmp_path, target, disposition_ledger={
+            "target": "other.test",
+            "source_manifest_sha256": manifest["sha256"],
+            "items": [],
+        })
+
+
+def test_disposition_ledger_rejects_placeholder_operator(tmp_path):
+    target = _fixture(tmp_path, actions=[{
+        "id": "AQ-terminal", "status": "validated", "action": "historical verdict",
+        "metadata": {"endpoint": "https://target.test/api/object", "vuln_class": "Authz"},
+    }])
+    manifest = migration._migration_manifest(tmp_path, target)
+    row = {
+        "owner": "queue",
+        "id": "AQ-terminal",
+        "reason": "legacy status validated is a terminal verdict with no unambiguous mapping into the action state machine; intent and verdict preserved",
+    }
+    item = {
+        **{field: row.get(field, "") for field in migration._QUARANTINE_ID_FIELDS},
+        "quarantine_id": quarantine_id(row),
+        "decision": "preserve_verdict",
+        "operator": "PENDING",
+        "decision_ref": "migration-review-1",
+    }
+    with pytest.raises(StoreError, match="non-placeholder operator"):
+        import_target(tmp_path, target, disposition_ledger={
+            "target": target,
+            "source_manifest_sha256": manifest["sha256"],
+            "items": [item],
+        })
+
+
 _MISSING_CASE = object()
 
 
@@ -537,6 +654,7 @@ def test_ledger_entry_imports_as_observation_with_raw_hash_and_bound_claim(tmp_p
         "id": "F-9", "validation_status": "", "report_status": "", "claim_status": "",
         "confidence": "", "severity": "", "claim_revision": "", "source_file": "",
     }]
+
     (link,) = result["links"]
     store = TargetStore(tmp_path, target)
     expanded = store.execution(link["operation_id"])
@@ -550,6 +668,16 @@ def test_ledger_entry_imports_as_observation_with_raw_hash_and_bound_claim(tmp_p
     assert finding["evidence"] == [{"operation_id": link["operation_id"], "step": 0}]
     # A migrated claim carries no technical verdict: assessment stays the AI's job.
     assert finding["assessment"] is None
+
+
+def test_duplicate_quarantine_rows_receive_distinct_disposition_ids(tmp_path):
+    target = _fixture(tmp_path, ledger=[_ledger_row(event_id="", evidence_ref="")]*2)
+
+    result = import_target(tmp_path, target)
+
+    rows = [row for row in result["quarantined"] if row["owner"] == "ledger"]
+    assert len(rows) == 2
+    assert len({quarantine_id({**row, "report_index": index}) for index, row in enumerate(rows)}) == 2
 
 
 def test_legacy_terminal_action_status_is_quarantined_not_promoted(tmp_path):

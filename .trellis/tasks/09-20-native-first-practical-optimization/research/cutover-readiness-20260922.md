@@ -119,3 +119,16 @@ stable IDs, preserves only bounded paths/reasons, and leaves every decision as
 queue, and 5 case-state rows have an explicit allowed-decision set. It is not a
 publishable receipt until every row has a recorded decision and evidence
 reference.
+
+Rows lacking an event/id/line source identity use their bounded report index as
+the explicit duplicate discriminator; otherwise a duplicate source identity is
+rejected rather than silently merged.
+
+The migration API now accepts `--disposition-ledger` (or the equivalent
+`disposition_ledger=` argument). It binds the ledger to target and manifest,
+rejects unknown/duplicate IDs and placeholder operators/references before
+creating a destination Store, and permits only fact-preserving decisions. A
+synthetic fixture ledger was used to verify the complete staged path: 117 rows cleared,
+the receipt became `complete`, and publish succeeded in an isolated `/tmp`
+destination. Those synthetic decisions are not operator dispositions for the
+fixture and were not promoted.
