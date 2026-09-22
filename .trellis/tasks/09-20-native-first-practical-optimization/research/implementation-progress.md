@@ -870,5 +870,5 @@ CAS，但旧 Queue 的 metadata 专属 hypothesis cap/runner-field/skill-card �
 - 最新证据、逐项兼容层处置及限制见 `research/offline-acceptance-20260922.md`；规范同步到
   `docs/architecture-contract.md` 和 backend `transactional-target-state.md`。
 - 任务仍为 `in_progress`：未切换真实目标、未全局删除仍服务 legacy 的接口、未跑在线
-  能力对照；未提交、未推送、未归档。完整性重读后的性能已复测，结果与历史方向一致；
+  能力对照；代码已提交但未推送、未归档。完整性重读后的性能已复测，结果与历史方向一致；
   不构成性能收益声明。
