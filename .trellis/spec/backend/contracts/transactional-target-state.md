@@ -375,6 +375,13 @@ material file, or a runtime lock inside a target-owned root.
   is. Runtime locks (any path segment `locks`/`.locks`) and store/fence/receipt
   files are excluded from both. A file the manifest hashes but the copy omits
   makes promotion report a vanished input, so the two sets must be defined once.
+- A completed activation is identified by its own durable markers: the SQLite
+  role commit, the fence, and a receipt whose `activation_status` is `active`,
+  all naming the same store and manifest. `promote_target` re-entered on such a
+  target returns the idempotent `recovered` result without reading archive
+  bytes, so cleaning up historical archive material after a cutover is not
+  treated as damage. The archive stays the recovery input for an *interrupted*
+  activation, where it is still required and verified byte for byte.
 
 **Validation & Error Matrix**:
 
@@ -395,7 +402,9 @@ material file, or a runtime lock inside a target-owned root.
   a path-form Case object endpoint resolved through the observed origin; the
   same endpoint without an origin staying quarantined; a pre-contract private
   session importing without the binding while the file is left byte-identical;
-  and manifest/copy agreement on runtime locks verified through a promote.
+  manifest/copy agreement on runtime locks verified through a promote; promote
+  staying idempotent after the archive is removed once activation is `active`;
+  and an interrupted activation still refusing to recover without its archive.
 
 **Wrong vs Correct**:
 
@@ -445,6 +454,8 @@ private_ref, reason = _carryable_private_ref(root, private_ref, canonical)
 | Primary report index source revision changes before publication | Conflict; preserve registered bodies and retry projection |
 | Legacy absolute reference outside the declared source root, or with no material in the copy | Quarantine; record a rebase only for a proven, material-backed rewrite |
 | Manifest and copy disagree about a migration input | Promotion fails; fix the shared predicate, never one side |
+| `promote_target` on a target whose receipt is already `active` | Idempotent success from the durable markers (role, fence, receipt); archive bytes are not required |
+| Recovery of an interrupted activation (receipt not yet `active`) | Archive receipt and material are required; missing material is a `StoreError` |
 
 ## 5. Good / Base / Bad Cases
 

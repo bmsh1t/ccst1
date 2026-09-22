@@ -960,3 +960,28 @@ receipt `complete` / `activation_status: active`。
 - 回退边界：激活已提交，`restore_legacy_metadata` 拒绝回退；恢复只能前向（Store 导出或
   用归档材料）。
 - 本轮代码改动仍未提交、未推送。
+
+### B6 观察期与归档清理（2026-09-22）
+
+切换后在 primary 上跑真实工作流验证 R6/R7：checkpoint/context_pack/scaffold 正常且
+**revision 209 前后不变**（默认零写入）；真实 `request-diff` 执行（2 个真实请求）→ 证据
+落盘 `.private/validation/` → Store 登记成功（revision 209→212），且新 finding
+`assessment: None`（执行未冒充裁决）。迁移的 11 个 finding **11/11 有可解析证据链**
+（`evidence` → `operation` → `observation`），含 19 条 rebase 修复的引用——这些引用若不修
+即为此处的断链。旧 writer 已被 fence 拒绝；legacy sidecar 未重建。
+
+观察期暴露并修复一个真缺陷：`promote_target` 在 `backend == primary` 时**无条件校验归档
+材料字节**，等于让一次性迁移工具在切换完成后仍持有对归档的运行时依赖。后果：清理历史归档
+会被误判为"迁移损坏"，且已完成的目标失去幂等重入路径（design.md 第 8 条要求恢复目标为
+当前事实而非旧快照）。修复：以持久标记（role 提交 + fence + receipt
+`activation_status == "active"`，三者 store/manifest 一致）识别**已完成**激活并短路返回
+`recovered`，不读归档；**中断**激活（receipt 仍 `pending`）继续要求并逐字节校验归档。
+`restore_legacy_metadata` 本就要求 `pending` 且 primary 已提交时拒绝，无需改动。
+
+随后按 operator 决定清理该目标的归档（`legacy-archive/` + `legacy-archive.json`，6 文件
+约 487 KB）：这些是 2026-09-11~15 自建 lab（`127.0.0.1:3001`）的演练记录，内容已全部
+迁入 primary Store，且 `/root/ccst-cutover-20260922/backup/` 有 6/6 逐字节相同副本。清理
+后 promote 仍幂等成功、Store 完整（12 findings / 101 observations）。切换审计与备份保留。
+
+验证：`tests/test_target_migration.py` 66 passed；全量 **2,274 passed**；`git diff --check`
+通过。

@@ -1385,6 +1385,15 @@ def promote_target(repo_root: str | Path, target: str, *, source_manifest_sha256
             # durable; only finish the idempotent activation bookkeeping.
             if fence is None or fence.get("store_id") != meta["store_id"] or fence.get("source_manifest_sha256") != digest:
                 raise StoreError("primary store activation identity is incomplete")
+            # A completed activation is identified by its own durable markers:
+            # the role commit, the fence and the receipt all name this store and
+            # manifest.  The archive is the recovery input for an *interrupted*
+            # cutover, not a runtime dependency of a finished one -- requiring
+            # its bytes here would make a cleaned-up archive look like damage and
+            # would leave a finished target with no idempotent re-entry.
+            if receipt.get("activation_status") == "active":
+                return {"status": "primary", "target": canonical, "store_id": meta["store_id"],
+                        "source_manifest_sha256": digest, "recovered": True}
             try:
                 archive_state = json.loads(archive_path.read_text(encoding="utf-8"))
             except (OSError, ValueError) as exc:

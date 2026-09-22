@@ -199,6 +199,58 @@ def test_promote_recovers_after_primary_commit_before_archive_activation(tmp_pat
     assert receipt["activation_status"] == "active"
 
 
+def test_promote_stays_idempotent_after_the_archive_is_cleaned_up(tmp_path):
+    """A finished cutover must not depend on archive bytes to re-enter."""
+    import shutil
+
+    source = tmp_path / "source"
+    target = _fixture(source, actions=[])
+    staged = tmp_path / "staging-root"
+    import_target_staged(source, staged, target)
+    published = tmp_path / "published-root"
+    publish_preview(staged, published, target)
+    promote_target(published, target)
+
+    # Cleanup of historical material is expected after a cutover; it is not damage.
+    archive_dir = published / "state" / target / "legacy-archive"
+    shutil.rmtree(archive_dir)
+    (published / "state" / target / "legacy-archive.json").unlink()
+
+    again = promote_target(published, target)
+    assert again["status"] == "primary"
+    assert again["recovered"] is True
+    assert target_backend(published, target) == "primary"
+
+
+def test_promote_still_requires_the_archive_for_an_interrupted_activation(tmp_path, monkeypatch):
+    """Recovery of an interrupted cutover keeps needing its recovery input."""
+    import shutil
+
+    source = tmp_path / "source"
+    target = _fixture(source, actions=[])
+    staged = tmp_path / "staging-root"
+    import_target_staged(source, staged, target)
+    published = tmp_path / "published-root"
+    publish_preview(staged, published, target)
+
+    import tools.target_migration as migration
+
+    def interrupted(*args, **kwargs):
+        raise OSError("simulated post-commit interruption")
+
+    monkeypatch.setattr(migration, "_mark_archive_active", interrupted)
+    with pytest.raises(OSError, match="post-commit interruption"):
+        promote_target(published, target)
+
+    # The receipt still says pending, so the activation is genuinely incomplete
+    # and the archive remains the required recovery input.
+    monkeypatch.undo()
+    shutil.rmtree(published / "state" / target / "legacy-archive")
+    with pytest.raises(StoreError, match="legacy archive material is missing"):
+        promote_target(published, target)
+    assert target_backend(published, target) == "primary"
+
+
 def test_archive_freeze_interruption_is_pending_and_explicitly_recoverable(tmp_path, monkeypatch):
     from pathlib import Path
 
