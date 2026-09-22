@@ -985,3 +985,33 @@ receipt `complete` / `activation_status: active`。
 
 验证：`tests/test_target_migration.py` 66 passed；全量 **2,274 passed**；`git diff --check`
 通过。
+
+### B6 收尾审计：legacy 退役的真实阻塞（2026-09-22）
+
+在 operator 指示"新的已经实现了的就把旧的完全删除"后做了完整审计，结论是**当前不具备删除条件**，
+且阻塞是架构性的而非遗留清理。
+
+事实：`tools/target_store.py:2059` 的 `target_backend()` 对**没有 Store 的目标返回
+`"legacy"`**。因此 legacy 写入路径仍有真实消费者——**新目标**（新建靶场、新侦察域名在建立
+Store 之前）。仓库现有目标只剩 `127.0.0.1:3001` 且已是 primary，但删除 legacy 分支会让新目标
+既无法写 legacy、也没有 Store 可写（`initialize()` 的 `allow_legacy=True` 仅保留给迁移工具的
+隔离副本）。
+
+逐工具分类（Store 调用 / legacy 读 / legacy 写）：
+
+- **已成对双路径（Store 路径已实现）**：`coverage_matrix`（`_append_primary_finding` 对
+  `_append_finding`）、`report_generator`（`_process_primary_reports` 对
+  `_process_findings_dir` 后半段）、`validate`、`surface`、`resume`、`runtime_state`、
+  `autopilot_state`、`validation_runner`、`surface_projection`。这些是 `if primary … else legacy`
+  结构，legacy 侧服务未切换目标，删除即制造功能缺口。
+- **完全未接线**：`param_discovery`、`spray_contract`（无 Store 写路径，legacy 写回是其唯一
+  结果落地方式；primary 下经 try/except 记成 `action_queue_sync: error`，扫描仍可完成）；
+  `intel_engine`、`oast_listen`、`intel_continuation`（纯 legacy 读，无 Store 路径）。
+
+正确顺序（`prd.md:64`「完成消费者迁移后删除旧逻辑与适配」）：
+
+1. 让新目标**直接建立 Store**，把 `legacy` 从默认状态降为历史只读兼容；
+2. 给 `param_discovery` / `spray_contract` / `intel_*` / `oast_listen` 补 Store 接线；
+3. 此时 legacy writer 才真正无消费者，可以退役并删除兼容分支。
+
+这属于独立的一轮工作，量级与本次切换相当，未在本轮执行。
