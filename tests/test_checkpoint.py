@@ -10,6 +10,7 @@ import pytest
 
 import checkpoint as checkpoint_module
 import finding_index
+import autopilot_state
 from action_queue import (
     _checkpoint_item_to_action,
     _dedupe_key,
@@ -60,7 +61,8 @@ from coverage_matrix import mark_cell
 from evidence_ledger import record_entry
 from identity_contract import build_closure_cell
 from runtime_state import runtime_phase_lock, update_runtime_state
-from target_case_state import add_actor, add_backlog, add_hypothesis, add_object, add_session
+from target_case_state import add_actor, add_hypothesis, add_object, add_session
+from target_store import TargetStore
 
 
 def _seed_recon(repo_root: Path, target: str, urls: list[str]) -> None:
@@ -88,32 +90,6 @@ def _write_round_evidence(repo_root: Path, evidence_ref: str, content: str = "{}
     path = repo_root / evidence_ref
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
-    return path
-
-
-def _write_request_spec(repo_root: Path, relative: str, *, target: str) -> Path:
-    """创建 request-diff backlog 引用的真实 spec 文件。
-
-    919dd15 后 _readiness 要求 request_spec_ref 指向可读且 target-owned 的
-    spec 文件;只写引用不建文件会把 backlog 降级为 enrichment。
-    """
-    path = repo_root / relative
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({
-        "schema_version": 1,
-        "baseline_request": {
-            "method": "GET",
-            "url": f"https://{target}/rest/order-history/123",
-            "headers": {"Authorization": "Bearer owner-token"},
-        },
-        "variant_request": {
-            "method": "GET",
-            "url": f"https://{target}/rest/order-history/123",
-            "headers": {"Authorization": "Bearer peer-token"},
-        },
-        "active_dimension": "header:authorization",
-        "classifier": "authz",
-    }), encoding="utf-8")
     return path
 
 
@@ -235,6 +211,7 @@ def test_checkpoint_without_recon_recommends_refresh_recon(tmp_path):
         'python3 tools/surface.py --target "target.com" && '
         'python3 tools/checkpoint.py --target "target.com"'
     )
+
     assert "CHECKPOINT DECISION" in output
     assert "Default candidate (compat pointer):" in output
     # B2 (ai-capability-roadmap batch 5): apply-on is the CLI default, so the
@@ -252,6 +229,39 @@ def test_checkpoint_without_recon_recommends_refresh_recon(tmp_path):
     )
     assert checkpoint["runtime_witness"]["path"] == "state/target.com/checkpoint_latest.json"
     assert witness["kind"] == "autopilot_checkpoint_witness"
+
+
+def test_primary_checkpoint_projects_store_actions_without_legacy_queue(tmp_path, capsys):
+    target = "primary-checkpoint.test"
+    store = TargetStore(tmp_path, target)
+    store.initialize()
+    store.create_action(
+        command_id="create-work",
+        action_id="WORK-1",
+        intent="Review the recorded target context",
+        execution_key="work:context-review",
+        actor="ai",
+        kind="work",
+        subject={"target": target},
+    )
+    queue_path = tmp_path / "state" / target / "action_queue.json"
+    queue_path.write_text("{not-json", encoding="utf-8")
+    before_revision = store.page("actions")["revision"]
+
+    result = checkpoint_module.main([
+        "--repo-root", str(tmp_path), "--target", target,
+        "--no-refresh-coverage", "--no-apply-target-memory", "--json",
+    ])
+
+    assert result == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["root_finding_claim_sync"]["status"] == "skipped"
+    assert output["action_queue_sync"]["status"] == "skipped"
+    assert output["action_queue_sync"]["reason"].startswith("primary store")
+    assert queue_path.read_text(encoding="utf-8") == "{not-json"
+    assert store.page("actions")["revision"] == before_revision
+    assert output["runtime_witness"]["status"] == "not_published"
+    assert not (tmp_path / "state" / target / "checkpoint_latest.json").exists()
 
 
 def test_record_global_review_persists_checkpoint_witness(tmp_path, monkeypatch):
@@ -2680,8 +2690,9 @@ def test_hypothesis_seed_does_not_materialize_without_owner_hypothesis():
     state = {"has_recon": True, "surface": {"p1": [], "workflow_leads": []}}
     context = {"hypothesis_seeds": ["try a card-derived route"]}
 
+    # lead 提案不再看 Case：它曾经能带 case_state 只是想借用假设，如今 Case 连
+    # 假设细节都不投影进行动，proposal 只由 live lead 来源决定。
     assert _lead_proposals(state, context) == []
-    assert _lead_proposals(state, context, case_state={"open_hypotheses": 1}) == []
 
 
 def test_checkpoint_v2_closure_compares_the_complete_identity():
@@ -3086,7 +3097,8 @@ def test_checkpoint_actor_matrix_reads_only_active_queue_metadata_family():
     ) == ["IDOR"]
 
 
-def test_checkpoint_projects_free_hypothesis_metadata_into_case_queue(tmp_path):
+def test_open_hypothesis_creates_no_case_owned_queue_action(tmp_path):
+    """Case 只提供上下文：假设写得再细，也不会自己长出一条 checkpoint 行动。"""
     _seed_recon(tmp_path, "target.com", ["https://target.com/render"])
     hypothesis = add_hypothesis(
         tmp_path,
@@ -3094,7 +3106,6 @@ def test_checkpoint_projects_free_hypothesis_metadata_into_case_queue(tmp_path):
         vuln_class="SSTI",
         endpoint="/render",
         why_now="template syntax changes the response",
-        next_action="validate the renderer boundary",
         metadata={
             "family": "RCE",
             "primitive": "SSTI",
@@ -3104,15 +3115,18 @@ def test_checkpoint_projects_free_hypothesis_metadata_into_case_queue(tmp_path):
     )
 
     checkpoint = build_checkpoint(tmp_path, target="target.com")
-    action = next(
-        item for item in checkpoint["next_action_queue"]
-        if item["type"] == "case-state-backlog-create"
-    )
+    output = format_checkpoint(checkpoint)
 
-    assert action["metadata"]["hypothesis_id"] == hypothesis["id"]
-    assert action["metadata"]["family"] == "RCE"
-    assert action["metadata"]["primitive"] == "SSTI"
-    assert action["metadata"]["chain"] == ["template", "sandbox", "execution"]
+    assert hypothesis["id"] == "hyp_001"
+    assert checkpoint["case_state"]["open_hypotheses"] == 1
+    assert "next_action" not in checkpoint["case_state"]
+    assert "pending_validation_backlog" not in checkpoint["case_state"]
+    assert all(
+        str(item.get("type") or "") not in {"case-state-validation", "case-state-backlog-create"}
+        for item in checkpoint["next_action_queue"]
+    )
+    assert "pending backlog" not in output
+    assert "top next action" not in output
 
 
 def test_checkpoint_surfaces_open_ledger_candidate_for_ai_validation(tmp_path):
@@ -3266,15 +3280,15 @@ def test_next_proposals_queue_role_actor_gaps_when_case_state_ready():
     assert len(actor_actions) == 3
 
 
-def test_checkpoint_prioritizes_case_state_validation_backlog(tmp_path):
+def test_legacy_case_backlog_is_not_a_checkpoint_action_source(tmp_path):
+    """旧 validation_backlog 带着原裁决留在 Case 文件里，但不进入行动模型。
+
+    §7.1：旧 Case 待办与 Queue 的关联由迁移报告按明确映射搬运并隔离歧义；
+    checkpoint 既不能把旧裁决当成活的行动来源，也不能替它排序或计数。
+    """
     _seed_recon(tmp_path, "target.com", [
         "https://api.target.com/rest/order-history/123",
     ])
-    _write_request_spec(
-        tmp_path,
-        "evidence/target.com/validation/order-idor-pair/spec.json",
-        target="target.com",
-    )
     add_actor(tmp_path, "target.com", actor="user_a", role="user", label="owner")
     add_actor(tmp_path, "target.com", actor="user_b", role="user", label="peer")
     add_session(
@@ -3303,157 +3317,43 @@ def test_checkpoint_prioritizes_case_state_validation_backlog(tmp_path):
         endpoint="https://api.target.com/rest/order-history/123",
         private_marker="owner@example.test",
     )
-    add_backlog(
-        tmp_path,
-        "target.com",
-        runner="request-diff",
-        endpoint="https://api.target.com/rest/order-history/123",
-        request_spec_ref="evidence/target.com/validation/order-idor-pair/spec.json",
-        active_dimension="header:authorization",
-        classifier="authz",
-        owner_actor="user_a",
-        peer_actor="user_b",
-        object_ref="order_123",
-        priority="high",
-        required_evidence=["owner session", "peer session", "owner private marker"],
-        stop_condition="peer 403/404 or no private marker",
-        chain_extensions_if_blocked=["try export endpoint", "try mobile API equivalent"],
-    )
+    state_path = tmp_path / "state" / "target.com" / "case_state.json"
+    payload = json.loads(state_path.read_text(encoding="utf-8"))
+    payload["validation_backlog"] = [{
+        "id": "val_001",
+        "runner": "request-diff",
+        "vuln_class": "Authz",
+        "endpoint": "https://api.target.com/rest/order-history/123",
+        "request_spec_ref": "evidence/target.com/validation/order-idor-pair/spec.json",
+        "owner_actor": "user_a",
+        "peer_actor": "user_b",
+        "object_ref": "order_123",
+        "priority": "high",
+        "status": "tested_clean",
+        "result": "tested_clean",
+        "created_at": "2026-07-05T01:18:07Z",
+    }]
+    state_path.write_text(json.dumps(payload), encoding="utf-8")
+    before = state_path.read_bytes()
 
     checkpoint = build_checkpoint(tmp_path, target="target.com")
     output = format_checkpoint(checkpoint)
 
-    assert checkpoint["decision"] == "continue"
-    assert checkpoint["target_write_back"]["next"][0].startswith("Case-state validation backlog val_001:")
-    assert checkpoint["recommended_executable_action"]["type"] == "case-state-validation"
-    assert checkpoint["recommended_executable_action"]["metadata"]["backlog_id"] == "val_001"
-    assert checkpoint["recommended_executable_action"]["metadata"]["runner"] == "request-diff"
-    assert checkpoint["recommended_executable_action"]["metadata"]["owner_actor"] == "user_a"
-    assert checkpoint["recommended_executable_action"]["metadata"]["peer_actor"] == "user_b"
-    assert checkpoint["recommended_executable_action"]["metadata"]["object_ref"] == "order_123"
-    assert checkpoint["recommended_executable_action"]["metadata"]["endpoint"] == "https://api.target.com/rest/order-history/123"
-    assert "--request-spec" in checkpoint["recommended_executable_action"]["command_hint"]
-    assert checkpoint["case_state"]["pending_validation_backlog"] == 1
-    assert checkpoint["case_state"]["top_next_action"]["backlog_id"] == "val_001"
-    assert "Case state:" in output
-    assert "pending backlog: 1" in output
-
-
-def test_checkpoint_surfaces_case_state_enrichment_when_evidence_missing(tmp_path):
-    _seed_recon(tmp_path, "target.com", [
-        "https://api.target.com/rest/order-history/123",
-    ])
-    add_actor(tmp_path, "target.com", actor="user_a", role="user", label="owner")
-    add_actor(tmp_path, "target.com", actor="user_b", role="user", label="peer")
-    add_session(
-        tmp_path,
-        "target.com",
-        session="sess_owner",
-        actor="user_a",
-        kind="bearer",
-        header_value="Bearer owner-token",
+    assert checkpoint["case_state"]["objects"] == 1
+    assert checkpoint["case_state"]["open_hypotheses"] == 0
+    assert "pending_validation_backlog" not in checkpoint["case_state"]
+    assert all(
+        str(item.get("type") or "") != "case-state-validation"
+        for item in checkpoint["next_action_queue"]
     )
-    add_object(
-        tmp_path,
-        "target.com",
-        object_ref="order_123",
-        object_type="order",
-        object_id="123",
-        owner_actor="user_a",
-        endpoint="https://api.target.com/rest/order-history/123",
+    assert all(
+        item.get("metadata", {}).get("backlog_id") is None
+        for item in checkpoint["next_action_queue"]
     )
-    add_backlog(
-        tmp_path,
-        "target.com",
-        runner="request-diff",
-        endpoint="https://api.target.com/rest/order-history/123",
-        active_dimension="header:authorization",
-        classifier="authz",
-        owner_actor="user_a",
-        peer_actor="user_b",
-        object_ref="order_123",
-        priority="high",
-        required_evidence=["owner session", "peer session", "owner private marker"],
-    )
-
-    checkpoint = build_checkpoint(tmp_path, target="target.com")
-
-    assert checkpoint["target_write_back"]["next"][0].startswith("Case-state enrichment backlog val_001:")
-    assert checkpoint["recommended_executable_action"]["type"] == "case-state-enrichment"
-    assert checkpoint["recommended_executable_action"]["metadata"]["backlog_id"] == "val_001"
-    assert "request_spec_ref" in checkpoint["recommended_executable_action"]["metadata"]["missing_evidence"]
-    assert "replay_draft" not in checkpoint["recommended_executable_action"]["metadata"]
-    assert checkpoint["recommended_executable_action"]["command_hint"] == "enrich actor/session/object/private-marker evidence in case_state"
-
-
-def test_case_state_recovery_projection_keeps_hypothesis_metadata_in_action_queue():
-    proposal = checkpoint_module._case_state_proposal({
-        "top_next_action": {
-            "next_action": "recover_hypothesis",
-            "backlog_id": "val_001",
-            "hypothesis_id": "hyp_001",
-            "hypothesis": "peer access may differ on export",
-            "why_now": "previous replay is blocked; recover with: capture export route",
-            "recovery_next_action": "capture export route",
-            "write_back": "preserve the blocked outcome before a fresh backlog",
-            "chain_extensions_if_blocked": ["capture export route"],
-        },
-    })
-
-    action = _build_next_action_queue([proposal], "target.com")[0]
-
-    assert action["type"] == "case-state-enrichment"
-    assert action["metadata"]["backlog_id"] == "val_001"
-    assert action["metadata"]["hypothesis_id"] == "hyp_001"
-    assert action["metadata"]["hypothesis"] == "peer access may differ on export"
-    assert action["metadata"]["why_now"] == "previous replay is blocked; recover with: capture export route"
-    assert action["metadata"]["chain_extensions_if_blocked"] == ["capture export route"]
-    assert action["metadata"]["recovery_next_action"] == "capture export route"
-
-
-def test_checkpoint_surfaces_optional_case_state_marker_gap_without_blocking_replay(tmp_path):
-    _seed_recon(tmp_path, "target.com", [
-        "https://api.target.com/rest/order-history/123",
-    ])
-    _write_request_spec(
-        tmp_path,
-        "evidence/target.com/validation/order-idor-pair/spec.json",
-        target="target.com",
-    )
-    add_actor(tmp_path, "target.com", actor="user_a", role="user", label="owner")
-    add_actor(tmp_path, "target.com", actor="user_b", role="user", label="peer")
-    add_session(tmp_path, "target.com", session="sess_owner", actor="user_a", kind="bearer", header_value="Bearer owner-token")
-    add_session(tmp_path, "target.com", session="sess_peer", actor="user_b", kind="bearer", header_value="Bearer peer-token")
-    add_object(
-        tmp_path,
-        "target.com",
-        object_ref="order_123",
-        object_type="order",
-        object_id="123",
-        owner_actor="user_a",
-        endpoint="https://api.target.com/rest/order-history/123",
-    )
-    add_backlog(
-        tmp_path,
-        "target.com",
-        runner="request-diff",
-        endpoint="https://api.target.com/rest/order-history/123",
-        request_spec_ref="evidence/target.com/validation/order-idor-pair/spec.json",
-        active_dimension="header:authorization",
-        classifier="authz",
-        owner_actor="user_a",
-        peer_actor="user_b",
-        object_ref="order_123",
-        priority="high",
-    )
-
-    checkpoint = build_checkpoint(tmp_path, target="target.com")
-
-    assert checkpoint["target_write_back"]["next"][0].startswith("Case-state validation backlog val_001:")
-    assert checkpoint["recommended_executable_action"]["type"] == "case-state-validation"
-    # The private marker is no longer a machine-side optional gate for
-    # request-diff pairs; readiness is contract-based only.
-    assert checkpoint["recommended_executable_action"]["metadata"].get("missing_evidence", []) == []
+    assert "Case-state validation backlog" not in output
+    assert "pending backlog" not in output
+    # Case 文件本身不动：旧待办只等迁移报告搬运，checkpoint 不替它写回。
+    assert state_path.read_bytes() == before
 
 
 def test_checkpoint_keeps_object_observations_without_automatic_seed_action(tmp_path):

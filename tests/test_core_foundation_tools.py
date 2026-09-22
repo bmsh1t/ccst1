@@ -332,6 +332,55 @@ def test_target_memory_fact_upserts_by_key_and_renders_digest(tmp_path, monkeypa
         )
 
 
+def test_target_memory_legacy_writer_is_fenced_after_primary_activation(tmp_path, monkeypatch):
+    from tools.target_store import StoreError, TargetStore
+
+    monkeypatch.setattr(target_memory, "BASE_DIR", tmp_path)
+    monkeypatch.setattr(target_memory, "GOALS_DIR", tmp_path / "memory" / "goals")
+    monkeypatch.setattr(target_memory, "ACTIVE_PATH", tmp_path / "memory" / "goals" / "active.json")
+    monkeypatch.setattr(target_memory, "TARGETS_DIR", tmp_path / "memory" / "goals" / "targets")
+    monkeypatch.setattr(target_memory, "SESSIONS_DIR", tmp_path / "memory" / "goals" / "sessions")
+    TargetStore(tmp_path, "example.com").initialize()
+
+    with pytest.raises(StoreError, match="legacy target-memory writer is disabled"):
+        target_memory.set_active(
+            argparse.Namespace(
+                target="example.com", mode="hunt", phase="recon", goal="", hypothesis="",
+                skill=[], knowledge=[],
+            )
+        )
+
+
+def test_target_memory_primary_projection_ignores_archived_json(tmp_path):
+    from tools.target_store import TargetStore
+
+    store = TargetStore(tmp_path, "example.com")
+    store.initialize()
+    store.remember(
+        command_id="primary-hypothesis",
+        kind="hypothesis",
+        statement="Peer object may cross the actor boundary",
+        conditions="Both actor sessions are available",
+        reopen_when="",
+        next_intent="Compare the peer response",
+        evidence=[],
+        actor="operator",
+    )
+    legacy = tmp_path / "memory" / "goals" / "targets" / "example.com.json"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text("{broken", encoding="utf-8")
+
+    projection = target_memory.load_goal_memory(tmp_path, "example.com")
+
+    assert projection["source"]["kind"] == "store"
+    assert projection["target"]["active_leads"][0]["text"] == (
+        "Peer object may cross the actor boundary"
+    )
+    assert projection["target"]["active_leads"][0]["structured"]["conditions"] == (
+        "Both actor sessions are available"
+    )
+
+
 def test_action_queue_ignores_keyword_value_and_legacy_relevance_scores():
     first = {"id": "a", "status": "queued", "priority": 70, "action": "Review observed input", "created_at": "2026-09-01"}
     second = {"id": "b", "status": "queued", "priority": 70, "action": "admin GraphQL secret SQLi RCE", "created_at": "2026-09-02", "metadata": {"relevance_score": 999}}

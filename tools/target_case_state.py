@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Target-scoped actor/session/object state for high-value validation.
+"""Target-scoped actor/session/object context for high-value validation.
 
-Target Case State is runtime memory, not knowledge.  It stores which test
-actors, sessions, objects, private markers, hypotheses, and validation backlog
-items are available for one target, then emits the next highest-value replay
-action for Claude to reason about and execute through validation_runner.
+Target Case State is runtime memory, not knowledge and not a queue.  It records
+which test actors, sessions, objects, private markers and hypotheses exist for
+one target.  Actions -- their identity, claim and execution state -- live in the
+one action source; Case never copies them into a second backlog and never ranks
+them, because the route decision belongs to Claude, not to a stored score.
 """
 
 from __future__ import annotations
@@ -16,7 +17,6 @@ import hashlib
 import json
 import os
 import re
-import shlex
 import sys
 import tempfile
 from contextlib import contextmanager
@@ -31,57 +31,25 @@ if str(BASE_DIR) not in sys.path:
 try:
     from tools.action_queue import SENSITIVE_OBSERVATION_VALUE_RE
     from tools.auth_session import AuthSession
-    from tools.closure_resolver import canonical_endpoint_identity
-    from tools.finding_index import load_finding_index, verify_finalized_finding_owner_provenance
     from tools.private_artifacts import private_artifact_dir, write_private_json
-    from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
-    from tools.request_diff import RequestPairError, validate_request_pair
+    from tools.target_paths import canonical_target_value, target_storage_key
+    from tools.target_store import StoreError, TargetStore, target_backend, target_switch_lock
 except ImportError:  # pragma: no cover - direct tools/ execution
     from action_queue import SENSITIVE_OBSERVATION_VALUE_RE  # type: ignore
     from auth_session import AuthSession  # type: ignore
-    from closure_resolver import canonical_endpoint_identity  # type: ignore
-    from finding_index import load_finding_index, verify_finalized_finding_owner_provenance  # type: ignore
     from private_artifacts import private_artifact_dir, write_private_json  # type: ignore
-    from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # type: ignore
-    from request_diff import RequestPairError, validate_request_pair  # type: ignore
+    from target_paths import canonical_target_value, target_storage_key  # type: ignore
+    from target_store import StoreError, TargetStore, target_backend, target_switch_lock  # type: ignore
 
 
 SCHEMA_VERSION = 1
-ACTIVE_BACKLOG_STATUSES = {"pending", "running", "candidate", "blocked"}
-FINAL_BACKLOG_STATUSES = {"tested_clean", "tested_finding", "dead_end"}
-BACKLOG_STATUSES = ACTIVE_BACKLOG_STATUSES | FINAL_BACKLOG_STATUSES
-PRIORITY_SCORE = {"critical": 120, "high": 100, "medium": 60, "low": 30, "info": 10}
+# 旧文件里的 validation_backlog 是迁移前 Case 自己持有的第二份待办；它的裁决、
+# 关联和冲突由 tools/target_migration.py 报告并按明确映射搬运，本模块只原样保留。
+LEGACY_BACKLOG_KEY = "validation_backlog"
 SESSION_INVALID = {"invalid", "expired", "revoked"}
 SESSION_KINDS = {"cookie", "bearer", "browser_state", "api_key", "custom_header", "unknown"}
 ACTOR_ROLES = {"anonymous", "user", "low_role", "admin_like", "service", "unknown"}
-HIGH_IMPACT_OBJECT_TYPES = {
-    "order",
-    "invoice",
-    "address",
-    "report",
-    "export",
-    "workspace",
-    "organization",
-    "tenant",
-    "payment",
-    "billing",
-    "file",
-}
-# Only runners implemented by validation_runner are eligible for a ready
-# command.  Required values are public request facts; session headers remain
-# in the private Case State session store.
-# marker-replay lane 已退役（archive/tools/，2026-09-12：全历史零 marker run）：
-# 真实 parser 只有 request-diff，这里不得再为已归档 lane 宣布 ready——
-# 否则 next_action=run_validation_runner 会把不可执行命令送进 exit 2。
-RUNNER_CONTRACTS = {
-    "request-diff": ("request_spec_ref", "active_dimension", "classifier"),
-}
 
-HYPOTHESIS_METADATA_KEYS = (
-    "family", "primitive", "boundary", "impact", "chain", "chain_id",
-    "dimensions", "confidence", "provenance", "evidence_refs",
-    "next_question", "stop_condition", "token_location",
-)
 _SENSITIVE_METADATA_PARTS = {
     "access_key", "access_token", "api_key", "apikey", "auth", "authorization", "bearer",
     "client_secret", "cookie", "credential", "credentials", "csrf_token", "header",
@@ -148,48 +116,6 @@ def _validate_hypothesis_metadata(metadata: dict[str, Any] | None) -> dict[str, 
     return metadata
 
 
-def _bounded_metadata_value(value: Any, *, key: str = "", depth: int = 0) -> Any:
-    if _sensitive_metadata_key(key) or depth > 3:
-        return None
-    if isinstance(value, str) and SENSITIVE_OBSERVATION_VALUE_RE.search(value):
-        return None
-    if isinstance(value, dict):
-        result = {}
-        for raw_key, raw_value in list(value.items())[:32]:
-            child_key = str(raw_key)
-            if _sensitive_metadata_key(child_key):
-                continue
-            projected = _bounded_metadata_value(raw_value, key=child_key, depth=depth + 1)
-            if projected is not None:
-                result[child_key] = projected
-        return result
-    if isinstance(value, list):
-        return [
-            projected
-            for item in value[:16]
-            if (projected := _bounded_metadata_value(item, depth=depth + 1)) is not None
-        ]
-    if isinstance(value, str):
-        return value[:500]
-    if isinstance(value, (bool, int, float)) or value is None:
-        return value
-    return str(value)[:500]
-
-
-def project_hypothesis_metadata(metadata: Any) -> dict[str, Any]:
-    """Project the fixed, bounded, secret-free AI metadata subset."""
-    if not isinstance(metadata, dict):
-        return {}
-    projected = {}
-    for key in HYPOTHESIS_METADATA_KEYS:
-        if key not in metadata or _sensitive_metadata_key(key):
-            continue
-        value = _bounded_metadata_value(metadata[key], key=key)
-        if value is not None:
-            projected[key] = value
-    return projected
-
-
 def now_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -199,17 +125,38 @@ def case_state_path(repo_root: str | Path, target: str) -> Path:
     return Path(repo_root) / "state" / target_storage_key(resolved) / "case_state.json"
 
 
+def _primary_store(repo_root: str | Path, target: str, *, write: bool = False) -> TargetStore | None:
+    backend = target_backend(repo_root, target)
+    if backend == "primary":
+        return TargetStore(repo_root, target)
+    if backend == "preview" and write:
+        raise StoreError("case-state JSON writer is disabled while the target backend is preview")
+    return None
+
+
+def _private_digest(payload: dict[str, Any]) -> str:
+    encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _object_private_path(repo_root: str | Path, target: str, object_ref: str, digest: str) -> Path:
+    directory = private_artifact_dir(repo_root, "case-state", target_storage_key(canonical_target_value(target)), "objects")
+    object_digest = hashlib.sha256(object_ref.encode("utf-8")).hexdigest()[:20]
+    return directory / f"{object_digest}-{digest[:16]}.json"
+
+
 @contextmanager
 def case_state_mutation_lock(repo_root: str | Path, target: str):
     """串行化同一目标的完整 case-state read-modify-write。"""
-    lock_path = case_state_path(repo_root, target).parent / "locks" / "case_state.lock"
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with lock_path.open("a+", encoding="utf-8") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    with target_switch_lock(repo_root, target):
+        lock_path = case_state_path(repo_root, target).parent / "locks" / "case_state.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _session_private_path(
@@ -246,6 +193,15 @@ def _load_private_session(
         raise ValueError(f"invalid private case-state session JSON {path}: {exc.msg}") from exc
     if not isinstance(payload, dict) or payload.get("session_id") != session_id:
         raise ValueError(f"private case-state session identity mismatch: {path}")
+    if payload.get("schema_version") != SCHEMA_VERSION or payload.get("target") != canonical_target_value(target):
+        raise ValueError(f"private case-state session metadata mismatch: {path}")
+    if payload.get("actor") != str(session.get("actor") or "") or payload.get("kind") != str(session.get("kind") or "unknown"):
+        raise ValueError(f"private case-state session owner mismatch: {path}")
+    digest = payload.get("content_sha256")
+    unsigned = dict(payload)
+    unsigned.pop("content_sha256", None)
+    if not isinstance(digest, str) or _private_digest(unsigned) != digest or not path.name.endswith(f"-{digest[:16]}.json"):
+        raise ValueError(f"private case-state session digest mismatch: {path}")
     headers = payload.get("headers") if isinstance(payload.get("headers"), dict) else {}
     session["headers"] = _normalize_headers({str(k): str(v) for k, v in headers.items()})
     session["header_name"] = str(payload.get("header_name") or "")
@@ -265,7 +221,6 @@ def _empty_state(target: str) -> dict[str, Any]:
         "sessions": {},
         "objects": {},
         "hypotheses": [],
-        "validation_backlog": [],
     }
 
 
@@ -277,8 +232,12 @@ def _ensure_shape(state: dict[str, Any], target: str) -> dict[str, Any]:
             f"target case state schema_version must be {SCHEMA_VERSION}, got {schema_version!r}"
         )
     state.setdefault("schema_version", SCHEMA_VERSION)
-    state["target"] = state.get("target") or resolved
-    state["target_key"] = state.get("target_key") or target_storage_key(resolved)
+    if state.get("target") not in (None, "", resolved):
+        raise ValueError(f"target case state target mismatch: {state.get('target')!r}")
+    if state.get("target_key") not in (None, "", target_storage_key(resolved)):
+        raise ValueError(f"target case state target_key mismatch: {state.get('target_key')!r}")
+    state["target"] = resolved
+    state["target_key"] = target_storage_key(resolved)
     state.setdefault("created_at", now_utc())
     state.setdefault("updated_at", now_utc())
     for key, default in (
@@ -286,7 +245,6 @@ def _ensure_shape(state: dict[str, Any], target: str) -> dict[str, Any]:
         ("sessions", {}),
         ("objects", {}),
         ("hypotheses", []),
-        ("validation_backlog", []),
     ):
         if key not in state:
             state[key] = default
@@ -294,16 +252,18 @@ def _ensure_shape(state: dict[str, Any], target: str) -> dict[str, Any]:
             raise ValueError(
                 f"target case state field {key!r} must be {type(default).__name__}"
             )
-    for key in ("hypotheses", "validation_backlog"):
-        record_ids: set[str] = set()
-        for index, item in enumerate(state[key]):
-            if not isinstance(item, dict):
-                raise ValueError(f"target case state field {key!r}[{index}] must be object")
-            record_id = str(item.get("id") or "").strip()
-            if record_id in record_ids:
-                raise ValueError(f"target case state field {key!r} has duplicate id: {record_id}")
-            if record_id:
-                record_ids.add(record_id)
+    # 旧 validation_backlog 原样保留：Case 不再是它的 owner，因此既不把它归一化，
+    # 也不替迁移器判断它的形状；它带着原裁决等迁移搬运或隔离。这里只校验 Case
+    # 自己拥有的 hypotheses 身份。
+    record_ids: set[str] = set()
+    for index, item in enumerate(state["hypotheses"]):
+        if not isinstance(item, dict):
+            raise ValueError(f"target case state field 'hypotheses'[{index}] must be object")
+        record_id = str(item.get("id") or "").strip()
+        if record_id in record_ids:
+            raise ValueError(f"target case state field 'hypotheses' has duplicate id: {record_id}")
+        if record_id:
+            record_ids.add(record_id)
     for session in state["sessions"].values():
         if not isinstance(session, dict):
             continue
@@ -319,6 +279,13 @@ def _ensure_shape(state: dict[str, Any], target: str) -> dict[str, Any]:
 
 
 def load_case_state(repo_root: str | Path, target: str) -> dict[str, Any]:
+    store = _primary_store(repo_root, target)
+    if store is not None:
+        state = store.case_state()
+        for session_id, session in state.get("sessions", {}).items():
+            if isinstance(session, dict):
+                _load_private_session(repo_root, target, str(session_id), session)
+        return state
     path = case_state_path(repo_root, target)
     if not path.is_file():
         return _empty_state(target)
@@ -338,6 +305,8 @@ def load_case_state(repo_root: str | Path, target: str) -> dict[str, Any]:
 
 
 def save_case_state(repo_root: str | Path, target: str, state: dict[str, Any]) -> Path:
+    if _primary_store(repo_root, target, write=True) is not None:
+        raise StoreError("case_state.json is read-only after primary backend activation")
     state = _ensure_shape(state, target)
     state["schema_version"] = SCHEMA_VERSION
     state["updated_at"] = now_utc()
@@ -355,6 +324,7 @@ def save_case_state(repo_root: str | Path, target: str, state: dict[str, Any]) -
         if headers:
             private_payload = {
                 "schema_version": SCHEMA_VERSION,
+                "target": canonical_target_value(target),
                 "session_id": str(session_id),
                 "actor": str(session.get("actor") or ""),
                 "kind": str(session.get("kind") or "unknown"),
@@ -362,9 +332,8 @@ def save_case_state(repo_root: str | Path, target: str, state: dict[str, Any]) -
                 "header_value": header_value,
                 "headers": {str(k): str(v) for k, v in headers.items()},
             }
-            content_digest = hashlib.sha256(
-                json.dumps(private_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
-            ).hexdigest()
+            content_digest = _private_digest(private_payload)
+            private_payload["content_sha256"] = content_digest
             private_path = _session_private_path(repo_root, target, str(session_id), content_digest)
             write_private_json(private_path, private_payload)
             public_session = public_state["sessions"][session_id]
@@ -424,10 +393,6 @@ def _next_id(items: list[dict[str, Any]], prefix: str) -> str:
     return f"{prefix}{highest + 1:03d}"
 
 
-def _quote(value: Any) -> str:
-    return shlex.quote(str(value or ""))
-
-
 def _normalize_headers(headers: dict[str, str] | None) -> dict[str, str]:
     """Normalize a header map through AuthSession so CR/LF and malformed names fail fast."""
     session = AuthSession()
@@ -474,11 +439,23 @@ def add_actor(
     role_value = str(role or "unknown").strip() or "unknown"
     if role_value not in ACTOR_ROLES:
         raise ValueError(f"unknown role: {role_value}. Allowed: {', '.join(sorted(ACTOR_ROLES))}")
+    store = _primary_store(repo_root, target, write=True)
+    if store is not None:
+        current = store.case_context()
+        existing = next((item for item in current["actors"] if item["id"] == actor_id), {})
+        role_value = role_value if role_value != "unknown" or not existing else str(existing.get("role") or "unknown")
+        label = label or str(existing.get("label") or "")
+        notes = notes or str(existing.get("notes") or "")
+        actor_material = {"role": role_value, "label": label, "notes": notes}
+        store.upsert_case_actor(command_id=f"case-actor:{actor_id}:{_private_digest(actor_material)[:16]}",
+                                actor_id=actor_id, role=role_value, label=label, notes=notes, actor=actor_id)
+        return store.case_state()["actors"][actor_id]
     def mutate(state):
         ts = now_utc()
         current = state["actors"].get(actor_id, {})
+        effective_role = role_value if role != "unknown" or not current else str(current.get("role") or "unknown")
         state["actors"][actor_id] = {
-            "role": role_value,
+            "role": effective_role,
             "label": str(label or current.get("label", "") or ""),
             "notes": str(notes or current.get("notes", "") or ""),
             "created_at": current.get("created_at") or ts,
@@ -505,6 +482,39 @@ def add_session(
     session_id = _require_non_empty(session, "session")
     actor_id = _require_non_empty(actor, "actor")
     kind_hint = str(kind or "unknown").strip() or "unknown"
+    store = _primary_store(repo_root, target, write=True)
+    if store is not None:
+        current = next((item for item in store.case_context()["sessions"] if item["id"] == session_id), {})
+        header_map = _normalize_headers(headers)
+        if header_value:
+            header_map.update(_normalize_headers({header_name or ("Authorization" if kind_hint == "bearer" else "Cookie" if kind_hint == "cookie" else "Authorization"): header_value}))
+        kind_value = _infer_session_kind(kind_hint, header_map)
+        if not header_map and kind_hint == "unknown" and current:
+            kind_value = str(current.get("kind") or "unknown")
+        private_ref = str(current.get("private_ref") or "")
+        if header_map:
+            private_base = {"schema_version": SCHEMA_VERSION, "target": canonical_target_value(target),
+                            "session_id": session_id, "actor": actor_id, "kind": kind_value, "headers": header_map}
+            content_digest = _private_digest(private_base)
+            private_payload = {**private_base, "content_sha256": content_digest}
+            private_path = _session_private_path(repo_root, target, session_id, content_digest)
+            write_private_json(private_path, private_payload)
+            private_ref = private_path.relative_to(Path(repo_root)).as_posix()
+        source_value = source or str(current.get("source") or "manual")
+        if source == "manual" and current:
+            source_value = str(current.get("source") or "manual")
+        validity_value = validity or str(current.get("validity") or "unknown")
+        if validity == "unknown" and current:
+            validity_value = str(current.get("validity") or "unknown")
+        notes_value = notes or str(current.get("notes") or "")
+        session_material = {"actor": actor_id, "kind": kind_value, "source": source_value,
+                            "validity": validity_value, "notes": notes_value, "private_ref": private_ref}
+        store.upsert_case_session(
+            command_id=f"case-session:{session_id}:{_private_digest(session_material)[:16]}", session_id=session_id, actor_id=actor_id,
+            kind=kind_value, source=source_value, validity=validity_value,
+            last_checked=str(current.get("last_checked") or ""), notes=notes_value,
+            private_ref=private_ref, actor=actor_id)
+        return next(item for item in store.case_context()["sessions"] if item["id"] == session_id)
     def mutate(state):
         nonlocal header_name
         if actor_id not in state["actors"]:
@@ -530,14 +540,16 @@ def add_session(
         if kind_value not in SESSION_KINDS:
             raise ValueError(f"unknown session kind: {kind_value}. Allowed: {', '.join(sorted(SESSION_KINDS))}")
         ts = now_utc()
+        source_value = str(source if source != "manual" or not current else current.get("source", "manual") or "manual")
+        validity_value = str(validity if validity != "unknown" or not current else current.get("validity", "unknown") or "unknown")
         state["sessions"][session_id] = {
             "actor": actor_id,
             "kind": kind_value,
             "header_name": header_name_value,
             "header_value": header_value_value,
             "headers": header_map,
-            "source": str(source or current.get("source", "manual") or "manual"),
-            "validity": str(validity or current.get("validity", "unknown") or "unknown"),
+            "source": source_value,
+            "validity": validity_value,
             "last_checked": current.get("last_checked", ""),
             "notes": str(notes or current.get("notes", "") or ""),
             "created_at": current.get("created_at") or ts,
@@ -562,18 +574,39 @@ def add_object(
 ) -> dict[str, Any]:
     ref = _require_non_empty(object_ref, "object")
     type_value = _require_non_empty(object_type, "type")
+    store = _primary_store(repo_root, target, write=True)
+    if store is not None:
+        current = next((item for item in store.case_context()["objects"] if item["ref"] == ref), {})
+        private_ref = str(current.get("private_ref") or "")
+        if private_marker:
+            private_base = {"schema_version": SCHEMA_VERSION, "target": canonical_target_value(target),
+                            "object_ref": ref, "owner_actor": owner_actor or str(current.get("owner_actor") or ""),
+                            "private_marker": private_marker}
+            content_digest = _private_digest(private_base)
+            private_payload = {**private_base, "content_sha256": content_digest}
+            private_path = _object_private_path(repo_root, target, ref, content_digest)
+            write_private_json(private_path, private_payload)
+            private_ref = private_path.relative_to(Path(repo_root)).as_posix()
+        store.upsert_case_object(
+            command_id=f"case-object:{ref}:{_private_digest({'type': type_value, 'object_id': object_id, 'owner': owner_actor, 'endpoint': endpoint, 'status': status, 'notes': notes, 'private_ref': private_ref})[:16]}",
+            object_ref=ref, object_type=type_value,
+            object_id=object_id or str(current.get("object_id") or ""), owner_actor=owner_actor or str(current.get("owner_actor") or ""),
+            endpoint=endpoint or str(current.get("endpoint") or ""), status=status or str(current.get("status") or "active"),
+            notes=notes or str(current.get("notes") or ""), private_ref=private_ref, actor=owner_actor or "case")
+        return next(item for item in store.case_context()["objects"] if item["ref"] == ref)
     def mutate(state):
         if owner_actor and owner_actor not in state["actors"]:
             raise ValueError(f"owner actor does not exist: {owner_actor}")
         ts = now_utc()
         current = state["objects"].get(ref, {})
+        status_value = str(status if status != "active" or not current else current.get("status", "active") or "active")
         state["objects"][ref] = {
             "type": type_value,
             "object_id": str(object_id or current.get("object_id", "") or ""),
             "owner_actor": str(owner_actor or current.get("owner_actor", "") or ""),
             "endpoint": str(endpoint or current.get("endpoint", "") or ""),
             "private_marker": str(private_marker or current.get("private_marker", "") or ""),
-            "status": str(status or current.get("status", "active") or "active"),
+            "status": status_value,
             "notes": str(notes or current.get("notes", "") or ""),
             "created_at": current.get("created_at") or ts,
             "last_seen": ts,
@@ -591,7 +624,6 @@ def add_hypothesis(
     object_ref: str = "",
     actors: list[str] | None = None,
     why_now: str = "",
-    next_action: str = "",
     status: str = "open",
     hypothesis_id: str = "",
     metadata: dict[str, Any] | None = None,
@@ -599,6 +631,16 @@ def add_hypothesis(
     actors = actors or []
     vuln_class_value = _require_non_empty(vuln_class, "vuln_class")
     metadata_value = _validate_hypothesis_metadata(metadata)
+    store = _primary_store(repo_root, target, write=True)
+    if store is not None:
+        record_id = hypothesis_id or _next_id(store.case_context()["hypotheses"], "hyp_")
+        hypothesis_material = {"vuln_class": vuln_class_value, "endpoint": endpoint, "object_ref": object_ref,
+                               "actors": actors, "why_now": why_now, "status": status, "metadata": metadata_value}
+        store.remember_hypothesis(command_id=f"case-hypothesis:{record_id}:{_private_digest(hypothesis_material)[:16]}", hypothesis_id=record_id,
+                                  vuln_class=vuln_class_value, endpoint=endpoint, object_ref=object_ref,
+                                  actor_ids=actors, why_now=why_now, status=status,
+                                  metadata=metadata_value, actor="case")
+        return next(item for item in store.case_context()["hypotheses"] if item["id"] == record_id)
     def mutate(state):
         for actor in actors:
             if actor not in state["actors"]:
@@ -615,8 +657,8 @@ def add_hypothesis(
             "object_ref": str(object_ref or ""),
             "actors": list(actors),
             "status": str(status or "open"),
+            # why_now 是假设自身的理由；"下一步做什么"属于唯一行动源，Case 不存它。
             "why_now": str(why_now or ""),
-            "next_action": str(next_action or ""),
             "created_at": now_utc(),
         }
         if metadata_value:
@@ -626,532 +668,33 @@ def add_hypothesis(
     return _mutate_case_state(repo_root, target, mutate)
 
 
-def add_backlog(
-    repo_root: str | Path,
-    target: str,
-    *,
-    runner: str,
-    endpoint: str = "",
-    owner_actor: str = "",
-    peer_actor: str = "",
-    object_ref: str = "",
-    priority: str = "medium",
-    required_evidence: list[str] | None = None,
-    stop_condition: str = "",
-    chain_extensions_if_blocked: list[str] | None = None,
-    param: str = "",
-    baseline_value: str = "",
-    variant_value: str = "",
-    baseline_url: str = "",
-    expect_marker: str = "",
-    request_spec_ref: str = "",
-    active_dimension: str = "",
-    classifier: str = "",
-    method: str = "GET",
-    status: str = "pending",
-    backlog_id: str = "",
-    hypothesis_id: str = "",
-) -> dict[str, Any]:
-    status_value = str(status or "pending")
-    if status_value not in BACKLOG_STATUSES:
-        raise ValueError(f"unknown backlog status: {status_value}")
-    runner_value = _require_non_empty(runner, "runner")
-    def mutate(state):
-        for actor in (owner_actor, peer_actor):
-            if actor and actor not in state["actors"]:
-                raise ValueError(f"actor does not exist: {actor}")
-        if object_ref and object_ref not in state["objects"]:
-            raise ValueError(f"object_ref does not exist: {object_ref}")
-        if hypothesis_id and not any(
-            item.get("id") == hypothesis_id
-            for item in state["hypotheses"]
-            if isinstance(item, dict)
-        ):
-            raise ValueError(f"hypothesis id does not exist: {hypothesis_id}")
-        record_id = backlog_id or _next_id(state["validation_backlog"], "val_")
-        if any(item.get("id") == record_id for item in state["validation_backlog"]):
-            raise ValueError(f"backlog id already exists: {record_id}")
-        record = {
-            "id": record_id,
-            "runner": runner_value,
-            "endpoint": str(endpoint or ""),
-            "owner_actor": str(owner_actor or ""),
-            "peer_actor": str(peer_actor or ""),
-            "object_ref": str(object_ref or ""),
-            "status": status_value,
-            "priority": str(priority or "medium"),
-            "required_evidence": list(required_evidence or []),
-            "stop_condition": str(stop_condition or ""),
-            "chain_extensions_if_blocked": list(chain_extensions_if_blocked or []),
-            "param": str(param or ""),
-            "baseline_value": str(baseline_value or ""),
-            "variant_value": str(variant_value or ""),
-            "baseline_url": str(baseline_url or ""),
-            "expect_marker": str(expect_marker or ""),
-            "request_spec_ref": str(request_spec_ref or ""),
-            "active_dimension": str(active_dimension or ""),
-            "classifier": str(classifier or ""),
-            "method": str(method or "GET").upper(),
-            "created_at": now_utc(),
-        }
-        if hypothesis_id:
-            record["hypothesis_id"] = str(hypothesis_id)
-        state["validation_backlog"].append(record)
-        return record
-    return _mutate_case_state(repo_root, target, mutate)
-
-
-def _impact_weight(state: dict[str, Any], item: dict[str, Any]) -> int:
-    obj = state.get("objects", {}).get(item.get("object_ref") or "", {})
-    object_type = str(obj.get("type") or "").lower()
-    endpoint = str(item.get("endpoint") or obj.get("endpoint") or "").lower()
-    score = 0
-    if object_type in HIGH_IMPACT_OBJECT_TYPES:
-        score += 30
-    if any(token in endpoint for token in ("order", "invoice", "address", "report", "export", "admin", "billing")):
-        score += 20
-    return score
-
-
-def _readiness(
-    state: dict[str, Any],
-    item: dict[str, Any],
-    *,
-    repo_root: Path | None = None,
-    target: str = "",
-) -> tuple[int, list[str], dict[str, Any]]:
-    missing: list[str] = []
-    optional_gaps: list[str] = []
-    details: dict[str, Any] = {}
-    obj = state.get("objects", {}).get(item.get("object_ref") or "", {})
-    runner = str(item.get("runner") or "").strip()
-    endpoint = item.get("endpoint") or obj.get("endpoint")
-    details["runner"] = runner
-    if runner not in RUNNER_CONTRACTS:
-        missing.append(f"unsupported runner: {runner or '<empty>'}")
-        return 0, missing, details
-    for field in RUNNER_CONTRACTS[runner]:
-        if field == "endpoint":
-            if not endpoint:
-                missing.append("endpoint")
-            continue
-        value = item.get(field)
-        if value is None or not str(value).strip():
-            missing.append(field)
-        else:
-            details[field] = str(value)
-    if runner == "request-diff" and "request_spec_ref" not in missing and repo_root is not None:
-        raw_ref = str(item.get("request_spec_ref") or "").strip()
-        spec_path = Path(raw_ref).expanduser()
-        if not spec_path.is_absolute():
-            spec_path = repo_root.resolve() / spec_path
-        details["request_spec_path"] = str(spec_path)
-        if not spec_path.is_file():
-            missing.append(f"request_spec_ref is not a readable file: {raw_ref}")
-        else:
-            try:
-                payload = json.loads(spec_path.read_text(encoding="utf-8"))
-                spec = validate_request_pair(payload)
-            except (OSError, UnicodeError) as exc:
-                missing.append(f"request_spec_ref cannot be read: {type(exc).__name__}")
-            except (json.JSONDecodeError, RequestPairError, TypeError, ValueError) as exc:
-                reason = str(exc).splitlines()[0][:160] or type(exc).__name__
-                missing.append(f"request_spec_ref is invalid: {reason}")
-            else:
-                if target:
-                    for request_name in ("baseline_request", "variant_request"):
-                        url = spec[request_name]["url"]
-                        if not url_belongs_to_target(url, target):
-                            missing.append(f"{request_name}.url is outside target scope")
-    return max(0, 30 - 10 * len(missing)), missing, details
-
-
-def _build_generic_command(target: str, item: dict[str, Any], details: dict[str, Any]) -> str:
-    """Build the ready command with ONLY flags the real runner parser accepts.
-
-    审计 F1：request-diff parser 接受 --request-spec/--header/--timeout/
-    --repeat/--no-ledger 等，不接受 --url/--method（请求形状来自 spec 文件，
-    method 由 spec 的 baseline/variant 携带）。多发的参数会被 argparse 以
-    exit 2 拒绝，把 ready 的 backlog 推进到不可执行动作。
-    """
-    runner = str(item.get("runner") or "").strip()
-    parts = ["python3", "tools/validation_runner.py", runner, "--target", target]
-    if runner == "request-diff":
-        parts.extend([
-            "--request-spec", details.get("request_spec_path") or item.get("request_spec_ref") or "",
-            "--repo-root", details.get("repo_root") or str(BASE_DIR),
-        ])
-    return " ".join(_quote(part) for part in parts if part != "")
-
-
-def _chain_context(state: dict[str, Any], item: dict[str, Any], details: dict[str, Any]) -> list[str]:
-    context: list[str] = []
-    obj = details.get("object") or {}
-    if details.get("endpoint"):
-        context.append("object endpoint is known")
-    if obj.get("private_marker"):
-        context.append("object has private marker")
-    if details.get("owner_session"):
-        context.append("owner session is available")
-    if details.get("peer_session"):
-        context.append("peer session is available")
-    return context
-
-
-def _score_backlog_item(
-    state: dict[str, Any],
-    item: dict[str, Any],
-    *,
-    repo_root: Path | None = None,
-    target: str = "",
-) -> tuple[int, list[str], dict[str, Any]]:
-    readiness_score, missing, details = _readiness(state, item, repo_root=repo_root, target=target)
-    priority = PRIORITY_SCORE.get(str(item.get("priority") or "medium").lower(), 50)
-    impact = _impact_weight(state, item)
-    chain_potential = 10 * len(item.get("chain_extensions_if_blocked") or [])
-    risk_cost = 20 if item.get("state_changing") else 0
-    status_penalty = 15 if item.get("status") == "blocked" else 0
-    score = priority + impact + readiness_score + chain_potential - risk_cost - status_penalty
-    return score, missing, details
-
-
-def _linked_hypothesis(state: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
-    hypothesis_id = str(item.get("hypothesis_id") or "").strip()
-    if not hypothesis_id:
-        return {}
-    return next(
-        (
-            hypothesis
-            for hypothesis in state.get("hypotheses", [])
-            if isinstance(hypothesis, dict) and hypothesis.get("id") == hypothesis_id
-        ),
-        {},
-    )
-
-
-def _recovery_next_action(item: dict[str, Any]) -> str:
-    extensions = item.get("chain_extensions_if_blocked") or []
-    for extension in extensions:
-        text = str(extension or "").strip()
-        if text:
-            return text
-    return "capture the missing prerequisite before creating a fresh validation backlog"
-
-
-def _case_vuln_identity(value: Any) -> str:
-    normalized = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
-    return {
-        "authorization": "authz",
-        "authorization_bypass": "authz",
-        "authentication_bypass": "authz",
-        "access_control": "authz",
-    }.get(normalized, normalized)
-
-
-def _matching_final_findings(
-    repo_root: str | Path,
-    target: str,
-    state: dict[str, Any],
-    item: dict[str, Any],
-) -> list[dict[str, Any]]:
-    """Return owner-backed findings that cover this backlog dimension.
-
-    Case State can suggest a clean result, but it must not close a dimension
-    already finalized by the canonical finding owner. Missing findings.json is
-    normal for a fresh case; malformed canonical state is deliberately allowed
-    to fail closed through the owner loader.
-    """
-    findings_dir = Path(repo_root) / "findings" / target_storage_key(target)
-    findings_path = findings_dir / "findings.json"
-    if not findings_path.is_file():
-        return []
-    payload = load_finding_index(
-        findings_dir,
-        migrate_legacy=False,
-        target=target,
-        allow_legacy=True,
-    )
-    rows = payload.get("findings", []) if isinstance(payload, dict) else []
-    hypothesis = _linked_hypothesis(state, item)
-    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
-    hypothesis_metadata = hypothesis.get("metadata") if isinstance(hypothesis.get("metadata"), dict) else {}
-    finding_id = str(
-        item.get("finding_id")
-        or metadata.get("finding_id")
-        or hypothesis_metadata.get("finding_id")
-        or ""
-    ).strip()
-    endpoint = str(item.get("endpoint") or hypothesis.get("endpoint") or "").strip()
-    endpoint_key = canonical_endpoint_identity(endpoint) if endpoint else ""
-    vuln_class = item.get("vuln_class") or hypothesis.get("vuln_class")
-    if not vuln_class:
-        vuln_class = {
-            "idor-actor-pair": "IDOR",
-            "authz-role-replay": "Authz",
-            "authz-public-exposure": "Authz",
-            "request-diff": "Authz",
-            "marker-replay": "RCE",
-        }.get(str(item.get("runner") or "").strip().lower(), "")
-    vuln_key = _case_vuln_identity(vuln_class)
-    matches: list[dict[str, Any]] = []
-    for finding in rows:
-        if not isinstance(finding, dict):
-            continue
-        if finding_id:
-            identity_match = str(finding.get("id") or "").strip() == finding_id
-        else:
-            finding_endpoint = canonical_endpoint_identity(
-                str(finding.get("url") or finding.get("endpoint") or "")
-            )
-            finding_vuln = _case_vuln_identity(
-                finding.get("vuln_class") or finding.get("type") or finding.get("category")
-            )
-            identity_match = bool(
-                endpoint_key
-                and finding_endpoint == endpoint_key
-                and vuln_key
-                and finding_vuln == vuln_key
-            )
-        if not identity_match:
-            continue
-        provenance = verify_finalized_finding_owner_provenance(
-            findings_dir,
-            finding,
-            target=target,
-        )
-        if provenance.get("required"):
-            # An invalid owner claim is still an unresolved canonical claim;
-            # allowing a clean result here would hide the provenance repair.
-            matches.append(finding)
-    return matches
-
-
-def next_action(
-    repo_root: str | Path,
-    target: str,
-    *,
-    state: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    state = state if state is not None else load_case_state(repo_root, target)
-    active = [
-        item for item in state.get("validation_backlog", [])
-        if str(item.get("status") or "pending") in ACTIVE_BACKLOG_STATUSES
-    ]
-    if not active:
-        open_hypotheses = [
-            item for item in state.get("hypotheses", [])
-            if str(item.get("status") or "open") == "open"
-        ]
-        if open_hypotheses:
-            hyp = open_hypotheses[0]
-            result = {
-                "next_action": "create_validation_backlog",
-                "hypothesis_id": hyp.get("id", ""),
-                "hypothesis": hyp.get("next_action") or hyp.get("why_now") or "open hypothesis needs validation backlog",
-                "why_now": hyp.get("why_now", ""),
-                "vuln_class": hyp.get("vuln_class", ""),
-                "endpoint": hyp.get("endpoint", ""),
-                "object_ref": hyp.get("object_ref", ""),
-                "actors": hyp.get("actors", []),
-                "write_back": "add-backlog for this hypothesis after choosing the runner",
-            }
-            metadata = project_hypothesis_metadata(hyp.get("metadata"))
-            if metadata:
-                result["metadata"] = metadata
-            return result
-        return {
-            "next_action": "none",
-            "reason": "no active validation backlog or open hypothesis",
-        }
-
-    target_value = state.get("target") or canonical_target_value(target)
-    ranked: list[tuple[int, list[str], dict[str, Any], dict[str, Any]]] = []
-    for item in active:
-        score, missing, details = _score_backlog_item(
-            state, item, repo_root=Path(repo_root), target=target_value
-        )
-        ranked.append((score, missing, details, item))
-    # 可执行项优先；candidate 即使已有部分证据也必须先补证据，避免同一 replay
-    # 在没有新上下文时被反复执行。
-    ranked.sort(
-        key=lambda row: (
-            not (
-                not row[1]
-                and str(row[3].get("status") or "pending") not in {"candidate", "blocked"}
-            ),
-            -row[0],
-        )
-    )
-    score, missing, details, item = ranked[0]
-    backlog_status = str(item.get("status") or "pending")
-    linked_hypothesis = _linked_hypothesis(state, item)
-    recovering_hypothesis = backlog_status == "blocked" and bool(linked_hypothesis)
-    ready = not missing and backlog_status not in {"candidate", "blocked"}
-    runner = item.get("runner")
-    if ready:
-        details["repo_root"] = str(Path(repo_root).resolve())
-    command = _build_generic_command(target_value, item, details) if ready else ""
-    redacted_command = command
-    obj = details.get("object") or {}
-    hypothesis = f"validate {runner} on {details.get('endpoint') or item.get('endpoint')}"
-    if linked_hypothesis:
-        hypothesis = str(
-            linked_hypothesis.get("next_action")
-            or linked_hypothesis.get("why_now")
-            or hypothesis
-        )
-    extensions = list(item.get("chain_extensions_if_blocked") or [])
-    recovery_next = next(
-        (str(extension).strip() for extension in extensions if str(extension).strip()),
-        "capture the missing prerequisite before creating a fresh validation backlog",
-    ) if recovering_hypothesis else ""
-    result = {
-        "next_action": (
-            "recover_hypothesis"
-            if recovering_hypothesis
-            else "run_validation_runner" if ready else "enrich_case_state"
-        ),
-        "ready": ready,
-        "score": score,
-        "backlog_id": item.get("id"),
-        "hypothesis_id": item.get("hypothesis_id", ""),
-        "runner": runner,
-        "hypothesis": hypothesis,
-        "chain_context": _chain_context(state, item, details),
-        "why_now": (
-            f"previous replay is blocked; recover with: {recovery_next}"
-            if recovering_hypothesis
-            else "blocked backlog has no linked hypothesis; record the missing prerequisite before replay"
-            if backlog_status == "blocked"
-            else
-            "ready validation first; candidate backlog is routed to evidence enrichment before any replay"
-            if backlog_status == "candidate"
-            else "highest-ranked ready backlog by priority, impact, chain potential, and risk cost"
-        ),
-        "endpoint": details.get("endpoint") or item.get("endpoint") or "",
-        "owner_actor": details.get("owner_actor") or item.get("owner_actor") or "",
-        "peer_actor": details.get("peer_actor") or item.get("peer_actor") or "",
-        "object_ref": item.get("object_ref") or "",
-        "object_type": obj.get("type", ""),
-        "required_evidence": item.get("required_evidence") or [
-            "owner session",
-            "peer session",
-            "owner private marker or exact owner-body match",
-        ],
-        "optional_evidence_gaps": details.get("optional_evidence_gaps", []),
-        "param": item.get("param") or "",
-        "baseline_value": item.get("baseline_value") or "",
-        "variant_value": item.get("variant_value") or "",
-        "baseline_url": item.get("baseline_url") or "",
-        "expect_marker": item.get("expect_marker") or "",
-        "method": item.get("method") or "GET",
-        "missing_evidence": missing,
-        "command": command,
-        "redacted_command": redacted_command,
-        "downgrade_rule": "peer denied or response lacks owner-private marker",
-        "stop_condition": item.get("stop_condition") or "peer 403/404 or no owner-private marker",
-        "chain_extensions_if_blocked": extensions,
-        "recovery_next_action": recovery_next,
-        "write_back": (
-            f"preserve this blocked outcome, then create a fresh backlog only after: {recovery_next}"
-            if recovering_hypothesis
-            else "link this blocked outcome to a hypothesis or record its missing prerequisite before replay"
-            if backlog_status == "blocked"
-            else
-            f"after adding new evidence, set backlog {item.get('id')} to running before replay"
-            if backlog_status == "candidate"
-            else f"complete-backlog {item.get('id')} with tested_finding/tested_clean/candidate"
-        ),
-    }
-    metadata = project_hypothesis_metadata(linked_hypothesis.get("metadata"))
-    if metadata:
-        result["metadata"] = metadata
-    return result
-
-
-def complete_backlog(
-    repo_root: str | Path,
-    target: str,
-    *,
-    backlog_id: str,
-    result: str,
-    evidence_ref: str = "",
-    notes: str = "",
-) -> dict[str, Any]:
-    if result not in BACKLOG_STATUSES:
-        raise ValueError(f"unknown result/status: {result}")
-    def mutate(state):
-        for item in state.get("validation_backlog", []):
-            if item.get("id") == backlog_id:
-                if result in {"tested_clean", "dead_end"}:
-                    finalized = _matching_final_findings(repo_root, target, state, item)
-                    if finalized:
-                        ids = ", ".join(
-                            str(row.get("id") or "")
-                            for row in finalized[:3]
-                            if str(row.get("id") or "")
-                        )
-                        raise ValueError(
-                            f"cannot mark backlog {backlog_id} {result}; canonical finding "
-                            f"is already finalized ({ids or 'unknown id'}); resolve the finding owner first"
-                        )
-                item["status"] = result
-                item["evidence_ref"] = str(evidence_ref or item.get("evidence_ref", "") or "")
-                item["notes"] = str(notes or item.get("notes", "") or "")
-                item["completed_at"] = now_utc()
-                hypothesis = _linked_hypothesis(state, item)
-                if hypothesis:
-                    metadata = hypothesis.get("metadata")
-                    if not isinstance(metadata, dict):
-                        metadata = {}
-                    metadata["last_backlog_id"] = str(item.get("id") or "")
-                    metadata["last_outcome"] = {
-                        "status": result,
-                        "evidence_ref": item["evidence_ref"],
-                        "notes": item["notes"],
-                        "at": item["completed_at"],
-                    }
-                    if result == "blocked":
-                        recovery_next = _recovery_next_action(item)
-                        metadata["recovery_next_action"] = recovery_next
-                        hypothesis["next_action"] = recovery_next
-                        hypothesis["status"] = "open"
-                    elif result == "tested_finding":
-                        hypothesis["status"] = "candidate"
-                        metadata["recovery_next_action"] = "run /validate after reviewing candidate evidence"
-                    elif result in {"tested_clean", "dead_end"}:
-                        hypothesis["status"] = "closed"
-                    hypothesis["metadata"] = metadata
-                return item
-        raise ValueError(f"backlog id not found: {backlog_id}")
-    return _mutate_case_state(repo_root, target, mutate)
-
-
 def summary(repo_root: str | Path, target: str) -> dict[str, Any]:
+    """Answer Case context facts: actors, sessions, objects, hypotheses.
+
+    不回答“下一步做什么”：行动身份与执行状态在唯一行动源，Case 既不再复制一份
+    待办，也不给候选排序。旧文件的 validation_backlog 只作为迁移材料存在，这里
+    不读它，避免旧裁决看起来仍像活的行动来源。
+    """
+    store = _primary_store(repo_root, target)
+    if store is not None:
+        context = store.case_context()
+        objects = context["objects"]
+        return {
+            "target": context["target"],
+            "target_key": context["target_key"],
+            "actors": len(context["actors"]),
+            "sessions": len(context["sessions"]),
+            "authz_coverage": context["authz_coverage"],
+            "objects": len(objects),
+            "open_hypotheses": len([item for item in context["hypotheses"] if item.get("status") == "open"]),
+            "object_samples": [
+                {"object_ref": item["ref"], "type": item["type"], "object_id": item["object_id"],
+                 "endpoint": item["endpoint"], "owner_actor": item["owner_actor"],
+                 "private_marker": "<redacted>" if item.get("private_ref") else ""}
+                for item in objects[:8]
+            ],
+        }
     state = load_case_state(repo_root, target)
-    next_item = next_action(repo_root, target, state=state)
-    pending = [
-        item for item in state.get("validation_backlog", [])
-        if str(item.get("status") or "pending") in ACTIVE_BACKLOG_STATUSES
-    ]
-    canonical_conflicts = []
-    for item in state.get("validation_backlog", []):
-        if (
-            not isinstance(item, dict)
-            or str(item.get("status") or "").lower() not in {"tested_clean", "dead_end"}
-        ):
-            continue
-        matches = _matching_final_findings(repo_root, target, state, item)
-        if matches:
-            canonical_conflicts.append({
-                "backlog_id": str(item.get("id") or ""),
-                "finding_ids": [
-                    str(row.get("id") or "")
-                    for row in matches[:3]
-                    if str(row.get("id") or "")
-                ],
-                "endpoint": str(item.get("endpoint") or ""),
-            })
     objects = state.get("objects") if isinstance(state.get("objects"), dict) else {}
     authenticated_sessions = []
     for session in state.get("sessions", {}).values():
@@ -1185,12 +728,8 @@ def summary(repo_root: str | Path, target: str) -> dict[str, Any]:
             "authenticated_actor_count": len(authenticated_actor_ids),
             "authenticated_session_count": authenticated_session_count,
         },
-        "canonical_conflict_count": len(canonical_conflicts),
-        "canonical_conflicts": canonical_conflicts[:8],
         "objects": len(state.get("objects", {})),
         "open_hypotheses": len([h for h in state.get("hypotheses", []) if h.get("status") == "open"]),
-        "pending_validation_backlog": len(pending),
-        "top_next_action": next_item,
         "object_samples": [
             {
                 "object_ref": str(ref),
@@ -1228,12 +767,6 @@ def _print_summary(payload: dict[str, Any]) -> None:
     print(f"Sessions: {payload.get('sessions', 0)}")
     print(f"Objects: {payload.get('objects', 0)}")
     print(f"Open hypotheses: {payload.get('open_hypotheses', 0)}")
-    print(f"Pending validation backlog: {payload.get('pending_validation_backlog', 0)}")
-    top = payload.get("top_next_action") or {}
-    if top.get("next_action") != "none":
-        print(f"Top next action: {top.get('runner') or top.get('next_action')} {top.get('object_ref', '')} {top.get('owner_actor', '')} -> {top.get('peer_actor', '')}".strip())
-        if top.get("redacted_command"):
-            print(f"Replay draft: {top.get('redacted_command')}")
 
 
 def _parse_metadata_json(raw: str | None) -> dict[str, Any] | None:
@@ -1249,7 +782,9 @@ def _parse_metadata_json(raw: str | None) -> dict[str, Any] | None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Manage target-scoped actor/session/object validation state")
+    parser = argparse.ArgumentParser(
+        description="Manage target-scoped actor/session/object validation context (no backlog, no route score)"
+    )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     def common(p: argparse.ArgumentParser) -> None:
@@ -1302,43 +837,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--object-ref", default="")
     p.add_argument("--actor", action="append", default=[])
     p.add_argument("--why-now", default="")
-    p.add_argument("--next-action", default="")
     p.add_argument("--status", default="open")
     p.add_argument("--metadata-json", default=None)
 
-    p = sub.add_parser("add-backlog")
-    common(p)
-    p.add_argument("--id", default="")
-    p.add_argument("--runner", required=True)
-    p.add_argument("--endpoint", default="")
-    p.add_argument("--owner-actor", default="")
-    p.add_argument("--peer-actor", default="")
-    p.add_argument("--object-ref", default="")
-    p.add_argument("--priority", default="medium")
-    p.add_argument("--required-evidence", action="append", default=[])
-    p.add_argument("--stop-condition", default="")
-    p.add_argument("--chain-extension", action="append", default=[])
-    p.add_argument("--param", default="")
-    p.add_argument("--baseline-value", default="")
-    p.add_argument("--variant-value", default="")
-    p.add_argument("--baseline-url", default="")
-    p.add_argument("--expect-marker", default="")
-    p.add_argument("--request-spec-ref", default="")
-    p.add_argument("--active-dimension", default="")
-    p.add_argument("--classifier", default="")
-    p.add_argument("--method", default="GET")
-    p.add_argument("--status", default="pending")
-    p.add_argument("--hypothesis-id", default="")
-
-    p = sub.add_parser("next")
-    common(p)
-
-    p = sub.add_parser("complete-backlog")
-    common(p)
-    p.add_argument("--id", required=True)
-    p.add_argument("--result", required=True)
-    p.add_argument("--evidence-ref", default="")
-    p.add_argument("--notes", default="")
     return parser
 
 
@@ -1397,46 +898,8 @@ def _run_command(argv: list[str] | None = None) -> int:
             object_ref=args.object_ref,
             actors=args.actor,
             why_now=args.why_now,
-            next_action=args.next_action,
             status=args.status,
             metadata=_parse_metadata_json(args.metadata_json),
-        ))
-    elif args.cmd == "add-backlog":
-        _print_json(add_backlog(
-            repo_root,
-            args.target,
-            backlog_id=args.id,
-            runner=args.runner,
-            endpoint=args.endpoint,
-            owner_actor=args.owner_actor,
-            peer_actor=args.peer_actor,
-            object_ref=args.object_ref,
-            priority=args.priority,
-            required_evidence=args.required_evidence,
-            stop_condition=args.stop_condition,
-            chain_extensions_if_blocked=args.chain_extension,
-            param=args.param,
-            baseline_value=args.baseline_value,
-            variant_value=args.variant_value,
-            baseline_url=args.baseline_url,
-            expect_marker=args.expect_marker,
-            request_spec_ref=args.request_spec_ref,
-            active_dimension=args.active_dimension,
-            classifier=args.classifier,
-            method=args.method,
-            status=args.status,
-            hypothesis_id=args.hypothesis_id,
-        ))
-    elif args.cmd == "next":
-        _print_json(next_action(repo_root, args.target))
-    elif args.cmd == "complete-backlog":
-        _print_json(complete_backlog(
-            repo_root,
-            args.target,
-            backlog_id=args.id,
-            result=args.result,
-            evidence_ref=args.evidence_ref,
-            notes=args.notes,
         ))
     else:  # pragma: no cover - argparse guards this
         raise ValueError(f"unknown command: {args.cmd}")

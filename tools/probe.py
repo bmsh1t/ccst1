@@ -63,6 +63,7 @@ try:
         target_storage_key,
         url_belongs_to_target,
     )
+    from tools.target_store import TargetStore, target_backend
 except ImportError:  # pragma: no cover - direct tools/ execution
     from evidence_ledger import (  # type: ignore
         RESULTS,
@@ -77,6 +78,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         target_storage_key,
         url_belongs_to_target,
     )
+    from target_store import TargetStore, target_backend  # type: ignore
 
 DISPLAY_BODY_LIMIT = 4096
 DEFAULT_MAX_BODY_BYTES = 10 * 1024 * 1024
@@ -316,28 +318,74 @@ def run_probe(
         ledger["skipped"] = "--no-ledger"
     else:
         try:
-            entry = record_entry(
-                repo,
-                target=target,
-                endpoint=url,
-                method=method_u,
-                vuln_class=vuln_class,
-                actor=actor,
-                variant=variant,
-                source="probe",
-                result=result,
-                state_changing=bool(state_changing),
-                redline_checked=bool(redline_checked),
-                evidence_ref=evidence_ref,
-                notes=note,
-                event_id=f"probe-{unique_stem}",
-            )
+            event_id = f"probe-{unique_stem}"
+            if target_backend(repo, resolved_target) == "primary":
+                store = TargetStore(repo, resolved_target)
+                attempt_id = "probe:" + hashlib.sha256(evidence_ref.encode("utf-8")).hexdigest()[:24]
+                store.start_attempt(
+                    attempt_id=attempt_id,
+                    source="probe",
+                    started_at=ts.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    actor=actor,
+                )
+                receipt = store.record_execution(
+                    attempt_id=attempt_id,
+                    outcome="partial" if body_truncated else "complete",
+                    observations=[{
+                        "endpoint": url,
+                        "method": method_u,
+                        "family": vuln_class,
+                        "observed_at": ts.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        "description": note or f"Probe returned HTTP {status}",
+                        "actor": actor,
+                        "object_scope": "none",
+                        "variant": variant,
+                        "error": "",
+                        "truncated": body_truncated,
+                        "state_changing": bool(state_changing),
+                        "redline_checked": bool(redline_checked),
+                        "result": result,
+                        "artifacts": {"probe": evidence_ref},
+                        "detail": {
+                            "status": status,
+                            "reason": reason,
+                            "final_url": final_url,
+                            "body_sha256": body_sha256,
+                        },
+                    }],
+                    actor=actor,
+                )
+                entry = {
+                    "event_id": event_id,
+                    "operation_id": receipt.get("entity_id", ""),
+                    "evidence_ref": evidence_ref,
+                    "result": result,
+                    "write_status": "deduplicated" if receipt.get("replayed") else "updated",
+                }
+            else:
+                entry = record_entry(
+                    repo,
+                    target=target,
+                    endpoint=url,
+                    method=method_u,
+                    vuln_class=vuln_class,
+                    actor=actor,
+                    variant=variant,
+                    source="probe",
+                    result=result,
+                    state_changing=bool(state_changing),
+                    redline_checked=bool(redline_checked),
+                    evidence_ref=evidence_ref,
+                    notes=note,
+                    event_id=event_id,
+                )
             ledger.update(
                 recorded=True,
                 event_id=str(entry.get("event_id") or ""),
                 write_status=str(entry.get("write_status") or ""),
                 evidence_ref=str(entry.get("evidence_ref") or evidence_ref),
                 result=str(entry.get("result") or ""),
+                operation_id=str(entry.get("operation_id") or ""),
             )
         except (ValueError, OSError) as exc:
             # The request already happened: keep the on-disk probe evidence and

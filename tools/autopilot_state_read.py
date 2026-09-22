@@ -20,7 +20,6 @@ try:
     from tools.surface import load_surface_context
     from tools.target_case_state import (
         case_state_path,
-        project_hypothesis_metadata,
         summary as build_case_state_summary,
     )
     from tools.target_memory import load_goal_memory
@@ -30,7 +29,6 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from surface import load_surface_context  # type: ignore
     from target_case_state import (  # type: ignore
         case_state_path,
-        project_hypothesis_metadata,
         summary as build_case_state_summary,
     )
     from target_memory import load_goal_memory  # type: ignore
@@ -498,41 +496,18 @@ def _load_case_state_projection(
         if isinstance(case_state_summary, dict)
         else build_case_state_summary(repo_root, target)
     )
-    top = payload.get("top_next_action") if isinstance(payload.get("top_next_action"), dict) else {}
-    canonical_conflict_count = int(payload.get("canonical_conflict_count", 0) or 0)
-    if canonical_conflict_count and str(top.get("next_action") or "none") == "none":
-        top = {
-            "next_action": "reconcile_case_state",
-            "ready": False,
-            "why_now": "Case State marks a backlog terminal while canonical findings are finalized",
-            "write_back": "reconcile the backlog outcome with the canonical finding owner before closure",
-        }
-    allowed = {
-        "next_action", "ready", "score", "backlog_id", "hypothesis_id", "runner", "hypothesis",
-        "chain_context", "why_now", "vuln_class", "endpoint", "owner_actor",
-        "peer_actor", "object_ref", "object_type", "required_evidence",
-        "optional_evidence_gaps", "missing_evidence", "redacted_command",
-        "downgrade_rule", "stop_condition", "chain_extensions_if_blocked", "recovery_next_action", "write_back",
-        "param", "baseline_value", "variant_value", "expect_marker", "method",
-    }
-    projected_top = {key: value for key, value in top.items() if key in allowed}
-    metadata = project_hypothesis_metadata(top.get("metadata"))
-    if metadata:
-        projected_top["metadata"] = metadata
+    # Case 只提供上下文事实。行动身份/执行状态在唯一行动源，Case 侧的旧待办由
+    # 迁移报告搬运，因此这里既不投影 next action，也不替它排序或宣布裁决冲突。
     return {
         "status": "valid",
         "path": str(path),
         "authz_coverage": payload.get("authz_coverage") if isinstance(payload.get("authz_coverage"), dict) else {},
-        "canonical_conflict_count": canonical_conflict_count,
-        "canonical_conflicts": payload.get("canonical_conflicts") if isinstance(payload.get("canonical_conflicts"), list) else [],
         **{
             key: int(payload.get(key, 0) or 0)
             for key in (
                 "actors", "sessions", "objects", "open_hypotheses",
-                "pending_validation_backlog",
             )
         },
-        "top_next_action": projected_top,
     }
 
 

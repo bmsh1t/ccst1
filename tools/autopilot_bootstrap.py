@@ -736,7 +736,7 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
             key: case_state[key]
             for key in (
                 "status", "path", "actors", "sessions", "authz_coverage", "objects",
-                "open_hypotheses", "pending_validation_backlog", "top_next_action",
+                "open_hypotheses",
             )
             if key in case_state
         },

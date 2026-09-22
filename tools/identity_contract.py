@@ -13,9 +13,9 @@ from types import MappingProxyType
 from typing import Any, Mapping
 
 try:
-    from tools.closure_resolver import canonical_endpoint_identity, canonical_vuln_class
+    from tools.evidence_identity import canonical_endpoint_identity, canonical_vuln_class
 except ImportError:  # pragma: no cover - direct ``python tools/...`` execution
-    from closure_resolver import canonical_endpoint_identity, canonical_vuln_class  # type: ignore
+    from evidence_identity import canonical_endpoint_identity, canonical_vuln_class  # type: ignore
 
 
 IDENTITY_SCHEMA_VERSION = 2

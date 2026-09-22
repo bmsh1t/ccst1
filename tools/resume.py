@@ -44,6 +44,7 @@ from memory.hunt_journal import HuntJournal
 from memory.target_profile import default_memory_dir, load_target_profile
 try:
     from tools.finding_index import load_finding_index
+    from tools.target_store import TargetStore, target_backend
     from tools.target_memory import load_goal_memory
     from tools.target_paths import (
         canonical_target_value,
@@ -53,6 +54,7 @@ try:
     )
 except ImportError:  # pragma: no cover - direct tools/ execution
     from finding_index import load_finding_index
+    from target_store import TargetStore, target_backend  # type: ignore
     from target_memory import load_goal_memory
     from target_paths import canonical_target_value, compact_url, target_storage_key, url_belongs_to_target
 
@@ -174,6 +176,54 @@ def load_structured_finding_followup(
     default and perform the canonical legacy migration when appropriate.
     """
     findings_dir = Path(base_dir) / "findings" / target_storage_key(target)
+    if target_backend(base_dir, target) == "primary":
+        store = TargetStore(base_dir, target)
+        findings: list[dict] = []
+        page = store.finding_page(limit=1000)
+        while True:
+            for item in page.get("items", []):
+                assessment = item.get("assessment") or {}
+                reports = item.get("reports") or []
+                verdict = str(assessment.get("verdict") or "").strip().lower()
+                findings.append({
+                    "id": item.get("id", ""),
+                    "type": item.get("family", ""),
+                    "severity": "medium",
+                    "confidence": verdict,
+                    "url": item.get("endpoint", ""),
+                    "validation_status": (
+                        "validated" if verdict == "confirmed"
+                        else "rejected" if verdict == "refuted"
+                        else "candidate"
+                    ),
+                    "report_status": "generated" if reports else "not_generated",
+                    "source_file": "",
+                    "validation_summary": "",
+                    "claim": item.get("claim", ""),
+                    "reports": reports,
+                    "deliveries": item.get("deliveries", []),
+                    "evidence": item.get("evidence", []),
+                })
+            if not page.get("has_more"):
+                break
+            page = store.finding_page(limit=1000, cursor=page.get("next_cursor"))
+        chain_context = []
+        for item in findings:
+            context = _finding_chain_context(item, target)
+            if context:
+                chain_context.append(context)
+            if len(chain_context) >= _CHAIN_CONTEXT_LIMIT:
+                break
+        summary = summarize_structured_findings(
+            findings,
+            findings_dir,
+            target=target,
+            enforce_owner_provenance=False,
+        )
+        if chain_context:
+            summary["chain_context"] = chain_context
+            summary["chain_context_count"] = len(chain_context)
+        return summary
     payload = load_finding_index(
         findings_dir,
         migrate_legacy=migrate_legacy,

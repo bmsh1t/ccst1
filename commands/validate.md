@@ -150,14 +150,16 @@ Successful preflight returns `status: "preflight_ok"`; invalid input returns
 exit `2` with `status: "preflight_invalid"` and an `errors` list. Remove
 `--preflight` to apply the unchanged validation path.
 
-The tool writes the summary, ledger/queue handoff and canonical status through
-their existing owners. `finding_index` also records a target-scoped owner
-mutation event, so a later runtime check can distinguish an owner mutation from
-an untracked JSON edit. Each canonical row records the actual
-`validation_summary` path and its `validation_summary_sha256`; do not reconstruct
-the filename in a caller. `findings/last-validate.json` is only a latest pointer
-and is never canonical evidence. Calls without `--decision-json` fail closed
-without creating report, finding, queue or runtime state.
+For a legacy target, the tool writes the summary, Ledger/Queue handoff and
+canonical status through their existing owners. For a primary target, the same
+command writes only the Store technical assessment and destination decision;
+legacy Ledger/Finding/Queue writers are rejected and no fallback JSON is
+consulted. A generated report remains a file until an explicit report/delivery
+command registers it. Each canonical row or Store record keeps the actual
+summary/artifact binding; callers must not reconstruct it from a global pointer.
+`findings/last-validate.json` is only a latest pointer and is never canonical
+evidence. Calls without `--decision-json` fail closed without creating report,
+finding, queue or runtime state.
 
 ## Browser-State Priority
 
@@ -218,25 +220,26 @@ Use them when they make evidence reproducible, but keep `/validate` as the
 report-readiness gate: Claude still decides impact, preconditions, and whether
 the issue is worth reporting.
 
-## Case-State-First Validation
+## Case-State-Assisted Validation
 
-Target case state is runtime memory that feeds deterministic evidence runners:
-actors, sessions, objects, private markers, hypotheses, and validation backlog.
-It is not a substitute for `/validate`, not a scope gate, and not a reason to
-reject a replayable candidate. Use it only when it improves continuity or
-reduces header/object drift.
+Target case state is runtime context that feeds deterministic evidence runners:
+actors, sessions, objects, private markers, and hypotheses. It holds no backlog
+and no route score — action identity, claim, and execution state live in the one
+action source. It is not a substitute for `/validate`, not a scope gate, and not
+a reason to reject a replayable candidate. Use it only when it improves
+continuity or reduces header/object drift.
 
 Useful paths:
 
 ```bash
 python3 tools/target_case_state.py summary --target <target> --json
-python3 tools/target_case_state.py next --target <target>
-python3 tools/target_case_state.py complete-backlog --target <target> --id <id> --result <tested_clean|tested_finding|blocked>
+python3 tools/target_case_state.py add-session --target <target> --session <ref> --actor <actor> --header-name <name> --header-value <value>
+python3 tools/action_queue.py next --target <target>
 ```
 
-If case state suggests a backlog item, validate the underlying evidence with
-the same 7-question gate below. If live evidence is stronger than the cached
-backlog, state the AI override and continue with the stronger proof path.
+Validate the underlying evidence of any candidate with the same 7-question gate
+below. If live evidence is stronger than cached Case context, state the AI
+override and continue with the stronger proof path.
 
 ## The 7-Question Gate
 

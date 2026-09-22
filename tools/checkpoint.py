@@ -59,6 +59,7 @@ try:
     )
     from tools.autopilot_state import (
         _global_review_basis,
+        _queue_snapshot_for_target,
         build_autopilot_state,
         load_closure_projection,
         stagnation_fingerprint,
@@ -66,7 +67,8 @@ try:
     )
     from tools.context_pack import build_context_pack
     from tools.coverage_matrix import _route_template, coverage_gaps_with_observed_evidence, high_risk_lane_summary, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, rebuild_matrix, save_matrix, save_matrix_projection
-    from tools.evidence_ledger import ACTOR_MATRIX_VULN_CLASSES, build_summary as build_evidence_summary, load_entries_diagnostic, record_command as evidence_record_command
+    from tools.current_truth import current_cell_projection
+    from tools.evidence_ledger import ACTOR_MATRIX_VULN_CLASSES, build_summary as build_evidence_summary, record_command as evidence_record_command
     from tools.case_state_seed import build_case_state_seed
     from tools.closure_resolver import ClosureResolver, canonical_endpoint_path, extract_endpoint_path
     from tools.finding_index import list_root_finding_claims, reconcile_root_finding_claims
@@ -81,6 +83,7 @@ try:
         write_json as write_target_memory_json,
     )
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
+    from tools.target_store import TargetStore, target_backend
     from tools.experience_schema import make_entry_id
 except ImportError:  # pragma: no cover - direct tools/ execution
     from autopilot_args import MAX_LANES  # type: ignore
@@ -107,6 +110,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     )
     from autopilot_state import (  # type: ignore
         _global_review_basis,
+        _queue_snapshot_for_target,
         build_autopilot_state,
         load_closure_projection,
         stagnation_fingerprint,
@@ -114,7 +118,8 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     )
     from context_pack import build_context_pack  # type: ignore
     from coverage_matrix import _route_template, coverage_gaps_with_observed_evidence, high_risk_lane_summary, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, rebuild_matrix, save_matrix, save_matrix_projection  # type: ignore
-    from evidence_ledger import ACTOR_MATRIX_VULN_CLASSES, build_summary as build_evidence_summary, load_entries_diagnostic, record_command as evidence_record_command  # type: ignore  # type: ignore
+    from current_truth import current_cell_projection  # type: ignore
+    from evidence_ledger import ACTOR_MATRIX_VULN_CLASSES, build_summary as build_evidence_summary, record_command as evidence_record_command  # type: ignore  # type: ignore
     from case_state_seed import build_case_state_seed  # type: ignore
     from closure_resolver import ClosureResolver, canonical_endpoint_path, extract_endpoint_path  # type: ignore
     from finding_index import list_root_finding_claims, reconcile_root_finding_claims  # type: ignore
@@ -129,6 +134,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         write_json as write_target_memory_json,
     )
     from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # type: ignore
+    from target_store import TargetStore, target_backend  # type: ignore
     from experience_schema import make_entry_id  # type: ignore
 
 
@@ -544,6 +550,14 @@ def write_checkpoint_witness(
         },
     }
     queue_sync = checkpoint.get("action_queue_sync")
+    if isinstance(queue_sync, dict):
+        if str(queue_sync.get("status") or "").strip().lower() == "skipped":
+            payload["action_queue"] = {
+                "synchronized": False,
+                "reason": str(queue_sync.get("reason") or "").strip(),
+                "backend": "primary",
+            }
+            queue_sync = None
     if isinstance(queue_sync, dict):
         queue_path = str(queue_sync.get("path") or "").strip()
         if queue_path:
@@ -1109,17 +1123,12 @@ def _evidence_focus_endpoints(state: dict, coverage_gaps: list[dict]) -> list[st
 
 def _evidence_vuln_classes(
     coverage_gaps: list[dict],
-    case_state: dict | None = None,
     queue_snapshot: dict | None = None,
 ) -> list[str]:
     """Collect only explicit canonical families from state owners."""
     classes: list[str] = []
     for gap in coverage_gaps[:8]:
         classes.append(str(gap.get("vuln_class") or ""))
-    top = (case_state or {}).get("top_next_action") if isinstance(case_state, dict) else {}
-    if isinstance(top, dict):
-        metadata = top.get("metadata") if isinstance(top.get("metadata"), dict) else {}
-        classes.extend([str(metadata.get("family") or ""), str(top.get("vuln_class") or "")])
     actions = (queue_snapshot or {}).get("actions") if isinstance(queue_snapshot, dict) else []
     for action in actions if isinstance(actions, list) else []:
         if (
@@ -1257,11 +1266,6 @@ def _case_state_summary(repo_root: Path | str, target: str) -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
-def _case_state_top_next(case_state: dict) -> dict:
-    top = case_state.get("top_next_action") or {}
-    return top if isinstance(top, dict) else {}
-
-
 def _list_clause(values: object) -> str:
     if not isinstance(values, list):
         return ""
@@ -1310,138 +1314,6 @@ def _entry_text(item: object) -> str:
     if _is_proposal_entry(item):
         return str(item["text"])
     return str(item or "")
-
-
-def _case_state_proposal(case_state: dict) -> dict:
-    """Emit a structured proposal entry for the top case-state next action.
-
-    The `top` projection already carries every field the prose version used
-    to hide behind `Key: value.` markers; pass them directly and keep the
-    prose for human/legacy consumers.
-    """
-    top = _case_state_top_next(case_state)
-    action = str(top.get("next_action") or "").strip().lower()
-    if not action or action == "none":
-        return ""
-
-    backlog_id = str(top.get("backlog_id") or "").strip()
-    label = "Case-state next action"
-    if action == "run_validation_runner":
-        label = "Case-state validation backlog"
-    elif action == "enrich_case_state":
-        label = "Case-state enrichment backlog"
-    elif action == "recover_hypothesis":
-        label = "Case-state recovery backlog"
-    elif action == "create_validation_backlog":
-        label = "Case-state backlog creation"
-
-    headline = f"{label} {backlog_id}".strip()
-    if headline.endswith("backlog creation"):
-        headline = headline.rstrip()
-
-    parts = [headline + ":"]
-    hypothesis = str(top.get("hypothesis") or "").strip()
-    if hypothesis:
-        parts.append(f"Hypothesis: {hypothesis}.")
-    hypothesis_id = str(top.get("hypothesis_id") or "").strip()
-    if hypothesis_id:
-        parts.append(f"Hypothesis ID: {hypothesis_id}.")
-    why_now = str(top.get("why_now") or "").strip()
-    if why_now:
-        parts.append(f"Why now: {why_now}.")
-
-    runner = str(top.get("runner") or "").strip()
-    owner_actor = str(top.get("owner_actor") or "").strip()
-    peer_actor = str(top.get("peer_actor") or "").strip()
-    object_ref = str(top.get("object_ref") or "").strip()
-    endpoint = str(top.get("endpoint") or "").strip()
-    if runner:
-        parts.append(f"Runner: {runner}.")
-    if owner_actor or peer_actor:
-        parts.append(
-            "Actors: owner={owner}, peer={peer}.".format(
-                owner=owner_actor or "-",
-                peer=peer_actor or "-",
-            )
-        )
-    if object_ref:
-        parts.append(f"Object ref: {object_ref}.")
-    if endpoint:
-        parts.append(f"Endpoint: {endpoint}.")
-
-    replay_draft = str(top.get("redacted_command") or top.get("command") or "").strip()
-    if action == "run_validation_runner" and replay_draft:
-        parts.append(f"Exact replay draft: {replay_draft}.")
-
-    required = _list_clause(top.get("required_evidence"))
-    if required:
-        parts.append(f"Required evidence: {required}.")
-    missing = _list_clause(top.get("missing_evidence"))
-    if missing:
-        parts.append(f"Missing evidence: {missing}.")
-    optional = _list_clause(top.get("optional_evidence_gaps"))
-    if optional:
-        parts.append(f"Optional evidence gaps: {optional}.")
-
-    downgrade_rule = str(top.get("downgrade_rule") or "").strip()
-    if downgrade_rule:
-        parts.append(f"Downgrade rule: {downgrade_rule}.")
-    stop_condition = str(top.get("stop_condition") or "").strip()
-    if stop_condition:
-        parts.append(f"Stop condition: {stop_condition}.")
-    write_back = str(top.get("write_back") or "").strip()
-    if write_back:
-        parts.append(f"Write-back: {write_back}.")
-    chain_extensions = _list_clause(top.get("chain_extensions_if_blocked"))
-    if chain_extensions:
-        parts.append(f"Chain extensions if blocked: {chain_extensions}.")
-    recovery_next = str(top.get("recovery_next_action") or "").strip()
-    if recovery_next:
-        parts.append(f"Recovery next action: {recovery_next}.")
-
-    text = " ".join(parts).strip()
-    # The classification mirror of this ladder lives in _classify_next_action;
-    # structured entries carry the type/priority directly.
-    type_hint = {
-        "run_validation_runner": ("case-state-validation", 110, replay_draft if replay_draft else "python3 tools/validation_runner.py ... --request-spec <spec>"),
-        "enrich_case_state": ("case-state-enrichment", 108, "enrich actor/session/object/private-marker evidence in case_state"),
-        "recover_hypothesis": ("case-state-enrichment", 108, "complete the recorded hypothesis recovery step before creating a fresh backlog"),
-        "create_validation_backlog": ("case-state-backlog-create", 103, "promote the active hypothesis into validation backlog"),
-    }
-    entry_type, priority, hint = type_hint.get(
-        action, ("case-state-enrichment", 54, "register actor/session/object with tools/target_case_state.py or review tools/case_state_seed.py")
-    )
-    replay_draft = str(top.get("redacted_command") or top.get("command") or "").strip()
-    metadata: dict = {"backlog_id": backlog_id}
-    for key in (
-        "hypothesis_id", "hypothesis", "why_now", "runner",
-        "object_ref", "endpoint", "downgrade_rule", "stop_condition",
-        "write_back", "recovery_next_action",
-    ):
-        value = str(top.get(key) or "").strip()
-        if value:
-            metadata[key] = value
-    owner_actor = str(top.get("owner_actor") or "").strip()
-    peer_actor = str(top.get("peer_actor") or "").strip()
-    if owner_actor or peer_actor:
-        metadata["owner_actor"] = owner_actor or "-"
-        metadata["peer_actor"] = peer_actor or "-"
-    for key in (
-        "required_evidence", "missing_evidence", "optional_evidence_gaps",
-        "chain_extensions_if_blocked",
-    ):
-        values = top.get(key)
-        if isinstance(values, list) and values:
-            metadata[key] = [str(item or "").strip() for item in values if str(item or "").strip()]
-    if action == "run_validation_runner" and replay_draft:
-        metadata["replay_draft"] = replay_draft
-    return _proposal_entry(
-        text,
-        action_type=entry_type,
-        priority=priority,
-        command_hint=hint,
-        metadata=metadata,
-    )
 
 
 def _case_state_seed_summary(repo_root: Path | str, target: str) -> dict:
@@ -1496,10 +1368,13 @@ ACTION_DECISIONS = {
     "repair_evidence_ledger": "checkpoint",
     "continue_last_focus": "continue",
     "resume_untested": "continue",
+    # Case 不再生产行动：这三个类型只用于路由**已经落在持久队列里的历史行**
+    # （队列快照仍可能把在跑的旧行动作为 action_queue_next 报回来）。新 checkpoint
+    # 不再生成它们；迁移验收后应随旧行一起消失，不需要第二套逻辑。
     "case-state-validation": "continue",
-    "case-state-enrichment": "continue",
     "case-state-backlog-create": "continue",
     "case-state-seed": "continue",
+    "case-state-enrichment": "continue",
     "actor-gap": "continue",
     "coverage-gap": "continue",
     "secondary-sweep": "continue",
@@ -1536,7 +1411,6 @@ def _lead_proposals(
     repo_root: Path | None = None,
     target: str = "",
     evidence_summary: dict | None = None,
-    case_state: dict | None = None,
 ) -> list[str]:
     proposals: list[str] = []
     surface = state.get("surface") or {}
@@ -2517,7 +2391,7 @@ def _build_next_action_queue(next_items: list, target: str = "") -> list[dict]:
     return queue
 
 _ACTIVATABLE_ACTION_TYPES = {
-    "validation", "candidate-evidence-gap", "case-state-validation", "actor-gap",
+    "validation", "candidate-evidence-gap", "actor-gap",
     "coverage-gap", "evidence-convergence", "json-inject-review", "sql-matrix-review",
 }
 _ACTIVATION_EVIDENCE_ROOTS = {".private", "evidence", "findings", "recon", "reports"}
@@ -3104,8 +2978,14 @@ def _append_unique_entries(memory: dict, field: str, entries: list[str], target:
 def apply_target_memory(repo_root: Path | str, target: str, checkpoint: dict) -> dict:
     repo = Path(repo_root)
     resolved_target = canonical_target_value(target)
+    if target_backend(repo, resolved_target) == "primary":
+        return {
+            "status": "skipped",
+            "reason": "primary store owns experience and case context; checkpoint is read-only",
+            "target": resolved_target,
+        }
     path = _target_memory_path(repo, resolved_target)
-    with target_memory_mutation_lock(path):
+    with target_memory_mutation_lock(path, repo_root=repo, target=resolved_target):
         memory = load_target_memory_file(path, expected_target=resolved_target) or new_target_memory(resolved_target)
         memory.setdefault("target", resolved_target)
 
@@ -3182,7 +3062,15 @@ def build_checkpoint(
     repo = Path(repo_root)
     resolved_target = canonical_target_value(target)
     coverage_target = target_storage_key(resolved_target)
-    queue_snapshot = load_action_queue(repo, resolved_target)
+    store_binding = (
+        TargetStore(repo, resolved_target).binding()
+        if target_backend(repo, resolved_target) == "primary" else None
+    )
+    queue_snapshot = (
+        _queue_snapshot_for_target(str(repo), resolved_target)
+        if target_backend(repo, resolved_target) == "primary"
+        else load_action_queue(repo, resolved_target)
+    )
     case_state = _case_state_summary(repo, resolved_target)
     state = build_autopilot_state(
         str(repo),
@@ -3191,21 +3079,23 @@ def build_checkpoint(
         queue_snapshot=queue_snapshot,
         case_state_summary=case_state,
     )
-    matrix = load_matrix_projection(coverage_target, repo_root=repo)
+    matrix = load_matrix_projection(resolved_target, repo_root=repo)
     coverage_rebuilt = False
     if matrix is None:
         matrix = load_matrix(coverage_target, repo_root=repo)
         if refresh_coverage and not matrix_is_fresh(coverage_target, matrix, repo_root=repo):
             matrix = rebuild_matrix(coverage_target, repo_root=repo)
-            save_matrix(coverage_target, matrix, repo_root=repo)
-            coverage_rebuilt = True
+            if target_backend(repo, resolved_target) != "primary":
+                save_matrix(coverage_target, matrix, repo_root=repo)
+                coverage_rebuilt = True
         elif matrix_is_fresh(coverage_target, matrix, repo_root=repo):
-            save_matrix_projection(coverage_target, matrix, repo_root=repo)
+            if target_backend(repo, resolved_target) != "primary":
+                save_matrix_projection(coverage_target, matrix, repo_root=repo)
     gaps = list(matrix.get("_coverage_gaps") or _matrix_gaps(matrix))
-    # 同一 ledger.jsonl 只读盘一次：checkpoint 自己的 summary 与 context_pack 内部的
-    # summary 共享同一份解析诊断（实测 2026-09-12：一次 checkpoint 触发 3 次 ledger
-    # 读取/2 次 summary）。快照生命周期 = 本次构建；owner 写入后下次调用自然失效。
-    ledger_diagnostics = load_entries_diagnostic(repo, resolved_target)
+    # Legacy Context Pack 可复用本次 seam 结果；primary 会重新读取 owner 并
+    # 复核 raw 完整性，最终 Store binding 检查拒绝组装期间的 revision 漂移。
+    # Store 存在但读不出时 seam 直接抛错，不静默退回 Ledger。
+    evidence_truth = current_cell_projection(repo, resolved_target)
     context = build_context_pack(
         repo,
         target=resolved_target,
@@ -3217,19 +3107,18 @@ def build_checkpoint(
             if isinstance(state.get("validation_runner_candidates"), list)
             else None
         ),
-        ledger_diagnostics=ledger_diagnostics,
+        ledger_truth=evidence_truth,
     )
     coverage_summary = _matrix_summary(matrix, gaps)
     evidence_summary = build_evidence_summary(
         repo,
         target=resolved_target,
         focus_endpoints=_evidence_focus_endpoints(state, gaps),
-        vuln_classes=_evidence_vuln_classes(gaps, case_state, queue_snapshot),
-        _diagnostics=ledger_diagnostics,
+        vuln_classes=_evidence_vuln_classes(gaps, queue_snapshot),
+        _truth=evidence_truth,
     )
     actor_gaps = _actor_gaps(evidence_summary)
-    case_state_proposal = _case_state_proposal(case_state)
-    case_state_seed = _case_state_seed_summary(repo, resolved_target) if not case_state_proposal else {}
+    case_state_seed = _case_state_seed_summary(repo, resolved_target)
 
     lead = _lead_proposals(
         state,
@@ -3237,7 +3126,6 @@ def build_checkpoint(
         repo_root=repo,
         target=resolved_target,
         evidence_summary=evidence_summary,
-        case_state=case_state,
     )
     next_items = _next_proposals(
         state,
@@ -3249,19 +3137,7 @@ def build_checkpoint(
         case_state,
         repo_root=repo,
     )
-    if case_state_proposal:
-        next_items = [case_state_proposal, *next_items]
     next_action_queue = _build_next_action_queue(next_items, resolved_target)
-    case_top = _case_state_top_next(case_state)
-    case_metadata = case_top.get("metadata") if isinstance(case_top.get("metadata"), dict) else {}
-    if case_metadata:
-        for action in next_action_queue:
-            if str(action.get("type") or "").startswith("case-state-"):
-                metadata = action.setdefault("metadata", {})
-                if isinstance(metadata, dict):
-                    metadata.update(case_metadata)
-                    metadata.setdefault("hypothesis_id", str(case_top.get("hypothesis_id") or ""))
-                break
     json_inject_item = _json_inject_queue_item(state, resolved_target)
     if json_inject_item:
         next_action_queue.append(json_inject_item)
@@ -3386,8 +3262,7 @@ def build_checkpoint(
             "actors": case_state.get("actors", 0),
             "sessions": case_state.get("sessions", 0),
             "objects": case_state.get("objects", 0),
-            "pending_validation_backlog": case_state.get("pending_validation_backlog", 0),
-            "top_next_action": _case_state_top_next(case_state),
+            "open_hypotheses": case_state.get("open_hypotheses", 0),
         },
         "case_state_seed": {
             "status": case_state_seed.get("status", ""),
@@ -3421,12 +3296,21 @@ def build_checkpoint(
         "retrospect": f"/retrospect {resolved_target}",
         "apply_status": "proposal only; CLI applies target memory by default (--no-apply-target-memory to skip)",
     }
-    witness = write_checkpoint_witness(repo, resolved_target, checkpoint)
-    witness_path = Path(witness["path"])
-    checkpoint["runtime_witness"] = {
-        "schema_version": witness["payload"]["schema_version"],
-        "path": str(witness_path.relative_to(repo)) if witness_path.is_relative_to(repo) else str(witness_path),
-    }
+    if store_binding is not None:
+        if TargetStore(repo, resolved_target).binding() != store_binding:
+            raise ValueError("primary checkpoint inputs changed during assembly")
+        checkpoint["runtime_witness"] = {
+            "status": "not_published",
+            "reason": "primary checkpoint build is read-only; publish via explicit CLI command",
+            "path": str(_checkpoint_witness_path(repo, resolved_target).relative_to(repo)),
+        }
+    else:
+        witness = write_checkpoint_witness(repo, resolved_target, checkpoint)
+        witness_path = Path(witness["path"])
+        checkpoint["runtime_witness"] = {
+            "schema_version": witness["payload"]["schema_version"],
+            "path": str(witness_path.relative_to(repo)) if witness_path.is_relative_to(repo) else str(witness_path),
+        }
     return checkpoint
 
 
@@ -3538,7 +3422,6 @@ def format_checkpoint(checkpoint: dict) -> str:
     write_back = checkpoint.get("target_write_back") or {}
     context = checkpoint.get("context_pack") or {}
     case_state = checkpoint.get("case_state") or {}
-    case_state_next = case_state.get("top_next_action") or {}
     evidence = checkpoint.get("evidence_ledger") or {}
     actor_matrix = evidence.get("actor_matrix") or {}
     queue_sync = checkpoint.get("action_queue_sync") or {}
@@ -3593,18 +3476,7 @@ def format_checkpoint(checkpoint: dict) -> str:
         f"  - actors: {case_state.get('actors', 0)}",
         f"  - sessions: {case_state.get('sessions', 0)}",
         f"  - objects: {case_state.get('objects', 0)}",
-        f"  - pending backlog: {case_state.get('pending_validation_backlog', 0)}",
-        "  - top next action:",
-        *_fmt_nested([
-            "{action} backlog={backlog} runner={runner} object={object_ref} owner={owner} peer={peer}".format(
-                action=case_state_next.get("next_action", "none"),
-                backlog=case_state_next.get("backlog_id", "-"),
-                runner=case_state_next.get("runner", "-"),
-                object_ref=case_state_next.get("object_ref", "-"),
-                owner=case_state_next.get("owner_actor", "-"),
-                peer=case_state_next.get("peer_actor", "-"),
-            ) if case_state_next else "none"
-        ]),
+        f"  - open hypotheses: {case_state.get('open_hypotheses', 0)}",
         "- Evidence ledger:",
         f"  - entries: {evidence.get('entry_count', 0)}",
         f"  - open candidates: {len(evidence.get('open_candidates') or [])}",
@@ -3759,21 +3631,28 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else result["path"])
         return 0
-    # Durable handoff 损坏时必须在 root-claim reconciliation 等写入前停止，避免把
-    # “无法读取旧 queue”误当作可从空状态继续构建 checkpoint。
-    try:
-        load_action_queue(repo, resolved_target)
-    except (OSError, ValueError, KeyError) as exc:
-        print(f"checkpoint action queue preflight failed: {exc}", file=sys.stderr)
-        return 2
-    try:
-        claim_sync = reconcile_root_finding_claims(
-            repo / "findings" / target_storage_key(resolved_target),
-            target=resolved_target,
-        )
-    except (OSError, ValueError, KeyError) as exc:
-        print(f"checkpoint finding-claim reconciliation failed: {exc}", file=sys.stderr)
-        return 2
+    backend = target_backend(repo, resolved_target)
+    if backend == "primary":
+        # Primary Store owns actions and findings.  Checkpoint is a read-only
+        # projection here; legacy queue/claim reconciliation would create a
+        # second lifecycle owner beside the transactional store.
+        claim_sync = {"status": "skipped", "reason": "primary store owns findings and actions"}
+    else:
+        # Durable handoff damage must stop before legacy reconciliation, rather
+        # than being interpreted as an empty queue.
+        try:
+            load_action_queue(repo, resolved_target)
+        except (OSError, ValueError, KeyError) as exc:
+            print(f"checkpoint action queue preflight failed: {exc}", file=sys.stderr)
+            return 2
+        try:
+            claim_sync = reconcile_root_finding_claims(
+                repo / "findings" / target_storage_key(resolved_target),
+                target=resolved_target,
+            )
+        except (OSError, ValueError, KeyError) as exc:
+            print(f"checkpoint finding-claim reconciliation failed: {exc}", file=sys.stderr)
+            return 2
     try:
         checkpoint = build_checkpoint(
             repo,
@@ -3786,20 +3665,35 @@ def main(argv: list[str] | None = None) -> int:
         print(f"checkpoint state build failed: {exc}", file=sys.stderr)
         return 2
     checkpoint["root_finding_claim_sync"] = claim_sync
-    root_claims = list_root_finding_claims(
-        repo / "findings" / target_storage_key(resolved_target),
-        target=resolved_target,
-        include_reconciled=True,
-    )
-    _append_root_claim_queue_items(checkpoint, root_claims, resolved_target)
-    try:
-        sync_checkpoint_action_queue(repo, checkpoint)
-    except (OSError, ValueError, KeyError) as exc:
-        print(f"checkpoint action queue sync failed: {exc}", file=sys.stderr)
-        return 2
+    if backend == "primary":
+        checkpoint["action_queue_sync"] = {
+            "status": "skipped",
+            "reason": "primary store action projection is read-only",
+        }
+        checkpoint["runtime_witness"] = {
+            "status": "not_published",
+            "reason": "primary checkpoint command is read-only; publish via explicit witness command",
+            "path": str(_checkpoint_witness_path(repo, resolved_target).relative_to(repo)),
+        }
+    else:
+        root_claims = list_root_finding_claims(
+            repo / "findings" / target_storage_key(resolved_target),
+            target=resolved_target,
+            include_reconciled=True,
+        )
+        _append_root_claim_queue_items(checkpoint, root_claims, resolved_target)
+        try:
+            sync_checkpoint_action_queue(repo, checkpoint)
+        except (OSError, ValueError, KeyError) as exc:
+            print(f"checkpoint action queue sync failed: {exc}", file=sys.stderr)
+            return 2
     if args.apply_target_memory:
         result = apply_target_memory(repo, checkpoint["target"], checkpoint)
-        checkpoint["apply_status"] = "applied target memory"
+        checkpoint["apply_status"] = (
+            "applied target memory"
+            if result.get("status") != "skipped"
+            else "skipped primary-store legacy memory write"
+        )
         checkpoint["apply_result"] = result
     else:
         checkpoint["apply_status"] = (

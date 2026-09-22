@@ -30,7 +30,6 @@ _CLOSURE_REASON_OWNERS = {
     "state_snapshot_stale": {"controller"},
     "durable_work_pending": {"action_queue"},
     "finding_work_pending": {"finding", "finding-claim", "target-memory"},
-    "case_state_canonical_conflict": {"case_state"},
     "case_state_work_pending": {"case_state"},
     "actor_context_required": {"case_state"},
     "surface_projection_pending": {"surface", "surface-context"},
@@ -377,52 +376,21 @@ def _build_actionable_frontier(
         break
 
     case_state = state.get("case_state") if isinstance(state.get("case_state"), dict) else {}
-    case_next = case_state.get("top_next_action") if isinstance(case_state.get("top_next_action"), dict) else {}
-    if str(case_next.get("next_action") or "none") != "none":
+    # Case 不再携带行动或评分：它进入 frontier 只因为自己的上下文义务（未决假设）。
+    # 行动来源由 action_queue / 唯一行动源的投影负责。
+    if int(case_state.get("open_hypotheses", 0) or 0) > 0:
         frontier.append(_frontier_item(
             owner="case_state",
-            item_id=str(case_next.get("backlog_id") or case_next.get("hypothesis_id") or ""),
-            action=str(case_next.get("write_back") or case_next.get("next_action")),
-            evidence_ref=str(case_state.get("path") or f"state/{target_storage_key(target)}/case_state.json"),
-            expected_information_gain=str(
-                case_next.get("why_now") or case_next.get("hypothesis") or "resolve the Case State prerequisite"
+            item_id="open-hypothesis",
+            action="Resolve the next open Case State hypothesis",
+            evidence_ref=str(
+                case_state.get("path")
+                or f"state/{target_storage_key(target)}/case_state.json"
             ),
-            stop_condition=str(
-                case_next.get("stop_condition")
-                or "record the backlog as tested, candidate, blocked, or dead-end"
-            ),
+            expected_information_gain="turn the hypothesis into bounded actor, object, or replay evidence",
+            stop_condition="record a bounded hypothesis result or an explicit blocker",
             priority=95,
         ))
-    else:
-        case_obligation = ""
-        if int(case_state.get("canonical_conflict_count", 0) or 0) > 0:
-            case_obligation = "canonical-conflict"
-            case_action = "Reconcile the Case State canonical conflict before closure"
-            case_gain = "align Case State terminal records with the canonical finding owner"
-            case_stop = "record the reconciliation or a bounded blocker, then recompute Closure"
-        elif int(case_state.get("pending_validation_backlog", 0) or 0) > 0:
-            case_obligation = "validation-backlog"
-            case_action = "Resume the pending Case State validation backlog"
-            case_gain = "produce the next owner-backed validation result"
-            case_stop = "record the backlog result as tested, candidate, blocked, or dead-end"
-        elif int(case_state.get("open_hypotheses", 0) or 0) > 0:
-            case_obligation = "open-hypothesis"
-            case_action = "Resolve the next open Case State hypothesis"
-            case_gain = "turn the hypothesis into bounded actor, object, or replay evidence"
-            case_stop = "record a bounded hypothesis result or an explicit blocker"
-        if case_obligation:
-            frontier.append(_frontier_item(
-                owner="case_state",
-                item_id=case_obligation,
-                action=case_action,
-                evidence_ref=str(
-                    case_state.get("path")
-                    or f"state/{target_storage_key(target)}/case_state.json"
-                ),
-                expected_information_gain=case_gain,
-                stop_condition=case_stop,
-                priority=95,
-            ))
 
     observation_inventory = state.get("observation_inventory") if isinstance(state.get("observation_inventory"), dict) else {}
     observation_reason = _observation_partial_reason(state)
@@ -641,11 +609,11 @@ def _closure_reason_frontier(
             stop_condition="record a terminal Queue result or bounded blocker",
             priority=85,
         )
-    if reason in {"case_state_work_pending", "case_state_canonical_conflict", "actor_context_required"}:
+    if reason in {"case_state_work_pending", "actor_context_required"}:
         case_state = state.get("case_state") if isinstance(state.get("case_state"), dict) else {}
         return _frontier_item(
             owner="case_state",
-            item_id="canonical-conflict" if reason == "case_state_canonical_conflict" else reason,
+            item_id=reason,
             action=(
                 "Import distinct owner/peer actor sessions with tools/target_case_state.py "
                 "add-actor/add-session, then resume the affected role-based lane"
@@ -960,11 +928,6 @@ def _build_priority_frontier(
         if isinstance(state.get("action_queue_next"), dict)
         else {}
     )
-    case_next = (
-        (state.get("case_state") or {}).get("top_next_action")
-        if isinstance((state.get("case_state") or {}).get("top_next_action"), dict)
-        else {}
-    )
     structured = (
         state.get("structured_findings")
         if isinstance(state.get("structured_findings"), dict)
@@ -1012,12 +975,8 @@ def _build_priority_frontier(
                 if finding.get(key)
             )
         elif owner == "case_state":
-            impact_hint = str(
-                case_next.get("why_now")
-                or case_next.get("hypothesis")
-                or case_next.get("write_back")
-                or ""
-            )
+            # Case 的 head 是上下文义务，不是行动投影：直接用它的义务描述。
+            impact_hint = str(item.get("expected_information_gain") or "")
         other_items.append(
             _execution_frontier_item(item, impact_hint=impact_hint)
         )
@@ -1379,10 +1338,10 @@ def _describe_next_step(state: dict) -> str:
             return f"resume durable action {item.get('id')}: {item.get('action') or item.get('command_hint')}."
         return "resume the highest-priority substantive durable action."
     if action == "resume_case_state":
-        item = (state.get("case_state") or {}).get("top_next_action") or {}
         return (
-            f"resume Case State action {item.get('next_action', 'enrich_case_state')}: "
-            f"{item.get('hypothesis') or item.get('write_back') or 'refresh the validation backlog'}."
+            "resume the Case State context obligation: resolve the open hypothesis into bounded "
+            "actor/object/replay evidence, or record its explicit blocker; actions themselves come "
+            "from the one action source."
         )
     if action == "refresh_checkpoint":
         return "refresh the target checkpoint witness, then recompute the bounded Closure snapshot."

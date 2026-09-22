@@ -31,21 +31,41 @@ BASE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = BASE_DIR.parent
 
 try:
+    from tools.current_truth import current_cell_projection
     from tools.evidence_ledger import load_entries
     from tools.target_paths import canonical_target_value, target_storage_key
+    from tools.target_store import TargetStore, target_backend
 except ImportError:  # pragma: no cover - direct tools/ execution
     sys.path.insert(0, str(BASE_DIR))
+    from current_truth import current_cell_projection  # type: ignore
     from evidence_ledger import load_entries  # type: ignore
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
+    from target_store import TargetStore, target_backend  # type: ignore
 
 
 def _load_source_evidence(repo: Path, target: str) -> dict:
     """拉三类原始证据（机器事实，非 AI 回忆）。"""
     key = target_storage_key(target)
-    entries = load_entries(repo, target)
+    primary = target_backend(repo, target) == "primary"
+    entries = list(current_cell_projection(repo, target)["records"]) if primary else load_entries(repo, target)
     findings: list[dict] = []
     findings_path = repo / "findings" / key / "findings.json"
-    if findings_path.is_file():
+    if primary:
+        store = TargetStore(repo, target)
+        page = store.finding_page(limit=1000)
+        while True:
+            for item in page.get("items", []):
+                findings.append({
+                    "id": item["id"],
+                    "type": item["family"],
+                    "url": item["endpoint"],
+                    "summary": item["claim"],
+                    "validation_status": (item.get("assessment") or {}).get("verdict", ""),
+                })
+            if not page.get("has_more"):
+                break
+            page = store.finding_page(limit=1000, cursor=page.get("next_cursor"))
+    elif findings_path.is_file():
         try:
             payload = json.loads(findings_path.read_text(encoding="utf-8", errors="replace"))
             findings = payload if isinstance(payload, list) else payload.get("findings") or []
@@ -53,7 +73,9 @@ def _load_source_evidence(repo: Path, target: str) -> dict:
             findings = []
     case_state: dict = {}
     case_path = repo / "state" / key / "case_state.json"
-    if case_path.is_file():
+    if primary:
+        case_state = TargetStore(repo, target).case_state()
+    elif case_path.is_file():
         try:
             case_state = json.loads(case_path.read_text(encoding="utf-8", errors="replace"))
         except (OSError, json.JSONDecodeError):

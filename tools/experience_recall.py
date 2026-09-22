@@ -32,10 +32,12 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 try:
     from tools.target_paths import canonical_target_value, target_storage_key
     from tools.target_memory import text_is_polluted
+    from tools.target_store import TargetStore, target_backend
 except ImportError:  # pragma: no cover - direct tools/ execution
     sys.path.insert(0, str(BASE_DIR))
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
     from target_memory import text_is_polluted  # type: ignore
+    from target_store import TargetStore, target_backend  # type: ignore
 
 
 # 每类条目的默认上限：聚合视图是工作集压缩的读形态，不是全量 dump
@@ -53,6 +55,13 @@ _KIND_TO_FIELD = {
     "dead_end": "dead_ends",
     "useful_pattern": "useful_patterns",
     "next_action": "next_actions",
+}
+
+_STORE_KIND = {
+    "lead": "hypothesis",
+    "dead_end": "negative",
+    "useful_pattern": "primitive",
+    "next_action": "handoff",
 }
 
 
@@ -121,6 +130,55 @@ def _load_target_memory(repo_root: Path, target: str) -> dict:
 def _collect_target_entries(
     repo_root: Path, target: str, kinds: list[str], query_tokens: set[str]
 ) -> list[dict]:
+    if target_backend(repo_root, target) == "primary":
+        store = TargetStore(repo_root, target)
+        selected = tuple(sorted({_STORE_KIND[kind] for kind in kinds if kind in _STORE_KIND}))
+        if not selected:
+            return []
+        rows: list[dict] = []
+        page = store.page("experiences", limit=1000)
+        while True:
+            rows.extend(
+                item for item in page.get("items", [])
+                if isinstance(item, dict) and item.get("kind") in selected
+            )
+            if not page.get("has_more"):
+                break
+            page = store.page("experiences", limit=1000, cursor=page.get("next_cursor"))
+        kind_by_store = {value: key for key, value in _STORE_KIND.items()}
+        entries: list[dict] = []
+        limits = {kind: DEFAULT_LIMITS[kind] for kind in kinds if kind in DEFAULT_LIMITS}
+        counts = {kind: 0 for kind in limits}
+        for row in reversed(rows):
+            kind = kind_by_store.get(str(row.get("kind") or ""))
+            if not kind or counts[kind] >= limits[kind]:
+                continue
+            structured = {
+                key: row[key]
+                for key in ("conditions", "reopen_when", "next_intent")
+                if str(row.get(key) or "").strip()
+            }
+            candidate = {
+                "kind": kind,
+                "target": target,
+                "ts": row.get("created_at", ""),
+                "text": str(row.get("statement") or "").strip(),
+                "entry_id": row.get("id", ""),
+                "evidence_refs": [],
+                "structured": structured or None,
+            }
+            if not candidate["text"] or not _entry_matches(candidate, query_tokens):
+                continue
+            expanded = store.experience(str(row.get("id") or ""))
+            candidate["evidence_refs"] = [
+                f"{item.get('operation_id')}:{item.get('step')}"
+                for item in expanded.get("evidence", [])
+                if isinstance(item, dict)
+            ]
+            entries.append(candidate)
+            counts[kind] += 1
+        return entries
+
     memory = _load_target_memory(repo_root, target)
     entries: list[dict] = []
     for kind in kinds:

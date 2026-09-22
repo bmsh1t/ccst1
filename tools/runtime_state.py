@@ -49,16 +49,50 @@ try:
     from tools.recon_adapter import ReconAdapter
     from tools.recon_gate import gate_from_record
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
+    from tools.target_store import TargetStore, target_backend, target_switch_lock
 except ImportError:  # pragma: no cover - direct tools/ execution
     from browser_mcp_import import BROWSER_FRESHNESS_SECONDS, inspect_mcp_browser_readiness
     from finding_index import load_finding_index, verify_finalized_finding_owner_provenance
     from recon_adapter import ReconAdapter
     from recon_gate import gate_from_record  # type: ignore
     from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
+    from target_store import TargetStore, target_backend, target_switch_lock  # type: ignore
 
 SCHEMA_VERSION = 2
 RUNNING_MARKER_STALE_SECONDS = 7200
 RUNTIME_PHASES = frozenset({"recon", "scan"})
+
+
+def _primary_finding_rows(repo_root: Path, target: str) -> list[dict] | None:
+    """Return Store-owned findings, or None for an uncut legacy target."""
+    if target_backend(repo_root, target) != "primary":
+        return None
+    store = TargetStore(repo_root, target)
+    rows: list[dict] = []
+    page = store.finding_page(limit=1000)
+    while True:
+        for item in page.get("items", []):
+            assessment = item.get("assessment") or {}
+            verdict = str(assessment.get("verdict") or "").strip().lower()
+            rows.append({
+                "id": item["id"],
+                "url": item["endpoint"],
+                "endpoint": item["endpoint"],
+                "type": item["family"],
+                "category": item["family"],
+                "vuln_class": item["family"],
+                "title": item["title"],
+                "summary": item["claim"],
+                "validation_status": {
+                    "confirmed": "validated",
+                    "refuted": "rejected",
+                }.get(verdict, "unvalidated"),
+                "report_status": "generated" if item.get("reports") else "not_generated",
+                "assessment": assessment,
+            })
+        if not page.get("has_more"):
+            return rows
+        page = store.finding_page(limit=1000, cursor=page.get("next_cursor"))
 
 # Whitelist of fields that actually get persisted to session.json.
 # Anything else passed to update_runtime_state() is silently dropped.
@@ -310,12 +344,13 @@ def runtime_state_mutation_lock(repo_root: str | Path, target: str):
     """Serialize one target's runtime-state read/modify/write sequence."""
     lock_path = _state_dir(repo_root, target) / "locks" / "session.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with lock_path.open("a+", encoding="utf-8") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    with target_switch_lock(repo_root, target):
+        with lock_path.open("a+", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _migrate_legacy_payload(payload: dict) -> dict:
@@ -471,6 +506,23 @@ def _line_count(path: Path) -> int:
 
 def _derive_queue_state(repo_root: Path, target: str) -> dict:
     """Read only the durable queue projection needed for runtime status."""
+    if target_backend(repo_root, target) == "primary":
+        store = TargetStore(repo_root, target)
+        page = store.page("actions", limit=1000)
+        rows = list(page.get("items") or [])
+        while page.get("has_more"):
+            page = store.page("actions", limit=1000, cursor=page.get("next_cursor"))
+            rows.extend(page.get("items") or [])
+        active_statuses = {"ready", "claimed"}
+        final_statuses = {"blocked", "completed", "cancelled"}
+        return {
+            "status": "valid",
+            "active": sum(1 for item in rows if item.get("status") in active_statuses),
+            "final": sum(1 for item in rows if item.get("status") in final_statuses),
+            "total": len(rows),
+            "backend": "primary",
+            "revision": page.get("revision", 0),
+        }
     path = _state_dir(repo_root, target) / "action_queue.json"
     if not path.is_file():
         return {"status": "missing", "active": 0, "final": 0, "total": 0}
@@ -756,10 +808,11 @@ def inspect_recon_artifacts(repo_root: str | Path, target: str) -> dict:
     )
     counts.update(exposure_counts)
     counts.update(infra_counts)
-    findings_payload = load_finding_index(
-        findings_dir,
-        target=target,
-        allow_legacy=True,
+    primary_findings = _primary_finding_rows(repo_root, target)
+    findings_payload = (
+        {"findings": primary_findings}
+        if primary_findings is not None
+        else load_finding_index(findings_dir, target=target, allow_legacy=True)
     )
     counts["structured_findings"] = len(
         [
@@ -1240,14 +1293,18 @@ def derive_state_view(repo_root: str | Path, target: str) -> dict:
         "validated_pending_report": 0,
         "reports_generated": 0,
     }
-    try:
-        findings_payload = load_finding_index(
-            findings_dir,
-            target=target,
-            allow_legacy=True,
-        )
-    except Exception:  # noqa: BLE001 — derivation must never crash callers
-        findings_payload = {}
+    primary_findings = _primary_finding_rows(repo_root_p, target)
+    if primary_findings is not None:
+        findings_payload = {"findings": primary_findings}
+    else:
+        try:
+            findings_payload = load_finding_index(
+                findings_dir,
+                target=target,
+                allow_legacy=True,
+            )
+        except Exception:  # noqa: BLE001 — derivation must never crash callers
+            findings_payload = {}
     items = [
         item for item in findings_payload.get("findings", [])
         if isinstance(item, dict) and item.get("id")
@@ -1260,14 +1317,17 @@ def derive_state_view(repo_root: str | Path, target: str) -> dict:
         if val_status == "needs_owner_revalidation":
             findings["owner_revalidation_pending"] += 1
             continue
-        provenance = verify_finalized_finding_owner_provenance(
-            findings_dir,
-            item,
-            target=target,
-        )
-        if provenance.get("required") and not provenance.get("valid"):
-            findings["owner_revalidation_pending"] += 1
-            continue
+        # Store rows have their own transactional identity and do not carry
+        # the legacy findings.json mutation-event provenance contract.
+        if primary_findings is None:
+            provenance = verify_finalized_finding_owner_provenance(
+                findings_dir,
+                item,
+                target=target,
+            )
+            if provenance.get("required") and not provenance.get("valid"):
+                findings["owner_revalidation_pending"] += 1
+                continue
         report_status = str(item.get("report_status", "not_generated") or "not_generated").lower()
         if val_status in {"unvalidated", "candidate", "partial", "needs_validation"}:
             findings["pending_validation"] += 1
@@ -1325,16 +1385,20 @@ def derive_owner_projection(repo_root: str | Path, target: str) -> dict:
     matrix_path = repo / "evidence" / storage_key / "coverage_matrix.json"
 
     findings: list[dict] = []
-    findings_authoritative = findings_path.is_file()
-    try:
-        payload = load_finding_index(
-            findings_dir,
-            migrate_legacy=False,
-            target=resolved_target,
-            allow_legacy=True,
-        )
-    except (OSError, ValueError):
-        payload = {}
+    primary_findings = _primary_finding_rows(repo, resolved_target)
+    findings_authoritative = primary_findings is not None or findings_path.is_file()
+    if primary_findings is not None:
+        payload = {"findings": primary_findings}
+    else:
+        try:
+            payload = load_finding_index(
+                findings_dir,
+                migrate_legacy=False,
+                target=resolved_target,
+                allow_legacy=True,
+            )
+        except (OSError, ValueError):
+            payload = {}
     for item in payload.get("findings", []) if isinstance(payload, dict) else []:
         if not isinstance(item, dict):
             continue
@@ -1352,7 +1416,7 @@ def derive_owner_projection(repo_root: str | Path, target: str) -> dict:
 
     tested_endpoints: set[str] = set()
     endpoint_status: dict[str, set[str]] = {}
-    ledger_authoritative = ledger_path.is_file()
+    ledger_authoritative = ledger_path.is_file() and primary_findings is None
     # Actor/lane history is advisory for Surface ranking.  A ledger
     # ``tested_clean`` row must not hide the endpoint from another family.
 
@@ -1402,7 +1466,11 @@ def derive_owner_projection(repo_root: str | Path, target: str) -> dict:
         "tested_endpoints": sorted(tested_endpoints),
         "untested_endpoints": untested_endpoints,
         "sources": {
-            "findings": str(findings_path) if findings_authoritative else "",
+            "findings": (
+                str(repo / "state" / storage_key / "metadata.sqlite3")
+                if primary_findings is not None
+                else str(findings_path) if findings_authoritative else ""
+            ),
             "ledger": str(ledger_path) if ledger_authoritative else "",
             "coverage": str(matrix_path) if matrix_authoritative else "",
         },

@@ -1,153 +1,213 @@
-# AI-Native Architecture Contract
+# Claude-Native Architecture Contract
 
-This is the authoritative architecture contract for the file-backed, Linux-first, single-operator runtime. It defines logical boundaries; it does not require a directory migration or a new framework.
+This is the authoritative target architecture for the Linux-first, single-operator
+Claude Agent enhancement layer. The approved refactor replaces the former
+file-format/CLI compatibility constraints; it does not build another Agent runtime.
 
-## Five Planes
+## Implementation and Cutover Status
+
+The refactor is in progress. `tools/target_store.py` implements transactional domain
+commands and read-only queries for isolated target copies. It is **not yet the
+backend used by the legacy runtime**. Existing targets have not been migrated.
+Do not initialize it beside a running legacy target or interpret unit-test success
+as completed real-target cutover. Runner/native registration, validation, reports,
+Case, primary queries, Checkpoint and round settlement are wired and tested in
+isolated fixtures. Actual migration and retirement of adapters still used by
+unswitched targets remain separate work.
+The explicit `tools/action_queue.py add|claim|resolve|list` surface now has a
+primary-only thin adapter for isolated fixtures: it reads/writes `TargetStore`
+actions and never creates the legacy JSON queue. This does not switch the
+remaining autopilot consumers or authorize a real-target cutover.
+
+`tools/evidence_identity.py` already owns the shared vocabulary and endpoint
+normalizers. Ledger and native evidence registration accept valid open-ended
+families; canonical Coverage mapping remains optional and unknown labels cannot close it.
+
+## Responsibilities
 
 ```text
-Intelligence -> AI Decision -> Deterministic Kernel -> Execution
-                                      |                 |
-                                      +---- owners <----+
-                                      ^
-                               Projection views
+Claude native reasoning / planning / tool use / context
+    |-- on-demand Skills / Rules / Knowledge
+    |-- native tools or deterministic executors -> raw evidence files
+    |-- explicit domain commands -> per-target transactional metadata
+    `-- read-only queries <----------------------'
+                  |
+        Context / candidates / Coverage / reports / handoff views
 ```
 
-### Intelligence plane
+Claude chooses hypotheses, routes, priority, test inputs, interpretations, and
+whether to investigate a chain. Project tools enforce mechanical constraints,
+preserve evidence, and expose facts. URL words, family labels, object labels, and
+hint counts must not substitute for business-value judgment. There is no new
+Planner, Controller, model loop, automatic chain generator, or session manager.
 
-`rules/`, on-demand `skills/`, and governed `knowledge/` provide constraints, decision branches, ROI signals, evidence expectations, and stop/rotate conditions. They do not own target progress, action status, coverage, findings, report readiness, or closure. Skills preserve model choice: they are decision trees and evidence contracts, not fixed test sequences, input catalogues, or duplicated tool manuals.
+Skills provide methods, applicability conditions, counterexamples and evidence
+requirements, not fixed test sequences or duplicated native tool manuals.
+`tools/skill_catalog.py` and `tools/knowledge_registry.py` remain catalog owners;
+Context Pack does not introduce a second registry.
 
-### AI decision plane
+## Domain Facts and Ownership
 
-The inline model chooses hypotheses, route, ROI, and runtime test inputs from bounded owner-backed projections. It requests work through explicit `tools/action_queue.py claim --id` writes (dumb queue interface, 2026-09-14: the selector, judgment-field merge, 16-field activation gate, and `activation_contract_projection()` are retired; six mechanical write-time invariants remain — flock/atomic write, execution_key dedup, runner-field anti-forgery, target-evidence binding, hypothesis cap counting, runner-observation preservation); no parallel intent schema is permitted. The model cannot write owner files or declare lifecycle finality.
-
-### Deterministic kernel
-
-The kernel enforces Scope/Auth, red lines, budgets, queue lifecycle, Runtime/Case state, canonical evidence, Finding lifecycle, locks, and recovery. Durable owners remain separate:
-
-- Scope/Auth context: scope and credential boundaries
-- Runtime State: non-derivable execution and wait state
-- Action Queue: admitted work and action lifecycle
-- Case State: actor/object/business context
-- Evidence Ledger and raw operation evidence: replay-backed observations
-- Finding Index: finding identity, provenance, and final validation status
-- Target Memory and history owners: narrowly scoped advisory/episodic context
-
-Each owner has one schema and mutation API. Cross-owner atomicity is not implied by file locking; coordination must be explicit, idempotent, and reconcilable.
-
-### Execution plane
-
-Reusable HTTP, browser, MCP, subprocess, source, and validation capabilities execute admitted actions. Execution returns the canonical validation-runner summary and raw evidence shape already consumed by the Evidence Ledger and Finding Index. A protocol name alone (WebSocket, gRPC, GraphQL, or LLM/RAG) does not justify a dedicated runner; add one only when an existing execution boundary cannot provide deterministic, reproducible, budgeted, evidence-linked behavior reusable across targets.
-
-### Projection plane
-
-Surface, Coverage, Checkpoint witness, Resume, Context Pack, Autopilot views, and Report are projections or generated artifacts. They may write only their own rebuildable cache/artifact and may request an owner mutation through that owner's public API. They must never write another owner's file, become a second lifecycle reducer, or turn advisory prose into finality. Deleting and rebuilding a projection must leave canonical Runtime, Queue, Case, Evidence, and Finding facts unchanged.
-
-## Existing Boundary Contracts
-
-| Boundary | Contract | Authority |
+| Concept | Durable meaning | Not its responsibility |
 |---|---|---|
-| Skill identity -> route admission | dependency-free IDs, paths, route modes, and dimensions | `tools/skill_catalog.py` |
-| AI -> kernel | versioned activation metadata | `tools/action_queue.py` |
-| execution -> evidence | canonical runner summary plus raw operation material | `tools/validation_runner.py` |
-| runner evidence -> validation/report finality | shared witness verification | `tools/runner_witness.py` |
-| evidence -> finding | provenance and finality checks | `tools/finding_index.py` |
-| target -> storage | canonical target and storage-key helpers | `tools/target_paths.py` |
-| knowledge -> context | registry-backed selection and budgets | `tools/knowledge_registry.py` / `tools/context_pack.py` |
+| Action | One intent, explicit claim, progress and blocking reason | A second Case backlog or computed business ROI |
+| Execution attempt | A particular real execution, source and action association | Merging real executions because their bytes match |
+| Registration / observation | Published input/output references, order, time, errors and completeness | Automatically confirming a vulnerability or closing an action |
+| Finding / technical assessment | A claim and an explicit evidence-linked boundary/impact judgment | Destination eligibility or payment policy |
+| Delivery decision | Eligibility for one destination, with reason and assessment binding | Rewriting technical validity |
+| Case context | Actors, objects, tenant/workflow conditions and private session references | Another execution lifecycle |
+| Conditional experience | Preconditions, failures, reopening conditions, primitives and next intent | Duplicated finding state or automatically created tasks |
 
-Do not introduce a universal `RuntimeStore`, a second result/intent schema, or a second lifecycle owner. Existing public imports, CLI defaults, schemas, and direct-script compatibility remain constraints.
+Each logical owner has explicit domain commands. Sharing a physical database
+does not permit consumers to UPDATE another owner's guessed lifecycle fields.
+Registration, assessment, delivery decision, delivery event and action resolution
+are separate commands. A generated report artifact is not an external submission;
+submission receipts are appended only by an explicit delivery-event command.
+Known, duplicate or accepted-risk issues do not automatically become technically
+refuted. A valuable report claim cannot make unsupported evidence valid.
 
-Skill roles and content owners are described in `skills/README.md`; they are
-separate from the catalog's routing modes. Route admission and governance import
-`tools/skill_catalog.py` directly, without depending on Context Pack's evidence
-assembly. `tools/context_pack.py` does not emit `selected_skill`/`skill_route`
-fields: skill discovery is native to the platform Skill surface, and
-`skill_route` appears only as AI-authored Queue metadata at claim time. It
-does not maintain a second registry.
+## Storage and Transactions
 
-## Change Classification
+- One SQLite database per target: `state/<target-key>/metadata.sqlite3`, using
+  standard-library `sqlite3`, explicit tables, foreign keys and indexes. Identity,
+  relations, lifecycle and query keys are columns, not an arbitrary JSON store.
+- Action context uses one bounded `metadata_json` detail on the Action row. It may
+  carry AI-authored hypothesis, route, dimension and evidence references, but it
+  cannot carry Runner-owned observations or become an execution/assessment/delivery
+  owner. Claims merge it through the action version/CAS; hypothesis caps and
+  target-owned evidence/card references are enforced before mutation.
+- Legacy writer admission binds the actual destination owner and runs inside the
+  shared target switch lock. Explicit target/output overrides cannot redirect a
+  different owner's files. Runner summaries bind target/backend/store generation;
+  preview execution and report publication reject before generated artifacts.
+- Database identity binds target, schema version, store instance and revision.
+  Missing, corrupted, foreign-target and unsupported-version stores fail visibly.
+- Writes use short transactions. Registration publishes operation, observation,
+  artifact bindings, optional finding links and audit together or none of them.
+  No network call, model invocation or large file hash runs inside the transaction.
+- Repeating a command is idempotent only for identical content and identity.
+  Changed content under the same command key is a conflict, not last-writer-wins.
+  Claims and judgments use explicit expected versions/previous judgment IDs.
+- A new execution gets a new attempt ID. Additional recovered evidence can revise
+  the registration of the same attempt by explicitly referencing the prior
+  operation; old operation records remain intact. Unknown effects are not a
+  request to replay the network action.
+- Raw requests/responses, screenshots, HAR, JavaScript, source and report bodies
+  remain files. Publish files first, then register metadata. Failure retains raw
+  files for registration retry; missing or changed registered evidence is an
+  integrity error, never empty history.
+- Scanner-pass output, source-hunt bundles, technology/intel artifacts and their
+  bounded review files are raw-material or rebuildable projection outputs. Their
+  explicit producers may write them for a primary target, but those writes never
+  advance Store revision, create findings, close Coverage, or replace an
+  observation. Producers bind the target and publish atomically; missing, stale,
+  or corrupt output remains an explicit refresh/review state.
+- Artifact identities are immutable. Availability and provenance changes are
+  append-only artifact events; authorization is derived from the latest event and
+  a fresh byte/hash check, so invalidated or revoked material remains historical
+  evidence rather than being rewritten as absent.
+- Observation envelopes use a closed relational head for target, operation,
+  timestamp, actor, outcome, family and artifact bindings, with only a bounded
+  canonical `detail` object open for extension. Queries never infer relationship
+  keys from `detail`.
+- Protect database/files and credential material with restrictive permissions.
+  Session secrets stay in private files; metadata stores references, not headers
+  or tokens. Public projections/exports need an explicit redaction boundary.
+- WAL and `synchronous=FULL` target local filesystems, not network shares. Read-only
+  connections use query-only snapshot transactions; SQLite may manage WAL/SHM
+  bookkeeping, but queries never mutate domain rows. Backups use SQLite's backup
+  API, not a copy of the main database while WAL may contain newer writes.
+- SQLite does not replace process/resource locks, enforce all native tool usage,
+  make files and network requests transactional, or prove semantic correctness.
 
-| Change | Default surface | Validation |
-|---|---|---|
-| reasoning, ROI, routing, stop condition | Skill/Knowledge/Rules | focused governance or recall test |
-| reusable knowledge | card + registry | `knowledge_audit --strict` and recall test |
-| deterministic execution | existing executor/runner and evidence adaptation | focused executor/evidence test |
-| projection/view behavior | projection owner and own-cache tests | focused projection test |
-| lifecycle, schema, or invariant | one named durable owner plus consumers/migration | owner, cross-owner, and recovery tests |
+## Query, Coverage and Memory
 
-An ordinary capability change should not touch a durable owner. If it does, the requirement must name the invariant that changed and explain every owner crossing. File count is a review signal, not a correctness gate.
+Queries do not create actions, submit judgments, reconcile owners or refresh
+canonical state. Rebuildable caches may be refreshed only through explicit
+operations. Primary Surface may derive recon component inventory in memory, but
+must not publish inventory, probe logs or observation summaries as a read side
+effect; legacy cache refresh remains an explicit compatibility path. Primary
+Checkpoint construction publishes neither witness nor Coverage cache. Primary
+round settlement closes the runtime round explicitly without old root-claim/Queue
+coordination or implicit Surface refresh.
 
-## Memory Contract
+Primary Coverage is rebuilt in memory from current truth. Historical matrix cells
+and scanner advice do not authorize closure, and merely storing a Finding does not
+make it tested. Exact terminal dispositions share the existing closure resolver;
+query/hash/v2 evidence is not widened to a whole endpoint. Its source snapshot
+includes reference time, Store/operation identities, evidence health and discovery
+inputs. Primary Context Pack reloads optional caller shortcuts because a stable
+Store revision alone cannot prove external artifact integrity.
 
-Memory is retention and recall policy, not a universal state owner.
+Primary report bodies are immutable, with identities bound to the Finding and
+current assessment/delivery. INDEX/SUMMARY are rebuildable snapshots carrying the
+Store binding and as-of boundary; drift before publication fails visibly. A retry
+preserves registered bodies, and a stale or damaged report leaves the current index
+without deleting history. None of these operations imply external submission.
 
-The four-layer memory model (sensory → working → episodic → semantic, cf.
-Generative Agents arXiv:2304.03442 and MemGPT arXiv:2310.08560) is the design
-principle for information lifecycle. The five planes own software
-responsibilities; these four layers own information lifecycle. The layers map
-onto existing owners — no new memory modules:
+Bounded queries report ordering, scope, exact remainder or explicit unknown,
+and expansion references. Cursors bind target, store instance, revision and filter;
+stale cursors fail instead of silently skipping or repeating a changed dataset.
+Canonical Coverage and Closure share identity/interpretation rules. Unknown family
+labels preserve observations but cannot close canonical cells. A projection is not
+a second authority for technical finality.
 
-| Layer | Purpose | Existing owner |
-|---|---|---|
-| L1 transient observation | new observations; Claude judges what is worth attention; raw evidence stays in the Ledger | Observation Inventory, probe/runner outputs |
-| L2 working memory | only the current hypothesis, key evidence, constraints, next step | Claude's context + Context Pack (disposable; rebuild from owners) |
-| L3 episodic (per-target) | what was done, why it failed, where to continue | `tools/target_memory.py` goals/hypotheses/leads/handoff |
-| L4 semantic (cross-target) | reusable methods, applicability conditions, counterexamples | Knowledge Cards + `/distill` + `/retrospect` review |
+Memory is retention and recall of the same facts, not another lifecycle system:
+raw observations remain expandable; Claude's working context is disposable;
+target experience retains conditions and evidence links; cross-target knowledge
+is sanitized and reviewed. Primitives need not have continuation hints to remain
+queryable. A negative result applies to its recorded conditions, not forever.
+No background extraction, automatic task-per-primitive, or extra vector service
+is added. `hunt-memory/targets/<target>.json` remains a legacy read projection and
+must not acquire new duplicate finding, coverage or action truth.
 
-| Retention authority | Recall/retention boundary |
-|---|---|
-| working context (Context Pack and bounded views) | disposable; rebuild from owners |
-| operational facts (Runtime, Queue, Case, Observation, Evidence, Finding) | canonical; restart-safe |
-| target episodic memory (`tools/target_memory.py`) | goals, hypotheses, leads/dead ends, next intent, handoff; advisory |
-| cross-target experience (sanitized Knowledge candidates) | evidence-linked and reviewed before promotion |
-| semantic memory (Skills, Knowledge, Rules) | governed, on-demand, bounded by registry |
-| audit memory (journal/audit JSONL) | append-only and rotated; not default context |
+## Dependency and Trust Boundaries
 
-### Layer-flow rules (efficiency mechanisms)
+```text
+CLI / Claude-facing commands / execution adapters
+                    -> domain commands and queries
+                    -> domain identity / validation / sqlite3 / files
+```
 
-1. **Working-set compression.** Do not push every observation, history row,
-   or knowledge card into context. Claude retains what the current decision
-   needs; everything else stays a queryable pointer (owner file path, ledger
-   row, card reference). Bounded views and `--projection-only` output are the
-   default read shape; full artifacts are expanded only by reference.
-2. **Consolidate at meaningful nodes only.** Distillation to L3/L4 happens
-   when a hypothesis is falsified, a stable conclusion is reached, a phase
-   changes, or a session pauses/hands off — the checkpoint cadence already
-   names these nodes. Every observation must NOT be forced through an
-   add→classify→commit pipeline; ordinary observations stay in the Ledger.
-3. **Question-driven recall.** Read the current task and per-target
-   experience first (`skills/runtime-protocol.md#shared-knowledge-recall`);
-   consult L4 only when that is insufficient. Recalled experience carries
-   applicability conditions — it prevents re-walking dead ends without
-   freezing old conclusions into permanent rules.
+Domain code must not import Coverage, Checkpoint, CLI, or runners. Stable identity
+functions live in `tools/evidence_identity.py`; target typing/storage keys remain
+in `tools/target_paths.py`. Existing import re-exports are temporary compatibility,
+not a second implementation.
 
-`hunt-memory/targets/<target>.json` is a compatibility/read projection. It cannot authorize validation, report readiness, coverage closure, or global completion. New features must not add duplicate finding, tested-endpoint, or lifecycle facts to it. Target-specific secrets, credentials, tokens, personal data, and customer data never enter cross-target or semantic memory. Retrospective output may propose a Knowledge candidate, Skill change, or Rule change, but only the existing review/lifecycle owners can promote it.
+Target pages, responses, JavaScript and logs are external data, including when
+quoted by memory or an assessment. Hashes attest byte consistency, not truth or
+instruction authority. Scope/Auth, side-effect rules, platform permissions,
+executor checks and post-hoc registration have different guarantees; do not call
+registration an execution sandbox or a semantic verifier.
 
-## Admission and Evolution
+## Migration and Retirement
 
-A new runner/lane is admitted only when the model cannot express the deterministic operation through an existing execution boundary, the behavior requires reproducibility/recovery/budget/evidence write-back, it is reusable across targets or routes, it has one owner and a focused regression, and it creates no competing finding/coverage/checkpoint truth.
+1. Import isolated copies first. Preserve IDs, timestamps, provenance, raw hashes,
+   unfinished work and private references. Map Case work to actions only through
+   explicit associations; ambiguous links and corrupted/half-committed history
+   are reported/quarantined, never silently merged or promoted.
+2. Validate entity/relationship counts, evidence bindings and actual semantics.
+   Do not reproduce historical bugs merely for byte-for-byte equivalence.
+3. Cut over quiescent targets only after writers and consumers are connected.
+   One writable backend per target; no permanent dual-write. Freeze old metadata
+   as migration evidence and preserve original target artifacts. Runtime,
+   coverage, unsafe-review and target-memory file mutations coordinate through
+   the same target switch lock; primary/preview target-memory writes fail closed.
+4. Retire old metadata writers, compensating sync, Case's second queue/ranker,
+   duplicate closure reducers and compatibility adapters after migration.
+5. After new writes exist, rollback must export/migrate the current truth or fix
+   forward. Pointing at stale pre-cutover JSON snapshots would lose progress.
 
-Large modules are not split by line count. Extract one real boundary at a time only for duplicated owner logic, a stable pure policy with at least two consumers, or a proven CLI/persistence seam. A wave that finds no such boundary records a no-production-change result.
+## Verification and Evolution
 
-The optimization program is independently revertible: baseline cleanup, architecture/governance, memory authority, projection reconciliation, runtime-root/CI reproducibility, one-hotspot extraction, then ten-change adoption measurement. Each wave must leave the repository releasable.
+Measure capability and efficiency separately: valid discoveries, verification
+depth, coverage and evidence completeness alongside requests, Token use, latency,
+I/O and recovery work. Compare native Claude, the current runtime and the target
+runtime on equivalent fixtures/permissions/budgets using target-side oracles and
+actual traces. No speedup percentage or model improvement is established yet.
 
-### Projection reconciliation result
-
-The initial Wave 3 audit found no production reverse writes: Surface, Context
-Pack, Resume, and Report write only their own rebuildable artifacts; Checkpoint
-and Autopilot coordinate durable owners through their public APIs. Coverage is
-also projection-only by default: `mark_cell` writes its matrix, while the
-explicit `write_finding=True` path calls the Finding owner's `upsert_finding`
-API rather than writing a second Finding store or finality state. This is a
-verified no-production-change result, not permission to add a generic
-projection framework.
-
-### Hotspot selection result
-
-The first post-contract hotspot review found no pure policy with duplicated
-consumers and no stable CLI/persistence seam that can be extracted without a
-new compatibility boundary. Large modules remain unchanged until normal work
-proves one of those conditions.
-
-## Prohibited by This Contract
-
-No database/service migration, physical directory rewrite, generic adapter framework, protocol-specific automatic chain, fixed model test sequence, payload catalogue in core Skills, or second lifecycle owner is introduced by architecture work alone.
+Ordinary method/knowledge improvements should not change the persistence core.
+New domain facts or invariants require focused owner, transaction and consumer
+tests. Module boundaries follow real responsibilities, not line-count targets.
+No ORM, generic repository framework, event bus, event-sourcing runtime, database
+service or duplicate Agent capability is required.

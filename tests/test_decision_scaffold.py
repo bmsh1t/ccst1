@@ -163,6 +163,38 @@ def test_validate_cli_scaffold_roundtrip(tmp_path, capsys):
     assert payload["evidence"]["runner_summary"]
 
 
+def test_validate_cli_scaffold_reads_primary_store_without_legacy_findings(tmp_path, monkeypatch, capsys):
+    from tools import validate
+    from tools.target_store import TargetStore
+
+    target = "primary.example"
+    store = TargetStore(tmp_path, target)
+    store.initialize()
+    store.create_finding(
+        command_id="create-f1",
+        finding_id="F-1",
+        endpoint=f"https://{target}/api/items/1",
+        method="POST",
+        family="auth_bypass",
+        title="Peer item",
+        claim="Peer item is visible",
+        actor="operator",
+    )
+    run_dir = tmp_path / "evidence" / target / "validation" / "F-1" / "20260911T000000Z-abcd1234"
+    run_dir.mkdir(parents=True)
+    (run_dir / "summary.json").write_text(
+        json.dumps({"schema_version": 1, "finding_id": "F-1", "result": "tested_finding"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(validate, "BASE_DIR", tmp_path)
+
+    assert validate.main(["--target", target, "--finding-id", "F-1", "--scaffold"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["method"] == "POST"
+    assert payload["endpoint"] == f"https://{target}/api/items/1"
+    assert not (tmp_path / "findings" / target / "findings.json").exists()
+
+
 def test_resolve_cli_rejects_missing_and_empty_status():
     """Step-1 收尾回归：resolve 缺 --status 或传空串必须 argparse 拒绝。
 

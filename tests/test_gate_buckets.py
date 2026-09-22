@@ -105,6 +105,7 @@ REPORT_PATTERNS = [
     r"witness",
     r"artifact",
     r"queue changed",
+    r"^primary checkpoint inputs changed during assembly$",
     r"operation material",
     r"evidence reference",
     r"evidence must be",
@@ -427,6 +428,14 @@ def test_bucket_registry_classifies_representative_gates() -> None:
         assert classify_gate_message(message) == bucket, (
             f"expected {bucket!r} for {message!r}"
         )
+
+
+def test_checkpoint_snapshot_consistency_gate_is_not_a_route_gate() -> None:
+    assert classify_gate_message("primary checkpoint inputs changed during assembly") == "REPORT"
+    assert classify_gate_message("primary checkpoint test route changed during assembly") is None
+    assert classify_gate_message(
+        "primary checkpoint inputs changed during assembly; select another route"
+    ) is None
 
 
 def test_bucket_patterns_compile() -> None:

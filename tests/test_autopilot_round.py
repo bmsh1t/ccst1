@@ -19,6 +19,7 @@ from tools.checkpoint import (
     record_round_lane_result,
 )
 from tools.surface_projection import load_surface_projection
+from tools.target_store import TargetStore
 
 
 def _witness(tmp_path, target: str = "target.com"):
@@ -169,8 +170,11 @@ def test_prepare_does_not_start_new_round_before_global_review(monkeypatch, tmp_
     assert calls == []
 
 
-def test_settle_round_refuses_started_lane_without_writing(tmp_path):
+@pytest.mark.parametrize("primary", [False, True])
+def test_settle_round_refuses_started_lane_without_writing(tmp_path, primary):
     target = "target.com"
+    if primary:
+        TargetStore(tmp_path, target).initialize()
     begin_round(tmp_path, target, max_lanes=1)
     record_round_lane(tmp_path, target, lane="coverage:/api/orders", max_lanes=1)
     witness = _witness(tmp_path, target)
@@ -208,6 +212,96 @@ def test_settle_round_closes_terminal_lane_and_replays_idempotently(tmp_path):
     assert replay["status"] == "already_settled"
     assert replay["round_progress"]["round_id"] == settled["round_progress"]["round_id"]
     assert witness.read_bytes() == after
+
+
+@pytest.mark.parametrize("invalid_evidence", [False, True])
+def test_primary_settle_only_closes_runtime_round(monkeypatch, tmp_path, invalid_evidence):
+    target = "target.com"
+    store = TargetStore(tmp_path, target)
+    store.initialize()
+    store.create_action(
+        command_id="create-work", action_id="WORK-1", intent="Review context",
+        execution_key="context-review", actor="ai", kind="work", subject={"target": target},
+    )
+    begin_round(tmp_path, target, max_lanes=1)
+    lane = "sqli:/api/orders"
+    record_round_lane(tmp_path, target, lane=lane, max_lanes=1)
+    evidence_ref = _write_evidence(tmp_path, target)
+    record_round_lane_result(
+        tmp_path, target, lane=lane, status="completed", decision="tested clean",
+        evidence_ref=evidence_ref, next_action="none",
+    )
+    if invalid_evidence:
+        (tmp_path / evidence_ref).write_text("", encoding="utf-8")
+    queue_path = tmp_path / "state" / target / "action_queue.json"
+    queue_path.write_text("{legacy-unreadable", encoding="utf-8")
+
+    def reject_legacy(*_args, **_kwargs):
+        pytest.fail("primary settlement called a legacy coordinator or implicit refresh")
+
+    for name in (
+        "reconcile_root_finding_claims", "list_root_finding_claims",
+        "_append_root_claim_queue_items", "sync_checkpoint_action_queue",
+        "_refresh_surface_if_pending",
+    ):
+        monkeypatch.setattr(autopilot_round_module, name, reject_legacy)
+
+    def snapshot():
+        return {
+            str(path.relative_to(tmp_path)): (path.read_bytes(), path.stat().st_mtime_ns)
+            for path in tmp_path.rglob("*")
+            if path.is_file() and "locks" not in path.parts
+            and path.name not in {"metadata.sqlite3-wal", "metadata.sqlite3-shm"}
+        }
+
+    before = snapshot()
+    revision = store.page("actions")["revision"]
+    action_before = store.action("WORK-1")
+    if invalid_evidence:
+        with pytest.raises(ValueError, match="invalid completed lane evidence"):
+            settle_round(tmp_path, target)
+        assert snapshot() == before
+        return
+
+    settled = settle_round(tmp_path, target)
+    assert settled["status"] == "settled"
+    assert settled["round_progress"]["status"] == "completed"
+    assert settled["checkpoint"]["action_queue_sync"]["status"] == "skipped"
+    assert settled["checkpoint"]["runtime_witness"]["status"] == "not_published"
+    after = snapshot()
+    witness_ref = str(_witness(tmp_path, target).relative_to(tmp_path))
+    assert {key: value for key, value in after.items() if key != witness_ref} == {
+        key: value for key, value in before.items() if key != witness_ref
+    }
+    replay = settle_round(tmp_path, target)
+    assert replay["status"] == "already_settled"
+    assert replay["round_progress"]["round_id"] == settled["round_progress"]["round_id"]
+    assert store.page("actions")["revision"] == revision
+    assert store.action("WORK-1") == action_before
+    assert snapshot() == after
+
+
+@pytest.mark.parametrize("backend", ["preview", "missing-primary", "corrupt-primary"])
+def test_settle_rejects_unavailable_backend_before_legacy_writes(monkeypatch, tmp_path, backend):
+    target = "target.com"
+    store = TargetStore(tmp_path, target)
+    store.initialize(allow_legacy=backend == "preview")
+    begin_round(tmp_path, target, max_lanes=1)
+    witness = _witness(tmp_path, target)
+    before = witness.read_bytes()
+    if backend == "missing-primary":
+        store.path.unlink()
+    elif backend == "corrupt-primary":
+        store.path.write_bytes(b"not sqlite")
+
+    def reject_legacy(*_args, **_kwargs):
+        pytest.fail("unavailable backend reached legacy reconciliation")
+
+    monkeypatch.setattr(autopilot_round_module, "reconcile_root_finding_claims", reject_legacy)
+    with pytest.raises(ValueError, match="preview|missing|target store failure"):
+        settle_round(tmp_path, target)
+    assert witness.read_bytes() == before
+    assert not (tmp_path / "state" / target / "action_queue.json").exists()
 
 
 @pytest.mark.parametrize("failure_point", ["checkpoint", "queue", "surface", "closure"])

@@ -134,7 +134,7 @@ identity, and cloud signals without re-enumerating everything.
 | `tools/autopilot_state.py` | Reading current autopilot state | Shared control facts plus compact read-only bootstrap/full diagnostic state; compact mode never ranks large surface bodies |
 | `tools/observation_inventory.py` | Large/resumed recon corpus | Persist neutral untouched/stale observations; stat-bound summary and revision cursor; never routes a Skill |
 | `tools/action_queue.py` | Actionable evidence exists or checkpoint has next actions | Persistent action queue: ingest, choose next, resolve, summarize |
-| `tools/target_case_state.py` | Multi-actor/object validation state | Actor/session/object registry; private auth refs; next validation |
+| `tools/target_case_state.py` | Multi-actor/object validation context | Actor/session/object/hypothesis registry and private auth refs; context memory only — no backlog, no route score |
 | `tools/case_state_seed.py` | Browser/recon/JS/source artifacts reveal object IDs but case state is empty | Read object-shaped observations and sources; no actor/runner selection or auto-write |
 | `tools/coverage_matrix.py` | Checking high-value untested cells | Endpoint × vuln-class matrix; emits auto-hints and lets Claude mark endpoint kind |
 | `tools/resume.py` | Continuing previous target work | `/pickup` backend — summarize prior session+untested endpoints |
@@ -158,7 +158,7 @@ identity, and cloud signals without re-enumerating everything.
 | Claude observes | First-pick tool |
 |---|---|
 | Concrete signal plus unresolved next verification question | smallest safe lookup/replay/diff/enrichment/probe, then checkpoint state |
-| Need to remember user_a/user_b sessions, owned objects, private markers, or IDOR backlog | `target_case_state.py summary/next` |
+| Need to remember user_a/user_b sessions, owned objects, private markers, or an open hypothesis | `target_case_state.py summary` (+ `add-actor`/`add-session`/`add-object`/`add-hypothesis`) |
 | `/orders/123`, `/invoices/42`, `/addresses/7`, `account_id`, `tenantId` appears in cached artifacts | `case_state_seed.py --target <target> --json`, then interpret the source-backed observations |
 | Concrete CMS/plugin/theme/library version observed, or network product/CPE identified | `/intel` → `tools/intel_engine.py`; add `/scan-cves` only after AI selects a reachable advisory |
 | 401/403 on interesting endpoint | AI direct browser/curl/raw request; optional `validation_runner.py request-diff` |

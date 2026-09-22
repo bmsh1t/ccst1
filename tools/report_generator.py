@@ -10,24 +10,27 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import sys
 import tempfile
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
 try:
     from action_queue import ACTIVE_STATUSES, load_queue, resolve_action
     from finding_index import (
+        _finding_backend_context,
         load_finding_index,
         update_finding_status,
         verify_finalized_finding_owner_provenance,
     )
     from target_paths import target_storage_key
     from target_paths import canonical_target_value, url_belongs_to_target
+    from target_store import ConflictError, StoreError, TargetStore, target_backend, target_mutation_lock, target_switch_lock
     from closure_resolver import canonical_vuln_class
     from contracts import artifact_digest_material, runner_operation_id
     from runner_witness import (
@@ -43,12 +46,14 @@ try:
 except ImportError:  # pragma: no cover - package import path
     from tools.action_queue import ACTIVE_STATUSES, load_queue, resolve_action
     from tools.finding_index import (
+        _finding_backend_context,
         load_finding_index,
         update_finding_status,
         verify_finalized_finding_owner_provenance,
     )
     from tools.target_paths import target_storage_key
     from tools.target_paths import canonical_target_value, url_belongs_to_target
+    from tools.target_store import ConflictError, StoreError, TargetStore, target_backend, target_mutation_lock, target_switch_lock
     from tools.closure_resolver import canonical_vuln_class
     from tools.contracts import artifact_digest_material, runner_operation_id
     from tools.runner_witness import (
@@ -1202,10 +1207,23 @@ def _is_reportable_structured_finding(
     findings_dir: str | os.PathLike | None = None,
     target: str | None = None,
     allow_legacy_draft: bool = False,
+    store: TargetStore | None = None,
 ):
     """Return whether a structured finding should enter auto-report generation."""
     if not isinstance(finding, dict) or not finding.get("url"):
         return False
+
+    if store is not None:
+        assessment = finding.get("assessment") if isinstance(finding.get("assessment"), dict) else {}
+        if str(assessment.get("verdict") or "").strip().lower() != "confirmed":
+            return False
+        return any(
+            item.get("status") == "eligible"
+            and not item.get("stale")
+            and str(item.get("assessment_id") or "") == str(assessment.get("id") or "")
+            for item in (finding.get("deliveries") or [])
+            if isinstance(item, dict)
+        )
 
     validation_status = str(finding.get("validation_status", "") or "").strip().lower()
     report_status = str(finding.get("report_status", "") or "").strip().lower()
@@ -1361,8 +1379,18 @@ def _create_or_reuse_report(report_file, report_content, finding):
     """
     path = Path(report_file)
     try:
-        with path.open("x", encoding="utf-8") as handle:
-            handle.write(report_content)
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent,
+                                             prefix=f".{path.name}.", delete=False) as handle:
+                temporary = Path(handle.name)
+                handle.write(report_content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.link(temporary, path)
+        finally:
+            if temporary is not None:
+                temporary.unlink()
         return "created"
     except FileExistsError:
         if not _report_file_matches_finding(path, finding):
@@ -1373,12 +1401,124 @@ def _create_or_reuse_report(report_file, report_content, finding):
         return "recovered"
 
 
+def _primary_report_store(repo_root, target):
+    backend = target_backend(repo_root, target)
+    if backend == "legacy":
+        return None
+    if backend != "primary":
+        raise StoreError(f"report publication is disabled for {backend} target")
+    return TargetStore(repo_root, target)
+
+
+def _primary_findings(store: TargetStore) -> list[dict]:
+    """Project Store findings into the report renderer's read-only shape."""
+    findings = []
+    page = store.finding_page(limit=1000)
+    while True:
+        for item in page.get("items", []):
+            if not isinstance(item, dict):
+                continue
+            finding = item
+            assessment = finding.get("assessment") or {}
+            reports = finding.get("reports") or []
+            report = next((item for item in reversed(reports) if not item.get("stale")), {})
+            artifact_ref = str(report.get("artifact_ref") or "").strip()
+            report_file = str(store.root / artifact_ref) if artifact_ref else ""
+            findings.append({
+                "id": finding["id"],
+                "type": finding["family"],
+                "category": finding["family"],
+                "title": finding["title"],
+                "summary": finding["claim"],
+                "url": finding["endpoint"],
+                "method": finding["method"],
+                "severity": "medium",
+                "confidence": assessment.get("verdict", ""),
+                "validation_status": "validated" if assessment.get("verdict") == "confirmed" else "",
+                "report_status": "generated" if report_file else "not_generated",
+                "report_id": report.get("id", ""),
+                "report_file": report_file,
+                "raw": finding["claim"],
+                "assessment": assessment,
+                "deliveries": finding.get("deliveries", []),
+                "reports": reports,
+                "evidence": finding.get("evidence", []),
+            })
+        if not page.get("has_more"):
+            break
+        page = store.finding_page(limit=1000, cursor=page.get("next_cursor"))
+    return findings
+
+
+def _process_primary_reports(store, report_dir, target_name):
+    """Publish report artifacts, then rebuild the index only from Store facts."""
+    for finding in _primary_findings(store):
+        if not _is_reportable_structured_finding(finding, store=store):
+            continue
+        assessment_id = finding["assessment"]["id"]
+        delivery = next(item for item in finding["deliveries"]
+                        if item["status"] == "eligible" and not item["stale"]
+                        and item["assessment_id"] == assessment_id)
+        # Registered bodies are immutable, including damaged historical artifacts.
+        if any(report["assessment_id"] == assessment_id
+               and report["delivery_id"] == delivery["id"]
+               for report in finding["reports"]):
+            continue
+        binding = json.dumps([store.target, finding["id"], assessment_id, delivery["id"]])
+        report_id = "report_" + hashlib.sha256(binding.encode("utf-8")).hexdigest()
+        report_file = str(Path(report_dir) / f"{report_id}.md")
+        content, _ = generate_report(finding, _report_vuln_type(finding), target_name,
+                                     repo_root=store.root)
+        _create_or_reuse_report(report_file, content, finding)
+        store.register_report(
+            command_id=f"report:{report_id}", report_id=report_id, finding_id=finding["id"],
+            assessment_id=assessment_id, delivery_id=delivery["id"], artifact=report_file,
+            actor="report-generator",
+        )
+
+    source_binding = store.binding()
+    as_of = datetime.now(timezone.utc).isoformat()
+    entries = []
+    for finding in _primary_findings(store):
+        for report in finding["reports"]:
+            if report["stale"]:
+                continue
+            entries.append({
+                "id": report["id"], "finding_id": finding["id"],
+                "title": finding["title"], "severity": finding["severity"],
+                "url": finding["url"], "file": str(store.root / report["artifact_ref"]),
+                "type": _report_vuln_type(finding), "confidence": finding["confidence"],
+                "assessment_id": report["assessment_id"], "delivery_id": report["delivery_id"],
+                "destination": report["destination"], "artifact_sha256": report["artifact_sha256"],
+                "queue_sync": {"status": "skipped", "reason": "primary store owns report lifecycle"},
+                "canonical_lifecycle": True,
+            })
+    return write_report_index(report_dir, target_name, len(entries), entries, write_empty=True,
+                              store=store, source_binding=source_binding, as_of=as_of)
+
+
 def process_findings_dir(findings_dir, *, allow_legacy_drafts=False):
     """Process all findings in a directory and generate reports."""
-    structured_index = load_finding_index(findings_dir)
-    target_name = _report_target_name(structured_index, findings_dir)
+    findings_repo_root, target = _finding_backend_context(findings_dir)
+    _primary_report_store(findings_repo_root, target)
+    with target_switch_lock(findings_repo_root, target):
+        _finding_backend_context(findings_dir, target)
+        primary_store = _primary_report_store(findings_repo_root, target)
+        return _process_findings_dir(findings_dir, findings_repo_root, target, primary_store,
+                                     allow_legacy_drafts=allow_legacy_drafts)
+
+
+def _process_findings_dir(findings_dir, findings_repo_root, target, primary_store, *, allow_legacy_drafts):
+    target_name = target_storage_key(target)
     report_dir = os.path.join(REPORTS_DIR, target_name)
+    report_path = Path(os.path.abspath(report_dir))
+    if report_path != report_path.resolve() or (primary_store is not None and
+            report_path != primary_store.root / "reports" / primary_store.key):
+        raise StoreError(f"report output does not match directory owner: {report_path}")
     os.makedirs(report_dir, exist_ok=True)
+    if primary_store is not None:
+        return _process_primary_reports(primary_store, report_dir, target_name)
+    structured_index = load_finding_index(findings_dir, migrate_legacy=False)
 
     # Map finding directories to vuln types
     dir_type_map = {
@@ -1429,8 +1569,6 @@ def process_findings_dir(findings_dir, *, allow_legacy_drafts=False):
         for finding in reportable_findings:
 
             vuln_type = _report_vuln_type(finding)
-            findings_repo_root = _repo_root_for_findings_dir(findings_dir)
-
             report_content, title = generate_report(
                 finding,
                 vuln_type,
@@ -1568,15 +1706,6 @@ def process_findings_dir(findings_dir, *, allow_legacy_drafts=False):
     return write_report_index(report_dir, target_name, total_reports, report_index)
 
 
-def _report_target_name(structured_index, findings_dir):
-    """Return canonical target storage key for report output paths."""
-    raw_target = ""
-    if isinstance(structured_index, dict):
-        raw_target = str(structured_index.get("target") or "").strip()
-    raw_target = raw_target or os.path.basename(str(findings_dir).rstrip(os.sep))
-    return target_storage_key(raw_target)
-
-
 def _existing_structured_report_entries(
     structured_findings,
     *,
@@ -1648,9 +1777,23 @@ def _existing_structured_report_entries(
     return entries
 
 
-def write_report_index(report_dir, target_name, total_reports, report_index):
+def write_report_index(report_dir, target_name, total_reports, report_index, *, write_empty=False,
+                       store=None, source_binding=None, as_of=None):
     """Save report index and summary markdown."""
-    if report_index:
+    if store is not None:
+        # Registration is complete before this lock: never nest a Store mutation.
+        with target_mutation_lock(store.root, store.target):
+            if store.binding() != source_binding:
+                raise ConflictError("report index source snapshot changed; regenerate reports")
+            return _write_report_index(report_dir, target_name, total_reports, report_index,
+                                       write_empty=write_empty, source_binding=source_binding, as_of=as_of)
+    return _write_report_index(report_dir, target_name, total_reports, report_index,
+                               write_empty=write_empty)
+
+
+def _write_report_index(report_dir, target_name, total_reports, report_index, *, write_empty=False,
+                        source_binding=None, as_of=None):
+    if report_index or write_empty:
         # Sort by severity
         severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
         report_index.sort(key=lambda x: severity_order.get(x["severity"], 5))
@@ -1664,6 +1807,7 @@ def write_report_index(report_dir, target_name, total_reports, report_index):
                     "generated_at": datetime.now().isoformat(),
                     "total_reports": total_reports,
                     "reports": report_index,
+                    **({"source_binding": source_binding, "as_of": as_of} if source_binding else {}),
                 },
                 indent=2,
             )
@@ -1682,6 +1826,9 @@ def write_report_index(report_dir, target_name, total_reports, report_index):
             "| # | Severity | Type | Title | URL |\n",
             "|---|----------|------|-------|-----|\n",
         ]
+        if source_binding:
+            summary_lines[1:1] = [f"Snapshot as of: {as_of}; store {source_binding['store_id']}; "
+                                  f"revision {source_binding['revision']}\n"]
         summary_lines.extend(
             f"| {r['id']} | {r['severity'].upper()} | {r['type']} | "
             f"{r['title'][:50]} | {r['url'][:60]} |\n"

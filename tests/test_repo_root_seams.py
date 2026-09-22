@@ -181,10 +181,14 @@ def test_resume_explicit_root_reads_runtime_artifacts(tmp_path, monkeypatch):
 def test_source_hunt_explicit_root_contains_exposure_bundle(tmp_path, monkeypatch):
     import source_hunt
     from repo_scan_models import RepoFinding, RepoSourceMeta
+    from tools.target_store import TargetStore
 
     legacy = tmp_path / "legacy"
     root = tmp_path / "isolated"
     source_meta = RepoSourceMeta(source_kind="local_path", repo_path="/tmp/SAMPLE", probe_complete=True)
+    store = TargetStore(root, "target.test")
+    store.initialize()
+    revision = store.context(limit=1)["revision"]
     monkeypatch.setattr(source_hunt, "BASE_DIR", legacy)
     monkeypatch.setattr(
         source_hunt,
@@ -214,6 +218,6 @@ def test_source_hunt_explicit_root_contains_exposure_bundle(tmp_path, monkeypatc
 
     assert Path(result["exposure_dir"]).is_relative_to(root)
     assert (root / "findings/target.test/exposure/repo_summary.md").is_file()
+    assert store.context(limit=1)["revision"] == revision
     assert not legacy.exists()
-
 

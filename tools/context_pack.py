@@ -22,7 +22,7 @@ if str(BASE_DIR) not in sys.path:
 try:
     from memory.target_profile import default_memory_dir
     from tools.closure_resolver import ClosureResolver
-    from tools.coverage_matrix import high_value_gaps_from_matrix, load_matrix
+    from tools.coverage_matrix import high_value_gaps_from_matrix, read_matrix
     from tools.evidence_ledger import ACTOR_MATRIX_VULN_CLASSES, build_summary as build_evidence_summary
     from tools.knowledge_registry import (
         load_card_metadata_by_file,
@@ -37,10 +37,11 @@ try:
     from tools.surface_projection import load_surface_projection
     from tools.target_paths import compact_url, canonical_target_value, target_storage_key
     from tools.target_memory import load_active_file, load_goal_memory
+    from tools.target_store import TargetStore, target_backend
 except ImportError:  # pragma: no cover - direct tools/ execution
     from memory.target_profile import default_memory_dir
     from closure_resolver import ClosureResolver  # type: ignore
-    from coverage_matrix import high_value_gaps_from_matrix, load_matrix  # type: ignore
+    from coverage_matrix import high_value_gaps_from_matrix, read_matrix  # type: ignore
     from evidence_ledger import ACTOR_MATRIX_VULN_CLASSES, build_summary as build_evidence_summary  # type: ignore
     from knowledge_registry import (  # type: ignore
         load_card_metadata_by_file,
@@ -55,6 +56,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from surface_projection import load_surface_projection  # type: ignore
     from target_paths import compact_url, canonical_target_value, target_storage_key  # type: ignore
     from target_memory import load_active_file, load_goal_memory  # type: ignore
+    from target_store import TargetStore, target_backend  # type: ignore
 
 
 # S1 native skill loading (ai-capability-roadmap batch 3): every skill loads
@@ -451,11 +453,18 @@ def _resolve_cli_args(args: argparse.Namespace, repo_root: Path) -> tuple[str, s
 
 def _load_goal_memory(repo_root: Path, target: str) -> dict:
     projection = load_goal_memory(repo_root, target)
-    projection["active_path"] = _display(repo_root / "memory" / "goals" / "active.json", repo_root)
-    projection["target_path"] = _display(
-        repo_root / "memory" / "goals" / "targets" / f"{target_storage_key(target)}.json",
-        repo_root,
+    projection["active_path"] = _display(
+        repo_root / "memory" / "goals" / "active.json", repo_root
     )
+    if projection.get("source", {}).get("kind") == "store":
+        projection["target_path"] = _display(
+            TargetStore(repo_root, target).path, repo_root
+        )
+    else:
+        projection["target_path"] = _display(
+            repo_root / "memory" / "goals" / "targets" / f"{target_storage_key(target)}.json",
+            repo_root,
+        )
     return projection
 
 
@@ -490,7 +499,39 @@ def _target_facts_projection(goal_memory: dict, *, limit: int = 20) -> list[dict
     return projected
 
 
-def _load_findings(repo_root: Path, target_key: str) -> list[dict]:
+def _load_findings(repo_root: Path, target_key: str, *, target: str | None = None) -> list[dict]:
+    resolved_target = target or target_key
+    if target_backend(repo_root, resolved_target) == "primary":
+        store = TargetStore(repo_root, resolved_target)
+        findings = []
+        page = store.finding_page(limit=1000)
+        while True:
+            for item in page.get("items", []):
+                assessment = item.get("assessment") or {}
+                reports = item.get("reports") or []
+                report = reports[-1] if reports else {}
+                findings.append({
+                    "id": item["id"],
+                    "type": item["family"],
+                    "category": item["family"],
+                    "title": item["title"],
+                    "summary": item["claim"],
+                    "url": item["endpoint"],
+                    "method": item["method"],
+                    "severity": "medium",
+                    "confidence": assessment.get("verdict", ""),
+                    "validation_status": "validated" if assessment.get("verdict") == "confirmed" else "",
+                    "report_status": "generated" if report else "not_generated",
+                    "report_id": report.get("id", ""),
+                    "raw": item["claim"],
+                    "assessment": assessment,
+                    "deliveries": item.get("deliveries", []),
+                    "reports": reports,
+                    "evidence": item.get("evidence", []),
+                })
+            if not page.get("has_more"):
+                return findings
+            page = store.finding_page(limit=1000, cursor=page.get("next_cursor"))
     payload = _read_json_any(repo_root / "findings" / target_key / "findings.json")
     if isinstance(payload, dict):
         payload = payload.get("findings", [])
@@ -609,10 +650,10 @@ def _finding_anchor(finding: dict, *, compact: bool = False) -> str:
 
 
 def _safe_find_gaps(target: str, target_key: str, repo_root: Path) -> tuple[list[dict], dict]:
-    matrix = load_matrix(target, repo_root=repo_root)
+    matrix = read_matrix(target, repo_root=repo_root)
     gaps = high_value_gaps_from_matrix(matrix)
-    if not gaps and target_key != target:
-        key_matrix = load_matrix(target_key, repo_root=repo_root)
+    if not gaps and target_key != target and matrix.get("backend") != "primary":
+        key_matrix = read_matrix(target_key, repo_root=repo_root)
         key_gaps = high_value_gaps_from_matrix(key_matrix)
         if key_gaps or key_matrix.get("summary", {}).get("total_cells", 0):
             return key_gaps, key_matrix
@@ -1197,7 +1238,12 @@ def _ledger_unknowns(summary: dict) -> list[str]:
 def _ledger_source_summary(summary: dict) -> dict:
     matrix = summary.get("actor_matrix") or {}
     result_counts = summary.get("result_counts") or {}
+    # 来源由「当前真源」seam 决定（store 为 primary 时即 store，否则 ledger），
+    # 这里只如实转述它，不在 Pack 里再选一次来源。
+    source = summary.get("evidence_source") or {}
     return {
+        "evidence_source_kind": str(source.get("kind") or ""),
+        "evidence_source_status": str(source.get("status") or ""),
         "evidence_ledger_entries": int(summary.get("entry_count") or 0),
         "actor_matrix_gaps": int(matrix.get("gap_count") or 0),
         "actor_matrix_covered": int(matrix.get("covered_count") or 0),
@@ -1215,15 +1261,26 @@ def build_context_pack(
     surface_state: dict | None = None,
     coverage_state: tuple[list[dict], dict] | None = None,
     validation_runner_candidates: list[dict] | None = None,
-    ledger_diagnostics: dict | None = None,
+    ledger_truth: dict | None = None,
 ) -> dict:
     repo = Path(repo_root)
     resolved_target = canonical_target_value(target)
     target_key = target_storage_key(resolved_target)
+    store_binding: dict[str, object] | None = None
+    if target_backend(repo, resolved_target) == "primary":
+        store_binding = TargetStore(repo, resolved_target).binding()
+        # Caller-supplied projections carry no enforceable target/revision or
+        # current artifact authorization. Re-read primary owners (including raw
+        # integrity checks); matching revisions alone cannot detect file damage.
+        # Legacy callers retain their invocation-local reuse optimization.
+        surface_state = None
+        coverage_state = None
+        validation_runner_candidates = None
+        ledger_truth = None
     goal_memory = _load_goal_memory(repo, resolved_target)
     ranked = surface_state if surface_state is not None else _surface_state(repo, resolved_target, memory_dir)
     gaps, matrix = coverage_state or _safe_find_gaps(resolved_target, target_key, repo)
-    findings = _load_findings(repo, target_key)
+    findings = _load_findings(repo, target_key, target=resolved_target)
     runner_candidates = (
         validation_runner_candidates
         if isinstance(validation_runner_candidates, list)
@@ -1270,8 +1327,14 @@ def build_context_pack(
         target=resolved_target,
         focus_endpoints=_focus_endpoints_for_ledger(ranked, gaps, local_intel),
         vuln_classes=_owner_backed_vuln_classes(gaps),
-        _diagnostics=ledger_diagnostics,
+        _truth=ledger_truth,
     )
+    if store_binding is not None:
+        current_binding = TargetStore(repo, resolved_target).binding()
+        if current_binding != store_binding:
+            raise ValueError(
+                "primary context inputs changed during assembly; rebuild from one store revision"
+            )
     ledger_path = _ledger_relative_path(evidence_summary, repo)
 
     # Must-read lists only paths that exist: goal memory is legitimately
@@ -1374,6 +1437,11 @@ def build_context_pack(
             "telerik_dialog_signal": telerik_dialog_signal,
             **_local_intel_source_summary(local_intel),
             **_ledger_source_summary(evidence_summary),
+            **({
+                "store_id": store_binding["store_id"],
+                "store_revision": store_binding["revision"],
+                "snapshot_status": "bound",
+            } if store_binding is not None else {}),
         },
     }
     return pack

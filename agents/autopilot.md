@@ -63,8 +63,8 @@ These tools are memory and execution aids, not a pre-flight checklist. Empty/sta
 Read the bounded `observation_inventory` summary before declaring exhaustion; use `/observations` for long-tail review. Never auto-route or enqueue the full inventory.
 
 - Skills route through `skills/runtime-protocol.md`.
-- Target case state stores actors, session metadata, objects, private markers, hypotheses, and validation backlog under `state/<target_key>/case_state.json`; session headers are private artifacts referenced from that file.
-- `case_state_seed.py` suggests add-actor/add-object/add-backlog commands from cached object-like endpoints; it does not auto-write.
+- Target case state stores actors, session metadata, objects, private markers, and hypotheses under `state/<target_key>/case_state.json`; session headers are private artifacts referenced from that file. It is context memory only: action identity, claim, and execution state live in the one action source, and Case neither ranks routes nor carries a backlog.
+- `case_state_seed.py` projects object-shaped candidates from cached endpoints so Claude can register them with `add-actor`/`add-object`; it neither writes Case State nor emits backlog commands.
 - Knowledge cards come from `knowledge/index.md`; load only matching project cards from context-pack. General technique detail comes from the model and is not stored as a default reference catalogue.
 - Coverage and tool/AI boundary semantics live in `rules/coverage-gate.md`, `rules/hunting.md`,
   and `rules/tool-ai-boundary.md`.
@@ -72,20 +72,20 @@ Read the bounded `observation_inventory` summary before declaring exhaustion; us
 
 ## Case-State First, Not Case-State Only
 
-If checkpoint exposes `case-state-validation` or `case-state-enrichment`, prefer that action before generic coverage gaps because it preserves actor/session/object continuity across context windows. This is not a hard rail: empty, missing, stale, or irrelevant case state must never block discovery, browser/JS/source enrichment, surface-review hunting, or AI-generated chain pivots.
+If checkpoint exposes `case-state-enrichment`, it names actor/session/object context that a role-differential test still lacks; supplying that context is high-value continuity, not a scope gate or bug-class selector. This is not a hard rail: empty, missing, stale, or irrelevant case state must never block discovery, browser/JS/source enrichment, surface-review hunting, or AI-generated chain pivots.
 
 Use case state as working memory:
 
-- Ready backlog -> run the `validation_runner.py request-diff --request-spec <ref>` replay emitted by `next_action.command` (the command carries only parser-supported flags) or resolve it with evidence.
+- Open hypothesis -> resolve it into bounded actor/object/replay evidence, then record the finding in the action source where the claim lives; Case does not own the test or its verdict.
 - Missing evidence -> collect the named actor/session/object/private marker, then rerun checkpoint.
-- Linked blocked backlog -> follow `recover_hypothesis` with an empty replay command; record the recovery step before creating a fresh backlog and never replay the blocked runner implicitly.
-- Empty case state + object IDs in cached artifacts -> run `case_state_seed.py --target <target> --json` and review suggested commands.
-- New workflow/object/role signal -> extend case state with `add-actor`, `add-session`, `add-object`, `add-hypothesis`, or `add-backlog`.
+- Blocked runner -> record the bounded recovery step in the action source before claiming fresh work and never replay the blocked runner implicitly.
+- Empty case state + object IDs in cached artifacts -> run `case_state_seed.py --target <target> --json` and review the object candidates it projects.
+- New workflow/object/role signal -> extend case state with `add-actor`, `add-session`, `add-object`, or `add-hypothesis`; if it implies testable work, put the action in the one action source rather than restating it in Case.
 - Hypotheses are AI-owned and may use any family, primitive, or chain, including RCE and families
   outside the canonical Coverage taxonomy. Case State/Queue `vuln_class` is a compatibility string;
   only an owner-backed Matrix terminal state or validator-confirmed complete dimensions, provenance,
   confidence, and evidence refs may close canonical Coverage. Unknown or incomplete candidates stay open.
-- Stronger fresh signal -> state the AI override reason and pursue it; do not force old backlog items.
+- Stronger fresh signal -> state the AI override reason and pursue it; stale Case context never outranks fresh evidence.
 - Case state is not a scope gate, permission gate, bug-class selector, or IDOR-only workflow.
 
 ## Actionable Evidence Continuation

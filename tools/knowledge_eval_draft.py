@@ -8,9 +8,9 @@ events.jsonl 或 capabilities.yaml。终态决定由人工 reviewer 通过
 `tools/knowledge_lifecycle.py` 执行。
 
 信号定义：
-- action_linkage: action queue 历史 metadata 中 knowledge signal
-  identity 与卡片 trigger_tags 的命中次数（读 state/<target>/
-  action_queue.json；无目标时为 0）。
+- action_linkage: active action-owner metadata 中 knowledge signal
+  identity 与卡片 trigger_tags 的命中次数（primary 读 TargetStore，legacy
+  读 action_queue.json；无目标时为 0）。
 - trigger_overlap: 两张卡 trigger_tags 的 Jaccard 相似度（merge 候选）。
 - source_refs: frontmatter source_refs 数量（corpus-report 案例来源）。
 - recall_log: memory/context-pack 召回记录若存在则计数，否则 0。
@@ -34,12 +34,14 @@ try:
         load_card_metadata_by_file,
         parse_knowledge_document,
     )
+    from tools.target_store import StoreError, TargetStore
 except ImportError:  # pragma: no cover - direct tools/ execution
     from knowledge_registry import (  # type: ignore
         KnowledgeRegistryError,
         load_card_metadata_by_file,
         parse_knowledge_document,
     )
+    from target_store import StoreError, TargetStore  # type: ignore
 
 
 MERGE_OVERLAP_THRESHOLD = 0.6
@@ -72,16 +74,32 @@ def _jaccard(a: set[str], b: set[str]) -> float:
 
 
 def _action_linkage_counts(repo_root: Path, tags_by_card: dict[str, set[str]]) -> dict[str, int]:
-    """扫描 state/<target>/action_queue.json 中 trigger tag 的出现次数。
-
-    只做字符串级命中统计，不解析 owner 状态；缺失目录返回全零。
-    """
+    """Count card signals from the active action owner, never archived JSON."""
     counts = {card_id: 0 for card_id in tags_by_card}
     state_dir = repo_root / "state"
     if not state_dir.is_dir():
         return counts
     tag_index = {tag: card_id for card_id, tags in tags_by_card.items() for tag in tags}
     for queue_file in state_dir.rglob("action_queue.json"):
+        target_dir = queue_file.parent
+        store_path = target_dir / "metadata.sqlite3"
+        if store_path.is_file():
+            try:
+                store = TargetStore(repo_root, target_dir.name)
+                if store.backend() == "primary":
+                    page = store.page("actions", limit=1000)
+                    rows = list(page.get("items") or [])
+                    while page.get("has_more"):
+                        page = store.page("actions", limit=1000, cursor=page.get("next_cursor"))
+                        rows.extend(page.get("items") or [])
+                    text = json.dumps(rows, ensure_ascii=False, sort_keys=True)
+                    for tag, card_id in tag_index.items():
+                        counts[card_id] += text.count(tag)
+                    continue
+            except (OSError, StoreError, ValueError):
+                # A damaged primary is not legacy evidence. Leave its signal
+                # absent and let the store health surface the underlying fault.
+                continue
         try:
             text = queue_file.read_text(encoding="utf-8", errors="ignore")
         except OSError:

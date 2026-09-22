@@ -94,6 +94,13 @@ do not replay merely to fit request-diff or fabricate runner-owned fields.
   submit, repair, or increase it in claim metadata. On claim failure inspect
   the single diagnostic and stored state once, then stop without
   guessing/retry.
+- For a target whose backend is `primary`, `action_queue.py` is only a thin
+  adapter over `TargetStore.actions`: `list` is a read-only Store projection,
+  `claim --id` uses Store CAS, and `resolve` requires an explicit Store proof
+  (`operation_id=`, `artifact=`, or `command_id=`) for completion. Do not pass
+  legacy metadata or `--from-evidence` to a primary claim; create the action
+  through the domain command with its concrete subject. The legacy JSON queue is
+  not created or updated for that target.
 - Queue identity rejects duplicate endpoint/method/family/technique/actor/object/
   workflow/dimension work without new evidence or a recorded repeat reason.
   Runner alone writes `last_outcome`, `tested_dimensions`, replayable refs, and
@@ -121,7 +128,7 @@ do not replay merely to fit request-diff or fabricate runner-owned fields.
   Re-reading bare `--bounded` after a closure read, or looping summary/list
   queries between actions, is measured waste — the checkpoint write-back or the
   claimed action defines when a fresh snapshot is actually required.
-- `resume_case_state`: follow `state.case_state.top_next_action`; run its redacted validation command when ready. Otherwise enrich or create the owner backlog with `tools/target_case_state.py`, write back through that owner, then refresh. If state projects `recover_hypothesis` with an empty replay command, record that bounded recovery before creating a fresh backlog; never replay the blocked runner implicitly.
+- `resume_case_state`: this reason now means only one thing — Case holds an unresolved context obligation (`state.case_state.open_hypotheses > 0`). Case carries no next action and no score; resolve the hypothesis into bounded actor/object/replay evidence with `tools/target_case_state.py` (`add-actor` / `add-session` / `add-object` / `add-hypothesis`), write back through that owner, then refresh. Action identity and execution state belong to the one action source — if the hypothesis implies testable work, claim it there instead of restating it in Case. Never replay a blocked runner implicitly.
 - `review_validation_candidate`, `complete_report_draft`, `run_intel`, `collect_web_intel`, `test_advisory_applicability`, `review_intel_group`, and `recon_no_live_hosts` retain their owner-defined stop/write-back semantics.
 - If `state.root_claim_next` exists, run `/checkpoint` so `finding_index` creates the canonical candidate and queue action, refresh, then use the canonical ID.
 - Matching deterministic replay follows `docs/evidence-runners.md` and `python3 tools/validation_runner.py <lane> --target <target_shell> ...`; its first positional argument is `<lane>` and it never accepts `--decision-json`.
@@ -200,7 +207,7 @@ do not replay merely to fit request-diff or fabricate runner-owned fields.
 
 - When imported HAR/browser Network evidence contains at least two ordered same-target business requests, the AI replays the flow with one bounded remove/repeat perturbation per step, refreshing short-lived tokens observed in the flow, and preserves raw traffic as private evidence; a response difference stays a candidate until AI reviews impact and replayability.
 - When a time-shaped candidate or explicit SQL timing evidence remains after result-diff, the AI runs interleaved baseline/variant samples with an explicit request cap and requires a stable median/MAD trend; one slow response, `429`, WAF block, or transport error stays partial.
-- Case-State First, Not Case-State Only: case-state-validation and case-state-enrichment are high-value continuity, not a scope gate or bug-class selector. Stale/missing cannot block fresh evidence/AI override; use `tools/target_case_state.py`, `tools/case_state_seed.py`, and runners.
+- Case-State First, Not Case-State Only: `case-state-enrichment` (the actor/session/object context a role-differential test still lacks) is high-value continuity, not a scope gate or bug-class selector. Case State carries context only — no backlog and no route score — so stale/missing case state cannot block fresh evidence/AI override; use `tools/target_case_state.py`, `tools/case_state_seed.py`, and the action source for actionable work.
 
 ## Credentials And Asset Expansion
 

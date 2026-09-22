@@ -68,6 +68,11 @@ except ImportError:  # pragma: no cover - package import path
     )
 
 try:
+    from target_store import StoreError, TargetStore, target_backend
+except ImportError:  # pragma: no cover - package import path
+    from tools.target_store import StoreError, TargetStore, target_backend
+
+try:
     from browser_evidence import (
         compact_browser_evidence,
         load_last_browser_evidence,
@@ -876,6 +881,26 @@ def _validation_method_from_summary(summary: dict, repo: Path) -> str:
     if not target or not endpoint:
         return "GET"
 
+    if target_backend(repo, target) == "primary":
+        try:
+            from current_truth import current_cell_projection
+        except ImportError:  # pragma: no cover - package import path
+            from tools.current_truth import current_cell_projection
+
+        truth = current_cell_projection(repo, target)
+        health = truth.get("health") if isinstance(truth, dict) else None
+        if not isinstance(health, dict) or health.get("status") != "ready":
+            raise StoreError("primary evidence store is partial; validation method is unavailable")
+        for entry in reversed(truth.get("records") or []):
+            if _endpoint_path_for_method_match(str(entry.get("endpoint") or "")) != endpoint:
+                continue
+            if str(entry.get("vuln_class") or "").strip().lower() != vuln_class:
+                continue
+            method = str(entry.get("method") or "").strip()
+            if method:
+                return normalize_http_method(method)
+        raise StoreError("primary evidence store has no recorded method for this finding")
+
     try:
         try:
             from evidence_ledger import load_entries
@@ -1139,13 +1164,35 @@ def _resolve_linked_finding_owner(
     return None
 
 
-def sync_validation_artifacts(summary: dict, *, repo_root: str | Path | None = None) -> dict:
-    """Best-effort write-back from /validate into evidence ledger and action queue.
+def apply_validation_decision(summary: dict, *, repo_root: str | Path | None = None) -> dict:
+    """Apply the validation decision through the target's active owner.
 
-    The function is intentionally conservative: failures are returned in the
-    result payload instead of blocking report generation.
+    Primary targets persist only the technical assessment and delivery decision
+    here. Report publication and action completion remain separate commands.
+    The legacy adapter is isolated below for targets that have not switched.
     """
     repo = Path(repo_root) if repo_root is not None else BASE_DIR
+    target = str(summary.get("target") or "").strip()
+    endpoint = str(summary.get("endpoint") or "").strip()
+    if not target or not endpoint:
+        return {"status": "skipped", "reason": "missing target or endpoint"}
+    if target_backend(repo, target) == "primary":
+        return _sync_primary_validation(summary, repo)
+
+    return _sync_legacy_validation_compat(summary, repo)
+
+
+def sync_validation_artifacts(summary: dict, *, repo_root: str | Path | None = None) -> dict:
+    """Compatibility dispatcher retained for pre-cutover callers.
+
+    The implementation is owner-aware: primary targets never enter the legacy
+    ledger/queue/finding compensation path.
+    """
+    return apply_validation_decision(summary, repo_root=repo_root)
+
+
+def _sync_legacy_validation_compat(summary: dict, repo: Path) -> dict:
+    """Keep the pre-cutover adapter isolated from primary domain commands."""
     target = str(summary.get("target") or "").strip()
     endpoint = str(summary.get("endpoint") or "").strip()
     if not target or not endpoint:
@@ -1311,6 +1358,57 @@ def sync_validation_artifacts(summary: dict, *, repo_root: str | Path | None = N
         "ledger": ledger_update,
         "action_queue": queue_update,
         "finding_index": finding_update,
+    }
+
+
+def _sync_primary_validation(summary: dict[str, Any], repo: Path) -> dict[str, Any]:
+    """Persist technical and delivery decisions in the target transaction store."""
+    target = canonical_target_value(str(summary.get("target") or ""))
+    finding_id = str(summary.get("finding_id") or "").strip()
+    if not finding_id:
+        return {"status": "error", "reason": "primary validation requires finding_id"}
+    store = TargetStore(repo, target)
+    try:
+        finding = store.finding(finding_id)
+    except StoreError as exc:
+        return {"status": "error", "reason": f"primary finding missing: {exc}"}
+    evidence = finding.get("evidence") or []
+    if not evidence:
+        return {"status": "error", "reason": "primary validation requires recorded execution evidence"}
+    verdict = "confirmed" if validation_evidence_passed(summary) else "inconclusive"
+    assessment_id = f"assessment:{hashlib.sha256(json.dumps(summary, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:24]}"
+    reason = str(summary.get("notes") or summary.get("impact") or "Machine validation decision")
+    try:
+        assessment = store.assess(
+            command_id=assessment_id, finding_id=finding_id, verdict=verdict,
+            reason=reason, boundary=str(summary.get("endpoint") or finding.get("endpoint") or ""),
+            impact=str(summary.get("impact") or ""), evidence=evidence,
+            actor="validate", expected_assessment=(finding.get("assessment") or {}).get("id"),
+        )
+        assessment_id = assessment_id
+    except StoreError as exc:
+        return {"status": "error", "reason": f"primary assessment rejected: {exc}"}
+    destination = str((summary.get("machine_decision") or {}).get("destination") or "internal-review")
+    delivery_id = f"delivery:{hashlib.sha256((assessment_id + destination).encode()).hexdigest()[:24]}"
+    delivery_status = "eligible" if bool(summary.get("report_ready")) else "deferred"
+    previous_delivery = next(
+        (item for item in finding.get("deliveries", [])
+         if item.get("destination") == destination and not item.get("stale")),
+        None,
+    )
+    try:
+        delivery = store.decide_delivery(
+            command_id=delivery_id, finding_id=finding_id, assessment_id=assessment_id,
+            destination=destination, status=delivery_status,
+            reason="report-ready" if delivery_status == "eligible" else "validation/report gate incomplete",
+            actor="validate", expected_decision=str(previous_delivery.get("id")) if previous_delivery else None,
+        )
+    except StoreError as exc:
+        return {"status": "error", "reason": f"primary delivery decision rejected: {exc}"}
+    return {
+        "status": "updated" if not assessment.get("replayed") else "deduplicated",
+        "assessment": {"id": assessment_id, "verdict": verdict},
+        "delivery": {"id": delivery_id, "status": delivery_status},
     }
 
 
@@ -1704,6 +1802,24 @@ def _validate_machine_runner_witness(
         raise ValueError(f"decision.evidence.runner_summary is invalid JSON: {exc.msg}") from exc
     if not isinstance(runner, dict):
         raise ValueError("decision.evidence.runner_summary must contain one object")
+    if target_backend(repo_root, decision_target) == "primary":
+        if canonical_target_value(str(runner.get("target") or "")) != decision_target:
+            raise ValueError("runner target does not match decision.target")
+        if str(runner.get("finding_id") or "").strip() != finding_id:
+            raise ValueError("runner finding_id does not match decision.finding_id")
+        if runner.get("result") != "tested_finding" or runner.get("candidate_ready") is not True:
+            raise ValueError("primary runner summary must be a candidate-ready tested_finding")
+        operation_id = _required_text(runner.get("store_operation_id"), "evidence.runner_summary.store_operation_id")
+        store = TargetStore(repo_root, decision_target)
+        execution = store.execution(operation_id)
+        if not execution.get("observations"):
+            raise ValueError("primary runner evidence is required before machine validation")
+        if not any(_machine_endpoints_match(decision_endpoint, item.get("endpoint", ""))
+                   for item in execution["observations"]):
+            raise ValueError("primary runner operation endpoint does not match decision.endpoint")
+        if normalize_http_method(execution["observations"][0].get("method")) != decision_method:
+            raise ValueError("primary runner operation method does not match decision.method")
+        return summary_path
     if runner.get("schema_version") != RUNNER_SUMMARY_SCHEMA_VERSION:
         raise ValueError(
             "decision.evidence.runner_summary schema_version must be "
@@ -1930,18 +2046,26 @@ def _assert_machine_report_path_available(
     report_path: Path,
     report_content: str,
     repo_root: Path,
+    target: str | None = None,
 ) -> None:
     """Reject cross-finding report reuse before the first validation write."""
-    payload = load_finding_index(findings_dir, migrate_legacy=False)
     owners: set[str] = set()
-    for item in payload.get("findings", []):
-        if not isinstance(item, dict):
-            continue
-        for key in ("validation_report_path", "report_draft_path", "report_file"):
-            owned_path = _resolved_repo_path(item.get(key), repo_root=repo_root)
+    if target and target_backend(repo_root, target) == "primary":
+        current = TargetStore(repo_root, target).finding(finding_id)
+        for report in current.get("reports", []):
+            owned_path = _resolved_repo_path(report.get("artifact_ref"), repo_root=repo_root)
             if owned_path == report_path:
-                owners.add(str(item.get("id") or ""))
-                break
+                owners.add(finding_id)
+    else:
+        payload = load_finding_index(findings_dir, migrate_legacy=False)
+        for item in payload.get("findings", []):
+            if not isinstance(item, dict):
+                continue
+            for key in ("validation_report_path", "report_draft_path", "report_file"):
+                owned_path = _resolved_repo_path(item.get(key), repo_root=repo_root)
+                if owned_path == report_path:
+                    owners.add(str(item.get("id") or ""))
+                    break
     other_owners = {owner for owner in owners if owner and owner != finding_id}
     if other_owners:
         raise ValueError(
@@ -1990,13 +2114,27 @@ def _build_machine_validation_input(
     # Machine binding must remain a pure preflight. In particular, a legacy
     # list payload is normalized in memory but not migrated until every
     # decision field has passed and the explicit owner transition begins.
-    prefill = load_finding_prefill(
-        str(findings_dir),
-        finding_id,
-        migrate_legacy=False,
-        include_canonical=True,
-        repo_root=repo_root,
-    )
+    if target_backend(repo_root, decision_target) == "primary":
+        try:
+            canonical = TargetStore(repo_root, decision_target).finding(finding_id)
+        except StoreError as exc:
+            raise ValueError(f"finding id not found in primary store: {finding_id}") from exc
+        prefill = {
+            "target": decision_target,
+            "vuln_type": canonical.get("family", ""),
+            "endpoint": canonical.get("endpoint", ""),
+            "finding_id": finding_id,
+            "summary": canonical.get("claim", ""),
+            "_canonical_finding": canonical,
+        }
+    else:
+        prefill = load_finding_prefill(
+            str(findings_dir),
+            finding_id,
+            migrate_legacy=False,
+            include_canonical=True,
+            repo_root=repo_root,
+        )
     if not prefill:
         raise ValueError(f"finding id not found in findings.json: {finding_id}")
     indexed_target = canonical_target_value(str(prefill.get("target") or ""))
@@ -2053,6 +2191,7 @@ def _build_machine_validation_input(
         report_path=report_path,
         report_content=report_content,
         repo_root=repo_root,
+        target=decision_target,
     )
 
     info = {
@@ -2099,12 +2238,31 @@ def run_scaffold(args: argparse.Namespace) -> dict[str, Any]:
         findings_dir = BASE_DIR / "findings" / target_storage_key(args.target)
     else:
         raise ValidationInputUnavailable("--scaffold requires --target or --findings-dir")
-    prefill = load_finding_prefill(
-        str(findings_dir),
-        args.finding_id,
-        migrate_legacy=False,
-        include_canonical=True,
-    )
+    repo_root = findings_dir.parent.parent
+    target = canonical_target_value(args.target or findings_dir.name)
+    if target_backend(repo_root, target) == "primary":
+        try:
+            canonical = TargetStore(repo_root, target).finding(args.finding_id)
+        except StoreError as exc:
+            raise ValidationInputUnavailable(
+                f"finding id not found in primary store: {args.finding_id}"
+            ) from exc
+        prefill = {
+            "target": target,
+            "vuln_type": canonical.get("family", ""),
+            "endpoint": canonical.get("endpoint", ""),
+            "finding_id": args.finding_id,
+            "summary": canonical.get("claim", ""),
+            "_canonical_finding": canonical,
+        }
+    else:
+        prefill = load_finding_prefill(
+            str(findings_dir),
+            args.finding_id,
+            migrate_legacy=False,
+            include_canonical=True,
+            repo_root=repo_root,
+        )
     if not prefill:
         raise ValidationInputUnavailable(
             f"finding id not found in findings.json: {args.finding_id}"
@@ -2120,8 +2278,6 @@ def run_scaffold(args: argparse.Namespace) -> dict[str, Any]:
         "endpoint": prefill.get("endpoint"),
         "type": prefill.get("vuln_type"),
     }
-    # findings_dir 恒为 <repo_root>/findings/<key>——从它上溯，兼容仓库外 --findings-dir（测试/只读挂载）
-    repo_root = findings_dir.parent.parent
     return build_validate_scaffold(
         repo_root,
         Path(findings_dir),
@@ -2295,12 +2451,13 @@ def run_machine_validation(args: argparse.Namespace) -> dict[str, Any]:
     )
     if retry:
         raise ValidationSyncError(retry)
-    mark_finding_validated(
-        str(findings_dir),
-        str(prefill.get("finding_id") or ""),
-        summary,
-        summary_path,
-    )
+    if target_backend(repo_root, str(summary.get("target") or "")) != "primary":
+        mark_finding_validated(
+            str(findings_dir),
+            str(prefill.get("finding_id") or ""),
+            summary,
+            summary_path,
+        )
     update_runtime_state_after_validate(summary, str(findings_dir), repo_root=repo_root)
     return {
         "status": "updated",

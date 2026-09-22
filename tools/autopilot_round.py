@@ -33,6 +33,7 @@ try:
     from tools.surface import build_surface_review
     from tools.surface_index import SurfaceIndexError
     from tools.target_paths import canonical_target_value, target_storage_key
+    from tools.target_store import target_backend, target_switch_lock
 except ImportError:  # pragma: no cover - direct tools/ execution
     from autopilot_args import MAX_LANES  # type: ignore
     from action_queue import load_queue  # type: ignore
@@ -54,6 +55,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from surface import build_surface_review  # type: ignore
     from surface_index import SurfaceIndexError  # type: ignore
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
+    from target_store import target_backend, target_switch_lock  # type: ignore
 
 
 def _closure_snapshot(repo_root: Path | str, target: str) -> tuple[dict, dict]:
@@ -235,15 +237,19 @@ def settle_round(
     note: str = "",
     refresh_coverage: bool = True,
 ) -> dict:
-    """Persist checkpoint/Queue state, close the round, and project Closure.
+    """Close the runtime round and project Closure through the active backend.
 
     The preflight is deliberately before checkpoint construction.  A started
     lane therefore fails without changing the witness, Queue, or coverage.
+    Primary checkpoints stay read-only; only legacy targets reconcile owners.
     A completed round is a read-only idempotent replay.
     """
     repo = Path(repo_root)
     resolved_target = canonical_target_value(target)
-    with checkpoint_witness_lock(repo, resolved_target):
+    with target_switch_lock(repo, resolved_target), checkpoint_witness_lock(repo, resolved_target):
+        backend = target_backend(repo, resolved_target)
+        if backend == "preview":
+            raise ValueError("round settle cannot mutate a preview target; complete explicit cutover first")
         state, closure = _closure_snapshot(repo, resolved_target)
         progress = _round_progress(closure)
         if not progress:
@@ -279,32 +285,40 @@ def settle_round(
                 + ", ".join(map(str, progress["invalid_evidence_lanes"]))
             )
 
-        findings_dir = repo / "findings" / target_storage_key(resolved_target)
-        claim_sync = reconcile_root_finding_claims(findings_dir, target=resolved_target)
+        if backend == "legacy":
+            findings_dir = repo / "findings" / target_storage_key(resolved_target)
+            claim_sync = reconcile_root_finding_claims(findings_dir, target=resolved_target)
         checkpoint = build_checkpoint(
             repo,
             target=resolved_target,
             note=note,
             refresh_coverage=refresh_coverage,
         )
-        checkpoint["root_finding_claim_sync"] = claim_sync
-        _append_root_claim_queue_items(
-            checkpoint,
-            list_root_finding_claims(
-                findings_dir,
-                target=resolved_target,
-                include_reconciled=True,
-            ),
-            resolved_target,
-        )
-        sync_checkpoint_action_queue(repo, checkpoint)
+        if backend == "primary":
+            checkpoint["action_queue_sync"] = {
+                "status": "skipped",
+                "reason": "primary store action projection is read-only",
+            }
+        else:
+            checkpoint["root_finding_claim_sync"] = claim_sync
+            _append_root_claim_queue_items(
+                checkpoint,
+                list_root_finding_claims(
+                    findings_dir,
+                    target=resolved_target,
+                    include_reconciled=True,
+                ),
+                resolved_target,
+            )
+            sync_checkpoint_action_queue(repo, checkpoint)
         state, closure = _closure_snapshot(repo, resolved_target)
-        state, closure = _refresh_surface_if_pending(
-            repo,
-            resolved_target,
-            state,
-            closure,
-        )
+        if backend == "legacy":
+            state, closure = _refresh_surface_if_pending(
+                repo,
+                resolved_target,
+                state,
+                closure,
+            )
         if _surface_projection_pending(state, closure):
             return _result(
                 "settle",

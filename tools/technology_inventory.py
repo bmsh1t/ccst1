@@ -799,8 +799,13 @@ def load_or_build_inventory(
     target: str,
     *,
     force: bool = False,
+    persist: bool = True,
 ) -> dict:
-    """读取 exact-hit inventory；缺失、损坏或 stale 时从 raw recon 重建。"""
+    """读取 exact-hit inventory；缺失、损坏或 stale 时从 raw recon 重建。
+
+    ``persist=False`` keeps the rebuilt projection in memory for primary
+    read-only consumers; legacy callers retain the default cache publication.
+    """
     repo = Path(repo_root)
     resolved_target = canonical_target_value(target)
     recon_dir = repo / "recon" / target_storage_key(resolved_target)
@@ -808,6 +813,7 @@ def load_or_build_inventory(
         recon_dir,
         target=resolved_target,
         force=force,
+        persist=persist,
     )
 
 
@@ -816,11 +822,13 @@ def load_or_build_inventory_for_recon_dir(
     *,
     target: str = "",
     force: bool = False,
+    persist: bool = True,
 ) -> dict:
     """按已解析的 recon 目录读取/重建 inventory。
 
     Surface、legacy hunt 等 consumer 已持有 recon path，使用此入口可避免
     重复推导 target storage key。`target` 仅用于 artifact 可读标签。
+    ``persist=False`` 禁止在重建时发布 inventory sidecar。
     """
     recon_dir = Path(recon_dir)
     resolved_target = canonical_target_value(target) if target else recon_dir.name
@@ -853,7 +861,8 @@ def load_or_build_inventory_for_recon_dir(
             return existing
 
     payload = build_inventory_from_sources(sources, target=resolved_target)
-    _write_json_atomic(inventory_path, payload)
+    if persist:
+        _write_json_atomic(inventory_path, payload)
     return payload
 
 

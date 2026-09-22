@@ -14,7 +14,7 @@ import os
 import re
 import sys
 import tempfile
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -35,8 +35,10 @@ except ImportError:  # pragma: no cover - direct tools/ execution
 
 try:
     from tools.target_paths import canonical_target_value, target_storage_key
+    from tools.target_store import StoreError, TargetStore, target_backend, target_switch_lock
 except ImportError:  # pragma: no cover - direct tools/ execution
     from target_paths import canonical_target_value, target_storage_key
+    from target_store import StoreError, TargetStore, target_backend, target_switch_lock  # type: ignore
 
 SCHEMA_VERSION = 1
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -80,6 +82,15 @@ def now_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _assert_target_memory_writer_allowed(target: str) -> str:
+    """Keep the legacy memory file read-compatible but never a primary writer."""
+    canonical = canonical_target_value(target)
+    backend = target_backend(BASE_DIR, canonical)
+    if backend != "legacy":
+        raise StoreError(f"legacy target-memory writer is disabled for {backend} target")
+    return canonical
+
+
 def read_json(path: Path, default: dict | None = None) -> dict:
     if not path.is_file():
         return default or {}
@@ -121,17 +132,24 @@ def write_json(path: Path, payload: dict) -> None:
 
 
 @contextmanager
-def target_memory_mutation_lock(path: Path):
+def target_memory_mutation_lock(
+    path: Path,
+    *,
+    repo_root: str | Path | None = None,
+    target: str | None = None,
+):
     """Serialize one target's target-memory read/modify/write sequence."""
     path = Path(path)
     lock_path = path.parent / ".locks" / f"{path.name}.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with lock_path.open("a+", encoding="utf-8") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    shared = target_switch_lock(repo_root or BASE_DIR, target) if target else nullcontext()
+    with shared:
+        with lock_path.open("a+", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def write_handoff_file(sessions_dir: Path, target_key: str, content: str) -> Path:
@@ -264,7 +282,12 @@ def new_target_memory(target: str) -> dict:
 
 
 def load_goal_memory(repo_root: str | Path, target: str) -> dict:
-    """Load the target-memory projection used by CLI coordinators."""
+    """Load the target-memory projection used by CLI coordinators.
+
+    Primary targets keep mutable experience in TargetStore.  The legacy JSON
+    shape remains a read projection for callers, but archived JSON is never
+    consulted after cutover.
+    """
     repo = Path(repo_root)
     resolved_target = canonical_target_value(target)
     goals_dir = repo / "memory" / "goals"
@@ -273,9 +296,83 @@ def load_goal_memory(repo_root: str | Path, target: str) -> dict:
     active = {}
     if active_path.is_file():
         active = load_active_file(active_path)
-    target_memory = load_target_memory_file(target_path, expected_target=resolved_target)
     active_target = canonical_target_value(str(active.get("target", "") or ""))
     active_matches = bool(active_target and active_target == resolved_target)
+    if target_backend(repo, resolved_target) == "primary":
+        store = TargetStore(repo, resolved_target)
+        context = store.case_context()
+        rows: list[dict] = []
+        page = store.page("experiences", limit=1000)
+        while True:
+            rows.extend(item for item in page.get("items", []) if isinstance(item, dict))
+            if not page.get("has_more"):
+                break
+            page = store.page("experiences", limit=1000, cursor=page.get("next_cursor"))
+
+        fields = {
+            "active_leads": [],
+            "dead_ends": [],
+            "next_actions": [],
+            "useful_patterns": [],
+            "session_handoffs": [],
+        }
+        kind_to_field = {
+            "hypothesis": "active_leads",
+            "negative": "dead_ends",
+            "primitive": "useful_patterns",
+            "handoff": "session_handoffs",
+        }
+        for row in sorted(rows, key=lambda item: (str(item.get("created_at") or ""), str(item.get("id") or ""))):
+            field = kind_to_field.get(str(row.get("kind") or ""))
+            if not field:
+                continue
+            expanded = store.experience(str(row.get("id") or ""))
+            structured = {
+                key: expanded[key]
+                for key in ("conditions", "reopen_when", "next_intent")
+                if str(expanded.get(key) or "").strip()
+            }
+            fields[field].append({
+                "ts": row.get("created_at", ""),
+                "text": str(row.get("statement") or "").strip(),
+                "entry_id": row.get("id", ""),
+                "evidence_refs": [
+                    f"{item.get('operation_id')}:{item.get('step')}"
+                    for item in expanded.get("evidence", [])
+                    if isinstance(item, dict)
+                ],
+                "structured": structured or None,
+            })
+        hypotheses = context.get("hypotheses") or []
+        latest_hypothesis = hypotheses[-1] if hypotheses else {}
+        created_at = context.get("created_at", "")
+        target_memory = {
+            "schema_version": SCHEMA_VERSION,
+            "target": resolved_target,
+            "created_at": created_at,
+            "updated_at": rows[-1].get("created_at", created_at) if rows else created_at,
+            "mode": "hunt",
+            "phase": "unknown",
+            "active_goal": "",
+            "current_hypothesis": str(latest_hypothesis.get("why_now") or ""),
+            "scope_notes": [],
+            **fields,
+            "facts": {},
+        }
+        return {
+            "active": active if active_matches else {},
+            "raw_active": active,
+            "target": target_memory,
+            "active_matches": active_matches,
+            "source": {
+                "kind": "store",
+                "store_id": context.get("store_id", ""),
+                "revision": context.get("revision", 0),
+            },
+            "active_path": str(active_path),
+            "target_path": str(store.path),
+        }
+    target_memory = load_target_memory_file(target_path, expected_target=resolved_target)
     return {
         "active": active if active_matches else {},
         "raw_active": active,
@@ -325,9 +422,9 @@ def _save_target_memory_unlocked(payload: dict) -> Path:
 
 
 def set_active(args: argparse.Namespace) -> str:
-    canonical_target = canonical_target_value(args.target)
+    canonical_target = _assert_target_memory_writer_allowed(args.target)
     path = target_memory_path(canonical_target)
-    with target_memory_mutation_lock(path):
+    with target_memory_mutation_lock(path, repo_root=BASE_DIR, target=canonical_target):
         target_memory = load_target_memory(canonical_target)
         target_memory["mode"] = args.mode
         target_memory["phase"] = args.phase
@@ -368,7 +465,7 @@ def resolve_target(explicit_target: str | None) -> str:
 
 
 def append_entry(args: argparse.Namespace, field: str, label: str) -> str:
-    target = resolve_target(args.target)
+    target = _assert_target_memory_writer_allowed(resolve_target(args.target))
     path = target_memory_path(target)
     structured_raw = str(getattr(args, "structured_json", "") or "")
     structured: dict = {}
@@ -385,7 +482,7 @@ def append_entry(args: argparse.Namespace, field: str, label: str) -> str:
             raise SystemExit(
                 "--structured-json requires all of: " + ", ".join(sorted(required))
             )
-    with target_memory_mutation_lock(path):
+    with target_memory_mutation_lock(path, repo_root=BASE_DIR, target=target):
         target_memory = load_target_memory(target)
         entry = {
             "ts": now_utc(),
@@ -452,10 +549,10 @@ def upsert_fact(args: argparse.Namespace) -> str:
         )
     if not text:
         raise SystemExit("fact text is required")
-    target = resolve_target(args.target)
+    target = _assert_target_memory_writer_allowed(resolve_target(args.target))
     path = target_memory_path(target)
     evidence_refs = normalize_evidence_refs(getattr(args, "evidence_ref", []))
-    with target_memory_mutation_lock(path):
+    with target_memory_mutation_lock(path, repo_root=BASE_DIR, target=target):
         target_memory = load_target_memory(target)
         facts = target_memory.get("facts")
         if facts is None:
@@ -490,12 +587,12 @@ def facts_digest(target_memory: dict, *, limit: int | None = None) -> list[str]:
 
 
 def write_handoff(args: argparse.Namespace) -> str:
-    target = resolve_target(args.target)
+    target = _assert_target_memory_writer_allowed(resolve_target(args.target))
     summary = " ".join(args.summary).strip()
     if not summary:
         raise SystemExit("handoff summary is required")
     path = target_memory_path(target)
-    with target_memory_mutation_lock(path):
+    with target_memory_mutation_lock(path, repo_root=BASE_DIR, target=target):
         target_memory = load_target_memory(target)
         ts = now_utc()
         next_actions = target_memory.get("next_actions", [])[-5:]

@@ -135,7 +135,7 @@
 
 ## Architecture Maintenance Contract
 
-The authoritative five-plane and memory contract lives in
+The authoritative Claude-native domain and memory contract lives in
 `docs/architecture-contract.md`. Apply these implementation checks when a
 backend change crosses a layer:
 

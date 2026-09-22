@@ -1,10 +1,16 @@
 # 持久化与状态规范
 
-## 当前事实
+## 当前事实与已批准迁移
 
-项目没有关系型数据库、ORM 或迁移框架。`requirements.txt` 也未引入数据库依赖。
-持久化由仓库内 JSON、JSONL、Markdown 和扫描器原始 artifact 组成。因此这里的“数据库
-规范”实际约束文件状态的 schema、所有权、写入原子性、并发和迁移。
+当前 runtime 仍使用下述 JSON/JSONL owner；`tools/target_store.py` 已实现隔离目标副本的
+事务领域基础，但没有接管旧 runtime、没有迁移真实目标。目标架构由
+`docs/architecture-contract.md` 唯一说明，具体 API 见 `contracts/transactional-target-state.md`。
+
+已批准每目标 SQLite 元数据 + 外置原始证据，使用标准库 sqlite3，不增加数据库服务或 ORM。
+下面文件协议是切换前的现状/兼容要求，不再是禁止数据库迁移或永久保留旧格式的约束。
+切换必须等到消费者/所有 writer 完成迁移验证；不得在活跃旧目标旁初始化另一个可写后端。
+隔离 Store 已提供 Case actor/session/object 表和 hypothesis 关系；legacy
+`case_state.json` 仍是未切换目标的兼容 owner，primary 激活后不得再写该文件。
 
 ## 状态分类与所有者
 
@@ -30,8 +36,8 @@
 | knowledge value review | `knowledge/governance/value-review.json` | `tools/knowledge_value_review.py` | 全 active 卡的可重建 advisory 复核投影，不是 runtime 状态 |
 | local case corpus | `distill/corpus/{reports.jsonl,index.json,manifest.json}` | `tools/case_corpus.py` | 可选、gitignored 的规范化案例数据与 byte-offset 索引 |
 
-`findings.json`、action queue、evidence ledger 和 target memory 含义不同。不得为了方便把
-它们合并，也不得创建第二套 finding 生命周期。
+`findings.json`、action queue、evidence ledger 和 target memory 的领域含义不同。共享 SQLite
+事务不等于合并这些逻辑职责；禁止第二套 finding/行动生命周期和永久双写。
 
 ## 场景：Evidence Ledger 当前闭合投影
 
@@ -245,7 +251,7 @@ Correct: use route identity for coverage and exact Queue endpoint identity for S
 
 ## 多文件一致性
 
-项目没有跨文件事务。现有流程采用“主状态 owner 成功 -> 派生/队列同步”的顺序，并让
+旧后端没有跨文件事务。现有流程采用“主状态 owner 成功 -> 派生/队列同步”的顺序，并让
 非主同步返回 `skipped` 或可诊断结果。例如 report 先排他创建文件，再更新 finding 状态和
 queue。新增跨文件流程必须明确：
 

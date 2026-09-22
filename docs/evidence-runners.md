@@ -148,12 +148,12 @@ handoff, not evidence of a vulnerability.
 
 ### Target case state
 
-只在 actor/session/object/private marker 连续性有价值时使用。`case_state_seed` 只读对象线索，
-不代选身份、标记私有数据、生成测试路线或登记命令。
+只在 actor/session/object/private marker 连续性有价值时使用。它只保存上下文事实，不保存待办、
+不排序路线。`case_state_seed` 只读对象线索，不代选身份、标记私有数据、生成测试路线或登记命令。
 
 ```bash
 python3 tools/target_case_state.py summary --target <target> --json
-python3 tools/target_case_state.py next --target <target>
+python3 tools/target_case_state.py add-actor --target <target> --actor <name> --role <role> [--json]
 python3 tools/case_state_seed.py --target <target> --json
 ```
 

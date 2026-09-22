@@ -17,10 +17,12 @@ description: 为当前目标生成 autopilot checkpoint、覆盖摘要和目标�
 
 ## 写回契约（权威定义，autopilot 家族只引用本段）
 
-- checkpoint 写回 = `apply_target_memory`（默认开）：把 `target_write_back.lead/next/
-  dead_end/handoff` 机器直写 `memory/goals/targets/<target>.json`，并同步
-  `state/<target_key>/checkpoint_latest.json` witness、action queue 同步与 coverage
-  刷新。`--no-apply-target-memory` 跳过 memory 两路，其余 owner 写回不变。
+- legacy checkpoint 写回 = `apply_target_memory`（默认开）：把
+  `target_write_back.lead/next/dead_end/handoff` 写入 legacy target memory，并同步
+  witness、受限 Queue/coverage 投影。对 primary 目标，TargetStore 是唯一可写真源：
+  checkpoint/query 只读 Store 快照，禁止写旧 memory、Queue、Ledger 或 Case JSON；显式
+  handoff/experience/action 命令才允许产生对应 Store 事实。`--no-apply-target-memory`
+  仍只影响 legacy memory 写回。
 - 时机由 `checkpoint_trigger`（paranoid/normal/yolo）决定；paranoid = 每个实质状态
   变更后，normal = 每个 lane batch 后，yolo = 仅 blocker/handoff/finish。
 - 写回后必须刷新 bounded state（owner 写回是 fresh-snapshot 信号）。
@@ -31,11 +33,11 @@ autopilot.md / autopilot-round.md / pickup.md / agents/autopilot.md 等文档提
 这个命令用于 `/autopilot`、`/hunt`、长会话结束、切换目标、或准备汇报前。
 它不是扫描器，也不是报告器；它把当前目标的状态压缩成可续接的目标记忆。
 
-默认把 lead / next / dead-end / handoff 写回目标记忆层，并先让 `finding_index`
-owner 受限地归档有效 root finding claim，再刷新派生 coverage、通过
-`action_queue` owner 幂等同步可执行 next-action，并原子更新
-`state/<target_key>/checkpoint_latest.json` runtime-v2 witness。不希望写目标记忆时
-显式传 `--no-apply-target-memory`。
+默认对 legacy 目标把 lead / next / dead-end / handoff 写回目标记忆层，并先让
+`finding_index` owner 受限地归档有效 root finding claim，再刷新派生 coverage、通过
+`action_queue` owner 幂等同步可执行 next-action，并原子更新 witness。Primary 目标只
+生成绑定 Store revision 的只读 checkpoint；不希望写 legacy 目标记忆时显式传
+`--no-apply-target-memory`。
 
 ## 用法
 
@@ -93,7 +95,7 @@ python3 tools/target_case_state.py summary --target <target>
   仍未迁移的文本建议保留 dual-read 分类，`text` 恒为人类可读 prose
 - 覆盖摘要和 high-value gaps
 - Evidence Ledger 摘要和 Actor Matrix gaps
-- Target Case State 摘要和 top backlog / enrichment action
+- Target Case State 摘要（actors / sessions / objects / open hypotheses）与 case-state enrichment action
 - `next_action_queue` 的 durable action queue 同步结果
 - target memory 的 `lead`
 - target memory 的 `next`
@@ -167,8 +169,7 @@ CHECKPOINT DECISION
   - actors:
   - sessions:
   - objects:
-  - pending backlog:
-  - top next action:
+  - open hypotheses:
 - Evidence ledger:
   - entries:
   - actor matrix gaps:
@@ -192,7 +193,7 @@ CHECKPOINT DECISION
 - `enrich`：browser/source/JS enrichment 可能改变下一步。
 - `hunt`：有 surface review candidates、advisory score hints 或 target-memory continuation。
 - `continue`：有 AI-actionable coverage hint，且无法被当前证据解释为 covered / n/a / blocked / deferred。
-- `continue`：存在 active case_state backlog / enrichment action 时，优先输出 exact replay draft 或缺失证据动作。
+- `continue`：存在 case-state enrichment action（角色差异测试缺少 actor/session/object 上下文）时，优先补齐该上下文；行动本身仍在唯一行动源里认领与裁决。
 - `continue`：coverage gap 为空但 Actor Matrix 仍有缺口时，也不能声称全面完成。
 - `checkpoint`：存在 action-gated scanner lead 或需要人工复核的 lane。
   Checkpoint 只投影 action owner 已记录的结果；`templates/phased-surface-validation-plan.md` 只记录阶段、证据、停止条件和回写，不新增安全门槛。

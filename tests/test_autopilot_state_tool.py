@@ -9,6 +9,7 @@ import pytest
 
 import autopilot_state as autopilot_state_module
 import finding_index
+import resume as resume_module
 from action_queue import (
     add_manual_action,
     claim_next_action,
@@ -54,6 +55,7 @@ from autopilot_state import (
 from request_guard import record_request
 from runtime_state import runtime_phase_lock, update_runtime_state
 from target_paths import target_storage_key
+from target_store import TargetStore
 
 
 def test_ranker_advisory_requires_valid_long_tail_and_multiple_evidence_groups(tmp_path):
@@ -967,10 +969,7 @@ def test_priority_frontier_keeps_one_head_for_each_present_owner():
         },
         "case_state": {
             "status": "valid",
-            "top_next_action": {
-                "next_action": "compare owner and peer",
-                "why_now": "a case obligation remains open",
-            },
+            "open_hypotheses": 1,
         },
         "json_inject": {"status": "partial", "path": "findings/target.com/json.json"},
         "surface_review_candidates": [{
@@ -1234,7 +1233,8 @@ def test_closure_does_not_cross_close_distinct_vulnerability_lanes():
     }]
 
 
-def test_closure_blocks_case_state_canonical_conflict():
+def test_case_state_legacy_verdict_conflicts_are_not_closure_reasons():
+    """旧待办裁决冲突不再是闭包理由：它由迁移报告搬运，不生成第二条路线。"""
     closure = build_closure_projection(
         {
             "target": "target.com",
@@ -1242,46 +1242,63 @@ def test_closure_blocks_case_state_canonical_conflict():
             "case_state": {
                 "status": "valid",
                 "canonical_conflict_count": 1,
+                "pending_validation_backlog": 3,
+                "validation_backlog": [{"id": "B-1", "status": "pending"}],
             },
         },
         _closure_matrix(),
     )
 
-    assert closure["verdict"] == "handoff"
-    assert closure["reasons"] == ["case_state_canonical_conflict"]
-    assert closure["actionable_frontier"][0]["owner"] == "case_state"
-    assert closure["actionable_frontier"][0]["id"] == "canonical-conflict"
-    assert closure["actionable_frontier"][0]["evidence_ref"].endswith(
-        "state/target.com/case_state.json"
-    )
+    assert closure["reasons"] == []
+    assert closure["verdict"] == "finish"
+    assert closure["actionable_frontier"] == []
 
 
-@pytest.mark.parametrize(
-    ("field", "item_id"),
-    [
-        ("pending_validation_backlog", "validation-backlog"),
-        ("open_hypotheses", "open-hypothesis"),
-    ],
-)
-def test_case_state_obligations_without_top_action_still_have_frontier(
-    field, item_id
-):
+def test_case_state_frontier_comes_only_from_open_hypotheses():
     closure = build_closure_projection(
         {
             "target": "target.com",
             "next_action": "handoff",
-            "case_state": {"status": "valid", field: 1},
+            "case_state": {"status": "valid", "open_hypotheses": 1},
         },
         _closure_matrix(),
     )
 
     assert closure["verdict"] == "handoff"
-    assert closure["actionable_frontier"][0]["owner"] == "case_state"
-    assert closure["actionable_frontier"][0]["id"] == item_id
+    assert closure["reasons"] == ["case_state_work_pending"]
+    assert closure["next_action"] == "resume_case_state"
+    item = closure["actionable_frontier"][0]
+    assert item["owner"] == "case_state"
+    assert item["id"] == "open-hypothesis"
     assert all(
-        closure["actionable_frontier"][0][key]
+        item[key]
         for key in ("action", "evidence_ref", "expected_information_gain", "stop_condition")
     )
+
+
+@pytest.mark.parametrize(
+    "legacy_case_state",
+    [
+        {"status": "valid", "pending_validation_backlog": 1},
+        {"status": "valid", "canonical_conflict_count": 1},
+        {"status": "valid", "top_next_action": {"next_action": "compare owner and peer", "status": "pending"}},
+        {"status": "valid", "validation_backlog": [{"id": "B-1", "status": "pending"}]},
+    ],
+)
+def test_retired_case_action_fields_produce_no_frontier(legacy_case_state):
+    """Case 不再携带待办或评分：旧字段即使留在文件里也不能再生成路线。"""
+    closure = build_closure_projection(
+        {
+            "target": "target.com",
+            "next_action": "handoff",
+            "case_state": legacy_case_state,
+        },
+        _closure_matrix(),
+    )
+
+    assert "case_state_work_pending" not in closure["reasons"]
+    assert closure["verdict"] == "finish"
+    assert closure["actionable_frontier"] == []
 
 
 @pytest.mark.parametrize(
@@ -1332,7 +1349,7 @@ def test_pending_next_action_always_has_owner_backed_frontier(next_action, owner
             {
                 "target": "target.com",
                 "next_action": "handoff",
-                "case_state": {"status": "valid", "pending_validation_backlog": 1},
+                "case_state": {"status": "valid", "open_hypotheses": 1},
             },
             "case_state_work_pending",
             "case_state",
@@ -1358,6 +1375,36 @@ def test_closure_binds_primary_reason_frontier_and_action(
     assert closure["reasons"][0] == reason
     assert closure["actionable_frontier"][0]["owner"] == owner
     assert closure["next_action"] == next_action
+
+
+def test_primary_resume_finding_summary_ignores_legacy_index(tmp_path):
+    target = "resume-primary.test"
+    store = TargetStore(tmp_path, target)
+    store.initialize()
+    store.create_finding(
+        command_id="store-finding",
+        finding_id="STORE-FINDING",
+        endpoint="https://resume-primary.test/orders/1",
+        method="GET",
+        family="Authz",
+        title="Store claim",
+        claim="Store evidence is the current claim",
+        actor="ai",
+    )
+    findings_dir = tmp_path / "findings" / target_storage_key(target)
+    findings_dir.mkdir(parents=True, exist_ok=True)
+    (findings_dir / "findings.json").write_text(json.dumps({
+        "findings": [{
+            "id": "STALE-LEGACY",
+            "url": "https://resume-primary.test/stale",
+            "validation_status": "candidate",
+        }]
+    }), encoding="utf-8")
+
+    summary = resume_module.load_structured_finding_followup(tmp_path, target)
+
+    assert summary["total"] == 1
+    assert summary["next_validation"]["id"] == "STORE-FINDING"
 
 
 def test_closure_prefers_durable_owner_over_stale_surface_projection():
@@ -2498,12 +2545,16 @@ def test_case_state_work_routes_bootstrap_and_blocks_exhausted_closure(tmp_path)
     )
 
     assert state["next_action"] == "resume_case_state"
-    assert state["case_state"]["top_next_action"]["next_action"] == "create_validation_backlog"
+    # Case 只投影自己的上下文义务：路线由未决假设数量驱动，而不是 Case 侧的行动文本。
+    assert state["case_state"]["open_hypotheses"] == 1
+    assert "top_next_action" not in state["case_state"]
+    assert "pending_validation_backlog" not in state["case_state"]
     assert closure["verdict"] == "handoff"
     assert closure["reasons"] == ["case_state_work_pending", "actor_context_required"]
 
 
-def test_case_state_recovery_keeps_bounded_hypothesis_linkage(tmp_path):
+def test_blocked_legacy_case_backlog_produces_no_case_action(tmp_path):
+    """旧 Case 待办即使处于 blocked，也不再是任何消费者读得到的行动来源。"""
     target = "target.com"
     case_path = tmp_path / "state" / target / "case_state.json"
     case_path.parent.mkdir(parents=True)
@@ -2533,14 +2584,20 @@ def test_case_state_recovery_keeps_bounded_hypothesis_linkage(tmp_path):
     )
 
     state = build_autopilot_state(str(tmp_path), target, bounded=True)
-    top = state["case_state"]["top_next_action"]
+    projected = json.dumps(state["case_state"], ensure_ascii=False)
 
-    assert top["next_action"] == "recover_hypothesis"
-    assert top["hypothesis_id"] == "hyp_001"
-    assert top["recovery_next_action"] == "capture the export route"
+    assert "val_001" not in projected
+    assert "recover_hypothesis" not in projected
+    assert "top_next_action" not in state["case_state"]
+    # 只有未决假设这一项上下文义务进入 Case 投影。
+    assert set(state["case_state"]) == {
+        "status", "path", "authz_coverage", "actors", "sessions", "objects", "open_hypotheses",
+    }
+    assert state["case_state"]["open_hypotheses"] == 1
 
 
-def test_case_state_metadata_projection_is_bounded_and_secret_free(tmp_path):
+def test_case_state_projection_is_context_counts_only_and_secret_free(tmp_path):
+    """Case 投影只承载上下文计数：假设元数据、描述维度与密钥不再进入状态投影。"""
     target = "target.com"
     case_path = tmp_path / "state" / target / "case_state.json"
     case_path.parent.mkdir(parents=True)
@@ -2555,13 +2612,15 @@ def test_case_state_metadata_projection_is_bounded_and_secret_free(tmp_path):
                 "next_action": "validate template renderer",
                 "metadata": {
                     "family": "RCE", "primitive": "SSTI",
+                    "dimensions": {
+                        "token_location": "Authorization header",
+                        "cache_key": "Accept-Language",
+                    },
                     "impact": {
                         "kind": "command execution",
                         "headers": {"Cookie": "SECRET"},
                         "accessToken": "SECRET_ACCESS_TOKEN",
-                        "authHeader": "SECRET_AUTH_HEADER",
                         "clientSecret": "SECRET_CLIENT_SECRET",
-                        "cookieValue": "SECRET_COOKIE",
                         "secretKey": "SECRET_KEY",
                         "sessionId": "SECRET_SESSION",
                         "tokenValue": "SECRET_TOKEN",
@@ -2575,53 +2634,18 @@ def test_case_state_metadata_projection_is_bounded_and_secret_free(tmp_path):
     )
 
     state = build_autopilot_state(str(tmp_path), target, bounded=True)
-    metadata = state["case_state"]["top_next_action"]["metadata"]
+    projected = json.dumps(state["case_state"], ensure_ascii=False)
 
-    assert metadata["family"] == "RCE"
-    assert metadata["primitive"] == "SSTI"
-    assert metadata["chain"] == ["template", "shell"]
-    assert "password" not in metadata
-    assert "headers" not in metadata["impact"]
-    assert "accessToken" not in metadata["impact"]
-    assert "authHeader" not in metadata["impact"]
-    assert "clientSecret" not in metadata["impact"]
-    assert "cookieValue" not in metadata["impact"]
-    assert "secretKey" not in metadata["impact"]
-    assert "sessionId" not in metadata["impact"]
-    assert "tokenValue" not in metadata["impact"]
-
-
-def test_case_state_projection_preserves_descriptive_token_dimension(tmp_path):
-    target = "target.com"
-    case_path = tmp_path / "state" / target / "case_state.json"
-    case_path.parent.mkdir(parents=True)
-    case_path.write_text(
-        json.dumps({
-            "schema_version": 1,
-            "target": target,
-            "target_key": target,
-            "actors": {}, "sessions": {}, "objects": {},
-            "hypotheses": [{
-                "id": "hyp_001", "status": "open", "vuln_class": "JWT",
-                "next_action": "compare token algorithm handling",
-                "metadata": {
-                    "family": "JWT",
-                    "dimensions": {
-                        "token_location": "Authorization header",
-                        "claim_algorithm": "alg",
-                        "cache_key": "Accept-Language",
-                    },
-                },
-            }],
-            "validation_backlog": [],
-        }),
-        encoding="utf-8",
-    )
-
-    state = build_autopilot_state(str(tmp_path), target, bounded=True)
-    dimensions = state["case_state"]["top_next_action"]["metadata"]["dimensions"]
-    assert dimensions["token_location"] == "Authorization header"
-    assert dimensions["cache_key"] == "Accept-Language"
+    assert set(state["case_state"]) == {
+        "status", "path", "authz_coverage", "actors", "sessions", "objects", "open_hypotheses",
+    }
+    for secret in (
+        "SECRET", "SECRET_ACCESS_TOKEN", "SECRET_CLIENT_SECRET", "SECRET_KEY",
+        "SECRET_SESSION", "SECRET_TOKEN", "SECRET_PASSWORD",
+    ):
+        assert secret not in projected
+    assert "hyp_001" not in projected
+    assert "template renderer" not in projected
 
 
 def test_malformed_case_state_returns_structured_state_error(tmp_path, monkeypatch, capsys):
@@ -3331,13 +3355,9 @@ def test_next_action_stagnation_uses_owner_semantics_not_runtime_noise():
                 "missing_evidence": ["control replay"],
             },
         }},
-        {"case_state": {
-            **state["case_state"],
-            "top_next_action": {
-                **state["case_state"]["top_next_action"],
-                "next_question": "does the private role marker match?",
-            },
-        }},
+        # Case 只以上下文义务参与停滞判定：新增一个未决假设会改变指纹，而它历史上
+        # 那份 top_next_action 文本不再是任何人读的语义（路线在唯一行动源）。
+        {"case_state": {**state["case_state"], "open_hypotheses": 1}},
     ):
         assert stagnation_fingerprint({**state, **update}, closure) != base
 
@@ -4133,8 +4153,12 @@ def test_damaged_ledger_is_visible_and_blocks_closure_and_rotation(tmp_path):
 def test_unreadable_ledger_is_visible_and_blocks_closure(tmp_path, monkeypatch):
     target = "target.com"
     _write_closure_owners(tmp_path, target, status="tested_clean", final_review=True)
+    # The read belongs to the current_truth seam; the damage it reports is what
+    # the closure verdict must fail closed on. Patch the exact seam module the
+    # closure loader bound, so both import forms (`tools.x` / `x`) are covered.
+    seam = sys.modules[autopilot_state_module.current_cell_projection.__module__]
     monkeypatch.setattr(
-        autopilot_state_module,
+        seam,
         "load_entries_diagnostic",
         lambda *_args: {
             "status": "unreadable",
@@ -4154,6 +4178,8 @@ def test_unreadable_ledger_is_visible_and_blocks_closure(tmp_path, monkeypatch):
 
     assert closure["ledger_health"]["status"] == "unreadable"
     assert len(closure["ledger_health"]["read_error"]) <= 240
+    assert closure["evidence_source"]["kind"] == "ledger"
+    assert closure["evidence_source"]["status"] == "unreadable"
     assert closure["verdict"] == "handoff"
     assert "ledger_unreadable" in closure["reasons"]
 
@@ -4331,7 +4357,7 @@ def test_normal_bounded_state_never_loads_closure_owners(tmp_path, monkeypatch):
         raise AssertionError("closure owner read")
 
     monkeypatch.setattr("autopilot_state.load_matrix", fail)
-    monkeypatch.setattr("autopilot_state.load_entries_diagnostic", fail)
+    monkeypatch.setattr("autopilot_state.current_cell_projection", fail)
 
     state = build_autopilot_state(
         str(tmp_path), "target.com", memory_dir=str(tmp_path / "hunt-memory"), bounded=True

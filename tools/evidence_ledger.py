@@ -25,39 +25,45 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 try:
-    from tools.closure_resolver import canonical_endpoint_identity
-    from tools.coverage_matrix import normalize_vuln_class
+    from tools.closure_projection import identity_fact_conflicts
+    from tools.evidence_identity import (
+        CLOSED_LEDGER_RESULTS,
+        COVERING_RESULTS,
+        LEDGER_RESULTS,
+        canonical_endpoint_identity,
+        normalize_family,
+    )
     from tools.identity_contract import (
         ClosureCellKey,
         build_closure_cell,
         validate_identity_candidate,
     )
     from tools.target_paths import canonical_target_value, target_storage_key
+    from tools.target_store import StoreError, target_backend, target_switch_lock
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from closure_resolver import canonical_endpoint_identity  # type: ignore
-    from coverage_matrix import normalize_vuln_class  # type: ignore
+    from closure_projection import identity_fact_conflicts  # type: ignore
+    from evidence_identity import (  # type: ignore
+        CLOSED_LEDGER_RESULTS,
+        COVERING_RESULTS,
+        LEDGER_RESULTS,
+        canonical_endpoint_identity,
+        normalize_family,
+    )
     from identity_contract import (  # type: ignore
         ClosureCellKey,
         build_closure_cell,
         validate_identity_candidate,
     )
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
+    from target_store import StoreError, target_backend, target_switch_lock  # type: ignore
 
 
 SCHEMA_VERSION = 1
-RESULTS = (
-    "lead",
-    "signal",
-    "candidate",
-    "tested_clean",
-    "tested_finding",
-    "dead_end",
-    "blocked_redline",
-    "not_applicable",
-)
+# Terminal vocabulary is defined once in evidence_identity and shared with
+# Closure; the Ledger owns which of these are observed terminal results.
+RESULTS = LEDGER_RESULTS
 ACTOR_MATRIX_VULN_CLASSES = frozenset({"IDOR", "Authz", "GraphQL", "CSRF"})
-COVERING_RESULTS = {"signal", "candidate", "tested_clean", "tested_finding", "dead_end"}
-CLOSED_CELL_RESULTS = {"tested_clean", "tested_finding", "dead_end", "blocked_redline", "not_applicable"}
+CLOSED_CELL_RESULTS = set(CLOSED_LEDGER_RESULTS)
 
 ACTOR_ALIASES = {
     "anonymous": "anonymous",
@@ -139,15 +145,19 @@ def ledger_path(repo_root: Path | str, target: str) -> Path:
 @contextmanager
 def ledger_mutation_lock(repo_root: Path | str, target: str):
     """Serialize one target's append without creating a second state owner."""
-    path = ledger_path(repo_root, target)
-    lock_path = path.parent / ".locks" / "ledger.lock"
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with lock_path.open("a+", encoding="utf-8") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    with target_switch_lock(repo_root, target):
+        backend = target_backend(repo_root, target)
+        if backend != "legacy":
+            raise StoreError(f"legacy evidence ledger writer is disabled for {backend} target {target}")
+        path = ledger_path(repo_root, target)
+        lock_path = path.parent / ".locks" / "ledger.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _dedupe(items: list[str]) -> list[str]:
@@ -208,24 +218,8 @@ def normalize_result(value: str) -> str:
 
 
 def normalize_ledger_vuln_class(value: str) -> str:
-    """Normalize Ledger families without widening Coverage Matrix's enum."""
-    if str(value or "").strip().lower() == "workflow":
-        return "Workflow"
-    return normalize_vuln_class(value)
-
-
-def _identity_fact_conflicts(key: ClosureCellKey, entry: Mapping[str, Any]) -> tuple[str, ...]:
-    """Reject a planned key that disagrees with durable Ledger facts."""
-    conflicts: list[str] = []
-    if key.endpoint != str(entry.get("endpoint") or ""):
-        conflicts.append("endpoint_mismatch")
-    if key.family != str(entry.get("vuln_class") or ""):
-        conflicts.append("family_mismatch")
-    dimensions = key.dimension_map
-    method = str(entry.get("method") or "").upper()
-    if "method" in dimensions and dimensions["method"] != method:
-        conflicts.append("method_mismatch")
-    return tuple(sorted(set(conflicts)))
+    """Admit open evidence families without widening canonical Coverage."""
+    return normalize_family(value)
 
 
 def _identity_follow_up_action(
@@ -367,6 +361,12 @@ def record_entry(
     identity_replaces_event_id: str = "",
 ) -> dict:
     resolved_target = canonical_target_value(target)
+    backend = target_backend(repo_root, resolved_target)
+    if backend != "legacy":
+        raise StoreError(
+            f"legacy evidence ledger writer is disabled for {backend} target {resolved_target}; "
+            "use the native observation registration command"
+        )
     canonical_endpoint = _canonicalize_endpoint(endpoint)
     if not canonical_endpoint:
         raise ValueError("endpoint is required")
@@ -422,7 +422,7 @@ def record_entry(
             else identity_v2
         )
         identity_key = ClosureCellKey.from_dict(identity_payload)
-        conflicts = _identity_fact_conflicts(identity_key, entry)
+        conflicts = identity_fact_conflicts(identity_key, entry)
         entry["identity_status"] = "conflict" if conflicts else "complete"
         entry["identity_missing_fields"] = []
         entry["identity_conflicts"] = list(conflicts)
@@ -438,7 +438,7 @@ def record_entry(
         candidate = candidate_validation.candidate
         entry["identity_candidate"] = candidate.to_dict()
         fact_conflicts = (
-            _identity_fact_conflicts(candidate_validation.identity, entry)
+            identity_fact_conflicts(candidate_validation.identity, entry)
             if candidate_validation.identity is not None
             else ()
         )
@@ -471,7 +471,7 @@ def record_entry(
             identity_dimensions,
         )
         fact_conflicts = (
-            _identity_fact_conflicts(identity_result.key, entry)
+            identity_fact_conflicts(identity_result.key, entry)
             if identity_result.key is not None
             else ()
         )
@@ -776,235 +776,6 @@ def _focus_endpoint_values(focus_endpoints: list[str | dict] | None, entries: li
     return _dedupe([_canonicalize_endpoint(value) for value in values])[:8]
 
 
-def _entry_closure_identity(entry: Mapping[str, Any]) -> ClosureCellKey | None:
-    if str(entry.get("identity_status") or "") != "complete":
-        return None
-    payload = entry.get("identity_v2")
-    if not isinstance(payload, Mapping):
-        return None
-    try:
-        return ClosureCellKey.from_dict(payload)
-    except (TypeError, ValueError, KeyError):
-        return None
-
-
-def _replaced_identity_event_ids(entries: list[dict]) -> set[str]:
-    return {
-        str(replacement.get("event_id") or "")
-        for entry in entries
-        for replacement in [entry.get("identity_replacement")]
-        if str(entry.get("identity_status") or "") == "complete"
-        and isinstance(replacement, Mapping)
-        and str(replacement.get("event_id") or "")
-    }
-
-
-def _project_v2_cells(entries: list[dict]) -> tuple[list[dict], list[dict]]:
-    """Project only complete v2 identities; legacy rows never enter this view."""
-    replaced_event_ids = _replaced_identity_event_ids(entries)
-    current: dict[str, tuple[int, ClosureCellKey, dict]] = {}
-    for sequence, entry in enumerate(entries):
-        if str(entry.get("event_id") or "") in replaced_event_ids:
-            continue
-        key = _entry_closure_identity(entry)
-        if key is None or str(entry.get("result") or "") not in RESULTS:
-            continue
-        current[key.identity_key] = (sequence, key, entry)
-
-    closed: list[dict] = []
-    open_candidates: list[dict] = []
-    for _identity_key, (_sequence, key, entry) in current.items():
-        result = str(entry.get("result") or "")
-        if result == "candidate":
-            open_candidates.append(entry)
-        if result in {"lead", "signal", "candidate"}:
-            continue
-        if result not in CLOSED_CELL_RESULTS:
-            continue
-        closed.append({
-            "identity_v2": key.to_dict(),
-            "endpoint": key.endpoint,
-            "vuln_class": key.family,
-            "dimensions": key.dimension_map,
-            "result": result,
-            "ts": str(entry.get("ts") or ""),
-            "evidence_ref": str(entry.get("evidence_ref") or ""),
-        })
-    return closed, sorted(
-        open_candidates,
-        key=lambda item: str(item.get("ts") or ""),
-        reverse=True,
-    )[:10]
-
-
-def _project_identity_follow_ups(entries: list[dict], replaced_event_ids: set[str]) -> list[dict]:
-    rows = [
-        entry
-        for entry in entries
-        if str(entry.get("identity_status") or "") in {"conflict", "follow_up_required"}
-        and isinstance(entry.get("identity_follow_up_action"), Mapping)
-        and str(entry.get("event_id") or "") not in replaced_event_ids
-    ]
-    return [
-        {
-            **dict(entry["identity_follow_up_action"]),
-            "ts": str(entry.get("ts") or ""),
-            "event_id": str(entry.get("event_id") or ""),
-        }
-        for entry in sorted(rows, key=lambda item: str(item.get("ts") or ""), reverse=True)[:10]
-    ]
-
-
-def _identity_shadow_diff(closed_cells: list[dict], closed_cells_v2: list[dict]) -> dict[str, Any]:
-    legacy_keys = {
-        (str(cell.get("endpoint") or ""), str(cell.get("vuln_class") or ""))
-        for cell in closed_cells
-    }
-    v2_keys = {
-        (str(cell.get("endpoint") or ""), str(cell.get("vuln_class") or ""))
-        for cell in closed_cells_v2
-    }
-    legacy_only = [
-        {"endpoint": endpoint, "vuln_class": family}
-        for endpoint, family in sorted(legacy_keys - v2_keys)
-    ]
-    v2_only = [
-        cell
-        for cell in closed_cells_v2
-        if (str(cell.get("endpoint") or ""), str(cell.get("vuln_class") or ""))
-        in v2_keys - legacy_keys
-    ]
-    scope_mismatches = [
-        {
-            "endpoint": endpoint,
-            "vuln_class": family,
-            "legacy_scope": "endpoint_family",
-            "v2_cells": [
-                cell["identity_v2"]
-                for cell in closed_cells_v2
-                if str(cell.get("endpoint") or "") == endpoint
-                and str(cell.get("vuln_class") or "") == family
-            ],
-        }
-        for endpoint, family in sorted(legacy_keys & v2_keys)
-    ]
-    return {
-        "status": "compared",
-        "different": bool(legacy_only or v2_only or scope_mismatches),
-        "legacy_closed_count": len(closed_cells),
-        "v2_closed_count": len(closed_cells_v2),
-        "legacy_only": legacy_only,
-        "v2_only": v2_only,
-        "scope_mismatches": scope_mismatches,
-    }
-
-
-def _project_legacy_cells(
-    entries: list[dict],
-    *,
-    include_identity_rows: bool,
-) -> tuple[list[dict], list[dict]]:
-    current_by_evidence_key: dict[tuple[str, str, str, str, str, str], tuple[int, dict]] = {}
-    for sequence, entry in enumerate(entries):
-        if not isinstance(entry, dict):
-            continue
-        if not include_identity_rows and "identity_status" in entry:
-            continue
-        result = str(entry.get("result") or "")
-        if result not in RESULTS:
-            continue
-        endpoint = _canonicalize_endpoint(
-            str(entry.get("raw_endpoint") or entry.get("endpoint") or "")
-        )
-        vuln_class = str(entry.get("vuln_class") or "").strip()
-        if not endpoint or not vuln_class:
-            continue
-        evidence_key = (
-            endpoint,
-            vuln_class,
-            str(entry.get("method") or "GET").strip().upper(),
-            str(entry.get("actor") or "owner").strip(),
-            str(entry.get("object_scope") or "unknown").strip(),
-            str(entry.get("variant") or "baseline").strip(),
-        )
-        current_by_evidence_key[evidence_key] = (sequence, entry)
-
-    current_by_closure_key: dict[tuple[str, str], list[tuple[int, dict]]] = {}
-    for evidence_key, current in current_by_evidence_key.items():
-        current_by_closure_key.setdefault(evidence_key[:2], []).append(current)
-
-    closed_cells: list[dict] = []
-    open_candidates: list[dict] = []
-    for (endpoint, vuln_class), current_rows in current_by_closure_key.items():
-        open_rows = [
-            item for item in current_rows
-            if str(item[1].get("result") or "") in {"lead", "signal", "candidate"}
-        ]
-        open_candidates.extend(
-            entry for _sequence, entry in open_rows
-            if str(entry.get("result") or "") == "candidate"
-        )
-        if open_rows:
-            continue
-        terminal_rows = [
-            item for item in current_rows
-            if str(item[1].get("result") or "") in CLOSED_CELL_RESULTS
-        ]
-        if not terminal_rows:
-            continue
-        _sequence, latest = max(terminal_rows, key=lambda item: item[0])
-        closed_cells.append({
-            "endpoint": endpoint,
-            "vuln_class": vuln_class,
-            "result": str(latest.get("result") or ""),
-            "ts": str(latest.get("ts") or ""),
-            "evidence_ref": str(latest.get("evidence_ref") or ""),
-        })
-    return closed_cells, open_candidates
-
-
-def build_current_cell_projection(entries: list[dict]) -> dict:
-    """Project current evidence identities and retain a v2 closure projection.
-
-    ``closed_cells`` remains the legacy endpoint projection for old readers.
-    ``closed_cells_v2`` is the only projection allowed to close a complete
-    family-aware identity.
-    """
-    closed_cells, open_candidates = _project_legacy_cells(
-        entries,
-        include_identity_rows=False,
-    )
-    shadow_legacy_cells, _shadow_candidates = _project_legacy_cells(
-        entries,
-        include_identity_rows=True,
-    )
-    closed_cells_v2, open_candidates_v2 = _project_v2_cells(entries)
-    replaced_event_ids = _replaced_identity_event_ids(entries)
-    identity_v2_incomplete = sum(
-        1
-        for entry in entries
-        if str(entry.get("identity_status") or "") in {"incomplete", "follow_up_required", "conflict"}
-        and str(entry.get("event_id") or "") not in replaced_event_ids
-    )
-    identity_v2_follow_ups = _project_identity_follow_ups(entries, replaced_event_ids)
-    return {
-        "closed_cells": closed_cells,
-        "closed_cells_v2": closed_cells_v2,
-        "open_candidates": sorted(
-            open_candidates,
-            key=lambda item: str(item.get("ts") or ""),
-            reverse=True,
-        )[:10],
-        "open_candidates_v2": open_candidates_v2,
-        "identity_v2_follow_up_actions": identity_v2_follow_ups,
-        "identity_v2_diagnostics": {
-            "incomplete_count": identity_v2_incomplete,
-            "closed_count": len(closed_cells_v2),
-            "follow_up_count": len(identity_v2_follow_ups),
-            "replacement_count": len(replaced_event_ids),
-        },
-        "identity_v2_shadow": _identity_shadow_diff(shadow_legacy_cells, closed_cells_v2),
-    }
 
 
 def build_summary(
@@ -1015,19 +786,24 @@ def build_summary(
     vuln_classes: list[str] | None = None,
     method: str = "GET",
     _include_aggregate: bool = True,
-    _diagnostics: dict | None = None,
+    _truth: dict | None = None,
 ) -> dict:
     resolved_target = canonical_target_value(target)
-    # 同一调用方（如 checkpoint → context_pack → build_summary → 自身 aggregate）
-    # 可传入已解析的诊断快照，避免同一 ledger.jsonl 被重复读盘+解码。
+    # 调用方若已持有「当前真源」seam 结果（checkpoint → context_pack → 此处 →
+    # 自身 aggregate），直接复用同一次读取与同一份闭合投影：不再自行读盘、
+    # 也不再重新推导闭合单元，否则同一轮会出现两份可分歧的闭合答案。
     # 快照只在单次构建内有效；owner 写入后由下次调用自然失效。
-    diagnostics = (
-        _diagnostics
-        if isinstance(_diagnostics, dict) and _diagnostics.get("entries") is not None
-        else load_entries_diagnostic(repo_root, resolved_target)
-    )
+    truth = _truth if isinstance(_truth, dict) and _truth.get("records") is not None else None
+    if truth is None:
+        # 没有现成快照时也走同一读口，直接调用者不会拿到第二份闭合答案。
+        # 函数级 import：current_truth 在模块级导入本模块。
+        try:
+            from tools.current_truth import current_cell_projection
+        except ImportError:  # pragma: no cover - direct tools/ execution
+            from current_truth import current_cell_projection  # type: ignore
+        truth = current_cell_projection(repo_root, resolved_target)
+    diagnostics = {**dict(truth.get("health") or {}), "entries": list(truth["records"])}
     entries = list(diagnostics.get("entries") or [])
-    path = ledger_path(repo_root, resolved_target)
     endpoints = _focus_endpoint_values(focus_endpoints, entries)
     # ``None`` keeps the legacy caller default; an explicit empty list means
     # no owner-backed actor-matrix classes for this projection.
@@ -1052,28 +828,28 @@ def build_summary(
         if entry.get("state_changing") and not entry.get("redline_checked"):
             redline_unchecked += 1
 
-    current_cells = build_current_cell_projection(entries)
-    if diagnostics.get("status") in {"partial", "unreadable"}:
-        current_cells["closed_cells"] = []
-        current_cells["closed_cells_v2"] = []
-        identity_diagnostics = dict(current_cells.get("identity_v2_diagnostics") or {})
-        identity_diagnostics["suppressed_closed_count"] = int(identity_diagnostics.get("closed_count", 0) or 0)
-        identity_diagnostics["closed_count"] = 0
-        current_cells["identity_v2_diagnostics"] = identity_diagnostics
-        current_cells["identity_v2_shadow"] = {
-            "status": "unavailable",
-            "reason": f"ledger_{diagnostics.get('status')}",
-        }
+    # 闭合单元直接取真源投影：损伤抑制（closed_cells 清空 + 两个 suppressed 计数）
+    # 由 `closure_projection.suppress_unauthorized_closures` 唯一定义，此处不重述。
+    current_cells = dict(truth.get("projection") or {})
+    source = dict(truth.get("source") or {})
+    label = str(source.get("path_label") or "").strip()
+    if label:
+        path = Path(repo_root) / label
+        path_exists = str(source.get("status") or "").strip().lower() != "missing"
+    else:  # pragma: no cover - the seam always labels its source
+        path = ledger_path(repo_root, resolved_target)
+        path_exists = path.is_file()
 
     summary = {
         "target": resolved_target,
         "path": str(path),
-        "path_exists": path.is_file(),
+        "path_exists": path_exists,
         "entry_count": len(entries),
+        "evidence_source": source,
         "ledger_status": diagnostics.get("status", "missing"),
         "ledger_diagnostics": {
             key: diagnostics[key]
-            for key in ("status", "invalid_count", "invalid_rows", "last_valid_offset", "read_error")
+            for key in ("status", "source_kind", "invalid_count", "invalid_rows", "last_valid_offset", "read_error")
             if key in diagnostics
         },
         "result_counts": counts,
@@ -1099,7 +875,7 @@ def build_summary(
             for row in actor_gaps[:5]
         ],
     }
-    if _include_aggregate:
+    if _include_aggregate and source.get("kind") != "store":
         summary["aggregate_closure"] = _build_aggregate_closure(
             repo_root,
             resolved_target,

@@ -23,6 +23,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -60,9 +61,10 @@ try:
     from tools.runner_witness import _runner_endpoint_matches
     from tools.request_diff import RequestPairError, request_pair_digest, validate_request_pair
     from tools.browser_surface import public_url_shape
-    from tools.closure_resolver import CLOSURE_FAMILIES, canonical_vuln_class
+    from tools.evidence_identity import CLOSURE_FAMILIES, canonical_vuln_class, normalize_family
     from tools.private_artifacts import private_artifact_dir, write_private_json, write_private_text
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
+    from tools.target_store import StoreError, TargetStore, target_backend, target_switch_lock
 except ImportError:  # pragma: no cover - direct tools/ execution
     from auth_session import AuthSession, add_cli_args, session_from_args  # type: ignore
     from contracts import artifact_digest_material, runner_operation_id  # type: ignore
@@ -92,9 +94,10 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from runner_witness import _runner_endpoint_matches  # type: ignore
     from request_diff import RequestPairError, request_pair_digest, validate_request_pair  # type: ignore
     from browser_surface import public_url_shape  # type: ignore
-    from closure_resolver import CLOSURE_FAMILIES, canonical_vuln_class  # type: ignore
+    from evidence_identity import CLOSURE_FAMILIES, canonical_vuln_class, normalize_family  # type: ignore
     from private_artifacts import private_artifact_dir, write_private_json, write_private_text  # type: ignore
     from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # type: ignore
+    from target_store import StoreError, TargetStore, target_backend, target_switch_lock  # type: ignore
 
 
 SCHEMA_VERSION = 1
@@ -340,7 +343,12 @@ def _stable_operation_material(value: Any) -> Any:
     return value
 
 
-def _finalize_runner_summary(summary: dict[str, Any], path: Path, repo_root: Path) -> dict[str, Any]:
+def _finalize_runner_summary(summary: dict[str, Any], path: Path, repo_root: Path,
+                             *, backend_binding: dict[str, str]) -> dict[str, Any]:
+    _, current = _runner_backend(repo_root, str(summary["target"]))
+    if current != backend_binding:
+        raise StoreError("runner backend changed before material publication")
+    summary["backend_binding"] = backend_binding
     summary["summary_path"] = _rel(path, repo_root)
     artifact_bindings = _artifact_bindings(summary, repo_root)
     summary["artifact_bindings"] = artifact_bindings
@@ -369,6 +377,176 @@ def _finalize_runner_summary(summary: dict[str, Any], path: Path, repo_root: Pat
 def _findings_dir(repo_root: Path, target: str) -> Path:
     key = target_storage_key(canonical_target_value(target))
     return repo_root / "findings" / key
+
+
+def _primary_store(repo_root: Path, target: str) -> TargetStore | None:
+    """Return the fixed transactional owner; legacy callers get no store."""
+    backend = target_backend(repo_root, target)
+    if backend == "preview":
+        raise StoreError("preview target does not admit runner execution or registration")
+    return TargetStore(repo_root, target) if backend == "primary" else None
+
+
+def _runner_backend(repo_root: Path, target: str) -> tuple[TargetStore | None, dict[str, str]]:
+    store = _primary_store(repo_root, target)
+    binding = store.binding() if store is not None else {
+        "target": canonical_target_value(target), "backend": "legacy", "store_id": "",
+    }
+    return store, {key: str(binding[key]) for key in ("target", "backend", "store_id")}
+
+
+@contextmanager
+def _runner_admission(repo_root: Path, target: str, *, expected: dict[str, str] | None = None):
+    # Hold only the cutover coordination lock across execution, never a DB transaction.
+    with target_switch_lock(repo_root, target):
+        store, binding = _runner_backend(repo_root, target)
+        if expected is not None and binding != expected:
+            raise StoreError("runner backend changed; registration cannot switch owner or generation")
+        yield store, binding
+
+
+def _store_candidate(store: TargetStore, finding_id: str) -> dict[str, str] | None:
+    if not finding_id:
+        return None
+    finding = store.finding(finding_id)
+    return {
+        "id": finding_id,
+        "endpoint": str(finding["endpoint"]),
+        "method": str(finding["method"]),
+        "family": str(finding["family"]),
+        "title": str(finding["title"]),
+        "claim": str(finding["claim"]),
+    }
+
+
+def _ensure_primary_finding(store: TargetStore, *, finding_id: str, endpoint: str,
+                            method: str, family: str) -> None:
+    try:
+        store.finding(finding_id)
+    except StoreError:
+        store.create_finding(
+            command_id=f"create-finding:{finding_id}", finding_id=finding_id,
+            endpoint=endpoint, method=method, family=family,
+            title=f"Validation candidate {finding_id}",
+            claim="The recorded validation operation requires technical assessment",
+            actor="validation-runner",
+        )
+
+
+def _store_observation(run: dict[str, Any], *, side: str | None, method: str,
+                       family: str, observed_at: str, result: str,
+                       incomplete: bool,
+                       state_changing: bool | None, redline_checked: bool,
+                       identity_dimensions: dict[str, Any] | None = None) -> dict[str, Any]:
+    if side is None:
+        endpoint = str(run.get("url") or "")
+        artifacts = dict(run.get("artifacts") or {})
+        variant = str(run.get("variant") or "native")
+        snapshot = run
+    else:
+        prefix = f"{side}_"
+        endpoint = str(run.get(f"{side}_url") or "")
+        artifacts = {
+            key.removeprefix(prefix): ref
+            for key, ref in (run.get("artifacts") or {}).items()
+            if key.startswith(prefix) and isinstance(ref, str) and ref
+        }
+        variant = side
+        snapshot = run.get(side) or {}
+    observed_method = str(run.get("method") or method).strip().upper()
+    if "request" not in artifacts:
+        raise StoreError(f"primary runner observation is missing {variant} request artifact")
+    if not incomplete and "response" not in artifacts:
+        raise StoreError(f"primary runner observation is missing {variant} response artifact")
+    return {
+        "endpoint": endpoint,
+        "method": observed_method,
+        "family": family,
+        "observed_at": observed_at,
+        "description": str((run.get("diff") or {}).get("summary") or f"{side} runner observation"),
+        "artifacts": artifacts,
+        "actor": str(run.get("actor") or "anonymous"),
+        "object_scope": str(run.get("object_scope") or "none"),
+        "variant": variant,
+        "error": str((run.get("error") or {}).get("type") or ""),
+        "truncated": bool(snapshot.get("truncated") or snapshot.get("body_truncated")),
+        "state_changing": state_changing,
+        "redline_checked": redline_checked,
+        "result": result,
+        "identity_dimensions": identity_dimensions or {},
+    }
+
+
+def _record_primary_execution(store: TargetStore, *, attempt_id: str, actor: str,
+                              started_at: str, result: str, runs: list[dict[str, Any]],
+                              method: str, methods: dict[str, str] | None,
+                              family: str, native: bool,
+                              candidate: dict[str, str] | None,
+                              state_changing: bool | None, redline_checked: bool,
+                              observed_at: str | None = None,
+                              identity_dimensions: dict[str, Any] | None = None) -> dict[str, Any]:
+    observations = []
+    timestamp = observed_at or started_at
+    for run in runs:
+        sides = (None,) if native else tuple(
+            side for side in ("baseline", "variant")
+            if any(str(key).startswith(f"{side}_") for key in (run.get("artifacts") or {}))
+        )
+        for side in sides:
+            observations.append(_store_observation(
+                run, side=side, method=(methods or {}).get(side, method), family=family, observed_at=timestamp,
+                result=result if result != "partial" else "", incomplete=result == "partial",
+                state_changing=state_changing,
+                redline_checked=redline_checked,
+                identity_dimensions=identity_dimensions,
+            ))
+    # A transport failure can happen before any response/request artifact is
+    # published. Preserve the attempt as an unknown operation instead of
+    # inventing an observation or dropping the externally-unknown outcome.
+    outcome = "unknown" if result == "partial" and not observations else (
+        "partial" if result == "partial" else "complete"
+    )
+    return store.record_execution(
+        attempt_id=attempt_id, outcome=outcome, observations=observations,
+        candidate=candidate, actor=actor,
+    )
+
+
+def _sync_primary_store(summary: dict[str, Any], *, repo_root: Path, store: TargetStore) -> dict[str, Any]:
+    attempt_id = str(summary.get("attempt_id") or "").strip()
+    if not attempt_id:
+        return {"status": "skipped", "reason": "no primary attempt"}
+    result = str(summary.get("result") or "")
+    if result not in {"tested_finding", "tested_clean", "candidate", "dead_end", "partial"}:
+        return {"status": "skipped", "reason": "non-execution result"}
+    receipt = _record_primary_execution(
+        store, attempt_id=attempt_id, actor="validation-runner",
+        started_at=str(summary.get("generated_at") or now_utc()), result=result,
+        runs=list(summary.get("runs") or []),
+        method=str(summary.get("method") or "GET").upper(),
+        methods={
+            str(side): str((summary.get("request_pair") or {}).get(f"{side}_request", {}).get("method") or "").upper()
+            for side in ("baseline", "variant")
+            if isinstance((summary.get("request_pair") or {}).get(f"{side}_request"), dict)
+        },
+        family=str(summary.get("vuln_class") or "runner-observation"),
+        native=str(summary.get("lane") or "") == "native_evidence",
+        candidate=(_store_candidate(store, str(summary.get("finding_id") or "").strip())
+                   if any(run.get("artifacts") for run in (summary.get("runs") or []) if isinstance(run, dict))
+                   else None),
+        state_changing=summary.get("state_changing"),
+        redline_checked=bool(summary.get("redline_checked")),
+        observed_at=str(summary.get("generated_at") or now_utc()),
+        identity_dimensions=(
+            summary.get("identity_v2", {}).get("dimensions")
+            if isinstance(summary.get("identity_v2"), dict)
+            and isinstance(summary.get("identity_v2", {}).get("dimensions"), dict)
+            else None
+        ),
+    )
+    summary["store_operation_id"] = str(receipt.get("entity_id") or "")
+    return {"status": "deduplicated" if receipt.get("replayed") else "updated",
+            "operation_id": summary["store_operation_id"]}
 
 
 def _normalized_url_for_match(url: str) -> str:
@@ -587,6 +765,11 @@ def _normalized_endpoint_identity(value: str) -> str:
 
 
 def _summary_backlog_id(summary: dict[str, Any]) -> str:
+    """迁移期身份匹配：只认旧 runner summary 里显式写下的 backlog id。
+
+    Case 不再拥有待办，新 summary 不会带这个 id；保留它是为了让**已经写出**的旧
+    summary 仍能按 id 找到对应 action，而不是按文本相似去猜关联（§7.1）。
+    """
     case_state_ref = summary.get("case_state_ref") if isinstance(summary.get("case_state_ref"), dict) else {}
     case_state_write_back = (
         summary.get("case_state_write_back")
@@ -1297,29 +1480,40 @@ def sync_runner_artifacts(summary: dict[str, Any], *, repo_root: Path) -> dict[s
     validation again.  Keep this best-effort: evidence generation must not fail
     just because findings.json or action_queue state is absent.
     """
-    if str(summary.get("result") or "") == "skeleton":
-        return {"status": "skipped", "reason": "skeleton result does not close validation state"}
-    updates: dict[str, Any] = {}
-    for owner, sync in (
-        ("ledger", _sync_evidence_ledger),
-        ("finding", _sync_finding_status),
-        ("action_queue", _sync_action_queue),
-    ):
-        try:
-            updates[owner] = sync(summary, repo_root=repo_root)
-        except Exception as exc:  # owner failure remains replayable from the summary witness
-            updates[owner] = {
-                "status": "error",
-                "error": " ".join(str(exc).split())[:500],
-            }
-    statuses = {str(item.get("status") or "") for item in updates.values()}
-    if statuses & {"error", "ambiguous", "blocked"}:
-        status = "partial"
-    elif statuses <= {"skipped", "deduplicated", "stale"}:
-        status = "deduplicated" if statuses & {"deduplicated", "stale"} else "skipped"
-    else:
-        status = "updated"
-    return {"status": status, "operation_id": str(summary.get("operation_id") or ""), **updates}
+    with _runner_admission(
+        repo_root, str(summary.get("target") or ""), expected=summary.get("backend_binding"),
+    ) as (store, _):
+        if str(summary.get("result") or "") == "skeleton":
+            return {"status": "skipped", "reason": "skeleton result does not close validation state"}
+        if store is not None:
+            if not summary.get("backend_binding"):
+                raise StoreError("primary registration requires the execution backend binding")
+            try:
+                receipt = _sync_primary_store(summary, repo_root=repo_root, store=store)
+                return {"status": receipt.get("status", "updated"), "store": receipt}
+            except Exception as exc:
+                return {"status": "partial", "store": {"status": "error", "error": " ".join(str(exc).split())[:500]}}
+        updates: dict[str, Any] = {}
+        for owner, sync in (
+            ("ledger", _sync_evidence_ledger),
+            ("finding", _sync_finding_status),
+            ("action_queue", _sync_action_queue),
+        ):
+            try:
+                updates[owner] = sync(summary, repo_root=repo_root)
+            except Exception as exc:  # owner failure remains replayable from the summary witness
+                updates[owner] = {
+                    "status": "error",
+                    "error": " ".join(str(exc).split())[:500],
+                }
+        statuses = {str(item.get("status") or "") for item in updates.values()}
+        if statuses & {"error", "ambiguous", "blocked"}:
+            status = "partial"
+        elif statuses <= {"skipped", "deduplicated", "stale"}:
+            status = "deduplicated" if statuses & {"deduplicated", "stale"} else "skipped"
+        else:
+            status = "updated"
+        return {"status": status, "operation_id": str(summary.get("operation_id") or ""), **updates}
 
 
 def parse_headers(values: list[str] | None) -> dict[str, str]:
@@ -1825,210 +2019,228 @@ def run_request_diff(
     session: AuthSession | None = None,
     lane: str = "request_diff",
     source: str = "validation-runner:request-diff",
+    attempt_id: str | None = None,
 ) -> dict[str, Any]:
     """Replay an AI-selected exact pair and persist shared diff evidence."""
-    try:
-        spec = validate_request_pair(request_spec)
-    except RequestPairError as exc:
-        if not str(exc).startswith("manual_required:"):
-            raise
-        finding_id = finding_id or "request-diff-manual"
+    with _runner_admission(repo_root, target) as (store, backend_binding):
+        try:
+            spec = validate_request_pair(request_spec)
+        except RequestPairError as exc:
+            if not str(exc).startswith("manual_required:"):
+                raise
+            finding_id = finding_id or "request-diff-manual"
+            bundle = _bundle_dir(repo_root, target, finding_id)
+            summary = {
+                "schema_version": SCHEMA_VERSION,
+                "lane": lane,
+                "target": canonical_target_value(target),
+                "finding_id": finding_id,
+                "result": "manual_required",
+                "candidate_ready": False,
+                "manual_required": str(exc),
+                "evidence_shape": "request_diff",
+                "classifier": str(request_spec.get("classifier") or "generic") if isinstance(request_spec, dict) else "generic",
+            }
+            return _finalize_runner_summary(summary, bundle / "summary.json", repo_root, backend_binding=backend_binding)
+
+        baseline = spec["baseline_request"]
+        variant = spec["variant_request"]
+        effective_state = _validate_request_facts(state_changing, redline_checked)
+        if not url_belongs_to_target(baseline["url"], target) or not url_belongs_to_target(variant["url"], target):
+            raise RequestPreflightError("request pair contains an off-target URL")
+        finding_id = finding_id or _default_finding_id(lane, baseline["url"])
+        started_at = now_utc()
+        if store is not None:
+            attempt_id = attempt_id or f"attempt:{uuid.uuid4().hex}"
+            _ensure_primary_finding(
+                store, finding_id=finding_id, endpoint=public_url_shape(baseline["url"]),
+                method=baseline["method"], family=_classifier_vuln_class(
+                    spec["classifier"], spec.get("vuln_class", "")
+                ) or "runner-observation",
+            )
+            store.start_attempt(attempt_id=attempt_id, source=source, started_at=started_at, actor="validation-runner")
         bundle = _bundle_dir(repo_root, target, finding_id)
+        private_bundle = _private_bundle_dir(repo_root, target, bundle)
+        pair_digest = request_pair_digest(spec)
+        header_overlay_digest = hashlib.sha256(
+            json.dumps(headers or {}, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest() if headers else ""
+        auth_session_id = session.session_id() if session is not None else ""
+        write_private_json(private_bundle / "inputs.json", spec)
+        repeat_count = max(1, int(repeat if repeat is not None else spec["repeat"]))
+        runs: list[dict[str, Any]] = []
+        baseline_bodies: list[str] = []
+        variant_bodies: list[str] = []
+        for idx in range(1, repeat_count + 1):
+            base_headers = _merge_request_headers(baseline, headers)
+            variant_headers = _merge_request_headers(variant, headers)
+            prefix = "" if repeat_count == 1 else f"{idx}."
+            run: dict[str, Any] = {
+                "iteration": idx,
+                "baseline_url": public_url_shape(baseline["url"]),
+                "variant_url": public_url_shape(variant["url"]),
+                "active_dimension": spec["active_dimension"],
+                "artifacts": {},
+            }
+            runs.append(run)
+            side = "baseline"
+            try:
+                base = request_once(
+                    target=target, url=baseline["url"], method=baseline["method"],
+                    headers=base_headers, body=baseline["body"], timeout=timeout, session=session,
+                )
+                artifacts = _write_raw_http(private_bundle, f"{prefix}baseline.", base, repo_root)
+                run["artifacts"].update({f"baseline_{key}": value for key, value in artifacts.items()})
+                run["baseline"] = _response_snapshot(base)
+                side = "variant"
+                variant_response = request_once(
+                    target=target, url=variant["url"], method=variant["method"],
+                    headers=variant_headers, body=variant["body"], timeout=timeout, session=session,
+                )
+                artifacts = _write_raw_http(private_bundle, f"{prefix}variant.", variant_response, repo_root)
+                run["artifacts"].update({f"variant_{key}": value for key, value in artifacts.items()})
+            except (OSError, urllib.error.URLError, ValueError) as exc:
+                run["error"] = {"side": side, "type": type(exc).__name__}
+                return _finalize_runner_summary({
+                    "schema_version": SCHEMA_VERSION, "lane": lane,
+                    "target": canonical_target_value(target), "finding_id": finding_id,
+                    "url": public_url_shape(baseline["url"]), "method": baseline["method"],
+                    "generated_at": now_utc(), "result": "partial", "status": "partial",
+                    "candidate_ready": False, "runs": runs, "repeat": repeat_count,
+                    "request_pair": _request_pair_spec_view(spec), "request_spec_sha256": pair_digest,
+                    "state_changing": effective_state, "redline_checked": redline_checked,
+                    "attempt_id": attempt_id or "",
+                    "classifier": spec["classifier"], "vuln_class": _classifier_vuln_class(
+                        spec["classifier"], spec.get("vuln_class", "")
+                    ),
+                    "error": run["error"],
+                }, bundle / "summary.json", repo_root, backend_binding=backend_binding)
+            run.update(_response_diff(base, variant_response))
+            baseline_bodies.append(str(base.get("body") or ""))
+            variant_bodies.append(str(variant_response.get("body") or ""))
+
+        classifier = spec["classifier"]
+        # These predicates only verify explicit declarations; they never select a test.
+        wire_facts = _compute_wire_facts(runs, baseline_bodies, variant_bodies)
+        declared_expected = list(spec.get("expected") or [])
+        if not declared_expected and spec.get("expect_auth") is True:
+            # Sugar: expect_auth is the missing-auth declaration expressed as a
+            # boolean; expand to its fact form so both spellings reconcile alike.
+            declared_expected = ["identical_success_pair"]
+        expected_check: dict[str, Any] = {}
+        if declared_expected:
+            observed = {
+                name: _declared_fact_holds(name, runs, baseline_bodies, variant_bodies, wire_facts)
+                for name in declared_expected
+            }
+            unmet = [name for name, holds in observed.items() if not holds]
+            candidate_ready = not unmet
+            expected_check = {
+                "declared": declared_expected,
+                "unmet": unmet,
+                "observed": observed,
+            }
+        else:
+            candidate_ready = False
+        # Intent routing: the AI declares which direction its expectation points
+        # (hazard evidence vs. boundary-holds evidence); the runner routes on the
+        # declaration mechanically and never infers direction from fact names.
+        #   hazard + confirmed  -> tested_finding (a hazard declaration held)
+        #   clean   + confirmed -> tested_clean   (a clean declaration held, with
+        #                                       expected_check archived as evidence)
+        #   either + unmet      -> candidate      (the declaration was wrong — the
+        #                           most signal-rich outcome, must reach review)
+        declaration_intent = str(spec.get("declaration_intent") or "hazard")
+        if candidate_ready:
+            # clean-intent confirmation is a mechanically-backed tested_clean;
+            # hazard-intent confirmation is a finding candidate as before.
+            result = "tested_clean" if declaration_intent == "clean" else "tested_finding"
+        else:
+            # An undeclared or unmet expectation is unresolved, never an automatic clean.
+            result = "candidate"
+        vuln_class = _classifier_vuln_class(classifier, spec.get("vuln_class", ""))
+        diff_path = bundle / "diff.json"
+        _write_json(diff_path, {"runs": runs, "request_pair": _request_pair_spec_view(spec)})
+        diff_summaries = [str(run.get("diff", {}).get("summary") or "") for run in runs]
+        if store is not None:
+            ledger = None
+        elif vuln_class in CLOSURE_FAMILIES:
+            ledger = _record_ledger_if_needed(
+                repo_root=repo_root,
+                no_ledger=no_ledger,
+                target=target,
+                endpoint=baseline["url"],
+                method=baseline["method"],
+                vuln_class=vuln_class,
+                actor="anonymous",
+                object_scope="none",
+                variant="replay",
+                result=result,
+                source=source,
+                evidence_ref=_rel(diff_path, repo_root),
+                notes=f"request-diff classifier={classifier}; {'; '.join(diff_summaries[:3])}",
+                browser_observed=browser_observed,
+                redline_checked=redline_checked,
+                state_changing=effective_state,
+                identity_v2=identity_v2,
+                operation_material={
+                    "target": canonical_target_value(target),
+                    "lane": lane,
+                    "finding_id": finding_id,
+                    "request_spec_sha256": pair_digest,
+                    "header_overlay_sha256": header_overlay_digest,
+                    "auth_session_id": auth_session_id,
+                    "classifier": classifier,
+                    "vuln_class": vuln_class,
+                    "evidence_shape": spec["evidence_shape"],
+                    "active_dimension": spec["active_dimension"],
+                    "repeat": repeat_count,
+                },
+                artifact_bindings=_artifact_bindings(
+                    {"runs": runs, "artifacts": {"diff": _rel(diff_path, repo_root)}},
+                    repo_root,
+                ),
+                finding_id=finding_id,
+            )
+        elif no_ledger:
+            ledger = None
+        else:
+            ledger = {
+                "write_status": "skipped",
+                "reason": "request-diff classifier has no canonical Ledger family; provide vuln_class",
+            }
         summary = {
             "schema_version": SCHEMA_VERSION,
             "lane": lane,
             "target": canonical_target_value(target),
             "finding_id": finding_id,
-            "result": "manual_required",
-            "candidate_ready": False,
-            "manual_required": str(exc),
-            "evidence_shape": "request_diff",
-            "classifier": str(request_spec.get("classifier") or "generic") if isinstance(request_spec, dict) else "generic",
-        }
-        return _finalize_runner_summary(summary, bundle / "summary.json", repo_root)
-
-    baseline = spec["baseline_request"]
-    variant = spec["variant_request"]
-    effective_state = _validate_request_facts(state_changing, redline_checked)
-    if not url_belongs_to_target(baseline["url"], target) or not url_belongs_to_target(variant["url"], target):
-        raise RequestPreflightError("request pair contains an off-target URL")
-    finding_id = finding_id or _default_finding_id(lane, baseline["url"])
-    bundle = _bundle_dir(repo_root, target, finding_id)
-    private_bundle = _private_bundle_dir(repo_root, target, bundle)
-    pair_digest = request_pair_digest(spec)
-    header_overlay_digest = hashlib.sha256(
-        json.dumps(headers or {}, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest() if headers else ""
-    auth_session_id = session.session_id() if session is not None else ""
-    write_private_json(private_bundle / "inputs.json", spec)
-    repeat_count = max(1, int(repeat if repeat is not None else spec["repeat"]))
-    runs: list[dict[str, Any]] = []
-    baseline_bodies: list[str] = []
-    variant_bodies: list[str] = []
-    for idx in range(1, repeat_count + 1):
-        base_headers = _merge_request_headers(baseline, headers)
-        variant_headers = _merge_request_headers(variant, headers)
-        prefix = "" if repeat_count == 1 else f"{idx}."
-        run: dict[str, Any] = {
-            "iteration": idx,
-            "baseline_url": public_url_shape(baseline["url"]),
-            "variant_url": public_url_shape(variant["url"]),
+            "url": public_url_shape(baseline["url"]),
+            "method": baseline["method"],
+            "generated_at": now_utc(),
+            "result": result,
+            "candidate_ready": candidate_ready,
+            "state_changing": effective_state,
+            "redline_checked": redline_checked,
+            "evidence_shape": spec["evidence_shape"],
+            "classifier": classifier,
+            "vuln_class": vuln_class,
             "active_dimension": spec["active_dimension"],
-            "artifacts": {},
+            "expected_signal": spec["expected_signal"],
+            "request_spec_sha256": pair_digest,
+            "header_overlay_sha256": header_overlay_digest,
+            "auth_session_id": auth_session_id,
+            "request_pair": _request_pair_spec_view(spec),
+            "repeat": repeat_count,
+            "runs": runs,
+            "artifacts": {"diff": _rel(diff_path, repo_root)},
+            "ledger_record": ledger,
+            "expected_check": expected_check,
+            "declaration_intent": declaration_intent,
+            "expected_note": spec.get("expected_note", ""),
+            "attempt_id": attempt_id or "",
         }
-        runs.append(run)
-        side = "baseline"
-        try:
-            base = request_once(
-                target=target, url=baseline["url"], method=baseline["method"],
-                headers=base_headers, body=baseline["body"], timeout=timeout, session=session,
-            )
-            artifacts = _write_raw_http(private_bundle, f"{prefix}baseline.", base, repo_root)
-            run["artifacts"].update({f"baseline_{key}": value for key, value in artifacts.items()})
-            run["baseline"] = _response_snapshot(base)
-            side = "variant"
-            variant_response = request_once(
-                target=target, url=variant["url"], method=variant["method"],
-                headers=variant_headers, body=variant["body"], timeout=timeout, session=session,
-            )
-            artifacts = _write_raw_http(private_bundle, f"{prefix}variant.", variant_response, repo_root)
-            run["artifacts"].update({f"variant_{key}": value for key, value in artifacts.items()})
-        except (OSError, urllib.error.URLError, ValueError) as exc:
-            run["error"] = {"side": side, "type": type(exc).__name__}
-            return _finalize_runner_summary({
-                "schema_version": SCHEMA_VERSION, "lane": lane,
-                "target": canonical_target_value(target), "finding_id": finding_id,
-                "url": public_url_shape(baseline["url"]), "method": baseline["method"],
-                "generated_at": now_utc(), "result": "partial", "status": "partial",
-                "candidate_ready": False, "runs": runs, "repeat": repeat_count,
-                "request_pair": _request_pair_spec_view(spec), "request_spec_sha256": pair_digest,
-                "state_changing": effective_state, "redline_checked": redline_checked,
-                "classifier": spec["classifier"], "vuln_class": spec.get("vuln_class", ""),
-                "error": run["error"],
-            }, bundle / "summary.json", repo_root)
-        run.update(_response_diff(base, variant_response))
-        baseline_bodies.append(str(base.get("body") or ""))
-        variant_bodies.append(str(variant_response.get("body") or ""))
-
-    classifier = spec["classifier"]
-    # These predicates only verify explicit declarations; they never select a test.
-    wire_facts = _compute_wire_facts(runs, baseline_bodies, variant_bodies)
-    declared_expected = list(spec.get("expected") or [])
-    if not declared_expected and spec.get("expect_auth") is True:
-        # Sugar: expect_auth is the missing-auth declaration expressed as a
-        # boolean; expand to its fact form so both spellings reconcile alike.
-        declared_expected = ["identical_success_pair"]
-    expected_check: dict[str, Any] = {}
-    if declared_expected:
-        observed = {
-            name: _declared_fact_holds(name, runs, baseline_bodies, variant_bodies, wire_facts)
-            for name in declared_expected
-        }
-        unmet = [name for name, holds in observed.items() if not holds]
-        candidate_ready = not unmet
-        expected_check = {
-            "declared": declared_expected,
-            "unmet": unmet,
-            "observed": observed,
-        }
-    else:
-        candidate_ready = False
-    # Intent routing: the AI declares which direction its expectation points
-    # (hazard evidence vs. boundary-holds evidence); the runner routes on the
-    # declaration mechanically and never infers direction from fact names.
-    #   hazard + confirmed  -> tested_finding (a hazard declaration held)
-    #   clean   + confirmed -> tested_clean   (a clean declaration held, with
-    #                                       expected_check archived as evidence)
-    #   either + unmet      -> candidate      (the declaration was wrong — the
-    #                           most signal-rich outcome, must reach review)
-    declaration_intent = str(spec.get("declaration_intent") or "hazard")
-    if candidate_ready:
-        # clean-intent confirmation is a mechanically-backed tested_clean;
-        # hazard-intent confirmation is a finding candidate as before.
-        result = "tested_clean" if declaration_intent == "clean" else "tested_finding"
-    else:
-        # An undeclared or unmet expectation is unresolved, never an automatic clean.
-        result = "candidate"
-    vuln_class = _classifier_vuln_class(classifier, spec.get("vuln_class", ""))
-    diff_path = bundle / "diff.json"
-    _write_json(diff_path, {"runs": runs, "request_pair": _request_pair_spec_view(spec)})
-    diff_summaries = [str(run.get("diff", {}).get("summary") or "") for run in runs]
-    if vuln_class in CLOSURE_FAMILIES:
-        ledger = _record_ledger_if_needed(
-            repo_root=repo_root,
-            no_ledger=no_ledger,
-            target=target,
-            endpoint=baseline["url"],
-            method=baseline["method"],
-            vuln_class=vuln_class,
-            actor="anonymous",
-            object_scope="none",
-            variant="replay",
-            result=result,
-            source=source,
-            evidence_ref=_rel(diff_path, repo_root),
-            notes=f"request-diff classifier={classifier}; {'; '.join(diff_summaries[:3])}",
-            browser_observed=browser_observed,
-            redline_checked=redline_checked,
-            state_changing=effective_state,
-            identity_v2=identity_v2,
-            operation_material={
-                "target": canonical_target_value(target),
-                "lane": lane,
-                "finding_id": finding_id,
-                "request_spec_sha256": pair_digest,
-                "header_overlay_sha256": header_overlay_digest,
-                "auth_session_id": auth_session_id,
-                "classifier": classifier,
-                "vuln_class": vuln_class,
-                "evidence_shape": spec["evidence_shape"],
-                "active_dimension": spec["active_dimension"],
-                "repeat": repeat_count,
-            },
-            artifact_bindings=_artifact_bindings(
-                {"runs": runs, "artifacts": {"diff": _rel(diff_path, repo_root)}},
-                repo_root,
-            ),
-            finding_id=finding_id,
-        )
-    elif no_ledger:
-        ledger = None
-    else:
-        ledger = {
-            "write_status": "skipped",
-            "reason": "request-diff classifier has no canonical Ledger family; provide vuln_class",
-        }
-    summary = {
-        "schema_version": SCHEMA_VERSION,
-        "lane": lane,
-        "target": canonical_target_value(target),
-        "finding_id": finding_id,
-        "url": public_url_shape(baseline["url"]),
-        "method": baseline["method"],
-        "generated_at": now_utc(),
-        "result": result,
-        "candidate_ready": candidate_ready,
-        "state_changing": effective_state,
-        "redline_checked": redline_checked,
-        "evidence_shape": spec["evidence_shape"],
-        "classifier": classifier,
-        "vuln_class": vuln_class,
-        "active_dimension": spec["active_dimension"],
-        "expected_signal": spec["expected_signal"],
-        "request_spec_sha256": pair_digest,
-        "header_overlay_sha256": header_overlay_digest,
-        "auth_session_id": auth_session_id,
-        "request_pair": _request_pair_spec_view(spec),
-        "repeat": repeat_count,
-        "runs": runs,
-        "artifacts": {"diff": _rel(diff_path, repo_root)},
-        "ledger_record": ledger,
-        "expected_check": expected_check,
-        "declaration_intent": declaration_intent,
-        "expected_note": spec.get("expected_note", ""),
-    }
-    summary_path = bundle / "summary.json"
-    return _finalize_runner_summary(summary, summary_path, repo_root)
+        summary_path = bundle / "summary.json"
+        return _finalize_runner_summary(summary, summary_path, repo_root, backend_binding=backend_binding)
 
 
 def record_native_evidence(
@@ -2040,140 +2252,157 @@ def record_native_evidence(
     state_changing: bool | None = None,
     redline_checked: bool = False,
     identity_v2: dict[str, Any] | None = None,
+    attempt_id: str | None = None,
 ) -> dict[str, Any]:
     """Bind existing raw observations to the same witness as request-diff.
 
     Result and meaning are explicitly AI-assessed, not inferred from bytes.
     This operation verifies references and records evidence; it executes nothing.
     """
-    target = canonical_target_value(target)
-    if not isinstance(evidence, dict) or type(evidence.get("schema_version")) is not int or evidence["schema_version"] != SCHEMA_VERSION:
-        raise ValueError("native evidence must be a schema-v1 JSON object")
+    with _runner_admission(repo_root, target) as (store, backend_binding):
+        target = canonical_target_value(target)
+        if not isinstance(evidence, dict) or type(evidence.get("schema_version")) is not int or evidence["schema_version"] != SCHEMA_VERSION:
+            raise ValueError("native evidence must be a schema-v1 JSON object")
 
-    def required_text(value: Any, field: str) -> str:
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError(f"native evidence {field} must be a non-empty string")
-        return value.strip()
+        def required_text(value: Any, field: str) -> str:
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"native evidence {field} must be a non-empty string")
+            return value.strip()
 
-    finding = find_finding(_findings_dir(repo_root, target), finding_id, migrate_legacy=False)
-    if not finding:
-        raise ValueError("record-evidence requires an existing canonical finding; save the Candidate through finding_index first")
-    for key, expected in (("target", target), ("finding_id", finding_id)):
-        if key in evidence and evidence[key] != expected:
-            raise ValueError(f"native evidence {key} does not match the selected finding")
-    url = required_text(finding.get("url") or finding.get("endpoint"), "canonical finding URL")
-    if not url_belongs_to_target(url, target):
-        raise ValueError("canonical finding URL is off target")
-    method = str(finding.get("method") or "GET").strip().upper()
-    vuln_class = canonical_vuln_class(str(finding.get("vuln_class") or finding.get("type") or ""))
-    if not vuln_class:
-        raise ValueError("canonical finding.vuln_class must use the existing Ledger taxonomy")
-    result = required_text(evidence.get("result"), "result")
-    if result not in {*RUNNER_RESULT_TO_FINDING_STATUS, "partial"}:
-        raise ValueError("native evidence result must be tested_finding, candidate, tested_clean, dead_end, or partial")
-    source = required_text(evidence.get("source"), "source")
-    observed_difference = _validate_observed_difference(
-        required_text(evidence.get("observed_difference"), "observed_difference")
-    )
-    captured_at = datetime.fromisoformat(required_text(evidence.get("generated_at"), "generated_at").replace("Z", "+00:00"))
-    if captured_at.tzinfo is None:
-        raise ValueError("native evidence generated_at must be an ISO-8601 timestamp with a timezone")
-    effective_state = _validate_request_facts(state_changing, redline_checked)
-    raw_runs = evidence.get("runs")
-    if not isinstance(raw_runs, list) or not raw_runs:
-        raise ValueError("native evidence runs must contain the recorded execution steps")
-    runs = []
-    anchor = None
-    for index, raw_run in enumerate(raw_runs):
-        if not isinstance(raw_run, dict):
-            raise ValueError(f"native evidence runs[{index}] must be an object")
-        run_url = required_text(raw_run.get("url"), f"runs[{index}].url")
-        run_method = required_text(raw_run.get("method"), f"runs[{index}].method").upper()
-        if not url_belongs_to_target(run_url, target):
-            raise ValueError(f"native evidence runs[{index}].url is off-target")
-        if not re.fullmatch(r"[A-Z][A-Z0-9_-]*", run_method):
-            raise ValueError(f"native evidence runs[{index}].method is invalid")
-        artifacts = raw_run.get("artifacts")
-        if not isinstance(artifacts, dict) or "request" not in artifacts:
-            raise ValueError(f"native evidence runs[{index}] requires a request artifact")
-        if result != "partial" and ("response" not in artifacts or raw_run.get("error") or raw_run.get("body_truncated")):
-            raise ValueError("incomplete native evidence requires result=partial, never candidate-ready")
-        refs = {}
-        for kind, value in artifacts.items():
-            ref = _target_owned_nonempty_evidence_ref(repo_root, target, value)
-            if not ref:
-                raise ValueError(f"native evidence runs[{index}].artifacts.{kind} must reference a non-empty target-owned file")
-            refs[kind] = ref
-        run = {
-            key: raw_run[key]
-            for key in ("actor", "object_scope", "variant", "summary", "error", "body_truncated")
-            if key in raw_run
-        }
-        for key, normalize in (("actor", normalize_actor), ("object_scope", normalize_object_scope), ("variant", normalize_variant)):
-            if key in run:
-                run[key] = normalize(required_text(run[key], f"runs[{index}].{key}"))
-        run.update(url=public_url_shape(run_url), method=run_method, artifacts=refs)
-        runs.append(run)
-        if run_method == method and _runner_endpoint_matches(url, run_url, target):
-            anchor = run
-    if anchor is None:
-        raise ValueError("native evidence must include the canonical finding's exact endpoint and method")
-    actor = normalize_actor(required_text(anchor.get("actor"), "canonical execution actor"))
-    summary = {
-        "schema_version": SCHEMA_VERSION,
-        "lane": "native_evidence",
-        "evidence_shape": "native",
-        "assessment_source": "ai",
-        "source": source,
-        "target": target,
-        "finding_id": finding_id,
-        "url": url,
-        "method": method,
-        "vuln_class": vuln_class,
-        "generated_at": captured_at.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "result": result,
-        "candidate_ready": result == "tested_finding",
-        "observed_difference": observed_difference,
-        "state_changing": effective_state,
-        "redline_checked": redline_checked,
-        "identity_v2": identity_v2,
-        "runs": runs,
-    }
-    bindings = _artifact_bindings(summary, repo_root)
-    digests = {(item["kind"], item["ref"]): item["sha256"] for item in bindings}
-    for run in runs:
-        # Bind each artifact to its execution step, not only to the bundle's
-        # unordered set of hashes (order matters for native stateful evidence).
-        run["artifact_sha256"] = {
-            kind: digests[(kind, ref)] for kind, ref in run["artifacts"].items()
-        }
-    material = _stable_operation_material(summary)
-    material["artifact_bindings"] = _artifact_digest_material(bindings)
-    # Re-registering identical material resumes the same operation and path,
-    # including a previous partial owner sync; raw observations are not copied.
-    operation_id = _runner_operation_id(material)
-    summary_path = (
-        repo_root / "evidence" / target_storage_key(target)
-        / "validation" / _safe_id(finding_id, "finding")
-        / f"native-{operation_id.split(':')[-1]}" / "summary.json"
-    )
-    if result == "partial":
-        summary["status"] = "partial"
-        summary["ledger_record"] = None
-    else:
-        summary["ledger_record"] = _record_ledger_if_needed(
-            repo_root=repo_root, no_ledger=False, target=target, endpoint=url,
-            method=method, vuln_class=vuln_class,
-            actor=actor,
-            object_scope=str(anchor.get("object_scope") or "unknown"),
-            variant=str(anchor.get("variant") or "replay"), result=result,
-            source=f"native-evidence:{source}", evidence_ref=anchor["artifacts"]["response"],
-            notes=observed_difference, browser_observed=False,
-            redline_checked=redline_checked, state_changing=effective_state,
-            identity_v2=identity_v2, operation_material=material,
-            artifact_bindings=bindings, finding_id=finding_id,
+        if store is not None:
+            try:
+                finding = store.finding(finding_id)
+            except StoreError as exc:
+                raise ValueError("record-evidence requires an existing primary finding") from exc
+        else:
+            finding = find_finding(_findings_dir(repo_root, target), finding_id, migrate_legacy=False)
+            if not finding:
+                raise ValueError("record-evidence requires an existing canonical finding; save the Candidate through finding_index first")
+        for key, expected in (("target", target), ("finding_id", finding_id)):
+            if key in evidence and evidence[key] != expected:
+                raise ValueError(f"native evidence {key} does not match the selected finding")
+        url = required_text(finding.get("url") or finding.get("endpoint"), "canonical finding URL")
+        if not url_belongs_to_target(url, target):
+            raise ValueError("canonical finding URL is off target")
+        method = str(finding.get("method") or "GET").strip().upper()
+        vuln_class = normalize_family(finding.get("vuln_class") or finding.get("family") or finding.get("type"))
+        if store is not None:
+            attempt_id = attempt_id or str(evidence.get("attempt_id") or "").strip()
+            if not attempt_id:
+                raise ValueError("primary record-evidence requires an explicit attempt_id")
+        result = required_text(evidence.get("result"), "result")
+        if result not in {*RUNNER_RESULT_TO_FINDING_STATUS, "partial"}:
+            raise ValueError("native evidence result must be tested_finding, candidate, tested_clean, dead_end, or partial")
+        source = required_text(evidence.get("source"), "source")
+        observed_difference = _validate_observed_difference(
+            required_text(evidence.get("observed_difference"), "observed_difference")
         )
-    return _finalize_runner_summary(summary, summary_path, repo_root)
+        captured_at = datetime.fromisoformat(required_text(evidence.get("generated_at"), "generated_at").replace("Z", "+00:00"))
+        if captured_at.tzinfo is None:
+            raise ValueError("native evidence generated_at must be an ISO-8601 timestamp with a timezone")
+        effective_state = _validate_request_facts(state_changing, redline_checked)
+        raw_runs = evidence.get("runs")
+        if not isinstance(raw_runs, list) or not raw_runs:
+            raise ValueError("native evidence runs must contain the recorded execution steps")
+        runs = []
+        anchor = None
+        for index, raw_run in enumerate(raw_runs):
+            if not isinstance(raw_run, dict):
+                raise ValueError(f"native evidence runs[{index}] must be an object")
+            run_url = required_text(raw_run.get("url"), f"runs[{index}].url")
+            run_method = required_text(raw_run.get("method"), f"runs[{index}].method").upper()
+            if not url_belongs_to_target(run_url, target):
+                raise ValueError(f"native evidence runs[{index}].url is off-target")
+            if not re.fullmatch(r"[A-Z][A-Z0-9_-]*", run_method):
+                raise ValueError(f"native evidence runs[{index}].method is invalid")
+            artifacts = raw_run.get("artifacts")
+            if not isinstance(artifacts, dict) or "request" not in artifacts:
+                raise ValueError(f"native evidence runs[{index}] requires a request artifact")
+            if result != "partial" and ("response" not in artifacts or raw_run.get("error") or raw_run.get("body_truncated")):
+                raise ValueError("incomplete native evidence requires result=partial, never candidate-ready")
+            refs = {}
+            for kind, value in artifacts.items():
+                ref = _target_owned_nonempty_evidence_ref(repo_root, target, value)
+                if not ref:
+                    raise ValueError(f"native evidence runs[{index}].artifacts.{kind} must reference a non-empty target-owned file")
+                refs[kind] = ref
+            run = {
+                key: raw_run[key]
+                for key in ("actor", "object_scope", "variant", "summary", "error", "body_truncated")
+                if key in raw_run
+            }
+            for key, normalize in (("actor", normalize_actor), ("object_scope", normalize_object_scope), ("variant", normalize_variant)):
+                if key in run:
+                    run[key] = normalize(required_text(run[key], f"runs[{index}].{key}"))
+            run.update(url=public_url_shape(run_url), method=run_method, artifacts=refs)
+            runs.append(run)
+            if run_method == method and _runner_endpoint_matches(url, run_url, target):
+                anchor = run
+        if anchor is None:
+            raise ValueError("native evidence must include the canonical finding's exact endpoint and method")
+        actor = normalize_actor(required_text(anchor.get("actor"), "canonical execution actor"))
+        if store is not None:
+            store.start_attempt(
+                attempt_id=attempt_id, source=source,
+                started_at=captured_at.astimezone(timezone.utc).isoformat(), actor="validation-runner",
+            )
+        summary = {
+            "schema_version": SCHEMA_VERSION,
+            "lane": "native_evidence",
+            "evidence_shape": "native",
+            "assessment_source": "ai",
+            "source": source,
+            "target": target,
+            "finding_id": finding_id,
+            "url": url,
+            "method": method,
+            "vuln_class": vuln_class,
+            "generated_at": captured_at.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "result": result,
+            "candidate_ready": result == "tested_finding",
+            "observed_difference": observed_difference,
+            "state_changing": effective_state,
+            "redline_checked": redline_checked,
+            "identity_v2": identity_v2,
+            "runs": runs,
+            "attempt_id": attempt_id or "",
+        }
+        bindings = _artifact_bindings(summary, repo_root)
+        digests = {(item["kind"], item["ref"]): item["sha256"] for item in bindings}
+        for run in runs:
+            # Bind each artifact to its execution step, not only to the bundle's
+            # unordered set of hashes (order matters for native stateful evidence).
+            run["artifact_sha256"] = {
+                kind: digests[(kind, ref)] for kind, ref in run["artifacts"].items()
+            }
+        material = _stable_operation_material(summary)
+        material["artifact_bindings"] = _artifact_digest_material(bindings)
+        # Re-registering identical material resumes the same operation and path,
+        # including a previous partial owner sync; raw observations are not copied.
+        operation_id = _runner_operation_id(material)
+        summary_path = (
+            repo_root / "evidence" / target_storage_key(target)
+            / "validation" / _safe_id(finding_id, "finding")
+            / f"native-{operation_id.split(':')[-1]}" / "summary.json"
+        )
+        if result == "partial":
+            summary["status"] = "partial"
+        if store is not None:
+            summary["ledger_record"] = None
+        else:
+            summary["ledger_record"] = _record_ledger_if_needed(
+                repo_root=repo_root, no_ledger=False, target=target, endpoint=url,
+                method=method, vuln_class=vuln_class,
+                actor=actor,
+                object_scope=str(anchor.get("object_scope") or "unknown"),
+                variant=str(anchor.get("variant") or "replay"), result=result,
+                source=f"native-evidence:{source}", evidence_ref=anchor["artifacts"].get("response") or anchor["artifacts"]["request"],
+                notes=observed_difference, browser_observed=False,
+                redline_checked=redline_checked, state_changing=effective_state,
+                identity_v2=identity_v2, operation_material=material,
+                artifact_bindings=bindings, finding_id=finding_id,
+            )
+        return _finalize_runner_summary(summary, summary_path, repo_root, backend_binding=backend_binding)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2208,6 +2437,7 @@ def build_parser() -> argparse.ArgumentParser:
     request_diff.add_argument("--header", action="append", default=[], help="Header overlay applied to both requests")
     request_diff.add_argument("--timeout", type=int, default=10)
     request_diff.add_argument("--repeat", type=int, default=None)
+    request_diff.add_argument("--attempt-id", default="", help="primary Store execution attempt identity")
     request_diff.add_argument("--browser-observed", action="store_true")
     add_request_facts(request_diff)
     request_diff.add_argument("--no-ledger", action="store_true")
@@ -2219,6 +2449,7 @@ def build_parser() -> argparse.ArgumentParser:
     record = sub.add_parser("record-evidence", help="Register already-executed native evidence without sending requests")
     add_common(record, finding_required=True)
     record.add_argument("--evidence-json", required=True, help="Schema-v1 observations with runs[].artifacts, source, generated_at, result and observed_difference")
+    record.add_argument("--attempt-id", default="", help="primary Store execution attempt identity")
     add_request_facts(record)
     record.add_argument("--json", action="store_true")
 
@@ -2240,61 +2471,69 @@ def main(argv: list[str] | None = None) -> int:
         except (json.JSONDecodeError, TypeError, ValueError, KeyError) as exc:
             parser.error(f"--identity-v2-json must contain a valid ClosureCellKey v2: {exc}")
     repo_root = Path(args.repo_root)
-    if args.lane == "request-diff":
-        auth_session = session_from_args(args).bind_target(args.target)
-        try:
-            request_spec = json.loads(Path(args.request_spec).read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            parser.error(f"--request-spec must point to a JSON object: {exc}")
-        if not isinstance(request_spec, dict):
-            parser.error("--request-spec must contain a JSON object")
-        try:
-            summary = run_request_diff(
-                repo_root=repo_root,
-                target=args.target,
-                request_spec=request_spec,
-                timeout=args.timeout,
-                finding_id=args.finding_id,
-                repeat=args.repeat,
-                no_ledger=args.no_ledger,
-                browser_observed=args.browser_observed,
-                state_changing=args.state_changing,
-                redline_checked=args.redline_checked,
-                identity_v2=identity_v2,
-                headers=parse_headers(args.header),
-                session=auth_session,
-            )
-        except (RequestPairError, RequestPreflightError) as exc:
-            # Invalid input must fail before any network I/O.
-            print(f"request-diff: invalid request spec: {exc}", file=sys.stderr)
-            return 2
-    elif args.lane == "record-evidence":
-        try:
-            evidence = json.loads(Path(args.evidence_json).read_text(encoding="utf-8"))
-            summary = record_native_evidence(
-                repo_root=repo_root, target=args.target, finding_id=args.finding_id,
-                evidence=evidence, state_changing=args.state_changing,
-                redline_checked=args.redline_checked, identity_v2=identity_v2,
-            )
-        except (OSError, ValueError) as exc:
-            parser.error(f"record-evidence: {exc}")
-    else:
-        raise ValueError(f"unknown lane: {args.lane}")
-    if identity_v2 is not None and summary.get("ledger_record") is None:
-        summary["identity_v2"] = identity_v2
-    if not getattr(args, "no_sync", False):
-        summary["sync"] = sync_runner_artifacts(summary, repo_root=repo_root)
-        summary_path = _summary_path(summary, repo_root)
-        if summary_path is not None:
-            _write_json(summary_path, summary)
-            # The first Finding sync digests the pre-sync summary. Reconcile once
-            # more after the final summary write so owner provenance binds the
-            # exact persisted witness consumed by non-interactive validation.
-            _sync_finding_status(summary, repo_root=repo_root)
-    print(json.dumps(summary, ensure_ascii=False, indent=2))
-    # --json is accepted for CLI symmetry; the default output is already the
-    # machine-readable summary JSON (no human-only trailing block exists).
-    return 1 if summary.get("result") == "partial" or (summary.get("sync") or {}).get("status") == "partial" else 0
+    try:
+        with _runner_admission(repo_root, args.target) as (store, _):
+            if args.lane == "request-diff":
+                auth_session = session_from_args(args).bind_target(args.target)
+                try:
+                    request_spec = json.loads(Path(args.request_spec).read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError) as exc:
+                    parser.error(f"--request-spec must point to a JSON object: {exc}")
+                if not isinstance(request_spec, dict):
+                    parser.error("--request-spec must contain a JSON object")
+                try:
+                    summary = run_request_diff(
+                        repo_root=repo_root,
+                        target=args.target,
+                        request_spec=request_spec,
+                        timeout=args.timeout,
+                        finding_id=args.finding_id,
+                        repeat=args.repeat,
+                        no_ledger=args.no_ledger,
+                        browser_observed=args.browser_observed,
+                        state_changing=args.state_changing,
+                        redline_checked=args.redline_checked,
+                        identity_v2=identity_v2,
+                        headers=parse_headers(args.header),
+                        session=auth_session,
+                        attempt_id=args.attempt_id or None,
+                    )
+                except (RequestPairError, RequestPreflightError) as exc:
+                    # Invalid input must fail before any network I/O.
+                    print(f"request-diff: invalid request spec: {exc}", file=sys.stderr)
+                    return 2
+            elif args.lane == "record-evidence":
+                try:
+                    evidence = json.loads(Path(args.evidence_json).read_text(encoding="utf-8"))
+                    summary = record_native_evidence(
+                        repo_root=repo_root, target=args.target, finding_id=args.finding_id,
+                        evidence=evidence, state_changing=args.state_changing,
+                        redline_checked=args.redline_checked, identity_v2=identity_v2,
+                        attempt_id=args.attempt_id or None,
+                    )
+                except (OSError, ValueError) as exc:
+                    parser.error(f"record-evidence: {exc}")
+            else:
+                raise ValueError(f"unknown lane: {args.lane}")
+            if identity_v2 is not None and summary.get("ledger_record") is None:
+                summary["identity_v2"] = identity_v2
+            if not getattr(args, "no_sync", False):
+                summary["sync"] = sync_runner_artifacts(summary, repo_root=repo_root)
+                summary_path = _summary_path(summary, repo_root)
+                if summary_path is not None:
+                    _write_json(summary_path, summary)
+                    # The first Finding sync digests the pre-sync summary. Reconcile once
+                    # more after the final summary write so owner provenance binds the
+                    # exact persisted witness consumed by non-interactive validation.
+                    if store is None:
+                        _sync_finding_status(summary, repo_root=repo_root)
+            print(json.dumps(summary, ensure_ascii=False, indent=2))
+            # --json is accepted for CLI symmetry; the default output is already the
+            # machine-readable summary JSON (no human-only trailing block exists).
+            return 1 if summary.get("result") == "partial" or (summary.get("sync") or {}).get("status") == "partial" else 0
+    except StoreError as exc:
+        print(f"validation-runner: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

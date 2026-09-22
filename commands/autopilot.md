@@ -160,6 +160,12 @@ from target-observed request shapes; one passive observation is not API completi
 results record the next evidence-linked dimension/question in Queue; partial cursors or
 unused dimensions remain resumable, not tested-clean.
 
+For a `primary` target backend, this CLI is a compatibility adapter over
+`TargetStore.actions`: claim uses the Store version/CAS contract and resolve
+completion must include `operation_id=`, `artifact=`, or `command_id=` proof.
+Legacy Queue metadata and `--from-evidence` are not written to the primary
+store, and no `action_queue.json` is created.
+
 Deep lanes keep normal caps unless `--deep`; parameter discovery, candidate extraction, and
 zero-day fuzzing may project a larger bounded budget from URL/parameter breadth, response
 variance, and high-value evidence. Each projection has a hard maximum and

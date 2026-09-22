@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import tempfile
 from pathlib import Path
 
 from repo_ci_scan import scan_repo_ci
@@ -25,7 +27,26 @@ def _exposure_dir(target: str, repo_root: str | Path | None = None) -> Path:
 
 
 def _write_json(path: Path, payload) -> None:
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    _write_text_atomic(path, json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
+
+
+def _write_text_atomic(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=str(path.parent),
+            prefix=f".{path.name}.", suffix=".tmp", delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(path)
+    except Exception:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+        raise
 
 
 def render_repo_summary(
@@ -71,9 +92,9 @@ def _write_result_bundle(
     _write_json(exposure_dir / "repo_source_meta.json", meta.to_dict())
     _write_json(exposure_dir / "repo_secrets.json", [finding.to_dict() for finding in secret_findings])
     _write_json(exposure_dir / "repo_ci_findings.json", [finding.to_dict() for finding in ci_findings])
-    (exposure_dir / "repo_summary.md").write_text(
+    _write_text_atomic(
+        exposure_dir / "repo_summary.md",
         render_repo_summary(meta, secret_findings, ci_findings),
-        encoding="utf-8",
     )
     return exposure_dir
 

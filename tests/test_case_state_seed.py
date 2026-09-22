@@ -209,10 +209,17 @@ def test_case_state_seed_does_not_choose_a_peer_for_a_single_session(tmp_path):
     assert "peer_actor" not in payload["suggested_objects"][0]
 
 
-def test_case_state_seed_skips_existing_objects_and_backlogs(tmp_path):
+def _inject_legacy_backlog(tmp_path, target: str, records: list[dict]) -> None:
+    """把旧待办直接写进 case 文件：Case 已不生产它，只留下迁移材料。"""
+    case_path = tmp_path / "state" / target / "case_state.json"
+    state = json.loads(case_path.read_text(encoding="utf-8"))
+    state["validation_backlog"] = records
+    case_path.write_text(json.dumps(state), encoding="utf-8")
+
+
+def test_case_state_seed_skips_existing_objects(tmp_path):
     target = "target.com"
     target_case_state.add_actor(tmp_path, target, actor="user_a", role="user")
-    target_case_state.add_actor(tmp_path, target, actor="user_b", role="user")
     target_case_state.add_object(
         tmp_path,
         target,
@@ -221,14 +228,6 @@ def test_case_state_seed_skips_existing_objects_and_backlogs(tmp_path):
         object_id="123",
         owner_actor="user_a",
         endpoint="https://api.target.com/orders/123",
-    )
-    target_case_state.add_backlog(
-        tmp_path,
-        target,
-        runner="idor-actor-pair",
-        owner_actor="user_a",
-        peer_actor="user_b",
-        object_ref="order_123",
     )
     urls_dir = tmp_path / "recon" / "target.com" / "urls"
     urls_dir.mkdir(parents=True)
@@ -241,6 +240,35 @@ def test_case_state_seed_skips_existing_objects_and_backlogs(tmp_path):
 
     assert payload["status"] == "no_seed_candidates"
     assert payload["suggested_objects"] == []
+    assert "suggested_backlog" not in payload
+    assert "commands" not in payload
+
+
+def test_case_state_seed_ignores_legacy_backlog_state(tmp_path):
+    """seed 只按对象事实判重：旧 backlog 不再是它的跳过依据，也不再被它续写。"""
+    target = "target.com"
+    target_case_state.add_actor(tmp_path, target, actor="user_a", role="user")
+    target_case_state.add_actor(tmp_path, target, actor="user_b", role="user")
+    _inject_legacy_backlog(tmp_path, target, [{
+        "id": "val_001",
+        "runner": "idor-actor-pair",
+        "vuln_class": "IDOR",
+        "owner_actor": "user_a",
+        "peer_actor": "user_b",
+        "object_ref": "order_123",
+        "status": "pending",
+    }])
+    urls_dir = tmp_path / "recon" / "target.com" / "urls"
+    urls_dir.mkdir(parents=True)
+    (urls_dir / "api_endpoints.txt").write_text(
+        "https://api.target.com/orders/123\n",
+        encoding="utf-8",
+    )
+
+    payload = case_state_seed.build_case_state_seed(tmp_path, target)
+
+    assert payload["status"] == "suggestions"
+    assert payload["suggested_objects"][0]["object_ref"] == "order_123"
     assert "suggested_backlog" not in payload
     assert "commands" not in payload
 

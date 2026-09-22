@@ -104,6 +104,7 @@ try:
         target_storage_key,
         url_belongs_to_target,
     )
+    from tools.target_store import TargetStore, target_backend
 except ImportError:  # pragma: no cover - direct tools/ execution
     from finding_index import (  # type: ignore
         list_root_finding_claims,
@@ -131,6 +132,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         target_storage_key,
         url_belongs_to_target,
     )
+    from target_store import TargetStore, target_backend  # type: ignore
 
 try:
     from tools.coverage_matrix import (
@@ -145,10 +147,7 @@ try:
         load_matrix_projection,
         matrix_is_fresh,
     )
-    from tools.evidence_ledger import (
-        build_current_cell_projection,
-        load_entries_diagnostic,
-    )
+    from tools.current_truth import current_cell_projection
 except ImportError:  # pragma: no cover - direct tools/ execution
     from coverage_matrix import (  # type: ignore
         STATUS_VALUES,
@@ -162,10 +161,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         load_matrix_projection,
         matrix_is_fresh,
     )
-    from evidence_ledger import (  # type: ignore
-        build_current_cell_projection,
-        load_entries_diagnostic,
-    )
+    from current_truth import current_cell_projection  # type: ignore
 try:
     from tools.closure_resolver import (
         canonical_endpoint_identity,
@@ -187,10 +183,6 @@ try:
     from tools.scope_context import ScopeContext, ScopeContextError
 except ImportError:  # pragma: no cover - direct tools/ execution
     from scope_context import ScopeContext, ScopeContextError  # type: ignore
-try:
-    from tools.target_case_state import case_state_path, project_hypothesis_metadata, summary as build_case_state_summary
-except ImportError:  # pragma: no cover - direct tools/ execution
-    from target_case_state import case_state_path, project_hypothesis_metadata, summary as build_case_state_summary  # type: ignore
 try:
     from tools.target_memory import load_goal_memory
 except ImportError:  # pragma: no cover - direct tools/ execution
@@ -352,6 +344,23 @@ def _finalized_finding_identities(repo_root: str, resolved_target: str) -> set[s
     This is an egress guard for AI-facing next actions. It does not delete raw
     surface; it only prevents old finalized findings from steering startup.
     """
+    if target_backend(repo_root, resolved_target) == "primary":
+        store = TargetStore(repo_root, resolved_target)
+        identities: set[str] = set()
+        page = store.finding_page(limit=1000)
+        while True:
+            for item in page.get("items", []):
+                assessment = item.get("assessment") or {}
+                verdict = str(assessment.get("verdict") or "").strip().lower()
+                if verdict not in {"confirmed", "refuted"} and not item.get("reports"):
+                    continue
+                endpoint_identity = canonical_endpoint_identity(str(item.get("endpoint") or ""))
+                if endpoint_identity and endpoint_identity != "/":
+                    identities.add(endpoint_identity)
+            if not page.get("has_more"):
+                return identities
+            page = store.finding_page(limit=1000, cursor=page.get("next_cursor"))
+
     path = Path(repo_root) / "findings" / target_storage_key(resolved_target) / "findings.json"
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -783,11 +792,6 @@ def _resume_targets_bound_to_surface(state: dict) -> bool:
             item for item in findings.values()
             if isinstance(item, dict)
         )
-    case_state = state.get("case_state")
-    if isinstance(case_state, dict):
-        case_next = case_state.get("top_next_action")
-        if isinstance(case_next, dict):
-            owners.append(case_next)
     return any(
         isinstance(item, dict)
         and any(
@@ -819,7 +823,7 @@ def _pick_next_action(
     surface_context_required: bool = False,
     cidr_continuation: dict | None = None,
     dir_fuzz_rotation_pending: bool = False,
-    case_state_next: dict | None = None,
+    case_state: dict | None = None,
     resume_targets_bound: bool = False,
 ) -> str:
     """Bias toward resumable session context before widening to surface review candidates."""
@@ -846,7 +850,9 @@ def _pick_next_action(
         return "review_validation_candidate"
     if action_queue_next:
         return "resume_action_queue"
-    if str((case_state_next or {}).get("next_action") or "none") != "none":
+    # Case 不再提供 next action：它只在自己还有未决假设（上下文义务）时把
+    # 路线拉回 Case State，路线本身仍由 AI 决定。
+    if int((case_state or {}).get("open_hypotheses", 0) or 0) > 0:
         return "resume_case_state"
     if (cidr_continuation or {}).get("status") == "pending":
         return "run_recon"
@@ -1678,7 +1684,59 @@ def _queue_snapshot_for_target(
     target: str,
     queue_snapshot: dict | None = None,
 ) -> dict:
-    """Return one validated Queue view for the current target."""
+    """Return one validated Queue view for the current target.
+
+    A primary target has no legacy queue projection to read.  Adapt the
+    transactional action rows into the small display shape used by the
+    existing autopilot state code; this is read-only and never becomes a
+    second action owner.
+    """
+    if target_backend(repo_root, target) == "primary":
+        store = TargetStore(repo_root, target)
+        page = store.page("actions", limit=1000)
+        rows = list(page.get("items") or [])
+        while page.get("has_more"):
+            page = store.page("actions", limit=1000, cursor=page.get("next_cursor"))
+            rows.extend(page.get("items") or [])
+        status_map = {
+            "ready": "queued",
+            "claimed": "running",
+            "blocked": "blocked",
+            "completed": "tested",
+            "cancelled": "n/a",
+        }
+        actions = []
+        for row in rows:
+            metadata = {
+                "execution_key": str(row.get("execution_key") or ""),
+                "store_status": str(row.get("status") or ""),
+            }
+            for key in ("endpoint", "family", "subject_artifact_id", "subject_finding_id", "subject_experience_id"):
+                value = row.get(key)
+                if value not in (None, ""):
+                    metadata[key] = value
+            if row.get("claim_token"):
+                metadata["claim_token"] = row["claim_token"]
+            actions.append({
+                "id": row.get("id", ""),
+                "type": str(row.get("kind") or "work"),
+                "status": status_map.get(str(row.get("status") or ""), "blocked"),
+                "priority": row.get("priority"),
+                "action": row.get("intent", ""),
+                "evidence": row.get("reason", ""),
+                "metadata": metadata,
+                "created_at": row.get("created_at", ""),
+                "updated_at": row.get("updated_at", ""),
+                "source": "target_store",
+            })
+        return {
+            "schema_version": 1,
+            "target": canonical_target_value(target),
+            "backend": "primary",
+            "store_id": page.get("store_id", ""),
+            "revision": page.get("revision", 0),
+            "actions": actions,
+        }
     if not isinstance(queue_snapshot, dict):
         return load_queue(repo_root, target)
     snapshot_target = canonical_target_value(str(queue_snapshot.get("target") or ""))
@@ -1965,10 +2023,12 @@ def _load_autopilot_control_facts(
         resolved_target,
         migrate_legacy=False,
     )
-    root_finding_claims = list_root_finding_claims(
-        Path(repo_root) / "findings" / target_storage_key(resolved_target),
-        target=resolved_target,
-    )
+    root_finding_claims = []
+    if target_backend(repo_root, resolved_target) != "primary":
+        root_finding_claims = list_root_finding_claims(
+            Path(repo_root) / "findings" / target_storage_key(resolved_target),
+            target=resolved_target,
+        )
     root_finding_claim_next = root_finding_claims[0] if root_finding_claims else {}
     validation_runner_candidates = load_validation_runner_candidate_pool(
         repo_root,
@@ -2174,7 +2234,7 @@ def _build_domain_autopilot_state(
         dir_fuzz_rotation_pending=bool(
             (facts.get("dir_fuzz_rotation") or {}).get("pending")
         ),
-        case_state_next=(facts.get("case_state") or {}).get("top_next_action") or {},
+        case_state=facts.get("case_state") or {},
         resume_targets_bound=resume_targets_bound,
     )
     intel_continuation = facts.get("intel_continuation") or {}
@@ -2547,12 +2607,21 @@ def _coverage_has_high_value_gaps(matrix: dict) -> bool:
     return bool(_actionable_coverage_gaps(matrix))
 
 
-def _coverage_terminal_evidence(matrix: dict | None, ledger_entries: list[dict] | None) -> dict:
-    """Check that every projected matrix terminal has a matching Ledger row."""
+def _coverage_terminal_evidence(
+    matrix: dict | None,
+    evidence_projection: dict | None,
+    record_count: int = 0,
+) -> dict:
+    """Check that every projected matrix terminal is backed by the current evidence.
+
+    The projection is the one the loader read from the target's current source;
+    re-deriving it here from raw rows would let Coverage and Closure disagree
+    about the same evidence.
+    """
     if not isinstance(matrix, dict):
         return {"status": "unavailable", "missing": [], "checked": 0}
 
-    projection = build_current_cell_projection(list(ledger_entries or []))
+    projection = evidence_projection if isinstance(evidence_projection, dict) else {}
     closed: dict[tuple[str, str], set[str]] = {}
     for cell in [
         *(projection.get("closed_cells") or []),
@@ -2601,7 +2670,7 @@ def _coverage_terminal_evidence(matrix: dict | None, ledger_entries: list[dict] 
         "status": "missing" if missing else "valid",
         "missing": missing[:20],
         "checked": checked,
-        "ledger_entry_count": len(ledger_entries or []),
+        "record_count": int(record_count or 0),
     }
 
 
@@ -2815,7 +2884,6 @@ _CLOSURE_REASON_PRIORITY = {
     "ledger_partial": 16,
     "durable_work_pending": 20,
     "finding_work_pending": 25,
-    "case_state_canonical_conflict": 30,
     "case_state_work_pending": 31,
     "actor_context_required": 32,
     "surface_projection_pending": 35,
@@ -2871,7 +2939,6 @@ def _closure_action_for_reason(reason: str, state: dict, current: str) -> str:
         "surface_projection_pending": "prepare_surface_context",
         "durable_work_pending": "resume_action_queue",
         "case_state_work_pending": "resume_case_state",
-        "case_state_canonical_conflict": "resume_case_state",
         "actor_context_required": "resume_case_state",
         "checkpoint_stale": "refresh_checkpoint",
         "checkpoint_invalid": "refresh_checkpoint",
@@ -2984,12 +3051,16 @@ def build_closure_projection(
     # must not silently change the closure contract.
     runtime_ledger_loaded = "_ledger_health" in state
     coverage_terminal_evidence = (
-        _coverage_terminal_evidence(matrix, ledger_entries)
+        _coverage_terminal_evidence(matrix, ledger_projection, len(ledger_entries or []))
         if runtime_ledger_loaded and isinstance(matrix, dict)
         else {"status": "unavailable", "missing": [], "checked": 0}
     )
     run_budget = (state.get("recon_artifacts") or {}).get("run_budget") or {}
     recon_budget_partial = bool(run_budget.get("partial"))
+    # The health belongs to whichever source authored the closure (store or
+    # ledger); the reason names that source so a damaged read is never reported
+    # as damage of a file the target no longer answers from.
+    evidence_source_kind = str(ledger_health.get("source_kind") or "ledger").strip().lower() or "ledger"
     ledger_status = str(ledger_health.get("status") or "missing").strip().lower()
     surface_review = state.get("surface_review_completion") or {}
     surface_projection = state.get("surface_projection")
@@ -3001,14 +3072,11 @@ def build_closure_projection(
     )
     case_state = state.get("case_state") or {}
     actor_context_gap = _actor_context_gap(case_state, matrix)
+    # Case 的义务只剩它自己的上下文：未决假设。行动来源与旧裁决冲突不再是 Case
+    # 的问题——前者属于唯一行动源，后者属于迁移报告。
     case_state_pending = (
         str(case_state.get("status") or "missing") == "valid"
-        and (
-            int(case_state.get("canonical_conflict_count", 0) or 0) > 0
-            or int(case_state.get("pending_validation_backlog", 0) or 0) > 0
-            or int(case_state.get("open_hypotheses", 0) or 0) > 0
-            or str((case_state.get("top_next_action") or {}).get("next_action") or "none") != "none"
-        )
+        and int(case_state.get("open_hypotheses", 0) or 0) > 0
     )
     # A legacy session endpoint preview is advisory. It only becomes an
     # executable continuation when current Surface state still owns the path.
@@ -3044,11 +3112,7 @@ def build_closure_projection(
         reasons.append(action)
     elif case_state_pending:
         verdict = "handoff"
-        reasons.append(
-            "case_state_canonical_conflict"
-            if int(case_state.get("canonical_conflict_count", 0) or 0) > 0
-            else "case_state_work_pending"
-        )
+        reasons.append("case_state_work_pending")
     elif actor_context_gap:
         verdict = "handoff"
         action = "resume_case_state"
@@ -3170,13 +3234,7 @@ def build_closure_projection(
     # diagnostics.  Primary selection below applies the stable precedence.
     for extra_reason in (
         _explicit_partial_reason(state),
-        (
-            "case_state_canonical_conflict"
-            if case_state_pending and int(case_state.get("canonical_conflict_count", 0) or 0) > 0
-            else "case_state_work_pending"
-            if case_state_pending
-            else ""
-        ),
+        "case_state_work_pending" if case_state_pending else "",
         "actor_context_required" if actor_context_gap else "",
         "surface_projection_pending" if surface_projection_pending else "",
     ):
@@ -3214,7 +3272,7 @@ def build_closure_projection(
             )]
 
     if ledger_status in {"partial", "unreadable"}:
-        ledger_reason = f"ledger_{ledger_status}"
+        ledger_reason = f"{evidence_source_kind}_{ledger_status}"
         if ledger_reason not in reasons:
             reasons.insert(0, ledger_reason)
         if verdict == "finish":
@@ -3969,21 +4027,14 @@ def load_closure_projection(
         if isinstance(item, dict)
         and str(item.get("tool") or "") in {"run_source_intel", "run_js_read"}
     ]
-    ledger_diagnostic = load_entries_diagnostic(repo_root, target)
-    ledger_entries = list(ledger_diagnostic.get("entries") or [])
-    ledger_projection = build_current_cell_projection(ledger_entries)
-    ledger_health = _ledger_health_projection(ledger_diagnostic)
-    if ledger_health.get("status") in {"partial", "unreadable"}:
-        ledger_projection["closed_cells"] = []
-        ledger_projection["closed_cells_v2"] = []
-        identity_diagnostics = dict(ledger_projection.get("identity_v2_diagnostics") or {})
-        identity_diagnostics["suppressed_closed_count"] = int(identity_diagnostics.get("closed_count", 0) or 0)
-        identity_diagnostics["closed_count"] = 0
-        ledger_projection["identity_v2_diagnostics"] = identity_diagnostics
-        ledger_projection["identity_v2_shadow"] = {
-            "status": "unavailable",
-            "reason": f"ledger_{ledger_health.get('status')}",
-        }
+    # One read of the target's current evidence truth: the source (per-target
+    # store or legacy ledger) and the damage rule both live in the seam, so
+    # Closure, Coverage and the loop guard cannot disagree about the same rows.
+    truth = current_cell_projection(repo_root, target)
+    ledger_entries = list(truth["records"])
+    ledger_projection = truth["projection"]
+    ledger_health = truth["health"]
+    evidence_source = truth["source"]
     witness_path = Path(repo_root) / "state" / target_storage_key(target) / "checkpoint_latest.json"
     checkpoint_health = {"status": "valid"}
     try:
@@ -4012,6 +4063,7 @@ def load_closure_projection(
         "_ledger_health": ledger_health,
         "_checkpoint_health": checkpoint_health,
         "_ledger_projection": ledger_projection,
+        "_evidence_source": evidence_source,
         "enrichment_hints": enrichment_hints,
         "_coverage_evidence_ref": f"evidence/{target_storage_key(target)}/coverage_matrix.json",
         "_coverage_stale": coverage_stale,
@@ -4043,6 +4095,7 @@ def load_closure_projection(
         ledger_entries,
         max_lanes_reached=max_lanes_reached,
     )
+    closure["evidence_source"] = evidence_source
     guard = witness.get("round_guard") if isinstance(witness.get("round_guard"), dict) else {}
     fingerprint = stagnation_fingerprint(closure_state, closure)
     if fingerprint:
@@ -4846,7 +4899,7 @@ def build_decision_projection(state: dict, kind: str) -> dict:
         ("repo_source_summary", ("status",)),
         ("observation_inventory", ("status", "reason", "untouched", "stale", "by_kind")),
         ("surface_projection", ("status", "reason", "input_fingerprint", "refresh_command", "continuation")),
-        ("case_state", ("status", "actors", "sessions", "authz_coverage", "objects", "canonical_conflict_count", "canonical_conflicts", "open_hypotheses", "pending_validation_backlog", "top_next_action")),
+        ("case_state", ("status", "actors", "sessions", "authz_coverage", "objects", "open_hypotheses")),
     ):
         value = state.get(field) if isinstance(state.get(field), dict) else {}
         projection[field] = {key: value[key] for key in keys if key in value}

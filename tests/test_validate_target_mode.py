@@ -11,6 +11,7 @@ import validate
 import validation_runner
 from runner_witness import canonical_runner_witness
 from runtime_state import load_runtime_state
+from target_store import StoreError, TargetStore
 
 
 def test_validation_and_reporting_share_runner_witness_boundary():
@@ -18,6 +19,38 @@ def test_validation_and_reporting_share_runner_witness_boundary():
 
     assert validate.canonical_runner_witness is canonical_runner_witness
     assert report_generator._canonical_runner_witness is canonical_runner_witness
+
+
+def test_primary_validation_method_reads_store_truth_and_fails_closed_on_damage(tmp_path):
+    target = "target.test"
+    endpoint = f"https://{target}/api/items/1"
+    store = TargetStore(tmp_path, target)
+    store.initialize()
+    artifact = tmp_path / "evidence" / target / "validation" / "method.txt"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("recorded response", encoding="utf-8")
+    store.start_attempt(
+        attempt_id="method-attempt", source="native", started_at="2026-09-21T00:00:00Z", actor="operator"
+    )
+    store.record_execution(
+        attempt_id="method-attempt",
+        outcome="complete",
+        observations=[{
+            "endpoint": endpoint,
+            "method": "POST",
+            "family": "custom-state-transition",
+            "observed_at": "2026-09-21T00:00:00Z",
+            "description": "Recorded method fixture",
+            "artifacts": {"response": artifact.relative_to(tmp_path).as_posix()},
+        }],
+        actor="operator",
+    )
+    summary = {"target": target, "endpoint": endpoint, "vuln_class": "custom-state-transition"}
+    assert validate._validation_method_from_summary(summary, tmp_path) == "POST"
+
+    artifact.unlink()
+    with pytest.raises(StoreError, match="partial"):
+        validate._validation_method_from_summary(summary, tmp_path)
 
 
 def test_finding_url_from_summary_preserves_protocol_relative_external_endpoint():
@@ -43,6 +76,7 @@ def _bind_runner_witness(
     source = Path(evidence_ref).resolve()
     evidence_root = next(parent for parent in source.parents if parent.name == "evidence")
     repo_root = evidence_root.parent
+    _, backend_binding = validation_runner._runner_backend(repo_root, target)
     bundle_root = evidence_root / target / "validation" / finding_id
     run_number = len(list(bundle_root.glob("fixture-*"))) + 1
     bundle = bundle_root / f"fixture-{run_number}"
@@ -123,7 +157,9 @@ def _bind_runner_witness(
         "operation_material": operation_material,
         "ledger_record": ledger,
     }
-    summary = validation_runner._finalize_runner_summary(summary, summary_path, repo_root)
+    summary = validation_runner._finalize_runner_summary(
+        summary, summary_path, repo_root, backend_binding=backend_binding,
+    )
     if sync:
         sync_result = validation_runner._sync_finding_status(summary, repo_root=repo_root)
         assert sync_result["status"] in {"updated", "created"}
@@ -466,6 +502,79 @@ def test_non_tty_machine_decision_binds_canonical_finding_and_uses_owner(tmp_pat
     assert persisted["severity"] == "critical"
     assert "cvss_score" not in summary
     assert "cvss_vector" not in summary
+
+
+def test_primary_machine_validation_uses_store_assessment_and_delivery(tmp_path, monkeypatch, capsys):
+    import action_queue
+    import evidence_ledger
+
+    target = "target.com"
+    endpoint = "https://target.com/items?id=1"
+    store = TargetStore(tmp_path, target)
+    store.initialize()
+    store.create_finding(
+        command_id="create:f1", finding_id="f1", endpoint=endpoint, method="GET",
+        family="sqli", title="SQL injection", claim="The item query crosses its boundary",
+        actor="operator",
+    )
+    raw = tmp_path / ".private" / "validation" / target / "f1" / "response.txt"
+    raw.parent.mkdir(parents=True)
+    raw.write_text("HTTP/1.1 200 OK\n\nfixture", encoding="utf-8")
+    store.start_attempt(
+        attempt_id="try1", source="native", started_at="2026-09-21T00:00:00Z", actor="operator"
+    )
+    operation = store.record_execution(
+        attempt_id="try1", outcome="complete", actor="operator", observations=[{
+            "endpoint": endpoint, "method": "GET", "family": "sqli",
+            "observed_at": "2026-09-21T00:00:00Z", "description": "Recorded fixture",
+            "artifacts": {"response": str(raw.relative_to(tmp_path))},
+            "actor": "operator", "object_scope": "fixture", "variant": "baseline",
+            "error": "", "truncated": False, "state_changing": False,
+            "redline_checked": False, "result": "tested_finding", "identity_dimensions": {},
+        }], candidate={
+            "id": "f1", "endpoint": endpoint, "method": "GET", "family": "sqli",
+            "title": "SQL injection", "claim": "The item query crosses its boundary",
+        },
+    )
+    runner_path = tmp_path / "evidence" / target / "validation" / "f1" / "runner.json"
+    runner_path.parent.mkdir(parents=True)
+    runner_path.write_text(json.dumps({
+        "target": target, "finding_id": "f1", "result": "tested_finding",
+        "candidate_ready": True, "store_operation_id": operation["entity_id"],
+    }), encoding="utf-8")
+    questions = {
+        key: {"status": "pass", "basis": "Recorded fixture supports this gate."}
+        for key, _ in validate.SEVEN_QUESTION_DEFINITIONS
+    }
+    decision = {
+        "schema_version": validate.MACHINE_DECISION_SCHEMA_VERSION,
+        "target": target, "finding_id": "f1", "endpoint": endpoint,
+        "vuln_class": "sqli", "method": "GET", "impact": "Query boundary crossed",
+        "severity": "high",
+        "gates": {key: {"passed": True, "notes": {}} for key in validate.MACHINE_DECISION_GATE_KEYS},
+        "seven_question_gate": {"questions": questions},
+        "evidence": {"summary": "Store operation", "refs": [str(runner_path.relative_to(tmp_path))],
+                     "runner_summary": str(runner_path.relative_to(tmp_path))},
+        "report": {"path": f"findings/{target}/f1-report.md", "content": "# Store-backed report\n"},
+    }
+    decision_path = tmp_path / "decision.json"
+    decision_path.write_text(json.dumps(decision), encoding="utf-8")
+    monkeypatch.setattr(validate, "BASE_DIR", tmp_path, raising=False)
+    monkeypatch.setattr(validate, "upsert_finding", lambda *args, **kwargs: pytest.fail("legacy finding writer called"))
+    monkeypatch.setattr(validate, "mark_finding_validated", lambda *args, **kwargs: pytest.fail("legacy status writer called"))
+    monkeypatch.setattr(evidence_ledger, "record_entry", lambda *args, **kwargs: pytest.fail("legacy ledger writer called"))
+    monkeypatch.setattr(action_queue, "load_queue", lambda *args, **kwargs: pytest.fail("legacy queue reader called"))
+    monkeypatch.setattr(action_queue, "resolve_action", lambda *args, **kwargs: pytest.fail("legacy queue writer called"))
+
+    assert validate.main([
+        "--target", target, "--finding-id", "f1", "--decision-json", str(decision_path), "--json",
+    ]) == 0
+    output = json.loads(capsys.readouterr().out)
+    finding = store.finding("f1")
+    assert output["validation_sync"]["status"] == "updated"
+    assert finding["assessment"]["verdict"] == "confirmed"
+    assert finding["deliveries"][0]["status"] == "eligible"
+    assert Path(output["report_path"]).is_file()
 
 
 def test_machine_validation_explicit_findings_dir_owns_all_artifacts(tmp_path, monkeypatch, capsys):

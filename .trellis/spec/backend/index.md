@@ -16,7 +16,8 @@
 | 规范 | 内容 | 状态 |
 |-------|-------------|--------|
 | [目录结构](./directory-structure.md) | Claude 命令、工具、状态、知识和测试的职责边界 | 已完成 |
-| [持久化与状态](./database-guidelines.md) | JSON/JSONL schema、身份、原子写和迁移 | 已完成 |
+| [持久化与状态](./database-guidelines.md) | 旧文件 owner 与获批事务迁移、身份、原子性 | 已完成 |
+| [事务目标状态](./contracts/transactional-target-state.md) | 隔离目标中的 sqlite3 命令、查询、审计与文件边界；尚未切换 runtime | 实施中 |
 | [错误处理](./error-handling.md) | 入口、核心逻辑、持久化和 CLI 出口 | 已完成 |
 | [Action Queue 哑接口](./action-queue-dumb-interface.md) | claim 显式 --id、六项机械写时不变量、排序引擎退役决策 | 已完成 |
 | [质量规范](./quality-guidelines.md) | 所有 backend 改动都读取：通用质量、AI/工具边界和专题索引 | 已完成 |

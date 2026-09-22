@@ -15,11 +15,17 @@ import re
 
 try:
     from tools.closure_resolver import canonical_endpoint_path
-    from tools.evidence_ledger import load_entries_diagnostic
+    from tools.current_truth import (
+        current_cell_projection,
+        ledger_health_projection as _ledger_health_projection,
+    )
     from tools.target_paths import url_belongs_to_target
 except ImportError:  # pragma: no cover - direct tools/ execution
     from closure_resolver import canonical_endpoint_path  # type: ignore
-    from evidence_ledger import load_entries_diagnostic  # type: ignore
+    from current_truth import (  # type: ignore
+        current_cell_projection,
+        ledger_health_projection as _ledger_health_projection,
+    )
     from target_paths import url_belongs_to_target  # type: ignore
 
 HIGH_VALUE_OBSERVATION_KINDS = frozenset({"exposure", "infra"})
@@ -39,7 +45,6 @@ _STAGNANT_REASONS = {
     "surface_work_pending",
     "coverage_high_value_gaps",
     "coverage_ledger_evidence_missing",
-    "case_state_canonical_conflict",
     "actor_context_required",
 }
 
@@ -86,12 +91,10 @@ def _loop_guard_authoritative_reason(state: dict) -> str:
         or state.get("validation_runner_next")
     ):
         return "authoritative_durable_work"
+    # Case 只保留上下文义务：未决假设是它唯一还能拉住路线的理由，待办与
+    # next-action 已归唯一行动源，不在这里复述。
     case_state = state.get("case_state") or {}
-    if (
-        int(case_state.get("pending_validation_backlog", 0) or 0) > 0
-        or int(case_state.get("open_hypotheses", 0) or 0) > 0
-        or str((case_state.get("top_next_action") or {}).get("next_action") or "none") != "none"
-    ):
+    if int(case_state.get("open_hypotheses", 0) or 0) > 0:
         return "authoritative_case_state_work"
     if state.get("root_finding_claim_next") or state.get("memory_candidate_next"):
         return "authoritative_finding_work"
@@ -117,9 +120,10 @@ def build_loop_guard_projection(state: dict, ledger_entries: list[dict] | None =
     ledger_health = state.get("_ledger_health") if isinstance(state.get("_ledger_health"), dict) else {}
     ledger_status = str(ledger_health.get("status") or "missing").strip().lower()
     if ledger_status in {"partial", "unreadable"}:
+        source_kind = str(ledger_health.get("source_kind") or "ledger").strip().lower() or "ledger"
         result = {
             "verdict": "continue",
-            "reason": f"ledger_{ledger_status}",
+            "reason": f"{source_kind}_{ledger_status}",
             "endpoint_family": "",
             "vuln_class": "",
             "next_action": action,
@@ -283,15 +287,12 @@ def _stagnation_owner_obligations(state: dict) -> dict:
 
     case_state = state.get("case_state")
     if isinstance(case_state, dict) and case_state:
-        case_next = case_state.get("top_next_action")
-        case_summary = _stagnation_obligation(
-            case_next if isinstance(case_next, dict) else case_state,
-            kind="case_state",
-        )
+        case_summary = _stagnation_obligation(case_state, kind="case_state")
         counts = {}
         for key in (
-            "canonical_conflict_count",
-            "pending_validation_backlog",
+            "actors",
+            "sessions",
+            "objects",
             "open_hypotheses",
         ):
             raw = case_state.get(key)
@@ -385,12 +386,6 @@ def stagnation_fingerprint(state: dict, closure: dict) -> str:
             for item in missing
             if isinstance(item, dict)
         ][:20]
-    elif reason == "case_state_canonical_conflict":
-        case_state = state.get("case_state") or {}
-        payload["case_state"] = {
-            "canonical_conflict_count": int(case_state.get("canonical_conflict_count", 0) or 0),
-            "canonical_conflicts": case_state.get("canonical_conflicts") or [],
-        }
     elif reason == "next_action_pending":
         findings = state.get("structured_findings") or {}
         finding = next(
@@ -406,13 +401,11 @@ def stagnation_fingerprint(state: dict, closure: dict) -> str:
             ),
             {},
         )
+        # Case 不再是行动 owner：它没有可记录的 action 身份，只以 owner_semantics
+        # 里的上下文义务出现（未决假设），避免把 Case 侧文本当成行动指纹。
         payload["owner"] = {
             "queue_id": str((state.get("action_queue_next") or {}).get("id") or ""),
             "finding_id": str(finding.get("id") or ""),
-            "case_action": str(
-                ((state.get("case_state") or {}).get("top_next_action") or {}).get("next_action")
-                or ""
-            ),
         }
         payload["owner_semantics"] = _stagnation_owner_obligations(state)
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -430,12 +423,12 @@ def _stagnation_continuation(state: dict, closure: dict) -> dict:
     return {}
 
 def _load_loop_guard_projection(repo_root: str, state: dict) -> dict:
-    """Read the ledger only for an explicit per-iteration loop check."""
+    """Read the current evidence truth only for an explicit per-iteration check."""
     target = str(state.get("resolved_target") or state.get("target") or "")
-    diagnostic = load_entries_diagnostic(repo_root, target)
+    truth = current_cell_projection(repo_root, target)
     projected_state = dict(state)
-    projected_state["_ledger_health"] = _ledger_health_projection(diagnostic)
-    return build_loop_guard_projection(projected_state, list(diagnostic.get("entries") or []))
+    projected_state["_ledger_health"] = truth["health"]
+    return build_loop_guard_projection(projected_state, list(truth["records"]))
 
 def _loop_control_projection(state: dict) -> dict:
     """Return the bounded post-lane control state with the loop decision."""
@@ -493,20 +486,4 @@ def _endpoint_family(endpoint: object) -> str:
         for segment in path.split("/")
     ) or "/"
 
-def _ledger_health_projection(diagnostic: dict) -> dict:
-    """Keep Ledger damage visible without serializing raw rows or paths."""
-    if not isinstance(diagnostic, dict):
-        return {}
-    status = str(diagnostic.get("status") or "missing").strip().lower()
-    health = {
-        "status": status,
-        "invalid_count": int(diagnostic.get("invalid_count", 0) or 0),
-        "invalid_rows": [
-            item for item in (diagnostic.get("invalid_rows") or [])[:5]
-            if isinstance(item, dict)
-        ],
-        "last_valid_offset": int(diagnostic.get("last_valid_offset", 0) or 0),
-    }
-    if status == "unreadable" and diagnostic.get("read_error"):
-        health["read_error"] = " ".join(str(diagnostic["read_error"]).split())[:240]
-    return health
+

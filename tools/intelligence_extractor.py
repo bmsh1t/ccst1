@@ -29,6 +29,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -321,15 +322,27 @@ def write_intelligence(
 
     rendered = render_markdown(resolved_target, corpus)
     existing = output_path.read_text(encoding="utf-8", errors="replace") if output_path.is_file() else ""
-    output_path.write_text(
-        merge_managed_section(
-            existing,
-            "local-extractor",
-            rendered,
-            replace_legacy_intelligence_document=True,
-        ),
-        encoding="utf-8",
+    content = merge_managed_section(
+        existing,
+        "local-extractor",
+        rendered,
+        replace_legacy_intelligence_document=True,
     )
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=str(output_path.parent),
+            prefix=f".{output_path.name}.", suffix=".tmp", delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(output_path)
+    except Exception:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+        raise
     return output_path
 
 

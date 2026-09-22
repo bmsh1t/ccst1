@@ -4,6 +4,7 @@ import json
 import hashlib
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import finding_index
@@ -12,6 +13,7 @@ import report_generator
 import validate
 import validation_runner
 from target_paths import canonical_target_value, target_storage_key
+from target_store import TargetStore
 
 
 def _bind_report_runner_witness(findings_dir: Path, finding: dict) -> None:
@@ -507,6 +509,59 @@ def test_legacy_list_migration_records_owner_provenance(tmp_path):
     assert finding["report_status"] == "not_generated"
     assert finding["claimed_validation_status"] == "validated"
     assert finding["claimed_report_status"] == "generated"
+
+
+@pytest.mark.parametrize("backend", ["primary", "preview", "frozen"])
+@pytest.mark.parametrize("target", ["example.com", "http://127.0.0.1:8080"])
+def test_legacy_list_migration_refuses_nonlegacy_backend(tmp_path, backend, target):
+    store = TargetStore(tmp_path, target)
+    store.initialize(allow_legacy=backend == "preview")
+    if backend == "frozen":
+        store.path.unlink()
+    findings_dir = tmp_path / "findings" / target_storage_key(target)
+    findings_dir.mkdir(parents=True)
+    path = findings_dir / "findings.json"
+    path.write_text(json.dumps([{"id": "old", "type": "idor", "url": "/orders/1"}]))
+    events = finding_index.mutation_events_path(findings_dir)
+    events.write_text('{"historical":true}\n')
+    before = {file: file.read_bytes() for file in (path, events)}
+
+    projected = finding_index.load_finding_index(findings_dir, migrate_legacy=False)
+    assert projected["findings"][0]["id"] == "old"
+    assert not (findings_dir / ".locks").exists()
+    with pytest.raises(finding_index.StoreError):
+        finding_index.load_finding_index(findings_dir)
+    assert {file: file.read_bytes() for file in before} == before
+
+
+@pytest.mark.parametrize("writer", ["migration", "upsert", "rebuild", "status"])
+def test_finding_writer_rechecks_backend_after_cutover_interposition(tmp_path, monkeypatch, writer):
+    target = "example.com"
+    findings_dir = tmp_path / "findings" / target
+    findings_dir.mkdir(parents=True)
+    path = findings_dir / "findings.json"
+    path.write_text(json.dumps([{"id": "old", "type": "idor", "url": "/orders/1"}]))
+    before = path.read_bytes()
+    original_lock = finding_index.target_switch_lock
+
+    @contextmanager
+    def publish_before_lock(repo_root, resolved_target):
+        TargetStore(repo_root, resolved_target).initialize(allow_legacy=True)
+        with original_lock(repo_root, resolved_target):
+            yield
+
+    monkeypatch.setattr(finding_index, "target_switch_lock", publish_before_lock)
+    with pytest.raises(finding_index.StoreError, match="legacy finding writer"):
+        if writer == "migration":
+            finding_index.load_finding_index(findings_dir)
+        elif writer == "upsert":
+            finding_index.upsert_finding(findings_dir, {"id": "new", "type": "idor"}, target=target)
+        elif writer == "rebuild":
+            finding_index.write_finding_index(findings_dir, target=target)
+        else:
+            finding_index.update_finding_status(findings_dir, "old", validation_status="candidate")
+    assert path.read_bytes() == before
+    assert not finding_index.mutation_events_path(findings_dir).exists()
 
 
 def test_rebuild_quarantines_direct_finality_instead_of_reauthorizing_it(tmp_path):
@@ -1165,6 +1220,337 @@ def test_report_generator_consumes_structured_findings(monkeypatch, tmp_path):
     assert updated_index["findings"][0]["report_file"] == str(report_path)
 
 
+def _primary_report_fixture(tmp_path: Path, *, delivery_status: str = "eligible"):
+    target = "example.com"
+    url = "https://example.com/items?id=1"
+    store = TargetStore(tmp_path, target)
+    store.initialize()
+    store.create_finding(
+        command_id="create:f1",
+        finding_id="f1",
+        endpoint=url,
+        method="GET",
+        family="sqli",
+        title="SQL injection on item",
+        claim="The item query crosses the expected input boundary",
+        actor="operator",
+    )
+    response = tmp_path / "evidence" / target / "validation" / "f1" / "response.txt"
+    response.parent.mkdir(parents=True)
+    response.write_text("HTTP/1.1 200 OK\n\nfixture", encoding="utf-8")
+    store.start_attempt(attempt_id="try1", source="native", started_at="2026-09-21T00:00:00Z", actor="operator")
+    receipt = store.record_execution(
+        attempt_id="try1",
+        outcome="complete",
+        observations=[{
+            "endpoint": url,
+            "method": "GET",
+            "family": "sqli",
+            "observed_at": "2026-09-21T00:00:00Z",
+            "description": "Recorded fixture response",
+            "artifacts": {"response": response.relative_to(tmp_path).as_posix()},
+            "actor": "operator",
+            "object_scope": "fixture",
+            "variant": "baseline",
+            "error": "",
+            "truncated": False,
+            "state_changing": False,
+            "redline_checked": False,
+            "result": "tested_finding",
+            "identity_dimensions": {},
+        }],
+        candidate={
+            "id": "f1",
+            "endpoint": url,
+            "method": "GET",
+            "family": "sqli",
+            "title": "SQL injection on item",
+            "claim": "The item query crosses the expected input boundary",
+        },
+        actor="operator",
+    )
+    evidence = store.finding("f1")["evidence"]
+    store.assess(
+        command_id="assess:f1",
+        finding_id="f1",
+        verdict="confirmed",
+        reason="The fixture records the claimed boundary crossing",
+        boundary="The item query must remain within the expected input boundary",
+        impact="A peer can influence the item query",
+        evidence=evidence,
+        actor="operator",
+        expected_assessment=None,
+    )
+    store.decide_delivery(
+        command_id="delivery:f1",
+        finding_id="f1",
+        assessment_id="assess:f1",
+        destination="internal-review",
+        status=delivery_status,
+        reason="Fixture delivery decision",
+        actor="operator",
+        expected_decision=None,
+    )
+    findings_dir = tmp_path / "findings" / target
+    findings_dir.mkdir(parents=True)
+    payload = {
+        "schema_version": 1,
+        "target": target,
+        "total": 1,
+        "findings": [{
+            "id": "f1",
+            "type": "sqli",
+            "category": "sqli",
+            "title": "SQL injection on item",
+            "summary": "Primary-store report fixture",
+            "url": url,
+            "severity": "high",
+            "confidence": "confirmed",
+            "validation_status": "validated",
+            "report_status": "not_generated",
+            "source_file": "fixture.txt",
+            "raw": "fixture finding",
+        }],
+    }
+    findings_path = findings_dir / "findings.json"
+    findings_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return store, findings_dir, findings_path
+
+
+def test_primary_report_generator_registers_store_report_without_legacy_writes(monkeypatch, tmp_path):
+    store, findings_dir, findings_path = _primary_report_fixture(tmp_path)
+    before = findings_path.read_bytes()
+    monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
+
+    total, index = report_generator.process_findings_dir(str(findings_dir))
+
+    assert total == 1
+    report_path = Path(index[0]["file"])
+    assert report_path.parent == tmp_path / "reports" / "example.com"
+    assert report_path.is_file()
+    assert findings_path.read_bytes() == before
+    assert json.loads((report_path.parent / "INDEX.json").read_text())["reports"] == index
+    registered = store.finding("f1")["reports"]
+    assert len(registered) == 1
+    assert registered[0]["assessment_id"] == "assess:f1"
+    assert registered[0]["delivery_id"] == "delivery:f1"
+    assert store.finding("f1")["delivery_events"] == []
+    published = json.loads((report_path.parent / "INDEX.json").read_text())
+    assert published["source_binding"] == store.binding()
+    assert published["as_of"] in (report_path.parent / "SUMMARY.md").read_text()
+
+
+@pytest.mark.parametrize("bypass", ["target", "output", "symlink"])
+def test_finding_writer_rejects_cross_target_destination(tmp_path, bypass):
+    store, frozen_dir, frozen_path = _primary_report_fixture(tmp_path)
+    before = frozen_path.read_bytes()
+    legacy_dir = tmp_path / "findings" / "legacy.example"
+    legacy_dir.mkdir()
+    with pytest.raises(finding_index.StoreError):
+        if bypass == "target":
+            finding_index.upsert_finding(frozen_dir, {"id": "new", "type": "idor"}, target="other.example")
+        elif bypass == "output":
+            finding_index.write_finding_index(legacy_dir, output=frozen_path)
+        else:
+            (legacy_dir / "export").symlink_to(frozen_dir, target_is_directory=True)
+            finding_index.write_finding_index(legacy_dir, output=legacy_dir / "export/findings.json")
+    assert frozen_path.read_bytes() == before
+    assert not (legacy_dir / "findings.json").exists()
+    assert not (tmp_path / "state/other.example").exists()
+
+
+def test_finding_writer_preserves_same_owner_custom_output(tmp_path):
+    findings_dir = tmp_path / "findings" / "legacy.example"
+    findings_dir.mkdir(parents=True)
+    output = findings_dir / "custom-index.json"
+    finding_index.write_finding_index(findings_dir, output=output, target="https://legacy.example")
+    assert json.loads(output.read_text())["total"] == 0
+
+
+@pytest.mark.parametrize("backend", ["preview", "frozen", "corrupt"])
+def test_report_publication_refuses_nonlegacy_backend_before_artifacts(tmp_path, monkeypatch, backend):
+    target = "example.com"
+    store = TargetStore(tmp_path, target)
+    store.initialize(allow_legacy=backend == "preview")
+    if backend == "frozen":
+        store.path.unlink()
+    elif backend == "corrupt":
+        store.path.write_bytes(b"broken database")
+    findings_dir = tmp_path / "findings" / target
+    findings_dir.mkdir(parents=True)
+    (findings_dir / "findings.json").write_text(json.dumps({"target": target, "findings": [
+        {"id": "draft", "type": "sqli", "url": "https://example.com/", "confidence": "confirmed"}
+    ]}))
+    monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
+    with pytest.raises(ValueError):
+        report_generator.process_findings_dir(findings_dir, allow_legacy_drafts=True)
+    assert not (tmp_path / "reports").exists()
+
+
+@pytest.mark.parametrize("rebind", ["target", "input_symlink", "output_symlink"])
+def test_report_publication_rejects_owner_rebinding(tmp_path, monkeypatch, rebind):
+    _, primary_dir, primary_path = _primary_report_fixture(tmp_path)
+    before = primary_path.read_bytes()
+    legacy_dir = tmp_path / "findings" / "legacy.example"
+    legacy_dir.mkdir()
+    findings_dir = legacy_dir
+    if rebind == "target":
+        (legacy_dir / "findings.json").write_text(json.dumps({"target": "example.com", "findings": []}))
+    elif rebind == "input_symlink":
+        findings_dir = tmp_path / "findings" / "alias.example"
+        findings_dir.symlink_to(primary_dir, target_is_directory=True)
+    else:
+        (tmp_path / "reports").mkdir()
+        (tmp_path / "reports/legacy.example").symlink_to(primary_dir, target_is_directory=True)
+    monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
+    with pytest.raises(ValueError):
+        report_generator.process_findings_dir(findings_dir, allow_legacy_drafts=True)
+    assert primary_path.read_bytes() == before
+    assert not (primary_dir / "INDEX.json").exists()
+    assert not (tmp_path / "reports/example.com").exists()
+
+
+@pytest.mark.parametrize("interposition", ["read", "publish"])
+def test_primary_report_index_rejects_delivery_drift(tmp_path, monkeypatch, interposition):
+    store, findings_dir, _ = _primary_report_fixture(tmp_path)
+    monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
+    name = "_primary_findings" if interposition == "read" else "write_report_index"
+    original = getattr(report_generator, name)
+    reads = 0
+
+    def revoke():
+        store.decide_delivery(command_id="delivery:revoked", finding_id="f1", assessment_id="assess:f1",
+                              destination="internal-review", status="ineligible", reason="Revoked",
+                              actor="operator", expected_decision="delivery:f1")
+
+    def drift(*args, **kwargs):
+        nonlocal reads
+        if interposition == "publish":
+            revoke()
+            return original(*args, **kwargs)
+        result = original(*args, **kwargs)
+        reads += 1
+        if reads == 2:
+            revoke()
+        return result
+
+    monkeypatch.setattr(report_generator, name, drift)
+    with pytest.raises(report_generator.ConflictError, match="snapshot changed"):
+        report_generator.process_findings_dir(findings_dir)
+    assert store.finding("f1")["reports"][0]["stale"] is True
+    assert not (tmp_path / "reports/example.com/INDEX.json").exists()
+    assert not (tmp_path / "reports/example.com/SUMMARY.md").exists()
+
+
+def test_primary_report_generator_reads_store_without_legacy_finding_index(monkeypatch, tmp_path):
+    store, findings_dir, findings_path = _primary_report_fixture(tmp_path)
+    findings_path.unlink()
+    monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("primary report generation read findings.json")
+
+    monkeypatch.setattr(report_generator, "load_finding_index", forbidden)
+
+    total, index = report_generator.process_findings_dir(str(findings_dir))
+
+    assert total == 1
+    assert index[0]["finding_id"] == "f1"
+    assert store.finding("f1")["reports"][0]["artifact_ref"].startswith("reports/example.com/")
+
+
+@pytest.mark.parametrize("failure", ["registration", "index"])
+def test_primary_report_retry_preserves_body_and_only_registers_once(monkeypatch, tmp_path, failure):
+    store, findings_dir, findings_path = _primary_report_fixture(tmp_path)
+    before = findings_path.read_bytes()
+    monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
+    owner = TargetStore if failure == "registration" else report_generator
+    name = "register_report" if failure == "registration" else "write_report_index"
+    original = getattr(owner, name)
+
+    def interrupted(*args, **kwargs):
+        raise OSError("injected publication failure")
+
+    monkeypatch.setattr(owner, name, interrupted)
+    with pytest.raises(OSError, match="injected publication failure"):
+        report_generator.process_findings_dir(str(findings_dir))
+    report_path = next((tmp_path / "reports" / "example.com").glob("report_*.md"))
+    body = report_path.read_bytes()
+    registered = store.finding("f1")["reports"]
+    assert len(registered) == (0 if failure == "registration" else 1)
+    monkeypatch.setattr(owner, name, original)
+    total, index = report_generator.process_findings_dir(str(findings_dir))
+    revision = store.binding()["revision"]
+    assert total == 1
+    assert report_generator.process_findings_dir(str(findings_dir)) == (total, index)
+    assert store.binding()["revision"] == revision
+    assert report_path.read_bytes() == body
+    assert len(store.finding("f1")["reports"]) == 1
+    assert store.finding("f1")["delivery_events"] == []
+    assert findings_path.read_bytes() == before
+
+
+def test_primary_report_index_preserves_all_registered_reports(monkeypatch, tmp_path):
+    store, findings_dir, _ = _primary_report_fixture(tmp_path)
+    monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("primary must not call a legacy owner")
+
+    for name in ("load_finding_index", "update_finding_status", "_reconcile_report_action"):
+        monkeypatch.setattr(report_generator, name, forbidden)
+    _, first = report_generator.process_findings_dir(str(findings_dir))
+    report_file = Path(first[0]["file"])
+    second = report_file.with_name("operator-report.md")
+    second.write_text("Independent registered report")
+    store.register_report(command_id="operator:report", report_id="operator-report", finding_id="f1",
+                          assessment_id="assess:f1", delivery_id="delivery:f1", artifact=str(second),
+                          actor="operator")
+    revision = store.binding()["revision"]
+    total, index = report_generator.process_findings_dir(str(findings_dir))
+    assert total == 2
+    assert {row["id"] for row in index} == {first[0]["id"], "operator-report"}
+    assert store.binding()["revision"] == revision
+    assert json.loads((report_file.parent / "INDEX.json").read_text())["reports"] == index
+
+
+@pytest.mark.parametrize("damaged", ["report", "evidence"])
+def test_primary_report_rerun_removes_stale_index_without_rewriting_artifacts(monkeypatch, tmp_path, damaged):
+    store, findings_dir, _ = _primary_report_fixture(tmp_path)
+    monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
+    _, index = report_generator.process_findings_dir(str(findings_dir))
+    report = Path(index[0]["file"])
+    artifact = report if damaged == "report" else tmp_path / "evidence/example.com/validation/f1/response.txt"
+    artifact.write_text("damaged")
+    body = report.read_bytes()
+    revision = store.binding()["revision"]
+    assert report_generator.process_findings_dir(str(findings_dir)) == (0, [])
+    assert report.read_bytes() == body
+    assert store.binding()["revision"] == revision
+    assert json.loads((report.parent / "INDEX.json").read_text())["reports"] == []
+    assert "Total findings: 0" in (report.parent / "SUMMARY.md").read_text()
+
+
+def test_primary_new_assessment_gets_new_report_without_rebinding_old_body(monkeypatch, tmp_path):
+    store, findings_dir, _ = _primary_report_fixture(tmp_path)
+    monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
+    _, first = report_generator.process_findings_dir(str(findings_dir))
+    old_path = Path(first[0]["file"])
+    body = old_path.read_bytes()
+    store.assess(command_id="assess:f1:2", finding_id="f1", verdict="confirmed", reason="Rechecked",
+                 boundary="Input isolation", impact="Peer query influence", evidence=store.finding("f1")["evidence"],
+                 actor="operator", expected_assessment="assess:f1")
+    store.decide_delivery(command_id="delivery:f1:2", finding_id="f1", assessment_id="assess:f1:2",
+                          destination="internal-review", status="eligible", reason="Rechecked",
+                          actor="operator", expected_decision="delivery:f1")
+    total, current = report_generator.process_findings_dir(str(findings_dir))
+    assert total == 1
+    assert current[0]["id"] != first[0]["id"]
+    assert current[0]["assessment_id"] == "assess:f1:2"
+    assert old_path.read_bytes() == body
+    assert len(store.finding("f1")["reports"]) == 2
+
+
 def test_report_generator_preserves_jwt_structured_finding_type(monkeypatch, tmp_path):
     findings_dir = tmp_path / "findings" / "example.com"
     findings_dir.mkdir(parents=True)
@@ -1543,7 +1929,7 @@ def _report_queue_fixture(monkeypatch, tmp_path):
     )
     _record_owner_provenance(findings_dir, "sqli_report_sync")
     queue_dir = tmp_path / "state" / "example.com"
-    queue_dir.mkdir(parents=True)
+    queue_dir.mkdir(parents=True, exist_ok=True)
     (queue_dir / "action_queue.json").write_text(
         json.dumps(
             {

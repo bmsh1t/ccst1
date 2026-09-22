@@ -13,10 +13,17 @@ from tools.technology_inventory import load_or_build_inventory
 
 
 def test_compact_state_keeps_bounded_case_state_continuation():
+    """Case 只以上下文计数参与续接；旧待办与行动文本不进 compact。"""
     compact = autopilot_bootstrap.compact_autopilot_state({
         "next_action": "resume_case_state",
         "case_state": {
             "status": "valid",
+            "path": "state/T/case_state.json",
+            "actors": 2,
+            "sessions": 2,
+            "authz_coverage": {"status": "missing"},
+            "objects": 1,
+            "open_hypotheses": 1,
             "pending_validation_backlog": 1,
             "top_next_action": {
                 "next_action": "run_validation_runner",
@@ -26,8 +33,15 @@ def test_compact_state_keeps_bounded_case_state_continuation():
         },
     })
 
-    assert compact["case_state"]["pending_validation_backlog"] == 1
-    assert compact["case_state"]["top_next_action"]["backlog_id"] == "val_001"
+    assert compact["case_state"] == {
+        "status": "valid",
+        "path": "state/T/case_state.json",
+        "actors": 2,
+        "sessions": 2,
+        "authz_coverage": {"status": "missing"},
+        "objects": 1,
+        "open_hypotheses": 1,
+    }
 
 
 def test_bootstrap_no_activation_contract_projection():

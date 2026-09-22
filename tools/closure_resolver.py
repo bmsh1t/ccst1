@@ -8,18 +8,6 @@
 
 from __future__ import annotations
 
-from urllib.parse import urlparse
-
-
-CLOSED_LEDGER_RESULTS = {
-    "tested_clean",
-    "tested_finding",
-    "dead_end",
-    "not_applicable",
-    "blocked_redline",
-}
-CLOSED_MATRIX_STATUSES = {"tested_clean", "tested_finding", "n_a"}
-
 # A matrix is a projection owned by Coverage; only structural N/A cells are
 # self-authenticating.  Every observed terminal result must come from the
 # Evidence Ledger so a hand-edited matrix cannot close a lane by itself.
@@ -31,156 +19,20 @@ _STRUCTURAL_NA_MARKERS = (
 )
 
 
-CANONICAL_VULN_CLASSES = (
-    "IDOR", "SSRF", "XSS", "Race", "Authz",
-    "GraphQL", "OAuth", "Upload", "Webhook", "JWT",
-    "SQLi", "XXE", "RCE", "Path", "CSRF",
-    "NoSQLi", "PrototypePollution", "OpenRedirect", "BusinessLogic",
-)
-# Coverage Matrix owns the append-only Web2 classes above. Workflow
-# is a closeable evidence family, but remains outside that matrix taxonomy.
-CLOSURE_ONLY_FAMILIES = ("Workflow",)
-CLOSURE_FAMILIES = CANONICAL_VULN_CLASSES + CLOSURE_ONLY_FAMILIES
-
-VULN_CLASS_ALIASES = {
-    **{vuln_class.lower(): vuln_class for vuln_class in CLOSURE_FAMILIES},
-    "auth": "Authz",
-    "access": "Authz",
-    "access-control": "Authz",
-    "auth-bypass": "Authz",
-    "authentication-bypass": "Authz",
-    "authorization-bypass": "Authz",
-    "public-exposure": "Authz",
-    "business-logic": "BusinessLogic",
-    "businesslogic": "BusinessLogic",
-    "mfa": "Authz",
-    "saml": "Authz",
-    "sql": "SQLi",
-    "sql-injection": "SQLi",
-    "sqlinjection": "SQLi",
-    "sqlblind": "SQLi",
-    "sqli-blind": "SQLi",
-    "sqli-time": "SQLi",
-    "blindsqli": "SQLi",
-    "nosqli": "NoSQLi",
-    "nosql-injection": "NoSQLi",
-    "nosqlinjection": "NoSQLi",
-    "cross-site-scripting": "XSS",
-    "xss-dom": "XSS",
-    "dom-xss": "XSS",
-    "domxss": "XSS",
-    "prototype-pollution": "PrototypePollution",
-    "prototypepollution": "PrototypePollution",
-    "pp": "PrototypePollution",
-    "toctou": "Race",
-    "file-upload": "Upload",
-    "openredirect": "OpenRedirect",
-    "open-redirect": "OpenRedirect",
-    "redirect": "OpenRedirect",
-    "oscommand": "RCE",
-    "os-command": "RCE",
-    "cmdinjection": "RCE",
-    "cmd-injection": "RCE",
-    "commandinjection": "RCE",
-    "ssti": "RCE",
-    "command-injection": "RCE",
-    "deser": "RCE",
-    "deserialization": "RCE",
-    "unserialize": "RCE",
-    "template-injection": "RCE",
-    "templateinjection": "RCE",
-    "lfi": "Path",
-    "rfi": "Path",
-    "pathtraversal": "Path",
-    "path-traversal": "Path",
-    "directory-traversal": "Path",
-    "directorytraversal": "Path",
-    "csrf-token": "CSRF",
-    "xsrf": "CSRF",
-    "xxe-blind": "XXE",
-    "xml-injection": "XXE",
-    "xmlinjection": "XXE",
-    "xinclude": "XXE",
-}
-
-
-def canonical_vuln_class(vuln_hint: str) -> str:
-    """归一化 closure 用的漏洞类名；未知/空/generic 返回空字符串。
-
-    返回空字符串代表 fail-open：调用方不得把该线索视为已关闭。
-    """
-    value = str(vuln_hint or "").strip().lower().replace("_", "-")
-    if not value or value == "generic":
-        return ""
-    return VULN_CLASS_ALIASES.get(value, "")
-
-
-def extract_endpoint_parts(value: str) -> tuple[str, str]:
-    """Return an endpoint's path and fragment using one URL parser."""
-    raw = str(value or "").strip()
-    if not raw:
-        return "", ""
-    if "://" in raw:
-        try:
-            parsed = urlparse(raw)
-            path = parsed.path or "/"
-            fragment = parsed.fragment
-        except ValueError:
-            path, _, fragment = raw.partition("#")
-    else:
-        path, _, fragment = raw.partition("#")
-    return path.split("?", 1)[0], fragment
-
-
-def extract_endpoint_path(value: str) -> str:
-    """Project a URL or endpoint to its path without identity normalization."""
-    return extract_endpoint_parts(value)[0]
-
-
-def _normalize_endpoint_path(path: str) -> str:
-    path = str(path or "").strip()
-    if not path:
-        return ""
-    if not path.startswith("/"):
-        path = "/" + path
-    if path != "/":
-        path = path.rstrip("/")
-    return path
-
-
-def canonical_endpoint_identity(value: str) -> str:
-    """Return an exact endpoint identity while discarding document fragments."""
-    raw = str(value or "").strip()
-    if not raw:
-        return ""
-    try:
-        parsed = urlparse(raw) if "://" in raw else urlparse(f"local://host/{raw.lstrip('/')}")
-        path = _normalize_endpoint_path(parsed.path or "/")
-        query = parsed.query
-        fragment = parsed.fragment
-    except ValueError:
-        base, _, fragment = raw.partition("#")
-        path, separator, query = base.partition("?")
-        query = query if separator else ""
-        path = _normalize_endpoint_path(path)
-    if not path:
-        return ""
-    identity = f"{path}?{query}" if query else path
-    if fragment.startswith("/"):
-        identity = f"{identity}#{fragment}"
-    return identity
-
-
-def canonical_endpoint_path(value: str) -> str:
-    """Normalize to a path while retaining semantic SPA hash routes."""
-    identity = canonical_endpoint_identity(value)
-    if not identity:
-        return ""
-    server_route, separator, fragment = identity.partition("#")
-    path = server_route.split("?", 1)[0]
-    if not separator:
-        return path
-    return f"{path}#{fragment.split('?', 1)[0]}"
+try:
+    from tools.evidence_identity import (
+        CANONICAL_VULN_CLASSES, CLOSED_LEDGER_RESULTS, CLOSED_MATRIX_STATUSES,
+        CLOSURE_ONLY_FAMILIES, CLOSURE_FAMILIES,
+        VULN_CLASS_ALIASES, canonical_vuln_class, extract_endpoint_parts,
+        extract_endpoint_path, canonical_endpoint_identity, canonical_endpoint_path,
+    )
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from evidence_identity import (
+        CANONICAL_VULN_CLASSES, CLOSED_LEDGER_RESULTS, CLOSED_MATRIX_STATUSES,
+        CLOSURE_ONLY_FAMILIES, CLOSURE_FAMILIES,
+        VULN_CLASS_ALIASES, canonical_vuln_class, extract_endpoint_parts,
+        extract_endpoint_path, canonical_endpoint_identity, canonical_endpoint_path,
+    )
 
 
 def _closure_cell_key(value: dict | object):

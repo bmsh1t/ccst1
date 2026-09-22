@@ -118,6 +118,145 @@ def test_context_pack_reuses_exact_surface_projection(tmp_path, monkeypatch):
     assert any("admin/orders" in item for item in pack["evidence_anchors"])
 
 
+def test_primary_goal_memory_projection_uses_store_case_context(tmp_path):
+    from tools.context_pack import _load_goal_memory
+    from tools.target_store import TargetStore
+
+    store = TargetStore(tmp_path, "target.com")
+    store.initialize()
+    store.remember_hypothesis(
+        command_id="hypothesis-1",
+        hypothesis_id="H-1",
+        vuln_class="authz",
+        why_now="Peer and owner sessions are available",
+        actor="operator",
+    )
+
+    projection = _load_goal_memory(tmp_path, "target.com")
+
+    assert projection["source"]["kind"] == "store"
+    assert projection["source"]["revision"] > 0
+    assert projection["target"]["current_hypothesis"] == "Peer and owner sessions are available"
+    assert projection["target_path"].endswith("state/target.com/metadata.sqlite3")
+
+
+def test_primary_context_pack_exposes_one_store_revision_binding(tmp_path):
+    from tools.target_store import TargetStore
+
+    store = TargetStore(tmp_path, "target.com")
+    store.initialize()
+    pack = build_context_pack(tmp_path, target="target.com")
+
+    binding = pack["source_summary"]
+    assert binding["snapshot_status"] == "bound"
+    assert binding["store_id"] == store.binding()["store_id"]
+    assert binding["store_revision"] == store.binding()["revision"]
+
+
+def _record_primary_context_evidence(store, repo_root, attempt_id):
+    artifact = repo_root / "evidence" / target_storage_key(store.target) / f"{attempt_id}.txt"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text("Recorded response", encoding="utf-8")
+    store.start_attempt(
+        attempt_id=attempt_id, source="native", started_at="2026-09-22T00:00:00Z", actor="operator",
+    )
+    store.record_execution(
+        attempt_id=attempt_id, outcome="complete", actor="operator",
+        observations=[{
+            "endpoint": f"https://{store.target}/{attempt_id}", "method": "GET", "family": "Authz",
+            "observed_at": "2026-09-22T00:00:00Z", "description": "Recorded object response",
+            "artifacts": {"response": artifact.relative_to(repo_root).as_posix()},
+            "result": "tested_clean", "state_changing": False,
+        }],
+    )
+    return artifact
+
+
+@pytest.mark.parametrize("shortcut", ["foreign", "old_revision", "damaged_raw"])
+def test_primary_context_pack_reloads_supplied_truth(tmp_path, shortcut):
+    from tools.current_truth import current_cell_projection
+    from tools.target_store import TargetStore
+
+    store = TargetStore(tmp_path, "target.com")
+    store.initialize()
+    source = store
+    if shortcut == "foreign":
+        source = TargetStore(tmp_path, "foreign.test")
+        source.initialize()
+    artifact = _record_primary_context_evidence(source, tmp_path, "first")
+    truth = current_cell_projection(tmp_path, source.target)
+    assert truth["source"]["status"] == "ready"
+    before = store.binding()
+    expected_entries = 1
+    if shortcut == "foreign":
+        expected_entries = 0
+    elif shortcut == "old_revision":
+        _record_primary_context_evidence(store, tmp_path, "second")
+        expected_entries = 2
+    else:
+        artifact.write_text("Damaged response", encoding="utf-8")
+        assert store.binding() == before
+
+    pack = build_context_pack(tmp_path, target=store.target, ledger_truth=truth)
+
+    summary = pack["source_summary"]
+    assert summary["evidence_ledger_entries"] == expected_entries
+    assert summary["evidence_source_status"] == ("partial" if shortcut == "damaged_raw" else "ready")
+    assert summary["store_revision"] == store.binding()["revision"]
+    assert "foreign.test" not in json.dumps(pack)
+
+
+def test_primary_context_pack_does_not_adopt_supplied_projection_shortcuts(tmp_path):
+    from tools.target_store import TargetStore
+
+    store = TargetStore(tmp_path, "target.com")
+    store.initialize()
+    pack = build_context_pack(
+        tmp_path, target=store.target,
+        surface_state={"available": True, "target": "foreign.test", "stats": {"p1": 999}},
+        coverage_state=([{"endpoint": "/foreign", "vuln_class": "Authz"}], {"endpoints": []}),
+        validation_runner_candidates=[{"summary_path": "foreign.test/summary.json"}],
+    )
+
+    summary = pack["source_summary"]
+    assert summary["surface_available"] is False
+    assert summary["p1"] == summary["coverage_gaps"] == summary["validation_runner_candidates"] == 0
+    assert pack["validation_runner_candidates"] == []
+    assert "foreign.test" not in json.dumps(pack)
+
+
+def test_primary_context_coverage_ignores_legacy_closure(tmp_path):
+    from tools.coverage_matrix import _matrix_path, VULN_CLASSES
+    from tools.target_store import TargetStore
+
+    store = TargetStore(tmp_path, "target.com")
+    store.initialize()
+    path = _matrix_path(tmp_path, store.target)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"target": store.target, "endpoints": [{
+        "endpoint": "/historical", "cells": {name: {"status": "tested_clean"} for name in VULN_CLASSES},
+    }]}), encoding="utf-8")
+    before = path.read_bytes(), path.stat().st_mtime_ns, store.binding()
+    pack = build_context_pack(tmp_path, target=store.target)
+    assert pack["source_summary"]["coverage_gaps"] == len(VULN_CLASSES)
+    assert (path.read_bytes(), path.stat().st_mtime_ns, store.binding()) == before
+
+
+def test_primary_context_pack_rejects_revision_change_during_assembly(tmp_path, monkeypatch):
+    from tools.target_store import TargetStore
+
+    store = TargetStore(tmp_path, "target.com")
+    store.initialize()
+    original = TargetStore.binding
+    first = original(store)
+    changed = {**first, "revision": first["revision"] + 1}
+    bindings = iter((first,))
+    monkeypatch.setattr(TargetStore, "binding", lambda self: next(bindings, changed))
+
+    with pytest.raises(ValueError, match="changed during assembly"):
+        build_context_pack(tmp_path, target="target.com")
+
+
 def test_state_and_context_projection_are_semantically_repeatable(tmp_path):
     target = "target.com"
     memory_dir = tmp_path / "hunt-memory"
@@ -585,6 +724,8 @@ def test_context_pack_surfaces_actor_matrix_gaps(tmp_path):
     output = format_context_pack(pack)
 
     assert pack["source_summary"]["evidence_ledger_entries"] == 1
+    assert pack["source_summary"]["evidence_source_kind"] == "ledger"
+    assert pack["source_summary"]["evidence_source_status"] == "valid"
     assert pack["source_summary"]["actor_matrix_gaps"] > 0
     assert "memory/evidence/target.com/ledger.jsonl" in pack["must_read"]
     assert any("Actor gap" in item and "peer" in item for item in pack["evidence_anchors"])

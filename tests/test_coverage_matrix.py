@@ -40,6 +40,181 @@ from surface_index import build_surface_index
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
+def test_primary_projection_uses_current_truth_without_publishing(tmp_path):
+    from tools.current_truth import current_cell_projection
+    from tools.target_store import TargetStore
+
+    target = "coverage.test"
+    store = TargetStore(tmp_path, target)
+    store.initialize()
+    _seed_recon(tmp_path, target, [f"https://{target}/observed"])
+    path = coverage_matrix_module._matrix_path(tmp_path, target)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"target": target, "endpoints": [{
+        "endpoint": "/historical", "endpoint_kind": "route_prefix",
+        "endpoint_kind_source": "operator", "cells": {
+            "Authz": {"status": "tested_finding", "evidence_ref": "old"},
+            "XSS": {"status": "n_a", "reason": "historical applicability"},
+        },
+    }]}), encoding="utf-8")
+    store.create_finding(
+        command_id="candidate", finding_id="candidate", endpoint=f"https://{target}/candidate",
+        method="GET", family="Authz", title="Unassessed", claim="needs evidence", actor="ai",
+    )
+    raw = tmp_path / "evidence" / target / "response.txt"
+    raw.parent.mkdir(parents=True, exist_ok=True)
+    raw.write_text("response", encoding="utf-8")
+    store.start_attempt(attempt_id="attempt", source="native", started_at="2026-09-22T00:00:00Z", actor="ai")
+    store.record_execution(attempt_id="attempt", outcome="complete", actor="ai", observations=[{
+        "endpoint": f"https://{target}/verified", "method": "GET", "family": "Authz",
+        "observed_at": "2026-09-22T00:00:00Z", "description": "Recorded clean response",
+        "artifacts": {"response": raw.relative_to(tmp_path).as_posix()}, "result": "tested_clean",
+    }, {
+        "endpoint": f"https://{target}/variant?actor=peer", "method": "GET", "family": "Authz",
+        "observed_at": "2026-09-22T00:00:00Z", "description": "One exact variant only",
+        "artifacts": {"response": raw.relative_to(tmp_path).as_posix()}, "result": "tested_clean",
+    }])
+
+    def snapshot():
+        return {str(p.relative_to(tmp_path)): (p.read_bytes(), p.stat().st_mtime_ns)
+                for p in tmp_path.rglob("*") if p.is_file()
+                and p.name not in {"metadata.sqlite3-wal", "metadata.sqlite3-shm"}}
+
+    before = snapshot()
+    matrix = load_matrix_projection(target, tmp_path)
+    endpoints = {row["endpoint"]: row for row in matrix["endpoints"]}
+    assert set(endpoints) == {"/observed", "/historical", "/candidate", "/verified", "/variant"}
+    assert endpoints["/historical"]["cells"]["Authz"]["status"] == "untested"
+    assert endpoints["/historical"]["cells"]["XSS"]["status"] == "untested"
+    assert endpoints["/historical"]["historical_cells"]["XSS"]["reason"] == "historical applicability"
+    assert endpoints["/candidate"]["cells"]["Authz"]["status"] == "untested"
+    assert endpoints["/verified"]["cells"]["Authz"]["status"] == "tested_clean"
+    assert endpoints["/variant"]["cells"]["Authz"]["status"] == "untested"
+    assert matrix["closure_projection"] == current_cell_projection(tmp_path, target)["projection"]
+    assert matrix["store_revision"] == store.binding()["revision"]
+    assert snapshot() == before
+
+    raw.write_text("corrupt", encoding="utf-8")
+    before = snapshot()
+    damaged = coverage_matrix_module.read_matrix(target, tmp_path)
+    assert damaged["evidence_health"]["status"] == "partial"
+    assert all(cell["status"] == "untested" for row in damaged["endpoints"] for cell in row["cells"].values())
+    assert snapshot() == before
+
+
+def test_primary_projection_retains_scanner_advice_for_observed_open_cells(tmp_path):
+    from tools.target_store import TargetStore
+
+    target = "scanner-coverage.test"
+    store = TargetStore(tmp_path, target)
+    store.initialize()
+    raw = tmp_path / "evidence" / target / "response.txt"
+    raw.parent.mkdir(parents=True, exist_ok=True)
+    raw.write_text("response", encoding="utf-8")
+    store.start_attempt(attempt_id="attempt", source="native", started_at="2026-09-22T00:00:00Z", actor="ai")
+    store.record_execution(attempt_id="attempt", outcome="complete", actor="ai", observations=[{
+        "endpoint": f"https://{target}/observed", "method": "GET", "family": "Authz",
+        "observed_at": "2026-09-22T00:00:00Z", "description": "Unresolved candidate",
+        "artifacts": {"response": raw.relative_to(tmp_path).as_posix()}, "result": "candidate",
+    }])
+    scanner = tmp_path / "findings" / target / "scanner_pass.json"
+    scanner.parent.mkdir(parents=True)
+    scanner.write_text(json.dumps({"endpoints": [
+        {"endpoint": endpoint, "vuln_class": "Authz", "module": "authz"}
+        for endpoint in ("/observed", "/scanner-only")
+    ]}), encoding="utf-8")
+
+    matrix = coverage_matrix_module.read_matrix(target, tmp_path)
+
+    for row in matrix["endpoints"]:
+        cell = row["cells"]["Authz"]
+        assert cell["status"] == "untested"
+        assert cell["scanner_swept"] is True
+        assert cell["scanner_evidence_ref"] == f"findings/{target}/scanner_pass.json#authz"
+    assert matrix["high_risk_lanes"]["Authz"]["scanner_swept"] == 2
+    assert not coverage_matrix_module._matrix_path(tmp_path, target).exists()
+
+
+@pytest.mark.parametrize("result", ["dead_end", "not_applicable", "blocked_redline"])
+def test_primary_terminal_dispositions_filter_only_exact_authorized_gaps(tmp_path, result):
+    from tools.target_store import TargetStore
+
+    target = "terminal-coverage.test"
+    store = TargetStore(tmp_path, target)
+    store.initialize()
+    raw = tmp_path / "evidence" / target / "response.txt"
+    raw.parent.mkdir(parents=True)
+    raw.write_text("response", encoding="utf-8")
+    as_of = "2026-09-22T00:00:00Z"
+    store.start_attempt(attempt_id="attempt", source="native", started_at=as_of, actor="ai")
+    receipt = store.record_execution(attempt_id="attempt", outcome="complete", actor="ai", observations=[{
+        "endpoint": f"https://{target}{endpoint}", "method": "GET", "family": "Authz",
+        "observed_at": as_of, "description": "Evidence-backed disposition",
+        "artifacts": {"response": raw.relative_to(tmp_path).as_posix()}, "result": result,
+        "identity_dimensions": dimensions,
+    } for endpoint, dimensions in [
+        ("/exact", {}), ("/query?actor=peer", {}), ("/fragment#/peer", {}),
+        ("/scoped", {"method": "GET", "actor_role": "admin", "object_scope": "admin_object"}),
+    ]])
+
+    matrix = coverage_matrix_module.read_matrix(target, tmp_path, as_of=as_of)
+    assert matrix == coverage_matrix_module.read_matrix(target, tmp_path, as_of=as_of)
+    assert matrix["as_of"] == matrix["last_updated"] == as_of
+    assert matrix["source_snapshot"]["store"] == store.binding()
+    assert matrix["source_snapshot"]["operation_ids"] == [receipt["entity_id"]]
+    assert len(matrix["source_snapshot"]["observation_ids"]) == 4
+    assert matrix_is_fresh(target, matrix, tmp_path)
+    assert all(row["cells"]["Authz"]["status"] == "untested" for row in matrix["endpoints"])
+    gaps = coverage_matrix_module.high_value_gaps_from_matrix(matrix)
+    assert {gap["endpoint"] for gap in gaps if gap["vuln_class"] == "Authz"} == {
+        "/query", "/fragment", "/scoped",
+    }
+    assert matrix["closure_projection"]["closed_cells_v2"][0]["result"] == result
+    summary = matrix["summary"]
+    assert summary["high_value_gaps_count"] == summary["actionable_high_value_gaps_count"] == len(gaps)
+    assert summary["untested"] == len(gaps) + 1
+    assert coverage_matrix_module.high_value_gap_window_from_matrix(matrix, limit=1)[1] == len(gaps)
+
+    raw.write_text("corrupted", encoding="utf-8")
+    damaged = coverage_matrix_module.read_matrix(target, tmp_path, as_of=as_of)
+    assert damaged["store_revision"] == matrix["store_revision"]
+    assert damaged["source_fingerprint"] != matrix["source_fingerprint"]
+    assert damaged["evidence_health"]["status"] == "partial"
+    assert not matrix_is_fresh(target, matrix, tmp_path)
+    assert any(gap["endpoint"] == "/exact" and gap["vuln_class"] == "Authz"
+               for gap in coverage_matrix_module.high_value_gaps_from_matrix(damaged))
+
+
+@pytest.mark.parametrize("changed_input", ["discovery", "store", "history"])
+def test_primary_read_rejects_input_drift(tmp_path, monkeypatch, changed_input):
+    from tools.target_store import StoreError, TargetStore
+
+    target = "drifting-coverage.test"
+    store = TargetStore(tmp_path, target)
+    store.initialize()
+    _seed_recon(tmp_path, target, [f"https://{target}/before"])
+    rebuild = coverage_matrix_module._rebuild_matrix_unlocked
+
+    def changing_rebuild(*args, **kwargs):
+        matrix = rebuild(*args, **kwargs)
+        if changed_input == "discovery":
+            (tmp_path / "recon" / target / "urls" / "all.txt").write_text(
+                f"https://{target}/after\n", encoding="utf-8",
+            )
+        elif changed_input == "history":
+            path = coverage_matrix_module._matrix_path(tmp_path, target)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"target": target, "endpoints": []}), encoding="utf-8")
+        else:
+            store.create_finding(command_id="new", finding_id="new", endpoint=f"https://{target}/new",
+                                 method="GET", family="Authz", title="New", claim="Unassessed", actor="ai")
+        return matrix
+
+    monkeypatch.setattr(coverage_matrix_module, "_rebuild_matrix_unlocked", changing_rebuild)
+    with pytest.raises(StoreError, match="inputs changed during assembly"):
+        coverage_matrix_module.read_matrix(target, tmp_path, as_of="2026-09-22T00:00:00Z")
+
+
 def _coverage_mark_worker(repo_root: str, target: str, vuln_class: str, ready, start) -> None:
     ready.set()
     start.wait(10)
@@ -1240,6 +1415,42 @@ class TestMarkCell:
         assert entry["reason"] == "user enum verified"
         assert entry["source"] == "mark_cell"
         assert entry["validation_status"] == "candidate"
+
+    def test_primary_mark_with_write_finding_uses_store_claim_owner(self, tmp_path):
+        from tools.target_store import TargetStore
+
+        target = "primary-coverage.test"
+        store = TargetStore(tmp_path, target)
+        store.initialize()
+        mark_cell(
+            target, "/api/orders", "Authz", "tested_finding",
+            reason="peer object was returned", repo_root=tmp_path, write_finding=True,
+        )
+        findings = store.page("findings")["items"]
+        assert len(findings) == 1
+        assert findings[0]["endpoint"] == "https://primary-coverage.test/api/orders"
+        assert not (tmp_path / "findings" / target / "findings.json").exists()
+
+    def test_primary_store_revision_invalidates_coverage_projection(self, tmp_path):
+        from tools.target_store import TargetStore
+
+        target = "primary-coverage.test"
+        urls = tmp_path / "recon" / target / "urls"
+        urls.mkdir(parents=True)
+        (urls / "all.txt").write_text("https://primary-coverage.test/api/orders\n", encoding="utf-8")
+        store = TargetStore(tmp_path, target)
+        store.initialize()
+        matrix = rebuild_matrix(target, repo_root=tmp_path)
+        assert matrix["backend"] == "primary"
+        assert matrix["store_id"] == store.context(limit=1)["store_id"]
+        assert matrix_is_fresh(target, matrix, repo_root=tmp_path)
+
+        store.create_finding(
+            command_id="finding-revision-1", finding_id="F-1",
+            endpoint="https://primary-coverage.test/api/orders", method="GET",
+            family="Authz", title="peer read", claim="peer object was returned", actor="operator",
+        )
+        assert not matrix_is_fresh(target, matrix, repo_root=tmp_path)
 
     def test_write_finding_idempotent(self, tmp_path):
         """Repeated mark_cell with write_finding=True must not duplicate."""

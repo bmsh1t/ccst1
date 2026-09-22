@@ -85,6 +85,31 @@ def test_view_aggregates_three_sources_with_counts(tmp_path):
     assert kinds == {"lead", "dead_end", "next_action"}
 
 
+def test_primary_recall_reads_store_experiences_not_target_memory(tmp_path):
+    from tools.target_store import TargetStore
+
+    store = TargetStore(tmp_path, "t.example")
+    store.initialize()
+    store.remember(
+        command_id="hypothesis-1",
+        kind="hypothesis",
+        statement="Check basket ownership boundary",
+        conditions="Peer session and owner session are both available",
+        reopen_when="When actor sessions change",
+        next_intent="Compare the peer response",
+        evidence=[],
+        actor="operator",
+    )
+
+    view = build_recall_view(tmp_path, target="t.example", kinds=["lead"])
+
+    assert view["counts"]["target_entries"] == 1
+    entry = view["target_entries"][0]
+    assert entry["text"] == "Check basket ownership boundary"
+    assert entry["structured"]["next_intent"] == "Compare the peer response"
+    assert not (tmp_path / "memory" / "goals" / "targets" / "t.example.json").exists()
+
+
 def test_isolation_excludes_other_targets_private_episodes(tmp_path):
     _seed(tmp_path)
     view = build_recall_view(tmp_path, target="t.example", query="BOLA basket")

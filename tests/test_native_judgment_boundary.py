@@ -2,9 +2,12 @@
 
 import json
 
+import pytest
+
 from tools import browser_mcp_import, repo_secret_scan, source_intel, surface
 from tools.structured_findings import finding_rank_key
 from tools.surface_source_intel import build_source_intel_urls, load_source_intel
+from tools.target_store import TargetStore
 
 
 def test_source_routes_keep_unfamiliar_inputs_and_real_method_provenance(tmp_path):
@@ -96,3 +99,171 @@ def test_surface_words_do_not_choose_a_class_or_hide_routes(tmp_path):
     assert set(rows) == set(urls)
     assert len({row["score"] for row in rows.values()}) == 1
     assert all("vuln_class" not in row and not row["suggested"] for row in rows.values())
+
+
+def test_primary_surface_action_projection_ignores_corrupt_legacy_queue(tmp_path):
+    target = "primary-surface.test"
+    store = TargetStore(tmp_path, target)
+    store.initialize()
+    store.create_action(
+        command_id="create-surface-work",
+        action_id="WORK-1",
+        intent="Review recorded surface",
+        execution_key="work:surface-review",
+        actor="ai",
+        kind="work",
+        subject={"target": target},
+    )
+    (tmp_path / "state" / target / "action_queue.json").write_text("{not-json", encoding="utf-8")
+
+    projected = surface._primary_action_queue(store)
+
+    assert [item["id"] for item in projected] == ["WORK-1"]
+    assert projected[0]["source"] == "target_store"
+
+
+def test_primary_surface_query_does_not_refresh_projection_sidecars(tmp_path):
+    target = "primary-surface-read.test"
+    store = TargetStore(tmp_path, target)
+    store.initialize()
+    recon = tmp_path / "recon" / target
+    (recon / "live").mkdir(parents=True)
+    (recon / "urls").mkdir()
+    (recon / "live" / "httpx_full.txt").write_text(
+        f"https://{target} [200] [Fixture] [100]\n", encoding="utf-8"
+    )
+    (recon / "urls" / "api_endpoints.txt").write_text(
+        f"https://{target}/api/objects\n", encoding="utf-8"
+    )
+    def snapshot_non_sqlite_sidecars():
+        return {
+            str(path.relative_to(tmp_path)): path.read_bytes()
+            for path in tmp_path.rglob("*")
+            if path.is_file() and path.name not in {"metadata.sqlite3-shm", "metadata.sqlite3-wal"}
+        }
+
+    before = snapshot_non_sqlite_sidecars()
+    surface.load_surface_context(tmp_path, target, memory_dir=tmp_path / "memory")
+    after = snapshot_non_sqlite_sidecars()
+    assert after == before
+
+
+def test_primary_surface_rejects_store_revision_drift_during_assembly(tmp_path, monkeypatch):
+    target = "primary-surface-revision.test"
+    from tools.target_store import TargetStore
+
+    store = TargetStore(tmp_path, target)
+    store.initialize()
+    recon = tmp_path / "recon" / target
+    (recon / "live").mkdir(parents=True)
+    (recon / "urls").mkdir()
+    (recon / "live" / "httpx_full.txt").write_text(
+        f"https://{target} [200] [Fixture] [100]\n", encoding="utf-8"
+    )
+    original = surface._store_binding_snapshot
+    first = original(store)
+    changed = {**first, "revision": first["revision"] + 1}
+    bindings = iter((first, changed))
+    monkeypatch.setattr(surface, "_store_binding_snapshot", lambda _store: next(bindings))
+
+    with pytest.raises(ValueError, match="Surface inputs changed during assembly"):
+        surface.load_surface_context(tmp_path, target, memory_dir=tmp_path / "memory")
+
+
+def test_primary_surface_rejects_mutation_after_context_before_publication(tmp_path, monkeypatch):
+    target = "primary-surface-publication.test"
+    store = TargetStore(tmp_path, target)
+    store.initialize()
+    recon = tmp_path / "recon" / target
+    (recon / "urls").mkdir(parents=True)
+    (recon / "urls" / "api_endpoints.txt").write_text(
+        f"https://{target}/objects\n", encoding="utf-8"
+    )
+    first = surface.build_surface_review(tmp_path, target, memory_dir=tmp_path / "memory")
+    projection_path = first["surface_projection"]["path"]
+    from pathlib import Path
+
+    published = Path(projection_path).read_bytes()
+    original = surface.load_surface_context
+
+    def mutate_after_context(*args, **kwargs):
+        context = original(*args, **kwargs)
+        store.create_finding(
+            command_id="new-finding", finding_id="F-1", endpoint=f"https://{target}/objects",
+            method="GET", family="Authz", title="New claim", claim="Needs review", actor="operator",
+        )
+        return context
+
+    monkeypatch.setattr(surface, "load_surface_context", mutate_after_context)
+    with pytest.raises(surface.SurfaceIndexError, match="inputs changed"):
+        surface.build_surface_review(tmp_path, target, memory_dir=tmp_path / "memory")
+
+    assert Path(projection_path).read_bytes() == published
+    assert store.finding("F-1")["id"] == "F-1"
+    from tools.surface_projection import load_surface_projection
+
+    assert load_surface_projection(tmp_path, target, memory_dir=tmp_path / "memory")["status"] != "valid"
+
+
+def test_surface_review_excludes_cutover_after_initial_backend_read(tmp_path, monkeypatch):
+    import fcntl
+    from concurrent.futures import ThreadPoolExecutor
+    from pathlib import Path
+    from queue import Queue
+
+    from tools.surface_projection import load_surface_projection
+    from tools.target_migration import import_target_staged, promote_target, publish_preview
+
+    target = "surface-cutover.test"
+    source = tmp_path / "source"
+    source.mkdir()
+    staging = tmp_path / "staging"
+    repo = tmp_path / "published"
+    assert import_target_staged(source, staging, target)["receipt"]["status"] == "complete"
+    publish_preview(staging, repo, target)
+    store = TargetStore(repo, target)
+    recon = repo / "recon" / target / "urls"
+    recon.mkdir(parents=True)
+    (recon / "api_endpoints.txt").write_text(f"https://{target}/objects\n", encoding="utf-8")
+    lock_path = repo / "state" / target / "locks" / "target-switch.lock"
+    lock_path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    attempted = Queue()
+    original = surface.target_backend
+    cutover = None
+
+    def switch_backend():
+        with lock_path.open("a+") as handle:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                attempted.put("blocked")
+            else:
+                fcntl.flock(handle, fcntl.LOCK_UN)
+                attempted.put("unblocked")
+        promote_target(repo, target)
+        store.create_finding(
+            command_id="new-finding", finding_id="F-1", endpoint=f"https://{target}/objects",
+            method="GET", family="Authz", title="New claim", claim="Needs review", actor="operator",
+        )
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        def read_backend_then_attempt_cutover(*args, **kwargs):
+            nonlocal cutover
+            backend = original(*args, **kwargs)
+            if cutover is None:
+                assert backend == "preview"
+                cutover = executor.submit(switch_backend)
+                assert attempted.get(timeout=5) == "blocked"
+            return backend
+
+        monkeypatch.setattr(surface, "target_backend", read_backend_then_attempt_cutover)
+        review = surface.build_surface_review(repo, target, memory_dir=tmp_path / "memory")
+        cutover.result(timeout=5)
+
+    published = json.loads(Path(review["surface_projection"]["path"]).read_text())
+    assert "store_id" not in published["input_manifest"]["binding"]
+    assert store.finding("F-1")["id"] == "F-1"
+    assert load_surface_projection(repo, target, memory_dir=tmp_path / "memory")["status"] != "valid"
+    refreshed = surface.build_surface_review(repo, target, memory_dir=tmp_path / "memory")
+    assert refreshed["surface_projection"]["status"] == "valid"
+    assert load_surface_projection(repo, target, memory_dir=tmp_path / "memory")["status"] == "valid"

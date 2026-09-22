@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 
+import evidence_ledger
 import pytest
 
+from closure_projection import build_current_cell_projection
 from evidence_ledger import (
     actor_requirements,
-    build_current_cell_projection,
     build_summary,
     ledger_path,
     load_entries,
@@ -17,6 +19,7 @@ from evidence_ledger import (
     record_entry,
 )
 from closure_resolver import ClosureResolver
+from tools.target_store import StoreError, TargetStore
 
 
 def test_record_entry_writes_normalized_ledger_row(tmp_path):
@@ -46,6 +49,40 @@ def test_record_entry_writes_normalized_ledger_row(tmp_path):
     assert entry["variant"] == "baseline"
     assert rows[0]["browser_observed"] is True
     assert rows[0]["replayed"] is True
+
+
+@pytest.mark.parametrize("allow_preview", [False, True])
+def test_nonlegacy_target_rejects_legacy_ledger_writer(tmp_path, allow_preview):
+    TargetStore(tmp_path, "target.com").initialize(allow_legacy=allow_preview)
+
+    with pytest.raises(StoreError, match="legacy evidence ledger writer"):
+        record_entry(
+            tmp_path,
+            target="target.com",
+            endpoint="https://target.com/api/items",
+            result="lead",
+        )
+
+    assert not ledger_path(tmp_path, "target.com").exists()
+
+
+def test_ledger_writer_rechecks_backend_after_cutover_interposition(tmp_path, monkeypatch):
+    target = "http://127.0.0.1:8080"
+    record_entry(tmp_path, target=target, endpoint="/orders/1", event_id="old")
+    path = ledger_path(tmp_path, target)
+    before = path.read_bytes()
+    original_lock = evidence_ledger.target_switch_lock
+
+    @contextmanager
+    def publish_before_lock(repo_root, resolved_target):
+        TargetStore(repo_root, resolved_target).initialize(allow_legacy=True)
+        with original_lock(repo_root, resolved_target):
+            yield
+
+    monkeypatch.setattr(evidence_ledger, "target_switch_lock", publish_before_lock)
+    with pytest.raises(StoreError, match="legacy evidence ledger writer"):
+        record_entry(tmp_path, target=target, endpoint="/orders/2", event_id="new")
+    assert path.read_bytes() == before
 
 
 def test_record_entry_accepts_canonical_object_scope(tmp_path):

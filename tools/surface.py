@@ -25,10 +25,7 @@ from tools.target_memory import load_goal_memory, text_is_polluted  # noqa: E402
 try:
     from tools.closure_resolver import canonical_endpoint_path
     from tools.coverage_matrix import load_matrix
-    from tools.evidence_ledger import (
-        build_current_cell_projection,
-        load_entries as load_evidence_ledger_entries,
-    )
+    from tools.current_truth import current_cell_projection
     from tools.action_queue import FINAL_STATUSES as ACTION_QUEUE_FINAL_STATUSES
     from tools.action_queue import load_queue as load_action_queue
     from tools.attack_probe_filter import (
@@ -44,6 +41,7 @@ try:
     from tools.observation_inventory import (
         InventoryError,
         inventory_path,
+        peek_inventory_summary,
         sync_inventory_summary,
     )
     from tools.recon_adapter import ReconAdapter
@@ -74,13 +72,11 @@ try:
         target_storage_key,
         url_belongs_to_target,
     )
+    from tools.target_store import TargetStore, target_backend, target_switch_lock
 except ImportError:  # pragma: no cover - top-level tools/ import
     from closure_resolver import canonical_endpoint_path  # type: ignore
     from coverage_matrix import load_matrix  # type: ignore
-    from evidence_ledger import (  # type: ignore
-        build_current_cell_projection,
-        load_entries as load_evidence_ledger_entries,
-    )
+    from current_truth import current_cell_projection  # type: ignore
     from action_queue import FINAL_STATUSES as ACTION_QUEUE_FINAL_STATUSES  # type: ignore
     from action_queue import load_queue as load_action_queue  # type: ignore
     from attack_probe_filter import filter_attack_probes, is_attack_probe, sanitize_attack_probe_url
@@ -89,6 +85,7 @@ except ImportError:  # pragma: no cover - top-level tools/ import
     from observation_inventory import (  # type: ignore
         InventoryError,
         inventory_path,
+        peek_inventory_summary,
         sync_inventory_summary,
     )
     from recon_adapter import ReconAdapter
@@ -102,6 +99,7 @@ except ImportError:  # pragma: no cover - top-level tools/ import
         target_storage_key,
         url_belongs_to_target,
     )
+    from target_store import TargetStore, target_backend, target_switch_lock  # type: ignore
 try:
     from tools.browser_surface import public_url_shape
     from tools.intel_artifact import advisory_is_actionable
@@ -264,9 +262,16 @@ def _count_recon_artifact(recon_artifacts: dict, key: str) -> int:
         return 0
 
 
-def _sync_observation_inventory(repo_root: Path, target: str) -> dict:
+def _sync_observation_inventory(
+    repo_root: Path,
+    target: str,
+    *,
+    backend: str | None = None,
+) -> dict:
     """同步中性 observation 状态，并把故障保留为显式 surface warning。"""
     try:
+        if (backend if backend is not None else target_backend(repo_root, target)) == "primary":
+            return peek_inventory_summary(repo_root, target)
         return sync_inventory_summary(repo_root, target)
     except (InventoryError, OSError) as exc:
         return {
@@ -788,7 +793,12 @@ def _build_evidence_convergence_leads(
     return leads[:5]
 
 
-def _read_httpx_hosts(recon_dir: Path, target: str = "") -> tuple[dict[str, dict], set[str]]:
+def _read_httpx_hosts(
+    recon_dir: Path,
+    target: str = "",
+    *,
+    persist_inventory: bool = True,
+) -> tuple[dict[str, dict], set[str]]:
     """从共享组件清单读取 host metadata 与 403-only hosts。"""
     hosts = {}
     status403 = set()
@@ -797,7 +807,11 @@ def _read_httpx_hosts(recon_dir: Path, target: str = "") -> tuple[dict[str, dict
     except ImportError:  # pragma: no cover - direct tools/ execution
         from technology_inventory import load_or_build_inventory_for_recon_dir
 
-    inventory = load_or_build_inventory_for_recon_dir(recon_dir, target=target)
+    inventory = load_or_build_inventory_for_recon_dir(
+        recon_dir,
+        target=target,
+        persist=persist_inventory,
+    )
     if inventory.get("status") != "ready":
         return hosts, status403
     for item in inventory.get("hosts") or []:
@@ -1204,6 +1218,79 @@ def _project_untrusted_finality_as_candidate(
     return projected
 
 
+def _primary_scanner_findings(store: TargetStore) -> list[dict]:
+    """Project Store claims for Surface without consulting legacy findings JSON."""
+    findings = []
+    page = store.finding_page(limit=1000)
+    while True:
+        for item in page.get("items", []):
+            assessment = item.get("assessment") or {}
+            findings.append({
+                "id": item["id"],
+                "type": item["family"],
+                "category": item["family"],
+                "title": item["title"],
+                "summary": item["claim"],
+                "url": item["endpoint"],
+                "method": item["method"],
+                "severity": "medium",
+                "confidence": assessment.get("verdict", ""),
+                "validation_status": "validated" if assessment.get("verdict") == "confirmed" else "",
+                "report_status": "generated" if item.get("reports") else "not_generated",
+                "raw": item["claim"],
+            })
+        if not page.get("has_more"):
+            return findings
+        page = store.finding_page(limit=1000, cursor=page.get("next_cursor"))
+
+
+def _primary_action_queue(store: TargetStore) -> list[dict]:
+    """Project Store actions for legacy Surface consumers without file reads."""
+    status_map = {
+        "ready": "queued",
+        "claimed": "running",
+        "blocked": "blocked",
+        "completed": "tested",
+        "cancelled": "n/a",
+    }
+    page = store.page("actions", limit=1000)
+    rows = list(page.get("items") or [])
+    while page.get("has_more"):
+        page = store.page("actions", limit=1000, cursor=page.get("next_cursor"))
+        rows.extend(page.get("items") or [])
+    projected = []
+    for row in rows:
+        metadata = {
+            key: row[key]
+            for key in ("endpoint", "family", "subject_artifact_id", "subject_finding_id", "subject_experience_id")
+            if row.get(key) not in (None, "")
+        }
+        projected.append({
+            "id": row.get("id", ""),
+            "type": row.get("kind", "work"),
+            "status": status_map.get(str(row.get("status") or ""), "blocked"),
+            "action": row.get("intent", ""),
+            "evidence": row.get("reason", ""),
+            "metadata": metadata,
+            "source": "target_store",
+        })
+    return projected
+
+
+def _store_binding_snapshot(store: TargetStore) -> dict[str, object]:
+    """Read the binding without re-entering consumer-facing binding hooks."""
+    with store._connection() as conn:
+        row = conn.execute(
+            "SELECT target, store_id, backend, revision FROM store WHERE singleton=1"
+        ).fetchone()
+        return {
+            "target": str(row["target"]),
+            "store_id": str(row["store_id"]),
+            "backend": str(row["backend"]),
+            "revision": int(row["revision"]),
+        }
+
+
 def _action_queue_final_endpoints(actions: list[dict]) -> dict[str, str]:
     """Return endpoint-level queue history for advisory display only.
 
@@ -1236,6 +1323,11 @@ def load_surface_context(
 ) -> dict:
     """Load recon + memory data for the surface review pack."""
     repo_root = Path(repo_root)
+    backend = target_backend(repo_root, target)
+    store = TargetStore(repo_root, target) if backend == "primary" else None
+    store_binding = _store_binding_snapshot(store) if store is not None else None
+    if backend == "primary":
+        write_probe_log = False
     storage_key = target_storage_key(target)
     recon_dir = repo_root / "recon" / storage_key
     findings_dir = repo_root / "findings" / storage_key
@@ -1244,6 +1336,10 @@ def load_surface_context(
     owner_projection = derive_owner_projection(repo_root, target)
     target_goal_memory = _load_target_goal_memory(repo_root, target)
     if not recon_dir.is_dir():
+        if store is not None and _store_binding_snapshot(store) != store_binding:
+            raise ValueError(
+                "primary Surface inputs changed during assembly; rebuild from one store revision"
+            )
         return {
             "target": target,
             "available": False,
@@ -1253,7 +1349,11 @@ def load_surface_context(
             "target_goal_memory": target_goal_memory,
         }
 
-    hosts, status403_hosts = _read_httpx_hosts(recon_dir, target)
+    hosts, status403_hosts = _read_httpx_hosts(
+        recon_dir,
+        target,
+        persist_inventory=backend != "primary",
+    )
     browser_request_shapes = _load_browser_request_shapes(recon_dir)
     surface_index_status = load_surface_index_status(repo_root, target)
     use_surface_index = surface_index_status.get("status") == "valid"
@@ -1315,24 +1415,33 @@ def load_surface_context(
         if probe_log_path is not None:
             probe_log_path.unlink(missing_ok=True)
         raise
-    finding_index = load_finding_index(
-        findings_dir,
-        target=target,
-        allow_legacy=True,
-    )
-    scanner_findings = [
-        _project_untrusted_finality_as_candidate(
-            item,
-            findings_dir=findings_dir,
+    if backend == "primary":
+        scanner_findings = [
+            item for item in _primary_scanner_findings(store)
+            if item.get("url") and url_belongs_to_target(str(item.get("url") or ""), target)
+        ]
+    else:
+        finding_index = load_finding_index(
+            findings_dir,
             target=target,
+            allow_legacy=True,
         )
-        for item in finding_index.get("findings", [])
-        if isinstance(item, dict) and item.get("url")
-        and url_belongs_to_target(str(item.get("url") or ""), target)
-    ]
-    ledger_entries = load_evidence_ledger_entries(repo_root, target)
+        scanner_findings = [
+            _project_untrusted_finality_as_candidate(
+                item,
+                findings_dir=findings_dir,
+                target=target,
+            )
+            for item in finding_index.get("findings", [])
+            if isinstance(item, dict) and item.get("url")
+            and url_belongs_to_target(str(item.get("url") or ""), target)
+        ]
+    evidence_truth = current_cell_projection(repo_root, target)
     coverage_matrix = load_matrix(target, repo_root=repo_root)
-    action_queue_entries = load_action_queue(repo_root, target).get("actions", [])
+    if backend == "primary":
+        action_queue_entries = _primary_action_queue(store)
+    else:
+        action_queue_entries = load_action_queue(repo_root, target).get("actions", [])
     intel_context = _load_intel_context(recon_dir)
     intel_signals = intel_context["signals"]
     ffuf_summary = ReconAdapter(recon_dir).get_ffuf_summary()
@@ -1340,7 +1449,7 @@ def load_surface_context(
     source_intel = load_source_intel(findings_dir)
     scanner_manual_review = _load_scanner_manual_review(findings_dir, target)
     manual_review_leads = _build_manual_review_lead_hints(findings_dir, storage_key)
-    observation_inventory = _sync_observation_inventory(repo_root, target)
+    observation_inventory = _sync_observation_inventory(repo_root, target, backend=backend)
 
     profile = None
     pattern_matches: list[dict] = []
@@ -1370,6 +1479,11 @@ def load_surface_context(
             return []
         return list(entry.get("js_files", []))
 
+    if store is not None and _store_binding_snapshot(store) != store_binding:
+        raise ValueError(
+            "primary Surface inputs changed during assembly; rebuild from one store revision"
+        )
+
     return {
         "target": target,
         "available": True,
@@ -1386,8 +1500,11 @@ def load_surface_context(
         "browser_request_shapes": browser_request_shapes,
         "surface_index": surface_index_status,
         "scanner_findings": scanner_findings,
-        "ledger_entries": ledger_entries,
-        "ledger_summary": build_current_cell_projection(ledger_entries),
+        # Closure truth comes from the current source (store or ledger); the
+        # key names stay for existing readers, ``evidence_source`` says which.
+        "ledger_entries": evidence_truth["records"],
+        "ledger_summary": evidence_truth["projection"],
+        "evidence_source": evidence_truth["source"],
         "coverage_matrix": coverage_matrix,
         "action_queue_entries": action_queue_entries if isinstance(action_queue_entries, list) else [],
         "intel_signals": intel_signals,
@@ -2863,41 +2980,52 @@ def build_surface_review(
 ) -> dict:
     """显式构建完整 index/ranking，并原子发布 bounded projection。"""
     repo = Path(repo_root).resolve()
-    resolved_memory = str(memory_dir or default_memory_dir(repo))
-    index_status = load_surface_index_status(repo, target)
-    if refresh or index_status.get("status") != "valid":
-        build_surface_index(repo, target)
+    # Keep backend selection stable through index, context and publication.
+    with target_switch_lock(repo, target):
+        resolved_memory = str(memory_dir or default_memory_dir(repo))
+        index_status = load_surface_index_status(repo, target)
+        if refresh or index_status.get("status") != "valid":
+            build_surface_index(repo, target)
 
-    # inventory sidecar 的显式同步发生在 context load；之后再冻结 ranking
-    # manifest，确保 projection 不绑定到一次构建前的旧摘要。
-    context = load_surface_context(repo, target, memory_dir=resolved_memory)
-    initial_manifest = build_surface_input_manifest(
-        repo,
-        target,
-        memory_dir=resolved_memory,
-    )
-    ranked = rank_surface(context)
-    final_manifest = build_surface_input_manifest(
-        repo,
-        target,
-        memory_dir=resolved_memory,
-    )
-    if final_manifest.get("fingerprint") != initial_manifest.get("fingerprint"):
-        raise SurfaceIndexError("surface inputs changed during ranking; projection not published")
-    if publish_projection and ranked.get("available"):
-        projection_path = write_surface_projection(
+        # Primary context reads are side-effect free: freeze before reading, not
+        # after, so a Store mutation cannot relabel old context with a new revision.
+        # Legacy context still synchronizes inventory sidecars before freezing.
+        initial_manifest = (
+            build_surface_input_manifest(repo, target, memory_dir=resolved_memory)
+            if target_backend(repo, target) == "primary" else None
+        )
+        context = load_surface_context(repo, target, memory_dir=resolved_memory)
+        if initial_manifest is None:
+            initial_manifest = build_surface_input_manifest(
+                repo,
+                target,
+                memory_dir=resolved_memory,
+            )
+        ranked = rank_surface(context)
+        final_manifest = build_surface_input_manifest(
             repo,
             target,
-            ranked,
-            manifest=initial_manifest,
             memory_dir=resolved_memory,
         )
-        ranked["surface_projection"] = {
-            "status": "valid",
-            "path": str(projection_path),
-            "input_fingerprint": initial_manifest.get("fingerprint", ""),
-        }
-    return ranked
+        if (
+            final_manifest.get("fingerprint") != initial_manifest.get("fingerprint")
+            or final_manifest.get("binding") != initial_manifest.get("binding")
+        ):
+            raise SurfaceIndexError("surface inputs changed during ranking; projection not published")
+        if publish_projection and ranked.get("available"):
+            projection_path = write_surface_projection(
+                repo,
+                target,
+                ranked,
+                manifest=initial_manifest,
+                memory_dir=resolved_memory,
+            )
+            ranked["surface_projection"] = {
+                "status": "valid",
+                "path": str(projection_path),
+                "input_fingerprint": initial_manifest.get("fingerprint", ""),
+            }
+        return ranked
 
 
 def main() -> None:

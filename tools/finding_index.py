@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 import tempfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -23,10 +24,12 @@ from typing import Any
 
 try:
     from tools.closure_resolver import canonical_endpoint_identity
-    from tools.target_paths import canonical_target_value, url_belongs_to_target
+    from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
+    from tools.target_store import StoreError, target_backend, target_switch_lock
 except ImportError:  # pragma: no cover - top-level tools/ import
     from closure_resolver import canonical_endpoint_identity
-    from target_paths import canonical_target_value, url_belongs_to_target
+    from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
+    from target_store import StoreError, target_backend, target_switch_lock  # type: ignore
 
 SCHEMA_VERSION = 1
 MUTATION_EVENT_SCHEMA_VERSION = 1
@@ -36,6 +39,53 @@ FINDING_OWNER = "tools.finding_index"
 FINALIZED_VALIDATION_STATUSES = frozenset({"validated", "rejected"})
 FINALIZED_REPORT_STATUSES = frozenset({"generated", "reported"})
 OWNER_REVALIDATION_STATUS = "needs_owner_revalidation"
+
+
+def _finding_backend_context(findings_dir: str | Path, target: str | None = None) -> tuple[Path, str]:
+    """Resolve the same target for backend admission and the cutover lock."""
+    root = Path(os.path.abspath(findings_dir))
+    if root != root.resolve():
+        raise StoreError(f"finding directory must not traverse symlinks: {root}")
+    repo_root = root.parent.parent if root.parent.name == "findings" else root.parent
+    key = root.name
+    store_path = repo_root / "state" / key / "metadata.sqlite3"
+    fence_path = repo_root / "state" / key / "legacy-frozen.json"
+    stored_target = None
+    if store_path.is_file():
+        try:
+            with sqlite3.connect(f"file:{store_path}?mode=ro", uri=True) as conn:
+                stored_target = conn.execute("SELECT target FROM store WHERE singleton=1").fetchone()[0]
+        except (OSError, sqlite3.DatabaseError, TypeError, IndexError) as exc:
+            raise StoreError(f"cannot determine finding backend for {root}") from exc
+    elif fence_path.exists() or fence_path.is_symlink():
+        raise StoreError(f"fenced target store is unavailable for legacy finding writer: {root}")
+    else:
+        payload = _load_json_value(root / "findings.json")
+        stored_target = payload.get("target") if isinstance(payload, dict) else None
+    resolved_target = canonical_target_value(str(stored_target or target or key))
+    if target_storage_key(resolved_target) != key or (
+        target and canonical_target_value(target) != resolved_target
+    ):
+        raise StoreError(f"finding target mismatch with directory owner: {root}")
+    _finding_output_path(root, root / "findings.json")
+    return repo_root, resolved_target
+
+
+def _finding_output_path(findings_dir: str | Path, output: str | Path) -> Path:
+    """Keep custom index names inside the same non-symlinked owner directory."""
+    root = Path(findings_dir).resolve()
+    path = Path(os.path.abspath(output))
+    if path != path.resolve() or not path.is_relative_to(root):
+        raise StoreError(f"finding output escapes directory owner: {path}")
+    return path
+
+
+def _assert_legacy_writer_allowed(findings_dir: str | Path, target: str | None = None) -> None:
+    """Reject legacy Finding writes once a target Store claims ownership."""
+    repo_root, resolved_target = _finding_backend_context(findings_dir, target)
+    backend = target_backend(repo_root, resolved_target)
+    if backend != "legacy":
+        raise StoreError(f"legacy finding writer is disabled for {backend} target")
 ROOT_CLAIM_KIND = "finding_claim"
 ROOT_CLAIM_SCHEMA_VERSION = 1
 URL_RE = re.compile(r"https?://[^\s|`>'\")]+")
@@ -189,17 +239,19 @@ def mutation_events_path(findings_dir: str | Path) -> Path:
 
 
 @contextmanager
-def finding_mutation_lock(findings_dir: str | Path):
+def finding_mutation_lock(findings_dir: str | Path, *, target: str | None = None):
     """串行化单 target canonical findings 的完整 read-modify-write。"""
     root = Path(findings_dir)
-    lock_path = root / ".locks" / "findings.lock"
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with lock_path.open("a+", encoding="utf-8") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    repo_root, resolved_target = _finding_backend_context(root, target)
+    with target_switch_lock(repo_root, resolved_target):
+        lock_path = root / ".locks" / "findings.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _canonical_target_or_raw(value: str | None) -> str:
@@ -508,6 +560,7 @@ def _write_payload_with_owner_provenance(
     to the caller and intentionally leaves a detectable runtime-invalid row.
     Retrying the owner mutation repairs that state without an unsafe rollback.
     """
+    _assert_legacy_writer_allowed(findings_dir, target)
     for finding in mutated_findings:
         if isinstance(finding, dict):
             _attach_validation_summary_digest(findings_dir, finding)
@@ -1627,8 +1680,8 @@ def _refresh_finding_counts(payload: dict[str, Any]) -> None:
 
 def _write_finding_index_unlocked(findings_dir: str | Path, *, target: str | None = None, output: str | Path | None = None) -> dict[str, Any]:
     root = Path(findings_dir)
+    output_path = _finding_output_path(root, output or root / "findings.json")
     payload = build_finding_index(root, target=target)
-    output_path = Path(output) if output else root / "findings.json"
     existing = _load_finding_payload(
         output_path,
         root,
@@ -1656,7 +1709,10 @@ def _write_finding_index_unlocked(findings_dir: str | Path, *, target: str | Non
 
 
 def write_finding_index(findings_dir: str | Path, *, target: str | None = None, output: str | Path | None = None) -> dict[str, Any]:
-    with finding_mutation_lock(findings_dir):
+    output = _finding_output_path(findings_dir, output or Path(findings_dir) / "findings.json")
+    _assert_legacy_writer_allowed(findings_dir, target)
+    with finding_mutation_lock(findings_dir, target=target):
+        _assert_legacy_writer_allowed(findings_dir, target)
         return _write_finding_index_unlocked(findings_dir, target=target, output=output)
 
 
@@ -1677,7 +1733,7 @@ def load_finding_index(
             migrate_legacy=False,
             allow_legacy=allow_legacy,
         )
-    with finding_mutation_lock(root):
+    with finding_mutation_lock(root, target=target):
         return _load_finding_payload(
             path,
             root,
@@ -1783,7 +1839,9 @@ def upsert_findings(
     *,
     target: str | None = None,
 ) -> dict[str, Any]:
-    with finding_mutation_lock(findings_dir):
+    _assert_legacy_writer_allowed(findings_dir, target)
+    with finding_mutation_lock(findings_dir, target=target):
+        _assert_legacy_writer_allowed(findings_dir, target)
         return _upsert_findings_unlocked(findings_dir, findings, target=target)
 
 
@@ -1868,7 +1926,10 @@ def _update_finding_status_unlocked(findings_dir: str | Path, finding_id: str, *
 
 
 def update_finding_status(findings_dir: str | Path, finding_id: str, **updates: Any) -> dict[str, Any] | None:
-    with finding_mutation_lock(findings_dir):
+    target = updates.pop("target", None)
+    _assert_legacy_writer_allowed(findings_dir, target)
+    with finding_mutation_lock(findings_dir, target=target):
+        _assert_legacy_writer_allowed(findings_dir, target)
         return _update_finding_status_unlocked(findings_dir, finding_id, **updates)
 
 

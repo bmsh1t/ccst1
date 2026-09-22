@@ -31,6 +31,7 @@ from runtime_state import (
     runtime_wait_action,
     update_runtime_state,
 )
+from tools.target_store import TargetStore
 
 
 def test_update_and_load_runtime_state(tmp_path):
@@ -454,6 +455,30 @@ def test_derive_state_view_returns_all_layers(tmp_path):
     assert view["findings"]["structured_total"] == 0
     assert view["evidence"]["browser_evidence_present"] is False
     assert view["derived"]["status"] == "unavailable"
+
+
+def test_primary_runtime_queue_projection_ignores_corrupt_legacy_queue(tmp_path):
+    target = "primary-runtime.test"
+    store = TargetStore(tmp_path, target)
+    store.initialize()
+    store.create_action(
+        command_id="create-runtime-work",
+        action_id="WORK-1",
+        intent="Review target context",
+        execution_key="work:runtime-review",
+        actor="ai",
+        kind="work",
+        subject={"target": target},
+    )
+    queue_path = tmp_path / "state" / target / "action_queue.json"
+    queue_path.write_text("{not-json", encoding="utf-8")
+
+    queue = runtime_state_module._derive_queue_state(tmp_path, target)
+
+    assert queue["status"] == "valid"
+    assert queue["backend"] == "primary"
+    assert queue["active"] == 1
+    assert queue["total"] == 1
 
 
 def test_owner_projection_prefers_canonical_findings_and_coverage(tmp_path):

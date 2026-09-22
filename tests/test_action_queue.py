@@ -28,6 +28,7 @@ from action_queue import (
 from coverage_matrix import load_matrix, mark_cell
 from finding_index import write_finding_index
 from runtime_state import runtime_phase_lock, update_runtime_state
+from tools.target_store import TargetStore, StoreError
 
 
 def _resolve_unsafe_review_worker(repo_root, target, action_id, output):
@@ -91,6 +92,82 @@ def _snapshot_files(root: Path) -> dict[str, bytes]:
         for path in root.rglob("*")
         if path.is_file()
     }
+
+
+def test_primary_store_rejects_legacy_queue_writer(tmp_path):
+    store = TargetStore(tmp_path, "target.com")
+    store.initialize()
+    queue = load_queue(tmp_path, "target.com")
+    with pytest.raises(StoreError, match="legacy action_queue writer"):
+        save_queue(tmp_path, "target.com", queue)
+
+
+def test_primary_action_commands_use_store_without_legacy_queue_file(tmp_path):
+    target = "primary-actions.test"
+    store = TargetStore(tmp_path, target)
+    store.initialize()
+
+    created = add_manual_action(
+        tmp_path,
+        target=target,
+        action_type="source-review",
+        evidence="Review the target-owned source material.",
+        next_question="What concrete boundary does the material establish?",
+        action="Review the target-owned source material.",
+        action_id="WORK-1",
+    )
+    assert created["backend"] == "primary"
+    assert created["action"]["kind"] == "work"
+    assert store.action("WORK-1")["status"] == "ready"
+
+    claimed = claim_next_action(tmp_path, target, action_id="WORK-1")
+    assert claimed["claim_status"] == "claimed"
+    resumed = claim_next_action(tmp_path, target, action_id="WORK-1")
+    assert resumed["claim_status"] == "resumed"
+
+    result = tmp_path / "evidence" / target / "source-review.txt"
+    result.parent.mkdir(parents=True)
+    result.write_text("reviewed", encoding="utf-8")
+    resolved = resolve_action(
+        tmp_path,
+        target=target,
+        action_id="WORK-1",
+        status="tested",
+        result=f"artifact={result.relative_to(tmp_path)}",
+    )
+    assert resolved["status"] == "completed"
+    assert store.action("WORK-1")["completion"]["artifact_id"].startswith("artifact:")
+    replayed = resolve_action(
+        tmp_path,
+        target=target,
+        action_id="WORK-1",
+        status="tested",
+        result=f"artifact={result.relative_to(tmp_path)}",
+    )
+    assert replayed["replayed"] is True
+    assert not (tmp_path / "state" / target / "action_queue.json").exists()
+
+
+def test_primary_action_claim_persists_bounded_metadata(tmp_path):
+    target = "primary-claim.test"
+    store = TargetStore(tmp_path, target)
+    store.initialize()
+    add_manual_action(
+        tmp_path,
+        target=target,
+        action_type="review",
+        evidence="Review target context.",
+        next_question="What is known?",
+        action="Review target context.",
+        action_id="WORK-2",
+        metadata={"hypothesis_id": "h1", "expected_learning": "role boundary"},
+    )
+    claimed = claim_next_action(
+        tmp_path, target, action_id="WORK-2", metadata={"active_dimension": "role"}
+    )
+    assert claimed["claim_status"] == "claimed"
+    assert claimed["metadata"]["hypothesis_id"] == "h1"
+    assert claimed["metadata"]["active_dimension"] == "role"
 
 
 def test_ingest_checkpoint_persists_and_prioritizes(tmp_path):

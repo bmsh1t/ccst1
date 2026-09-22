@@ -30,9 +30,11 @@ if str(BASE_DIR) not in sys.path:
 try:
     from tools.runtime_state import runtime_wait_action
     from tools.target_paths import canonical_target_value, target_storage_key
+    from tools.target_store import StoreError, TargetStore, target_backend, target_switch_lock
 except ImportError:  # pragma: no cover - direct tools/ execution
     from runtime_state import runtime_wait_action  # type: ignore
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
+    from target_store import StoreError, TargetStore, target_backend, target_switch_lock  # type: ignore
 
 
 SCHEMA_VERSION = 1
@@ -736,17 +738,251 @@ def queue_path(repo_root: Path | str, target: str) -> Path:
     return repo / "state" / target_storage_key(resolved) / "action_queue.json"
 
 
+def _primary_action_projection(store: TargetStore) -> dict:
+    """Expose Store actions in the legacy CLI shape without creating a file owner."""
+    status_map = {
+        "ready": "queued",
+        "claimed": "running",
+        "blocked": "blocked",
+        "completed": "tested",
+        "cancelled": "n/a",
+    }
+    page = store.page("actions", limit=1000)
+    rows = list(page.get("items") or [])
+    while page.get("has_more"):
+        page = store.page("actions", limit=1000, cursor=page.get("next_cursor"))
+        rows.extend(page.get("items") or [])
+    actions = []
+    for row in rows:
+        metadata = {
+            "execution_key": str(row.get("execution_key") or ""),
+            "store_status": str(row.get("status") or ""),
+        }
+        stored_metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        metadata.update(copy.deepcopy(stored_metadata))
+        for key in ("endpoint", "family", "subject_artifact_id", "subject_finding_id", "subject_experience_id"):
+            if row.get(key) not in (None, ""):
+                metadata[key] = row[key]
+        if row.get("claim_token"):
+            metadata["claim_token"] = row["claim_token"]
+        actions.append({
+            "id": row.get("id", ""),
+            "type": str(row.get("kind") or "work"),
+            "status": status_map.get(str(row.get("status") or ""), "blocked"),
+            "priority": row.get("priority"),
+            "action": row.get("intent", ""),
+            "evidence": row.get("reason", ""),
+            "metadata": metadata,
+            "created_at": row.get("created_at", ""),
+            "updated_at": row.get("updated_at", ""),
+            "source": "target_store",
+        })
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "target": canonical_target_value(store.target),
+        "backend": "primary",
+        "store_id": page.get("store_id", ""),
+        "revision": page.get("revision", 0),
+        "actions": actions,
+    }
+
+
+def _primary_store(repo_root: Path | str, target: str) -> TargetStore | None:
+    return TargetStore(repo_root, target) if target_backend(repo_root, target) == "primary" else None
+
+
+def _primary_action_id(target: str, action_id: str, built: dict) -> str:
+    explicit = str(action_id or "").strip()
+    if explicit:
+        return explicit
+    material = {
+        "target": canonical_target_value(target),
+        "source": built.get("source", ""),
+        "source_id": built.get("source_id", ""),
+        "type": built.get("type", ""),
+        "action": built.get("action", ""),
+        "next_question": built.get("next_question", ""),
+        "metadata": built.get("metadata") or {},
+    }
+    return "action:" + hashlib.sha256(
+        json.dumps(material, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:24]
+
+
+def _primary_action_intent(built: dict) -> str:
+    return _compact_text(built.get("action") or built.get("next_question") or built.get("type") or "work", 1000)
+
+
+def _primary_create_action(
+    repo_root: Path | str,
+    target: str,
+    built: dict,
+    *,
+    action_id: str = "",
+    actor: str = "action-queue",
+) -> dict:
+    store = TargetStore(repo_root, target)
+    metadata = built.get("metadata") if isinstance(built.get("metadata"), dict) else {}
+    endpoint = str(metadata.get("endpoint") or metadata.get("url") or "").strip()
+    family = str(metadata.get("family") or metadata.get("vuln_class") or "").strip()
+    evidence_ref = _target_owned_nonempty_evidence_ref(repo_root, target, metadata.get("evidence_ref"))
+    if endpoint and family:
+        kind = "execution"
+        subject = None
+    elif endpoint:
+        kind = "work"
+        subject = {"url": endpoint}
+        endpoint = ""
+    elif evidence_ref:
+        kind = "work"
+        subject = {"artifact": evidence_ref}
+    else:
+        kind = "work"
+        subject = {"target": canonical_target_value(target)}
+    execution_key = str(metadata.get("execution_key") or "").strip()
+    if not execution_key:
+        execution_key = "intent:" + hashlib.sha256(
+            json.dumps(
+                {"target": canonical_target_value(target), "action_id": _primary_action_id(target, action_id, built),
+                 "intent": _primary_action_intent(built)},
+                ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()[:24]
+    store_action_id = _primary_action_id(target, action_id, built)
+    command_id = "action:add:" + hashlib.sha256(
+        json.dumps(
+            {"action_id": store_action_id, "intent": _primary_action_intent(built), "kind": kind,
+             "endpoint": endpoint, "family": family, "subject": subject, "execution_key": execution_key,
+             "priority": built.get("priority")},
+            ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()[:24]
+    receipt = store.create_action(
+        command_id=command_id,
+        action_id=store_action_id,
+        intent=_primary_action_intent(built),
+        execution_key=execution_key,
+        actor=actor,
+        endpoint=endpoint or None,
+        family=family or None,
+        kind=kind,
+        subject=subject,
+        priority=int(built.get("priority", 50) or 50),
+        metadata=metadata,
+    )
+    return {
+        "backend": "primary",
+        "receipt": receipt,
+        "action": store.action(store_action_id),
+        "queue": _primary_action_projection(store),
+        "stats": {"added": 0 if receipt.get("replayed") else 1, "updated": 0, "skipped_final": 0},
+    }
+
+
+def _primary_completion(result: str) -> dict:
+    text = str(result or "").strip()
+    for key in ("operation_id", "artifact", "command_id"):
+        match = re.search(rf"(?:^|[;\s]){re.escape(key)}=([^;\s]+)", text)
+        if match:
+            return {key: match.group(1).strip("`'\"()[]{}<>,")}
+    raise StoreError(
+        "primary action completion requires an explicit operation_id=, artifact=, or command_id= proof"
+    )
+
+
+def _primary_claim(
+    repo_root: Path | str,
+    target: str,
+    *,
+    action_id: str,
+    metadata: dict | None,
+    from_evidence: str,
+    actor: str,
+) -> dict:
+    if from_evidence:
+        raise StoreError("primary action claims do not infer identity from evidence; use explicit action metadata")
+    store = TargetStore(repo_root, target)
+    current = store.action(action_id)
+    status = str(current.get("status") or "")
+    if status == "claimed":
+        if current.get("claimed_by") != actor:
+            raise StoreError(f"action {action_id} is claimed by another operator")
+        return {**current, "claim_status": "resumed", "previous_status": "claimed"}
+    if status != "ready":
+        raise StoreError(f"action {action_id} is not ready for claim: {status}")
+    command_id = f"action:claim:{action_id}:{current.get('version', 0)}"
+    receipt = store.transition_action(
+        command_id=command_id, action_id=action_id, expected_version=int(current["version"]),
+        status="claimed", actor=actor, metadata=metadata,
+    )
+    return {**store.action(action_id), "receipt": receipt, "claim_status": "claimed", "previous_status": "ready"}
+
+
+def _primary_resolve(
+    repo_root: Path | str,
+    target: str,
+    *,
+    action_id: str,
+    status: str,
+    result: str,
+    notes: str,
+    metadata: dict | None,
+    actor: str,
+) -> dict:
+    store = TargetStore(repo_root, target)
+    current = store.action(action_id)
+    requested = _normalize_status(status)
+    mapped = {
+        "queued": "ready", "running": "claimed", "blocked": "blocked",
+        "dead-end": "cancelled", "n/a": "cancelled", "tested": "completed",
+        "validated": "completed", "reported": "completed",
+    }.get(requested)
+    if mapped is None:
+        raise StoreError(
+            f"primary action status {status!r} is observation state; record Store evidence before resolving the action"
+        )
+    if mapped == "claimed":
+        raise StoreError("primary action re-claim is explicit: use claim, not resolve running")
+    if current.get("status") in {"completed", "cancelled"}:
+        same_terminal = (
+            current["status"] == mapped
+            and ((mapped == "completed" and requested in {"tested", "validated", "reported"})
+                 or (mapped == "cancelled" and requested in {"dead-end", "n/a"}))
+        )
+        if same_terminal:
+            return {**current, "replayed": True}
+        raise StoreError(f"action {action_id} is terminal and cannot resolve as {requested}")
+    claim_token = current.get("claim_token")
+    if current.get("status") == "claimed" and current.get("claimed_by") != actor:
+        raise StoreError(f"action {action_id} is claimed by another operator")
+    completion = _primary_completion(result) if mapped == "completed" else None
+    command_id = "action:resolve:" + hashlib.sha256(
+        json.dumps(
+            {"action_id": action_id, "version": current.get("version"), "status": mapped,
+             "result": result, "notes": notes, "completion": completion},
+            ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()[:24]
+    receipt = store.transition_action(
+        command_id=command_id, action_id=action_id, expected_version=int(current["version"]),
+        status=mapped, actor=actor, reason=_compact_text(notes or result or "", 1000),
+        claim_token=claim_token, completion=completion, metadata=metadata,
+    )
+    return {**store.action(action_id), "receipt": receipt}
+
+
 @contextmanager
 def queue_mutation_lock(repo_root: Path | str, target: str):
     """串行化同一 target 的完整 action queue read-modify-write。"""
-    path = queue_path(repo_root, target).parent / "locks" / "action_queue.lock"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+", encoding="utf-8") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    with target_switch_lock(repo_root, target):
+        path = queue_path(repo_root, target).parent / "locks" / "action_queue.lock"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a+", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _empty_queue(target: str) -> dict:
@@ -761,6 +997,9 @@ def _empty_queue(target: str) -> dict:
 
 
 def load_queue(repo_root: Path | str, target: str) -> dict:
+    primary = _primary_store(repo_root, target)
+    if primary is not None:
+        return _primary_action_projection(primary)
     path = queue_path(repo_root, target)
     if not path.is_file():
         return _empty_queue(target)
@@ -816,6 +1055,9 @@ def queue_fingerprint(queue: dict) -> str:
 
 
 def save_queue(repo_root: Path | str, target: str, queue: dict) -> Path:
+    backend = target_backend(repo_root, target)
+    if backend != "legacy":
+        raise StoreError(f"legacy action_queue writer is disabled for {backend} target")
     path = queue_path(repo_root, target)
     queue["target"] = canonical_target_value(target)
     if path.is_file():
@@ -1268,12 +1510,13 @@ def _unsafe_review_mutation_lock(repo_root: Path | str, target: str):
     path = _unsafe_review_path(repo_root, target)
     lock_path = path.parent / "locks" / "unsafe_review.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with lock_path.open("a+", encoding="utf-8") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    with target_switch_lock(repo_root, target):
+        with lock_path.open("a+", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _sync_unsafe_skipped_review_for_action(
@@ -1283,6 +1526,9 @@ def _sync_unsafe_skipped_review_for_action(
     normalized_status: str,
 ) -> dict:
     """Persist resolution for action-gated scanner manual-review leads."""
+    backend = target_backend(repo_root, target)
+    if backend != "legacy":
+        raise StoreError(f"legacy unsafe-review writer is disabled for {backend} target")
     if str(action.get("type") or "") not in {"action-gated-review", "unsafe-skipped-review"}:
         return {}
     if normalized_status not in UNSAFE_REVIEW_FINAL_STATUSES:
@@ -1644,6 +1890,8 @@ def add_manual_action(
     safety: str = "non_destructive",
     stop_condition: str = DEFAULT_STOP_CONDITION,
     metadata: dict | None = None,
+    action_id: str = "",
+    actor: str = "action-queue",
 ) -> dict:
     action_metadata = dict(_validate_action_metadata(metadata))
     # Runner-owned observation fields are anti-forgery on every AI-facing
@@ -1671,6 +1919,9 @@ def add_manual_action(
         stop_condition=stop_condition,
         metadata=action_metadata or None,
     )
+    primary = _primary_store(repo_root, target)
+    if primary is not None:
+        return _primary_create_action(repo_root, target, built, action_id=action_id, actor=actor)
     with queue_mutation_lock(repo_root, target):
         queue = load_queue(repo_root, target)
         stats = (
@@ -1840,6 +2091,7 @@ def claim_next_action(
     action_id: str = "",
     metadata: dict | None = None,
     from_evidence: str = "",
+    actor: str = "action-queue",
 ) -> dict:
     """Claim one explicitly named action (dumb queue interface).
 
@@ -1867,6 +2119,11 @@ def claim_next_action(
         # Explicit AI-supplied metadata wins over every derived value.
         metadata = {**derived, **(metadata or {})}
         metadata = _validate_action_metadata(metadata)
+    if _primary_store(repo_root, target) is not None:
+        return _primary_claim(
+            repo_root, target, action_id=action_id, metadata=metadata,
+            from_evidence=from_evidence, actor=actor,
+        )
     with queue_mutation_lock(repo_root, target):
         queue = load_queue(repo_root, target)
         selected = next(
@@ -1928,8 +2185,14 @@ def resolve_action(
     result: str = "",
     notes: str = "",
     metadata: dict | None = None,
+    actor: str = "action-queue",
 ) -> dict:
     metadata = _validate_action_metadata(metadata)
+    if _primary_store(repo_root, target) is not None:
+        return _primary_resolve(
+            repo_root, target, action_id=action_id, status=status,
+            result=result, notes=notes, metadata=metadata, actor=actor,
+        )
     with queue_mutation_lock(repo_root, target):
         queue = load_queue(repo_root, target)
         response = _resolve_action_in_queue(
@@ -2186,6 +2449,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_STOP_CONDITION,
         help="Explicit condition for when this action is tested, blocked, dead-end, signal, candidate, or validated.",
     )
+    add.add_argument("--id", default="", help="Explicit action id for the transactional primary store.")
+    add.add_argument("--actor", default="action-queue", help="Command actor for primary-store actions.")
     add.add_argument("--json", action="store_true")
 
     claim = sub.add_parser("claim", help="Claim one explicitly named active action (dumb queue interface).")
@@ -2212,6 +2477,7 @@ def build_parser() -> argparse.ArgumentParser:
             "judgment fields are never derived."
         ),
     )
+    claim.add_argument("--actor", default="action-queue", help="Command actor for primary-store actions.")
     claim.add_argument("--json", action="store_true")
 
     resolve = sub.add_parser("resolve", help="Resolve or reclassify one action.")
@@ -2230,6 +2496,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="JSON object merged into the existing Action Queue metadata.",
     )
     resolve.add_argument("--notes", default="")
+    resolve.add_argument("--actor", default="action-queue", help="Command actor for primary-store actions.")
     resolve.add_argument("--json", action="store_true")
 
     summary = sub.add_parser("summary", help="Print queue summary.")
@@ -2278,9 +2545,11 @@ def main(argv: list[str] | None = None) -> int:
                 safety=args.safety,
                 stop_condition=args.stop_condition,
                 metadata=metadata,
+                action_id=args.id,
+                actor=args.actor,
             )
             _print(
-                result if args.json else format_summary(result["queue"], repo_root=repo, target=args.target),
+                result if args.json else format_summary(result.get("queue") or load_queue(repo, args.target), repo_root=repo, target=args.target),
                 as_json=args.json,
             )
             return 0
@@ -2293,6 +2562,7 @@ def main(argv: list[str] | None = None) -> int:
                 action_id=args.id,
                 metadata=metadata,
                 from_evidence=str(args.from_evidence or ""),
+                actor=args.actor,
             )
             _print(action if args.json else format_action(action), as_json=args.json)
             return 0 if action else 1
@@ -2307,6 +2577,7 @@ def main(argv: list[str] | None = None) -> int:
                 result=args.result or args.evidence,
                 notes=args.notes,
                 metadata=metadata,
+                actor=args.actor,
             )
             _print(
                 result if args.json else format_summary(load_queue(repo, args.target), repo_root=repo, target=args.target),

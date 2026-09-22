@@ -121,4 +121,3 @@ def build_validate_scaffold(
             "first, then regenerate the scaffold"
         ]
     return scaffold
-

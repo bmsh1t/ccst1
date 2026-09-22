@@ -179,17 +179,22 @@ def test_loopback_target_cannot_reach_external_host(tmp_path, http_server, monke
 
 
 def test_bad_ledger_enum_rejected_before_request(tmp_path, http_server, monkeypatch):
-    """A vuln_class/actor/variant/result typo fails pre-request.
+    """Actor/variant/result typos and malformed families fail pre-request.
 
     Otherwise the request would fire, the ledger append would raise, and the
     on-disk probe file would be orphaned evidence no ledger row points at.
+    Evidence families are open (see evidence_identity), so only structural
+    family errors are rejected here; an unknown-but-valid family is admitted.
     """
     target, handler = http_server
 
     monkeypatch.setattr(probe.urllib.request, "build_opener", _forbid_network)
 
     for kwargs, message in (
-        ({"vuln_class": "NotAFamily"}, "unknown vuln_class"),
+        ({"vuln_class": ""}, "family must be a non-empty string"),
+        ({"vuln_class": "   "}, "family must be a non-empty string"),
+        ({"vuln_class": "x" * 257}, "at most 256 characters"),
+        ({"vuln_class": "bad\x00family"}, "without control characters"),
         ({"actor": "root"}, "unknown actor"),
         ({"variant": "freeform"}, "unknown variant"),
         ({"result": "maybe"}, "unknown result"),
@@ -205,6 +210,45 @@ def test_bad_ledger_enum_rejected_before_request(tmp_path, http_server, monkeypa
     assert handler.requests_seen == []
     assert not ledger_path(tmp_path, target).exists()
     assert not _probe_dir(tmp_path, target).exists()
+
+
+def test_unknown_but_valid_family_recorded_without_coverage(tmp_path, http_server):
+    """An open-ended family is admitted and preserved, not coerced to a class."""
+    target, _handler = http_server
+
+    outcome = probe.run_probe(
+        target=target,
+        url=f"http://{target}/rest/basket/7",
+        repo_root=tmp_path,
+        vuln_class="custom-state-transition",
+    )
+
+    assert outcome["ledger"]["recorded"] is True
+    entries = load_entries(tmp_path, target)
+    assert len(entries) == 1
+    assert entries[0]["vuln_class"] == "custom-state-transition"
+
+
+def test_primary_probe_registers_store_observation_instead_of_legacy_ledger(tmp_path, http_server):
+    from tools.target_store import TargetStore
+
+    target, _handler = http_server
+    store = TargetStore(tmp_path, target)
+    store.initialize()
+
+    outcome = probe.run_probe(
+        target=target,
+        url=f"http://{target}/primary-probe",
+        repo_root=tmp_path,
+    )
+
+    assert outcome["ledger"]["recorded"] is True
+    assert outcome["ledger"]["operation_id"]
+    assert not ledger_path(tmp_path, target).exists()
+    expanded = store.execution(outcome["ledger"]["operation_id"])
+    assert expanded["attempt"]["source"] == "probe"
+    assert expanded["observations"][0]["result"] == "lead"
+    assert expanded["observations"][0]["artifacts"][0]["ref"] == outcome["probe_file"]
 
 
 def test_defaults_record_lead_with_source_probe(tmp_path, http_server):

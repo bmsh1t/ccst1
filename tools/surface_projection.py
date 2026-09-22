@@ -22,11 +22,11 @@ try:
         _semantic_action,
         load_queue,
     )
-    from tools.evidence_ledger import (
-        build_current_cell_projection,
-        load_entries_diagnostic,
-    )
+    from tools.closure_projection import build_current_cell_projection
+    from tools.evidence_ledger import load_entries_diagnostic
+    from tools.current_truth import current_cell_projection
     from tools.target_paths import canonical_target_value, target_storage_key
+    from tools.target_store import TargetStore, target_backend
 except ImportError:  # pragma: no cover - direct tools/ execution
     from action_queue import (  # type: ignore
         ACTIVE_STATUSES,
@@ -34,11 +34,11 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         _semantic_action,
         load_queue,
     )
-    from evidence_ledger import (  # type: ignore
-        build_current_cell_projection,
-        load_entries_diagnostic,
-    )
+    from closure_projection import build_current_cell_projection  # type: ignore
+    from evidence_ledger import load_entries_diagnostic  # type: ignore
+    from current_truth import current_cell_projection  # type: ignore
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
+    from target_store import TargetStore, target_backend  # type: ignore
 
 
 # Bump when selection semantics change; stale derived decisions must not replay.
@@ -80,7 +80,48 @@ def _without_queue_transients(value: object) -> object:
 
 def _semantic_action_queue(repo_root: Path, target: str) -> dict:
     """Project Queue meaning while ignoring claim/runner write-back churn."""
-    queue = load_queue(repo_root, target)
+    if target_backend(repo_root, target) == "primary":
+        store = TargetStore(repo_root, target)
+        page = store.page("actions", limit=1000)
+        rows = list(page.get("items") or [])
+        while page.get("has_more"):
+            page = store.page("actions", limit=1000, cursor=page.get("next_cursor"))
+            rows.extend(page.get("items") or [])
+        status_map = {
+            "ready": "queued",
+            "claimed": "running",
+            "blocked": "blocked",
+            "completed": "tested",
+            "cancelled": "n/a",
+        }
+        queue = {
+            "schema_version": 1,
+            "target": canonical_target_value(target),
+            "backend": "primary",
+            "store_id": page.get("store_id", ""),
+            "revision": page.get("revision", 0),
+            "actions": [
+                {
+                    "id": row.get("id", ""),
+                    "type": row.get("kind", "work"),
+                    "status": status_map.get(str(row.get("status") or ""), "blocked"),
+                    "priority": row.get("priority"),
+                    "action": row.get("intent", ""),
+                    "evidence": row.get("reason", ""),
+                    "metadata": {
+                        key: row[key]
+                        for key in (
+                            "endpoint", "family", "subject_artifact_id",
+                            "subject_finding_id", "subject_experience_id",
+                        )
+                        if row.get(key) not in (None, "")
+                    },
+                }
+                for row in rows
+            ],
+        }
+    else:
+        queue = load_queue(repo_root, target)
     semantic_queue = _without_queue_transients(queue)
     if not isinstance(semantic_queue, dict):  # pragma: no cover - owner returns an object
         return {"kind": "action_queue_semantic_projection", "queue": {}}
@@ -122,6 +163,15 @@ def _semantic_closed_cells(value: object) -> list[dict]:
 
 def _semantic_evidence_ledger(repo_root: Path, target: str) -> dict:
     """Project the Ledger closure owner without rewriting or hashing raw rows."""
+    if target_backend(repo_root, target) == "primary":
+        truth = current_cell_projection(repo_root, target)
+        return {
+            "kind": "target_store_closure_projection",
+            "status": "invalid" if truth["health"].get("status") in {"partial", "unreadable"} else "ready",
+            "revision": truth["source"].get("revision", 0),
+            "closed_cells": _semantic_closed_cells(truth["projection"].get("closed_cells")),
+            "closed_cells_v2": _semantic_closed_cells(truth["projection"].get("closed_cells_v2")),
+        }
     diagnostic = load_entries_diagnostic(repo_root, target)
     projection = build_current_cell_projection(list(diagnostic.get("entries") or []))
     return {
@@ -188,6 +238,12 @@ def _manifest_roots(
     memory_dir: str | Path | None = None,
 ) -> list[tuple[Path, frozenset[str]]]:
     storage_key = target_storage_key(target)
+    if target_backend(repo_root, target) == "primary":
+        return [
+            (repo_root / "recon" / storage_key, _GENERATED_RECON_PARTS),
+            (repo_root / "findings" / storage_key, frozenset({".locks"})),
+            (repo_root / "state" / storage_key / "metadata.sqlite3", frozenset()),
+        ]
     roots: list[tuple[Path, frozenset[str]]] = [
         (repo_root / "recon" / storage_key, _GENERATED_RECON_PARTS),
         # owner 锁只承载并发控制；首次创建不能让业务输入 projection 失效。
@@ -217,15 +273,22 @@ def build_surface_input_manifest(
     target: str,
     *,
     memory_dir: str | Path | None = None,
+    as_of: str = "",
 ) -> dict:
     """构建稳定输入 manifest；目录只记结构，普通文件记录 metadata。"""
     repo = Path(repo_root).resolve()
     resolved = canonical_target_value(target)
     storage_key = target_storage_key(resolved)
-    semantic_paths = {
-        f"state/{storage_key}/action_queue.json": _semantic_action_queue,
-        f"memory/evidence/{storage_key}/ledger.jsonl": _semantic_evidence_ledger,
-    }
+    if target_backend(repo, resolved) == "primary":
+        semantic_paths = {
+            f"state/{storage_key}/metadata.sqlite3": _semantic_evidence_ledger,
+            f"state/{storage_key}/action_queue.json": _semantic_action_queue,
+        }
+    else:
+        semantic_paths = {
+            f"state/{storage_key}/action_queue.json": _semantic_action_queue,
+            f"memory/evidence/{storage_key}/ledger.jsonl": _semantic_evidence_ledger,
+        }
     # pattern_calibration 绑定已移除（审计 F9）：calibrated pattern 排除只
     # 影响已被删除的跨目标 PatternDB 匹配，surface 排序不再消费该文件；
     # 保留绑定只会让校准行写入无谓地使投影失效。
@@ -291,11 +354,18 @@ def build_surface_input_manifest(
         sort_keys=True,
         separators=(",", ":"),
     )
+    binding = {"target": resolved, "policy_version": SCHEMA_VERSION, "as_of": str(as_of or "")}
+    if target_backend(repo, resolved) == "primary":
+        store = TargetStore(repo, resolved)
+        with store._connection() as conn:
+            meta = dict(conn.execute("SELECT store_id, revision FROM store WHERE singleton=1").fetchone())
+        binding.update({"store_id": meta["store_id"], "revision": int(meta["revision"])})
     return {
         "kind": MANIFEST_KIND,
         "schema_version": SCHEMA_VERSION,
         "target": resolved,
         "storage_key": target_storage_key(resolved),
+        "binding": binding,
         "fingerprint": hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
         "items": items,
     }
@@ -399,6 +469,7 @@ def write_surface_projection(
     *,
     manifest: dict | None = None,
     memory_dir: str | Path | None = None,
+    as_of: str = "",
 ) -> Path:
     """原子发布 bounded projection；调用方必须先完成完整 ranking。"""
     resolved = canonical_target_value(target)
@@ -406,6 +477,7 @@ def write_surface_projection(
         repo_root,
         resolved,
         memory_dir=memory_dir,
+        as_of=as_of,
     )
     if current_manifest.get("target") != resolved:
         raise ValueError("surface manifest target mismatch")
@@ -467,6 +539,17 @@ def load_surface_projection(
         return _projection_result(path, "invalid", "schema-mismatch")
     if payload.get("target") != resolved or payload.get("storage_key") != target_storage_key(resolved):
         return _projection_result(path, "invalid", "target-mismatch")
+    binding = payload.get("input_manifest", {}).get("binding") if isinstance(payload.get("input_manifest"), dict) else {}
+    if target_backend(repo_root, resolved) == "primary":
+        if not isinstance(binding, dict) or binding.get("target") != resolved:
+            return _projection_result(path, "invalid", "store-binding-missing")
+        if not isinstance(binding.get("as_of", ""), str):
+            return _projection_result(path, "invalid", "as-of-binding-invalid")
+        store = TargetStore(repo_root, resolved)
+        with store._connection() as conn:
+            meta = dict(conn.execute("SELECT store_id, revision FROM store WHERE singleton=1").fetchone())
+        if binding.get("store_id") != meta["store_id"] or int(binding.get("revision", -1)) != int(meta["revision"]):
+            return _projection_result(path, "stale", "store-revision-mismatch")
     if not payload.get("complete") or not isinstance(payload.get("surface"), dict):
         return _projection_result(path, "invalid", "incomplete-projection")
     try:

@@ -19,6 +19,7 @@ from evidence_ledger import ledger_path
 from identity_contract import build_closure_cell
 from request_diff import RequestPairError, request_pair_digest, validate_request_pair
 from tools.auth_session import AuthSession
+from tools.target_store import TargetStore
 
 
 def _target_key(target: str) -> str:
@@ -2265,12 +2266,225 @@ def test_record_evidence_binds_native_observation_to_runner_witness(tmp_path):
     assert Path(tmp_path / summary["summary_path"]).is_file()
 
 
+def test_primary_record_evidence_registers_store_operation_without_legacy_writer(tmp_path, monkeypatch):
+    target, finding_id = "https://target.test", "NATIVE-PRIMARY-1"
+    key = _target_key(target)
+    artifacts_dir = tmp_path / ".private" / "validation" / key / finding_id
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    artifacts = {}
+    for name, body in (("request.txt", "POST /orders/1 HTTP/1.1\n"), ("response.txt", "HTTP/1.1 200 OK\n\nfixture")):
+        path = artifacts_dir / name
+        path.write_text(body, encoding="utf-8")
+        artifacts[name.split(".")[0]] = str(path.relative_to(tmp_path))
+    evidence = {
+        "schema_version": 1, "source": "browser", "generated_at": "2026-09-16T10:00:00Z",
+        "result": "tested_finding", "observed_difference": "peer actor observed the object",
+        "attempt_id": "native-attempt-1", "runs": [{"url": "https://target.test/orders/1", "method": "POST",
+        "actor": "peer", "artifacts": artifacts}],
+    }
+    for writer in ("record_entry", "upsert_finding", "update_finding_status", "save_queue"):
+        monkeypatch.setattr(
+            validation_runner, writer,
+            lambda *args, _writer=writer, **kwargs: pytest.fail(f"primary runner called legacy writer: {_writer}"),
+        )
+    store = TargetStore(tmp_path, target)
+    store.initialize()
+    store.create_finding(
+        command_id="seed-finding", finding_id=finding_id,
+        endpoint=evidence["runs"][0]["url"], method="POST", family="Authz",
+        title="Native fixture", claim="Recorded actor crossed the boundary", actor="operator",
+    )
+    summary = validation_runner.record_native_evidence(
+        repo_root=tmp_path, target=target, finding_id=finding_id, evidence=evidence,
+        state_changing=True, redline_checked=True,
+    )
+    sync = validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)
+    assert sync["status"] == "updated"
+    assert summary["store_operation_id"].startswith("operation:")
+    assert store.finding(finding_id)["evidence"]
+    assert store.execution(summary["store_operation_id"])["attempt"]["id"] == evidence["attempt_id"]
+
+    replay = validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)
+    assert replay["status"] == "deduplicated"
+    assert store.page("operations")["total"] == 1
+
+
+def test_primary_native_registration_preserves_each_step_method(tmp_path):
+    target, finding_id = "https://target.test", "NATIVE-PRIMARY-METHODS"
+    key = _target_key(target)
+    artifacts_dir = tmp_path / ".private" / "validation" / key / finding_id
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+
+    def artifact(name: str, body: str) -> str:
+        path = artifacts_dir / name
+        path.write_text(body, encoding="utf-8")
+        return str(path.relative_to(tmp_path))
+
+    evidence = {
+        "schema_version": 1,
+        "source": "browser",
+        "generated_at": "2026-09-16T10:00:00Z",
+        "result": "tested_finding",
+        "observed_difference": "the second method observed the same object",
+        "attempt_id": "native-attempt-methods",
+        "runs": [
+            {
+                "url": "https://target.test/orders/1",
+                "method": "POST",
+                "actor": "owner",
+                "artifacts": {
+                    "request": artifact("post.request.txt", "POST /orders/1 HTTP/1.1\n"),
+                    "response": artifact("post.response.txt", "HTTP/1.1 200 OK\n"),
+                },
+            },
+            {
+                "url": "https://target.test/orders/1",
+                "method": "GET",
+                "actor": "peer",
+                "artifacts": {
+                    "request": artifact("get.request.txt", "GET /orders/1 HTTP/1.1\n"),
+                    "response": artifact("get.response.txt", "HTTP/1.1 200 OK\n"),
+                },
+            },
+        ],
+    }
+    store = TargetStore(tmp_path, target)
+    store.initialize()
+    store.create_finding(
+        command_id="seed-finding-methods", finding_id=finding_id,
+        endpoint=evidence["runs"][0]["url"], method="POST", family="Authz",
+        title="Native fixture", claim="Recorded method sequence", actor="operator",
+    )
+
+    summary = validation_runner.record_native_evidence(
+        repo_root=tmp_path, target=target, finding_id=finding_id, evidence=evidence,
+    )
+    validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)
+    operation = store.execution(summary["store_operation_id"])
+
+    assert [row["method"] for row in operation["observations"]] == ["POST", "GET"]
+
+
+def test_primary_request_diff_registers_store_operation_without_legacy_ledger(monkeypatch, tmp_path):
+    TargetStore(tmp_path, "https://target.test").initialize()
+    for writer in ("record_entry", "upsert_finding", "update_finding_status", "save_queue"):
+        monkeypatch.setattr(
+            validation_runner, writer,
+            lambda *args, _writer=writer, **kwargs: pytest.fail(f"primary runner called legacy writer: {_writer}"),
+        )
+    monkeypatch.setattr(
+        validation_runner, "request_once",
+        lambda **kwargs: _fake_response(kwargs["url"], body='{"id":1}' if "users/1" in kwargs["url"] else '{"id":2}'),
+    )
+    summary = validation_runner.run_request_diff(
+        repo_root=tmp_path, target="https://target.test",
+        finding_id="PAIR-PRIMARY",
+        request_spec={
+            "baseline_request": {"method": "GET", "url": "https://target.test/users/1"},
+            "variant_request": {"method": "GET", "url": "https://target.test/users/2"},
+            "active_dimension": "path:/users/1", "classifier": "authz",
+            "expected": ["distinct_bodies"],
+        },
+    )
+    assert summary["ledger_record"] is None
+    store = TargetStore(tmp_path, "https://target.test")
+    assert store.backend() == "primary"
+    sync = validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)
+    assert sync["status"] == "updated"
+    assert store.page("operations")["total"] == 1
+    assert store.finding("PAIR-PRIMARY")["evidence"]
+
+
+def test_primary_partial_request_diff_without_published_artifacts_is_unknown(monkeypatch, tmp_path):
+    store = TargetStore(tmp_path, "https://target.test")
+    store.initialize()
+    calls = {"count": 0}
+
+    def fail_before_response(**kwargs):
+        calls["count"] += 1
+        raise OSError("fixture transport failure")
+
+    monkeypatch.setattr(validation_runner, "request_once", fail_before_response)
+    summary = validation_runner.run_request_diff(
+        repo_root=tmp_path,
+        target="https://target.test",
+        finding_id="PAIR-PRIMARY-UNKNOWN",
+        request_spec={
+            "baseline_request": {"method": "GET", "url": "https://target.test/users/1"},
+            "variant_request": {"method": "GET", "url": "https://target.test/users/2"},
+            "active_dimension": "path:/users/1",
+            "classifier": "authz",
+            "expected": ["distinct_bodies"],
+        },
+    )
+    assert calls["count"] == 1
+    sync = validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)
+    assert sync["status"] == "updated"
+    operation = store.execution(summary["store_operation_id"])
+    assert operation["outcome"] == "unknown"
+    assert operation["observations"] == []
+
+
+def test_primary_partial_request_diff_keeps_completed_side_observation(monkeypatch, tmp_path):
+    store = TargetStore(tmp_path, "https://target.test")
+    store.initialize()
+    calls = {"count": 0}
+
+    def baseline_then_failure(**kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return _fake_response(kwargs["url"], body="baseline")
+        raise OSError("variant transport failure")
+
+    monkeypatch.setattr(validation_runner, "request_once", baseline_then_failure)
+    summary = validation_runner.run_request_diff(
+        repo_root=tmp_path,
+        target="https://target.test",
+        finding_id="PAIR-PRIMARY-PARTIAL",
+        request_spec={
+            "baseline_request": {"method": "GET", "url": "https://target.test/users/1"},
+            "variant_request": {"method": "GET", "url": "https://target.test/users/2"},
+            "active_dimension": "path:/users/1",
+            "classifier": "authz",
+            "expected": ["distinct_bodies"],
+        },
+    )
+    sync = validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)
+    assert sync["status"] == "updated"
+    operation = store.execution(summary["store_operation_id"])
+    assert operation["outcome"] == "partial"
+    assert len(operation["observations"]) == 1
+    assert operation["observations"][0]["endpoint"] == "https://target.test/users/1"
+
+
 def test_record_evidence_requires_existing_canonical_finding(tmp_path):
     target, _, evidence = _native_fixture(tmp_path)
     with pytest.raises(ValueError, match="existing canonical finding"):
         validation_runner.record_native_evidence(
             repo_root=tmp_path, target=target, finding_id="GHOST-FINDING", evidence=evidence,
         )
+
+
+def test_record_evidence_accepts_unknown_family_without_closing_canonical_coverage(tmp_path):
+    from tools.closure_projection import build_current_cell_projection
+    from tools.closure_resolver import ClosureResolver
+    from tools.evidence_ledger import load_entries
+
+    target, finding_id, evidence = _native_fixture(tmp_path)
+    finding_index.upsert_finding(
+        tmp_path / "findings" / _target_key(target),
+        {"id": finding_id, "vuln_class": "custom-state-transition", "type": "custom-state-transition"},
+        target=target,
+    )
+    summary = validation_runner.record_native_evidence(
+        repo_root=tmp_path, target=target, finding_id=finding_id, evidence=evidence,
+    )
+    assert summary["vuln_class"] == "custom-state-transition"
+    entries = load_entries(tmp_path, target)
+    assert entries[0]["vuln_class"] == "custom-state-transition"
+    closure = ClosureResolver(build_current_cell_projection(entries))
+    assert not closure.is_cell_closed(summary["url"], "Authz")
+    assert not closure.is_cell_closed(summary["url"], "custom-state-transition")
 
 
 def test_record_evidence_rejects_nonv1_schema(tmp_path):
@@ -2651,3 +2865,106 @@ def test_request_diff_invalid_repeat_exits_two_without_request(tmp_path, monkeyp
     assert code == 2
     assert called is False
     assert "invalid request spec" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("manual_required", [False, True])
+def test_preview_request_diff_rejects_before_execution_or_bundle(tmp_path, monkeypatch, manual_required):
+    store = TargetStore(tmp_path, "target.test", allow_preview=True)
+    store.initialize(allow_legacy=True)
+    spec = _expect_auth_pair_spec()
+    if manual_required:
+        for side in ("baseline_request", "variant_request"):
+            spec[side]["headers"] = {"Content-Type": "multipart/form-data"}
+            spec[side]["body"] = "binary"
+    monkeypatch.setattr(validation_runner, "request_once", lambda **kwargs: pytest.fail("request before admission"))
+    with pytest.raises(validation_runner.StoreError, match="preview"):
+        validation_runner.run_request_diff(repo_root=tmp_path, target="target.test", request_spec=spec)
+    assert not (tmp_path / "evidence").exists()
+    assert not (tmp_path / ".private").exists()
+
+
+def test_preview_native_registration_preserves_existing_summary(tmp_path):
+    target, finding_id, evidence = _native_fixture(tmp_path)
+    summary = validation_runner.record_native_evidence(
+        repo_root=tmp_path, target=target, finding_id=finding_id, evidence=evidence,
+        state_changing=True, redline_checked=True,
+    )
+    path = tmp_path / summary["summary_path"]
+    before = path.read_bytes()
+    store = TargetStore(tmp_path, target, allow_preview=True)
+    store.initialize(allow_legacy=True)
+    with pytest.raises(validation_runner.StoreError, match="preview"):
+        validation_runner.record_native_evidence(
+            repo_root=tmp_path, target=target, finding_id=finding_id, evidence=evidence,
+            state_changing=True, redline_checked=True,
+        )
+    with pytest.raises(validation_runner.StoreError, match="preview"):
+        validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("fault", ["missing", "corrupt"])
+def test_fenced_runner_refuses_before_execution_or_bundle(tmp_path, monkeypatch, fault):
+    store = TargetStore(tmp_path, "target.test")
+    store.initialize()
+    if fault == "missing":
+        store.path.unlink()
+    else:
+        store.path.write_bytes(b"not a sqlite database")
+    monkeypatch.setattr(validation_runner, "request_once", lambda **kwargs: pytest.fail("request before admission"))
+    with pytest.raises(validation_runner.StoreError):
+        validation_runner.run_request_diff(repo_root=tmp_path, target="target.test", request_spec=_expect_auth_pair_spec())
+    assert not (tmp_path / "evidence").exists()
+    assert not (tmp_path / ".private").exists()
+
+
+def test_runner_cli_holds_switch_lock_through_execution_and_registration(tmp_path, monkeypatch, capsys):
+    import fcntl
+
+    target = "target.test"
+    store = TargetStore(tmp_path, target)
+    store.initialize()
+    lock_path = store.path.parent / "locks" / "target-switch.lock"
+    stages = []
+
+    def assert_cutover_blocked(stage):
+        with lock_path.open("a+") as handle:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        stages.append(stage)
+
+    def request(**kwargs):
+        assert_cutover_blocked("request")
+        return _fake_response(kwargs["url"])
+
+    original_sync = validation_runner._sync_primary_store
+    def sync(*args, **kwargs):
+        assert_cutover_blocked("registration")
+        return original_sync(*args, **kwargs)
+
+    monkeypatch.setattr(validation_runner, "_sync_primary_store", sync)
+    original_run = validation_runner.run_request_diff
+    def run(**kwargs):
+        summary = original_run(**kwargs)
+        assert_cutover_blocked("between_execution_and_registration")
+        return summary
+
+    monkeypatch.setattr(validation_runner, "request_once", request)
+    monkeypatch.setattr(validation_runner, "run_request_diff", run)
+    spec = tmp_path / "spec.json"
+    spec.write_text(json.dumps(_expect_auth_pair_spec()))
+    assert validation_runner.main([
+        "request-diff", "--repo-root", str(tmp_path), "--target", target,
+        "--request-spec", str(spec),
+    ]) == 0
+    summary = json.loads(capsys.readouterr().out)
+    assert stages == ["request", "request", "between_execution_and_registration", "registration"]
+    assert summary["sync"]["status"] == "updated"
+    assert summary["backend_binding"]["store_id"] == store.binding()["store_id"]
+    with lock_path.open("a+") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    summary["backend_binding"]["store_id"] = "0" * 32
+    with pytest.raises(validation_runner.StoreError, match="backend changed"):
+        validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)
+    assert store.page("operations")["total"] == 1
