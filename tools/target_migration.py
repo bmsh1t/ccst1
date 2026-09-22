@@ -209,22 +209,67 @@ def _stable_id(*parts: Any) -> str:
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
 
 
-# Keep quarantine identity independent of report ordering and unbounded text.
+# Quarantine identity is a bounded hash of the reported facts only; report
+# position is never part of it, so reordering the report cannot change an ID.
 _QUARANTINE_ID_FIELDS = (
     "owner", "reason", "path", "event_id", "id", "endpoint", "evidence_ref",
-    "line", "status", "family", "result", "declared_target", "expected_target", "report_index",
+    "line", "status", "family", "result", "declared_target", "expected_target",
 )
-_SAFE_DISPOSITION_DECISIONS = frozenset({
-    "preserve_verdict", "permanent_quarantine", "operator_review",
+# A terminal disposition closes one quarantine item and may clear the gate.
+_TERMINAL_DISPOSITION_DECISIONS = frozenset({
+    "preserve_verdict", "permanent_quarantine",
 })
+# Recorded but unfinished intents keep the item open and the gate shut:
+# `rebind_after_export_verification` commits to re-registering evidence that is
+# still missing, and `operator_review` asks a human to look again.  Neither is a
+# completed decision, so neither may unlock publish.
+_OPEN_DISPOSITION_DECISIONS = frozenset({
+    "rebind_after_export_verification", "operator_review",
+})
+_DISPOSITION_DECISIONS = _TERMINAL_DISPOSITION_DECISIONS | _OPEN_DISPOSITION_DECISIONS
 _PLACEHOLDER_DECISION_REFS = frozenset({"", "pending", "todo", "tbd", "none", "null"})
+
+
+def _quarantine_material(row: dict[str, Any]) -> str:
+    bounded = {field: row.get(field, "") for field in _QUARANTINE_ID_FIELDS}
+    return json.dumps(bounded, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
 
 
 def quarantine_id(row: dict[str, Any]) -> str:
     """Return the stable ID used by a migration disposition ledger."""
-    bounded = {field: row.get(field, "") for field in _QUARANTINE_ID_FIELDS}
-    material = json.dumps(bounded, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(_quarantine_material(row).encode("utf-8")).hexdigest()[:16]
+
+
+def quarantine_identities(rows: list[dict[str, Any]]) -> list[str]:
+    """Identity for each row, independent of where it appears in the report.
+
+    Rows that agree on every bounded field are interchangeable, so the n-th copy
+    is identified by its occurrence count inside that identical group rather than
+    by its report position.  Permuting the report therefore leaves the identity
+    set unchanged, while a changed fact still changes the identity.
+    """
+    seen: dict[str, int] = {}
+    identities: list[str] = []
+    for row in rows:
+        material = _quarantine_material(row)
+        occurrence = seen.get(material, 0)
+        seen[material] = occurrence + 1
+        if occurrence:
+            material = f"{material}\x1f{occurrence}"
+        identities.append(hashlib.sha256(material.encode("utf-8")).hexdigest()[:16])
+    return identities
+
+
+def quarantine_roster(rows: list[dict[str, Any]]) -> tuple[list[str], str]:
+    """Return the identity list and a digest that binds a decision table to it.
+
+    The digest covers the complete quarantine roster, not the decided subset, so
+    a ledger generated for one report cannot be re-bound to a different report
+    that happens to share some identities.
+    """
+    identities = quarantine_identities(rows)
+    material = json.dumps(sorted(identities), ensure_ascii=True, separators=(",", ":"))
+    return identities, hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
 def _load_disposition_ledger(value: Any) -> tuple[dict[str, Any] | None, str]:
@@ -260,18 +305,24 @@ def _apply_disposition_ledger(
     if ledger is None:
         return
     _validate_disposition_binding(ledger, canonical, source_manifest_sha256)
+    _validate_disposition_ledger_shape(ledger)
 
-    expected_rows = list(report.get("quarantined") or [])
-    expected: dict[str, dict[str, Any]] = {}
-    for row_index, row in enumerate(expected_rows):
-        identity = dict(row)
-        if not any(_text(identity.get(field)) for field in ("event_id", "id", "line")):
-            identity["report_index"] = row_index
-        item_id = quarantine_id(identity)
-        if item_id in expected:
-            raise StoreError("migration produced duplicate quarantine IDs")
-        expected[item_id] = identity
+    expected_rows = [dict(row) for row in (report.get("quarantined") or [])]
+    expected_ids, roster_digest = quarantine_roster(expected_rows)
+    # The roster digest binds this decision table to the exact quarantine set it
+    # was generated for.  Without it, a ledger written for one report could be
+    # re-bound to another input that happens to share identities.
+    declared_roster = _text(ledger.get("quarantine_roster_sha256"))
+    if declared_roster and declared_roster != roster_digest:
+        raise StoreError("disposition ledger quarantine roster does not match migration input")
+    group_of: dict[str, str] = {}
+    for row, item_id in zip(expected_rows, expected_ids):
+        group_of[item_id] = quarantine_id(row)
+    if len(set(expected_ids)) != len(expected_ids):
+        raise StoreError("migration produced duplicate quarantine IDs")
+
     seen: set[str] = set()
+    decisions: dict[str, str] = {}
     validated: list[dict[str, Any]] = []
     for item in ledger.get("items", []):
         if not isinstance(item, dict):
@@ -279,15 +330,12 @@ def _apply_disposition_ledger(
         item_id = _text(item.get("quarantine_id"))
         if not item_id or item_id in seen:
             raise StoreError("disposition ledger contains a missing or duplicate quarantine ID")
-        if item_id not in expected:
+        if item_id not in group_of:
             raise StoreError(f"disposition ledger references unknown quarantine ID: {item_id}")
-        item_identity = dict(item)
-        if not any(_text(item_identity.get(field)) for field in ("event_id", "id", "line")):
-            item_identity["report_index"] = expected[item_id].get("report_index")
-        if item_id != quarantine_id(item_identity):
+        if quarantine_id(item) != group_of[item_id]:
             raise StoreError(f"disposition ledger row does not match quarantine ID: {item_id}")
         decision = _text(item.get("decision")).lower()
-        if decision not in _SAFE_DISPOSITION_DECISIONS:
+        if decision not in _DISPOSITION_DECISIONS:
             raise StoreError(f"unsupported quarantine disposition: {decision or '<empty>'}")
         operator = _text(item.get("operator"))
         if operator.lower() in _PLACEHOLDER_DECISION_REFS:
@@ -296,32 +344,74 @@ def _apply_disposition_ledger(
         if decision_ref.lower() in _PLACEHOLDER_DECISION_REFS:
             raise StoreError("quarantine disposition requires a non-placeholder decision_ref")
         allowed = item.get("allowed_decisions")
+        if allowed is not None and not isinstance(allowed, list):
+            raise StoreError(f"quarantine disposition allowed_decisions must be a list: {item_id}")
         if isinstance(allowed, list) and allowed and decision not in {str(value).strip().lower() for value in allowed}:
             raise StoreError(f"quarantine disposition is not allowed for {item_id}: {decision}")
         seen.add(item_id)
+        decisions[item_id] = decision
         validated.append({**item, "quarantine_id": item_id, "decision": decision})
 
-    missing = sorted(set(expected) - seen)
+    missing = sorted(set(expected_ids) - seen)
+    # Rows the ledger never decided, plus rows whose only decision was a
+    # non-terminal `operator_review`, remain quarantined and keep the gate shut.
+    open_rows = [
+        {**row, "identity": item_id, "recorded_decision": decisions.get(item_id, "")}
+        for row, item_id in zip(expected_rows, expected_ids)
+        if decisions.get(item_id) not in _TERMINAL_DISPOSITION_DECISIONS
+    ]
     metadata = {
         "target": canonical,
         "source_manifest_sha256": source_manifest_sha256,
         "ledger_sha256": ledger_digest,
+        "quarantine_roster_sha256": roster_digest,
         "count": len(validated),
         "missing": missing,
-        "status": "complete" if not missing and all(row["decision"] != "pending" for row in validated) else "partial",
+        "open": [row["identity"] for row in open_rows],
+        "status": "complete" if not missing and not open_rows else "partial",
     }
     report["disposition_ledger"] = metadata
-    if missing:
+    report["dispositioned_quarantine"] = [
+        row for row in validated if row["decision"] in _TERMINAL_DISPOSITION_DECISIONS
+    ]
+    # `operator_review` is a recorded human-review request, not a decision that
+    # closes the item, so those rows stay quarantined and keep the gate closed.
+    report["quarantined"] = open_rows
+    if metadata["status"] == "complete":
+        report["status"] = "ready"
+
+
+def _validate_disposition_ledger_shape(ledger: dict[str, Any]) -> None:
+    """Reject a ledger that contradicts its own governance metadata.
+
+    A payload that declares the cutover ledger format must also satisfy it:
+    a declared `kind` requires a finalized `status` and an accurate `count`.
+    Bare decision payloads without `kind` stay usable for narrow callers.
+    """
+    kind = _text(ledger.get("kind"))
+    if kind and kind != "target_cutover_quarantine_disposition_ledger":
+        raise StoreError(f"unexpected disposition ledger kind: {kind}")
+    declared_count = ledger.get("count")
+    if declared_count is not None and int(declared_count) != len(ledger.get("items") or []):
+        raise StoreError(
+            "disposition ledger count does not match its items: "
+            f"{declared_count} != {len(ledger.get('items') or [])}"
+        )
+    if not kind and "status" not in ledger:
         return
-    report["dispositioned_quarantine"] = validated
-    report["quarantined"] = []
-    report["status"] = "ready"
+    declared_status = _text(ledger.get("status")).lower()
+    if declared_status in _PLACEHOLDER_DECISION_REFS:
+        raise StoreError(
+            "disposition ledger is not finalized; every item requires an explicit "
+            f"operator decision (status={declared_status or '<empty>'})"
+        )
 
 
 def _validate_disposition_binding(
     ledger: dict[str, Any] | None,
     canonical: str,
     source_manifest_sha256: str,
+    quarantine_roster_sha256: str = "",
 ) -> None:
     if ledger is None:
         return
@@ -329,6 +419,57 @@ def _validate_disposition_binding(
         raise StoreError("disposition ledger target does not match migration target")
     if _text(ledger.get("source_manifest_sha256")) != source_manifest_sha256:
         raise StoreError("disposition ledger source manifest does not match migration input")
+    declared_roster = _text(ledger.get("quarantine_roster_sha256"))
+    if declared_roster and quarantine_roster_sha256 and declared_roster != quarantine_roster_sha256:
+        raise StoreError("disposition ledger quarantine roster does not match migration input")
+
+
+_SOURCE_ROOT_DIGEST_PREFIX = "source-root:"
+
+
+def _rebase_source_absolute_ref(source_root: Path, copy_root: Path, ref: str) -> tuple[str, str]:
+    """Rebase a legacy absolute reference onto the migration copy.
+
+    Legacy writers recorded absolute paths (``/root/.../<repo>/evidence/...``)
+    because the operator ran in that directory.  The migration contract allows
+    resolving an absolute path only after its source ownership is confirmed, so
+    the reference is first proven to resolve under ``source_root`` (the
+    directory it was authored in) and is then expressed relative to
+    ``copy_root``.  The caller accepts the result only if the same relative path
+    material actually exists inside the copy, so a rewritten reference can never
+    point outside the isolated root.
+
+    Returns ``(rewritten_ref, "")`` on success and ``("", reason)`` otherwise.
+    Nothing is guessed: a reference that is not absolute, cannot be resolved,
+    does not resolve under the declared source root, or does not exist in the
+    copy is rejected exactly as before.
+    """
+    path = Path(ref)
+    if not path.is_absolute():
+        return "", "reference is not absolute"
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return "", f"absolute reference cannot be resolved: {ref}"
+    if not resolved.is_relative_to(source_root):
+        return "", f"absolute reference is outside the declared migration source root: {ref}"
+    relative = resolved.relative_to(source_root).as_posix()
+    if _escapes_root(copy_root, relative):
+        return "", f"rebase result escapes the migration copy: {ref}"
+    if not _evidence_readable(copy_root, relative):
+        return "", f"rebased reference has no material in the migration copy: {relative}"
+    return relative, ""
+
+
+def _rebase_notice(root: Path, original: str, rewritten: str) -> dict[str, str]:
+    """Bounded record of a rebase, so the rewrite is auditable and not silent."""
+    return {
+        "kind": "absolute_reference_rebased",
+        "source_root_digest": _SOURCE_ROOT_DIGEST_PREFIX + hashlib.sha256(
+            str(root).encode("utf-8")).hexdigest()[:16],
+        "original": original,
+        "rebased": rewritten,
+    }
 
 
 def _evidence_path(root: Path, ref: str) -> Path:
@@ -508,7 +649,9 @@ def _uncarryable_identity_reason(entry: dict[str, Any], dimensions: dict[str, st
     )
 
 
-def _ledger_observation(entry: dict[str, Any], origin: str) -> tuple[dict[str, Any] | None, str]:
+def _ledger_observation(entry: dict[str, Any], origin: str,
+                        rebase_root: Path | None = None,
+                        copy_root: Path | None = None) -> tuple[dict[str, Any] | None, str]:
     """Map one ledger entry onto the execution-observation contract.
 
     Every field comes from the raw record; nothing is inferred from the
@@ -516,6 +659,9 @@ def _ledger_observation(entry: dict[str, Any], origin: str) -> tuple[dict[str, A
     (in the vocabulary the Ledger and Closure share), and the identity
     dimensions the record itself declared -- complete or partial -- so the
     shared derivation re-adjudicates them instead of this import judging them.
+
+    A legacy absolute ``evidence_ref`` is rebased onto the migration source root
+    when it provably resolves under it; anything not proven stays rejected.
     """
     endpoint = _text(entry.get("raw_endpoint")) or _text(entry.get("endpoint"))
     if endpoint.startswith("/"):
@@ -534,6 +680,11 @@ def _ledger_observation(entry: dict[str, Any], origin: str) -> tuple[dict[str, A
     ref = _text(entry.get("evidence_ref"))
     if not ref:
         return None, "ledger entry has no raw evidence reference"
+    if rebase_root is not None and copy_root is not None and Path(ref).is_absolute():
+        rebased, rebase_reason = _rebase_source_absolute_ref(rebase_root, copy_root, ref)
+        if not rebased:
+            return None, rebase_reason
+        ref = rebased
     reason = _live_credential_reason(_text(entry.get("notes")))
     if reason:
         return None, reason
@@ -759,6 +910,24 @@ def _report_artifact_inventory(root: Path, key: str) -> list[dict[str, Any]]:
     return items
 
 
+_MIGRATION_COPY_EXCLUDES = ("locks", "metadata.sqlite3", "legacy-frozen.json", "migration-receipt.json")
+
+
+def _is_migration_input(path: Path, root: Path) -> bool:
+    """Whether a path under a target-owned root is a migration input.
+
+    The manifest and the copy step must agree on this set: a file the manifest
+    hashes but the copy deliberately omits makes promotion report a vanished
+    input, and a file the copy takes but the manifest skips is unaccounted for.
+    Runtime locks live under ``locks/`` (and ``.locks/``) directories and are
+    process state, not domain facts, so both steps exclude them together.
+    """
+    relative = path.relative_to(root)
+    if any(part in {"locks", ".locks"} for part in relative.parts[:-1]):
+        return False
+    return path.name not in _MIGRATION_COPY_EXCLUDES
+
+
 def _migration_manifest(repo_root: Path, target: str) -> dict[str, Any]:
     """Hash the target-owned legacy inputs without creating migration state."""
     key = target_storage_key(target)
@@ -779,6 +948,8 @@ def _migration_manifest(repo_root: Path, target: str) -> dict[str, Any]:
         paths = [root] if root.is_file() else sorted(root.rglob("*"))
         for path in paths:
             if not path.is_file() or path.is_symlink():
+                continue
+            if not _is_migration_input(path, repo_root):
                 continue
             relative = path.relative_to(repo_root).as_posix()
             digest = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -847,20 +1018,20 @@ def _copy_target_inputs(source: Path, destination: Path, target: str) -> None:
             for child in path.iterdir():
                 reject_symlink_tree(child)
 
+    def ignore_non_inputs(directory: str, names: list[str]) -> set[str]:
+        # Same predicate the manifest uses, so the copied set and the hashed set
+        # can never disagree about what a migration input is.
+        base = Path(directory)
+        return {name for name in names if not _is_migration_input(base / name, source)}
+
     for origin, copied in paths:
         if not origin.exists():
             continue
         reject_symlink_tree(origin)
+        copied.parent.mkdir(parents=True, exist_ok=True)
         if origin.is_dir():
-            copied.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(
-                origin,
-                copied,
-                symlinks=False,
-                ignore=shutil.ignore_patterns("locks", "metadata.sqlite3", "legacy-frozen.json", "migration-receipt.json"),
-            )
+            shutil.copytree(origin, copied, symlinks=False, ignore=ignore_non_inputs)
         else:
-            copied.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(origin, copied)
 
 
@@ -897,6 +1068,7 @@ def import_target_staged(
             canonical,
             disposition_ledger=disposition_ledger,
             source_manifest_sha256=manifest["sha256"],
+            source_root=source,
         )
         store = TargetStore(staging, canonical, allow_preview=True)
         context = store.context(limit=1)
@@ -916,6 +1088,21 @@ def import_target_staged(
                 "ledger_sha256": disposition_digest,
                 "status": "partial",
             })
+        # Preserved-but-unregistered material stays a durable cutover fact: the
+        # bytes are kept by design, and the receipt must show that no report
+        # registration or delivery relation was inferred from their presence.
+        artifacts = result.get("legacy", {}).get("report_artifacts") or []
+        if artifacts:
+            receipt["unregistered_artifacts"] = {
+                "report_artifacts": len(artifacts),
+                "paths": [str(item.get("path", "")) for item in artifacts],
+                "digests_sha256": [
+                    f"{item.get('sha256', '')}  {item.get('path', '')}" for item in sorted(
+                        artifacts, key=lambda item: str(item.get("path", ""))
+                    )
+                ],
+                "note": "preserved as artifacts; registration requires explicit re-registration",
+            }
         receipt_path = staging / "state" / target_storage_key(canonical) / "migration-receipt.json"
         receipt_path.parent.mkdir(parents=True, exist_ok=True)
         receipt_path.write_text(json.dumps(receipt, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
@@ -1307,7 +1494,8 @@ def _empty_report(canonical: str, sources: dict[str, Any]) -> dict[str, Any]:
 
 
 def _import_ledger(report: dict[str, Any], store: TargetStore, root: Path, canonical: str,
-                   entries: list[dict[str, Any]], findings: list[dict[str, Any]]) -> set[str]:
+                   entries: list[dict[str, Any]], findings: list[dict[str, Any]],
+                   rebase_root: Path | None = None) -> set[str]:
     """Register raw observations, binding a claim only on an exact match.
 
     Returns the origins seen in the raw records so the caller can resolve a
@@ -1337,7 +1525,7 @@ def _import_ledger(report: dict[str, Any], store: TargetStore, root: Path, canon
     entry_origin = next(iter(origins)) if len(origins) == 1 else ""
     prepared: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
     for entry in entries:
-        observation, reason = _ledger_observation(entry, entry_origin)
+        observation, reason = _ledger_observation(entry, entry_origin, rebase_root, root)
         if observation is None:
             _count_uncarryable_claim(report, entry)
             report["quarantined"].append({
@@ -1346,6 +1534,12 @@ def _import_ledger(report: dict[str, Any], store: TargetStore, root: Path, canon
                 "evidence_ref": _text(entry.get("evidence_ref")), "result": _text(entry.get("result")),
             })
             continue
+        original_ref = _text(entry.get("evidence_ref"))
+        imported_ref = observation["artifacts"]["evidence"]
+        if original_ref != imported_ref:
+            report["legacy"].setdefault("rebased_references", []).append(
+                _rebase_notice(root, original_ref, imported_ref)
+            )
         prepared.setdefault(_observation_key(observation), []).append({"entry": entry, "observation": observation})
 
     used: set[int] = set()
@@ -1572,14 +1766,44 @@ def _case_private_ref(root: Path, key: str, value: Any) -> str:
     return ref
 
 
+def _carryable_private_ref(root: Path, ref: str, target: str) -> tuple[str, str]:
+    """Return the private reference the Store can carry, or "" plus a reason.
+
+    Private material written before the current contract declares neither its
+    target nor a content digest, so the Store cannot verify it and refuses the
+    binding.  That material is never rewritten by migration (private user
+    material is out of the freeze scope), so the record is imported without the
+    binding and the omission is reported instead of being hidden.
+    """
+    if not ref:
+        return "", ""
+    try:
+        payload = json.loads((root / ref).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ref, ""
+    if not isinstance(payload, dict):
+        return ref, ""
+    if payload.get("target") == target and isinstance(payload.get("content_sha256"), str):
+        return ref, ""
+    return "", "legacy private material declares no target/content_sha256 and is not rewritten"
+
+
 def _import_case_context(
     report: dict[str, Any],
     store: TargetStore,
     root: Path,
     canonical: str,
     payload: dict[str, Any],
+    origin: str = "",
 ) -> None:
-    """Import Case context facts without importing its retired backlog owner."""
+    """Import Case context facts without importing its retired backlog owner.
+
+    ``origin`` is the single origin observed in the target's own raw material.
+    A legacy Case object endpoint recorded in path form (``/rest/basket/1``) is
+    resolved against it exactly like a ledger endpoint; when no single origin is
+    provable the endpoint stays unresolved and the object is quarantined rather
+    than given an invented scheme/host.
+    """
     key = store.key
     outcome = report["legacy"].setdefault("case_context_import", {
         "actors": 0, "sessions": 0, "objects": 0, "hypotheses": 0,
@@ -1616,6 +1840,12 @@ def _import_case_context(
             if _live_credential_reason(notes):
                 raise StoreError("session notes contain apparent live credential material")
             private_ref = _case_private_ref(root, key, raw.get("private_ref"))
+            private_ref, private_reason = _carryable_private_ref(root, private_ref, canonical)
+            if private_reason:
+                report["legacy"].setdefault("private_bindings_dropped", []).append({
+                    "owner": "case-state", "kind": "session", "id": _text(session_id),
+                    "legacy_ref": _text(raw.get("private_ref")), "reason": private_reason,
+                })
             store.upsert_case_session(
                 command_id=f"migrate:case-session:{_stable_id(session_id, raw)}",
                 session_id=_text(session_id), actor_id=_text(raw.get("actor")),
@@ -1641,11 +1871,27 @@ def _import_case_context(
             if _live_credential_reason(notes):
                 raise StoreError("object notes contain apparent live credential material")
             private_ref = _case_private_ref(root, key, raw.get("private_ref"))
+            private_ref, private_reason = _carryable_private_ref(root, private_ref, canonical)
+            if private_reason:
+                report["legacy"].setdefault("private_bindings_dropped", []).append({
+                    "owner": "case-state", "kind": "object", "id": _text(object_ref),
+                    "legacy_ref": _text(raw.get("private_ref")), "reason": private_reason,
+                })
+            object_endpoint = _text(raw.get("endpoint"))
+            if object_endpoint.startswith("/"):
+                # Legacy Case objects recorded path-form endpoints.  Resolve
+                # against the single observed origin, or leave it empty so the
+                # object stays quarantined instead of inventing a host.
+                object_endpoint = f"{origin}{object_endpoint}" if origin else ""
+                if not object_endpoint:
+                    raise StoreError(
+                        "case object endpoint is path-form and the target observed no single origin"
+                    )
             store.upsert_case_object(
                 command_id=f"migrate:case-object:{_stable_id(object_ref, raw)}",
                 object_ref=_text(object_ref), object_type=_text(raw.get("type") or raw.get("object_type")) or "unknown",
                 object_id=_text(raw.get("object_id")), owner_actor=_text(raw.get("owner_actor")),
-                endpoint=_text(raw.get("endpoint")), status=_text(raw.get("status")) or "active",
+                endpoint=object_endpoint, status=_text(raw.get("status")) or "active",
                 notes=notes, private_ref=private_ref, actor="migration",
             )
             outcome["objects"] += 1
@@ -1908,8 +2154,18 @@ def import_target(
     initialize: bool = False,
     disposition_ledger: str | Path | dict[str, Any] | None = None,
     source_manifest_sha256: str = "",
+    source_root: str | Path | None = None,
 ) -> dict[str, Any]:
+    """Import legacy target metadata into ``repo_root``.
+
+    ``source_root`` is the root the legacy records were written against -- the
+    directory the operator ran in.  It is required to resolve a legacy absolute
+    ``evidence_ref`` (see ``_rebase_source_absolute_ref``); the unified staging
+    path passes the export root explicitly instead of letting the importer infer
+    one from the references it is trying to validate.
+    """
     root = Path(repo_root).resolve()
+    rebase_root = Path(source_root).resolve() if source_root is not None else root
     canonical = canonical_target_value(target)
     disposition_payload, disposition_digest = _load_disposition_ledger(disposition_ledger)
     expected_manifest = _migration_manifest(root, canonical)
@@ -1987,7 +2243,7 @@ def import_target(
         "case_state": {},
         "case_backlog": {},
     }
-    origins = _import_ledger(report, store, root, canonical, entries, findings)
+    origins = _import_ledger(report, store, root, canonical, entries, findings, rebase_root)
     # A legacy path endpoint is only resolved when the target's own material
     # shows exactly one origin; otherwise the record stays quarantined.
     report["legacy"]["observed_origins"] = sorted(origins)
@@ -2029,7 +2285,7 @@ def import_target(
             [case_payload], _CASE_STATE_FIELDS
         )
         report["legacy"]["case_context"] = _case_context(case_payload, present=True)
-        _import_case_context(report, store, root, canonical, case_payload)
+        _import_case_context(report, store, root, canonical, case_payload, origin)
         _carry_case_backlog(
             report, canonical=canonical,
             backlog=case_payload.get("validation_backlog"),
@@ -2067,6 +2323,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--source-manifest-sha256", default="")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
+    if args.disposition_ledger and not args.import_source:
+        parser.error("--disposition-ledger is only applied with --import-source; it was not read")
     try:
         if args.restore_legacy:
             result = restore_legacy_metadata(

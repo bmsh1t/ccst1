@@ -494,8 +494,10 @@ def test_complete_disposition_ledger_clears_quarantine_and_completes_staged_rece
     ledger = {
         "schema_version": 1,
         "kind": "target_cutover_quarantine_disposition_ledger",
+        "status": "complete",
         "target": target,
         "source_manifest_sha256": manifest["sha256"],
+        "quarantine_roster_sha256": migration.quarantine_roster([row])[1],
         "items": items,
     }
 
@@ -677,7 +679,172 @@ def test_duplicate_quarantine_rows_receive_distinct_disposition_ids(tmp_path):
 
     rows = [row for row in result["quarantined"] if row["owner"] == "ledger"]
     assert len(rows) == 2
-    assert len({quarantine_id({**row, "report_index": index}) for index, row in enumerate(rows)}) == 2
+    # Identical rows are told apart by occurrence, not by report position, so
+    # the set of identities survives a reordering of the report.
+    assert len(set(migration.quarantine_identities(rows))) == 2
+    assert migration.quarantine_identities(rows) == migration.quarantine_identities(list(reversed(rows)))
+    assert migration.quarantine_roster(rows)[1] == migration.quarantine_roster(list(reversed(rows)))[1]
+
+
+def test_quarantine_identity_is_independent_of_report_order(tmp_path):
+    target = _fixture(tmp_path, actions=[
+        {"id": "AQ-1", "status": "validated", "action": "first verdict",
+         "metadata": {"endpoint": "https://target.test/api/object", "vuln_class": "Authz"}},
+        {"id": "AQ-2", "status": "rejected", "action": "second verdict",
+         "metadata": {"endpoint": "https://target.test/api/thing", "vuln_class": "IDOR"}},
+    ])
+
+    rows = import_target(tmp_path, target)["quarantined"]
+    assert len(rows) >= 2
+    assert migration.quarantine_roster(rows)[1] == migration.quarantine_roster(list(reversed(rows)))[1]
+    # Changing a reported fact still changes the identity.
+    tampered = [dict(rows[0]), *rows[1:]]
+    tampered[0]["reason"] = "different reason"
+    assert migration.quarantine_roster(tampered)[1] != migration.quarantine_roster(rows)[1]
+
+
+def _terminal_verdict_fixture(base):
+    """Write one legacy terminal verdict into its own isolated root."""
+    return _fixture(base, actions=[{
+        "id": "AQ-terminal", "status": "validated", "action": "historical verdict",
+        "metadata": {"endpoint": "https://target.test/api/object", "vuln_class": "Authz"},
+    }])
+
+
+def _probe_terminal_verdict(tmp_path):
+    """Return (target, quarantine rows) for a fresh terminal-verdict root.
+
+    A source root is consumed by an import, so the probe root and every target
+    root are built separately and each is imported at most once.
+    """
+    target = _terminal_verdict_fixture(tmp_path / "probe")
+    rows = import_target(tmp_path / "probe", target)["quarantined"]
+    return target, rows
+
+
+def _manifest_of(base, target):
+    return migration._migration_manifest(base, target)["sha256"]
+
+
+def test_disposition_ledger_roster_binding_rejects_a_rebound_decision_table(tmp_path):
+    target, rows = _probe_terminal_verdict(tmp_path)
+    _terminal_verdict_fixture(tmp_path / "clean")
+    digest = _manifest_of(tmp_path / "clean", target)
+    item = {
+        **{field: rows[0].get(field, "") for field in migration._QUARANTINE_ID_FIELDS},
+        "quarantine_id": migration.quarantine_identities(rows)[0],
+        "decision": "permanent_quarantine",
+        "operator": "OWNER",
+        "decision_ref": "audit-1",
+    }
+    base = {
+        "kind": "target_cutover_quarantine_disposition_ledger",
+        "status": "complete",
+        "target": target,
+        "source_manifest_sha256": digest,
+        "items": [item],
+    }
+    # Without a roster digest the payload stays usable for narrow callers.
+    _terminal_verdict_fixture(tmp_path / "loose")
+    assert import_target(tmp_path / "loose", target, disposition_ledger=base)["status"] == "ready"
+    # A roster digest that does not describe this input is refused outright.
+    _terminal_verdict_fixture(tmp_path / "stale")
+    with pytest.raises(StoreError, match="quarantine roster does not match"):
+        import_target(tmp_path / "stale", target, disposition_ledger={**base, "quarantine_roster_sha256": "0" * 64})
+
+
+def test_operator_review_records_the_request_without_closing_the_gate(tmp_path):
+    target, rows = _probe_terminal_verdict(tmp_path)
+    _terminal_verdict_fixture(tmp_path / "review")
+    digest = _manifest_of(tmp_path / "review", target)
+    item = {
+        **{field: rows[0].get(field, "") for field in migration._QUARANTINE_ID_FIELDS},
+        "quarantine_id": migration.quarantine_identities(rows)[0],
+        "decision": "operator_review",
+        "operator": "OWNER",
+        "decision_ref": "audit-1",
+    }
+    result = import_target(tmp_path / "review", target, disposition_ledger={
+        "target": target, "source_manifest_sha256": digest, "items": [item],
+    })
+    # The request is recorded, the row stays quarantined, and publish is blocked.
+    assert result["dispositioned_quarantine"] == []
+    assert len(result["quarantined"]) == 1
+    assert result["quarantined"][0]["recorded_decision"] == "operator_review"
+    assert result["disposition_ledger"]["open"] == [item["quarantine_id"]]
+    assert result["disposition_ledger"]["status"] == "partial"
+    assert result["status"] == "partial"
+
+
+def test_rebind_after_export_verification_is_recorded_but_not_terminal(tmp_path):
+    target, rows = _probe_terminal_verdict(tmp_path)
+    _terminal_verdict_fixture(tmp_path / "rebind")
+    manifest = migration._migration_manifest(tmp_path / "rebind", target)
+    item = {
+        **{field: rows[0].get(field, "") for field in migration._QUARANTINE_ID_FIELDS},
+        "quarantine_id": migration.quarantine_identities(rows)[0],
+        "allowed_decisions": ["rebind_after_export_verification", "permanent_quarantine"],
+        "decision": "rebind_after_export_verification",
+        "operator": "OWNER",
+        "decision_ref": "audit-1",
+    }
+    result = import_target(tmp_path / "rebind", target, disposition_ledger={
+        "target": target, "source_manifest_sha256": manifest["sha256"], "items": [item],
+    })
+    # The decision the generated ledger advertises is accepted, but committing to
+    # re-register missing evidence is unfinished work, so it cannot clear publish.
+    assert len(result["quarantined"]) == 1
+    assert result["dispositioned_quarantine"] == []
+    assert result["status"] == "partial"
+
+
+def test_disposition_ledger_governance_metadata_is_enforced(tmp_path):
+    target, rows = _probe_terminal_verdict(tmp_path)
+    item = {
+        **{field: rows[0].get(field, "") for field in migration._QUARANTINE_ID_FIELDS},
+        "quarantine_id": migration.quarantine_identities(rows)[0],
+        "decision": "permanent_quarantine",
+        "operator": "OWNER",
+        "decision_ref": "audit-1",
+    }
+
+    def attempt(name, **over):
+        _terminal_verdict_fixture(tmp_path / name)
+        digest = _manifest_of(tmp_path / name, target)
+        payload = {
+            "kind": "target_cutover_quarantine_disposition_ledger",
+            "status": "complete",
+            "target": target,
+            "source_manifest_sha256": digest,
+            "items": [item],
+            **over,
+        }
+        return import_target(tmp_path / name, target, disposition_ledger=payload)
+
+    with pytest.raises(StoreError, match="is not finalized"):
+        attempt("pending", status="pending")
+    with pytest.raises(StoreError, match="count does not match"):
+        attempt("count", count=99)
+    with pytest.raises(StoreError, match="unexpected disposition ledger kind"):
+        attempt("kind", kind="something-else")
+    # A finalized ledger with matching governance metadata is accepted.
+    assert attempt("ok", count=1)["status"] == "ready"
+
+
+def test_staged_receipt_records_preserved_but_unregistered_report_artifacts(tmp_path):
+    source = tmp_path / "source"
+    target = _fixture(source, actions=[])
+    report = source / "reports" / target / "idor_001.md"
+    report.parent.mkdir(parents=True)
+    report.write_text("report body\n", encoding="utf-8")
+
+    result = import_target_staged(source, tmp_path / "staging", target)
+    preserved = result["receipt"]["unregistered_artifacts"]
+    assert preserved["report_artifacts"] == 1
+    assert preserved["paths"] == [f"reports/{target}/idor_001.md"]
+    assert "explicit re-registration" in preserved["note"]
+    # The bytes stay preserved in staging; nothing is registered by inference.
+    assert (tmp_path / "staging" / "reports" / target / "idor_001.md").read_text() == "report body\n"
 
 
 def test_legacy_terminal_action_status_is_quarantined_not_promoted(tmp_path):
@@ -746,8 +913,9 @@ def test_evidence_reference_outside_the_isolated_copy_is_not_reinterpreted(tmp_p
     result = import_target(tmp_path, target)
 
     assert result["imported"]["observations"] == 0
-    assert any(row["owner"] == "ledger" and "outside the isolated copy" in row["reason"]
+    assert any(row["owner"] == "ledger" and "outside the declared migration source root" in row["reason"]
                for row in result["quarantined"])
+    assert result["legacy"].get("rebased_references") in (None, [])
 
 
 def test_corrupt_jsonl_reports_the_row_and_accounts_for_the_unread_tail(tmp_path):
@@ -1262,3 +1430,146 @@ def test_cross_target_case_state_is_imported_by_nobody(tmp_path):
     assert result["legacy"]["case_backlog"] == []
     assert any(row["owner"] == "case-state" and "imported by nobody" in row["reason"]
                for row in result["quarantined"])
+
+
+def test_staged_import_rebases_a_legacy_absolute_reference_onto_the_copy(tmp_path):
+    source = tmp_path / "source"
+    absolute = str(source / "evidence" / "target.test" / "validation" / "AQ-9" / "run" / "diff.json")
+    target = _fixture(
+        source,
+        ledger=[_ledger_row(evidence_ref=absolute)],
+        evidence=[("evidence/target.test/validation/AQ-9/run/diff.json", b"peer read")],
+    )
+    staged = tmp_path / "staging-root"
+
+    result = import_target_staged(source, staged, target)
+
+    assert result["imported"]["observations"] == 1
+    (rebased,) = result["legacy"]["rebased_references"]
+    assert rebased["original"] == absolute
+    assert rebased["rebased"] == "evidence/target.test/validation/AQ-9/run/diff.json"
+    assert rebased["source_root_digest"].startswith("source-root:")
+    assert not any(row["owner"] == "ledger" for row in result["quarantined"])
+
+
+def test_staged_import_rejects_a_rebased_reference_with_no_material_in_the_copy(tmp_path):
+    source = tmp_path / "source"
+    absolute = str(source / "evidence" / "target.test" / "validation" / "AQ-9" / "run" / "diff.json")
+    target = _fixture(source, ledger=[_ledger_row(evidence_ref=absolute)])
+    staged = tmp_path / "staging-root"
+
+    result = import_target_staged(source, staged, target)
+
+    # The path is under the declared source root, but the copy has no material
+    # there: nothing is invented and the row stays quarantined.
+    assert result["imported"]["observations"] == 0
+    assert any(row["owner"] == "ledger" and "no material in the migration copy" in row["reason"]
+               for row in result["quarantined"])
+
+
+def test_staged_import_does_not_rebase_an_absolute_reference_outside_the_source_root(tmp_path):
+    source = tmp_path / "source"
+    target = _fixture(
+        source,
+        ledger=[_ledger_row(evidence_ref="/srv/other-host/evidence/target.test/validation/run/diff.json")],
+    )
+    staged = tmp_path / "staging-root"
+
+    result = import_target_staged(source, staged, target)
+
+    assert result["imported"]["observations"] == 0
+    assert result["legacy"].get("rebased_references") in (None, [])
+    assert any(row["owner"] == "ledger" and "outside the declared migration source root" in row["reason"]
+               for row in result["quarantined"])
+
+
+def test_case_object_path_endpoint_is_resolved_against_the_observed_origin(tmp_path):
+    target = _fixture(
+        tmp_path,
+        ledger=[_ledger_row()],
+        evidence=[("evidence/target.test/validation/AQ-9/run/diff.json", b"peer read")],
+        case_state=_case_payload(
+            actors={"owner_a": {"role": "user", "label": "owner a"}},
+            objects={"basket-1": {"type": "basket", "object_id": "1", "owner_actor": "owner_a",
+                                  "endpoint": "/rest/basket/1", "status": "active", "notes": "owner read"}},
+        ),
+    )
+
+    result = import_target(tmp_path, target)
+
+    assert result["legacy"]["case_context_import"]["objects"] == 1
+    assert not any(row["owner"] == "case-state" and "endpoint" in row["reason"]
+                   for row in result["quarantined"])
+
+
+def test_case_object_path_endpoint_without_an_observed_origin_stays_quarantined(tmp_path):
+    target = _fixture(
+        tmp_path,
+        case_state=_case_payload(
+            actors={"owner_a": {"role": "user", "label": "owner a"}},
+            objects={"basket-1": {"type": "basket", "object_id": "1", "owner_actor": "owner_a",
+                                  "endpoint": "/rest/basket/1", "status": "active"}},
+        ),
+    )
+
+    result = import_target(tmp_path, target)
+
+    assert result["legacy"]["case_context_import"]["objects"] == 0
+    assert any(row["owner"] == "case-state" and "no single origin" in row["reason"]
+               for row in result["quarantined"])
+
+
+def test_manifest_and_copy_agree_on_runtime_locks(tmp_path):
+    """A lock the manifest hashes but the copy omits fails promotion; keep them aligned."""
+    source = tmp_path / "source"
+    target = _fixture(source)
+    locks = source / "state" / target / "locks"
+    locks.mkdir(parents=True)
+    (locks / "action_queue.lock").write_text("", encoding="utf-8")
+    dot_locks = source / "findings" / target / ".locks"
+    dot_locks.mkdir(parents=True)
+    (dot_locks / "findings.lock").write_text("", encoding="utf-8")
+
+    staged = tmp_path / "staging-root"
+    result = import_target_staged(source, staged, target)
+
+    manifest_paths = {item["path"] for item in result["receipt"]["source_manifest"]["files"]}
+    assert not any("/locks/" in path or "/.locks/" in path for path in manifest_paths)
+    # Promotion re-verifies the manifest against the published root; it must not
+    # report a lock as a vanished migration input.
+    published = tmp_path / "published-root"
+    publish_preview(staged, published, target)
+    promoted = promote_target(published, target)
+    assert promoted["status"] == "primary"
+
+
+def test_legacy_private_session_without_target_or_digest_imports_without_the_binding(tmp_path):
+    """Pre-contract private material is never rewritten, so the record carries no binding."""
+    target = _fixture(tmp_path)
+    sessions_dir = tmp_path / ".private" / "case-state" / target / "sessions"
+    sessions_dir.mkdir(parents=True)
+    # A file exactly as the retired writer left it: no target, no content_sha256.
+    (sessions_dir / "aabbccddeeff00112233.json").write_text(
+        json.dumps({"schema_version": 1, "session_id": "s_legacy", "actor": "owner_a",
+                    "kind": "bearer", "header_name": "Authorization", "header_value": "Bearer x",
+                    "headers": {"Authorization": "Bearer x"}}),
+        encoding="utf-8",
+    )
+    case_path = tmp_path / "state" / target / "case_state.json"
+    case_path.write_text(json.dumps(_case_payload(
+        actors={"owner_a": {"role": "user", "label": "owner a"}},
+        sessions={"s_legacy": {"actor": "owner_a", "kind": "bearer", "validity": "verified",
+                               "private_ref": ".private/case-state/target.test/sessions/aabbccddeeff00112233.json"}},
+    )), encoding="utf-8")
+
+    result = import_target(tmp_path, target)
+
+    assert result["legacy"]["case_context_import"]["sessions"] == 1
+    assert result["legacy"]["case_context_import"]["quarantined"] == 0
+    (dropped,) = result["legacy"]["private_bindings_dropped"]
+    assert dropped["kind"] == "session" and "content_sha256" in dropped["reason"]
+    # The private file is untouched: migration never rewrites private material.
+    assert (sessions_dir / "aabbccddeeff00112233.json").exists()
+    assert "content_sha256" not in json.loads(
+        (sessions_dir / "aabbccddeeff00112233.json").read_text(encoding="utf-8")
+    )

@@ -132,3 +132,74 @@ synthetic fixture ledger was used to verify the complete staged path: 117 rows c
 the receipt became `complete`, and publish succeeded in an isolated `/tmp`
 destination. Those synthetic decisions are not operator dispositions for the
 fixture and were not promoted.
+
+## Correction (2026-09-22, post-review)
+
+An independent review of the disposition-ledger change found that several
+statements above were stronger than the implementation, and that the ledger
+itself under-covered the real target. The record above is left as written; this
+section corrects it.
+
+- **The ledger was generated against an incomplete source.** Its bound manifest
+  `877ed02a…` (1,285 files) matches
+  `/tmp/ccst-cutover-source-20260922-127.0.0.1_3001` exactly, and that export
+  contains **zero** `reports/` entries. Copying the real
+  `reports/127.0.0.1:3001/` (10 files) into the export makes the manifest equal
+  the live repository manifest `860c7d0d…` (1,295 files); those 10 files are the
+  only difference between the two. The 117-row ledger therefore covers 1,285 of
+  the 1,295 files a real cutover would migrate, and its `decision_rule` ("every
+  item requires an explicit operator decision") does not account for the 10
+  preserved report artifacts that a real import reports.
+- **Binding did not cover the decision table.** `source_manifest_sha256` is read
+  from the payload itself and `ledger_sha256` only covers the items, so a
+  decision table generated for one report could be re-bound to a different input
+  by editing one field. This was reproduced: reusing the fixture's 117 IDs
+  against the reports-complete input, with the manifest field rewritten, was
+  accepted and produced a `complete` receipt.
+- **"before creating a destination Store" was not accurate for item-level
+  checks.** Target/manifest binding is validated before staging begins, but
+  unknown/duplicate IDs, placeholder operators, and unsupported decisions are
+  validated at the end of `import_target`, after the destination Store exists
+  and the full import has run. A failure retains the staging root for diagnosis
+  and never publishes it.
+- **"report index as the explicit duplicate discriminator" made identity
+  order-dependent.** 45 of the 117 rows carried no event/id/line, so their ID
+  changed if the report was reordered — contradicting the "reordering does not
+  change the identity" contract. All 117 IDs were reproducible only under that
+  index rule.
+- **Ledger governance metadata was decorative.** `status: "pending"`, `count`,
+  `staged_root`, `source_report_status`, and `decision_rule` were written but
+  never read or enforced by the tool.
+
+Fixes applied in the same review cycle (see
+`transactional-target-state.md` § Migration Quarantine Disposition Contract for
+the resulting contract):
+
+- Identity no longer includes report position; identical rows are told apart by
+  occurrence count, so the identity set is order-independent. Verified on the
+  real 117 rows: identity set and roster digest are unchanged under reversal and
+  under a seeded shuffle, while changing a reported fact changes both.
+- The ledger may declare `quarantine_roster_sha256` (a digest over the complete
+  source identity set), which is now required to match the input. A rebind
+  attempt is refused with `disposition ledger quarantine roster does not match
+  migration input`; the rebind reproduction above now fails instead of
+  publishing.
+- `rebind_after_export_verification` is accepted (it is what the generated
+  ledger advertises) but is **non-terminal**: it and `operator_review` are
+  recorded as `recorded_decision` on a still-quarantined row and keep the report
+  `partial`. Only `preserve_verdict` and `permanent_quarantine` can clear the
+  publish gate.
+- Governance metadata is enforced for payloads declaring the cutover ledger
+  `kind`: a placeholder `status` and a `count` that disagrees with `items` are
+  refused.
+- Staged receipts now record preserved-but-unregistered report artifacts under
+  `unregistered_artifacts` (count, paths, digests), so that fact survives the
+  run instead of existing only in the in-memory report.
+- `--disposition-ledger` without `--import-source` is now a CLI error rather
+  than being silently ignored.
+
+Consequences for the cutover: the fixture ledger is unusable against a real
+target (it is bound to a reports-less manifest) and every quarantine item needs
+a fresh, terminal decision. The ledger file itself must be archived with the
+cutover audit; the receipt stores only its digest and roster digest, not the
+per-row decisions.

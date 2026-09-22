@@ -872,3 +872,91 @@ CAS，但旧 Queue 的 metadata 专属 hypothesis cap/runner-field/skill-card �
 - 任务仍为 `in_progress`：未切换真实目标、未全局删除仍服务 legacy 的接口、未跑在线
   能力对照；代码已提交但未推送、未归档。完整性重读后的性能已复测，结果与历史方向一致；
   不构成性能收益声明。
+
+### B5 接续：迁移处置账本身份与绑定修复（2026-09-22）
+
+三轮独立审核对 `2885c69`（migration disposition ledger）确认 11 项缺陷，全部在本轮修复：
+
+- **账本绑定了不完整的源（阻断）**：ledger 的 `source_manifest_sha256`
+  `877ed02a…`（1,285 文件）精确匹配 `/tmp/ccst-cutover-source-20260922-127.0.0.1_3001`，
+  而该 export **不含 `reports/`**。仓库真实 manifest `860c7d0d…` 为 1,295 文件，
+  路径差集恰好是 `reports/127.0.0.1:3001/` 下 10 个文件，无其它差异。即 117 行账本
+  只覆盖真实切换需要迁移的 1,295 个文件中的 1,285 个；其 `decision_rule`
+  （"every item requires an explicit operator decision"）未覆盖真实导入会报告的 10 项
+  保留 report artifacts。
+- **绑定不覆盖决策表（阻断）**：`source_manifest_sha256` 取自 payload 自身，
+  `ledger_sha256` 只覆盖 items，因此为一份报告生成的决策表只需改一个字段即可重绑到
+  另一份输入。已复现：把 fixture 的 117 个 ID 用于 reports-complete 输入并改写
+  manifest 字段，被接受并产出 `complete` receipt。
+- **身份依赖报告顺序（中）**：117 行中 45 行无 event/id/line，其 ID 在报告重排后会变化，
+  与"重排不改变身份"契约矛盾。
+- **治理元数据仅装饰（中）**：`status: "pending"`、`count`、`staged_root`、
+  `source_report_status`、`decision_rule` 被写出但从不读取或强制。
+- **终局语义错误（高）**：`operator_review` 与 `rebind_after_export_verification`
+  可清空发布门槛，但二者记录的是未完成动作。
+- **CLI 静默忽略（中）**：`--disposition-ledger` 不带 `--import-source` 时不报错。
+
+修复落点与验证（见 spec `transactional-target-state.md` § Migration Quarantine
+Disposition Contract）：
+
+- 身份移除报告位置，同字段组按 occurrence 计数区分，身份集合与顺序无关。真实 117 行
+  上验证：反转与种子打乱后身份集合和 roster 摘要不变；改动任一上报事实则两者均变。
+- 账本可声明 `quarantine_roster_sha256`（完整源身份集合摘要），现要求与输入一致。
+  重绑尝试被拒：`disposition ledger quarantine roster does not match migration input`。
+- `rebind_after_export_verification` 与 `operator_review` 归为非终局：记录为
+  `recorded_decision`，行保留在 quarantine，报告保持 `partial`。只有 `preserve_verdict`
+  和 `permanent_quarantine` 能清空发布门槛。
+- 声明 cutover ledger `kind` 的 payload 强制治理元数据：占位 `status` 和与 `items`
+  不符的 `count` 被拒。
+- staged receipt 新增 `unregistered_artifacts`（数量、路径、摘要），使"保留但未登记"
+  这一事实跨运行留存；`--disposition-ledger` 缺 `--import-source` 现为 CLI 错误。
+- 真实 fixture 复验：旧 pending ledger 与 ready ledger 均被 manifest 校验拦住；
+  复用旧 ID 被 roster+身份拦住；reports-complete 输入下 receipt 正确写出
+  `unregistered_artifacts: {"report_artifacts": 10, ...}`。
+- 验证：`tests/test_target_migration.py` **57 passed**；全量
+  `rtk proxy python3 -B -m pytest -q -p no:cacheprovider` → **2265 passed in 56.51s**；
+  `compileall`、`git diff --check` 通过。
+- 修正后的两处不实描述已按"不改写历史"约定以追加更正段写入
+  `research/cutover-readiness-20260922.md`；`research/cutover-review-checklist.md`
+  补 ledger 归档项（receipt 只存 `ledger_sha256`/`quarantine_roster_sha256`，不存逐行决策）。
+- 结论：fixture 账本对真实目标不可用（绑定于 reports-less manifest），每个隔离项都需
+  重新生成并由 operator 给出终局决策。未提交、未推送，真实切换未授权。
+
+### B5/B6 真实目标切换（2026-09-22，已授权执行）
+
+目标 `127.0.0.1:3001` 已完成真实切换：`legacy → primary`，store_id
+`022e4e9618264d8a92df6262a3a1b749`，manifest `31660dc141c0d173…`（1,287 文件），
+receipt `complete` / `activation_status: active`。
+
+切换前先解决了阻断真实切换的两类问题：
+
+- **迁移兼容缺口（本轮修复）**：19 条 legacy 绝对 `evidence_ref`（文件都在，只是写死了
+  运行目录前缀）、2 条 Case 相对 endpoint、3 个缺 `target`/`content_sha256` 的旧私密
+  session 文件。修复方式分别是：按 §9.6 第 1 条**声明源根后显式 rebase**（`source_root=`
+  显式传入，rebase 结果必须在副本内可读，否则照旧隔离）；复用已有的单一 origin 映射；
+  **不重写私密材料**，记录照常导入、去掉无法验证的绑定并记入
+  `legacy.private_bindings_dropped`。隔离项 117 → 0。
+- **manifest/copy 规则不一致（本轮修复）**：manifest 把 9 个运行锁计入，而 copy 按设计
+  排除 `locks/`，导致 promote 报"迁移输入消失"。抽出共享判定 `_is_migration_input()`，
+  两侧共用，manifest 1,295 → 1,287 文件。
+
+97 项处置的最终分类：19 绝对引用 + 2 case endpoint + 3 session 经修复后无损导入；
+63 条 queue 终局裁决 `preserve_verdict`；30 条（25 无 raw 引用且 `operation_id` 全空、
+4 缺 endpoint/family、1 raw 物理缺失）`permanent_quarantine`。
+
+切换执行与验证：
+
+- 静默复核（无 lock 持有者、无 writer 进程、无打开句柄）→ 备份 1,287/1,287 逐字节校验
+  → staged import（receipt `complete`、隔离 0）→ install → promote。
+- 事后验证：Store 可读（11 findings）、可写（新事实成功创建，探测 action 已按追加事实
+  取消）、旧 writer 已被 fence 拒绝（`legacy action_queue writer is disabled for primary
+  target`）；全量 **2,272 passed**。
+- 现场：legacy 归档于 `state/127.0.0.1:3001/legacy-archive/`（6 文件，字节完整）；
+  raw/reports/私密材料未冻结（evidence 186、reports 10、.private/validation 1035、
+  .private/case-state 3）；备份在 `/root/ccst-cutover-20260922/backup/`。
+- 审计：`/root/ccst-cutover-20260922/cutover-audit.json`；recon 目录清空事故按 operator
+  选择以显式接受记录（`data-incident-acceptance.json`：投影 174 项输入中 130 项指向
+  `recon/` 且全部悬空，无副本可恢复，未声称已恢复）。
+- 回退边界：激活已提交，`restore_legacy_metadata` 拒绝回退；恢复只能前向（Store 导出或
+  用归档材料）。
+- 本轮代码改动仍未提交、未推送。

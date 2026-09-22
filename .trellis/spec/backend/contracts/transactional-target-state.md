@@ -264,23 +264,42 @@ legacy rows into a publishable preview.
 **Contracts**:
 
 - Quarantine identity is a bounded hash of owner, reason, path, event/id,
-  endpoint, evidence reference, line, status and family. Reordering the report
-  does not change the identity; changing a fact does.
-- `decision` is limited to `preserve_verdict`, `permanent_quarantine`, or
-  `operator_review`. All decisions require a non-placeholder operator and
-  decision reference; `operator_review` is not a technical judgment.
+  endpoint, evidence reference, line, status, family, result, declared/expected
+  target. Report position is not part of it: reordering the report does not
+  change the identity, and changing a fact does. Rows that agree on every
+  bounded field are told apart by occurrence count inside that group.
+- The ledger may carry `quarantine_roster_sha256`, a digest over the complete
+  identity set of the source report. When present it must match the input, so a
+  decision table generated for one report cannot be re-bound to another.
+  Bare payloads without it remain usable only at the caller's own risk.
+- A payload declaring `kind: target_cutover_quarantine_disposition_ledger` must
+  also carry a finalized `status` (a placeholder such as `pending` is refused)
+  and a `count` equal to its `items` length.
+- `decision` is limited to `preserve_verdict`, `permanent_quarantine`,
+  `rebind_after_export_verification`, or `operator_review`. All decisions
+  require a non-placeholder operator and decision reference. Only
+  `preserve_verdict` and `permanent_quarantine` are terminal: they close the
+  item and may clear the publish gate. `rebind_after_export_verification` and
+  `operator_review` are recorded as `recorded_decision` on a still-quarantined
+  row and keep the report `partial`; they assert that work remains.
 - The ledger must contain every quarantine ID exactly once. Missing or unknown
   IDs keep the report `partial`; no decision can create an assessment,
   completion, delivery, or observation.
+- Preserved report artifacts stay artifacts. They are copied and digest-listed
+  but never auto-registered; staged receipts record them under
+  `unregistered_artifacts` so the preserved-but-unregistered fact survives the
+  run instead of living only in the in-memory report.
 
 **Validation & Error Matrix**:
 
 | Condition | Required result |
 |---|---|
-| Ledger target or source manifest differs | `StoreError`; no staging database is created |
+| Ledger target, source manifest, or declared roster differs | `StoreError` before any staging import |
 | Missing/duplicate/unknown quarantine ID | `StoreError`, or `partial` when rows are omitted; never publish |
 | `PENDING`, placeholder operator/reference, or unsupported decision | `StoreError`; never publish |
-| Complete, matching, fact-preserving ledger | report/receipt may become `ready`/`complete` and proceed to explicit publish |
+| `status` is a placeholder, or `count` disagrees with `items` | `StoreError`; never publish |
+| All decisions terminal, complete and fact-preserving | report/receipt may become `ready`/`complete` and proceed to explicit publish |
+| Any decision non-terminal (`operator_review`, `rebind_after_export_verification`) | row stays quarantined, report stays `partial`; never publish |
 | No ledger supplied while quarantine exists | report remains `partial`; legacy verdicts stay quarantined |
 
 **Good/Base/Bad Cases**:
@@ -290,13 +309,20 @@ legacy rows into a publishable preview.
 - Base: preview without a ledger reports all quarantine rows and remains
   publish-blocked.
 - Bad: treating a count, endpoint similarity, or `PENDING` row as a decision.
+- Bad: recording `operator_review` and reading the run as approved, or reusing a
+  decision table generated against a different manifest or roster.
 
 **Tests Required**:
 
-- `tests/test_target_migration.py` asserts complete disposition clears only
-  quarantine and produces a complete receipt; missing rows, pending decisions,
-  target/manifest mismatch, and placeholder references fail closed.
-- Invalid ledger binding fails before the destination Store is created.
+- `tests/test_target_migration.py` asserts complete terminal disposition clears
+  only quarantine and produces a complete receipt; missing rows, pending
+  decisions, target/manifest/roster mismatch, placeholder references, mismatched
+  governance metadata, and non-terminal decisions all fail closed.
+- Identity is asserted to be order-independent, and a changed fact is asserted
+  to change the roster digest.
+- Binding and governance checks fail before the destination Store is created;
+  item-level decisions are validated after the staged import, whose failed
+  staging root is retained for diagnosis and never published.
 
 **Wrong vs Correct**:
 
@@ -304,13 +330,87 @@ legacy rows into a publishable preview.
 # Wrong: aggregate approval or endpoint similarity authorizes a terminal row.
 ledger = {"items": [{"decision": "PENDING"}]}
 
-# Correct: exact quarantine identity plus an auditable, bounded disposition.
+# Wrong: `operator_review` recorded as if it closed the item.
+ledger = {"status": "complete", "items": [{
+    "quarantine_id": ID, "decision": "operator_review",
+    "operator": "OWNER", "decision_ref": "AUDIT_REF",
+}]}  # accepted, but the row stays quarantined and the gate stays shut
+
+# Correct: exact quarantine identity plus an auditable, bounded, terminal decision.
 item = {
     "quarantine_id": QUARANTINE_ID,
     "decision": "preserve_verdict",
     "operator": "OWNER",
     "decision_ref": "AUDIT_REF",
 }
+```
+
+### Legacy Reference and Migration Input Contract
+
+**Scope / Trigger**: Importing a target whose legacy writers recorded an
+absolute `evidence_ref`, a path-form Case endpoint, a pre-contract private
+material file, or a runtime lock inside a target-owned root.
+
+**Contracts**:
+
+- An absolute `evidence_ref` is rebased only when it provably resolves under the
+  declared migration source root and the resulting relative path has readable
+  material inside the copy. `import_target_staged` passes its export root as
+  `source_root`; the importer never infers a source root from the references it
+  is validating. Every rebase is recorded under
+  `legacy.rebased_references` with the original value, the rewritten value, and
+  a `source-root:<digest>` marker. A reference outside the declared root, or one
+  whose rebased path has no material in the copy, stays quarantined.
+- A path-form Case object endpoint is resolved against the single origin
+  observed in the target's own raw material, exactly like a ledger endpoint.
+  With no single provable origin the object is quarantined; no scheme or host is
+  invented.
+- Private material written before the current contract declares neither `target`
+  nor `content_sha256`, so the Store cannot verify it. Migration never rewrites
+  private material: the Case record is imported without the binding and the
+  omission is listed under `legacy.private_bindings_dropped` with the legacy
+  reference. This preserves the fact without weakening the Store's private
+  material check.
+- The manifest and the copy step share one predicate for what a migration input
+  is. Runtime locks (any path segment `locks`/`.locks`) and store/fence/receipt
+  files are excluded from both. A file the manifest hashes but the copy omits
+  makes promotion report a vanished input, so the two sets must be defined once.
+
+**Validation & Error Matrix**:
+
+| Condition | Required result |
+|---|---|
+| Absolute reference outside the declared source root | Quarantine; no rebase recorded |
+| Rebased path has no material in the copy | Quarantine; no rebase recorded |
+| Path-form Case endpoint with no single observed origin | Quarantine the object; no invented host |
+| Pre-contract private material (no target/digest) | Import the record without the binding; list it under `private_bindings_dropped`; never rewrite the file |
+| Runtime lock under a target-owned root | Excluded from manifest and copy alike |
+| Manifest and copy disagree on a path | Promotion must fail; fix the predicate, never the manifest alone |
+
+**Tests Required**:
+
+- `tests/test_target_migration.py` covers: an absolute reference rebased onto the
+  copy with the notice recorded; a rebased path with no material staying
+  quarantined; an absolute reference outside the declared root staying rejected;
+  a path-form Case object endpoint resolved through the observed origin; the
+  same endpoint without an origin staying quarantined; a pre-contract private
+  session importing without the binding while the file is left byte-identical;
+  and manifest/copy agreement on runtime locks verified through a promote.
+
+**Wrong vs Correct**:
+
+```python
+# Wrong: accept an absolute reference by prefix-stripping whatever it starts with.
+ref = ref.replace("/root/", "")          # guesses; may leave the copy entirely
+
+# Correct: prove the source root, then require the material to exist in the copy.
+rebased, reason = _rebase_source_absolute_ref(source_root, copy_root, ref)
+
+# Wrong: rewrite a pre-contract private file so the Store check passes.
+payload["target"] = canonical            # mutates user private material and its digest
+
+# Correct: import the fact, drop the unverifiable binding, report the omission.
+private_ref, reason = _carryable_private_ref(root, private_ref, canonical)
 ```
 
 ## 4. Validation & Error Matrix
@@ -343,6 +443,8 @@ item = {
 | Runner summary names another backend/Store generation | Reject registration; retain existing raw material |
 | Primary query receives foreign/old shortcut data or raw changes at same revision | Re-read owner and integrity; do not relabel shortcut as bound |
 | Primary report index source revision changes before publication | Conflict; preserve registered bodies and retry projection |
+| Legacy absolute reference outside the declared source root, or with no material in the copy | Quarantine; record a rebase only for a proven, material-backed rewrite |
+| Manifest and copy disagree about a migration input | Promotion fails; fix the shared predicate, never one side |
 
 ## 5. Good / Base / Bad Cases
 
