@@ -109,3 +109,13 @@ promote.
   `preview receipt is incomplete or does not match target`; the published
   destination was not created. No freeze or promote occurred, and the source
   metadata database still exists.
+
+## Quarantine Disposition Ledger
+
+The 117 staged quarantine rows were normalized into the machine-checkable
+ledger `/tmp/ccst-cutover-dispositions-20260922.json`. It has 117 unique
+stable IDs, preserves only bounded paths/reasons, and leaves every decision as
+`PENDING` with operator `OWNER`. The ledger validates that all 45 ledger, 67
+queue, and 5 case-state rows have an explicit allowed-decision set. It is not a
+publishable receipt until every row has a recorded decision and evidence
+reference.
