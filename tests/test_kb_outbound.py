@@ -52,12 +52,14 @@ def test_pull_stats_skips_corrupt_lines(tmp_path: Path) -> None:
     assert stats == {"good-card": {"pulls": 1, "last_pull": "2026-09-14T00:00:00Z"}}
 
 
-def test_claim_records_selected_knowledge_card_pull(tmp_path: Path) -> None:
-    """The queue write path feeds the pull log: selecting knowledge refs at
-    claim time is the mechanical signal outbound review consumes."""
+def test_claim_preserves_card_reference_and_read_is_recorded_explicitly(tmp_path: Path) -> None:
+    """A selected reference remains metadata; explicit read telemetry is separate."""
     import sys
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
     from action_queue import add_manual_action, claim_next_action, load_queue
+
+    from tools.target_store import TargetStore
+    TargetStore(tmp_path, "t.example").initialize()
 
     cards_root = tmp_path / "knowledge" / "cards"
     cards_root.mkdir(parents=True)
@@ -67,6 +69,7 @@ def test_claim_records_selected_knowledge_card_pull(tmp_path: Path) -> None:
         tmp_path,
         target="t.example",
         action_type="validation",
+        metadata={"endpoint": "https://t.example/objects/1", "vuln_class": "idor"},
         evidence="Observed object endpoint.",
         next_question="Does a peer actor get denied?",
         action="Replay with peer actor.",
@@ -79,6 +82,13 @@ def test_claim_records_selected_knowledge_card_pull(tmp_path: Path) -> None:
         metadata={"selected_knowledge_refs": ["knowledge/cards/rest-numeric-id-cross-actor.md"]},
     )
 
+    assert pull_stats(tmp_path) == {}
+    current = load_queue(tmp_path, "t.example")["actions"][0]
+    assert current["metadata"]["selected_knowledge_refs"] == ["knowledge/cards/rest-numeric-id-cross-actor.md"]
+    from tools.knowledge_pull_log import main as record_read
+    assert "card" in (cards_root / "rest-numeric-id-cross-actor.md").read_text()
+    assert record_read(["record", "--card", "rest-numeric-id-cross-actor",
+                        "--target", "t.example", "--repo-root", str(tmp_path)]) == 0
     stats = pull_stats(tmp_path)
     assert stats["rest-numeric-id-cross-actor"]["pulls"] == 1
     assert stats["rest-numeric-id-cross-actor"]["last_pull"] != ""
@@ -261,26 +271,17 @@ def test_show_explicit_target_does_not_bleed_active(tmp_path: Path) -> None:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     import target_memory as tm
 
-    goals = tmp_path / "memory" / "goals"
-    targets = goals / "targets"
-    targets.mkdir(parents=True)
-    (goals / "active.json").write_text(json.dumps({
-        "target": "beta.test", "active_goal": "BETA-GOAL",
-        "current_hypothesis": "BETA-HYP", "phase": "hunt"}))
-    (targets / "alpha.test.json").write_text(json.dumps({
-        "schema_version": 1, "target": "alpha.test",
-        "active_goal": "ALPHA-GOAL", "current_hypothesis": "ALPHA-HYP",
-        "active_leads": [{"ts": "t", "text": "alpha lead"}]}))
+    from tools.target_store import TargetStore
+    import argparse
 
-    orig_active, orig_targets = tm.ACTIVE_PATH, tm.TARGETS_DIR
-    tm.ACTIVE_PATH = goals / "active.json"
-    tm.TARGETS_DIR = targets
-    try:
-        import argparse
-
-        out = tm.show(argparse.Namespace(target="alpha.test"))
-        assert "BETA" not in out
-        assert "ALPHA-GOAL" in out
-        assert "ALPHA-HYP" in out
-    finally:
-        tm.ACTIVE_PATH, tm.TARGETS_DIR = orig_active, orig_targets
+    for target, goal in (("alpha.test", "ALPHA-GOAL"), ("beta.test", "BETA-GOAL")):
+        store = TargetStore(tmp_path, target)
+        store.initialize()
+        store.set_active_goal(command_id="goal", goal=goal, actor="test")
+        store.remember(command_id="hypothesis", kind="hypothesis", statement=goal.replace("GOAL", "HYP"),
+                       conditions="test", reopen_when="", next_intent="", evidence=[], actor="test")
+    tm.set_active(argparse.Namespace(target="beta.test", repo_root=tmp_path))
+    out = tm.show(argparse.Namespace(target="alpha.test", repo_root=tmp_path))
+    assert "BETA" not in out
+    assert "ALPHA-GOAL" in out
+    assert "ALPHA-HYP" in out

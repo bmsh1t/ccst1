@@ -17,35 +17,17 @@ import json
 import os
 import re
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 from urllib.parse import urlparse
 
 try:
-    from finding_index import (
-        load_finding_index,
-        update_finding_status,
-        upsert_finding,
-        verify_finding_owner_provenance,
-    )
+    from finding_index import _finding_backend_context
 except ImportError:  # pragma: no cover - package import path
-    from tools.finding_index import (
-        load_finding_index,
-        update_finding_status,
-        upsert_finding,
-        verify_finding_owner_provenance,
-    )
+    from tools.finding_index import _finding_backend_context
 
-try:
-    from contracts import artifact_digest_material, runner_operation_id
-except ImportError:  # pragma: no cover - package import path
-    from tools.contracts import artifact_digest_material, runner_operation_id
-
-try:
-    from runner_witness import canonical_runner_witness, _runner_endpoint_slots
-except ImportError:  # pragma: no cover - package import path
-    from tools.runner_witness import canonical_runner_witness, _runner_endpoint_slots  # type: ignore
 
 try:
     from closure_resolver import canonical_vuln_class
@@ -53,24 +35,17 @@ except ImportError:  # pragma: no cover - package import path
     from tools.closure_resolver import canonical_vuln_class
 
 try:
-    from target_paths import (
-        canonical_target_value,
-        resolve_target_url,
-        target_storage_key,
-        url_belongs_to_target,
-    )
+    from target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - package import path
     from tools.target_paths import (
         canonical_target_value,
-        resolve_target_url,
         target_storage_key,
-        url_belongs_to_target,
     )
 
 try:
-    from target_store import StoreError, TargetStore, target_backend
+    from target_store import StoreError, runtime_store
 except ImportError:  # pragma: no cover - package import path
-    from tools.target_store import StoreError, TargetStore, target_backend
+    from tools.target_store import StoreError, runtime_store
 
 try:
     from browser_evidence import (
@@ -547,43 +522,6 @@ def validation_evidence_passed(summary: dict) -> bool:
     return four and seven
 
 
-def _canonical_runner_witness_for_finding(
-    findings_dir: str | Path,
-    finding_id: str,
-    *,
-    target: str,
-) -> dict[str, Any]:
-    """Load and verify the runner witness owned by one canonical Finding.
-
-    Validation and reporting share one witness definition so neither consumer
-    can establish a weaker finality path than the other.
-    """
-    owner_root = _repo_root_from_findings_dir(findings_dir)
-    prefill = load_finding_prefill(
-        str(findings_dir),
-        str(finding_id),
-        migrate_legacy=False,
-        include_canonical=True,
-        repo_root=owner_root,
-    )
-    canonical = prefill.get("_canonical_finding") if isinstance(prefill, dict) else None
-    if not isinstance(canonical, dict):
-        return {"valid": False, "reason": "canonical finding not found"}
-    # A Finding is scoped by its owner index, while its endpoint may live on a
-    # target-owned subdomain.  Use the owner target for witness and Ledger
-    # checks so endpoint host discovery cannot split one lifecycle across keys.
-    owner_target = canonical_target_value(str(prefill.get("target") or ""))
-    if not owner_target:
-        owner_target = canonical_target_value(Path(findings_dir).name)
-    if not owner_target:
-        owner_target = canonical_target_value(target)
-    return canonical_runner_witness(
-        canonical,
-        findings_dir=findings_dir,
-        target=owner_target,
-    )
-
-
 def build_validation_summary(info: dict, *, all_pass: bool, report_path: str | Path) -> dict:
     """Build a compact JSON summary that /remember can import later."""
     vuln_class = (info.get("vuln_type") or "").strip().lower()
@@ -608,6 +546,25 @@ def build_validation_summary(info: dict, *, all_pass: bool, report_path: str | P
     evidence_passed = bool(all_pass and seven_question_gate.get("passed"))
     report_draft = inspect_report_draft(report_path)
     report_ready = bool(evidence_passed and report_draft.get("status") == "complete")
+    delivery_judgment = None
+    if (info.get("machine_decision") or {}).get("store_command"):
+        # Novelty and destination policy do not decide whether a boundary was violated.
+        questions = seven_question_gate["questions"]
+        evidence_passed = all(gate_info.get(f"gate{number}_pass") is True for number in (1, 2, 3)) and all(
+            questions[key]["status"] == "pass"
+            for key in ("q1_replayable_now", "q2_impact_demonstrated", "q3_target_context",
+                        "q4_attacker_access", "q6_impact_beyond_possible")
+        )
+        exclusions = []
+        if gate_info.get("gate4_pass") is False:
+            exclusions.append("Gate 4: duplicate at the destination")
+        for key in ("q5_not_known_behavior", "q7_not_never_submit"):
+            if questions[key]["status"] == "fail":
+                exclusions.append(f"{key}: {questions[key]['basis']}")
+        delivery_judgment = {
+            "status": "ineligible" if exclusions else "eligible" if report_ready else "deferred",
+            "reason": "; ".join(exclusions) if exclusions else "report-ready" if report_ready else "validation/report gate incomplete",
+        }
     # Linked validation belongs to the canonical Finding owner.  Ad-hoc
     # validation keeps endpoint-host compatibility because no owner index is
     # available to supply a stronger target identity.
@@ -642,6 +599,8 @@ def build_validation_summary(info: dict, *, all_pass: bool, report_path: str | P
         "report_path": str(report_path),
         "validated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
+    if delivery_judgment is not None:
+        summary["delivery_judgment"] = delivery_judgment
     if cvss_score is not None:
         summary["cvss_score"] = float(cvss_score)
         summary["cvss_vector"] = str(info.get("cvss_vector") or "")
@@ -686,6 +645,8 @@ def build_validation_summary(info: dict, *, all_pass: bool, report_path: str | P
             ],
             "runner_summary": str(machine_decision.get("runner_summary") or ""),
         }
+        if "store_command" in machine_decision:
+            summary["machine_decision"]["store_command"] = machine_decision["store_command"]
     # 源归因透传：calibration 回写要读 summary.source_knowledge_refs。
     adopted_sources = info.get("source_knowledge_refs")
     if isinstance(adopted_sources, list) and adopted_sources:
@@ -811,554 +772,24 @@ def ensure_report_output_path(output_path: str | Path) -> Path:
     return path
 
 
-def mark_finding_validated(findings_dir: str, finding_id: str, summary: dict, summary_path: str | Path) -> None:
-    """Update the canonical finding after validation completes."""
-    if not findings_dir or not finding_id:
-        return
-    status = "validated" if validation_evidence_passed(summary) else "partial"
-    runner_witness: dict[str, Any] | None = None
-    if status == "validated":
-        target = canonical_target_value(str(summary.get("target") or ""))
-        if not target:
-            target = canonical_target_value(Path(findings_dir).name)
-        runner_witness = _canonical_runner_witness_for_finding(
-            findings_dir,
-            finding_id,
-            target=target,
-        )
-        if not runner_witness.get("valid"):
-            raise ValueError(
-                "canonical runner witness required before validation finality: "
-                f"{runner_witness.get('reason') or 'missing witness'}"
-            )
-    updates: dict[str, Any] = {
-        "validation_status": status,
-        "validation_summary": str(summary_path),
-        "validation_report_path": str(summary.get("report_path") or ""),
-        "validated_at": summary.get("validated_at", ""),
-    }
-    if str(summary.get("machine_decision", {}).get("source") or "").strip():
-        updates["severity"] = summary["severity"]
-    if runner_witness and runner_witness.get("summary_path"):
-        updates["runner_summary_path"] = str(runner_witness["summary_path"])
-        runner_summary = runner_witness.get("summary")
-        if isinstance(runner_summary, dict) and runner_summary.get("operation_id"):
-            updates["runner_operation_id"] = str(runner_summary["operation_id"])
-    updated = update_finding_status(
-        findings_dir,
-        finding_id,
-        **updates,
-    )
-    if updated is None:
-        raise ValueError(f"canonical finding not found: {findings_dir}/{finding_id}")
-
-
-def _endpoint_path_for_method_match(value: str) -> str:
-    raw = str(value or "").strip()
-    if not raw:
-        return ""
-    if raw.startswith(("http://", "https://")):
-        parsed = urlparse(raw)
-        return (parsed.path or "/").split("?", 1)[0].split("#", 1)[0]
-    return raw.split("?", 1)[0].split("#", 1)[0] or "/"
-
-
-def _validation_method_from_summary(summary: dict, repo: Path) -> str:
-    """Return the replay method without guessing from endpoint shape.
-
-    Explicit summary data wins. For older ad-hoc summaries that missed
-    ``method``, reuse a prior non-validate ledger entry for the same
-    endpoint/vulnerability. This preserves evidence fidelity while avoiding
-    path-based heuristics or value judgments.
-    """
-    explicit = str(summary.get("method") or "").strip()
-    if explicit:
-        return normalize_http_method(explicit)
-
-    target = str(summary.get("target") or "").strip()
-    endpoint = _endpoint_path_for_method_match(str(summary.get("endpoint") or ""))
-    vuln_class = str(summary.get("vuln_class") or "validation").strip().lower()
-    if not target or not endpoint:
-        return "GET"
-
-    if target_backend(repo, target) == "primary":
-        try:
-            from current_truth import current_cell_projection
-        except ImportError:  # pragma: no cover - package import path
-            from tools.current_truth import current_cell_projection
-
-        truth = current_cell_projection(repo, target)
-        health = truth.get("health") if isinstance(truth, dict) else None
-        if not isinstance(health, dict) or health.get("status") != "ready":
-            raise StoreError("primary evidence store is partial; validation method is unavailable")
-        for entry in reversed(truth.get("records") or []):
-            if _endpoint_path_for_method_match(str(entry.get("endpoint") or "")) != endpoint:
-                continue
-            if str(entry.get("vuln_class") or "").strip().lower() != vuln_class:
-                continue
-            method = str(entry.get("method") or "").strip()
-            if method:
-                return normalize_http_method(method)
-        raise StoreError("primary evidence store has no recorded method for this finding")
-
-    try:
-        try:
-            from evidence_ledger import load_entries
-        except ImportError:  # pragma: no cover - package import path
-            from tools.evidence_ledger import load_entries
-        entries = load_entries(repo, target)
-    except Exception:  # pragma: no cover - best-effort evidence fidelity fallback
-        return "GET"
-
-    for entry in reversed(entries):
-        if str(entry.get("source") or "").strip().lower() == "validate":
-            continue
-        if _endpoint_path_for_method_match(str(entry.get("endpoint") or "")) != endpoint:
-            continue
-        if str(entry.get("vuln_class") or "").strip().lower() != vuln_class:
-            continue
-        method = str(entry.get("method") or "").strip()
-        if method:
-            return normalize_http_method(method)
-    return "GET"
-
-
-def _finding_url_from_summary(summary: dict) -> str:
-    endpoint = str(summary.get("endpoint") or "").strip()
-    target = str(summary.get("target") or summary.get("program") or "").strip()
-    if not target:
-        return endpoint
-    base = target if target.startswith(("http://", "https://")) else f"http://{target}"
-    return resolve_target_url(endpoint, base) or f"{base.rstrip('/')}/"
-
-
-def _finding_id_from_summary(summary: dict) -> str:
-    vuln_class = str(summary.get("vuln_class") or "validation").strip().lower() or "validation"
-    endpoint = str(summary.get("endpoint") or "").strip() or "endpoint"
-    digest = hashlib.sha1(f"{vuln_class}:{endpoint}".encode("utf-8")).hexdigest()[:10]
-    safe_endpoint = endpoint.split("?", 1)[0].strip("/") or "root"
-    safe_endpoint = "".join(ch if ch.isalnum() else "_" for ch in safe_endpoint).strip("_")
-    return f"validate-{vuln_class}-{safe_endpoint[:48]}-{digest}"
-
-
-def upsert_ad_hoc_validated_finding(summary: dict, summary_path: str | Path, *, repo_root: str | Path | None = None) -> dict:
-    """Create/update a structured finding for `/validate` runs without finding_id.
-
-    Linked validations already update `findings.json` through `mark_finding_validated`.
-    Ad-hoc validations still need a structured row, otherwise a confirmed issue
-    can live only in Evidence Ledger and disappear from `/checkpoint` report flow.
-    """
-    target = str(summary.get("target") or "").strip()
-    endpoint = str(summary.get("endpoint") or "").strip()
-    if not target or not endpoint:
-        return {"status": "skipped", "reason": "missing target or endpoint"}
-    if str(summary.get("finding_id") or "").strip():
-        return {"status": "skipped", "reason": "linked finding already handled"}
-
-    repo = Path(repo_root) if repo_root is not None else BASE_DIR
-    findings_dir = repo / "findings" / target_storage_key(target)
-    finding_id = _finding_id_from_summary(summary)
-    all_pass = validation_evidence_passed(summary)
-    finding = {
-        "id": finding_id,
-        "type": str(summary.get("vuln_class") or "validation").strip().lower() or "validation",
-        "category": str(summary.get("vuln_class") or "validation").strip().lower() or "validation",
-        "title": f"Validated {summary.get('vuln_class', 'validation')} on {_finding_url_from_summary(summary)}",
-        "summary": str(summary.get("notes") or summary.get("impact") or summary.get("result") or "validated finding"),
-        "url": _finding_url_from_summary(summary),
-        "severity": str(summary.get("severity") or "medium").lower(),
-        "confidence": "confirmed" if all_pass else "medium",
-        "source_file": str(summary_path),
-        "line_number": 0,
-        "template_id": "",
-        "raw": f"validate:{summary.get('result', '')}:{summary_path}",
-        "method": _validation_method_from_summary(summary, repo),
-        "validation_status": "validated" if all_pass else "partial",
-        "report_status": "not_generated",
-        "validation_summary": str(summary_path),
-        "validated_at": str(summary.get("validated_at") or ""),
-        "vuln_class": str(summary.get("vuln_class") or "validation"),
-        "report_draft_path": str(summary.get("report_path") or ""),
-        "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-    }
-    result = upsert_finding(findings_dir, finding, target=target)
-    persisted = result.get("finding") or finding
-    return {"status": "updated", "path": result.get("path", ""), "id": persisted["id"]}
-
-
-def _validation_summary_path(report_path: str | Path, *, summary: dict | None = None) -> Path:
-    payload = summary if isinstance(summary, dict) else {}
-    recorded = str(payload.get("validation_summary_path") or "").strip()
-    if recorded:
-        return Path(recorded)
-    return validation_artifact_paths(payload, report_path)[0]
-
-
-def _validation_endpoint_markers(endpoint: str) -> list[str]:
-    """Return full/path endpoint markers suitable for action_queue matching."""
-    raw = str(endpoint or "").strip()
-    markers = [raw] if raw else []
-    if raw.startswith(("http://", "https://")):
-        parsed = urlparse(raw)
-        path_query = parsed.path or "/"
-        if parsed.query:
-            path_query = f"{path_query}?{parsed.query}"
-        markers.append(path_query)
-        markers.append(parsed.path or "/")
-    return [item for item in markers if item]
-
-
-def _validation_action_matches(action: dict, summary: dict) -> bool:
-    """Return whether an action_queue item represents this validation result."""
-    finding_id = str(summary.get("finding_id") or "").strip()
-    endpoint_markers = _validation_endpoint_markers(str(summary.get("endpoint") or ""))
-    metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
-    action_type = str(action.get("type") or "").lower()
-    haystack = " ".join(
-        str(value or "")
-        for value in (
-            action.get("id"),
-            action.get("source_id"),
-            action.get("evidence"),
-            action.get("next_question"),
-            action.get("action"),
-            action.get("command_hint"),
-            metadata.get("finding_id"),
-            metadata.get("endpoint"),
-        )
-    )
-    if finding_id and finding_id in haystack:
-        return True
-    if action_type in {"validation", "candidate-evidence-gap"}:
-        for marker in endpoint_markers:
-            if marker and marker in haystack:
-                return True
-    return False
-
-
-def _validation_ledger_vuln_class(
-    summary: dict,
-    repo: Path,
-    *,
-    target_override: str | None = None,
-) -> str:
-    """优先从关联的 canonical finding 解析 ledger taxonomy。"""
-    requested = str(summary.get("vuln_class") or "validation").strip()
-    target = str(target_override or summary.get("target") or "").strip()
-    finding_id = str(summary.get("finding_id") or "").strip()
-    candidates: list[str] = []
-
-    if target and finding_id:
-        try:
-            try:
-                from finding_index import find_finding
-            except ImportError:  # pragma: no cover - package import path
-                from tools.finding_index import find_finding
-
-            finding = find_finding(
-                repo / "findings" / target_storage_key(target),
-                finding_id,
-                migrate_legacy=False,
-            )
-        except (OSError, ValueError, KeyError):
-            finding = None
-        if isinstance(finding, dict):
-            candidates.extend(
-                str(finding.get(key) or "").strip()
-                for key in ("vuln_class", "type")
-            )
-
-    candidates.append(requested)
-    try:
-        try:
-            from coverage_matrix import normalize_vuln_class
-        except ImportError:  # pragma: no cover - package import path
-            from tools.coverage_matrix import normalize_vuln_class
-
-        for candidate in candidates:
-            if not candidate:
-                continue
-            try:
-                return normalize_vuln_class(candidate)
-            except ValueError:
-                continue
-    except ImportError:  # pragma: no cover - module path failure falls back to ledger owner
-        pass
-    return requested
-
-
-def _resolve_linked_finding_owner(
-    repo: Path,
-    *,
-    target: str,
-    finding_id: str,
-    endpoint: str,
-) -> tuple[Path, str, dict] | None:
-    """Resolve a linked Finding by owner index, including old subdomain summaries.
-
-    Older validation summaries sometimes used the endpoint host as ``target``
-    (for example ``api.TARGET``) while the Finding index was owned by the
-    canonical parent target.  Search the target directory first, then the
-    other canonical indexes, and only accept a row whose endpoint remains
-    target-owned.  This preserves compatibility without creating a second
-    finding owner.
-    """
-    findings_root = repo / "findings"
-    if not findings_root.is_dir():
-        return None
-    candidate_dirs: list[Path] = []
-    try:
-        preferred = findings_root / target_storage_key(target)
-    except (OSError, ValueError):
-        preferred = None
-    if preferred is not None:
-        candidate_dirs.append(preferred)
-    candidate_dirs.extend(
-        path.parent
-        for path in sorted(findings_root.glob("*/findings.json"))
-        if path.parent not in candidate_dirs
-    )
-
-    requested_owner = canonical_target_value(target).strip(".").lower()
-
-    for findings_dir in candidate_dirs:
-        try:
-            payload = load_finding_index(
-                findings_dir,
-                migrate_legacy=False,
-                allow_legacy=True,
-            )
-        except (OSError, ValueError):
-            continue
-        owner_target = canonical_target_value(
-            str(payload.get("target") or findings_dir.name)
-        )
-        if not owner_target:
-            continue
-        owner_value = owner_target.strip(".").lower()
-        target_related = bool(
-            requested_owner
-            and owner_value
-            and (
-                requested_owner == owner_value
-                or requested_owner.endswith(f".{owner_value}")
-                or owner_value.endswith(f".{requested_owner}")
-            )
-        )
-        for finding in payload.get("findings", []):
-            if not isinstance(finding, dict) or str(finding.get("id") or "") != finding_id:
-                continue
-            finding_endpoint = str(
-                finding.get("url") or finding.get("endpoint") or ""
-            ).strip()
-            if finding_endpoint and endpoint and not _machine_endpoints_match(
-                endpoint,
-                finding_endpoint,
-            ) and not url_belongs_to_target(endpoint, owner_target):
-                continue
-            if not target_related and not urlparse(endpoint).netloc:
-                continue
-            if not url_belongs_to_target(endpoint, owner_target):
-                continue
-            return findings_dir, owner_target, finding
-    return None
-
-
 def apply_validation_decision(summary: dict, *, repo_root: str | Path | None = None) -> dict:
     """Apply the validation decision through the target's active owner.
 
     Primary targets persist only the technical assessment and delivery decision
     here. Report publication and action completion remain separate commands.
-    The legacy adapter is isolated below for targets that have not switched.
     """
     repo = Path(repo_root) if repo_root is not None else BASE_DIR
     target = str(summary.get("target") or "").strip()
     endpoint = str(summary.get("endpoint") or "").strip()
     if not target or not endpoint:
         return {"status": "skipped", "reason": "missing target or endpoint"}
-    if target_backend(repo, target) == "primary":
-        return _sync_primary_validation(summary, repo)
-
-    return _sync_legacy_validation_compat(summary, repo)
+    runtime_store(repo, target)
+    return _sync_primary_validation(summary, repo)
 
 
 def sync_validation_artifacts(summary: dict, *, repo_root: str | Path | None = None) -> dict:
-    """Compatibility dispatcher retained for pre-cutover callers.
-
-    The implementation is owner-aware: primary targets never enter the legacy
-    ledger/queue/finding compensation path.
-    """
+    """Apply saved explicit judgments through the same Store command."""
     return apply_validation_decision(summary, repo_root=repo_root)
-
-
-def _sync_legacy_validation_compat(summary: dict, repo: Path) -> dict:
-    """Keep the pre-cutover adapter isolated from primary domain commands."""
-    target = str(summary.get("target") or "").strip()
-    endpoint = str(summary.get("endpoint") or "").strip()
-    if not target or not endpoint:
-        return {"status": "skipped", "reason": "missing target or endpoint"}
-
-    summary_path = _validation_summary_path(
-        summary.get("report_path") or "",
-        summary=summary,
-    )
-    finding_id = str(summary.get("finding_id") or "").strip()
-    owner_target = canonical_target_value(target)
-    findings_dir: Path | None = None
-    if finding_id:
-        linked = _resolve_linked_finding_owner(
-            repo,
-            target=owner_target,
-            finding_id=finding_id,
-            endpoint=endpoint,
-        )
-        if linked is None:
-            findings_dir = repo / "findings" / target_storage_key(target)
-        else:
-            findings_dir, owner_target, _finding = linked
-            # Persist the canonical owner back into old summaries so later
-            # runtime, queue, and memory consumers cannot split the lifecycle
-            # onto the endpoint subdomain.
-            summary["target"] = owner_target
-        try:
-            payload = load_finding_index(
-                findings_dir,
-                migrate_legacy=False,
-                target=owner_target,
-                allow_legacy=True,
-            )
-        except Exception as exc:
-            return {
-                "status": "error",
-                "reason": f"unable to load canonical finding index: {exc}",
-                "finding_index": {"status": "error", "finding_id": finding_id},
-                "ledger": {"status": "skipped"},
-                "action_queue": {"status": "skipped"},
-            }
-        if not any(
-            isinstance(item, dict) and str(item.get("id") or "") == finding_id
-            for item in payload.get("findings", [])
-        ):
-            return {
-                "status": "error",
-                "reason": f"canonical finding not found: {findings_dir}/{finding_id}",
-                "finding_index": {"status": "error", "finding_id": finding_id},
-                "ledger": {"status": "skipped"},
-                "action_queue": {"status": "skipped"},
-            }
-    if validation_evidence_passed(summary):
-        if not finding_id:
-            reason = "canonical finding id and runner witness are required for validation finality"
-            return {
-                "status": "error",
-                "reason": reason,
-                "finding_index": {"status": "error", "reason": reason},
-                "ledger": {"status": "skipped"},
-                "action_queue": {"status": "skipped"},
-            }
-        witness = _canonical_runner_witness_for_finding(
-            findings_dir,
-            finding_id,
-            target=owner_target,
-        )
-        if not witness.get("valid"):
-            reason = (
-                "canonical runner witness required before validation finality: "
-                f"{witness.get('reason') or 'missing witness'}"
-            )
-            return {
-                "status": "error",
-                "reason": reason,
-                "finding_index": {"status": "error", "finding_id": finding_id, "reason": reason},
-                "ledger": {"status": "skipped"},
-                "action_queue": {"status": "skipped"},
-            }
-    ledger_update: dict = {}
-    queue_update: dict = {}
-    finding_update: dict = {}
-
-    try:
-        try:
-            from evidence_ledger import record_entry
-        except ImportError:  # pragma: no cover - package import path
-            from tools.evidence_ledger import record_entry
-
-        ledger_entry = record_entry(
-            repo,
-            target=owner_target,
-            endpoint=endpoint,
-            method=_validation_method_from_summary(summary, repo),
-            vuln_class=_validation_ledger_vuln_class(
-                summary,
-                repo,
-                target_override=owner_target,
-            ),
-            workflow="validate",
-            actor="owner",
-            object_scope="unknown",
-            variant="baseline",
-            source="validate",
-            result="tested_finding" if validation_evidence_passed(summary) else "candidate",
-            evidence_ref=str(summary_path),
-            notes=f"/validate {summary.get('result', '')}: {summary.get('submission_notes_path', '')}",
-        )
-        ledger_update = {
-            "status": "updated",
-            "path": str(repo / "memory" / "evidence" / ledger_entry.get("target_key", "") / "ledger.jsonl"),
-            "result": ledger_entry.get("result", ""),
-        }
-    except Exception as exc:  # pragma: no cover - defensive best-effort path
-        ledger_update = {"status": "error", "error": str(exc)}
-
-    try:
-        try:
-            from action_queue import ACTIVE_STATUSES, load_queue, resolve_action
-        except ImportError:  # pragma: no cover - package import path
-            from tools.action_queue import ACTIVE_STATUSES, load_queue, resolve_action
-
-        queue = load_queue(repo, owner_target)
-        matched = None
-        for action in queue.get("actions", []):
-            if not isinstance(action, dict):
-                continue
-            if str(action.get("status") or "queued") not in ACTIVE_STATUSES:
-                continue
-            if _validation_action_matches(action, summary):
-                matched = action
-                break
-
-        if matched:
-            resolved = resolve_action(
-                repo,
-                target=owner_target,
-                action_id=str(matched.get("id") or ""),
-                status="validated" if validation_evidence_passed(summary) else "candidate",
-                result=f"validation-summary={summary_path}",
-                notes=f"submission-notes={summary.get('submission_notes_path', '')}",
-            )
-            queue_update = {
-                "status": "updated",
-                "id": resolved.get("id", ""),
-                "action_status": resolved.get("status", ""),
-            }
-        else:
-            queue_update = {"status": "skipped", "reason": "no matching active validation action"}
-    except Exception as exc:  # pragma: no cover - defensive best-effort path
-        queue_update = {"status": "error", "error": str(exc)}
-
-    try:
-        finding_update = upsert_ad_hoc_validated_finding(summary, summary_path, repo_root=repo)
-    except Exception as exc:  # pragma: no cover - defensive best-effort path
-        finding_update = {"status": "error", "error": str(exc)}
-
-    child_updates = (ledger_update, queue_update, finding_update)
-    overall_status = "error" if any(item.get("status") == "error" for item in child_updates) else "updated"
-    return {
-        "status": overall_status,
-        "ledger": ledger_update,
-        "action_queue": queue_update,
-        "finding_index": finding_update,
-    }
 
 
 def _sync_primary_validation(summary: dict[str, Any], repo: Path) -> dict[str, Any]:
@@ -1367,46 +798,49 @@ def _sync_primary_validation(summary: dict[str, Any], repo: Path) -> dict[str, A
     finding_id = str(summary.get("finding_id") or "").strip()
     if not finding_id:
         return {"status": "error", "reason": "primary validation requires finding_id"}
-    store = TargetStore(repo, target)
+    store = runtime_store(repo, target)
     try:
         finding = store.finding(finding_id)
     except StoreError as exc:
         return {"status": "error", "reason": f"primary finding missing: {exc}"}
-    evidence = finding.get("evidence") or []
-    if not evidence:
-        return {"status": "error", "reason": "primary validation requires recorded execution evidence"}
+    command = (summary.get("machine_decision") or {}).get("store_command")
+    required = {"store_id", "assessment_id", "delivery_id", "expected_assessment", "expected_delivery", "evidence", "destination"}
+    if not isinstance(command, dict) or command.keys() != required:
+        return {"status": "error", "reason": "primary validation requires a preflight-bound store command; regenerate the decision scaffold"}
+    if command["store_id"] != store.binding()["store_id"]:
+        return {"status": "error", "reason": "primary validation command belongs to a different Store generation"}
+    delivery_judgment = summary.get("delivery_judgment")
+    if (not isinstance(delivery_judgment, dict) or delivery_judgment.keys() != {"status", "reason"}
+            or not isinstance(delivery_judgment["status"], str)
+            or delivery_judgment["status"] not in {"eligible", "ineligible", "deferred"}
+            or not isinstance(delivery_judgment["reason"], str) or not delivery_judgment["reason"].strip()):
+        return {"status": "error", "reason": "primary validation requires an explicit delivery judgment"}
     verdict = "confirmed" if validation_evidence_passed(summary) else "inconclusive"
-    assessment_id = f"assessment:{hashlib.sha256(json.dumps(summary, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:24]}"
+    assessment_id = command["assessment_id"]
     reason = str(summary.get("notes") or summary.get("impact") or "Machine validation decision")
     try:
         assessment = store.assess(
             command_id=assessment_id, finding_id=finding_id, verdict=verdict,
             reason=reason, boundary=str(summary.get("endpoint") or finding.get("endpoint") or ""),
-            impact=str(summary.get("impact") or ""), evidence=evidence,
-            actor="validate", expected_assessment=(finding.get("assessment") or {}).get("id"),
+            impact=str(summary.get("impact") or ""), evidence=command["evidence"],
+            actor="validate", expected_assessment=command["expected_assessment"],
         )
-        assessment_id = assessment_id
     except StoreError as exc:
         return {"status": "error", "reason": f"primary assessment rejected: {exc}"}
-    destination = str((summary.get("machine_decision") or {}).get("destination") or "internal-review")
-    delivery_id = f"delivery:{hashlib.sha256((assessment_id + destination).encode()).hexdigest()[:24]}"
-    delivery_status = "eligible" if bool(summary.get("report_ready")) else "deferred"
-    previous_delivery = next(
-        (item for item in finding.get("deliveries", [])
-         if item.get("destination") == destination and not item.get("stale")),
-        None,
-    )
+    destination = command["destination"]
+    delivery_id = command["delivery_id"]
+    delivery_status = delivery_judgment["status"]
     try:
         delivery = store.decide_delivery(
             command_id=delivery_id, finding_id=finding_id, assessment_id=assessment_id,
             destination=destination, status=delivery_status,
-            reason="report-ready" if delivery_status == "eligible" else "validation/report gate incomplete",
-            actor="validate", expected_decision=str(previous_delivery.get("id")) if previous_delivery else None,
+            reason=delivery_judgment["reason"],
+            actor="validate", expected_decision=command["expected_delivery"],
         )
     except StoreError as exc:
         return {"status": "error", "reason": f"primary delivery decision rejected: {exc}"}
     return {
-        "status": "updated" if not assessment.get("replayed") else "deduplicated",
+        "status": "deduplicated" if assessment.get("replayed") and delivery.get("replayed") else "updated",
         "assessment": {"id": assessment_id, "verdict": verdict},
         "delivery": {"id": delivery_id, "status": delivery_status},
     }
@@ -1429,11 +863,6 @@ def _validation_sync_retry_result(
             "validation_sync": {},
         }
     failed = str(sync.get("status") or "").strip().lower() in {"error", "partial"}
-    failed = failed or any(
-        isinstance(item, dict) and str(item.get("status") or "").strip().lower() in {"error", "partial"}
-        for key in ("ledger", "action_queue", "finding_index")
-        for item in [sync.get(key)]
-    )
     if not failed:
         return None
     return {
@@ -1581,29 +1010,18 @@ def load_finding_prefill(
     migrate_legacy: bool = True,
     include_canonical: bool = False,
     repo_root: str | Path | None = None,
+    target: str | None = None,
 ) -> dict:
-    """Load defaults from findings.json, optionally without legacy write-back."""
-    payload = load_finding_index(findings_dir, migrate_legacy=migrate_legacy)
-    finding = next(
-        (
-            item
-            for item in payload.get("findings", [])
-            if isinstance(item, dict) and str(item.get("id") or "") == finding_id
-        ),
-        None,
-    )
-    if not finding:
-        return {}
+    """Load Store defaults without changing the Finding or its source material."""
+    inferred_root, owner_target = _finding_backend_context(findings_dir, target)
+    owner_root = Path(repo_root).resolve() if repo_root is not None else inferred_root
+    if Path(findings_dir).resolve() != owner_root / "findings" / target_storage_key(owner_target):
+        raise ValueError("findings directory does not match the selected target owner")
+    store = runtime_store(owner_root, owner_target)
+    finding = store.finding(finding_id)
     prefill = {
-        "target": payload.get("target") or Path(findings_dir).name,
-        "vuln_type": (finding.get("type") or "").upper(),
-        "endpoint": finding.get("url") or "",
-        "finding_id": finding.get("id") or finding_id,
-        "source_file": finding.get("source_file") or "",
-        "summary": finding.get("summary") or finding.get("raw") or "",
-        "validation_report_path": finding.get("validation_report_path") or "",
-        "report_draft_path": finding.get("report_draft_path") or "",
-        "report_file": finding.get("report_file") or "",
+        "target": owner_target, "vuln_type": finding["family"], "endpoint": finding["endpoint"],
+        "finding_id": finding_id, "summary": finding["claim"], "store_id": store.binding()["store_id"],
     }
     if include_canonical:
         prefill["_canonical_finding"] = finding
@@ -1787,7 +1205,7 @@ def _validate_machine_runner_witness(
     findings_dir: Path,
     prefill: dict[str, Any],
     repo_root: Path,
-) -> Path:
+) -> tuple[Path, str]:
     """Require one owner-bound runner witness before machine validation writes."""
     summary_path = _resolve_machine_repo_file(
         evidence.get("runner_summary"),
@@ -1802,130 +1220,56 @@ def _validate_machine_runner_witness(
         raise ValueError(f"decision.evidence.runner_summary is invalid JSON: {exc.msg}") from exc
     if not isinstance(runner, dict):
         raise ValueError("decision.evidence.runner_summary must contain one object")
-    if target_backend(repo_root, decision_target) == "primary":
-        if canonical_target_value(str(runner.get("target") or "")) != decision_target:
-            raise ValueError("runner target does not match decision.target")
-        if str(runner.get("finding_id") or "").strip() != finding_id:
-            raise ValueError("runner finding_id does not match decision.finding_id")
-        if runner.get("result") != "tested_finding" or runner.get("candidate_ready") is not True:
-            raise ValueError("primary runner summary must be a candidate-ready tested_finding")
-        operation_id = _required_text(runner.get("store_operation_id"), "evidence.runner_summary.store_operation_id")
-        store = TargetStore(repo_root, decision_target)
-        execution = store.execution(operation_id)
-        if not execution.get("observations"):
-            raise ValueError("primary runner evidence is required before machine validation")
-        if not any(_machine_endpoints_match(decision_endpoint, item.get("endpoint", ""))
-                   for item in execution["observations"]):
-            raise ValueError("primary runner operation endpoint does not match decision.endpoint")
-        if normalize_http_method(execution["observations"][0].get("method")) != decision_method:
-            raise ValueError("primary runner operation method does not match decision.method")
-        return summary_path
-    if runner.get("schema_version") != RUNNER_SUMMARY_SCHEMA_VERSION:
-        raise ValueError(
-            "decision.evidence.runner_summary schema_version must be "
-            f"{RUNNER_SUMMARY_SCHEMA_VERSION}"
-        )
-
-    recorded_summary = _resolve_machine_repo_file(
-        runner.get("summary_path"),
-        "evidence.runner_summary.summary_path",
-        repo_root=repo_root,
-    )
-    if recorded_summary != summary_path:
-        raise ValueError("runner summary_path does not point to the supplied runner summary")
+    store = runtime_store(repo_root, decision_target)
     if canonical_target_value(str(runner.get("target") or "")) != decision_target:
-        raise ValueError(
-            "runner target does not match decision.target — fix: "
-            "record the native evidence or replay against this target, or point runner_summary "
-            "at a run recorded under this target"
-        )
+        raise ValueError("runner target does not match decision.target")
     if str(runner.get("finding_id") or "").strip() != finding_id:
-        raise ValueError(
-            f"runner finding_id does not match decision.finding_id — fix: use "
-            f"`tools/validation_runner.py record-evidence --finding-id {finding_id}` "
-            "for saved native observations, or replay with that finding id; point runner_summary at a run recorded "
-            "under this finding id"
-        )
-    runner_endpoints = _runner_endpoint_slots(runner)
-    if not any(_machine_endpoints_match(decision_endpoint, str(value or "")) for value in runner_endpoints):
-        raise ValueError(
-            "runner endpoint does not match decision.endpoint — fix: endpoint matching is "
-            "EXACT against every endpoint the run recorded (top-level url plus the "
-            "request_pair baseline/variant urls; template placeholders like <id> cannot "
-            "bind a concrete run); register or replay the finding's canonical endpoint "
-            "as the recorded anchor, or regenerate the decision with "
-            "`tools/validate.py --finding-id <id> --scaffold`"
-        )
-    runner_method = normalize_http_method(runner.get("method") or "GET")
-    if runner_method != decision_method:
-        raise ValueError("runner method does not match decision.method — fix: align decision.method with the run's method")
+        raise ValueError("runner finding_id does not match decision.finding_id")
     if runner.get("result") != "tested_finding" or runner.get("candidate_ready") is not True:
-        raise ValueError(
-            "runner summary must be a candidate-ready tested_finding — fix: the recorded "
-            "run is not marked candidate-ready; review the raw observations and collect "
-            "missing evidence before registering a finding-grade assessment or replaying"
-        )
-    operation_id = _required_text(runner.get("operation_id"), "evidence.runner_summary.operation_id")
+        raise ValueError("primary runner summary must be a candidate-ready tested_finding")
+    operation_id = _required_text(runner.get("store_operation_id"), "evidence.runner_summary.store_operation_id")
+    execution = store.execution(operation_id)
+    if execution["outcome"] != "complete" or not execution.get("observations"):
+        raise ValueError("complete primary runner evidence is required before machine validation")
+    linked_steps = {ref["step"] for ref in prefill["_canonical_finding"]["evidence"]
+                    if ref["operation_id"] == operation_id}
+    if not any(item["step"] in linked_steps
+               and _machine_endpoints_match(decision_endpoint, item["endpoint"])
+               and normalize_http_method(item["method"]) == decision_method
+               for item in execution["observations"]):
+        raise ValueError("primary runner operation must bind this finding's endpoint and method")
+    store.verify_operation(operation_id)
+    return summary_path, operation_id
 
-    bindings = runner.get("artifact_bindings")
-    if not isinstance(bindings, list) or not bindings:
-        raise ValueError("runner summary artifact_bindings must be a non-empty list")
-    kinds: set[str] = set()
-    for index, binding in enumerate(bindings):
-        if not isinstance(binding, dict):
-            raise ValueError(f"runner artifact_bindings[{index}] must be an object")
-        kind = _required_text(binding.get("kind"), f"evidence.runner_summary.artifact_bindings[{index}].kind")
-        artifact = _resolve_machine_repo_file(
-            binding.get("ref"),
-            f"evidence.runner_summary.artifact_bindings[{index}].ref",
-            repo_root=repo_root,
-        )
-        expected = _required_text(
-            binding.get("sha256"),
-            f"evidence.runner_summary.artifact_bindings[{index}].sha256",
-        ).lower()
-        actual = hashlib.sha256(artifact.read_bytes()).hexdigest()
-        if not re.fullmatch(r"[0-9a-f]{64}", expected) or actual != expected:
-            raise ValueError(f"runner artifact digest mismatch: {binding.get('ref')}")
-        kinds.add(kind)
-    if not any(kind == "request" or kind.endswith("_request") for kind in kinds):
-        raise ValueError("runner summary must bind at least one request artifact")
-    if not any(kind == "response" or kind.endswith("_response") for kind in kinds):
-        raise ValueError("runner summary must bind at least one response artifact")
 
-    canonical = prefill.get("_canonical_finding")
-    if not isinstance(canonical, dict):
-        raise ValueError("canonical finding is unavailable for runner owner binding")
-    if str(canonical.get("runner_operation_id") or "").strip() != operation_id:
-        raise ValueError("canonical finding runner_operation_id does not match runner summary")
-    canonical_method = str(canonical.get("method") or "").strip()
-    if canonical_method and normalize_http_method(canonical_method) != decision_method:
-        raise ValueError("canonical finding method does not match decision.method")
-    provenance = verify_finding_owner_provenance(findings_dir, canonical, target=decision_target)
-    if provenance.get("valid") is not True:
-        raise ValueError(
-            "canonical finding owner provenance is invalid: "
-            f"{provenance.get('reason') or 'unknown'}"
-        )
-    operation_material = runner.get("operation_material")
-    if not isinstance(operation_material, dict):
-        raise ValueError("runner summary operation_material must be an object")
-    if operation_material.get("artifact_bindings") != artifact_digest_material(bindings):
-        raise ValueError("runner operation material artifact binding mismatch")
-    if canonical_target_value(str(operation_material.get("target") or "")) != decision_target:
-        raise ValueError("runner operation material target does not match decision.target")
-    if runner_operation_id(operation_material) != operation_id:
-        raise ValueError("runner operation_id does not match canonical operation material")
-    # validation_summary points at the validation result after the first run.
-    witness = canonical_runner_witness(canonical, findings_dir=findings_dir, target=decision_target)
-    if not witness.get("valid"):
-        raise ValueError(
-            "canonical runner witness required before machine validation: "
-            f"{witness.get('reason') or 'missing witness'}"
-        )
-    if witness.get("summary_path") != summary_path:
-        raise ValueError("canonical runner witness does not match supplied runner summary")
-    return summary_path
+def _primary_validation_command(decision: dict, prefill: dict, operation_id: str) -> dict:
+    """Bind one authored decision to its evidence and explicit judgment predecessors."""
+    expected = decision.get("store_preconditions", {"assessment_id": None, "delivery_id": None})
+    if not isinstance(expected, dict) or set(expected) != {"assessment_id", "delivery_id"}:
+        raise ValueError("decision.store_preconditions requires assessment_id and delivery_id (IDs or null)")
+    if any(value is not None and (not isinstance(value, str) or not value.strip()) for value in expected.values()):
+        raise ValueError("decision.store_preconditions values must be IDs or null")
+    finding = prefill["_canonical_finding"]
+    evidence = [ref for ref in finding["evidence"] if ref["operation_id"] == operation_id]
+    if not evidence:
+        raise ValueError("primary validation operation is not linked to this finding")
+    digest = hashlib.sha256(json.dumps(
+        [prefill["store_id"], decision, evidence], ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode()).hexdigest()
+    assessment_id, delivery_id = f"assessment:{digest}", f"delivery:{digest}"
+    destination = "internal-review"
+    current_assessment = (finding.get("assessment") or {}).get("id")
+    current_delivery = next((item["id"] for item in finding["deliveries"]
+                             if item["destination"] == destination), None)
+    if current_assessment not in (expected["assessment_id"], assessment_id):
+        raise ValueError("technical assessment changed; regenerate the scaffold before a new decision")
+    if current_delivery not in (expected["delivery_id"], delivery_id):
+        raise ValueError("delivery decision changed; regenerate the scaffold before a new decision")
+    return {
+        "store_id": prefill["store_id"], "assessment_id": assessment_id, "delivery_id": delivery_id,
+        "expected_assessment": expected["assessment_id"], "expected_delivery": expected["delivery_id"],
+        "destination": destination, "evidence": evidence,
+    }
 
 
 def _parse_machine_gates(raw: Any) -> tuple[dict[str, bool], dict[str, dict[str, Any]]]:
@@ -2047,38 +1391,28 @@ def _assert_machine_report_path_available(
     report_content: str,
     repo_root: Path,
     target: str | None = None,
+    store_command: dict | None = None,
 ) -> None:
-    """Reject cross-finding report reuse before the first validation write."""
-    owners: set[str] = set()
-    if target and target_backend(repo_root, target) == "primary":
-        current = TargetStore(repo_root, target).finding(finding_id)
-        for report in current.get("reports", []):
-            owned_path = _resolved_repo_path(report.get("artifact_ref"), repo_root=repo_root)
-            if owned_path == report_path:
-                owners.add(finding_id)
-    else:
-        payload = load_finding_index(findings_dir, migrate_legacy=False)
-        for item in payload.get("findings", []):
-            if not isinstance(item, dict):
-                continue
-            for key in ("validation_report_path", "report_draft_path", "report_file"):
-                owned_path = _resolved_repo_path(item.get(key), repo_root=repo_root)
-                if owned_path == report_path:
-                    owners.add(str(item.get("id") or ""))
-                    break
-    other_owners = {owner for owner in owners if owner and owner != finding_id}
-    if other_owners:
-        raise ValueError(
-            "decision report path is already owned by another finding: "
-            + ", ".join(sorted(other_owners))
-            + " — fix: each finding owns its own report; use "
-            f"findings/<target>/<finding-id>-report.md"
-        )
-    if not report_path.exists() or finding_id in owners:
+    """Allow only the same finding, decision and intact report to replay."""
+    _, owner_target = _finding_backend_context(findings_dir, target)
+    store = runtime_store(repo_root, owner_target)
+    page = store.finding_page(limit=1000)
+    while True:
+        for finding in page["items"]:
+            for report in finding.get("reports", []):
+                if _resolved_repo_path(report.get("artifact_ref"), repo_root=repo_root) == report_path:
+                    if (finding["id"] != finding_id or not store_command or report.get("stale")
+                            or report["assessment_id"] != store_command["assessment_id"]
+                            or report["delivery_id"] != store_command["delivery_id"]):
+                        raise ValueError("registered report artifact is immutable; choose a separate draft path")
+        if not page["has_more"]:
+            break
+        page = store.finding_page(limit=1000, cursor=page["next_cursor"])
+    if not report_path.exists():
         return
-    expected = report_content.rstrip() + "\n"
+    expected = (report_content.rstrip() + "\n").encode("utf-8")
     try:
-        current = report_path.read_text(encoding="utf-8")
+        current = report_path.read_bytes()
     except OSError as exc:
         raise ValueError(f"unable to inspect existing decision.report.path: {report_path}: {exc}") from exc
     if current != expected:
@@ -2088,16 +1422,23 @@ def _assert_machine_report_path_available(
 
 
 def _write_machine_report(path: Path, content: str) -> None:
-    """Create a report exclusively, allowing only a preflight-approved replay."""
-    rendered = content.rstrip() + "\n"
-    if path.exists():
-        path.write_text(rendered, encoding="utf-8")
-        return
+    """Publish a complete report exclusively; identical retries never rewrite it."""
+    rendered = (content.rstrip() + "\n").encode("utf-8")
+    temporary = None
     try:
-        with path.open("x", encoding="utf-8") as handle:
+        with tempfile.NamedTemporaryFile("wb", dir=path.parent, prefix=f".{path.name}.", delete=False) as handle:
+            temporary = Path(handle.name)
             handle.write(rendered)
-    except FileExistsError as exc:
-        raise ValueError(f"decision.report.path appeared during exclusive create: {path}") from exc
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            if path.read_bytes() != rendered:
+                raise ValueError(f"decision.report.path exists with different bytes: {path}")
+    finally:
+        if temporary is not None:
+            temporary.unlink()
 
 
 def _build_machine_validation_input(
@@ -2111,35 +1452,16 @@ def _build_machine_validation_input(
         raise ValueError("decision.finding_id must exactly match --finding-id")
     findings_dir = _resolve_machine_findings_dir(args, decision_target)
     repo_root = _machine_repo_root(findings_dir, explicit_findings_dir=args.findings_dir)
-    # Machine binding must remain a pure preflight. In particular, a legacy
-    # list payload is normalized in memory but not migrated until every
-    # decision field has passed and the explicit owner transition begins.
-    if target_backend(repo_root, decision_target) == "primary":
-        try:
-            canonical = TargetStore(repo_root, decision_target).finding(finding_id)
-        except StoreError as exc:
-            raise ValueError(f"finding id not found in primary store: {finding_id}") from exc
-        prefill = {
-            "target": decision_target,
-            "vuln_type": canonical.get("family", ""),
-            "endpoint": canonical.get("endpoint", ""),
-            "finding_id": finding_id,
-            "summary": canonical.get("claim", ""),
-            "_canonical_finding": canonical,
-        }
-    else:
-        prefill = load_finding_prefill(
-            str(findings_dir),
-            finding_id,
-            migrate_legacy=False,
-            include_canonical=True,
-            repo_root=repo_root,
-        )
+    # Preflight reads only the existing Store and never imports legacy files.
+    prefill = load_finding_prefill(
+        str(findings_dir), finding_id, migrate_legacy=False, include_canonical=True,
+        repo_root=repo_root, target=decision_target,
+    )
     if not prefill:
-        raise ValueError(f"finding id not found in findings.json: {finding_id}")
+        raise ValueError(f"finding id not found in Store: {finding_id}")
     indexed_target = canonical_target_value(str(prefill.get("target") or ""))
     if indexed_target != decision_target:
-        raise ValueError("decision.target does not match the canonical findings index target")
+        raise ValueError("decision.target does not match the Store target")
 
     decision_endpoint = _required_text(decision.get("endpoint"), "endpoint")
     if not _machine_endpoints_match(decision_endpoint, str(prefill.get("endpoint") or "")):
@@ -2169,7 +1491,7 @@ def _build_machine_validation_input(
         raise ValueError("decision.evidence must be an object")
     evidence_summary = _required_text(evidence.get("summary"), "evidence.summary")
     evidence_refs = _resolve_machine_evidence_refs(evidence.get("refs"), repo_root=repo_root)
-    runner_summary_path = _validate_machine_runner_witness(
+    runner_summary_path, operation_id = _validate_machine_runner_witness(
         evidence,
         evidence_refs=evidence_refs,
         decision_target=decision_target,
@@ -2180,6 +1502,7 @@ def _build_machine_validation_input(
         prefill=prefill,
         repo_root=repo_root,
     )
+    store_command = _primary_validation_command(decision, prefill, operation_id) if operation_id else None
     report_path, report_content = _resolve_machine_report(
         decision.get("report"),
         findings_dir=findings_dir,
@@ -2192,6 +1515,7 @@ def _build_machine_validation_input(
         report_content=report_content,
         repo_root=repo_root,
         target=decision_target,
+        store_command=store_command,
     )
 
     info = {
@@ -2215,6 +1539,7 @@ def _build_machine_validation_input(
             "evidence_summary": evidence_summary,
             "evidence_refs": evidence_refs,
             "runner_summary": str(runner_summary_path),
+            **({"store_command": store_command} if store_command is not None else {}),
         },
     }
     for key in MACHINE_DECISION_GATE_KEYS:
@@ -2240,32 +1565,13 @@ def run_scaffold(args: argparse.Namespace) -> dict[str, Any]:
         raise ValidationInputUnavailable("--scaffold requires --target or --findings-dir")
     repo_root = findings_dir.parent.parent
     target = canonical_target_value(args.target or findings_dir.name)
-    if target_backend(repo_root, target) == "primary":
-        try:
-            canonical = TargetStore(repo_root, target).finding(args.finding_id)
-        except StoreError as exc:
-            raise ValidationInputUnavailable(
-                f"finding id not found in primary store: {args.finding_id}"
-            ) from exc
-        prefill = {
-            "target": target,
-            "vuln_type": canonical.get("family", ""),
-            "endpoint": canonical.get("endpoint", ""),
-            "finding_id": args.finding_id,
-            "summary": canonical.get("claim", ""),
-            "_canonical_finding": canonical,
-        }
-    else:
-        prefill = load_finding_prefill(
-            str(findings_dir),
-            args.finding_id,
-            migrate_legacy=False,
-            include_canonical=True,
-            repo_root=repo_root,
-        )
+    prefill = load_finding_prefill(
+        str(findings_dir), args.finding_id, migrate_legacy=False, include_canonical=True,
+        repo_root=repo_root, target=target,
+    )
     if not prefill:
         raise ValidationInputUnavailable(
-            f"finding id not found in findings.json: {args.finding_id}"
+            f"finding id not found in Store: {args.finding_id}"
         )
     canonical = (
         prefill.get("_canonical_finding")
@@ -2278,12 +1584,19 @@ def run_scaffold(args: argparse.Namespace) -> dict[str, Any]:
         "endpoint": prefill.get("endpoint"),
         "type": prefill.get("vuln_type"),
     }
-    return build_validate_scaffold(
+    scaffold = build_validate_scaffold(
         repo_root,
         Path(findings_dir),
         finding,
         target=str(prefill.get("target") or ""),
     )
+    if prefill.get("store_id"):
+        scaffold["store_preconditions"] = {
+            "assessment_id": (canonical.get("assessment") or {}).get("id"),
+            "delivery_id": next((item["id"] for item in canonical["deliveries"]
+                                 if item["destination"] == "internal-review"), None),
+        }
+    return scaffold
 
 
 def run_machine_preflight(args: argparse.Namespace) -> dict[str, Any]:
@@ -2316,7 +1629,7 @@ def run_machine_preflight(args: argparse.Namespace) -> dict[str, Any]:
         else None
     )
     prefill = None
-    if findings_dir is not None and finding_id:
+    if findings_dir is not None and finding_id and repo_root is not None and decision_target is not None:
         prefill = capture(
             lambda: load_finding_prefill(
                 str(findings_dir),
@@ -2324,16 +1637,17 @@ def run_machine_preflight(args: argparse.Namespace) -> dict[str, Any]:
                 migrate_legacy=False,
                 include_canonical=True,
                 repo_root=repo_root,
+                target=decision_target,
             )
         )
         if prefill == {}:
-            errors.append(f"finding id not found in findings.json: {finding_id}")
+            errors.append(f"finding id not found in Store: {finding_id}")
 
     if prefill:
         if decision_target is not None:
             indexed_target = canonical_target_value(str(prefill.get("target") or ""))
             if indexed_target != decision_target:
-                errors.append("decision.target does not match the canonical findings index target")
+                errors.append("decision.target does not match the Store target")
 
     decision_endpoint = capture(lambda: _required_text(decision.get("endpoint"), "endpoint"))
     if prefill and decision_endpoint is not None and not _machine_endpoints_match(
@@ -2368,6 +1682,7 @@ def run_machine_preflight(args: argparse.Namespace) -> dict[str, Any]:
         capture(lambda: _parse_machine_severity(decision["severity"]))
     decision_method = capture(lambda: normalize_http_method(decision.get("method") or "GET"))
 
+    store_command = None
     evidence = decision.get("evidence")
     if not isinstance(evidence, dict):
         errors.append("decision.evidence must be an object")
@@ -2385,7 +1700,7 @@ def run_machine_preflight(args: argparse.Namespace) -> dict[str, Any]:
             and findings_dir is not None
             and prefill
         ):
-            capture(
+            witness = capture(
                 lambda: _validate_machine_runner_witness(
                     evidence,
                     evidence_refs=evidence_refs,
@@ -2398,6 +1713,8 @@ def run_machine_preflight(args: argparse.Namespace) -> dict[str, Any]:
                     repo_root=repo_root or BASE_DIR,
                 )
             )
+            if witness is not None and witness[1]:
+                store_command = capture(lambda: _primary_validation_command(decision, prefill, witness[1]))
 
     report_result = capture(
         lambda: _resolve_machine_report(
@@ -2415,6 +1732,8 @@ def run_machine_preflight(args: argparse.Namespace) -> dict[str, Any]:
                 report_path=report_path,
                 report_content=report_content,
                 repo_root=repo_root or BASE_DIR,
+                target=decision_target,
+                store_command=store_command,
             )
         )
 
@@ -2442,6 +1761,18 @@ def run_machine_validation(args: argparse.Namespace) -> dict[str, Any]:
     summary = build_validation_summary(info, all_pass=all_pass, report_path=output_path)
     summary_path = write_validation_summary(summary, output_path, repo_root=repo_root)
     validation_sync = sync_validation_artifacts(summary, repo_root=repo_root)
+    if validation_sync.get("status") in {"updated", "deduplicated"} and summary.get("report_ready"):
+        command = info["machine_decision"]["store_command"]
+        report_id = "report:" + command["assessment_id"].split(":", 1)[1]
+        try:
+            receipt = runtime_store(repo_root, summary["target"]).register_report(
+                command_id=report_id, report_id=report_id, finding_id=summary["finding_id"],
+                assessment_id=command["assessment_id"], delivery_id=command["delivery_id"],
+                artifact=str(output_path), actor="validate",
+            )
+            validation_sync["report"] = {"id": report_id, "replayed": receipt["replayed"]}
+        except (StoreError, OSError) as exc:
+            validation_sync.update(status="partial", reason=f"report registration rejected: {exc}")
     summary["validation_sync"] = validation_sync
     summary_path = write_validation_summary(summary, output_path, repo_root=repo_root)
     retry = _validation_sync_retry_result(
@@ -2451,13 +1782,6 @@ def run_machine_validation(args: argparse.Namespace) -> dict[str, Any]:
     )
     if retry:
         raise ValidationSyncError(retry)
-    if target_backend(repo_root, str(summary.get("target") or "")) != "primary":
-        mark_finding_validated(
-            str(findings_dir),
-            str(prefill.get("finding_id") or ""),
-            summary,
-            summary_path,
-        )
     update_runtime_state_after_validate(summary, str(findings_dir), repo_root=repo_root)
     return {
         "status": "updated",
@@ -2477,8 +1801,8 @@ def run_machine_validation(args: argparse.Namespace) -> dict[str, Any]:
 def build_parser() -> argparse.ArgumentParser:
     """Build the shared interactive/non-interactive validation CLI parser."""
     parser = argparse.ArgumentParser(description="Machine-decision validation backend")
-    parser.add_argument("--findings-dir", default="", help="Directory containing findings.json")
-    parser.add_argument("--finding-id", default="", help="Prefill target/type/endpoint from findings.json")
+    parser.add_argument("--findings-dir", default="", help="Target-owned findings directory")
+    parser.add_argument("--finding-id", default="", help="Prefill target/type/endpoint from the Store finding")
     parser.add_argument(
         "--target",
         default="",

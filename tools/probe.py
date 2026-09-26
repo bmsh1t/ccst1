@@ -39,6 +39,7 @@ import json
 import os
 import sys
 import time
+import uuid
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -56,14 +57,13 @@ try:
         normalize_ledger_vuln_class,
         normalize_result,
         normalize_variant,
-        record_entry,
     )
     from tools.target_paths import (
         canonical_target_value,
         target_storage_key,
         url_belongs_to_target,
     )
-    from tools.target_store import TargetStore, target_backend
+    from tools.target_store import StoreError, runtime_store, target_switch_lock
 except ImportError:  # pragma: no cover - direct tools/ execution
     from evidence_ledger import (  # type: ignore
         RESULTS,
@@ -71,23 +71,17 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         normalize_ledger_vuln_class,
         normalize_result,
         normalize_variant,
-        record_entry,
     )
     from target_paths import (  # type: ignore
         canonical_target_value,
         target_storage_key,
         url_belongs_to_target,
     )
-    from target_store import TargetStore, target_backend  # type: ignore
+    from target_store import StoreError, runtime_store, target_switch_lock  # type: ignore
 
 DISPLAY_BODY_LIMIT = 4096
 DEFAULT_MAX_BODY_BYTES = 10 * 1024 * 1024
 DEFAULT_TIMEOUT_SECONDS = 10.0
-# Literal hosts that all name the local loopback interface. A lab target typed
-# as `localhost:3000` must accept a probe URL on `127.0.0.1:3000` (and vice
-# versa); the strict literal-host matcher in target_paths treats them as
-# different hosts, so probe adds this equivalence layer on top.
-LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
 
 
 class ProbeError(ValueError):
@@ -120,20 +114,8 @@ def _parse_authority(value: str) -> tuple[str, int | None, str]:
 
 
 def url_matches_target_scope(url: str, target: str) -> bool:
-    """Scope gate: the shared target matcher plus loopback host equivalence."""
-    if url_belongs_to_target(url, target):
-        return True
-    t_host, t_port, t_scheme = _parse_authority(target)
-    u_host, u_port, u_scheme = _parse_authority(url)
-    if not t_host or not u_host:
-        return False
-    if t_host not in LOOPBACK_HOSTS or u_host not in LOOPBACK_HOSTS:
-        return False
-    if t_scheme and u_scheme and t_scheme != u_scheme:
-        return False
-    if t_port is not None and u_port != t_port:
-        return False
-    return True
+    """Use the same scope rule for request admission and Store registration."""
+    return url_belongs_to_target(url, target)
 
 
 def _read_bounded(response: object, limit: int) -> tuple[bytes, int]:
@@ -203,131 +185,127 @@ def run_probe(
     # fall back exactly the way record_entry's own normalizers do — probe does
     # not add gates the ledger owner does not have.
     try:
-        normalize_ledger_vuln_class(vuln_class)
-        normalize_actor(actor or "owner")
-        normalize_variant(variant or "baseline")
-        normalize_result(result or "lead")
+        vuln_class = normalize_ledger_vuln_class(vuln_class)
+        actor = normalize_actor(actor or "owner")
+        variant = normalize_variant(variant or "baseline")
+        result = normalize_result(result or "lead")
     except ValueError as exc:
         raise ProbeError(str(exc)) from exc
 
-    repo = Path(repo_root)
-    method_u = str(method or "GET").strip().upper()
-    request_headers = {str(k): str(v) for k, v in (headers or {}).items()}
-    data_text = str(data or "")
-    data_bytes = data_text.encode("utf-8") if data_text else None
-
-    request = urllib.request.Request(
-        url,
-        data=data_bytes,
-        headers=request_headers,
-        method=method_u,
-    )
-    opener = urllib.request.build_opener(_NoRedirectHandler)
-    started = time.monotonic()
-    try:
-        with opener.open(request, timeout=timeout) as response:
-            raw, observed_bytes = _read_bounded(response, max_body_bytes)
-            status = int(response.status)
-            reason = str(response.reason or "")
-            response_headers = {str(k): str(v) for k, v in response.headers.items()}
-            final_url = str(response.geturl() or url)
-    except urllib.error.HTTPError as exc:
-        raw, observed_bytes = _read_bounded(exc, max_body_bytes)
-        status = int(exc.code)
-        reason = str(exc.reason or "")
-        response_headers = {str(k): str(v) for k, v in exc.headers.items()}
-        final_url = str(exc.geturl() or url)
-    elapsed_ms = int((time.monotonic() - started) * 1000)
-
-    body_sha256 = hashlib.sha256(raw).hexdigest()
-    body_text = raw.decode("utf-8", errors="replace")
-    body_truncated = observed_bytes > len(raw)
-    ts = datetime.now(timezone.utc)
-    ts_compact = ts.strftime("%Y%m%dT%H%M%S") + f"{ts.microsecond // 1000:03d}Z"
-    stem = f"{ts_compact}-{body_sha256[:8]}"
-
+    repo = Path(repo_root).resolve()
     resolved_target = canonical_target_value(target)
-    probe_dir = repo / "evidence" / target_storage_key(resolved_target) / "probe"
-    probe_dir.mkdir(parents=True, exist_ok=True)
-    probe_payload = {
-        "kind": "probe",
-        "schema_version": 1,
-        "ts": ts.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "target": resolved_target,
-        "request": {
-            "method": method_u,
-            "url": url,
-            "headers": request_headers,
-            "body": data_text,
-            "timeout_seconds": timeout,
-        },
-        "response": {
-            "status": status,
-            "reason": reason,
-            "headers": response_headers,
-            "body": body_text,
-            "body_sha256": body_sha256,
-            "body_retained_bytes": len(raw),
-            "body_observed_bytes": observed_bytes,
-            "body_truncated": body_truncated,
-            "final_url": final_url,
-        },
-        "elapsed_ms": elapsed_ms,
-        "flags": {
+    with target_switch_lock(repo, resolved_target):
+        store = runtime_store(repo, resolved_target)
+        attempt_id = "" if no_ledger else "probe:" + uuid.uuid4().hex
+        method_u = str(method or "GET").strip().upper()
+        request_headers = {str(k): str(v) for k, v in (headers or {}).items()}
+        data_text = str(data or "")
+        data_bytes = data_text.encode("utf-8") if data_text else None
+
+        request = urllib.request.Request(
+            url,
+            data=data_bytes,
+            headers=request_headers,
+            method=method_u,
+        )
+        if attempt_id:
+            store.start_attempt(attempt_id=attempt_id, source="probe",
+                                started_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), actor=actor)
+        opener = urllib.request.build_opener(_NoRedirectHandler)
+        started = time.monotonic()
+        try:
+            with opener.open(request, timeout=timeout) as response:
+                raw, observed_bytes = _read_bounded(response, max_body_bytes)
+                status = int(response.status)
+                reason = str(response.reason or "")
+                response_headers = {str(k): str(v) for k, v in response.headers.items()}
+                final_url = str(response.geturl() or url)
+        except urllib.error.HTTPError as exc:
+            raw, observed_bytes = _read_bounded(exc, max_body_bytes)
+            status = int(exc.code)
+            reason = str(exc.reason or "")
+            response_headers = {str(k): str(v) for k, v in exc.headers.items()}
+            final_url = str(exc.geturl() or url)
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+
+        body_sha256 = hashlib.sha256(raw).hexdigest()
+        body_text = raw.decode("utf-8", errors="replace")
+        body_truncated = observed_bytes > len(raw)
+        ts = datetime.now(timezone.utc)
+        ts_compact = ts.strftime("%Y%m%dT%H%M%S") + f"{ts.microsecond // 1000:03d}Z"
+        stem = f"{ts_compact}-{body_sha256[:8]}"
+
+        resolved_target = canonical_target_value(target)
+        probe_dir = repo / "evidence" / target_storage_key(resolved_target) / "probe"
+        probe_dir.mkdir(parents=True, exist_ok=True)
+        probe_payload = {
+            "kind": "probe",
+            "attempt_id": attempt_id,
+            "schema_version": 1,
+            "ts": ts.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "target": resolved_target,
+            "request": {
+                "method": method_u,
+                "url": url,
+                "headers": request_headers,
+                "body": data_text,
+                "timeout_seconds": timeout,
+            },
+            "response": {
+                "status": status,
+                "reason": reason,
+                "headers": response_headers,
+                "body": body_text,
+                "body_sha256": body_sha256,
+                "body_retained_bytes": len(raw),
+                "body_observed_bytes": observed_bytes,
+                "body_truncated": body_truncated,
+                "final_url": final_url,
+            },
+            "elapsed_ms": elapsed_ms,
+            "flags": {
+                "state_changing": bool(state_changing),
+                "redline_checked": bool(redline_checked),
+            },
+        }
+        encoded_payload = (
+            json.dumps(probe_payload, ensure_ascii=False, indent=2) + "\n"
+        ).encode("utf-8")
+        # Two probes in the same millisecond with identical bodies would otherwise
+        # collide on `<ts>-<hash8>.json`: the second write would overwrite the
+        # first. Exclusive creation retains separate evidence for each attempt.
+        # Exclusive-create plus a -N suffix keeps every probe its own file and
+        # its own ledger event; the retry is unbounded so evidence is never
+        # dropped after a request has already fired.
+        probe_path: Path | None = None
+        attempt = 0
+        while probe_path is None:
+            attempt += 1
+            suffix = "" if attempt == 1 else f"-{attempt}"
+            candidate = probe_dir / f"{stem}{suffix}.json"
+            try:
+                fd = os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                continue
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(encoded_payload)
+            probe_path = candidate
+        try:
+            evidence_ref = str(probe_path.relative_to(repo))
+        except ValueError:  # probe dir outside repo root: keep the absolute path
+            evidence_ref = str(probe_path)
+
+        ledger: dict = {
+            "recorded": False,
             "state_changing": bool(state_changing),
             "redline_checked": bool(redline_checked),
-        },
-    }
-    encoded_payload = (
-        json.dumps(probe_payload, ensure_ascii=False, indent=2) + "\n"
-    ).encode("utf-8")
-    # Two probes in the same millisecond with identical bodies would otherwise
-    # collide on `<ts>-<hash8>.json`: the second write would overwrite the
-    # first, and record_entry would silently dedupe the shared event_id.
-    # Exclusive-create plus a -N suffix keeps every probe its own file and
-    # its own ledger event; the retry is unbounded so evidence is never
-    # dropped after a request has already fired.
-    probe_path: Path | None = None
-    unique_stem = stem
-    attempt = 0
-    while probe_path is None:
-        attempt += 1
-        suffix = "" if attempt == 1 else f"-{attempt}"
-        candidate = probe_dir / f"{stem}{suffix}.json"
-        try:
-            fd = os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-        except FileExistsError:
-            continue
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(encoded_payload)
-        probe_path = candidate
-        unique_stem = f"{stem}{suffix}"
-    try:
-        evidence_ref = str(probe_path.relative_to(repo))
-    except ValueError:  # probe dir outside repo root: keep the absolute path
-        evidence_ref = str(probe_path)
-
-    ledger: dict = {
-        "recorded": False,
-        "state_changing": bool(state_changing),
-        "redline_checked": bool(redline_checked),
-        "source": "probe",
-        "result": str(result or "lead"),
-    }
-    if no_ledger:
-        ledger["skipped"] = "--no-ledger"
-    else:
-        try:
-            event_id = f"probe-{unique_stem}"
-            if target_backend(repo, resolved_target) == "primary":
-                store = TargetStore(repo, resolved_target)
-                attempt_id = "probe:" + hashlib.sha256(evidence_ref.encode("utf-8")).hexdigest()[:24]
-                store.start_attempt(
-                    attempt_id=attempt_id,
-                    source="probe",
-                    started_at=ts.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    actor=actor,
-                )
+            "source": "probe",
+            "result": str(result or "lead"),
+        }
+        if no_ledger:
+            ledger["skipped"] = "--no-ledger"
+        else:
+            try:
                 receipt = store.record_execution(
                     attempt_id=attempt_id,
                     outcome="partial" if body_truncated else "complete",
@@ -356,64 +334,48 @@ def run_probe(
                     actor=actor,
                 )
                 entry = {
-                    "event_id": event_id,
+                    "event_id": f"{receipt['entity_id']}:0",
                     "operation_id": receipt.get("entity_id", ""),
                     "evidence_ref": evidence_ref,
                     "result": result,
                     "write_status": "deduplicated" if receipt.get("replayed") else "updated",
                 }
-            else:
-                entry = record_entry(
-                    repo,
-                    target=target,
-                    endpoint=url,
-                    method=method_u,
-                    vuln_class=vuln_class,
-                    actor=actor,
-                    variant=variant,
-                    source="probe",
-                    result=result,
-                    state_changing=bool(state_changing),
-                    redline_checked=bool(redline_checked),
-                    evidence_ref=evidence_ref,
-                    notes=note,
-                    event_id=event_id,
+                ledger.update(
+                    recorded=True,
+                    event_id=str(entry.get("event_id") or ""),
+                    write_status=str(entry.get("write_status") or ""),
+                    evidence_ref=str(entry.get("evidence_ref") or evidence_ref),
+                    result=str(entry.get("result") or ""),
+                    operation_id=str(entry.get("operation_id") or ""),
                 )
-            ledger.update(
-                recorded=True,
-                event_id=str(entry.get("event_id") or ""),
-                write_status=str(entry.get("write_status") or ""),
-                evidence_ref=str(entry.get("evidence_ref") or evidence_ref),
-                result=str(entry.get("result") or ""),
-                operation_id=str(entry.get("operation_id") or ""),
-            )
-        except (ValueError, OSError) as exc:
-            # The request already happened: keep the on-disk probe evidence and
-            # surface the ledger failure loudly instead of dropping it.
-            ledger["error"] = str(exc)
+            except (ValueError, OSError) as exc:
+                # The request already happened: keep the on-disk probe evidence and
+                # surface the ledger failure loudly instead of dropping it.
+                ledger["error"] = str(exc)
 
-    outcome = {
-        "target": resolved_target,
-        "url": url,
-        "final_url": final_url,
-        "method": method_u,
-        "status": status,
-        "reason": reason,
-        "elapsed_ms": elapsed_ms,
-        "request_headers": request_headers,
-        "response_headers": response_headers,
-        "body_bytes": len(raw),
-        "body_observed_bytes": observed_bytes,
-        "body_truncated": body_truncated,
-        "body_sha256": body_sha256,
-        "body_sha256_16": body_sha256[:16],
-        "body_display": body_text[:DISPLAY_BODY_LIMIT],
-        "body_display_truncated": len(body_text) > DISPLAY_BODY_LIMIT,
-        "probe_file": evidence_ref,
-        "ledger": ledger,
-    }
-    outcome["ledger_echo"] = _ledger_echo(ledger, evidence_ref)
-    return outcome
+        outcome = {
+            "attempt_id": attempt_id,
+            "target": resolved_target,
+            "url": url,
+            "final_url": final_url,
+            "method": method_u,
+            "status": status,
+            "reason": reason,
+            "elapsed_ms": elapsed_ms,
+            "request_headers": request_headers,
+            "response_headers": response_headers,
+            "body_bytes": len(raw),
+            "body_observed_bytes": observed_bytes,
+            "body_truncated": body_truncated,
+            "body_sha256": body_sha256,
+            "body_sha256_16": body_sha256[:16],
+            "body_display": body_text[:DISPLAY_BODY_LIMIT],
+            "body_display_truncated": len(body_text) > DISPLAY_BODY_LIMIT,
+            "probe_file": evidence_ref,
+            "ledger": ledger,
+        }
+        outcome["ledger_echo"] = _ledger_echo(ledger, evidence_ref)
+        return outcome
 
 
 def _ledger_echo(ledger: dict, evidence_ref: str) -> str:
@@ -575,7 +537,7 @@ def main(argv: list[str] | None = None) -> int:
             note=args.note,
             repo_root=args.repo_root,
         )
-    except ProbeError as exc:
+    except (ProbeError, StoreError) as exc:
         print(f"probe error: {exc}", file=sys.stderr)
         return 2
     except (urllib.error.URLError, OSError) as exc:

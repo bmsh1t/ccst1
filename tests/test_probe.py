@@ -30,7 +30,9 @@ from pathlib import Path
 import pytest
 
 import probe
-from evidence_ledger import ledger_path, load_entries
+from evidence_ledger import ledger_path
+from current_truth import current_cell_projection
+from tools.target_store import StoreError, TargetStore
 
 
 def _forbid_network(*_args, **_kwargs):
@@ -139,6 +141,7 @@ def test_loopback_equivalence_accepted(tmp_path, http_server):
     """localhost and 127.0.0.1 name the same lab target."""
     target, handler = http_server
     port = target.split(":")[1]
+    TargetStore(tmp_path, f"localhost:{port}").initialize()
 
     outcome = probe.run_probe(
         target=f"localhost:{port}",
@@ -215,6 +218,7 @@ def test_bad_ledger_enum_rejected_before_request(tmp_path, http_server, monkeypa
 def test_unknown_but_valid_family_recorded_without_coverage(tmp_path, http_server):
     """An open-ended family is admitted and preserved, not coerced to a class."""
     target, _handler = http_server
+    TargetStore(tmp_path, target).initialize()
 
     outcome = probe.run_probe(
         target=target,
@@ -224,7 +228,7 @@ def test_unknown_but_valid_family_recorded_without_coverage(tmp_path, http_serve
     )
 
     assert outcome["ledger"]["recorded"] is True
-    entries = load_entries(tmp_path, target)
+    entries = current_cell_projection(tmp_path, target)["records"]
     assert len(entries) == 1
     assert entries[0]["vuln_class"] == "custom-state-transition"
 
@@ -253,6 +257,7 @@ def test_primary_probe_registers_store_observation_instead_of_legacy_ledger(tmp_
 
 def test_defaults_record_lead_with_source_probe(tmp_path, http_server):
     target, _handler = http_server
+    TargetStore(tmp_path, target).initialize()
 
     outcome = probe.run_probe(
         target=target,
@@ -261,13 +266,14 @@ def test_defaults_record_lead_with_source_probe(tmp_path, http_server):
     )
 
     # Ledger defaults: a probe produces a lead, never a conclusion.
-    entries = load_entries(tmp_path, target)
+    entries = current_cell_projection(tmp_path, target)["records"]
     assert len(entries) == 1
     entry = entries[0]
     assert entry["result"] == "lead"
-    assert entry["source"] == "probe"
-    assert entry["state_changing"] is False
-    assert entry["redline_checked"] is False
+    execution = TargetStore(tmp_path, target).execution(outcome["ledger"]["operation_id"])
+    assert execution["attempt"]["source"] == "probe"
+    assert execution["observations"][0]["state_changing"] == 0
+    assert execution["observations"][0]["redline_checked"] == 0
     assert entry["method"] == "GET"
     assert entry["endpoint"] == "/rest/basket/7"
 
@@ -308,6 +314,7 @@ def test_state_changing_without_redline_checked_refused(tmp_path, http_server):
 
 def test_state_changing_with_redline_checked_records_flags(tmp_path, http_server):
     target, _handler = http_server
+    TargetStore(tmp_path, target).initialize()
 
     outcome = probe.run_probe(
         target=target,
@@ -320,21 +327,22 @@ def test_state_changing_with_redline_checked_records_flags(tmp_path, http_server
     )
 
     assert outcome["status"] == 200
-    entry = load_entries(tmp_path, target)[0]
-    assert entry["state_changing"] is True
-    assert entry["redline_checked"] is True
+    entry = TargetStore(tmp_path, target).execution(outcome["ledger"]["operation_id"])["observations"][0]
+    assert entry["state_changing"] == 1
+    assert entry["redline_checked"] == 1
     assert "state_changing=True redline_checked=True" in outcome["ledger_echo"]
 
 
 def test_repeat_requests_are_independent_ledger_events(tmp_path, http_server):
     """No silent dedupe: the same request twice is two events, two files."""
     target, _handler = http_server
+    TargetStore(tmp_path, target).initialize()
     url = f"http://{target}/repeat"
 
     first = probe.run_probe(target=target, url=url, repo_root=tmp_path)
     second = probe.run_probe(target=target, url=url, repo_root=tmp_path)
 
-    entries = load_entries(tmp_path, target)
+    entries = current_cell_projection(tmp_path, target)["records"]
     assert len(entries) == 2
     event_ids = {entry["event_id"] for entry in entries}
     assert first["ledger"]["event_id"] != second["ledger"]["event_id"]
@@ -357,6 +365,7 @@ def test_same_millisecond_collision_is_not_deduplicated(tmp_path, http_server):
     the unique event_id keep them independent.
     """
     target, handler = http_server
+    TargetStore(tmp_path, target).initialize()
     url = f"http://{target}/same-ms"
 
     class FrozenDatetime(datetime):
@@ -384,7 +393,7 @@ def test_same_millisecond_collision_is_not_deduplicated(tmp_path, http_server):
     }
     assert len(event_ids) == 3
 
-    entries = load_entries(tmp_path, target)
+    entries = current_cell_projection(tmp_path, target)["records"]
     assert len(entries) == 3
     assert {entry["event_id"] for entry in entries} == event_ids
 
@@ -397,6 +406,7 @@ def test_same_millisecond_collision_is_not_deduplicated(tmp_path, http_server):
 
 def test_no_ledger_escape_hatch_marks_not_recorded(tmp_path, http_server):
     target, _handler = http_server
+    TargetStore(tmp_path, target).initialize()
     url = f"http://{target}/browse"
 
     outcome = probe.run_probe(
@@ -418,6 +428,7 @@ def test_no_ledger_escape_hatch_marks_not_recorded(tmp_path, http_server):
 
 def test_probe_file_captures_request_and_response(tmp_path, http_server):
     target, _handler = http_server
+    TargetStore(tmp_path, target).initialize()
 
     outcome = probe.run_probe(
         target=target,
@@ -444,13 +455,14 @@ def test_probe_file_captures_request_and_response(tmp_path, http_server):
     assert payload["flags"] == {"state_changing": False, "redline_checked": False}
 
     # The note travels with the ledger entry.
-    entry = load_entries(tmp_path, target)[0]
-    assert entry["notes"] == "captured-request-test"
+    entry = current_cell_projection(tmp_path, target)["records"][0]
+    assert entry["description"] == "captured-request-test"
     assert entry["endpoint"] == "/echo?x=1"
 
 
 def test_ledger_fields_from_cli_options(tmp_path, http_server):
     target, _handler = http_server
+    TargetStore(tmp_path, target).initialize()
 
     probe.run_probe(
         target=target,
@@ -462,7 +474,7 @@ def test_ledger_fields_from_cli_options(tmp_path, http_server):
         repo_root=tmp_path,
     )
 
-    entry = load_entries(tmp_path, target)[0]
+    entry = current_cell_projection(tmp_path, target)["records"][0]
     assert entry["vuln_class"] == "Authz"
     assert entry["actor"] == "peer"
     assert entry["variant"] == "id_swap"
@@ -472,11 +484,12 @@ def test_ledger_fields_from_cli_options(tmp_path, http_server):
 def test_ledger_failure_after_request_is_not_silent(tmp_path, http_server, monkeypatch):
     """A ledger write failure surfaces in the outcome instead of vanishing."""
     target, _handler = http_server
+    TargetStore(tmp_path, target).initialize()
 
     def broken_record_entry(*_args, **_kwargs):
         raise ValueError("ledger exploded")
 
-    monkeypatch.setattr(probe, "record_entry", broken_record_entry)
+    monkeypatch.setattr(TargetStore, "record_execution", broken_record_entry)
 
     outcome = probe.run_probe(
         target=target,
@@ -533,6 +546,7 @@ def test_main_state_changing_without_redline_exit_code(tmp_path, http_server, ca
 
 def test_main_success_and_echo(tmp_path, http_server, capsys):
     target, _handler = http_server
+    TargetStore(tmp_path, target).initialize()
 
     exit_code = probe.main(
         [
@@ -555,6 +569,7 @@ def test_main_success_and_echo(tmp_path, http_server, capsys):
 
 def test_main_no_ledger_echo(tmp_path, http_server, capsys):
     target, _handler = http_server
+    TargetStore(tmp_path, target).initialize()
 
     exit_code = probe.main(
         [
@@ -579,11 +594,12 @@ def test_main_ledger_failure_exits_one(tmp_path, http_server, capsys, monkeypatc
     stdout carries the NOT RECORDED echo, stderr carries the ledger error.
     """
     target, _handler = http_server
+    TargetStore(tmp_path, target).initialize()
 
     def broken_record_entry(*_args, **_kwargs):
         raise ValueError("ledger exploded")
 
-    monkeypatch.setattr(probe, "record_entry", broken_record_entry)
+    monkeypatch.setattr(TargetStore, "record_execution", broken_record_entry)
 
     exit_code = probe.main(
         [
@@ -650,3 +666,33 @@ def test_probe_gates_stay_bucketed():
     # Exactly one dynamic raise is allowed: the pre-request passthrough of the
     # ledger owner's own normalizer message (validated before any I/O).
     assert len(dynamic_gates) == 1, dynamic_gates
+
+
+def test_uninitialized_probe_rejects_before_network_or_material(tmp_path, monkeypatch):
+    monkeypatch.setattr(probe.urllib.request, "build_opener", _forbid_network)
+    with pytest.raises(StoreError, match="not initialized"):
+        probe.run_probe(target="probe.test", url="https://probe.test/", repo_root=tmp_path)
+    assert not TargetStore(tmp_path, "probe.test").path.exists()
+    assert not (tmp_path / "evidence").exists()
+
+
+def test_uninitialized_probe_cli_rejects_cleanly(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(probe.urllib.request, "build_opener", _forbid_network)
+    assert probe.main(["--target", "probe.test", "--url", "https://probe.test/",
+                       "--repo-root", str(tmp_path)]) == 2
+    captured = capsys.readouterr()
+    assert "not initialized" in captured.err
+    assert "Traceback" not in captured.err
+    assert not (tmp_path / "evidence").exists()
+
+
+@pytest.mark.parametrize("url,allowed", [
+    ("https://127.0.0.1:443/x", True),
+    ("https://[::1]/x", True),
+    ("http://127.0.0.1:443/x", False),
+    ("https://127.0.0.1:444/x", False),
+    ("https://evil.localhost/x", False),
+    ("https://localhost.example/x", False),
+])
+def test_local_alias_scope_preserves_scheme_port_and_literal_boundary(url, allowed):
+    assert probe.url_matches_target_scope(url, "https://localhost") is allowed

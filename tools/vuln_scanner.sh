@@ -242,6 +242,18 @@ if [ "${BBHUNT_RUNTIME_PHASE_LOCKED:-}" != "scan" ] || [ "${BBHUNT_RUNTIME_LOCK_
 fi
 bb_auth_bind_target "$SCANNER_AUTH_TARGET"
 
+# Refuse missing, preview, or damaged domain state before scanner side effects.
+PYTHONPATH="$BASE_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 - "$BASE_DIR" "$SCANNER_AUTH_TARGET" <<'PY'
+import sys
+from tools.target_store import runtime_store
+
+try:
+    runtime_store(sys.argv[1], sys.argv[2])
+except (ValueError, OSError) as exc:
+    print(f"scanner admission failed: {exc}", file=sys.stderr)
+    raise SystemExit(2)
+PY
+
 FINDINGS_DIR="${FINDINGS_OUT_DIR:-$DEFAULT_FINDINGS_DIR}"
 THREADS="${BB_SCAN_THREADS:-10}"
 RATE_LIMIT="${BB_SCAN_RATE_LIMIT:-20}"  # Conservative default to avoid WAF blocks (429/403)
@@ -1546,7 +1558,7 @@ FINDING_SUMMARY="$FINDINGS_DIR/summary.txt"
 FINDING_SUMMARY_JSON="$FINDINGS_DIR/summary.json"
 FINDING_SUMMARY_TMP="$FINDINGS_DIR/.summary.txt.tmp"
 FINDING_SUMMARY_JSON_TMP="$FINDINGS_DIR/.summary.json.tmp"
-FINDING_INDEX_JSON="$FINDINGS_DIR/findings.json"
+FINDING_INDEX_JSON="$FINDINGS_DIR/scanner_candidates.json"
 
 if [ -s "$NUCLEI_FAILURE_MARKER" ] || [ -s "$SCANNER_PARTIAL_MARKER" ]; then
     if python3 "$BASE_DIR/tools/finding_index.py" "$FINDINGS_DIR" --target "$TARGET" --output "$FINDING_INDEX_JSON" >/dev/null; then
@@ -1610,7 +1622,7 @@ fi
 
 if write_summary_json "$FINDING_SUMMARY_JSON_TMP"; then
     mv "$FINDING_SUMMARY_TMP" "$FINDING_SUMMARY"
-    # JSON 是 completion marker，必须在 canonical finding index 后发布。
+    # JSON 是 completion marker，必须在 Store review registration 后发布。
     mv "$FINDING_SUMMARY_JSON_TMP" "$FINDING_SUMMARY_JSON"
     log_done "Structured summary: $FINDING_SUMMARY_JSON"
 else

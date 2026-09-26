@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+import errno
 import ipaddress
 import json
 import os
 import re
+import stat
+from contextlib import ExitStack
 from pathlib import Path
+from typing import TextIO
 from urllib.parse import urljoin, urlparse, urlsplit
 
 
@@ -318,6 +322,58 @@ def target_storage_key(target: str) -> str:
     return re.sub(r"[^A-Za-z0-9._:-]+", "_", normalized_target).strip("._-") or "unknown-target"
 
 
+def open_target_lock_file(
+    repo_root: str | Path, target: str, filename: str, *, create: bool = True,
+) -> TextIO:
+    """Open a single-link regular lock beneath a trusted repository root.
+
+    Directory FDs prevent symlink traversal below the root. Existing directory
+    modes and lock inodes stay intact; read-only probes create or chmod nothing.
+    The caller owns the returned handle and its flock lifecycle.
+    """
+    if (
+        not isinstance(filename, str) or not filename or filename in {".", ".."}
+        or Path(filename).name != filename or "\x00" in filename
+    ):
+        raise ValueError("lock filename must be a single basename")
+    root = Path(repo_root).resolve()
+    key = target_storage_key(target)
+    if create:
+        root.mkdir(parents=True, exist_ok=True)
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    with ExitStack() as directories:
+        parent_fd = os.open(root, directory_flags)
+        directories.callback(os.close, parent_fd)
+        for component, mode in (("state", 0o777), (key, 0o700), ("locks", 0o700)):
+            if create:
+                try:
+                    os.mkdir(component, mode, dir_fd=parent_fd)
+                except FileExistsError:
+                    pass
+            parent_fd = os.open(component, directory_flags, dir_fd=parent_fd)
+            directories.callback(os.close, parent_fd)
+        flags = os.O_NOFOLLOW | os.O_NONBLOCK
+        flags |= os.O_RDWR | os.O_CREAT | os.O_APPEND if create else os.O_RDONLY
+        fd = os.open(filename, flags, 0o600, dir_fd=parent_fd)
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise OSError(errno.EINVAL, "lock must be a single-link regular file", filename)
+            if create:
+                os.fchmod(fd, 0o600)
+            return os.fdopen(fd, "a+" if create else "r", encoding="utf-8")
+        except BaseException:
+            os.close(fd)
+            raise
+
+
+def legacy_target_profile_path(memory_dir: str | Path, target: str) -> Path:
+    """Return the legacy target-profile path using its historical filename rule."""
+    normalized = canonical_target_value(target)
+    filename = normalized.replace(".", "-").replace("/", "-").replace("\\", "-") + ".json"
+    return Path(memory_dir) / "targets" / filename
+
+
 def migrate_legacy_list_storage(
     repo_root: str | Path,
     target: str,
@@ -550,8 +606,13 @@ def url_belongs_to_target(url: str, target: str, *, allow_subdomains: bool = Tru
     if not target_host:
         return False
 
-    host_matches = not target_wildcard and url_host == target_host
-    if (allow_subdomains or target_wildcard) and not host_matches:
+    # Local fixture aliases share scope, but retain their actual URL identity.
+    # Match literals only: resolving arbitrary DNS names would widen ownership.
+    local_hosts = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
+    host_matches = not target_wildcard and (
+        url_host == target_host or (target_host in local_hosts and url_host in local_hosts)
+    )
+    if (allow_subdomains or target_wildcard) and not host_matches and target_host not in local_hosts:
         host_matches = url_host.endswith("." + target_host)
     if not host_matches:
         return False

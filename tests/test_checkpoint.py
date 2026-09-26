@@ -3,50 +3,25 @@
 from __future__ import annotations
 
 import json
+import fcntl
 import multiprocessing
+import shlex
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 import checkpoint as checkpoint_module
-import finding_index
-import autopilot_state
 from action_queue import (
-    _checkpoint_item_to_action,
-    _dedupe_key,
     add_manual_action,
-    build_action,
     claim_next_action,
-    ingest_checkpoint,
     load_queue,
-    resolve_action,
-    save_queue,
 )
 from checkpoint import (
-    _build_next_action_queue,
-    _bounded_next_proposals,
-    _actor_gap_enrichment_proposal,
-    _capability_chain_review_item,
-    _checkpoint_coverage_gaps,
     _decision_for_action,
-    _dead_end_proposals,
-    _dedupe_artifact_category_items,
-    _entry_text,
-    _is_proposal_entry,
-    _proposal_entry,
-    _filter_final_action_queue_items,
-    _json_inject_queue_item,
-    _lead_proposals,
-    _ledger_candidate_proposals,
-    _ledger_covered_cells,
-    _ledger_covers_cell,
     _matrix_summary,
-    _next_proposals,
     _project_knowledge_effect_trace,
-    _sibling_queue_item,
-    _workflow_lead_queue_items,
-    _select_default_candidate,
-    _sql_matrix_queue_items,
     apply_target_memory,
     build_checkpoint,
     begin_round,
@@ -55,21 +30,69 @@ from checkpoint import (
     record_global_review,
     record_round_lane,
     record_round_lane_result,
-    sync_checkpoint_action_queue,
 )
-from coverage_matrix import mark_cell
-from evidence_ledger import record_entry
-from identity_contract import build_closure_cell
+from coverage_matrix import mark_cell, rebuild_matrix
 from runtime_state import runtime_phase_lock, update_runtime_state
 from target_case_state import add_actor, add_hypothesis, add_object, add_session
 from target_store import TargetStore
 
 
+def test_checkpoint_witness_lock_is_reentrant_and_keeps_outer_lock(tmp_path, monkeypatch):
+    original_open = checkpoint_module.open_target_lock_file
+    opened = []
+
+    def open_once(*args, **kwargs):
+        assert not opened, "nested checkpoint lock must reuse its outer handle"
+        handle = original_open(*args, **kwargs)
+        opened.append(handle)
+        return handle
+
+    monkeypatch.setattr(checkpoint_module, "open_target_lock_file", open_once)
+    with checkpoint_module.checkpoint_witness_lock(tmp_path, "target.com"):
+        with checkpoint_module.checkpoint_witness_lock(tmp_path, "https://TARGET.com/path"):
+            assert len(opened) == 1
+        with original_open(tmp_path, "target.com", "checkpoint.lock", create=False) as observer:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(observer.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    assert opened[0].closed
+    with original_open(tmp_path, "target.com", "checkpoint.lock", create=False) as observer:
+        fcntl.flock(observer.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+@pytest.fixture
+def store(tmp_path):
+    result = TargetStore(tmp_path, "target.com")
+    result.initialize()
+    return result
+
+
+def _seed_work(repo_root, target="target.com"):
+    return add_manual_action(
+        repo_root, target=target, action_id="WORK-1", action_type="context-review",
+        evidence="Recorded target context", next_question="What is known?", action="Inspect target context",
+    )["action"]
+
+
+def _record_observation(store, *, endpoint, family, result, actor="owner", method="GET", state_changing=False):
+    attempt = f"attempt-{store.page('attempts')['total']}"
+    path = store.root / "evidence" / store.key / f"{attempt}.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("Recorded response", encoding="utf-8")
+    store.start_attempt(attempt_id=attempt, source="native", started_at="2026-09-24T00:00:00Z", actor="operator")
+    return store.record_execution(attempt_id=attempt, outcome="complete", actor="operator", observations=[{
+        "endpoint": endpoint, "family": family, "method": method, "actor": actor,
+        "object_scope": "own_object", "variant": "baseline", "result": result,
+        "description": "Recorded fixture response", "observed_at": "2026-09-24T00:00:00Z",
+        "artifacts": {"response": path.relative_to(store.root).as_posix()},
+        "state_changing": state_changing, "redline_checked": True,
+    }])
+
+
 def _seed_recon(repo_root: Path, target: str, urls: list[str]) -> None:
     recon_dir = repo_root / "recon" / target
-    (recon_dir / "live").mkdir(parents=True)
-    (recon_dir / "urls").mkdir(parents=True)
-    (recon_dir / "js").mkdir(parents=True)
+    (recon_dir / "live").mkdir(parents=True, exist_ok=True)
+    (recon_dir / "urls").mkdir(parents=True, exist_ok=True)
+    (recon_dir / "js").mkdir(parents=True, exist_ok=True)
     (recon_dir / "live" / "httpx_full.txt").write_text(
         "https://api.target.com [200] [API] [FastAPI,React] [1000]\n",
         encoding="utf-8",
@@ -91,63 +114,6 @@ def _write_round_evidence(repo_root: Path, evidence_ref: str, content: str = "{}
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
     return path
-
-
-def _seed_capability_parent(
-    repo_root: Path,
-    *,
-    target: str = "target.com",
-    primitive: dict | None = None,
-    continuation_kind: str = "",
-    chain_child: bool = False,
-) -> dict:
-    evidence_ref = f"evidence/{target}/validation/primitive.json"
-    evidence_path = repo_root / evidence_ref
-    evidence_path.parent.mkdir(parents=True, exist_ok=True)
-    evidence_path.write_text(json.dumps({"difference": "stable"}), encoding="utf-8")
-    metadata = {
-        "depth_contract_version": 1,
-        "hypothesis_id": "H-primitive",
-        "capability_primitives": [
-            primitive
-            or {
-                "capability": "cross-workflow object selector",
-                "evidence_ref": evidence_ref,
-                "continuation_hint": "compare the linked download workflow",
-            }
-        ],
-    }
-    if continuation_kind:
-        metadata["continuation"] = {"kind": continuation_kind}
-    parent = build_action(
-        target=target,
-        action_type="validation",
-        evidence="Controlled replay recorded one reusable capability.",
-        next_question="Can the capability support one bounded chain?",
-        action="Preserve the result and review its chain value.",
-        metadata=metadata,
-    )
-    parent.update({"id": "AQ-0001", "status": "tested"})
-    queue = load_queue(repo_root, target)
-    queue["actions"].append(parent)
-    if chain_child:
-        child = build_action(
-            target=target,
-            action_type="hypothesis-continuation",
-            evidence="The parent already selected a chain continuation.",
-            next_question="Does the linked chain produce a controlled difference?",
-            action="Execute the existing chain child.",
-            metadata={
-                "depth_contract_version": 1,
-                "hypothesis_id": "H-primitive",
-                "parent_action_id": parent["id"],
-                "continuation_kind": "chain",
-            },
-        )
-        child.update({"id": "AQ-0002", "status": "queued"})
-        queue["actions"].append(child)
-    save_queue(repo_root, target, queue)
-    return parent
 
 
 def _claim_round_lane_worker(repo_root, target, lane, max_lanes, output):
@@ -174,61 +140,26 @@ def _finish_round_lane_worker(repo_root, target, lane, output):
         output.put(("error", str(exc)))
 
 
-def _apply_target_memory_worker(repo_root, target, index, output):
-    try:
-        result = apply_target_memory(
-            repo_root,
-            target,
-            {
-                "decision": "handoff",
-                "target_write_back": {
-                    "lead": [f"lead-{index}"],
-                    "next": [f"next-{index}"],
-                    "dead_end": [f"dead-end-{index}"],
-                    "handoff": f"handoff-{index}",
-                },
-            },
-        )
-        output.put(("ok", result.get("session_path", "")))
-    except Exception as exc:  # pragma: no cover - surfaced through parent assertion
-        output.put(("error", str(exc)))
-
-
-def test_checkpoint_without_recon_recommends_refresh_recon(tmp_path):
-    checkpoint = build_checkpoint(tmp_path, target="target.com")
+def test_checkpoint_without_recon_is_read_only_and_does_not_choose_work(tmp_path, store):
+    before = store.binding()
+    checkpoint = build_checkpoint(tmp_path, target=store.target)
     output = format_checkpoint(checkpoint)
-    witness_path = tmp_path / "state" / "target.com" / "checkpoint_latest.json"
-    witness = json.loads(witness_path.read_text(encoding="utf-8"))
 
-    assert checkpoint["decision"] == "refresh-recon"
-    assert checkpoint["target"] == "target.com"
-    assert any("/recon target.com" in item for item in checkpoint["target_write_back"]["next"])
-    assert checkpoint["recommended_executable_action"]["type"] == "recon"
-    assert checkpoint["default_candidate"] == checkpoint["recommended_executable_action"]
-    assert (
-        checkpoint["recommended_executable_action"]["command_hint"]
-        == 'python3 tools/hunt.py --target "target.com" --recon-only && '
-        'python3 tools/surface.py --target "target.com" && '
-        'python3 tools/checkpoint.py --target "target.com"'
-    )
-
+    assert checkpoint["decision"] == "continue"
+    assert checkpoint["target"] == store.target
+    assert checkpoint["next_action_queue"] == []
+    assert checkpoint["recommended_executable_action"] == {}
+    assert checkpoint["default_candidate"] == {}
+    assert checkpoint["target_write_back"]["lead"] == []
+    assert checkpoint["target_write_back"]["next"] == []
+    assert checkpoint["target_write_back"]["dead_end"] == []
     assert "CHECKPOINT DECISION" in output
-    assert "Default candidate (compat pointer):" in output
-    # B2 (ai-capability-roadmap batch 5): apply-on is the CLI default, so the
-    # build-level status explains the default instead of claiming "not applied".
-    assert "Apply status: proposal only; CLI applies target memory by default" in output
-    # S1 native loading (ai-capability-roadmap batch 3): the pack no longer
-    # recommends a skill; skill_route is an empty compatibility shell carried
-    # through the checkpoint and witness. Skills are selected by the AI via
-    # the native Skill tool.
-    assert checkpoint["context_pack"]["skill_route"] == {}
-    assert all(
-        "skill_route" not in (item.get("metadata") or {})
-        and "route_required" not in (item.get("metadata") or {})
-        for item in checkpoint["next_action_queue"]
-    )
-    assert checkpoint["runtime_witness"]["path"] == "state/target.com/checkpoint_latest.json"
-    assert witness["kind"] == "autopilot_checkpoint_witness"
+    assert "Apply status: read-only Store view" in output
+    assert "skill_route" not in checkpoint["context_pack"]
+    assert checkpoint["runtime_witness"]["status"] == "not_published"
+    assert not (tmp_path / "state" / store.key / "checkpoint_latest.json").exists()
+    assert not (tmp_path / "evidence" / store.key / "coverage_matrix.json").exists()
+    assert store.binding() == before
 
 
 def test_primary_checkpoint_projects_store_actions_without_legacy_queue(tmp_path, capsys):
@@ -255,24 +186,165 @@ def test_primary_checkpoint_projects_store_actions_without_legacy_queue(tmp_path
 
     assert result == 0
     output = json.loads(capsys.readouterr().out)
-    assert output["root_finding_claim_sync"]["status"] == "skipped"
+    assert "root_finding_claim_sync" not in output
     assert output["action_queue_sync"]["status"] == "skipped"
     assert output["action_queue_sync"]["reason"].startswith("primary store")
     assert queue_path.read_text(encoding="utf-8") == "{not-json"
     assert store.page("actions")["revision"] == before_revision
     assert output["runtime_witness"]["status"] == "not_published"
+    assert [item["id"] for item in output["next_action_queue"]] == ["WORK-1"]
     assert not (tmp_path / "state" / target / "checkpoint_latest.json").exists()
 
 
-def test_record_global_review_persists_checkpoint_witness(tmp_path, monkeypatch):
+def test_primary_checkpoint_restores_pending_actions_without_generated_routes(tmp_path, monkeypatch):
+    import tools.resume as resume_tool
+
+    root = tmp_path / "isolated root"
+    target = "checkpoint-actions.test"
+    store = TargetStore(root, target)
+    store.initialize()
+    for index in range(12):
+        store.create_action(command_id=f"create-{index:02}", action_id=f"WORK-{index:02}",
+                            intent=f"Review context {index}", execution_key=f"context:{index}",
+                            actor="operator", kind="work", subject={"target": target},
+                            priority=index * 10,
+                            metadata={"conditions": "same tenant", "action_context": {
+                                "type": "context-review", "command_hint": f"Inspect material {index}",
+                            }})
+
+    before = store.binding()
+    checkpoint = build_checkpoint(root, target=target, refresh_coverage=False)
+    assert [item["id"] for item in checkpoint["next_action_queue"]] == [f"WORK-{i:02}" for i in range(5)]
+    assert checkpoint["next_action_queue"][0]["metadata"]["conditions"] == "same tenant"
+    assert checkpoint["next_action_queue"][0]["command_hint"] == "Inspect material 0"
+    assert checkpoint["default_candidate"] == {}
+    assert checkpoint["recommended_executable_action"] == {}
+    assert checkpoint["target_write_back"]["next"] == []
+    window = checkpoint["action_queue_window"]
+    assert (window["total"], window["returned"], window["remaining"]) == (12, 5, 7)
+    expanded = subprocess.run(shlex.split(window["expand_command"]), text=True, capture_output=True, check=True)
+    assert {item["id"] for item in json.loads(expanded.stdout)} == {f"WORK-{i:02}" for i in range(12)}
+    rendered = checkpoint_module.format_checkpoint(checkpoint)
+    assert "remaining=7" in rendered
+    assert window["expand_command"] in rendered
+    followup = resume_tool.load_checkpoint_followup(root, target)
+    assert followup["current_action"] == {}
+    assert followup["action_queue_window"] == window
+    assert store.binding() == before
+    assert not (root / "state" / target / "action_queue.json").exists()
+
+    store.transition_action(command_id="claim-last", action_id="WORK-11", expected_version=1,
+                            status="claimed", actor="operator")
+    store.transition_action(command_id="cancel-first", action_id="WORK-00", expected_version=1,
+                            status="cancelled", actor="operator", reason="No longer needed")
+    store.transition_action(command_id="block-second", action_id="WORK-01", expected_version=1,
+                            status="blocked", actor="operator", reason="Missing comparison context")
+    before = store.binding()
+    checkpoint = build_checkpoint(root, target=target, refresh_coverage=False)
+    assert checkpoint["default_candidate"]["id"] == "WORK-11"
+    assert checkpoint["action_queue_window"]["total"] == 11
+    assert checkpoint["next_action_queue"][0]["id"] == "WORK-01"
+    assert checkpoint["next_action_queue"][0]["status"] == "blocked"
+    text = checkpoint_module.format_checkpoint(checkpoint)
+    assert "status: blocked" in text and "Missing comparison context" in text
+    assert resume_tool.load_checkpoint_followup(root, target)["current_action"]["id"] == "WORK-11"
+    assert store.binding() == before
+
+
+@pytest.mark.parametrize("entry_count", [0, 7])
+def test_primary_checkpoint_cli_preserves_goal_and_conditional_memory(tmp_path, entry_count):
+    repo = tmp_path / "isolated root"
+    target = "target.com"
+    store = TargetStore(repo, target)
+    store.initialize()
+    goal = "Review saved object access evidence"
+    store.set_active_goal(
+        command_id="goal", goal=goal, actor="operator", expected_revision=store.binding()["revision"],
+    )
+    operation_id = ""
+    if entry_count:
+        evidence_ref = f"evidence/{target}/response.txt"
+        _write_round_evidence(repo, evidence_ref, "Recorded object response")
+        store.start_attempt(
+            attempt_id="replay", source="native", started_at="2026-09-24T00:00:00Z", actor="operator",
+        )
+        store.record_execution(
+            attempt_id="replay", outcome="complete", actor="operator",
+            observations=[{
+                "endpoint": f"https://{target}/object", "method": "GET", "family": "Authz",
+                "observed_at": "2026-09-24T00:00:00Z", "description": "Recorded object response",
+                "artifacts": {"response": evidence_ref}, "result": "tested_clean", "state_changing": False,
+            }],
+        )
+        operation_id = store.page("operations")["items"][0]["id"]
+    for index in range(entry_count):
+        store.remember(
+            command_id=f"memory-{index}", kind="negative" if index == 6 else "note",
+            statement=f"Saved observation {index}", conditions=f"tenant {index}",
+            reopen_when=f"peer session {index}", next_intent=f"compare object {index}",
+            evidence=[{"operation_id": operation_id, "step": 0}] if index == 6 else [],
+            actor="operator",
+        )
+    legacy_path = repo / "memory" / "goals" / "targets" / f"{target}.json"
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_path.write_text("{not-json", encoding="utf-8")
+    before = store.binding()
+    checkout = Path(__file__).resolve().parents[1]
+    command = [
+        sys.executable, "-B", str(checkout / "tools" / "checkpoint.py"),
+        "--repo-root", str(repo), "--target", target,
+    ]
+    result = subprocess.run(command + ["--json"], capture_output=True, text=True, check=True)
+    checkpoint = json.loads(result.stdout)
+    context = checkpoint["context_pack"]
+    memory = context["target_experiences"]
+    output = subprocess.run(command, capture_output=True, text=True, check=True).stdout
+
+    assert context["active_goal"] == goal
+    assert goal in output
+    assert memory["total"] == entry_count
+    assert len(memory["items"]) == min(entry_count, 5)
+    assert memory["remaining"] == max(0, entry_count - 5)
+    assert f"Showing {min(entry_count, 5)} of {entry_count}" in output
+    if entry_count:
+        negative = memory["items"][0]
+        assert negative["entry_id"] == "memory-6"
+        assert negative["kind"] == "negative"
+        assert negative["structured"] == {
+            "conditions": "tenant 6", "reopen_when": "peer session 6", "next_intent": "compare object 6",
+        }
+        assert negative["evidence_refs"] == [f"{operation_id}:0"]
+        for text in ('conditions="tenant 6"', 'reopen_when="peer session 6"',
+                     'next_intent="compare object 6"', f"evidence={operation_id}:0"):
+            assert text in output
+        for key, extra in (("next_command", []), ("expand_command", ["memory-6"])):
+            assert memory[key] in output
+            args = shlex.split(memory[key])
+            if extra:
+                args[-1:] = extra
+            page = subprocess.run(args + ["--json"], cwd=checkout, capture_output=True, text=True, check=True)
+            assert [item["entry_id"] for item in json.loads(page.stdout)["target_entries"]] == (
+                ["memory-6"] if extra else ["memory-1", "memory-0"]
+            )
+    else:
+        assert memory["has_more"] is False
+        assert memory["next_command"] == ""
+        assert "Next page:" not in output
+    assert store.binding() == before
+    assert legacy_path.read_text(encoding="utf-8") == "{not-json"
+    assert not (repo / "state" / target / "checkpoint_latest.json").exists()
+    assert not (repo / "state" / target / "action_queue.json").exists()
+
+
+def test_record_global_review_persists_checkpoint_witness(tmp_path, monkeypatch, store):
     target = "target.com"
     digest = "c" * 64
     evidence_ref = "evidence/target.com/review/summary.json"
     evidence = tmp_path / evidence_ref
-    evidence.parent.mkdir(parents=True)
+    evidence.parent.mkdir(parents=True, exist_ok=True)
     evidence.write_text("review\n", encoding="utf-8")
     witness = tmp_path / "state" / target / "checkpoint_latest.json"
-    witness.parent.mkdir(parents=True)
+    witness.parent.mkdir(parents=True, exist_ok=True)
     witness.write_text(
         json.dumps({
             "schema_version": 1,
@@ -307,7 +379,7 @@ def test_record_global_review_persists_checkpoint_witness(tmp_path, monkeypatch)
     assert payload["round_guard"]["fingerprint"] == "x"
 
 
-def test_record_global_review_persists_claim_basis(tmp_path, monkeypatch):
+def test_record_global_review_persists_claim_basis(tmp_path, monkeypatch, store):
     """The recorded witness keeps the claim basis next to the digest, so a
     later validation scopes to queue/coverage/closure components instead of
     the whole snapshot."""
@@ -316,10 +388,10 @@ def test_record_global_review_persists_claim_basis(tmp_path, monkeypatch):
     digest = "c" * 64
     evidence_ref = "evidence/target.com/review/summary.json"
     evidence = tmp_path / evidence_ref
-    evidence.parent.mkdir(parents=True)
+    evidence.parent.mkdir(parents=True, exist_ok=True)
     evidence.write_text("review\n", encoding="utf-8")
     witness = tmp_path / "state" / target / "checkpoint_latest.json"
-    witness.parent.mkdir(parents=True)
+    witness.parent.mkdir(parents=True, exist_ok=True)
     witness.write_text(
         json.dumps({
             "schema_version": 1,
@@ -366,10 +438,10 @@ def test_record_global_review_persists_claim_basis(tmp_path, monkeypatch):
     }
 
 
-def test_record_global_review_propagates_stale_recovery_diagnostics(tmp_path, monkeypatch):
+def test_record_global_review_propagates_stale_recovery_diagnostics(tmp_path, monkeypatch, store):
     target = "target.com"
     witness = tmp_path / "state" / target / "checkpoint_latest.json"
-    witness.parent.mkdir(parents=True)
+    witness.parent.mkdir(parents=True, exist_ok=True)
     witness.write_text(
         json.dumps({"schema_version": 1, "kind": "autopilot_checkpoint_witness", "target": target}),
         encoding="utf-8",
@@ -401,7 +473,7 @@ def test_record_global_review_propagates_stale_recovery_diagnostics(tmp_path, mo
     assert "Re-run closure check" in diagnostics["action_required"]
 
 
-def test_checkpoint_projects_visible_knowledge_effect_stages(tmp_path):
+def test_checkpoint_projects_visible_knowledge_effect_stages(tmp_path, store):
     checkpoint = {
         "context_pack": {
             "knowledge_cards": ["sqli-hidden-surfaces"],
@@ -446,9 +518,7 @@ def test_checkpoint_projects_visible_knowledge_effect_stages(tmp_path):
     )
 
     checkpoint["target"] = "target.test"
-    save_queue(tmp_path, "target.test", {"actions": [action]})
-    sync_checkpoint_action_queue(tmp_path, checkpoint)
-    assert checkpoint["knowledge_effect_trace"] == resolved
+    checkpoint["knowledge_effect_trace"] = resolved
 
     output = format_checkpoint(checkpoint)
     assert output.count("Knowledge effect:") == 1
@@ -457,10 +527,10 @@ def test_checkpoint_projects_visible_knowledge_effect_stages(tmp_path):
     assert "-> tested_clean" in output
 
 
-def test_round_guard_blocks_only_after_three_identical_records(monkeypatch, tmp_path):
+def test_round_guard_blocks_only_after_three_identical_records(monkeypatch, tmp_path, store):
     target = "target.com"
     state_dir = tmp_path / "state" / target
-    state_dir.mkdir(parents=True)
+    state_dir.mkdir(parents=True, exist_ok=True)
     witness = state_dir / "checkpoint_latest.json"
     witness.write_text(json.dumps({"schema_version": 1, "target": target}), encoding="utf-8")
     state = {"target": target, "resolved_target": target, "json_inject": {
@@ -475,7 +545,7 @@ def test_round_guard_blocks_only_after_three_identical_records(monkeypatch, tmp_
     assert counts == [1, 2, 3, 3]
 
 
-def test_round_lane_budget_resumes_and_dedupes_claims_across_invocations(tmp_path):
+def test_round_lane_budget_resumes_and_dedupes_claims_across_invocations(tmp_path, store):
     target = "target.com"
     first = begin_round(tmp_path, target, max_lanes=2)
     lane_one = record_round_lane(tmp_path, target, lane="sqli:/api/search", max_lanes=2)
@@ -508,7 +578,7 @@ def test_round_lane_budget_resumes_and_dedupes_claims_across_invocations(tmp_pat
         "candidate:idle-no-change-r4e2c64d",
     ],
 )
-def test_new_passive_round_lane_is_rejected_without_budget_mutation(tmp_path, lane):
+def test_new_passive_round_lane_is_rejected_without_budget_mutation(tmp_path, lane, store):
     target = "target.com"
     begin_round(tmp_path, target, max_lanes=2)
     witness = tmp_path / "state" / target / "checkpoint_latest.json"
@@ -524,7 +594,7 @@ def test_new_passive_round_lane_is_rejected_without_budget_mutation(tmp_path, la
     assert witness.read_bytes() == before
 
 
-def test_generic_verify_lane_remains_substantive(tmp_path):
+def test_generic_verify_lane_remains_substantive(tmp_path, store):
     target = "target.com"
     begin_round(tmp_path, target, max_lanes=1)
 
@@ -536,7 +606,7 @@ def test_generic_verify_lane_remains_substantive(tmp_path):
     assert result["allowed"] is True
 
 
-def test_legacy_claimed_passive_lane_remains_recoverable(tmp_path):
+def test_legacy_claimed_passive_lane_remains_recoverable(tmp_path, store):
     target = "target.com"
     lane = "idle:no-change"
     begin_round(tmp_path, target, max_lanes=1)
@@ -569,7 +639,7 @@ def test_legacy_claimed_passive_lane_remains_recoverable(tmp_path):
     assert terminal["allowed"] is False
 
 
-def test_round_closure_counts_underlying_post_round_next_action(monkeypatch, tmp_path):
+def test_round_closure_counts_underlying_post_round_next_action(monkeypatch, tmp_path, store):
     target = "target.com"
     state = {"target": target, "resolved_target": target, "next_action": "hunt_p1"}
     calls = []
@@ -609,7 +679,7 @@ def test_round_closure_counts_underlying_post_round_next_action(monkeypatch, tmp
     assert counts == [1, 2, 3]
 
 
-def test_round_lane_requires_explicit_round_begin(tmp_path):
+def test_round_lane_requires_explicit_round_begin(tmp_path, store):
     target = "target.com"
     witness = tmp_path / "state" / target / "checkpoint_latest.json"
     evidence_ref = "findings/target.com/poc/sql.json"
@@ -636,7 +706,7 @@ def test_round_lane_requires_explicit_round_begin(tmp_path):
         record_round_lane(tmp_path, target, lane="authz:/api/orders", max_lanes=1)
 
 
-def test_round_lane_result_survives_resume_and_terminal_replay_is_idempotent(tmp_path):
+def test_round_lane_result_survives_resume_and_terminal_replay_is_idempotent(tmp_path, store):
     target = "target.com"
     lane = "sqli:/api/search"
     evidence_ref = "findings/target.com/poc/sql_parameter/summary.json"
@@ -686,7 +756,7 @@ def test_round_lane_result_survives_resume_and_terminal_replay_is_idempotent(tmp
         )
 
 
-def test_round_lane_result_requires_claim_and_completed_evidence(tmp_path):
+def test_round_lane_result_requires_claim_and_completed_evidence(tmp_path, store):
     target = "target.com"
     begin_round(tmp_path, target, max_lanes=1)
 
@@ -714,7 +784,7 @@ def test_round_lane_result_requires_claim_and_completed_evidence(tmp_path):
         )
 
 
-def test_completed_coverage_lane_requires_canonical_owner_evidence(tmp_path):
+def test_completed_coverage_lane_requires_canonical_owner_evidence(tmp_path, store):
     target = "target.com"
     lane = "coverage:high-risk-lane-review"
     narrative_ref = f"evidence/{target}/coverage_disposition.md"
@@ -733,6 +803,14 @@ def test_completed_coverage_lane_requires_canonical_owner_evidence(tmp_path):
             next_action="final closure",
         )
 
+    for retired_ref in (f"state/{target}/action_queue.json", f"memory/evidence/{target}/ledger.jsonl"):
+        _write_round_evidence(tmp_path, retired_ref, "legacy closure claim")
+        with pytest.raises(ValueError, match="canonical Coverage Matrix|target-owned, non-empty evidence_ref"):
+            record_round_lane_result(
+                tmp_path, target, lane=lane, status="completed", decision="legacy state",
+                evidence_ref=retired_ref, next_action="final closure",
+            )
+
     matrix_ref = f"evidence/{target}/coverage_matrix.json"
     mark_cell(
         target,
@@ -742,6 +820,7 @@ def test_completed_coverage_lane_requires_canonical_owner_evidence(tmp_path):
         reason="bounded two-actor replay",
         repo_root=tmp_path,
     )
+    rebuild_matrix(target, repo_root=tmp_path)
     recorded = record_round_lane_result(
         tmp_path,
         target,
@@ -756,7 +835,7 @@ def test_completed_coverage_lane_requires_canonical_owner_evidence(tmp_path):
 
 
 @pytest.mark.parametrize("case", ["missing", "empty", "off_target", "outside_repo"])
-def test_completed_round_lane_rejects_invalid_evidence_without_mutating_lane(tmp_path, case):
+def test_completed_round_lane_rejects_invalid_evidence_without_mutating_lane(tmp_path, case, store):
     target = "target.com"
     lane = "sqli:/api/search"
     refs = {
@@ -791,7 +870,7 @@ def test_completed_round_lane_rejects_invalid_evidence_without_mutating_lane(tmp
     assert resumed["round_progress"]["lanes"][0]["status"] == "started"
 
 
-def test_round_lane_result_cli_records_bounded_heartbeat(tmp_path, capsys):
+def test_round_lane_result_cli_records_bounded_heartbeat(tmp_path, capsys, store):
     target = "target.com"
     lane = "authz:/api/orders/:id"
     begin_round(tmp_path, target, max_lanes=1)
@@ -816,7 +895,7 @@ def test_round_lane_result_cli_records_bounded_heartbeat(tmp_path, capsys):
     assert payload["lane"]["next_action"] == "capture owner session"
 
 
-def test_round_lane_heartbeat_is_atomic_under_concurrent_processes(tmp_path):
+def test_round_lane_heartbeat_is_atomic_under_concurrent_processes(tmp_path, store):
     target = "target.com"
     max_lanes = 5
     begin_round(tmp_path, target, max_lanes=max_lanes)
@@ -871,7 +950,7 @@ def test_round_lane_heartbeat_is_atomic_under_concurrent_processes(tmp_path):
     assert heartbeat["decision"] == "concurrent replay completed"
 
 
-def test_round_lane_heartbeat_survives_repeated_interrupt_cycles(monkeypatch, tmp_path):
+def test_round_lane_heartbeat_survives_repeated_interrupt_cycles(monkeypatch, tmp_path, store):
     target = "target.com"
     monkeypatch.setattr(
         checkpoint_module,
@@ -919,7 +998,7 @@ def test_round_lane_heartbeat_survives_repeated_interrupt_cycles(monkeypatch, tm
         previous_round = round_id
 
 
-def test_round_closure_completes_budget_and_next_begin_starts_new_round(monkeypatch, tmp_path):
+def test_round_closure_completes_budget_and_next_begin_starts_new_round(monkeypatch, tmp_path, store):
     target = "target.com"
     evidence_ref = "findings/target.com/poc/sql_parameter/summary.json"
     first = begin_round(tmp_path, target, max_lanes=1)
@@ -954,7 +1033,7 @@ def test_round_closure_completes_budget_and_next_begin_starts_new_round(monkeypa
     assert second["round_progress"]["round_id"] != first["round_progress"]["round_id"]
 
 
-def test_round_closure_rejects_completed_lane_after_evidence_disappears(monkeypatch, tmp_path):
+def test_round_closure_rejects_completed_lane_after_evidence_disappears(monkeypatch, tmp_path, store):
     target = "target.com"
     lane = "sqli:/api/search"
     evidence_ref = "findings/target.com/poc/sql_parameter/summary.json"
@@ -992,7 +1071,7 @@ def test_round_closure_rejects_completed_lane_after_evidence_disappears(monkeypa
     assert witness.read_bytes() == previous
 
 
-def test_new_round_does_not_overwrite_closed_round_with_invalid_evidence(tmp_path):
+def test_new_round_does_not_overwrite_closed_round_with_invalid_evidence(tmp_path, store):
     target = "target.com"
     lane = "sqli:/api/search"
     evidence_ref = "findings/target.com/poc/sql_parameter/summary.json"
@@ -1022,7 +1101,7 @@ def test_new_round_does_not_overwrite_closed_round_with_invalid_evidence(tmp_pat
     assert witness.read_bytes() == previous
 
 
-def test_round_closure_rejects_unfinished_lane(monkeypatch, tmp_path):
+def test_round_closure_rejects_unfinished_lane(monkeypatch, tmp_path, store):
     target = "target.com"
     begin_round(tmp_path, target, max_lanes=1)
     record_round_lane(tmp_path, target, lane="sqli:/api/search", max_lanes=1)
@@ -1041,11 +1120,11 @@ def test_round_closure_rejects_unfinished_lane(monkeypatch, tmp_path):
         record_round_closure(tmp_path, target)
 
 
-def test_evidence_before_terminal_heartbeat_remains_an_unfinished_lane(monkeypatch, tmp_path):
+def test_evidence_before_terminal_heartbeat_remains_an_unfinished_lane(monkeypatch, tmp_path, store):
     target = "target.com"
     evidence_ref = "findings/target.com/poc/sql/summary.json"
     evidence_path = tmp_path / evidence_ref
-    evidence_path.parent.mkdir(parents=True)
+    evidence_path.parent.mkdir(parents=True, exist_ok=True)
     evidence_path.write_text(json.dumps({"result": "tested_clean"}), encoding="utf-8")
 
     begin_round(tmp_path, target, max_lanes=1)
@@ -1072,7 +1151,7 @@ def test_evidence_before_terminal_heartbeat_remains_an_unfinished_lane(monkeypat
         record_round_closure(tmp_path, target)
 
 
-def test_checkpoint_witness_atomic_replace_failure_preserves_previous_bytes(tmp_path, monkeypatch):
+def test_checkpoint_witness_atomic_replace_failure_preserves_previous_bytes(tmp_path, monkeypatch, store):
     target = "target.com"
     first = checkpoint_module.write_checkpoint_witness(
         tmp_path,
@@ -1102,7 +1181,7 @@ def test_checkpoint_witness_atomic_replace_failure_preserves_previous_bytes(tmp_
     assert not list(path.parent.glob(f".{path.name}.*.tmp"))
 
 
-def test_checkpoint_witness_validates_preserved_round_before_rewrite(tmp_path):
+def test_checkpoint_witness_validates_preserved_round_before_rewrite(tmp_path, store):
     target = "target.com"
     begin_round(tmp_path, target, max_lanes=2)
     claimed = record_round_lane(
@@ -1136,7 +1215,7 @@ def test_checkpoint_witness_validates_preserved_round_before_rewrite(tmp_path):
     assert path.read_bytes() == previous
 
 
-def test_round_begin_normalizes_legacy_claimed_lanes_as_unfinished(tmp_path):
+def test_round_begin_normalizes_legacy_claimed_lanes_as_unfinished(tmp_path, store):
     target = "target.com"
     first = begin_round(tmp_path, target, max_lanes=1)
     witness = tmp_path / "state" / target / "checkpoint_latest.json"
@@ -1158,18 +1237,18 @@ def test_round_begin_normalizes_legacy_claimed_lanes_as_unfinished(tmp_path):
     assert resumed["round_progress"]["lanes"][0]["status"] == "started"
 
 
-def test_round_begin_rejects_corrupt_checkpoint_witness(tmp_path):
+def test_round_begin_rejects_corrupt_checkpoint_witness(tmp_path, store):
     witness = tmp_path / "state" / "target.com" / "checkpoint_latest.json"
-    witness.parent.mkdir(parents=True)
+    witness.parent.mkdir(parents=True, exist_ok=True)
     witness.write_text("{broken", encoding="utf-8")
 
     with pytest.raises(ValueError, match="invalid checkpoint witness JSON"):
         begin_round(tmp_path, "target.com", max_lanes=2)
 
 
-def test_round_begin_rejects_inconsistent_persisted_budget(tmp_path):
+def test_round_begin_rejects_inconsistent_persisted_budget(tmp_path, store):
     witness = tmp_path / "state" / "target.com" / "checkpoint_latest.json"
-    witness.parent.mkdir(parents=True)
+    witness.parent.mkdir(parents=True, exist_ok=True)
     witness.write_text(json.dumps({
         "schema_version": 1,
         "target": "target.com",
@@ -1188,113 +1267,68 @@ def test_round_begin_rejects_inconsistent_persisted_budget(tmp_path):
         begin_round(tmp_path, "target.com", max_lanes=2)
 
 
-def test_checkpoint_reuses_surface_state_for_context_pack(tmp_path, monkeypatch):
-    _seed_recon(tmp_path, "target.com", ["https://api.target.com/users/1"])
-    context_globals = checkpoint_module.build_context_pack.__globals__
-    load_registry = context_globals["_load_capability_registry"]
-    load_runner_candidates = checkpoint_module.build_autopilot_state.__globals__[
-        "load_validation_runner_candidate_pool"
-    ]
-    registry_loads = 0
-    candidate_loads = 0
+@pytest.mark.parametrize("recon", ["absent", "partial", "ready"])
+def test_shared_coverage_is_built_once_per_checkpoint_or_pack(tmp_path, monkeypatch, store, recon):
+    from tools import coverage_matrix
+    from tools.context_pack import build_context_pack
 
-    def fail_on_second_surface_load(*_args, **_kwargs):
-        raise AssertionError("checkpoint rebuilt surface state for context pack")
+    if recon == "ready":
+        _seed_recon(tmp_path, store.target, ["https://api.target.com/users/1"])
+    elif recon == "partial":
+        (tmp_path / "recon" / store.key).mkdir(parents=True)
+    _seed_work(tmp_path, target=store.target)
+    store.create_finding(command_id="finding", finding_id="finding", endpoint="https://target.com/item",
+                         method="GET", family="custom", title="Claim", claim="Unassessed", actor="operator")
+    rebuild = coverage_matrix._rebuild_matrix_unlocked
+    calls = []
 
-    def fail_on_candidate_reload(*_args, **_kwargs):
-        raise AssertionError("context pack reloaded validation runner candidates")
+    def counted(*args, **kwargs):
+        calls.append(args[0])
+        return rebuild(*args, **kwargs)
 
-    def count_registry_loads(*args, **kwargs):
-        nonlocal registry_loads
-        registry_loads += 1
-        return load_registry(*args, **kwargs)
-
-    def count_candidate_loads(*args, **kwargs):
-        nonlocal candidate_loads
-        candidate_loads += 1
-        return load_runner_candidates(*args, **kwargs)
-
-    monkeypatch.setitem(
-        context_globals,
-        "_surface_state",
-        fail_on_second_surface_load,
-    )
-    monkeypatch.setitem(
-        context_globals,
-        "load_validation_runner_candidate_pool",
-        fail_on_candidate_reload,
-    )
-    monkeypatch.setitem(
-        checkpoint_module.build_autopilot_state.__globals__,
-        "load_validation_runner_candidate_pool",
-        count_candidate_loads,
-    )
-    monkeypatch.setitem(context_globals, "_load_capability_registry", count_registry_loads)
-
-    checkpoint = build_checkpoint(tmp_path, target="target.com", refresh_coverage=False)
-
-    assert checkpoint["evidence_reviewed"]["surface"] is True
-    assert registry_loads == 1
-    assert candidate_loads == 1
+    monkeypatch.setattr(coverage_matrix, "_rebuild_matrix_unlocked", counted)
+    monkeypatch.setattr(TargetStore, "_finding_projections", lambda *args: pytest.fail("expanded unused Finding history"))
+    before = store.binding()
+    checkpoint = build_checkpoint(tmp_path, target=store.target)
+    assert calls == [store.target]
+    calls.clear()
+    pack = build_context_pack(tmp_path, target=store.target)
+    assert calls == [store.target]
+    assert checkpoint["coverage"]["summary"]["total_cells"] >= 0
+    assert pack["source_summary"]["findings"] == 1
+    assert store.binding() == before
+    from tools.resume import load_pickup_summary
+    calls.clear()
+    pickup = load_pickup_summary(tmp_path / "memory", store.target, repo_root=tmp_path)
+    assert pickup["checkpoint"]["available"] is True
+    assert calls == [store.target]
 
 
-def test_checkpoint_reuses_action_queue_snapshot(tmp_path, monkeypatch):
-    _seed_recon(tmp_path, "target.com", ["https://api.target.com/users/1"])
-    _seed_capability_parent(tmp_path)
-    load_queue = checkpoint_module.load_action_queue
-    queue_loads = 0
+@pytest.mark.parametrize("consumer", ["checkpoint", "pack", "surface"])
+def test_shared_coverage_rejects_raw_damage_during_assembly(tmp_path, monkeypatch, store, consumer):
+    from tools import checkpoint as checkpoint_module, context_pack, surface
 
-    def count_queue_loads(*args, **kwargs):
-        nonlocal queue_loads
-        queue_loads += 1
-        return load_queue(*args, **kwargs)
+    _seed_recon(tmp_path, store.target, ["https://api.target.com/users/1"])
+    _record_observation(store, endpoint="https://target.com/item", family="Authz", result="tested_clean")
+    raw = next((tmp_path / "evidence" / store.key).glob("attempt-*.txt"))
+    module = {"checkpoint": checkpoint_module, "pack": context_pack, "surface": surface}[consumer]
+    read_truth = module.current_cell_projection
 
-    def fail_on_state_queue_reload(*_args, **_kwargs):
-        raise AssertionError("autopilot state reloaded the checkpoint Queue snapshot")
+    def damage(*args, **kwargs):
+        raw.write_text("Changed after Coverage acquisition")
+        return read_truth(*args, **kwargs)
 
-    monkeypatch.setattr(checkpoint_module, "load_action_queue", count_queue_loads)
-    monkeypatch.setitem(
-        checkpoint_module.build_autopilot_state.__globals__,
-        "load_queue",
-        fail_on_state_queue_reload,
-    )
-
-    checkpoint = build_checkpoint(tmp_path, target="target.com", refresh_coverage=False)
-
-    assert queue_loads == 1
-    assert any(item["type"] == "capability-chain-review" for item in checkpoint["next_action_queue"])
+    monkeypatch.setattr(module, "current_cell_projection", damage)
+    build = {"checkpoint": checkpoint_module.build_checkpoint,
+             "pack": context_pack.build_context_pack, "surface": surface.load_surface_context}[consumer]
+    with pytest.raises(ValueError, match="coverage evidence changed"):
+        build(tmp_path, target=store.target)
 
 
-def test_checkpoint_reuses_case_state_owner_snapshot(tmp_path, monkeypatch):
-    add_object(
-        tmp_path,
-        "target.com",
-        object_ref="order_123",
-        object_type="order",
-        object_id="123",
-        endpoint="https://api.target.com/orders/123",
-    )
-    case_state_globals = checkpoint_module.build_case_state_summary.__globals__
-    load_case_state = case_state_globals["load_case_state"]
-    state_loads = 0
-
-    def count_state_loads(*args, **kwargs):
-        nonlocal state_loads
-        state_loads += 1
-        return load_case_state(*args, **kwargs)
-
-    monkeypatch.setitem(case_state_globals, "load_case_state", count_state_loads)
-
-    checkpoint = build_checkpoint(tmp_path, target="target.com", refresh_coverage=False)
-
-    assert state_loads == 1
-    assert checkpoint["case_state"]["objects"] == 1
-
-
-def test_checkpoint_owner_read_budget_is_bounded(tmp_path, monkeypatch):
+def test_checkpoint_owner_read_budget_is_bounded(tmp_path, monkeypatch, store):
     target = "target.com"
     _seed_recon(tmp_path, target, ["https://api.target.com/users/1"])
-    _seed_capability_parent(tmp_path, target=target)
+    _seed_work(tmp_path, target=target)
 
     counts = {
         "queue": 0,
@@ -1305,22 +1339,23 @@ def test_checkpoint_owner_read_budget_is_bounded(tmp_path, monkeypatch):
         "coverage_fallback": 0,
     }
 
-    original_queue = checkpoint_module.load_action_queue
+    original_queue = checkpoint_module.load_queue_summary
 
     def count_queue(*args, **kwargs):
         counts["queue"] += 1
         return original_queue(*args, **kwargs)
 
-    monkeypatch.setattr(checkpoint_module, "load_action_queue", count_queue)
+    monkeypatch.setattr(checkpoint_module, "load_queue_summary", count_queue)
 
-    case_globals = checkpoint_module.build_case_state_summary.__globals__
-    original_case = case_globals["load_case_state"]
+    case_globals = checkpoint_module._build_autopilot_state.__globals__["_load_case_state_projection"].__globals__
+    original_case = checkpoint_module.build_case_state_summary
 
     def count_case(*args, **kwargs):
         counts["case"] += 1
         return original_case(*args, **kwargs)
 
-    monkeypatch.setitem(case_globals, "load_case_state", count_case)
+    monkeypatch.setattr(checkpoint_module, "build_case_state_summary", count_case)
+    monkeypatch.setitem(case_globals, "build_case_state_summary", count_case)
 
     state_globals = checkpoint_module.build_autopilot_state.__globals__
     original_candidates = state_globals["load_validation_runner_candidate_pool"]
@@ -1331,13 +1366,13 @@ def test_checkpoint_owner_read_budget_is_bounded(tmp_path, monkeypatch):
 
     monkeypatch.setitem(state_globals, "load_validation_runner_candidate_pool", count_candidates)
 
-    original_matrix_projection = checkpoint_module.load_matrix_projection
+    original_matrix_projection = checkpoint_module.read_matrix
 
     def count_matrix_projection(*args, **kwargs):
         counts["coverage_projection"] += 1
         return original_matrix_projection(*args, **kwargs)
 
-    monkeypatch.setattr(checkpoint_module, "load_matrix_projection", count_matrix_projection)
+    monkeypatch.setattr(checkpoint_module, "read_matrix", count_matrix_projection)
 
     context_globals = checkpoint_module.build_context_pack.__globals__
 
@@ -1365,10 +1400,10 @@ def test_checkpoint_owner_read_budget_is_bounded(tmp_path, monkeypatch):
     }
 
 
-def test_checkpoint_owner_snapshots_preserve_state_projection(tmp_path):
+def test_checkpoint_owner_snapshots_preserve_state_projection(tmp_path, store):
     target = "target.com"
     _seed_recon(tmp_path, target, ["https://api.target.com/users/1"])
-    _seed_capability_parent(tmp_path, target=target)
+    _seed_work(tmp_path, target=target)
     add_object(
         tmp_path,
         target,
@@ -1398,472 +1433,82 @@ def test_checkpoint_owner_snapshots_preserve_state_projection(tmp_path):
         assert reused[key] == baseline[key], key
 
 
-def test_autopilot_state_rejects_cross_target_owner_snapshots(tmp_path):
-    add_object(
-        tmp_path,
-        "target.com",
-        object_ref="order_123",
-        object_type="order",
-        object_id="123",
-        endpoint="https://target.com/orders/123",
-    )
-
-    with pytest.raises(ValueError, match="action queue snapshot target"):
-        checkpoint_module.build_autopilot_state(
-            str(tmp_path),
-            "target.com",
-            queue_snapshot={"target": "other.test", "actions": []},
-        )
-    with pytest.raises(ValueError, match="case state snapshot target"):
-        checkpoint_module.build_autopilot_state(
-            str(tmp_path),
-            "target.com",
-            case_state_summary={"target": "other.test"},
-        )
+@pytest.mark.parametrize("snapshot", ["queue", "case"])
+def test_autopilot_state_ignores_caller_supplied_owner_snapshots(tmp_path, store, snapshot):
+    add_object(tmp_path, store.target, object_ref="order_123", object_type="order",
+               object_id="123", endpoint="https://target.com/orders/123")
+    kwargs = ({"queue_snapshot": {"target": "other.test", "actions": [{"id": "FORGED"}]}}
+              if snapshot == "queue" else {"case_state_summary": {"target": "other.test", "objects": 999}})
+    state = checkpoint_module.build_autopilot_state(str(tmp_path), store.target, **kwargs)
+    assert state["case_state"]["objects"] == 1
+    assert state["action_queue_next"] == {}
+    assert "FORGED" not in json.dumps(state)
 
 
-def test_checkpoint_reuses_fresh_coverage_matrix(tmp_path, monkeypatch):
-    _seed_recon(tmp_path, "target.com", ["https://target.com/api/users/1"])
-    first = build_checkpoint(tmp_path, target="target.com")
-    assert first["evidence_reviewed"]["coverage_rebuilt"] is True
-
-    monkeypatch.setattr(
-        checkpoint_module,
-        "rebuild_matrix",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("fresh coverage matrix was rebuilt")
-        ),
-    )
-    second = build_checkpoint(tmp_path, target="target.com")
-    assert second["evidence_reviewed"]["coverage_rebuilt"] is False
-
-
-def test_checkpoint_no_refresh_is_read_only_for_coverage(tmp_path, monkeypatch):
-    _seed_recon(tmp_path, "target.com", ["https://target.com/api/users/1"])
-    monkeypatch.setattr(
-        checkpoint_module,
-        "rebuild_matrix",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("no-refresh rebuilt coverage")
-        ),
-    )
-    checkpoint = build_checkpoint(tmp_path, target="target.com", refresh_coverage=False)
+@pytest.mark.parametrize("refresh", [False, True])
+def test_checkpoint_coverage_is_current_without_publishing_cache(tmp_path, store, refresh):
+    _seed_recon(tmp_path, store.target, ["https://target.com/api/users/1"])
+    cache = tmp_path / "evidence" / store.key / "coverage_matrix.json"
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text("{stale-cache", encoding="utf-8")
+    before = store.binding()
+    checkpoint = build_checkpoint(tmp_path, target=store.target, refresh_coverage=refresh)
+    assert checkpoint["coverage"]["summary"]["endpoints"] == 1
     assert checkpoint["evidence_reviewed"]["coverage_rebuilt"] is False
+    assert cache.read_text(encoding="utf-8") == "{stale-cache"
+    assert store.binding() == before
 
 
-def test_bounded_proposals_preserve_lane_types_before_duplicate_fill():
-    def _entry(text, action_type, priority):
-        return _proposal_entry(text, action_type=action_type, priority=priority)
-
-    proposals = [
-        _entry(
-            f"Candidate evidence gap for finding F-{index} on /items/{index}: fill evidence.",
-            "candidate-evidence-gap", 105,
-        )
-        for index in range(8)
-    ] + [
-        _entry("Cover high-value matrix gap: /admin x Authz (weight=5).", "coverage-gap", 94),
-        _entry(
-            "Cover actor matrix gap: /orders/1 x IDOR with peer/other/id_swap expected=deny status=missing.",
-            "actor-gap", 96,
-        ),
-        _entry("Review surface candidate https://target.com/payments: inspect workflow.", "surface-review", 70),
-    ]
-
-    bounded = _bounded_next_proposals(proposals, "target.com")
-
-    assert len(bounded) == 8
-    types = {str(item.get("type")) for item in bounded if _is_proposal_entry(item)}
-    assert {"candidate-evidence-gap", "coverage-gap", "actor-gap", "surface-review"} <= types
-
-
-def test_checkpoint_fails_explicitly_on_corrupt_case_state(tmp_path):
-    path = tmp_path / "state" / "target.com" / "case_state.json"
-    path.parent.mkdir(parents=True)
+def test_checkpoint_ignores_corrupt_legacy_case_state(tmp_path, store):
+    path = tmp_path / "state" / store.key / "case_state.json"
     path.write_text("{broken", encoding="utf-8")
-
-    with pytest.raises(ValueError, match="invalid target case state JSON"):
-        build_checkpoint(tmp_path, target="target.com")
-
-
-def test_checkpoint_cli_syncs_durable_action_queue_idempotently(tmp_path, capsys):
-    first_exit = checkpoint_module.main([
-        "--repo-root",
-        str(tmp_path),
-        "--target",
-        "target.com",
-        "--no-refresh-coverage",
-        "--json",
-    ])
-    first = json.loads(capsys.readouterr().out)
-    queue_path = tmp_path / "state" / "target.com" / "action_queue.json"
-    witness_path = tmp_path / "state" / "target.com" / "checkpoint_latest.json"
-    first_queue = load_queue(tmp_path, "target.com")
-    witness = json.loads(witness_path.read_text(encoding="utf-8"))
-
-    assert first_exit == 0
-    assert queue_path.is_file()
-    assert first_queue["actions"]
-    assert first["action_queue_sync"]["path"] == str(queue_path)
-    assert first["action_queue_sync"]["stats"]["added"] >= 1
-    assert witness["action_queue"]["synchronized"] is True
-    assert witness["action_queue"]["path"] == "state/target.com/action_queue.json"
-
-    second_exit = checkpoint_module.main([
-        "--repo-root",
-        str(tmp_path),
-        "--target",
-        "target.com",
-        "--no-refresh-coverage",
-        "--json",
-    ])
-    second = json.loads(capsys.readouterr().out)
-    second_queue = load_queue(tmp_path, "target.com")
-
-    assert second_exit == 0
-    assert second["action_queue_sync"]["stats"]["added"] == 0
-    assert len(second_queue["actions"]) == len(first_queue["actions"])
+    add_object(tmp_path, store.target, object_ref="saved", object_type="order", object_id="1")
+    checkpoint = build_checkpoint(tmp_path, target=store.target)
+    assert checkpoint["case_state"]["objects"] == 1
+    assert path.read_text(encoding="utf-8") == "{broken"
 
 
-def test_repeated_auth_prerequisite_handoff_keeps_one_queue_action(tmp_path):
-    proposal = _actor_gap_enrichment_proposal(
-        {
-            "actor_matrix": {
-                "gaps": [{
-                    "endpoint": "/api/orders/123",
-                    "vuln_class": "IDOR",
-                    "actor": "peer",
-                    "object_scope": "other_object_same_org",
-                    "variant": "id_swap",
-                    "status": "missing",
-                }]
-            }
-        },
-        {"actors": 0, "sessions": 0, "objects": 0},
-    )
-    checkpoint = {
-        "target": "target.com",
-        "context_pack": {},
-        "next_action_queue": _build_next_action_queue([proposal], "target.com"),
-    }
-
-    first = sync_checkpoint_action_queue(tmp_path, checkpoint)
-    queue_path = tmp_path / "state" / "target.com" / "action_queue.json"
-    first_bytes = queue_path.read_bytes()
-    first_queue = load_queue(tmp_path, "target.com")
-    second = sync_checkpoint_action_queue(tmp_path, checkpoint)
-    second_queue = load_queue(tmp_path, "target.com")
-
-    assert first["stats"]["added"] == 1
-    assert second["stats"]["added"] == 0
-    assert queue_path.read_bytes() == first_bytes
-    assert len(second_queue["actions"]) == len(first_queue["actions"]) == 1
-    assert second_queue["actions"][0]["type"] == "case-state-enrichment"
-    assert second_queue["actions"][0]["metadata"]["missing_evidence"] == [
-        "second actor",
-        "peer/second session",
-        "business object",
-    ]
-
-
-def test_checkpoint_cli_fails_fast_without_overwriting_corrupt_action_queue(tmp_path, capsys):
-    queue_path = tmp_path / "state" / "target.com" / "action_queue.json"
-    queue_path.parent.mkdir(parents=True)
-    queue_path.write_text('{"actions":', encoding="utf-8")
-    original = queue_path.read_bytes()
-
-    exit_code = checkpoint_module.main(
-        [
-            "--repo-root",
-            str(tmp_path),
-            "--target",
-            "target.com",
-            "--no-refresh-coverage",
-            "--json",
-        ]
-    )
-
-    error = capsys.readouterr().err
-    assert exit_code == 2
-    assert "checkpoint action queue preflight failed" in error
-    assert str(queue_path) in error
-    assert queue_path.read_bytes() == original
-
-
-def test_checkpoint_cli_reconciles_root_json_claim_and_links_durable_actions(tmp_path, capsys):
-    findings_dir = tmp_path / "findings" / "target.com"
-    findings_dir.mkdir(parents=True)
-    (findings_dir / "manual-sqli.json").write_text(
-        json.dumps(
-            {
-                "title": "Manual SQLi claim",
-                "severity": "critical",
-                "endpoint": "/rest/products/search",
-                "vuln_class": "SQLi",
-                "poc": "curl https://target.com/rest/products/search?q=...",
-                "impact": "claimed database access",
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    exit_code = checkpoint_module.main([
-        "--repo-root",
-        str(tmp_path),
-        "--target",
-        "target.com",
-        "--no-refresh-coverage",
-        "--json",
-    ])
-    checkpoint = json.loads(capsys.readouterr().out)
-    payload = json.loads((findings_dir / "findings.json").read_text(encoding="utf-8"))
-    finding = payload["findings"][0]
-    queue = load_queue(tmp_path, "target.com")
-
-    assert exit_code == 0
-    assert checkpoint["root_finding_claim_sync"]["status"] == "updated"
-    assert finding["validation_status"] == "candidate"
-    assert finding["report_status"] == "not_generated"
-    assert any(
-        (item.get("metadata") or {}).get("finding_id") == finding["id"]
-        for item in queue["actions"]
-    )
-
-
-@pytest.mark.parametrize("failure_point", ["finding", "queue"])
-def test_checkpoint_root_claim_replays_each_durable_boundary(
-    monkeypatch,
-    tmp_path,
-    capsys,
-    failure_point,
-):
-    target = "target.com"
-    findings_dir = tmp_path / "findings" / target
-    findings_dir.mkdir(parents=True)
-    (findings_dir / "manual-sqli.json").write_text(
-        json.dumps(
-            {
-                "kind": "finding_claim",
-                "schema_version": 1,
-                "title": "Manual SQLi claim",
-                "endpoint": "/rest/products/search",
-                "vuln_class": "SQLi",
-                "impact": "claimed database access",
-            }
-        ),
-        encoding="utf-8",
-    )
-    args = [
-        "--repo-root",
-        str(tmp_path),
-        "--target",
-        target,
-        "--no-refresh-coverage",
-        "--json",
-    ]
-    failed = False
-    original_sync = checkpoint_module.sync_checkpoint_action_queue
-    original_write = checkpoint_module.write_checkpoint_witness
-
-    if failure_point == "finding":
-        def fail_after_finding(*_args, **_kwargs):
-            nonlocal failed
-            failed = True
-            raise OSError("interrupted after finding")
-
-        monkeypatch.setattr(checkpoint_module, "sync_checkpoint_action_queue", fail_after_finding)
+@pytest.mark.parametrize("damage", ["missing", "corrupt"])
+def test_checkpoint_cli_fails_fast_on_unavailable_store(tmp_path, store, capsys, damage):
+    queue_path = tmp_path / "state" / store.key / "action_queue.json"
+    queue_path.write_text('{"actions": [{"id": "LEGACY"}]}', encoding="utf-8")
+    if damage == "missing":
+        store.path.unlink()
     else:
-        def fail_after_queue(repo_root, target_name, checkpoint):
-            nonlocal failed
-            result = original_write(repo_root, target_name, checkpoint)
-            if checkpoint.get("action_queue_sync") and not failed:
-                failed = True
-                raise OSError("interrupted after queue")
-            return result
-
-        monkeypatch.setattr(checkpoint_module, "write_checkpoint_witness", fail_after_queue)
-
-    assert checkpoint_module.main(args) == 2
-    capsys.readouterr()
-    finding = finding_index.load_finding_index(findings_dir)["findings"][0]
-    interrupted_actions = [
-        item
-        for item in load_queue(tmp_path, target)["actions"]
-        if item.get("type") == "validation"
-        and (item.get("metadata") or {}).get("finding_id") == finding["id"]
-    ]
-    assert len(interrupted_actions) == (0 if failure_point == "finding" else 1)
-
-    monkeypatch.setattr(checkpoint_module, "sync_checkpoint_action_queue", original_sync)
-    monkeypatch.setattr(checkpoint_module, "write_checkpoint_witness", original_write)
-    assert checkpoint_module.main(args) == 0
-    capsys.readouterr()
-    queue_path = tmp_path / "state" / target / "action_queue.json"
-    recovered_queue = queue_path.read_bytes()
-    assert checkpoint_module.main(args) == 0
-    capsys.readouterr()
-
-    payload = finding_index.load_finding_index(findings_dir)
-    queue = load_queue(tmp_path, target)
-    actions = [
-        item
-        for item in queue["actions"]
-        if item.get("type") == "validation"
-        and (item.get("metadata") or {}).get("finding_id") == finding["id"]
-    ]
-    witness = json.loads(
-        (tmp_path / "state" / target / "checkpoint_latest.json").read_text(encoding="utf-8")
-    )
-    events = (findings_dir / "mutation-events.jsonl").read_text(encoding="utf-8").splitlines()
-
-    assert failed is True
-    assert payload["total"] == 1
-    assert len(events) == 1
-    assert len(actions) == 1
-    assert len({item["id"] for item in queue["actions"]}) == len(queue["actions"])
-    assert queue_path.read_bytes() == recovered_queue
-    assert witness["action_queue"]["synchronized"] is True
-
-
-def test_checkpoint_keeps_every_reconciled_root_claim_in_the_durable_queue(tmp_path, capsys):
-    findings_dir = tmp_path / "findings" / "target.com"
-    findings_dir.mkdir(parents=True)
-    for name, endpoint, vuln_class in (
-        ("claim-sqli.json", "/rest/products/search", "SQLi"),
-        ("claim-authz.json", "/rest/admin/config", "Authz"),
-        ("claim-upload.json", "/file-upload", "Upload"),
-    ):
-        (findings_dir / name).write_text(
-            json.dumps(
-                {
-                    "title": name,
-                    "endpoint": endpoint,
-                    "vuln_class": vuln_class,
-                    "poc": "candidate replay",
-                }
-            ),
-            encoding="utf-8",
-        )
-
-    first_exit = checkpoint_module.main([
-        "--repo-root", str(tmp_path), "--target", "target.com", "--no-refresh-coverage", "--json",
-    ])
-    capsys.readouterr()
-    findings = json.loads((findings_dir / "findings.json").read_text(encoding="utf-8"))["findings"]
-    expected_ids = {item["id"] for item in findings}
-    first_queue = load_queue(tmp_path, "target.com")
-    first_ids = {
-        str((item.get("metadata") or {}).get("finding_id") or "")
-        for item in first_queue["actions"]
-    }
-
-    second_exit = checkpoint_module.main([
-        "--repo-root", str(tmp_path), "--target", "target.com", "--no-refresh-coverage", "--json",
-    ])
-    capsys.readouterr()
-    second_queue = load_queue(tmp_path, "target.com")
-    second_ids = {
-        str((item.get("metadata") or {}).get("finding_id") or "")
-        for item in second_queue["actions"]
-    }
-
-    assert first_exit == second_exit == 0
-    assert expected_ids <= first_ids
-    assert expected_ids <= second_ids
-    assert len(second_queue["actions"]) == len(first_queue["actions"])
-
-
-def test_checkpoint_recovers_incomplete_root_claim_without_target_root_url(tmp_path, capsys):
-    findings_dir = tmp_path / "findings" / "target.com"
-    findings_dir.mkdir(parents=True)
-    (findings_dir / "jwt-claim.json").write_text(
-        json.dumps(
-            {
-                "title": "JWT authentication bypass",
-                "target": "target.com",
-                "vulnerability_class": "JWT",
-                "impact": "Forged token reaches the administrator view.",
-            }
-        ),
-        encoding="utf-8",
-    )
-
+        store.path.write_bytes(b"corrupt database")
+    before = queue_path.read_bytes()
     exit_code = checkpoint_module.main([
-        "--repo-root",
-        str(tmp_path),
-        "--target",
-        "target.com",
-        "--no-refresh-coverage",
-        "--json",
+        "--repo-root", str(tmp_path), "--target", store.target, "--json",
     ])
-    checkpoint = json.loads(capsys.readouterr().out)
-    payload = json.loads((findings_dir / "findings.json").read_text(encoding="utf-8"))
-    finding = payload["findings"][0]
-    queue = load_queue(tmp_path, "target.com")
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "checkpoint state build failed" in captured.err
+    assert captured.out == ""
+    assert queue_path.read_bytes() == before
+    assert not (tmp_path / "state" / store.key / "checkpoint_latest.json").exists()
 
-    assert exit_code == 0
-    assert finding["url"] == ""
-    assert finding["claim_status"] == "incomplete"
-    assert "endpoint" in finding["incomplete_fields"]
+
+def test_checkpoint_keeps_pending_claim_without_choosing_validation(tmp_path, store):
+    store.create_finding(command_id="F-1", finding_id="F-1", endpoint="https://target.com/api/users",
+                         method="GET", family="Authz", title="Unassessed claim",
+                         claim="Requires validation", actor="operator")
+    before = store.binding()
+    checkpoint = build_checkpoint(tmp_path, target=store.target)
     assert checkpoint["structured_findings"]["pending_validation"] == 1
-    assert any(
-        (item.get("metadata") or {}).get("finding_id") == finding["id"]
-        for item in queue["actions"]
-    )
+    assert checkpoint["structured_findings"]["next_validation"]["id"] == "F-1"
+    assert checkpoint["decision"] == "continue"
+    assert checkpoint["next_action_queue"] == []
+    assert checkpoint["recommended_executable_action"] == {}
+    assert checkpoint["target_write_back"]["next"] == []
+    assert store.binding() == before
 
 
-def test_checkpoint_prioritizes_pending_validation(tmp_path):
-    findings_dir = tmp_path / "findings" / "target.com"
-    findings_dir.mkdir(parents=True)
-    (findings_dir / "findings.json").write_text(
-        json.dumps({
-            "findings": [
-                {
-                    "id": "F-1",
-                    "type": "idor",
-                    "severity": "high",
-                    "confidence": "confirmed",
-                    "url": "https://api.target.com/api/org/123/users",
-                    "validation_status": "unvalidated",
-                    "report_status": "not_generated",
-                }
-            ]
-        }),
-        encoding="utf-8",
-    )
-    checkpoint = build_checkpoint(tmp_path, target="target.com")
-
-    assert checkpoint["decision"] == "validate"
-    assert checkpoint["structured_findings"]["pending_validation"] == 1
-    assert any("F-1" in item for item in checkpoint["target_write_back"]["next"])
-    assert checkpoint["recommended_executable_action"]["type"] == "validation"
-    assert checkpoint["recommended_executable_action"]["command_hint"] == "/validate"
-    assert any(
-        item["type"] == "validation"
-        for item in checkpoint["next_action_queue"]
-    )
-
-
-def test_checkpoint_runtime_wait_marker_preempts_pending_validation(tmp_path):
+def test_checkpoint_runtime_wait_marker_preempts_pending_validation(tmp_path, store):
     _seed_recon(tmp_path, "target.com", ["https://target.com/api/orders/1"])
     findings_dir = tmp_path / "findings" / "target.com"
     findings_dir.mkdir(parents=True, exist_ok=True)
-    (findings_dir / "findings.json").write_text(
-        json.dumps({
-            "findings": [
-                {
-                    "id": "F-wait-scan",
-                    "type": "idor",
-                    "severity": "high",
-                    "confidence": "confirmed",
-                    "url": "https://target.com/api/orders/1",
-                    "validation_status": "unvalidated",
-                    "report_status": "not_generated",
-                }
-            ]
-        }),
-        encoding="utf-8",
-    )
+    store.create_finding(command_id='F-wait-scan', finding_id='F-wait-scan', endpoint='https://target.com/api/orders/1', method="GET",
+                         family='idor', title="Unassessed claim", claim="Requires validation", actor="operator")
     update_runtime_state(
         tmp_path,
         "target.com",
@@ -1883,27 +1528,13 @@ def test_checkpoint_runtime_wait_marker_preempts_pending_validation(tmp_path):
         assert checkpoint["target_write_back"]["next"] == []
 
 
-def test_checkpoint_orphan_scan_marker_releases_pending_validation(tmp_path):
+def test_checkpoint_orphan_scan_marker_releases_pending_validation(tmp_path, store):
     """进程退出后遗留 marker 不能让 checkpoint 继续返回 wait_scan。"""
     _seed_recon(tmp_path, "target.com", ["https://target.com/api/orders/1"])
     findings_dir = tmp_path / "findings" / "target.com"
     findings_dir.mkdir(parents=True, exist_ok=True)
-    (findings_dir / "findings.json").write_text(
-        json.dumps({
-            "findings": [
-                {
-                    "id": "F-orphan-scan",
-                    "type": "idor",
-                    "severity": "high",
-                    "confidence": "confirmed",
-                    "url": "https://target.com/api/orders/1",
-                    "validation_status": "unvalidated",
-                    "report_status": "not_generated",
-                }
-            ]
-        }),
-        encoding="utf-8",
-    )
+    store.create_finding(command_id='F-orphan-scan', finding_id='F-orphan-scan', endpoint='https://target.com/api/orders/1', method="GET",
+                         family='idor', title="Unassessed claim", claim="Requires validation", actor="operator")
     update_runtime_state(
         tmp_path,
         "target.com",
@@ -1913,30 +1544,16 @@ def test_checkpoint_orphan_scan_marker_releases_pending_validation(tmp_path):
 
     checkpoint = build_checkpoint(tmp_path, target="target.com", refresh_coverage=False)
 
-    assert checkpoint["decision"] == "validate"
+    assert checkpoint["decision"] == "continue"
     assert checkpoint["next_action"] != "wait_scan"
-    assert checkpoint["recommended_executable_action"]["type"] != "wait_scan"
+    assert checkpoint["recommended_executable_action"] == {}
 
 
-def test_checkpoint_runtime_recon_wait_marker_preempts_pending_validation(tmp_path):
+def test_checkpoint_runtime_recon_wait_marker_preempts_pending_validation(tmp_path, store):
     findings_dir = tmp_path / "findings" / "target.com"
-    findings_dir.mkdir(parents=True)
-    (findings_dir / "findings.json").write_text(
-        json.dumps({
-            "findings": [
-                {
-                    "id": "F-wait-recon",
-                    "type": "idor",
-                    "severity": "high",
-                    "confidence": "confirmed",
-                    "url": "https://target.com/api/orders/1",
-                    "validation_status": "unvalidated",
-                    "report_status": "not_generated",
-                }
-            ]
-        }),
-        encoding="utf-8",
-    )
+    findings_dir.mkdir(parents=True, exist_ok=True)
+    store.create_finding(command_id='F-wait-recon', finding_id='F-wait-recon', endpoint='https://target.com/api/orders/1', method="GET",
+                         family='idor', title="Unassessed claim", claim="Requires validation", actor="operator")
     update_runtime_state(
         tmp_path,
         "target.com",
@@ -1956,10 +1573,10 @@ def test_checkpoint_runtime_recon_wait_marker_preempts_pending_validation(tmp_pa
         assert checkpoint["target_write_back"]["next"] == []
 
 
-def test_checkpoint_displays_runner_candidates_as_advisory_evidence(tmp_path):
+def test_checkpoint_displays_runner_candidates_as_advisory_evidence(tmp_path, store):
     _seed_recon(tmp_path, "target.com", ["https://target.com/rest/basket/6"])
     validation_dir = tmp_path / "evidence" / "target.com" / "validation" / "idor-basket"
-    validation_dir.mkdir(parents=True)
+    validation_dir.mkdir(parents=True, exist_ok=True)
     (validation_dir / "summary.json").write_text(
         json.dumps(
             {
@@ -1982,99 +1599,11 @@ def test_checkpoint_displays_runner_candidates_as_advisory_evidence(tmp_path):
     output = format_checkpoint(checkpoint)
 
     assert checkpoint["validation_runner_candidates"][0]["id"] == "idor-basket"
-    assert checkpoint["next_action_queue"][0]["type"] == "validation"
-    assert "Review validation-runner candidate idor-basket" in checkpoint["next_action_queue"][0]["action"]
+    assert checkpoint["next_action_queue"] == []
+    assert checkpoint["recommended_executable_action"] == {}
     assert "Validation runner candidates (advisory; require /validate before report):" in output
     assert "idor-basket [idor_actor_pair/tested_finding]" in output
     assert checkpoint["decision"] != "report"
-
-
-def test_checkpoint_ignores_off_target_direct_finding_followup(tmp_path):
-    findings_dir = tmp_path / "findings" / "target.com"
-    findings_dir.mkdir(parents=True)
-    (findings_dir / "findings.json").write_text(
-        json.dumps({
-            "findings": [
-                {
-                    "id": "OFFTARGET-IDOR",
-                    "type": "idor",
-                    "severity": "high",
-                    "confidence": "confirmed",
-                    "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=1969196030",
-                    "validation_status": "unvalidated",
-                    "report_status": "not_generated",
-                },
-                {
-                    "id": "TARGET-AUTHZ",
-                    "type": "auth_bypass",
-                    "severity": "high",
-                    "confidence": "high",
-                    "url": "https://api.target.com/rest/admin/application-configuration",
-                    "validation_status": "validated",
-                    "report_status": "not_generated",
-                },
-            ]
-        }),
-        encoding="utf-8",
-    )
-    finding_index.update_finding_status(
-        findings_dir,
-        "TARGET-AUTHZ",
-        validation_status="validated",
-        report_status="not_generated",
-    )
-
-    checkpoint = build_checkpoint(tmp_path, target="target.com")
-
-    # The selector that steered decision away from report is retired; with a
-    # validated finding pending report and no other evidence-backed candidate,
-    # "report" is the honest default-candidate decision.
-    assert checkpoint["decision"] == "report"
-    assert checkpoint["structured_findings"]["pending_validation"] == 0
-    assert checkpoint["structured_findings"]["validated_pending_report"] == 1
-    assert checkpoint["structured_findings"]["next_report"]["id"] == "TARGET-AUTHZ"
-    assert any(item["type"] == "report" for item in checkpoint["next_action_queue"])
-    assert "OFFTARGET-IDOR" not in json.dumps(checkpoint["next_action_queue"])
-
-
-def test_checkpoint_keeps_report_queued_without_outranking_high_value_hunt(tmp_path):
-    _seed_recon(tmp_path, "target.com", [
-        "https://api.target.com/api/admin/export?order_id=42",
-    ])
-    findings_dir = tmp_path / "findings" / "target.com"
-    findings_dir.mkdir(parents=True, exist_ok=True)
-    (findings_dir / "findings.json").write_text(
-        json.dumps({
-            "findings": [
-                {
-                    "id": "TARGET-AUTHZ",
-                    "type": "auth_bypass",
-                    "severity": "high",
-                    "confidence": "high",
-                    "url": "https://api.target.com/rest/admin/application-configuration",
-                    "validation_status": "validated",
-                    "report_status": "not_generated",
-                },
-            ]
-        }),
-        encoding="utf-8",
-    )
-    finding_index.update_finding_status(
-        findings_dir,
-        "TARGET-AUTHZ",
-        validation_status="validated",
-        report_status="not_generated",
-    )
-
-    checkpoint = build_checkpoint(tmp_path, target="target.com")
-
-    assert checkpoint["decision"] in {"continue", "hunt"}
-    assert checkpoint["recommended_executable_action"]["type"] != "report"
-    assert checkpoint["next_action"] == checkpoint["recommended_executable_action"]["type"]
-    assert "next_action=report" not in checkpoint["target_write_back"]["handoff"]
-    report_action = next(item for item in checkpoint["next_action_queue"] if item["type"] == "report")
-    assert report_action["metadata"]["finding_id"] == "TARGET-AUTHZ"
-    assert report_action["priority"] >= 90
 
 
 @pytest.mark.parametrize(
@@ -2098,7 +1627,7 @@ def test_checkpoint_decision_is_pure_projection_of_effective_action(action, deci
     assert _decision_for_action(action) == decision
 
 
-def test_checkpoint_handoff_next_action_does_not_reuse_stale_runtime_state(tmp_path, monkeypatch):
+def test_checkpoint_handoff_next_action_does_not_reuse_stale_runtime_state(tmp_path, monkeypatch, store):
     monkeypatch.setattr(
         checkpoint_module,
         "build_autopilot_state",
@@ -2117,10 +1646,8 @@ def test_checkpoint_handoff_next_action_does_not_reuse_stale_runtime_state(tmp_p
     monkeypatch.setattr(
         checkpoint_module,
         "build_context_pack",
-        lambda *args, **kwargs: {"phase": "recon", "knowledge_cards": []},
+        lambda *args, **kwargs: {"phase": "recon", "knowledge_cards": [], "active_goal": "", "target_experiences": {}},
     )
-    monkeypatch.setattr(checkpoint_module, "rebuild_matrix", lambda *args, **kwargs: {"endpoints": []})
-    monkeypatch.setattr(checkpoint_module, "save_matrix", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         checkpoint_module,
         "build_evidence_summary",
@@ -2129,8 +1656,8 @@ def test_checkpoint_handoff_next_action_does_not_reuse_stale_runtime_state(tmp_p
 
     checkpoint = build_checkpoint(tmp_path, target="target.com")
 
-    assert checkpoint["decision"] == "handoff"
-    assert checkpoint["next_action"] == "handoff"
+    assert checkpoint["decision"] == "continue"
+    assert checkpoint["next_action"] == "continue"
     assert checkpoint["recommended_executable_action"] == {}
     assert "next_action=continue_last_focus" not in checkpoint["target_write_back"]["handoff"]
 
@@ -2172,94 +1699,7 @@ def test_matrix_summary_separates_raw_and_actionable_coverage_gaps():
     assert summary["actionable_high_value_gaps_count"] == 1
 
 
-def test_report_action_stays_above_advisory_surface_review_but_below_high_value_actions():
-    queue = _build_next_action_queue([
-        _proposal_entry(
-            "Draft report for validated finding F-REPORT; do not submit without human review.",
-            action_type="report", priority=90, command_hint="/report",
-            metadata={"finding_id": "F-REPORT"},
-        ),
-        _proposal_entry(
-            "Review surface candidate https://api.target.com/api/admin/export: focused authz replay",
-            action_type="surface-review", priority=70,
-        ),
-        _proposal_entry(
-            "Cover high-value matrix gap: /api/admin/export x Authz (weight=5, relevance=8: admin path).",
-            action_type="coverage-gap", priority=94,
-        ),
-        _proposal_entry(
-            "Secondary-sweep lead [open-200-api-review]: Anonymous API returned 200. "
-            "Artifact=findings/target/manual_review/open_200_api.txt. Why it matters: review. "
-            "Next action: sample body. Stop condition: keep demoted unless concrete evidence appears.",
-            action_type="secondary-sweep", priority=72,
-            metadata={
-                "lead_category": "open-200-api-review",
-                "artifact": "findings/target/manual_review/open_200_api.txt",
-            },
-        ),
-    ], "target.com")
-
-    by_type = {item["type"]: item for item in queue}
-    assert by_type["coverage-gap"]["priority"] > by_type["report"]["priority"]
-    assert by_type["surface-review"]["priority"] < by_type["report"]["priority"]
-    assert by_type["report"]["priority"] > by_type["secondary-sweep"]["priority"]
-    assert by_type["report"]["metadata"]["finding_id"] == "F-REPORT"
-
-
-def test_default_candidate_uses_action_queue_selection_for_executable_surface_review():
-    """The heuristic picker died with the selector: recommended_executable_action
-    is now the stable-order first item — an advisory compat pointer, not a
-    recommendation. The AI reads the full queue and chooses."""
-    queue = _build_next_action_queue(
-        [
-            _proposal_entry(
-                "Draft report for validated finding F-REPORT; do not submit without human review.",
-                action_type="report", priority=90, command_hint="/report",
-                metadata={"finding_id": "F-REPORT"},
-            ),
-            _proposal_entry(
-                "Review surface candidate https://api.target.com/api/users: baseline authz checks.",
-                action_type="surface-review", priority=70,
-                metadata={
-                    "url": "https://api.target.com/api/users",
-                    "endpoint": "/api/users",
-                    "replay_draft": (
-                        "Run authenticated role replay from case_state: "
-                        "`python3 tools/validation_runner.py authz-role-replay --target \"target.com\" "
-                        "--url \"https://api.target.com/api/users\" --from-case-state --repeat 2`."
-                    ),
-                },
-            ),
-        ],
-        "target.com",
-    )
-
-    selected = _select_default_candidate("target.com", queue)
-    assert selected["type"] == "report"  # stable order: first item, no heuristic
-
-def test_default_candidate_keeps_report_above_advisory_surface_review():
-    queue = _build_next_action_queue(
-        [
-            _proposal_entry(
-                "Draft report for validated finding F-REPORT; do not submit without human review.",
-                action_type="report", priority=90, command_hint="/report",
-                metadata={"finding_id": "F-REPORT"},
-            ),
-            _proposal_entry(
-                "Review surface candidate https://api.target.com/api/catalog: advisory review only.",
-                action_type="surface-review", priority=70,
-            ),
-        ],
-        "target.com",
-    )
-
-    selected = _select_default_candidate("target.com", queue)
-
-    assert selected["type"] == "report"
-    assert selected["metadata"]["finding_id"] == "F-REPORT"
-
-
-def test_checkpoint_default_preserves_explicitly_claimed_priority_override(tmp_path):
+def test_checkpoint_default_preserves_explicitly_claimed_priority_override(tmp_path, store):
     target = "target.com"
     high = add_manual_action(
         tmp_path,
@@ -2290,790 +1730,65 @@ def test_checkpoint_default_preserves_explicitly_claimed_priority_override(tmp_p
     claimed = claim_next_action(tmp_path, target, action_id=selected["id"])
     state = checkpoint_module.build_autopilot_state(str(tmp_path), target)
     checkpoint = build_checkpoint(tmp_path, target=target, refresh_coverage=False)
-    sync_checkpoint_action_queue(tmp_path, checkpoint)
 
-    assert claimed["status"] == "running"
+    assert claimed["status"] == "claimed"
     assert state["action_queue_next"]["id"] == selected["id"]
     assert checkpoint["default_candidate"]["id"] == selected["id"]
     assert checkpoint["recommended_executable_action"]["id"] == selected["id"]
-    assert selected["id"] in checkpoint["action_queue_sync"]["active"]
-
-
-def test_checkpoint_replaces_replay_with_existing_candidate_evidence_gap(tmp_path):
-    target = "target.com"
-    surface_item = _build_next_action_queue(
-        [
-            (
-                "Review surface candidate https://api.target.com/api/users: baseline authz checks. "
-                "Replay draft: `python3 tools/validation_runner.py authz-role-replay "
-                "--target \"target.com\" --url \"https://api.target.com/api/users\"`."
-            )
-        ],
-        target,
-    )[0]
-    existing = _checkpoint_item_to_action(target, surface_item)
-    existing.update(
-        {
-            "id": "AQ-0001",
-            "status": "candidate",
-            "type": "candidate-evidence-gap",
-            "action": "Candidate evidence gap for api/users; do not rerun the same replay.",
-            "next_question": "Fill missing policy evidence.",
-            "command_hint": "fill missing rubric evidence, then /validate",
-        }
-    )
-    save_queue(tmp_path, target, {"schema_version": 1, "target": target, "actions": [existing]})
-
-    filtered = _filter_final_action_queue_items(tmp_path, target, [surface_item])
-    selected = _select_default_candidate(target, filtered)
-
-    assert filtered[0]["type"] == "candidate-evidence-gap"
-    assert filtered[0]["status"] == "candidate"
-    assert selected["type"] == "candidate-evidence-gap"
-    assert "do not rerun" in selected["action"]
-
-
-def test_checkpoint_keeps_unmatched_active_candidate_evidence_gap(tmp_path):
-    target = "target.com"
-    stale_candidate = _checkpoint_item_to_action(
-        target,
-        _build_next_action_queue(
-            [
-                (
-                    "Review surface candidate https://api.target.com/api/users: baseline authz checks. "
-                    "Replay draft: `python3 tools/validation_runner.py authz-role-replay "
-                    "--target \"target.com\" --url \"https://api.target.com/api/users\"`."
-                )
-            ],
-            target,
-        )[0],
-    )
-    stale_candidate.update(
-        {
-            "id": "AQ-0001",
-            "status": "candidate",
-            "type": "candidate-evidence-gap",
-            "priority": 60,
-            "action": "Candidate evidence gap for api/users; fill policy evidence.",
-            "next_question": "Fill missing policy evidence.",
-            "command_hint": "fill missing rubric evidence, then /validate",
-        }
-    )
-    save_queue(tmp_path, target, {"schema_version": 1, "target": target, "actions": [stale_candidate]})
-
-    fresh_surface = _build_next_action_queue(
-        ["Review surface candidate https://api.target.com/v3/: advisory browser-state-first review."],
-        target,
-    )[0]
-
-    filtered = _filter_final_action_queue_items(tmp_path, target, [fresh_surface])
-    selected = _select_default_candidate(target, filtered)
-
-    assert any(item["type"] == "candidate-evidence-gap" for item in filtered)
-    # Stable-order default (no heuristic): the first item, while the gap
-    # stays visible for the AI to weigh.
-    assert selected["type"] == "next-action"
-
-
-def test_checkpoint_drops_active_candidate_superseded_by_validated_endpoint(tmp_path):
-    target = "target.com"
-    active_candidate = _checkpoint_item_to_action(
-        target,
-        _build_next_action_queue(
-            [
-                (
-                    "Review surface candidate https://api.target.com/api/users: baseline authz checks. "
-                    "Replay draft: `python3 tools/validation_runner.py authz-role-replay "
-                    "--target \"target.com\" --url \"https://api.target.com/api/users\"`."
-                )
-            ],
-            target,
-        )[0],
-    )
-    active_candidate.update({
-        "id": "AQ-0001",
-        "status": "candidate",
-        "type": "candidate-evidence-gap",
-        "action": "Candidate evidence gap for authz-role-replay-api_users.",
-        "metadata": {
-            "endpoint": "/api/users",
-            "url": "https://api.target.com/api/users",
-            "finding_id": "authz-role-replay-api_users",
-        },
-    })
-    validated = dict(active_candidate)
-    validated.update({
-        "id": "AQ-0002",
-        "status": "validated",
-        "result": "validation-summary=evidence/target.com/validate/F-1/summary.json",
-    })
-    save_queue(
-        tmp_path,
-        target,
-        {"schema_version": 1, "target": target, "actions": [active_candidate, validated]},
-    )
-
-    fresh_surface = _build_next_action_queue(
-        ["Review surface candidate https://api.target.com/v3/: advisory browser-state-first review."],
-        target,
-    )[0]
-
-    filtered = _filter_final_action_queue_items(tmp_path, target, [fresh_surface])
-
-    assert all(item.get("type") != "candidate-evidence-gap" for item in filtered)
-
-
-def test_checkpoint_keeps_validate_action_when_only_runner_marked_validated(tmp_path):
-    target = "target.com"
-    item = _build_next_action_queue(
-        [
-            (
-                "Run /validate for finding AUTHZ-SYNC on https://target.com/api/Feedbacks; "
-                "verify replay, A/B diff, impact, evidence rubric, and red-line safety before report."
-            )
-        ],
-        target,
-    )[0]
-    action = _checkpoint_item_to_action(target, item)
-    action.update({
-        "id": "AQ-0001",
-        "status": "validated",
-        "result": "validation-runner-result=tested_finding; summary=evidence/target.com/validation/authz/summary.json",
-        "dedupe_key": _dedupe_key(action),
-    })
-    save_queue(
-        tmp_path,
-        target,
-        {"schema_version": 1, "target": target, "actions": [action]},
-    )
-
-    filtered = _filter_final_action_queue_items(tmp_path, target, [item])
-
-    assert filtered == [item]
-
-
-def test_checkpoint_hands_candidate_to_validation_without_guessed_gaps(tmp_path):
-    findings_dir = tmp_path / "findings" / "target.com"
-    findings_dir.mkdir(parents=True)
-    (findings_dir / "findings.json").write_text(
-        json.dumps({
-            "findings": [
-                {
-                    "id": "SQLI-1",
-                    "type": "sqli",
-                    "severity": "high",
-                    "confidence": "medium",
-                    "url": "https://api.target.com/search?q=1",
-                    "summary": "possible SQL injection",
-                    "validation_status": "unvalidated",
-                    "report_status": "not_generated",
-                }
-            ]
-        }),
-        encoding="utf-8",
-    )
-
-    checkpoint = build_checkpoint(tmp_path, target="target.com")
-
-    assert any(
-        "Run /validate for finding SQLI-1" in item
-        for item in checkpoint["target_write_back"]["next"]
-    )
-    assert checkpoint["recommended_executable_action"]["type"] == "validation"
-
-
-def test_checkpoint_ignores_contradictory_legacy_rubric(tmp_path):
-    findings_dir = tmp_path / "findings" / "target.com"
-    findings_dir.mkdir(parents=True)
-    (findings_dir / "findings.json").write_text(
-        json.dumps({
-            "findings": [
-                {
-                    "id": "IDOR-BASKET",
-                    "type": "idor",
-                    "severity": "medium",
-                    "confidence": "confirmed",
-                    "url": "https://target.com/rest/basket/6",
-                    "validation_status": "candidate",
-                    "report_status": "not_generated",
-                    "evidence_rubric": {
-                        "rubric_id": "authz",
-                        "status": "candidate-ready",
-                        "ready": True,
-                        "score": 90,
-                        "missing_labels": ["target-owned business impact"],
-                        "next_actions": [
-                            "Tie the diff to concrete target-owned impact before reporting.",
-                        ],
-                    },
-                }
-            ]
-        }),
-        encoding="utf-8",
-    )
-
-    checkpoint = build_checkpoint(tmp_path, target="target.com")
-
-    assert checkpoint["decision"] == "validate"
-    assert checkpoint["recommended_executable_action"]["type"] == "validation"
-    assert "target-owned business impact" not in checkpoint["recommended_executable_action"]["action"]
-    assert checkpoint["next_action_queue"][0]["type"] == "validation"
-
-
-def test_checkpoint_queues_secret_verification_lane_from_repo_source_summary(tmp_path):
-    exposure_dir = tmp_path / "findings" / "target.com" / "exposure"
-    exposure_dir.mkdir(parents=True)
-    (exposure_dir / "repo_source_meta.json").write_text(
-        json.dumps({"status": "ok", "source_kind": "local", "clone_performed": False}),
-        encoding="utf-8",
-    )
-    (exposure_dir / "repo_summary.md").write_text(
-        "# Repository Source Hunt Summary\n\n- Secret findings: 2\n- CI findings: 0\n",
-        encoding="utf-8",
-    )
-
-    checkpoint = build_checkpoint(tmp_path, target="target.com")
-
-    assert any(
-        "secret scanner record(s)" in item
-        for item in checkpoint["target_write_back"]["next"]
-    )
-    assert any(
-        item["type"] == "secret-verification"
-        for item in checkpoint["next_action_queue"]
-    )
-
-
-def test_checkpoint_queues_unsafe_skipped_review_from_manual_review_artifact(tmp_path):
-    _seed_recon(tmp_path, "target.com", ["https://api.target.com/profile"])
-    manual_dir = tmp_path / "findings" / "target.com" / "manual_review"
-    manual_dir.mkdir(parents=True)
-    (manual_dir / "unsafe_skipped.txt").write_text(
-        "2026-06-07T00:00:00Z\tmethod=PUT\tlabel=HTTP method tampering probes\turl=https://api.target.com/profile\treason=requires opt-in\n",
-        encoding="utf-8",
-    )
-
-    checkpoint = build_checkpoint(tmp_path, target="target.com")
-
-    assert any(
-        "Review action-gated scanner lane" in item
-        for item in checkpoint["target_write_back"]["next"]
-    )
-    review_action = next(item for item in checkpoint["next_action_queue"] if item["type"] == "action-gated-review")
-    assert review_action["redline_required"] is False
-    assert review_action["metadata"]["unsafe_skipped_id"]
-    assert review_action["metadata"]["artifact"] == "findings/target.com/manual_review/unsafe_skipped.txt"
-
-
-def test_checkpoint_queues_secondary_sweep_for_demoted_manual_review_leads(tmp_path):
-    _seed_recon(tmp_path, "target.com", ["https://api.target.com/profile"])
-    manual_dir = tmp_path / "findings" / "target.com" / "manual_review"
-    manual_dir.mkdir(parents=True)
-    (manual_dir / "open_200_api.txt").write_text(
-        "[OPEN-200-REVIEW] 200 1200 https://api.target.com/profile\n",
-        encoding="utf-8",
-    )
-
-    checkpoint = build_checkpoint(tmp_path, target="target.com")
-
-    assert any(
-        "Secondary-sweep lead [open-200-api-review]" in item
-        for item in checkpoint["target_write_back"]["next"]
-    )
-    action = next(item for item in checkpoint["next_action_queue"] if item["type"] == "secondary-sweep")
-    assert action["command_hint"] == "review the recorded artifact; AI judges significance and next steps"
-    assert action["metadata"]["lead_category"] == "open-200-api-review"
-    assert action["metadata"]["artifact"] == "findings/target.com/manual_review/open_200_api.txt"
-
-
-def test_checkpoint_suppresses_secondary_sweep_when_artifact_endpoint_closed_by_ledger(tmp_path):
-    _seed_recon(tmp_path, "target.com", ["https://api.target.com/profile"])
-    manual_dir = tmp_path / "findings" / "target.com" / "manual_review"
-    manual_dir.mkdir(parents=True)
-    (manual_dir / "open_200_api.txt").write_text(
-        "[OPEN-200-REVIEW] 200 1200 https://api.target.com/profile\n",
-        encoding="utf-8",
-    )
-    record_entry(
-        tmp_path,
-        target="target.com",
-        endpoint="/profile",
-        vuln_class="Authz",
-        result="tested_clean",
-        source="ai-review",
-        workflow="secondary-sweep",
-        evidence_ref="findings/target.com/manual_review/open_200_api.txt",
-        notes="AI reviewed anonymous 200 body and found no secret/config/business-impact evidence.",
-    )
-
-    checkpoint = build_checkpoint(tmp_path, target="target.com")
-
-    assert not any(
-        "Secondary-sweep lead [open-200-api-review]" in item
-        for item in checkpoint["target_write_back"]["next"]
-    )
-    assert not any(
-        "Anonymous API endpoints returned substantial 200 responses" in item
-        for item in checkpoint["target_write_back"]["lead"]
-    )
-    assert not any(item["type"] == "secondary-sweep" for item in checkpoint["next_action_queue"])
-
-
-def test_lead_proposals_keep_surface_after_one_class_is_closed():
-    proposals = _lead_proposals(
-        {
-            "has_recon": True,
-            "surface": {
-                "p1": [
-                    {
-                        "url": "https://api.target.com/api/Feedbacks",
-                        "reasons": ["API endpoint"],
-                        "suggested": "validate auth_bypass evidence from auth_bypass/unauth_api_access.txt",
-                        "scanner_findings": [{"type": "auth_bypass"}],
-                    }
-                ],
-                "workflow_leads": [],
-            },
-        },
-        {"hypothesis_seeds": []},
-        target="target.com",
-        evidence_summary={
-            "closed_cells": [
-                {
-                    "endpoint": "/api/Feedbacks",
-                    "vuln_class": "Authz",
-                    "result": "tested_finding",
-                    "ts": "2026-07-06T00:00:00Z",
-                }
-            ]
-        },
-    )
-
-    assert any("/api/Feedbacks" in _entry_text(item) for item in proposals)
-
-
-def test_lead_proposals_keep_unknown_surface_type_fail_open():
-    proposals = _lead_proposals(
-        {
-            "has_recon": True,
-            "surface": {
-                "p1": [
-                    {
-                        "url": "https://api.target.com/api/Feedbacks",
-                        "reasons": ["API endpoint"],
-                        "suggested": "review unusual scanner signal",
-                        "scanner_findings": [{"type": "unknown-custom-signal"}],
-                    }
-                ],
-                "workflow_leads": [],
-            },
-        },
-        {"hypothesis_seeds": []},
-        target="target.com",
-        evidence_summary={
-            "closed_cells": [
-                {
-                    "endpoint": "/api/Feedbacks",
-                    "vuln_class": "Authz",
-                    "result": "tested_finding",
-                    "ts": "2026-07-06T00:00:00Z",
-                }
-            ]
-        },
-    )
-
-    # proposal 现在保留 dict 形态（去重按 text 键，不再 str 化——嵌套污染治理）
-    assert any("/api/Feedbacks" in str(item.get("text") or "") for item in proposals)
-
-
-def test_hypothesis_seed_does_not_materialize_without_owner_hypothesis():
-    state = {"has_recon": True, "surface": {"p1": [], "workflow_leads": []}}
-    context = {"hypothesis_seeds": ["try a card-derived route"]}
-
-    # lead 提案不再看 Case：它曾经能带 case_state 只是想借用假设，如今 Case 连
-    # 假设细节都不投影进行动，proposal 只由 live lead 来源决定。
-    assert _lead_proposals(state, context) == []
-
-
-def test_checkpoint_v2_closure_compares_the_complete_identity():
-    closed = build_closure_cell(
-        "/api/search",
-        "SQLi",
-        {"method": "GET", "parameter": "q"},
-    ).key.to_dict()
-    other = build_closure_cell(
-        "/api/search",
-        "SQLi",
-        {"method": "GET", "parameter": "term"},
-    ).key.to_dict()
-    resolver = _ledger_covered_cells({
-        "closed_cells_v2": [{"identity_v2": closed, "result": "tested_clean"}],
-    })
-
-    assert _ledger_covers_cell(resolver, "/api/search", "SQLi", closed)
-    assert not _ledger_covers_cell(resolver, "/api/search", "SQLi", other)
-    assert not _ledger_covers_cell(resolver, "/other", "SQLi", closed)
-
-
-def test_checkpoint_surfaces_identity_follow_up_action():
-    proposals = _ledger_candidate_proposals({
-        "identity_v2_follow_up_actions": [{
-            "kind": "identity_follow_up",
-            "endpoint": "/api/search",
-            "family": "SQLi",
-            "missing_fields": [],
-            "conflicts": ["method_mismatch"],
-            "evidence_refs": ["evidence/search.json"],
-        }],
-    })
-
-    assert len(proposals) == 1
-    entry_text = _entry_text(proposals[0])
-    assert "Resolve closure identity for /api/search x SQLi" in entry_text
-    assert "method_mismatch" in entry_text
-    assert proposals[0]["metadata"]["endpoint"] == "/api/search"
-    assert proposals[0]["metadata"]["family"] == "SQLi"
-
-
-def test_checkpoint_keeps_open_200_secondary_sweep_without_authz_ledger_closure(tmp_path):
-    _seed_recon(tmp_path, "target.com", ["https://api.target.com/profile"])
-    manual_dir = tmp_path / "findings" / "target.com" / "manual_review"
-    manual_dir.mkdir(parents=True)
-    (manual_dir / "open_200_api.txt").write_text(
-        "[OPEN-200-REVIEW] 200 1200 https://api.target.com/profile\n",
-        encoding="utf-8",
-    )
-    record_entry(
-        tmp_path,
-        target="target.com",
-        endpoint="/profile",
-        vuln_class="SQLi",
-        result="tested_clean",
-        source="ai-review",
-        workflow="pressure-test",
-        notes="SQLi lane was tested, but anonymous 200 exposure review is still unclosed.",
-    )
-
-    checkpoint = build_checkpoint(tmp_path, target="target.com")
-
-    assert any(
-        "Secondary-sweep lead [open-200-api-review]" in item
-        for item in checkpoint["target_write_back"]["next"]
-    )
-
-
-def test_public_metadata_secondary_sweep_does_not_outrank_ranked_surface():
-    queue = _build_next_action_queue([
-        # Structured entry is the real producer path since the plain-string
-        # secondary-sweep producer was migrated.
-        _proposal_entry(
-            "Secondary-sweep lead [public-metadata]: Standard public metadata endpoints were demoted. "
-            "Artifact=findings/target.com/manual_review/standard_public_metadata.txt. "
-            "Why it matters: standard metadata. Next action: review only for unusual fields. "
-            "Stop condition: keep demoted unless concrete evidence appears.",
-            action_type="secondary-sweep", priority=52,
-            metadata={
-                "lead_category": "public-metadata",
-                "artifact": "findings/target.com/manual_review/standard_public_metadata.txt",
-                "demoted": True,
-            },
-        ),
-        _proposal_entry(
-            "Review surface candidate https://api.target.com/rest/admin/application-version: "
-            "capture baseline first",
-            action_type="surface-review", priority=70,
-        ),
-    ], "target.com")
-
-    by_type = {item["type"]: item for item in queue}
-    public_meta = next(item for item in queue if item.get("metadata", {}).get("lead_category") == "public-metadata")
-    assert public_meta["priority"] < by_type["surface-review"]["priority"]
-
-
-def test_checkpoint_surfaces_high_value_coverage_gaps(tmp_path):
-    _seed_recon(tmp_path, "target.com", [
-        "https://api.target.com/api/v1/admin/users?isAdmin=true&userId=1001",
-    ])
-
-    checkpoint = build_checkpoint(tmp_path, target="target.com")
-
+    assert selected["id"] in [item["id"] for item in checkpoint["next_action_queue"]]
+
+
+def test_checkpoint_ignores_contradictory_legacy_rubric(tmp_path, store):
+    store.create_finding(command_id="F-1", finding_id="F-1", endpoint="https://target.com/orders/1",
+                         method="GET", family="Authz", title="Unassessed claim",
+                         claim="Requires validation", actor="operator")
+    path = tmp_path / "findings" / store.key / "findings.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps([{"id": "F-1", "status": "confirmed", "evidence_rubric": {"ready": True}}]))
+    before = path.read_bytes()
+    checkpoint = build_checkpoint(tmp_path, target=store.target)
+    assert checkpoint["structured_findings"]["pending_validation"] == 1
+    assert checkpoint["structured_findings"].get("validated_pending_report", 0) == 0
+    assert checkpoint["next_action_queue"] == []
+    assert checkpoint["recommended_executable_action"] == {}
+    assert path.read_bytes() == before
+
+
+def test_checkpoint_surfaces_coverage_gaps_without_creating_actions(tmp_path, store):
+    _seed_recon(tmp_path, store.target, ["https://api.target.com/api/v1/admin/users?isAdmin=true&userId=1001"])
+    before = store.binding()
+    checkpoint = build_checkpoint(tmp_path, target=store.target)
+    coverage = checkpoint["coverage"]
+    assert coverage["summary"]["high_value_gaps_count"] > 0
+    assert coverage["window"]["total"] == len(coverage["high_value_gaps"]) + coverage["window"]["remaining"]
+    expanded = subprocess.run(shlex.split(coverage["window"]["expand_command"]),
+                              capture_output=True, text=True, check=True)
+    gaps = json.loads(expanded.stdout)
+    assert len(gaps) == coverage["window"]["total"]
+    assert ("/api/v1/admin/users", "Authz") in {(item["endpoint"], item["vuln_class"]) for item in gaps}
     assert checkpoint["decision"] == "continue"
-    assert checkpoint["coverage"]["summary"]["high_value_gaps_count"] > 0
-    assert any(
-        "Review coverage gap" in item
-        for item in checkpoint["target_write_back"]["next"]
-    )
-    assert checkpoint["next_action_queue"]
-    assert any(item["type"] == "coverage-gap" for item in checkpoint["next_action_queue"])
-    assert checkpoint["recommended_executable_action"]["status"] == "ready"
-    # Ordering now follows observed facts (route kind, params, weight, impact),
-    # not word-list relevance, so the first gap may be any class; what must
-    # hold is that the evidence-backed gap is present with intact metadata.
-    queued_gaps = [
-        (item["metadata"]["endpoint"], item["metadata"]["vuln_class"])
-        for item in checkpoint["next_action_queue"]
-        if item["type"] == "coverage-gap"
-    ]
-    # The queue window is fact-ordered and finite; every evidence-backed gap
-    # on this observed endpoint stays present and AI-selectable in the matrix.
-    assert queued_gaps, "evidence-backed gaps must reach the queue window"
-    assert all(endpoint == "/api/v1/admin/users" for endpoint, _ in queued_gaps)
-    matrix_data = json.loads(
-        (tmp_path / "evidence" / "target.com" / "coverage_matrix.json").read_text(encoding="utf-8")
-    )
-    matrix_cells = {
-        (ep.get("endpoint"), vuln_class)
-        for ep in matrix_data.get("endpoints", [])
-        for vuln_class in (ep.get("cells") or {})
-    }
-    assert ("/api/v1/admin/users", "Authz") in matrix_cells
-    coverage_action = next(
-        item
-        for item in checkpoint["next_action_queue"]
-        if item["type"] == "coverage-gap"
-    )
-    assert coverage_action["metadata"]["endpoint"] == "/api/v1/admin/users"
-    assert "Validation path:" not in coverage_action["action"]
-    assert "validation_path" not in coverage_action["metadata"]
-    assert "weight" not in coverage_action["metadata"]
-    assert (tmp_path / "evidence" / "target.com" / "coverage_matrix.json").is_file()
+    assert checkpoint["target_write_back"]["next"] == []
+    assert checkpoint["next_action_queue"] == []
+    assert checkpoint["recommended_executable_action"] == {}
+    assert store.binding() == before
+    assert not (tmp_path / "evidence" / store.key / "coverage_matrix.json").exists()
 
 
-def test_checkpoint_does_not_queue_zero_relevance_coverage_gap():
-    proposals = _next_proposals(
-        state={"has_recon": True, "recommended_targets": []},
-        coverage_gaps=[
-            {
-                "endpoint": "/rest/admin",
-                "vuln_class": "RCE",
-                "weight": 5.0,
-                "relevance_score": 0,
-                "relevance_reason": "",
-            }
-        ],
-        matrix={"endpoints": []},
-        target="target.com",
-        context_pack={},
-        evidence_summary={},
-    )
-    queue = _build_next_action_queue(proposals, "target.com")
-
-    assert not any("Cover high-value matrix gap" in _entry_text(item) for item in proposals)
-    assert not any(item["type"] == "coverage-gap" for item in queue)
-
-
-def test_unassessed_families_do_not_generate_a_mandatory_test_menu():
-    lane_order = (
-        "SQLi", "SSRF", "XXE", "RCE", "Path", "Upload", "IDOR", "Authz",
-        "GraphQL", "OAuth", "JWT", "CSRF", "Race", "Webhook", "XSS", "NoSQLi",
-        "PrototypePollution", "OpenRedirect", "BusinessLogic",
-    )
-    lanes = {name: {"disposition": "unassessed"} for name in lane_order}
-    lanes["SQLi"]["techniques"] = ["BooleanBlind"]
-    lanes["RCE"]["techniques"] = ["SSTI", "CommandInjection", "Deserialization"]
-    lanes["Path"]["techniques"] = ["LFI", "RFI"]
-
-    proposals = _next_proposals(
-        state={"has_recon": True, "recommended_targets": [], "surface": {}},
-        coverage_gaps=[],
-        matrix={"endpoints": [{"endpoint": "/api"}], "high_risk_lanes": lanes},
-        target="target.com",
-        context_pack={},
-        evidence_summary={},
-    )
-
-    assert all(item["type"] != "high-risk-lane-review" for item in proposals)
-    assert all(lanes[name]["disposition"] == "unassessed" for name in lane_order)
-
-
-def test_checkpoint_still_queues_semantically_relevant_coverage_gap():
-    proposals = _next_proposals(
-        state={"has_recon": True, "recommended_targets": []},
-        coverage_gaps=[
-            {
-                "endpoint": "/rest/order-history",
-                "vuln_class": "IDOR",
-                "weight": 3.0,
-                "relevance_score": 3,
-                "relevance_reason": "object reference path/parameter",
-                "source_count": 1,
-                "sources": ["js"],
-            }
-        ],
-        matrix={"endpoints": []},
-        target="target.com",
-        context_pack={},
-        evidence_summary={},
-    )
-    queue = _build_next_action_queue(proposals, "target.com")
-
-    assert any("Review coverage gap" in _entry_text(item) for item in proposals)
-    coverage_action = next(item for item in queue if item["type"] == "coverage-gap")
-    assert "relevance_score" not in coverage_action["metadata"]
-
-
-def test_checkpoint_keeps_folded_coverage_and_replay_identities_separate():
-    proposals = _next_proposals(
-        state={"has_recon": True, "recommended_targets": []},
-        coverage_gaps=[{
-            "endpoint": "/api/orders/{id}",
-            "representative_endpoint": "/api/orders/123",
-            "vuln_class": "IDOR",
-            "weight": 3.0,
-            "relevance_score": 3,
-            "relevance_reason": "object reference path/parameter",
-            "source_count": 1,
-            "sources": ["js"],
-        }],
-        matrix={"endpoints": []},
-        target="target.com",
-        context_pack={},
-        evidence_summary={},
-    )
-
-    action = next(
-        item
-        for item in _build_next_action_queue(proposals, "target.com")
-        if item["type"] == "coverage-gap"
-    )
-
-    assert action["metadata"]["endpoint"] == "/api/orders/123"
-    assert action["metadata"]["coverage_endpoint"] == "/api/orders/{id}"
-
-
-def test_checkpoint_skips_parent_only_authz_gap_when_child_validated():
-    proposals = _next_proposals(
-        state={"has_recon": True, "recommended_targets": []},
-        coverage_gaps=[
-            {
-                "endpoint": "/rest/admin",
-                "vuln_class": "Authz",
-                "weight": 5.0,
-                "relevance_score": 5,
-                "relevance_reason": "admin/internal path",
-                "observed_params": [],
-            },
-            {
-                "endpoint": "/api/v1/admin/users",
-                "vuln_class": "Authz",
-                "weight": 5.0,
-                "relevance_score": 8,
-                "relevance_reason": "privilege/role parameter",
-                "observed_params": ["role"],
-            },
-        ],
-        matrix={
-            "endpoints": [
-                {
-                    "endpoint": "/rest/admin/application-configuration",
-                    "cells": {"Authz": {"status": "tested_finding"}},
-                }
-            ]
-        },
-        target="target.com",
-        context_pack={},
-        evidence_summary={},
-    )
-
-    assert not any("Review coverage gap: /rest/admin x Authz" in _entry_text(item) for item in proposals)
-    assert any("Review coverage gap: /api/v1/admin/users x Authz" in _entry_text(item) for item in proposals)
-
-
-def test_checkpoint_skips_coverage_gap_closed_by_evidence_ledger():
-    proposals = _next_proposals(
-        state={"has_recon": True, "recommended_targets": [], "surface": {"workflow_leads": []}},
-        coverage_gaps=[
-            {
-                "endpoint": "/rest/products/search",
-                "vuln_class": "XSS",
-                "weight": 3.0,
-                "relevance_score": 5,
-                "relevance_reason": "reflection/DOM input surface",
-                "observed_params": ["q"],
-            }
-        ],
-        matrix={"endpoints": []},
-        target="target.com",
-        context_pack={},
-        evidence_summary={
-            "closed_cells": [
-                {
-                    "endpoint": "/rest/products/search",
-                    "vuln_class": "XSS",
-                    "result": "tested_finding",
-                    "evidence_ref": "evidence/target.com/browser/dom_xss.txt",
-                }
-            ]
-        },
-    )
-
-    assert not any("Cover high-value matrix gap: /rest/products/search x XSS" in item for item in proposals)
-
-
-def test_checkpoint_filters_actions_already_final_in_action_queue(tmp_path):
-    item = {
-        "id": "A1",
-        "priority": 72,
-        "type": "secondary-sweep",
-        "status": "ready",
-        "action": "Secondary-sweep lead [public-metadata]: Standard public metadata endpoints were demoted. Artifact=findings/target.com/manual_review/standard_public_metadata.txt.",
-        "command_hint": "review demoted raw artifact; re-promote only with concrete secret/chain evidence",
-        "redline_required": False,
-        "stop_condition": "record tested, blocked, dead-end, candidate, or validated finding before moving to the next queued action",
-        "metadata": {
-            "lead_category": "public-metadata",
-            "artifact": "findings/target.com/manual_review/standard_public_metadata.txt",
-        },
-    }
-    action = _checkpoint_item_to_action("target.com", item)
-    action["id"] = "AQ-0001"
-    action["status"] = "dead-end"
-    action["dedupe_key"] = _dedupe_key(action)
-    save_queue(
-        tmp_path,
-        "target.com",
-        {
-            "schema_version": 1,
-            "target": "target.com",
-            "actions": [action],
-        },
-    )
-
-    assert _filter_final_action_queue_items(tmp_path, "target.com", [item]) == []
-
-
-def test_checkpoint_surfaces_actor_matrix_gaps(tmp_path):
-    _seed_recon(tmp_path, "target.com", [
-        "https://api.target.com/api/accounts/42/export?account_id=42",
-    ])
-    record_entry(
-        tmp_path,
-        target="target.com",
-        endpoint="/api/accounts/42/export",
-        vuln_class="IDOR",
-        actor="owner",
-        object_scope="own",
-        variant="baseline",
-        result="tested_clean",
-    )
-
-    checkpoint = build_checkpoint(tmp_path, target="target.com")
+def test_checkpoint_surfaces_actor_matrix_gaps_without_creating_actions(tmp_path, store):
+    endpoint = "https://api.target.com/api/accounts/42/export"
+    _seed_recon(tmp_path, store.target, [endpoint + "?account_id=42"])
+    _record_observation(store, endpoint=endpoint, family="IDOR", result="tested_clean")
+    checkpoint = build_checkpoint(tmp_path, target=store.target)
     output = format_checkpoint(checkpoint)
-
     assert checkpoint["evidence_ledger"]["entry_count"] == 1
     assert checkpoint["evidence_ledger"]["actor_matrix"]["gap_count"] > 0
-    assert any(
-        "Cover actor matrix gap" in item
-        for item in checkpoint["target_write_back"]["next"]
-    )
-    assert any(item["type"] == "actor-gap" for item in checkpoint["next_action_queue"])
+    assert checkpoint["target_write_back"]["next"] == []
+    assert checkpoint["next_action_queue"] == []
     assert "Evidence ledger:" in output
     assert "actor matrix gaps:" in output
-    assert "Next action queue:" in output
-    assert "Default candidate (compat pointer):" in output
 
 
-def test_checkpoint_does_not_default_actor_matrix_without_owner_family(tmp_path):
+def test_checkpoint_does_not_default_actor_matrix_without_owner_family(tmp_path, store):
     _seed_recon(tmp_path, "target.com", ["https://target.com/about/company"])
 
     checkpoint = build_checkpoint(tmp_path, target="target.com")
@@ -3097,14 +1812,14 @@ def test_checkpoint_actor_matrix_reads_only_active_queue_metadata_family():
     ) == ["IDOR"]
 
 
-def test_open_hypothesis_creates_no_case_owned_queue_action(tmp_path):
+def test_open_hypothesis_creates_no_case_owned_queue_action(tmp_path, store):
     """Case 只提供上下文：假设写得再细，也不会自己长出一条 checkpoint 行动。"""
     _seed_recon(tmp_path, "target.com", ["https://target.com/render"])
     hypothesis = add_hypothesis(
         tmp_path,
         "target.com",
         vuln_class="SSTI",
-        endpoint="/render",
+        endpoint="https://target.com/render",
         why_now="template syntax changes the response",
         metadata={
             "family": "RCE",
@@ -3129,158 +1844,23 @@ def test_open_hypothesis_creates_no_case_owned_queue_action(tmp_path):
     assert "top next action" not in output
 
 
-def test_checkpoint_surfaces_open_ledger_candidate_for_ai_validation(tmp_path):
-    _seed_recon(tmp_path, "target.com", ["https://target.com/profile/image/url"])
-    record_entry(
-        tmp_path,
-        target="target.com",
-        endpoint="/profile/image/url",
-        method="POST",
-        vuln_class="SSRF",
-        actor="owner",
-        object_scope="own",
-        variant="replay",
-        result="candidate",
-        replayed=True,
-        state_changing=True,
-        redline_checked=True,
-        evidence_ref="evidence/target.com/complex/ssrf.json",
-        notes="server-side URL fetch stored response",
-    )
-
-    checkpoint = build_checkpoint(tmp_path, target="target.com")
+def test_checkpoint_surfaces_open_evidence_candidate_without_creating_actions(tmp_path, store):
+    endpoint = "https://target.com/profile/image/url"
+    _seed_recon(tmp_path, store.target, [endpoint])
+    _record_observation(store, endpoint=endpoint, family="SSRF", result="candidate",
+                        method="POST", state_changing=True)
+    before = store.binding()
+    checkpoint = build_checkpoint(tmp_path, target=store.target)
     output = format_checkpoint(checkpoint)
-
     assert checkpoint["evidence_ledger"]["open_candidates"][0]["endpoint"] == "/profile/image/url"
-    assert any(
-        "Run /validate for ledger candidate POST /profile/image/url x SSRF" in item
-        for item in checkpoint["target_write_back"]["next"]
-    )
-    assert any(item["type"] == "validation" for item in checkpoint["next_action_queue"])
+    assert checkpoint["target_write_back"]["next"] == []
+    assert checkpoint["next_action_queue"] == []
     assert "open candidates: 1" in output
     assert "POST /profile/image/url x SSRF" in output
+    assert store.binding() == before
 
 
-def test_next_proposals_only_queue_anonymous_actor_gap_without_case_state():
-    gaps = [
-        {
-            "endpoint": "/api/orders/123",
-            "method": "GET",
-            "vuln_class": "IDOR",
-            "actor": "anonymous",
-            "object_scope": "none",
-            "variant": "unauth_denied",
-            "expected": "deny",
-            "status": "missing",
-        },
-        {
-            "endpoint": "/api/orders/123",
-            "method": "GET",
-            "vuln_class": "IDOR",
-            "actor": "owner",
-            "object_scope": "own_object",
-            "variant": "baseline",
-            "expected": "allow",
-            "status": "missing",
-        },
-        {
-            "endpoint": "/api/orders/123",
-            "method": "GET",
-            "vuln_class": "IDOR",
-            "actor": "peer",
-            "object_scope": "other_object_same_org",
-            "variant": "id_swap",
-            "expected": "deny_or_no_data",
-            "status": "missing",
-        },
-    ]
-
-    proposals = _next_proposals(
-        state={"has_recon": True, "surface": {}, "recommended_targets": []},
-        coverage_gaps=[],
-        matrix={"endpoints": []},
-        target="target.com",
-        context_pack={},
-        evidence_summary={"actor_matrix": {"gaps": gaps}},
-        case_state={"actors": 0, "sessions": 0, "objects": 0},
-    )
-
-    actor_gap_proposals = [
-        item for item in proposals
-        if _entry_text(item).startswith("Cover actor matrix gap:")
-    ]
-    assert len(actor_gap_proposals) == 1
-    assert "with anonymous/none/unauth_denied" in _entry_text(actor_gap_proposals[0])
-    assert not any("with owner/own_object/baseline" in _entry_text(item) for item in actor_gap_proposals)
-    assert not any("with peer/other_object_same_org/id_swap" in _entry_text(item) for item in actor_gap_proposals)
-    assert any(_entry_text(item).startswith("Case-state enrichment lead:") for item in proposals)
-
-    queue = _build_next_action_queue(proposals, "target.com")
-    actor_action = next(item for item in queue if item["type"] == "actor-gap")
-    assert actor_action["redline_required"] is False
-    enrichment = next(item for item in queue if item["type"] == "case-state-enrichment")
-    assert enrichment["redline_required"] is False
-    assert enrichment["metadata"]["missing_evidence"] == [
-        "actor",
-        "session",
-        "business object",
-    ]
-
-
-def test_next_proposals_queue_role_actor_gaps_when_case_state_ready():
-    gaps = [
-        {
-            "endpoint": "/api/orders/123",
-            "method": "GET",
-            "vuln_class": "IDOR",
-            "actor": "anonymous",
-            "object_scope": "none",
-            "variant": "unauth_denied",
-            "expected": "deny",
-            "status": "missing",
-        },
-        {
-            "endpoint": "/api/orders/123",
-            "method": "GET",
-            "vuln_class": "IDOR",
-            "actor": "owner",
-            "object_scope": "own_object",
-            "variant": "baseline",
-            "expected": "allow",
-            "status": "missing",
-        },
-        {
-            "endpoint": "/api/orders/123",
-            "method": "GET",
-            "vuln_class": "IDOR",
-            "actor": "peer",
-            "object_scope": "other_object_same_org",
-            "variant": "id_swap",
-            "expected": "deny_or_no_data",
-            "status": "missing",
-        },
-    ]
-
-    proposals = _next_proposals(
-        state={"has_recon": True, "surface": {}, "recommended_targets": []},
-        coverage_gaps=[],
-        matrix={"endpoints": []},
-        target="target.com",
-        context_pack={},
-        evidence_summary={"actor_matrix": {"gaps": gaps}},
-        case_state={"actors": 2, "sessions": 2, "objects": 1},
-    )
-
-    assert any("with owner/own_object/baseline" in _entry_text(item) for item in proposals)
-    assert any("with peer/other_object_same_org/id_swap" in _entry_text(item) for item in proposals)
-    assert not any(_entry_text(item).startswith("Case-state enrichment lead:") for item in proposals)
-
-    queue = _build_next_action_queue(proposals, "target.com")
-    actor_actions = [item for item in queue if item["type"] == "actor-gap"]
-    assert len(actor_actions) == 3
-
-
-def test_legacy_case_backlog_is_not_a_checkpoint_action_source(tmp_path):
+def test_legacy_case_backlog_is_not_a_checkpoint_action_source(tmp_path, store):
     """旧 validation_backlog 带着原裁决留在 Case 文件里，但不进入行动模型。
 
     §7.1：旧 Case 待办与 Queue 的关联由迁移报告按明确映射搬运并隔离歧义；
@@ -3318,7 +1898,7 @@ def test_legacy_case_backlog_is_not_a_checkpoint_action_source(tmp_path):
         private_marker="owner@example.test",
     )
     state_path = tmp_path / "state" / "target.com" / "case_state.json"
-    payload = json.loads(state_path.read_text(encoding="utf-8"))
+    payload = {"target": "target.com"}
     payload["validation_backlog"] = [{
         "id": "val_001",
         "runner": "request-diff",
@@ -3356,7 +1936,7 @@ def test_legacy_case_backlog_is_not_a_checkpoint_action_source(tmp_path):
     assert state_path.read_bytes() == before
 
 
-def test_checkpoint_keeps_object_observations_without_automatic_seed_action(tmp_path):
+def test_checkpoint_keeps_object_observations_without_automatic_seed_action(tmp_path, store):
     _seed_recon(tmp_path, "target.com", [
         "https://api.target.com/rest/order-history/123",
     ])
@@ -3373,9 +1953,9 @@ def test_checkpoint_keeps_object_observations_without_automatic_seed_action(tmp_
     )
 
 
-def test_checkpoint_keeps_historical_object_shape_without_automatic_seed_action(tmp_path):
+def test_checkpoint_keeps_historical_object_shape_without_automatic_seed_action(tmp_path, store):
     recon_dir = tmp_path / "recon" / "target.com"
-    (recon_dir / "live").mkdir(parents=True)
+    (recon_dir / "live").mkdir(parents=True, exist_ok=True)
     (recon_dir / "urls").mkdir()
     (recon_dir / "live" / "httpx_full.txt").write_text("https://target.com\n")
     historical = "https://target.com/?option=com_demo&Itemid=0\n"
@@ -3389,7 +1969,7 @@ def test_checkpoint_keeps_historical_object_shape_without_automatic_seed_action(
     assert all(item["type"] != "case-state-seed" for item in checkpoint["next_action_queue"])
 
 
-def test_checkpoint_keeps_endpointless_object_without_inventing_a_backlog(tmp_path):
+def test_checkpoint_keeps_endpointless_object_without_inventing_a_backlog(tmp_path, store):
     _seed_recon(tmp_path, "target.com", [
         "https://api.target.com/rest/languages",
     ])
@@ -3412,7 +1992,7 @@ def test_checkpoint_keeps_endpointless_object_without_inventing_a_backlog(tmp_pa
         header_value="Bearer peer",
     )
     browser_dir = tmp_path / "recon" / "target.com" / "browser"
-    browser_dir.mkdir(parents=True)
+    browser_dir.mkdir(parents=True, exist_ok=True)
     (browser_dir / "object_probe.json").write_text(
         json.dumps({"addressId": 7}),
         encoding="utf-8",
@@ -3429,1399 +2009,62 @@ def test_checkpoint_keeps_endpointless_object_without_inventing_a_backlog(tmp_pa
     )
 
 
-def test_checkpoint_queues_cross_evidence_convergence(tmp_path):
-    _seed_recon(tmp_path, "target.com", [
-        "https://api.target.com/api/admin/export?order_id=42",
-    ])
-    recon_dir = tmp_path / "recon" / "target.com"
-    browser_dir = recon_dir / "browser"
-    js_intel_dir = tmp_path / "findings" / "target.com" / "js_intel"
-    source_intel_dir = tmp_path / "findings" / "target.com" / "source_intel"
-    browser_dir.mkdir(parents=True)
-    js_intel_dir.mkdir(parents=True)
-    source_intel_dir.mkdir(parents=True)
-
-    converged_url = "https://api.target.com/api/admin/export?order_id=42"
-    (browser_dir / "xhr_endpoints.txt").write_text(converged_url + "\n", encoding="utf-8")
-    (browser_dir / "api_endpoints.txt").write_text(converged_url + "\n", encoding="utf-8")
-    (js_intel_dir / "hypotheses.json").write_text(
-        json.dumps({
-            "endpoints": [
-                {"method": "POST", "path": "/api/admin/export?order_id=42", "auth_required": "true"}
-            ],
-            "attack_surface_leads": [],
-            "graphql_operations": [],
-        }),
-        encoding="utf-8",
-    )
-    (source_intel_dir / "routes.json").write_text(
-        json.dumps({"routes": [{"route": "/api/admin/export?order_id=42", "method": "POST"}]}),
-        encoding="utf-8",
-    )
-    (source_intel_dir / "hypotheses.jsonl").write_text(
-        json.dumps({
-            "type": "idor",
-            "candidate": "/api/admin/export?order_id=42",
-            "reason": "admin export route uses order_id",
-            "source": "routes/export.py",
-        }) + "\n",
-        encoding="utf-8",
-    )
-
-    checkpoint = build_checkpoint(tmp_path, target="target.com")
-
-    assert any(
-        "Cross-evidence high-value surface" in item
-        for item in checkpoint["target_write_back"]["next"]
-    )
-    assert any(item["type"] == "evidence-convergence" for item in checkpoint["next_action_queue"])
-    assert any(
-        item["command_hint"] == "focused replay with browser/JS/source evidence"
-        for item in checkpoint["next_action_queue"]
-    )
-    convergence = next(
-        item for item in checkpoint["next_action_queue"] if item["type"] == "evidence-convergence"
-    )
-    assert convergence["metadata"]["activation_required"] is True
-    assert len(convergence["metadata"]["evidence_refs"]) >= 2
-
-
-def test_activation_seeding_has_no_ai_field_gates_and_claims_succeed(tmp_path):
-    """V-1 regression: activation seeding must not gate on endpoint/method/
-    input_boundary. Those are AI-declared at claim time; pre-deriving them from
-    action text (HTTP-verb regex) made every coverage-gap/surface-review item
-    permanently unclaimable. Queue-owned fields seed whenever evidence refs
-    resolve."""
-
-    from checkpoint import _attach_activation_context, _ACTIVATABLE_ACTION_TYPES
-
-    repo = tmp_path
-    target = "target.com"
-    key = "target.com"
-    surface = repo / "recon" / key / "surface"
-    surface.mkdir(parents=True)
-    (surface / "summary.json").write_text("{}", encoding="utf-8")
-
-    # coverage-gap action text carries NO HTTP verb and NO endpoint metadata —
-    # the exact shape that was unclaimable before the fix. validation items
-    # previously seeded only when a verb happened to appear in their text.
-    actions = [
-        {
-            "type": "coverage-gap",
-            "action": "Cover high-value matrix gap: /redirect x Authz (weight=3.0). Validation path applies.",
-            "metadata": {"endpoint": "/redirect", "vuln_class": "Authz"},
-        },
-        {
-            "type": "validation",
-            "action": "validate finding on an endpoint with no verb in this sentence",
-            "metadata": {},
-        },
-    ]
-    attached = _attach_activation_context(actions, repo=repo, target=target, context={})
-    for action in attached:
-        m = action["metadata"]
-        assert m["activation_required"] is True
-        assert m["max_hypothesis_actions_cap"] == 4
-        assert m["evidence_refs"], "target-owned refs must seed"
-        assert action["activation_required"] is True
-        # AI-owned fields are NOT pre-derived anymore.
-        assert "method" not in m
-        assert "input_boundary" not in m
-
-    # The refs gate is anti-forgery, not judgment: seeding happens whenever
-    # target-owned evidence resolves (including the default surface summary),
-    # and an item with genuinely no refs (no recon at all) seeds nothing.
-    empty_repo = tmp_path / "empty"
-    empty_repo.mkdir()
-    orphan = [{"type": "coverage-gap", "action": "no refs here", "metadata": {}}]
-    attached_orphan = _attach_activation_context(orphan, repo=empty_repo, target=target, context={})
-    assert "activation_required" not in attached_orphan[0]["metadata"]
-
-
-def test_coverage_gap_item_claims_with_claim_time_activation(tmp_path):
-    """End-to-end V-1: a checkpoint-emitted coverage-gap item seeds its cap and
-    the AI claims it by declaring endpoint/method at claim time."""
-
-    from checkpoint import _attach_activation_context
-    from action_queue import add_manual_action, claim_next_action
-
-    repo = tmp_path
-    target = "target.com"
-    key = "target.com"
-    (repo / "recon" / key / "surface").mkdir(parents=True)
-    (repo / "recon" / key / "surface" / "summary.json").write_text("{}", encoding="utf-8")
-
-    action = {
-        "type": "coverage-gap",
-        "action": "Cover high-value matrix gap: /redirect x Authz (weight=3.0). Validation path applies.",
-        "metadata": {"endpoint": "/redirect", "vuln_class": "Authz"},
-    }
-    [seeded] = _attach_activation_context([action], repo=repo, target=target, context={})
-    add_manual_action(
-        repo,
-        target=target,
-        action_type="coverage-gap",
-        action=seeded["action"],
-        evidence="coverage gap /redirect x Authz from matrix rebuild",
-        next_question="does the redirect endpoint enforce its boundary",
-        stop_condition="boundary enforced or a stable gap with reproducible raw evidence",
-        priority=70,
-        metadata=seeded["metadata"],
-    )
-    activation = {
-        "depth_contract_version": 1,
-        "hypothesis_id": "redirect-authz-boundary",
-        "family": "Authz",
-        "technique": "object-boundary replay on redirect parameter",
-        "active_dimension": "query:url",
-        "expected_learning": "whether /redirect validates the target before redirecting",
-        "kill_condition": "endpoint rejects the crafted parameter with a stable response",
-        "decision_reason": "coverage-gap item published by the matrix rebuild",
-        "input_boundary": "single query parameter, GET only, one replay",
-        "endpoint": "http://target.com/redirect?url=example.org",
-        "method": "GET",
-        "skill_route": {
-            "skill_id": "bb-methodology",
-            "skill_path": "skills/bb-methodology/SKILL.md",
-            "required_dimensions": ["hypothesis", "coverage", "pivot", "stop_condition"],
-        },
-        "evidence_ref": f"recon/{key}/surface/summary.json",
-        "baseline_ref": f"recon/{key}/surface/summary.json",
-        "risk_tier": "low",
-        "max_hypothesis_actions": 3,
-    }
-    queue = load_queue(repo, target)
-    item_id = next(
-        a["id"] for a in queue["actions"] if a.get("type") == "coverage-gap"
-    )
-    claimed = claim_next_action(repo, target=target, action_id=item_id, metadata=activation)
-    assert claimed["status"] == "running"
-    assert claimed["metadata"]["endpoint"] == "http://target.com/redirect?url=example.org"
-    assert claimed["metadata"]["method"] == "GET"
-
-
-def test_next_proposals_skip_ranked_surface_when_endpoint_already_has_tested_finding():
-    proposals = _next_proposals(
-        state={
-            "has_recon": True,
-            "recommended_targets": [
-                {
-                    "url": "https://api.target.com/api/admin/users?isAdmin=true",
-                    "suggested": "prioritize authz checks",
-                }
-            ],
-            "surface": {},
-        },
-        coverage_gaps=[],
-        matrix={
-            "endpoints": [
-                {
-                    "endpoint": "/api/admin/users",
-                    "cells": {"Authz": {"status": "tested_finding"}},
-                }
-            ]
-        },
-        target="target.com",
-        context_pack={"contradictions": []},
-        evidence_summary={
-            "closed_cells": [{
-                "endpoint": "/api/admin/users",
-                "vuln_class": "Authz",
-                "result": "tested_finding",
-            }],
-        },
-    )
-
-    assert not any(
-        "Review surface candidate https://api.target.com/api/admin/users" in item
-        for item in proposals
-    )
-
-
-def test_next_proposals_skip_ranked_surface_when_ledger_has_tested_clean():
-    url = "https://api.target.com/rest/admin/application-version"
-    proposals = _next_proposals(
-        state={
-            "has_recon": True,
-            "recommended_targets": [
-                {
-                    "url": url,
-                    "suggested": "prioritize authenticated/browser-observed authz and workflow checks",
-                }
-            ],
-            "surface": {
-                "p1": [{"url": url, "suggested": "prioritize authenticated/browser-observed authz and workflow checks"}],
-                "workflow_leads": [],
-            },
-        },
-        coverage_gaps=[],
-        matrix={"endpoints": []},
-        target="target.com",
-        context_pack={"contradictions": []},
-        evidence_summary={
-            "closed_cells": [
-                {
-                    "endpoint": "/rest/admin/application-version",
-                    "vuln_class": "Authz",
-                    "result": "tested_clean",
-                }
-            ]
-        },
-    )
-
-    assert not any(
-        "Review surface candidate https://api.target.com/rest/admin/application-version" in item
-        for item in proposals
-    )
-
-
-def test_viewstate_marker_does_not_prescribe_a_test_method():
-    proposals = _next_proposals(
-        state={"has_recon": True, "surface": {}, "recommended_targets": []},
-        coverage_gaps=[],
-        matrix={"endpoints": []},
-        target="target.com",
-        context_pack={
-            "source_summary": {"viewstate_signal": True},
-            "hypothesis_seeds": [],
-            "contradictions": [],
-        },
-        evidence_summary={},
-    )
-
-    assert all(item["type"] != "viewstate-integrity-review" for item in proposals)
-
-
-def test_capability_chain_review_projection_has_stable_identity_and_bounded_lineage(tmp_path):
-    parent = _seed_capability_parent(tmp_path)
-
-    first = _capability_chain_review_item(tmp_path, "target.com")
-    second = _capability_chain_review_item(tmp_path, "target.com")
-
-    assert first == second
-    assert first["type"] == "capability-chain-review"
-    assert first["source_id"] == parent["id"]
-    assert len(first["metadata"]["generation"]) == 64
-    assert first["metadata"]["generation"] == first["metadata"]["primitive_fingerprint"]
-    assert first["metadata"]["parent_action_id"] == parent["id"]
-    assert first["metadata"]["parent_hypothesis_id"] == "H-primitive"
-    assert first["metadata"]["primitive_lineage"] == {
-        "capability": "cross-workflow object selector",
-        "evidence_ref": "evidence/target.com/validation/primitive.json",
-        "continuation_hint": "compare the linked download workflow",
-    }
-    assert "activation_required" not in first
-    assert "depth_contract_version" not in first["metadata"]
-    assert "hypothesis_id" not in first["metadata"]
-    assert _decision_for_action(first["type"]) == "continue"
-
-
-@pytest.mark.parametrize("case", ["no-hint", "off-target", "immediate-chain", "existing-child"])
-def test_capability_chain_review_projection_rejects_ineligible_primitives(tmp_path, case):
-    primitive = None
-    continuation_kind = ""
-    chain_child = False
-    if case == "no-hint":
-        primitive = {
-            "capability": "cross-workflow object selector",
-            "evidence_ref": "evidence/target.com/validation/primitive.json",
-        }
-    elif case == "off-target":
-        foreign = tmp_path / "evidence" / "other.test" / "validation" / "primitive.json"
-        foreign.parent.mkdir(parents=True)
-        foreign.write_text("{}", encoding="utf-8")
-        primitive = {
-            "capability": "cross-workflow object selector",
-            "evidence_ref": "evidence/other.test/validation/primitive.json",
-            "continuation_hint": "compare the linked download workflow",
-        }
-    elif case == "immediate-chain":
-        continuation_kind = "chain"
-    else:
-        chain_child = True
-    _seed_capability_parent(
-        tmp_path,
-        primitive=primitive,
-        continuation_kind=continuation_kind,
-        chain_child=chain_child,
-    )
-
-    assert _capability_chain_review_item(tmp_path, "target.com") == {}
-
-
-def test_capability_chain_review_checkpoint_ingest_is_idempotent_and_final_suppresses_replay(tmp_path):
-    _seed_capability_parent(tmp_path)
-    review = _capability_chain_review_item(tmp_path, "target.com")
-
-    ingest_checkpoint(tmp_path, "target.com", checkpoint={"next_action_queue": [review]})
-    assert _capability_chain_review_item(tmp_path, "target.com") == {}
-    ingest_checkpoint(tmp_path, "target.com", checkpoint={"next_action_queue": []})
-    queue = load_queue(tmp_path, "target.com")
-    reviews = [item for item in queue["actions"] if item["type"] == "capability-chain-review"]
-    assert len(reviews) == 1
-
-    resolve_action(
-        tmp_path,
-        target="target.com",
-        action_id=reviews[0]["id"],
-        status="dead-end",
-        result="No bounded in-scope chain remained.",
-    )
-    assert _capability_chain_review_item(tmp_path, "target.com") == {}
-    ingest_checkpoint(tmp_path, "target.com", checkpoint={"next_action_queue": []})
-    reviews = [
-        item for item in load_queue(tmp_path, "target.com")["actions"]
-        if item["type"] == "capability-chain-review"
-    ]
-    assert len(reviews) == 1
-    assert reviews[0]["status"] == "dead-end"
-
-
-def test_capability_chain_review_serializes_distinct_primitives_and_dedupes_equivalents(tmp_path):
-    parent = _seed_capability_parent(tmp_path)
-    second_ref = "evidence/target.com/validation/second-primitive.json"
-    second_path = tmp_path / second_ref
-    second_path.parent.mkdir(parents=True, exist_ok=True)
-    second_path.write_text(json.dumps({"difference": "stable second"}), encoding="utf-8")
-    queue = load_queue(tmp_path, "target.com")
-    parent_metadata = queue["actions"][0]["metadata"]
-    parent_metadata["capability_primitives"].extend([
-        {
-            "capability": "  CROSS-WORKFLOW   OBJECT SELECTOR ",
-            "evidence_ref": "evidence/target.com/validation/primitive.json",
-            "continuation_hint": " Compare   the linked DOWNLOAD workflow ",
-        },
-        {
-            "capability": "parser-controlled export format",
-            "evidence_ref": second_ref,
-            "continuation_hint": "compare one alternate export parser",
-        },
-    ])
-    save_queue(tmp_path, "target.com", queue)
-
-    fingerprints = []
-    capabilities = []
-    for _ in range(2):
-        review = _capability_chain_review_item(tmp_path, "target.com")
-        assert review == _capability_chain_review_item(tmp_path, "target.com")
-        assert review["source_id"] == parent["id"]
-        fingerprints.append(review["metadata"]["primitive_fingerprint"])
-        capabilities.append(review["metadata"]["primitive_lineage"]["capability"])
-        ingest_checkpoint(tmp_path, "target.com", checkpoint={"next_action_queue": [review]})
-        durable = next(
-            item for item in load_queue(tmp_path, "target.com")["actions"]
-            if item["type"] == "capability-chain-review" and item["status"] == "queued"
-        )
-        resolve_action(
-            tmp_path,
-            target="target.com",
-            action_id=durable["id"],
-            status="dead-end",
-            result="No bounded in-scope chain remained for this primitive.",
-        )
-
-    assert len(set(fingerprints)) == 2
-    assert set(capabilities) == {
-        "cross-workflow object selector",
-        "parser-controlled export format",
-    }
-    assert _capability_chain_review_item(tmp_path, "target.com") == {}
-    reviews = [
-        item for item in load_queue(tmp_path, "target.com")["actions"]
-        if item["type"] == "capability-chain-review"
-    ]
-    assert len(reviews) == 2
-    assert all(item["status"] == "dead-end" for item in reviews)
-
-
-def test_lane_history_does_not_close_an_untyped_surface():
-    covered_finding = "https://api.target.com/api/admin/users"
-    covered_ledger = "https://api.target.com/rest/admin/application-version"
-    fresh = "https://api.target.com/api/orders"
-    proposals = _next_proposals(
-        state={
-            "has_recon": True,
-            "recommended_targets": [
-                {
-                    "url": covered_finding,
-                    "suggested": "prioritize authz checks",
-                },
-                {
-                    "url": covered_ledger,
-                    "suggested": "prioritize authz checks",
-                },
-                {
-                    "url": fresh,
-                    "suggested": "baseline authz and business-logic checks",
-                },
-            ],
-            "surface": {
-                "p1": [
-                    {"url": covered_finding, "suggested": "prioritize authz checks"},
-                    {"url": covered_ledger, "suggested": "prioritize authz checks"},
-                    {"url": fresh, "suggested": "baseline authz and business-logic checks"},
-                ],
-                "workflow_leads": [],
-            },
-        },
-        coverage_gaps=[],
-        matrix={
-            "endpoints": [
-                {
-                    "endpoint": "/api/admin/users",
-                    "cells": {"Authz": {"status": "tested_finding"}},
-                }
-            ]
-        },
-        target="target.com",
-        context_pack={"contradictions": []},
-        evidence_summary={
-            "closed_cells": [
-                {
-                    "endpoint": "/api/admin/users",
-                    "vuln_class": "Authz",
-                    "result": "tested_finding",
-                },
-                {
-                    "endpoint": "/rest/admin/application-version",
-                    "vuln_class": "Authz",
-                    "result": "tested_clean",
-                }
-            ]
-        },
-    )
-
-    assert any(covered_finding in _entry_text(item) for item in proposals)
-    assert any(covered_ledger in _entry_text(item) for item in proposals)
-    assert any(fresh in _entry_text(item) for item in proposals)
-
-
-def test_next_proposals_keeps_ranked_surface_candidates_after_secondary_sweeps():
-    urls = [
-        "https://api.target.com/api/one",
-        "https://api.target.com/api/two",
-        "https://api.target.com/api/three",
-        "https://api.target.com/api/four",
-    ]
-    proposals = _next_proposals(
-        state={
-            "has_recon": True,
-            "recommended_targets": [
-                {"url": url, "suggested": "baseline authz and business-logic checks"}
-                for url in urls
-            ],
-            "surface": {
-                "p1": [
-                    {"url": url, "suggested": "baseline authz and business-logic checks"}
-                    for url in urls
-                ],
-                "workflow_leads": [
-                    {
-                        "category": "open-200-api-review",
-                        "title": "Anonymous API endpoints returned substantial 200 responses",
-                        "artifact": "findings/target/manual_review/open_200_api.txt",
-                        "rationale": "manual review",
-                        "next_action": "sample raw bodies",
-                    },
-                    {
-                        "category": "public-metadata",
-                        "title": "Standard public metadata endpoints were demoted",
-                        "artifact": "findings/target/manual_review/public_metadata.txt",
-                        "rationale": "metadata",
-                        "next_action": "review only for chain pivots",
-                    },
-                ],
-            },
-        },
-        coverage_gaps=[],
-        matrix={"endpoints": []},
-        target="target.com",
-        context_pack={"contradictions": []},
-        evidence_summary={},
-    )
-
-    ranked = [_entry_text(item) for item in proposals if _entry_text(item).startswith("Review surface candidate ")]
-    assert len(ranked) == 4
-    assert any(urls[-1] in item for item in ranked)
-
-
-def test_context_pack_hypothesis_seed_and_recall_do_not_materialize_queue(
-    tmp_path,
-    monkeypatch,
-):
-    target = "target.com"
-    goals = tmp_path / "memory" / "goals"
-    targets = goals / "targets"
-    targets.mkdir(parents=True)
-    (goals / "active.json").write_text(
-        json.dumps({
-            "target": target,
-            "phase": "hunt",
-            "active_goal": "Validate one template rendering boundary",
-            "current_hypothesis": "SSTI template injection render payload family",
-        }),
-        encoding="utf-8",
-    )
-    (targets / f"{target}.json").write_text(
-        json.dumps({
-            "schema_version": 1,
-            "target": target,
-            "phase": "hunt",
-            "active_goal": "Validate one template rendering boundary",
-            "current_hypothesis": "SSTI template injection render payload family",
-        }),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(
-        checkpoint_module,
-        "build_autopilot_state",
-        lambda *_args, **_kwargs: {
-            "target": target,
-            "resolved_target": target,
-            "has_recon": True,
-            "surface": {
-                "available": False,
-                "p1": [],
-                "p2": [],
-                "workflow_leads": [],
-                "stats": {},
-            },
-            "recommended_targets": [],
-            "validation_runner_candidates": [],
-        },
-    )
-    monkeypatch.setattr(
-        checkpoint_module,
-        "load_matrix_projection",
-        lambda *_args, **_kwargs: {"endpoints": []},
-    )
-
-    checkpoint = build_checkpoint(tmp_path, target=target, refresh_coverage=False)
+def test_context_pack_hypothesis_and_catalog_do_not_materialize_queue(tmp_path, store):
+    store.remember(command_id="hypothesis", kind="hypothesis", statement="Inspect template rendering",
+                   conditions="known input", reopen_when="", next_intent="", evidence=[], actor="operator")
+    before = store.binding()
+    checkpoint = build_checkpoint(tmp_path, target=store.target)
     context = checkpoint["context_pack"]
-
-    # Word-list matches no longer auto-select cards: the SSTI card appears as
-    # a signal annotation in recall (visible, AI-readable, not auto-loaded)
-    # while the full card catalog is published for AI-side selection.
-    ssti_path = "knowledge/cards/server-side-template-injection.md"
-    recall_entries = {
-        entry.get("file"): entry.get("status")
-        for entry in context["knowledge_card_recall"]
-    }
-    # Static seeds + word-list routing retired (native-capability audit
-    # 2026-09-13): recall may be empty; the catalog is the discovery surface.
-    assert any(
-        entry.get("id") == "server-side-template-injection"
-        for entry in context.get("card_catalog", [])
-    )
+    assert context["target_experiences"]["items"][0]["entry_id"] == "hypothesis"
+    assert any(item["id"] == "server-side-template-injection" for item in context["card_catalog"])
     assert context["hypothesis_seeds"] == []
     assert checkpoint["next_action_queue"] == []
-
-    sync_checkpoint_action_queue(tmp_path, checkpoint)
-    witness = json.loads(
-        (tmp_path / "state" / target / "checkpoint_latest.json").read_text(
-            encoding="utf-8"
-        )
-    )
-
-    assert load_queue(tmp_path, target)["actions"] == []
-    assert (
-        witness["context_pack"]["knowledge_card_recall"]
-        == context["knowledge_card_recall"]
-    )
-    # 语义选卡退役后 knowledge_cards 恒为空兼容投影：无选中卡时
-    # knowledge_effect_trace 为空 dict（没有建议就没有效果追踪）。
-    assert checkpoint["knowledge_effect_trace"] == {}
-
-
-def test_legacy_knowledge_signal_review_remains_resolvable(tmp_path):
-    target = "target.com"
-    action = build_action(
-        target=target,
-        action_type="knowledge-signal-review",
-        evidence="Legacy checkpoint recalled one card.",
-        next_question="Does the historical review still need a disposition?",
-        action="Disposition the restored advisory review.",
-        metadata={"signal_identity": "legacy-card-signal"},
-    )
-    action.update({"id": "AQ-0001", "status": "queued"})
-    save_queue(tmp_path, target, {"actions": [action]})
-
-    claimed = claim_next_action(tmp_path, target, action_id=action["id"])
-    resolved = resolve_action(
-        tmp_path,
-        target=target,
-        action_id=action["id"],
-        status="dead-end",
-        result="Historical advisory review was dispositioned.",
-    )
-
-    assert claimed["status"] == "running"
-    assert resolved["status"] == "dead-end"
-
-
-def test_checkpoint_coverage_projection_bounds_large_family_without_closing_siblings():
-    family_gaps = [
-        {
-            "endpoint": f"/en/job/us/role-{index}/23251/{1000 + index}",
-            "vuln_class": "Path",
-            "weight": 3.5,
-            "relevance_score": 14,
-            "relevance_reason": "file/path selector; file download/read path",
-            "source_count": 1,
-        }
-        for index in range(3)
-    ]
-    other = {
-        "endpoint": "/download/export-report",
-        "vuln_class": "Path",
-        "weight": 3.5,
-        "relevance_score": 12,
-        "relevance_reason": "file/path selector; file download/read path",
-        "source_count": 1,
-    }
-    matrix = {
-        "endpoints": [
-            {
-                "endpoint": item["endpoint"],
-                "cells": {"Path": {"status": "untested"}},
-            }
-            for item in [*family_gaps, other]
-        ]
-    }
-
-    selected = _checkpoint_coverage_gaps([*family_gaps, other], matrix, limit=8)
-
-    assert len(selected) == 2
-    family_selected = [item for item in selected if "/en/job/" in item["endpoint"]]
-    assert len(family_selected) == 1
-    assert family_selected[0]["_projection_family"]["size"] == 3
-    assert any(item["endpoint"] == other["endpoint"] for item in selected)
-    assert all(
-        endpoint["cells"]["Path"]["status"] == "untested"
-        for endpoint in matrix["endpoints"]
-    )
-
-    proposals = _next_proposals(
-        state={"has_recon": True, "recommended_targets": []},
-        coverage_gaps=[*family_gaps, other],
-        matrix=matrix,
-        target="target.com",
-        context_pack={},
-        evidence_summary={},
-    )
-    action = next(
-        item
-        for item in _build_next_action_queue(proposals, "target.com")
-        if item["type"] == "coverage-gap"
-    )
-    assert action["metadata"]["family_projection"] == "structural"
-    assert action["metadata"]["family_size"] == 3
-    assert len(action["metadata"]["family_members"]) == 3
-
-
-def test_checkpoint_family_projection_keeps_all_members_and_leaves_ai_override_visible():
-    family_gaps = [
-        {
-            "endpoint": f"/en/job/us/role-{index}/23251/{1000 + index}",
-            "vuln_class": "Path",
-            "weight": 3.5,
-            "relevance_score": 14,
-            "relevance_reason": "file/path selector; file download/read path",
-            "source_count": 1,
-        }
-        for index in range(7)
-    ]
-    endpoints = [item["endpoint"] for item in family_gaps]
-    matrix = {
-        "endpoints": [
-            {"endpoint": endpoint, "cells": {"Path": {"status": "untested"}}}
-            for endpoint in endpoints
-        ]
-    }
-
-    selected = _checkpoint_coverage_gaps(family_gaps, matrix, limit=8)
-    projection = selected[0]["_projection_family"]
-
-    assert projection["size"] == len(endpoints)
-    assert projection["members"] == endpoints
-
-    proposals = _next_proposals(
-        state={"has_recon": True, "recommended_targets": []},
-        coverage_gaps=family_gaps,
-        matrix=matrix,
-        target="target.com",
-        context_pack={},
-        evidence_summary={},
-    )
-    proposal = next(item for item in proposals if _entry_text(item).startswith("Review coverage gap:"))
-    proposal_text = _entry_text(proposal)
-    assert "Queue projection only" in proposal_text
-    assert "does not assert family equivalence" in proposal_text
-    assert "AI remains the judgment owner and may choose or expand any listed member" in proposal_text
-    assert "sibling Matrix cells stay unclosed" in proposal_text
-
-    action = next(
-        item
-        for item in _build_next_action_queue(proposals, "target.com")
-        if item["type"] == "coverage-gap"
-    )
-    assert action["metadata"]["family_size"] == len(endpoints)
-    assert action["metadata"]["family_members"] == endpoints
-    assert all(
-        endpoint["cells"]["Path"]["status"] == "untested"
-        for endpoint in matrix["endpoints"]
-    )
-
-
-def test_checkpoint_family_projection_bounds_preview_without_hiding_family_size():
-    gaps = [
-        {
-            "endpoint": f"/api/orders/role-{index}/23251/{1000 + index}",
-            "vuln_class": "Path",
-            "weight": 3.5,
-            "relevance_score": 14,
-            "relevance_reason": "file/path selector; file download/read path",
-        "source_count": 1,
-    }
-        for index in range(20)
-    ]
-    matrix = {
-        "endpoints": [
-            {"endpoint": item["endpoint"], "cells": {"Path": {"status": "untested"}}}
-            for item in gaps
-        ]
-    }
-
-    selected = _checkpoint_coverage_gaps(gaps, matrix, limit=8)
-    projection = selected[0]["_projection_family"]
-
-    assert projection["size"] == 20
-    assert len(projection["members"]) == 12
-
-    proposals = _next_proposals(
-        state={"has_recon": True, "recommended_targets": []},
-        coverage_gaps=gaps,
-        matrix=matrix,
-        target="target.com",
-        context_pack={},
-        evidence_summary={},
-    )
-    proposal = next(item for item in proposals if _entry_text(item).startswith("Review coverage gap:"))
-    proposal_text = _entry_text(proposal)
-    assert "preview is incomplete" in proposal_text
-    assert "raw Coverage gap window" in proposal_text
-
-
-def test_checkpoint_does_not_merge_distinct_dynamic_resources():
-    gaps = [
-        {
-            "endpoint": f"/api/v1/{resource}/{index}",
-            "vuln_class": "Path",
-            "weight": 3.5,
-            "relevance_score": 14,
-            "relevance_reason": "file/path selector; file download/read path",
-        "source_count": 1,
-    }
-        for resource, index in (("users", 101), ("orders", 202), ("admin", 303))
-    ]
-    matrix = {
-        "endpoints": [
-            {
-                "endpoint": item["endpoint"],
-                "cells": {"Path": {"status": "untested"}},
-            }
-            for item in gaps
-        ]
-    }
-
-    selected = _checkpoint_coverage_gaps(gaps, matrix, limit=8)
-
-    assert [item["endpoint"] for item in selected] == [item["endpoint"] for item in gaps]
-    assert all("_projection_family" not in item for item in selected)
-
-
-def test_checkpoint_family_keeps_exact_members_without_legacy_relevance():
-    # 分隔符（分号、大括号、冒号）出现在 relevance reason 和路径模板中时，
-    # 结构化 metadata 必须原样保留——这是 prose/regex 通道曾经的截断风险点。
-    reason = "file/path selector; file download/read path"
-    gaps = [
-        {
-            "endpoint": f"/api/orders/{name}.json",
-            "vuln_class": "Path",
-            "weight": 3.5,
-            "relevance_score": 14,
-            "relevance_reason": reason,
-            "source_count": 1,
-        }
-        for name in ("list", "search", "export")
-    ]
-    matrix = {
-        "endpoints": [
-            {"endpoint": item["endpoint"], "cells": {"Path": {"status": "untested"}}}
-            for item in gaps
-        ]
-    }
-
-    proposals = _next_proposals(
-        state={"has_recon": True, "recommended_targets": []},
-        coverage_gaps=gaps,
-        matrix=matrix,
-        target="target.com",
-        context_pack={},
-        evidence_summary={},
-    )
-    action = next(
-        item
-        for item in _build_next_action_queue(proposals, "target.com")
-        if item["type"] == "coverage-gap"
-    )
-
-    assert action["metadata"]["family_key"] == (
-        "structural:path:{static}/{static}/{static}:/api/orders"
-    )
-    assert action["metadata"]["family_members"] == [
-        "/api/orders/list.json",
-        "/api/orders/search.json",
-        "/api/orders/export.json",
-    ]
-    assert "relevance_reason" not in action["metadata"]
-
-
-def test_checkpoint_family_projection_refreshes_queued_action_without_duplicate(tmp_path):
-    def checkpoint_for(size):
-        names = ("list", "search", "export", "archive")[:size]
-        action = _proposal_entry(
-            "Cover high-value matrix gap: /api/orders/list.json x Path "
-            "(weight=3.5, relevance=14: file/path selector). Family projection: "
-            f"key=route-template:path:file/path selector:/api/orders/{{id}}; "
-            f"kind=route-template; size={size}; samples={','.join(f'/api/orders/{name}.json' for name in names)}.",
-            action_type="coverage-gap", priority=94,
-            metadata={
-                "endpoint": "/api/orders/list.json",
-                "vuln_class": "Path",
-                "weight": "3.5",
-                "relevance_score": 14,
-                "relevance_reason": "file/path selector",
-                "family_key": "route-template:path:file/path selector:/api/orders/{id}",
-                "family_projection": "route-template",
-                "family_size": size,
-                "family_members": [f"/api/orders/{name}.json" for name in names],
-            },
-        )
-        return {"next_action_queue": _build_next_action_queue([action], "target.com")}
-
-    first = ingest_checkpoint(tmp_path, "target.com", checkpoint=checkpoint_for(3))
-    second = ingest_checkpoint(tmp_path, "target.com", checkpoint=checkpoint_for(4))
-    queue = load_queue(tmp_path, "target.com")
-    coverage = next(item for item in queue["actions"] if item["type"] == "coverage-gap")
-
-    assert first["stats"]["added"] == 1
-    assert second["stats"]["added"] == 0
-    assert second["stats"]["updated"] == 1
-    assert len(queue["actions"]) == 1
-    assert coverage["metadata"]["family_size"] == 4
-    assert coverage["metadata"]["family_members"][-1] == "/api/orders/archive.json"
-    assert "size=4" in coverage["action"]
-
-
-@pytest.mark.parametrize("family_status", ["tested", "not_applicable"])
-def test_checkpoint_preserves_ssti_recall_after_rce_family_closure(
-    tmp_path,
-    monkeypatch,
-    family_status,
-):
-    card = "knowledge/cards/server-side-template-injection.md"
-    cell_status = "tested_clean" if family_status == "tested" else "n_a"
-    monkeypatch.setattr(
-        checkpoint_module,
-        "load_matrix_projection",
-        lambda *_args, **_kwargs: {
-            "endpoints": [{
-                "endpoint": "/render",
-                "cells": {"RCE": {"status": cell_status, "reason": "bounded family closure"}},
-            }],
-        },
-    )
-    monkeypatch.setattr(
-        checkpoint_module,
-        "build_context_pack",
-        lambda *_args, **_kwargs: {
-            "phase": "hunt",
-            "skill_route": {},
-            "knowledge_cards": [card],
-            "knowledge_card_recall": [{
-                "file": card,
-                "id": "server-side-template-injection",
-                "status": "selected",
-                "rank": 1,
-                "reason": "specific routing signal matched; selected within card budget",
-            }],
-            "evidence_anchors": ["POST /render accepts a template-shaped field"],
-            "hypothesis_seeds": ["compare one inert expression"],
-            "reference_hints": [],
-            "required_checks": [],
-            "contradictions": [],
-        },
-    )
-
-    checkpoint = build_checkpoint(tmp_path, target="target.com", refresh_coverage=False)
-    witness = json.loads(
-        (tmp_path / "state" / "target.com" / "checkpoint_latest.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    sync_checkpoint_action_queue(tmp_path, checkpoint)
-
-    assert checkpoint["coverage"]["high_risk_lanes"]["RCE"]["disposition"] == family_status
-    assert checkpoint["context_pack"]["knowledge_card_recall"][0]["file"] == card
-    assert witness["context_pack"]["knowledge_card_recall"][0]["file"] == card
-    assert not any(
-        item["type"] == "knowledge-signal-review"
-        for item in checkpoint["next_action_queue"]
-    )
-    assert not any(
-        item["type"] == "knowledge-signal-review"
-        for item in load_queue(tmp_path, "target.com")["actions"]
-    )
-    # 效果追踪消费 context 的 knowledge_cards 字段本身（monkeypatch 注入了
-    # 选中卡）：语义选卡器退役不改变这一消费契约。
-    assert checkpoint["knowledge_effect_trace"]["suggestion"].startswith(card)
-
-
-def test_artifact_backed_high_workflow_leads_become_durable_queue_items(tmp_path):
-    artifact = tmp_path / "recon" / "target.com" / "exposure" / "openapi.jsonl"
-    artifact.parent.mkdir(parents=True)
-    artifact.write_text('{"path":"/api/admin/export"}\n', encoding="utf-8")
-
-    items = _workflow_lead_queue_items(
-        {
-            "surface": {
-                "workflow_leads": [
-                    {
-                        "title": "OpenAPI auth boundary",
-                        "category": "openapi-semantics",
-                        "priority": "high",
-                        "artifact": str(artifact),
-                        "next_action": "replay the declared operation",
-                    },
-                    {
-                        "title": "ordinary metadata",
-                        "category": "public-metadata",
-                        "priority": "medium",
-                        "artifact": str(artifact),
-                    },
-                ]
-            }
-        },
-        repo_root=tmp_path,
-        target="target.com",
-    )
-
-    assert len(items) == 1
-    item = items[0]
-    assert item["type"] == "workflow-lead-review"
-    assert item["source"] == "workflow-lead"
-    assert item["metadata"]["artifact"] == str(artifact)
-    assert item["metadata"]["generation"]
-
-    save_queue(tmp_path, "target.com", {"actions": []})
-    assert load_queue(tmp_path, "target.com")["actions"] == []
-    checkpoint = {"target": "target.com", "next_action_queue": items}
-    sync_checkpoint_action_queue(tmp_path, checkpoint)
-    persisted = load_queue(tmp_path, "target.com")
-    assert len(persisted["actions"]) == 1
-    assert persisted["actions"][0]["source"] == "workflow-lead"
-
-
-def test_checkpoint_prefers_structured_workflow_lead_for_same_artifact_category():
-    artifact = "findings/target.com/manual_review/openapi.jsonl"
-    natural = _build_next_action_queue(
-        [
-            _proposal_entry(
-                "Evidence: Workflow lead: OpenAPI auth boundary. Why it matters: API. "
-                "Category=openapi-semantics. Artifact=findings/target.com/manual_review/openapi.jsonl. "
-                "Next action: replay the declared operation.",
-                action_type="workflow-lead-review", priority=88,
-                metadata={
-                    "lead_title": "OpenAPI auth boundary",
-                    "lead_category": "openapi-semantics",
-                    "artifact": "findings/target.com/manual_review/openapi.jsonl",
-                },
-            )
-        ],
-        "target.com",
-    )[0]
-    structured = {
-        "source": "workflow-lead",
-        "type": "workflow-lead-review",
-        "metadata": {"artifact": artifact, "category": "openapi-semantics"},
-    }
-
-    deduped = _dedupe_artifact_category_items([natural, structured])
-
-    assert len(deduped) == 1
-    assert deduped[0]["source"] == "workflow-lead"
-
-
-def test_sql_matrix_candidates_become_generation_aware_durable_actions(tmp_path):
-    state = {
-        "sql_matrix": {
-            "query": {
-                "status": "candidate_pending",
-                "path": "findings/target.com/poc/sql_matrix/query/summary.json",
-                "input_fingerprint": "a" * 64,
-                "candidate_count": 1,
-                "source_paths": ["recon/target.com/urls/with_params.txt"],
-                "candidates": [{
-                    "endpoint": "/search",
-                    "field": "q",
-                    "class": "sqli_error",
-                    "signal": "database error",
-                }],
-            },
-            "form": {"status": "complete_no_hit"},
-        }
-    }
-
-    items = _sql_matrix_queue_items(state, "target.com")
-    assert len(items) == 1
-    assert items[0]["type"] == "sql-matrix-review"
-    assert items[0]["source"] == "sql-matrix"
-    assert items[0]["source_id"] == "sql-matrix-query"
-    assert items[0]["metadata"]["generation"] == "a" * 64
-    assert "request-diff" in items[0]["command_hint"]
-    assert "sql_parameter_probe" not in items[0]["command_hint"]
-
-    save_queue(tmp_path, "target.com", {"actions": []})
-    checkpoint = {"target": "target.com", "next_action_queue": items}
-    sync_checkpoint_action_queue(tmp_path, checkpoint)
-    persisted = load_queue(tmp_path, "target.com")
-    assert len(persisted["actions"]) == 1
-    assert persisted["actions"][0]["source_id"] == "sql-matrix-query"
-
-    sync_checkpoint_action_queue(tmp_path, {"target": "target.com", "next_action_queue": items})
-    assert len(load_queue(tmp_path, "target.com")["actions"]) == 1
-
-
-def test_json_inject_queue_item_replays_target_owned_source_without_placeholder():
-    item = _json_inject_queue_item(
-        {
-            "target": "target.com",
-            "json_inject": {
-                "status": "partial",
-                "input_fingerprint": "a" * 64,
-                "source_paths": ["recon/target.com/urls/json_endpoints.txt"],
-            },
-        }
-    )
-
-    assert "json_inject_probe" not in item["command_hint"]
-    assert "request-diff" in item["command_hint"]
-    assert "findings/json_inject/summary.json" in item["command_hint"]
-    assert "FILE" not in item["command_hint"]
-    assert item["metadata"]["source_paths"] == [
-        "recon/target.com/urls/json_endpoints.txt"
-    ]
-
-
-def test_json_inject_queue_item_preserves_typed_source_flags():
-    item = _json_inject_queue_item(
-        {
-            "target": "target.com",
-            "json_inject": {
-                "status": "partial",
-                "input_fingerprint": "a" * 64,
-                "source_paths": ["findings/target.com/js_intel/hypotheses.json"],
-                "source_refs": [
-                    {"kind": "js-intel", "path": "findings/target.com/js_intel/hypotheses.json"},
-                ],
-            },
-        }
-    )
-
-    assert "json_inject_probe" not in item["command_hint"]
-    assert "request-diff" in item["command_hint"]
-
-
-def test_json_inject_queue_item_uses_default_seed_recovery_without_source_placeholder():
-    item = _json_inject_queue_item(
-        {
-            "target": "target.com",
-            "json_inject": {"status": "invalid_input", "input_fingerprint": "b" * 64},
-        }
-    )
-
-    assert "json_inject_probe" not in item["command_hint"]
-    assert "request-diff" in item["command_hint"]
-    assert "FILE" not in item["command_hint"]
-
-
-def test_candidate_finding_creates_one_scoped_sibling_action(tmp_path):
-    evidence = tmp_path / "findings" / "target.com" / "validation" / "F-1.json"
-    evidence.parent.mkdir(parents=True)
-    evidence.write_text('{"id":"F-1"}\n', encoding="utf-8")
-    item = _sibling_queue_item(
-        {
-            "structured_findings": {
-                "next_validation": {
-                    "id": "F-1",
-                    "url": "https://target.com/api/orders/123",
-                    "validation_status": "candidate",
-                    "source_file": str(evidence),
-                }
-            }
-        },
-        repo_root=tmp_path,
-        target="target.com",
-    )
-    assert item["type"] == "sibling-chain-review"
-    assert item["source"] == "primary-finding-sibling"
-    assert "sibling" in item["command_hint"].lower() and "recon URLs" in item["command_hint"]
-    assert item["metadata"]["finding_id"] == "F-1"
-
-
-def test_candidate_sibling_action_rejects_off_target_endpoint(tmp_path):
-    assert _sibling_queue_item(
-        {
-            "structured_findings": {
-                "next_validation": {
-                    "id": "F-1",
-                    "url": "https://other.example/api/orders/123",
-                    "validation_status": "candidate",
-                    "source_file": "findings/target.com/F-1.json",
-                }
-            }
-        },
-        repo_root=tmp_path,
-        target="target.com",
-    ) == {}
-
-
-def test_coverage_gap_boilerplate_does_not_force_redline_first():
-    entry = _proposal_entry(
-        "Cover high-value matrix gap: /rest/products/search x XSS "
-        "(weight=3.0, relevance=5: reflection/DOM input surface). "
-        "Validation path: Capture the exact request or browser flow needed to reproduce the signal. "
-        "If concrete side-effect risk appears, mark blocked and use low-risk evidence instead.",
-        action_type="coverage-gap", priority=94,
-    )
-
-    action = _build_next_action_queue([entry], "target.com")[0]
-
-    assert action["type"] == "coverage-gap"
-    assert action["redline_required"] is False
-
-
-def test_checkpoint_surfaces_context_contradictions_without_queueing_them(tmp_path):
-    _seed_recon(tmp_path, "target.com", [
-        "https://api.target.com/graphql",
-    ])
-    target_dir = tmp_path / "memory" / "goals" / "targets"
-    target_dir.mkdir(parents=True)
-    (target_dir / "target.com.json").write_text(
-        json.dumps({
-            "target": "target.com",
-            "dead_ends": [
-                {"text": "GraphQL introspection disabled; no operation names in JS"}
-            ],
-        }),
-        encoding="utf-8",
-    )
-
-    checkpoint = build_checkpoint(tmp_path, target="target.com")
+    assert load_queue(tmp_path, store.target)["actions"] == []
+    assert not (tmp_path / "state" / store.key / "checkpoint_latest.json").exists()
+    assert store.binding() == before
+
+
+def test_checkpoint_preserves_conditional_learning_without_deciding_reopen(tmp_path, store):
+    endpoint = "https://target.com/graphql"
+    _seed_recon(tmp_path, store.target, [endpoint])
+    receipt = _record_observation(store, endpoint=endpoint, family="Authz", result="tested_clean")
+    store.remember(command_id="negative", kind="negative", statement="Introspection unavailable",
+                   conditions="anonymous session", reopen_when="new role or operation names",
+                   next_intent="", evidence=[{"operation_id": receipt["entity_id"], "step": 0}], actor="operator")
+    before = store.binding()
+    checkpoint = build_checkpoint(tmp_path, target=store.target)
     output = format_checkpoint(checkpoint)
-
-    assert any(
-        "Remembered dead end may have new evidence" in item
-        for item in checkpoint["context_pack"]["contradictions"]
-    )
-    assert not any(
-        "Review context contradiction" in item
-        for item in checkpoint["target_write_back"]["next"]
-    )
-    assert not any(item["type"] == "context-review" for item in checkpoint["next_action_queue"])
-    assert "Contradictions:" in output
+    assert 'conditions="anonymous session"' in output
+    assert 'reopen_when="new role or operation names"' in output
+    assert checkpoint["target_write_back"]["next"] == []
+    assert checkpoint["next_action_queue"] == []
+    assert store.binding() == before
 
 
-def test_untouched_observation_prevents_false_surface_exhaustion():
-    proposals = _dead_end_proposals(
-        {
-            "has_recon": True,
-            "surface": {
-                "stats": {
-                    "p1": 0,
-                    "p2": 0,
-                    "review_pool": 0,
-                    "observation_untouched": 1,
-                },
-                "workflow_leads": [],
-            },
-        },
-        coverage_gaps=[],
-    )
-
-    assert proposals == []
-
-
-def test_apply_target_memory_appends_checkpoint_entries(tmp_path):
-    checkpoint = build_checkpoint(tmp_path, target="target.com", note="end of authz pass")
-
-    result = apply_target_memory(tmp_path, "target.com", checkpoint)
-    memory_path = tmp_path / result["target_memory_path"]
-    payload = json.loads(memory_path.read_text(encoding="utf-8"))
-
-    assert result["added"]["next"] >= 1
-    assert result["added"]["handoff"] == 1
-    assert payload["target"] == "target.com"
-    assert payload["next_actions"]
-    assert payload["session_handoffs"]
-    assert (tmp_path / result["session_path"]).is_file()
-
-
-def test_apply_target_memory_is_deduped(tmp_path):
-    checkpoint = build_checkpoint(tmp_path, target="target.com")
-
-    first = apply_target_memory(tmp_path, "target.com", checkpoint)
-    second = apply_target_memory(tmp_path, "target.com", checkpoint)
-
-    assert first["added"]["next"] >= 1
-    assert second["added"]["next"] == 0
-    assert second["added"]["handoff"] == 0
-
-
-def test_apply_target_memory_preserves_concurrent_entries_and_handoffs(tmp_path):
-    target = "target.com"
-    context = multiprocessing.get_context("fork")
-    output = context.Queue()
-    workers = [
-        context.Process(
-            target=_apply_target_memory_worker,
-            args=(str(tmp_path), target, index, output),
-        )
-        for index in range(12)
-    ]
-    for process in workers:
-        process.start()
-    results = [output.get(timeout=15) for _ in workers]
-    for process in workers:
-        process.join(timeout=15)
-
-    memory_path = tmp_path / "memory" / "goals" / "targets" / target / "target.com.json"
-    if not memory_path.is_file():
-        memory_path = tmp_path / "memory" / "goals" / "targets" / "target.com.json"
-    payload = json.loads(memory_path.read_text(encoding="utf-8"))
-
-    assert all(process.exitcode == 0 for process in workers)
-    assert all(status == "ok" for status, _ in results)
-    assert {item["text"] for item in payload["next_actions"]} == {
-        f"next-{index}" for index in range(12)
-    }
-    assert {item["summary"] for item in payload["session_handoffs"]} == {
-        f"handoff-{index}" for index in range(12)
-    }
-    session_paths = [item["path"] for item in payload["session_handoffs"]]
-    assert len(session_paths) == len(set(session_paths))
-    assert all((tmp_path / path).is_file() for path in session_paths)
-
-
-def test_action_decisions_are_default_projection_ai_overridable_without_hard_gate():
-    """ACTION_DECISIONS 是默认投影而非门：无 hard_gate 时 AI 保留选择权。
-
-    checkpoint 的 decision 字段只决定摘要标签和 handoff 措辞；队列项本身
-    始终携带完整的 type/action/command_hint/metadata 供 AI 自主选择。
-    hard_gate 语义由 autopilot_state 投影（wait_recon/wait_scan 等）持有，
-    checkpoint 侧不存在第二套 gate。
-    """
-    from checkpoint import ACTION_DECISIONS, _decision_for_action
-
-    # 每个 action type 都有默认决策映射（handoff 兜底）
-    assert _decision_for_action("nonexistent-action-type") == "handoff"
-    assert _decision_for_action("validation") == "validate"
-    assert _decision_for_action("surface-review") == "hunt"
-
-    # decision 不改变队列项内容: 同一输入无论 decision 如何, 队列项可执行字段不变
-    queue = _build_next_action_queue(
-        ["Review surface candidate http://target.test/api/orders/1: authz checks."],
-        "target.test",
-    )
-    item = queue[0]
-    for field in ("type", "action", "command_hint", "priority", "stop_condition"):
-        assert field in item
-    # AI 覆盖通道: 队列项不带任何强制字段（redline_required 是显式投影不是推断）
-    assert item["redline_required"] is False
-
-
-def test_apply_target_memory_flag_defaults_on_with_no_escape():
-    """B2 (ai-capability-roadmap batch 5): --apply-target-memory 默认开启。
-
-    `--no-apply-target-memory` 是显式逃生口；旧 `--apply-target-memory`
-    BooleanOptionalAction 形态仍被接受且不改语义（默认即开启）。
-    """
+def test_apply_target_memory_flag_is_an_inactive_compatibility_option():
     parser = checkpoint_module.build_parser()
-    default_args = parser.parse_args(["--target", "target.com"])
-    assert default_args.apply_target_memory is True
-
-    off_args = parser.parse_args(["--target", "target.com", "--no-apply-target-memory"])
-    assert off_args.apply_target_memory is False
-
-    legacy_args = parser.parse_args(["--target", "target.com", "--apply-target-memory"])
-    assert legacy_args.apply_target_memory is True
+    assert parser.parse_args(["--target", "target.com"]).apply_target_memory is False
+    assert parser.parse_args(["--target", "target.com", "--no-apply-target-memory"]).apply_target_memory is False
+    assert parser.parse_args(["--target", "target.com", "--apply-target-memory"]).apply_target_memory is True
+    assert "never writes memory" in parser.format_help()
 
 
-def test_checkpoint_cli_applies_target_memory_by_default(tmp_path, capsys, monkeypatch):
-    """B2: 不传 flag 时 checkpoint CLI 默认写入目标记忆层。"""
-    state = {"target": "target.com", "resolved_target": "target.com"}
-    monkeypatch.setattr(
-        checkpoint_module, "build_autopilot_state", lambda *_a, **_k: state
-    )
-    monkeypatch.setattr(
-        checkpoint_module,
-        "load_closure_projection",
-        lambda *_a, **_k: {"verdict": "handoff", "reasons": ["next_action_pending"]},
-    )
-
+@pytest.mark.parametrize("flags", [[], ["--apply-target-memory"], ["--no-apply-target-memory"]])
+def test_checkpoint_cli_never_writes_target_memory(tmp_path, store, capsys, flags):
+    store.remember(command_id="note", kind="note", statement="Saved operator note",
+                   conditions="operator note; applicability unknown", reopen_when="", next_intent="", evidence=[], actor="operator")
+    before = store.binding()
     exit_code = checkpoint_module.main([
-        "--repo-root", str(tmp_path),
-        "--target", "target.com",
-        "--no-refresh-coverage",
-        "--json",
+        "--repo-root", str(tmp_path), "--target", store.target, "--json", *flags,
     ])
-
-    checkpoint = json.loads(capsys.readouterr().out)
-    memory_path = tmp_path / "memory" / "goals" / "targets" / "target.com.json"
     assert exit_code == 0
-    assert checkpoint["apply_status"] == "applied target memory"
-    assert memory_path.is_file()
-
-
-def test_checkpoint_cli_no_apply_target_memory_skips_write(tmp_path, capsys, monkeypatch):
-    """B2: 显式 `--no-apply-target-memory` 时不写目标记忆并回显可恢复指引。"""
-    state = {"target": "target.com", "resolved_target": "target.com"}
-    monkeypatch.setattr(
-        checkpoint_module, "build_autopilot_state", lambda *_a, **_k: state
-    )
-    monkeypatch.setattr(
-        checkpoint_module,
-        "load_closure_projection",
-        lambda *_a, **_k: {"verdict": "handoff", "reasons": ["next_action_pending"]},
-    )
-
-    exit_code = checkpoint_module.main([
-        "--repo-root", str(tmp_path),
-        "--target", "target.com",
-        "--no-refresh-coverage",
-        "--no-apply-target-memory",
-        "--json",
-    ])
-
     checkpoint = json.loads(capsys.readouterr().out)
-    memory_path = tmp_path / "memory" / "goals" / "targets" / "target.com.json"
-    assert exit_code == 0
-    assert checkpoint["apply_status"] == (
-        "not applied; rerun without --no-apply-target-memory to write target memory"
-    )
-    assert "apply_result" not in checkpoint
-    assert not memory_path.exists()
+    assert checkpoint["apply_status"].startswith("read-only Store view")
+    if flags == ["--apply-target-memory"]:
+        assert checkpoint["apply_result"]["status"] == "skipped"
+    assert store.binding() == before
+    assert not (tmp_path / "memory" / "goals" / "targets" / f"{store.key}.json").exists()
+    assert not (tmp_path / "state" / store.key / "checkpoint_latest.json").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -4841,7 +2084,7 @@ def _write_browser_manifest(repo_root: Path, evidence_ref: str, url: str = "http
     return path
 
 
-def test_browser_lane_completion_auto_imports_focused_manifest(tmp_path):
+def test_browser_lane_completion_auto_imports_focused_manifest(tmp_path, store):
     """B3: browser lane 完成且 evidence_ref 是 manifest 时自动落 browser evidence。"""
     target = "target.com"
     lane = "browser:target.com-session-1"
@@ -4864,13 +2107,14 @@ def test_browser_lane_completion_auto_imports_focused_manifest(tmp_path):
     assert result["status"] == "recorded"
     assert lane_record["browser_import"]["status"] == "ok"
     assert lane_record["browser_import"]["counts"]["successful"] == 1
+    assert store.page("actions")["total"] == 0
     # The importer wrote the durable browser surface + capture summary.
     assert (tmp_path / "recon" / "target.com" / "browser" / "xhr_endpoints.txt").is_file()
     assert (tmp_path / "recon" / "target.com" / "browser" / "context_discovery.json").is_file()
     assert (tmp_path / "recon" / "target.com" / "browser" / "context_discovery").is_dir()
 
 
-def test_browser_lane_manifest_import_failure_does_not_block_heartbeat(tmp_path, monkeypatch):
+def test_browser_lane_manifest_import_failure_does_not_block_heartbeat(tmp_path, monkeypatch, store):
     """B3: 导入失败只记 warning（browser_import.status=failed），不 raise。"""
     from tools import browser_mcp_import
 
@@ -4903,7 +2147,7 @@ def test_browser_lane_manifest_import_failure_does_not_block_heartbeat(tmp_path,
     assert "OSError" in lane_record["browser_import"]["reason"]
 
 
-def test_browser_lane_replay_does_not_reimport_manifest(tmp_path):
+def test_browser_lane_replay_does_not_reimport_manifest(tmp_path, store):
     """B3: `already_recorded` 幂等重放不重复导入（不新建 capture 目录）。"""
     target = "target.com"
     lane = "browser:target.com-session-3"
@@ -4930,7 +2174,7 @@ def test_browser_lane_replay_does_not_reimport_manifest(tmp_path):
     assert len(captures) == 1
 
 
-def test_non_browser_lane_and_non_manifest_evidence_do_not_trigger_import(tmp_path):
+def test_non_browser_lane_and_non_manifest_evidence_do_not_trigger_import(tmp_path, store):
     """B3: 非 browser lane 或非 manifest evidence 不触发导入（最小侵入面）。"""
     target = "target.com"
     begin_round(tmp_path, target, max_lanes=2)
@@ -4955,7 +2199,7 @@ def test_non_browser_lane_and_non_manifest_evidence_do_not_trigger_import(tmp_pa
     assert not (tmp_path / "recon" / "target.com" / "browser").exists()
 
 
-def test_importer_output_reused_as_lane_evidence_does_not_reimport(tmp_path):
+def test_importer_output_reused_as_lane_evidence_does_not_reimport(tmp_path, store):
     """B3: importer 自身产物（context_discovery.json）带 captures 列表，但不能作为
     manifest 触发再导入——否则重复 capture 目录和多余 context snapshot 会被创建。
     只有 evidence/<target_key>/browser/ 下的 pending-import manifest 形态 opt-in。
@@ -4994,81 +2238,6 @@ def test_importer_output_reused_as_lane_evidence_does_not_reimport(tmp_path):
     assert not (tmp_path / "recon" / "target.com" / "browser" / "context_discovery").exists()
 
 
-@pytest.mark.parametrize("path", [
-    "/rest/basket/NaN", "/rest/user/login", "/redirect?to=elsewhere",
-    "/api", "/orders", "/api/admin/export?order_id=42", "/plain/input",
-    "/urldom/jsonp?callback=foo", "/reflected/url/css_import?q=a",
-])
-def test_surface_review_preserves_facts_without_choosing_a_method(path):
-    url = "https://app.target.com" + path
-    shapes = [{"method": "POST", "body": {"parameter_names": ["value"]}}]
-    refs = ["evidence/target.com/capture.json"]
-    state = {
-        "has_recon": True,
-        "recommended_targets": [{"url": url}],
-        "surface": {"review_pool": [{"url": url, "request_shapes": shapes, "evidence_refs": refs}]},
-    }
-    proposals = _next_proposals(state, [], {"endpoints": []}, "target.com", {}, {}, case_state={"actors": 2, "sessions": 2, "objects": 1})
-    item = next(item for item in proposals if item["type"] == "surface-review")
-    metadata = item["metadata"]
-    assert metadata["url"] == url
-    assert metadata["request_shapes"] == shapes
-    assert metadata["evidence_refs"] == refs
-    assert not {"actor", "vuln_class", "replay_draft", "ledger_record_skeleton", "approach_hints"}.intersection(metadata)
-    assert "request-diff" not in _entry_text(item)
-    assert "--replayed" not in _entry_text(item)
-
-
-def test_target_memory_echo_not_written_back(tmp_path):
-    """断环回归（2026-09-15 污染治理）：surface 从 target memory 投影出的
-    workflow lead 不得再被 checkpoint 写回——那是记忆给自己喂回声。"""
-    import json
-    from checkpoint import build_checkpoint
-    from pathlib import Path
-
-    (tmp_path / "memory" / "goals" / "targets").mkdir(parents=True)
-    (tmp_path / "state").mkdir(parents=True)
-    T = "echo.test"
-    (tmp_path / "memory" / "goals" / "targets" / f"{T}.json").write_text(json.dumps({
-        "schema_version": 1, "target": T, "mode": "hunt", "phase": "unknown",
-        "active_goal": "", "current_hypothesis": "", "scope_notes": [],
-        "active_leads": [], "dead_ends": [], "next_actions": [],
-        "useful_patterns": [], "session_handoffs": [], "facts": {},
-        "selected_skills": [], "knowledge_focus": [],
-    }, ensure_ascii=False))
-
-    cp = build_checkpoint(tmp_path, target=T, refresh_coverage=False)
-    # 空 workflow_leads 时无写回候选（baseline）
-    assert cp["target_write_back"]["lead"] == []
-
-
-def test_apply_target_memory_rejects_polluted_text(tmp_path):
-    """写入防线回归：结构外壳必须当场 raise，文件字节不变。"""
-    import hashlib
-    import json
-    from checkpoint import apply_target_memory
-    from pathlib import Path
-
-    targets = tmp_path / "memory" / "goals" / "targets"
-    targets.mkdir(parents=True)
-    T = "guard.test"
-    p = targets / f"{T}.json"
-    p.write_text(json.dumps({
-        "schema_version": 1, "target": T, "mode": "hunt", "phase": "unknown",
-        "active_goal": "", "current_hypothesis": "", "scope_notes": [],
-        "active_leads": [], "dead_ends": [], "next_actions": [],
-        "useful_patterns": [], "session_handoffs": [], "facts": {},
-        "selected_skills": [], "knowledge_focus": [],
-    }, ensure_ascii=False))
-    before = hashlib.sha256(p.read_bytes()).hexdigest()
-    cp = {"target": T, "target_write_back": {
-        "lead": ["{'schema_version': 1, 'text': 'polluted echo'}"],
-        "next": [], "dead_end": []}}
-    with pytest.raises(ValueError, match="invalid for writeback"):
-        apply_target_memory(tmp_path, T, cp)
-    assert hashlib.sha256(p.read_bytes()).hexdigest() == before
-
-
 def test_target_memory_text_returns_empty_for_polluted():
     """读取端回归：污染文本返回空，干净文本原样保留。"""
     from surface import _target_memory_text
@@ -5079,30 +2248,65 @@ def test_target_memory_text_returns_empty_for_polluted():
     assert _target_memory_text({"text": ""}) == ""
 
 
-def test_checkpoint_roundtrip_is_idempotent(tmp_path):
-    """幂等性验收：连续 3 轮 build+apply，active_leads[].text 长度不增。"""
-    import json
-    from checkpoint import apply_target_memory, build_checkpoint
-    from pathlib import Path
-
-    targets = tmp_path / "memory" / "goals" / "targets"
-    targets.mkdir(parents=True)
-    (tmp_path / "state").mkdir(parents=True)
-    T = "idem.test"
-    p = targets / f"{T}.json"
-    p.write_text(json.dumps({
-        "schema_version": 1, "target": T, "mode": "hunt", "phase": "unknown",
-        "active_goal": "", "current_hypothesis": "", "scope_notes": [],
-        "active_leads": [{"ts": "2026-01-01T00:00:00Z", "text": "human lead"}],
-        "dead_ends": [], "next_actions": [], "useful_patterns": [],
-        "session_handoffs": [], "facts": {}, "selected_skills": [],
-        "knowledge_focus": [],
-    }, ensure_ascii=False))
-    lengths = []
+def test_checkpoint_roundtrip_does_not_feed_its_projection_back_to_memory(tmp_path, store):
+    store.remember(command_id="lead", kind="note", statement="human lead",
+                   conditions="operator note; applicability unknown", reopen_when="", next_intent="", evidence=[], actor="operator")
+    _seed_work(tmp_path)
+    before = store.binding()
     for _ in range(3):
-        cp = build_checkpoint(tmp_path, target=T, refresh_coverage=False)
-        apply_target_memory(tmp_path, T, cp)
-        leads = json.loads(p.read_text())["active_leads"]
-        lengths.append([len(str(it.get("text", ""))) for it in leads])
-    assert lengths[0] == lengths[1] == lengths[2], lengths
-    assert lengths[0] == [10], lengths  # human lead 原样保留，无外壳增长
+        checkpoint = build_checkpoint(tmp_path, target=store.target)
+        result = apply_target_memory(tmp_path, store.target, checkpoint)
+        assert result["status"] == "skipped"
+        assert [item["id"] for item in checkpoint["next_action_queue"]] == ["WORK-1"]
+        memory = checkpoint["context_pack"]["target_experiences"]
+        assert memory["total"] == 1
+        assert memory["items"][0]["text"] == "human lead"
+        assert store.binding() == before
+
+
+def test_checkpoint_keeps_discovery_material_visible_without_registering_work(tmp_path, store):
+    _seed_recon(tmp_path, store.target, ["https://api.target.com/profile"])
+    findings = tmp_path / "findings" / store.key
+    manual = findings / "manual_review"
+    manual.mkdir(parents=True)
+    (manual / "unsafe_skipped.txt").write_text(
+        "2026-09-24T00:00:00Z\tmethod=PUT\tlabel=method probe\turl=https://api.target.com/profile\treason=requires opt-in\n")
+    (manual / "open_200_api.txt").write_text("[OPEN-200-REVIEW] 200 1200 https://api.target.com/profile\n")
+    (findings / "manual-claim.json").write_text(json.dumps({
+        "title": "Manual claim", "endpoint": "/profile", "vuln_class": "Authz",
+        "severity": "medium", "poc": "Recorded claim; requires independent proof", "impact": "unknown",
+    }))
+    exposure = findings / "exposure"
+    exposure.mkdir()
+    (exposure / "repo_source_meta.json").write_text('{"status":"ok","source_kind":"local_path"}')
+    before = store.binding()
+    checkpoint = build_checkpoint(tmp_path, target=store.target)
+    sources = checkpoint["material_sources"]["sources"]
+    assert sources["root_claims"]["total"] == 1
+    assert sources["root_claims"]["items"][0]["source_file"].endswith("manual-claim.json")
+    categories = {item["category"] for item in sources["workflow_leads"]["items"]}
+    assert {"open-200-api-review", "action-gated"} <= categories
+    assert sources["repo_source"]["items"] == ["findings/target.com/exposure/repo_source_meta.json"]
+    text = format_checkpoint(checkpoint)
+    assert "manual-claim.json" in text
+    assert "open-200-api-review" in text
+    assert "repo_source_meta.json" in text
+    expanded = subprocess.run(shlex.split(checkpoint["material_sources"]["expand_command"]),
+                              capture_output=True, text=True, check=True)
+    assert len(json.loads(expanded.stdout)["root_finding_claims"]) == 1
+    assert checkpoint["next_action_queue"] == []
+    assert store.page("findings")["total"] == 0
+    assert store.binding() == before
+
+
+def test_checkpoint_rechecks_raw_bytes_between_calls_without_revision_change(tmp_path, store):
+    _seed_recon(tmp_path, store.target, ["https://target.com/object"])
+    receipt = _record_observation(store, endpoint="https://target.com/object", family="Authz", result="tested_clean")
+    before = store.binding()
+    first = build_checkpoint(tmp_path, target=store.target)
+    assert first["coverage"]["summary"]["tested_clean"] > 0
+    observation = store.execution(receipt["entity_id"])["observations"][0]
+    (tmp_path / observation["artifacts"][0]["ref"]).write_text("changed response")
+    second = build_checkpoint(tmp_path, target=store.target)
+    assert second["coverage"]["summary"]["tested_clean"] == 0
+    assert store.binding() == before

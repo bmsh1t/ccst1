@@ -38,61 +38,54 @@ from urllib.parse import urlsplit
 import fcntl
 
 try:
-    from tools.finding_index import (
-        load_finding_index,
-        verify_finalized_finding_owner_provenance,
-    )
     from tools.browser_mcp_import import (
         BROWSER_FRESHNESS_SECONDS,
         inspect_mcp_browser_readiness,
     )
     from tools.recon_adapter import ReconAdapter
     from tools.recon_gate import gate_from_record
-    from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
-    from tools.target_store import TargetStore, target_backend, target_switch_lock
+    from tools.scope_source import load_scope_context
+    from tools.target_paths import canonical_target_value, open_target_lock_file, target_storage_key, url_belongs_to_target
+    from tools.target_store import runtime_store, target_switch_lock
 except ImportError:  # pragma: no cover - direct tools/ execution
     from browser_mcp_import import BROWSER_FRESHNESS_SECONDS, inspect_mcp_browser_readiness
-    from finding_index import load_finding_index, verify_finalized_finding_owner_provenance
     from recon_adapter import ReconAdapter
     from recon_gate import gate_from_record  # type: ignore
-    from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
-    from target_store import TargetStore, target_backend, target_switch_lock  # type: ignore
+    from scope_source import load_scope_context  # type: ignore
+    from target_paths import canonical_target_value, open_target_lock_file, target_storage_key, url_belongs_to_target
+    from target_store import runtime_store, target_switch_lock  # type: ignore
 
 SCHEMA_VERSION = 2
 RUNNING_MARKER_STALE_SECONDS = 7200
 RUNTIME_PHASES = frozenset({"recon", "scan"})
 
 
-def _primary_finding_rows(repo_root: Path, target: str) -> list[dict] | None:
-    """Return Store-owned findings, or None for an uncut legacy target."""
-    if target_backend(repo_root, target) != "primary":
-        return None
-    store = TargetStore(repo_root, target)
-    rows: list[dict] = []
-    page = store.finding_page(limit=1000)
+def _project_finding_rows(items: list[dict]) -> list[dict]:
+    rows = []
+    for item in items:
+        assessment = item.get("assessment") or {}
+        verdict = str(assessment.get("verdict") or "").strip().lower()
+        rows.append({
+            "id": item["id"], "url": item["endpoint"], "endpoint": item["endpoint"],
+            "type": item["family"], "category": item["family"], "vuln_class": item["family"],
+            "title": item["title"], "summary": item["claim"],
+            "validation_status": {"confirmed": "validated", "refuted": "rejected"}.get(verdict, "unvalidated"),
+            "report_status": "generated" if item["report_recorded"] else "not_generated",
+            "assessment": assessment,
+        })
+    return rows
+
+
+def _primary_finding_rows(repo_root: Path, target: str) -> list[dict]:
+    """Read all recorded Finding postures, not evidence or delivery authority."""
+    store = runtime_store(repo_root, target)
+    rows = []
+    page = store.finding_state_page(limit=1000)
     while True:
-        for item in page.get("items", []):
-            assessment = item.get("assessment") or {}
-            verdict = str(assessment.get("verdict") or "").strip().lower()
-            rows.append({
-                "id": item["id"],
-                "url": item["endpoint"],
-                "endpoint": item["endpoint"],
-                "type": item["family"],
-                "category": item["family"],
-                "vuln_class": item["family"],
-                "title": item["title"],
-                "summary": item["claim"],
-                "validation_status": {
-                    "confirmed": "validated",
-                    "refuted": "rejected",
-                }.get(verdict, "unvalidated"),
-                "report_status": "generated" if item.get("reports") else "not_generated",
-                "assessment": assessment,
-            })
-        if not page.get("has_more"):
+        rows.extend(_project_finding_rows(page["items"]))
+        if not page["has_more"]:
             return rows
-        page = store.finding_page(limit=1000, cursor=page.get("next_cursor"))
+        page = store.finding_state_page(limit=1000, cursor=page["next_cursor"])
 
 # Whitelist of fields that actually get persisted to session.json.
 # Anything else passed to update_runtime_state() is silently dropped.
@@ -252,10 +245,8 @@ def runtime_phase_lock(
         raise ValueError(f"unsupported runtime phase: {phase}")
 
     resolved_target = canonical_target_value(target)
-    lock_dir = _state_dir(repo_root, resolved_target) / "locks"
-    lock_dir.mkdir(parents=True, exist_ok=True)
-    lock_path = lock_dir / f"{normalized_phase}.lock"
-    handle = lock_path.open("a+", encoding="utf-8")
+    lock_path = _state_dir(repo_root, resolved_target) / "locks" / f"{normalized_phase}.lock"
+    handle = open_target_lock_file(repo_root, resolved_target, lock_path.name)
     try:
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -307,14 +298,10 @@ def _runtime_phase_lock_status(
         raise ValueError(f"unsupported runtime phase: {phase}")
 
     resolved_target = canonical_target_value(target)
-    lock_path = _state_dir(repo_root, resolved_target) / "locks" / f"{normalized_phase}.lock"
-    if not lock_path.is_file():
-        return False
-
     try:
-        # 只读打开避免 status 查询创建残留 lock 文件。真正的执行方在获取锁前
-        # 已经创建该文件；若它在 is_file() 与 open() 之间退出，视为未活跃即可。
-        with lock_path.open("r", encoding="utf-8") as handle:
+        with open_target_lock_file(
+            repo_root, resolved_target, f"{normalized_phase}.lock", create=False,
+        ) as handle:
             try:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
@@ -342,10 +329,8 @@ def state_path(repo_root: str | Path, target: str) -> Path:
 @contextmanager
 def runtime_state_mutation_lock(repo_root: str | Path, target: str):
     """Serialize one target's runtime-state read/modify/write sequence."""
-    lock_path = _state_dir(repo_root, target) / "locks" / "session.lock"
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
     with target_switch_lock(repo_root, target):
-        with lock_path.open("a+", encoding="utf-8") as handle:
+        with open_target_lock_file(repo_root, target, "session.lock") as handle:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
             try:
                 yield
@@ -506,38 +491,22 @@ def _line_count(path: Path) -> int:
 
 def _derive_queue_state(repo_root: Path, target: str) -> dict:
     """Read only the durable queue projection needed for runtime status."""
-    if target_backend(repo_root, target) == "primary":
-        store = TargetStore(repo_root, target)
-        page = store.page("actions", limit=1000)
-        rows = list(page.get("items") or [])
-        while page.get("has_more"):
-            page = store.page("actions", limit=1000, cursor=page.get("next_cursor"))
-            rows.extend(page.get("items") or [])
-        active_statuses = {"ready", "claimed"}
-        final_statuses = {"blocked", "completed", "cancelled"}
-        return {
-            "status": "valid",
-            "active": sum(1 for item in rows if item.get("status") in active_statuses),
-            "final": sum(1 for item in rows if item.get("status") in final_statuses),
-            "total": len(rows),
-            "backend": "primary",
-            "revision": page.get("revision", 0),
-        }
-    path = _state_dir(repo_root, target) / "action_queue.json"
-    if not path.is_file():
-        return {"status": "missing", "active": 0, "final": 0, "total": 0}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        return {"status": "invalid", "active": 0, "final": 0, "total": 0, "error": str(exc)[:300]}
-    actions = payload.get("actions") if isinstance(payload, dict) else None
-    if not isinstance(actions, list):
-        return {"status": "invalid", "active": 0, "final": 0, "total": 0, "error": "actions must be a list"}
-    active_statuses = {"queued", "running", "lead", "signal", "candidate"}
-    final_statuses = {"tested", "dead-end", "blocked", "validated", "reported", "n/a"}
-    active = sum(1 for item in actions if isinstance(item, dict) and str(item.get("status") or "queued") in active_statuses)
-    final = sum(1 for item in actions if isinstance(item, dict) and str(item.get("status") or "") in final_statuses)
-    return {"status": "valid", "active": active, "final": final, "total": len(actions)}
+    store = runtime_store(repo_root, target)
+    page = store.page("actions", limit=1000)
+    rows = list(page.get("items") or [])
+    while page.get("has_more"):
+        page = store.page("actions", limit=1000, cursor=page.get("next_cursor"))
+        rows.extend(page.get("items") or [])
+    active_statuses = {"ready", "claimed", "blocked"}
+    final_statuses = {"completed", "cancelled"}
+    return {
+        "status": "valid",
+        "active": sum(1 for item in rows if item.get("status") in active_statuses),
+        "final": sum(1 for item in rows if item.get("status") in final_statuses),
+        "total": len(rows),
+        "backend": "primary",
+        "revision": page.get("revision", 0),
+    }
 
 
 def _derive_current_status(
@@ -630,7 +599,7 @@ def _inspect_exposure_counts(recon_dir: Path) -> tuple[dict[str, int], dict[str,
     return counts, paths
 
 
-def _asset_relation_state(recon_dir: Path, target: str) -> dict:
+def _asset_relation_state(repo_root: Path, recon_dir: Path, target: str) -> dict:
     relative = Path("exposure/asset_relation_summary.json")
     path = recon_dir / relative
     base = {
@@ -653,6 +622,9 @@ def _asset_relation_state(recon_dir: Path, target: str) -> dict:
             raise ValueError("unexpected summary schema")
         if canonical_target_value(str(payload.get("target") or "")) != canonical_target_value(target):
             raise ValueError("target mismatch")
+        binding = payload.get("source_binding")
+        if not isinstance(binding, dict) or binding.get("scope_hash") != load_scope_context(repo_root, target).scope_hash:
+            raise ValueError("asset relation Scope changed; rebuild candidates")
         if "candidate_bytes" in payload:
             candidate_path = recon_dir / "exposure" / "asset_relation_candidates.jsonl"
             if int(payload["candidate_bytes"]) != candidate_path.stat().st_size:
@@ -752,7 +724,11 @@ def _cidr_continuation_state(recon_dir: Path, target: str) -> dict:
 
 
 def inspect_recon_artifacts(repo_root: str | Path, target: str) -> dict:
-    """Summarize whether cached recon artifacts are usable for resume/surface."""
+    """Inspect raw Recon materials independently of domain initialization.
+
+    Finding facts belong to derive_state_view/derive_owner_projection, not
+    to the raw-material readiness check used before target initialization.
+    """
     repo_root = Path(repo_root)
     storage_key = target_storage_key(target)
     recon_dir = repo_root / "recon" / storage_key
@@ -800,7 +776,7 @@ def inspect_recon_artifacts(repo_root: str | Path, target: str) -> dict:
         "source_intel": 1 if _source_intel_present(findings_dir) else 0,
     }
     exposure_counts, exposure_paths = _inspect_exposure_counts(recon_dir)
-    asset_relations = _asset_relation_state(recon_dir, target)
+    asset_relations = _asset_relation_state(repo_root, recon_dir, target)
     infra_counts, infra_paths = _inspect_named_counts(
         recon_dir,
         INFRA_COUNT_PATHS,
@@ -808,19 +784,6 @@ def inspect_recon_artifacts(repo_root: str | Path, target: str) -> dict:
     )
     counts.update(exposure_counts)
     counts.update(infra_counts)
-    primary_findings = _primary_finding_rows(repo_root, target)
-    findings_payload = (
-        {"findings": primary_findings}
-        if primary_findings is not None
-        else load_finding_index(findings_dir, target=target, allow_legacy=True)
-    )
-    counts["structured_findings"] = len(
-        [
-            item
-            for item in findings_payload.get("findings", [])
-            if isinstance(item, dict) and item.get("url")
-        ]
-    )
 
     host_inventory_ready = counts["hosts"] > 0
     surface_inputs_ready = any(
@@ -834,7 +797,6 @@ def inspect_recon_artifacts(repo_root: str | Path, target: str) -> dict:
             "browser_xhr_urls",
             "browser_api_urls",
             "ffuf_observations",
-            "structured_findings",
             "source_intel",
         )
     )
@@ -866,7 +828,7 @@ def inspect_recon_artifacts(repo_root: str | Path, target: str) -> dict:
     elif asset_relations.get("partial"):
         warnings.append("asset relation projection is partial; inspect its summary diagnostics")
     if host_inventory_ready and not surface_inputs_ready and not warnings:
-        warnings.append("no URL, JS, browser, or structured finding surface artifacts found yet")
+        warnings.append("no URL, JS, browser, or source-intel surface artifacts found yet")
 
     return {
         "available": True,
@@ -1133,13 +1095,11 @@ def inspect_recon_artifacts_fast(repo_root: str | Path, target: str) -> dict:
             Path("dirs/ffuf-results-summary.json"),
         )
     )
-    findings_ready = _artifact_has_bytes(findings_dir / "findings.json")
     source_intel_ready = _source_intel_present(findings_dir)
     counts.update(
         {
             "ffuf_observations": None if ffuf_ready else 0,
             "ffuf_legacy_raw_files": 0,
-            "structured_findings": None if findings_ready else 0,
             "source_intel": None if source_intel_ready else 0,
         }
     )
@@ -1172,12 +1132,12 @@ def inspect_recon_artifacts_fast(repo_root: str | Path, target: str) -> dict:
             "browser_xhr_urls",
             "browser_api_urls",
         )
-    ) or ffuf_ready or findings_ready or source_intel_ready
+    ) or ffuf_ready or source_intel_ready
     http_probe = _http_probe_state(recon_dir)
     phase_gates = _phase_gate_state(recon_dir)
     run_budget = _run_budget_state(recon_dir)
     cidr_continuation = _cidr_continuation_state(recon_dir, target)
-    asset_relations = _asset_relation_state(recon_dir, target)
+    asset_relations = _asset_relation_state(repo, recon_dir, target)
     ready = host_inventory_ready or surface_inputs_ready
     missing = (
         []
@@ -1200,7 +1160,7 @@ def inspect_recon_artifacts_fast(repo_root: str | Path, target: str) -> dict:
     elif asset_relations.get("partial"):
         warnings.append("asset relation projection is partial; inspect its summary diagnostics")
     if host_inventory_ready and not surface_inputs_ready:
-        warnings.append("no URL, JS, browser, or structured finding surface artifacts found yet")
+        warnings.append("no URL, JS, browser, or source-intel surface artifacts found yet")
 
     return {
         "available": True,
@@ -1286,55 +1246,14 @@ def derive_state_view(repo_root: str | Path, target: str) -> dict:
     persisted = load_runtime_state(repo_root_p, target)
     recon = inspect_recon_artifacts(repo_root_p, target)
 
+    counts = runtime_store(repo_root_p, target).finding_summary()["counts"]
     findings = {
-        "structured_total": 0,
-        "pending_validation": 0,
+        "structured_total": counts["total"],
+        "pending_validation": counts["pending_validation"],
         "owner_revalidation_pending": 0,
-        "validated_pending_report": 0,
-        "reports_generated": 0,
+        "validated_pending_report": counts["validated_pending_report"],
+        "reports_generated": counts["reported"],
     }
-    primary_findings = _primary_finding_rows(repo_root_p, target)
-    if primary_findings is not None:
-        findings_payload = {"findings": primary_findings}
-    else:
-        try:
-            findings_payload = load_finding_index(
-                findings_dir,
-                target=target,
-                allow_legacy=True,
-            )
-        except Exception:  # noqa: BLE001 — derivation must never crash callers
-            findings_payload = {}
-    items = [
-        item for item in findings_payload.get("findings", [])
-        if isinstance(item, dict) and item.get("id")
-    ]
-    findings["structured_total"] = len(items)
-    # Use the same field semantics as tools/structured_findings.py so derived
-    # counts are consistent with what /pickup / autopilot_state report.
-    for item in items:
-        val_status = str(item.get("validation_status", "unvalidated") or "unvalidated").lower()
-        if val_status == "needs_owner_revalidation":
-            findings["owner_revalidation_pending"] += 1
-            continue
-        # Store rows have their own transactional identity and do not carry
-        # the legacy findings.json mutation-event provenance contract.
-        if primary_findings is None:
-            provenance = verify_finalized_finding_owner_provenance(
-                findings_dir,
-                item,
-                target=target,
-            )
-            if provenance.get("required") and not provenance.get("valid"):
-                findings["owner_revalidation_pending"] += 1
-                continue
-        report_status = str(item.get("report_status", "not_generated") or "not_generated").lower()
-        if val_status in {"unvalidated", "candidate", "partial", "needs_validation"}:
-            findings["pending_validation"] += 1
-        elif val_status == "validated" and report_status != "generated":
-            findings["validated_pending_report"] += 1
-        if report_status == "generated":
-            findings["reports_generated"] += 1
 
     browser_evidence = inspect_browser_evidence(repo_root_p, target)
     evidence = {
@@ -1369,7 +1288,12 @@ def _owner_projection_endpoint(value: object) -> str:
     return raw if raw.startswith("/") else f"/{raw.lstrip('/')}"
 
 
-def derive_owner_projection(repo_root: str | Path, target: str) -> dict:
+def derive_owner_projection(repo_root: str | Path, target: str, *, finding_limit: int | None = None) -> dict:
+    return _derive_owner_projection(repo_root, target, finding_limit=finding_limit)
+
+
+def _derive_owner_projection(repo_root: str | Path, target: str, *, finding_limit: int | None = None,
+                             coverage_state: dict | None = None) -> dict:
     """Project current endpoint/finding facts from their canonical owners.
 
     This read-only view is intentionally separate from ``derive_state_view``:
@@ -1379,26 +1303,15 @@ def derive_owner_projection(repo_root: str | Path, target: str) -> dict:
     repo = Path(repo_root)
     resolved_target = canonical_target_value(target)
     storage_key = target_storage_key(resolved_target)
-    findings_dir = repo / "findings" / storage_key
-    findings_path = findings_dir / "findings.json"
-    ledger_path = repo / "memory" / "evidence" / storage_key / "ledger.jsonl"
-    matrix_path = repo / "evidence" / storage_key / "coverage_matrix.json"
+    store = runtime_store(repo, resolved_target)
+    binding = store.binding()
 
     findings: list[dict] = []
-    primary_findings = _primary_finding_rows(repo, resolved_target)
-    findings_authoritative = primary_findings is not None or findings_path.is_file()
-    if primary_findings is not None:
-        payload = {"findings": primary_findings}
-    else:
-        try:
-            payload = load_finding_index(
-                findings_dir,
-                migrate_legacy=False,
-                target=resolved_target,
-                allow_legacy=True,
-            )
-        except (OSError, ValueError):
-            payload = {}
+    finding_summary = (store.finding_summary(limit=finding_limit)
+                       if finding_limit is not None else None)
+    primary_findings = (_project_finding_rows(finding_summary["items"]) if finding_summary is not None
+                        else _primary_finding_rows(repo, resolved_target))
+    payload = {"findings": primary_findings}
     for item in payload.get("findings", []) if isinstance(payload, dict) else []:
         if not isinstance(item, dict):
             continue
@@ -1411,67 +1324,55 @@ def derive_owner_projection(repo_root: str | Path, target: str) -> dict:
         )
         projected["endpoint"] = _owner_projection_endpoint(url)
         findings.append(projected)
-    if findings:
-        findings_authoritative = True
 
     tested_endpoints: set[str] = set()
     endpoint_status: dict[str, set[str]] = {}
-    ledger_authoritative = ledger_path.is_file() and primary_findings is None
     # Actor/lane history is advisory for Surface ranking.  A ledger
     # ``tested_clean`` row must not hide the endpoint from another family.
 
-    matrix_authoritative = matrix_path.is_file()
-    if matrix_authoritative:
-        try:
-            from tools.coverage_matrix import load_matrix
-        except ImportError:  # pragma: no cover - direct tools/ execution
-            from coverage_matrix import load_matrix  # type: ignore
-        try:
-            matrix = load_matrix(resolved_target, repo_root=repo)
-        except (OSError, ValueError):
-            matrix = {}
-        for item in matrix.get("endpoints", []) if isinstance(matrix, dict) else []:
-            if not isinstance(item, dict):
-                continue
-            endpoint = _owner_projection_endpoint(item.get("endpoint"))
-            if not endpoint:
-                continue
-            statuses = {
-                str(cell.get("status") or "untested")
-                for cell in (item.get("cells") or {}).values()
-                if isinstance(cell, dict)
-            }
-            endpoint_status[endpoint] = statuses
-            if any(status != "untested" for status in statuses):
-                tested_endpoints.add(endpoint)
-
-    for item in findings:
-        endpoint = _owner_projection_endpoint(item.get("endpoint") or item.get("url"))
-        if endpoint:
+    try:
+        from tools.coverage_matrix import read_matrix
+    except ImportError:  # pragma: no cover - direct tools/ execution
+        from coverage_matrix import read_matrix  # type: ignore
+    matrix = coverage_state if coverage_state is not None else read_matrix(resolved_target, repo_root=repo, current_only=True)
+    if (matrix.get("source_snapshot") or {}).get("store") != binding:
+        raise ValueError("primary owner projection inputs changed during assembly")
+    for item in matrix.get("endpoints", []) if isinstance(matrix, dict) else []:
+        if not isinstance(item, dict):
+            continue
+        endpoint = _owner_projection_endpoint(item.get("endpoint"))
+        if not endpoint:
+            continue
+        statuses = {
+            str(cell.get("status") or "untested")
+            for cell in (item.get("cells") or {}).values()
+            if isinstance(cell, dict)
+        }
+        endpoint_status[endpoint] = statuses
+        if any(status != "untested" for status in statuses):
             tested_endpoints.add(endpoint)
 
-    canonical_available = findings_authoritative or ledger_authoritative or matrix_authoritative
     untested_endpoints = sorted(
         endpoint
         for endpoint, statuses in endpoint_status.items()
         if statuses and all(status == "untested" for status in statuses)
     )
+    if store.binding() != binding:
+        raise ValueError("primary owner projection inputs changed during assembly")
     return {
+        **({"finding_summary": finding_summary} if finding_summary is not None else {}),
         "target": resolved_target,
-        "available": canonical_available,
-        "findings_authoritative": findings_authoritative,
-        "tested_authoritative": bool(tested_endpoints) or matrix_authoritative,
-        "untested_authoritative": matrix_authoritative,
+        "backend": "primary",
+        "available": True,
+        "findings_authoritative": True,
+        "tested_authoritative": True,
+        "untested_authoritative": True,
         "findings": findings,
         "tested_endpoints": sorted(tested_endpoints),
         "untested_endpoints": untested_endpoints,
         "sources": {
-            "findings": (
-                str(repo / "state" / storage_key / "metadata.sqlite3")
-                if primary_findings is not None
-                else str(findings_path) if findings_authoritative else ""
-            ),
-            "ledger": str(ledger_path) if ledger_authoritative else "",
-            "coverage": str(matrix_path) if matrix_authoritative else "",
+            "findings": str(repo / "state" / storage_key / "metadata.sqlite3"),
+            "ledger": "",
+            "coverage": str(repo / "state" / storage_key / "metadata.sqlite3"),
         },
     }

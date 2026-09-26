@@ -2,8 +2,8 @@
 
 ## 当前事实与已批准迁移
 
-当前 runtime 仍使用下述 JSON/JSONL owner；`tools/target_store.py` 已实现隔离目标副本的
-事务领域基础，但没有接管旧 runtime、没有迁移真实目标。目标架构由
+下述 JSON/JSONL owner 是未切换目标的兼容协议；primary 使用 `tools/target_store.py`。
+任务记录 `127.0.0.1:3001` 已于 2026-09-22 切换，其他消费者与新目标入口仍在收口。目标架构由
 `docs/architecture-contract.md` 唯一说明，具体 API 见 `contracts/transactional-target-state.md`。
 
 已批准每目标 SQLite 元数据 + 外置原始证据，使用标准库 sqlite3，不增加数据库服务或 ORM。
@@ -481,6 +481,9 @@ classification = "valid_session" if success_signal else "ambiguous_candidate"
 - `page_inventory(repo_root, target, *, status="", kind="", source="", limit=50, cursor="")`
 - `page_surface_index(repo_root, target, *, limit=50, cursor="", shape_id="", source="", target_owned=None)`
 - `build_surface_input_manifest(repo_root, target, *, memory_dir=None)`
+- `surface.py --repo-root ROOT --target TARGET [--json]`
+- `coverage_matrix.py find-gaps --repo-root ROOT --target TARGET [--limit N]`
+- `coverage_matrix.py needs-triage --repo-root ROOT --target TARGET [--limit N | --all]`
 
 ### 3. 契约
 
@@ -491,6 +494,17 @@ classification = "valid_session" if success_signal else "ambiguous_candidate"
 - Surface input/index binding 同样记录文件身份字段。即使替换后的文件 size 相同并恢复 mtime，只要
   inode/ctime 变化，manifest/projection 必须成为 `stale`，不能消费旧候选。
 - 过滤分页只有在后方存在下一条**匹配**记录时才返回 `next_cursor`；byte EOF 前的非匹配行不构成下一页。
+- Surface review pool 不是 index 首页。`surface_index.continuation.command` 从首页查询全部
+  indexed URLs（含 external context），声明 `starts_at=first-page`、`scope=all-indexed-urls`；
+  command 绑定 shell-quoted 绝对 repo root。文本与缓存保留完整命令，不截断 cursor/路径。
+- Primary Surface index 的 Finding URL 来自 Store，输入 manifest 绑定 Store identity/revision，
+  不读或 stat 退休 findings.json；Store 修订使 index stale。Coverage 在无有效 index 时复用
+  `recon_source_iterators` 读取同一组 raw/API/browser/JS 来源，查询不发布索引。
+- Primary `find-gaps`/`needs-triage` 使用 `read_matrix(..., current_only=True)`；旧矩阵损坏不能
+  影响当前查询。bounded CLI 返回 total/returned/remaining/truncated/order/expand_command；
+  未限量 find-gaps 保持完整 list 返回，triage `--all` 返回全部 items。展开是新查询。
+- Coverage 按 `(endpoint, vuln_class)` 排序、triage 按 endpoint 排序；route kind、参数有无、
+  source count 和类别枚举位置不是展示优先级。Checkpoint 保留前 10 条、准确余量及完整查询。
 
 ### 4. 校验与错误矩阵
 
@@ -500,6 +514,9 @@ classification = "valid_session" if success_signal else "ambiguous_candidate"
 | sidecar/body binding 或 projection manifest 不匹配 | 返回 `stale/needs_sync`，不把旧数据投影为零或 clean |
 | legacy body 没有 `page_order` | 兼容完整读取，不写入目标状态 |
 | filtered final page 后只有非匹配行 | `next_cursor == ""` |
+| review pool 未显示 index 首页的部分行 | 完整展开从首页开始；不能跳到第 51 行 |
+| Primary 旧 Finding/矩阵文件冲突或损坏 | 当前 Store/Recon 结果不变，旧文件字节保留 |
+| Store 或实际 Recon 来源改变 | index stale 或 Coverage fingerprint 改变；旧页拒绝继续 |
 
 ### 5. Good / Base / Bad
 
@@ -512,6 +529,8 @@ classification = "valid_session" if success_signal else "ambiguous_candidate"
 - 原子同尺寸替换并恢复 mtime 后，summary/projection 必须 stale。
 - 流式 cursor 遍历所有匹配 ID 一次且不调用完整 snapshot loader；legacy 分支不写文件。
 - source/shape 过滤后的最后一条匹配记录不返回空 cursor。
+- `tests/test_surface_primary_owner.py`：真实 CLI 的小窗口/跨页、外部 context、含空格根、
+  Coverage 全量展开与 Checkpoint 命令、损坏退休文件隔离、Store/Recon 变化失效和零领域写入。
 
 ### 7. 错误与正确做法
 

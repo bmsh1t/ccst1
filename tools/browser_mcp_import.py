@@ -773,56 +773,6 @@ def _load_focused_manifest(path: str | Path) -> dict[str, Any]:
     return payload
 
 
-def _enqueue_focused_action(
-    repo_root: Path,
-    target: str,
-    artifact_path: Path,
-    actionable: list[dict[str, Any]],
-) -> dict[str, Any]:
-    try:
-        from tools.action_queue import add_manual_action
-    except ImportError:  # pragma: no cover - direct tools/ execution
-        from action_queue import add_manual_action  # type: ignore
-
-    generation = hashlib.sha256(
-        json.dumps(
-            [
-                {
-                    "url": item.get("url", ""),
-                    "snapshot_sha256": item.get("snapshot_sha256", ""),
-                    "new_surface": item.get("new_surface", {}),
-                }
-                for item in actionable
-            ],
-            ensure_ascii=False,
-            sort_keys=True,
-        ).encode("utf-8")
-    ).hexdigest()
-    result = add_manual_action(
-        repo_root,
-        target=target,
-        action_type="browser-context-discovery",
-        evidence=(
-            f"{len(actionable)} MCP browser capture(s) exposed high-value, "
-            f"target-owned surface; review {artifact_path}."
-        ),
-        next_question=(
-            "Which newly observed route or parameter warrants the smallest independent replay?"
-        ),
-        action="Review the browser context delta, then replay one evidence-backed endpoint.",
-        priority=78,
-        evidence_type="browser-context-discovery",
-        source="browser-context-discovery",
-        source_id="browser-context-discovery",
-        generation=generation,
-        safety="non_destructive",
-        stop_condition=(
-            "record tested, dead-end, blocked, lead, signal, candidate, or validated before another lane"
-        ),
-    )
-    return {"path": result["path"], "stats": result["stats"]}
-
-
 def import_focused_mcp_manifest(
     *,
     target: str,
@@ -831,9 +781,13 @@ def import_focused_mcp_manifest(
     evidence_root: str | Path = DEFAULT_EVIDENCE_ROOT,
     recon_root: str | Path = DEFAULT_RECON_ROOT,
     repo_root: str | Path = BASE_DIR,
-    enqueue: bool = True,
+    enqueue: bool = False,
 ) -> dict[str, Any]:
-    """批量导入 MCP 已落盘的少量同目标证据，并只入队高价值新差分。"""
+    """导入 MCP 已落盘的同目标证据，发布有界差分供 AI 选择。"""
+    if enqueue:
+        from tools.action_queue import add_material_review
+        from tools.target_store import runtime_store
+        runtime_store(repo_root, target)
     if max_urls < 1:
         raise ValueError("max_urls must be at least 1")
     manifest = _load_focused_manifest(manifest_path)
@@ -991,9 +945,12 @@ def import_focused_mcp_manifest(
     _write_json(output_path, result)
     _write_json(latest_path, result)
     if enqueue and actionable:
-        result["queue"] = _enqueue_focused_action(
-            Path(repo_root), target, output_path, actionable
+        registered = add_material_review(
+            repo_root, target=target, source="browser-context-discovery",
+            source_id="browser-context-discovery", action_type="browser-context-discovery",
+            summary_path=output_path, material={"captures": actionable},
         )
+        result["queue"] = {"receipt": registered["receipt"], "action_id": registered["action"]["id"]}
         _write_json(output_path, result)
         _write_json(latest_path, result)
     return result
@@ -1016,12 +973,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--har", default="", help="Optional HAR artifact kept private; also used as network input when needed")
     parser.add_argument("--focused-manifest", default="", help="Import a bounded file-backed MCP capture manifest")
     parser.add_argument("--max-urls", type=int, default=DEFAULT_FOCUSED_LIMIT, help="Focused manifest URL budget")
-    parser.add_argument("--no-enqueue", action="store_true", help="Do not add newly observed deltas to Action Queue")
+    parser.add_argument("--enqueue", action=argparse.BooleanOptionalAction, default=False,
+                        help="Explicitly register review work for new browser material in the active Store")
     parser.add_argument("--label", default="mcp", help="Capture label suffix")
     parser.add_argument("--source", default="mcp", help="Source label, e.g. chrome-devtools-mcp or playwright-mcp")
     parser.add_argument("--evidence-root", default=str(DEFAULT_EVIDENCE_ROOT), help="Evidence root directory")
     parser.add_argument("--recon-root", default=str(DEFAULT_RECON_ROOT), help="Recon root directory")
-    parser.add_argument("--repo-root", default=str(BASE_DIR), help="Repository root used by the existing Action Queue owner")
+    parser.add_argument("--repo-root", default=str(BASE_DIR), help="Repository data root")
     return parser
 
 
@@ -1036,7 +994,7 @@ def main(argv: list[str] | None = None) -> int:
             evidence_root=args.evidence_root,
             recon_root=args.recon_root,
             repo_root=args.repo_root,
-            enqueue=not args.no_enqueue,
+            enqueue=args.enqueue,
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0

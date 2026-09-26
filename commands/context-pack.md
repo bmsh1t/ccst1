@@ -44,17 +44,17 @@ python3 tools/context_pack.py --target <target>
 
 工具会：
 
-1. 读取目标层：`memory/goals/active.json` 和 `memory/goals/targets/<target>.json`。
-2. 只读调用 surface review pack，提取 AI Review Pool、advisory score hints、Workflow Leads 和 target memory 线索。
+1. `memory/goals/active.json` 仅用于选择目标；意图、笔记和条件化经验读取当前 Store。
+2. 只读调用 Surface review pack，提取中性 URL 窗口、来源、余量与完整展开入口。
 3. 读取覆盖矩阵未处置格的有界预览，不按关键词过滤。
-4. 读取 `findings/<target>/findings.json` 索引。
+4. 查询 Store Finding 主张、技术裁决和交付状态。
 5. 读取小型 browser/JS/source 证据索引：
    - `recon/<target>/browser/xhr_endpoints.txt`
    - `recon/<target>/browser/api_endpoints.txt`
    - `recon/<target>/browser/browser_params.txt`
    - `findings/<target>/js_intel/hypotheses.json`
    - `findings/<target>/source_intel/routes.json`
-6. 读取 Evidence Ledger 摘要：`memory/evidence/<target>/ledger.jsonl`。
+6. 从 Store observation 和当前材料完整性检查生成只读证据摘要。
 7. 从 `knowledge/capabilities.yaml` 发布知识卡目录；Skill 发现使用 Claude Code 原生目录。
 8. 输出证据锚点、已记录的 Actor Matrix 缺口、未知项、矛盾点和 owner 写回入口。
 
@@ -87,9 +87,8 @@ python3 tools/context_pack.py --target TARGET --json
 - 结束前必须加入 `rules/coverage-gate.md`。
 - 上下文包不是结论或必过步骤；它是可按需读取的事实和引用视图。
 - 目录或观察不自动生成动作；Claude 选择假设后通过现有 owner 创建或激活 Queue action。
-- 每次 substantive lane 在 Action Queue claim 时由 Claude 显式选择 `skill_route`；
-  `required_dimensions` 必须写入对应 metadata。首次选择不是 override；替换 action
-  owner 已有 route 时必须记录 `skill_override_reason`。
+- Skill 由 Claude 通过平台原生工具按需加载。Queue claim 不登记或校验 Skill 路由，
+  不要求 `required_dimensions`；实验使用 `active_dimension`，实际执行由 Runner 记录 `tested_dimensions`。
 - browser 证据默认只读 `recon/<target>/browser/` 的 XHR/API/params/form/page-JS 小索引；
   不默认加载 `evidence/<target>/browser/...` 的原始 requests/console/storage。
 - Actor Matrix 缺口不是结论；它只是提醒哪些角色/对象/replay 还没有结构化记录。

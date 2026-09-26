@@ -7,21 +7,71 @@ file-format/CLI compatibility constraints; it does not build another Agent runti
 ## Implementation and Cutover Status
 
 The refactor is in progress. `tools/target_store.py` implements transactional domain
-commands and read-only queries for isolated target copies. It is **not yet the
-backend used by the legacy runtime**. Existing targets have not been migrated.
-Do not initialize it beside a running legacy target or interpret unit-test success
-as completed real-target cutover. Runner/native registration, validation, reports,
-Case, primary queries, Checkpoint and round settlement are wired and tested in
-isolated fixtures. Actual migration and retirement of adapters still used by
-unswitched targets remain separate work.
+commands and read-only queries. The task records the authorized cutover of
+`127.0.0.1:3001` on 2026-09-22; this is not a claim that every consumer or future
+target already uses the Store. Do not initialize it beside a running legacy target
+or interpret unit-test success as complete consumer migration. Runner/native
+registration, validation, reports, Case, Store queries, Checkpoint and round
+settlement have Store paths. Complete consumer migration, explicit new-target
+initialization, legacy retirement and online capability comparison remain unfinished.
 The explicit `tools/action_queue.py add|claim|resolve|list` surface now has a
-primary-only thin adapter for isolated fixtures: it reads/writes `TargetStore`
-actions and never creates the legacy JSON queue. This does not switch the
-remaining autopilot consumers or authorize a real-target cutover.
+thin Store adapter for initialized targets; uninitialized callers still have
+legacy paths in the current implementation. This is temporary compatibility,
+not the final runtime contract or proof of all-consumer migration.
+
+The 2026-09-23 C0-C3 implementation has repaired fenced-database admission,
+explicit `/hunt` initialization, ordinary primary target-memory writes, bounded
+recall, Store Finding distillation, and manifest-bound legacy target-memory import.
+An explicit supplemental import can add historical advice to an active Store
+without re-running cutover. Primary Resume now displays the Store memory window,
+and isolated three-round checkpoint/pickup tests show no projection echo. PatternDB
+target history now has a separate byte-pinned import into unverified Store notes,
+not a second primary recall source. An isolated Store-to-draft-to-promote-to-registry
+test now covers the knowledge reuse mechanism without automatic promotion. These
+are partial C3 results, not completion of all memory consumers: knowledge quality,
+old-owner retirement, and online capability comparison
+still require their own acceptance evidence. The task's `prd.md`, `design.md`
+and `implement.md` retain the C0-C5 exit criteria.
+
+The Action adapter preserves descriptive producer type/source and material/reading
+references separately from Store kind/status. Parameter-discovery and spray primary
+consumers publish immutable review snapshots before creating pending work; they do
+not turn scanner dispositions into action completion. OAST poll/stop append linked
+handoffs without confirming findings or reopening/closing actions. Legacy behavior
+remains isolated until its consumers are retired.
 
 `tools/evidence_identity.py` already owns the shared vocabulary and endpoint
 normalizers. Ledger and native evidence registration accept valid open-ended
 families; canonical Coverage mapping remains optional and unknown labels cannot close it.
+
+## Single Runtime and Explicit Initialization — Target Contract
+
+- Normal domain commands and queries use the existing `TargetStore` only.
+  Legacy data is available through explicit import, historical inspection and
+  recovery, not a missing-database fallback. A real empty initialized Store may
+  return an empty page; an absent, damaged or inactive Store must not impersonate it.
+- Retain one initialization primitive, `initialize_target_store(repo_root, target)`,
+  exposed by `python3 tools/target_store.py init --store --target TARGET`.
+  A fresh target is created; an active target is returned idempotently; legacy,
+  preview and damaged/fenced-missing targets are refused without implicit migration.
+- `hunt_target()` invokes that primitive as the explicit start-target operation,
+  after input/scope/auth checks and before target execution or artifact side effects.
+  Lists initialize each actual target at execution time, not during list parsing.
+  Other domain entry points must either be explicit creation operations or require
+  initialization. Ordinary writes, queries, checkpoint/resume and previews never
+  create a Store or silently select legacy.
+- Store identity/role/schema/fence/receipt checks have one low-level owner.
+  After consumer migration, `runtime_store()` returns a valid Store or raises;
+  it does not offer `None -> legacy`. Interim compatibility must retain the same
+  failure checks until its callers are retired.
+- Keep internal `primary/preview` roles, durable fences and migration receipts
+  where needed for integrity and recovery. Removing business backend branching
+  does not justify renaming the database schema, deleting markers or creating a
+  new TargetRuntime/repository/backend-driver abstraction.
+- Delete obsolete runtime writers and compensating algorithms only after their
+  useful behavior works through the remaining owner. Raw evidence, private
+  material, rebuildable projections and resource locks remain outside this
+  metadata-retirement operation; their JSON format is not grounds for deletion.
 
 ## Responsibilities
 
@@ -43,8 +93,9 @@ Planner, Controller, model loop, automatic chain generator, or session manager.
 
 Skills provide methods, applicability conditions, counterexamples and evidence
 requirements, not fixed test sequences or duplicated native tool manuals.
-`tools/skill_catalog.py` and `tools/knowledge_registry.py` remain catalog owners;
-Context Pack does not introduce a second registry.
+The native platform owns Skill discovery and loading. Queue/Store do not require
+Skill routes, inspect Skill files or prescribe method dimensions. Knowledge cards
+retain `tools/knowledge_registry.py`; Context Pack adds no second registry.
 
 ## Domain Facts and Ownership
 
@@ -72,7 +123,7 @@ refuted. A valuable report claim cannot make unsupported evidence valid.
   standard-library `sqlite3`, explicit tables, foreign keys and indexes. Identity,
   relations, lifecycle and query keys are columns, not an arbitrary JSON store.
 - Action context uses one bounded `metadata_json` detail on the Action row. It may
-  carry AI-authored hypothesis, route, dimension and evidence references, but it
+  carry AI-authored hypothesis, experimental dimension and evidence references, but it
   cannot carry Runner-owned observations or become an execution/assessment/delivery
   owner. Claims merge it through the action version/CAS; hypothesis caps and
   target-owned evidence/card references are enforced before mutation.
@@ -104,8 +155,11 @@ refuted. A valuable report claim cannot make unsupported evidence valid.
   or corrupt output remains an explicit refresh/review state.
 - Artifact identities are immutable. Availability and provenance changes are
   append-only artifact events; authorization is derived from the latest event and
-  a fresh byte/hash check, so invalidated or revoked material remains historical
-  evidence rather than being rewritten as absent.
+  an explicit fresh byte/hash validation. That source-acquisition step captures
+  the checked digest, health result and one `as_of` value for the ensuing closed
+  projection snapshot; a projection itself does not read the live filesystem or
+  clock. Invalidated or revoked material remains historical evidence rather than
+  being rewritten as absent.
 - Observation envelopes use a closed relational head for target, operation,
   timestamp, actor, outcome, family and artifact bindings, with only a bounded
   canonical `detail` object open for extension. Queries never infer relationship
@@ -136,8 +190,10 @@ and scanner advice do not authorize closure, and merely storing a Finding does n
 make it tested. Exact terminal dispositions share the existing closure resolver;
 query/hash/v2 evidence is not widened to a whole endpoint. Its source snapshot
 includes reference time, Store/operation identities, evidence health and discovery
-inputs. Primary Context Pack reloads optional caller shortcuts because a stable
-Store revision alone cannot prove external artifact integrity.
+inputs. Primary Context Pack explicitly reacquires current owners and validates
+needed artifacts because a stable Store revision alone cannot prove external
+artifact integrity. The captured validation results and `as_of` are included in
+the Pack binding; projection rendering uses those inputs only.
 
 Primary report bodies are immutable, with identities bound to the Finding and
 current assessment/delivery. INDEX/SUMMARY are rebuildable snapshots carrying the
@@ -152,6 +208,8 @@ Canonical Coverage and Closure share identity/interpretation rules. Unknown fami
 labels preserve observations but cannot close canonical cells. A projection is not
 a second authority for technical finality.
 
+## Memory Contract
+
 Memory is retention and recall of the same facts, not another lifecycle system:
 raw observations remain expandable; Claude's working context is disposable;
 target experience retains conditions and evidence links; cross-target knowledge
@@ -160,6 +218,70 @@ queryable. A negative result applies to its recorded conditions, not forever.
 No background extraction, automatic task-per-primitive, or extra vector service
 is added. `hunt-memory/targets/<target>.json` remains a legacy read projection and
 must not acquire new duplicate finding, coverage or action truth.
+
+SQLite owns authoritative structured target facts and only explicitly saved,
+decision-relevant target experience. It does not accumulate every observation,
+chat, model reasoning trace, raw response, report body or temporary Pack/
+Checkpoint; raw artifacts remain files behind references, and cross-target
+knowledge remains reviewed Markdown/registry content.
+
+| Responsibility | Authority and lifetime |
+|---|---|
+| Original facts | Store domain relations and external raw evidence; observation, assessment and delivery remain distinct |
+| Working context | Bounded, disposable Context/Checkpoint/Resume views with expansion references; never a write-back source |
+| Target experience | Same-Store intent, advisory notes, conditional experience and provenance; no duplicate Action/Finding lifecycle |
+| Cross-target knowledge | Existing sanitized, reviewed Markdown cards and registry; not automatic sharing of private field memory |
+
+These are information responsibilities, not four stores or new services.
+Normal memory commands, Python APIs, default text and JSON must use one domain
+meaning. `target_memory.py` remains a thin interface; `show` must read the same
+Store that accepted the write. `set TARGET` selects an initialized target only;
+an explicit `--goal` changes that target's Store-owned intent. Retired mode,
+phase, hypothesis, skill and knowledge flags must be routed to their real owner
+or rejected, never copied into active-target state. Target intent has one
+explicit current-value owner in the existing Store row; scope notes do not
+change authorization, runtime phase stays with its runtime owner, and the
+active-target pointer contains target selection metadata only.
+
+The only planned memory schema additions are an `active_goal` column on the
+existing Store singleton and an advisory `note` Experience kind. Import
+manifests and command receipts retain historical
+source identity; per-entry provenance columns or tables require a demonstrated
+consumer need. No keyed-note replacement chain is planned: corrections append
+a new Experience and preserve the earlier entry. A note or historical claim
+needs provenance, not a fabricated execution. New negative/primitive experience
+retains observation requirements; negative experience carries conditions and
+reopening criteria. Ordinary calls never implicitly upgrade an active Store.
+
+Recall uses bounded domain queries and batch reference reads, not full-history
+loading followed by per-entry expansion and slicing. Default text and JSON
+preserve statement, conditions, reopening criteria, next intent and evidence/
+source references. Pages identify ordering, filters, exact remainder or explicit
+unknown, source health and usable query/ID expansion; a binary DB pathname alone
+is not a readable continuation. Category scores cannot silently remove candidates
+from the accessible set. Optional-source failure is visible, not a successful
+empty result. Native reasoning still decides relevance and action.
+
+Legacy notes are mapped by evidence level: provably linked experience retains
+its meaning; unsupported historical statements remain explicitly unverified
+advice with their original type/source; corrupt, foreign or ambiguous material
+has an inspectable quarantine disposition. Archive retention is not proof of
+recall continuity. An already active target requires an explicitly authorized,
+source-bound, idempotent supplemental import, not another cutover or rollback.
+
+Working-context compaction never deletes the source. Projection echoes cannot
+become new experience, and same-source retries are idempotent. Checkpoint and
+explicit handoff are tested across repeated rounds and real process restarts.
+Distillation reads the same Finding/Experience/Case semantics, including failure
+conditions and contrary evidence; AI authors Markdown, then existing review,
+audit and registry promotion control cross-target reuse. PatternDB, like the
+legacy target profile, is history/projection rather than another final runtime
+writer. Journal/audit history stays available on demand without becoming default
+model context. No automatic long-term compaction or knowledge promotion is added.
+
+The task's M1-M8 gate covers save, restart, recall, expansion, recovery, historical
+mapping, distillation and cost. Store unit tests, archived bytes or a migration
+receipt cannot replace this consumer-level acceptance.
 
 ## Dependency and Trust Boundaries
 
@@ -194,7 +316,10 @@ registration an execution sandbox or a semantic verifier.
    coverage, unsafe-review and target-memory file mutations coordinate through
    the same target switch lock; primary/preview target-memory writes fail closed.
 4. Retire old metadata writers, compensating sync, Case's second queue/ranker,
-   duplicate closure reducers and compatibility adapters after migration.
+   duplicate closure reducers and obsolete compatibility algorithms after
+   consumer migration. Retain a public name only when it is a useful thin Store
+   adapter. Normal runtime must not import legacy writers or expose a switch
+   that restores the old backend; unimported data requires explicit migration.
 5. After new writes exist, rollback must export/migrate the current truth or fix
    forward. Pointing at stale pre-cutover JSON snapshots would lose progress.
 
@@ -202,9 +327,19 @@ registration an execution sandbox or a semantic verifier.
 
 Measure capability and efficiency separately: valid discoveries, verification
 depth, coverage and evidence completeness alongside requests, Token use, latency,
-I/O and recovery work. Compare native Claude, the current runtime and the target
-runtime on equivalent fixtures/permissions/budgets using target-side oracles and
-actual traces. No speedup percentage or model improvement is established yet.
+I/O, Store/WAL size growth, backup/restore time and recovery work. Compare native
+Claude, the current runtime and the target runtime on equivalent
+fixtures/permissions/budgets using target-side oracles and actual traces; interleave
+repeated runs and report variance/uncertainty. No speedup percentage or model
+improvement is established yet.
+Preserve the historical count-query baseline, but validate full facts, relations,
+unfinished work and authorization semantics before comparing equivalent paths.
+Measure the pre-revision Store against the converged Store as well as the legacy
+baseline. Start with batch SQL, indexes, bounded queries and reuse within closed
+inputs; do not trade away integrity checks or add speculative cache infrastructure.
+Engineering closure, writer retirement, measured efficiency and online capability
+evidence are separate results. An unapproved online budget leaves that acceptance
+item open; successful cutover or more passing tests cannot replace it.
 
 Ordinary method/knowledge improvements should not change the persistence core.
 New domain facts or invariants require focused owner, transaction and consumer

@@ -25,6 +25,8 @@ from coverage_matrix import (
     find_high_value_gaps,
     load_matrix,
     load_matrix_projection,
+    read_matrix,
+    high_value_gaps_from_matrix,
     mark_cell,
     mark_endpoint_kind,
     matrix_is_fresh,
@@ -33,11 +35,27 @@ from coverage_matrix import (
     rebuild_matrix,
     save_matrix,
 )
-from finding_index import update_finding_status, upsert_finding
+from tools.target_store import TargetStore
 from surface_index import build_surface_index
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+@pytest.fixture
+def store(tmp_path):
+    result = TargetStore(tmp_path, "x.com")
+    result.initialize()
+    return result
+
+
+def _claim(store, finding_id, endpoint, family):
+    store.create_finding(
+        command_id=finding_id, finding_id=finding_id,
+        endpoint=endpoint if "://" in endpoint else f"https://{store.target}{endpoint}",
+        method="GET", family=family, title="Unassessed claim",
+        claim="Requires evidence and technical assessment", actor="operator",
+    )
 
 
 def test_primary_projection_uses_current_truth_without_publishing(tmp_path):
@@ -83,10 +101,9 @@ def test_primary_projection_uses_current_truth_without_publishing(tmp_path):
     before = snapshot()
     matrix = load_matrix_projection(target, tmp_path)
     endpoints = {row["endpoint"]: row for row in matrix["endpoints"]}
-    assert set(endpoints) == {"/observed", "/historical", "/candidate", "/verified", "/variant"}
-    assert endpoints["/historical"]["cells"]["Authz"]["status"] == "untested"
-    assert endpoints["/historical"]["cells"]["XSS"]["status"] == "untested"
-    assert endpoints["/historical"]["historical_cells"]["XSS"]["reason"] == "historical applicability"
+    assert set(endpoints) == {"/observed", "/candidate", "/verified", "/variant"}
+    # Old annotations remain explicit historical input until imported into Store.
+    assert load_matrix(target, tmp_path)["endpoints"][0]["cells"]["XSS"]["reason"] == "historical applicability"
     assert endpoints["/candidate"]["cells"]["Authz"]["status"] == "untested"
     assert endpoints["/verified"]["cells"]["Authz"]["status"] == "tested_clean"
     assert endpoints["/variant"]["cells"]["Authz"]["status"] == "untested"
@@ -185,7 +202,7 @@ def test_primary_terminal_dispositions_filter_only_exact_authorized_gaps(tmp_pat
                for gap in coverage_matrix_module.high_value_gaps_from_matrix(damaged))
 
 
-@pytest.mark.parametrize("changed_input", ["discovery", "store", "history"])
+@pytest.mark.parametrize("changed_input", ["discovery", "store", "review"])
 def test_primary_read_rejects_input_drift(tmp_path, monkeypatch, changed_input):
     from tools.target_store import StoreError, TargetStore
 
@@ -201,10 +218,9 @@ def test_primary_read_rejects_input_drift(tmp_path, monkeypatch, changed_input):
             (tmp_path / "recon" / target / "urls" / "all.txt").write_text(
                 f"https://{target}/after\n", encoding="utf-8",
             )
-        elif changed_input == "history":
-            path = coverage_matrix_module._matrix_path(tmp_path, target)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps({"target": target, "endpoints": []}), encoding="utf-8")
+        elif changed_input == "review":
+            store.record_coverage_review(command_id="new-review", endpoint="/before", kind="cell_status",
+                                         family="Authz", value="n_a", reason="authored input", actor="operator")
         else:
             store.create_finding(command_id="new", finding_id="new", endpoint=f"https://{target}/new",
                                  method="GET", family="Authz", title="New", claim="Unassessed", actor="ai")
@@ -237,6 +253,7 @@ def test_readme_names_the_canonical_web2_closure_taxonomy():
 
 
 def test_default_xss_skip_is_visible_without_closing_coverage(tmp_path):
+    TargetStore(tmp_path, "xss-policy.test").initialize()
     _seed_recon(tmp_path, "xss-policy.test", ["https://xss-policy.test/search?q=one"])
     findings_dir = tmp_path / "findings" / "xss-policy.test"
     findings_dir.mkdir(parents=True)
@@ -320,24 +337,18 @@ class TestEmptyMatrix:
             "SSTI", "CommandInjection", "Deserialization",
         ]
 
-    def test_cli_reports_corrupt_matrix_with_stable_exit(self, tmp_path, capsys):
-        path = tmp_path / "evidence" / "x.com" / "coverage_matrix.json"
+    def test_cli_rejects_uninitialized_target_without_using_corrupt_cache(self, tmp_path, capsys):
+        path = tmp_path / "evidence/x.com/coverage_matrix.json"
         path.parent.mkdir(parents=True)
         path.write_text("{broken", encoding="utf-8")
-
-        rc = coverage_matrix_module.main([
-            "find-gaps",
-            "--repo-root",
-            str(tmp_path),
-            "--target",
-            "x.com",
-        ])
+        before = path.read_bytes()
+        rc = coverage_matrix_module.main(["find-gaps", "--repo-root", str(tmp_path), "--target", "x.com"])
         captured = capsys.readouterr()
-
-        assert rc == 2
-        assert captured.out == ""
+        assert rc == 2 and captured.out == ""
         assert "coverage matrix command failed" in captured.err
-        assert str(path) in captured.err
+        assert "import" in captured.err or "initialized" in captured.err
+        assert path.read_bytes() == before
+        assert not (tmp_path / "state/x.com/metadata.sqlite3").exists()
 
     @pytest.mark.parametrize(
         "payload, message",
@@ -356,7 +367,7 @@ class TestEmptyMatrix:
             load_matrix("x.com", repo_root=tmp_path)
 
 
-def test_concurrent_coverage_marks_preserve_disjoint_cells(tmp_path):
+def test_concurrent_coverage_marks_preserve_disjoint_cells(tmp_path, store):
     context = multiprocessing.get_context("fork")
     start = context.Event()
     ready = [context.Event() for _ in ("IDOR", "SSRF", "XSS")]
@@ -375,9 +386,9 @@ def test_concurrent_coverage_marks_preserve_disjoint_cells(tmp_path):
         process.join(10)
         assert process.exitcode == 0
 
-    matrix = load_matrix("x.com", repo_root=tmp_path)
+    matrix = read_matrix("x.com", repo_root=tmp_path)
     endpoint = next(item for item in matrix["endpoints"] if item["endpoint"] == "/api/admin/users")
-    assert {name for name, cell in endpoint["cells"].items() if cell["status"] == "tested_clean"} >= {
+    assert {name for name, cell in endpoint["cells"].items() if cell.get("review", {}).get("value") == "tested_clean"} >= {
         "IDOR", "SSRF", "XSS",
     }
 
@@ -403,7 +414,7 @@ class TestRouteTemplate:
         assert _route_template("/assets/123/app.js") == "/assets/123/app.js"
         assert _route_template("/.well-known/openid-configuration") == "/.well-known/openid-configuration"
 
-    def test_rebuild_collapses_dynamic_rows(self, tmp_path):
+    def test_rebuild_collapses_dynamic_rows(self, tmp_path, store):
         _seed_recon(tmp_path, "x.com", [
             "https://x.com/users/123",
             "https://x.com/users/456",
@@ -423,7 +434,7 @@ class TestRouteTemplate:
         assert gap["endpoint"] == "/users/{id}"
         assert gap["representative_endpoint"] == "/users/123"
 
-    def test_source_count_tracks_provenance_not_duplicate_url_observations(self, tmp_path):
+    def test_source_count_tracks_provenance_not_duplicate_url_observations(self, tmp_path, store):
         url = "https://x.com/api/users/123"
         _seed_recon(tmp_path, "x.com", [url])
         urls_dir = tmp_path / "recon" / "x.com" / "urls"
@@ -435,7 +446,7 @@ class TestRouteTemplate:
         assert endpoint["source_count"] == 2
         assert endpoint["observation_count"] == 1
 
-    def test_query_variants_do_not_trigger_route_template_folding(self, tmp_path):
+    def test_query_variants_do_not_trigger_route_template_folding(self, tmp_path, store):
         _seed_recon(tmp_path, "x.com", [
             "https://x.com/users/123?view=summary",
             "https://x.com/users/123?view=detail",
@@ -447,7 +458,7 @@ class TestRouteTemplate:
         assert endpoint["source_count"] == 1
         assert endpoint["observation_count"] == 2
 
-    def test_rebuild_preserves_exact_rows_with_operator_state(self, tmp_path):
+    def test_rebuild_preserves_exact_rows_with_operator_state(self, tmp_path, store):
         _seed_recon(tmp_path, "x.com", ["https://x.com/users/123"])
         save_matrix("x.com", rebuild_matrix("x.com", repo_root=tmp_path), repo_root=tmp_path)
         mark_cell("x.com", "/users/123", "IDOR", "tested_clean", repo_root=tmp_path)
@@ -457,36 +468,22 @@ class TestRouteTemplate:
         )
         matrix = rebuild_matrix("x.com", repo_root=tmp_path)
         endpoints = {item["endpoint"]: item for item in matrix["endpoints"]}
-        assert endpoints["/users/123"]["cells"]["IDOR"]["status"] == "tested_clean"
+        assert endpoints["/users/123"]["cells"]["IDOR"]["status"] == "untested"
+        assert endpoints["/users/123"]["cells"]["IDOR"]["review"]["value"] == "tested_clean"
         assert "/users/{id}" in endpoints
 
-    def test_rebuild_retains_historical_endpoint_when_recon_no_longer_reports_it(self, tmp_path):
-        target = "x.com"
-        historical_endpoint = "/api/v1/admin/legacy"
-        current_endpoint = "/api/v1/admin/current"
-        _seed_recon(tmp_path, target, [historical_endpoint])
-        matrix = rebuild_matrix(target, repo_root=tmp_path)
-        historical = matrix["endpoints"][0]
-        historical["cells"]["Authz"] = {
-            "status": "tested_clean",
-            "reason": "operator reviewed historical route",
-            "evidence_ref": "evidence/x.com/legacy.json",
-        }
-        save_matrix(target, matrix, repo_root=tmp_path)
-
-        (tmp_path / "recon" / target / "urls" / "all.txt").write_text(
-            current_endpoint + "\n", encoding="utf-8"
-        )
-        rebuilt = rebuild_matrix(target, repo_root=tmp_path)
-        by_endpoint = {item["endpoint"]: item for item in rebuilt["endpoints"]}
-
-        assert historical_endpoint in by_endpoint
-        assert by_endpoint[historical_endpoint]["cells"]["Authz"] == {
-            "status": "tested_clean",
-            "reason": "operator reviewed historical route",
-            "evidence_ref": "evidence/x.com/legacy.json",
-        }
-        assert current_endpoint in by_endpoint
+    def test_rebuild_retains_reviewed_endpoint_when_recon_no_longer_reports_it(self, tmp_path, store):
+        _seed_recon(tmp_path, store.target, ["/api/v1/admin/legacy"])
+        mark_cell(store.target, "/api/v1/admin/legacy", "Authz", "tested_clean",
+                  reason="Operator reviewed historical route", repo_root=tmp_path)
+        (tmp_path / "recon/x.com/urls/all.txt").write_text("/api/v1/admin/current\n")
+        rebuilt = rebuild_matrix(store.target, repo_root=tmp_path)
+        rows = {row["endpoint"]: row for row in rebuilt["endpoints"]}
+        cell = rows["/api/v1/admin/legacy"]["cells"]["Authz"]
+        assert cell["status"] == "untested"
+        assert cell["review"]["value"] == "tested_clean"
+        assert cell["review"]["reason"] == "Operator reviewed historical route"
+        assert "/api/v1/admin/current" in rows
 
 
 class TestComputeSummary:
@@ -618,22 +615,20 @@ class TestSaveLoadRoundTrip:
         assert path.read_bytes() == previous
         assert list(path.parent.glob(f".{path.name}.*.tmp")) == []
 
-    def test_compact_projection_is_bound_to_matrix_and_sources(self, tmp_path):
-        _seed_recon(tmp_path, "x.com", ["https://x.com/api/users/1"])
-        save_matrix("x.com", rebuild_matrix("x.com", repo_root=tmp_path), repo_root=tmp_path)
-
-        projection = load_matrix_projection("x.com", repo_root=tmp_path)
-        assert projection is not None
-        assert projection["_coverage_projection"] is True
+    def test_current_projection_refreshes_sources_without_publishing(self, tmp_path, store):
+        _seed_recon(tmp_path, store.target, ["https://x.com/api/users/1"])
+        projection = load_matrix_projection(store.target, repo_root=tmp_path)
+        assert projection["store_id"] == store.binding()["store_id"]
         assert projection["summary"]["total_cells"] > 0
-
-        with (tmp_path / "recon/x.com/urls/all.txt").open("a", encoding="utf-8") as handle:
-            handle.write("\nhttps://x.com/api/users/2")
-        assert load_matrix_projection("x.com", repo_root=tmp_path) is None
+        (tmp_path / "recon/x.com/urls/all.txt").write_text("https://x.com/new\n")
+        fresh = load_matrix_projection(store.target, repo_root=tmp_path)
+        assert fresh["source_fingerprint"] != projection["source_fingerprint"]
+        assert [row["endpoint"] for row in fresh["endpoints"]] == ["/new"]
+        assert not coverage_matrix_module._matrix_path(tmp_path, store.target).exists()
 
 
 class TestRebuildMatrix:
-    def test_rebuild_consumes_complete_surface_index_and_tracks_its_generation(self, tmp_path):
+    def test_rebuild_consumes_complete_surface_index_and_tracks_its_generation(self, tmp_path, store):
         urls_dir = tmp_path / "recon" / "x.com" / "urls"
         urls_dir.mkdir(parents=True)
         urls = [f"https://x.com/api/admin/resources/{index}?tenant_id={index}" for index in range(9)]
@@ -653,7 +648,7 @@ class TestRebuildMatrix:
 
         assert matrix_is_fresh("x.com", matrix, repo_root=tmp_path) is False
 
-    def test_source_fingerprint_skips_only_unchanged_inputs(self, tmp_path):
+    def test_source_fingerprint_skips_only_unchanged_inputs(self, tmp_path, store):
         _seed_recon(tmp_path, "x.com", ["https://x.com/api/users/1"])
         matrix = rebuild_matrix("x.com", repo_root=tmp_path)
         assert matrix_is_fresh("x.com", matrix, repo_root=tmp_path) is True
@@ -662,7 +657,7 @@ class TestRebuildMatrix:
             handle.write("\nhttps://x.com/api/users/2")
         assert matrix_is_fresh("x.com", matrix, repo_root=tmp_path) is False
 
-    def test_rebuild_cli_reuses_fresh_matrix_without_rebuild_or_write(self, tmp_path, monkeypatch, capsys):
+    def test_rebuild_cli_reuses_fresh_matrix_without_rebuild_or_write(self, tmp_path, monkeypatch, capsys, store):
         _seed_recon(tmp_path, "x.com", ["https://x.com/api/users/1"])
         args = ["rebuild", "--target", "x.com", "--repo-root", str(tmp_path)]
 
@@ -681,7 +676,7 @@ class TestRebuildMatrix:
         assert path.stat().st_mtime_ns == before_mtime
         assert "coverage_matrix reused:" in capsys.readouterr().out
 
-    def test_rebuild_cli_force_clean_ignores_fresh_matrix(self, tmp_path, capsys):
+    def test_rebuild_cli_force_clean_ignores_fresh_matrix(self, tmp_path, capsys, store):
         _seed_recon(tmp_path, "x.com", ["https://x.com/api/users/1"])
         args = ["rebuild", "--target", "x.com", "--repo-root", str(tmp_path)]
         assert coverage_matrix_module.main(args) == 0
@@ -698,28 +693,19 @@ class TestRebuildMatrix:
         assert loaded["endpoints"][0]["cells"]["XSS"]["status"] == "untested"
         assert "coverage_matrix written:" in capsys.readouterr().out
 
-    def test_rebuild_cli_repairs_missing_projection_for_fresh_matrix(self, tmp_path, monkeypatch):
+    def test_rebuild_and_read_need_no_compact_cache(self, tmp_path, store):
         _seed_recon(tmp_path, "x.com", ["https://x.com/api/users/1"])
         args = ["rebuild", "--target", "x.com", "--repo-root", str(tmp_path)]
         assert coverage_matrix_module.main(args) == 0
-        projection = tmp_path / "evidence" / "x.com" / "coverage_matrix-summary.json"
-        projection.unlink()
-
-        def fail_full_gap_materialization(*_args, **_kwargs):
-            raise AssertionError("projection repair should use a bounded gap window")
-
-        monkeypatch.setattr(
-            coverage_matrix_module,
-            "high_value_gaps_from_matrix",
-            fail_full_gap_materialization,
-        )
-
+        path = tmp_path / "evidence/x.com/coverage_matrix.json"
+        before = path.read_bytes(), path.stat().st_mtime_ns, store.binding()
         assert coverage_matrix_module.main(args) == 0
+        matrix = load_matrix_projection("x.com", tmp_path)
+        assert matrix["summary"]["total_cells"] == len(VULN_CLASSES)
+        assert (path.read_bytes(), path.stat().st_mtime_ns, store.binding()) == before
+        assert not (path.parent / "coverage_matrix-summary.json").exists()
 
-        assert projection.is_file()
-        assert coverage_matrix_module.load_matrix_projection("x.com", tmp_path) is not None
-
-    def test_rebuild_does_not_expand_ffuf_only_evidence(self, tmp_path):
+    def test_rebuild_does_not_expand_ffuf_only_evidence(self, tmp_path, store):
         dirs = tmp_path / "recon" / "x.com" / "dirs"
         dirs.mkdir(parents=True)
         (dirs / "ffuf_results.jsonl").write_text(
@@ -739,7 +725,7 @@ class TestRebuildMatrix:
 
         assert matrix["endpoints"] == []
 
-    def test_rebuild_from_recon_urls(self, tmp_path):
+    def test_rebuild_from_recon_urls(self, tmp_path, store):
         _seed_recon(tmp_path, "x.com", [
             "/api/v1/admin/users",        # weight high (admin + api_v)
             "/api/v1/orders/123",          # weight (api_v)
@@ -752,7 +738,7 @@ class TestRebuildMatrix:
         # Unfamiliar and static-looking paths remain visible too.
         assert "/blog/post-1" in endpoints
 
-    def test_rebuild_normalizes_attack_probe_without_losing_surface(self, tmp_path):
+    def test_rebuild_normalizes_attack_probe_without_losing_surface(self, tmp_path, store):
         _seed_recon(tmp_path, "x.com", [
             "/rest/admin/application-configuration",
             "/rest/admin/%5C%22/",
@@ -772,7 +758,7 @@ class TestRebuildMatrix:
         assert admin_ep["source_count"] == 1
         assert "weight" not in admin_ep
 
-    def test_rebuild_uses_filtered_view_when_legacy_raw_backstop_exists(self, tmp_path):
+    def test_rebuild_uses_filtered_view_when_legacy_raw_backstop_exists(self, tmp_path, store):
         _seed_recon_with_filtered(
             tmp_path,
             "x.com",
@@ -790,7 +776,7 @@ class TestRebuildMatrix:
         assert "/api/v1/admin/users" in endpoints
         assert "/api/v1/orders/123" not in endpoints
 
-    def test_rebuild_does_not_restore_logged_js_path_artifact_from_raw_backstop(self, tmp_path):
+    def test_rebuild_does_not_restore_logged_js_path_artifact_from_raw_backstop(self, tmp_path, store):
         artifact = "https://x.com/i.visualViewport.scale/i.document.do"
         _seed_recon_with_filtered(
             tmp_path,
@@ -810,7 +796,7 @@ class TestRebuildMatrix:
         assert "/rest/admin/application-configuration" in endpoints
         assert "/i.visualViewport.scale/i.document.do" not in endpoints
 
-    def test_rebuild_drops_minified_js_pseudo_endpoint_without_filter_log(self, tmp_path):
+    def test_rebuild_drops_minified_js_pseudo_endpoint_without_filter_log(self, tmp_path, store):
         _seed_recon(tmp_path, "x.com", [
             "https://x.com/i.visualViewport.scale/i.document.do",
             "https://x.com/rest/admin/application-configuration",
@@ -822,7 +808,7 @@ class TestRebuildMatrix:
         assert "/i.visualViewport.scale/i.document.do" not in endpoints
         assert "/rest/admin/application-configuration" in endpoints
 
-    def test_static_and_public_metadata_stay_visible_without_predicted_value(self, tmp_path):
+    def test_static_and_public_metadata_stay_visible_without_predicted_value(self, tmp_path, store):
         _seed_recon(tmp_path, "x.com", [
             "https://x.com/assets/public/images/logo.png",
             "https://x.com/.well-known/csaf/provider-metadata.json",
@@ -864,7 +850,7 @@ class TestRebuildMatrix:
         assert "/.well-known/oauth-authorization-server" in gap_endpoints
         assert "/.well-known/oauth-protected-resource" in gap_endpoints
 
-    def test_route_prefix_like_endpoint_stays_visible_for_ai_judgement(self, tmp_path):
+    def test_route_prefix_like_endpoint_stays_visible_for_ai_judgement(self, tmp_path, store):
         _seed_recon(tmp_path, "x.com", [
             "https://x.com/rest/admin",
             "https://x.com/rest/admin/application-configuration",
@@ -884,7 +870,7 @@ class TestRebuildMatrix:
         assert child_ep["endpoint_kind"] == "untriaged"
         assert child_ep["cells"]["Authz"]["status"] == "untested"
 
-    def test_ai_marked_route_prefix_is_removed_from_direct_gaps(self, tmp_path):
+    def test_ai_marked_route_prefix_is_advisory_and_keeps_gaps(self, tmp_path, store):
         _seed_recon(tmp_path, "x.com", [
             "https://x.com/rest/admin",
             "https://x.com/rest/admin/application-configuration",
@@ -899,21 +885,21 @@ class TestRebuildMatrix:
             reason="container path; test concrete child handlers instead",
             repo_root=tmp_path,
         )
-        assert {cell["status"] for cell in marked["cells"].values()} == {"n_a"}
+        assert marked["kind_review"]["value"] == "route_prefix"
 
         rebuilt = rebuild_matrix("x.com", repo_root=tmp_path)
         save_matrix("x.com", rebuilt, repo_root=tmp_path)
         by_endpoint = {ep["endpoint"]: ep for ep in rebuilt["endpoints"]}
         assert by_endpoint["/rest/admin"]["endpoint_kind"] == "route_prefix"
-        assert {cell["status"] for cell in by_endpoint["/rest/admin"]["cells"].values()} == {"n_a"}
+        assert {cell["status"] for cell in by_endpoint["/rest/admin"]["cells"].values()} == {"untested"}
         assert by_endpoint["/rest/admin/application-configuration"]["cells"]["Authz"]["status"] == "untested"
 
         gaps = find_high_value_gaps("x.com", repo_root=tmp_path)
         gap_endpoints = {gap["endpoint"] for gap in gaps}
-        assert "/rest/admin" not in gap_endpoints
+        assert "/rest/admin" in gap_endpoints
         assert "/rest/admin/application-configuration" in gap_endpoints
 
-    def test_needs_triage_lists_untriaged_endpoints_with_hints(self, tmp_path):
+    def test_needs_triage_lists_untriaged_endpoints_with_hints(self, tmp_path, store):
         _seed_recon(tmp_path, "x.com", [
             "https://x.com/rest/admin",
             "https://x.com/assets/app.js",
@@ -929,7 +915,7 @@ class TestRebuildMatrix:
         assert "/assets/app.js" in by_endpoint
         assert "static_asset_shape" in by_endpoint["/assets/app.js"]["auto_hints"]
 
-    def test_mark_endpoint_kind_persists_across_rebuild(self, tmp_path):
+    def test_mark_endpoint_kind_persists_across_rebuild(self, tmp_path, store):
         _seed_recon(tmp_path, "x.com", [
             "https://x.com/orders",
         ])
@@ -954,7 +940,7 @@ class TestRebuildMatrix:
         remaining = needs_endpoint_triage("x.com", repo_root=tmp_path)
         assert "/orders" not in {item["endpoint"] for item in remaining}
 
-    def test_rebuild_creates_all_vuln_class_cells(self, tmp_path):
+    def test_rebuild_creates_all_vuln_class_cells(self, tmp_path, store):
         _seed_recon(tmp_path, "x.com", ["/api/v1/admin/users"])
         matrix = rebuild_matrix("x.com", repo_root=tmp_path)
         cells = matrix["endpoints"][0]["cells"]
@@ -962,21 +948,17 @@ class TestRebuildMatrix:
             assert vc in cells
             assert cells[vc]["status"] == "untested"
 
-    def test_rebuild_preserves_existing_annotations(self, tmp_path):
+    def test_rebuild_preserves_store_reviews_as_advisory(self, tmp_path, store):
         _seed_recon(tmp_path, "x.com", ["/api/v1/admin/users"])
-        # First rebuild + manual annotation
-        matrix = rebuild_matrix("x.com", repo_root=tmp_path)
-        matrix["endpoints"][0]["cells"]["XSS"] = {"status": "n_a", "reason": "no input"}
-        save_matrix("x.com", matrix, repo_root=tmp_path)
-        # Second rebuild — preserve the annotation
-        rebuilt = rebuild_matrix("x.com", repo_root=tmp_path)
-        save_matrix("x.com", rebuilt, repo_root=tmp_path)
-        loaded = load_matrix("x.com", repo_root=tmp_path)
-        cell = loaded["endpoints"][0]["cells"]["XSS"]
-        assert cell["status"] == "n_a"
-        assert cell["reason"] == "no input"
+        mark_cell("x.com", "/api/v1/admin/users", "XSS", "n_a", reason="no input", repo_root=tmp_path)
+        rebuild_matrix("x.com", repo_root=tmp_path)
+        coverage_matrix_module._matrix_path(tmp_path, "x.com").unlink()
+        cell = read_matrix("x.com", tmp_path)["endpoints"][0]["cells"]["XSS"]
+        assert cell["status"] == "untested"
+        assert cell["review"]["value"] == "n_a"
+        assert cell["review"]["reason"] == "no input"
 
-    def test_force_clean_wipes_annotations(self, tmp_path):
+    def test_force_clean_wipes_annotations(self, tmp_path, store):
         _seed_recon(tmp_path, "x.com", ["/api/v1/admin/users"])
         matrix = rebuild_matrix("x.com", repo_root=tmp_path)
         matrix["endpoints"][0]["cells"]["XSS"] = {"status": "n_a", "reason": "stale"}
@@ -989,23 +971,18 @@ class TestRebuildMatrix:
         assert loaded["endpoints"][0]["cells"]["XSS"]["status"] == "untested"
 
     def test_no_recon_dir_safe(self, tmp_path):
+        TargetStore(tmp_path, "ghost.com").initialize()
         matrix = rebuild_matrix("ghost.com", repo_root=tmp_path)
         assert matrix["endpoints"] == []
 
-    def test_findings_mark_tested_finding(self, tmp_path):
+    def test_findings_mark_tested_finding(self, tmp_path, store):
         _seed_recon(tmp_path, "x.com", ["/api/v1/orders/123"])
-        findings_dir = tmp_path / "findings" / "x.com"
-        findings_dir.mkdir(parents=True)
-        (findings_dir / "findings.json").write_text(json.dumps([{
-            "id": "F-1",
-            "endpoint": "/api/v1/orders/123",
-            "vuln_class": "IDOR",
-        }]), encoding="utf-8")
+        _claim(store, 'F-1', '/api/v1/orders/123', 'IDOR')
         matrix = rebuild_matrix("x.com", repo_root=tmp_path)
         ep = [e for e in matrix["endpoints"] if e["endpoint"] == "/api/v1/orders/123"][0]
-        assert ep["cells"]["IDOR"]["status"] == "tested_finding"
+        assert ep["cells"]["IDOR"]["status"] == "untested"
 
-    def test_rebuild_adds_endpoints_from_findings_only(self, tmp_path):
+    def test_rebuild_adds_endpoints_from_findings_only(self, tmp_path, store):
         """PR-12 audit: an endpoint present ONLY in findings.json (absent
         from recon URLs) must end up in the matrix with `tested_finding`
         on the right cell. Pilot 2026-05-15 surfaced this as a real gap
@@ -1015,12 +992,8 @@ class TestRebuildMatrix:
         # Recon contains ONE endpoint only
         _seed_recon(tmp_path, "x.com", ["/api/v1/orders/123"])
         # findings.json adds a SECOND, distinct endpoint not in recon
-        findings_dir = tmp_path / "findings" / "x.com"
-        findings_dir.mkdir(parents=True)
-        (findings_dir / "findings.json").write_text(json.dumps([
-            {"id": "F-1", "endpoint": "/api/v1/orders/123", "vuln_class": "IDOR"},
-            {"id": "F-2", "endpoint": "/wp-json/wp/v2/users", "vuln_class": "Authz"},
-        ]), encoding="utf-8")
+        _claim(store, 'F-1', '/api/v1/orders/123', 'IDOR')
+        _claim(store, 'F-2', '/wp-json/wp/v2/users', 'Authz')
         matrix = rebuild_matrix("x.com", repo_root=tmp_path)
         endpoints = {ep["endpoint"] for ep in matrix["endpoints"]}
         # Both endpoints must be present
@@ -1028,40 +1001,28 @@ class TestRebuildMatrix:
         assert "/wp-json/wp/v2/users" in endpoints
         # The findings-only endpoint has the right cell marked
         wp_ep = next(ep for ep in matrix["endpoints"] if ep["endpoint"] == "/wp-json/wp/v2/users")
-        assert wp_ep["cells"]["Authz"]["status"] == "tested_finding"
+        assert wp_ep["cells"]["Authz"]["status"] == "untested"
         # All vuln_class cells exist on the new endpoint (not just the marked one)
         for vc in VULN_CLASSES:
             assert vc in wp_ep["cells"]
 
-    def test_findings_for_folded_route_mark_template_cell(self, tmp_path):
+    def test_findings_for_folded_route_mark_template_cell(self, tmp_path, store):
         _seed_recon(tmp_path, "x.com", [
             "https://x.com/api/v1/orders/123",
             "https://x.com/api/v1/orders/456",
         ])
-        findings_dir = tmp_path / "findings" / "x.com"
-        findings_dir.mkdir(parents=True)
-        (findings_dir / "findings.json").write_text(json.dumps([{
-            "id": "F-folded",
-            "endpoint": "/api/v1/orders/123",
-            "vuln_class": "IDOR",
-        }]), encoding="utf-8")
+        _claim(store, 'F-folded', '/api/v1/orders/123', 'IDOR')
 
         matrix = rebuild_matrix("x.com", repo_root=tmp_path)
         endpoints = {ep["endpoint"]: ep for ep in matrix["endpoints"]}
 
         assert "/api/v1/orders/{id}" in endpoints
         assert "/api/v1/orders/123" not in endpoints
-        assert endpoints["/api/v1/orders/{id}"]["cells"]["IDOR"]["status"] == "tested_finding"
+        assert endpoints["/api/v1/orders/{id}"]["cells"]["IDOR"]["status"] == "untested"
 
-    def test_rebuild_preserves_ai_kind_for_findings_only_endpoint(self, tmp_path):
+    def test_rebuild_preserves_ai_kind_for_findings_only_endpoint(self, tmp_path, store):
         _seed_recon(tmp_path, "x.com", [])
-        findings_dir = tmp_path / "findings" / "x.com"
-        findings_dir.mkdir(parents=True)
-        (findings_dir / "findings.json").write_text(json.dumps([{
-            "id": "F-1",
-            "endpoint": "/rest/products/search?q=",
-            "vuln_class": "SQLi",
-        }]), encoding="utf-8")
+        _claim(store, 'F-1', '/rest/products/search?q=', 'SQLi')
 
         first = rebuild_matrix("x.com", repo_root=tmp_path)
         save_matrix("x.com", first, repo_root=tmp_path)
@@ -1078,32 +1039,26 @@ class TestRebuildMatrix:
         ep = by_endpoint["/rest/products/search"]
         assert ep["endpoint_kind"] == "api_endpoint"
         assert ep["kind_reason"] == "browser-observed query API"
-        assert ep["cells"]["SQLi"]["status"] == "tested_finding"
+        assert ep["cells"]["SQLi"]["status"] == "untested"
 
-    def test_rebuild_handles_full_url_in_findings(self, tmp_path):
+    def test_rebuild_handles_full_url_in_findings(self, tmp_path, store):
         """A finding's endpoint may be a full URL (https://host/path) —
         canonicalization must strip scheme + host before matrix lookup.
         Otherwise the same logical endpoint creates two distinct rows.
         """
         _seed_recon(tmp_path, "x.com", [])  # no recon URLs
-        findings_dir = tmp_path / "findings" / "x.com"
-        findings_dir.mkdir(parents=True)
-        (findings_dir / "findings.json").write_text(json.dumps([{
-            "id": "F-1",
-            "endpoint": "https://wp.x.com/wp-json/wp/v2/users",
-            "vuln_class": "Authz",
-        }]), encoding="utf-8")
+        _claim(store, 'F-1', 'https://wp.x.com/wp-json/wp/v2/users', 'Authz')
         matrix = rebuild_matrix("x.com", repo_root=tmp_path)
         # The endpoint should appear with its canonical path (no scheme/host)
         endpoints = {ep["endpoint"] for ep in matrix["endpoints"]}
         assert "/wp-json/wp/v2/users" in endpoints
         # And the marked cell exists
         ep = next(ep for ep in matrix["endpoints"] if ep["endpoint"] == "/wp-json/wp/v2/users")
-        assert ep["cells"]["Authz"]["status"] == "tested_finding"
+        assert ep["cells"]["Authz"]["status"] == "untested"
 
 
 class TestFindGaps:
-    def test_returns_untested_cells_without_word_scores(self, tmp_path):
+    def test_returns_untested_cells_without_word_scores(self, tmp_path, store):
         _seed_recon(tmp_path, "x.com", [
             "/api/v1/admin/users",   # weight high
             "/api/v1/orders/123",     # weight medium
@@ -1124,16 +1079,16 @@ class TestFindGaps:
             {"endpoint": "/plain", "weight": 0, "cells": {"SQLi": {"status": "untested"}}},
             {"endpoint": "/admin", "weight": 100, "cells": {"Authz": {"status": "tested_clean"}}},
         ]
-        save_matrix("x.com", matrix, repo_root=tmp_path)
-        gaps = find_high_value_gaps("x.com", repo_root=tmp_path)
+        gaps = high_value_gaps_from_matrix(matrix)
         assert [(g["endpoint"], g["vuln_class"]) for g in gaps] == [("/plain", "SQLi")]
         assert "weight" not in gaps[0]
 
     def test_empty_matrix_yields_empty_gaps(self, tmp_path):
+        TargetStore(tmp_path, "ghost.com").initialize()
         gaps = find_high_value_gaps("ghost.com", repo_root=tmp_path)
         assert gaps == []
 
-    def test_cli_limit_is_presentation_only_and_reports_total(self, tmp_path, monkeypatch, capsys):
+    def test_cli_limit_is_presentation_only_and_reports_total(self, tmp_path, monkeypatch, capsys, store):
         _seed_recon(tmp_path, "x.com", ["https://x.com/api/admin/users"])
         save_matrix("x.com", rebuild_matrix("x.com", repo_root=tmp_path), repo_root=tmp_path)
 
@@ -1165,7 +1120,7 @@ class TestFindGaps:
         assert limited["returned"] == 1
         assert limited["truncated"] is True
 
-    def test_cli_default_keeps_unfamiliar_and_keyword_named_routes(self, tmp_path, capsys):
+    def test_cli_default_keeps_unfamiliar_and_keyword_named_routes(self, tmp_path, capsys, store):
         _seed_recon(tmp_path, "x.com", ["https://x.com/plain/path", "https://x.com/api/import?url=one"])
         rebuild_matrix("x.com", repo_root=tmp_path)
         assert coverage_matrix_module.main(["find-gaps", "--target", "x.com", "--repo-root", str(tmp_path)]) == 0
@@ -1174,9 +1129,9 @@ class TestFindGaps:
         assert all("relevance_score" not in item and "weight" not in item for item in gaps)
 
 
-    def test_parameter_names_do_not_choose_a_vulnerability_class(self, tmp_path):
+    def test_parameter_names_do_not_choose_a_vulnerability_class(self, tmp_path, store):
         _seed_recon(tmp_path, "x.com", [
-            "https://api.target.com/api/admin/users?isAdmin=true&userId=1001",
+            "https://api.x.com/api/admin/users?isAdmin=true&userId=1001",
         ])
         matrix = rebuild_matrix("x.com", repo_root=tmp_path)
         save_matrix("x.com", matrix, repo_root=tmp_path)
@@ -1198,13 +1153,13 @@ class TestFindGaps:
     @pytest.mark.parametrize(
         ("url", "expected_class"),
         [
-            ("https://api.target.com/api/v1/fetch?url=http://127.0.0.1/", "SSRF"),
-            ("https://api.target.com/download?file=readme.txt", "Path"),
-            ("https://api.target.com/api/render?template=invoice", "RCE"),
-            ("https://api.target.com/api/search?q=test&sort=created_at", "SQLi"),
+            ("https://api.x.com/api/v1/fetch?url=http://127.0.0.1/", "SSRF"),
+            ("https://api.x.com/download?file=readme.txt", "Path"),
+            ("https://api.x.com/api/render?template=invoice", "RCE"),
+            ("https://api.x.com/api/search?q=test&sort=created_at", "SQLi"),
         ],
     )
-    def test_class_named_routes_keep_every_canonical_family(self, tmp_path, url, expected_class):
+    def test_class_named_routes_keep_every_canonical_family(self, tmp_path, url, expected_class, store):
         _seed_recon(tmp_path, "x.com", [url])
         matrix = rebuild_matrix("x.com", repo_root=tmp_path)
         save_matrix("x.com", matrix, repo_root=tmp_path)
@@ -1223,12 +1178,12 @@ class TestFindGaps:
         assert all("relevance_score" not in g for g in gaps)
 
 
-    def test_sqli_semantics_require_real_query_signals_not_resource_words(self, tmp_path):
+    def test_sqli_semantics_require_real_query_signals_not_resource_words(self, tmp_path, store):
         """`select` / `order` 资源名不应单靠路径触发 SQLi 高价值 gap。"""
         _seed_recon(tmp_path, "x.com", [
-            "https://api.target.com/rest/order-history",
-            "https://api.target.com/address/select",
-            "https://api.target.com/rest/products/search?q=test",
+            "https://api.x.com/rest/order-history",
+            "https://api.x.com/address/select",
+            "https://api.x.com/rest/products/search?q=test",
         ])
         matrix = rebuild_matrix("x.com", repo_root=tmp_path)
         save_matrix("x.com", matrix, repo_root=tmp_path)
@@ -1242,7 +1197,7 @@ class TestFindGaps:
         assert ("/rest/products/search", "SQLi") in gap_pairs
 
 
-    def test_payload_shaped_dom_paths_rank_as_xss_not_ssrf_or_rce(self, tmp_path):
+    def test_payload_shaped_dom_paths_rank_as_xss_not_ssrf_or_rce(self, tmp_path, store):
         _seed_recon(tmp_path, "x.com", [
             "https://x.com/urldom/location/hash/fetch",
             "https://x.com/reflected/filteredstrings/body/caseSensitive/script?q=a",
@@ -1260,7 +1215,7 @@ class TestFindGaps:
         assert "XSS" in classes_by_endpoint["/urldom/location/hash/fetch"]
         assert "XSS" in classes_by_endpoint["/reflected/filteredstrings/body/caseSensitive/script"]
 
-    def test_unbalanced_archive_path_stays_raw_but_not_in_coverage_queue(self, tmp_path):
+    def test_unbalanced_archive_path_stays_raw_but_not_in_coverage_queue(self, tmp_path, store):
         malformed = "https://x.com/dom/index.html.[10"
         valid = "https://x.com/dom/index.html"
         _seed_recon(tmp_path, "x.com", [malformed, valid])
@@ -1273,7 +1228,7 @@ class TestFindGaps:
         assert malformed in (tmp_path / "recon" / "x.com" / "urls" / "all.txt").read_text()
 
 
-    def test_embedded_external_path_noise_is_excluded_without_dropping_query_urls(self, tmp_path):
+    def test_embedded_external_path_noise_is_excluded_without_dropping_query_urls(self, tmp_path, store):
         malformed = [
             "https://x.com/articles/http://external.example/report",
             "https://x.com/articles/annual%0Areport",
@@ -1294,10 +1249,10 @@ class TestFindGaps:
         assert not any(endpoint.startswith("/articles/") for endpoint in endpoints)
         assert "/api/fetch" in endpoints
 
-    def test_numeric_paths_are_not_dropped_by_value_words(self, tmp_path):
+    def test_numeric_paths_are_not_dropped_by_value_words(self, tmp_path, store):
         _seed_recon(tmp_path, "x.com", [
-            "https://app.target.com/16",
-            "https://app.target.com/orders/16",
+            "https://app.x.com/16",
+            "https://app.x.com/orders/16",
         ])
         matrix = rebuild_matrix("x.com", repo_root=tmp_path)
         save_matrix("x.com", matrix, repo_root=tmp_path)
@@ -1310,14 +1265,14 @@ class TestFindGaps:
         assert "/orders/16" in endpoints
         assert ("/16", "IDOR") in gap_pairs
 
-    def test_race_semantics_require_state_transition_not_state_resource_words(self, tmp_path):
+    def test_race_semantics_require_state_transition_not_state_resource_words(self, tmp_path, store):
         """`order` / `balance` 资源名不应单靠路径触发 Race 高价值 gap。"""
         _seed_recon(tmp_path, "x.com", [
-            "https://api.target.com/rest/order-history",
-            "https://api.target.com/rest/track-order",
-            "https://api.target.com/rest/wallet/balance",
-            "https://api.target.com/api/cart/checkout",
-            "https://api.target.com/api/payment/confirm?coupon=SAVE10",
+            "https://api.x.com/rest/order-history",
+            "https://api.x.com/rest/track-order",
+            "https://api.x.com/rest/wallet/balance",
+            "https://api.x.com/api/cart/checkout",
+            "https://api.x.com/api/payment/confirm?coupon=SAVE10",
         ])
         matrix = rebuild_matrix("x.com", repo_root=tmp_path)
         save_matrix("x.com", matrix, repo_root=tmp_path)
@@ -1355,66 +1310,46 @@ def test_high_value_gap_preserves_explicit_closure_identity(tmp_path):
             for vuln_class in VULN_CLASSES
         },
     }]
-    save_matrix("x.com", matrix, repo_root=tmp_path)
-
-    gap = next(
-        item
-        for item in find_high_value_gaps("x.com", repo_root=tmp_path)
-        if item["vuln_class"] == "SQLi"
-    )
+    gap = next(item for item in high_value_gaps_from_matrix(matrix) if item["vuln_class"] == "SQLi")
     assert gap["identity_v2"] == identity
 
 
 class TestMarkCell:
-    def test_mark_creates_endpoint_if_missing(self, tmp_path):
-        cell = mark_cell(
-            "x.com", "/admin/x", "IDOR", "n_a",
-            reason="read-only resource",
-            repo_root=tmp_path,
-        )
-        assert cell["status"] == "n_a"
-        loaded = load_matrix("x.com", repo_root=tmp_path)
-        # endpoint now exists
-        ep = [e for e in loaded["endpoints"] if e["endpoint"] == "/admin/x"][0]
-        assert ep["cells"]["IDOR"]["status"] == "n_a"
-        assert ep["cells"]["IDOR"]["reason"] == "read-only resource"
+    def test_mark_creates_advisory_endpoint_if_missing(self, tmp_path, store):
+        marked = mark_cell("x.com", "/admin/x", "IDOR", "n_a", reason="read-only resource", repo_root=tmp_path)
+        assert marked["advisory"] is True
+        assert marked["review"]["value"] == "n_a"
+        ep = read_matrix("x.com", tmp_path)["endpoints"][0]
+        assert ep["endpoint"] == "/admin/x"
+        assert ep["cells"]["IDOR"]["status"] == "untested"
+        assert ep["cells"]["IDOR"]["review"]["reason"] == "read-only resource"
 
-    def test_mark_overwrites_existing(self, tmp_path):
-        mark_cell("x.com", "/admin/x", "IDOR", "untested", repo_root=tmp_path)
-        mark_cell("x.com", "/admin/x", "IDOR", "tested_clean", repo_root=tmp_path)
-        loaded = load_matrix("x.com", repo_root=tmp_path)
-        ep = loaded["endpoints"][0]
-        assert ep["cells"]["IDOR"]["status"] == "tested_clean"
+    def test_mark_appends_review_and_preserves_prior_input(self, tmp_path, store):
+        first = mark_cell("x.com", "/admin/x", "IDOR", "untested", repo_root=tmp_path)
+        second = mark_cell("x.com", "/admin/x", "IDOR", "tested_clean", repo_root=tmp_path)
+        cell = read_matrix("x.com", tmp_path)["endpoints"][0]["cells"]["IDOR"]
+        assert cell["status"] == "untested"
+        assert cell["review"]["id"] == second["review"]["id"]
+        assert store.coverage_review(first["review"]["id"])["value"] == "untested"
 
-    def test_invalid_vuln_class_rejected(self, tmp_path):
+    def test_invalid_vuln_class_rejected(self, tmp_path, store):
         with pytest.raises(ValueError):
             mark_cell("x.com", "/admin/x", "Bogus", "untested", repo_root=tmp_path)
 
-    def test_invalid_status_rejected(self, tmp_path):
+    def test_invalid_status_rejected(self, tmp_path, store):
         with pytest.raises(ValueError):
             mark_cell("x.com", "/admin/x", "IDOR", "bogus", repo_root=tmp_path)
 
-    def test_mark_with_write_finding_appends_to_findings_json(self, tmp_path):
-        """PR-12: when mark with status=tested_finding and write_finding=True,
-        the cell ALSO appears in findings/<target>/findings.json so a
-        future rebuild_matrix re-ingests it. Closes the pilot-flow gap
-        where mark_cell calls were lost on rebuild.
-        """
-        mark_cell(
-            "x.com", "/wp-json/wp/v2/users", "Authz", "tested_finding",
-            reason="user enum verified",
-            repo_root=tmp_path,
-            write_finding=True,
-        )
-        findings_path = tmp_path / "findings" / "x.com" / "findings.json"
-        assert findings_path.is_file()
-        data = json.loads(findings_path.read_text(encoding="utf-8"))
-        assert isinstance(data, dict)
-        entry = next(e for e in data["findings"] if e["endpoint"] == "/wp-json/wp/v2/users")
-        assert entry["vuln_class"] == "Authz"
-        assert entry["reason"] == "user enum verified"
-        assert entry["source"] == "mark_cell"
-        assert entry["validation_status"] == "candidate"
+    def test_mark_with_write_finding_creates_unassessed_store_claim(self, tmp_path, store):
+        result = mark_cell("x.com", "/wp-json/wp/v2/users", "Authz", "tested_finding",
+                           reason="User enumeration claim", repo_root=tmp_path, write_finding=True)
+        finding = store.finding(result["review"]["finding_id"])
+        assert finding["endpoint"] == "https://x.com/wp-json/wp/v2/users"
+        assert finding["family"] == "Authz"
+        assert finding["claim"] == "User enumeration claim"
+        assert finding["assessment"] is None
+        assert store.page("operations")["total"] == 0
+        assert not (tmp_path / "findings/x.com/findings.json").exists()
 
     def test_primary_mark_with_write_finding_uses_store_claim_owner(self, tmp_path):
         from tools.target_store import TargetStore
@@ -1452,53 +1387,23 @@ class TestMarkCell:
         )
         assert not matrix_is_fresh(target, matrix, repo_root=tmp_path)
 
-    def test_write_finding_idempotent(self, tmp_path):
-        """Repeated mark_cell with write_finding=True must not duplicate."""
+    def test_write_finding_idempotent(self, tmp_path, store):
         for _ in range(3):
-            mark_cell(
-                "x.com", "/wp-json/wp/v2/users", "Authz", "tested_finding",
-                reason="r",
-                repo_root=tmp_path,
-                write_finding=True,
-            )
-        findings_path = tmp_path / "findings" / "x.com" / "findings.json"
-        data = json.loads(findings_path.read_text(encoding="utf-8"))
-        wp_entries = [e for e in data["findings"] if e["endpoint"] == "/wp-json/wp/v2/users"]
-        assert len(wp_entries) == 1
+            mark_cell("x.com", "/wp-json/wp/v2/users", "Authz", "tested_finding",
+                      reason="Unassessed claim", repo_root=tmp_path, write_finding=True, command_id="same-command")
+        assert store.page("findings")["total"] == 1
+        assert store.coverage_review_page()["total"] == 1
+        assert store.binding()["revision"] == 1
 
-    def test_write_finding_preserves_existing_canonical_lifecycle(self, tmp_path):
-        findings_path = tmp_path / "findings" / "x.com" / "findings.json"
-        upsert_finding(
-            findings_path.parent,
-            {
-                "id": "existing-validated",
-                "url": "https://x.com/search?q=1",
-                "type": "sqli",
-                "severity": "high",
-                "confidence": "confirmed",
-            },
-            target="x.com",
-        )
-        update_finding_status(
-            findings_path.parent,
-            "existing-validated",
-            validation_status="validated",
-            report_status="generated",
-            report_id="sqli_001",
-        )
+    def test_write_finding_preserves_existing_claim(self, tmp_path, store):
+        _claim(store, "existing", "/search?q=1", "SQLi")
+        before = store.finding("existing")
+        mark_cell("x.com", "/api/orders/1", "IDOR", "tested_finding",
+                  reason="owner/peer divergence", repo_root=tmp_path, write_finding=True)
+        assert store.page("findings")["total"] == 2
+        assert store.finding("existing") == {**before, "revision": store.binding()["revision"]}
 
-        mark_cell(
-            "x.com", "/api/orders/1", "IDOR", "tested_finding",
-            reason="owner/peer divergence", repo_root=tmp_path, write_finding=True,
-        )
-        payload = json.loads(findings_path.read_text(encoding="utf-8"))
-        by_id = {item["id"]: item for item in payload["findings"]}
-
-        assert payload["total"] == 2
-        assert by_id["existing-validated"]["validation_status"] == "validated"
-        assert by_id["existing-validated"]["report_id"] == "sqli_001"
-
-    def test_write_finding_skipped_for_non_finding_status(self, tmp_path):
+    def test_write_finding_skipped_for_non_finding_status(self, tmp_path, store):
         """write_finding only takes effect for status=tested_finding."""
         mark_cell(
             "x.com", "/admin/x", "IDOR", "n_a",
@@ -1508,7 +1413,7 @@ class TestMarkCell:
         # No findings.json should be created for n_a marks
         assert not findings_path.is_file()
 
-    def test_rebuild_after_write_finding_preserves_cell(self, tmp_path):
+    def test_rebuild_after_write_finding_preserves_cell(self, tmp_path, store):
         """End-to-end PR-12 contract: mark_cell --write-finding then
         rebuild_matrix must preserve the marked cell, even when the
         endpoint is absent from recon URLs.
@@ -1529,7 +1434,7 @@ class TestMarkCell:
         endpoints = {ep["endpoint"] for ep in loaded["endpoints"]}
         assert "/wp-json/wp/v2/users" in endpoints
         ep = next(e for e in loaded["endpoints"] if e["endpoint"] == "/wp-json/wp/v2/users")
-        assert ep["cells"]["Authz"]["status"] == "tested_finding"
+        assert ep["cells"]["Authz"]["status"] == "untested"
 
 
 class TestQuestionToToolDiscoverability:
@@ -1768,7 +1673,7 @@ class TestExtendedVulnClasses:
         assert set(VULN_CLASSES[10:15]) == set(self.NEW_CLASSES)
         assert tuple(VULN_CLASSES[15:]) == self.SEMANTIC_CLASSES
 
-    def test_new_classes_create_cells_on_rebuild(self, tmp_path):
+    def test_new_classes_create_cells_on_rebuild(self, tmp_path, store):
         """C3: a fresh rebuild produces an `untested` cell for each of
         the 5 new classes on every endpoint, alongside cells for the
         10 originals.
@@ -1780,113 +1685,41 @@ class TestExtendedVulnClasses:
             assert vc in cells, f"new class {vc} missing on rebuild"
             assert cells[vc]["status"] == "untested"
 
-    def test_legacy_matrix_auto_migrates_on_rebuild(self, tmp_path):
-        """C3 auto-migration: a matrix JSON written before this enum
-        extension has only the 10 old cell keys per endpoint. On the
-        next rebuild, line 235 `setdefault` adds the 5 new cells as
-        `untested` while preserving any pre-existing operator
-        annotations on the original cells.
-        """
-        target = "legacy.com"
-        matrix_dir = tmp_path / "evidence" / target
-        matrix_dir.mkdir(parents=True)
-        # Hand-craft a 10-class matrix shape (the pre-extension wire)
-        legacy_cells = {
-            vc: {"status": "untested"}
-            for vc in ("IDOR", "SSRF", "XSS", "Race", "Authz",
-                       "GraphQL", "OAuth", "Upload", "Webhook", "JWT")
-        }
-        legacy_cells["XSS"] = {"status": "n_a", "reason": "no-input page"}
-        legacy_matrix = {
-            "target": target,
-            "vuln_classes": ["IDOR", "SSRF", "XSS", "Race", "Authz",
-                             "GraphQL", "OAuth", "Upload", "Webhook", "JWT"],
-            "endpoints": [{
-                "endpoint": "/api/v1/admin/users",
-                "weight": 5.0,
-                "cells": legacy_cells,
-            }],
-            "summary": {},
-            "last_updated": "2026-05-14T00:00:00+00:00",
-        }
-        (matrix_dir / "coverage_matrix.json").write_text(
-            json.dumps(legacy_matrix), encoding="utf-8"
-        )
-        # Same endpoint must be in recon for the merge path to fire
-        _seed_recon(tmp_path, target, ["/api/v1/admin/users"])
-        rebuilt = rebuild_matrix(target, repo_root=tmp_path)
-        save_matrix(target, rebuilt, repo_root=tmp_path)
-        loaded = load_matrix(target, repo_root=tmp_path)
-        # vuln_classes field upgraded to the 15-class list
-        assert len(loaded["vuln_classes"]) == len(VULN_CLASSES)
-        ep = next(e for e in loaded["endpoints"]
-                  if e["endpoint"] == "/api/v1/admin/users")
-        # All 15 cells exist
-        for vc in VULN_CLASSES:
-            assert vc in ep["cells"], f"cell {vc} missing after auto-migration"
-        # New cells default to untested
-        for vc in self.NEW_CLASSES:
-            assert ep["cells"][vc]["status"] == "untested"
-        # Pre-existing annotation survived
-        assert ep["cells"]["XSS"]["status"] == "n_a"
-        assert ep["cells"]["XSS"]["reason"] == "no-input page"
+    def test_legacy_matrix_does_not_authorize_current_cells_on_rebuild(self, tmp_path, store):
+        _seed_recon(tmp_path, "x.com", ["/api/v1/admin/users"])
+        path = tmp_path / "evidence/x.com/coverage_matrix.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"target": "x.com", "endpoints": [{
+            "endpoint": "/api/v1/admin/users", "cells": {"XSS": {"status": "n_a", "reason": "legacy"}},
+        }]}))
+        matrix = read_matrix("x.com", tmp_path)
+        cells = matrix["endpoints"][0]["cells"]
+        assert set(cells) == set(VULN_CLASSES)
+        assert all(cell["status"] == "untested" for cell in cells.values())
+        assert load_matrix("x.com", tmp_path)["endpoints"][0]["cells"]["XSS"]["reason"] == "legacy"
 
     @pytest.mark.parametrize("new_class", list(NEW_CLASSES))
-    def test_mark_writefinding_rebuild_for_each_new_class(self, tmp_path, new_class):
-        """C2 end-to-end PR-12 contract for each of the 5 new classes:
-        `mark --write-finding` then `rebuild --force-clean` must
-        preserve the marked cell, even when the endpoint is absent
-        from recon URLs (this is the exact failure mode the pilot
-        SQLi cell hit before this PR).
-        """
-        target = f"x-{new_class.lower()}.com"
+    def test_mark_writefinding_rebuild_for_each_new_class(self, tmp_path, new_class, store):
         endpoint = f"/api/v1/{new_class.lower()}-target"
-        # No recon URLs — endpoint exists only because mark created it
-        _seed_recon(tmp_path, target, [])
-        mark_cell(
-            target, endpoint, new_class, "tested_finding",
-            reason=f"PoC: {new_class} confirmed end-to-end",
-            repo_root=tmp_path,
-            write_finding=True,
-        )
-        # findings.json was created with the new-class entry
-        findings_path = tmp_path / "findings" / target / "findings.json"
-        assert findings_path.is_file()
-        data = json.loads(findings_path.read_text(encoding="utf-8"))
-        entry = next(e for e in data["findings"] if e["endpoint"] == endpoint)
-        assert entry["vuln_class"] == new_class
-        assert entry["source"] == "mark_cell"
-        # Force-clean rebuild wipes operator state, but findings.json
-        # entries with the new-class string must NOT be filtered out
-        # by the line-256 guard
-        rebuilt = rebuild_matrix(target, repo_root=tmp_path, force_clean=True)
-        save_matrix(target, rebuilt, repo_root=tmp_path)
-        loaded = load_matrix(target, repo_root=tmp_path)
-        ep = next(e for e in loaded["endpoints"] if e["endpoint"] == endpoint)
-        assert ep["cells"][new_class]["status"] == "tested_finding"
-        assert "evidence_ref" in ep["cells"][new_class]
+        result = mark_cell(store.target, endpoint, new_class, "tested_finding", reason="Claim requiring validation",
+                           repo_root=tmp_path, write_finding=True)
+        finding = store.finding(result["review"]["finding_id"])
+        assert finding["family"] == new_class and finding["assessment"] is None
+        rebuilt = rebuild_matrix(store.target, tmp_path, force_clean=True)
+        ep = next(e for e in rebuilt["endpoints"] if e["endpoint"] == endpoint)
+        assert ep["cells"][new_class]["status"] == "untested"
+        assert ep["cells"][new_class]["review"]["finding_id"] == finding["id"]
 
-    def test_findings_with_new_class_strings_pass_filter(self, tmp_path):
+    def test_findings_with_new_class_strings_pass_filter(self, tmp_path, store):
         """C2: the line-256 filter (`if vc not in VULN_CLASSES: continue`)
         used to silently drop SQLi/XXE/RCE/Path/CSRF entries from
         findings.json on rebuild. After enum extension, all 5 new
         class strings must produce cells.
         """
-        target = "all-new.com"
+        target = "x.com"
         _seed_recon(tmp_path, target, [])
-        findings_dir = tmp_path / "findings" / target
-        findings_dir.mkdir(parents=True)
-        findings = [
-            {
-                "id": f"F-{nc}",
-                "endpoint": f"/v1/{nc.lower()}-endpoint",
-                "vuln_class": nc,
-            }
-            for nc in self.NEW_CLASSES
-        ]
-        (findings_dir / "findings.json").write_text(
-            json.dumps(findings), encoding="utf-8"
-        )
+        for nc in self.NEW_CLASSES:
+            _claim(store, f"F-{nc}", f"/v1/{nc.lower()}-endpoint", nc)
         matrix = rebuild_matrix(target, repo_root=tmp_path)
         endpoint_cells = {ep["endpoint"]: ep["cells"] for ep in matrix["endpoints"]}
         for nc in self.NEW_CLASSES:
@@ -1895,7 +1728,7 @@ class TestExtendedVulnClasses:
                 f"endpoint {ep_path} not in matrix — finding for {nc} "
                 "was silently dropped (line-256 filter still rejecting?)"
             )
-            assert endpoint_cells[ep_path][nc]["status"] == "tested_finding"
+            assert endpoint_cells[ep_path][nc]["status"] == "untested"
 
 
 class TestVulnClassNormalization:
@@ -1979,41 +1812,28 @@ class TestVulnClassNormalization:
         assert "SQLi" in msg
         assert "RCE" in msg
 
-    def test_unknown_via_mark_cell_raises(self, tmp_path):
+    def test_unknown_via_mark_cell_raises(self, tmp_path, store):
         with pytest.raises(ValueError):
             mark_cell("x.com", "/admin/x", "totally-bogus", "untested",
                       repo_root=tmp_path)
 
-    def test_mark_cell_with_lowercase(self, tmp_path):
-        """AC2: `mark --vuln-class sqli` must succeed and the on-disk
-        matrix must store the canonical `SQLi`."""
-        mark_cell("x.com", "/api/orders/1", "sqli", "tested_finding",
-                  reason="boolean blind", repo_root=tmp_path,
-                  write_finding=True)
-        loaded = load_matrix("x.com", repo_root=tmp_path)
-        ep = loaded["endpoints"][0]
-        # Cell stored under canonical key
-        assert "SQLi" in ep["cells"]
-        assert "sqli" not in ep["cells"]
-        assert ep["cells"]["SQLi"]["status"] == "tested_finding"
-        # findings.json also uses canonical name
-        findings = json.loads(
-            (tmp_path / "findings" / "x.com" / "findings.json").read_text(
-                encoding="utf-8"
-            )
-        )
-        assert findings["findings"][0]["vuln_class"] == "SQLi"
+    def test_mark_cell_with_lowercase(self, tmp_path, store):
+        result = mark_cell("x.com", "/api/check", "sqli", "tested_finding",
+                           reason="Claim requiring validation", repo_root=tmp_path, write_finding=True)
+        assert result["review"]["family"] == "SQLi"
+        assert store.finding(result["review"]["finding_id"])["family"] == "SQLi"
+        cell = read_matrix("x.com", tmp_path)["endpoints"][0]["cells"]["SQLi"]
+        assert cell["status"] == "untested"
+        assert cell["review"]["value"] == "tested_finding"
 
-    def test_mark_cell_with_alias(self, tmp_path):
-        """AC3: `mark --vuln-class lfi` resolves to canonical `Path`."""
-        mark_cell("x.com", "/file/download", "lfi", "tested_finding",
-                  reason="../../etc/passwd disclosed",
-                  repo_root=tmp_path, write_finding=True)
-        loaded = load_matrix("x.com", repo_root=tmp_path)
-        ep = loaded["endpoints"][0]
-        assert "Path" in ep["cells"]
-        assert "lfi" not in ep["cells"]
-        assert ep["cells"]["Path"]["status"] == "tested_finding"
+    def test_mark_cell_with_alias(self, tmp_path, store):
+        result = mark_cell("x.com", "/api/check", "lfi", "tested_finding",
+                           reason="Claim requiring validation", repo_root=tmp_path, write_finding=True)
+        assert result["review"]["family"] == "Path"
+        assert store.finding(result["review"]["finding_id"])["family"] == "Path"
+        cell = read_matrix("x.com", tmp_path)["endpoints"][0]["cells"]["Path"]
+        assert cell["status"] == "untested"
+        assert cell["review"]["value"] == "tested_finding"
 
     def test_alias_table_round_trip(self):
         """Every alias in the table must resolve to a canonical name
@@ -2030,9 +1850,8 @@ class TestRouteKindQualification:
 
     Anchors after the selection-authority refactor: every untested
     high-value cell stays in the matrix and AI-selectable regardless of its
-    route kind; ordering prefers observed server-backed handlers over SPA
-    shell routes; word-list relevance stays as a visible annotation and
-    exits both qualification and ordering.
+    route kind; ordering follows endpoint/class identity. Route observations
+    remain evidence for AI review without choosing the first work item.
     """
 
     def _seed_route_kind(self, tmp_path: Path, target: str, endpoint_url: str, kind: str) -> None:
@@ -2054,7 +1873,8 @@ class TestRouteKindQualification:
         }
         path.write_text(json.dumps(existing), encoding="utf-8")
 
-    def test_client_route_gap_stays_in_matrix_and_orders_after_server_backed(self, tmp_path):
+    def test_client_route_gap_stays_in_matrix_with_identity_order(self, tmp_path):
+        TargetStore(tmp_path, "route.test").initialize()
         target = "route.test"
         _seed_recon(tmp_path, target, [
             "https://route.test/payment",
@@ -2070,18 +1890,15 @@ class TestRouteKindQualification:
         payment_gaps = [g for g in gaps if g["endpoint"] == "/payment"]
         assert payment_gaps, "client_route stays in the matrix, never dropped"
         assert all(g.get("route_kind") == "client_route" for g in payment_gaps)
-        # All gaps are returned; ordering prefers server-backed first.
+        # All gaps are returned; ordering does not prefer server-backed routes.
         assert set(VULN_CLASSES) == {gap["vuln_class"] for gap in payment_gaps}
         server_gaps = [g for g in gaps if g.get("route_kind") == "json_api"]
         assert server_gaps
         ordered = sorted(gaps, key=coverage_matrix_module._gap_sort_key)
-        first_server = min(
-            index for index, gap in enumerate(ordered) if gap.get("route_kind") == "json_api"
+        assert [gap["endpoint"] for gap in ordered[:len(payment_gaps)]] == ["/payment"] * len(payment_gaps)
+        assert [(gap["endpoint"], gap["vuln_class"]) for gap in ordered] == sorted(
+            (gap["endpoint"], gap["vuln_class"]) for gap in gaps
         )
-        last_client = max(
-            index for index, gap in enumerate(ordered) if gap.get("route_kind") == "client_route"
-        )
-        assert first_server < last_client, "observed server-backed handlers rank ahead of SPA shells"
 
     def test_word_list_relevance_stays_visible_but_exits_ordering(self, tmp_path):
         gap_high = {
@@ -2093,11 +1910,12 @@ class TestRouteKindQualification:
             "relevance_score": 0, "route_kind": "json_api",
         }
         ordered = sorted([gap_high, gap_low], key=coverage_matrix_module._gap_sort_key)
-        assert ordered[0] is gap_low, "route-kind observation outranks word-list relevance"
+        assert ordered[0] is gap_high, "identity order is independent of route kind and relevance"
         # The relevance annotation survives for AI visibility.
         assert gap_high["relevance_score"] == 9
 
     def test_server_backed_route_kind_recorded_on_matrix_row(self, tmp_path):
+        TargetStore(tmp_path, "route.test").initialize()
         target = "route.test"
         _seed_recon(tmp_path, target, ["https://route.test/rest/admin/application-configuration"])
         self._seed_route_kind(
@@ -2109,6 +1927,7 @@ class TestRouteKindQualification:
         assert any(g.get("route_kind") == "json_api" for g in gaps)
 
     def test_matrix_fingerprint_binds_route_kinds_file(self, tmp_path):
+        TargetStore(tmp_path, "route.test").initialize()
         target = "route.test"
         _seed_recon(tmp_path, target, ["https://route.test/payment"])
         matrix = coverage_matrix_module._rebuild_matrix_unlocked(target, tmp_path)

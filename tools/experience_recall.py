@@ -1,26 +1,13 @@
 #!/usr/bin/env python3
-"""统一经验读入口（2026-09-12 记忆复核顺序 2 第一步）。
+"""Read target-owned Store experience and explicitly promoted knowledge cards.
 
-经验散在 11+ 个目标的 target memory、patterns.jsonl 和知识卡里，Claude
-想用历史经验时得先猜读哪个文件。本工具把跨来源经验聚合成一个 Claude
-可读的视图：这是"形成→召回→复用→巩固"闭环的召回端。
-
-规模判断（当前 177 条情节）：聚合视图 + Claude 原生语义判断足够；向量
-索引等跨目标条目超过 ~500 或视图超预算时再启动（架构契约
-memory-contract 的"以真实规模决定"原则）。
-
-目标隔离（评审硬边界 + 2026-09-12 收敛裁定）：默认只返回当前目标的
-情节与技术经验；其他目标的私有情节和 pattern 行都不因"召回不足"混入。
-跨项目复用唯一通道 = 人工审核晋升的知识卡。
-
-查询是 Claude 侧语义判断的辅助过滤：--query 做词项交集粗筛（缩小视图），
-相关性判断由 Claude 读聚合结果完成，不在本工具里模拟语义检索。
+Keyword filtering narrows the view; Claude judges relevance. Other targets'
+private history and retired PatternDB files never enter the current view.
 """
 
 from __future__ import annotations
 
 import argparse
-import ast
 import json
 import re
 import sys
@@ -30,34 +17,18 @@ from typing import Any
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 try:
-    from tools.target_paths import canonical_target_value, target_storage_key
-    from tools.target_memory import text_is_polluted
-    from tools.target_store import TargetStore, target_backend
+    from tools.target_paths import canonical_target_value
+    from tools.target_store import StoreError, runtime_store
 except ImportError:  # pragma: no cover - direct tools/ execution
     sys.path.insert(0, str(BASE_DIR))
-    from target_paths import canonical_target_value, target_storage_key  # type: ignore
-    from target_memory import text_is_polluted  # type: ignore
-    from target_store import TargetStore, target_backend  # type: ignore
+    from target_paths import canonical_target_value  # type: ignore
+    from target_store import StoreError, runtime_store  # type: ignore
 
 
-# 每类条目的默认上限：聚合视图是工作集压缩的读形态，不是全量 dump
-DEFAULT_LIMITS = {
-    "lead": 5,
-    "dead_end": 5,
-    "useful_pattern": 5,
-    "next_action": 3,
-    "pattern_db": 10,
-    "knowledge_card": 10,
-}
-
-_KIND_TO_FIELD = {
-    "lead": "active_leads",
-    "dead_end": "dead_ends",
-    "useful_pattern": "useful_patterns",
-    "next_action": "next_actions",
-}
+KNOWLEDGE_CARD_LIMIT = 10
 
 _STORE_KIND = {
+    "note": "note",
     "lead": "hypothesis",
     "dead_end": "negative",
     "useful_pattern": "primitive",
@@ -72,213 +43,43 @@ def _tokenize(text: str) -> set[str]:
     }
 
 
-def _entry_text(entry: dict) -> str:
-    """Normalize entry text: plain string, dict, or legacy stringified dict.
-
-    存量嵌套污染（2026-09-15 治理）：能干净解出的用解出值；解出后仍含
-    结构外壳（内嵌形态，边界已被有损截断破坏）返回空——不用残缺文本
-    伪装正常记忆。
-    """
-    text = entry.get("text", "")
-    if isinstance(text, dict):
-        text = str(text.get("text", "") or "")
-    raw = str(text or "")
-    if text_is_polluted(raw):
-        # 历史写入方曾把 dict 的 repr 存成 text；尝试解出内层 text。
-        try:
-            parsed = ast.literal_eval(raw)
-            inner = str(parsed.get("text", "") or "") if isinstance(parsed, dict) else ""
-        except (ValueError, SyntaxError):
-            inner = ""
-        # 内嵌形态解不出干净文本（title[:140] 截断破坏了边界）——返回空
-        return inner if (inner and not text_is_polluted(inner)) else ""
-    return raw
-
-
-def _entry_matches(entry: dict, query_tokens: set[str]) -> bool:
-    """词项粗筛：文本 + structured 假设全字段并集命中任一 token。"""
-    if not query_tokens:
-        return True
-    haystack = _entry_text(entry)
-    structured = entry.get("structured")
-    if isinstance(structured, dict):
-        haystack += " " + " ".join(str(v) for v in structured.values() if v)
-    return bool(_tokenize(haystack) & query_tokens)
-
-
-def _load_target_memory(repo_root: Path, target: str) -> dict:
-    """Load one target's memory through the canonical owner.
-
-    2026-09-14 审计修复：此前直接 json.loads 目标文件，绕过
-    ``normalize_target_memory`` 的归属校验——beta 记录被误放进 alpha
-    文件名时，正式 owner 拒绝而 recall 照读并把 beta 内容标成 alpha
-    返回。现在复用 ``load_target_memory_file``：归属不符返回空，
-    recall 不再成为绕过校验的第二读入口。
-    """
-    from tools.target_memory import canonical_target_value, load_target_memory_file
-
-    canonical = canonical_target_value(target)
-    path = repo_root / "memory" / "goals" / "targets" / f"{target_storage_key(canonical)}.json"
-    try:
-        return load_target_memory_file(path, expected_target=canonical)
-    except ValueError:
-        # 归属不符（文件内容与文件名指向不同目标）：按缺失处理，不把
-        # 别的目标内容当本目标返回。
-        return {}
+def _store_entry(row: dict, target: str) -> dict:
+    kind_by_store = {value: key for key, value in _STORE_KIND.items()}
+    evidence = row.get("evidence", [])
+    return {
+        "kind": kind_by_store[row["kind"]], "target": target,
+        "ts": row["created_at"], "text": row["statement"],
+        "entry_id": row["id"], "conditions": row["conditions"],
+        "reopen_when": row["reopen_when"], "next_intent": row["next_intent"],
+        "recorded_by": row["recorded_by"], "action_id": row["action_id"],
+        "finding_id": row["finding_id"], "evidence": evidence,
+        "evidence_refs": [f"{item['operation_id']}:{item['step']}" for item in evidence],
+        "structured": {key: row[key] for key in ("conditions", "reopen_when", "next_intent") if row[key]} or None,
+    }
 
 
 def _collect_target_entries(
-    repo_root: Path, target: str, kinds: list[str], query_tokens: set[str]
-) -> list[dict]:
-    if target_backend(repo_root, target) == "primary":
-        store = TargetStore(repo_root, target)
-        selected = tuple(sorted({_STORE_KIND[kind] for kind in kinds if kind in _STORE_KIND}))
-        if not selected:
-            return []
-        rows: list[dict] = []
-        page = store.page("experiences", limit=1000)
-        while True:
-            rows.extend(
-                item for item in page.get("items", [])
-                if isinstance(item, dict) and item.get("kind") in selected
-            )
-            if not page.get("has_more"):
-                break
-            page = store.page("experiences", limit=1000, cursor=page.get("next_cursor"))
-        kind_by_store = {value: key for key, value in _STORE_KIND.items()}
-        entries: list[dict] = []
-        limits = {kind: DEFAULT_LIMITS[kind] for kind in kinds if kind in DEFAULT_LIMITS}
-        counts = {kind: 0 for kind in limits}
-        for row in reversed(rows):
-            kind = kind_by_store.get(str(row.get("kind") or ""))
-            if not kind or counts[kind] >= limits[kind]:
-                continue
-            structured = {
-                key: row[key]
-                for key in ("conditions", "reopen_when", "next_intent")
-                if str(row.get(key) or "").strip()
-            }
-            candidate = {
-                "kind": kind,
-                "target": target,
-                "ts": row.get("created_at", ""),
-                "text": str(row.get("statement") or "").strip(),
-                "entry_id": row.get("id", ""),
-                "evidence_refs": [],
-                "structured": structured or None,
-            }
-            if not candidate["text"] or not _entry_matches(candidate, query_tokens):
-                continue
-            expanded = store.experience(str(row.get("id") or ""))
-            candidate["evidence_refs"] = [
-                f"{item.get('operation_id')}:{item.get('step')}"
-                for item in expanded.get("evidence", [])
-                if isinstance(item, dict)
-            ]
-            entries.append(candidate)
-            counts[kind] += 1
-        return entries
-
-    memory = _load_target_memory(repo_root, target)
-    entries: list[dict] = []
-    for kind in kinds:
-        field = _KIND_TO_FIELD.get(kind)
-        if not field:
-            continue
-        matched = [
-            entry for entry in memory.get(field, [])
-            if isinstance(entry, dict) and _entry_matches(entry, query_tokens)
-        ]
-        # 最近优先（列表本身按时间追加，尾部最新）；同文去重（dict 形态与
-        # 纯文本形态可能记录同一事件）
-        limit = DEFAULT_LIMITS[kind]
-        seen_texts: set[str] = set()
-        emitted = 0
-        truncated = False
-        for entry in reversed(matched):
-            text = _entry_text(entry)
-            if not text or text in seen_texts:
-                continue
-            seen_texts.add(text)
-            # 有界视图提示（2026-09-14 审计 + 三轮边界修复）：截断必须可见——
-            # 窗口填满后仍有未输出条目才追加提示，提示本身不是一条记录
-            # （不进 counts，也不占用窗口）。旧写法在恰好 6 条时不提示、
-            # 7 条时把提示计入记录数。
-            if emitted >= limit:
-                truncated = True
-                break
-            emitted += 1
-            structured = entry.get("structured") if isinstance(entry.get("structured"), dict) else None
-            entries.append({
-                "kind": kind,
-                "target": target,
-                "ts": entry.get("ts", ""),
-                "text": text,
-                "entry_id": entry.get("entry_id", ""),
-                "evidence_refs": entry.get("evidence_refs", []),
-                "structured": structured,
-            })
-        if truncated:
-            entries.append({
-                "kind": kind,
-                "target": target,
-                "ts": "",
-                "text": f"(truncated: {kind} window reached — read the owner file for full history)",
-                "entry_id": "",
-                "evidence_refs": [],
-                "structured": None,
-                "truncated": True,
-            })
-    return entries
-
-
-def _collect_pattern_db(repo_root: Path, target: str, query_tokens: set[str]) -> list[dict]:
-    """PatternDB 经验：默认只收当前目标（项目内经验沉淀）。
-
-    跨项目自动带入现场记忆不作为默认能力（2026-09-12 收敛裁定）：相关性
-    难保证，容易带入过期条件。确有值得复用的跨项目经验，人工审核后晋升
-    知识卡（/distill → promote），由 knowledge_cards 通道按需读取——那是
-    知识复用，不是项目状态共享。
-    """
-    path = repo_root / "hunt-memory" / "patterns.jsonl"
-    if not path.is_file():
-        return []
-    rows: list[dict] = []
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return []
-    for line in reversed(lines):  # 最新在前
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(row, dict):
-            continue
-        # 目标隔离：只收当前目标的模式行（跨项目经验走知识卡通道）
-        if str(row.get("target", "")).strip() != target:
-            continue
-        # 查询粗筛对 technique/notes/tags 生效
-        haystack = " ".join(str(row.get(k, "") or "") for k in ("technique", "notes", "vuln_class"))
-        haystack += " " + " ".join(str(t) for t in row.get("tags", []))
-        if query_tokens and not (_tokenize(haystack) & query_tokens):
-            continue
-        rows.append({
-            "kind": "pattern_db",
-            "target": row.get("target", ""),
-            "ts": row.get("ts", ""),
-            "text": f"{row.get('technique', '')} [{row.get('vuln_class', '')}]"
-                    + (f" (outcome={row['outcome']})" if row.get("outcome") else "")
-                    + (f" payout={row['payout']}" if row.get("payout") else ""),
-            "tech_stack": row.get("tech_stack", []),
-            "entry_id": f"{row.get('target', '')}|{row.get('vuln_class', '')}|{row.get('technique', '')}",
-        })
-        if len(rows) >= DEFAULT_LIMITS["pattern_db"]:
-            break
-    return rows
+    repo_root: Path, target: str, kinds: list[str],
+    *, query: str = "", limit: int = 5, cursor: str | None = None,
+    experience_id: str | None = None,
+) -> tuple[list[dict], dict | None]:
+    store = runtime_store(repo_root, target)
+    selected = sorted({_STORE_KIND[kind] for kind in kinds if kind in _STORE_KIND})
+    if not selected:
+        if "pattern_db" in kinds:
+            raise StoreError("PatternDB is legacy-only for primary targets; use note, dead_end or useful_pattern")
+        if cursor or experience_id:
+            raise StoreError("target experience cursor or ID requires a target experience kind")
+        return [], None
+    if experience_id:
+        row = store.experience(experience_id)
+        if row["kind"] not in selected:
+            raise StoreError(f"experience {experience_id} is outside the selected kinds")
+        return [_store_entry(row, target)], None
+    page = store.experience_page(kinds=selected, query=query, limit=limit, cursor=cursor)
+    return [_store_entry(row, target) for row in page["items"]], {
+        key: page[key] for key in ("store_id", "revision", "order", "total", "remaining", "has_more", "next_cursor")
+    }
 
 
 def _collect_knowledge_cards(repo_root: Path, query_tokens: set[str]) -> list[dict]:
@@ -325,7 +126,7 @@ def _collect_knowledge_cards(repo_root: Path, query_tokens: set[str]) -> list[di
             "ref": rel_path,
             "maturity": maturity,
         })
-        if len(entries) >= DEFAULT_LIMITS["knowledge_card"]:
+        if len(entries) >= KNOWLEDGE_CARD_LIMIT:
             break
     return entries
 
@@ -336,20 +137,22 @@ def build_recall_view(
     target: str,
     query: str = "",
     kinds: list[str] | None = None,
+    limit: int = 5,
+    cursor: str | None = None,
+    experience_id: str | None = None,
 ) -> dict[str, Any]:
     """Aggregate one Claude-readable recall view across experience sources."""
     canonical = canonical_target_value(target)
     query_tokens = _tokenize(query) if query else set()
-    selected_kinds = kinds or list(_KIND_TO_FIELD) + ["pattern_db", "knowledge_card"]
+    selected_kinds = kinds or list(_STORE_KIND) + ["knowledge_card"]
 
-    target_entries = _collect_target_entries(repo_root, canonical, selected_kinds, query_tokens)
-    pattern_entries = (
-        _collect_pattern_db(repo_root, canonical, query_tokens)
-        if "pattern_db" in selected_kinds else []
+    target_entries, target_page = _collect_target_entries(
+        repo_root, canonical, selected_kinds, query=query,
+        limit=limit, cursor=cursor, experience_id=experience_id,
     )
     card_entries = (
         _collect_knowledge_cards(repo_root, query_tokens)
-        if "knowledge_card" in selected_kinds else []
+        if "knowledge_card" in selected_kinds and not experience_id else []
     )
 
     return {
@@ -364,12 +167,14 @@ def build_recall_view(
         },
         "counts": {
             "target_entries": sum(1 for e in target_entries if not e.get("truncated")),
-            "pattern_db": len(pattern_entries),
+            "pattern_db": 0,
             "knowledge_cards": len(card_entries),
-            "truncated_windows": sum(1 for e in target_entries if e.get("truncated")),
+            "truncated_windows": sum(1 for e in target_entries if e.get("truncated"))
+                                 + int(bool(target_page and target_page["has_more"])),
         },
         "target_entries": target_entries,
-        "pattern_db": pattern_entries,
+        "target_page": target_page,
+        "pattern_db": [],
         "knowledge_cards": card_entries,
         "note": (
             "query 是词项粗筛，相关性判断由 Claude 完成。情节 evidence_refs/structured "
@@ -380,25 +185,31 @@ def build_recall_view(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Aggregate one recall view across target memory, patterns, and knowledge cards."
+        description="Read Store experiences and reviewed knowledge cards."
     )
     parser.add_argument("--target", required=True, help="current target (isolation anchor)")
     parser.add_argument("--query", default="", help="optional coarse token filter")
     parser.add_argument(
         "--kind", action="append", default=[],
-        choices=["lead", "dead_end", "useful_pattern", "next_action", "pattern_db", "knowledge_card"],
+        choices=["note", "lead", "dead_end", "useful_pattern", "next_action", "pattern_db", "knowledge_card"],
         help="restrict to specific kinds (repeatable)",
     )
     parser.add_argument("--repo-root", default=str(BASE_DIR))
+    parser.add_argument("--limit", type=int, default=5, help="target experience page size")
+    parser.add_argument("--cursor", default=None, help="target experience next-page cursor")
+    parser.add_argument("--id", dest="experience_id", default=None, help="expand one target experience")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
-    view = build_recall_view(
-        Path(args.repo_root),
-        target=args.target,
-        query=args.query,
-        kinds=args.kind or None,
-    )
+    try:
+        view = build_recall_view(
+            Path(args.repo_root), target=args.target, query=args.query,
+            kinds=args.kind or None, limit=args.limit, cursor=args.cursor,
+            experience_id=args.experience_id,
+        )
+    except (StoreError, ValueError) as exc:
+        print(f"experience recall failed: {exc}", file=sys.stderr)
+        return 2
     if args.json:
         print(json.dumps(view, ensure_ascii=False, indent=2))
         return 0
@@ -415,6 +226,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"- ({entry['kind']} {ts}){entry_id} {entry['text']}")
             if entry.get("evidence_refs"):
                 print(f"  evidence: {', '.join(entry['evidence_refs'][:3])}")
+            for field, label in (("conditions", "conditions"), ("reopen_when", "reopen_when"),
+                                 ("next_intent", "next_intent"), ("recorded_by", "recorded_by")):
+                if entry.get(field):
+                    print(f"  {label}: {entry[field]}")
             # structured 判断单元的关键字段必须进入默认文本（2026-09-14
             # 审计）：JSON 保留了它们而文本不显示——压缩/接手后默认视图
             # 丢失证据引用、下一步和停止条件，恢复时不得不再读原文件。
@@ -429,11 +244,9 @@ def main(argv: list[str] | None = None) -> int:
                     if value:
                         print(f"  {label}: {value}")
         print()
-    if view["pattern_db"]:
-        print("## 本目标技术经验（PatternDB）")
-        for entry in view["pattern_db"]:
-            stack = ",".join(entry.get("tech_stack", [])[:4])
-            print(f"- [{entry['target']}] {entry['text']}" + (f" (stack: {stack})" if stack else ""))
+    if view["target_page"] and view["target_page"]["has_more"]:
+        print(f"More target experiences: {view['target_page']['remaining']}")
+        print(f"Next cursor: {view['target_page']['next_cursor']}")
         print()
     if view["knowledge_cards"]:
         print("## 已晋升知识卡（按需读正文）")

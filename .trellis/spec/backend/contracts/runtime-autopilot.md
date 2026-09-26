@@ -888,20 +888,24 @@ Use when Autopilot `next_action`, Checkpoint candidate selection, or Checkpoint 
 
 ### 2. Contracts
 
-- `autopilot_state._pick_next_action()` owns fine-grained action priority.
-- Checkpoint builds candidates from coverage, actor, case, evidence, and surface inputs, then reuses
-  `action_queue.select_next_action()` to select the effective executable action.
-- Checkpoint `decision` is a pure, total projection of the selected action type. It must not maintain
-  a second state-priority router. Live `wait_recon` / `wait_scan` remains the only pre-selection gate.
-- If filtering leaves no executable candidate, Checkpoint returns `handoff` instead of reusing a stale
-  state action. Unknown action types also fail visible to `handoff`.
-- A report may remain queued while canonical recon or higher-value surface work is selected; the
-  queued report is not lost or treated as already completed.
+- Checkpoint reads the existing Store Action Queue, Case, Coverage, evidence and
+  material sources. It never proposes, ingests or resolves actions.
+- Pending actions are ordered by stable ID, with a five-item page, total,
+  remainder and explicit expansion. AI selects new work. An already-running
+  action may be shown as the current action; otherwise the pointer is empty.
+- `decision=continue` leaves selection to AI, including an empty queue. Live
+  `wait_recon` / `wait_scan` is the transient process gate. Raw materials remain
+  visible independently of whether anyone registered review work.
+- Same-call private assembly can reuse acquired owner inputs. Public Pack/State
+  entries reject caller snapshots and read fresh owners; each Checkpoint reads
+  current evidence integrity and checks Store revision drift before returning.
 
 ### 3. Tests Required
 
-- `tests/test_checkpoint.py` must cover each decision family, unknown actions, live wait, empty-queue
-  handoff, report retention, and recon/surface priority conflicts.
+`tests/test_checkpoint.py` covers candidate pages/expansion, claimed action
+recovery, empty queues, no automatic actions, current integrity and bounded reads.
+`tests/test_context_pack.py` rejects foreign, stale and same-revision damaged
+caller projections.
 
 ## Scenario: Coordinator Maintenance Gate
 
@@ -999,21 +1003,17 @@ discover_parameters(..., max_urls=5, deep=False, resume=False) -> dict
 - AI-selected JSON/query/form replays use the existing HTTP/request-diff
   boundary and preserve exact request/response evidence. Zero-day fuzzing may
   adapt only in deep mode and retains the same scope and evidence gates.
-- Checkpoint recommendations do not prebind every substantive Queue action to a
-  Skill. AI claim supplies a validated `metadata.skill_route` whose `skill_id`
-  is a canonical `primary` entry in the shared `SKILL_CATALOG`, whose
-  `skill_path` matches the repository file, and whose `required_dimensions` is
-  non-empty; replacing an action-owner route requires the replacement route and
-  reason. An `active_dimension` outside the selected route requires a bounded
-  `dimension_override_reason`. Hand-written versionless actions remain backward
-  compatible.
+- Skill selection/loading belongs to the native platform. Queue/Store do not
+  validate `skill_route`, `route_required`, preset `required_dimensions` or Skill
+  files; parameter discovery never preselects a method. Experimental
+  `active_dimension` and Runner `tested_dimensions` retain their existing roles.
 - An action with `activation_required=true` is executable only after an AI claim
   carrying `depth_contract_version=1`, `hypothesis_id`, open `family`/`technique`,
   `active_dimension`, `expected_learning`, `kill_condition`, `risk_tier`,
   `max_hypothesis_actions`, target-owned evidence references, and a bounded
   decision reason. `selected_knowledge_refs` is optional and canonicalizes to
   `[]`; non-empty refs must use action recommendations or record an override
-  reason. Missing activation, route, evidence, or budget metadata rejects the
+  reason. Missing required execution evidence or budget metadata rejects the
   claim before queue mutation.
 - The Runner may observe only a prior running claim. It writes `last_outcome`,
   replayable `summary_ref`/`evidence_ref`, `runner_operation_id`,

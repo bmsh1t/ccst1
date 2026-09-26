@@ -16,33 +16,17 @@ from pathlib import Path
 from typing import Iterable
 
 try:
-    from tools.action_queue import (
-        ACTIVE_STATUSES,
-        _is_final_action,
-        _semantic_action,
-        load_queue,
-    )
-    from tools.closure_projection import build_current_cell_projection
-    from tools.evidence_ledger import load_entries_diagnostic
     from tools.current_truth import current_cell_projection
     from tools.target_paths import canonical_target_value, target_storage_key
-    from tools.target_store import TargetStore, target_backend
+    from tools.target_store import runtime_store
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from action_queue import (  # type: ignore
-        ACTIVE_STATUSES,
-        _is_final_action,
-        _semantic_action,
-        load_queue,
-    )
-    from closure_projection import build_current_cell_projection  # type: ignore
-    from evidence_ledger import load_entries_diagnostic  # type: ignore
     from current_truth import current_cell_projection  # type: ignore
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
-    from target_store import TargetStore, target_backend  # type: ignore
+    from target_store import runtime_store  # type: ignore
 
 
 # Bump when selection semantics change; stale derived decisions must not replay.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 6
 PROJECTION_KIND = "surface_projection"
 MANIFEST_KIND = "surface_input_manifest"
 
@@ -50,96 +34,6 @@ MANIFEST_KIND = "surface_input_manifest"
 # `recon_manifest.jsonl` 在 projection 发布后写入，若纳入指纹会让刚发布的
 # projection 立即变 stale；原始 surface artifact 仍完整保留。
 _GENERATED_RECON_PARTS = frozenset({"surface", "recon_manifest.jsonl"})
-
-
-_QUEUE_TRANSIENT_FIELDS = frozenset({
-    "attempts",
-    "claim_status",
-    "claimed_at",
-    "claimed_by",
-    "created_at",
-    "last_outcome",
-    "next_question",
-    "runner_operation_id",
-    "tested_dimensions",
-    "updated_at",
-})
-
-
-def _without_queue_transients(value: object) -> object:
-    if isinstance(value, dict):
-        return {
-            key: _without_queue_transients(child)
-            for key, child in value.items()
-            if key not in _QUEUE_TRANSIENT_FIELDS
-        }
-    if isinstance(value, list):
-        return [_without_queue_transients(child) for child in value]
-    return value
-
-
-def _semantic_action_queue(repo_root: Path, target: str) -> dict:
-    """Project Queue meaning while ignoring claim/runner write-back churn."""
-    if target_backend(repo_root, target) == "primary":
-        store = TargetStore(repo_root, target)
-        page = store.page("actions", limit=1000)
-        rows = list(page.get("items") or [])
-        while page.get("has_more"):
-            page = store.page("actions", limit=1000, cursor=page.get("next_cursor"))
-            rows.extend(page.get("items") or [])
-        status_map = {
-            "ready": "queued",
-            "claimed": "running",
-            "blocked": "blocked",
-            "completed": "tested",
-            "cancelled": "n/a",
-        }
-        queue = {
-            "schema_version": 1,
-            "target": canonical_target_value(target),
-            "backend": "primary",
-            "store_id": page.get("store_id", ""),
-            "revision": page.get("revision", 0),
-            "actions": [
-                {
-                    "id": row.get("id", ""),
-                    "type": row.get("kind", "work"),
-                    "status": status_map.get(str(row.get("status") or ""), "blocked"),
-                    "priority": row.get("priority"),
-                    "action": row.get("intent", ""),
-                    "evidence": row.get("reason", ""),
-                    "metadata": {
-                        key: row[key]
-                        for key in (
-                            "endpoint", "family", "subject_artifact_id",
-                            "subject_finding_id", "subject_experience_id",
-                        )
-                        if row.get(key) not in (None, "")
-                    },
-                }
-                for row in rows
-            ],
-        }
-    else:
-        queue = load_queue(repo_root, target)
-    semantic_queue = _without_queue_transients(queue)
-    if not isinstance(semantic_queue, dict):  # pragma: no cover - owner returns an object
-        return {"kind": "action_queue_semantic_projection", "queue": {}}
-    actions: list[dict] = []
-    for action in queue.get("actions", []):
-        if not isinstance(action, dict):
-            continue
-        semantic_action = _without_queue_transients(_semantic_action(action))
-        if not isinstance(semantic_action, dict):  # pragma: no cover - action is an object
-            continue
-        raw_status = str(action.get("status") or "queued")
-        semantic_action["status"] = raw_status if _is_final_action(action) else (
-            "active" if raw_status in ACTIVE_STATUSES else raw_status
-        )
-        actions.append(semantic_action)
-    actions.sort(key=lambda item: json.dumps(item, ensure_ascii=True, sort_keys=True))
-    semantic_queue["actions"] = actions
-    return {"kind": "action_queue_semantic_projection", "queue": semantic_queue}
 
 
 def _semantic_closed_cells(value: object) -> list[dict]:
@@ -163,28 +57,14 @@ def _semantic_closed_cells(value: object) -> list[dict]:
 
 def _semantic_evidence_ledger(repo_root: Path, target: str) -> dict:
     """Project the Ledger closure owner without rewriting or hashing raw rows."""
-    if target_backend(repo_root, target) == "primary":
-        truth = current_cell_projection(repo_root, target)
-        return {
-            "kind": "target_store_closure_projection",
-            "status": "invalid" if truth["health"].get("status") in {"partial", "unreadable"} else "ready",
-            "revision": truth["source"].get("revision", 0),
-            "closed_cells": _semantic_closed_cells(truth["projection"].get("closed_cells")),
-            "closed_cells_v2": _semantic_closed_cells(truth["projection"].get("closed_cells_v2")),
-        }
-    diagnostic = load_entries_diagnostic(repo_root, target)
-    projection = build_current_cell_projection(list(diagnostic.get("entries") or []))
+    truth = current_cell_projection(repo_root, target)
     return {
-        "kind": "evidence_ledger_closure_projection",
-        # Missing, empty, and lead-only ledgers all have the same Surface
-        # closure meaning. Corrupt/unreadable input must still invalidate it.
-        "status": (
-            "invalid"
-            if str(diagnostic.get("status") or "missing") in {"partial", "unreadable"}
-            else "ready"
-        ),
-        "closed_cells": _semantic_closed_cells(projection.get("closed_cells")),
-        "closed_cells_v2": _semantic_closed_cells(projection.get("closed_cells_v2")),
+        "kind": "target_store_closure_projection",
+        "status": "invalid" if truth["health"].get("status") in {"partial", "unreadable"} else "ready",
+        "store_id": truth["source"].get("store_id", ""),
+        "revision": truth["source"].get("revision", 0),
+        "closed_cells": _semantic_closed_cells(truth["projection"].get("closed_cells")),
+        "closed_cells_v2": _semantic_closed_cells(truth["projection"].get("closed_cells_v2")),
     }
 
 
@@ -238,34 +118,11 @@ def _manifest_roots(
     memory_dir: str | Path | None = None,
 ) -> list[tuple[Path, frozenset[str]]]:
     storage_key = target_storage_key(target)
-    if target_backend(repo_root, target) == "primary":
-        return [
-            (repo_root / "recon" / storage_key, _GENERATED_RECON_PARTS),
-            (repo_root / "findings" / storage_key, frozenset({".locks"})),
-            (repo_root / "state" / storage_key / "metadata.sqlite3", frozenset()),
-        ]
-    roots: list[tuple[Path, frozenset[str]]] = [
+    return [
         (repo_root / "recon" / storage_key, _GENERATED_RECON_PARTS),
-        # owner 锁只承载并发控制；首次创建不能让业务输入 projection 失效。
         (repo_root / "findings" / storage_key, frozenset({".locks"})),
-        (repo_root / "memory" / "evidence" / storage_key, frozenset({".locks"})),
-        (repo_root / "memory" / "goals" / "targets" / f"{storage_key}.json", frozenset()),
-        (repo_root / "memory" / "goals" / "active.json", frozenset()),
-        (repo_root / "state" / storage_key / "action_queue.json", frozenset()),
-        (repo_root / "state" / storage_key / "observations-summary.json", frozenset()),
+        (repo_root / "state" / storage_key / "metadata.sqlite3", frozenset()),
     ]
-    if memory_dir:
-        memory_root = Path(memory_dir).resolve()
-        roots.extend(
-            [
-                (memory_root / "targets" / f"{storage_key}.json", frozenset()),
-                # patterns.jsonl 已移出输入指纹（审计 F9）：surface 排序自
-                # 2026-09-12 收敛裁定后不再消费跨目标 pattern（loader、
-                # 计分分支均已删），其他目标写入 pattern 不再使本目标投影
-                # 无效——这是输出不变的确定性收益，也消除无谓重建。
-            ]
-        )
-    return roots
 
 
 def build_surface_input_manifest(
@@ -279,16 +136,9 @@ def build_surface_input_manifest(
     repo = Path(repo_root).resolve()
     resolved = canonical_target_value(target)
     storage_key = target_storage_key(resolved)
-    if target_backend(repo, resolved) == "primary":
-        semantic_paths = {
-            f"state/{storage_key}/metadata.sqlite3": _semantic_evidence_ledger,
-            f"state/{storage_key}/action_queue.json": _semantic_action_queue,
-        }
-    else:
-        semantic_paths = {
-            f"state/{storage_key}/action_queue.json": _semantic_action_queue,
-            f"memory/evidence/{storage_key}/ledger.jsonl": _semantic_evidence_ledger,
-        }
+    semantic_paths = {
+        f"state/{storage_key}/metadata.sqlite3": _semantic_evidence_ledger,
+    }
     # pattern_calibration 绑定已移除（审计 F9）：calibrated pattern 排除只
     # 影响已被删除的跨目标 PatternDB 匹配，surface 排序不再消费该文件；
     # 保留绑定只会让校准行写入无谓地使投影失效。
@@ -355,11 +205,10 @@ def build_surface_input_manifest(
         separators=(",", ":"),
     )
     binding = {"target": resolved, "policy_version": SCHEMA_VERSION, "as_of": str(as_of or "")}
-    if target_backend(repo, resolved) == "primary":
-        store = TargetStore(repo, resolved)
-        with store._connection() as conn:
-            meta = dict(conn.execute("SELECT store_id, revision FROM store WHERE singleton=1").fetchone())
-        binding.update({"store_id": meta["store_id"], "revision": int(meta["revision"])})
+    store = runtime_store(repo, resolved)
+    with store._connection() as conn:
+        meta = dict(conn.execute("SELECT store_id, revision FROM store WHERE singleton=1").fetchone())
+    binding.update({"store_id": meta["store_id"], "revision": int(meta["revision"])})
     return {
         "kind": MANIFEST_KIND,
         "schema_version": SCHEMA_VERSION,
@@ -399,7 +248,7 @@ def _write_json_atomic(path: Path, payload: dict) -> None:
 
 
 def _bounded_surface(ranked: dict) -> dict:
-    """限制投影集合大小；candidate 已是 surface scorer 的有界证据摘要。"""
+    """限制投影集合大小，保留中性 URL 窗口及其完整性信息。"""
     allowed = (
         "available",
         "target",
@@ -416,6 +265,7 @@ def _bounded_surface(ranked: dict) -> dict:
         "browser",
         "semantic_surface",
         "surface_index",
+        "review_window",
         "evidence_refs",
         "stats",
     )
@@ -455,8 +305,10 @@ def _bounded_surface(ranked: dict) -> dict:
         "index_revision": str(index.get("index_revision") or "")[:64],
         "continuation": {
             "available": bool(continuation.get("available")),
-            "next_cursor": str(continuation.get("next_cursor") or "")[:512],
-            "command": str(continuation.get("command") or "")[:800],
+            "starts_at": str(continuation.get("starts_at") or ""),
+            "scope": str(continuation.get("scope") or ""),
+            "next_cursor": str(continuation.get("next_cursor") or ""),
+            "command": str(continuation.get("command") or ""),
         },
     }
     return surface
@@ -526,6 +378,7 @@ def load_surface_projection(
 ) -> dict:
     """只在 schema、target 和当前 manifest 全部命中时返回可消费投影。"""
     resolved = canonical_target_value(target)
+    store = runtime_store(repo_root, resolved)
     path = surface_projection_path(repo_root, resolved)
     if not path.is_file():
         return _projection_result(path, "missing", "projection-missing")
@@ -540,16 +393,12 @@ def load_surface_projection(
     if payload.get("target") != resolved or payload.get("storage_key") != target_storage_key(resolved):
         return _projection_result(path, "invalid", "target-mismatch")
     binding = payload.get("input_manifest", {}).get("binding") if isinstance(payload.get("input_manifest"), dict) else {}
-    if target_backend(repo_root, resolved) == "primary":
-        if not isinstance(binding, dict) or binding.get("target") != resolved:
-            return _projection_result(path, "invalid", "store-binding-missing")
-        if not isinstance(binding.get("as_of", ""), str):
-            return _projection_result(path, "invalid", "as-of-binding-invalid")
-        store = TargetStore(repo_root, resolved)
-        with store._connection() as conn:
-            meta = dict(conn.execute("SELECT store_id, revision FROM store WHERE singleton=1").fetchone())
-        if binding.get("store_id") != meta["store_id"] or int(binding.get("revision", -1)) != int(meta["revision"]):
-            return _projection_result(path, "stale", "store-revision-mismatch")
+    if not isinstance(binding, dict) or binding.get("target") != resolved:
+        return _projection_result(path, "invalid", "store-binding-missing")
+    if not isinstance(binding.get("as_of", ""), str):
+        return _projection_result(path, "invalid", "as-of-binding-invalid")
+    with store._connection() as conn:
+        meta = dict(conn.execute("SELECT store_id, revision FROM store WHERE singleton=1").fetchone())
     if not payload.get("complete") or not isinstance(payload.get("surface"), dict):
         return _projection_result(path, "invalid", "incomplete-projection")
     try:
@@ -557,6 +406,8 @@ def load_surface_projection(
     except (OSError, ValueError) as exc:
         return _projection_result(path, "invalid", f"manifest-error: {exc}")
     current_fingerprint = str(current.get("fingerprint") or "")
+    if binding.get("store_id") != meta["store_id"] or int(binding.get("revision", -1)) != int(meta["revision"]):
+        return _projection_result(path, "stale", "store-revision-mismatch", input_fingerprint=current_fingerprint)
     if str(payload.get("input_fingerprint") or "") != current_fingerprint:
         return _projection_result(
             path,

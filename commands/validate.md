@@ -26,28 +26,28 @@ Run full validation on the current finding before writing a report.
 
 - Candidate endpoint, vuln class, impact claim, and reproduction details
 - Exact request/response, browser/frame, state, or OOB evidence when available
-- `findings/<target>/findings.json` and `--finding-id` linkage when present
+- An existing Store Finding bound by `--finding-id` and registered operation evidence
 - Current target/runtime context from repo-local config and disk artifacts
 
 ## Outputs
 
 - Validation decision and reasoning
 - 当前 finding 独占的 `<artifact-key>.validation-summary.json`
-- Updated finding linkage/status when launched from `findings.json`
-- Updated runtime state so `/pickup` / `/surface` / autopilot know validation progress
+- Store technical assessment, independent destination decision and registered report when eligible
+- Current queries expose validation progress from those same facts
 
 ## Artifacts Written
 
 - 报告同目录的 `<artifact-key>.validation-summary.json`
 - 报告同目录的 `<artifact-key>.submission-notes.md`
 - `findings/last-validate.json`（仅为最近一次运行的 convenience pointer）
-- `findings/<target>/findings.json` status updates when applicable
-- `state/<target>/session.json`
+- Store assessment/delivery/report records and their command receipts
+- `state/<target>/session.json` runtime breadcrumbs and advisory calibration telemetry
 
 ## Resume Source
 
-- Structured finding linkage from `findings/<target>/findings.json`
-- canonical finding 行中 `validation_summary` 指向的摘要（如果该 finding 已部分验证）
+- Finding/assessment/report linkage from the target Store
+- The report-local summary path returned by this validation invocation
 - PASS cases hand off to `/report`; non-PASS cases hand off back to hunt with a
   concrete next evidence step
 
@@ -86,8 +86,8 @@ The tool does not prompt interactively or infer missing judgments.
 
 ## Machine Decision Path
 
-Never edit `findings/<target>/findings.json` directly. Bind a complete machine
-decision to the existing canonical finding instead:
+Bind a complete machine decision to an existing Store Finding. Legacy Finding
+JSON is not an input or write destination:
 
 ```bash
 python3 tools/validate.py --target <target> --finding-id <canonical-id> \
@@ -136,6 +136,27 @@ The observation fields and side-effect flags are documented in
 `docs/evidence-runners.md#native-evidence-registration`. Registration uses the
 same schema-v1 witness; then use the scaffold/preflight/decision path above.
 Request-diff is optional, not the admission test for a valid experiment.
+For a claimed Store execution Action, pass `--action-id ACTION_ID --claim-token
+CLAIM_TOKEN --actor OPERATOR` to either runner lane. The operator must be the
+claimant; observed `runs[].actor` roles remain separate. Registration preserves
+the claim without completing it; explicit resolve cites `store_operation_id`.
+Native registration retries keep the original attempt ID and argv. A real
+request-diff rerun requires a new attempt ID.
+
+Store scaffolds include `store_preconditions.assessment_id` and `delivery_id`.
+Keep these when filling a decision: null means no prior judgment. Identical
+decision retries reuse the same commands, including after assessment succeeds
+but delivery fails. A changed decision requires a fresh scaffold with the
+current predecessors; stale input fails before report/summary writes.
+Only the chosen runner operation's linked observations enter the assessment.
+Preflight checks their current integrity and refuses foreign or partial proof.
+
+On Store targets, Gates 1–3 and Q1/Q2/Q3/Q4/Q6 establish the technical verdict.
+Gate 4 (duplicate), Q5 (known/documented), and Q7 (destination exclusions) govern
+delivery separately. A real, evidenced boundary violation can remain confirmed
+while delivery is ineligible or deferred. Known behavior alone neither confirms
+nor refutes a violation; a missing technical gate still prevents confirmation.
+Report generation requires both confirmation and current eligible delivery.
 
 To check a decision before applying it, add `--preflight`. This reads the
 decision and canonical finding, reports all independent schema/binding errors,
@@ -150,13 +171,14 @@ Successful preflight returns `status: "preflight_ok"`; invalid input returns
 exit `2` with `status: "preflight_invalid"` and an `errors` list. Remove
 `--preflight` to apply the unchanged validation path.
 
-For a legacy target, the tool writes the summary, Ledger/Queue handoff and
-canonical status through their existing owners. For a primary target, the same
-command writes only the Store technical assessment and destination decision;
-legacy Ledger/Finding/Queue writers are rejected and no fallback JSON is
-consulted. A generated report remains a file until an explicit report/delivery
-command registers it. Each canonical row or Store record keeps the actual
-summary/artifact binding; callers must not reconstruct it from a global pointer.
+The command requires an initialized Store and records the technical assessment
+and destination decision separately. When eligible, it atomically publishes the
+AI report body and registers its artifact against those exact decisions. If
+registration fails, the body and committed decisions remain available for an
+idempotent retry. Report registration never submits externally or completes an
+Action. Legacy targets require explicit import; no legacy fallback is consulted.
+Use the returned summary/artifact binding rather than reconstructing a path from
+a global pointer.
 `findings/last-validate.json` is only a latest pointer and is never canonical
 evidence. Calls without `--decision-json` fail closed without creating report,
 finding, queue or runtime state.
@@ -172,19 +194,18 @@ current state:
 
 Reproducibility and evidence quality matter here.
 
-When a scanner finding index exists, the finding id from
-`findings/<target>/findings.json` binds the machine decision:
+An explicitly registered Finding ID binds the machine decision:
 
 ```bash
 python3 tools/validate.py --findings-dir findings/target.com --finding-id sqli_abc123 \
     --decision-json /tmp/validate-decision.json --json
 ```
 
-For a quick candidate list, read `findings/<target>/findings.json` directly or
-rebuild it with:
+For a candidate list or a selected Finding's current assessment/evidence:
 
 ```bash
-python3 tools/finding_index.py findings/target.com
+python3 tools/target_store.py findings --target target.com
+python3 tools/target_store.py findings --target target.com --id sqli_abc123
 ```
 
 When validation finishes, the returned per-finding validation summary keeps the
@@ -198,11 +219,9 @@ This lets `/report`, `/remember --from-validate`, and later review steps trace
 the validated issue back to the original scanner evidence without reparsing the
 raw finding files.
 
-The matching item in `findings.json` is also updated with `validation_status`,
-the exact `validation_summary` path, and its content digest when validation was
-launched with `--finding-id`.
-Subsequent `/surface` or direct `findings.json` review shows the
-validation/report status for each structured candidate.
+Subsequent `/surface` and Store Finding queries show the recorded technical and
+delivery/report status. Damaged supporting evidence invalidates current delivery
+eligibility without deleting the historical claim, judgment or report.
 
 Include in the explicit decision:
 - The endpoint

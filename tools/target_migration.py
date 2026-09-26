@@ -32,32 +32,47 @@ the importer would otherwise drop without a trace.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
 import re
 import shutil
 import sqlite3
+import sys
+import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+BASE_DIR = Path(__file__).resolve().parent.parent
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
+
+from memory.schemas import SchemaError, validate_pattern_entry
+from memory.target_profile import load_target_profile, target_profile_path
+from tools.scope_context import read_scope_source, scope_source_path, write_scope_source_locked
+from tools.scope_source import scope_source_from_profile
+
 try:
-    from tools.action_queue import load_queue
+    from tools.action_queue import load_legacy_queue
     from tools.evidence_identity import LEDGER_RESULTS, canonical_endpoint_identity
     from tools.evidence_ledger import load_entries_diagnostic
-    from tools.finding_index import load_finding_index, verify_finalized_finding_owner_provenance
+    from tools.finding_index import load_legacy_finding_index, verify_finalized_finding_owner_provenance
     from tools.target_paths import canonical_target_value, target_storage_key
+    from tools.target_memory import normalize_target_memory, text_is_polluted
     from tools.target_store import StoreError, TargetStore, target_cutover_lock
 except ImportError:  # pragma: no cover
-    from action_queue import load_queue  # type: ignore
+    from action_queue import load_legacy_queue  # type: ignore
     from evidence_identity import LEDGER_RESULTS, canonical_endpoint_identity  # type: ignore
     from evidence_ledger import load_entries_diagnostic  # type: ignore
     from finding_index import (  # type: ignore
-        load_finding_index,
+        load_legacy_finding_index,
         verify_finalized_finding_owner_provenance,
     )
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
+    from target_memory import normalize_target_memory, text_is_polluted  # type: ignore
     from target_store import StoreError, TargetStore, target_cutover_lock  # type: ignore
 
 
@@ -792,11 +807,11 @@ def _legacy_sources(repo_root: Path, target: str) -> dict[str, Any]:
     case_state = _load_case_state(repo_root, target)
     reports_path = repo_root / "reports" / key
     try:
-        queue = load_queue(repo_root, target)
+        queue = load_legacy_queue(repo_root, target)
     except (OSError, ValueError) as exc:
         queue = {"actions": [], "error": str(exc)}
     try:
-        findings = load_finding_index(repo_root / "findings" / key, migrate_legacy=False, target=target)
+        findings = load_legacy_finding_index(repo_root / "findings" / key, target=target)
     except (OSError, ValueError) as exc:
         findings = {"findings": [], "error": str(exc)}
     return {
@@ -851,16 +866,25 @@ def _target_memory_disposition(root: Path, canonical: str) -> dict[str, Any]:
         })
         return result
     declared = _text(payload.get("target"))
-    if declared and canonical_target_value(declared) != canonical:
+    try:
+        wrong_target = bool(declared and canonical_target_value(declared) != canonical)
+    except ValueError:
+        wrong_target = True
+    if wrong_target:
         result.update({
             "status": "quarantined",
             "declared_target": declared,
             "disposition": "target-memory declares another target; retained for explicit review",
         })
         return result
+    try:
+        payload = normalize_target_memory(payload, expected_target=canonical, path=path)
+    except ValueError as exc:
+        result.update({"status": "quarantined", "disposition": str(exc)[:240]})
+        return result
     fields: dict[str, int] = {}
     for field in (
-        "active_leads", "dead_ends", "next_actions", "useful_patterns",
+        "scope_notes", "active_leads", "dead_ends", "next_actions", "useful_patterns",
         "session_handoffs", "facts",
     ):
         value = payload.get(field)
@@ -872,17 +896,225 @@ def _target_memory_disposition(root: Path, canonical: str) -> dict[str, Any]:
             count = 0
         if count:
             fields[field] = count
+    if payload["active_goal"].strip():
+        fields["active_goal"] = 1
     total = sum(fields.values())
     result.update({
         "status": "valid",
         "fields": fields,
         "entries": total,
         "disposition": (
-            "retained in the legacy archive; not imported into Experience because legacy entries "
-            "lack a canonical operation binding and must be explicitly re-registered"
+            "retained as source material; eligible entries require a manifest-bound Experience import"
         ) if total else "valid target-memory file contains no migratable entries",
     })
     return result
+
+
+def _import_target_memory(report: dict[str, Any], store: TargetStore, root: Path,
+                          canonical: str, manifest: dict[str, Any]) -> None:
+    """Import historical advice without promoting unbound claims to evidence."""
+    disposition = report["legacy"]["target_memory"]
+    if disposition["status"] != "valid":
+        return
+    relative = f"memory/goals/targets/{target_storage_key(canonical)}.json"
+    source = next((item for item in manifest["files"] if item["path"] == relative), None)
+    if source is None:
+        raise StoreError(f"target-memory source is absent from migration manifest: {relative}")
+    path = root / relative
+    if path.is_symlink() or not path.is_file():
+        raise StoreError(f"target-memory source is not a regular file: {path}")
+    raw = path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != source["sha256"] or len(raw) != source["size"]:
+        raise StoreError(f"target-memory source differs from migration manifest: {relative}")
+    try:
+        memory = normalize_target_memory(json.loads(raw), expected_target=canonical, path=path)
+    except (ValueError, UnicodeError) as exc:
+        disposition.update(status="quarantined", disposition=f"target-memory structure invalid: {exc}")
+        report["quarantined"].append({"owner": "target-memory", "path": relative, "reason": str(exc)})
+        return
+    store.active_goal()  # A v8 target must be explicitly upgraded before the first imported row.
+
+    rows = [(field, index, item) for field in (
+        "scope_notes", "active_leads", "dead_ends", "next_actions", "useful_patterns", "session_handoffs"
+    ) for index, item in enumerate(memory[field])]
+    rows.extend(("facts", key, item) for key, item in sorted(memory["facts"].items()))
+    if memory["active_goal"].strip():
+        rows.append(("active_goal", "value", {"text": memory["active_goal"]}))
+    mapped = []
+    for field, position, item in rows:
+        if len(str(position)) > 80:
+            report["quarantined"].append({"owner": "target-memory", "path": relative,
+                                          "field": field, "position": str(position)[:80],
+                                          "reason": "historical source key is oversized"})
+            continue
+        declared = item.get("target")
+        try:
+            wrong_target = declared is not None and canonical_target_value(declared) != canonical
+        except (TypeError, ValueError):
+            wrong_target = True
+        if wrong_target:
+            report["quarantined"].append({"owner": "target-memory", "path": relative,
+                                          "field": field, "position": position,
+                                          "reason": "historical entry declares another target"})
+            continue
+        text = item.get("text") or (item.get("summary") if field == "session_handoffs" else "")
+        structured = item.get("structured") or {}
+        if not isinstance(structured, dict):
+            structured = {}
+        if not isinstance(text, str) or not text.strip() or len(text) > 4096 or text_is_polluted(text):
+            report["quarantined"].append({"owner": "target-memory", "path": relative,
+                                          "field": field, "position": position,
+                                          "reason": "empty, oversized or polluted historical text"})
+            continue
+        conditions = item.get("conditions") or structured.get("conditions") or "unknown"
+        reopen = item.get("reopen_when") or structured.get("reopen_when") or ""
+        next_intent = item.get("next_intent") or structured.get("next") or ""
+        if not all(isinstance(value, str) and len(value) <= 2048
+                   for value in (conditions, reopen, next_intent)):
+            report["quarantined"].append({"owner": "target-memory", "path": relative,
+                                          "field": field, "position": position,
+                                          "reason": "historical condition fields are invalid or oversized"})
+            continue
+        refs = item.get("evidence_refs") or []
+        evidence = []
+        if isinstance(refs, list):
+            for ref in refs:
+                if not isinstance(ref, str) or ":" not in ref:
+                    break
+                operation_id, step = ref.rsplit(":", 1)
+                if not step.isdecimal():
+                    break
+                try:
+                    operation = store.execution(operation_id)
+                    store.verify_operation(operation_id)
+                except StoreError:
+                    break
+                if not any(row["step"] == int(step) for row in operation["observations"]):
+                    break
+                evidence.append({"operation_id": operation_id, "step": int(step)})
+        if not isinstance(refs, list) or len(evidence) != len(refs):
+            evidence = []
+        kind = {"active_leads": "hypothesis", "next_actions": "handoff",
+                "session_handoffs": "handoff"}.get(field, "note")
+        if field == "dead_ends" and evidence and conditions != "unknown" and reopen:
+            kind = "negative"
+        elif field == "useful_patterns" and evidence:
+            kind = "primitive"
+        if kind not in {"negative", "primitive"}:
+            evidence = []
+            label = f"{field}[{position}]" if field == "facts" else field
+            text = f"Historical {label} (unverified): {text.strip()}"
+        command_id = "legacy-memory:" + _stable_id(manifest["sha256"], relative, field, position)
+        receipt = store.remember(command_id=command_id, kind=kind, statement=text,
+                                 conditions=conditions, reopen_when=reopen, next_intent=next_intent,
+                                 evidence=evidence, actor="migration")
+        source_id, source_ts = item.get("entry_id"), item.get("ts")
+        mapped.append({"experience_id": receipt["entity_id"], "source_path": relative,
+                       "field": field, "position": position,
+                       "source_id": source_id[:256] if isinstance(source_id, str) else "",
+                       "source_ts": source_ts[:64] if isinstance(source_ts, str) else "", "kind": kind,
+                       "evidence_status": "bound" if evidence else "unverified",
+                       "unbound_reference_count": len(refs) if isinstance(refs, list) and not evidence else 0})
+    disposition["source_sha256"] = source["sha256"]
+    disposition["source_manifest_sha256"] = manifest["sha256"]
+    disposition["experience_map"] = mapped
+    disposition["imported_experiences"] = len(mapped)
+    disposition["disposition"] = "imported eligible historical entries; original source retained"
+
+
+def _coverage_review_source(root: Path, canonical: str, manifest: dict) -> dict:
+    """Read pinned legacy annotations as historical review inputs, never evidence."""
+    relative = f"evidence/{target_storage_key(canonical)}/coverage_matrix.json"
+    result = {"status": "missing", "path": relative, "source_sha256": "", "reviews": [],
+              "quarantined": [], "retained_default_cells": 0}
+    path = root / relative
+    source = next((item for item in manifest["files"] if item.get("path") == relative), None)
+    if source is None and not path.exists() and not path.is_symlink():
+        return result
+    if source is None or path.is_symlink() or path.resolve() != path or not path.is_file():
+        raise StoreError(f"coverage source must be a regular manifest-bound file: {path}")
+    raw = path.read_bytes()
+    if len(raw) != source["size"] or hashlib.sha256(raw).hexdigest() != source["sha256"]:
+        raise StoreError(f"coverage source differs from migration manifest: {relative}")
+    result["source_sha256"] = source["sha256"]
+
+    def quarantine(pointer: str, reason: str) -> None:
+        result["quarantined"].append({"owner": "coverage", "path": relative,
+                                       "id": pointer, "reason": reason})
+
+    try:
+        payload = json.loads(raw)
+        if not isinstance(payload, dict) or not isinstance(payload.get("endpoints"), list):
+            raise ValueError("coverage matrix must contain an endpoints array")
+        if canonical_target_value(payload.get("target", "")) != canonical:
+            raise ValueError("coverage matrix declares another target")
+        if payload.get("backend") == "primary" or payload.get("store_id") or payload.get("source_snapshot"):
+            raise ValueError("Store Coverage projection is not a legacy author source")
+    except (ValueError, TypeError) as exc:
+        quarantine("/", str(exc))
+        result["status"] = "quarantined"
+        return result
+    store = TargetStore(root, canonical)
+    for index, ep in enumerate(payload["endpoints"]):
+        pointer = f"/endpoints/{index}"
+        if not isinstance(ep, dict):
+            quarantine(pointer, "endpoint row must be an object")
+            continue
+        try:
+            store.coverage_endpoint(ep.get("endpoint"))
+        except (ValueError, TypeError) as exc:
+            quarantine(pointer, str(exc))
+            continue
+        drafts = []
+        if (ep.get("endpoint_kind") not in (None, "", "untriaged")
+                or ep.get("kind_source") or ep.get("kind_reason") or ep.get("kind_triaged_at")):
+            drafts.append((pointer, {
+                "kind": "endpoint_kind", "value": ep.get("endpoint_kind"),
+                "source": ep.get("kind_source", "legacy_import"), "reason": ep.get("kind_reason", ""),
+                "reviewed_at": ep.get("kind_triaged_at", ""),
+            }))
+        cells = ep.get("cells", {})
+        if not isinstance(cells, dict):
+            quarantine(pointer + "/cells", "coverage cells must be an object")
+            cells = {}
+        for family, cell in cells.items():
+            cell_pointer = pointer + "/cells/" + family.replace("~", "~0").replace("/", "~1")
+            if not isinstance(cell, dict):
+                quarantine(cell_pointer, "coverage cell must be an object")
+                continue
+            if cell.get("status") == "untested" and not cell.get("reason"):
+                result["retained_default_cells"] += 1
+                continue
+            drafts.append((cell_pointer, {"kind": "cell_status", "family": family,
+                           "value": cell.get("status"), "reason": cell.get("reason", ""),
+                           "source": "legacy_import"}))
+        for source_pointer, draft in drafts:
+            try:
+                normalized = store.normalize_coverage_review(
+                    endpoint=ep.get("endpoint"), historical=True, **draft,
+                )
+            except (StoreError, ValueError, TypeError) as exc:
+                quarantine(source_pointer, str(exc))
+                continue
+            result["reviews"].append({"source_pointer": source_pointer, "input": normalized})
+    result["status"] = "partial" if result["quarantined"] else "valid"
+    return result
+
+
+def _import_coverage_reviews(report: dict, store: TargetStore, root: Path,
+                             canonical: str, manifest: dict) -> dict:
+    source = _coverage_review_source(root, canonical, manifest)
+    mapping = []
+    if source["reviews"]:
+        store.coverage_review_page(limit=1)  # Refuse old schemas before importing any row.
+    for row in source.pop("reviews"):
+        review_id = "legacy-coverage:" + _stable_id(source["path"], source["source_sha256"], row["source_pointer"])
+        store.record_coverage_review(command_id=review_id, actor="legacy-import", **row["input"])
+        mapping.append({"review_id": review_id, "source_pointer": row["source_pointer"]})
+    source["review_map"] = mapping
+    report["legacy"]["coverage"] = source
+    report["quarantined"].extend(source["quarantined"])
+    return source
 
 
 def _report_artifact_inventory(root: Path, key: str) -> list[dict[str, Any]]:
@@ -940,6 +1172,7 @@ def _migration_manifest(repo_root: Path, target: str) -> dict[str, Any]:
         repo_root / "evidence" / key,
         repo_root / ".private" / "validation" / key,
         repo_root / ".private" / "case-state" / key,
+        target_profile_path(repo_root / "hunt-memory", target),
     ]
     files: list[dict[str, Any]] = []
     for root in roots:
@@ -971,6 +1204,7 @@ def preview_target(repo_root: str | Path, target: str) -> dict[str, Any]:
     sources = _legacy_sources(root, canonical)
     report = _empty_report(canonical, sources)
     report["mode"] = "readonly-preview"
+    report["scope"] = _migration_scope(root, canonical)
     memory_disposition = _target_memory_disposition(root, canonical)
     report["legacy"]["target_memory"] = memory_disposition
     if memory_disposition.get("status") == "quarantined":
@@ -980,12 +1214,17 @@ def preview_target(repo_root: str | Path, target: str) -> dict[str, Any]:
             "reason": memory_disposition.get("disposition", "target-memory unavailable"),
         })
     report["manifest"] = _migration_manifest(root, canonical)
+    coverage = _coverage_review_source(root, canonical, report["manifest"])
+    coverage_count = len(coverage.pop("reviews"))
+    report["legacy"]["coverage"] = coverage
+    report["quarantined"].extend(coverage["quarantined"])
     report["source_counts"] = {
         "actions": len(sources["queue"].get("actions") or []),
         "findings": len(sources["findings"].get("findings") or []),
         "observations": len(sources["ledger"].get("entries") or []),
         "report_artifacts": len(_report_artifact_inventory(root, target_storage_key(canonical))),
         "target_memory_entries": int(memory_disposition.get("entries", 0) or 0),
+        "coverage_reviews": coverage_count,
     }
     if (
         sources["queue"].get("error")
@@ -993,6 +1232,7 @@ def preview_target(repo_root: str | Path, target: str) -> dict[str, Any]:
         or sources["ledger"].get("status") not in {"missing", "valid"}
         or sources["case_state"].get("error")
         or memory_disposition.get("status") == "quarantined"
+        or coverage["quarantined"]
     ):
         report["status"] = "partial"
     return report
@@ -1010,6 +1250,8 @@ def _copy_target_inputs(source: Path, destination: Path, target: str) -> None:
         (source / "evidence" / key, destination / "evidence" / key),
         (source / ".private" / "validation" / key, destination / ".private" / "validation" / key),
         (source / ".private" / "case-state" / key, destination / ".private" / "case-state" / key),
+        (target_profile_path(source / "hunt-memory", target),
+         target_profile_path(destination / "hunt-memory", target)),
     ]
     def reject_symlink_tree(path: Path) -> None:
         if path.is_symlink():
@@ -1055,6 +1297,7 @@ def import_target_staged(
     if destination.exists():
         raise StoreError(f"destination already exists: {destination}")
     canonical = canonical_target_value(target)
+    _migration_scope(source, canonical)
     manifest = _migration_manifest(source, canonical)
     disposition_payload, disposition_digest = _load_disposition_ledger(disposition_ledger)
     _validate_disposition_binding(disposition_payload, canonical, manifest["sha256"])
@@ -1082,7 +1325,19 @@ def import_target_staged(
             "source_manifest_sha256": manifest["sha256"],
             "source_manifest": manifest,
             "imported": result["imported"],
+            "scope_sha256": read_scope_source(staging, canonical)["sha256"],
         }
+        memory = result["legacy"]["target_memory"]
+        coverage = result["legacy"]["coverage"]
+        if coverage.get("source_sha256"):
+            receipt["coverage_backfill"] = {"source_manifest_sha256": manifest["sha256"], **coverage}
+        if memory.get("source_sha256"):
+            receipt["memory_backfill"] = {
+                "source_manifest_sha256": manifest["sha256"],
+                "source_sha256": memory["source_sha256"],
+                "experience_map": memory["experience_map"],
+                "quarantined": [row for row in result["quarantined"] if row.get("owner") == "target-memory"],
+            }
         if disposition_payload is not None:
             receipt["disposition_ledger"] = result.get("disposition_ledger", {
                 "ledger_sha256": disposition_digest,
@@ -1130,6 +1385,8 @@ def publish_preview(staging_root: str | Path, destination_root: str | Path, targ
         raise StoreError(f"migration receipt is unreadable: {receipt_path}") from exc
     if receipt.get("target") != canonical or receipt.get("backend") != "preview" or receipt.get("status") != "complete":
         raise StoreError("preview receipt is incomplete or does not match target")
+    if read_scope_source(staging, canonical)["sha256"] != receipt.get("scope_sha256"):
+        raise StoreError("preview Scope changed; rebuild the isolated migration")
     destination.parent.mkdir(parents=True, exist_ok=True)
     os.replace(staging, destination)
     return {"status": "published", "target": canonical, "destination_root": str(destination), "receipt": receipt}
@@ -1410,6 +1667,8 @@ def promote_target(repo_root: str | Path, target: str, *, source_manifest_sha256
                     "source_manifest_sha256": digest, "recovered": True}
         if meta["backend"] != "preview":
             raise StoreError("only a preview store can be promoted")
+        if read_scope_source(root, canonical)["sha256"] != receipt.get("scope_sha256"):
+            raise StoreError("preview Scope changed; rebuild the isolated migration")
         if fence is not None:
             try:
                 archive_state = json.loads(archive_path.read_text(encoding="utf-8"))
@@ -2156,6 +2415,23 @@ def _carry_case_backlog(
             report["legacy"]["case_backlog_conflicts"].append(conflict)
 
 
+def _migration_scope(root: Path, target: str) -> dict[str, Any]:
+    """Scope is an explicit migration input, never inferred from target notes."""
+    path = scope_source_path(root, target)
+    if path.exists() or path.is_symlink():
+        return read_scope_source(root, target)["manifest"]
+    memory_dir = root / "hunt-memory"
+    profile_path = target_profile_path(memory_dir, target)
+    external_memory = os.environ.get("HUNT_MEMORY_DIR")
+    if (external_memory and Path(external_memory).expanduser().resolve() != memory_dir.resolve()
+            and target_profile_path(Path(external_memory).expanduser(), target).exists()
+            and not profile_path.exists()):
+        raise StoreError("export the external target Profile into the isolated source hunt-memory before migration")
+    if profile_path.resolve() != profile_path:
+        raise StoreError(f"Scope Profile must not traverse symlinks: {profile_path}")
+    return scope_source_from_profile(load_target_profile(memory_dir, target), target)
+
+
 def import_target(
     repo_root: str | Path,
     target: str,
@@ -2176,6 +2452,7 @@ def import_target(
     root = Path(repo_root).resolve()
     rebase_root = Path(source_root).resolve() if source_root is not None else root
     canonical = canonical_target_value(target)
+    scope_manifest = _migration_scope(root, canonical)
     disposition_payload, disposition_digest = _load_disposition_ledger(disposition_ledger)
     expected_manifest = _migration_manifest(root, canonical)
     expected_manifest_sha256 = source_manifest_sha256 or expected_manifest["sha256"]
@@ -2235,6 +2512,9 @@ def import_target(
         # Legacy files exist by definition in the isolated copy this importer
         # operates on; the live-target guard is asserted by the copy assertion.
         store.initialize(allow_legacy=True)
+    with target_cutover_lock(root, canonical):
+        write_scope_source_locked(root, canonical, scope_manifest)
+    report["scope"] = scope_manifest
     entries = [row for row in sources["ledger"].get("entries", []) if isinstance(row, dict)]
     for row in sources["ledger"].get("entries", []):
         if not isinstance(row, dict):
@@ -2307,6 +2587,8 @@ def import_target(
         result: sum(1 for row in entries if _text(row.get("result")) == result)
         for result in sorted({_text(row.get("result")) for row in entries if _text(row.get("result"))})
     }
+    _import_target_memory(report, store, root, canonical, expected_manifest)
+    _import_coverage_reviews(report, store, root, canonical, expected_manifest)
     if report["quarantined"]:
         report["status"] = "partial"
     _apply_disposition_ledger(
@@ -2317,6 +2599,247 @@ def import_target(
         expected_manifest_sha256,
     )
     return report
+
+
+def backfill_coverage_reviews(source_root: str | Path, repo_root: str | Path, target: str) -> dict:
+    """Import annotations from the pinned cutover source without replacing new reviews."""
+    source_root, root = Path(source_root).resolve(), Path(repo_root).resolve()
+    if source_root == root or source_root in root.parents or root in source_root.parents:
+        raise StoreError("coverage backfill source and active target must be separate roots")
+    canonical = canonical_target_value(target)
+    store = TargetStore(root, canonical)
+    store.coverage_review_page(limit=1)
+    with _backfill_receipt_lock(root, canonical) as receipt_path:
+        receipt, manifest, digest = _load_active_backfill_receipt(store, receipt_path, canonical)
+        report = {"legacy": {}, "quarantined": []}
+        source = _import_coverage_reviews(report, store, source_root, canonical, manifest)
+        if source["status"] == "missing":
+            raise StoreError("coverage source is absent from the cutover manifest")
+        backfill = {"source_manifest_sha256": digest, **source}
+        receipt["coverage_backfill"] = backfill
+        _publish_backfill_receipt(receipt_path, receipt)
+        return {"target": canonical, "store_id": receipt["store_id"], **backfill,
+                "status": "partial" if report["quarantined"] else "complete"}
+
+
+def backfill_target_memory(source_root: str | Path, repo_root: str | Path, target: str) -> dict[str, Any]:
+    """Explicitly import a cutover source's target memory into its active Store."""
+    source_root, root = Path(source_root).resolve(), Path(repo_root).resolve()
+    if source_root == root or source_root in root.parents or root in source_root.parents:
+        raise StoreError("memory backfill source and active target must be separate roots")
+    canonical = canonical_target_value(target)
+    with _backfill_receipt_lock(root, canonical) as receipt_path:
+        return _backfill_target_memory_locked(source_root, root, canonical, receipt_path)
+
+
+@contextmanager
+def _backfill_receipt_lock(root: Path, canonical: str):
+    receipt_path = root / "state" / target_storage_key(canonical) / "migration-receipt.json"
+    lock_path = receipt_path.with_suffix(".lock")
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    except OSError as exc:
+        raise StoreError(f"memory backfill lock is unavailable: {lock_path}") from exc
+    with os.fdopen(fd, "r+") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            yield receipt_path
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
+def _backfill_target_memory_locked(source_root: Path, root: Path, canonical: str,
+                                   receipt_path: Path) -> dict[str, Any]:
+    store = TargetStore(root, canonical)
+    receipt, manifest, files_digest = _load_active_backfill_receipt(store, receipt_path, canonical)
+    relative = f"memory/goals/targets/{target_storage_key(canonical)}.json"
+    source = next((item for item in manifest["files"]
+                   if isinstance(item, dict) and item.get("path") == relative), None)
+    if source is None:
+        raise StoreError(f"target-memory source is absent from migration manifest: {relative}")
+    existing = receipt.get("memory_backfill")
+    if existing is not None:
+        path = source_root / relative
+        if (not isinstance(existing, dict) or path.is_symlink() or not path.is_file()
+                or hashlib.sha256(path.read_bytes()).hexdigest() != source.get("sha256")
+                or existing.get("source_sha256") != source.get("sha256")
+                or existing.get("source_manifest_sha256") != files_digest
+                or not isinstance(existing.get("experience_map"), list)):
+            raise StoreError("existing memory backfill does not match the source manifest")
+        for item in existing["experience_map"]:
+            if not isinstance(item, dict) or not isinstance(item.get("experience_id"), str):
+                raise StoreError("existing memory backfill has an invalid experience map")
+            store.experience(item["experience_id"])
+        quarantined = existing.get("quarantined") or []
+        if not isinstance(quarantined, list):
+            raise StoreError("existing memory backfill has an invalid quarantine list")
+        return {"target": canonical, "status": "partial" if quarantined else "complete",
+                "store_id": receipt["store_id"], "source_manifest_sha256": files_digest,
+                "source_sha256": existing["source_sha256"],
+                "experience_map": existing["experience_map"], "quarantined": quarantined}
+    report = {"target": canonical, "status": "ready", "quarantined": [],
+              "legacy": {"target_memory": {"status": "valid"}}}
+    _import_target_memory(report, store, source_root, canonical, manifest)
+    memory = report["legacy"]["target_memory"]
+    if memory["status"] != "valid":
+        raise StoreError(f"target-memory source is invalid: {memory['disposition']}")
+    backfill = {"source_manifest_sha256": files_digest, "source_sha256": memory["source_sha256"],
+                "experience_map": memory["experience_map"], "quarantined": report["quarantined"]}
+    receipt["memory_backfill"] = backfill
+    _publish_backfill_receipt(receipt_path, receipt)
+    return {"target": canonical, "status": "partial" if report["quarantined"] else "complete",
+            "store_id": receipt["store_id"], **backfill}
+
+
+def _load_active_backfill_receipt(store: TargetStore, receipt_path: Path,
+                                  canonical: str) -> tuple[dict, dict, str]:
+    if store.backend() != "primary":
+        raise StoreError("historical backfill requires an active primary target Store")
+    if receipt_path.is_symlink():
+        raise StoreError(f"migration receipt must not be a symlink: {receipt_path}")
+    try:
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise StoreError(f"migration receipt is unavailable: {receipt_path}") from exc
+    if not isinstance(receipt, dict):
+        raise StoreError(f"migration receipt is not an object: {receipt_path}")
+    manifest = receipt.get("source_manifest")
+    if (receipt.get("target") != canonical or receipt.get("store_id") != store.binding()["store_id"]
+            or receipt.get("activation_status") != "active" or not isinstance(manifest, dict)
+            or manifest.get("target") != canonical or not isinstance(manifest.get("files"), list)):
+        raise StoreError("historical backfill requires the matching active migration receipt")
+    files_digest = hashlib.sha256(json.dumps(manifest["files"], ensure_ascii=True, sort_keys=True,
+                                           separators=(",", ":")).encode("utf-8")).hexdigest()
+    if files_digest != manifest.get("sha256") or files_digest != receipt.get("source_manifest_sha256"):
+        raise StoreError("historical backfill source manifest does not match migration receipt")
+    return receipt, manifest, files_digest
+
+
+def _publish_backfill_receipt(receipt_path: Path, receipt: dict) -> None:
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=receipt_path.parent,
+                                         prefix=".memory-backfill-", suffix=".tmp", delete=False) as handle:
+            temporary = Path(handle.name)
+            os.chmod(temporary, 0o600)
+            json.dump(receipt, handle, ensure_ascii=True, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(receipt_path)
+        directory_fd = os.open(receipt_path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def backfill_target_patterns(source_root: str | Path, repo_root: str | Path, target: str) -> dict[str, Any]:
+    """Import target-owned rows from a pinned historical PatternDB snapshot."""
+    source_root, root = Path(source_root).resolve(), Path(repo_root).resolve()
+    if source_root == root or source_root in root.parents or root in source_root.parents:
+        raise StoreError("pattern backfill source and active target must be separate roots")
+    canonical = canonical_target_value(target)
+    with _backfill_receipt_lock(root, canonical) as receipt_path:
+        store = TargetStore(root, canonical)
+        receipt, _, manifest_digest = _load_active_backfill_receipt(store, receipt_path, canonical)
+        base = source_root / "hunt-memory" / "patterns.jsonl"
+        paths = [base.with_suffix(base.suffix + f".{index}") for index in (3, 2, 1)] + [base]
+        snapshots = []
+        for path in paths:
+            if path.is_symlink():
+                raise StoreError(f"PatternDB source must not be a symlink: {path}")
+            if not path.exists():
+                continue
+            if not path.is_file():
+                raise StoreError(f"PatternDB source is not a regular file: {path}")
+            raw = path.read_bytes()
+            snapshots.append((path.relative_to(source_root).as_posix(), raw))
+        if not snapshots:
+            raise StoreError(f"PatternDB source is unavailable: {base}")
+        files = [{"path": relative, "size": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+                 for relative, raw in snapshots]
+        existing = receipt.get("pattern_backfill")
+        if existing is not None:
+            if (not isinstance(existing, dict) or existing.get("source_files") != files
+                    or existing.get("source_manifest_sha256") != manifest_digest
+                    or existing.get("status") not in {"pending", "complete", "partial"}):
+                raise StoreError("existing PatternDB backfill does not match the pinned source")
+            if existing["status"] != "pending":
+                mapping = existing.get("experience_map")
+                if not isinstance(mapping, list):
+                    raise StoreError("existing PatternDB backfill has an invalid experience map")
+                for item in mapping:
+                    if not isinstance(item, dict) or not isinstance(item.get("experience_id"), str):
+                        raise StoreError("existing PatternDB backfill has an invalid experience map")
+                    store.experience(item["experience_id"])
+                return {"target": canonical, "store_id": receipt["store_id"], **existing}
+        else:
+            existing = {"status": "pending", "source_manifest_sha256": manifest_digest,
+                        "source_files": files}
+            receipt["pattern_backfill"] = existing
+            _publish_backfill_receipt(receipt_path, receipt)
+
+        mapped, quarantined = [], []
+        for relative, raw in snapshots:
+            for line_number, raw_line in enumerate(raw.split(b"\n"), 1):
+                if not raw_line.strip():
+                    continue
+                try:
+                    line = raw_line.decode("utf-8")
+                except UnicodeError:
+                    quarantined.append({"source_path": relative, "line": line_number,
+                                        "reason": "PatternDB row is not UTF-8"})
+                    continue
+                try:
+                    item = json.loads(line)
+                except ValueError:
+                    quarantined.append({"source_path": relative, "line": line_number,
+                                        "reason": "PatternDB row is not JSON"})
+                    continue
+                if not isinstance(item, dict) or not isinstance(item.get("target"), str) or not item["target"].strip():
+                    quarantined.append({"source_path": relative, "line": line_number,
+                                        "reason": "PatternDB row has no target identity"})
+                    continue
+                if item["target"] != canonical:
+                    continue
+                try:
+                    validate_pattern_entry(item)
+                    technique, family = item["technique"], item["vuln_class"]
+                    stack, endpoint, notes = item["tech_stack"], item.get("endpoint", ""), item.get("notes", "")
+                    conditions = "Historical tech stack: " + (", ".join(stack) or "unknown")
+                    if (not isinstance(family, str) or not family.strip() or len(family) > 256
+                            or len(technique) > 1024 or text_is_polluted(technique)
+                            or any(len(value) > 128 for value in stack) or len(stack) > 16
+                            or not isinstance(endpoint, str) or len(endpoint) > 1024
+                            or not isinstance(notes, str) or len(notes) > 2048 or text_is_polluted(notes)
+                            or len(conditions) > 2048
+                            or any("\x00" in value for value in (family, technique, endpoint, notes, *stack))):
+                        raise ValueError("PatternDB row contains invalid or polluted experience fields")
+                    outcome = item.get("outcome", "unknown")
+                    statement = (f"Historical PatternDB (unverified; outcome={outcome}): "
+                                 f"{technique} [family={family}; endpoint={endpoint or 'unknown'}]"
+                                 + (f"; {notes}" if notes else ""))
+                    if len(statement) > 4096:
+                        raise ValueError("PatternDB experience statement is oversized")
+                except (SchemaError, ValueError, TypeError) as exc:
+                    quarantined.append({"source_path": relative, "line": line_number,
+                                        "reason": " ".join(str(exc).split())[:240]})
+                    continue
+                command_id = "legacy-pattern:" + _stable_id(canonical, relative, line_number)
+                result = store.remember(command_id=command_id, kind="note", statement=statement,
+                                        conditions=conditions,
+                                        reopen_when="", next_intent="", evidence=[], actor="migration")
+                mapped.append({"experience_id": result["entity_id"], "source_path": relative,
+                               "line": line_number, "source_line_sha256": hashlib.sha256(raw_line).hexdigest(),
+                               "source_ts": item["ts"], "outcome": outcome})
+        existing.update(status="partial" if quarantined else "complete",
+                        experience_map=mapped, quarantined=quarantined)
+        _publish_backfill_receipt(receipt_path, receipt)
+        return {"target": canonical, "store_id": receipt["store_id"], **existing}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -2330,12 +2853,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--promote", action="store_true", help="Explicitly activate a published preview as primary")
     parser.add_argument("--restore-legacy", action="store_true", help="Explicitly restore pre-primary legacy metadata from the archive")
     parser.add_argument("--source-manifest-sha256", default="")
+    parser.add_argument("--backfill-memory-source", default="", help="Explicit isolated cutover source root for historical target memory")
+    parser.add_argument("--backfill-pattern-source", default="", help="Explicit isolated source root for historical PatternDB rows")
+    parser.add_argument("--backfill-coverage-source", default="", help="Explicit isolated cutover source root for historical Coverage reviews")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
+    if sum(bool(value) for value in (args.backfill_memory_source, args.backfill_pattern_source, args.backfill_coverage_source, args.restore_legacy,
+                                     args.promote, args.publish_staging, args.import_source)) > 1:
+        parser.error("choose exactly one migration operation")
     if args.disposition_ledger and not args.import_source:
         parser.error("--disposition-ledger is only applied with --import-source; it was not read")
     try:
-        if args.restore_legacy:
+        if args.backfill_coverage_source:
+            result = backfill_coverage_reviews(args.backfill_coverage_source, args.repo_root, args.target)
+        elif args.backfill_memory_source:
+            result = backfill_target_memory(args.backfill_memory_source, args.repo_root, args.target)
+        elif args.backfill_pattern_source:
+            result = backfill_target_patterns(args.backfill_pattern_source, args.repo_root, args.target)
+        elif args.restore_legacy:
             result = restore_legacy_metadata(
                 args.repo_root,
                 args.target,

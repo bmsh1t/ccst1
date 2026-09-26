@@ -10,7 +10,7 @@ Garbage-collect the hunt-memory directory. Reports current sizes, rotates oversi
 
 Append-only logs grow without bound. On active hunters:
 - `audit.jsonl` can reach 100 MB+ in months (every outbound request)
-- `patterns.jsonl` and `journal.jsonl` accumulate forever
+- `journal.jsonl` continues to grow; historical `patterns.jsonl` files may still occupy space
 
 This command surfaces that growth and gives you a one-shot fix.
 
@@ -50,7 +50,7 @@ from the repo root.
 
 Auto-rotation is writer-owned:
 
-1. **On every writer path** — `AuditLog.log()`, `PatternDB.save()`, and `HuntJournal.append()` call `rotate_if_needed()` before appending to oversized files.
+1. **On active log writer paths** — `AuditLog.log()` and `HuntJournal.append()` call `rotate_if_needed()` before appending to oversized files. PatternDB writes are retired; current target experience belongs to TargetStore.
 2. **On demand** — `/memory-gc --rotate` remains available for ad-hoc cleanup, old files, or custom memory directories.
 
 No Claude Code hook is required for correctness. This slash command is mainly for ad-hoc reporting (`/memory-gc` with no args) and manual cleanup of accumulated backups (`/memory-gc --purge-backups`).

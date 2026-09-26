@@ -4,14 +4,13 @@ surface.py — build an AI-first review pack from cached recon and hunt memory.
 """
 
 import argparse
-import heapq
+import bisect
 import hashlib
 import json
 import os
 import re
 import shlex
 import sys
-import tempfile
 from pathlib import Path
 from typing import Iterator
 from urllib.parse import urlparse
@@ -20,33 +19,24 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
-from memory.target_profile import default_memory_dir, load_target_profile  # noqa: E402
+from memory.target_profile import default_memory_dir  # noqa: E402
 from tools.target_memory import load_goal_memory, text_is_polluted  # noqa: E402
 try:
     from tools.closure_resolver import canonical_endpoint_path
-    from tools.coverage_matrix import load_matrix
+    from tools.coverage_matrix import read_matrix, require_matching_truth
     from tools.current_truth import current_cell_projection
     from tools.action_queue import FINAL_STATUSES as ACTION_QUEUE_FINAL_STATUSES
-    from tools.action_queue import load_queue as load_action_queue
+    pass
     from tools.attack_probe_filter import (
         filter_attack_probes,
         is_attack_probe,
         sanitize_attack_probe_url,
     )
-    from tools.finding_index import (
-        load_finding_index,
-        verify_finalized_finding_owner_provenance,
-    )
     from tools.intel_artifact import load_intel_projection
-    from tools.observation_inventory import (
-        InventoryError,
-        inventory_path,
-        peek_inventory_summary,
-        sync_inventory_summary,
-    )
+    from tools.observation_inventory import InventoryError, inventory_path, peek_inventory_summary
     from tools.recon_adapter import ReconAdapter
     from tools.runtime_state import (
-        derive_owner_projection,
+        _derive_owner_projection,
         inspect_recon_artifacts,
         load_runtime_state,
     )
@@ -55,7 +45,6 @@ try:
         build_surface_index,
         iter_surface_index,
         load_surface_index_status,
-        page_surface_index,
         surface_shape,
         surface_request_shape,
         surface_safe_preview,
@@ -72,25 +61,22 @@ try:
         target_storage_key,
         url_belongs_to_target,
     )
-    from tools.target_store import TargetStore, target_backend, target_switch_lock
+    from tools.target_store import TargetStore, runtime_store, target_switch_lock
 except ImportError:  # pragma: no cover - top-level tools/ import
     from closure_resolver import canonical_endpoint_path  # type: ignore
-    from coverage_matrix import load_matrix  # type: ignore
+    from coverage_matrix import read_matrix, require_matching_truth  # type: ignore
     from current_truth import current_cell_projection  # type: ignore
     from action_queue import FINAL_STATUSES as ACTION_QUEUE_FINAL_STATUSES  # type: ignore
-    from action_queue import load_queue as load_action_queue  # type: ignore
     from attack_probe_filter import filter_attack_probes, is_attack_probe, sanitize_attack_probe_url
-    from finding_index import load_finding_index, verify_finalized_finding_owner_provenance
     from intel_artifact import load_intel_projection
     from observation_inventory import (  # type: ignore
         InventoryError,
         inventory_path,
         peek_inventory_summary,
-        sync_inventory_summary,
     )
     from recon_adapter import ReconAdapter
-    from runtime_state import derive_owner_projection, inspect_recon_artifacts, load_runtime_state
-    from surface_index import SurfaceIndexError, build_surface_index, iter_surface_index, load_surface_index_status, page_surface_index, surface_shape, surface_request_shape, surface_safe_preview, surface_value_summary
+    from runtime_state import _derive_owner_projection, inspect_recon_artifacts, load_runtime_state
+    from surface_index import SurfaceIndexError, build_surface_index, iter_surface_index, load_surface_index_status, surface_shape, surface_request_shape, surface_safe_preview, surface_value_summary
     from surface_projection import build_surface_input_manifest, write_surface_projection
     from target_paths import (  # type: ignore
         compact_url,
@@ -99,7 +85,7 @@ except ImportError:  # pragma: no cover - top-level tools/ import
         target_storage_key,
         url_belongs_to_target,
     )
-    from target_store import TargetStore, target_backend, target_switch_lock  # type: ignore
+    from target_store import TargetStore, runtime_store, target_switch_lock  # type: ignore
 try:
     from tools.browser_surface import public_url_shape
     from tools.intel_artifact import advisory_is_actionable
@@ -265,14 +251,11 @@ def _count_recon_artifact(recon_artifacts: dict, key: str) -> int:
 def _sync_observation_inventory(
     repo_root: Path,
     target: str,
-    *,
-    backend: str | None = None,
 ) -> dict:
     """同步中性 observation 状态，并把故障保留为显式 surface warning。"""
     try:
-        if (backend if backend is not None else target_backend(repo_root, target)) == "primary":
-            return peek_inventory_summary(repo_root, target)
-        return sync_inventory_summary(repo_root, target)
+        runtime_store(repo_root, target)
+        return peek_inventory_summary(repo_root, target)
     except (InventoryError, OSError) as exc:
         return {
             "available": False,
@@ -319,11 +302,14 @@ def _build_exposure_lead_hints(recon_artifacts: dict, target: str) -> list[dict]
         recon_artifacts, "host_collision_observations"
     )
     ai_assets = _count_recon_artifact(recon_artifacts, "ai_asset_candidates")
-    asset_relations = _count_recon_artifact(recon_artifacts, "asset_relation_candidates")
     asset_relation_state = (
         recon_artifacts.get("asset_relations")
         if isinstance(recon_artifacts.get("asset_relations"), dict)
         else {}
+    )
+    asset_relations = (
+        0 if asset_relation_state.get("error")
+        else _count_recon_artifact(recon_artifacts, "asset_relation_candidates")
     )
     try:
         asset_scope_reviews = min(
@@ -348,7 +334,6 @@ def _build_exposure_lead_hints(recon_artifacts: dict, target: str) -> list[dict]
             "source": "recon_exposure",
             "title": "Verified secret material found in API leak artifacts",
             "category": "verified-secret",
-            "priority": "critical",
             "artifact": f"recon/{storage_key}/exposure/api_leak_trufflehog_verified.jsonl",
             "evidence": f"{verified} verified line(s)",
         })
@@ -367,7 +352,6 @@ def _build_exposure_lead_hints(recon_artifacts: dict, target: str) -> list[dict]
                 else "Platform authentication metadata extracted"
             ),
             "category": "openapi-semantics",
-            "priority": "high" if openapi_auth > 0 else "medium",
             "artifact": f"recon/{storage_key}/api_specs/{semantic_artifact}",
             "evidence": f"{openapi_operations + platform_metadata} structured discovery fact(s)",
         })
@@ -378,7 +362,6 @@ def _build_exposure_lead_hints(recon_artifacts: dict, target: str) -> list[dict]
             "title": "API leak candidates from Postman/OpenAPI discovery",
             "category": "api-leak",
             "artifact": f"recon/{storage_key}/exposure/api_leak_candidates.txt",
-            "priority": "high",
             "evidence": f"{api_leaks + postman + postleaks + swagger} exposure line(s)",
         })
 
@@ -388,7 +371,6 @@ def _build_exposure_lead_hints(recon_artifacts: dict, target: str) -> list[dict]
             "title": "OpenAPI/Swagger/API documentation candidates discovered",
             "category": "api-docs",
             "artifact": f"recon/{storage_key}/exposure/api_doc_candidates.txt",
-            "priority": "high",
             "evidence": f"{api_docs} candidate line(s)",
         })
 
@@ -397,7 +379,6 @@ def _build_exposure_lead_hints(recon_artifacts: dict, target: str) -> list[dict]
             "source": "recon_exposure",
             "title": "Config/cloud exposure candidates discovered",
             "category": "config-cloud",
-            "priority": "medium",
             "evidence": f"{config + cloud + s3 + external_hosts} candidate line(s)",
         })
 
@@ -407,7 +388,6 @@ def _build_exposure_lead_hints(recon_artifacts: dict, target: str) -> list[dict]
             "title": "Identity/cloud intel signals discovered",
             "category": "identity-cloud",
             "artifact": f"recon/{storage_key}/exposure/identity_intel/summary.md",
-            "priority": "medium",
             "evidence": f"{emails + leaksearch + cloud_enum} signal line(s)",
         })
 
@@ -416,7 +396,6 @@ def _build_exposure_lead_hints(recon_artifacts: dict, target: str) -> list[dict]
             "source": "recon_routing_candidate",
             "title": "Host/SNI/VirtualHost pivot evidence is available",
             "category": "host-pivot",
-            "priority": "high",
             "artifact": f"recon/{storage_key}/exposure/host_pivot_candidates.jsonl",
             "evidence": f"{host_pivots} candidate row(s)",
         })
@@ -426,7 +405,6 @@ def _build_exposure_lead_hints(recon_artifacts: dict, target: str) -> list[dict]
             "source": "recon_routing_observation",
             "title": "Host collision response observations are available",
             "category": "host-collision-observation",
-            "priority": "high",
             "artifact": f"recon/{storage_key}/exposure/host_collision_observations.jsonl",
             "evidence": f"{host_collision_observations} observation row(s)",
         })
@@ -436,7 +414,6 @@ def _build_exposure_lead_hints(recon_artifacts: dict, target: str) -> list[dict]
             "source": "recon_routing_candidate",
             "title": "AI/LLM application or service candidates are available",
             "category": "ai-asset",
-            "priority": "high",
             "artifact": f"recon/{storage_key}/exposure/ai_asset_candidates.jsonl",
             "evidence": f"{ai_assets} candidate row(s)",
         })
@@ -446,7 +423,6 @@ def _build_exposure_lead_hints(recon_artifacts: dict, target: str) -> list[dict]
             "source": "recon_routing_candidate",
             "title": "High-confidence target-linked assets require Scope review",
             "category": "asset-scope-review",
-            "priority": "high",
             "artifact": f"recon/{storage_key}/exposure/asset_relation_candidates.jsonl",
             "next_action": (
                 f"review recon/{storage_key}/exposure/asset_relation_candidates.jsonl and classify "
@@ -466,7 +442,6 @@ def _build_exposure_lead_hints(recon_artifacts: dict, target: str) -> list[dict]
             "source": "recon_routing_candidate",
             "title": "External asset relationship candidates are available",
             "category": "asset-relation",
-            "priority": "medium",
             "artifact": f"recon/{storage_key}/exposure/asset_relation_candidates.jsonl",
             "next_action": (
                 f"review recon/{storage_key}/exposure/asset_relation_candidates.jsonl; prioritize "
@@ -502,7 +477,6 @@ def _build_manual_review_lead_hints(findings_dir: Path, storage_key: str) -> lis
                 "source": "scanner_manual_review",
                 "title": "Side-effect-capable scanner probes were skipped",
                 "category": "action-gated",
-                "priority": "high",
                 "unsafe_skipped_id": first_id,
                 "unsafe_skipped_ids": [unsafe_skipped_id(line) for line in unresolved[:20]],
                 "artifact": unsafe_display_path,
@@ -517,7 +491,6 @@ def _build_manual_review_lead_hints(findings_dir: Path, storage_key: str) -> lis
             "source": "scanner_manual_review",
             "title": "Anonymous API endpoints returned substantial 200 responses",
             "category": "open-200-api-review",
-            "priority": "medium",
             "artifact": display_path,
             "evidence": f"{len(open_200)} anonymous substantial 200 response(s)",
         })
@@ -530,7 +503,6 @@ def _build_manual_review_lead_hints(findings_dir: Path, storage_key: str) -> lis
             "source": "scanner_manual_review",
             "title": "Standard public metadata endpoints were demoted from exposure findings",
             "category": "public-metadata",
-            "priority": "low",
             "artifact": display_path,
             "evidence": f"{len(public_metadata)} demoted metadata line(s)",
         })
@@ -641,7 +613,6 @@ def _build_target_memory_lead_hints(target_goal_memory: dict) -> list[dict]:
             "source": "target_memory",
             "title": text[:140],
             "category": "active-lead",
-            "priority": "high",
             "next_action": f"continue validating remembered lead: {text}",
             "rationale": "Target memory marks this as an active lead from prior Claude CLI work.",
             "evidence": item.get("ts", ""),
@@ -653,7 +624,6 @@ def _build_target_memory_lead_hints(target_goal_memory: dict) -> list[dict]:
             "source": "target_memory",
             "title": text[:140],
             "category": "next-action",
-            "priority": "medium",
             "next_action": text,
             "rationale": "Target memory recorded this as a concrete next action.",
             "evidence": item.get("ts", ""),
@@ -689,7 +659,6 @@ def _build_cf_bypass_refresh_leads(context: dict) -> list[dict]:
             "source": "cf_solver",
             "title": f"403-only host may need refreshed Cloudflare clearance: {host}",
             "category": "cf-bypass-refresh",
-            "priority": "high",
             "artifact": artifact,
             "next_action": f"python3 tools/cf_solver.py --target {url} --check --auto-resolve",
             "rationale": (
@@ -717,7 +686,6 @@ def _build_external_url_context_leads(
         "source": "external_url_context",
         "title": f"{count} third-party/integration URL(s) preserved as chain context",
         "category": "external-chain-context",
-        "priority": "medium",
         "artifact": f"recon/{storage_key}/urls/all.txt",
         "next_action": (
             f"review recon/{storage_key}/urls/all.txt and browser/JS artifacts for target-owned "
@@ -733,24 +701,10 @@ def _build_external_url_context_leads(
     }]
 
 
-_WORKFLOW_LEAD_PRIORITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
-
-
 def _sort_workflow_leads(leads: list[dict]) -> list[dict]:
-    """Sort soft leads by priority without changing their semantics."""
-    return [
-        item
-        for _, item in sorted(
-            enumerate(leads),
-            key=lambda pair: (
-                _WORKFLOW_LEAD_PRIORITY_ORDER.get(
-                    str(pair[1].get("priority", "medium") or "medium").lower(),
-                    4,
-                ),
-                pair[0],
-            ),
-        )
-    ]
+    """Stable identity order, independent of source-assigned priority labels."""
+    return sorted(leads, key=lambda item: tuple(str(item.get(key) or "")
+                                               for key in ("source", "title", "category", "evidence")))
 
 
 def _build_evidence_convergence_leads(
@@ -761,9 +715,7 @@ def _build_evidence_convergence_leads(
 ) -> list[dict]:
     """把 browser / JS / source 的交叉命中转成可执行 workflow lead。"""
     leads: list[dict] = []
-    all_urls = _dedupe_keep_order(
-        list(browser_urls) + list(js_intel_urls.keys()) + list(source_intel_urls.keys())
-    )
+    all_urls = sorted(set(browser_urls) | set(js_intel_urls) | set(source_intel_urls))
     for url in all_urls:
         sources = []
         if url in browser_urls:
@@ -787,7 +739,6 @@ def _build_evidence_convergence_leads(
             "source": "evidence_convergence",
             "title": url,
             "category": "+".join(sources),
-            "priority": "critical" if len(sources) >= 3 else "high",
             "evidence": "; ".join(action_bits) or ", ".join(sources),
         })
     return leads[:5]
@@ -838,93 +789,7 @@ def _read_httpx_hosts(
     return hosts, status403
 
 
-SCORE_SOURCE_LABELS = {
-    "attack_value": "attack",
-    "browser": "browser",
-    "evidence_convergence": "converged",
-    "recon": "recon",
-    "memory": "memory",
-    "scanner": "scanner",
-    "intel": "intel",
-    "js_intel": "js",
-}
-
-
 REVIEW_POOL_LIMIT = 16
-
-
-def _add_score_breakdown(
-    score_breakdown: list[dict],
-    source: str,
-    label: str,
-    points: int,
-    evidence: str = "",
-) -> int:
-    """Record one deterministic surface-ranking score contribution."""
-    if points == 0:
-        return 0
-
-    item = {
-        "source": source,
-        "label": label,
-        "score": points,
-    }
-    if evidence:
-        item["evidence"] = evidence
-    score_breakdown.append(item)
-    return points
-
-
-def _format_score_breakdown(item: dict) -> str:
-    """Return a compact, grouped score explanation for terminal output."""
-    total = item.get("score", 0)
-    breakdown = item.get("score_breakdown") or []
-    if not breakdown:
-        return str(total)
-
-    source_totals = {}
-    source_order = []
-    for part in breakdown:
-        source = str(part.get("source", "other"))
-        if source not in source_totals:
-            source_totals[source] = 0
-            source_order.append(source)
-        source_totals[source] += int(part.get("score", 0) or 0)
-
-    segments = []
-    for source in source_order:
-        points = source_totals[source]
-        if points == 0:
-            continue
-        label = SCORE_SOURCE_LABELS.get(source, source)
-        segments.append(f"{label} {points:+d}")
-
-    if not segments:
-        return str(total)
-    return f"{total} = " + ", ".join(segments[:6])
-
-
-def _add_review_item(
-    pool: list[dict],
-    seen: set[str],
-    item: dict,
-    reason: str,
-    shape_counts: dict[str, int] | None = None,
-) -> bool:
-    """Add one surface item to the bounded AI review pool."""
-    url = str(item.get("url") or "").strip()
-    if not url or url in seen or len(pool) >= REVIEW_POOL_LIMIT:
-        return False
-    shape_id = str(_candidate_semantic_shape(item).get("id") or url)
-    if shape_counts is not None and shape_counts.get(shape_id, 0) >= 2:
-        return False
-    seen.add(url)
-    if shape_counts is not None:
-        shape_counts[shape_id] = shape_counts.get(shape_id, 0) + 1
-    cloned = dict(item)
-    cloned["review_reason"] = reason
-    pool.append(cloned)
-    return True
 
 
 def _is_final_surface_item(item: dict) -> bool:
@@ -937,14 +802,7 @@ def _is_final_surface_item(item: dict) -> bool:
 
 
 def _has_actionable_review_evidence(item: dict) -> bool:
-    """Return true when a candidate has enough evidence to lead Claude's review.
-
-    Recon-wide facts such as "non-standard port", "tech stack overlap", or
-    "untested in memory" are useful tie-breakers, but they are not concrete
-    next-action evidence by themselves. Keep those candidates in p1/p2
-    compatibility output, yet avoid letting them crowd the AI review pool when
-    browser/source/JS/scanner/parameter/intel evidence exists.
-    """
+    """Identify attached source observations; never a selection or scoring rule."""
     if any(
         item.get(key)
         for key in (
@@ -991,56 +849,11 @@ def _build_review_pool(
     candidates: list[dict],
     ffuf_candidates: list[dict] | None = None,
 ) -> list[dict]:
-    """Build an AI-first review pool without treating score as a verdict.
-
-    `p1` / `p2` remain for compatibility. Source-backed and new observations
-    lead the bounded view; remaining routes fill it with shape diversity.
-    The complete index stays queryable, regardless of position in this window.
-    """
-    pool: list[dict] = []
-    seen: set[str] = set()
-    shape_counts: dict[str, int] = {}
-    unresolved = [item for item in candidates if not _is_final_surface_item(item)]
-
-    # New observations are neutral facts, not a score source.  Keep two exact
-    # matches visible before the ordinary evidence-led review seats fill up.
-    for item in unresolved:
-        if item.get("new_observation"):
-            reason = (
-                "browser-observed API/workflow" if item.get("browser_observed")
-                else "JS/source-inferred surface" if item.get("js_intel_observed") or item.get("source_intel_observed")
-                else "top advisory score" if _has_actionable_review_evidence(item)
-                else "top advisory score (low-evidence fallback)"
-            )
-            _add_review_item(pool, seen, item, reason, shape_counts)
-            if len(pool) == 2:
-                break
-
-    for item in unresolved:
-        if item.get("evidence_convergence"):
-            _add_review_item(pool, seen, item, "cross-evidence convergence", shape_counts)
-    for item in unresolved:
-        if item.get("browser_observed"):
-            _add_review_item(pool, seen, item, "browser-observed API/workflow", shape_counts)
-    for item in unresolved:
-        if item.get("js_intel_observed") or item.get("source_intel_observed"):
-            _add_review_item(pool, seen, item, "JS/source-inferred surface", shape_counts)
-    for item in unresolved:
-        if item.get("scanner_findings"):
-            _add_review_item(pool, seen, item, "scanner lead requiring AI triage", shape_counts)
-    for item in unresolved:
-        if item.get("target_memory_hits"):
-            _add_review_item(pool, seen, item, "target-memory continuation", shape_counts)
-    for item in unresolved:
-        if _has_actionable_review_evidence(item):
-            _add_review_item(pool, seen, item, "top advisory score", shape_counts)
-    for item in ffuf_candidates or []:
-        _add_review_item(pool, seen, item, "ffuf-observed route; AI triage required", shape_counts)
-    for item in unresolved:
-        _add_review_item(pool, seen, item, "observed surface; AI review", shape_counts)
-    for item in unresolved:
-        _add_review_item(pool, seen, item, "observed surface; AI review")
-    return pool
+    """Expose a stable URL window without assigning business priority."""
+    by_url = {item["url"]: item for item in [*candidates, *(ffuf_candidates or [])]
+              if item.get("url") and not _is_final_surface_item(item)}
+    return [{**by_url[url], "review_reason": "URL order; AI chooses applicability and next work"}
+            for url in sorted(by_url)[:REVIEW_POOL_LIMIT]]
 
 
 def _build_ffuf_review_candidates(
@@ -1057,12 +870,14 @@ def _build_ffuf_review_candidates(
         if str(item.get("url") or "").strip()
     }
     result = []
+    seen = set()
     for observation in (ffuf_summary.get("review_sample") or [])[:4]:
         if not isinstance(observation, dict):
             continue
         url = str(observation.get("url") or "").strip()
-        if not url or not url_belongs_to_target(url, target):
+        if not url or url in seen or not url_belongs_to_target(url, target):
             continue
+        seen.add(url)
         response_meta = {
             key: observation.get(key)
             for key in (
@@ -1090,8 +905,6 @@ def _build_ffuf_review_candidates(
             "url": url,
             "host": parsed.netloc,
             "path": path,
-            "score": 0,
-            "score_breakdown": [],
             "reasons": ["FFUF observation"],
             "suggested": (
                 "inspect cached response metadata and current business/browser/source context, "
@@ -1137,91 +950,11 @@ def _load_intel_context(recon_dir: Path) -> dict:
     }
 
 
-def _finding_score_bonus(finding: dict) -> int:
-    """Return deterministic score boost from scanner finding confidence."""
-    severity = (finding.get("severity") or "").lower()
-    confidence = (finding.get("confidence") or "").lower()
-    validation_status = (finding.get("validation_status") or "").lower()
-    report_status = (finding.get("report_status") or "").lower()
-
-    if report_status == "generated":
-        return -20
-
-    score = 0
-    if severity == "critical":
-        score += 9
-    elif severity == "high":
-        score += 7
-    elif severity == "medium":
-        score += 4
-    elif severity == "low":
-        score += 1
-
-    if confidence == "confirmed":
-        score += 6
-    elif confidence == "high":
-        score += 4
-    elif confidence == "medium":
-        score += 2
-
-    if validation_status == "validated":
-        score += 3
-
-    if score < 1:
-        return 1
-    return score
-
-
-def _project_untrusted_finality_as_candidate(
-    finding: dict,
-    *,
-    findings_dir: Path,
-    target: str,
-) -> dict:
-    """Keep an edited finality claim visible without letting it close surface work.
-
-    ``surface`` is a reader, not a second finding owner.  When a row declares
-    a final lifecycle state without a matching owner event, preserve its URL as
-    a candidate but remove the untrusted validation/report bonus and closure
-    signal from this read-only projection.
-    """
-    if str(finding.get("validation_status") or "").strip().lower() == "needs_owner_revalidation":
-        projected = dict(finding)
-        projected["claimed_validation_status"] = str(
-            finding.get("claimed_validation_status") or "needs_owner_revalidation"
-        )
-        projected["claimed_report_status"] = str(
-            finding.get("claimed_report_status") or finding.get("report_status") or ""
-        )
-        projected["validation_status"] = "candidate"
-        projected["report_status"] = "not_generated"
-        projected["lifecycle_status"] = "needs_owner_revalidation"
-        projected["provenance_reason"] = str(
-            finding.get("owner_revalidation_reason") or "owner-provenance-invalid"
-        )
-        return projected
-
-    provenance = verify_finalized_finding_owner_provenance(
-        findings_dir,
-        finding,
-        target=target,
-    )
-    if not provenance.get("required") or provenance.get("valid"):
-        return finding
-    projected = dict(finding)
-    projected["claimed_validation_status"] = str(finding.get("validation_status") or "")
-    projected["claimed_report_status"] = str(finding.get("report_status") or "")
-    projected["validation_status"] = "candidate"
-    projected["report_status"] = "not_generated"
-    projected["lifecycle_status"] = "needs_owner_revalidation"
-    projected["provenance_reason"] = str(provenance.get("reason") or "owner-provenance-invalid")
-    return projected
-
 
 def _primary_scanner_findings(store: TargetStore) -> list[dict]:
     """Project Store claims for Surface without consulting legacy findings JSON."""
     findings = []
-    page = store.finding_page(limit=1000)
+    page = store.finding_state_page(limit=1000)
     while True:
         for item in page.get("items", []):
             assessment = item.get("assessment") or {}
@@ -1236,12 +969,12 @@ def _primary_scanner_findings(store: TargetStore) -> list[dict]:
                 "severity": "medium",
                 "confidence": assessment.get("verdict", ""),
                 "validation_status": "validated" if assessment.get("verdict") == "confirmed" else "",
-                "report_status": "generated" if item.get("reports") else "not_generated",
+                "report_status": "generated" if item["report_recorded"] else "not_generated",
                 "raw": item["claim"],
             })
         if not page.get("has_more"):
             return findings
-        page = store.finding_page(limit=1000, cursor=page.get("next_cursor"))
+        page = store.finding_state_page(limit=1000, cursor=page.get("next_cursor"))
 
 
 def _primary_action_queue(store: TargetStore) -> list[dict]:
@@ -1315,28 +1048,31 @@ def _action_queue_final_endpoints(actions: list[dict]) -> dict[str, str]:
 
 
 def load_surface_context(
-    repo_root: str | Path,
-    target: str,
-    memory_dir: str | Path | None = None,
-    *,
-    write_probe_log: bool = True,
+    repo_root: str | Path, target: str, memory_dir: str | Path | None = None,
+) -> dict:
+    return _load_surface_context(repo_root, target, memory_dir)
+
+
+def _load_surface_context(
+    repo_root: str | Path, target: str, memory_dir: str | Path | None = None, *,
+    coverage_state: dict | None = None,
 ) -> dict:
     """Load recon + memory data for the surface review pack."""
     repo_root = Path(repo_root)
-    backend = target_backend(repo_root, target)
-    store = TargetStore(repo_root, target) if backend == "primary" else None
-    store_binding = _store_binding_snapshot(store) if store is not None else None
-    if backend == "primary":
-        write_probe_log = False
+    store = runtime_store(repo_root, target)
+    store_binding = _store_binding_snapshot(store)
     storage_key = target_storage_key(target)
     recon_dir = repo_root / "recon" / storage_key
     findings_dir = repo_root / "findings" / storage_key
     runtime_state = load_runtime_state(repo_root, target)
     recon_artifacts = inspect_recon_artifacts(repo_root, target)
-    owner_projection = derive_owner_projection(repo_root, target)
+    coverage_matrix = (coverage_state if coverage_state is not None
+                       else read_matrix(target, repo_root=repo_root, current_only=True))
+    owner_projection = _derive_owner_projection(repo_root, target, coverage_state=coverage_matrix)
+    recon_artifacts["counts"]["structured_findings"] = len(owner_projection["findings"])
     target_goal_memory = _load_target_goal_memory(repo_root, target)
     if not recon_dir.is_dir():
-        if store is not None and _store_binding_snapshot(store) != store_binding:
+        if _store_binding_snapshot(store) != store_binding:
             raise ValueError(
                 "primary Surface inputs changed during assembly; rebuild from one store revision"
             )
@@ -1352,96 +1088,46 @@ def load_surface_context(
     hosts, status403_hosts = _read_httpx_hosts(
         recon_dir,
         target,
-        persist_inventory=backend != "primary",
+        persist_inventory=False,
     )
     browser_request_shapes = _load_browser_request_shapes(recon_dir)
     surface_index_status = load_surface_index_status(repo_root, target)
     use_surface_index = surface_index_status.get("status") == "valid"
-    # Payload-marker handling: never lose the endpoint/parameter surface during
-    # discovery. Raw historical probes are logged for review, while inert
-    # probe-derived shapes stay in ranking so a noisy archive cannot hide a
-    # real attack surface.
-    _probe_log = recon_dir / "urls" / "_filtered_attack_probes.txt"
-    probe_log_path = None
-    if write_probe_log:
-        _probe_log.parent.mkdir(parents=True, exist_ok=True)
-        fd, temp_name = tempfile.mkstemp(
-            prefix=f".{_probe_log.name}.",
-            dir=_probe_log.parent,
-        )
-        os.close(fd)
-        probe_log_path = Path(temp_name)
-    try:
-        if use_surface_index:
-            # 完整 URL 正文由 index iterator 流式消费；这里不再把 30 万行物化成 list。
-            api_urls = []
-            param_urls = []
-            js_endpoints = []
-            browser_xhr_urls = []
-            browser_api_urls = []
-        else:
-            api_urls = filter_attack_probes(
-                _read_lines(recon_dir / "urls" / "api_endpoints.txt"),
-                log_path=probe_log_path,
-                preserve_surfaces=True,
-            )
-            param_urls = filter_attack_probes(
-                _read_lines(recon_dir / "urls" / "with_params.txt"),
-                log_path=probe_log_path,
-                preserve_surfaces=True,
-            )
-            js_endpoints = filter_attack_probes(
-                _read_lines(recon_dir / "js" / "endpoints.txt"),
-                log_path=probe_log_path,
-                preserve_surfaces=True,
-            )
-            browser_xhr_urls = filter_attack_probes(
-                _read_lines(recon_dir / "browser" / "xhr_endpoints.txt"),
-                log_path=probe_log_path,
-                preserve_surfaces=True,
-            )
-            browser_api_urls = filter_attack_probes(
-                _read_lines(recon_dir / "browser" / "api_endpoints.txt"),
-                log_path=probe_log_path,
-                preserve_surfaces=True,
-            )
-        if probe_log_path is not None:
-            if probe_log_path.stat().st_size:
-                os.replace(probe_log_path, _probe_log)
-            else:
-                probe_log_path.unlink()
-                _probe_log.unlink(missing_ok=True)
-    except Exception:
-        if probe_log_path is not None:
-            probe_log_path.unlink(missing_ok=True)
-        raise
-    if backend == "primary":
-        scanner_findings = [
-            item for item in _primary_scanner_findings(store)
-            if item.get("url") and url_belongs_to_target(str(item.get("url") or ""), target)
-        ]
+    if use_surface_index:
+        # 完整 URL 正文由 index iterator 流式消费；这里不再把 30 万行物化成 list。
+        api_urls = []
+        param_urls = []
+        js_endpoints = []
+        browser_xhr_urls = []
+        browser_api_urls = []
     else:
-        finding_index = load_finding_index(
-            findings_dir,
-            target=target,
-            allow_legacy=True,
+        api_urls = filter_attack_probes(
+            _read_lines(recon_dir / "urls" / "api_endpoints.txt"),
+            preserve_surfaces=True,
         )
-        scanner_findings = [
-            _project_untrusted_finality_as_candidate(
-                item,
-                findings_dir=findings_dir,
-                target=target,
-            )
-            for item in finding_index.get("findings", [])
-            if isinstance(item, dict) and item.get("url")
-            and url_belongs_to_target(str(item.get("url") or ""), target)
-        ]
+        param_urls = filter_attack_probes(
+            _read_lines(recon_dir / "urls" / "with_params.txt"),
+            preserve_surfaces=True,
+        )
+        js_endpoints = filter_attack_probes(
+            _read_lines(recon_dir / "js" / "endpoints.txt"),
+            preserve_surfaces=True,
+        )
+        browser_xhr_urls = filter_attack_probes(
+            _read_lines(recon_dir / "browser" / "xhr_endpoints.txt"),
+            preserve_surfaces=True,
+        )
+        browser_api_urls = filter_attack_probes(
+            _read_lines(recon_dir / "browser" / "api_endpoints.txt"),
+            preserve_surfaces=True,
+        )
+    scanner_findings = [
+        item for item in _primary_scanner_findings(store)
+        if item.get("url") and url_belongs_to_target(str(item.get("url") or ""), target)
+    ]
     evidence_truth = current_cell_projection(repo_root, target)
-    coverage_matrix = load_matrix(target, repo_root=repo_root)
-    if backend == "primary":
-        action_queue_entries = _primary_action_queue(store)
-    else:
-        action_queue_entries = load_action_queue(repo_root, target).get("actions", [])
+    require_matching_truth(coverage_matrix, evidence_truth)
+    action_queue_entries = _primary_action_queue(store)
     intel_context = _load_intel_context(recon_dir)
     intel_signals = intel_context["signals"]
     ffuf_summary = ReconAdapter(recon_dir).get_ffuf_summary()
@@ -1449,16 +1135,10 @@ def load_surface_context(
     source_intel = load_source_intel(findings_dir)
     scanner_manual_review = _load_scanner_manual_review(findings_dir, target)
     manual_review_leads = _build_manual_review_lead_hints(findings_dir, storage_key)
-    observation_inventory = _sync_observation_inventory(repo_root, target, backend=backend)
+    observation_inventory = _sync_observation_inventory(repo_root, target)
 
     profile = None
     pattern_matches: list[dict] = []
-    if memory_dir:
-        profile = load_target_profile(memory_dir, target)
-        # 跨目标模式计分已移除（2026-09-12 收敛裁定）：其他目标的现场经验
-        # 不自动进入本目标的 surface 排序。本目标模式经 experience_recall
-        # 读取；跨项目复用唯一通道 = 人工审核晋升的知识卡。
-
     # Per-page JS loading map (PR-19). Empty when no browser captures yet.
     # We build closures over the loaded map so callers can answer
     # "which page loads this JS file?" without juggling raw dicts.
@@ -1479,7 +1159,7 @@ def load_surface_context(
             return []
         return list(entry.get("js_files", []))
 
-    if store is not None and _store_binding_snapshot(store) != store_binding:
+    if _store_binding_snapshot(store) != store_binding:
         raise ValueError(
             "primary Surface inputs changed during assembly; rebuild from one store revision"
         )
@@ -1529,176 +1209,30 @@ def load_surface_context(
     }
 
 
-class _BoundedCandidateFrontier:
-    """按 legacy ``score desc, first-seen asc`` 保留固定数量候选。"""
-
-    def __init__(self, limit: int):
-        self.limit = limit
-        self._heap: list[tuple[int, int, str, dict]] = []
-
-    def add(self, item: dict, sequence: int) -> None:
-        quality = (int(item.get("score", 0) or 0), -int(sequence), str(item.get("url") or ""), item)
-        if len(self._heap) < self.limit:
-            heapq.heappush(self._heap, quality)
-            return
-        if quality[:3] > self._heap[0][:3]:
-            heapq.heapreplace(self._heap, quality)
-
-    def values(self) -> list[tuple[int, dict]]:
-        return [
-            (-negative_sequence, item)
-            for _score, negative_sequence, _url, item in sorted(
-                self._heap,
-                key=lambda value: (-value[0], -value[1], value[2]),
-            )
-        ]
-
-
-class _DiverseBoundedCandidateFrontier:
-    """Keep top exact candidates plus bounded top representatives per route shape."""
-
-    def __init__(self, limit: int):
-        self.limit = limit
-        self._overall = _BoundedCandidateFrontier(limit)
-        self._shapes: dict[str, tuple[int, dict]] = {}
-
-    @staticmethod
-    def _better_representative(
-        left_sequence: int,
-        left: dict,
-        right_sequence: int,
-        right: dict,
-    ) -> bool:
-        """Prefer score, then legacy first-seen order, then stable URL."""
-        left_score = int(left.get("score", 0) or 0)
-        right_score = int(right.get("score", 0) or 0)
-        if left_score != right_score:
-            return left_score > right_score
-        if left_sequence != right_sequence:
-            return left_sequence < right_sequence
-        return str(left.get("url") or "") < str(right.get("url") or "")
-
-    def _worst_shape(self) -> tuple[str, tuple[int, dict]]:
-        iterator = iter(self._shapes.items())
-        worst_shape, worst = next(iterator)
-        for shape_id, candidate in iterator:
-            if self._better_representative(
-                worst[0], worst[1], candidate[0], candidate[1]
-            ):
-                worst_shape, worst = shape_id, candidate
-        return worst_shape, worst
-
-    def add(self, item: dict, sequence: int) -> None:
-        self._overall.add(item, sequence)
-        url = str(item.get("url") or "")
-        shape_id = str(_candidate_semantic_shape(item).get("id") or url)
-        current = self._shapes.get(shape_id)
-        if current is not None:
-            if self._better_representative(sequence, item, current[0], current[1]):
-                self._shapes[shape_id] = (sequence, item)
-            return
-        if len(self._shapes) < self.limit:
-            self._shapes[shape_id] = (sequence, item)
-            return
-        worst_shape, worst = self._worst_shape()
-        if self._better_representative(sequence, item, worst[0], worst[1]):
-            del self._shapes[worst_shape]
-            self._shapes[shape_id] = (sequence, item)
-
-    def values(self) -> list[tuple[int, dict]]:
-        selected = sorted(
-            self._shapes.values(),
-            key=lambda value: (-int(value[1].get("score", 0) or 0), value[0], str(value[1].get("url") or "")),
-        )
-        seen = {str(item.get("url") or "") for _sequence, item in selected}
-        for sequence, item in self._overall.values():
-            url = str(item.get("url") or "")
-            if url not in seen:
-                selected.append((sequence, item))
-                seen.add(url)
-            if len(selected) >= self.limit:
-                break
-        return sorted(
-            selected[: self.limit],
-            key=lambda value: (-int(value[1].get("score", 0) or 0), value[0], str(value[1].get("url") or "")),
-        )
-
-
-class _SurfaceCandidateFrontiers:
-    """生成兼容 P1/P2/review pool 所需的 bounded deterministic 子集。"""
+class _SurfaceReviewWindow:
+    """Keep a bounded exact-URL window; source/shape/labels never choose seats."""
 
     def __init__(self, ffuf_urls: set[str]):
         self.total = 0
-        self.p1 = _DiverseBoundedCandidateFrontier(8)
-        self.p2 = _DiverseBoundedCandidateFrontier(8)
-        self.overall = _DiverseBoundedCandidateFrontier(REVIEW_POOL_LIMIT)
-        self.review = {
-            name: _DiverseBoundedCandidateFrontier(REVIEW_POOL_LIMIT)
-            for name in (
-                "convergence",
-                "browser",
-                "intel",
-                "scanner",
-                "target_memory",
-                "actionable",
-            )
-        }
+        self._items: list[dict] = []
         self.ffuf_urls = ffuf_urls
-        self.ffuf_matches: dict[str, tuple[int, dict]] = {}
-        self.new_observations: list[tuple[int, dict]] = []
+        self.ffuf_matches: dict[str, dict] = {}
 
-    def add(self, item: dict, sequence: int) -> None:
+    def add(self, item: dict) -> None:
         self.total += 1
-        score = int(item.get("score", 0) or 0)
-        if score >= 8:
-            self.p1.add(item, sequence)
-        elif 3 <= score < 8:
-            self.p2.add(item, sequence)
-        self.overall.add(item, sequence)
-        if item.get("evidence_convergence"):
-            self.review["convergence"].add(item, sequence)
-        if item.get("browser_observed"):
-            self.review["browser"].add(item, sequence)
-        if item.get("js_intel_observed") or item.get("source_intel_observed"):
-            self.review["intel"].add(item, sequence)
-        if item.get("scanner_findings"):
-            self.review["scanner"].add(item, sequence)
-        if item.get("target_memory_hits"):
-            self.review["target_memory"].add(item, sequence)
-        if _has_actionable_review_evidence(item):
-            self.review["actionable"].add(item, sequence)
-        url = str(item.get("url") or "")
+        url = item["url"]
         if url in self.ffuf_urls:
-            self.ffuf_matches[url] = (sequence, item)
-        if item.get("new_observation"):
-            self.new_observations.append((sequence, item))
-            self.new_observations.sort(key=lambda value: value[0])
-            del self.new_observations[2:]
+            self.ffuf_matches[url] = item
+        if len(self._items) < REVIEW_POOL_LIMIT or url < self._items[-1]["url"]:
+            bisect.insort(self._items, item, key=lambda row: row["url"])
+            del self._items[REVIEW_POOL_LIMIT:]
 
     def review_candidates(self) -> list[dict]:
-        by_url: dict[str, tuple[int, dict]] = {}
-        frontiers = [*self.review.values(), self.overall]
-        for frontier in frontiers:
-            for sequence, item in frontier.values():
-                url = str(item.get("url") or "")
-                current = by_url.get(url)
-                if url and (current is None or sequence < current[0]):
-                    by_url[url] = (sequence, item)
-        for url, value in self.ffuf_matches.items():
-            by_url.setdefault(url, value)
-        for sequence, item in self.new_observations:
-            by_url.setdefault(str(item.get("url") or ""), (sequence, item))
-        return [
-            item
-            for sequence, item in sorted(
-                by_url.values(),
-                key=lambda value: (-int(value[1].get("score", 0) or 0), value[0]),
-            )
-        ]
+        return list({item["url"]: item for item in [*self._items, *self.ffuf_matches.values()]}.values())
 
 
 def _enrich_bounded_candidates(candidates: list[dict]) -> None:
-    """Attach bounded value metadata only after the streaming frontier is selected."""
+    """Attach display metadata after selecting the neutral URL window."""
     seen: set[str] = set()
     for item in candidates:
         if not isinstance(item, dict):
@@ -1743,7 +1277,7 @@ def _build_semantic_surface(context: dict, candidates: list[dict]) -> list[dict]
             },
         )
         entry["candidate_count"] += 1
-        entry["representatives"].append((int(item.get("score", 0) or 0), str(item.get("url") or "")))
+        entry["representatives"].append(str(item.get("url") or ""))
         for signal in (item.get("value_summary") or {}).get("signals", []):
             entry["value_classes"].update(str(value) for value in signal.get("classes", []) if str(value))
         for source in ("browser" if item.get("browser_observed") else "", "js" if item.get("js_intel_observed") else "", "source" if item.get("source_intel_observed") else "", "scanner" if item.get("scanner_findings") else ""):
@@ -1780,15 +1314,15 @@ def _build_semantic_surface(context: dict, candidates: list[dict]) -> list[dict]
             break
     result = []
     for entry in groups.values():
-        representatives = sorted(entry.pop("representatives"), key=lambda value: (-value[0], value[1]))
-        entry["representative_url"] = compact_url(representatives[0][1]) if representatives else ""
-        entry["candidate_urls"] = [compact_url(url) for _score, url in representatives[:2]]
+        representatives = sorted(set(entry.pop("representatives")))
+        entry["representative_url"] = compact_url(representatives[0]) if representatives else ""
+        entry["candidate_urls"] = [compact_url(url) for url in representatives[:2]]
         entry["sources"] = sorted(entry["sources"])
         entry["value_classes"] = sorted(entry["value_classes"])
         if raw_reference:
             entry["raw_reference"] = raw_reference
         result.append(entry)
-    return sorted(result, key=lambda item: (-int(item.get("candidate_count", 0)), item.get("shape_id", "")))[:REVIEW_POOL_LIMIT]
+    return sorted(result, key=lambda item: item.get("shape_id", ""))[:REVIEW_POOL_LIMIT]
 
 
 def _iter_rankable_surface_rows(
@@ -1796,7 +1330,7 @@ def _iter_rankable_surface_rows(
     js_intel_urls: dict[str, list[dict]],
     source_intel_urls: dict[str, list[dict]],
 ) -> Iterator[tuple[str, set[str], int, bool | None]]:
-    """统一 legacy list 与 exact index，保持 URL first-seen tie-breaker。"""
+    """统一 list 与 exact index，保留完整 URL 来源和首次观察序号。"""
     index_status = context.get("surface_index") or {}
     extra_sources: dict[str, set[str]] = {}
     for url in js_intel_urls:
@@ -1806,7 +1340,7 @@ def _iter_rankable_surface_rows(
 
     if index_status.get("status") == "valid":
         # 先只收集 probe-derived inert identity。若直接边读边 yield，文件后段
-        # 的 probe 可能 sanitize 成前段已经输出过的正常 URL，导致 P1/P2 重复
+        # 的 probe 可能 sanitize 成前段已经输出过的正常 URL，导致候选重复
         # 和 total_candidates 虚增。两次流式遍历仍为 O(N)，且只为 probe 子集
         # 保留内存。
         index_repo = context.get("repo_root") or Path(BASE_DIR)
@@ -1905,7 +1439,7 @@ def _iter_rankable_surface_rows(
 
 
 def rank_surface(context: dict) -> dict:
-    """Build an AI-first surface review pack with compatibility P1/P2 hints."""
+    """Build a bounded URL-ordered surface view with complete expansion sources."""
     if not context.get("available"):
         return {
             "available": False,
@@ -1985,7 +1519,7 @@ def rank_surface(context: dict) -> dict:
         for item in (ffuf_summary.get("review_sample") or [])[:4]
         if isinstance(item, dict) and str(item.get("url") or "")
     }
-    frontiers = _SurfaceCandidateFrontiers(ffuf_urls)
+    frontiers = _SurfaceReviewWindow(ffuf_urls)
     external_context_count = 0
     external_context_sample: list[tuple[int, str]] = []
     convergence_browser_urls: set[str] = set()
@@ -2017,42 +1551,17 @@ def rank_surface(context: dict) -> dict:
         if parsed.query:
             path = f"{path}?{parsed.query}"
         query_keys = [key.lower() for key in re.findall(r"[?&]([^=&]+)=", raw_url)]
-        score = 0
-        score_breakdown = []
         reasons = []
         suggested = ""
         if browser_observed:
-            score += _add_score_breakdown(
-                score_breakdown,
-                "browser",
-                "Browser-observed XHR/API",
-                5,
-                path,
-            )
             reasons.append("browser-observed surface")
         matching_js_intel_endpoints = js_intel_urls.get(raw_url, [])
         if matching_js_intel_endpoints:
-            methods = _dedupe_keep_order([
-                str(item.get("method", "")).upper()
-                for item in matching_js_intel_endpoints
-                if item.get("method")
-            ])
-            evidence = ", ".join(methods[:3]) or path
-            score += _add_score_breakdown(
-                score_breakdown,
-                "js_intel",
-                "JS-reader endpoint observation",
-                5,
-                evidence,
-            )
             reasons.append("js-reader endpoint observation")
         matching_source_routes = list(source_intel_urls.get(raw_url, []))
         if matching_source_routes:
             convergence_source_intel_urls[raw_url] = list(
                 matching_source_routes
-            )
-            score += _add_score_breakdown(
-                score_breakdown, "intel", "Source route observation", 5, path,
             )
             reasons.append("source route observation")
 
@@ -2064,44 +1573,16 @@ def rank_surface(context: dict) -> dict:
         if matching_source_routes:
             convergence_sources.append("source")
         if len(convergence_sources) >= 2:
-            convergence_bonus = 10 if len(convergence_sources) >= 3 else 6
-            score += _add_score_breakdown(
-                score_breakdown,
-                "evidence_convergence",
-                "Cross-evidence endpoint convergence",
-                convergence_bonus,
-                "+".join(convergence_sources),
-            )
             reasons.append("cross-evidence convergence: " + "+".join(convergence_sources))
             if browser_observed:
                 convergence_browser_urls.add(raw_url)
         if api_observed:
-            score += _add_score_breakdown(
-                score_breakdown,
-                "recon",
-                "API endpoint",
-                4,
-                "api_endpoints.txt" if api_observed else path,
-            )
+            reasons.append("recon API observation")
         if query_keys:
             reasons.append("observed query parameters: " + ", ".join(query_keys))
         if path in untested_endpoints:
-            score += _add_score_breakdown(
-                score_breakdown,
-                "memory",
-                "Untested in hunt memory",
-                3,
-                path,
-            )
             reasons.append("untested in memory")
         if path in tested_endpoints:
-            score += _add_score_breakdown(
-                score_breakdown,
-                "memory",
-                "Tested before",
-                -3,
-                path,
-            )
             reasons.append("tested before")
 
         active_memory_hits = _matching_target_memory_entries(
@@ -2114,45 +1595,17 @@ def rank_surface(context: dict) -> dict:
             target_goal_memory, "dead_ends", raw_url, path
         )
         if active_memory_hits:
-            first = _target_memory_text(active_memory_hits[-1])
-            score += _add_score_breakdown(
-                score_breakdown,
-                "target_memory",
-                "Active target-memory lead",
-                4,
-                first[:120],
-            )
             reasons.append("target-memory active lead")
-            suggested = f"continue remembered lead: {first[:140]}"
         if next_memory_hits:
-            first = _target_memory_text(next_memory_hits[-1])
-            score += _add_score_breakdown(
-                score_breakdown,
-                "target_memory",
-                "Remembered next action",
-                2,
-                first[:120],
-            )
             reasons.append("target-memory next action")
-            suggested = first[:180]
         if dead_end_hits:
-            first = _target_memory_text(dead_end_hits[-1])
-            score += _add_score_breakdown(
-                score_breakdown,
-                "target_memory",
-                "Remembered dead end",
-                -4,
-                first[:120],
-            )
             reasons.append("target-memory dead end")
-            suggested = f"avoid repeating remembered dead end unless new evidence changed: {first[:120]}"
 
         # 跨目标 pattern 计分分支已移除（审计 F9）：pattern_matches 恒为空
         # （2026-09-12 收敛裁定后 loader 不再产生），此分支不可达。
 
         scanner_findings = scanner_findings_by_url.get(raw_url, [])
         if scanner_findings:
-            scanner_bonus = sum(_finding_score_bonus(item) for item in scanner_findings)
             scanner_types = _dedupe_keep_order([
                 item.get("type") or item.get("category") or "scanner"
                 for item in scanner_findings
@@ -2161,23 +1614,10 @@ def rank_surface(context: dict) -> dict:
                 (item.get("report_status") or item.get("validation_status") or "untracked")
                 for item in scanner_findings
             ])
-            scanner_ids = _dedupe_keep_order([
-                item.get("id", "")
-                for item in scanner_findings
-                if item.get("id")
-            ])
-            score += _add_score_breakdown(
-                score_breakdown,
-                "scanner",
-                "Scanner finding: " + ", ".join(scanner_types[:3]),
-                scanner_bonus,
-                ", ".join(scanner_ids[:3]),
-            )
             reasons.append(
                 "scanner finding: "
                 + ", ".join(scanner_types[:3])
                 + f" status={','.join(scanner_statuses[:3])}"
-                + f" (+{scanner_bonus})"
             )
 
         observed_request_shapes = list(
@@ -2218,8 +1658,6 @@ def rank_surface(context: dict) -> dict:
             "path": path,
             "source_names": sorted(source_tags),
             "raw_evidence": "raw" in source_tags,
-            "score": score,
-            "score_breakdown": score_breakdown,
             "reasons": reasons,
             "suggested": suggested,
             "tech_stack": context["hosts"].get(host, {}).get("tech_stack", []),
@@ -2321,7 +1759,7 @@ def rank_surface(context: dict) -> dict:
                     f"review prior action-queue outcome ({queue_status}) before repeating the same lane; "
                     "fresh browser/source/role/object evidence may justify a different test"
                 )
-        frontiers.add(entry, sequence)
+        frontiers.add(entry)
 
     bounded_candidates = frontiers.review_candidates()
     ffuf_review_candidates = _build_ffuf_review_candidates(
@@ -2352,26 +1790,14 @@ def rank_surface(context: dict) -> dict:
         for item in lead_items
     ])
 
-    kill = []
-    for host, item in context["hosts"].items():
-        lower_host = host.lower()
-        title = item.get("title", "").lower()
-        if host in context["status403_hosts"] and context.get("cf_bypass_active"):
-            continue
-        if any(token in lower_host for token in ("docs.", "status.", "blog.", "static.", "cdn.")):
-            kill.append({"host": host, "reason": "possible docs/static/support host"})
-            continue
-        if host in context["status403_hosts"]:
-            kill.append({"host": host, "reason": "403-only host from recon; revisit if auth/CF/session context changes"})
-            continue
-        if any(token in title for token in ("documentation", "status page", "help center")):
-            kill.append({"host": host, "reason": f"title suggests lower-priority surface: {item.get('title', '')}"})
-
-    p1 = [item for _sequence, item in frontiers.p1.values()]
-    p2 = [item for _sequence, item in frontiers.p2.values()]
-    _enrich_bounded_candidates([*bounded_candidates, *p1, *p2])
     review_pool = _build_review_pool(bounded_candidates, ffuf_review_candidates)
-    semantic_surface = _build_semantic_surface(context, [*bounded_candidates, *p1, *p2])
+    _enrich_bounded_candidates(review_pool)
+    semantic_surface = _build_semantic_surface(context, review_pool)
+    total_candidates = frontiers.total + sum(
+        item["url"] not in frontiers.ffuf_matches for item in ffuf_review_candidates
+    )
+    # Retired compatibility fields carry no alternate ranked work set.
+    p1, p2, kill = [], [], []
     observation_inventory = context.get("observation_inventory") or {}
     index_status = context.get("surface_index") or {}
     index_summary = index_status.get("summary") or {}
@@ -2379,26 +1805,18 @@ def rank_surface(context: dict) -> dict:
     index_binding = index_manifest.get("index_binding") if isinstance(index_manifest.get("index_binding"), dict) else {}
     continuation = {"available": False, "next_cursor": "", "command": ""}
     if str(index_status.get("status") or "") == "valid":
-        try:
-            first_page = page_surface_index(
-                context["repo_root"],
-                context["target"],
-                limit=50,
-                target_owned=True,
-            )
-            next_cursor = str(first_page.get("next_cursor") or "")
-            continuation = {
-                "available": bool(next_cursor),
-                "next_cursor": next_cursor,
-                "command": (
-                    "python3 tools/surface_index.py page "
-                    f"--target {shlex.quote(context['target'])} --limit 50 "
-                    f"--target-owned --cursor {shlex.quote(next_cursor)}"
-                ),
-            }
-        except (OSError, SurfaceIndexError, ValueError):
-            # Ranking remains usable; stale index status is already a refresh gate.
-            pass
+        # The review pool is not an index page: expansion must start at row one.
+        continuation = {
+            "available": True,
+            "starts_at": "first-page",
+            "scope": "all-indexed-urls",
+            "next_cursor": "",
+            "command": shlex.join([
+                "python3", "tools/surface_index.py", "--repo-root",
+                str(Path(context["repo_root"]).resolve()), "page",
+                "--target", context["target"], "--limit", "50",
+            ]),
+        }
     browser_source_counts = index_summary.get("source_counts") or {}
     filter_summary = _read_json_object(Path(context.get("recon_dir") or "") / "urls" / "filter_summary.json")
     raw_url_count = int((index_summary.get("source_counts") or {}).get("raw", 0) or 0)
@@ -2417,6 +1835,8 @@ def rank_surface(context: dict) -> dict:
         "p1": p1,
         "p2": p2,
         "review_pool": review_pool,
+        "review_window": {"order": "url", "total": total_candidates, "returned": len(review_pool),
+                          "remaining": total_candidates - len(review_pool), "limit": REVIEW_POOL_LIMIT},
         "semantic_surface": semantic_surface,
         "surface_index": {
             "status": str(index_status.get("status") or "missing"),
@@ -2478,7 +1898,7 @@ def rank_surface(context: dict) -> dict:
             ],
         },
         "stats": {
-            "total_candidates": frontiers.total,
+            "total_candidates": total_candidates,
             "p1": len(p1),
             "p2": len(p2),
             "review_pool": len(review_pool),
@@ -2598,10 +2018,6 @@ def format_surface_output(ranked: dict, target: str) -> str:
         lines.append(f"- abandon {target} (if confirmed unproductive)")
         return "\n".join(lines)
 
-    kill_items = [
-        json.loads(item) if isinstance(item, str) else item
-        for item in ranked.get("kill", [])
-    ]
     workflow_leads = [
         json.loads(item) if isinstance(item, str) else item
         for item in ranked.get("workflow_leads", [])
@@ -2676,74 +2092,28 @@ def format_surface_output(ranked: dict, target: str) -> str:
         lines.extend(ffuf_lines)
         lines.append("")
     review_pool = ranked.get("review_pool") or []
+    surface_index = ranked.get("surface_index") or {}
+    expansion = surface_index.get("continuation") or {}
+    if expansion.get("available"):
+        lines.extend([
+            f"Indexed URL variants: {surface_index.get('row_count', 0)}; review pool is a preview.",
+            f"Full index from first page (includes external context): {expansion['command']}",
+            "",
+        ])
     lines.extend([
-        "AI Review Pool (advisory; Claude chooses final priority):",
+        "AI Review Pool (URL order; Claude chooses work):",
     ])
     if review_pool:
-        for idx, item in enumerate(review_pool[:10], 1):
+        for idx, item in enumerate(review_pool, 1):
             reason = ", ".join(item.get("reasons", [])[:2])
             review_reason = str(item.get("review_reason") or "surface evidence").strip()
             lines.append(f"{idx}. {surface_safe_preview(item['url'])} — {review_reason}; {reason}")
-            lines.append(f"   Score hint: {_format_score_breakdown(item)}")
-            lines.append(f"   Suggested evidence path: {item['suggested']}")
+            if item.get("tech_stack"):
+                lines.append(f"   Tech: {', '.join(item['tech_stack'])}")
+            if item.get("evidence_refs"):
+                lines.append("   Sources: " + ", ".join(item["evidence_refs"]))
     else:
         lines.append("1. No review candidates from cached recon.")
-
-    lines.extend([
-        "",
-        "Advisory first-review score hints (legacy P1, not verdicts):",
-    ])
-    if ranked["p1"]:
-        for idx, item in enumerate(ranked["p1"], 1):
-            reason = ", ".join(item["reasons"][:2])
-            lines.append(f"{idx}. {surface_safe_preview(item['url'])} — {reason}")
-            if item["tech_stack"]:
-                lines.append(f"   Tech: {', '.join(item['tech_stack'])}")
-            if item.get("browser_observed"):
-                lines.append("   Source: browser-observed XHR/API")
-            if item.get("js_intel_observed"):
-                lines.append("   Source: js-reader hypotheses")
-            if item.get("source_intel_observed"):
-                lines.append("   Source: source-intel route observations")
-            if item.get("evidence_convergence"):
-                lines.append("   Source: cross-evidence convergence (" + "+".join(item["evidence_convergence"]) + ")")
-            if item.get("target_memory_hits"):
-                lines.append("   Source: target memory")
-            if item.get("target_memory_dead_ends"):
-                lines.append("   Caution: matches remembered dead end")
-            lines.append(f"   Score: {_format_score_breakdown(item)}")
-            lines.append(f"   Suggested: {item['suggested']}")
-    else:
-        lines.append("1. No clear first-review score hints from cached recon.")
-
-    lines.extend(["", "Advisory follow-up score hints (legacy P2, not verdicts):"])
-    if ranked["p2"]:
-        for idx, item in enumerate(ranked["p2"], 1):
-            reason = ", ".join(item["reasons"][:2])
-            lines.append(f"{idx}. {surface_safe_preview(item['url'])} — {reason}")
-            if item.get("browser_observed"):
-                lines.append("   Source: browser-observed XHR/API")
-            if item.get("js_intel_observed"):
-                lines.append("   Source: js-reader hypotheses")
-            if item.get("source_intel_observed"):
-                lines.append("   Source: source-intel route observations")
-            if item.get("evidence_convergence"):
-                lines.append("   Source: cross-evidence convergence (" + "+".join(item["evidence_convergence"]) + ")")
-            if item.get("target_memory_hits"):
-                lines.append("   Source: target memory")
-            if item.get("target_memory_dead_ends"):
-                lines.append("   Caution: matches remembered dead end")
-            lines.append(f"   Score: {_format_score_breakdown(item)}")
-            lines.append(f"   Suggested: {item['suggested']}")
-    else:
-        lines.append("1. No follow-up score hints. Consider re-running recon.")
-
-    lines.extend(["", "Low-priority host hints (not exclusion):"])
-    if kill_items:
-        for item in kill_items[:5]:
-            lines.append(f"- {item['host']} — {item['reason']}")
-    else:
-        lines.append("- No obvious low-value hosts from cached recon.")
 
     lines.extend(["", "Memory:"])
     for item in ranked["memory"]["pattern_suggestions"]:
@@ -2786,7 +2156,7 @@ def format_surface_output(ranked: dict, target: str) -> str:
     if scanner_count:
         lines.append(f"- Structured scanner candidates: {scanner_count}")
         shown = 0
-        for item in ranked.get("p1", []) + ranked.get("p2", []):
+        for item in review_pool:
             for finding in item.get("scanner_findings", []):
                 lines.append(
                     f"- {finding.get('id', '-')} "
@@ -2861,7 +2231,7 @@ def format_surface_output(ranked: dict, target: str) -> str:
     if intel_count:
         lines.append(f"- Local intel signals: {intel_count}")
         shown = 0
-        for item in ranked.get("p1", []) + ranked.get("p2", []):
+        for item in review_pool:
             for signal in item.get("intel_signals", []):
                 label = signal.get("id") or signal.get("summary") or signal.get("source", "intel")
                 lines.append(
@@ -2913,8 +2283,7 @@ def format_surface_output(ranked: dict, target: str) -> str:
         for item in workflow_leads[:5]:
             title = item.get("title", "-")
             category = item.get("category", "other")
-            priority = item.get("priority", "medium")
-            lines.append(f"- [{priority}] {category}: {title}")
+            lines.append(f"- {category}: {title}")
             lines.append(f"  Next: {item.get('next_action', '')}")
             rationale = str(item.get("rationale", "") or "").strip()
             if rationale:
@@ -2926,9 +2295,7 @@ def format_surface_output(ranked: dict, target: str) -> str:
         "",
         "Stats:",
         f"- Total candidates: {ranked['stats']['total_candidates']}",
-        f"- Advisory first-review hints: {ranked['stats']['p1']}",
-        f"- Advisory follow-up hints: {ranked['stats']['p2']}",
-        f"- Low-priority host hints: {ranked['stats']['kill']}",
+        f"- Review window: {len(review_pool)}; remaining: {(ranked.get('review_window') or {}).get('remaining', 'unknown')}",
     ])
 
     # Options surface multiple candidate next moves rather than a single
@@ -2982,25 +2349,14 @@ def build_surface_review(
     repo = Path(repo_root).resolve()
     # Keep backend selection stable through index, context and publication.
     with target_switch_lock(repo, target):
+        runtime_store(repo, target)
         resolved_memory = str(memory_dir or default_memory_dir(repo))
         index_status = load_surface_index_status(repo, target)
         if refresh or index_status.get("status") != "valid":
             build_surface_index(repo, target)
 
-        # Primary context reads are side-effect free: freeze before reading, not
-        # after, so a Store mutation cannot relabel old context with a new revision.
-        # Legacy context still synchronizes inventory sidecars before freezing.
-        initial_manifest = (
-            build_surface_input_manifest(repo, target, memory_dir=resolved_memory)
-            if target_backend(repo, target) == "primary" else None
-        )
+        initial_manifest = build_surface_input_manifest(repo, target, memory_dir=resolved_memory)
         context = load_surface_context(repo, target, memory_dir=resolved_memory)
-        if initial_manifest is None:
-            initial_manifest = build_surface_input_manifest(
-                repo,
-                target,
-                memory_dir=resolved_memory,
-            )
         ranked = rank_surface(context)
         final_manifest = build_surface_input_manifest(
             repo,
@@ -3031,15 +2387,17 @@ def build_surface_review(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build an AI-first surface review pack from cached recon")
     parser.add_argument("--target", required=True, help="Target domain")
+    parser.add_argument("--repo-root", default=str(BASE_DIR))
     parser.add_argument("--memory-dir", default="", help="Optional hunt-memory directory")
     parser.add_argument("--json", action="store_true", help="Output JSON summary")
     parser.add_argument("--refresh", action="store_true", help="Force a complete index/ranking rebuild")
     args = parser.parse_args()
 
-    memory_dir = args.memory_dir or str(default_memory_dir(BASE_DIR))
+    repo_root = Path(args.repo_root).resolve()
+    memory_dir = args.memory_dir or str(default_memory_dir(repo_root))
     try:
         ranked = build_surface_review(
-            BASE_DIR,
+            repo_root,
             args.target,
             memory_dir=memory_dir,
             refresh=args.refresh,

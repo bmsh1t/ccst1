@@ -27,6 +27,8 @@ def isolated_findings(tmp_path, monkeypatch):
     """Redirect FINDINGS_ROOT to a tmp dir for test isolation."""
     monkeypatch.setattr(oast_listen, "FINDINGS_ROOT", tmp_path)
     monkeypatch.setattr(oast_listen, "REPO_ROOT", tmp_path)
+    from tools.target_store import TargetStore
+    TargetStore(tmp_path, "demo.com").initialize()
     return tmp_path
 
 
@@ -197,6 +199,8 @@ def test_url_backend_marker_uses_path_segment(isolated_findings, capsys):
     import contextlib
     from unittest.mock import patch
 
+    from tools.target_store import TargetStore
+    TargetStore(isolated_findings, "urlbk.local").initialize()
     _seed_url("urlbk.local", "https://webhook.site/f3d2c1b0-token")
     paths = oast_listen._paths("urlbk.local")
     with patch.object(oast_listen, "_paths", return_value=paths):

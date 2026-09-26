@@ -2,11 +2,9 @@
 """
 pattern_calibration.py — per-pattern outcome tracking & precision/recall.
 
-PRD: B12d. The `PatternDB.match()` helper exposes hunting leads from
-prior wins, but nothing tracks whether those leads ever paid off. This
-tool maintains a parallel JSONL of outcome labels and exposes
-aggregated stats so `/surface` (and a calibrated PatternDB.match() kwarg)
-can deprioritise low-precision patterns.
+Stores explicitly recorded outcome telemetry and exposes aggregate statistics.
+Current Surface/recall consumers do not use these statistics to filter or rank
+target experience. Historical PatternDB matching remains explicit inspection.
 
 Outcome labels:
   - helped          — pattern led to a confirmed finding or strong signal
@@ -14,7 +12,7 @@ Outcome labels:
   - false_positive  — pattern misled the agent into wasted attempts
 
 Calibration thresholds:
-  - A pattern is excluded ONLY if samples >= 5 AND precision < 0.2.
+  - Historical calibration inspection marks samples >= 5 and precision < 0.2.
 
 Layout:
   hunt-memory/pattern_calibration.jsonl   — one record per outcome
@@ -59,9 +57,8 @@ def pattern_id_for(pattern: dict) -> str:
 
     Patterns don't carry an explicit `id` column — they are uniquely
     identified by (target, vuln_class, technique). The calibration
-    pattern_id MUST match this composite so /surface and PatternDB.match()
-    can join calibration rows against pattern rows without a schema
-    migration.
+    pattern_id retains this composite for explicitly inspecting historical
+    calibration rows; current Surface selection does not join these rows.
     """
     return "|".join([
         str(pattern.get("target", "")),

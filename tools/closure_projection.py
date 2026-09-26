@@ -16,6 +16,7 @@ try:
         CLOSED_LEDGER_RESULTS,
         LEDGER_RESULTS,
         canonical_endpoint_identity,
+        observation_supports_coverage,
     )
     from tools.identity_contract import ClosureCellKey, build_closure_cell
 except ImportError:  # pragma: no cover - direct tools/ execution
@@ -23,6 +24,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         CLOSED_LEDGER_RESULTS,
         LEDGER_RESULTS,
         canonical_endpoint_identity,
+        observation_supports_coverage,
     )
     from identity_contract import ClosureCellKey, build_closure_cell  # type: ignore
 
@@ -133,6 +135,8 @@ def _project_v2_cells(entries: list[dict]) -> tuple[list[dict], list[dict]]:
         if result in {"lead", "signal", "candidate"}:
             continue
         if result not in CLOSED_LEDGER_RESULTS:
+            continue
+        if not observation_supports_coverage(entry):
             continue
         closed.append({
             "identity_v2": key.to_dict(),
@@ -257,7 +261,7 @@ def _project_legacy_cells(
             entry for _sequence, entry in open_rows
             if str(entry.get("result") or "") == "candidate"
         )
-        if open_rows:
+        if open_rows or any(not observation_supports_coverage(entry) for _, entry in current_rows):
             continue
         terminal_rows = [
             item for item in current_rows

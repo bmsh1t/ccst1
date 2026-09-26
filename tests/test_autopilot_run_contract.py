@@ -8,6 +8,7 @@ from pathlib import Path
 
 from tools.checkpoint import build_checkpoint, write_checkpoint_witness
 from tools.runtime_state import update_runtime_state
+from tools.target_store import TargetStore
 
 SCRIPT = Path(__file__).resolve().parent / "skill-validator" / "check_autopilot_run.py"
 SPEC = importlib.util.spec_from_file_location("check_autopilot_run", SCRIPT)
@@ -29,61 +30,44 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
     )
 
 
-def _write_passing_run(repo: Path, target: str = "demo.test") -> None:
-    state_dir = repo / "state" / target
-    evidence_dir = repo / "memory" / "evidence" / target
+def _write_passing_run(repo: Path, target: str = "demo.test", *, command=True,
+                       complete=True, stop=None, observation=True) -> TargetStore:
+    store = TargetStore(repo, target)
+    store.initialize()
     raw_evidence_path = repo / "evidence" / target / "raw" / "ssti_probe_001.json"
-    _write_json(
-        raw_evidence_path,
-        {
-            "target": target,
-            "request": "GET /profile?name={{probe}} HTTP/1.1",
-            "response": "HTTP/1.1 200 OK",
-        },
+    _write_json(raw_evidence_path, {"target": target, "request": "GET /profile HTTP/1.1",
+                                   "response": "HTTP/1.1 200 OK"})
+    update_runtime_state(repo, target, mode="autopilot", last_executed_workflow="checkpoint")
+    write_checkpoint_witness(repo, target, {"context_pack": {
+        "knowledge_cards": ["knowledge/cards/server-side-template-injection.md"],
+        "reference_hints": [],
+    }})
+    store.create_action(
+        command_id="create", action_id="AQ-0001", intent="Compare template rendering",
+        execution_key="render-probe", endpoint=f"https://{target}/profile", family="ssti", actor="test",
+        metadata={"action_context": {
+            "command_hint": "python3 tools/context_pack.py --target demo.test --focus ssti"
+                            if command else "manual browser review",
+            "stop_condition": stop if stop is not None else "Stop after one harmless parser comparison.",
+        }},
     )
-    update_runtime_state(
-        repo,
-        target,
-        mode="autopilot",
-        last_executed_workflow="checkpoint",
-    )
-    write_checkpoint_witness(
-        repo,
-        target,
-        {
-            "context_pack": {
-                "knowledge_cards": ["knowledge/cards/server-side-template-injection.md"],
-                "reference_hints": [],
-            }
-        },
-    )
-    _write_json(
-        state_dir / "action_queue.json",
-        {
-            "actions": [
-                {
-                    "id": "AQ-0001",
-                    "status": "tested",
-                    "type": "ssti",
-                    "action": "python3 tools/context_pack.py --target demo.test --focus ssti",
-                    "command_hint": "python3 tools/context_pack.py --target demo.test --focus ssti",
-                    "stop_condition": "Stop after a harmless parser probe shows no render delta.",
-                }
-            ]
-        },
-    )
-    _write_jsonl(
-        evidence_dir / "ledger.jsonl",
-        [
-            {
-                "target": "demo.test",
-                "endpoint": "/profile",
-                "raw_endpoint": "/profile?name={{probe}}",
-                "evidence_ref": f"evidence/{target}/raw/ssti_probe_001.json",
-                "result": "tested_clean",
-            }
-        ],
-    )
+    if observation:
+        store.transition_action(command_id="claim", action_id="AQ-0001", expected_version=1,
+                                status="claimed", actor="test")
+        store.start_attempt(attempt_id="attempt", source="native", actor="test",
+                            started_at="2026-09-24T00:00:00Z", action_id="AQ-0001", claim_token="claim")
+        operation = store.record_execution(
+            attempt_id="attempt", outcome="complete", actor="test", observations=[{
+                "endpoint": f"https://{target}/profile", "method": "GET", "family": "ssti",
+                "observed_at": "2026-09-24T00:00:00Z", "description": "No render difference observed",
+                "artifacts": {"response": raw_evidence_path.relative_to(repo).as_posix()}, "state_changing": False,
+            }],
+        )
+        if complete:
+            store.transition_action(command_id="complete", action_id="AQ-0001", expected_version=2,
+                                    status="completed", actor="test", claim_token="claim", reason="Recorded comparison",
+                                    completion={"operation_id": operation["entity_id"]})
+    return store
 
 
 def test_passing_fixture_satisfies_autopilot_run_contract(tmp_path):
@@ -154,6 +138,7 @@ def test_runtime_v2_session_remains_minimal_and_witness_supplies_context(tmp_pat
 def test_real_checkpoint_projection_satisfies_runtime_v2_context_contract(tmp_path):
     _write_passing_run(tmp_path)
 
+    before = (tmp_path / "state/demo.test/checkpoint_latest.json").read_bytes()
     checkpoint = build_checkpoint(
         tmp_path,
         target="demo.test",
@@ -166,16 +151,13 @@ def test_real_checkpoint_projection_satisfies_runtime_v2_context_contract(tmp_pa
 
     assert result["passed"] is True
     assert result["checks"]["context_pack"]["score"] == 30
-    assert witness["context_pack"]["knowledge_cards"] == checkpoint["context_pack"]["knowledge_cards"]
+    assert checkpoint["runtime_witness"]["status"] == "not_published"
+    assert (tmp_path / "state/demo.test/checkpoint_latest.json").read_bytes() == before
+    assert witness["context_pack"]["knowledge_cards"]
 
 
 def test_natural_language_only_action_fails_executable_check(tmp_path):
-    _write_passing_run(tmp_path)
-    queue_path = tmp_path / "state" / "demo.test" / "action_queue.json"
-    queue = json.loads(queue_path.read_text(encoding="utf-8"))
-    queue["actions"][0]["action"] = "Investigate the template injection signal manually."
-    queue["actions"][0]["command_hint"] = "manual browser review"
-    _write_json(queue_path, queue)
+    _write_passing_run(tmp_path, command=False)
 
     result = check_autopilot_run.check_run(tmp_path, "demo.test")
 
@@ -189,10 +171,7 @@ def test_natural_language_only_action_fails_executable_check(tmp_path):
 
 def test_missing_raw_evidence_fails_evidence_check(tmp_path):
     _write_passing_run(tmp_path)
-    _write_jsonl(
-        tmp_path / "memory" / "evidence" / "demo.test" / "ledger.jsonl",
-        [{"target": "demo.test", "endpoint": "/profile", "result": "tested_clean"}],
-    )
+    (tmp_path / "evidence/demo.test/raw/ssti_probe_001.json").unlink()
 
     result = check_autopilot_run.check_run(tmp_path, "demo.test")
 
@@ -201,36 +180,25 @@ def test_missing_raw_evidence_fails_evidence_check(tmp_path):
     assert result["grade"] == "needs_review"
     assert result["checks"]["evidence_path"]["passed"] is False
     assert result["checks"]["evidence_path"]["score"] == 0
-    assert result["checks"]["evidence_path"]["missing"] == ["locatable_evidence_ref_or_raw_artifact"]
+    assert result["checks"]["evidence_path"]["missing"] == ["registered_intact_raw_evidence"]
 
 
 def test_raw_endpoint_only_does_not_satisfy_evidence_contract(tmp_path):
-    _write_passing_run(tmp_path)
-    _write_jsonl(
-        tmp_path / "memory" / "evidence" / "demo.test" / "ledger.jsonl",
-        [
-            {
-                "target": "demo.test",
-                "endpoint": "/profile",
-                "raw_endpoint": "/profile?name={{probe}}",
-                "result": "candidate",
-            }
-        ],
-    )
+    _write_passing_run(tmp_path, observation=False)
+    _write_jsonl(tmp_path / "memory/evidence/demo.test/ledger.jsonl", [{
+        "endpoint": "/profile", "raw_endpoint": "/profile?name=test", "result": "tested_clean",
+        "evidence_ref": "evidence/demo.test/raw/ssti_probe_001.json",
+    }])
 
     result = check_autopilot_run.check_run(tmp_path, "demo.test")
 
     assert result["passed"] is False
     assert result["checks"]["evidence_path"]["passed"] is False
-    assert result["checks"]["evidence_path"]["missing"] == ["locatable_evidence_ref_or_raw_artifact"]
+    assert result["checks"]["evidence_path"]["missing"] == ["registered_intact_raw_evidence"]
 
 
 def test_active_only_queue_fails_resolution_check(tmp_path):
-    _write_passing_run(tmp_path)
-    queue_path = tmp_path / "state" / "demo.test" / "action_queue.json"
-    queue = json.loads(queue_path.read_text(encoding="utf-8"))
-    queue["actions"][0]["status"] = "queued"
-    _write_json(queue_path, queue)
+    _write_passing_run(tmp_path, complete=False)
 
     result = check_autopilot_run.check_run(tmp_path, "demo.test")
 
@@ -242,7 +210,7 @@ def test_active_only_queue_fails_resolution_check(tmp_path):
     assert "final_status" in result["checks"]["queue_resolution_and_stop"]["missing"]
 
 
-def test_unreconciled_root_json_claim_fails_even_with_unrelated_final_queue(tmp_path):
+def test_raw_claim_does_not_create_work_or_override_current_facts(tmp_path):
     _write_passing_run(tmp_path)
     claim_path = tmp_path / "findings" / "demo.test" / "manual-sqli.json"
     _write_json(
@@ -259,15 +227,13 @@ def test_unreconciled_root_json_claim_fails_even_with_unrelated_final_queue(tmp_
 
     result = check_autopilot_run.check_run(tmp_path, "demo.test")
 
-    assert result["passed"] is False
-    check = result["checks"]["queue_resolution_and_stop"]
-    assert check["passed"] is False
-    assert "unreconciled_root_finding_claim" in check["missing"]
-    assert "manual-sqli.json" in check["evidence"]
+    assert result["passed"] is True
+    assert TargetStore(tmp_path, "demo.test").page("findings")["total"] == 0
+    assert TargetStore(tmp_path, "demo.test").page("actions")["total"] == 1
 
 
-def test_direct_validated_json_row_without_owner_provenance_fails_runtime_contract(tmp_path):
-    _write_passing_run(tmp_path)
+def test_direct_validated_json_cannot_replace_store_observations(tmp_path):
+    _write_passing_run(tmp_path, observation=False)
     findings_path = tmp_path / "findings" / "demo.test" / "findings.json"
     _write_json(
         findings_path,
@@ -288,45 +254,24 @@ def test_direct_validated_json_row_without_owner_provenance_fails_runtime_contra
     )
 
     result = check_autopilot_run.check_run(tmp_path, "demo.test")
-    check = result["checks"]["queue_resolution_and_stop"]
-
     assert result["passed"] is False
-    assert result["score"] == 90
-    assert "owner_provenance_for_validated_or_generated_finding" in check["missing"]
-    assert "manual-validated:missing-owner-provenance" in check["evidence"]
+    assert result["checks"]["evidence_path"]["passed"] is False
+    assert TargetStore(tmp_path, "demo.test").page("findings")["total"] == 0
 
 
-def test_owner_api_validated_row_satisfies_runtime_provenance_contract(tmp_path):
-    from tools.finding_index import upsert_finding
-
-    _write_passing_run(tmp_path)
-    findings_dir = tmp_path / "findings" / "demo.test"
-    upsert_finding(
-        findings_dir,
-        {
-            "id": "owner-validated",
-            "type": "ssti",
-            "url": "https://demo.test/profile",
-            "source_file": "evidence/demo.test/raw/ssti_probe_001.json",
-            "validation_summary": "evidence/demo.test/raw/ssti_probe_001.json",
-            "validation_status": "validated",
-            "report_status": "not_generated",
-        },
-        target="demo.test",
-    )
-
+def test_registered_evidence_tamper_fails_without_erasing_history(tmp_path):
+    store = _write_passing_run(tmp_path)
+    before = store.binding()
+    (tmp_path / "evidence/demo.test/raw/ssti_probe_001.json").write_text("changed")
     result = check_autopilot_run.check_run(tmp_path, "demo.test")
-
-    assert result["passed"] is True
-    assert result["score"] == 100
+    assert result["passed"] is False
+    assert "changed" in result["checks"]["evidence_path"]["evidence"]
+    assert store.binding() == before
+    assert store.page("operations")["total"] == 1
 
 
 def test_high_risk_default_stop_condition_fails_stop_check(tmp_path):
-    _write_passing_run(tmp_path)
-    queue_path = tmp_path / "state" / "demo.test" / "action_queue.json"
-    queue = json.loads(queue_path.read_text(encoding="utf-8"))
-    queue["actions"][0]["stop_condition"] = check_autopilot_run.DEFAULT_STOP_CONDITION
-    _write_json(queue_path, queue)
+    _write_passing_run(tmp_path, stop=check_autopilot_run.DEFAULT_STOP_CONDITION)
 
     result = check_autopilot_run.check_run(tmp_path, "demo.test")
 

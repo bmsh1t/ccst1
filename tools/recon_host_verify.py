@@ -24,9 +24,9 @@ BASE_DIR = Path(__file__).resolve().parents[1]
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
-from memory.target_profile import default_memory_dir, load_target_profile  # noqa: E402
 from tools.scope_context import ScopeContext, ScopeContextError  # noqa: E402
-from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # noqa: E402
+from tools.scope_source import load_scope_context  # noqa: E402
+from tools.target_paths import canonical_target_value, target_storage_key  # noqa: E402
 
 
 SCHEMA_VERSION = 1
@@ -84,36 +84,12 @@ def _is_ip(host: str) -> bool:
             return False
 
 
-def _scope_checker(repo_root: Path, target: str):
-    try:
-        profile = load_target_profile(default_memory_dir(repo_root), target)
-    except ValueError:
-        return False
-    snapshot = profile.get("scope_snapshot", {}) if isinstance(profile, dict) else {}
-    if profile is not None and not isinstance(snapshot, dict):
-        return False
-    if not isinstance(snapshot, dict):
-        snapshot = {}
-    try:
-        context = ScopeContext(
-            root_target=target,
-            in_scope=[v for v in snapshot.get("in_scope", []) if isinstance(v, str)],
-            out_of_scope=[v for v in snapshot.get("out_of_scope", []) if isinstance(v, str)],
-        )
-    except ScopeContextError:
-        return False
-    return context
-
-
-def _in_scope(host: str, target: str, context) -> bool:
+def _in_scope(host: str, context: ScopeContext, *, scheme: str = "https", port: int | None = None) -> bool:
     if not host:
         return False
-    if context is False:
-        return False
-    value = f"https://{host}"
-    if context is not None and context.allows_active(value):
-        return True
-    return url_belongs_to_target(value, target)
+    authority = f"[{host}]" if ":" in host else host
+    value = f"{scheme}://{authority}{f':{port}' if port else ''}"
+    return context.allows_active(value)
 
 
 def _schemes(recon_dir: Path, hosts: set[str]) -> dict[str, list[str]]:
@@ -145,7 +121,10 @@ def select_candidates(rows: list[dict], target: str, context, *, limit: int = DE
         hosts = []
         for value in [row.get("value"), *(row.get("related") or [])]:
             host, port = _host_port(value)
-            if not host or not _in_scope(host, target, context):
+            if not host or not (
+                _in_scope(host, context, port=port)
+                or _in_scope(host, context, scheme="http", port=port)
+            ):
                 continue
             entry = (host, port)
             if entry not in hosts:
@@ -229,7 +208,7 @@ def verify(
     candidate_path = exposure / "host_pivot_candidates.jsonl"
     output_path = recon_dir / OUTPUT_PATH
     summary_path = recon_dir / SUMMARY_PATH
-    context = _scope_checker(repo, resolved)
+    context = load_scope_context(repo, resolved)
     rows = _read_jsonl(candidate_path)
     selected = select_candidates(rows, resolved, context, limit=limit)
     seen_keys = {
@@ -254,7 +233,9 @@ def verify(
             if probes >= max_probes:
                 break
             schemes = scheme_map.get(host) or ["https"]
-            scheme = schemes[0]
+            scheme = next((value for value in schemes if _in_scope(host, context, scheme=value, port=port)), None)
+            if scheme is None:
+                continue
             request_host = host
             probe_kwargs = {"scheme": scheme, "port": port, "timeout": timeout}
             if _is_ip(host) and candidate_hosts:
@@ -265,6 +246,8 @@ def verify(
                     connect_host=host,
                     host_header=request_host,
                 )
+            if request_host != host and not _in_scope(request_host, context, scheme=scheme, port=port):
+                continue
             result = _probe(request_host, **probe_kwargs)
             probes += 1
             entry = {"host": request_host, "port": port, "scheme": scheme, "result": result}
@@ -334,7 +317,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.limit < 0 or args.max_probes < 0 or args.timeout <= 0:
         parser.error("limit/max-probes must be non-negative and timeout must be positive")
-    print(json.dumps(verify(args.repo_root, args.target, limit=args.limit, max_probes=args.max_probes, timeout=args.timeout), sort_keys=True))
+    try:
+        result = verify(args.repo_root, args.target, limit=args.limit, max_probes=args.max_probes, timeout=args.timeout)
+    except (ScopeContextError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print(json.dumps(result, sort_keys=True))
     return 0
 
 

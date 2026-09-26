@@ -20,10 +20,10 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 try:
-    from tools.target_case_state import load_case_state
+    from tools.target_store import runtime_store
     from tools.target_paths import canonical_target_value, resolve_target_url, target_storage_key, url_belongs_to_target
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from target_case_state import load_case_state  # type: ignore
+    from target_store import runtime_store  # type: ignore
     from target_paths import canonical_target_value, resolve_target_url, target_storage_key, url_belongs_to_target  # type: ignore
 
 
@@ -475,16 +475,11 @@ def object_candidates_from_endpoint(endpoint: str, source: str = "") -> list[dic
     return _dedupe_by_key(candidates, "object_ref")
 
 
-def _existing_object_refs(state: dict[str, Any]) -> set[str]:
-    objects = state.get("objects") if isinstance(state.get("objects"), dict) else {}
-    return {str(object_ref) for object_ref in objects.keys()}
-
-
 def build_case_state_seed(repo_root: str | Path, target: str, *, limit: int = 8) -> dict[str, Any]:
     """Project unregistered object observations without choosing actors or tests."""
     repo = Path(repo_root)
     resolved = canonical_target_value(target)
-    state = load_case_state(repo, resolved)
+    existing_objects = runtime_store(repo, resolved).case_object_refs()
     endpoints = collect_artifact_endpoints(repo, resolved)
 
     # Keep external observations counted, but never seed target-owned object
@@ -503,7 +498,6 @@ def build_case_state_seed(repo_root: str | Path, target: str, *, limit: int = 8)
     object_candidates.extend(collect_json_object_candidates(repo, resolved, target_endpoints))
     object_candidates = _dedupe_objects(object_candidates)
 
-    existing_objects = _existing_object_refs(state)
     object_candidates = [
         item for item in object_candidates
         if str(item.get("object_ref") or "") not in existing_objects

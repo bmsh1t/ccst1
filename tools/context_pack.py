@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shlex
 import sys
 from pathlib import Path
 from urllib.parse import urlparse
@@ -22,7 +23,7 @@ if str(BASE_DIR) not in sys.path:
 try:
     from memory.target_profile import default_memory_dir
     from tools.closure_resolver import ClosureResolver
-    from tools.coverage_matrix import high_value_gaps_from_matrix, read_matrix
+    from tools.coverage_matrix import high_value_gaps_from_matrix, read_matrix, require_matching_truth
     from tools.evidence_ledger import ACTOR_MATRIX_VULN_CLASSES, build_summary as build_evidence_summary
     from tools.knowledge_registry import (
         load_card_metadata_by_file,
@@ -32,16 +33,17 @@ try:
         format_validation_runner_candidate_lines,
         load_validation_runner_candidate_pool,
     )
-    from tools.surface import load_surface_context, rank_surface
+    from tools.surface import _load_surface_context, rank_surface
     from tools.surface_index import surface_safe_preview
     from tools.surface_projection import load_surface_projection
     from tools.target_paths import compact_url, canonical_target_value, target_storage_key
     from tools.target_memory import load_active_file, load_goal_memory
-    from tools.target_store import TargetStore, target_backend
+    from tools.current_truth import current_cell_projection
+    from tools.target_store import TargetStore, runtime_store
 except ImportError:  # pragma: no cover - direct tools/ execution
     from memory.target_profile import default_memory_dir
     from closure_resolver import ClosureResolver  # type: ignore
-    from coverage_matrix import high_value_gaps_from_matrix, read_matrix  # type: ignore
+    from coverage_matrix import high_value_gaps_from_matrix, read_matrix, require_matching_truth  # type: ignore
     from evidence_ledger import ACTOR_MATRIX_VULN_CLASSES, build_summary as build_evidence_summary  # type: ignore
     from knowledge_registry import (  # type: ignore
         load_card_metadata_by_file,
@@ -51,12 +53,13 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         format_validation_runner_candidate_lines,
         load_validation_runner_candidate_pool,
     )
-    from surface import load_surface_context, rank_surface  # type: ignore
+    from surface import _load_surface_context, rank_surface  # type: ignore
     from surface_index import surface_safe_preview  # type: ignore
     from surface_projection import load_surface_projection  # type: ignore
     from target_paths import compact_url, canonical_target_value, target_storage_key  # type: ignore
     from target_memory import load_active_file, load_goal_memory  # type: ignore
-    from target_store import TargetStore, target_backend  # type: ignore
+    from current_truth import current_cell_projection  # type: ignore
+    from target_store import TargetStore, runtime_store  # type: ignore
 
 
 # S1 native skill loading (ai-capability-roadmap batch 3): every skill loads
@@ -452,7 +455,7 @@ def _resolve_cli_args(args: argparse.Namespace, repo_root: Path) -> tuple[str, s
 
 
 def _load_goal_memory(repo_root: Path, target: str) -> dict:
-    projection = load_goal_memory(repo_root, target)
+    projection = load_goal_memory(repo_root, target, experience_limit=5)
     projection["active_path"] = _display(
         repo_root / "memory" / "goals" / "active.json", repo_root
     )
@@ -499,45 +502,14 @@ def _target_facts_projection(goal_memory: dict, *, limit: int = 20) -> list[dict
     return projected
 
 
-def _load_findings(repo_root: Path, target_key: str, *, target: str | None = None) -> list[dict]:
-    resolved_target = target or target_key
-    if target_backend(repo_root, resolved_target) == "primary":
-        store = TargetStore(repo_root, resolved_target)
-        findings = []
-        page = store.finding_page(limit=1000)
-        while True:
-            for item in page.get("items", []):
-                assessment = item.get("assessment") or {}
-                reports = item.get("reports") or []
-                report = reports[-1] if reports else {}
-                findings.append({
-                    "id": item["id"],
-                    "type": item["family"],
-                    "category": item["family"],
-                    "title": item["title"],
-                    "summary": item["claim"],
-                    "url": item["endpoint"],
-                    "method": item["method"],
-                    "severity": "medium",
-                    "confidence": assessment.get("verdict", ""),
-                    "validation_status": "validated" if assessment.get("verdict") == "confirmed" else "",
-                    "report_status": "generated" if report else "not_generated",
-                    "report_id": report.get("id", ""),
-                    "raw": item["claim"],
-                    "assessment": assessment,
-                    "deliveries": item.get("deliveries", []),
-                    "reports": reports,
-                    "evidence": item.get("evidence", []),
-                })
-            if not page.get("has_more"):
-                return findings
-            page = store.finding_page(limit=1000, cursor=page.get("next_cursor"))
-    payload = _read_json_any(repo_root / "findings" / target_key / "findings.json")
-    if isinstance(payload, dict):
-        payload = payload.get("findings", [])
-    if not isinstance(payload, list):
-        return []
-    return [item for item in payload if isinstance(item, dict)]
+def _load_findings(repo_root: Path, target_key: str, *, target: str | None = None) -> dict:
+    snapshot = runtime_store(repo_root, target or target_key).finding_summary(limit=5)
+    return {"counts": snapshot["counts"], "items": [{
+        "id": item["id"], "type": item["family"], "category": item["family"],
+        "url": item["endpoint"],
+        "validation_status": "validated" if (item.get("assessment") or {}).get("verdict") == "confirmed" else "",
+        "report_status": "generated" if item["report_recorded"] else "not_generated",
+    } for item in snapshot["items"]]}
 
 
 def _artifact_path(path: Path, repo_root: Path) -> str:
@@ -620,18 +592,6 @@ def _load_local_intel(repo_root: Path, target_key: str) -> dict:
     }
 
 
-def _finding_is_candidate(finding: dict) -> bool:
-    status_blob = " ".join(
-        str(finding.get(key) or "")
-        for key in ("status", "validation_status", "report_status", "state")
-    ).lower()
-    if any(token in status_blob for token in ("candidate", "pending", "unvalidated", "needs_validation")):
-        return True
-    if any(token in status_blob for token in ("validated", "submitted", "rejected", "false_positive")):
-        return False
-    return bool(finding.get("id") or finding.get("type") or finding.get("endpoint") or finding.get("url"))
-
-
 def _finding_anchor(finding: dict, *, compact: bool = False) -> str:
     label = str(finding.get("id") or finding.get("type") or finding.get("title") or "finding").strip()
     vuln = str(finding.get("vuln_class") or finding.get("class") or finding.get("category") or "").strip()
@@ -650,17 +610,11 @@ def _finding_anchor(finding: dict, *, compact: bool = False) -> str:
 
 
 def _safe_find_gaps(target: str, target_key: str, repo_root: Path) -> tuple[list[dict], dict]:
-    matrix = read_matrix(target, repo_root=repo_root)
-    gaps = high_value_gaps_from_matrix(matrix)
-    if not gaps and target_key != target and matrix.get("backend") != "primary":
-        key_matrix = read_matrix(target_key, repo_root=repo_root)
-        key_gaps = high_value_gaps_from_matrix(key_matrix)
-        if key_gaps or key_matrix.get("summary", {}).get("total_cells", 0):
-            return key_gaps, key_matrix
-    return gaps, matrix
+    matrix = read_matrix(target, repo_root=repo_root, current_only=True)
+    return high_value_gaps_from_matrix(matrix), matrix
 
 
-def _surface_state(repo_root: Path, target: str, memory_dir: str | None) -> dict:
+def _surface_state(repo_root: Path, target: str, memory_dir: str | None, *, coverage_state: dict | None = None) -> dict:
     resolved_memory_dir = memory_dir or str(default_memory_dir(repo_root))
     projection = load_surface_projection(
         repo_root,
@@ -669,11 +623,11 @@ def _surface_state(repo_root: Path, target: str, memory_dir: str | None) -> dict
     )
     if projection.get("status") == "valid":
         return dict(projection.get("surface") or {})
-    context = load_surface_context(
+    context = _load_surface_context(
         repo_root,
         target,
         memory_dir=resolved_memory_dir,
-        write_probe_log=False,
+        coverage_state=coverage_state,
     )
     return rank_surface(context)
 
@@ -843,7 +797,6 @@ def _hypothesis(goal_memory: dict) -> str:
 def _surface_anchor(item: dict) -> str:
     url = surface_safe_preview(str(item.get("url") or "").strip())
     reasons = ", ".join(str(reason) for reason in (item.get("reasons") or [])[:2])
-    score = item.get("score")
     review_reason = str(item.get("review_reason") or "surface evidence").strip()
     value_summary = item.get("value_summary") if isinstance(item.get("value_summary"), dict) else {}
     value_bits = []
@@ -852,7 +805,7 @@ def _surface_anchor(item: dict) -> str:
         name = str(signal.get("name") or "param")[:40]
         value_bits.append(f"{name}:{classes or 'structured'}:{signal.get('length', '?')}")
     value_hint = f" values={','.join(value_bits)}" if value_bits else ""
-    return f"Surface review {url} score_hint={score} reason={review_reason}{value_hint}; {reasons}".strip()
+    return f"Surface review {url} reason={review_reason}{value_hint}; {reasons}".strip()
 
 
 def _gap_anchor(gap: dict) -> str:
@@ -996,7 +949,7 @@ def _unknowns(
     if not summary.get("total_cells"):
         items.append("Coverage matrix is empty or not rebuilt for this target.")
     if not findings:
-        items.append("No structured findings.json entries found for this target.")
+        items.append("No Store findings recorded for this target.")
     if not (goal_memory.get("active") or goal_memory.get("target")):
         items.append("No target memory found; write back the first concrete lead/handoff after work.")
     return items or ["No major local unknowns surfaced by context_pack."]
@@ -1114,12 +1067,18 @@ def _contradictions(
     return _dedupe(items) or ["None detected."]
 
 
-def _write_back_commands(target: str) -> list[str]:
+def _write_back_commands(repo_root: Path, target: str) -> list[str]:
+    memory = shlex.join(["python3", "tools/target_memory.py", "--repo-root", str(repo_root.resolve())])
+    target_arg = shlex.quote(target)
     return [
-        f'python3 tools/target_memory.py lead "Evidence: ... Why it matters: ... Next action: ... Stop condition: ..." --target {target}',
-        f'python3 tools/target_memory.py next "..." --target {target}',
-        f'python3 tools/target_memory.py dead-end "..." --target {target}',
-        f'python3 tools/target_memory.py handoff "..." --target {target}',
+        f'{memory} lead "STATEMENT" --target {target_arg} --conditions "CONDITIONS" --reopen-when "REOPEN_WHEN" --next-intent "NEXT_INTENT"',
+        f'{memory} next "NEXT_INTENT" --target {target_arg}',
+        f'{memory} dead-end "STATEMENT" --target {target_arg} --conditions "CONDITIONS" --reopen-when "REOPEN_WHEN" --operation-ref OPERATION_ID:0',
+        f'{memory} handoff "STATEMENT" --target {target_arg}',
+        shlex.join([
+            "python3", "tools/validation_runner.py", "record-evidence", "--repo-root", str(repo_root.resolve()),
+            "--target", target, "--finding-id", "FINDING_ID", "--evidence-json", "EVIDENCE_JSON",
+        ]),
         "/retrospect <target>  # 可复用经验只建议晋升到知识库 / Skill / Rules，默认不自动改文件",
     ]
 
@@ -1168,13 +1127,13 @@ def _focus_endpoints_for_ledger(ranked: dict, gaps: list[dict], local_intel: dic
     return _dedupe(endpoints)[:8]
 
 
-def _owner_backed_vuln_classes(coverage_gaps: list[dict]) -> list[str]:
+def _owner_backed_vuln_classes(evidence_records: list[dict]) -> list[str]:
     canonical_by_name = {item.casefold(): item for item in ACTOR_MATRIX_VULN_CLASSES}
     return _dedupe([
         canonical_by_name[value.casefold()]
-        for gap in coverage_gaps
-        if isinstance(gap, dict)
-        and (value := str(gap.get("vuln_class") or "").strip())
+        for record in evidence_records
+        if isinstance(record, dict)
+        and (value := str(record.get("vuln_class") or "").strip())
         and value.casefold() in canonical_by_name
     ])
 
@@ -1238,8 +1197,7 @@ def _ledger_unknowns(summary: dict) -> list[str]:
 def _ledger_source_summary(summary: dict) -> dict:
     matrix = summary.get("actor_matrix") or {}
     result_counts = summary.get("result_counts") or {}
-    # 来源由「当前真源」seam 决定（store 为 primary 时即 store，否则 ledger），
-    # 这里只如实转述它，不在 Pack 里再选一次来源。
+    # 来源与健康状态由同一 Store 快照提供。
     source = summary.get("evidence_source") or {}
     return {
         "evidence_source_kind": str(source.get("kind") or ""),
@@ -1263,24 +1221,33 @@ def build_context_pack(
     validation_runner_candidates: list[dict] | None = None,
     ledger_truth: dict | None = None,
 ) -> dict:
+    """Read current owners; public caller snapshots never authorize this view."""
+    return _build_context_pack(repo_root, target=target, focus=focus, memory_dir=memory_dir)
+
+
+def _build_context_pack(
+    repo_root: Path | str = BASE_DIR,
+    *,
+    target: str,
+    focus: str = "",
+    memory_dir: str | None = None,
+    surface_state: dict | None = None,
+    coverage_state: tuple[list[dict], dict] | None = None,
+    validation_runner_candidates: list[dict] | None = None,
+    ledger_truth: dict | None = None,
+) -> dict:
     repo = Path(repo_root)
     resolved_target = canonical_target_value(target)
     target_key = target_storage_key(resolved_target)
-    store_binding: dict[str, object] | None = None
-    if target_backend(repo, resolved_target) == "primary":
-        store_binding = TargetStore(repo, resolved_target).binding()
-        # Caller-supplied projections carry no enforceable target/revision or
-        # current artifact authorization. Re-read primary owners (including raw
-        # integrity checks); matching revisions alone cannot detect file damage.
-        # Legacy callers retain their invocation-local reuse optimization.
-        surface_state = None
-        coverage_state = None
-        validation_runner_candidates = None
-        ledger_truth = None
+    store = runtime_store(repo, resolved_target)
+    store_binding = store.binding()
+    # Private assembly accepts only inputs captured by this call's owner reader.
     goal_memory = _load_goal_memory(repo, resolved_target)
-    ranked = surface_state if surface_state is not None else _surface_state(repo, resolved_target, memory_dir)
     gaps, matrix = coverage_state or _safe_find_gaps(resolved_target, target_key, repo)
-    findings = _load_findings(repo, target_key, target=resolved_target)
+    ranked = (surface_state if surface_state is not None
+              else _surface_state(repo, resolved_target, memory_dir, coverage_state=matrix))
+    finding_summary = _load_findings(repo, target_key, target=resolved_target)
+    findings = finding_summary["items"]
     runner_candidates = (
         validation_runner_candidates
         if isinstance(validation_runner_candidates, list)
@@ -1291,7 +1258,7 @@ def build_context_pack(
     blob = _text_blob(focus, goal_memory, ranked, gaps, findings, local_intel)
     telerik_dialog_signal = _has_telerik_dialog_signal(blob)
     viewstate_signal = bool(re.search(r"\bviewstate\b|__viewstate", blob, re.I))
-    has_candidate = any(_finding_is_candidate(item) for item in findings)
+    has_candidate = finding_summary["counts"]["total"] > finding_summary["counts"]["confirmed"]
     historical_patterns = []
     # 2026-09-12 收敛裁定：跨目标现场经验不自动进入本目标的 Pack。
     # surface 新计算路径已不再产生跨目标 pattern_suggestions，但升级前的
@@ -1322,20 +1289,20 @@ def build_context_pack(
     deferred_cards: list[str] = []
     knowledge_card_recall: list[dict[str, object]] = []
     checks = _required_checks(blob, has_candidate)
+    ledger_truth = ledger_truth if ledger_truth is not None else current_cell_projection(repo, resolved_target)
+    require_matching_truth(matrix, ledger_truth)
     evidence_summary = build_evidence_summary(
         repo,
         target=resolved_target,
         focus_endpoints=_focus_endpoints_for_ledger(ranked, gaps, local_intel),
-        vuln_classes=_owner_backed_vuln_classes(gaps),
+        vuln_classes=_owner_backed_vuln_classes(ledger_truth["records"]),
         _truth=ledger_truth,
     )
-    if store_binding is not None:
-        current_binding = TargetStore(repo, resolved_target).binding()
-        if current_binding != store_binding:
-            raise ValueError(
-                "primary context inputs changed during assembly; rebuild from one store revision"
-            )
-    ledger_path = _ledger_relative_path(evidence_summary, repo)
+    current_binding = store.binding()
+    if current_binding != store_binding:
+        raise ValueError(
+            "primary context inputs changed during assembly; rebuild from one store revision"
+        )
 
     # Must-read lists only paths that exist: goal memory is legitimately
     # absent after a reset/fresh start, and a contract that points at missing
@@ -1360,15 +1327,15 @@ def build_context_pack(
 
     must_read = _dedupe([
         goal_memory["active_path"],
-        goal_memory["target_path"],
         "skills/runtime-protocol.md",
-        ledger_path,
     ] + (["tools/aspnet_viewstate_knownkey.py"] if viewstate_signal else []) + (["tools/telerik_knownkey.py"] if telerik_dialog_signal else []) + _local_intel_paths(local_intel) + [
         str(item.get("summary_path") or "")
         for item in runner_candidates[:6]
         if item.get("summary_path")
     ])
     must_read = [item for item in must_read if _must_read_candidate(item)]
+    experience_window = (goal_memory.get("source") or {}).get("experience_window") or {}
+    recall_command = experience_window["recall_command"]
 
     pack = {
         "target": resolved_target,
@@ -1377,6 +1344,15 @@ def build_context_pack(
         "active_goal": _active_goal(goal_memory),
         "current_hypothesis": _hypothesis(goal_memory),
         "facts": _target_facts_projection(goal_memory),
+        "target_experiences": {
+            **experience_window,
+            "items": goal_memory.get("recent_entries") or [],
+            "next_command": (
+                f"{recall_command} --cursor {shlex.quote(experience_window['next_cursor'])}"
+                if experience_window.get("has_more") else ""
+            ),
+            "expand_command": f"{recall_command} --id EXPERIENCE_ID",
+        },
         "focus": focus,
         "tech_stack": tech_stack,
         "must_read": must_read,
@@ -1394,6 +1370,17 @@ def build_context_pack(
         "evidence_anchors": _build_evidence_anchors(ranked, goal_memory, gaps, findings, local_intel)
         + _runner_candidate_anchors(runner_candidates)
         + _ledger_anchors(evidence_summary),
+        "source_queries": {
+            "surface": ranked.get("surface_index") or {"status": "unavailable"},
+            "coverage": {
+                "total": len(gaps),
+                "order": "endpoint,vuln_class",
+                "command": shlex.join([
+                    "python3", "tools/coverage_matrix.py", "find-gaps", "--repo-root",
+                    str(repo.resolve()), "--target", resolved_target,
+                ]),
+            },
+        },
         "validation_runner_candidates": runner_candidates,
         # 静态假设/发散建议已退役（原生能力审计 2026-09-13）：
         # if 某张卡 in cards: append 固定思路 是卡片正文的复读层，
@@ -1411,14 +1398,13 @@ def build_context_pack(
             "generic technique catalogues and external reference indexes",
             "raw large recon logs, full JSONL, full HTML responses, or unrelated historical sessions",
             "raw browser capture requests/console/storage unless validating one exact replay path",
-            "all findings evidence bodies; start from findings/<target>/findings.json index only",
+            "all finding evidence bodies; start from Store finding IDs and evidence refs",
         ],
-        "write_back": _write_back_commands(resolved_target) + (evidence_summary.get("record_commands") or [])[:3],
+        "write_back": _write_back_commands(repo, resolved_target),
         "ai_override": (
-            "Skill and knowledge-card fields are advisory. Claude must explicitly choose and load "
-            "the applicable route at Action Queue claim, keep the coverage check loaded, and "
-            "write the selected skill and tested dimensions into the Action Queue. "
-            "skill_override_reason is required only when replacing an action-owned route."
+            "Claude selects and loads Skills through the native Skill tool. "
+            "The pack does not prescribe a Skill route; record evidence and tested dimensions "
+            "through their domain commands."
         ),
         "source_summary": {
             "surface_available": bool(ranked.get("available")),
@@ -1430,18 +1416,16 @@ def build_context_pack(
             "observation_untouched": int((ranked.get("observation_inventory") or {}).get("untouched", 0) or 0),
             "observation_stale": int((ranked.get("observation_inventory") or {}).get("stale", 0) or 0),
             "coverage_gaps": len(gaps),
-            "findings": len(findings),
+            "findings": finding_summary["counts"]["total"],
             "validation_runner_candidates": len(runner_candidates),
             "historical_patterns": len(historical_patterns),
             "viewstate_signal": viewstate_signal,
             "telerik_dialog_signal": telerik_dialog_signal,
             **_local_intel_source_summary(local_intel),
             **_ledger_source_summary(evidence_summary),
-            **({
-                "store_id": store_binding["store_id"],
-                "store_revision": store_binding["revision"],
-                "snapshot_status": "bound",
-            } if store_binding is not None else {}),
+            "store_id": store_binding["store_id"],
+            "store_revision": store_binding["revision"],
+            "snapshot_status": "bound",
         },
     }
     return pack
@@ -1451,6 +1435,35 @@ def _format_list(lines: list[str]) -> list[str]:
     if not lines:
         return ["  - None"]
     return [f"  - {line}" for line in lines]
+
+
+def format_target_experiences(experiences: dict) -> list[str]:
+    """Render the bounded experience view without loading or changing its source."""
+    experience_lines = []
+    if experiences:
+        experience_lines = [
+            "- Target experiences:",
+            *_format_list([
+                "[{id}/{kind}] {text} | conditions={conditions} | reopen_when={reopen} | "
+                "next_intent={next_intent} | evidence={evidence}".format(
+                    id=item.get("entry_id", ""),
+                    kind=item.get("kind", ""),
+                    text=json.dumps(item.get("text", ""), ensure_ascii=False),
+                    conditions=json.dumps((item.get("structured") or {}).get("conditions") or "unknown", ensure_ascii=False),
+                    reopen=json.dumps((item.get("structured") or {}).get("reopen_when") or "none", ensure_ascii=False),
+                    next_intent=json.dumps((item.get("structured") or {}).get("next_intent") or "none", ensure_ascii=False),
+                    evidence=", ".join(item.get("evidence_refs") or []) or "none",
+                )
+                for item in experiences.get("items", [])
+            ]),
+            f"  Showing {len(experiences.get('items', []))} of {experiences.get('total', 0)}; "
+            f"{experiences.get('remaining', 0)} more.",
+        ]
+        if experiences.get("next_command"):
+            experience_lines.append(f"  Next page: {experiences['next_command']}")
+        if experiences.get("items"):
+            experience_lines.append(f"  Expand: {experiences['expand_command']}")
+    return experience_lines
 
 
 def format_context_pack(pack: dict) -> str:
@@ -1466,6 +1479,7 @@ def format_context_pack(pack: dict) -> str:
             "{text}".format(text=str(item.get("text") or item.get("fact") or ""))
             for item in pack.get("facts", [])
         ] if pack.get("facts") else ["-"]),
+        *format_target_experiences(pack.get("target_experiences") or {}),
         "- Skill recommendation retired (S1 native loading): select and load skills on demand via the Claude Code Skill tool (the platform's skill listing is the routing surface).",
         "- Must read:",
         *_format_list(pack["must_read"]),
@@ -1486,6 +1500,7 @@ def format_context_pack(pack: dict) -> str:
         *_format_list(pack["required_checks"]),
         "- Evidence anchors:",
         *_format_list(pack["evidence_anchors"]),
+        *format_source_queries(pack.get("source_queries") or {}),
         "- Validation runner candidate evidence (advisory; not report-ready):",
         *_format_list(format_validation_runner_candidate_lines(
             pack.get("validation_runner_candidates", []),
@@ -1515,6 +1530,27 @@ def format_context_pack(pack: dict) -> str:
         f"- AI override: {pack['ai_override']}",
     ]
     return "\n".join(lines)
+
+
+def format_source_queries(queries: dict) -> list[str]:
+    """Anchors are previews, not pages; expansion starts from each full source."""
+    lines = []
+    surface = queries.get("surface") or {}
+    continuation = surface.get("continuation") or {}
+    if continuation.get("available") and continuation.get("command"):
+        lines.extend([
+            f"- Indexed URLs: {surface['row_count']}; anchors are a preview, including external context in the full query.",
+            f"  Query from first page: {continuation['command']}",
+        ])
+    elif surface:
+        lines.append(f"- Surface index: {surface.get('status', 'unavailable')}; no complete index query is available.")
+    coverage = queries.get("coverage") or {}
+    if coverage.get("command"):
+        lines.extend([
+            f"- Unresolved coverage cells: {coverage['total']}; order={coverage['order']}; anchors are a preview.",
+            f"  Full coverage query: {coverage['command']}",
+        ])
+    return lines
 
 
 def build_parser() -> argparse.ArgumentParser:

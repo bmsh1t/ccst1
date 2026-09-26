@@ -51,7 +51,9 @@ Claude Code CLI 当前主会话保留最终路线判断权。本协议、推荐 
 - 需要经验（目标情节 + 本目标技术经验 + 已晋升知识卡）时，用一个统一读入口：
   `python3 tools/experience_recall.py --target <target> [--query <词项>]`。该视图只含
   当前目标内容 + 人工审核晋升的知识卡（跨项目现场记忆不自动带入）；query 只是
-  词项粗筛，相关性判断由 Claude 读视图完成。向量索引暂缓（显式缓期决策）。
+  词项粗筛，相关性判断由 Claude 读视图完成。Store 经验可用 `--limit`/`--cursor`
+  分页、`--id EXPERIENCE_ID` 展开，默认文本保留适用/重开条件；primary 目标
+  不再从旧 PatternDB 混入当前经验。向量索引暂缓（显式缓期决策）。
 
 卡片保持独立，提供模式、反例和证据提示；Skill 保留路线和证据门，不复制卡片正文。
 
@@ -59,9 +61,9 @@ Context Pack 的 `knowledge_cards` 是兼容推荐字段；skill 推荐壳字段
 （`selected_skill`/`skill_route`/`selected_skill_id`/`why_this_skill`）已删除，
 skill 可发现性由平台技能面原生持有，pack 不发布 skill 目录。它们从来不是已选择的执行
 状态，也不进入默认 `must_read` 或自动写入 Queue。Skill 的选择与加载由 AI 通过原生
-Skill 工具完成（frontmatter description 是路由面）；Claude 在实质 Action Queue claim 时
-显式选择 Skill route；只有替换 action owner 已有 route 时才需要
-`skill_override_reason`。
+Skill 工具完成（frontmatter description 是发现面）。Queue/Store 不持有 Skill 注册表、
+不检查 Skill 文件或预设维度、不登记自报调用审计；`active_dimension` 与 Runner 的
+`tested_dimensions` 继续分别表示实验意图与真实观察。
 
 `hypothesis_seeds`、`alternative_angles` 和 `knowledge_card_recall` 是恒空的
 兼容字段（静态建议已退役，2026-09-13 原生能力审计）：假设由 AI 在真实证据和
@@ -93,10 +95,10 @@ Target context -> evidence-backed route -> smallest bounded action
 L2 工作集、L3 目标经验、L4 跨目标知识都落在既有 owner 上。运行时遵守
 三条层间流转：工作集只保留当前决策所需（其余留指针按引用展开）；只在
 重要节点（假设证伪、稳定结论、阶段切换、会话暂停/handoff）做 L3/L4 巩固
-写回——普通观察进 Ledger 即止，不强制走提炼管线；召回以当前问题为驱动，
+写回——普通观察登记为 Store operation/observation 即止，不强制走提炼管线；召回以当前问题为驱动，
 先目标经验后跨目标知识，经验必须带适用条件。
 
-回写区分认知状态：观察、假设、已验证结论各有 owner（Ledger / queue 假设
+回写区分认知状态：观察、假设、已验证结论各有 owner（Store observation / Experience 假设
 字段 / validation+finding），不把猜测写成事实，也不把一次失败固化成永久
 禁区（dead-end 带适用条件和重开条件）。关键证据即时保存；通用经验经复盘
 和人工审核晋升（/distill → promote）。暂停、切换目标或主动压缩上下文前，将尚未保存的
@@ -104,10 +106,15 @@ L2 工作集、L3 目标经验、L4 跨目标知识都落在既有 owner 上。�
 
 ### 1. Target layer
 
-以本轮明确的目标运行 `python3 tools/target_memory.py show TARGET`，或读取其 owner 文件，
-确认 target、mode/phase、active goal、current hypothesis、leads、next actions 和 dead ends。
+以本轮明确的目标运行 `python3 tools/target_memory.py show TARGET`，确认目标意图、
+最近经验的适用/重开条件和可展开 ID；Store 目标不能把旧 JSON 的 mode/phase
+当作当前事实。
 写回显式传 `--target TARGET`；需要无参入口时先用 `target_memory.py set TARGET` 设置正确的
-active target。`/pickup` 与 Context Pack 是读取入口，不会替你切换 active target。
+active target（目标必须已初始化）。`/pickup` 与 Context Pack 是读取入口，不会替你切换 active target。
+隔离数据根使用 `target_memory.py --repo-root ROOT --json COMMAND ...`（两个选项也可放在
+子命令后）。写入 JSON 返回 `target` 和 Store `receipt`，重放保留原实体并标记 `replayed`；
+`show --json` 返回同一记忆投影。`set --goal` 已提交但目标选择失败时，错误仍带收据和
+`selection_status=failed`，使用原 command ID、内容及 expected revision 重试，不创建第二条意图。
 目标尚未明确时先确认，不用旧 active target 替代当前用户意图。
 
 ### 2. Skill layer
@@ -137,7 +144,8 @@ Stop condition 不再匹配当前模式时直接切换；checkpoint 的 round la
 
 AI selection / override 是能力上限保护：当前 Skill 可以跳过建议路线、组合知识卡、创建
 新的 action 类型，或局部重排模式顺序；选择必须说明 decision reason、下一步验证动作和
-停止条件。Skill route 及 required dimensions 是 substantive Action Queue 的最小执行证据。
+停止条件。执行事实由 Store attempt/operation 与原始材料引用证明；Skill 的选择和加载走
+平台原生能力，Action 不要求路由字段或预设维度清单。
 
 ### 2.2 Web 深水区启发式路由
 
@@ -187,7 +195,7 @@ applicable、Dead ends、Still unknown 和 Next actions。不得用“没有发�
 ## 5. Execution and write-back
 
 执行选择最低影响、最小必要的确定性动作；原始结果由现有工具和 owner 保存。未决工作通过
-现有 `target_memory.py`、Action Queue、Evidence Ledger、Finding、Checkpoint 或 `/remember`
+现有 `target_memory.py`、Action Queue、原生证据登记、Finding 裁决或 `/remember`（Checkpoint 只读）
 写回，不在协议内创建第二份状态。
 
 ### Stateful Continuity
@@ -202,7 +210,7 @@ new shell/tool invocation.
 ## 输出契约
 
 5 必填字段由 AI 手打（判断性内容：证据、候选、终态、残余未知、下一步）；
-其余 8 个字段定义保留，但由 checkpoint / pack / queue owner 自动记录，
+其余 7 个字段从对应 owner 的已保存事实或只读投影引用，
 AI 无需手打——需要时可引用 owner 已有字段而不是重抄：
 
 ```text
@@ -213,12 +221,11 @@ SKILL RESULT
 - Still unknown:       (必填)
 - Next actions:        (必填)
 - Target:              (owner: pack/state 自动记录)
-- Skill:               (owner: queue skill_route 自动记录)
-- Phase:               (owner: state 自动记录)
-- Hypotheses:          (owner: queue hypothesis 字段自动记录)
-- Actions taken:       (owner: queue/ledger 自动记录)
+- Phase:               (owner: runtime 当前阶段投影)
+- Hypotheses:          (owner: Store 显式保存的假设及 Action 关联)
+- Actions taken:       (owner: Store Action/operation)
 - Coverage update:     (owner: coverage_matrix 自动记录)
-- Leads / Signals:     (owner: evidence_ledger 自动记录)
+- Leads / Signals:     (owner: Store 观察；主张显式登记)
 - Write-back:          (owner: 各 owner 写回即记录)
 ```
 

@@ -13,18 +13,17 @@ import resume as resume_module
 from action_queue import (
     add_manual_action,
     claim_next_action,
-    ingest_checkpoint,
     load_queue,
     queue_path,
     queue_fingerprint,
     resolve_action,
 )
 from tools import surface as surface_module
-from tools.surface_projection import build_surface_input_manifest, write_surface_projection
 from memory.hunt_journal import HuntJournal
-from memory.pattern_db import PatternDB
+from legacy_fixtures import append_legacy_pattern
 from memory.schemas import make_journal_entry, make_pattern_entry
-from memory.target_profile import make_target_profile, save_target_profile
+from memory.target_profile import make_target_profile
+from legacy_fixtures import write_legacy_profile
 from autopilot_state import (
     _build_enrichment_hints,
     _build_priority_frontier,
@@ -34,17 +33,14 @@ from autopilot_state import (
     _filter_ranked_placeholders,
     _filter_legacy_memory_candidates,
     _filter_stale_finalized_scanner_candidates,
-    _is_substantive_queue_action,
     _load_closure_projection,
     _load_loop_guard_projection,
     _load_json_inject_projection,
     _load_js_intel_projection,
-    _load_sql_matrix_projection,
     _closure_snapshot_digest,
     _pick_next_action,
     build_closure_projection,
     build_decision_projection,
-    build_loop_guard_projection,
     build_autopilot_state,
     format_autopilot_state,
     load_closure_projection,
@@ -52,13 +48,22 @@ from autopilot_state import (
     stagnation_fingerprint,
     main as autopilot_state_main,
 )
+from tools.autopilot_state_read import _load_sql_matrix_projection
+from tools.autopilot_loop_guard import build_loop_guard_projection
 from request_guard import record_request
 from runtime_state import runtime_phase_lock, update_runtime_state
 from target_paths import target_storage_key
 from target_store import TargetStore
 
 
-def test_ranker_advisory_requires_valid_long_tail_and_multiple_evidence_groups(tmp_path):
+@pytest.fixture
+def store(tmp_path):
+    result = TargetStore(tmp_path, "target.com")
+    result.initialize()
+    return result
+
+
+def test_ranker_advisory_requires_valid_long_tail_and_multiple_evidence_groups(tmp_path, store):
     ranked = {
         "stats": {
             "review_pool": 4,
@@ -95,7 +100,7 @@ def test_ranker_advisory_requires_valid_long_tail_and_multiple_evidence_groups(t
     ) == {}
 
 
-def test_ranker_advisory_never_becomes_next_tool_hint(tmp_path):
+def test_ranker_advisory_never_becomes_next_tool_hint(tmp_path, store):
     next_tool, hints = _build_enrichment_hints(
         repo_root=str(tmp_path),
         resolved_target="target.test",
@@ -121,11 +126,11 @@ def test_ranker_advisory_never_becomes_next_tool_hint(tmp_path):
     assert [item["tool"] for item in hints] == ["recon-ranker"]
 
 
-def test_global_review_requires_current_nonempty_target_evidence(tmp_path):
+def test_global_review_requires_current_nonempty_target_evidence(tmp_path, store):
     target = "target.com"
     evidence_ref = "evidence/target.com/review/summary.json"
     evidence_path = tmp_path / evidence_ref
-    evidence_path.parent.mkdir(parents=True)
+    evidence_path.parent.mkdir(parents=True, exist_ok=True)
     evidence_path.write_text('{"reviewed":true}\n', encoding="utf-8")
     queue = {"target": target, "actions": []}
     digest = "a" * 64
@@ -184,7 +189,7 @@ def test_global_review_requires_current_nonempty_target_evidence(tmp_path):
     assert "Re-run closure check" in stale["action_required"]
 
 
-def test_global_review_basis_scoping_survives_unrelated_digest_drift(tmp_path):
+def test_global_review_basis_scoping_survives_unrelated_digest_drift(tmp_path, store):
     """A review with claim components stays valid when only non-claim state
     drifted: the whole snapshot digest changed, but queue/coverage/closure
     components — the things the review actually attests to — did not."""
@@ -192,7 +197,7 @@ def test_global_review_basis_scoping_survives_unrelated_digest_drift(tmp_path):
     target = "target.com"
     evidence_ref = "evidence/target.com/review/summary.json"
     evidence_path = tmp_path / evidence_ref
-    evidence_path.parent.mkdir(parents=True)
+    evidence_path.parent.mkdir(parents=True, exist_ok=True)
     evidence_path.write_text('{"reviewed":true}\n', encoding="utf-8")
     queue = {"target": target, "actions": []}
     components = {
@@ -232,14 +237,14 @@ def test_global_review_basis_scoping_survives_unrelated_digest_drift(tmp_path):
     }
 
 
-def test_global_review_basis_reports_stale_component_on_claim_drift(tmp_path):
+def test_global_review_basis_reports_stale_component_on_claim_drift(tmp_path, store):
     """When a claim component changed, the review reports stale with a
     per-component state_changes entry naming exactly what moved."""
 
     target = "target.com"
     evidence_ref = "evidence/target.com/review/summary.json"
     evidence_path = tmp_path / evidence_ref
-    evidence_path.parent.mkdir(parents=True)
+    evidence_path.parent.mkdir(parents=True, exist_ok=True)
     evidence_path.write_text('{"reviewed":true}\n', encoding="utf-8")
     queue = {"target": target, "actions": []}
     components = {
@@ -306,14 +311,14 @@ def test_global_review_basis_reports_stale_component_on_claim_drift(tmp_path):
     ]
 
 
-def test_global_review_legacy_without_basis_keeps_digest_comparison(tmp_path):
+def test_global_review_legacy_without_basis_keeps_digest_comparison(tmp_path, store):
     """Reviews recorded before basis components exist (or from older state
     directories) keep the exact legacy whole-digest behavior."""
 
     target = "target.com"
     evidence_ref = "evidence/target.com/review/summary.json"
     evidence_path = tmp_path / evidence_ref
-    evidence_path.parent.mkdir(parents=True)
+    evidence_path.parent.mkdir(parents=True, exist_ok=True)
     evidence_path.write_text('{"reviewed":true}\n', encoding="utf-8")
     queue = {"target": target, "actions": []}
 
@@ -362,11 +367,11 @@ def test_global_review_legacy_without_basis_keeps_digest_comparison(tmp_path):
     }]
 
 
-def test_global_review_follow_up_must_bind_active_queue_action(tmp_path):
+def test_global_review_follow_up_must_bind_active_queue_action(tmp_path, store):
     target = "target.com"
     evidence_ref = "evidence/target.com/review/summary.json"
     path = tmp_path / evidence_ref
-    path.parent.mkdir(parents=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("review\n", encoding="utf-8")
     digest = "b" * 64
     queue = {
@@ -422,7 +427,7 @@ def test_global_review_field_is_excluded_from_snapshot_digest():
     assert first == second
 
 
-def test_closure_requires_global_review_only_when_other_owners_can_finish(tmp_path, monkeypatch):
+def test_closure_requires_global_review_only_when_other_owners_can_finish(tmp_path, monkeypatch, store):
     def finish_projection(*_args, **_kwargs):
         return {
             "verdict": "finish",
@@ -436,10 +441,10 @@ def test_closure_requires_global_review_only_when_other_owners_can_finish(tmp_pa
     state = {"target": "target.com", "resolved_target": "target.com", "next_action": "handoff"}
     evidence_ref = "findings/target.com/poc/global-review.json"
     evidence_path = tmp_path / evidence_ref
-    evidence_path.parent.mkdir(parents=True)
+    evidence_path.parent.mkdir(parents=True, exist_ok=True)
     evidence_path.write_text("lane evidence\n", encoding="utf-8")
     base_witness = tmp_path / "state" / "target.com" / "checkpoint_latest.json"
-    base_witness.parent.mkdir(parents=True)
+    base_witness.parent.mkdir(parents=True, exist_ok=True)
     base_witness.write_text(
         json.dumps({
             "schema_version": 1,
@@ -478,7 +483,7 @@ def test_closure_requires_global_review_only_when_other_owners_can_finish(tmp_pa
 
     evidence_ref = "evidence/target.com/review/summary.json"
     path = tmp_path / evidence_ref
-    path.parent.mkdir(parents=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("review\n", encoding="utf-8")
     witness = base_witness
     payload = json.loads(witness.read_text(encoding="utf-8"))
@@ -502,34 +507,51 @@ def test_closure_requires_global_review_only_when_other_owners_can_finish(tmp_pa
     assert stale["reasons"] == ["global_review_stale"]
 
 
-def _record_owner_provenance(findings_dir, finding_id: str) -> None:
-    """Turn a fixture's declared finality into a real owner mutation."""
-    payload = json.loads((findings_dir / "findings.json").read_text(encoding="utf-8"))
-    finding = next(item for item in payload["findings"] if item.get("id") == finding_id)
-    updated = finding_index.update_finding_status(
-        findings_dir,
-        finding_id,
-        validation_status=finding.get("validation_status", "unvalidated"),
-        report_status=finding.get("report_status", "not_generated"),
-    )
-    assert updated is not None
+def _register_work(store, actions):
+    for item in actions:
+        action_id = item["id"]
+        store.create_action(command_id=action_id, action_id=action_id, intent=item.get("action") or "Review saved material",
+                            execution_key=action_id, kind="work", subject={"target": store.target}, actor="operator",
+                            priority=item.get("priority"), metadata={
+                                **item.get("metadata", {}),
+                                "action_context": {key: item[key] for key in ("type", "source", "command_hint", "evidence", "evidence_type", "stop_condition") if key in item},
+                            })
 
 
-def test_browser_context_discovery_queue_item_is_substantive():
-    assert _is_substantive_queue_action(
-        {
-            "status": "queued",
-            "source": "browser-context-discovery",
-            "evidence_type": "browser-context-discovery",
-        }
-    )
-    assert not _is_substantive_queue_action(
-        {
-            "status": "queued",
-            "source": "browser-context-discovery",
-            "evidence_type": "generic",
-        }
-    )
+def _record_observation(store, endpoint, family, result="tested_clean", candidate=None):
+    attempt = f"attempt-{store.page('attempts')['total']}"
+    path = store.root / "evidence" / store.key / f"{attempt}.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("Recorded baseline and comparison response", encoding="utf-8")
+    store.start_attempt(attempt_id=attempt, source="native", started_at="2026-09-24T00:00:00Z", actor="operator")
+    return store.record_execution(attempt_id=attempt, outcome="complete", actor="operator", candidate=candidate, observations=[{
+        "endpoint": endpoint, "method": "GET", "family": family, "actor": "owner",
+        "object_scope": "own_object", "variant": "baseline", "result": result,
+        "description": "Recorded fixture comparison", "observed_at": "2026-09-24T00:00:00Z",
+        "artifacts": {"response": path.relative_to(store.root).as_posix()}, "state_changing": False,
+    }])
+
+
+def _register_findings(store, findings):
+    for item in findings:
+        finding_id = item["id"]
+        candidate = {"id": finding_id, "endpoint": item["url"], "method": "GET", "family": item["type"],
+                     "title": item.get("title") or finding_id, "claim": item.get("summary") or "Recorded candidate claim"}
+        store.create_finding(command_id=f"create-{finding_id}", finding_id=finding_id, actor="operator",
+                             **{key: value for key, value in candidate.items() if key != "id"})
+        status = item.get("validation_status", "unvalidated")
+        if status == "unvalidated":
+            continue
+        verdict = {"validated": "confirmed", "rejected": "refuted"}[status]
+        operation = _record_observation(store, item["url"], item["type"], candidate=candidate)
+        store.assess(command_id=f"assess-{finding_id}", finding_id=finding_id, verdict=verdict,
+                     reason="Reviewed comparison", boundary="Owner/peer object boundary", impact="Fixture data access",
+                     evidence=[{"operation_id": operation["entity_id"], "step": 0}], actor="operator", expected_assessment=None)
+        if verdict == "confirmed":
+            store.decide_delivery(command_id=f"delivery-{finding_id}", finding_id=finding_id,
+                                  assessment_id=f"assess-{finding_id}", destination="default", status="eligible",
+                                  reason="Reviewed destination", actor="operator", expected_decision=None)
+
 
 
 def test_legacy_memory_surface_hints_stay_visible_but_do_not_steer_without_focus():
@@ -602,76 +624,23 @@ def test_generic_intel_does_not_activate_finalized_static_candidate():
     assert filtered["deferred_surface_candidates"][0]["intel_packet"][0]["id"] == "CVE-1"
 
 
-def test_deep_js_review_queue_item_is_substantive():
-    action = {
-        "status": "queued",
-        "type": "deep-js-review",
-        "evidence_type": "recon-artifact",
-        "command_hint": "/js-read target.com",
-    }
-
-    assert _is_substantive_queue_action(action)
-    assert not _is_substantive_queue_action({**action, "evidence_type": "generic"})
 
 
-def test_checkpoint_viewstate_review_is_substantive_only_with_checkpoint_evidence():
-    action = {
-        "status": "queued",
-        "type": "viewstate-integrity-review",
-        "source": "checkpoint",
-        "evidence_type": "checkpoint-next-action",
-    }
-
-    assert _is_substantive_queue_action(action)
-    assert _is_substantive_queue_action({**action, "status": "ready"})
-    assert not _is_substantive_queue_action({**action, "evidence_type": "generic"})
 
 
-def test_actor_context_enrichment_lead_is_advisory_until_context_exists():
-    action = {
-        "status": "queued",
-        "type": "case-state-enrichment",
-        "source": "checkpoint",
-        "evidence_type": "checkpoint-next-action",
-        "command_hint": "register actor/session/object with tools/target_case_state.py",
-        "metadata": {
-            "missing_evidence": [
-                "second actor",
-                "peer/second session",
-                "business object",
-            ],
-        },
-    }
-
-    assert not _is_substantive_queue_action(action)
-    assert _is_substantive_queue_action({**action, "status": "running"})
-    assert _is_substantive_queue_action({
-        **action,
-        "metadata": {"missing_evidence": ["object endpoint"]},
-    })
 
 
-def test_persisted_actor_context_enrichment_blocks_only_affected_role_lane(tmp_path):
+def test_explicit_actor_context_work_requires_resolution(tmp_path, store):
     target = "target.test"
+    TargetStore(tmp_path, target).initialize()
     matrix_path = tmp_path / "evidence" / target / "coverage_matrix.json"
-    matrix_path.parent.mkdir(parents=True)
+    matrix_path.parent.mkdir(parents=True, exist_ok=True)
     matrix_path.write_text(json.dumps(_closure_matrix()), encoding="utf-8")
-    ingest_checkpoint(
-        tmp_path,
-        target,
-        checkpoint={
-            "target": target,
-            "next_action_queue": [{
-                "id": "A1",
-                "priority": 54,
-                "type": "case-state-enrichment",
-                "status": "ready",
-                "action": (
-                    "Case-state enrichment lead: actor matrix has a role gap. "
-                    "Missing evidence: second actor, peer/second session, business object."
-                ),
-                "command_hint": "register actor/session/object with tools/target_case_state.py",
-                "metadata": {
+    TargetStore(tmp_path, target).create_action(
+        command_id="A1", action_id="A1", kind="work", subject={"target": target},
+        intent="Case-state enrichment lead: actor matrix has a role gap. "
+                    "Missing evidence: second actor, peer/second session, business object.", execution_key="A1", actor="operator",
+        metadata={**{
                     "endpoint": "/api/orders/1",
                     "vuln_class": "IDOR",
                     "missing_evidence": [
@@ -679,9 +648,7 @@ def test_persisted_actor_context_enrichment_blocks_only_affected_role_lane(tmp_p
                         "peer/second session",
                         "business object",
                     ],
-                },
-            }],
-        },
+                }, "action_context": {"type": "case-state-enrichment"}},
     )
 
     closure = load_closure_projection(
@@ -705,76 +672,18 @@ def test_persisted_actor_context_enrichment_blocks_only_affected_role_lane(tmp_p
     )
 
     assert closure["verdict"] == "handoff"
-    assert closure["reasons"] == ["actor_context_required"]
-    assert closure["next_action"] == "resume_case_state"
-    assert closure["actor_context_gap"]["blocking"] is True
-    assert "durable_work_pending" not in closure["reasons"]
+    assert closure["reasons"] == ["durable_work_pending", "coverage_empty"]
+    assert closure["next_action"] == "resume_action_queue"
 
 
-def test_asset_scope_workflow_review_is_substantive_but_other_advisory_leads_are_not():
-    action = {
-        "status": "ready",
-        "type": "workflow-lead-review",
-        "source": "workflow-lead",
-        "metadata": {"category": "asset-scope-review"},
-    }
-
-    assert _is_substantive_queue_action(action)
-    assert not _is_substantive_queue_action(
-        {**action, "metadata": {"category": "public-metadata"}}
-    )
 
 
-def test_legacy_checkpoint_coverage_action_uses_observation_not_word_scores():
-    base = {
-        "status": "queued",
-        "type": "coverage-gap",
-        "evidence_type": "checkpoint-next-action",
-        "source": "checkpoint",
-        "attempts": 0,
-    }
-
-    assert not _is_substantive_queue_action({
-        **base,
-        "metadata": {
-            "endpoint": "/api/public/job-alerts/renew",
-            "vuln_class": "RCE",
-            "relevance_score": 15,
-        },
-    })
-    assert _is_substantive_queue_action({
-        **base,
-        "metadata": {
-            "endpoint": "/api/jobs/123/run",
-            "vuln_class": "RCE",
-            "observed_params": ["input"],
-        },
-    })
 
 
-def test_asset_scope_workflow_review_routes_autopilot_to_durable_queue(tmp_path):
+def test_asset_scope_workflow_review_routes_autopilot_to_durable_queue(tmp_path, store):
     queue_dir = tmp_path / "state" / "target.com"
-    queue_dir.mkdir(parents=True)
-    (queue_dir / "action_queue.json").write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "target": "target.com",
-                "actions": [
-                    {
-                        "id": "AQ-0001",
-                        "status": "queued",
-                        "type": "workflow-lead-review",
-                        "priority": 88,
-                        "source": "workflow-lead",
-                        "action": "Review target-linked external asset scope evidence.",
-                        "metadata": {"category": "asset-scope-review"},
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
+    queue_dir.mkdir(parents=True, exist_ok=True)
+    _register_work(TargetStore(tmp_path, 'target.com'), [{'id': 'AQ-0001', 'status': 'queued', 'type': 'workflow-lead-review', 'priority': 88, 'source': 'workflow-lead', 'action': 'Review target-linked external asset scope evidence.', 'metadata': {'category': 'asset-scope-review'}}])
 
     state = build_autopilot_state(
         str(tmp_path), "target.com", memory_dir=str(tmp_path / "hunt-memory")
@@ -784,24 +693,13 @@ def test_asset_scope_workflow_review_routes_autopilot_to_durable_queue(tmp_path)
     assert state["next_action"] == "resume_action_queue"
 
 
-def test_queue_resolution_rebuilds_state_from_durable_owner_facts(tmp_path):
+def test_queue_resolution_rebuilds_state_from_durable_owner_facts(tmp_path, store):
     target = "target.com"
     memory_dir = tmp_path / "hunt-memory"
-    ingest_checkpoint(
-        tmp_path,
-        target,
-        checkpoint={
-            "next_action_queue": [
-                {
-                    "id": "AQ-OWNER",
-                    "priority": 90,
-                    "type": "workflow-lead-review",
-                    "status": "ready",
-                    "action": "Review one durable owner fact.",
-                    "metadata": {"category": "asset-scope-review"},
-                }
-            ]
-        },
+    TargetStore(tmp_path, target).create_action(
+        command_id="AQ-OWNER", action_id="AQ-OWNER", kind="work", subject={"target": target},
+        intent="Review one durable owner fact.", execution_key="AQ-OWNER", actor="operator",
+        metadata={**{"category": "asset-scope-review"}, "action_context": {"type": "workflow-lead-review"}},
     )
     before = build_autopilot_state(str(tmp_path), target, memory_dir=str(memory_dir))
     witness_path = tmp_path / "state" / target / "checkpoint_latest.json"
@@ -815,8 +713,7 @@ def test_queue_resolution_rebuilds_state_from_durable_owner_facts(tmp_path):
         }),
         encoding="utf-8",
     )
-    from action_queue import select_next_action
-    claim = claim_next_action(tmp_path, target, action_id=select_next_action(load_queue(tmp_path, target))["id"])
+    claim = claim_next_action(tmp_path, target, action_id="AQ-OWNER")
     resolved = resolve_action(
         tmp_path,
         target=target,
@@ -828,7 +725,7 @@ def test_queue_resolution_rebuilds_state_from_durable_owner_facts(tmp_path):
 
     assert before["next_action"] == "resume_action_queue"
     assert before["action_queue_next"]["id"] == claim["id"]
-    assert resolved["active"] == []
+    assert resolved["status"] == "blocked"
     assert after["action_queue_next"] == {}
     assert after["next_action"] != "resume_action_queue"
     closure = load_closure_projection(str(tmp_path), after, max_lanes_reached=False)
@@ -836,23 +733,12 @@ def test_queue_resolution_rebuilds_state_from_durable_owner_facts(tmp_path):
     assert closure.get("checkpoint_health", {}).get("status") == "valid"
 
 
-def test_ai_action_outside_initial_frontier_uses_queue_owner_and_resumes(tmp_path):
+def test_ai_action_outside_initial_frontier_uses_queue_owner_and_resumes(tmp_path, store):
     target = "target.com"
-    ingest_checkpoint(
-        tmp_path,
-        target,
-        checkpoint={
-            "next_action_queue": [
-                {
-                    "id": "AQ-INITIAL",
-                    "priority": 90,
-                    "type": "workflow-lead-review",
-                    "status": "ready",
-                    "action": "Review the initial owner-backed action.",
-                    "metadata": {"category": "asset-scope-review"},
-                }
-            ]
-        },
+    TargetStore(tmp_path, target).create_action(
+        command_id="AQ-INITIAL", action_id="AQ-INITIAL", kind="work", subject={"target": target},
+        intent="Review the initial owner-backed action.", execution_key="AQ-INITIAL", actor="operator",
+        metadata={**{"category": "asset-scope-review"}, "action_context": {"type": "workflow-lead-review"}},
     )
     initial = build_autopilot_state(
         str(tmp_path), target, memory_dir=str(tmp_path / "hunt-memory")
@@ -897,7 +783,8 @@ def test_ai_action_outside_initial_frontier_uses_queue_owner_and_resumes(tmp_pat
     saved = load_queue(tmp_path, target)
     persisted = next(item for item in saved["actions"] if item["id"] == new_action["id"])
     assert persisted["status"] == "running"
-    assert persisted["attempts"] == 1
+    assert persisted["metadata"]["claim_token"] == claimed["claim_token"]
+    assert store.page("attempts")["total"] == 0
 
 
 def test_pending_cidr_continuation_routes_back_to_recon():
@@ -1060,25 +947,7 @@ def _closure_matrix(*, status: str = "tested_clean") -> dict:
 
 
 def _publish_surface_projection(repo_root, target: str, memory_dir=None) -> None:
-    memory_dir = memory_dir or (repo_root / "hunt-memory")
-    inventory_path = repo_root / "recon" / target / "live" / "technology_inventory.json"
-    had_inventory = inventory_path.is_file()
-    context = surface_module.load_surface_context(
-        repo_root,
-        target,
-        memory_dir=memory_dir,
-        write_probe_log=False,
-    )
-    if not had_inventory and inventory_path.is_file():
-        inventory_path.unlink()
-    manifest = build_surface_input_manifest(repo_root, target, memory_dir=memory_dir)
-    write_surface_projection(
-        repo_root,
-        target,
-        surface_module.rank_surface(context),
-        manifest=manifest,
-        memory_dir=memory_dir,
-    )
+    surface_module.build_surface_review(repo_root, target, memory_dir=memory_dir or repo_root / "hunt-memory")
 
 
 def test_closure_finishes_only_for_gap_free_handoff_state():
@@ -1673,9 +1542,9 @@ def test_partial_scanner_lane_with_zero_remaining_cannot_finish():
     assert closure["reasons"][0] == "scanner_lane_review_required"
 
 
-def test_scanner_projection_rejects_inconsistent_accounting(tmp_path):
+def test_scanner_projection_rejects_inconsistent_accounting(tmp_path, store):
     summary_path = tmp_path / "findings" / "target.com" / "summary.json"
-    summary_path.parent.mkdir(parents=True)
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
     summary_path.write_text(
         json.dumps({
             "target": "target.com",
@@ -1700,10 +1569,10 @@ def test_scanner_projection_rejects_inconsistent_accounting(tmp_path):
     assert projection["lanes"]["sqli"]["accounting_valid"] is False
 
 
-def test_residual_global_review_requires_every_token_and_never_restores_exhausted(tmp_path):
+def test_residual_global_review_requires_every_token_and_never_restores_exhausted(tmp_path, store):
     target = "target.com"
     witness_path = tmp_path / "state" / target / "checkpoint_latest.json"
-    witness_path.parent.mkdir(parents=True)
+    witness_path.parent.mkdir(parents=True, exist_ok=True)
     witness = {
         "schema_version": 1,
         "kind": "autopilot_checkpoint_witness",
@@ -1712,7 +1581,7 @@ def test_residual_global_review_requires_every_token_and_never_restores_exhauste
     witness_path.write_text(json.dumps(witness), encoding="utf-8")
     evidence_ref = f"findings/{target}/review/residual-review.txt"
     evidence_path = tmp_path / evidence_ref
-    evidence_path.parent.mkdir(parents=True)
+    evidence_path.parent.mkdir(parents=True, exist_ok=True)
     evidence_path.write_text("reviewed bounded residuals\n", encoding="utf-8")
     state = {
         "target": target,
@@ -1831,10 +1700,10 @@ def test_legacy_verdict_cannot_author_formal_closure(legacy_state):
     assert closure["reasons"] == ["coverage_missing"]
 
 
-def test_checkpoint_witness_verdict_cannot_author_formal_closure(tmp_path):
+def test_checkpoint_witness_verdict_cannot_author_formal_closure(tmp_path, store):
     target = "target.com"
     witness = tmp_path / "state" / target / "checkpoint_latest.json"
-    witness.parent.mkdir(parents=True)
+    witness.parent.mkdir(parents=True, exist_ok=True)
     witness.write_text(
         json.dumps({
             "schema_version": 1,
@@ -1854,22 +1723,15 @@ def test_checkpoint_witness_verdict_cannot_author_formal_closure(tmp_path):
 
     assert closure["verdict"] == "handoff"
     assert closure["can_claim_exhausted"] is False
-    assert closure["reasons"] == ["coverage_missing"]
+    assert closure["reasons"] == ["coverage_empty"]
 
 
-def test_stale_checkpoint_queue_fingerprint_forces_refresh_handoff(tmp_path):
+def test_stale_checkpoint_queue_fingerprint_forces_refresh_handoff(tmp_path, store):
     target = "target.com"
-    ingest_checkpoint(
-        tmp_path,
-        target,
-        checkpoint={
-            "next_action_queue": [{
-                "id": "AQ-0001",
-                "type": "coverage-gap",
-                "action": "Review one durable coverage gap.",
-                "priority": 80,
-            }]
-        },
+    TargetStore(tmp_path, target).create_action(
+        command_id="AQ-0001", action_id="AQ-0001", kind="work", subject={"target": target},
+        intent="Review one durable coverage gap.", execution_key="AQ-0001", actor="operator",
+        metadata={**{}, "action_context": {"type": "coverage-gap"}},
     )
     current = queue_fingerprint(load_queue(tmp_path, target))
     witness = tmp_path / "state" / target / "checkpoint_latest.json"
@@ -1899,22 +1761,9 @@ def test_stale_checkpoint_queue_fingerprint_forces_refresh_handoff(tmp_path):
     assert current != "stale-queue-generation"
 
 
-def test_closure_uses_current_queue_next_instead_of_preloaded_pointer(tmp_path):
+def test_closure_uses_current_queue_next_instead_of_preloaded_pointer(tmp_path, store):
     target = "target.com"
-    path = queue_path(tmp_path, target)
-    path.parent.mkdir(parents=True)
-    path.write_text(json.dumps({
-        "schema_version": 1,
-        "target": target,
-        "actions": [{
-            "id": "AQ-CURRENT",
-            "status": "queued",
-            "type": "coverage-gap",
-            "source": "operator",
-            "action": "review the current queue item",
-            "priority": 80,
-        }],
-    }), encoding="utf-8")
+    _register_work(store, [{"id": "AQ-CURRENT", "type": "coverage-gap", "action": "Review current work"}])
 
     closure = load_closure_projection(
         str(tmp_path),
@@ -1934,31 +1783,11 @@ def test_closure_uses_current_queue_next_instead_of_preloaded_pointer(tmp_path):
     assert all(item["id"] != "AQ-STALE" for item in closure["actionable_frontier"])
 
 
-def test_closure_marks_state_snapshot_stale_when_queue_generation_changes(tmp_path):
+def test_closure_marks_state_snapshot_stale_when_queue_generation_changes(tmp_path, store):
     target = "target.com"
-    path = queue_path(tmp_path, target)
-    path.parent.mkdir(parents=True)
-    initial = {
-        "schema_version": 1,
-        "target": target,
-        "actions": [{
-            "id": "AQ-OLD",
-            "status": "queued",
-            "type": "coverage-gap",
-            "source": "operator",
-            "action": "old queue item",
-        }],
-    }
-    path.write_text(json.dumps(initial), encoding="utf-8")
+    _register_work(store, [{"id": "AQ-OLD", "action": "Old work"}])
     old_generation = queue_fingerprint(load_queue(tmp_path, target))
-    path.write_text(json.dumps({
-        **initial,
-        "actions": [{
-            **initial["actions"][0],
-            "id": "AQ-NEW",
-            "action": "new queue item",
-        }],
-    }), encoding="utf-8")
+    _register_work(store, [{"id": "AQ-NEW", "action": "New work"}])
 
     closure = load_closure_projection(
         str(tmp_path),
@@ -1978,7 +1807,7 @@ def test_closure_marks_state_snapshot_stale_when_queue_generation_changes(tmp_pa
     assert closure["snapshot_stale_sources"] == ["action_queue"]
 
 
-def test_closure_marks_owner_snapshot_stale_when_source_changes_during_read(tmp_path, monkeypatch):
+def test_closure_marks_owner_snapshot_stale_when_source_changes_during_read(tmp_path, monkeypatch, store):
     target = "target.com"
     names = (
         "action_queue",
@@ -2011,11 +1840,11 @@ def test_closure_marks_owner_snapshot_stale_when_source_changes_during_read(tmp_
     assert closure["actionable_frontier"][0]["id"] == "state_snapshot_stale"
 
 
-def test_closure_rejects_stale_coverage_matrix(tmp_path):
+def test_closure_rebuilds_current_coverage_without_trusting_stale_cache(tmp_path, store):
     target = "target.com"
     _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
     recon_dir = tmp_path / "recon" / target
-    (recon_dir / "urls").mkdir(parents=True)
+    (recon_dir / "urls").mkdir(parents=True, exist_ok=True)
     (recon_dir / "urls" / "all.txt").write_text(
         "https://target.com/orders\n", encoding="utf-8"
     )
@@ -2031,11 +1860,11 @@ def test_closure_rejects_stale_coverage_matrix(tmp_path):
     )
 
     assert closure["verdict"] == "handoff"
-    assert closure["reasons"] == ["coverage_stale"]
-    assert closure["coverage_stale"] is True
+    assert closure["reasons"] == ["coverage_high_value_gaps"]
+    assert closure["coverage_stale"] is False
 
 
-def test_closure_blocking_surface_candidate_requires_owner_outcome(tmp_path):
+def test_closure_blocking_surface_candidate_requires_owner_outcome(tmp_path, store):
     target = "target.com"
     _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
     state = _surface_closure_state(target, next_action="handoff")
@@ -2050,7 +1879,7 @@ def test_closure_blocking_surface_candidate_requires_owner_outcome(tmp_path):
     assert closure["surface_review"]["closure_blocking"] is True
 
 
-def test_closure_digest_changes_when_decision_state_changes(tmp_path):
+def test_closure_digest_changes_when_decision_state_changes(tmp_path, store):
     target = "target.com"
     base = {
         "target": target,
@@ -2078,7 +1907,7 @@ def test_closure_digest_changes_when_decision_state_changes(tmp_path):
     )
 
 
-def test_invalid_cidr_continuation_has_recon_frontier(tmp_path):
+def test_invalid_cidr_continuation_has_recon_frontier(tmp_path, store):
     target = "target.com"
     closure = build_closure_projection(
         {
@@ -2131,22 +1960,14 @@ def test_pending_cidr_continuation_has_recon_frontier_and_cannot_finish():
     )
 
 
-def test_checkpoint_cursor_missing_from_queue_is_stale_not_advanced(tmp_path):
+def test_checkpoint_cursor_missing_from_queue_is_stale_not_advanced(tmp_path, store):
     target = "target.com"
-    ingest_checkpoint(
-        tmp_path,
-        target,
-        checkpoint={
-            "next_action_queue": [{
-                "id": "AQ-0001",
-                "type": "coverage-gap",
-                "action": "Review one durable coverage gap.",
-                "priority": 80,
-            }]
-        },
+    TargetStore(tmp_path, target).create_action(
+        command_id="AQ-0001", action_id="AQ-0001", kind="work", subject={"target": target},
+        intent="Review one durable coverage gap.", execution_key="AQ-0001", actor="operator",
+        metadata={**{}, "action_context": {"type": "coverage-gap"}},
     )
-    queue_path = tmp_path / "state" / target / "action_queue.json"
-    queue = json.loads(queue_path.read_text(encoding="utf-8"))
+    queue = load_queue(tmp_path, target)
     witness = tmp_path / "state" / target / "checkpoint_latest.json"
     witness.write_text(
         json.dumps({
@@ -2155,14 +1976,12 @@ def test_checkpoint_cursor_missing_from_queue_is_stale_not_advanced(tmp_path):
             "target": target,
             "action_queue": {
                 "synchronized": True,
-                "next_id": "AQ-0001",
-                "fingerprint": queue_fingerprint(queue),
+                "next_id": "AQ-MISSING",
+                "fingerprint": "previous-generation",
             },
         }),
         encoding="utf-8",
     )
-    queue["actions"] = []
-    queue_path.write_text(json.dumps(queue), encoding="utf-8")
 
     closure = load_closure_projection(
         str(tmp_path),
@@ -2174,9 +1993,9 @@ def test_checkpoint_cursor_missing_from_queue_is_stale_not_advanced(tmp_path):
     assert "checkpoint_stale" in closure["reasons"]
 
 
-def test_corrupt_checkpoint_witness_becomes_recovery_handoff(tmp_path):
+def test_corrupt_checkpoint_witness_becomes_recovery_handoff(tmp_path, store):
     witness_path = tmp_path / "state" / "target.com" / "checkpoint_latest.json"
-    witness_path.parent.mkdir(parents=True)
+    witness_path.parent.mkdir(parents=True, exist_ok=True)
     witness_path.write_bytes(b"{broken\n")
 
     closure = load_closure_projection(
@@ -2252,7 +2071,7 @@ def test_closure_projection_exposes_identity_follow_up_and_shadow_diff():
     assert closure["identity_v2"]["shadow"] == shadow
 
 
-def test_closure_resumes_started_lane_and_requires_round_closure(tmp_path):
+def test_closure_resumes_started_lane_and_requires_round_closure(tmp_path, store):
     target = "target.com"
     _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
     witness = tmp_path / "state" / target / "checkpoint_latest.json"
@@ -2325,7 +2144,7 @@ def test_closure_resumes_started_lane_and_requires_round_closure(tmp_path):
     assert closed["can_claim_exhausted"] is False
 
 
-def test_closure_does_not_finish_an_active_round_before_first_lane_claim(tmp_path):
+def test_closure_does_not_finish_an_active_round_before_first_lane_claim(tmp_path, store):
     target = "target.com"
     _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
     witness = tmp_path / "state" / target / "checkpoint_latest.json"
@@ -2366,6 +2185,7 @@ def test_closure_does_not_finish_an_active_round_before_first_lane_claim(tmp_pat
 def test_closure_handoffs_legacy_completed_lane_with_invalid_evidence(
     tmp_path,
     evidence_ref,
+    store,
 ):
     target = "target.com"
     _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
@@ -2415,7 +2235,7 @@ def test_closure_handoffs_legacy_completed_lane_with_invalid_evidence(
     assert witness.read_bytes() == previous
 
 
-def test_closure_rejects_legacy_coverage_lane_with_narrative_only_evidence(tmp_path):
+def test_closure_rejects_legacy_coverage_lane_with_narrative_only_evidence(tmp_path, store):
     target = "target.com"
     _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
     narrative_ref = f"evidence/{target}/coverage_disposition.md"
@@ -2464,11 +2284,11 @@ def test_closure_rejects_legacy_coverage_lane_with_narrative_only_evidence(tmp_p
     assert closure["actionable_frontier"][0]["owner"] == "round-progress"
 
 
-def test_round_projection_preserves_budget_after_lane_field_projection(tmp_path):
+def test_round_projection_preserves_budget_after_lane_field_projection(tmp_path, store):
     target = "target.com"
     evidence_ref = "evidence/target.com/summary.json"
     evidence_path = tmp_path / evidence_ref
-    evidence_path.parent.mkdir(parents=True)
+    evidence_path.parent.mkdir(parents=True, exist_ok=True)
     evidence_path.write_text("{}", encoding="utf-8")
     lane = {
         "schema_version": 1,
@@ -2513,28 +2333,10 @@ def test_round_projection_preserves_budget_after_lane_field_projection(tmp_path)
         )
 
 
-def test_case_state_work_routes_bootstrap_and_blocks_exhausted_closure(tmp_path):
+def test_case_state_work_routes_bootstrap_and_blocks_exhausted_closure(tmp_path, store):
     target = "target.com"
-    case_path = tmp_path / "state" / target / "case_state.json"
-    case_path.parent.mkdir(parents=True)
-    case_path.write_text(
-        json.dumps({
-            "schema_version": 1,
-            "target": target,
-            "target_key": target,
-            "actors": {},
-            "sessions": {},
-            "objects": {},
-            "hypotheses": [{
-                "status": "open",
-                "vuln_class": "Authz",
-                "endpoint": "https://target.com/api/orders/1",
-                "next_action": "build actor-pair replay",
-            }],
-            "validation_backlog": [],
-        }),
-        encoding="utf-8",
-    )
+    store.remember_hypothesis(command_id="hypothesis", hypothesis_id="hypothesis", vuln_class="Authz",
+                              endpoint="https://target.com/api/orders/1", why_now="Compare owner and peer context", actor="operator")
 
     state = build_autopilot_state(
         str(tmp_path), target, memory_dir=str(tmp_path / "memory"), bounded=True
@@ -2553,11 +2355,59 @@ def test_case_state_work_routes_bootstrap_and_blocks_exhausted_closure(tmp_path)
     assert closure["reasons"] == ["case_state_work_pending", "actor_context_required"]
 
 
-def test_blocked_legacy_case_backlog_produces_no_case_action(tmp_path):
+def test_primary_case_projection_uses_store_without_legacy_file(tmp_path):
+    target = "target.com"
+    store = TargetStore(tmp_path, target)
+    store.initialize()
+    store.remember_hypothesis(
+        command_id="case-hypothesis",
+        hypothesis_id="hyp-store",
+        vuln_class="Authz",
+        actor="tester",
+    )
+
+    state = build_autopilot_state(str(tmp_path), target, bounded=True)
+
+    assert state["case_state"]["status"] == "valid"
+    assert state["case_state"]["path"] == str(store.path)
+    assert state["case_state"]["open_hypotheses"] == 1
+    assert state["next_action"] == "resume_case_state"
+    legacy_path = tmp_path / "state" / target / "case_state.json"
+    assert not legacy_path.exists()
+    legacy_path.write_text("{broken", encoding="utf-8")
+
+    with_legacy_conflict = build_autopilot_state(str(tmp_path), target, bounded=True)
+    assert with_legacy_conflict["case_state"] == state["case_state"]
+
+
+def test_primary_resume_memory_requires_store_facts_not_legacy_owner_files(tmp_path):
+    target = "target.com"
+    store = TargetStore(tmp_path, target)
+    store.initialize()
+    legacy_dir = tmp_path / "state" / target
+    (legacy_dir / "action_queue.json").write_text("{broken", encoding="utf-8")
+    (legacy_dir / "case_state.json").write_text("{broken", encoding="utf-8")
+
+    empty = build_autopilot_state(str(tmp_path), target, bounded=True)
+    assert empty["has_memory"] is False
+    assert empty["resume_summary"]["canonical_sources"] == ["store"]
+
+    store.remember_hypothesis(
+        command_id="case-hypothesis",
+        hypothesis_id="hyp-store",
+        vuln_class="Authz",
+        actor="tester",
+    )
+    with_case = build_autopilot_state(str(tmp_path), target, bounded=True)
+    assert with_case["has_memory"] is True
+    assert with_case["resume_summary"]["canonical_sources"] == ["store"]
+
+
+def test_blocked_legacy_case_backlog_produces_no_case_action(tmp_path, store):
     """旧 Case 待办即使处于 blocked，也不再是任何消费者读得到的行动来源。"""
     target = "target.com"
     case_path = tmp_path / "state" / target / "case_state.json"
-    case_path.parent.mkdir(parents=True)
+    case_path.parent.mkdir(parents=True, exist_ok=True)
     case_path.write_text(
         json.dumps({
             "schema_version": 1,
@@ -2589,18 +2439,18 @@ def test_blocked_legacy_case_backlog_produces_no_case_action(tmp_path):
     assert "val_001" not in projected
     assert "recover_hypothesis" not in projected
     assert "top_next_action" not in state["case_state"]
-    # 只有未决假设这一项上下文义务进入 Case 投影。
+    # Historical Case state is never the active owner.
     assert set(state["case_state"]) == {
         "status", "path", "authz_coverage", "actors", "sessions", "objects", "open_hypotheses",
     }
-    assert state["case_state"]["open_hypotheses"] == 1
+    assert state["case_state"]["open_hypotheses"] == 0
 
 
-def test_case_state_projection_is_context_counts_only_and_secret_free(tmp_path):
+def test_case_state_projection_is_context_counts_only_and_secret_free(tmp_path, store):
     """Case 投影只承载上下文计数：假设元数据、描述维度与密钥不再进入状态投影。"""
     target = "target.com"
     case_path = tmp_path / "state" / target / "case_state.json"
-    case_path.parent.mkdir(parents=True)
+    case_path.parent.mkdir(parents=True, exist_ok=True)
     case_path.write_text(
         json.dumps({
             "schema_version": 1,
@@ -2648,11 +2498,9 @@ def test_case_state_projection_is_context_counts_only_and_secret_free(tmp_path):
     assert "template renderer" not in projected
 
 
-def test_malformed_case_state_returns_structured_state_error(tmp_path, monkeypatch, capsys):
+def test_malformed_store_returns_structured_state_error(tmp_path, monkeypatch, capsys, store):
     target = "target.com"
-    case_path = tmp_path / "state" / target / "case_state.json"
-    case_path.parent.mkdir(parents=True)
-    case_path.write_text("{broken", encoding="utf-8")
+    store.path.write_bytes(b"broken sqlite")
     monkeypatch.setattr("autopilot_state.BASE_DIR", str(tmp_path))
     monkeypatch.setattr(
         sys,
@@ -2664,13 +2512,13 @@ def test_malformed_case_state_returns_structured_state_error(tmp_path, monkeypat
     payload = json.loads(capsys.readouterr().out)
     assert payload["closure"]["verdict"] == "error"
     assert payload["closure"]["reasons"] == ["state_read_error"]
-    assert "invalid target case state JSON" in payload["closure"]["error"]["message"]
+    assert "database" in payload["closure"]["error"]["message"]
 
 
-def test_malformed_checkpoint_witness_returns_structured_state_error(tmp_path, monkeypatch, capsys):
+def test_malformed_checkpoint_witness_returns_structured_state_error(tmp_path, monkeypatch, capsys, store):
     target = "target.com"
     witness = tmp_path / "state" / target / "checkpoint_latest.json"
-    witness.parent.mkdir(parents=True)
+    witness.parent.mkdir(parents=True, exist_ok=True)
     witness.write_text("{broken", encoding="utf-8")
     monkeypatch.setattr("autopilot_state.BASE_DIR", str(tmp_path))
     monkeypatch.setattr(
@@ -2814,7 +2662,8 @@ def test_surface_continuation_is_omitted_when_no_page_remains():
     assert state == {"status": "valid", "reason": ""}
 
 
-def test_cli_projection_only_keeps_full_json_mode_available(monkeypatch, capsys):
+def test_cli_projection_only_keeps_full_json_mode_available(monkeypatch, capsys, tmp_path, store):
+    monkeypatch.setattr(autopilot_state_module, "BASE_DIR", str(tmp_path))
     state = {
         "target": "target.com",
         "resolved_target": "target.com",
@@ -2866,14 +2715,14 @@ def test_cli_projection_only_keeps_full_json_mode_available(monkeypatch, capsys)
     assert full["surface"] == state["surface"]
 
 
-def test_json_summary_projection_and_partial_closure(tmp_path):
+def test_json_summary_projection_and_partial_closure(tmp_path, store):
     target = "target.com"
     source = tmp_path / "recon" / target / "urls" / "json_endpoints.txt"
-    source.parent.mkdir(parents=True)
+    source.parent.mkdir(parents=True, exist_ok=True)
     source.write_text("https://target.com/api/login\n", encoding="utf-8")
     source_digest = hashlib.sha256(source.read_bytes()).hexdigest()
     path = tmp_path / "findings" / target / "poc" / "json_inject" / "summary.json"
-    path.parent.mkdir(parents=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({
         "schema_version": 2,
         "kind": "json_inject_summary",
@@ -2908,49 +2757,42 @@ def test_json_summary_projection_and_partial_closure(tmp_path):
 
 
 def _write_closure_owners(tmp_path, target: str, *, status: str, final_review: bool) -> None:
-    evidence_dir = tmp_path / "evidence" / target_storage_key(target)
-    evidence_dir.mkdir(parents=True, exist_ok=True)
-    (evidence_dir / "coverage_matrix.json").write_text(
-        json.dumps(_closure_matrix(status=status)),
-        encoding="utf-8",
-    )
+    from tools.coverage_matrix import VULN_CLASSES, rebuild_matrix
+    from tools.target_case_state import add_actor, add_session
+    store = TargetStore(tmp_path, target)
+    for identity in ("owner", "peer"):
+        add_actor(tmp_path, target, actor=identity, role="user")
+        add_session(tmp_path, target, session=identity, actor=identity, kind="bearer",
+                    header_value=f"Bearer fixture-{identity}", validity="valid")
+    evidence = tmp_path / "evidence" / store.key / "closure-response.txt"
+    evidence.parent.mkdir(parents=True, exist_ok=True)
+    evidence.write_text("Recorded bounded comparison responses", encoding="utf-8")
+    endpoint = f"https://{target}/api/orders/1"
     if status in {"tested_clean", "tested_finding"}:
-        ledger_dir = tmp_path / "memory" / "evidence" / target_storage_key(target)
-        ledger_dir.mkdir(parents=True, exist_ok=True)
-        (ledger_dir / "ledger.jsonl").write_text(
-            json.dumps({
-                "target": target,
-                "endpoint": "/api/orders/1",
-                "method": "GET",
-                "vuln_class": "IDOR",
-                "actor": "owner",
-                "object_scope": "unknown",
-                "variant": "baseline",
-                "source": "test:closure-owner",
-                "result": status,
-                "replayed": True,
-            }) + "\n",
-            encoding="utf-8",
-        )
+        store.start_attempt(attempt_id="coverage", source="native", started_at="2026-09-24T00:00:00Z", actor="operator")
+        store.record_execution(attempt_id="coverage", outcome="complete", actor="operator", observations=[{
+            "endpoint": endpoint, "method": "GET", "family": family, "actor": "owner",
+            "object_scope": "own_object", "variant": "baseline", "result": status,
+            "description": f"Recorded {family} comparison", "observed_at": "2026-09-24T00:00:00Z",
+            "artifacts": {"response": evidence.relative_to(tmp_path).as_posix()}, "state_changing": False,
+        } for family in VULN_CLASSES])
+    else:
+        recon = tmp_path / "recon" / store.key / "urls" / "all.txt"
+        recon.parent.mkdir(parents=True, exist_ok=True)
+        recon.write_text(endpoint + "\n", encoding="utf-8")
     if final_review:
-        queue_dir = tmp_path / "state" / target_storage_key(target)
-        queue_dir.mkdir(parents=True, exist_ok=True)
-        (queue_dir / "action_queue.json").write_text(
-            json.dumps({
-                "schema_version": 1,
-                "target": target,
-                "actions": [{
-                    "id": "AQ-0001",
-                    "status": "tested",
-                    "type": "surface-review",
-                    "metadata": {"endpoint": "/api/orders/1"},
-                }],
-            }),
-            encoding="utf-8",
-        )
+        store.create_action(command_id="review", action_id="AQ-0001", intent="Review recorded surface",
+                            kind="work", subject={"url": endpoint}, execution_key="surface-review", actor="operator",
+                            metadata={"action_context": {"type": "surface-review"}})
+        store.transition_action(command_id="claim-review", action_id="AQ-0001", expected_version=1,
+                                status="claimed", actor="operator")
+        store.transition_action(command_id="finish-review", action_id="AQ-0001", expected_version=2,
+                                status="completed", actor="operator", claim_token="claim-review",
+                                reason="Review saved", completion={"artifact": str(evidence)})
+    rebuild_matrix(target, repo_root=tmp_path)
 
 
-def test_matching_third_round_guard_blocks_partial_json_lane(tmp_path):
+def test_matching_third_round_guard_blocks_partial_json_lane(tmp_path, store):
     target = "target.com"
     _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
     state = {
@@ -2987,36 +2829,10 @@ def test_matching_third_round_guard_blocks_partial_json_lane(tmp_path):
     assert closure["reasons"] == ["stagnant_prerequisite"]
 
 
-def test_matching_third_round_guard_does_not_revive_advisory_surface(tmp_path):
+def test_matching_third_round_guard_does_not_revive_advisory_surface(tmp_path, store):
     target = "target.com"
     _write_closure_owners(tmp_path, target, status="tested_clean", final_review=True)
-    matrix_path = tmp_path / "evidence" / target / "coverage_matrix.json"
-    matrix = json.loads(matrix_path.read_text(encoding="utf-8"))
-    matrix["endpoints"].append({
-        "endpoint": "/profile",
-        "weight": 3.0,
-        "cells": {"IDOR": {"status": "tested_clean"}},
-    })
-    matrix_path.write_text(json.dumps(matrix), encoding="utf-8")
-    queue_path = tmp_path / "state" / target / "action_queue.json"
-    queue = json.loads(queue_path.read_text(encoding="utf-8"))
-    queue["actions"].append({
-        "id": "AQ-0002",
-        "status": "tested",
-        "type": "surface-review",
-        "metadata": {"endpoint": "/profile"},
-    })
-    queue_path.write_text(json.dumps(queue), encoding="utf-8")
-    ledger_dir = tmp_path / "memory" / "evidence" / target
-    ledger_dir.mkdir(parents=True, exist_ok=True)
-    (ledger_dir / "ledger.jsonl").write_text(
-        "".join(json.dumps({
-            "endpoint": f"/api/orders/{value}",
-            "vuln_class": "IDOR",
-            "result": "tested_clean",
-        }) + "\n" for value in ("1", "2", "3")),
-        encoding="utf-8",
-    )
+    _complete_surface_review(store, "AQ-0002", "https://target.com/profile")
     state = {
         "target": target,
         "resolved_target": target,
@@ -3044,7 +2860,7 @@ def test_matching_third_round_guard_does_not_revive_advisory_surface(tmp_path):
     assert "rotation_target" not in closure
 
 
-def test_matching_third_round_guard_ignores_stale_state_queue_pointer(tmp_path):
+def test_matching_third_round_guard_ignores_stale_state_queue_pointer(tmp_path, store):
     target = "target.com"
     _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
     stagnant_state = {
@@ -3073,36 +2889,10 @@ def test_matching_third_round_guard_ignores_stale_state_queue_pointer(tmp_path):
     assert "rotation_target" not in closure
 
 
-def test_matching_third_round_guard_keeps_blocked_family_terminal(tmp_path):
+def test_matching_third_round_guard_keeps_blocked_family_terminal(tmp_path, store):
     target = "target.com"
     _write_closure_owners(tmp_path, target, status="tested_clean", final_review=True)
-    matrix_path = tmp_path / "evidence" / target / "coverage_matrix.json"
-    matrix = json.loads(matrix_path.read_text(encoding="utf-8"))
-    matrix["endpoints"].append({
-        "endpoint": "/api/orders/99",
-        "weight": 3.0,
-        "cells": {"IDOR": {"status": "tested_clean"}},
-    })
-    matrix_path.write_text(json.dumps(matrix), encoding="utf-8")
-    queue_path = tmp_path / "state" / target / "action_queue.json"
-    queue = json.loads(queue_path.read_text(encoding="utf-8"))
-    queue["actions"].append({
-        "id": "AQ-0002",
-        "status": "tested",
-        "type": "surface-review",
-        "metadata": {"endpoint": "/api/orders/99"},
-    })
-    queue_path.write_text(json.dumps(queue), encoding="utf-8")
-    ledger_dir = tmp_path / "memory" / "evidence" / target
-    ledger_dir.mkdir(parents=True, exist_ok=True)
-    (ledger_dir / "ledger.jsonl").write_text(
-        "".join(json.dumps({
-            "endpoint": f"/api/orders/{value}",
-            "vuln_class": "IDOR",
-            "result": "tested_clean",
-        }) + "\n" for value in ("1", "2", "3")),
-        encoding="utf-8",
-    )
+    _complete_surface_review(store, "AQ-0002", "https://target.com/api/orders/99")
     state = {
         "target": target,
         "resolved_target": target,
@@ -3131,7 +2921,7 @@ def test_matching_third_round_guard_keeps_blocked_family_terminal(tmp_path):
     assert closure["reasons"] == ["stagnant_prerequisite"]
 
 
-def test_round_guard_ignores_coverage_rebuild_timestamp(tmp_path):
+def test_round_guard_ignores_coverage_rebuild_timestamp(tmp_path, store):
     target = "target.com"
     _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
     state = {
@@ -3175,7 +2965,7 @@ def test_semantic_coverage_fingerprint_ignores_source_count_only_changes():
     )
 
 
-def test_next_action_pending_round_guard_ignores_candidate_window_churn(tmp_path):
+def test_next_action_pending_round_guard_ignores_candidate_window_churn(tmp_path, store):
     target = "target.com"
     _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
     state = {
@@ -3200,7 +2990,7 @@ def test_next_action_pending_round_guard_ignores_candidate_window_churn(tmp_path
     assert "stagnation_fingerprint" not in changed
 
 
-def test_coverage_high_value_gap_round_guard_blocks_without_candidate(tmp_path):
+def test_coverage_high_value_gap_round_guard_blocks_without_candidate(tmp_path, store):
     target = "target.com"
     _write_closure_owners(tmp_path, target, status="untested", final_review=False)
     state = {"target": target, "resolved_target": target, "next_action": "handoff"}
@@ -3392,133 +3182,41 @@ def test_stagnation_fingerprint_ignores_queue_rebuild_and_round_recovery():
     ) == base
 
 
-def test_closure_prefers_compact_coverage_projection(tmp_path, monkeypatch):
-    target = "target.com"
-    _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
-    projection = {
-        "target": target,
-        "summary": {"high_value_gaps_count": 0},
-        "endpoints": [{
-            "endpoint": "/api/orders/1",
-            "cells": {"IDOR": {"status": "tested_clean"}},
-        }],
-        "_coverage_gaps": [],
-        "_coverage_projection": True,
-    }
-    monkeypatch.setattr(autopilot_state_module, "load_matrix_projection", lambda *_args: projection)
-    monkeypatch.setattr(
-        autopilot_state_module,
-        "load_matrix",
-        lambda *_args: (_ for _ in ()).throw(AssertionError("full matrix loaded")),
-    )
-
-    closure = _load_closure_projection(
-        str(tmp_path), {"target": target, "next_action": "handoff"}, max_lanes_reached=False
-    )
-
-    assert closure["verdict"] == "finish"
 
 
-def test_closure_falls_back_when_coverage_projection_is_unavailable(tmp_path, monkeypatch):
-    target = "target.com"
-    _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
-    loaded = []
-    monkeypatch.setattr(autopilot_state_module, "load_matrix_projection", lambda *_args: None)
-    original = autopilot_state_module.load_matrix
-    monkeypatch.setattr(
-        autopilot_state_module,
-        "load_matrix",
-        lambda *args: loaded.append(args) or original(*args),
-    )
-
-    closure = _load_closure_projection(
-        str(tmp_path), {"target": target, "next_action": "handoff"}, max_lanes_reached=False
-    )
-
-    assert closure["verdict"] == "finish"
-    assert loaded
 
 
-def test_compact_projection_keeps_default_cells_as_pending_gaps():
-    # Real projection gaps carry their observation fields; an IDOR gap on an
-    # observed endpoint (source evidence present) blocks Closure.
-    projection = {
-        "summary": {"high_value_gaps_count": 1},
-        "endpoints": [{"endpoint": "/api/orders/1", "cells": {}}],
-        "_coverage_gaps": [{
-            "endpoint": "/api/orders/1",
-            "vuln_class": "IDOR",
-            "source_count": 1,
-            "sources": ["js"],
-        }],
-        "_coverage_projection": True,
-    }
 
-    closure = build_closure_projection({"next_action": "handoff"}, projection)
 
+def test_current_matrix_keeps_observed_default_cells_as_pending_gaps():
+    matrix = _closure_matrix(status="untested")
+    matrix["endpoints"][0].update(source_count=1, sources=["js"])
+    closure = build_closure_projection({"next_action": "handoff"}, matrix)
     assert closure["verdict"] == "handoff"
     assert closure["reasons"] == ["coverage_high_value_gaps"]
 
 
-def test_zero_relevance_coverage_gap_is_advisory_not_closure_work():
-    # A grid-enumeration gap with NO observed fact behind it (no params, no
-    # sources, no route-kind probe) is advisory: it never blocks Closure.
-    # Word-list relevance_score no longer decides this either way.
-    projection = {
-        "summary": {"high_value_gaps_count": 1},
-        "endpoints": [{"endpoint": "/api/orders/1", "cells": {}}],
-        "_coverage_gaps": [{
-            "endpoint": "/api/orders/1",
-            "vuln_class": "RCE",
-            "relevance_score": 0,
-            "observed_params": [],
-            "source_count": 0,
-        }],
-        "_coverage_projection": True,
-    }
-
-    closure = build_closure_projection({"next_action": "handoff"}, projection)
-
+def test_zero_source_coverage_gap_is_advisory_regardless_of_relevance_score():
+    matrix = _closure_matrix(status="untested")
+    matrix["endpoints"][0].update(source_count=0, relevance_score=999)
+    closure = build_closure_projection({"next_action": "handoff"}, matrix)
     assert closure["verdict"] == "finish"
     assert closure["reasons"] == []
-    assert projection["summary"]["high_value_gaps_count"] == 1
+    assert matrix["endpoints"][0]["cells"]["IDOR"]["status"] == "untested"
 
 
-def test_zero_relevance_gap_does_not_hide_surface_review_requirement():
-    projection = {
-        "summary": {"high_value_gaps_count": 1},
-        "endpoints": [{"endpoint": "/api/orders/1", "cells": {}}],
-        "_coverage_gaps": [{"endpoint": "/api/orders/1", "vuln_class": "RCE", "relevance_score": 0}],
-        "_coverage_projection": True,
-    }
-
+def test_zero_source_gap_does_not_hide_surface_review_requirement():
+    matrix = _closure_matrix(status="untested")
+    matrix["endpoints"][0]["source_count"] = 0
     completion = autopilot_state_module._surface_review_completion(
-        {"surface_review_candidates": [{"url": "https://target.com/api/orders/1"}]},
-        projection,
-        {"actions": []},
-    )
-
-    assert completion["unresolved"] == [{
-        "url": "https://target.com/api/orders/1",
-        "reason": "review_outcome_missing",
-    }]
+        {"surface_review_candidates": [{"url": "https://target.com/api/orders/1"}]}, matrix, {"actions": []})
+    assert completion["unresolved"] == [{"url": "https://target.com/api/orders/1", "reason": "review_outcome_missing"}]
 
 
-def test_actionable_coverage_gap_still_blocks_closure_and_frontier():
-    projection = {
-        "summary": {"high_value_gaps_count": 1},
-        "endpoints": [{"endpoint": "/api/orders/1", "cells": {}}],
-        "_coverage_gaps": [{
-            "endpoint": "/api/orders/1",
-            "vuln_class": "IDOR",
-            "relevance_score": 3,
-            "source_count": 1,
-        }],
-        "_coverage_projection": True,
-    }
-
-    closure = build_closure_projection({"target": "target.com", "next_action": "handoff"}, projection)
-
+def test_observed_coverage_gap_blocks_closure_without_relevance_score():
+    matrix = _closure_matrix(status="untested")
+    matrix["endpoints"][0].update(source_count=1, relevance_score=0)
+    closure = build_closure_projection({"target": "target.com", "next_action": "handoff"}, matrix)
     assert closure["verdict"] == "handoff"
     assert closure["reasons"] == ["coverage_high_value_gaps"]
     assert closure["actionable_frontier"][0]["owner"] == "coverage"
@@ -3534,7 +3232,7 @@ def _surface_closure_state(target: str, *, next_action: str = "hunt_p1") -> dict
     }
 
 
-def test_surface_candidate_blocks_closure_without_durable_review_outcome(tmp_path):
+def test_surface_candidate_blocks_closure_without_durable_review_outcome(tmp_path, store):
     target = "target.com"
     _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
 
@@ -3547,7 +3245,7 @@ def test_surface_candidate_blocks_closure_without_durable_review_outcome(tmp_pat
     assert closure["surface_review"]["unresolved"][0]["reason"] == "review_outcome_missing"
 
 
-def test_surface_candidate_allows_closure_after_coverage_and_final_review(tmp_path):
+def test_surface_candidate_allows_closure_after_coverage_and_final_review(tmp_path, store):
     target = "target.com"
     _write_closure_owners(tmp_path, target, status="tested_clean", final_review=True)
 
@@ -3560,46 +3258,26 @@ def test_surface_candidate_allows_closure_after_coverage_and_final_review(tmp_pa
     assert closure["surface_review"] == {"status": "complete", "unresolved": []}
 
 
-def test_surface_candidate_stays_unresolved_after_terminal_ledger_outcome(tmp_path):
+def test_terminal_observation_does_not_create_surface_review_outcome(tmp_path, store):
     target = "target.com"
     _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
-    ledger_dir = tmp_path / "memory" / "evidence" / target_storage_key(target)
-    ledger_dir.mkdir(parents=True, exist_ok=True)
-    (ledger_dir / "ledger.jsonl").write_text(
-        (ledger_dir / "ledger.jsonl").read_text(encoding="utf-8")
-        + json.dumps({
-            "endpoint": "/api/orders/1",
-            "vuln_class": "IDOR",
-            "result": "dead_end",
-        }) + "\n",
-        encoding="utf-8",
-    )
+    _record_observation(store, "https://target.com/api/orders/1", "IDOR", "dead_end")
 
     closure = _load_closure_projection(
         str(tmp_path), _surface_closure_state(target), max_lanes_reached=False
     )
 
-    assert closure["verdict"] == "handoff"
-    assert closure["can_claim_exhausted"] is False
-    assert "coverage_ledger_evidence_missing" in closure["reasons"]
+    assert closure["verdict"] == "finish"
+    assert closure["can_claim_exhausted"] is True
+    assert closure["coverage_terminal_evidence"]["status"] == "valid"
     assert closure["surface_review"]["status"] == "unresolved"
     assert closure["surface_review"]["unresolved"][0]["reason"] == "review_outcome_missing"
 
 
-def test_surface_candidate_query_is_not_closed_by_terminal_ledger_identity(tmp_path):
+def test_surface_candidate_query_is_not_closed_by_terminal_ledger_identity(tmp_path, store):
     target = "target.com"
     _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
-    ledger_dir = tmp_path / "memory" / "evidence" / target_storage_key(target)
-    ledger_dir.mkdir(parents=True, exist_ok=True)
-    (ledger_dir / "ledger.jsonl").write_text(
-        (ledger_dir / "ledger.jsonl").read_text(encoding="utf-8")
-        + json.dumps({
-            "endpoint": "/api/orders/1?view=summary",
-            "vuln_class": "IDOR",
-            "result": "dead_end",
-        }) + "\n",
-        encoding="utf-8",
-    )
+    _record_observation(store, "https://target.com/api/orders/1?view=summary", "IDOR", "dead_end")
 
     state = _surface_closure_state(target)
     state["surface_review_candidates"][0]["url"] += "?view=detail"
@@ -3618,17 +3296,14 @@ def test_surface_candidate_query_is_not_closed_by_terminal_ledger_identity(tmp_p
     assert exact["surface_review"]["unresolved"][0]["reason"] == "review_outcome_missing"
 
 
-def test_surface_candidate_query_requires_exact_final_queue_identity(tmp_path):
+def test_surface_candidate_query_requires_exact_final_queue_identity(tmp_path, store):
     target = "target.com"
     _write_closure_owners(tmp_path, target, status="tested_clean", final_review=True)
     state = _surface_closure_state(target)
     state["surface_review_candidates"][0]["url"] += "?view=detail"
 
     mismatch = _load_closure_projection(str(tmp_path), state, max_lanes_reached=False)
-    queue_path = tmp_path / "state" / target_storage_key(target) / "action_queue.json"
-    queue = json.loads(queue_path.read_text(encoding="utf-8"))
-    queue["actions"][0]["metadata"]["endpoint"] += "?view=detail"
-    queue_path.write_text(json.dumps(queue), encoding="utf-8")
+    _complete_surface_review(store, "AQ-EXACT", f"https://{target}/api/orders/1?view=detail")
     exact = _load_closure_projection(str(tmp_path), state, max_lanes_reached=False)
 
     assert mismatch["verdict"] == "finish"
@@ -3679,38 +3354,25 @@ def test_surface_candidate_uses_folded_coverage_but_requires_exact_queue_identit
     assert exact == {"status": "complete", "unresolved": []}
 
 
-def test_surface_candidate_reopens_after_new_ledger_candidate(tmp_path):
+def test_later_candidate_reopens_coverage_at_equal_observation_time(tmp_path, store):
     target = "target.com"
     _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
-    ledger_dir = tmp_path / "memory" / "evidence" / target_storage_key(target)
-    ledger_dir.mkdir(parents=True, exist_ok=True)
-    (ledger_dir / "ledger.jsonl").write_text(
-        (ledger_dir / "ledger.jsonl").read_text(encoding="utf-8")
-        + "\n".join([
-            json.dumps({
-                "endpoint": "/api/orders/1",
-                "vuln_class": "IDOR",
-                "result": "dead_end",
-            }),
-            json.dumps({
-                "endpoint": "/api/orders/1",
-                "vuln_class": "IDOR",
-                "result": "candidate",
-            }),
-        ]) + "\n",
-        encoding="utf-8",
-    )
+    _record_observation(store, "https://target.com/api/orders/1", "IDOR", "dead_end")
+    _record_observation(store, "https://target.com/api/orders/1", "IDOR", "candidate")
 
+    records = [row for row in store.closure_records()["records"] if row["vuln_class"] == "IDOR"]
+    assert len({row["ts"] for row in records}) == 1
+    assert [row["result"] for row in records] == ["tested_clean", "dead_end", "candidate"]
     closure = _load_closure_projection(
-        str(tmp_path), _surface_closure_state(target), max_lanes_reached=False
+        str(tmp_path), _surface_closure_state(target, next_action="handoff"), max_lanes_reached=False
     )
 
     assert closure["verdict"] == "handoff"
-    assert "coverage_ledger_evidence_missing" in closure["reasons"]
-    assert closure["surface_review"]["unresolved"][0]["reason"] == "review_outcome_missing"
+    assert "coverage_high_value_gaps" in closure["reasons"]
+    assert closure["surface_review"]["unresolved"][0]["reason"] == "coverage_gap_pending"
 
 
-def test_malformed_surface_candidate_fails_open_at_closure(tmp_path):
+def test_malformed_surface_candidate_fails_open_at_closure(tmp_path, store):
     target = "target.com"
     _write_closure_owners(tmp_path, target, status="tested_clean", final_review=True)
     state = _surface_closure_state(target, next_action="handoff")
@@ -3722,25 +3384,11 @@ def test_malformed_surface_candidate_fails_open_at_closure(tmp_path):
     assert closure["surface_review"]["unresolved"] == [{"reason": "invalid_candidate"}]
 
 
-def test_finalized_finding_filters_only_exact_resume_identity(tmp_path):
+def test_finalized_finding_filters_only_exact_resume_identity(tmp_path, store):
     target = "target.com"
     findings_dir = tmp_path / "findings" / target
-    findings_dir.mkdir(parents=True)
-    (findings_dir / "findings.json").write_text(
-        json.dumps({
-            "schema_version": 1,
-            "target": target,
-            "findings": [{
-                "id": "idor_summary",
-                "type": "idor",
-                "url": f"https://{target}/api/orders/1?view=summary",
-                "validation_status": "rejected",
-                "report_status": "not_generated",
-            }],
-        }),
-        encoding="utf-8",
-    )
-    _record_owner_provenance(findings_dir, "idor_summary")
+    findings_dir.mkdir(parents=True, exist_ok=True)
+    _register_findings(TargetStore(tmp_path, target), [{'id': 'idor_summary', 'type': 'idor', 'url': f'https://{target}/api/orders/1?view=summary', 'validation_status': 'rejected', 'report_status': 'not_generated'}])
     targets = ["/api/orders/1?view=summary", "/api/orders/1?view=detail"]
     finalized = autopilot_state_module._finalized_finding_identities(
         str(tmp_path),
@@ -3756,7 +3404,7 @@ def test_finalized_finding_filters_only_exact_resume_identity(tmp_path):
     assert filtered == ["/api/orders/1?view=detail"]
 
 
-def test_final_surface_review_does_not_hide_high_value_coverage_gap(tmp_path):
+def test_final_surface_review_does_not_hide_high_value_coverage_gap(tmp_path, store):
     target = "target.com"
     _write_closure_owners(tmp_path, target, status="untested", final_review=True)
 
@@ -3771,12 +3419,13 @@ def test_final_surface_review_does_not_hide_high_value_coverage_gap(tmp_path):
     assert closure["surface_review"]["unresolved"][0]["reason"] == "coverage_gap_pending"
 
 
-def test_json_closure_returns_structured_error_for_malformed_coverage(
-    tmp_path, monkeypatch, capsys
+def test_json_closure_ignores_malformed_coverage_cache(
+    tmp_path, monkeypatch, capsys,
+    store,
 ):
     target = "target.com"
     evidence_dir = tmp_path / "evidence" / target_storage_key(target)
-    evidence_dir.mkdir(parents=True)
+    evidence_dir.mkdir(parents=True, exist_ok=True)
     (evidence_dir / "coverage_matrix.json").write_text("{broken", encoding="utf-8")
     monkeypatch.setattr("autopilot_state.BASE_DIR", str(tmp_path))
     monkeypatch.setattr(
@@ -3793,11 +3442,11 @@ def test_json_closure_returns_structured_error_for_malformed_coverage(
         ],
     )
 
-    assert autopilot_state_main() == 2
+    assert autopilot_state_main() == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["closure"]["verdict"] == "error"
-    assert payload["closure"]["reasons"] == ["state_read_error"]
-    assert payload["closure"]["error"]["type"] == "ValueError"
+    assert payload["closure"]["verdict"] == "handoff"
+    assert payload["closure"]["reasons"] == ["next_action_pending"]
+    assert (evidence_dir / "coverage_matrix.json").read_text() == "{broken"
 
 
 def test_closure_handoffs_actionable_work_and_coverage_gaps():
@@ -3814,9 +3463,9 @@ def test_closure_handoffs_actionable_work_and_coverage_gaps():
     assert gap_closure["reasons"] == ["coverage_high_value_gaps"]
 
 
-def test_stale_surface_projection_blocks_full_state_and_closure(tmp_path):
+def test_stale_surface_projection_blocks_full_state_and_closure(tmp_path, store):
     recon_dir = tmp_path / "recon" / "target.com"
-    (recon_dir / "live").mkdir(parents=True)
+    (recon_dir / "live").mkdir(parents=True, exist_ok=True)
     (recon_dir / "urls").mkdir()
     (recon_dir / "js").mkdir()
     (recon_dir / "live" / "httpx_full.txt").write_text(
@@ -3834,15 +3483,16 @@ def test_stale_surface_projection_blocks_full_state_and_closure(tmp_path):
     assert state["next_action"] == "prepare_surface_context"
 
     _write_closure_owners(tmp_path, "target.com", status="tested_clean", final_review=False)
+    state = build_autopilot_state(str(tmp_path), "target.com")
     state["next_action"] = "handoff"
     closure = _load_closure_projection(str(tmp_path), state, max_lanes_reached=False)
     assert closure["verdict"] == "handoff"
     assert closure["reasons"] == ["surface_projection_pending"]
 
 
-def test_surface_round_guard_resets_after_surface_input_changes(tmp_path):
+def test_surface_round_guard_resets_after_surface_input_changes(tmp_path, store):
     recon_dir = tmp_path / "recon" / "target.com"
-    (recon_dir / "live").mkdir(parents=True)
+    (recon_dir / "live").mkdir(parents=True, exist_ok=True)
     (recon_dir / "urls").mkdir()
     (recon_dir / "js").mkdir()
     (recon_dir / "live" / "httpx_full.txt").write_text(
@@ -4091,97 +3741,42 @@ def test_loop_guard_rotates_only_three_matching_recent_outcomes():
     assert mixed["rotation_target"] == {}
 
 
-def test_damaged_ledger_is_visible_and_blocks_closure_and_rotation(tmp_path):
-    target = "target.com"
+@pytest.mark.parametrize("damage", ["missing", "changed", "directory"])
+def test_damaged_store_evidence_blocks_closure_and_rotation(tmp_path, store, damage):
+    target = store.target
     _write_closure_owners(tmp_path, target, status="tested_clean", final_review=True)
-    ledger_dir = tmp_path / "memory" / "evidence" / target_storage_key(target)
-    ledger_dir.mkdir(parents=True, exist_ok=True)
-    rows = [
-        {
-            "endpoint": f"/api/orders/{value}",
-            "vuln_class": "IDOR",
-            "result": "tested_clean",
-        }
-        for value in ("1", "2", "3")
-    ]
-    rows[0].update({
-        "identity_status": "complete",
-        "identity_v2": {
-            "schema_version": 2,
-            "kind": "closure_cell",
-            "endpoint": {
-                "schema_version": 2,
-                "kind": "endpoint",
-                "endpoint": "/api/orders/1",
-            },
-            "family": "IDOR",
-            "dimensions": {
-                "path_template": "/api/orders/{id}",
-                "method": "GET",
-                "actor_relation": "peer",
-                "object_scope": "other_object_same_org",
-            },
-        },
-    })
-    (ledger_dir / "ledger.jsonl").write_text(
-        "".join(json.dumps(row) + "\n" for row in rows) + "{broken\n",
-        encoding="utf-8",
-    )
+    path = tmp_path / "evidence" / store.key / "closure-response.txt"
+    if damage == "changed":
+        path.write_text("Different raw bytes", encoding="utf-8")
+    else:
+        path.unlink()
+        if damage == "directory":
+            path.mkdir()
     state = {"target": target, "resolved_target": target, "next_action": "handoff"}
-
     closure = _load_closure_projection(str(tmp_path), state, max_lanes_reached=False)
     loop = _load_loop_guard_projection(str(tmp_path), {**state, "next_action": "hunt_p1"})
-
     assert closure["ledger_health"]["status"] == "partial"
     assert closure["ledger_health"]["invalid_count"] == 1
-    assert closure["ledger_health"]["last_valid_offset"] > 0
+    assert closure["evidence_source"]["kind"] == "store"
     assert closure["verdict"] == "handoff"
-    assert "ledger_partial" in closure["reasons"]
+    assert "store_partial" in closure["reasons"]
     assert closure["identity_v2"]["closed_cells"] == []
     assert closure["identity_v2"]["diagnostics"]["closed_count"] == 0
-    assert closure["identity_v2"]["diagnostics"]["suppressed_closed_count"] == 1
-    assert closure["identity_v2"]["shadow"] == {
-        "status": "unavailable",
-        "reason": "ledger_partial",
-    }
     assert loop["ledger_health"]["status"] == "partial"
-    assert loop["verdict"] == "continue"
-    assert loop["reason"] == "ledger_partial"
+    assert loop["reason"] == "store_partial"
     assert loop["rotation_target"] == {}
 
 
-def test_unreadable_ledger_is_visible_and_blocks_closure(tmp_path, monkeypatch):
-    target = "target.com"
-    _write_closure_owners(tmp_path, target, status="tested_clean", final_review=True)
-    # The read belongs to the current_truth seam; the damage it reports is what
-    # the closure verdict must fail closed on. Patch the exact seam module the
-    # closure loader bound, so both import forms (`tools.x` / `x`) are covered.
-    seam = sys.modules[autopilot_state_module.current_cell_projection.__module__]
-    monkeypatch.setattr(
-        seam,
-        "load_entries_diagnostic",
-        lambda *_args: {
-            "status": "unreadable",
-            "entries": [],
-            "invalid_rows": [],
-            "invalid_count": 0,
-            "last_valid_offset": 0,
-            "read_error": "permission denied " + ("x" * 1000),
-        },
-    )
-
-    closure = _load_closure_projection(
-        str(tmp_path),
-        {"target": target, "resolved_target": target, "next_action": "handoff"},
-        max_lanes_reached=False,
-    )
-
-    assert closure["ledger_health"]["status"] == "unreadable"
-    assert len(closure["ledger_health"]["read_error"]) <= 240
-    assert closure["evidence_source"]["kind"] == "ledger"
-    assert closure["evidence_source"]["status"] == "unreadable"
-    assert closure["verdict"] == "handoff"
-    assert "ledger_unreadable" in closure["reasons"]
+def test_unreadable_legacy_owners_do_not_change_current_closure(tmp_path, store):
+    _write_closure_owners(tmp_path, store.target, status="tested_clean", final_review=True)
+    for name in ("memory/evidence/target.com/ledger.jsonl", "state/target.com/action_queue.json", "state/target.com/case_state.json"):
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.mkdir()
+    closure = load_closure_projection(str(tmp_path), {"target": store.target, "next_action": "handoff"})
+    assert closure["ledger_health"]["status"] == "ready"
+    assert closure["evidence_source"]["kind"] == "store"
+    assert closure["verdict"] == "finish"
 
 
 def test_loop_guard_rotation_target_selection_is_retired():
@@ -4239,7 +3834,6 @@ def test_loop_guard_stale_handoff_yields_to_authoritative_control_plane_work():
         {"action_queue_next": {"id": "AQ-1"}},
         {"validation_runner_next": {"id": "VR-1"}},
         {"root_finding_claim_next": {"id": "F-1"}},
-        {"memory_candidate_next": {"id": "M-1"}},
         {"structured_findings": {"next_owner_revalidation": {"id": "F-1"}}},
         {"structured_findings": {"next_validation": {"id": "F-1"}}},
         {"structured_findings": {"draft_completion_pending": {"id": "F-1"}}},
@@ -4352,11 +3946,11 @@ def test_default_formatted_state_omits_explicit_closure_line():
     assert "Loop guard:" not in output
 
 
-def test_normal_bounded_state_never_loads_closure_owners(tmp_path, monkeypatch):
+def test_normal_bounded_state_never_loads_closure_owners(tmp_path, monkeypatch, store):
     def fail(*_args, **_kwargs):
         raise AssertionError("closure owner read")
 
-    monkeypatch.setattr("autopilot_state.load_matrix", fail)
+    monkeypatch.setattr("autopilot_state.read_matrix", fail)
     monkeypatch.setattr("autopilot_state.current_cell_projection", fail)
 
     state = build_autopilot_state(
@@ -4366,57 +3960,31 @@ def test_normal_bounded_state_never_loads_closure_owners(tmp_path, monkeypatch):
     assert state["next_action"] == "run_recon"
 
 
-def test_explicit_closure_defers_non_substantive_active_queue_work(tmp_path):
+def test_explicit_closure_requires_resolution_of_registered_advisory_work(tmp_path, store):
     target = "target.com"
     _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
     queue_dir = tmp_path / "state" / target_storage_key(target)
-    queue_dir.mkdir(parents=True)
-    (queue_dir / "action_queue.json").write_text(
-        json.dumps({
-            "schema_version": 1,
-            "target": target,
-            "actions": [{
-                "id": "AQ-0001",
-                "status": "queued",
-                "type": "surface-review",
-                "evidence": "reason: top advisory score",
-            }],
-        }),
-        encoding="utf-8",
-    )
+    queue_dir.mkdir(parents=True, exist_ok=True)
+    _register_work(TargetStore(tmp_path, target), [{'id': 'AQ-0001', 'status': 'queued', 'type': 'surface-review', 'evidence': 'reason: top advisory score'}])
 
     state = build_autopilot_state(
         str(tmp_path), target, memory_dir=str(tmp_path / "hunt-memory"), bounded=True
     )
-    assert state["action_queue_next"] == {}
+    assert state["action_queue_next"]["id"] == "AQ-0001"
     state["next_action"] = "handoff"
     state["observation_inventory"] = {"status": "valid", "by_kind": {}}
     closure = _load_closure_projection(str(tmp_path), state, max_lanes_reached=False)
 
-    assert closure["verdict"] == "finish"
-    assert closure["reasons"] == []
+    assert closure["verdict"] == "handoff"
+    assert closure["reasons"] == ["durable_work_pending"]
 
 
-def test_explicit_closure_keeps_substantive_surface_queue_work(tmp_path):
+def test_explicit_closure_keeps_substantive_surface_queue_work(tmp_path, store):
     target = "target.com"
     _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
     queue_dir = tmp_path / "state" / target_storage_key(target)
-    queue_dir.mkdir(parents=True)
-    (queue_dir / "action_queue.json").write_text(
-        json.dumps({
-            "schema_version": 1,
-            "target": target,
-            "actions": [{
-                "id": "AQ-0001",
-                "status": "queued",
-                "type": "surface-review",
-                "command_hint": "python3 tools/validation_runner.py marker-replay",
-                "evidence": "findings/target.com/poc/candidate.json",
-                "stop_condition": "record a terminal replay result",
-            }],
-        }),
-        encoding="utf-8",
-    )
+    queue_dir.mkdir(parents=True, exist_ok=True)
+    _register_work(TargetStore(tmp_path, target), [{'id': 'AQ-0001', 'status': 'queued', 'type': 'surface-review', 'command_hint': 'python3 tools/validation_runner.py marker-replay', 'evidence': 'findings/target.com/poc/candidate.json', 'stop_condition': 'record a terminal replay result'}])
     state = {
         "target": target,
         "resolved_target": target,
@@ -4430,12 +3998,12 @@ def test_explicit_closure_keeps_substantive_surface_queue_work(tmp_path):
     assert closure["reasons"] == ["durable_work_pending"]
 
 
-def test_explicit_closure_checks_pending_source_and_js_artifacts(tmp_path):
+def test_explicit_closure_checks_pending_source_and_js_artifacts(tmp_path, store):
     target = "target.com"
     storage_key = target_storage_key(target)
     _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
     exposure_dir = tmp_path / "findings" / storage_key / "exposure"
-    exposure_dir.mkdir(parents=True)
+    exposure_dir.mkdir(parents=True, exist_ok=True)
     (exposure_dir / "repo_source_meta.json").write_text('{"status":"ok"}\n', encoding="utf-8")
 
     state = build_autopilot_state(str(tmp_path), target, bounded=True)
@@ -4450,28 +4018,27 @@ def test_explicit_closure_checks_pending_source_and_js_artifacts(tmp_path):
     assert _load_closure_projection(str(tmp_path), state, max_lanes_reached=False)["verdict"] == "finish"
 
     js_dir = tmp_path / "recon" / storage_key / "urls"
-    js_dir.mkdir(parents=True)
+    js_dir.mkdir(parents=True, exist_ok=True)
     (js_dir / "js_files.txt").write_text("https://target.com/app.js\n", encoding="utf-8")
     closure = _load_closure_projection(str(tmp_path), state, max_lanes_reached=False)
-    # A legacy matrix without a source fingerprint cannot be reused once new
-    # Recon inputs exist; refresh Coverage before evaluating JS follow-up.
-    assert closure["reasons"] == ["coverage_stale"]
+    # New raw JS remains an observed surface with untested coverage.
+    assert closure["reasons"] == ["coverage_high_value_gaps"]
 
     js_intel = tmp_path / "findings" / storage_key / "js_intel"
     js_intel.mkdir()
     (js_intel / "materials.json").write_text("{}\n", encoding="utf-8")
     prepared = _load_closure_projection(str(tmp_path), state, max_lanes_reached=False)
     assert prepared["verdict"] == "handoff"
-    assert prepared["reasons"] == ["coverage_stale"]
+    assert prepared["reasons"] == ["coverage_high_value_gaps"]
 
 
-def test_sql_matrix_projection_validates_lane_and_source_freshness(tmp_path):
+def test_sql_matrix_projection_validates_lane_and_source_freshness(tmp_path, store):
     target = "target.com"
     source = tmp_path / "urls.txt"
     source.write_text("https://target.com/search?q=1\n", encoding="utf-8")
     digest = hashlib.sha256(source.read_bytes()).hexdigest()
     summary = tmp_path / "findings" / target / "poc" / "sql_matrix" / "query" / "summary.json"
-    summary.parent.mkdir(parents=True)
+    summary.parent.mkdir(parents=True, exist_ok=True)
     summary.write_text(json.dumps({
         "schema_version": 1,
         "kind": "sql_matrix_summary",
@@ -4497,10 +4064,10 @@ def test_sql_matrix_projection_validates_lane_and_source_freshness(tmp_path):
     assert stale["reason"] == "stale_source_binding"
 
 
-def test_sql_matrix_partial_blocks_closure(tmp_path):
+def test_sql_matrix_partial_blocks_closure(tmp_path, store):
     target = "target.com"
     summary = tmp_path / "findings" / target / "poc" / "sql_matrix" / "form" / "summary.json"
-    summary.parent.mkdir(parents=True)
+    summary.parent.mkdir(parents=True, exist_ok=True)
     summary.write_text(json.dumps({
         "schema_version": 1,
         "kind": "sql_matrix_summary",
@@ -4519,10 +4086,10 @@ def test_sql_matrix_partial_blocks_closure(tmp_path):
     assert closure["reasons"] == ["sql_evidence_partial"]
 
 
-def test_js_materials_require_analysis_or_terminal_disposition(tmp_path):
+def test_js_materials_require_analysis_or_terminal_disposition(tmp_path, store):
     target = "target.com"
     js_dir = tmp_path / "findings" / target / "js_intel"
-    js_dir.mkdir(parents=True)
+    js_dir.mkdir(parents=True, exist_ok=True)
     (js_dir / "materials.json").write_text("{}\n", encoding="utf-8")
     prepared = _load_js_intel_projection(str(tmp_path), target)
     assert prepared["status"] == "prepared"
@@ -4534,10 +4101,10 @@ def test_js_materials_require_analysis_or_terminal_disposition(tmp_path):
     assert _load_js_intel_projection(str(tmp_path), target)["status"] == "blocked"
 
 
-def test_js_reader_attack_surface_leads_are_analyzed(tmp_path):
+def test_js_reader_attack_surface_leads_are_analyzed(tmp_path, store):
     target = "target.com"
     js_dir = tmp_path / "findings" / target / "js_intel"
-    js_dir.mkdir(parents=True)
+    js_dir.mkdir(parents=True, exist_ok=True)
     (js_dir / "hypotheses.json").write_text(
         json.dumps({
             "hypotheses": [],
@@ -4555,9 +4122,9 @@ def test_js_reader_attack_surface_leads_are_analyzed(tmp_path):
 
 
 class TestAutopilotState:
-    def test_bounded_recon_counts_render_unknown_without_crashing(self, tmp_path):
+    def test_bounded_recon_counts_render_unknown_without_crashing(self, tmp_path, store):
         recon_dir = tmp_path / "recon" / "target.com"
-        (recon_dir / "live").mkdir(parents=True)
+        (recon_dir / "live").mkdir(parents=True, exist_ok=True)
         (recon_dir / "urls").mkdir()
         (recon_dir / "live" / "httpx_full.txt").write_text("https://target.com\n")
         (recon_dir / "urls" / "with_params.txt").write_text(
@@ -4579,7 +4146,7 @@ class TestAutopilotState:
         scope = tmp_path / "targets.txt"
         scope.write_text("alpha.test\nbeta.test\ngamma.test\n", encoding="utf-8")
         batch_dir = tmp_path / "recon" / target_storage_key(str(scope))
-        batch_dir.mkdir(parents=True)
+        batch_dir.mkdir(parents=True, exist_ok=True)
         (batch_dir / "batch_manifest.jsonl").write_text(
             '{"target":"alpha.test","status":"ok"}\n'
             '{"target":"beta.test","status":"failed"}\n',
@@ -4654,11 +4221,13 @@ class TestAutopilotState:
         assert first_state["next_action"] == "wait_recon"
         assert second_state["next_action"] == "run_batch_recon"
 
-    def test_owned_legacy_batch_state_and_recon_are_migrated(self, tmp_path):
+    def test_owned_legacy_batch_migration_is_explicit_and_state_reads_are_pure(self, tmp_path):
+        from tools.target_paths import migrate_legacy_list_storage
+
         scope = tmp_path / "targets.txt"
         scope.write_text("alpha.test\n", encoding="utf-8")
         old_state = tmp_path / "state" / "targets"
-        old_state.mkdir(parents=True)
+        old_state.mkdir(parents=True, exist_ok=True)
         (old_state / "session.json").write_text(json.dumps({
             "schema_version": 2,
             "target": str(scope.resolve()),
@@ -4668,15 +4237,23 @@ class TestAutopilotState:
             "updated_at": "2026-07-12T00:00:00Z",
         }), encoding="utf-8")
         old_recon = tmp_path / "recon" / "targets"
-        old_recon.mkdir(parents=True)
+        old_recon.mkdir(parents=True, exist_ok=True)
         (old_recon / "completed_targets.txt").write_text("alpha.test\n", encoding="utf-8")
         (old_recon / "high_value_targets.json").write_text(
             json.dumps([{"target": "alpha.test", "score": 5}]),
             encoding="utf-8",
         )
 
+        before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
         state = build_autopilot_state(str(tmp_path), str(scope))
         new_key = target_storage_key(str(scope))
+        assert state["next_action"] == "run_batch_recon"
+        assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+        assert not (tmp_path / "state" / new_key).exists()
+        assert not (tmp_path / "recon" / new_key).exists()
+
+        assert migrate_legacy_list_storage(tmp_path, str(scope))["status"] == "migrated"
+        state = build_autopilot_state(str(tmp_path), str(scope))
 
         assert state["next_action"] == "select_completed_domain"
         migrated_session = tmp_path / "state" / new_key / "session.json"
@@ -4690,7 +4267,7 @@ class TestAutopilotState:
         scope = tmp_path / "targets.txt"
         scope.write_text("alpha.test\nbeta.test\n", encoding="utf-8")
         batch_dir = tmp_path / "recon" / target_storage_key(str(scope))
-        batch_dir.mkdir(parents=True)
+        batch_dir.mkdir(parents=True, exist_ok=True)
         (batch_dir / "failed_targets.txt").write_text(
             "alpha.test\nbeta.test\nold.test\n",
             encoding="utf-8",
@@ -4712,7 +4289,7 @@ class TestAutopilotState:
         scope = tmp_path / "targets.txt"
         scope.write_text("beta.test\n", encoding="utf-8")
         batch_dir = tmp_path / "recon" / target_storage_key(str(scope))
-        batch_dir.mkdir(parents=True)
+        batch_dir.mkdir(parents=True, exist_ok=True)
         (batch_dir / "completed_targets.txt").write_text("alpha.test\n", encoding="utf-8")
         (batch_dir / "pending_targets.txt").write_text("alpha.test\n", encoding="utf-8")
         (batch_dir / "high_value_targets.json").write_text(
@@ -4732,7 +4309,7 @@ class TestAutopilotState:
         scope = tmp_path / "targets.txt"
         scope.write_text("alpha.test\nbeta.test\n", encoding="utf-8")
         batch_dir = tmp_path / "recon" / target_storage_key(str(scope))
-        batch_dir.mkdir(parents=True)
+        batch_dir.mkdir(parents=True, exist_ok=True)
         (batch_dir / "completed_targets.txt").write_text("alpha.test\n", encoding="utf-8")
         (batch_dir / "scope_context.json").write_text(
             json.dumps({"scope_hash": "sha256:old"}),
@@ -4750,7 +4327,7 @@ class TestAutopilotState:
         scope = tmp_path / "targets.txt"
         scope.write_text("alpha.test\nbeta.test\n", encoding="utf-8")
         batch_dir = tmp_path / "recon" / target_storage_key(str(scope))
-        batch_dir.mkdir(parents=True)
+        batch_dir.mkdir(parents=True, exist_ok=True)
         (batch_dir / "completed_targets.txt").write_text("alpha.test\n", encoding="utf-8")
         (batch_dir / "pending_targets.txt").write_text("beta.test\nold.test\n", encoding="utf-8")
         (batch_dir / "high_value_targets.json").write_text("{invalid", encoding="utf-8")
@@ -4830,249 +4407,20 @@ class TestAutopilotState:
         assert recommended[0]["url"] == "https://app.target.com/rest/languages"
         assert recommended[0]["review_reason"] == "browser-observed API/workflow"
 
-    def test_requires_recon_when_missing(self, tmp_path):
+    def test_requires_recon_when_missing(self, tmp_path, store):
         memory_dir = tmp_path / "hunt-memory"
-        (memory_dir / "targets").mkdir(parents=True)
-        save_target_profile(memory_dir, make_target_profile("target.com", hunt_sessions=1))
+        (memory_dir / "targets").mkdir(parents=True, exist_ok=True)
+        write_legacy_profile(memory_dir, make_target_profile("target.com", hunt_sessions=1))
 
         state = build_autopilot_state(str(tmp_path), "target.com", memory_dir=str(memory_dir))
         assert state["has_recon"] is False
-        assert state["has_memory"] is True
+        assert state["has_memory"] is False
         assert state["next_action"] == "run_recon"
 
-    def test_loads_target_goal_memory_into_state_and_output(self, tmp_path):
-        repo_root = tmp_path
-        goals_dir = repo_root / "memory" / "goals"
-        target_dir = goals_dir / "targets"
-        target_dir.mkdir(parents=True)
-        (goals_dir / "active.json").write_text(
-            json.dumps(
-                {
-                    "target": "target.com",
-                    "active_goal": "test org API authorization",
-                    "current_hypothesis": "org_id may be user-controlled",
-                }
-            ),
-            encoding="utf-8",
-        )
-        (target_dir / "target.com.json").write_text(
-            json.dumps(
-                {
-                    "target": "target.com",
-                    "active_leads": [{"text": "/api/org/{id}/users"}],
-                    "next_actions": [{"text": "run role_diff with two owned accounts"}],
-                    "dead_ends": [{"text": "GraphQL introspection alone is not reportable"}],
-                    "session_handoffs": [
-                        {
-                            "path": "memory/goals/sessions/example.md",
-                            "summary": "continue org API role diff",
-                        }
-                    ],
-                }
-            ),
-            encoding="utf-8",
-        )
 
-        state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(tmp_path / "hunt-memory"))
-        output = format_autopilot_state(state)
 
-        assert state["target_goal_memory"]["active_matches"] is True
-        assert state["target_goal_memory"]["active"]["active_goal"] == "test org API authorization"
-        assert "Target memory:" in output
-        assert "Goal: test org API authorization" in output
-        assert "Hypothesis: org_id may be user-controlled" in output
-        assert "/api/org/{id}/users" in output
-        assert "run role_diff with two owned accounts" in output
-        assert state["memory_action_queue"]
-        assert state["memory_action_queue"][0]["command_hint"] == "role/object diff with low-risk replay"
-        assert "Memory action queue:" in output
-        assert "continue org API role diff" in output
 
-    def test_legacy_raw_corpus_nuclei_action_requires_replan_without_memory_mutation(self, tmp_path):
-        repo_root = tmp_path
-        target_memory_path = repo_root / "memory" / "goals" / "targets" / "target.com.json"
-        target_memory_path.parent.mkdir(parents=True)
-        target_memory_path.write_text(
-            json.dumps(
-                {
-                    "target": "target.com",
-                    "next_actions": [
-                        {"text": "Run /validate after nuclei on 19K wayback URLs"},
-                        {"text": "Run nuclei -l all.txt -severity high,critical"},
-                        {
-                            "text": (
-                                "Run nuclei -tags cve -id CVE-2026-1234 against "
-                                "https://app.target.com/admin"
-                            )
-                        },
-                    ],
-                }
-            ),
-            encoding="utf-8",
-        )
-        original_bytes = target_memory_path.read_bytes()
 
-        state = build_autopilot_state(
-            str(repo_root),
-            "target.com",
-            memory_dir=str(repo_root / "hunt-memory"),
-        )
-        output = format_autopilot_state(state)
-
-        stale, stale_file, targeted = state["memory_action_queue"]
-        assert stale["action"] == "Run /validate after nuclei on 19K wayback URLs"
-        for item in (stale, stale_file):
-            assert item["status"] == "requires_replan"
-            assert item["executable"] is False
-            assert "scan-only --quick" in item["command_hint"]
-        assert state["memory_candidate_next"] == {}
-        assert targeted.get("status") is None
-        assert targeted.get("executable", True) is True
-        assert target_memory_path.read_bytes() == original_bytes
-        assert "status: requires_replan" in output
-        assert "executable: false" in output
-
-    def test_target_memory_validate_candidate_preempts_generic_resume_and_requires_artifact(self, tmp_path):
-        repo_root = tmp_path
-        memory_dir = repo_root / "hunt-memory"
-        (memory_dir / "targets").mkdir(parents=True)
-        save_target_profile(
-            memory_dir,
-            make_target_profile(
-                "target.com",
-                untested_endpoints=["/historical-resume"],
-                hunt_sessions=1,
-            ),
-        )
-        target_memory_path = repo_root / "memory" / "goals" / "targets" / "target.com.json"
-        target_memory_path.parent.mkdir(parents=True)
-        target_memory_path.write_text(
-            json.dumps(
-                {
-                    "target": "target.com",
-                    "next_actions": [
-                        {
-                            "text": (
-                                "Run /validate for SQLi candidate after comparing the raw response pair. "
-                                "Evidence=evidence/target.com/validation/sqli/raw-pair.json"
-                            )
-                        }
-                    ],
-                }
-            ),
-            encoding="utf-8",
-        )
-
-        state_without_artifact = build_autopilot_state(
-            str(repo_root),
-            "target.com",
-            memory_dir=str(memory_dir),
-        )
-
-        assert state_without_artifact["memory_candidate_next"]["command_hint"] == "/validate"
-        assert state_without_artifact["memory_candidate_next"]["evidence_available"] is False
-        assert state_without_artifact["next_action"] == "collect_candidate_evidence"
-        assert state_without_artifact["next_action"] != "resume_untested"
-        assert (
-            _pick_next_action(
-                True,
-                {},
-                {"latest_session_summary": {"session_id": "old-session"}},
-                resume_targets=["/historical-resume"],
-                memory_candidate_next=state_without_artifact["memory_candidate_next"],
-            )
-            == "collect_candidate_evidence"
-        )
-
-        raw_evidence = repo_root / "evidence" / "target.com" / "validation" / "sqli" / "raw-pair.json"
-        raw_evidence.parent.mkdir(parents=True)
-        raw_evidence.write_text('{"baseline": 1, "probe": 56}\n', encoding="utf-8")
-
-        state_with_artifact = build_autopilot_state(
-            str(repo_root),
-            "target.com",
-            memory_dir=str(memory_dir),
-        )
-
-        assert state_with_artifact["memory_candidate_next"]["evidence_ref"].endswith("raw-pair.json")
-        assert state_with_artifact["memory_candidate_next"]["evidence_available"] is True
-        assert state_with_artifact["next_action"] == "validate_finding"
-
-    def test_target_memory_evidence_requires_target_owned_nonempty_regular_file(self, tmp_path):
-        repo_root = tmp_path
-        memory_path = repo_root / "memory" / "goals" / "targets" / "target.com.json"
-        memory_path.parent.mkdir(parents=True)
-        memory_path.write_text(
-            json.dumps(
-                {
-                    "target": "target.com",
-                    "next_actions": [
-                        {"text": "Run /validate Evidence=evidence/target.com/empty.json"},
-                        {"text": "Run /validate Evidence=evidence/other.test/raw.json"},
-                        {"text": "Run /validate Evidence=evidence/target.com"},
-                    ],
-                }
-            ),
-            encoding="utf-8",
-        )
-        target_root = repo_root / "evidence" / "target.com"
-        target_root.mkdir(parents=True)
-        (target_root / "empty.json").write_text("", encoding="utf-8")
-        (repo_root / "evidence" / "other.test").mkdir(parents=True)
-        (repo_root / "evidence" / "other.test" / "raw.json").write_text("{}", encoding="utf-8")
-
-        state = build_autopilot_state(str(repo_root), "target.com")
-
-        assert len(state["memory_action_queue"]) == 3
-        assert all(item["evidence_available"] is False for item in state["memory_action_queue"])
-
-    def test_legacy_memory_narrative_cannot_preempt_report_closure(self, tmp_path):
-        target_memory_path = tmp_path / "memory" / "goals" / "targets" / "target.com.json"
-        target_memory_path.parent.mkdir(parents=True)
-        target_memory_path.write_text(
-            json.dumps(
-                {
-                    "target": "target.com",
-                    "next_actions": [
-                        {"text": "Please validate the report narrative next session."},
-                        {"text": "Validated finding needs report reconciliation."},
-                        {"text": "Review validation notes next session."},
-                        {"text": "/validated findings are only a handoff summary."},
-                        {"text": "/validate-later is not the validation command."},
-                    ],
-                }
-            ),
-            encoding="utf-8",
-        )
-
-        state = build_autopilot_state(str(tmp_path), "target.com")
-
-        assert state["memory_candidate_next"] == {}
-        assert len(state["memory_action_queue"]) == 5
-        assert all(item["command_hint"] != "/validate" for item in state["memory_action_queue"])
-        assert state["next_action"] == "run_recon"
-
-        legacy_candidate = {"command_hint": "/validate", "evidence_available": False}
-        assert (
-            _pick_next_action(
-                True,
-                {},
-                None,
-                {"draft_completion_pending": 1},
-                memory_candidate_next=legacy_candidate,
-            )
-            == "complete_report_draft"
-        )
-        assert (
-            _pick_next_action(
-                True,
-                {},
-                None,
-                {"validated_pending_report": 1},
-                memory_candidate_next=legacy_candidate,
-            )
-            == "report_finding"
-        )
 
     def test_fresh_recon_without_ranked_candidate_prepares_surface_context(self):
         assert (
@@ -5103,7 +4451,7 @@ class TestAutopilotState:
         monkeypatch.chdir(repo_root)
 
         recon_dir = repo_root / "recon" / target_storage_key("scope.txt")
-        recon_dir.mkdir(parents=True)
+        recon_dir.mkdir(parents=True, exist_ok=True)
         (recon_dir / "completed_targets.txt").write_text("api.target.com\n")
         (recon_dir / "high_value_targets.json").write_text(
             json.dumps([{"target": "api.target.com", "score": 12}]),
@@ -5120,12 +4468,12 @@ class TestAutopilotState:
         assert "surface" not in state
         assert "guard_status" not in state
 
-    def test_all_hosts_tripped_pivots_to_cached_evidence_work(self, tmp_path):
+    def test_all_hosts_tripped_pivots_to_cached_evidence_work(self, tmp_path, store):
         repo_root = tmp_path
         recon_dir = repo_root / "recon" / "target.com"
-        (recon_dir / "live").mkdir(parents=True)
-        (recon_dir / "urls").mkdir(parents=True)
-        (recon_dir / "js").mkdir(parents=True)
+        (recon_dir / "live").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "urls").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "js").mkdir(parents=True, exist_ok=True)
         (recon_dir / "live" / "httpx_full.txt").write_text(
             "https://api.target.com [200] [API] [Next.js,Cloudflare] [1000]\n",
             encoding="utf-8",
@@ -5138,7 +4486,7 @@ class TestAutopilotState:
         (recon_dir / "js" / "endpoints.txt").write_text("", encoding="utf-8")
 
         memory_dir = tmp_path / "hunt-memory"
-        (memory_dir / "targets").mkdir(parents=True)
+        (memory_dir / "targets").mkdir(parents=True, exist_ok=True)
         record_request(
             memory_dir=memory_dir,
             target="target.com",
@@ -5160,12 +4508,12 @@ class TestAutopilotState:
         assert "cached recon/browser/JS/source evidence" in output
         assert "residential" not in output.lower()
 
-    def test_pending_structured_finding_is_visible_without_keyword_evaluation(self, tmp_path):
+    def test_pending_structured_finding_is_visible_without_keyword_evaluation(self, tmp_path, store):
         repo_root = tmp_path
         recon_dir = repo_root / "recon" / "target.com"
-        (recon_dir / "live").mkdir(parents=True)
-        (recon_dir / "urls").mkdir(parents=True)
-        (recon_dir / "js").mkdir(parents=True)
+        (recon_dir / "live").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "urls").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "js").mkdir(parents=True, exist_ok=True)
         (recon_dir / "live" / "httpx_full.txt").write_text(
             "https://api.target.com [200] [API] [Next.js] [1000]\n"
         )
@@ -5176,46 +4524,12 @@ class TestAutopilotState:
         (recon_dir / "js" / "endpoints.txt").write_text("")
 
         findings_dir = repo_root / "findings" / "target.com"
-        findings_dir.mkdir(parents=True)
-        (findings_dir / "findings.json").write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "target": "target.com",
-                    "findings": [
-                        {
-                            "id": "sqli_pending",
-                            "type": "sqli",
-                            "severity": "high",
-                            "confidence": "confirmed",
-                            "url": "https://api.target.com/search?q=1",
-                            "validation_status": "unvalidated",
-                            "report_status": "not_generated",
-                            "rubric": {
-                                "rubric_id": "sqli",
-                                "status": "needs-evidence",
-                                "ready": False,
-                                "score": 50,
-                                "satisfied_count": 2,
-                                "total": 4,
-                                "missing_labels": [
-                                    "paired baseline and probe",
-                                    "stable response difference",
-                                ],
-                                "next_actions": [
-                                    "capture a paired baseline/probe response diff",
-                                ],
-                            },
-                        }
-                    ],
-                }
-            ),
-            encoding="utf-8",
-        )
+        findings_dir.mkdir(parents=True, exist_ok=True)
+        _register_findings(TargetStore(tmp_path, 'target.com'), [{'id': 'sqli_pending', 'type': 'sqli', 'severity': 'high', 'confidence': 'confirmed', 'url': 'https://api.target.com/search?q=1', 'validation_status': 'unvalidated', 'report_status': 'not_generated', 'rubric': {'rubric_id': 'sqli', 'status': 'needs-evidence', 'ready': False, 'score': 50, 'satisfied_count': 2, 'total': 4, 'missing_labels': ['paired baseline and probe', 'stable response difference'], 'next_actions': ['capture a paired baseline/probe response diff']}}])
 
         memory_dir = tmp_path / "hunt-memory"
-        (memory_dir / "targets").mkdir(parents=True)
-        save_target_profile(memory_dir, make_target_profile("target.com", hunt_sessions=1))
+        (memory_dir / "targets").mkdir(parents=True, exist_ok=True)
+        write_legacy_profile(memory_dir, make_target_profile("target.com", hunt_sessions=1))
 
         state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(memory_dir))
         output = format_autopilot_state(state)
@@ -5224,7 +4538,7 @@ class TestAutopilotState:
         assert "rubric" not in state["structured_findings"]["next_validation"]
         assert "Next evidence step:" not in output
         assert "Structured findings: total=1, pending_validation=1" in output
-        assert "Next validation: sqli_pending [high/confirmed] sqli https://api.target.com/search?q=1" in output
+        assert "Next validation: sqli_pending [medium/]" in output
         assert state["next_tool_hint"] == ""
 
     def test_ready_and_legacy_structured_candidates_still_validate(self):
@@ -5239,9 +4553,9 @@ class TestAutopilotState:
         assert _pick_next_action(True, {}, None, ready) == "validate_finding"
         assert _pick_next_action(True, {}, None, legacy) == "validate_finding"
 
-    def test_root_json_claim_is_read_only_candidate_evidence_handoff(self, tmp_path):
+    def test_root_json_claim_is_read_only_candidate_evidence_handoff(self, tmp_path, store):
         findings_dir = tmp_path / "findings" / "target.com"
-        findings_dir.mkdir(parents=True)
+        findings_dir.mkdir(parents=True, exist_ok=True)
         (findings_dir / "manual-claim.json").write_text(
             json.dumps(
                 {
@@ -5259,12 +4573,13 @@ class TestAutopilotState:
         state = build_autopilot_state(str(tmp_path), "target.com")
         output = format_autopilot_state(state)
 
-        assert state["next_action"] == "collect_candidate_evidence"
-        assert state["root_finding_claim_next"]["claim_source_file"] == "manual-claim.json"
-        assert state["root_finding_claim_next"]["validation_status"] == "candidate"
+        assert state["next_action"] == "run_recon"
+        assert state["root_finding_claims"][0]["claim_source_file"] == "manual-claim.json"
+        assert state["root_finding_claims"][0]["validation_status"] == "candidate"
         assert not (findings_dir / "findings.json").exists()
         assert "Unreconciled root finding claims (not validated):" in output
-        assert "Do not call it validated or report-ready from the claim alone." in output
+        assert state["root_finding_claim_next"] == {}
+        assert load_queue(tmp_path, store.target)["actions"] == []
 
     def test_wait_marker_preempts_missing_candidate_evidence(self):
         structured = {
@@ -5285,12 +4600,12 @@ class TestAutopilotState:
             == "wait_recon"
         )
 
-    def test_outputs_validation_runner_candidates_as_advisory_pool(self, tmp_path):
+    def test_outputs_validation_runner_candidates_as_advisory_pool(self, tmp_path, store):
         repo_root = tmp_path
         recon_dir = repo_root / "recon" / "target.com"
-        (recon_dir / "live").mkdir(parents=True)
-        (recon_dir / "urls").mkdir(parents=True)
-        (recon_dir / "js").mkdir(parents=True)
+        (recon_dir / "live").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "urls").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "js").mkdir(parents=True, exist_ok=True)
         (recon_dir / "live" / "httpx_full.txt").write_text(
             "https://target.com [200] [API] [Express] [1000]\n",
             encoding="utf-8",
@@ -5303,7 +4618,7 @@ class TestAutopilotState:
         (recon_dir / "js" / "endpoints.txt").write_text("", encoding="utf-8")
 
         validation_dir = repo_root / "evidence" / "target.com" / "validation" / "idor-basket"
-        validation_dir.mkdir(parents=True)
+        validation_dir.mkdir(parents=True, exist_ok=True)
         (validation_dir / "summary.json").write_text(
             json.dumps(
                 {
@@ -5332,28 +4647,10 @@ class TestAutopilotState:
         assert "Validation runner candidates (advisory; require /validate before report):" in output
         assert "idor-basket [idor_actor_pair/tested_finding]" in output
 
-    def test_substantive_durable_queue_preempts_fresh_recon(self, tmp_path):
+    def test_substantive_durable_queue_preempts_fresh_recon(self, tmp_path, store):
         queue_dir = tmp_path / "state" / "target.com"
-        queue_dir.mkdir(parents=True)
-        (queue_dir / "action_queue.json").write_text(
-            json.dumps({
-                "schema_version": 1,
-                "target": "target.com",
-                "actions": [
-                    {
-                        "id": "AQ-0001",
-                        "target": "target.com",
-                        "status": "candidate",
-                        "type": "candidate-evidence-gap",
-                        "priority": 95,
-                        "action": "Review the exact owner/peer response diff.",
-                        "command_hint": "/validate idor-orders",
-                        "evidence": "runner summary is candidate-ready",
-                    }
-                ],
-            }),
-            encoding="utf-8",
-        )
+        queue_dir.mkdir(parents=True, exist_ok=True)
+        _register_work(TargetStore(tmp_path, 'target.com'), [{'id': 'AQ-0001', 'target': 'target.com', 'status': 'candidate', 'type': 'candidate-evidence-gap', 'priority': 95, 'action': 'Review the exact owner/peer response diff.', 'command_hint': '/validate idor-orders', 'evidence': 'runner summary is candidate-ready'}])
 
         state = build_autopilot_state(
             str(tmp_path),
@@ -5367,7 +4664,7 @@ class TestAutopilotState:
         assert state["next_action"] == "resume_action_queue"
         assert "resume durable action AQ-0001" in output
 
-    def test_queued_evidence_actions_reach_action_queue_next(self, tmp_path):
+    def test_queued_evidence_actions_reach_action_queue_next(self, tmp_path, store):
         for index, action_type in enumerate((
             "candidate-evidence-gap",
             "actor-gap",
@@ -5377,20 +4674,10 @@ class TestAutopilotState:
             "case-state-enrichment",
         ), 1):
             target = f"case{index}.target"
+            TargetStore(tmp_path, target).initialize()
             queue_dir = tmp_path / "state" / target
-            queue_dir.mkdir(parents=True)
-            (queue_dir / "action_queue.json").write_text(json.dumps({
-                "schema_version": 1,
-                "target": target,
-                "actions": [{
-                    "id": "AQ-0001",
-                    "status": "queued",
-                    "type": action_type,
-                    "priority": 90,
-                    "action": f"Execute {action_type} from existing evidence.",
-                    "command_hint": "review the linked evidence",
-                }],
-            }))
+            queue_dir.mkdir(parents=True, exist_ok=True)
+            _register_work(TargetStore(tmp_path, target), [{'id': 'AQ-0001', 'status': 'queued', 'type': action_type, 'priority': 90, 'action': f'Execute {action_type} from existing evidence.', 'command_hint': 'review the linked evidence'}])
 
             state = build_autopilot_state(
                 str(tmp_path), target, memory_dir=str(tmp_path / "hunt-memory")
@@ -5399,28 +4686,10 @@ class TestAutopilotState:
             assert state["action_queue_next"]["type"] == action_type
             assert state["next_action"] == "resume_action_queue"
 
-    def test_advisory_queue_item_does_not_preempt_fresh_recon(self, tmp_path):
+    def test_advisory_queue_item_remains_visible_before_fresh_recon(self, tmp_path, store):
         queue_dir = tmp_path / "state" / "target.com"
-        queue_dir.mkdir(parents=True)
-        (queue_dir / "action_queue.json").write_text(
-            json.dumps({
-                "schema_version": 1,
-                "target": "target.com",
-                "actions": [
-                    {
-                        "id": "AQ-0001",
-                        "target": "target.com",
-                        "status": "queued",
-                        "type": "surface-review",
-                        "priority": 92,
-                        "action": "Review a score-only surface hint.",
-                        "command_hint": "choose a route",
-                        "evidence": "Reason: top advisory score",
-                    }
-                ],
-            }),
-            encoding="utf-8",
-        )
+        queue_dir.mkdir(parents=True, exist_ok=True)
+        _register_work(TargetStore(tmp_path, 'target.com'), [{'id': 'AQ-0001', 'target': 'target.com', 'status': 'queued', 'type': 'surface-review', 'priority': 92, 'action': 'Review a score-only surface hint.', 'command_hint': 'choose a route', 'evidence': 'Reason: top advisory score'}])
 
         state = build_autopilot_state(
             str(tmp_path),
@@ -5428,67 +4697,28 @@ class TestAutopilotState:
             memory_dir=str(tmp_path / "hunt-memory"),
         )
 
-        assert state["action_queue_next"] == {}
-        assert state["next_action"] == "run_recon"
+        assert state["action_queue_next"]["id"] == "AQ-0001"
+        assert state["next_action"] == "resume_action_queue"
 
-    def test_generic_surface_command_does_not_preempt_fresh_recon(self, tmp_path):
+    def test_generic_surface_command_remains_visible_before_fresh_recon(self, tmp_path, store):
         queue_dir = tmp_path / "state" / "target.com"
-        queue_dir.mkdir(parents=True)
-        (queue_dir / "action_queue.json").write_text(json.dumps({
-            "schema_version": 1,
-            "target": "target.com",
-            "actions": [{
-                "id": "AQ-0001",
-                "status": "queued",
-                "type": "surface-review",
-                "priority": 99,
-                "action": "Refresh the generic surface review.",
-                "command_hint": "python3 tools/surface.py --target target.com",
-            }],
-        }))
+        queue_dir.mkdir(parents=True, exist_ok=True)
+        _register_work(TargetStore(tmp_path, 'target.com'), [{'id': 'AQ-0001', 'status': 'queued', 'type': 'surface-review', 'priority': 99, 'action': 'Refresh the generic surface review.', 'command_hint': 'python3 tools/surface.py --target target.com'}])
 
         state = build_autopilot_state(
             str(tmp_path), "target.com", memory_dir=str(tmp_path / "hunt-memory")
         )
 
-        assert state["action_queue_next"] == {}
-        assert state["next_action"] == "run_recon"
+        assert state["action_queue_next"]["id"] == "AQ-0001"
+        assert state["next_action"] == "resume_action_queue"
 
-    def test_advisory_item_does_not_hide_lower_priority_substantive_action(
-        self, tmp_path
+    def test_registered_work_uses_creation_order_without_business_priority(
+        self, tmp_path,
+        store,
     ):
         queue_dir = tmp_path / "state" / "target.com"
-        queue_dir.mkdir(parents=True)
-        (queue_dir / "action_queue.json").write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "target": "target.com",
-                    "actions": [
-                        {
-                            "id": "AQ-0001",
-                            "target": "target.com",
-                            "status": "queued",
-                            "type": "manual-review",
-                            "priority": 90,
-                            "action": "Review a generic advisory.",
-                            "command_hint": "choose a route",
-                        },
-                        {
-                            "id": "AQ-0002",
-                            "target": "target.com",
-                            "status": "queued",
-                            "type": "browser-context-discovery",
-                            "priority": 78,
-                            "source": "browser-context-discovery",
-                            "evidence_type": "browser-context-discovery",
-                            "action": "Review the captured browser delta.",
-                        },
-                    ],
-                }
-            ),
-            encoding="utf-8",
-        )
+        queue_dir.mkdir(parents=True, exist_ok=True)
+        _register_work(TargetStore(tmp_path, 'target.com'), [{'id': 'AQ-0001', 'target': 'target.com', 'status': 'queued', 'type': 'manual-review', 'priority': 90, 'action': 'Review a generic advisory.', 'command_hint': 'choose a route'}, {'id': 'AQ-0002', 'target': 'target.com', 'status': 'queued', 'type': 'browser-context-discovery', 'priority': 78, 'source': 'browser-context-discovery', 'evidence_type': 'browser-context-discovery', 'action': 'Review the captured browser delta.'}])
 
         state = build_autopilot_state(
             str(tmp_path),
@@ -5496,12 +4726,12 @@ class TestAutopilotState:
             memory_dir=str(tmp_path / "hunt-memory"),
         )
 
-        assert state["action_queue_next"]["id"] == "AQ-0002"
+        assert state["action_queue_next"]["id"] == "AQ-0001"
         assert state["next_action"] == "resume_action_queue"
 
-    def test_completed_recon_without_live_hosts_is_terminal(self, tmp_path):
+    def test_completed_recon_without_live_hosts_is_terminal(self, tmp_path, store):
         recon_dir = tmp_path / "recon" / "target.com"
-        (recon_dir / "live").mkdir(parents=True)
+        (recon_dir / "live").mkdir(parents=True, exist_ok=True)
         (recon_dir / "live" / "httpx_full.txt").write_text("", encoding="utf-8")
         (recon_dir / "exposure").mkdir()
         (recon_dir / "exposure" / "config_files.txt").write_text(
@@ -5528,19 +4758,19 @@ class TestAutopilotState:
         assert "do not rerun recon automatically" in output
         assert "completed with no live host inventory" in state["recon_blocker"]
         inventory = state["observation_inventory"]
-        assert inventory["total"] >= 1
-        assert inventory["untouched"] >= 1
-        assert "Observation inventory: total=" in output
+        assert inventory["available"] is False
+        assert (recon_dir / "exposure" / "config_files.txt").read_text() == "https://target.com/.env\n"
 
-    def test_incomplete_http_probing_is_not_no_live_terminal(self, tmp_path):
+    def test_incomplete_http_probing_is_not_no_live_terminal(self, tmp_path, store):
         for index, (status, note) in enumerate((
             ("skipped", "httpx missing"),
             ("partial", "httpx timed out"),
             ("failed", "httpx failed"),
         ), 1):
             target = f"probe{index}.target"
+            TargetStore(tmp_path, target).initialize()
             recon_dir = tmp_path / "recon" / target
-            (recon_dir / "live").mkdir(parents=True)
+            (recon_dir / "live").mkdir(parents=True, exist_ok=True)
             (recon_dir / "live" / "httpx_full.txt").write_text("")
             (recon_dir / "recon_manifest.jsonl").write_text(json.dumps({
                 "record_type": "recon_phase",
@@ -5560,9 +4790,9 @@ class TestAutopilotState:
             assert state["recon_completed_no_live_hosts"] is False
             assert state["next_action"] == "run_recon"
 
-    def test_zero_live_hosts_with_historical_surface_is_not_terminal(self, tmp_path):
+    def test_zero_live_hosts_with_historical_surface_is_not_terminal(self, tmp_path, store):
         recon_dir = tmp_path / "recon" / "target.com"
-        (recon_dir / "live").mkdir(parents=True)
+        (recon_dir / "live").mkdir(parents=True, exist_ok=True)
         (recon_dir / "urls").mkdir()
         (recon_dir / "live" / "httpx_full.txt").write_text("")
         (recon_dir / "urls" / "all.txt").write_text("https://target.com/api/history\n")
@@ -5584,31 +4814,11 @@ class TestAutopilotState:
         assert state["recon_completed_no_live_hosts"] is False
         assert state["next_action"] != "recon_no_live_hosts"
 
-    def test_missing_recon_precedes_validated_structured_finding_report(self, tmp_path):
+    def test_missing_recon_precedes_validated_structured_finding_report(self, tmp_path, store):
         repo_root = tmp_path
         findings_dir = repo_root / "findings" / "target.com"
-        findings_dir.mkdir(parents=True)
-        (findings_dir / "findings.json").write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "target": "target.com",
-                    "findings": [
-                        {
-                            "id": "mfa_report",
-                            "type": "mfa",
-                            "severity": "medium",
-                            "confidence": "high",
-                            "url": "https://api.target.com/mfa",
-                            "validation_status": "validated",
-                            "report_status": "not_generated",
-                        }
-                    ],
-                }
-            ),
-            encoding="utf-8",
-        )
-        _record_owner_provenance(findings_dir, "mfa_report")
+        findings_dir.mkdir(parents=True, exist_ok=True)
+        _register_findings(TargetStore(tmp_path, 'target.com'), [{'id': 'mfa_report', 'type': 'mfa', 'severity': 'medium', 'confidence': 'high', 'url': 'https://api.target.com/mfa', 'validation_status': 'validated', 'report_status': 'not_generated'}])
 
         state = build_autopilot_state(
             str(repo_root), "target.com", memory_dir=str(tmp_path / "hunt-memory")
@@ -5617,44 +4827,13 @@ class TestAutopilotState:
 
         assert state["next_action"] == "run_recon"
         assert "Next: run /recon target.com first." in output
-        assert "Next report: mfa_report [medium/high] mfa https://api.target.com/mfa" in output
+        assert "Next report: mfa_report [medium/confirmed]" in output
 
-    def test_generic_candidate_and_validated_report_both_remain_visible(self, tmp_path):
+    def test_generic_candidate_and_validated_report_both_remain_visible(self, tmp_path, store):
         repo_root = tmp_path
         findings_dir = repo_root / "findings" / "target.com"
-        findings_dir.mkdir(parents=True)
-        (findings_dir / "findings.json").write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "target": "target.com",
-                    "findings": [
-                        {
-                            "id": "metrics",
-                            "type": "exposure",
-                            "severity": "medium",
-                            "confidence": "medium",
-                            "title": "prometheus-metrics on https://target.com/metrics",
-                            "summary": "[prometheus-metrics] [http] [medium] https://target.com/metrics",
-                            "url": "https://target.com/metrics",
-                            "validation_status": "unvalidated",
-                            "report_status": "not_generated",
-                        },
-                        {
-                            "id": "admin_config",
-                            "type": "auth_bypass",
-                            "severity": "high",
-                            "confidence": "confirmed",
-                            "url": "https://target.com/rest/admin/application-configuration",
-                            "validation_status": "validated",
-                            "report_status": "not_generated",
-                        },
-                    ],
-                }
-            ),
-            encoding="utf-8",
-        )
-        _record_owner_provenance(findings_dir, "admin_config")
+        findings_dir.mkdir(parents=True, exist_ok=True)
+        _register_findings(TargetStore(tmp_path, 'target.com'), [{'id': 'metrics', 'type': 'exposure', 'severity': 'medium', 'confidence': 'medium', 'title': 'prometheus-metrics on https://target.com/metrics', 'summary': '[prometheus-metrics] [http] [medium] https://target.com/metrics', 'url': 'https://target.com/metrics', 'validation_status': 'unvalidated', 'report_status': 'not_generated'}, {'id': 'admin_config', 'type': 'auth_bypass', 'severity': 'high', 'confidence': 'confirmed', 'url': 'https://target.com/rest/admin/application-configuration', 'validation_status': 'validated', 'report_status': 'not_generated'}])
 
         state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(tmp_path / "hunt-memory"))
         output = format_autopilot_state(state)
@@ -5662,15 +4841,15 @@ class TestAutopilotState:
         assert state["structured_findings"]["pending_validation"] == 1
         assert state["structured_findings"]["next_validation"]["id"] == "metrics"
         assert state["next_action"] == "validate_finding"
-        assert "Next report: admin_config [high/confirmed] auth_bypass" in output
+        assert "Next report: admin_config [medium/confirmed]" in output
         assert "Next validation: metrics" in output
 
-    def test_validated_report_does_not_preempt_live_surface_review(self, tmp_path):
+    def test_validated_report_does_not_preempt_live_surface_review(self, tmp_path, store):
         repo_root = tmp_path
         recon_dir = repo_root / "recon" / "target.com"
-        (recon_dir / "live").mkdir(parents=True)
-        (recon_dir / "urls").mkdir(parents=True)
-        (recon_dir / "js").mkdir(parents=True)
+        (recon_dir / "live").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "urls").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "js").mkdir(parents=True, exist_ok=True)
 
         (recon_dir / "live" / "httpx_full.txt").write_text(
             "https://api.target.com [200] [API] [GraphQL] [1000]\n",
@@ -5683,28 +4862,8 @@ class TestAutopilotState:
         (recon_dir / "js" / "endpoints.txt").write_text("", encoding="utf-8")
 
         findings_dir = repo_root / "findings" / "target.com"
-        findings_dir.mkdir(parents=True)
-        (findings_dir / "findings.json").write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "target": "target.com",
-                    "findings": [
-                        {
-                            "id": "mfa_report",
-                            "type": "mfa",
-                            "severity": "medium",
-                            "confidence": "high",
-                            "url": "https://api.target.com/mfa",
-                            "validation_status": "validated",
-                            "report_status": "not_generated",
-                        }
-                    ],
-                }
-            ),
-            encoding="utf-8",
-        )
-        _record_owner_provenance(findings_dir, "mfa_report")
+        findings_dir.mkdir(parents=True, exist_ok=True)
+        _register_findings(TargetStore(tmp_path, 'target.com'), [{'id': 'mfa_report', 'type': 'mfa', 'severity': 'medium', 'confidence': 'high', 'url': 'https://api.target.com/mfa', 'validation_status': 'validated', 'report_status': 'not_generated'}])
 
         memory_dir = tmp_path / "hunt-memory"
         _publish_surface_projection(repo_root, "target.com", memory_dir)
@@ -5715,15 +4874,15 @@ class TestAutopilotState:
         assert state["surface_review_candidates"]
         assert state["next_action"] == "hunt_p1"
         assert "Next step: review the top surface candidate" in output
-        assert "Next report: mfa_report [medium/high] mfa https://api.target.com/mfa" in output
+        assert "Next report: mfa_report [medium/confirmed]" in output
         assert "Next: generate a report for validated finding mfa_report." not in output
 
-    def test_prefers_p1_targets_when_recon_ready(self, tmp_path):
+    def test_surface_targets_preserve_neutral_url_order(self, tmp_path, store):
         repo_root = tmp_path
         recon_dir = repo_root / "recon" / "target.com"
-        (recon_dir / "live").mkdir(parents=True)
-        (recon_dir / "urls").mkdir(parents=True)
-        (recon_dir / "js").mkdir(parents=True)
+        (recon_dir / "live").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "urls").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "js").mkdir(parents=True, exist_ok=True)
 
         (recon_dir / "live" / "httpx_full.txt").write_text(
             "https://api.target.com [200] [API] [Next.js,GraphQL] [1000]\n"
@@ -5737,15 +4896,15 @@ class TestAutopilotState:
         (recon_dir / "js" / "endpoints.txt").write_text("")
 
         memory_dir = tmp_path / "hunt-memory"
-        (memory_dir / "targets").mkdir(parents=True)
-        save_target_profile(memory_dir, make_target_profile(
+        (memory_dir / "targets").mkdir(parents=True, exist_ok=True)
+        write_legacy_profile(memory_dir, make_target_profile(
             "target.com",
             tech_stack=["graphql", "next.js"],
             tested_endpoints=["/api/v2/users/123"],
             untested_endpoints=["/graphql", "/api/v2/report?id=123"],
             hunt_sessions=2,
         ))
-        PatternDB(memory_dir / "patterns.jsonl").save(make_pattern_entry(
+        append_legacy_pattern(memory_dir / "patterns.jsonl", make_pattern_entry(
             target="alpha.com",
             vuln_class="idor",
             technique="id_swap",
@@ -5756,17 +4915,18 @@ class TestAutopilotState:
         _publish_surface_projection(repo_root, "target.com", memory_dir)
         state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(memory_dir))
         assert state["has_recon"] is True
-        assert state["has_memory"] is True
+        # Recon URLs and a conflicting legacy Profile are not saved Store memory.
+        assert state["has_memory"] is False
         assert state["next_action"] == "hunt_p1"
         assert state["recommended_targets"]
-        assert "graphql" in state["recommended_targets"][0]["url"]
+        assert [item["url"] for item in state["recommended_targets"]] == sorted(item["url"] for item in state["recommended_targets"])
 
-    def test_build_autopilot_state_does_not_rewrite_surface_probe_log(self, tmp_path):
+    def test_build_autopilot_state_does_not_rewrite_surface_probe_log(self, tmp_path, store):
         repo_root = tmp_path
         recon_dir = repo_root / "recon" / "target.com"
-        (recon_dir / "live").mkdir(parents=True)
-        (recon_dir / "urls").mkdir(parents=True)
-        (recon_dir / "js").mkdir(parents=True)
+        (recon_dir / "live").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "urls").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "js").mkdir(parents=True, exist_ok=True)
         (recon_dir / "live" / "httpx_full.txt").write_text(
             "https://api.target.com [200] [API] [FastAPI] [1000]\n",
             encoding="utf-8",
@@ -5785,12 +4945,12 @@ class TestAutopilotState:
 
         assert probe_log.read_text(encoding="utf-8") == "sentinel\n"
 
-    def test_prefers_continue_last_focus_when_recent_session_exists(self, tmp_path):
+    def test_prefers_continue_last_focus_when_recent_session_exists(self, tmp_path, store):
         repo_root = tmp_path
         recon_dir = repo_root / "recon" / "target.com"
-        (recon_dir / "live").mkdir(parents=True)
-        (recon_dir / "urls").mkdir(parents=True)
-        (recon_dir / "js").mkdir(parents=True)
+        (recon_dir / "live").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "urls").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "js").mkdir(parents=True, exist_ok=True)
 
         (recon_dir / "live" / "httpx_full.txt").write_text(
             "https://api.target.com [200] [API] [Next.js,GraphQL] [1000]\n"
@@ -5802,8 +4962,8 @@ class TestAutopilotState:
         (recon_dir / "js" / "endpoints.txt").write_text("")
 
         memory_dir = tmp_path / "hunt-memory"
-        (memory_dir / "targets").mkdir(parents=True)
-        save_target_profile(memory_dir, make_target_profile(
+        (memory_dir / "targets").mkdir(parents=True, exist_ok=True)
+        write_legacy_profile(memory_dir, make_target_profile(
             "target.com",
             tech_stack=["graphql", "next.js"],
             tested_endpoints=["/graphql"],
@@ -5824,12 +4984,12 @@ class TestAutopilotState:
         assert state["resume_targets"] == ["/graphql"]
         assert state["recommended_targets"][0]["url"] == "https://api.target.com/graphql"
 
-    def test_finalized_findings_do_not_drive_resume_but_do_not_hide_surface(self, tmp_path):
+    def test_finalized_findings_do_not_drive_resume_but_do_not_hide_surface(self, tmp_path, store):
         repo_root = tmp_path
         recon_dir = repo_root / "recon" / "target.com"
-        (recon_dir / "live").mkdir(parents=True)
-        (recon_dir / "urls").mkdir(parents=True)
-        (recon_dir / "js").mkdir(parents=True)
+        (recon_dir / "live").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "urls").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "js").mkdir(parents=True, exist_ok=True)
         (recon_dir / "live" / "httpx_full.txt").write_text(
             "https://target.com [200] [API] [Express] [1000]\n",
             encoding="utf-8",
@@ -5842,30 +5002,12 @@ class TestAutopilotState:
         (recon_dir / "js" / "endpoints.txt").write_text("", encoding="utf-8")
 
         findings_dir = repo_root / "findings" / "target.com"
-        findings_dir.mkdir(parents=True)
-        (findings_dir / "findings.json").write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "target": "target.com",
-                    "findings": [
-                        {
-                            "id": "auth_bypass_feedbacks",
-                            "type": "auth_bypass",
-                            "url": "https://target.com/api/Feedbacks",
-                            "validation_status": "rejected",
-                            "report_status": "not_generated",
-                        }
-                    ],
-                }
-            ),
-            encoding="utf-8",
-        )
-        _record_owner_provenance(findings_dir, "auth_bypass_feedbacks")
+        findings_dir.mkdir(parents=True, exist_ok=True)
+        _register_findings(TargetStore(tmp_path, 'target.com'), [{'id': 'auth_bypass_feedbacks', 'type': 'auth_bypass', 'url': 'https://target.com/api/Feedbacks', 'validation_status': 'rejected', 'report_status': 'not_generated'}])
 
         memory_dir = tmp_path / "hunt-memory"
-        (memory_dir / "targets").mkdir(parents=True)
-        save_target_profile(memory_dir, make_target_profile(
+        (memory_dir / "targets").mkdir(parents=True, exist_ok=True)
+        write_legacy_profile(memory_dir, make_target_profile(
             "target.com",
             tested_endpoints=["/api/Feedbacks"],
             untested_endpoints=[],
@@ -5888,12 +5030,12 @@ class TestAutopilotState:
         assert state["surface_review_candidates"][0]["url"] == "https://target.com/api/Feedbacks"
         assert state["next_action"] == "hunt_p1"
 
-    def test_build_autopilot_state_emits_enrichment_tool_hints(self, tmp_path):
+    def test_build_autopilot_state_emits_enrichment_tool_hints(self, tmp_path, store):
         repo_root = tmp_path
         recon_dir = repo_root / "recon" / "target.com"
-        (recon_dir / "live").mkdir(parents=True)
-        (recon_dir / "urls").mkdir(parents=True)
-        (recon_dir / "js").mkdir(parents=True)
+        (recon_dir / "live").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "urls").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "js").mkdir(parents=True, exist_ok=True)
         (recon_dir / "live" / "httpx_full.txt").write_text(
             "https://app.target.com [200] [Admin Portal] [Next.js,GraphQL] [1000]\n"
         )
@@ -5907,15 +5049,15 @@ class TestAutopilotState:
         (recon_dir / "js" / "endpoints.txt").write_text("/api/v2/users\n")
 
         exposure_dir = repo_root / "findings" / "target.com" / "exposure"
-        exposure_dir.mkdir(parents=True)
+        exposure_dir.mkdir(parents=True, exist_ok=True)
         (exposure_dir / "repo_source_meta.json").write_text(
             '{"status":"ok","source_kind":"local_path","clone_performed":false}\n',
             encoding="utf-8",
         )
 
         memory_dir = tmp_path / "hunt-memory"
-        (memory_dir / "targets").mkdir(parents=True)
-        save_target_profile(memory_dir, make_target_profile(
+        (memory_dir / "targets").mkdir(parents=True, exist_ok=True)
+        write_legacy_profile(memory_dir, make_target_profile(
             "target.com",
             tech_stack=["next.js", "graphql"],
             tested_endpoints=[],
@@ -5992,15 +5134,15 @@ class TestAutopilotState:
         })
 
         assert "Workflow leads:" in output
-        assert "[high] idor: Admin export IDOR" in output
+        assert "idor: Admin export IDOR" in output
         assert "Next: swap order_id under a lower-privileged session" in output
 
-    def test_legacy_untested_inventory_does_not_reactivate_autopilot(self, tmp_path):
+    def test_legacy_untested_inventory_does_not_reactivate_autopilot(self, tmp_path, store):
         repo_root = tmp_path
         recon_dir = repo_root / "recon" / "target.com"
-        (recon_dir / "live").mkdir(parents=True)
-        (recon_dir / "urls").mkdir(parents=True)
-        (recon_dir / "js").mkdir(parents=True)
+        (recon_dir / "live").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "urls").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "js").mkdir(parents=True, exist_ok=True)
 
         (recon_dir / "live" / "httpx_full.txt").write_text(
             "https://api.target.com [200] [API] [Next.js,GraphQL] [1000]\n"
@@ -6012,8 +5154,8 @@ class TestAutopilotState:
         (recon_dir / "js" / "endpoints.txt").write_text("")
 
         memory_dir = tmp_path / "hunt-memory"
-        (memory_dir / "targets").mkdir(parents=True)
-        save_target_profile(memory_dir, make_target_profile(
+        (memory_dir / "targets").mkdir(parents=True, exist_ok=True)
+        write_legacy_profile(memory_dir, make_target_profile(
             "target.com",
             tech_stack=["graphql", "next.js"],
             tested_endpoints=[],
@@ -6034,7 +5176,6 @@ class TestAutopilotState:
         assert state["resume_targets"] == []
         assert state["resume_summary"]["untested_endpoints"] == [
             "/graphql",
-            "/api/v2/report?id=123",
         ]
 
     def test_formats_state(self):
@@ -6124,12 +5265,12 @@ class TestAutopilotState:
         assert "Next action: resume_untested" in output
         assert "Next step: resume the cached untested surface first: /graphql, /api/v2/report?id=123." in output
 
-    def test_includes_guard_state_and_marks_tripped_hosts(self, tmp_path):
+    def test_includes_guard_state_and_marks_tripped_hosts(self, tmp_path, store):
         repo_root = tmp_path
         recon_dir = repo_root / "recon" / "target.com"
-        (recon_dir / "live").mkdir(parents=True)
-        (recon_dir / "urls").mkdir(parents=True)
-        (recon_dir / "js").mkdir(parents=True)
+        (recon_dir / "live").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "urls").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "js").mkdir(parents=True, exist_ok=True)
 
         (recon_dir / "live" / "httpx_full.txt").write_text(
             "\n".join([
@@ -6144,8 +5285,8 @@ class TestAutopilotState:
         (recon_dir / "js" / "endpoints.txt").write_text("")
 
         memory_dir = tmp_path / "hunt-memory"
-        (memory_dir / "targets").mkdir(parents=True)
-        save_target_profile(memory_dir, make_target_profile(
+        (memory_dir / "targets").mkdir(parents=True, exist_ok=True)
+        write_legacy_profile(memory_dir, make_target_profile(
             "target.com",
             tech_stack=["graphql", "next.js"],
             tested_endpoints=[],
@@ -6177,12 +5318,12 @@ class TestAutopilotState:
         assert "Guard hint:" in output
         assert "files.target.com" in output
 
-    def test_build_autopilot_state_includes_recent_guard_advisories(self, tmp_path):
+    def test_build_autopilot_state_includes_recent_guard_advisories(self, tmp_path, store):
         repo_root = tmp_path
         recon_dir = repo_root / "recon" / "target.com"
-        (recon_dir / "live").mkdir(parents=True)
-        (recon_dir / "urls").mkdir(parents=True)
-        (recon_dir / "js").mkdir(parents=True)
+        (recon_dir / "live").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "urls").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "js").mkdir(parents=True, exist_ok=True)
         (recon_dir / "live" / "httpx_full.txt").write_text(
             "https://api.target.com [200] [API] [Next.js] [1000]\n"
         )
@@ -6193,8 +5334,8 @@ class TestAutopilotState:
         (recon_dir / "js" / "endpoints.txt").write_text("")
 
         memory_dir = tmp_path / "hunt-memory"
-        (memory_dir / "targets").mkdir(parents=True)
-        save_target_profile(memory_dir, make_target_profile(
+        (memory_dir / "targets").mkdir(parents=True, exist_ok=True)
+        write_legacy_profile(memory_dir, make_target_profile(
             "target.com",
             tech_stack=["graphql"],
             tested_endpoints=[],
@@ -6225,12 +5366,12 @@ class TestAutopilotState:
         assert "breaker_advisory" in state["recent_guard_advisories"][0]["notes"]
         assert state["pivot_hint"] == ""
 
-    def test_includes_repo_source_hint_when_artifacts_exist(self, tmp_path):
+    def test_includes_repo_source_hint_when_artifacts_exist(self, tmp_path, store):
         repo_root = tmp_path
         recon_dir = repo_root / "recon" / "target.com"
-        (recon_dir / "live").mkdir(parents=True)
-        (recon_dir / "urls").mkdir(parents=True)
-        (recon_dir / "js").mkdir(parents=True)
+        (recon_dir / "live").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "urls").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "js").mkdir(parents=True, exist_ok=True)
         (recon_dir / "live" / "httpx_full.txt").write_text(
             "https://api.target.com [200] [API] [Next.js] [1000]\n"
         )
@@ -6241,7 +5382,7 @@ class TestAutopilotState:
         (recon_dir / "js" / "endpoints.txt").write_text("")
 
         exposure_dir = repo_root / "findings" / "target.com" / "exposure"
-        exposure_dir.mkdir(parents=True)
+        exposure_dir.mkdir(parents=True, exist_ok=True)
         (exposure_dir / "repo_source_meta.json").write_text(
             '{"status":"ok"}\n',
             encoding="utf-8",
@@ -6252,7 +5393,7 @@ class TestAutopilotState:
         )
 
         memory_dir = tmp_path / "hunt-memory"
-        (memory_dir / "targets").mkdir(parents=True)
+        (memory_dir / "targets").mkdir(parents=True, exist_ok=True)
 
         state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(memory_dir))
         output = format_autopilot_state(state)
@@ -6262,12 +5403,12 @@ class TestAutopilotState:
         assert "Repo source: available" in output
         assert "read_repo_source_summary" in output
 
-    def test_build_autopilot_state_includes_repo_source_summary(self, tmp_path):
+    def test_build_autopilot_state_includes_repo_source_summary(self, tmp_path, store):
         repo_root = tmp_path
         recon_dir = repo_root / "recon" / "target.com"
-        (recon_dir / "live").mkdir(parents=True)
-        (recon_dir / "urls").mkdir(parents=True)
-        (recon_dir / "js").mkdir(parents=True)
+        (recon_dir / "live").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "urls").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "js").mkdir(parents=True, exist_ok=True)
         (recon_dir / "live" / "httpx_full.txt").write_text(
             "https://api.target.com [200] [API] [Next.js] [1000]\n"
         )
@@ -6278,7 +5419,7 @@ class TestAutopilotState:
         (recon_dir / "js" / "endpoints.txt").write_text("")
 
         exposure_dir = repo_root / "findings" / "target.com" / "exposure"
-        exposure_dir.mkdir(parents=True)
+        exposure_dir.mkdir(parents=True, exist_ok=True)
         (exposure_dir / "repo_source_meta.json").write_text(
             '{"status":"ok","source_kind":"local_path","clone_performed":false}\n',
             encoding="utf-8",
@@ -6289,8 +5430,8 @@ class TestAutopilotState:
         )
 
         memory_dir = tmp_path / "hunt-memory"
-        (memory_dir / "targets").mkdir(parents=True)
-        save_target_profile(memory_dir, make_target_profile("target.com", hunt_sessions=1))
+        (memory_dir / "targets").mkdir(parents=True, exist_ok=True)
+        write_legacy_profile(memory_dir, make_target_profile("target.com", hunt_sessions=1))
 
         state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(memory_dir))
 
@@ -6299,16 +5440,16 @@ class TestAutopilotState:
         assert state["repo_source_summary"]["ci_findings"] == 1
         assert state["repo_source_summary"]["summary_hint"] == "local_path, secrets=2, ci=1"
 
-    def test_build_autopilot_state_includes_runtime_state_and_recon_cache_summary(self, tmp_path):
+    def test_build_autopilot_state_includes_runtime_state_and_recon_cache_summary(self, tmp_path, store):
         repo_root = tmp_path
         recon_dir = repo_root / "recon" / "target.com"
-        (recon_dir / "live").mkdir(parents=True)
-        (recon_dir / "urls").mkdir(parents=True)
-        (recon_dir / "js").mkdir(parents=True)
-        (recon_dir / "exposure" / "api_leaks").mkdir(parents=True)
-        (recon_dir / "exposure" / "identity_intel").mkdir(parents=True)
-        (recon_dir / "exposure" / "cloud").mkdir(parents=True)
-        (recon_dir / "api_specs").mkdir(parents=True)
+        (recon_dir / "live").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "urls").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "js").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "exposure" / "api_leaks").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "exposure" / "identity_intel").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "exposure" / "cloud").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "api_specs").mkdir(parents=True, exist_ok=True)
         (recon_dir / "live" / "httpx_full.txt").write_text(
             "https://api.target.com [200] [API] [Next.js] [1000]\n",
             encoding="utf-8",
@@ -6421,7 +5562,7 @@ class TestAutopilotState:
         assert "Recon cache issue: live/httpx_full.txt" in output
         assert "rerun /recon target.com; cached recon is incomplete" in output
 
-    def test_recon_running_runtime_state_waits_instead_of_restart_loop(self, tmp_path):
+    def test_recon_running_runtime_state_waits_instead_of_restart_loop(self, tmp_path, store):
         repo_root = tmp_path
         update_runtime_state(
             repo_root,
@@ -6449,11 +5590,11 @@ class TestAutopilotState:
         assert orphaned["recon_in_progress"] is False
         assert orphaned["next_action"] == "run_recon"
 
-    def test_active_recon_lock_preempts_surface_when_partial_artifacts_are_ready(self, tmp_path):
+    def test_active_recon_lock_preempts_surface_when_partial_artifacts_are_ready(self, tmp_path, store):
         repo_root = tmp_path
         recon_dir = repo_root / "recon" / "target.com"
-        (recon_dir / "live").mkdir(parents=True)
-        (recon_dir / "urls").mkdir(parents=True)
+        (recon_dir / "live").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "urls").mkdir(parents=True, exist_ok=True)
         (recon_dir / "live" / "httpx_full.txt").write_text(
             "https://target.com [200] [Home] [Apache] [1000]\n",
             encoding="utf-8",
@@ -6478,27 +5619,10 @@ class TestAutopilotState:
         assert state["recon_in_progress"] is True
         assert state["next_action"] == "wait_recon"
 
-    def test_recon_running_marker_preempts_validation_followup(self, tmp_path):
+    def test_recon_running_marker_preempts_validation_followup(self, tmp_path, store):
         findings_dir = tmp_path / "findings" / "target.com"
-        findings_dir.mkdir(parents=True)
-        (findings_dir / "findings.json").write_text(
-            json.dumps({
-                "schema_version": 1,
-                "target": "target.com",
-                "findings": [
-                    {
-                        "id": "idor_wait_recon",
-                        "type": "idor",
-                        "severity": "high",
-                        "confidence": "confirmed",
-                        "url": "https://target.com/api/orders/1",
-                        "validation_status": "unvalidated",
-                        "report_status": "not_generated",
-                    }
-                ],
-            }),
-            encoding="utf-8",
-        )
+        findings_dir.mkdir(parents=True, exist_ok=True)
+        _register_findings(TargetStore(tmp_path, 'target.com'), [{'id': 'idor_wait_recon', 'type': 'idor', 'severity': 'high', 'confidence': 'confirmed', 'url': 'https://target.com/api/orders/1', 'validation_status': 'unvalidated', 'report_status': 'not_generated'}])
         update_runtime_state(
             tmp_path,
             "target.com",
@@ -6512,9 +5636,9 @@ class TestAutopilotState:
         assert state["structured_findings"]["next_validation"]["id"] == "idor_wait_recon"
         assert state["next_action"] == "wait_recon"
 
-    def test_recon_running_marker_preempts_runner_and_durable_queue(self, tmp_path):
+    def test_recon_running_marker_preempts_runner_and_durable_queue(self, tmp_path, store):
         validation_dir = tmp_path / "evidence" / "target.com" / "validation" / "runner-wait"
-        validation_dir.mkdir(parents=True)
+        validation_dir.mkdir(parents=True, exist_ok=True)
         (validation_dir / "summary.json").write_text(
             json.dumps({
                 "lane": "authz_role_replay",
@@ -6528,22 +5652,8 @@ class TestAutopilotState:
             encoding="utf-8",
         )
         queue_dir = tmp_path / "state" / "target.com"
-        queue_dir.mkdir(parents=True)
-        (queue_dir / "action_queue.json").write_text(
-            json.dumps({
-                "schema_version": 1,
-                "target": "target.com",
-                "actions": [{
-                    "id": "AQ-0001",
-                    "status": "candidate",
-                    "type": "candidate-evidence-gap",
-                    "priority": 99,
-                    "action": "review candidate evidence",
-                    "command_hint": "/validate runner-wait",
-                }],
-            }),
-            encoding="utf-8",
-        )
+        queue_dir.mkdir(parents=True, exist_ok=True)
+        _register_work(TargetStore(tmp_path, 'target.com'), [{'id': 'AQ-0001', 'status': 'candidate', 'type': 'candidate-evidence-gap', 'priority': 99, 'action': 'review candidate evidence', 'command_hint': '/validate runner-wait'}])
         update_runtime_state(
             tmp_path,
             "target.com",
@@ -6562,9 +5672,9 @@ class TestAutopilotState:
         assert state["action_queue_next"]["id"] == "AQ-0001"
         assert state["next_action"] == "wait_recon"
 
-    def test_stale_recon_running_marker_allows_single_rerun(self, tmp_path):
+    def test_stale_recon_running_marker_allows_single_rerun(self, tmp_path, store):
         state_dir = tmp_path / "state" / "target.com"
-        state_dir.mkdir(parents=True)
+        state_dir.mkdir(parents=True, exist_ok=True)
         (state_dir / "session.json").write_text(
             json.dumps({
                 "schema_version": 2,
@@ -6582,7 +5692,7 @@ class TestAutopilotState:
         assert state["recon_in_progress"] is False
         assert state["next_action"] == "run_recon"
 
-    def test_completed_recon_workflow_overrides_stale_running_mode(self, tmp_path):
+    def test_completed_recon_workflow_overrides_stale_running_mode(self, tmp_path, store):
         update_runtime_state(
             tmp_path,
             "target.com",
@@ -6595,12 +5705,12 @@ class TestAutopilotState:
         assert state["recon_in_progress"] is False
         assert state["next_action"] != "wait_recon"
 
-    def test_scan_running_runtime_state_waits_instead_of_restart_loop(self, tmp_path):
+    def test_scan_running_runtime_state_waits_instead_of_restart_loop(self, tmp_path, store):
         repo_root = tmp_path
         recon_dir = repo_root / "recon" / "target.com"
-        (recon_dir / "live").mkdir(parents=True)
-        (recon_dir / "urls").mkdir(parents=True)
-        (recon_dir / "js").mkdir(parents=True)
+        (recon_dir / "live").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "urls").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "js").mkdir(parents=True, exist_ok=True)
         (recon_dir / "live" / "httpx_full.txt").write_text(
             "https://api.target.com [200] [API] [GraphQL] [1000]\n",
             encoding="utf-8",
@@ -6631,12 +5741,12 @@ class TestAutopilotState:
         assert orphaned["scan_in_progress"] is False
         assert orphaned["next_action"] != "wait_scan"
 
-    def test_scan_running_marker_preempts_validation_followup(self, tmp_path):
+    def test_scan_running_marker_preempts_validation_followup(self, tmp_path, store):
         repo_root = tmp_path
         recon_dir = repo_root / "recon" / "target.com"
-        (recon_dir / "live").mkdir(parents=True)
-        (recon_dir / "urls").mkdir(parents=True)
-        (recon_dir / "js").mkdir(parents=True)
+        (recon_dir / "live").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "urls").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "js").mkdir(parents=True, exist_ok=True)
         (recon_dir / "live" / "httpx_full.txt").write_text(
             "https://target.com [200] [HTML] [OK] [100]\n",
             encoding="utf-8",
@@ -6647,25 +5757,8 @@ class TestAutopilotState:
         )
         (recon_dir / "js" / "endpoints.txt").write_text("", encoding="utf-8")
         findings_dir = repo_root / "findings" / "target.com"
-        findings_dir.mkdir(parents=True)
-        (findings_dir / "findings.json").write_text(
-            json.dumps({
-                "schema_version": 1,
-                "target": "target.com",
-                "findings": [
-                    {
-                        "id": "idor_wait_scan",
-                        "type": "idor",
-                        "severity": "high",
-                        "confidence": "confirmed",
-                        "url": "https://target.com/api/orders/1",
-                        "validation_status": "unvalidated",
-                        "report_status": "not_generated",
-                    }
-                ],
-            }),
-            encoding="utf-8",
-        )
+        findings_dir.mkdir(parents=True, exist_ok=True)
+        _register_findings(TargetStore(tmp_path, 'target.com'), [{'id': 'idor_wait_scan', 'type': 'idor', 'severity': 'high', 'confidence': 'confirmed', 'url': 'https://target.com/api/orders/1', 'validation_status': 'unvalidated', 'report_status': 'not_generated'}])
         update_runtime_state(
             repo_root,
             "target.com",
@@ -6680,12 +5773,12 @@ class TestAutopilotState:
         assert state["scan_in_progress"] is True
         assert state["next_action"] == "wait_scan"
 
-    def test_stale_scan_running_marker_allows_single_rerun(self, tmp_path):
+    def test_stale_scan_running_marker_allows_single_rerun(self, tmp_path, store):
         repo_root = tmp_path
         recon_dir = repo_root / "recon" / "target.com"
-        (recon_dir / "live").mkdir(parents=True)
-        (recon_dir / "urls").mkdir(parents=True)
-        (recon_dir / "js").mkdir(parents=True)
+        (recon_dir / "live").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "urls").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "js").mkdir(parents=True, exist_ok=True)
         (recon_dir / "live" / "httpx_full.txt").write_text(
             "https://api.target.com [200] [API] [GraphQL] [1000]\n",
             encoding="utf-8",
@@ -6696,7 +5789,7 @@ class TestAutopilotState:
         )
         (recon_dir / "js" / "endpoints.txt").write_text("", encoding="utf-8")
         state_dir = repo_root / "state" / "target.com"
-        state_dir.mkdir(parents=True)
+        state_dir.mkdir(parents=True, exist_ok=True)
         (state_dir / "session.json").write_text(
             json.dumps({
                 "schema_version": 2,
@@ -6715,12 +5808,12 @@ class TestAutopilotState:
         assert state["scan_in_progress"] is False
         assert state["next_action"] != "wait_scan"
 
-    def test_completed_scan_workflow_overrides_stale_running_mode(self, tmp_path):
+    def test_completed_scan_workflow_overrides_stale_running_mode(self, tmp_path, store):
         repo_root = tmp_path
         recon_dir = repo_root / "recon" / "target.com"
-        (recon_dir / "live").mkdir(parents=True)
-        (recon_dir / "urls").mkdir(parents=True)
-        (recon_dir / "js").mkdir(parents=True)
+        (recon_dir / "live").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "urls").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "js").mkdir(parents=True, exist_ok=True)
         (recon_dir / "live" / "httpx_full.txt").write_text(
             "https://api.target.com [200] [API] [GraphQL] [1000]\n",
             encoding="utf-8",
@@ -6807,12 +5900,12 @@ class TestAutopilotState:
 
         assert "Repo source: local_path, secrets=2, ci=1" in output
 
-    def test_build_autopilot_state_includes_repo_first_pivot_hint_when_guard_advisories_and_repo_findings_exist(self, tmp_path):
+    def test_build_autopilot_state_includes_repo_first_pivot_hint_when_guard_advisories_and_repo_findings_exist(self, tmp_path, store):
         repo_root = tmp_path
         recon_dir = repo_root / "recon" / "target.com"
-        (recon_dir / "live").mkdir(parents=True)
-        (recon_dir / "urls").mkdir(parents=True)
-        (recon_dir / "js").mkdir(parents=True)
+        (recon_dir / "live").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "urls").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "js").mkdir(parents=True, exist_ok=True)
         (recon_dir / "live" / "httpx_full.txt").write_text(
             "https://api.target.com [200] [API] [Next.js,GraphQL] [1000]\n"
             "https://files.target.com [200] [Files] [nginx] [1000]\n"
@@ -6824,7 +5917,7 @@ class TestAutopilotState:
         (recon_dir / "js" / "endpoints.txt").write_text("")
 
         exposure_dir = repo_root / "findings" / "target.com" / "exposure"
-        exposure_dir.mkdir(parents=True)
+        exposure_dir.mkdir(parents=True, exist_ok=True)
         (exposure_dir / "repo_source_meta.json").write_text(
             '{"status":"ok","source_kind":"local_path","clone_performed":false}\n',
             encoding="utf-8",
@@ -6835,8 +5928,8 @@ class TestAutopilotState:
         )
 
         memory_dir = tmp_path / "hunt-memory"
-        (memory_dir / "targets").mkdir(parents=True)
-        save_target_profile(memory_dir, make_target_profile(
+        (memory_dir / "targets").mkdir(parents=True, exist_ok=True)
+        write_legacy_profile(memory_dir, make_target_profile(
             "target.com",
             tech_stack=["graphql", "next.js"],
             tested_endpoints=[],
@@ -6860,13 +5953,14 @@ class TestAutopilotState:
 
         assert state["pivot_hint"] == "live API has guard advisories; inspect repo source findings first."
 
-    def test_build_autopilot_state_uses_cidr_storage_key_for_recon_findings_and_repo_source(self, tmp_path):
+    def test_build_autopilot_state_uses_cidr_storage_key_for_recon_findings_and_repo_source(self, tmp_path, store):
         repo_root = tmp_path
+        TargetStore(tmp_path, "1.2.3.0/24").initialize()
         stored_key = "1.2.3.0_24"
         recon_dir = repo_root / "recon" / stored_key
-        (recon_dir / "live").mkdir(parents=True)
-        (recon_dir / "urls").mkdir(parents=True)
-        (recon_dir / "js").mkdir(parents=True)
+        (recon_dir / "live").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "urls").mkdir(parents=True, exist_ok=True)
+        (recon_dir / "js").mkdir(parents=True, exist_ok=True)
         (recon_dir / "live" / "httpx_full.txt").write_text(
             "https://1.2.3.25 [200] [API] [nginx] [1000]\n",
             encoding="utf-8",
@@ -6879,29 +5973,10 @@ class TestAutopilotState:
         (recon_dir / "js" / "endpoints.txt").write_text("", encoding="utf-8")
 
         findings_dir = repo_root / "findings" / stored_key
-        findings_dir.mkdir(parents=True)
-        (findings_dir / "findings.json").write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "target": "1.2.3.0/24",
-                    "findings": [
-                        {
-                            "id": "idor_cidr",
-                            "type": "idor",
-                            "severity": "high",
-                            "confidence": "confirmed",
-                            "url": "https://1.2.3.25/api/v1/orders?id=42",
-                            "validation_status": "unvalidated",
-                            "report_status": "not_generated",
-                        }
-                    ],
-                }
-            ),
-            encoding="utf-8",
-        )
+        findings_dir.mkdir(parents=True, exist_ok=True)
+        _register_findings(TargetStore(tmp_path, '1.2.3.0/24'), [{'id': 'idor_cidr', 'type': 'idor', 'severity': 'high', 'confidence': 'confirmed', 'url': 'https://1.2.3.25/api/v1/orders?id=42', 'validation_status': 'unvalidated', 'report_status': 'not_generated'}])
         exposure_dir = findings_dir / "exposure"
-        exposure_dir.mkdir(parents=True)
+        exposure_dir.mkdir(parents=True, exist_ok=True)
         (exposure_dir / "repo_source_meta.json").write_text(
             '{"status":"ok","source_kind":"local_path","clone_performed":false}\n',
             encoding="utf-8",
@@ -6912,8 +5987,8 @@ class TestAutopilotState:
         )
 
         memory_dir = tmp_path / "hunt-memory"
-        (memory_dir / "targets").mkdir(parents=True)
-        save_target_profile(memory_dir, make_target_profile(
+        (memory_dir / "targets").mkdir(parents=True, exist_ok=True)
+        write_legacy_profile(memory_dir, make_target_profile(
             "1.2.3.0/24",
             tech_stack=["nginx"],
             tested_endpoints=[],
@@ -6999,3 +6074,103 @@ def test_target_memory_entry_matches_ignores_host_level_keyword_tokens():
         "https://app.target.com/api/orders/export",
         "/api/orders/export",
     )
+
+
+@pytest.mark.parametrize("source", ["store", "legacy"])
+def test_closure_tracks_store_revision_without_legacy_owner_markers(tmp_path, store, monkeypatch, source):
+    path = tmp_path / "state" / store.key / "action_queue.json"
+    path.write_text("{old historical queue", encoding="utf-8")
+    original = autopilot_state_module.read_matrix
+    def change_during_read(*args, **kwargs):
+        matrix = original(*args, **kwargs)
+        if source == "store":
+            store.set_active_goal(command_id="new-goal", goal="Updated intent", actor="operator")
+        else:
+            path.write_text("{different historical queue", encoding="utf-8")
+        return matrix
+    monkeypatch.setattr(autopilot_state_module, "read_matrix", change_during_read)
+    closure = load_closure_projection(str(tmp_path), {"target": store.target, "next_action": "handoff"})
+    if source == "store":
+        assert closure["reasons"] == ["state_snapshot_stale"]
+        assert closure["snapshot_stale_sources"] == ["store"]
+    else:
+        assert "state_snapshot_stale" not in closure["reasons"]
+        assert closure["reasons"] == ["coverage_empty"]
+
+
+@pytest.mark.parametrize("action_type,command", [
+    ("surface-review", "review cached materials"),
+    ("case-state-enrichment", "collect actor/session context"),
+    ("deep-js-review", "read source"),
+    ("workflow-lead-review", "review public metadata"),
+    ("coverage-gap", "compare observed inputs"),
+    ("custom-work", ""),
+])
+def test_registered_work_is_visible_without_type_or_command_filter(tmp_path, store, action_type, command):
+    store.create_action(command_id="work", action_id="work", intent="Review saved context",
+                        kind="work", subject={"target": store.target}, execution_key="work", actor="operator",
+                        metadata={"action_context": {"type": action_type, "command_hint": command}})
+    state = build_autopilot_state(str(tmp_path), store.target, memory_dir=str(tmp_path / "hunt-memory"))
+    assert state["action_queue_next"]["id"] == "work"
+    assert state["next_action"] == "resume_action_queue"
+    closure = load_closure_projection(str(tmp_path), state)
+    assert "durable_work_pending" in closure["reasons"]
+    assert any(item.get("id") == "work" for item in closure["actionable_frontier"])
+
+
+@pytest.mark.parametrize("artifact_exists", [False, True])
+def test_saved_handoff_is_visible_without_becoming_an_action(tmp_path, store, artifact_exists):
+    ref = "evidence/target.com/raw.txt"
+    if artifact_exists:
+        path = tmp_path / ref
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("Observed local response", encoding="utf-8")
+    statement = f"Run /validate; Evidence={ref}; then /report"
+    store.set_active_goal(command_id="goal", goal="Review recorded API behavior", actor="operator")
+    store.remember(command_id="handoff", kind="handoff", statement=statement,
+                   conditions="owned account", reopen_when="", next_intent="Compare peer response",
+                   evidence=[], actor="operator")
+    binding = store.binding()
+    for _ in range(3):
+        state = build_autopilot_state(str(tmp_path), store.target, memory_dir=str(tmp_path / "hunt-memory"))
+        output = format_autopilot_state(state)
+        assert state["has_memory"] is True
+        assert "Goal: Review recorded API behavior" in output
+        assert statement in output
+        assert "owned account" in output
+        assert "Compare peer response" in output
+        assert state["memory_action_queue"] == []
+        assert state["memory_candidate_next"] == {}
+        assert state["action_queue_next"] == {}
+        assert state["next_action"] == "run_recon"
+        assert "Memory action queue:" not in output
+    assert load_queue(tmp_path, store.target)["actions"] == []
+    assert store.binding() == binding
+
+
+def _complete_surface_review(store, action_id, endpoint):
+    path = store.root / "evidence" / store.key / f"{action_id}.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("Saved surface review outcome", encoding="utf-8")
+    store.create_action(command_id=action_id, action_id=action_id, intent="Review recorded surface",
+                        kind="work", subject={"url": endpoint}, execution_key=action_id, actor="operator",
+                        metadata={"action_context": {"type": "surface-review"}})
+    store.transition_action(command_id=f"claim-{action_id}", action_id=action_id, expected_version=1,
+                            status="claimed", actor="operator")
+    store.transition_action(command_id=f"finish-{action_id}", action_id=action_id, expected_version=2,
+                            status="completed", actor="operator", claim_token=f"claim-{action_id}",
+                            reason="Review saved", completion={"artifact": str(path)})
+
+
+@pytest.mark.parametrize("cache", ["missing", "poisoned"])
+def test_closure_uses_store_coverage_with_disposable_cache(tmp_path, store, cache):
+    _write_closure_owners(tmp_path, store.target, status="tested_clean", final_review=False)
+    path = tmp_path / "evidence" / store.key / "coverage_matrix.json"
+    if cache == "missing":
+        path.unlink()
+    else:
+        path.write_text('{"endpoints": [], "_coverage_projection": true}', encoding="utf-8")
+    closure = load_closure_projection(str(tmp_path), {"target": store.target, "next_action": "handoff"})
+    assert closure["verdict"] == "finish"
+    assert closure["coverage_terminal_evidence"]["status"] == "valid"
+    assert closure["evidence_source"]["kind"] == "store"

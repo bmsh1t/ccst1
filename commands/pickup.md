@@ -26,15 +26,13 @@ required. This command restores context, not permission to start extra testing.
 
 ## Inputs
 
-- `memory/goals/targets/<target_key>.json`
-- `hunt-memory/targets/<target>.json`
+- Initialized target Store: goal, advisory notes, conditional experience, Case and Actions
 - `hunt-memory/journal.jsonl`
-- `findings/<target>/findings.json`
+- Store Findings, technical assessments and delivery/report records
 - `state/<target>/session.json`
 - Cached recon health and repo-source summary when present
 - Checkpoint follow-up built internally through `build_checkpoint(..., refresh_coverage=False)`;
-  this updates only the bounded runtime-v2 checkpoint witness and its lock, not
-  the target-memory/Queue write-back performed by the standalone checkpoint CLI
+  this is read-only, including when invoked by the standalone Checkpoint CLI
 
 ## Outputs
 
@@ -48,17 +46,24 @@ required. This command restores context, not permission to start extra testing.
 
 ## Artifacts Written
 
-- `state/<target_key>/checkpoint_latest.json`
-- `/pickup` does not apply target-memory write-back or modify knowledge/Skills/rules
+- None. `/pickup` does not publish a witness or write target memory/Queue.
 
 ## Resume Source
 
 - Target-level memory and structured findings
 - Runtime state and recon cache health
 
-Use the returned `target_memory_path` to restore saved goals, facts, next actions,
-dead ends and handoff when they are not already in context. The scene preview is
-not the full memory. Reading `/pickup` does not change the active-target pointer.
+Use the returned recall command, cursor and item IDs to expand saved goals, notes,
+conditions, next intentions and handoff. The default preview is not the full
+memory, and a SQLite path is not a text-reading command. Reading `/pickup` does
+not change the active-target pointer.
+
+Finding, tested-endpoint and untested-endpoint collections also default to five
+items each. `domain_windows` records exact totals, returned counts, remaining
+counts, order and a root/target-bound expansion command. Use that command
+(`--json --full`) to retrieve complete collections; owner metadata does not
+duplicate their contents. These are output windows, not a claim that all
+underlying Coverage/history reads are bounded.
 
 `/pickup` reads target-level memory and structured findings. It does **not** replay
 temporary operator preferences such as skipped scanner modules, focus
@@ -74,16 +79,15 @@ current turn if you really want them.
 
 ## What This Does
 
-1. Reads current-target memory and the legacy hunt profile when present
+1. Reads the current Store's saved intent and experience
 2. Shows hunt history (sessions, findings, payouts)
-3. Lists untested endpoints from last recon
-4. Shows structured finding follow-up from `findings/<target>/findings.json`
+3. Lists a bounded endpoint preview from current Coverage, with exact totals and full expansion
+4. Shows current Store Finding and report follow-up
 5. Suggests the next validation or report command when a candidate is pending
 6. Provides the target-memory reference; Claude recalls relevant experience as needed
 7. Shows the current action, recent evidence, blocker, next action, and
-   target-memory write-back proposal while recording only the bounded
-   runtime-v2 witness
-8. Asks: continue hunting, checkpoint write-back, validate/report pending findings, or re-run recon?
+   advisory target-memory write-back proposal without publishing a witness
+8. Presents continuation, fresh Checkpoint, validation/report and recon commands
 
 ## Usage
 
@@ -94,6 +98,7 @@ current turn if you really want them.
 ```bash
 python3 tools/resume.py --target TARGET
 python3 tools/resume.py --target TARGET --json
+python3 tools/resume.py --target TARGET --json --full
 ```
 
 ## Output
@@ -111,17 +116,17 @@ current state. It may contain:
   may show external dependencies and evidence references without promoting them
   to target Findings or executable endpoints.
 - Checkpoint: `Decision`, `Next action`, `Current action`, `Recent
-  evidence`, `Blocker`, optional `Recommended skill`, `High-value gaps`,
+  evidence`, `Blocker`, `High-value gaps`,
   `Target write-back proposals`, and an optional `Suggested command`.
   Checkpoint data is read-only here; target write-back remains explicit.
 - Untested Surface with the cached endpoint count/list or an empty-cache notice.
 - Memory Suggestions with available tech-stack context; use the target-memory
   reference or shared recall for relevant experience.
-- Actions: [r] Continue hunting untested endpoints; [c] Run checkpoint write-back when ready; [n] Re-run recon first (surface may have changed); and [s] Show full hunt journal for this target.
+- Actions: [r] Continue hunting untested endpoints; [c] Read a fresh Checkpoint; save handoff through target memory; [n] Re-run recon first (surface may have changed); and [s] Show full hunt journal for this target.
 
 ## If No Previous Hunt
 
-```text
-No previous hunt data for <target>.
-Run /recon <target> first, then /hunt <target>.
-```
+An initialized empty Store returns its empty current context. An uninitialized
+target requires explicit `target_store.py init --store --target TARGET`; legacy
+or damaged targets require their explicit import/recovery flow. Missing state is
+never silently read as an empty legacy history.

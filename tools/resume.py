@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import sys
 from pathlib import Path
 
@@ -22,10 +23,10 @@ try:
         inspect_recon_artifacts_fast,
         load_runtime_state,
     )
-    from .runtime_state import derive_owner_projection
+    from .runtime_state import _derive_owner_projection
     from .structured_findings import (
         format_structured_findings_lines,
-        summarize_structured_findings,
+        compact_structured_finding,
     )
 except ImportError:
     # Keep legacy top-level `import resume` working.
@@ -35,28 +36,26 @@ except ImportError:
         inspect_recon_artifacts_fast,
         load_runtime_state,
     )
-    from runtime_state import derive_owner_projection
+    from runtime_state import _derive_owner_projection
     from structured_findings import (
         format_structured_findings_lines,
-        summarize_structured_findings,
+        compact_structured_finding,
     )
 from memory.hunt_journal import HuntJournal
-from memory.target_profile import default_memory_dir, load_target_profile
+from memory.target_profile import default_memory_dir
 try:
-    from tools.finding_index import load_finding_index
-    from tools.target_store import TargetStore, target_backend
+    from tools.context_pack import format_source_queries
+    from tools.target_store import runtime_store
     from tools.target_memory import load_goal_memory
     from tools.target_paths import (
         canonical_target_value,
-        compact_url,
         target_storage_key,
-        url_belongs_to_target,
     )
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from finding_index import load_finding_index
-    from target_store import TargetStore, target_backend  # type: ignore
+    from context_pack import format_source_queries
+    from target_store import runtime_store  # type: ignore
     from target_memory import load_goal_memory
-    from target_paths import canonical_target_value, compact_url, target_storage_key, url_belongs_to_target
+    from target_paths import canonical_target_value, target_storage_key
 
 _SESSION_SUMMARY_RE = re.compile(
     r"Endpoints tested:\s*(?P<endpoints_count>\d+)\.\s*"
@@ -65,206 +64,37 @@ _SESSION_SUMMARY_RE = re.compile(
     r"(?:\s*Session:\s*(?P<session_id>[^.]+)\.)?"
 )
 
-_CHAIN_CONTEXT_LIMIT = 8
-_CHAIN_CONTEXT_ITEM_LIMIT = 8
-_CHAIN_CONTEXT_ASSET_FIELDS = ("assets", "related_assets", "external_assets")
-_CHAIN_CONTEXT_REFERENCE_FIELDS = (
-    "related_evidence",
-    "chain_extension_summary",
-    "cross_source_links",
-)
-_CHAIN_CONTEXT_RELATION_FIELDS = ("chain_context",)
-_CHAIN_CONTEXT_EVIDENCE_FIELDS = (
-    "source_file",
-    "evidence_ref",
-    "evidence_refs",
-    "source_ref",
-    "source_refs",
-    "poc_ref",
-)
-
-
-def _text_values(value: object) -> list[str]:
-    """Return bounded-source strings without interpreting arbitrary finding prose."""
-    values = value if isinstance(value, list) else [value]
-    return [str(item).strip() for item in values if str(item or "").strip()]
-
-
-def _external_chain_asset(value: str, target: str) -> str:
-    """Return an inert external asset preview, or an empty string for target assets."""
-    raw = str(value or "").strip()
-    if not raw or raw.startswith(("./", "../")) or (
-        raw.startswith("/") and not raw.startswith("//")
-    ):
-        return ""
-    candidate = raw if ("://" in raw or raw.startswith("//")) else f"https://{raw}"
-    try:
-        if url_belongs_to_target(candidate, target):
-            return ""
-    except (OSError, ValueError):
-        return ""
-    return compact_url(raw, limit=240)
-
-
-def _finding_chain_context(finding: dict, target: str) -> dict | None:
-    """Project external dependencies without turning them into direct findings."""
-    finding_id = str(finding.get("id") or "").strip()
-    if not finding_id:
-        return None
-
-    external_assets: list[str] = []
-    for field in _CHAIN_CONTEXT_ASSET_FIELDS:
-        for value in _text_values(finding.get(field)):
-            preview = _external_chain_asset(value, target)
-            if preview and preview not in external_assets:
-                external_assets.append(preview)
-
-    explicit_refs: list[str] = []
-    for field in _CHAIN_CONTEXT_REFERENCE_FIELDS:
-        for value in _text_values(finding.get(field)):
-            preview = compact_url(value, limit=240) if "://" in value or value.startswith("//") else value[:512]
-            if preview and preview not in explicit_refs:
-                explicit_refs.append(preview)
-
-    chain_relations: list[str] = []
-    for field in _CHAIN_CONTEXT_RELATION_FIELDS:
-        for value in _text_values(finding.get(field)):
-            preview = compact_url(value, limit=512)
-            if preview and preview not in chain_relations:
-                chain_relations.append(preview)
-
-    if not external_assets and not explicit_refs and not chain_relations:
-        return None
-
-    scope_status = str(finding.get("scope_status") or "").strip()
-    if not scope_status:
-        scope_status = "external-chain-context" if external_assets else "evidence-context"
-    evidence_refs: list[str] = []
-    evidence_values = []
-    for field in _CHAIN_CONTEXT_EVIDENCE_FIELDS:
-        evidence_values.extend(_text_values(finding.get(field)))
-    evidence_values.extend(explicit_refs)
-    for value in evidence_values:
-        preview = compact_url(value, limit=512) if "://" in value or value.startswith("//") else value[:512]
-        if preview and preview not in evidence_refs:
-            evidence_refs.append(preview)
-    return {
-        "finding_id": finding_id[:240],
-        "finding_type": str(
-            finding.get("type") or finding.get("vuln_class") or finding.get("category") or "finding"
-        ).strip()[:128],
-        "validation_status": str(finding.get("validation_status") or "unvalidated").strip()[:64],
-        "report_status": str(finding.get("report_status") or "not_generated").strip()[:64],
-        "external_assets": external_assets[:_CHAIN_CONTEXT_ITEM_LIMIT],
-        "chain_context": chain_relations[:_CHAIN_CONTEXT_ITEM_LIMIT],
-        "scope_status": scope_status[:64],
-        "evidence_refs": evidence_refs[:_CHAIN_CONTEXT_ITEM_LIMIT],
-        "active": False,
-    }
-
-
 def load_structured_finding_followup(
     base_dir: str | Path,
     target: str,
     *,
     migrate_legacy: bool = True,
 ) -> dict:
-    """Load owner-verified validation/report follow-up state from findings.json.
+    """Project current Store findings for validation/report follow-up."""
+    return _structured_finding_followup(runtime_store(base_dir, target).finding_summary(), base_dir, target)
 
-    ``migrate_legacy=False`` is reserved for strictly read-only projections such
-    as slash-command bootstrap.  Mutation owners can keep the historical
-    default and perform the canonical legacy migration when appropriate.
-    """
+
+def _structured_finding_followup(snapshot: dict, base_dir: str | Path, target: str) -> dict:
+    """Summarize recorded posture; current truth owns evidence/delivery checks."""
     findings_dir = Path(base_dir) / "findings" / target_storage_key(target)
-    if target_backend(base_dir, target) == "primary":
-        store = TargetStore(base_dir, target)
-        findings: list[dict] = []
-        page = store.finding_page(limit=1000)
-        while True:
-            for item in page.get("items", []):
-                assessment = item.get("assessment") or {}
-                reports = item.get("reports") or []
-                verdict = str(assessment.get("verdict") or "").strip().lower()
-                findings.append({
-                    "id": item.get("id", ""),
-                    "type": item.get("family", ""),
-                    "severity": "medium",
-                    "confidence": verdict,
-                    "url": item.get("endpoint", ""),
-                    "validation_status": (
-                        "validated" if verdict == "confirmed"
-                        else "rejected" if verdict == "refuted"
-                        else "candidate"
-                    ),
-                    "report_status": "generated" if reports else "not_generated",
-                    "source_file": "",
-                    "validation_summary": "",
-                    "claim": item.get("claim", ""),
-                    "reports": reports,
-                    "deliveries": item.get("deliveries", []),
-                    "evidence": item.get("evidence", []),
-                })
-            if not page.get("has_more"):
-                break
-            page = store.finding_page(limit=1000, cursor=page.get("next_cursor"))
-        chain_context = []
-        for item in findings:
-            context = _finding_chain_context(item, target)
-            if context:
-                chain_context.append(context)
-            if len(chain_context) >= _CHAIN_CONTEXT_LIMIT:
-                break
-        summary = summarize_structured_findings(
-            findings,
-            findings_dir,
-            target=target,
-            enforce_owner_provenance=False,
-        )
-        if chain_context:
-            summary["chain_context"] = chain_context
-            summary["chain_context_count"] = len(chain_context)
-        return summary
-    payload = load_finding_index(
-        findings_dir,
-        migrate_legacy=migrate_legacy,
-        target=target,
-        allow_legacy=True,
-    )
-    all_findings = [
-        item for item in payload.get("findings", []) if isinstance(item, dict)
-    ]
-    findings = []
-    for item in all_findings:
-        url = str(item.get("url") or "").strip()
-        if (
-            (bool(url) and url_belongs_to_target(url, target))
-            # An incomplete root claim may not know its endpoint yet.  It is
-            # already scoped by the target-owned findings directory and must
-            # remain recoverable instead of disappearing from bootstrap.
-            or (
-                not url
-                and bool(item.get("claim_id") or item.get("claim_source_file"))
-            )
-        ):
-            findings.append(item)
-
-    chain_context = []
-    for item in findings:
-        context = _finding_chain_context(item, target)
-        if context:
-            chain_context.append(context)
-        if len(chain_context) >= _CHAIN_CONTEXT_LIMIT:
-            break
-
-    summary = summarize_structured_findings(
-        findings,
-        findings_dir,
-        target=target,
-        enforce_owner_provenance=True,
-    )
-    if chain_context:
-        summary["chain_context"] = chain_context
-        summary["chain_context_count"] = len(chain_context)
+    counts = snapshot["counts"]
+    summary = {key: counts[key] for key in (
+        "total", "pending_validation", "validated_pending_report", "reported",
+    )}
+    summary.update(owner_revalidation_pending=0, draft_completion_pending=0, findings_dir=str(findings_dir))
+    if counts["total"]:
+        summary["evidence_gap_count"] = 0
+    for key in ("next_validation", "next_report"):
+        item = snapshot.get(key)
+        if item is None:
+            continue
+        verdict = (item.get("assessment") or {}).get("verdict", "")
+        summary[key] = compact_structured_finding({
+            "id": item["id"], "type": item["family"], "severity": "medium", "confidence": verdict,
+            "url": item["endpoint"],
+            "validation_status": {"confirmed": "validated", "refuted": "rejected"}.get(verdict, "candidate"),
+            "report_status": "generated" if item["report_recorded"] else "not_generated",
+        }, findings_dir)
     return summary
 
 
@@ -351,47 +181,42 @@ recent_guard_blocks = recent_guard_advisories
 
 
 def load_resume_summary(
-    memory_dir: str | Path,
-    target: str,
-    *,
-    repo_root: str | Path | None = None,
-    fast_recon: bool = False,
+    memory_dir: str | Path, target: str, *, repo_root: str | Path | None = None,
+    fast_recon: bool = False, full_domain_context: bool = False,
+) -> dict | None:
+    return _load_resume_summary(memory_dir, target, repo_root=repo_root, fast_recon=fast_recon,
+                                full_domain_context=full_domain_context)
+
+
+def _load_resume_summary(
+    memory_dir: str | Path, target: str, *, repo_root: str | Path | None = None,
+    fast_recon: bool = False, full_domain_context: bool = False, coverage_state: dict | None = None,
 ) -> dict | None:
     """Load the minimum data needed to resume a target hunt."""
     memory_dir = Path(memory_dir)
     root = Path(repo_root) if repo_root is not None else Path(BASE_DIR)
     requested_target = target
     canonical_target = canonical_target_value(target)
-    profile_error = ""
-    try:
-        profile = load_target_profile(memory_dir, canonical_target)
-    except ValueError as exc:
-        # Legacy target profiles are optional compatibility metadata. A
-        # damaged profile must not hide canonical owner facts that can still
-        # be resumed safely.
-        profile = None
-        profile_error = str(exc)
-
-    profile = profile if isinstance(profile, dict) else {}
-
-    profile_target = str(profile.get("target") or canonical_target or requested_target)
-    target_memory = load_goal_memory(root, profile_target)["target"]
-    owner_projection = derive_owner_projection(root, profile_target)
+    store = runtime_store(root, canonical_target)
+    binding = store.binding()
+    profile_target = canonical_target
+    owner_projection = _derive_owner_projection(root, profile_target, finding_limit=None if full_domain_context else 5,
+                                                 coverage_state=coverage_state)
+    finding_summary = owner_projection.pop("finding_summary", None)
+    if finding_summary is None:
+        finding_summary = store.finding_summary()
+    memory_view = load_goal_memory(root, profile_target, experience_limit=5)
+    target_memory = memory_view["target"]
+    memory_source = memory_view.get("source") or {}
+    experience_window = memory_source.get("experience_window") or {}
     owner_key = target_storage_key(profile_target)
-    canonical_owner_paths = {
-        "queue": root / "state" / owner_key / "action_queue.json",
-        "runtime": root / "state" / owner_key / "session.json",
-        "case": root / "state" / owner_key / "case_state.json",
-    }
-    canonical_sources = [
-        name for name, path in canonical_owner_paths.items() if path.is_file()
-    ]
+    canonical_sources = ["store"]
+    if (root / "state" / owner_key / "session.json").is_file():
+        canonical_sources.append("runtime")
     journal = HuntJournal(memory_dir / "journal.jsonl")
     entries = journal.query(target=profile_target)
-    if not profile and not owner_projection.get("available") and not canonical_sources and not entries and not target_memory:
-        return None
-    confirmed_entries = [entry for entry in entries if entry.get("result") == "confirmed"]
-    confirmed_payout = round(sum(float(entry.get("payout", 0) or 0) for entry in confirmed_entries), 2)
+    confirmed_findings = finding_summary["counts"]["confirmed"]
+    confirmed_payout = None
     latest_session = latest_session_summary(entries)
 
     # 跨目标模式匹配已移除（2026-09-12 收敛裁定）：按 tech_stack 自动带入
@@ -400,23 +225,28 @@ def load_resume_summary(
     # 知识卡（/distill -> promote）。
     pattern_matches: list[dict] = []
 
-    findings = (
-        owner_projection.get("findings", [])
-        if owner_projection.get("findings_authoritative")
-        else profile.get("findings", [])
-    )
-    tested_endpoints = (
-        owner_projection.get("tested_endpoints", [])
-        if owner_projection.get("tested_authoritative")
-        else profile.get("tested_endpoints", [])
-    )
-    untested_endpoints = (
-        owner_projection.get("untested_endpoints", [])
-        if owner_projection.get("untested_authoritative")
-        else profile.get("untested_endpoints", [])
-    )
+    expand_command = shlex.join([
+        "python3", "tools/resume.py", "--repo-root", str(root.resolve()),
+        "--target", profile_target, "--memory-dir", str(memory_dir.resolve()), "--json", "--full",
+    ])
+    domain_windows = {}
+    domain_values = {}
+    for field in ("findings", "tested_endpoints", "untested_endpoints"):
+        values = owner_projection.get(field, [])
+        preview = values if full_domain_context else values[:5]
+        domain_values[field] = preview
+        total = finding_summary["total"] if field == "findings" else len(values)
+        domain_windows[field] = {
+            "total": total, "returned": len(preview), "remaining": total - len(preview),
+            "limit": None if full_domain_context else 5,
+            "order": "id" if field == "findings" else "endpoint_asc",
+            "expand_command": expand_command,
+        }
+    findings = domain_values["findings"]
+    tested_endpoints = domain_values["tested_endpoints"]
+    untested_endpoints = domain_values["untested_endpoints"]
     finding_titles = []
-    for finding in findings[:3]:
+    for finding in findings[:5]:
         vuln = finding.get("vuln_class") or finding.get("type") or "finding"
         endpoint = finding.get("endpoint") or finding.get("url") or ""
         payout = finding.get("payout", 0)
@@ -428,21 +258,28 @@ def load_resume_summary(
 
     guard_advisories = recent_guard_advisories(entries)
 
-    return {
+    summary = {
         "target": requested_target,
         "resolved_target": profile_target,
-        "target_memory_path": str(root / "memory/goals/targets" / f"{owner_key}.json") if target_memory else "",
-        "sessions": int(profile.get("hunt_sessions", 0)),
-        "last_hunted": profile.get("last_hunted", ""),
-        "total_time_minutes": round(float(profile.get("total_time_minutes", 0) or 0), 2),
-        "tech_stack": profile.get("tech_stack", []),
+        "target_memory_path": memory_view.get("target_path", "") if target_memory else "",
+        "target_memory": {
+            "source_kind": memory_source.get("kind", "legacy"),
+            "active_goal": target_memory.get("active_goal", ""),
+            "recent_entries": memory_view.get("recent_entries") or [],
+            "experience_window": experience_window,
+        } if target_memory else {},
+        "sessions": sum(entry.get("vuln_class") == "session_summary" for entry in entries),
+        "last_hunted": (latest_session or {}).get("ts", ""),
+        "total_time_minutes": None,
+        "tech_stack": [],
         "tested_endpoints": tested_endpoints,
         "untested_endpoints": untested_endpoints,
         "findings": findings,
         "finding_titles": finding_titles,
-        "owner_projection": owner_projection,
+        "owner_projection": {key: value for key, value in owner_projection.items() if key not in domain_values},
+        "domain_windows": domain_windows,
         "journal_entries": len(entries),
-        "confirmed_findings": len(confirmed_entries),
+        "confirmed_findings": confirmed_findings,
         "confirmed_payout": confirmed_payout,
         "pattern_matches": pattern_matches[:5],
         "matched_targets": len({item["target"] for item in pattern_matches}),
@@ -456,13 +293,13 @@ def load_resume_summary(
             if fast_recon
             else inspect_recon_artifacts(root, profile_target)
         ),
-        "structured_findings": load_structured_finding_followup(root, profile_target, migrate_legacy=False),
+        "structured_findings": _structured_finding_followup(finding_summary, root, profile_target),
         "canonical_sources": canonical_sources,
-        "legacy_profile": {
-            "status": "invalid" if profile_error else ("loaded" if profile else "missing"),
-            "error": profile_error,
-        },
+        "source_binding": binding,
     }
+    if store.binding() != binding:
+        raise ValueError("primary resume inputs changed during assembly")
+    return summary
 
 
 def load_checkpoint_followup(base_dir: str | Path, target: str, memory_dir: str | Path | None = None) -> dict:
@@ -490,6 +327,10 @@ def load_checkpoint_followup(base_dir: str | Path, target: str, memory_dir: str 
             "error": str(exc),
         }
 
+    return _checkpoint_followup(checkpoint)
+
+
+def _checkpoint_followup(checkpoint: dict) -> dict:
     coverage = checkpoint.get("coverage") or {}
     coverage_summary = coverage.get("summary") or {}
     write_back = checkpoint.get("target_write_back") or {}
@@ -498,7 +339,8 @@ def load_checkpoint_followup(base_dir: str | Path, target: str, memory_dir: str 
     if not isinstance(current_action, dict) or not current_action:
         current_action = checkpoint.get("default_candidate")
     if not isinstance(current_action, dict) or not current_action:
-        current_action = queue[0] if queue and isinstance(queue[0], dict) else {}
+        current_action = (queue[0] if "action_queue_window" not in checkpoint
+                          and queue and isinstance(queue[0], dict) else {})
 
     evidence = []
     for value in (
@@ -547,14 +389,18 @@ def load_checkpoint_followup(base_dir: str | Path, target: str, memory_dir: str 
     }
     return {
         "available": True,
+        "next_action_queue": queue,
         "decision": checkpoint.get("decision", ""),
         "next_action": checkpoint.get("next_action", ""),
         "knowledge_cards": (checkpoint.get("context_pack") or {}).get("knowledge_cards", []),
+        "source_queries": context.get("source_queries", {}),
         "high_value_gaps_count": int(coverage_summary.get("high_value_gaps_count", 0) or 0),
         "lead_count": len(write_back.get("lead") or []),
         "next_count": len(write_back.get("next") or []),
         "dead_end_count": len(write_back.get("dead_end") or []),
         "handoff": str(write_back.get("handoff") or ""),
+        **({"action_queue_window": checkpoint["action_queue_window"]}
+           if "action_queue_window" in checkpoint else {}),
         **control,
     }
 
@@ -564,19 +410,29 @@ def load_pickup_summary(
     target: str,
     *,
     repo_root: str | Path | None = None,
+    full_domain_context: bool = False,
 ) -> dict | None:
     """Load resume summary plus a read-only checkpoint follow-up."""
     root = Path(repo_root) if repo_root is not None else Path(BASE_DIR)
-    summary = load_resume_summary(memory_dir, target, repo_root=root)
-    if summary is None:
-        return None
-
+    try:
+        from tools.checkpoint import _build_checkpoint
+    except ImportError:  # pragma: no cover - direct tools/ execution
+        from checkpoint import _build_checkpoint
+    try:
+        checkpoint, summary = _build_checkpoint(
+            root, target=target, memory_dir=str(memory_dir), refresh_coverage=False,
+            full_domain_context=full_domain_context,
+        )
+    except Exception as exc:
+        # Preserve pickup's independently available Resume when Checkpoint fails.
+        summary = load_resume_summary(memory_dir, target, repo_root=root, full_domain_context=full_domain_context)
+        if summary is None:
+            return None
+        summary["checkpoint"] = {"available": False, "error": str(exc)}
+    else:
+        summary["checkpoint"] = _checkpoint_followup(checkpoint)
+    summary["target"] = target
     resolved_target = summary.get("resolved_target") or target
-    summary["checkpoint"] = load_checkpoint_followup(
-        root,
-        resolved_target,
-        memory_dir=memory_dir,
-    )
     summary["target_leads"] = _target_active_leads(root, resolved_target)
     return summary
 
@@ -601,19 +457,41 @@ def format_resume_output(summary: dict | None, target: str) -> str:
         "Hunt History:",
         f"  Sessions:    {summary['sessions']}",
         f"  Last hunt:   {summary['last_hunted'] or 'unknown'}",
-        f"  Total time:  {format_minutes(summary['total_time_minutes'])}",
+        f"  Total time:  {format_minutes(summary['total_time_minutes']) if summary['total_time_minutes'] is not None else 'not recorded'}",
         f"  Journal:     {summary['journal_entries']} entries",
     ]
 
     if summary["confirmed_findings"]:
-        lines.append(
-            f"  Findings:    {summary['confirmed_findings']} confirmed (${summary['confirmed_payout']:.0f} total)"
-        )
+        payout = summary.get("confirmed_payout")
+        amount = f" (${payout:.0f} total)" if payout is not None else ""
+        lines.append(f"  Findings:    {summary['confirmed_findings']} confirmed{amount}")
     else:
         lines.append("  Findings:    0 confirmed")
 
     if summary.get("target_memory_path"):
         lines.extend(["", f"Target Memory: {summary['target_memory_path']}"])
+        memory = summary.get("target_memory") or {}
+        if memory.get("source_kind") == "store":
+            window = memory.get("experience_window") or {}
+            entries = memory.get("recent_entries") or []
+            lines.append(f"  Saved experiences: {window.get('total', 0)}")
+            lines.append(f"  Showing: {len(entries)}; remaining: {window.get('remaining', 0)}")
+            if memory.get("active_goal"):
+                lines.append(f"  Goal: {memory['active_goal']}")
+            for item in entries:
+                lines.append(f"  - [{item.get('entry_id', '')}] ({item.get('kind', '')}) {item.get('text', '')}")
+                structured = item.get("structured") or {}
+                for key in ("conditions", "reopen_when", "next_intent"):
+                    if structured.get(key):
+                        lines.append(f"    {key}: {structured[key]}")
+                if item.get("evidence_refs"):
+                    lines.append(f"    evidence: {', '.join(item['evidence_refs'])}")
+                lines.append(f"    recorded_by: {item.get('recorded_by', '')}")
+            if window.get("has_more"):
+                lines.append(f"  More: {window['remaining']}; {window['recall_command']} "
+                             f"--cursor {shlex.quote(window['next_cursor'])}")
+            if entries:
+                lines.append(f"  Expand: {window['recall_command']} --id {shlex.quote(entries[0]['entry_id'])}")
 
     if summary["finding_titles"]:
         lines.append("")
@@ -622,6 +500,11 @@ def format_resume_output(summary: dict | None, target: str) -> str:
             payout = f" (${item['payout']:.0f})" if item.get("payout") else ""
             endpoint = f" on {item['endpoint']}" if item.get("endpoint") else ""
             lines.append(f"  - {item['vuln_class']}{endpoint}{payout}")
+    domain_windows = summary.get("domain_windows") or {}
+    finding_window = domain_windows.get("findings") or {}
+    if finding_window:
+        lines.append(f"  Finding preview: {len(summary['finding_titles'])} of {finding_window['total']}; "
+                     f"remaining={finding_window['total'] - len(summary['finding_titles'])}")
 
     latest_session = summary.get("latest_session_summary")
     if latest_session:
@@ -702,39 +585,6 @@ def format_resume_output(summary: dict | None, target: str) -> str:
         if next_report:
             lines.append(f"  Command: python3 tools/report_generator.py {next_report.get('findings_dir')}")
 
-    chain_context = structured_findings.get("chain_context") or []
-    if chain_context:
-        lines.append("")
-        lines.append("Chain Context:")
-        for item in chain_context[:_CHAIN_CONTEXT_LIMIT]:
-            if not isinstance(item, dict):
-                continue
-            finding_id = str(item.get("finding_id") or "finding").strip()
-            scope_status = str(item.get("scope_status") or "external-chain-context").strip()
-            details = f"  - {finding_id} [{scope_status}]"
-            assets = ", ".join(
-                str(value).strip()
-                for value in (item.get("external_assets") or [])[:_CHAIN_CONTEXT_ITEM_LIMIT]
-                if str(value).strip()
-            )
-            refs = ", ".join(
-                str(value).strip()
-                for value in (item.get("evidence_refs") or [])[:_CHAIN_CONTEXT_ITEM_LIMIT]
-                if str(value).strip()
-            )
-            relations = "; ".join(
-                str(value).strip()
-                for value in (item.get("chain_context") or [])[:_CHAIN_CONTEXT_ITEM_LIMIT]
-                if str(value).strip()
-            )
-            if assets:
-                details += f" assets={assets}"
-            if relations:
-                details += f" chain={relations}"
-            if refs:
-                details += f" evidence={refs}"
-            lines.append(details)
-
     checkpoint = summary.get("checkpoint") or {}
     if checkpoint:
         lines.append("")
@@ -750,7 +600,16 @@ def format_resume_output(summary: dict | None, target: str) -> str:
             evidence = checkpoint.get("recent_evidence") or []
             lines.append(f"  Recent evidence: {evidence[0] if evidence else 'none'}")
             lines.append(f"  Blocker: {checkpoint.get('blocker') or 'none'}")
+            action_window = checkpoint.get("action_queue_window") or {}
+            if action_window:
+                lines.append(f"  Stored nonterminal actions: {action_window['total']}; "
+                             f"remaining={action_window['remaining']}; AI chooses")
+                lines.append(f"  Expand all stored actions: {action_window['expand_command']}")
+            for candidate in checkpoint.get("next_action_queue") or []:
+                lines.append(f"  - [{candidate.get('id', '')}] {candidate.get('status', '')}: "
+                             f"{candidate.get('action', '')}")
             lines.append(f"  High-value gaps: {checkpoint.get('high_value_gaps_count', 0)}")
+            lines.extend(format_source_queries(checkpoint.get("source_queries") or {}))
             lines.append(
                 "  Target write-back proposals: "
                 f"lead={checkpoint.get('lead_count', 0)}, "
@@ -760,15 +619,28 @@ def format_resume_output(summary: dict | None, target: str) -> str:
         else:
             lines.append(f"  unavailable: {checkpoint.get('error', 'unknown error')}")
 
+    tested_window = domain_windows.get("tested_endpoints") or {}
+    if tested_window:
+        tested_preview = summary["tested_endpoints"][:5]
+        lines.extend(["", "Tested Surface:",
+                      f"  {len(tested_preview)} of {tested_window['total']}; "
+                      f"remaining={tested_window['total'] - len(tested_preview)}"])
+        lines.extend(f"  - {endpoint}" for endpoint in tested_preview)
+
     lines.append("")
     lines.append("Untested Surface:")
     untested = summary["untested_endpoints"]
+    untested_window = domain_windows.get("untested_endpoints") or {}
     if untested:
-        lines.append(f"  {len(untested)} endpoints from last recon:")
+        total = untested_window.get("total", len(untested))
+        lines.append(f"  {total} endpoints from current coverage; "
+                     f"showing={min(5, len(untested))}; remaining={total - min(5, len(untested))}:")
         for idx, endpoint in enumerate(untested[:5], 1):
             lines.append(f"  {idx}. {endpoint}")
     else:
         lines.append("  No cached untested endpoints. Consider re-running recon.")
+    if finding_window:
+        lines.append(f"  Expand all Findings and endpoints: {finding_window['expand_command']}")
 
     lines.append("")
     lines.append("Memory Suggestions:")
@@ -784,7 +656,7 @@ def format_resume_output(summary: dict | None, target: str) -> str:
         "",
         "Actions:",
         "  [r] Continue hunting untested endpoints",
-        "  [c] Run checkpoint write-back when ready",
+        "  [c] Read a fresh Checkpoint; save handoff through target memory",
         "  [n] Re-run recon first (surface may have changed)",
         "  [s] Show full hunt journal for this target",
     ])
@@ -831,12 +703,15 @@ def main() -> None:
     parser.add_argument("--memory-dir", default="", help="Optional hunt-memory directory")
     parser.add_argument("--repo-root", default="", help="Repository root for runtime artifacts")
     parser.add_argument("--json", action="store_true", help="Output JSON summary")
+    parser.add_argument("--full", action="store_true", help="Include complete Finding and endpoint collections in JSON")
     args = parser.parse_args()
+    if args.full and not args.json:
+        parser.error("--full requires --json")
 
     repo_root = Path(args.repo_root) if args.repo_root else Path(BASE_DIR)
     memory_dir = args.memory_dir or str(default_memory_dir(repo_root))
     try:
-        summary = load_pickup_summary(memory_dir, args.target, repo_root=repo_root)
+        summary = load_pickup_summary(memory_dir, args.target, repo_root=repo_root, full_domain_context=args.full)
     except (OSError, ValueError) as exc:
         parser.exit(2, f"pickup state read failed: {exc}\n")
 

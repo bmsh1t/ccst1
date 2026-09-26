@@ -7,6 +7,7 @@ not admission of observations. No executor, projection or persistence imports.
 from __future__ import annotations
 
 import re
+from typing import Mapping, Any
 from urllib.parse import parse_qsl, urlparse
 
 
@@ -30,6 +31,16 @@ CLOSED_MATRIX_STATUSES = frozenset({"tested_clean", "tested_finding", "n_a"})
 # is a closeable evidence family, but remains outside that matrix taxonomy.
 CLOSURE_ONLY_FAMILIES = ("Workflow",)
 CLOSURE_FAMILIES = CANONICAL_VULN_CLASSES + CLOSURE_ONLY_FAMILIES
+
+
+def observation_supports_coverage(record: Mapping[str, Any]) -> bool:
+    """Recorded incompleteness or unchecked side effects cannot authorize coverage."""
+    return (
+        record.get("outcome", "complete") == "complete"
+        and not record.get("error")
+        and not record.get("truncated")
+        and not (record.get("state_changing") and not record.get("redline_checked"))
+    )
 
 VULN_CLASS_ALIASES = {
     **{vuln_class.lower(): vuln_class for vuln_class in CLOSURE_FAMILIES},

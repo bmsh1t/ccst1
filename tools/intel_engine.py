@@ -29,7 +29,6 @@ SHARED_TOOLS_DIR = os.environ.get(
 )
 
 from learn import severity_order
-from memory.target_profile import load_target_profile
 from tools.runtime_state import derive_owner_projection
 try:
     from tools.intel_artifact import (
@@ -116,49 +115,8 @@ def load_memory_context(
 
     resolved_target = canonical_target_value(target)
     owner_projection = derive_owner_projection(repo_root or REPO_ROOT, resolved_target)
-    if owner_projection.get("tested_authoritative"):
-        context["tested_endpoints"] = owner_projection.get("tested_endpoints", [])
-    if owner_projection.get("findings_authoritative"):
-        context["findings"] = owner_projection.get("findings", [])
-
-    if not memory_dir or not os.path.isdir(memory_dir):
-        return context
-
-    profile = load_target_profile(memory_dir, resolved_target)
-    if profile is not None:
-        if not owner_projection.get("tested_authoritative"):
-            context["tested_endpoints"] = profile.get("tested_endpoints", [])
-        if not owner_projection.get("findings_authoritative"):
-            context["findings"] = profile.get("findings", [])
-        context["tech_stack"] = profile.get("tech_stack", [])
-        context["last_hunted"] = profile.get("last_hunted")
-        context["hunt_sessions"] = profile.get("hunt_sessions", 0)
-
-    # Load journal entries for this target to find tested CVEs
-    journal_path = os.path.join(memory_dir, "journal.jsonl")
-    if os.path.isfile(journal_path):
-        try:
-            with open(journal_path) as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        entry = json.loads(line)
-                        if canonical_target_value(str(entry.get("target") or "")) == resolved_target:
-                            # Check if any tag looks like a CVE
-                            for tag in entry.get("tags", []):
-                                if tag.upper().startswith("CVE-"):
-                                    context["tested_cves"].append(tag.upper())
-                    except json.JSONDecodeError:
-                        continue
-        except OSError:
-            pass
-
-    # 跨目标 PatternDB 加载已移除（审计 F9 / 2026-09-12 收敛裁定）：
-    # context["patterns"] 曾全量解码后无任何消费者，只是浪费；跨目标经验
-    # 复用唯一通道 = 人工晋升知识卡。
-
+    context["tested_endpoints"] = owner_projection.get("tested_endpoints", [])
+    context["findings"] = owner_projection.get("findings", [])
     return context
 
 
@@ -707,48 +665,17 @@ _CVE_ID_RE = re.compile(r"\bCVE-\d{4}-\d{4,}\b", re.IGNORECASE)
 
 
 def load_local_advisory_signals(repo_root: str | Path, target: str) -> dict:
-    """从 canonical finding index 读取显式 CVE/Nuclei 线索，不扫描或改写状态。"""
+    """Read local scanner material; it supplies advisory hints, never validation status."""
     try:
-        from tools.finding_index import load_finding_index
+        from tools.finding_index import build_finding_index
+        from tools.target_store import runtime_store
     except ImportError:  # pragma: no cover - direct tools/ execution
-        from finding_index import load_finding_index  # type: ignore
-
+        from finding_index import build_finding_index
+        from target_store import runtime_store
     resolved_target = canonical_target_value(target)
+    runtime_store(repo_root, resolved_target)
     findings_dir = Path(repo_root) / "findings" / target_storage_key(resolved_target)
-    path = findings_dir / "findings.json"
-    if not path.is_file():
-        return {
-            "source": "local_nuclei",
-            "status": "unavailable",
-            "fetched_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "cached": True,
-            "stale": False,
-            "error": "canonical findings artifact is missing",
-            "items": {},
-            "stats": {"item_count": 0},
-        }
-    try:
-        raw_payload = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(raw_payload, (dict, list)):
-            raise ValueError("canonical findings artifact must be an object or legacy list")
-        payload = load_finding_index(
-            findings_dir,
-            migrate_legacy=False,
-            target=target,
-            allow_legacy=True,
-        )
-    except Exception as exc:  # 可选本地来源失败只降级该 source envelope。
-        return {
-            "source": "local_nuclei",
-            "status": "error",
-            "fetched_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "cached": True,
-            "stale": False,
-            "error": str(exc),
-            "items": {},
-            "stats": {"item_count": 0},
-        }
-
+    payload = build_finding_index(findings_dir, target=resolved_target)
     index: dict[str, list[dict]] = {}
     for finding in payload.get("findings") or []:
         if not isinstance(finding, dict):
@@ -772,9 +699,7 @@ def load_local_advisory_signals(repo_root: str | Path, target: str) -> dict:
     return {
         "source": "local_nuclei",
         "status": "ok",
-        "fetched_at": datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
-        ),
+        "fetched_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "cached": True,
         "stale": False,
         "error": "",
@@ -1512,7 +1437,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Load memory context before enforcing --tech so standalone /intel can reuse prior recon/hunt state.
     try:
-        memory = load_memory_context(args.memory_dir, resolved_target)
+        memory = load_memory_context(args.memory_dir, resolved_target, repo_root=args.repo_root)
         techs = resolve_tech_stack(resolved_target, techs, memory, repo_root=args.repo_root)
     except (OSError, TechnologyInventoryError, ValueError) as exc:
         return _emit_cli_error(

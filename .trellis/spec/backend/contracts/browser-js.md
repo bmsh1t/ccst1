@@ -18,7 +18,7 @@
 
 ```bash
 python3 tools/browser_mcp_import.py --target <target> --network-json <path> [--har <path>] [...]
-python3 tools/browser_mcp_import.py --target <target> --focused-manifest <manifest.json> [--max-urls 8]
+python3 tools/browser_mcp_import.py --target <target> --focused-manifest <manifest.json> [--max-urls 8] [--enqueue]
 ```
 
 Focused manifest 为 `{"target":"...","captures":[{"url":"https://...","source":"playwright-mcp","network":"...","snapshot":"..."}]}`。
@@ -40,8 +40,9 @@ Focused manifest 为 `{"target":"...","captures":[{"url":"https://...","source":
   不能解释为 tested-clean。
 - capture `summary.json` 必须先发布，再刷新 page→JS map；否则当前 capture 的 JS 会延迟到
   下一页面并错误归因。Surface 差分包含 XHR、API、参数和 JS。
-- 只有采集成功且出现新 target-owned Surface 或非重复 snapshot shape 的批次，才以 generation
-  幂等写入既有 Action Queue，不做关键词价值过滤。
+- 导入默认只发布材料和差分。显式 `--enqueue` 要求活动 Store；仅有采集成功且出现新
+  target-owned Surface 或非重复 snapshot shape 时，通过 `add_material_review` 保存不可变
+  材料快照并登记 work，返回 action ID 和命令收据。重复材料不生成新工作，不做关键词价值过滤。
 
 ### 4. Validation & Error Matrix
 
@@ -59,7 +60,7 @@ Focused manifest 为 `{"target":"...","captures":[{"url":"https://...","source":
 ### 5. Good / Base / Bad Cases
 
 - Good：持久 MCP session 访问 2 个同目标页面，文件导入后当前页面的 JS/API 立即进入 Surface，
-  一个 generation continuation 入队。
+  差分可见；显式 `--enqueue` 才登记对应待审工作。
 - Base：瞬时断连只重试一次；仍失败时保留 blocker 并切换 JS/source/API，下一轮可重试。
 - Bad：浏览器不可用时无限重试、创建第二套 health 状态、把 MCP 正文复制进 prompt/公共 JSON，
   或把 raw URL corpus 直接作为浏览器访问清单。
@@ -82,7 +83,7 @@ MCP response body -> model copy -> public evidence / second browser queue
 #### Correct
 
 ```text
-first-use probe -> MCP filename/filePath -> browser_mcp_import -> private raw + public shape -> Surface -> existing Action Queue
+first-use probe -> MCP filename/filePath -> browser_mcp_import -> private raw + public shape -> Surface -> AI selects / explicitly registers review work
 ```
 
 

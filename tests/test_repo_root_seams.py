@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from tools.target_store import TargetStore
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -17,13 +18,14 @@ CLASSIFICATIONS = {
     "browser_playwright_fallback": "narrow-root-injected",
     "cf_solver": "repo-root-dependent",
     "remember": "repo-root-dependent",
-    "request_guard": "narrow-root-injected",
+    "request_guard": "repo-root-dependent",
     "resume": "repo-root-dependent",
     "scanner_pass_writer": "narrow-root-injected",
     "source_hunt": "repo-root-dependent",
 }
 
 ROOT_SYMBOLS = {
+    "request_guard": ("preflight_request", "record_request"),
     "cf_solver": ("load_config", "check_cookie", "write_output"),
     "remember": (
         "resolve_validate_summary_path",
@@ -40,8 +42,6 @@ NARROW_SYMBOLS = {
         "capture_with_playwright": {"evidence_root", "recon_root"},
     },
     "request_guard": {
-        "preflight_request": {"memory_dir"},
-        "record_request": {"memory_dir"},
         "load_guard_status": {"memory_dir"},
     },
     "scanner_pass_writer": {
@@ -132,6 +132,8 @@ def test_remember_cli_uses_explicit_root_for_default_memory(tmp_path, monkeypatc
 
     legacy = tmp_path / "legacy"
     root = tmp_path / "isolated"
+    store = TargetStore(root, "target.test")
+    store.initialize()
     monkeypatch.setattr(remember, "BASE_DIR", str(legacy))
     monkeypatch.delenv("HUNT_MEMORY_DIR", raising=False)
     monkeypatch.setattr(
@@ -149,25 +151,27 @@ def test_remember_cli_uses_explicit_root_for_default_memory(tmp_path, monkeypatc
             "/orders/1",
             "--result",
             "partial",
+            "--notes",
+            "Review object ownership",
         ],
     )
 
     remember.main()
 
-    assert (root / "hunt-memory/targets/target-test.json").is_file()
+    assert store.experience_page()["items"][0]["kind"] == "note"
+    assert not (root / "hunt-memory/targets/target-test.json").exists()
     assert not legacy.exists()
 
 
 def test_resume_explicit_root_reads_runtime_artifacts(tmp_path, monkeypatch):
     import resume
-    from memory.target_profile import make_target_profile, save_target_profile
     from runtime_state import update_runtime_state
 
     legacy = tmp_path / "legacy"
     root = tmp_path / "isolated"
     memory_dir = root / "hunt-memory"
     memory_dir.mkdir(parents=True)
-    save_target_profile(memory_dir, make_target_profile("target.test"))
+    TargetStore(root, "target.test").initialize()
     update_runtime_state(root, "target.test", last_executed_workflow="run_scan")
     monkeypatch.setattr(resume, "BASE_DIR", str(legacy))
 

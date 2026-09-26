@@ -18,54 +18,15 @@ import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlparse
 
 try:
-    from action_queue import ACTIVE_STATUSES, load_queue, resolve_action
-    from finding_index import (
-        _finding_backend_context,
-        load_finding_index,
-        update_finding_status,
-        verify_finalized_finding_owner_provenance,
-    )
+    from finding_index import _finding_backend_context
     from target_paths import target_storage_key
-    from target_paths import canonical_target_value, url_belongs_to_target
-    from target_store import ConflictError, StoreError, TargetStore, target_backend, target_mutation_lock, target_switch_lock
-    from closure_resolver import canonical_vuln_class
-    from contracts import artifact_digest_material, runner_operation_id
-    from runner_witness import (
-        RUNNER_SUMMARY_SCHEMA_VERSION,
-        _canonical_runner_witness,
-        _repo_root_for_findings_dir,
-        _resolve_repo_file,
-        _runner_class,
-        _runner_endpoint_matches,
-        _runner_ledger_row,
-        _runner_summary_candidates,
-    )
+    from target_store import ConflictError, StoreError, TargetStore, runtime_store, target_mutation_lock, target_switch_lock
 except ImportError:  # pragma: no cover - package import path
-    from tools.action_queue import ACTIVE_STATUSES, load_queue, resolve_action
-    from tools.finding_index import (
-        _finding_backend_context,
-        load_finding_index,
-        update_finding_status,
-        verify_finalized_finding_owner_provenance,
-    )
+    from tools.finding_index import _finding_backend_context
     from tools.target_paths import target_storage_key
-    from tools.target_paths import canonical_target_value, url_belongs_to_target
-    from tools.target_store import ConflictError, StoreError, TargetStore, target_backend, target_mutation_lock, target_switch_lock
-    from tools.closure_resolver import canonical_vuln_class
-    from tools.contracts import artifact_digest_material, runner_operation_id
-    from tools.runner_witness import (
-        RUNNER_SUMMARY_SCHEMA_VERSION,
-        _canonical_runner_witness,
-        _repo_root_for_findings_dir,
-        _resolve_repo_file,
-        _runner_class,
-        _runner_endpoint_matches,
-        _runner_ledger_row,
-        _runner_summary_candidates,
-    )
+    from tools.target_store import ConflictError, StoreError, TargetStore, runtime_store, target_mutation_lock, target_switch_lock
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPORTS_DIR = os.path.join(BASE_DIR, "reports")
@@ -97,152 +58,6 @@ def _write_text_atomic(path: str | Path, content: str) -> None:
             except FileNotFoundError:
                 pass
         raise
-
-
-def _legacy_token_match(token: str, haystack: str) -> bool:
-    if not token:
-        return False
-    return re.search(rf"(?<![A-Za-z0-9_-]){re.escape(token)}(?![A-Za-z0-9_-])", haystack) is not None
-
-
-def _endpoint_identity(value: str) -> str:
-    raw = str(value or "").strip()
-    if not raw:
-        return ""
-    parsed = urlparse(raw)
-    if parsed.scheme and parsed.netloc:
-        path = parsed.path or "/"
-        return f"{path}?{parsed.query}" if parsed.query else path
-    return raw
-
-
-def _report_action_match_kind(action, finding, report_file):
-    """Return exact/legacy match rank; never infer identity from a loose substring."""
-    finding_id = str(finding.get("id") or "").strip()
-    url = str(finding.get("url") or "").strip()
-    report_file = str(report_file or "").strip()
-    metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
-    exact_finding = {
-        str(action.get("id") or "").strip(),
-        str(action.get("source_id") or "").strip(),
-        str(metadata.get("finding_id") or "").strip(),
-    }
-    if finding_id and finding_id in exact_finding:
-        return "exact_finding"
-    if report_file and str(metadata.get("report_file") or "").strip() == report_file:
-        return "exact_report_file"
-    metadata_endpoint = str(metadata.get("url") or metadata.get("endpoint") or "").strip()
-    if url and metadata_endpoint and _endpoint_identity(metadata_endpoint) == _endpoint_identity(url):
-        return "exact_endpoint"
-    haystack = " ".join(
-        str(value or "")
-        for value in (
-            action.get("id"),
-            action.get("source_id"),
-            action.get("type"),
-            action.get("evidence"),
-            action.get("next_question"),
-            action.get("action"),
-            action.get("command_hint"),
-            action.get("result"),
-            action.get("notes"),
-            metadata.get("finding_id"),
-            metadata.get("url"),
-            metadata.get("endpoint"),
-            metadata.get("report_file"),
-        )
-    )
-    if finding_id and _legacy_token_match(finding_id, haystack):
-        return "legacy_finding"
-    if str(action.get("type") or "").lower() == "report":
-        if report_file and _legacy_token_match(report_file, haystack):
-            return "legacy_report_file"
-        if url and _legacy_token_match(url, haystack):
-            return "legacy_endpoint"
-    return None
-
-
-def sync_report_action_queue(target_name, finding, report_file):
-    """Best-effort close report queue items after a report draft is generated."""
-    try:
-        repo_root = Path(BASE_DIR)
-        queue = load_queue(repo_root, str(target_name or ""))
-        matches = []
-        for action in queue.get("actions", []):
-            if not isinstance(action, dict):
-                continue
-            action_status = str(action.get("status") or "queued")
-            if action_status not in ACTIVE_STATUSES and action_status != "reported":
-                continue
-            kind = _report_action_match_kind(action, finding, report_file)
-            if action_status == "reported" and kind in {"exact_endpoint", "legacy_endpoint"}:
-                continue
-            if kind:
-                matches.append((kind, action))
-        if not matches:
-            return {"status": "skipped", "reason": "no matching report action"}
-        rank = {
-            "exact_finding": 0,
-            "exact_report_file": 1,
-            "exact_endpoint": 2,
-            "legacy_finding": 3,
-            "legacy_report_file": 4,
-            "legacy_endpoint": 5,
-        }
-        best_rank = min(rank[kind] for kind, _action in matches)
-        best = [(kind, action) for kind, action in matches if rank[kind] == best_rank]
-        if len(best) != 1:
-            return {
-                "status": "ambiguous",
-                "reason": "multiple report actions match the same identity",
-                "ids": [str(action.get("id") or "") for _kind, action in best],
-            }
-        match_kind, matched = best[0]
-        if str(matched.get("status") or "") == "reported":
-            return {
-                "status": "unchanged",
-                "id": str(matched.get("id") or ""),
-                "action_status": "reported",
-                "match_kind": match_kind,
-            }
-        resolved = resolve_action(
-            repo_root,
-            target=str(target_name or ""),
-            action_id=str(matched.get("id") or ""),
-            status="reported",
-            result=f"report_file={report_file}",
-            notes=f"finding_id={finding.get('id', '')}",
-        )
-        return {
-            "status": "updated",
-            "id": resolved.get("id", ""),
-            "action_status": resolved.get("status", ""),
-            "match_kind": match_kind,
-        }
-    except Exception as exc:  # pragma: no cover - queue sync must not block reports
-        return {"status": "error", "error": str(exc)}
-
-
-def _reconcile_report_action(findings_dir, target_name, finding, report_file):
-    """Persist the Queue reconciliation witness through the Finding owner."""
-    current = finding.get("queue_sync") if isinstance(finding.get("queue_sync"), dict) else {}
-    if current.get("status") in {"updated", "unchanged"}:
-        return finding, current
-
-    queue_sync = sync_report_action_queue(target_name, finding, report_file)
-    if queue_sync == current:
-        return finding, current
-    updated = update_finding_status(
-        findings_dir,
-        finding.get("id", ""),
-        queue_sync=queue_sync,
-    )
-    if updated is None:
-        raise ValueError(
-            "canonical finding disappeared before report queue reconciliation: "
-            f"{findings_dir}/{finding.get('id', '')}"
-        )
-    return updated, queue_sync
 
 
 # Severity mappings
@@ -774,6 +589,7 @@ def format_finding_reference(finding):
     references = []
     field_labels = (
         ("id", "Finding ID"),
+        ("type", "Claim family"),
         ("source_file", "Source artifact"),
         ("line_number", "Source line"),
         ("confidence", "Confidence"),
@@ -784,6 +600,15 @@ def format_finding_reference(finding):
         if value in (None, ""):
             continue
         references.append(f"- **{label}:** {value}")
+
+    assessment = finding.get("assessment") or {}
+    if isinstance(assessment, dict):
+        for key, label in (("id", "Assessment"), ("boundary", "Boundary"), ("impact", "Assessed impact")):
+            if assessment.get(key):
+                references.append(f"- **{label}:** {assessment[key]}")
+    for ref in finding.get("evidence") or []:
+        if isinstance(ref, dict) and ref.get("operation_id") and "step" in ref:
+            references.append(f"- **Observation:** {ref['operation_id']}:{ref['step']}")
 
     if not references:
         return ""
@@ -807,8 +632,12 @@ def _load_validation_summary(finding, *, repo_root=None):
         summary_path = Path(path).expanduser()
         return _load_json_file(summary_path) if summary_path.is_file() else {}
     root = Path(repo_root).resolve() if repo_root is not None else Path(BASE_DIR).resolve()
-    summary_path = _resolve_repo_file(path, root)
-    return _load_json_file(summary_path) if summary_path else {}
+    summary_path = (root / path).expanduser().resolve()
+    try:
+        summary_path.relative_to(root)
+    except ValueError:
+        return {}
+    return _load_json_file(summary_path) if summary_path.is_file() else {}
 
 
 def _validation_cvss_score(validation):
@@ -869,31 +698,6 @@ def _report_severity(finding, validation, template):
         return summary_severity
     finding_severity = str(finding.get("severity") or template.get("severity") or "medium").strip().lower()
     return finding_severity if finding_severity in SEVERITY_MAP else "medium"
-
-
-def _validation_summary_is_report_ready(finding, validation):
-    """Return whether an attached validation summary is a report-readiness gate."""
-    path = str(finding.get("validation_summary") or "").strip()
-    if not path:
-        return None
-    gate_fields = {
-        "all_gates_passed",
-        "seven_question_gate_passed",
-        "four_validation_gates_passed",
-        "seven_question_gate_decision",
-    }
-    if not validation or not any(field in validation for field in gate_fields):
-        return False
-    if validation.get("all_gates_passed") is False:
-        return False
-    if validation.get("seven_question_gate_passed") is False:
-        return False
-    if validation.get("four_validation_gates_passed") is False:
-        return False
-    decision = str(validation.get("seven_question_gate_decision") or "").strip().lower()
-    if decision in {"kill", "chain_required", "needs_review"}:
-        return False
-    return bool(validation.get("all_gates_passed") or validation.get("seven_question_gate_passed"))
 
 
 def _auth_bypass_narrative(finding, validation):
@@ -1201,65 +1005,16 @@ def generate_report(finding, vuln_type, target_name=None, *, repo_root=None):
     return report, title
 
 
-def _is_reportable_structured_finding(
-    finding,
-    *,
-    findings_dir: str | os.PathLike | None = None,
-    target: str | None = None,
-    allow_legacy_draft: bool = False,
-    store: TargetStore | None = None,
-):
-    """Return whether a structured finding should enter auto-report generation."""
+def _is_reportable_structured_finding(finding):
+    """Require a confirmed assessment and its current eligible delivery."""
     if not isinstance(finding, dict) or not finding.get("url"):
         return False
-
-    if store is not None:
-        assessment = finding.get("assessment") if isinstance(finding.get("assessment"), dict) else {}
-        if str(assessment.get("verdict") or "").strip().lower() != "confirmed":
-            return False
-        return any(
-            item.get("status") == "eligible"
-            and not item.get("stale")
-            and str(item.get("assessment_id") or "") == str(assessment.get("id") or "")
-            for item in (finding.get("deliveries") or [])
-            if isinstance(item, dict)
-        )
-
-    validation_status = str(finding.get("validation_status", "") or "").strip().lower()
-    report_status = str(finding.get("report_status", "") or "").strip().lower()
-
-    if validation_status != "validated":
-        return bool(allow_legacy_draft and not validation_status and report_status != "generated")
-    if report_status == "generated":
-        # 审计 F3：登记状态不能替代产物存在。已登记 generated 但报告文件
-        # 缺失或不完整（崩溃残片）时回到生成路径恢复——文件级证据优先于
-        # 状态字段，否则一次崩溃会让该报告永远无法恢复。
-        return not _registered_report_artifact_is_intact(finding)
-    # A direct JSON edit is not enough to enter report generation.  The
-    # report writer is a lifecycle consumer, so require the same owner
-    # provenance that runtime state and checkpoint use.
-    if not findings_dir:
-        return False
-    provenance = verify_finalized_finding_owner_provenance(
-        findings_dir,
-        finding,
-        target=target,
+    assessment = finding.get("assessment") or {}
+    return assessment.get("verdict") == "confirmed" and any(
+        item.get("status") == "eligible" and not item.get("stale")
+        and item.get("assessment_id") == assessment.get("id")
+        for item in finding.get("deliveries", [])
     )
-    if not provenance.get("valid"):
-        return False
-    repo_root = _repo_root_for_findings_dir(findings_dir)
-    validation = _load_validation_summary(finding, repo_root=repo_root)
-    if _validation_summary_is_report_ready(finding, validation) is False:
-        return False
-    runner_target = target or str(finding.get("target") or Path(findings_dir).name)
-    if not _canonical_runner_witness(
-        finding,
-        findings_dir=findings_dir,
-        target=runner_target,
-    ).get("valid"):
-        return False
-
-    return True
 
 
 def _report_file_matches_finding(report_file, finding):
@@ -1288,19 +1043,6 @@ def _report_artifact_is_complete(report_file) -> bool:
     except OSError:
         return False
     return _REPORT_TERMINATOR in text and text.rstrip().endswith("*")
-
-
-def _registered_report_artifact_is_intact(finding) -> bool:
-    """已登记 generated 的报告产物是否完整可用（缺失/残片 -> 需要恢复）。"""
-    report_file = str(finding.get("report_file") or "").strip()
-    if not report_file:
-        return False
-    path = Path(report_file)
-    if not path.is_absolute():
-        # report_file 由 owner 写入时是绝对路径；相对形态（历史行或测试
-        # 夹具）按 REPORTS_DIR 根解析，与生成路径一致。
-        path = Path(REPORTS_DIR) / Path(report_file).name
-    return _report_artifact_is_complete(path)
 
 
 def _occupied_report_ids(structured_findings, report_dir):
@@ -1401,15 +1143,6 @@ def _create_or_reuse_report(report_file, report_content, finding):
         return "recovered"
 
 
-def _primary_report_store(repo_root, target):
-    backend = target_backend(repo_root, target)
-    if backend == "legacy":
-        return None
-    if backend != "primary":
-        raise StoreError(f"report publication is disabled for {backend} target")
-    return TargetStore(repo_root, target)
-
-
 def _primary_findings(store: TargetStore) -> list[dict]:
     """Project Store findings into the report renderer's read-only shape."""
     findings = []
@@ -1453,7 +1186,7 @@ def _primary_findings(store: TargetStore) -> list[dict]:
 def _process_primary_reports(store, report_dir, target_name):
     """Publish report artifacts, then rebuild the index only from Store facts."""
     for finding in _primary_findings(store):
-        if not _is_reportable_structured_finding(finding, store=store):
+        if not _is_reportable_structured_finding(finding):
             continue
         assessment_id = finding["assessment"]["id"]
         delivery = next(item for item in finding["deliveries"]
@@ -1487,7 +1220,7 @@ def _process_primary_reports(store, report_dir, target_name):
                 "id": report["id"], "finding_id": finding["id"],
                 "title": finding["title"], "severity": finding["severity"],
                 "url": finding["url"], "file": str(store.root / report["artifact_ref"]),
-                "type": _report_vuln_type(finding), "confidence": finding["confidence"],
+                "type": _report_vuln_type(finding), "family": finding["type"], "confidence": finding["confidence"],
                 "assessment_id": report["assessment_id"], "delivery_id": report["delivery_id"],
                 "destination": report["destination"], "artifact_sha256": report["artifact_sha256"],
                 "queue_sync": {"status": "skipped", "reason": "primary store owns report lifecycle"},
@@ -1497,298 +1230,28 @@ def _process_primary_reports(store, report_dir, target_name):
                               store=store, source_binding=source_binding, as_of=as_of)
 
 
-def process_findings_dir(findings_dir, *, allow_legacy_drafts=False):
-    """Process all findings in a directory and generate reports."""
-    findings_repo_root, target = _finding_backend_context(findings_dir)
-    _primary_report_store(findings_repo_root, target)
-    with target_switch_lock(findings_repo_root, target):
+def process_findings_dir(findings_dir):
+    """Publish reports from the target Store and rebuild its bound index."""
+    repo_root, target = _finding_backend_context(findings_dir)
+    runtime_store(repo_root, target)
+    with target_switch_lock(repo_root, target):
         _finding_backend_context(findings_dir, target)
-        primary_store = _primary_report_store(findings_repo_root, target)
-        return _process_findings_dir(findings_dir, findings_repo_root, target, primary_store,
-                                     allow_legacy_drafts=allow_legacy_drafts)
-
-
-def _process_findings_dir(findings_dir, findings_repo_root, target, primary_store, *, allow_legacy_drafts):
-    target_name = target_storage_key(target)
-    report_dir = os.path.join(REPORTS_DIR, target_name)
-    report_path = Path(os.path.abspath(report_dir))
-    if report_path != report_path.resolve() or (primary_store is not None and
-            report_path != primary_store.root / "reports" / primary_store.key):
-        raise StoreError(f"report output does not match directory owner: {report_path}")
-    os.makedirs(report_dir, exist_ok=True)
-    if primary_store is not None:
-        return _process_primary_reports(primary_store, report_dir, target_name)
-    structured_index = load_finding_index(findings_dir, migrate_legacy=False)
-
-    # Map finding directories to vuln types
-    dir_type_map = {
-        "upload": "upload",
-        "sqli": "sqli",
-        "xss": "xss",
-        "ssti": "ssti",
-        "takeover": "takeover",
-        "misconfig": "misconfig",
-        "exposure": "exposure",
-        "ssrf": "ssrf",
-        "cves": "cve",
-        "redirects": "redirect",
-        "idor": "idor",
-        "auth_bypass": "auth_bypass",
-        "mfa": "mfa",
-        "saml": "saml",
-        "jwt": "jwt",
-    }
-
-    total_reports = 0
-    report_index = []
-
-    structured_findings = structured_index.get("findings", []) if isinstance(structured_index, dict) else []
-    provenance_target = str(structured_index.get("target") or "").strip() if isinstance(structured_index, dict) else ""
-    provenance_target = provenance_target or target_name
-    if structured_findings:
-        report_index.extend(
-            _existing_structured_report_entries(
-                structured_findings,
-                findings_dir=findings_dir,
-                target=provenance_target,
-            )
-        )
-        total_reports = len(report_index)
-        occupied_report_ids = _occupied_report_ids(structured_findings, report_dir)
-
-        reportable_findings = [
-            finding
-            for finding in structured_findings
-            if _is_reportable_structured_finding(
-                finding,
-                findings_dir=findings_dir,
-                target=provenance_target,
-                allow_legacy_draft=allow_legacy_drafts,
-            )
-        ]
-        for finding in reportable_findings:
-
-            vuln_type = _report_vuln_type(finding)
-            report_content, title = generate_report(
-                finding,
-                vuln_type,
-                target_name,
-                repo_root=findings_repo_root,
-            )
-            validation = _load_validation_summary(
-                finding,
-                repo_root=findings_repo_root,
-            )
-            report_severity = _report_severity(
-                finding,
-                validation,
-                VULN_TEMPLATES.get(vuln_type, VULN_TEMPLATES["misconfig"]),
-            )
-
-            while True:
-                report_id = _next_report_id(
-                    vuln_type,
-                    finding,
-                    report_dir,
-                    occupied_report_ids,
-                )
-                report_file = os.path.join(report_dir, f"{report_id}.md")
-                try:
-                    _create_or_reuse_report(report_file, report_content, finding)
-                    break
-                except FileExistsError:
-                    # Another writer claimed the candidate after allocation.
-                    occupied_report_ids[report_id] = ""
-            occupied_report_ids[report_id] = str(finding.get("id") or "")
-
-            legacy_draft = not str(finding.get("validation_status") or "").strip()
-            if finding.get("id") and not legacy_draft:
-                updates = {
-                    "report_status": "generated",
-                    "report_file": report_file,
-                    "report_id": report_id,
-                }
-                updated = update_finding_status(
-                    findings_dir,
-                    finding.get("id", ""),
-                    **updates,
-                )
-                if updated is None:
-                    raise ValueError(
-                        "canonical finding disappeared before report status update: "
-                        f"{findings_dir}/{finding.get('id', '')}"
-                    )
-                finding = updated
-            if legacy_draft:
-                queue_sync = {"status": "skipped", "reason": "legacy compatibility draft"}
-            else:
-                finding, queue_sync = _reconcile_report_action(
-                    findings_dir,
-                    target_name,
-                    finding,
-                    report_file,
-                )
-
-            total_reports += 1
-            report_index.append({
-                "id": report_id,
-                "finding_id": finding.get("id", ""),
-                "title": title,
-                "severity": report_severity,
-                "url": finding.get("url", ""),
-                "file": report_file,
-                "type": vuln_type,
-                "source_file": finding.get("source_file", ""),
-                "confidence": finding.get("confidence", ""),
-                "queue_sync": queue_sync,
-                "canonical_lifecycle": not legacy_draft,
-            })
-
-        return write_report_index(report_dir, target_name, total_reports, report_index)
-
-    if not allow_legacy_drafts:
-        return write_report_index(report_dir, target_name, total_reports, report_index)
-
-    occupied_report_ids = _occupied_report_ids([], report_dir)
-    for subdir, vuln_type in dir_type_map.items():
-        subdir_path = os.path.join(findings_dir, subdir)
-        if not os.path.isdir(subdir_path):
-            continue
-
-        for filename in os.listdir(subdir_path):
-            filepath = os.path.join(subdir_path, filename)
-            if not os.path.isfile(filepath) or not filename.endswith(".txt"):
-                continue
-            if "manual" in filename:
-                continue  # Skip manual review files
-
-            with open(filepath) as f:
-                lines = f.readlines()
-
-            for i, line in enumerate(lines):
-                line = line.strip()
-                if not line:
-                    continue
-
-                finding = parse_nuclei_line(line)
-
-                if not finding or not finding.get("url"):
-                    continue
-
-                # Generate report
-                report_content, title = generate_report(finding, vuln_type, target_name)
-
-                # Legacy 输入没有 finding ID，仍使用全局占用集合和排他创建，
-                # 让增量运行永远分配新 ID，不覆盖历史报告。
-                while True:
-                    report_id = _next_report_id(
-                        vuln_type, finding, report_dir, occupied_report_ids
-                    )
-                    report_file = os.path.join(report_dir, f"{report_id}.md")
-                    try:
-                        with Path(report_file).open("x", encoding="utf-8") as rf:
-                            rf.write(report_content)
-                        break
-                    except FileExistsError:
-                        occupied_report_ids[report_id] = ""
-                occupied_report_ids[report_id] = ""
-
-                total_reports += 1
-                report_index.append({
-                    "id": report_id,
-                    "title": title,
-                    "severity": finding.get("severity", "medium"),
-                    "url": finding.get("url", ""),
-                    "file": report_file,
-                    "type": vuln_type
-                })
-
-    return write_report_index(report_dir, target_name, total_reports, report_index)
-
-
-def _existing_structured_report_entries(
-    structured_findings,
-    *,
-    findings_dir: str | os.PathLike,
-    target: str | None = None,
-):
-    """Build report index rows for findings already marked as generated.
-
-    Report generation can be called repeatedly as new candidates pass
-    `/validate`. The index should describe the current report set, not only the
-    reports created in this invocation.
-    """
-    entries = []
-    seen = set()
-    for finding in structured_findings:
-        if not isinstance(finding, dict):
-            continue
-        if str(finding.get("report_status") or "").strip().lower() != "generated":
-            continue
-        # 审计 F3：产物缺失/残片的 generated 行不进存量索引——它要走的
-        # 是下面的恢复路径（重新生成），不是当作已有报告计入。
-        if not _registered_report_artifact_is_intact(finding):
-            continue
-        provenance = verify_finalized_finding_owner_provenance(
-            findings_dir,
-            finding,
-            target=target,
-        )
-        if not provenance.get("valid"):
-            continue
-        report_file = str(finding.get("report_file") or "").strip()
-        if not report_file:
-            continue
-        finding, queue_sync = _reconcile_report_action(
-            findings_dir,
-            target_storage_key(target or Path(findings_dir).name),
-            finding,
-            report_file,
-        )
-        report_id = str(finding.get("report_id") or "").strip() or Path(report_file).stem
-        key = str(finding.get("id") or "") or report_file
-        if key in seen:
-            continue
-        seen.add(key)
-        # Keep index rows consistent with the report prose: severity resolves
-        # through the attached validation summary first, then the finding row.
-        repo_root = _repo_root_for_findings_dir(findings_dir)
-        entry_validation = _load_validation_summary(finding, repo_root=repo_root)
-        entry_severity = _report_severity(
-            finding,
-            entry_validation,
-            VULN_TEMPLATES.get(
-                _report_vuln_type(finding),
-                VULN_TEMPLATES["misconfig"],
-            ),
-        )
-        entries.append({
-            "id": report_id,
-            "finding_id": finding.get("id", ""),
-            "title": finding.get("title") or f"{str(finding.get('type') or 'finding').upper()} on {finding.get('url', '')}",
-            "severity": entry_severity,
-            "url": finding.get("url", ""),
-            "file": report_file,
-            "type": finding.get("type") or finding.get("category") or "misconfig",
-            "source_file": finding.get("source_file", ""),
-            "confidence": finding.get("confidence", ""),
-            "queue_sync": queue_sync,
-        })
-    return entries
+        store = runtime_store(repo_root, target)
+        report_dir = store.root / "reports" / store.key
+        if report_dir != report_dir.resolve():
+            raise StoreError(f"report output does not match directory owner: {report_dir}")
+        report_dir.mkdir(parents=True, exist_ok=True)
+        return _process_primary_reports(store, str(report_dir), store.key)
 
 
 def write_report_index(report_dir, target_name, total_reports, report_index, *, write_empty=False,
-                       store=None, source_binding=None, as_of=None):
-    """Save report index and summary markdown."""
-    if store is not None:
-        # Registration is complete before this lock: never nest a Store mutation.
-        with target_mutation_lock(store.root, store.target):
-            if store.binding() != source_binding:
-                raise ConflictError("report index source snapshot changed; regenerate reports")
-            return _write_report_index(report_dir, target_name, total_reports, report_index,
-                                       write_empty=write_empty, source_binding=source_binding, as_of=as_of)
-    return _write_report_index(report_dir, target_name, total_reports, report_index,
-                               write_empty=write_empty)
+                       store, source_binding, as_of):
+    """Publish the index only while its source snapshot is still current."""
+    with target_mutation_lock(store.root, store.target):
+        if store.binding() != source_binding:
+            raise ConflictError("report index source snapshot changed; regenerate reports")
+        return _write_report_index(report_dir, target_name, total_reports, report_index,
+                                   write_empty=write_empty, source_binding=source_binding, as_of=as_of)
 
 
 def _write_report_index(report_dir, target_name, total_reports, report_index, *, write_empty=False,
@@ -1840,9 +1303,9 @@ def _write_report_index(report_dir, target_name, total_reports, report_index, *,
 
 
 def create_manual_report(vuln_type, url, param=None, evidence=None):
-    """Create a report from manual findings."""
+    """Write an unregistered manual draft without changing target facts."""
     target_name = target_storage_key(url)
-    report_dir = os.path.join(REPORTS_DIR, target_name)
+    report_dir = os.path.join(REPORTS_DIR, target_name, "drafts")
     os.makedirs(report_dir, exist_ok=True)
 
     finding = {
@@ -1856,6 +1319,7 @@ def create_manual_report(vuln_type, url, param=None, evidence=None):
         finding["raw"] += f"\nParameter: {param}"
 
     report_content, title = generate_report(finding, vuln_type, target_name)
+    report_content = "> Manual draft — not assessed, registered, or submitted.\n\n" + report_content
 
     occupied_report_ids = _occupied_report_ids([], report_dir)
     while True:
@@ -1867,7 +1331,7 @@ def create_manual_report(vuln_type, url, param=None, evidence=None):
         except FileExistsError:
             occupied_report_ids[report_id] = ""
 
-    print(f"[+] Report saved: {report_file}")
+    print(f"[+] Manual draft saved: {report_file}")
     return report_file
 
 
@@ -1907,11 +1371,6 @@ def main():
     parser.add_argument("--param", type=str, help="Affected parameter (for manual reports)")
     parser.add_argument("--evidence", type=str, help="Evidence/PoC text (for manual reports)")
     parser.add_argument("--poc-images", type=str, nargs="+", help="PoC screenshot PNG files to attach")
-    parser.add_argument(
-        "--allow-legacy-drafts",
-        action="store_true",
-        help="Generate non-canonical drafts from statusless structured or raw legacy findings",
-    )
     args = parser.parse_args()
 
     print("=============================================")
@@ -1939,10 +1398,7 @@ def main():
         print(f"[-] Not a directory: {args.findings_dir}")
         sys.exit(1)
 
-    total, index = process_findings_dir(
-        args.findings_dir,
-        allow_legacy_drafts=args.allow_legacy_drafts,
-    )
+    total, index = process_findings_dir(args.findings_dir)
 
     print(f"\n[+] Generated {total} reports")
     if index:
@@ -1952,9 +1408,9 @@ def main():
             if count > 0:
                 print(f"  {sev.upper()}: {count}")
 
-        target_name = os.path.basename(args.findings_dir)
-        print(f"\nReports saved to: {REPORTS_DIR}/{target_name}/")
-        print(f"Summary: {REPORTS_DIR}/{target_name}/SUMMARY.md")
+        report_dir = Path(index[0]["file"]).parent
+        print(f"\nReports saved to: {report_dir}/")
+        print(f"Summary: {report_dir}/SUMMARY.md")
     else:
         print("\n[*] No reportable findings to generate reports for.")
 

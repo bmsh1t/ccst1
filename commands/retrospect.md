@@ -63,14 +63,15 @@ python3 tools/coverage_matrix.py find-gaps --target <target> # 需要未处置�
 和 `retrospect` 字段，再判断哪些经验需要晋升到知识库（走 `/distill`）、
 Skills 或 Rules。
 
-如果存在文件，再读取：
+需要展开主张或条件化经验时读取同一 Store：
 
-```text
-findings/<target>/findings.json
-该 finding 行的 validation_summary 路径（通常为 report-local *.validation-summary.json）
-memory/goals/targets/<target>.json
-memory/goals/sessions/*.md
+```bash
+python3 tools/target_store.py findings --target TARGET
+python3 tools/experience_recall.py --target TARGET
 ```
+
+按查询返回的 ID/引用补读对应 report-local validation summary 或原始材料；
+旧目标记忆/会话文件仅供显式历史检查，不用于恢复当前事实。
 
 `findings/last-validate.json` 仅表示最近一次运行，不得替代 selected finding 的 canonical
 artifact 绑定。

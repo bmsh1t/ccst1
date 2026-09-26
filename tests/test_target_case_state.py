@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import sqlite3
 
 import pytest
 
@@ -16,6 +17,7 @@ TARGET = "http://127.0.0.1:3002"
 
 
 def _build_idor_state(tmp_path):
+    TargetStore(tmp_path, TARGET).initialize()
     target_case_state.add_actor(tmp_path, TARGET, actor="user_a", role="user", label="owner")
     target_case_state.add_actor(tmp_path, TARGET, actor="user_b", role="user", label="peer")
     target_case_state.add_session(
@@ -49,6 +51,7 @@ def _build_idor_state(tmp_path):
 
 
 def test_empty_state_initializes_shape(tmp_path):
+    TargetStore(tmp_path, TARGET).initialize()
     state = target_case_state.load_case_state(tmp_path, TARGET)
     summary = target_case_state.summary(tmp_path, TARGET)
 
@@ -73,7 +76,7 @@ def test_existing_corrupt_state_fails_instead_of_resetting_to_empty(tmp_path):
     path.parent.mkdir(parents=True)
     path.write_text("{broken", encoding="utf-8")
 
-    with pytest.raises(ValueError, match="invalid target case state JSON"):
+    with pytest.raises(ValueError, match="not initialized"):
         target_case_state.load_case_state(tmp_path, TARGET)
 
 
@@ -95,10 +98,11 @@ def test_cli_reports_corrupt_state_with_stable_exit(tmp_path, capsys):
     assert rc == 2
     assert captured.out == ""
     assert "target case state command failed" in captured.err
-    assert str(path) in captured.err
+    assert "not initialized" in captured.err
 
 
 def test_add_session_cli_redacts_auth_material_from_stdout(tmp_path, capsys):
+    TargetStore(tmp_path, TARGET).initialize()
     target_case_state.add_actor(tmp_path, TARGET, actor="user_a", role="user")
     secret = "SECRET_CASE_SESSION"
 
@@ -125,6 +129,7 @@ def test_add_session_cli_redacts_auth_material_from_stdout(tmp_path, capsys):
 
 
 def test_add_session_cli_rejects_cross_target_auth_file_without_state_write(tmp_path, capsys):
+    TargetStore(tmp_path, TARGET).initialize()
     target_case_state.add_actor(tmp_path, TARGET, actor="user_a", role="user")
     secret = "SECRET_OTHER_TARGET"
     auth_file = tmp_path / "other-auth.json"
@@ -158,6 +163,7 @@ def test_add_session_cli_rejects_cross_target_auth_file_without_state_write(tmp_
 
 
 def test_case_state_public_file_contains_private_ref_only(tmp_path):
+    TargetStore(tmp_path, TARGET).initialize()
     target_case_state.add_actor(tmp_path, TARGET, actor="user_a", role="user")
     target_case_state.add_session(
         tmp_path,
@@ -170,9 +176,9 @@ def test_case_state_public_file_contains_private_ref_only(tmp_path):
     )
 
     public_path = target_case_state.case_state_path(tmp_path, TARGET)
-    public_text = public_path.read_text(encoding="utf-8")
-    assert "SECRET_CASE" not in public_text
-    payload = json.loads(public_text)
+    assert not public_path.exists()
+    payload = TargetStore(tmp_path, TARGET).case_state()
+    assert "SECRET_CASE" not in json.dumps(payload)
     session = payload["sessions"]["sess_a"]
     assert session["private_ref"].startswith(".private/case-state/")
     private_path = tmp_path / session["private_ref"]
@@ -181,6 +187,7 @@ def test_case_state_public_file_contains_private_ref_only(tmp_path):
 
 
 def test_legacy_case_updates_preserve_defaulted_existing_values(tmp_path):
+    TargetStore(tmp_path, TARGET).initialize()
     target_case_state.add_actor(tmp_path, TARGET, actor="user_a", role="admin_like")
     target_case_state.add_session(tmp_path, TARGET, session="sess_a", actor="user_a",
                                   source="runner", validity="valid", kind="bearer",
@@ -208,11 +215,12 @@ def test_legacy_case_state_rejects_foreign_target_identity(tmp_path):
         "target_key": target_storage_key("https://foreign.test"),
         "actors": {}, "sessions": {}, "objects": {}, "hypotheses": [],
     }), encoding="utf-8")
-    with pytest.raises(ValueError, match="target case state target mismatch"):
+    with pytest.raises(ValueError, match="not initialized"):
         target_case_state.load_case_state(tmp_path, TARGET)
 
 
 def test_case_state_mutations_keep_concurrent_actor_updates(tmp_path):
+    TargetStore(tmp_path, TARGET).initialize()
     from concurrent.futures import ThreadPoolExecutor
 
     def add(index):
@@ -238,7 +246,7 @@ def test_existing_invalid_state_shape_fails_explicitly(tmp_path, payload, messag
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps(payload), encoding="utf-8")
 
-    with pytest.raises(ValueError, match=message):
+    with pytest.raises(ValueError, match="not initialized"):
         target_case_state.load_case_state(tmp_path, TARGET)
 
 
@@ -253,7 +261,7 @@ def test_existing_invalid_case_state_list_member_fails_explicitly(tmp_path):
         "hypotheses": ["invalid"],
     }), encoding="utf-8")
 
-    with pytest.raises(ValueError, match=r"field 'hypotheses'\[0\] must be object"):
+    with pytest.raises(ValueError, match="not initialized"):
         target_case_state.load_case_state(tmp_path, TARGET)
 
 
@@ -268,7 +276,7 @@ def test_existing_duplicate_case_state_id_fails_explicitly(tmp_path):
         "hypotheses": [{"id": "duplicate"}, {"id": "duplicate"}],
     }), encoding="utf-8")
 
-    with pytest.raises(ValueError, match=r"field 'hypotheses' has duplicate id: duplicate"):
+    with pytest.raises(ValueError, match="not initialized"):
         target_case_state.load_case_state(tmp_path, TARGET)
 
 
@@ -299,31 +307,22 @@ def test_legacy_validation_backlog_shape_is_not_validated_by_case(tmp_path, back
         "validation_backlog": backlog,
     }), encoding="utf-8")
 
-    state = target_case_state.load_case_state(tmp_path, TARGET)
+    before = path.read_bytes()
+    with pytest.raises(StoreError, match="not initialized"):
+        target_case_state.load_case_state(tmp_path, TARGET)
+    assert path.read_bytes() == before
 
-    assert state["validation_backlog"] == backlog
 
-
-def test_atomic_save_failure_preserves_previous_case_state(tmp_path, monkeypatch):
-    _build_idor_state(tmp_path)
+def test_uninitialized_case_writer_preserves_legacy_material(tmp_path):
     path = target_case_state.case_state_path(tmp_path, TARGET)
-    previous = path.read_bytes()
-    state = target_case_state.load_case_state(tmp_path, TARGET)
-    state["actors"]["user_a"]["label"] = "changed"
-    original_replace = Path.replace
-
-    def fail_case_state_replace(self, target):
-        if Path(target) == path:
-            raise OSError("synthetic replace failure")
-        return original_replace(self, target)
-
-    monkeypatch.setattr(Path, "replace", fail_case_state_replace)
-
-    with pytest.raises(OSError, match="synthetic replace failure"):
-        target_case_state.save_case_state(tmp_path, TARGET, state)
-
-    assert path.read_bytes() == previous
-    assert list(path.parent.glob(f".{path.name}.*.tmp")) == []
+    path.parent.mkdir(parents=True)
+    path.write_text('{"actors":{"old":{"role":"user"}}}')
+    before = path.read_bytes()
+    with pytest.raises(StoreError, match="not initialized"):
+        target_case_state.add_actor(tmp_path, TARGET, actor="new", role="user")
+    assert path.read_bytes() == before
+    assert not TargetStore(tmp_path, TARGET).path.exists()
+    assert not hasattr(target_case_state, "save_case_state")
 
 
 def test_add_actor_session_object_and_summary(tmp_path):
@@ -334,7 +333,9 @@ def test_add_actor_session_object_and_summary(tmp_path):
 
     assert state["actors"]["user_a"]["role"] == "user"
     assert state["sessions"]["sess_user_a"]["header_name"] == "Authorization"
-    assert state["objects"]["order_123"]["private_marker"] == "owner@example.test"
+    assert state["objects"]["order_123"]["private_marker"] == "<redacted>"
+    private_object = tmp_path / state["objects"]["order_123"]["private_ref"]
+    assert json.loads(private_object.read_text())["private_marker"] == "owner@example.test"
     assert summary["actors"] == 2
     assert summary["sessions"] == 2
     assert summary["authz_coverage"]["status"] == "ready"
@@ -343,6 +344,7 @@ def test_add_actor_session_object_and_summary(tmp_path):
 
 
 def test_add_session_imports_multi_header_auth_file(tmp_path):
+    TargetStore(tmp_path, TARGET).initialize()
     target_case_state.add_actor(tmp_path, TARGET, actor="user_a", role="user")
     auth_file = tmp_path / "auth.json"
     auth_file.write_text(
@@ -386,6 +388,7 @@ def test_add_session_imports_multi_header_auth_file(tmp_path):
 
 
 def test_add_session_requires_existing_actor(tmp_path):
+    TargetStore(tmp_path, TARGET).initialize()
     with pytest.raises(ValueError, match="actor does not exist"):
         target_case_state.add_session(
             tmp_path,
@@ -467,6 +470,48 @@ def test_case_module_exposes_no_backlog_or_ranking_api(tmp_path):
         )
 
 
+def test_case_summary_and_seed_do_not_materialize_hypothesis_history(tmp_path, monkeypatch):
+    from tools.case_state_seed import build_case_state_seed
+    from tools.distill_target import build_evidence_view
+
+    _build_idor_state(tmp_path)
+    store = TargetStore(tmp_path, TARGET)
+    for index in range(1001):
+        store.remember_hypothesis(
+            command_id=f"hyp-{index}", hypothesis_id=f"hyp-{index}", vuln_class="IDOR",
+            actor_ids=["user_a", "user_b"], object_ref="order_123",
+            status="closed" if index == 1000 else "open", actor="test",
+        )
+    context = store.case_context()
+    assert len(context["hypotheses"]) == 1001
+    assert context["hypotheses"][0]["actors"] == ["user_a", "user_b"]
+    full_state = store.case_state()
+    assert store.case_state(include_hypotheses=False) == {
+        key: value for key, value in full_state.items() if key != "hypotheses"
+    }
+    expected = target_case_state.summary(tmp_path, TARGET)
+    assert expected["open_hypotheses"] == 1000
+    assert expected["authz_coverage"]["status"] == "ready"
+    assert expected["object_samples"][0]["private_marker"] == "<redacted>"
+    before = store.binding()
+    row_count = 0
+    row_factory = sqlite3.Row
+
+    def count_row(cursor, values):
+        nonlocal row_count
+        row_count += 1
+        return row_factory(cursor, values)
+
+    monkeypatch.setattr(sqlite3, "Row", count_row)
+    assert target_case_state.summary(tmp_path, TARGET) == expected
+    assert build_case_state_seed(tmp_path, TARGET)["status"] == "no_seed_candidates"
+    assert row_count < 80
+    row_count = 0
+    assert build_evidence_view(tmp_path, TARGET)["evidence_counts"]["experiences"] == 1001
+    assert row_count < 120
+    assert store.binding() == before
+
+
 def test_case_cli_has_no_action_verbs(tmp_path):
     for verb in ("next", "add-backlog", "complete-backlog"):
         with pytest.raises(SystemExit) as exit_info:
@@ -527,17 +572,10 @@ def test_legacy_backlog_and_unknown_keys_survive_case_mutations_verbatim(tmp_pat
         "unknown_top_level_key": {"keep": True},
     }), encoding="utf-8")
 
-    _build_idor_state(tmp_path)
-    target_case_state.add_hypothesis(
-        tmp_path, TARGET, vuln_class="IDOR", object_ref="order_123",
-        why_now="owner endpoint observed",
-    )
-    state = target_case_state.load_case_state(tmp_path, TARGET)
-
-    assert state["validation_backlog"] == legacy_backlog
-    assert state["unknown_top_level_key"] == {"keep": True}
-    assert state["hypotheses"][0]["why_now"] == "owner endpoint observed"
-    assert json.loads(path.read_text(encoding="utf-8"))["validation_backlog"] == legacy_backlog
+    before = path.read_bytes()
+    with pytest.raises(StoreError, match="not initialized"):
+        target_case_state.add_hypothesis(tmp_path, TARGET, vuln_class="IDOR")
+    assert path.read_bytes() == before
 
 
 def test_cli_summary_outputs_context_json_only(tmp_path, capsys):
@@ -569,6 +607,7 @@ def test_cli_summary_text_lists_context_lines_only(tmp_path, capsys):
 
 def test_hypothesis_metadata_cli_round_trip_stores_what_the_validator_accepted(tmp_path, capsys):
     target = "target.com"
+    TargetStore(tmp_path, target).initialize()
     metadata = {
         "family": "RCE",
         "primitive": "SSTI",
@@ -602,6 +641,7 @@ def test_hypothesis_metadata_cli_round_trip_stores_what_the_validator_accepted(t
 
 
 def test_add_hypothesis_metadata_json_rejects_invalid_or_non_object(tmp_path, capsys):
+    TargetStore(tmp_path, "target.com").initialize()
     for raw in ("{broken", "[]"):
         rc = target_case_state.main([
             "add-hypothesis", "--repo-root", str(tmp_path), "--target", "target.com",
@@ -699,18 +739,21 @@ def test_add_hypothesis_rejects_unknown_actor_and_object(tmp_path):
 
 
 def test_case_state_rejects_duplicate_hypothesis_ids(tmp_path):
+    TargetStore(tmp_path, TARGET).initialize()
     hypothesis = target_case_state.add_hypothesis(
         tmp_path,
         TARGET,
         hypothesis_id="hyp_001",
         vuln_class="IDOR",
     )
-    with pytest.raises(ValueError, match="hypothesis id already exists: hyp_001"):
+    assert target_case_state.add_hypothesis(tmp_path, TARGET, hypothesis_id=hypothesis["id"], vuln_class="IDOR")["id"] == hypothesis["id"]
+    with pytest.raises(ValueError, match="hypothesis id is already bound to different content"):
         target_case_state.add_hypothesis(
             tmp_path,
             TARGET,
             hypothesis_id=hypothesis["id"],
             vuln_class="IDOR",
+            why_now="changed premise",
         )
 
 
@@ -742,10 +785,10 @@ def test_primary_case_context_uses_store_and_redacts_private_material(tmp_path):
     assert target_case_state.add_hypothesis(tmp_path, TARGET, vuln_class="IDOR")["id"] == "hyp_002"
     private_path = tmp_path / state["sessions"]["sess_a"]["private_ref"]
     private_path.unlink()
-    with pytest.raises(StoreError, match="private case material unavailable"):
-        store.case_context()
-    with pytest.raises(StoreError, match="case_state.json is read-only"):
-        target_case_state.save_case_state(tmp_path, TARGET, state)
+    for read in (store.case_context, store.case_summary, store.case_object_refs):
+        with pytest.raises(StoreError, match="private case material unavailable"):
+            read()
+    assert not hasattr(target_case_state, "save_case_state")
 
 
 def test_primary_case_updates_preserve_defaults_and_detect_tampering(tmp_path):
@@ -768,5 +811,6 @@ def test_primary_case_updates_preserve_defaults_and_detect_tampering(tmp_path):
     payload = json.loads(private_path.read_text(encoding="utf-8"))
     payload["headers"]["Authorization"] = "Bearer TAMPERED"
     private_path.write_text(json.dumps(payload), encoding="utf-8")
-    with pytest.raises(StoreError, match="digest mismatch"):
-        store.case_context()
+    for read in (store.case_context, store.case_summary, store.case_object_refs):
+        with pytest.raises(StoreError, match="digest mismatch"):
+            read()

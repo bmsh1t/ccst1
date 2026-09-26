@@ -16,6 +16,8 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import shutil
+from tempfile import TemporaryDirectory
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -31,6 +33,9 @@ try:
     from context_pack import build_context_pack
 except ImportError:  # pragma: no cover - direct tools/ execution
     from tools.context_pack import build_context_pack  # type: ignore
+
+
+from tools.target_store import TargetStore
 
 
 DEFAULT_CASES = BASE_DIR / "tests" / "skill-validator" / "cases" / "web2_vuln_classes_ab_cases.json"
@@ -106,76 +111,80 @@ def evaluate_cases(repo_root: Path = BASE_DIR, cases_path: Path = DEFAULT_CASES)
     web2_text = _read_text(repo_root / "skills" / "web2-vuln-classes" / "SKILL.md").lower()
     rows: list[dict] = []
 
-    for case in cases:
-        focus = str(case["focus"])
-        pack = build_context_pack(repo_root, target="eval.test", focus=focus)
-        baseline = _build_baseline_material(repo_root, pack)
-        # Enhanced arm: baseline + the card bodies the AI would pull for this
-        # case (expected_cards from the catalog) + the web2 skill. This
-        # measures whether the card corpus carries the knowledge the retired
-        # seeds used to duplicate.
-        enhanced_parts = [baseline.text]
-        enhanced_paths = [*baseline.paths]
-        for rel in case.get("expected_cards", []) or []:
-            rel = str(rel)
-            path = _repo_path(repo_root, rel)
-            if path.is_file():
-                enhanced_parts.append(f"\n--- {rel} ---\n{_read_text(path)}")
-                enhanced_paths.append(rel)
-        enhanced_parts.append("\n--- skills/web2-vuln-classes/SKILL.md ---\n" + web2_text)
-        enhanced_paths.append("skills/web2-vuln-classes/SKILL.md")
-        enhanced = Material(
-            text="\n".join(enhanced_parts).lower(),
-            paths=enhanced_paths,
-        )
+    with TemporaryDirectory(prefix="ccst-skill-eval-") as directory:
+        fixture = Path(directory)
+        shutil.copytree(repo_root / "knowledge", fixture / "knowledge")
+        TargetStore(fixture, "eval.test").initialize()
+        for case in cases:
+            focus = str(case["focus"])
+            pack = build_context_pack(fixture, target="eval.test", focus=focus)
+            baseline = _build_baseline_material(repo_root, pack)
+            # Enhanced arm: baseline + the card bodies the AI would pull for this
+            # case (expected_cards from the catalog) + the web2 skill. This
+            # measures whether the card corpus carries the knowledge the retired
+            # seeds used to duplicate.
+            enhanced_parts = [baseline.text]
+            enhanced_paths = [*baseline.paths]
+            for rel in case.get("expected_cards", []) or []:
+                rel = str(rel)
+                path = _repo_path(repo_root, rel)
+                if path.is_file():
+                    enhanced_parts.append(f"\n--- {rel} ---\n{_read_text(path)}")
+                    enhanced_paths.append(rel)
+            enhanced_parts.append("\n--- skills/web2-vuln-classes/SKILL.md ---\n" + web2_text)
+            enhanced_paths.append("skills/web2-vuln-classes/SKILL.md")
+            enhanced = Material(
+                text="\n".join(enhanced_parts).lower(),
+                paths=enhanced_paths,
+            )
 
-        expected_cards = [str(item) for item in case.get("expected_cards", [])]
-        forbidden_cards = [str(item) for item in case.get("forbidden_cards", [])]
-        # Keyword selection retired (2026-09-13 native audit): the card
-        # catalog is the AI-visible discovery surface. The eval checks
-        # discoverability; auto-selection no longer exists, so forbidden-card
-        # noise checks are vacuously satisfied and kept only for schema.
-        visible_cards = {
-            str(item.get("file") or "")
-            for item in pack.get("card_catalog", []) or []
-            if isinstance(item, dict)
-        }
-        cards = sorted(visible_cards)
-        route_missing = [card for card in expected_cards if card not in visible_cards]
-        selected_cards: set[str] = set()
-        forbidden_present: list[str] = []
-        route_score = sum(card in cards for card in expected_cards)
-        forbidden_score = sum(card not in selected_cards for card in forbidden_cards)
-        route_max = len(expected_cards) + len(forbidden_cards)
+            expected_cards = [str(item) for item in case.get("expected_cards", [])]
+            forbidden_cards = [str(item) for item in case.get("forbidden_cards", [])]
+            # Keyword selection retired (2026-09-13 native audit): the card
+            # catalog is the AI-visible discovery surface. The eval checks
+            # discoverability; auto-selection no longer exists, so forbidden-card
+            # noise checks are vacuously satisfied and kept only for schema.
+            visible_cards = {
+                str(item.get("file") or "")
+                for item in pack.get("card_catalog", []) or []
+                if isinstance(item, dict)
+            }
+            cards = sorted(visible_cards)
+            route_missing = [card for card in expected_cards if card not in visible_cards]
+            selected_cards: set[str] = set()
+            forbidden_present: list[str] = []
+            route_score = sum(card in cards for card in expected_cards)
+            forbidden_score = sum(card not in selected_cards for card in forbidden_cards)
+            route_max = len(expected_cards) + len(forbidden_cards)
 
-        signal_checks = [item for item in case.get("signal_checks", []) if isinstance(item, dict)]
-        baseline_signal, baseline_passed, baseline_missing = _score_signals(baseline, signal_checks)
-        enhanced_signal, enhanced_passed, enhanced_missing = _score_signals(enhanced, signal_checks)
+            signal_checks = [item for item in case.get("signal_checks", []) if isinstance(item, dict)]
+            baseline_signal, baseline_passed, baseline_missing = _score_signals(baseline, signal_checks)
+            enhanced_signal, enhanced_passed, enhanced_missing = _score_signals(enhanced, signal_checks)
 
-        max_score = route_max + len(signal_checks)
-        baseline_score = route_score + forbidden_score + baseline_signal
-        enhanced_score = route_score + forbidden_score + enhanced_signal
-        skill_only = sorted(set(enhanced_passed) - set(baseline_passed))
+            max_score = route_max + len(signal_checks)
+            baseline_score = route_score + forbidden_score + baseline_signal
+            enhanced_score = route_score + forbidden_score + enhanced_signal
+            skill_only = sorted(set(enhanced_passed) - set(baseline_passed))
 
-        rows.append({
-            "id": case["id"],
-            "lane": case["lane"],
-            "expected_skill": case.get("expected_skill"),
-            "knowledge_cards": cards,
-            "reference_hints": pack.get("reference_hints", []) or [],
-            "route_missing_expected_cards": route_missing,
-            "route_forbidden_cards_present": forbidden_present,
-            "baseline_score": baseline_score,
-            "enhanced_score": enhanced_score,
-            "max_score": max_score,
-            "delta": enhanced_score - baseline_score,
-            "baseline_signal_passed": baseline_passed,
-            "baseline_signal_missing": baseline_missing,
-            "enhanced_signal_passed": enhanced_passed,
-            "enhanced_signal_missing": enhanced_missing,
-            "skill_only_signal_checks": skill_only,
-            "baseline_paths": baseline.paths,
-        })
+            rows.append({
+                "id": case["id"],
+                "lane": case["lane"],
+                "expected_skill": case.get("expected_skill"),
+                "knowledge_cards": cards,
+                "reference_hints": pack.get("reference_hints", []) or [],
+                "route_missing_expected_cards": route_missing,
+                "route_forbidden_cards_present": forbidden_present,
+                "baseline_score": baseline_score,
+                "enhanced_score": enhanced_score,
+                "max_score": max_score,
+                "delta": enhanced_score - baseline_score,
+                "baseline_signal_passed": baseline_passed,
+                "baseline_signal_missing": baseline_missing,
+                "enhanced_signal_passed": enhanced_passed,
+                "enhanced_signal_missing": enhanced_missing,
+                "skill_only_signal_checks": skill_only,
+                "baseline_paths": baseline.paths,
+            })
 
     summary = {
         "case_count": len(rows),

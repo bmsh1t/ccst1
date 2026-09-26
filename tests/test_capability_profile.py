@@ -12,6 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from tools.target_store import TargetStore
 from tools.capability_profile import build_capability_profile
 from tools.autopilot_bootstrap import build_autopilot_bootstrap
 
@@ -74,7 +75,11 @@ def test_bootstrap_carry_real_capability_profile(monkeypatch, tmp_path):
     """
     runtime_root = _prepare_runtime_fixture(tmp_path)
     monkeypatch.setenv("CCST_RUNTIME_ROOT", str(runtime_root))
-    payload = build_autopilot_bootstrap(["127.0.0.1:3001", "--deep"])
+    import shutil
+    for subdir in ("commands", "agents", "skills"):
+        shutil.copytree(runtime_root / subdir, tmp_path / subdir)
+    TargetStore(tmp_path, "capability.test").initialize()
+    payload = build_autopilot_bootstrap(["capability.test", "--deep"], repo_root=tmp_path)
     assert payload["action"] != "stop_runtime_drift", (
         f"temp runtime fixture must satisfy critical drift gate: {payload.get('runtime', {}).get('missing_critical')}"
     )
@@ -89,6 +94,7 @@ def test_bootstrap_stops_on_missing_runtime_short_circuits_capability(monkeypatc
     """审计 F6 负例：缺 runtime 时 bootstrap 必须 stop_runtime_drift，
     能力快照保持未检查（checked=false）——生产短路行为本身是正确的。"""
     monkeypatch.setenv("CCST_RUNTIME_ROOT", str(tmp_path / "nowhere"))
-    payload = build_autopilot_bootstrap(["127.0.0.1:3001", "--deep"])
+    TargetStore(tmp_path, "capability.test").initialize()
+    payload = build_autopilot_bootstrap(["capability.test", "--deep"], repo_root=tmp_path)
     assert payload["action"] == "stop_runtime_drift"
     assert payload["capabilities"]["checked"] is False

@@ -19,7 +19,7 @@
 
 ## 禁止模式
 
-- target-level `findings.json` 的直接多写者或 list/object 双 schema。
+- 把旧 `findings.json` 当作当前领域 owner，或为缺库恢复旧 writer。
 - 用 scanner-negative、coverage gap、regex 或 score 代替 AI 最终判断。
 - 把 runtime v2 可派生状态重新持久化进 `session.json`。
 - 同名 batch list 仅按 stem 共享磁盘状态。
@@ -119,13 +119,13 @@
 
 - 工具化必须增强 AI，而不是把 AI 降级成固定扫描器。
 - AI 负责假设生成、攻击面取舍、跨证据组合、误判解释和升级/降级决策。
-- 工具负责稳定 replay、diff、raw evidence、ledger 写入和格式一致性。
+- 工具负责稳定 replay、diff、raw evidence、Store 观察登记和格式一致性。
 - 新增执行工具不能只输出 pass/fail；必须保留 baseline、variant、证据路径、停止条件和
   Claude 可继续推理的原始观察与引用，不生成固定测试建议。
 - AI identity enrichment may propose a vulnerability family, semantic
   dimensions, aliases, and follow-up tests, but the candidate is untrusted
   until `tools/identity_contract.py` validates completeness, confidence,
-  provenance, and conflicts. Persist candidates through the Evidence Ledger;
+  provenance, and conflicts. Persist observations and explicit claims through the Store;
   do not create a second identity or lifecycle owner.
 - A complete family-aware closure key is immutable. Later evidence that adds or
   corrects dimensions creates a linked replacement key and preserves the old

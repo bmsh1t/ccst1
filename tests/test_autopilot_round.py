@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import multiprocessing
 import time
-from contextlib import nullcontext
 
 import pytest
 
@@ -60,80 +59,51 @@ def _claim_lane_after_signal(repo_root, target, start, attempting, output):
         output.put(("error", str(exc)))
 
 
-def test_closure_snapshot_reuses_one_queue_read(monkeypatch, tmp_path):
-    queue = {"target": "target.com", "actions": []}
-    queue_reads = []
-    state_snapshots = []
-    closure_snapshots = []
+def test_closure_snapshot_reads_current_state_and_closure(monkeypatch, tmp_path):
+    TargetStore(tmp_path, "target.com").initialize()
+    calls = []
+    state = {"target": "target.com", "resolved_target": "target.com"}
 
-    monkeypatch.setattr(
-        autopilot_round_module,
-        "load_queue",
-        lambda *_args, **_kwargs: queue_reads.append(queue) or queue,
+    def current_state(*args, **kwargs):
+        assert kwargs == {"bounded": True}
+        calls.append("state")
+        return state
+
+    def current_closure(repo, actual, **kwargs):
+        assert actual is state
+        assert kwargs == {"max_lanes_reached": False}
+        calls.append("closure")
+        return {"snapshot_digest": "stable"}
+
+    monkeypatch.setattr(autopilot_round_module, "build_autopilot_state", current_state)
+    monkeypatch.setattr(autopilot_round_module, "load_closure_projection", current_closure)
+    assert autopilot_round_module._closure_snapshot(tmp_path, "target.com") == (
+        state, {"snapshot_digest": "stable"},
     )
-
-    def fake_state(*_args, **kwargs):
-        state_snapshots.append(kwargs["queue_snapshot"])
-        return {
-            "target": "target.com",
-            "resolved_target": "target.com",
-            "action_queue_fingerprint": "queue-generation",
-        }
-
-    def fake_closure(*_args, **kwargs):
-        closure_snapshots.append(kwargs["queue_snapshot"])
-        return {}
-
-    monkeypatch.setattr(autopilot_round_module, "build_autopilot_state", fake_state)
-    monkeypatch.setattr(autopilot_round_module, "load_closure_projection", fake_closure)
-
-    autopilot_round_module._closure_snapshot(tmp_path, "target.com")
-
-    assert len(queue_reads) == 1
-    assert state_snapshots == [queue]
-    assert closure_snapshots == [queue]
-    assert state_snapshots[0] is closure_snapshots[0]
+    assert calls == ["state", "closure"]
 
 
 def test_closure_snapshot_retries_one_stale_owner_read(monkeypatch, tmp_path):
-    queues = [
-        {"target": "target.com", "actions": [{"id": "AQ-1"}]},
-        {"target": "target.com", "actions": [{"id": "AQ-2"}]},
-    ]
-    closures = [
-        {"snapshot_stale": True, "reasons": ["state_snapshot_stale"]},
-        {"snapshot_digest": "stable"},
-    ]
+    store = TargetStore(tmp_path, "target.com")
+    store.initialize()
     reads = []
 
-    monkeypatch.setattr(
-        autopilot_round_module,
-        "load_queue",
-        lambda *_args, **_kwargs: reads.append(queues.pop(0)) or reads[-1],
-    )
-    monkeypatch.setattr(
-        autopilot_round_module,
-        "build_autopilot_state",
-        lambda *_args, **kwargs: {
-            "target": "target.com",
-            "resolved_target": "target.com",
-            "action_queue_fingerprint": "generation",
-            "queue_snapshot": kwargs["queue_snapshot"],
-        },
-    )
-    monkeypatch.setattr(
-        autopilot_round_module,
-        "load_closure_projection",
-        lambda *_args, **_kwargs: closures.pop(0),
-    )
+    def current_state(*args, **kwargs):
+        reads.append(store.binding()["revision"])
+        if len(reads) == 1:
+            store.set_active_goal(command_id="concurrent-goal", goal="Changed during read", actor="test")
+        return {"target": "target.com", "resolved_target": "target.com"}
 
-    _state, closure = autopilot_round_module._closure_snapshot(tmp_path, "target.com")
-
-    assert len(reads) == 2
+    monkeypatch.setattr(autopilot_round_module, "build_autopilot_state", current_state)
+    monkeypatch.setattr(autopilot_round_module, "load_closure_projection",
+                        lambda *args, **kwargs: {"snapshot_digest": "stable"})
+    _, closure = autopilot_round_module._closure_snapshot(tmp_path, "target.com")
+    assert reads == [0, 1]
     assert closure == {"snapshot_digest": "stable"}
 
 
 def test_prepare_round_is_idempotent_and_preserves_checkpoint_budget(tmp_path):
+    TargetStore(tmp_path, "target.com").initialize()
     first = prepare_round(tmp_path, "target.com", 2)
     second = prepare_round(tmp_path, "target.com", 8)
 
@@ -170,11 +140,9 @@ def test_prepare_does_not_start_new_round_before_global_review(monkeypatch, tmp_
     assert calls == []
 
 
-@pytest.mark.parametrize("primary", [False, True])
-def test_settle_round_refuses_started_lane_without_writing(tmp_path, primary):
+def test_settle_round_refuses_started_lane_without_writing(tmp_path):
     target = "target.com"
-    if primary:
-        TargetStore(tmp_path, target).initialize()
+    TargetStore(tmp_path, target).initialize()
     begin_round(tmp_path, target, max_lanes=1)
     record_round_lane(tmp_path, target, lane="coverage:/api/orders", max_lanes=1)
     witness = _witness(tmp_path, target)
@@ -188,6 +156,7 @@ def test_settle_round_refuses_started_lane_without_writing(tmp_path, primary):
 
 def test_settle_round_closes_terminal_lane_and_replays_idempotently(tmp_path):
     target = "target.com"
+    TargetStore(tmp_path, target).initialize()
     begin_round(tmp_path, target, max_lanes=1)
     lane = "sqli:/api/orders"
     record_round_lane(tmp_path, target, lane=lane, max_lanes=1)
@@ -239,12 +208,7 @@ def test_primary_settle_only_closes_runtime_round(monkeypatch, tmp_path, invalid
     def reject_legacy(*_args, **_kwargs):
         pytest.fail("primary settlement called a legacy coordinator or implicit refresh")
 
-    for name in (
-        "reconcile_root_finding_claims", "list_root_finding_claims",
-        "_append_root_claim_queue_items", "sync_checkpoint_action_queue",
-        "_refresh_surface_if_pending",
-    ):
-        monkeypatch.setattr(autopilot_round_module, name, reject_legacy)
+    monkeypatch.setattr(surface_module, "build_surface_review", reject_legacy)
 
     def snapshot():
         return {
@@ -294,274 +258,85 @@ def test_settle_rejects_unavailable_backend_before_legacy_writes(monkeypatch, tm
     elif backend == "corrupt-primary":
         store.path.write_bytes(b"not sqlite")
 
-    def reject_legacy(*_args, **_kwargs):
-        pytest.fail("unavailable backend reached legacy reconciliation")
-
-    monkeypatch.setattr(autopilot_round_module, "reconcile_root_finding_claims", reject_legacy)
-    with pytest.raises(ValueError, match="preview|missing|target store failure"):
+    with pytest.raises(ValueError, match="not active|missing|target store failure"):
         settle_round(tmp_path, target)
     assert witness.read_bytes() == before
     assert not (tmp_path / "state" / target / "action_queue.json").exists()
 
 
-@pytest.mark.parametrize("failure_point", ["checkpoint", "queue", "surface", "closure"])
-def test_settle_round_replays_each_durable_boundary(
-    monkeypatch,
-    tmp_path,
-    failure_point,
-):
+@pytest.mark.parametrize("failure_point", ["checkpoint", "snapshot", "before-closure", "after-closure"])
+def test_settle_round_replays_each_durable_boundary(monkeypatch, tmp_path, failure_point):
     target = "target.com"
-    _seed_stale_surface(tmp_path, target)
+    store = TargetStore(tmp_path, target)
+    store.initialize()
     started = begin_round(tmp_path, target, max_lanes=1)
     lane = "sqli:/api/orders"
     record_round_lane(tmp_path, target, lane=lane, max_lanes=1)
-    record_round_lane_result(
-        tmp_path,
-        target,
-        lane=lane,
-        status="completed",
-        decision="tested clean",
-        evidence_ref=_write_evidence(tmp_path, target),
-        next_action="none",
-    )
+    record_round_lane_result(tmp_path, target, lane=lane, status="completed", decision="tested clean",
+                             evidence_ref=_write_evidence(tmp_path, target), next_action="none")
+    binding = store.binding()
+    attribute = {"checkpoint": "build_checkpoint", "snapshot": "_closure_snapshot"}.get(
+        failure_point, "record_round_closure")
+    original = getattr(autopilot_round_module, attribute)
+    calls = 0
 
-    failed = False
-    if failure_point == "checkpoint":
-        attribute = "sync_checkpoint_action_queue"
-        original = getattr(autopilot_round_module, attribute)
-
-        def interrupt(*_args, **_kwargs):
-            nonlocal failed
-            failed = True
-            raise OSError("interrupted after checkpoint")
-    elif failure_point == "queue":
-        attribute = "_refresh_surface_if_pending"
-        original = getattr(autopilot_round_module, attribute)
-
-        def interrupt(*_args, **_kwargs):
-            nonlocal failed
-            failed = True
-            raise OSError("interrupted after queue")
-    elif failure_point == "surface":
-        attribute = "_refresh_surface_if_pending"
-        original = getattr(autopilot_round_module, attribute)
-
-        def interrupt(*args, **kwargs):
-            nonlocal failed
-            result = original(*args, **kwargs)
-            failed = True
-            raise OSError("interrupted after surface")
-    else:
-        attribute = "record_round_closure"
-        original = getattr(autopilot_round_module, attribute)
-
-        def interrupt(*args, **kwargs):
-            nonlocal failed
+    def interrupt(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if failure_point == "snapshot" and calls == 1:
+            return original(*args, **kwargs)
+        if failure_point in {"checkpoint", "after-closure"}:
             original(*args, **kwargs)
-            failed = True
-            raise OSError("interrupted after closure")
+        raise OSError("interrupted at " + failure_point)
 
     monkeypatch.setattr(autopilot_round_module, attribute, interrupt)
-    with pytest.raises(OSError, match=f"interrupted after {failure_point}"):
+    with pytest.raises(OSError, match="interrupted at " + failure_point):
         settle_round(tmp_path, target, refresh_coverage=False)
-
-    interrupted = json.loads(_witness(tmp_path, target).read_text(encoding="utf-8"))
+    interrupted = json.loads(_witness(tmp_path).read_text())
     assert interrupted["round_progress"]["status"] == (
-        "completed" if failure_point == "closure" else "active"
-    )
-    if failure_point != "closure":
-        _state, pending_closure = autopilot_round_module._closure_snapshot(tmp_path, target)
-        assert pending_closure["verdict"] != "finish"
+        "completed" if failure_point == "after-closure" else "active")
     monkeypatch.setattr(autopilot_round_module, attribute, original)
-
     recovered = settle_round(tmp_path, target, refresh_coverage=False)
-    queue_path = tmp_path / "state" / target / "action_queue.json"
-    recovered_queue = queue_path.read_bytes()
+    after = _witness(tmp_path).read_bytes()
     replay = settle_round(tmp_path, target, refresh_coverage=False)
-    final_witness = json.loads(_witness(tmp_path, target).read_text(encoding="utf-8"))
-    action_ids = [item["id"] for item in load_queue(tmp_path, target)["actions"]]
-
-    assert failed is True
     assert recovered["status"] in {"settled", "already_settled"}
     assert replay["status"] == "already_settled"
-    assert final_witness["round_progress"]["status"] == "completed"
-    assert final_witness["round_progress"]["round_id"] == started["round_progress"]["round_id"]
-    assert len(action_ids) == len(set(action_ids))
-    assert queue_path.read_bytes() == recovered_queue
-    assert load_surface_projection(tmp_path, target)["status"] == "valid"
+    assert replay["round_progress"]["round_id"] == started["round_progress"]["round_id"]
+    assert _witness(tmp_path).read_bytes() == after
+    assert store.binding() == binding
+    assert load_queue(tmp_path, target)["actions"] == []
+    assert not (tmp_path / "state" / target / "action_queue.json").exists()
 
 
-def test_pending_surface_refreshes_before_settle(monkeypatch, tmp_path):
-    calls = []
-    refreshed = ({"surface_projection": {"status": "valid"}}, {"reasons": []})
-
-    monkeypatch.setattr(
-        autopilot_round_module,
-        "build_surface_review",
-        lambda *args, **kwargs: calls.append((args, kwargs)),
-    )
-    monkeypatch.setattr(autopilot_round_module, "_closure_snapshot", lambda *args: refreshed)
-
-    state, closure = autopilot_round_module._refresh_surface_if_pending(
-        tmp_path,
-        "target.com",
-        {"surface_projection": {"status": "stale"}},
-        {"reasons": ["surface_projection_pending"]},
-    )
-
-    assert calls == [((tmp_path, "target.com"), {"refresh": True})]
-    assert (state, closure) == refreshed
-
-
-def test_pending_surface_refreshes_when_round_closure_masks_stale_projection(monkeypatch, tmp_path):
-    calls = []
-    refreshed = (
-        {"has_recon": True, "surface_projection": {"status": "valid"}},
-        {"reasons": ["round_closure_pending"]},
-    )
-
-    monkeypatch.setattr(
-        autopilot_round_module,
-        "build_surface_review",
-        lambda *args, **kwargs: calls.append((args, kwargs)),
-    )
-    monkeypatch.setattr(autopilot_round_module, "_closure_snapshot", lambda *args: refreshed)
-
-    state, closure = autopilot_round_module._refresh_surface_if_pending(
-        tmp_path,
-        "target.com",
-        {"has_recon": True, "surface_projection": {"status": "stale"}},
-        {"reasons": ["round_closure_pending"]},
-    )
-
-    assert calls == [((tmp_path, "target.com"), {"refresh": True})]
-    assert (state, closure) == refreshed
-
-
-def test_pending_surface_refresh_failure_preserves_handoff(monkeypatch, tmp_path):
-    original = ({"surface_projection": {"status": "stale"}}, {"reasons": ["surface_projection_pending"]})
-
-    def fail_refresh(*_args, **_kwargs):
-        raise OSError("surface unavailable")
-
-    monkeypatch.setattr(autopilot_round_module, "build_surface_review", fail_refresh)
-
-    assert autopilot_round_module._refresh_surface_if_pending(
-        tmp_path,
-        "target.com",
-        *original,
-    ) == original
-
-
-def test_settle_refreshes_surface_after_checkpoint_queue_writeback(monkeypatch, tmp_path):
-    events = []
+@pytest.mark.parametrize("projection", ["stale", "missing", "malformed"])
+def test_settle_requires_explicit_surface_refresh(tmp_path, monkeypatch, projection):
     target = "target.com"
-    state = {"resolved_target": target}
-    closure = {
-        "reasons": ["round_closure_pending"],
-        "round_progress": {"status": "active", "unfinished_lanes": []},
-    }
-
-    monkeypatch.setattr(
-        autopilot_round_module,
-        "checkpoint_witness_lock",
-        lambda *_args, **_kwargs: nullcontext(),
-    )
-    monkeypatch.setattr(autopilot_round_module, "_closure_snapshot", lambda *_args: (state, closure))
-    monkeypatch.setattr(
-        autopilot_round_module,
-        "reconcile_root_finding_claims",
-        lambda *_args, **_kwargs: events.append("reconcile") or {},
-    )
-    monkeypatch.setattr(
-        autopilot_round_module,
-        "build_checkpoint",
-        lambda *_args, **kwargs: events.append("checkpoint") or {
-            "target": kwargs["target"],
-            "next_action_queue": [],
-        },
-    )
-    monkeypatch.setattr(autopilot_round_module, "list_root_finding_claims", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(
-        autopilot_round_module,
-        "sync_checkpoint_action_queue",
-        lambda *_args, **_kwargs: events.append("sync"),
-    )
-    monkeypatch.setattr(
-        autopilot_round_module,
-        "_refresh_surface_if_pending",
-        lambda *_args, **_kwargs: events.append("refresh") or (state, closure),
-    )
-    monkeypatch.setattr(
-        autopilot_round_module,
-        "record_round_closure",
-        lambda *_args, **_kwargs: events.append("close") or {"round_progress": {"status": "completed"}},
-    )
-
+    store = TargetStore(tmp_path, target)
+    store.initialize()
+    _seed_stale_surface(tmp_path, target)
+    path = tmp_path / "state" / target / "surface-projection.json"
+    if projection == "missing":
+        path.unlink()
+    elif projection == "malformed":
+        path.write_text("{broken")
+    begin_round(tmp_path, target, max_lanes=1)
+    before = _witness(tmp_path).read_bytes()
+    binding = store.binding()
+    surface_before = path.read_bytes() if path.exists() else None
     result = settle_round(tmp_path, target, refresh_coverage=False)
-
-    assert result["status"] == "settled"
-    assert events == ["reconcile", "checkpoint", "sync", "refresh", "close"]
-
-
-def test_settle_keeps_round_open_when_surface_remains_pending(monkeypatch, tmp_path):
-    events = []
-    target = "target.com"
-    state = {
-        "resolved_target": target,
-        "has_recon": True,
-        "surface_projection": {"status": "stale"},
-    }
-    closure = {
-        "reasons": ["round_closure_pending"],
-        "round_progress": {"status": "active", "unfinished_lanes": []},
-    }
-
-    monkeypatch.setattr(
-        autopilot_round_module,
-        "checkpoint_witness_lock",
-        lambda *_args, **_kwargs: nullcontext(),
-    )
-    monkeypatch.setattr(autopilot_round_module, "_closure_snapshot", lambda *_args: (state, closure))
-    monkeypatch.setattr(
-        autopilot_round_module,
-        "reconcile_root_finding_claims",
-        lambda *_args, **_kwargs: events.append("reconcile") or {},
-    )
-    monkeypatch.setattr(
-        autopilot_round_module,
-        "build_checkpoint",
-        lambda *_args, **kwargs: events.append("checkpoint") or {
-            "target": kwargs["target"],
-            "next_action_queue": [],
-        },
-    )
-    monkeypatch.setattr(autopilot_round_module, "list_root_finding_claims", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(
-        autopilot_round_module,
-        "sync_checkpoint_action_queue",
-        lambda *_args, **_kwargs: events.append("sync"),
-    )
-    monkeypatch.setattr(
-        autopilot_round_module,
-        "_refresh_surface_if_pending",
-        lambda *_args, **_kwargs: events.append("refresh") or (state, closure),
-    )
-    monkeypatch.setattr(
-        autopilot_round_module,
-        "record_round_closure",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("round must remain open")),
-    )
-
-    result = settle_round(tmp_path, target, refresh_coverage=False)
-
     assert result["status"] == "handoff"
     assert result["round_progress"]["status"] == "active"
-    assert events == ["reconcile", "checkpoint", "sync", "refresh"]
+    assert _witness(tmp_path).read_bytes() == before
+    assert (path.read_bytes() if path.exists() else None) == surface_before
+    surface_module.build_surface_review(tmp_path, target, refresh=True)
+    result = settle_round(tmp_path, target, refresh_coverage=False)
+    assert result["round_progress"]["status"] == "completed"
+    assert store.binding() == binding
 
 
 def test_settle_round_blocks_concurrent_lane_claim_until_round_is_closed(monkeypatch, tmp_path):
     target = "target.com"
+    TargetStore(tmp_path, target).initialize()
     begin_round(tmp_path, target, max_lanes=1)
     context = multiprocessing.get_context("fork")
     start = context.Event()
@@ -572,19 +347,19 @@ def test_settle_round_blocks_concurrent_lane_claim_until_round_is_closed(monkeyp
         args=(str(tmp_path), target, start, attempting, output),
     )
     process.start()
-    original_reconcile = autopilot_round_module.reconcile_root_finding_claims
+    original_checkpoint = autopilot_round_module.build_checkpoint
 
-    def reconcile_while_claim_waits(*args, **kwargs):
+    def checkpoint_while_claim_waits(*args, **kwargs):
         start.set()
         assert attempting.wait(timeout=2)
         time.sleep(0.1)
         assert process.is_alive()
-        return original_reconcile(*args, **kwargs)
+        return original_checkpoint(*args, **kwargs)
 
     monkeypatch.setattr(
         autopilot_round_module,
-        "reconcile_root_finding_claims",
-        reconcile_while_claim_waits,
+        "build_checkpoint",
+        checkpoint_while_claim_waits,
     )
     settled = settle_round(tmp_path, target, refresh_coverage=False)
     outcome, detail = output.get(timeout=5)

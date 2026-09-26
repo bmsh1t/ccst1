@@ -90,8 +90,14 @@ WEBHOOK_SITE_API = "https://webhook.site/token"
 PID_GRACE_SECS = 3
 
 def _target_dir(target: str) -> Path:
-    safe = target.replace("/", "_").strip()
-    return FINDINGS_ROOT / safe / "oast"
+    try:
+        from tools.target_paths import target_storage_key
+        from tools.target_store import runtime_store
+    except ImportError:  # pragma: no cover - direct tools/ execution
+        from target_paths import target_storage_key  # type: ignore
+        from target_store import runtime_store  # type: ignore
+    runtime_store(REPO_ROOT, target)
+    return FINDINGS_ROOT / target_storage_key(target) / "oast"
 
 
 def _paths(target: str) -> dict[str, Path]:
@@ -161,38 +167,44 @@ def _latest_oast_action(target: str) -> dict | None:
     return actions[0] if actions else None
 
 
-def _sync_poll_action(target: str, *, paths: dict[str, Path], callbacks: int) -> None:
-    if callbacks <= 0:
-        return
+def _record_primary_listener_update(target: str, action: dict, paths: dict[str, Path],
+                                    *, callbacks: int, stopped: bool) -> None:
+    """Append listener facts without turning callbacks into an action verdict."""
     try:
-        from tools.action_queue import resolve_action
+        from tools.target_store import runtime_store
     except ImportError:  # pragma: no cover - direct tools/ execution
-        from action_queue import resolve_action  # type: ignore
-    action = _latest_oast_action(target)
-    if not action or str(action.get("status") or "") in {"tested", "dead-end", "blocked", "n/a"}:
-        return
-    artifact = str(paths["callbacks"])
-    try:
-        artifact = str(paths["callbacks"].relative_to(_queue_repo_root()))
-    except ValueError:
-        pass
-    resolve_action(
-        _queue_repo_root(),
-        target=target,
-        action_id=str(action.get("id") or ""),
-        status="candidate",
-        result=f"callbacks={callbacks}; artifact={artifact}",
-        notes="Callback evidence is candidate-only until correlated and validated.",
+        from target_store import runtime_store  # type: ignore
+    root = _queue_repo_root()
+    store = runtime_store(root, target)
+    artifact = paths["callbacks"].resolve()
+    if not artifact.is_relative_to(root.resolve() / "findings" / store.key):
+        raise ValueError("OAST callbacks must belong to this target's findings directory")
+    ref = str(artifact.relative_to(root.resolve()))
+    if callbacks > 0 and (not artifact.is_file() or artifact.stat().st_size == 0):
+        raise ValueError("OAST callback handoff requires nonempty callback material")
+    digest = hashlib.sha256(artifact.read_bytes()).hexdigest() if artifact.is_file() else "absent"
+    statement = f"OAST listener stopped={stopped}; callbacks={callbacks}; material={ref}; sha256={digest}"
+    command_id = "oast:handoff:" + hashlib.sha256(f"{action['id']}:{statement}".encode()).hexdigest()
+    store.remember(
+        command_id=command_id, kind="handoff", statement=statement,
+        conditions=f"Listener generation {action['metadata'].get('generation', '')}; callback interpretation remains pending.",
+        reopen_when="", next_intent="Review listener material; explicitly resolve the work with its evidence.",
+        evidence=[], actor="oast_listen", action_id=action["id"],
     )
 
 
-def _sync_stop_action(target: str, *, paths: dict[str, Path]) -> None:
-    try:
-        from tools.action_queue import resolve_action
-    except ImportError:  # pragma: no cover - direct tools/ execution
-        from action_queue import resolve_action  # type: ignore
+def _sync_poll_action(target: str, *, paths: dict[str, Path], callbacks: int) -> None:
+    if callbacks <= 0:
+        return
     action = _latest_oast_action(target)
-    if not action or str(action.get("status") or "") in {"candidate", "tested", "dead-end", "blocked", "n/a"}:
+    if not action:
+        return
+    _record_primary_listener_update(target, action, paths, callbacks=callbacks, stopped=False)
+
+
+def _sync_stop_action(target: str, *, paths: dict[str, Path]) -> None:
+    action = _latest_oast_action(target)
+    if not action:
         return
     callback_count = 0
     if paths["callbacks"].is_file():
@@ -202,18 +214,7 @@ def _sync_stop_action(target: str, *, paths: dict[str, Path]) -> None:
                     callback_count += 1
             except json.JSONDecodeError:
                 continue
-    resolve_action(
-        _queue_repo_root(),
-        target=target,
-        action_id=str(action.get("id") or ""),
-        status="dead-end" if callback_count == 0 else "candidate",
-        result=(
-            "listener stopped without callbacks"
-            if callback_count == 0
-            else f"callbacks={callback_count}; listener stopped"
-        ),
-        notes="No callback was observed; restart the listener only when a new OAST lane is justified." if callback_count == 0 else "Callback evidence remains candidate-only.",
-    )
+    _record_primary_listener_update(target, action, paths, callbacks=callback_count, stopped=True)
 
 
 def _pid_alive(pid: int) -> bool:

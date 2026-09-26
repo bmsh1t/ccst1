@@ -4,16 +4,18 @@ import json
 
 from tools.autopilot_state import _pick_next_action
 from tools.recon_target_selector import load_rotation_status
+from tools.scope_source import load_scope_context
 
 
 def test_pending_directory_rotation_routes_to_recon_after_surface_handoff(tmp_path):
     recon_dir = tmp_path / "recon" / "target.test" / "dirs"
     recon_dir.mkdir(parents=True)
+    scope_hash = load_scope_context(tmp_path, "target.test").scope_hash
     (recon_dir / "ffuf_target_plan.json").write_text(
-        json.dumps({"schema": 1, "eligible_count": 3}), encoding="utf-8"
+        json.dumps({"schema": 1, "eligible_count": 3, "scope_hash": scope_hash}), encoding="utf-8"
     )
     (recon_dir / "ffuf_target_state.json").write_text(
-        json.dumps({"schema": 1, "completed": {"https://target.test": {"status": "ok"}}}),
+        json.dumps({"schema": 1, "completed": {"https://target.test": {"status": "ok"}}, "scope_hash": scope_hash}),
         encoding="utf-8",
     )
 

@@ -51,6 +51,7 @@ def test_validate_scaffold_prefills_mechanical_fields(tmp_path):
     assert scaffold["schema_version"] == 2
     assert scaffold["finding_id"] == "F-1"
     assert scaffold["endpoint"] == "http://t.example/rest/basket/6"
+    assert scaffold["vuln_class"] == "auth_bypass"
     assert scaffold["evidence"]["runner_summary"].endswith(
         "evidence/t.example/validation/F-1/20260911T000000Z-abcd1234/summary.json"
     )
@@ -144,6 +145,11 @@ def test_validate_cli_scaffold_roundtrip(tmp_path, capsys):
     import sys
 
     sys.path.insert(0, str(tmp_path))
+    from tools.target_store import TargetStore
+    store = TargetStore(tmp_path, "t.example")
+    store.initialize()
+    store.create_finding(command_id="claim", finding_id="F-1", endpoint="http://t.example/rest/orders/1",
+                         method="GET", family="auth_bypass", title="Object read", claim="Compare actors", actor="test")
     _seed_finding(tmp_path)
     from tools.validate import main as validate_main
 
@@ -163,7 +169,8 @@ def test_validate_cli_scaffold_roundtrip(tmp_path, capsys):
     assert payload["evidence"]["runner_summary"]
 
 
-def test_validate_cli_scaffold_reads_primary_store_without_legacy_findings(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("family", ["auth_bypass", "custom-boundary-family"])
+def test_validate_cli_scaffold_reads_primary_store_without_legacy_findings(tmp_path, monkeypatch, capsys, family):
     from tools import validate
     from tools.target_store import TargetStore
 
@@ -175,7 +182,7 @@ def test_validate_cli_scaffold_reads_primary_store_without_legacy_findings(tmp_p
         finding_id="F-1",
         endpoint=f"https://{target}/api/items/1",
         method="POST",
-        family="auth_bypass",
+        family=family,
         title="Peer item",
         claim="Peer item is visible",
         actor="operator",
@@ -191,6 +198,9 @@ def test_validate_cli_scaffold_reads_primary_store_without_legacy_findings(tmp_p
     assert validate.main(["--target", target, "--finding-id", "F-1", "--scaffold"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["method"] == "POST"
+    assert payload["vuln_class"] == store.finding("F-1")["family"]
+    assert payload["impact"] == ""
+    assert all(item["passed"] is None for item in payload["gates"].values())
     assert payload["endpoint"] == f"https://{target}/api/items/1"
     assert not (tmp_path / "findings" / target / "findings.json").exists()
 

@@ -11,15 +11,17 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
-import finding_index
-import target_case_state
 import validation_runner
-from action_queue import ingest_checkpoint, load_queue, save_queue
-from evidence_ledger import ledger_path
-from identity_contract import build_closure_cell
+from evidence_identity import CLOSURE_FAMILIES
 from request_diff import RequestPairError, request_pair_digest, validate_request_pair
 from tools.auth_session import AuthSession
-from tools.target_store import TargetStore
+from tools.target_store import StoreError, TargetStore, initialize_target_store
+
+
+@pytest.fixture
+def runner_store(tmp_path):
+    initialize_target_store(tmp_path, "target.test")
+    return TargetStore(tmp_path, "target.test")
 
 
 def _target_key(target: str) -> str:
@@ -42,7 +44,7 @@ def _target_key(target: str) -> str:
 def test_request_diff_uses_canonical_vuln_taxonomy(classifier, explicit, expected):
     actual = validation_runner._classifier_vuln_class(classifier, explicit)
     assert actual == expected
-    assert not actual or actual in validation_runner.CLOSURE_FAMILIES
+    assert not actual or actual in CLOSURE_FAMILIES
 
 
 def _expect_auth_pair_spec() -> dict:
@@ -59,7 +61,7 @@ def _expect_auth_pair_spec() -> dict:
     }
 
 
-def test_undeclared_same_size_body_change_remains_candidate(monkeypatch, tmp_path):
+def test_undeclared_same_size_body_change_remains_candidate(runner_store, monkeypatch, tmp_path):
     bodies = iter(['{"value":"first"}', '{"value":"other"}'])
     monkeypatch.setattr(validation_runner, "request_once", lambda **kw: _fake_response(kw["url"], body=next(bodies)))
     summary = validation_runner.run_request_diff(repo_root=tmp_path, target="target.test", request_spec=_expect_auth_pair_spec())
@@ -74,7 +76,7 @@ def test_undeclared_same_size_body_change_remains_candidate(monkeypatch, tmp_pat
     assert facts["identical_success_pair"] is False
 
 
-def test_partial_pair_preserves_first_response_without_promoting(monkeypatch, tmp_path):
+def test_partial_pair_preserves_first_response_without_promoting(runner_store, monkeypatch, tmp_path):
     calls = []
 
     def request(**kwargs):
@@ -97,7 +99,7 @@ def test_partial_pair_preserves_first_response_without_promoting(monkeypatch, tm
     assert len(calls) == 2
 
 
-def test_request_diff_distinct_bodies_promotes_sub_threshold_cross_user_read(monkeypatch, tmp_path):
+def test_request_diff_distinct_bodies_promotes_sub_threshold_cross_user_read(runner_store, monkeypatch, tmp_path):
     """V-2: a cross-user read whose body delta is below the 20-byte material
     threshold is still a different object. distinct_bodies has no threshold,
     so the Users/24-vs-Users/1 shape (delta ~15 bytes) promotes."""
@@ -132,7 +134,7 @@ def test_request_diff_distinct_bodies_promotes_sub_threshold_cross_user_read(mon
     assert summary["expected_check"]["observed"]["distinct_bodies"] is True
 
 
-def test_request_diff_needle_facts_promote_structurally_identical_cross_user_read(monkeypatch, tmp_path):
+def test_request_diff_needle_facts_promote_structurally_identical_cross_user_read(runner_store, monkeypatch, tmp_path):
     """V-3: a cross-user read whose responses are structurally identical
     (same JSON shape, same size, different owner) cannot be expressed by any
     diff-relative fact. The AI declares a needle — the owner identifier — and
@@ -173,7 +175,7 @@ def test_request_diff_needle_facts_promote_structurally_identical_cross_user_rea
     }
 
 
-def test_request_diff_needle_fact_contradicted_falls_to_candidate(monkeypatch, tmp_path):
+def test_request_diff_needle_fact_contradicted_falls_to_candidate(runner_store, monkeypatch, tmp_path):
     """Anti-forgery for needles: declaring a needle that the wire disproves
     rejects to candidate with the entry named in unmet."""
 
@@ -267,7 +269,7 @@ def test_request_pair_declaration_intent_parse_and_digest(tmp_path):
     assert request_pair_digest(dict(base, declaration_intent="clean")) != request_pair_digest(base)
 
 
-def test_request_diff_clean_intent_confirmed_lands_tested_clean(monkeypatch, tmp_path):
+def test_request_diff_clean_intent_confirmed_lands_tested_clean(runner_store, monkeypatch, tmp_path):
     """O-1: declaring the CLEAN direction and confirming it yields a
     mechanically-backed tested_clean (expected_check archived), not a
     finding-shaped artifact. The runner routes on the declared intent; it
@@ -361,611 +363,7 @@ def _fake_response(url: str, *, status: int = 200, body: str = "{}") -> dict:
     }
 
 
-def _runner_reconciliation_fixture(monkeypatch, tmp_path):
-    target = "https://target.test"
-    url = "https://target.test/rest/admin/application-configuration"
-    finding_id = "AUTHZ-RECONCILE"
-    key = _target_key(target)
-    queue_dir = tmp_path / "state" / key
-    queue_dir.mkdir(parents=True)
-    (queue_dir / "action_queue.json").write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "target": target,
-                "actions": [
-                    {
-                        "id": "AQ-RECONCILE",
-                        "status": "queued",
-                        "type": "validation",
-                        "metadata": {"finding_id": finding_id, "url": url},
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-    def _fixture_request_once(**kwargs):
-        headers = kwargs.get("headers") or {}
-        if any("Bearer" in str(v) for v in headers.values()):
-            return _fake_response(
-                kwargs["url"],
-                body=json.dumps({"config": {"googleOauth": {"clientId": "leaked.apps.test"}}}),
-            )
-        return _fake_response(
-            kwargs["url"],
-            body=json.dumps({"config": {"googleOauth": {"clientId": "client.apps.test"}}}),
-        )
-
-    monkeypatch.setattr(validation_runner, "request_once", _fixture_request_once)
-    summary = validation_runner.run_request_diff(
-        repo_root=tmp_path,
-        target=target,
-        request_spec={
-            "schema_version": 1,
-            "baseline_request": {"method": "GET", "url": url},
-            "variant_request": {"method": "GET", "url": url, "headers": {"Authorization": "Bearer denied"}},
-            "active_dimension": "header:Authorization",
-            "classifier": "authz",
-            "expected": ["distinct_bodies"],
-            "declaration_intent": "hazard",
-        },
-        finding_id=finding_id,
-    )
-    return summary, queue_dir / "action_queue.json", key
-
-
-def _build_case_state_for_authz_role(tmp_path):
-    target = "https://target.test"
-    target_case_state.add_actor(tmp_path, target, actor="user_a", role="user")
-    target_case_state.add_actor(tmp_path, target, actor="user_b", role="user")
-    target_case_state.add_session(
-        tmp_path,
-        target,
-        session="sess_user_a",
-        actor="user_a",
-        kind="bearer",
-        header_value="Bearer owner",
-        validity="valid",
-    )
-    target_case_state.add_session(
-        tmp_path,
-        target,
-        session="sess_user_b",
-        actor="user_b",
-        kind="bearer",
-        header_value="Bearer peer",
-        validity="valid",
-    )
-    return target
-
-
-def test_candidate_followup_reingest_is_idempotent_across_runner_and_checkpoint(tmp_path):
-    target = "https://target.test"
-    url = "https://target.test/rest/admin/application-configuration"
-    original = {
-        "id": "A1",
-        "priority": 70,
-        "type": "surface-review",
-        "status": "ready",
-        "action": f"Review surface candidate {url}: validate exposure evidence.",
-        "command_hint": "capture baseline",
-        "source": "checkpoint",
-        "source_id": "A1",
-        "metadata": {
-            "url": url,
-            "endpoint": "/rest/admin/application-configuration",
-        },
-    }
-    ingest_checkpoint(tmp_path, target, checkpoint={"next_action_queue": [original]})
-    queue = load_queue(tmp_path, target)
-    queue["actions"][0]["status"] = "candidate"
-
-    summary = {
-        "finding_id": "exposure_f0731e9e75",
-        "url": url,
-        "summary_path": "evidence/target.test/summary.json",
-        "lane": "authz_public_exposure",
-        "evidence_rubric": {
-            "status": "candidate",
-            "missing_labels": ["policy/role expectation"],
-        },
-    }
-    patched = validation_runner._patch_candidate_queue_followup_in_queue(
-        queue,
-        action_id="AQ-0001",
-        summary=summary,
-    )
-    assert patched["patched"] is True
-    duplicate = {
-        **queue["actions"][0],
-        "id": "AQ-LEGACY-DUP",
-        "dedupe_key": "legacy-candidate-gap",
-        "metadata": dict(queue["actions"][0]["metadata"]),
-    }
-    queue["actions"].append(duplicate)
-    save_queue(tmp_path, target, queue)
-
-    candidate = validation_runner._candidate_queue_followup(summary)
-    candidate.update(
-        {
-            "id": "A9",
-            "priority": 70,
-            "status": "ready",
-            "source": "checkpoint",
-            "source_id": "A9",
-        }
-    )
-    validation = {
-        "id": "A10",
-        "priority": 100,
-        "type": "validation",
-        "status": "ready",
-        "action": f"Run /validate for finding {summary['finding_id']} on {url}.",
-        "command_hint": "/validate",
-        "source": "checkpoint",
-        "source_id": "A10",
-        "metadata": {"finding_id": summary["finding_id"]},
-    }
-
-    first = ingest_checkpoint(
-        tmp_path,
-        target,
-        checkpoint={"next_action_queue": [candidate, validation]},
-    )
-    second = ingest_checkpoint(
-        tmp_path,
-        target,
-        checkpoint={"next_action_queue": [candidate, validation]},
-    )
-    actions = load_queue(tmp_path, target)["actions"]
-    active_candidates = [
-        item
-        for item in actions
-        if item.get("type") == "candidate-evidence-gap"
-        and item.get("status") in {"queued", "candidate", "running"}
-    ]
-    active_validations = [
-        item
-        for item in actions
-        if item.get("type") == "validation"
-        and item.get("status") in {"queued", "candidate", "running"}
-    ]
-
-    assert first["stats"]["added"] == 1
-    assert second["stats"]["added"] == 0
-    assert len(active_candidates) == 1
-    assert active_candidates[0]["id"] == "AQ-0001"
-    assert [item for item in actions if item.get("id") == "AQ-LEGACY-DUP"][0]["status"] == "n/a"
-    assert len(active_validations) == 1
-
-
-def test_runner_queue_sync_prefers_exact_finding_id_over_legacy_url(tmp_path):
-    target = "https://target.test"
-    url = "https://target.test/api/Users"
-    key = _target_key(target)
-    queue_dir = tmp_path / "state" / key
-    queue_dir.mkdir(parents=True)
-    (queue_dir / "action_queue.json").write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "target": target,
-                "actions": [
-                    {
-                        "id": "AQ-EXACT",
-                        "status": "queued",
-                        "type": "ranked-surface",
-                        "metadata": {"finding_id": "F-EXACT", "url": "https://target.test/other"},
-                    },
-                    {
-                        "id": "AQ-LEGACY",
-                        "status": "queued",
-                        "type": "ranked-surface",
-                        "action": f"Replay {url} and classify it.",
-                    },
-                ],
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
-
-    synced = validation_runner._sync_action_queue(
-        {"target": target, "finding_id": "F-EXACT", "url": url, "result": "tested_clean"},
-        repo_root=tmp_path,
-    )
-    queue = json.loads((queue_dir / "action_queue.json").read_text(encoding="utf-8"))
-    statuses = {item["id"]: item["status"] for item in queue["actions"]}
-
-    assert synced["status"] == "updated"
-    assert synced["id"] == "AQ-EXACT"
-    assert synced["match_kind"] == "finding_id"
-    assert statuses == {"AQ-EXACT": "tested", "AQ-LEGACY": "queued"}
-
-
-def test_runner_queue_sync_refuses_ambiguous_legacy_marker(tmp_path):
-    target = "https://target.test"
-    url = "https://target.test/api/Users"
-    key = _target_key(target)
-    queue_dir = tmp_path / "state" / key
-    queue_dir.mkdir(parents=True)
-    actions = [
-        {"id": "AQ-ONE", "status": "queued", "type": "ranked-surface", "action": f"Replay {url}."},
-        {"id": "AQ-TWO", "status": "queued", "type": "coverage-gap", "evidence": f"Observed {url}."},
-    ]
-    (queue_dir / "action_queue.json").write_text(
-        json.dumps({"schema_version": 1, "target": target, "actions": actions}),
-        encoding="utf-8",
-    )
-
-    synced = validation_runner._sync_action_queue(
-        {"target": target, "url": url, "result": "tested_clean"},
-        repo_root=tmp_path,
-    )
-    queue = json.loads((queue_dir / "action_queue.json").read_text(encoding="utf-8"))
-
-    assert synced == {
-        "status": "ambiguous",
-        "reason": "multiple legacy_marker queue actions match runner output",
-        "ids": ["AQ-ONE", "AQ-TWO"],
-    }
-    assert [item["status"] for item in queue["actions"]] == ["queued", "queued"]
-
-
-def test_queue_endpoint_match_normalizes_trailing_slash_without_path_suffix_match():
-    exact = {
-        "id": "AQ-EXACT",
-        "status": "queued",
-        "type": "validation",
-        "metadata": {"endpoint": "/api/Users"},
-    }
-    legacy_suffix = {
-        "id": "AQ-SUFFIX",
-        "status": "queued",
-        "type": "validation",
-        "action": "Replay /v1/api/Users and classify it.",
-    }
-    matches, match_kind = validation_runner._select_queue_actions_for_summary(
-        {"actions": [exact, legacy_suffix]},
-        {"url": "https://target.test/api/Users/"},
-        "tested",
-    )
-
-    assert [item["id"] for item in matches] == ["AQ-EXACT"]
-    assert match_kind == "endpoint"
-    assert validation_runner._action_matches_legacy_marker(
-        legacy_suffix,
-        ["/api/Users"],
-    ) is False
-
-
-def test_queue_endpoint_match_prefers_running_versioned_hypothesis_over_advisory_review():
-    endpoint = "https://target.test/rest/admin"
-    versioned = {
-        "id": "AQ-VERSIONED",
-        "status": "running",
-        "type": "coverage-gap",
-        "metadata": {
-            "endpoint": "/rest/admin",
-            "depth_contract_version": 1,
-        },
-    }
-    advisory = {
-        "id": "AQ-ADVISORY",
-        "status": "queued",
-        "type": "surface-review",
-        "metadata": {"endpoint": "/rest/admin"},
-    }
-
-    matches, match_kind = validation_runner._select_queue_actions_for_summary(
-        {"actions": [advisory, versioned]},
-        {"url": endpoint},
-        "tested",
-    )
-
-    assert [item["id"] for item in matches] == ["AQ-VERSIONED"]
-    assert match_kind == "versioned_endpoint"
-
-
-def test_runner_sync_does_not_downgrade_validated_finding(monkeypatch, tmp_path, capsys):
-    target = "https://target.test"
-    url = "https://target.test/rest/admin/application-configuration"
-    key = _target_key(target)
-    findings_dir = tmp_path / "findings" / key
-    findings_dir.mkdir(parents=True)
-    (findings_dir / "findings.json").write_text(
-        json.dumps(
-            {
-                "target": target,
-                "total": 1,
-                "findings": [
-                    {
-                        "id": "AUTHZ-VALIDATED",
-                        "type": "auth_bypass",
-                        "severity": "high",
-                        "confidence": "confirmed",
-                        "url": url,
-                        "validation_status": "validated",
-                        "validation_summary": "validated/validation-summary.json",
-                        "report_status": "not_generated",
-                    }
-                ],
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-    validation_runner.update_finding_status(
-        findings_dir,
-        "AUTHZ-VALIDATED",
-        validation_status="validated",
-        report_status="not_generated",
-    )
-
-    monkeypatch.setattr(
-        validation_runner,
-        "request_once",
-        lambda **kwargs: _fake_response(
-            kwargs["url"],
-            body=(
-                json.dumps({"config": {"application": {"name": "Shop-Private"}, "googleOauth": {"clientId": "leaked"}}})
-                if any("Bearer" in str(v) for v in (kwargs.get("headers") or {}).values())
-                else json.dumps({"config": {"application": {"name": "Shop"}, "googleOauth": {"clientId": "x"}}})
-            ),
-        ),
-    )
-
-    spec_path = tmp_path / "pair-spec.json"
-    spec_path.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "baseline_request": {"method": "GET", "url": url},
-                "variant_request": {
-                    "method": "GET",
-                    "url": url,
-                    "headers": {"Authorization": "Bearer denied"},
-                },
-                "active_dimension": "header:Authorization",
-                "classifier": "authz",
-                "expected": ["distinct_bodies"],
-                "declaration_intent": "hazard",
-            }
-        ),
-        encoding="utf-8",
-    )
-    rc = validation_runner.main(
-        [
-            "request-diff",
-            "--repo-root",
-            str(tmp_path),
-            "--target",
-            target,
-            "--request-spec",
-            str(spec_path),
-            "--finding-id",
-            "AUTHZ-VALIDATED",
-        ]
-    )
-    summary = json.loads(capsys.readouterr().out)
-    findings = json.loads((findings_dir / "findings.json").read_text(encoding="utf-8"))
-
-    assert rc == 0
-    assert summary["sync"]["finding"]["validation_status"] == "validated"
-    assert findings["findings"][0]["validation_status"] == "validated"
-    assert findings["findings"][0]["validation_summary"] == "validated/validation-summary.json"
-    assert "evidence_rubric" not in summary
-
-
-def test_runner_replay_does_not_reopen_finalized_queue_action(monkeypatch, tmp_path):
-    summary, queue_path, key = _runner_reconciliation_fixture(monkeypatch, tmp_path)
-    first = validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)
-    assert first["status"] == "updated"
-
-    findings_dir = tmp_path / "findings" / key
-    finding_index.update_finding_status(
-        findings_dir,
-        "AUTHZ-RECONCILE",
-        validation_status="validated",
-        report_status="not_generated",
-    )
-    queue = json.loads(queue_path.read_text(encoding="utf-8"))
-    queue["actions"][0]["status"] = "dead-end"
-    queue_path.write_text(json.dumps(queue), encoding="utf-8")
-
-    replay = validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)
-    persisted_queue = json.loads(queue_path.read_text(encoding="utf-8"))
-
-    assert replay["status"] == "deduplicated"
-    assert replay["action_queue"]["status"] == "deduplicated"
-    assert persisted_queue["actions"][0]["status"] == "dead-end"
-
-
-def test_runner_replay_ignores_report_and_sibling_followups(monkeypatch, tmp_path):
-    summary, queue_path, _ = _runner_reconciliation_fixture(monkeypatch, tmp_path)
-    assert validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)["status"] == "updated"
-
-    queue = json.loads(queue_path.read_text(encoding="utf-8"))
-    queue["actions"][0]["status"] = "n/a"
-    finding_id = summary["finding_id"]
-    queue["actions"].extend(
-        [
-            {"id": "AQ-REPORT", "status": "queued", "type": "report", "metadata": {"finding_id": finding_id}},
-            {
-                "id": "AQ-SIBLING",
-                "status": "queued",
-                "type": "sibling-chain-review",
-                "metadata": {"finding_id": finding_id},
-            },
-        ]
-    )
-    queue_path.write_text(json.dumps(queue), encoding="utf-8")
-
-    replay = validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)
-    persisted = json.loads(queue_path.read_text(encoding="utf-8"))
-
-    assert replay["status"] == "deduplicated"
-    assert replay["action_queue"]["status"] == "deduplicated"
-    assert {item["status"] for item in persisted["actions"][1:]} == {"queued"}
-
-
-def test_runner_sync_completes_missing_claim_identity_without_creating_second_finding(tmp_path):
-    import finding_index
-
-    target = "target.test"
-    findings_dir = tmp_path / "findings" / target
-    findings_dir.mkdir(parents=True)
-    claim_path = findings_dir / "manual-authz.json"
-    claim_path.write_text(
-        json.dumps(
-            {
-                "kind": "finding_claim",
-                "schema_version": 1,
-                "title": "Interrupted authorization validation",
-                "vuln_class": "authz",
-                "evidence": {"artifact": "evidence/target.test/raw.json"},
-            }
-        ),
-        encoding="utf-8",
-    )
-    claim = finding_index.list_root_finding_claims(findings_dir, target=target)[0]
-    finding_index.reconcile_root_finding_claims(findings_dir, target=target)
-    summary_path = tmp_path / "evidence" / target / "validation" / claim["id"] / "summary.json"
-    summary_path.parent.mkdir(parents=True)
-    summary_path.write_text("{}\n", encoding="utf-8")
-
-    sync = validation_runner._sync_finding_status(
-        {
-            "target": target,
-            "finding_id": claim["id"],
-            "result": "tested_finding",
-            "url": "https://target.test/api/orders/42",
-            "vuln_class": "authz",
-            "lane": "authz_public_exposure",
-            "summary_path": str(summary_path),
-            "evidence_rubric": {"status": "candidate-ready", "ready": True},
-        },
-        repo_root=tmp_path,
-    )
-    payload = finding_index.load_finding_index(findings_dir)
-    row = payload["findings"][0]
-
-    assert sync["status"] == "updated"
-    assert payload["total"] == 1
-    assert row["id"] == claim["id"]
-    assert row["url"] == "https://target.test/api/orders/42"
-    assert "endpoint" not in row["incomplete_fields"]
-    assert row["claim_status"] == "complete"
-
-
-def test_runner_sync_rejects_off_target_completion_for_missing_endpoint(tmp_path):
-    import finding_index
-
-    target = "target.test"
-    findings_dir = tmp_path / "findings" / target
-    findings_dir.mkdir(parents=True)
-    (findings_dir / "manual-authz.json").write_text(
-        json.dumps(
-            {
-                "kind": "finding_claim",
-                "schema_version": 1,
-                "title": "Interrupted authorization validation",
-                "vuln_class": "authz",
-                "evidence": {"artifact": "evidence/target.test/raw.json"},
-            }
-        ),
-        encoding="utf-8",
-    )
-    claim = finding_index.list_root_finding_claims(findings_dir, target=target)[0]
-    finding_index.reconcile_root_finding_claims(findings_dir, target=target)
-
-    sync = validation_runner._sync_finding_status(
-        {
-            "target": target,
-            "finding_id": claim["id"],
-            "result": "tested_finding",
-            "url": "other.test/api/orders/42",
-            "vuln_class": "authz",
-            "lane": "authz_public_exposure",
-        },
-        repo_root=tmp_path,
-    )
-    row = finding_index.find_finding(findings_dir, claim["id"])
-
-    assert sync["status"] == "skipped"
-    assert "off target" in sync["reason"]
-    assert row is not None
-    assert row["url"] == ""
-    assert "endpoint" in row["incomplete_fields"]
-
-
-@pytest.mark.parametrize(
-    ("runner_url", "runner_class", "reason"),
-    [
-        (
-            "https://target.test/api/orders/99",
-            "authz",
-            "runner endpoint conflicts with non-empty canonical finding identity",
-        ),
-        (
-            "https://target.test/api/orders/42",
-            "sqli",
-            "runner vulnerability class conflicts with non-empty canonical finding identity",
-        ),
-    ],
-)
-def test_runner_sync_rejects_non_empty_canonical_identity_conflicts(
-    tmp_path,
-    runner_url,
-    runner_class,
-    reason,
-):
-    import finding_index
-
-    target = "target.test"
-    findings_dir = tmp_path / "findings" / target
-    findings_dir.mkdir(parents=True)
-    (findings_dir / "manual-authz.json").write_text(
-        json.dumps(
-            {
-                "kind": "finding_claim",
-                "schema_version": 1,
-                "title": "Authorization validation",
-                "endpoint": "/api/orders/42",
-                "vuln_class": "authz",
-                "evidence": {"artifact": "evidence/target.test/raw.json"},
-            }
-        ),
-        encoding="utf-8",
-    )
-    claim = finding_index.list_root_finding_claims(findings_dir, target=target)[0]
-    finding_index.reconcile_root_finding_claims(findings_dir, target=target)
-    index_path = findings_dir / "findings.json"
-    events_path = findings_dir / "mutation-events.jsonl"
-    index_before = index_path.read_bytes()
-    events_before = events_path.read_bytes()
-
-    sync = validation_runner._sync_finding_status(
-        {
-            "target": target,
-            "finding_id": claim["id"],
-            "result": "tested_finding",
-            "url": runner_url,
-            "vuln_class": runner_class,
-            "lane": "authz_public_exposure",
-        },
-        repo_root=tmp_path,
-    )
-
-    assert sync["status"] == "skipped"
-    assert sync["reason"] == reason
-    assert index_path.read_bytes() == index_before
-    assert events_path.read_bytes() == events_before
-
-
-def test_request_diff_replays_post_json_with_sql_classifier(monkeypatch, tmp_path):
+def test_request_diff_replays_post_json_with_sql_classifier(runner_store, monkeypatch, tmp_path):
     def fake_request_once(**kwargs):
         body = kwargs["body"]
         name = body["filter"]["name"] if isinstance(body, dict) else ""
@@ -1008,16 +406,15 @@ def test_request_diff_replays_post_json_with_sql_classifier(monkeypatch, tmp_pat
     assert summary["result"] == "tested_finding"
     assert summary["candidate_ready"] is True
     assert summary["expected_check"]["unmet"] == []
-    assert summary["ledger_record"]["write_status"] in {"written", "deduplicated", "updated"}
-    assert validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)["ledger"]["status"] in {
-        "written",
-        "deduplicated",
-        "updated",
-    }
+    assert summary["ledger_record"] is None
+    assert validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)["store"]["status"] == "updated"
+    operation = runner_store.execution(summary["store_operation_id"])
+    assert len(operation["observations"]) == 4
+    assert all(row["method"] == "POST" and row["family"] == "SQLi" for row in operation["observations"])
     assert all(run["method"] if "method" in run else True for run in summary["runs"])
 
 
-def test_request_diff_without_canonical_ledger_family_keeps_sync_skipped(monkeypatch, tmp_path):
+def test_request_diff_without_canonical_family_preserves_store_observations(runner_store, monkeypatch, tmp_path):
     def fake_request_once(**kwargs):
         query = parse_qs(urlparse(kwargs["url"]).query).get("q", [""])[0]
         count = 2 if query == "banana" else 1
@@ -1038,13 +435,15 @@ def test_request_diff_without_canonical_ledger_family_keeps_sync_skipped(monkeyp
 
     sync = validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)
 
-    assert summary["ledger_record"]["write_status"] == "skipped"
-    assert sync["status"] == "skipped"
-    assert sync["ledger"]["status"] == "skipped"
-    assert "error" not in sync["ledger"]
+    assert summary["ledger_record"] is None
+    assert sync["status"] == "updated"
+    operation = runner_store.execution(summary["store_operation_id"])
+    assert len(operation["observations"]) == 2
+    assert all(row["family"] == "runner-observation" for row in operation["observations"])
+    assert runner_store.finding("GENERIC-REQUEST-DIFF")["assessment"] is None
 
 
-def test_request_diff_marks_multipart_manual_required_without_request(monkeypatch, tmp_path):
+def test_request_diff_marks_multipart_manual_required_without_request(runner_store, monkeypatch, tmp_path):
     def fail_request(**kwargs):
         raise AssertionError("unsupported wire body must not be sent")
 
@@ -1074,7 +473,7 @@ def test_request_diff_marks_multipart_manual_required_without_request(monkeypatc
     assert "multipart" in summary["manual_required"]
 
 
-def test_request_diff_replay_keeps_operation_id_and_one_ledger_event(monkeypatch, tmp_path):
+def test_request_diff_rerun_creates_attempt_but_registration_replay_is_idempotent(runner_store, monkeypatch, tmp_path):
     monkeypatch.setattr(
         validation_runner,
         "request_once",
@@ -1088,9 +487,13 @@ def test_request_diff_replay_keeps_operation_id_and_one_ledger_event(monkeypatch
     }
     first = validation_runner.run_request_diff(repo_root=tmp_path, target="https://target.test", request_spec=spec, finding_id="PAIR-IDEMPOTENT")
     second = validation_runner.run_request_diff(repo_root=tmp_path, target="https://target.test", request_spec=spec, finding_id="PAIR-IDEMPOTENT")
-    ledger = tmp_path / "memory" / "evidence" / _target_key("https://target.test") / "ledger.jsonl"
-    assert first["operation_id"] == second["operation_id"]
-    assert len(ledger.read_text(encoding="utf-8").splitlines()) == 1
+    assert first["attempt_id"] != second["attempt_id"]
+    for summary in (first, second):
+        assert validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)["status"] == "updated"
+        assert validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)["status"] == "deduplicated"
+    assert first["store_operation_id"] != second["store_operation_id"]
+    assert runner_store.page("operations")["total"] == 2
+    assert not (tmp_path / "memory/evidence/target.test/ledger.jsonl").exists()
 
 
 def test_request_once_rejects_off_target_before_open(monkeypatch):
@@ -1243,7 +646,7 @@ def test_cross_origin_redirect_replays_only_explicitly_authorized_session_header
     assert "X-Raw-Auth" not in sink_headers[1]
 
 
-def test_cli_auth_file_builds_session_and_raw_header_keeps_precedence(monkeypatch, tmp_path, capsys):
+def test_cli_auth_file_builds_session_and_raw_header_keeps_precedence(runner_store, monkeypatch, tmp_path, capsys):
     auth = tmp_path / "auth.json"
     auth.write_text(
         json.dumps({"target": "target.test", "bearer": "session-token"}),
@@ -1275,6 +678,7 @@ def test_cli_auth_file_builds_session_and_raw_header_keeps_precedence(monkeypatc
     monkeypatch.setattr(validation_runner, "run_request_diff", fake_run)
     assert validation_runner.main([
         "request-diff",
+        "--repo-root", str(tmp_path),
         "--target",
         "target.test",
         "--request-spec",
@@ -1293,88 +697,6 @@ def test_cli_auth_file_builds_session_and_raw_header_keeps_precedence(monkeypatc
         "https://target.test/check",
         captured["headers"],
     )["Authorization"] == "Bearer raw-token"
-
-
-@pytest.mark.parametrize("failed_owner", ["ledger", "finding", "action_queue"])
-def test_runner_reconciliation_replay_repairs_each_owner_without_duplicates(
-    monkeypatch,
-    tmp_path,
-    failed_owner,
-):
-    summary, queue_path, key = _runner_reconciliation_fixture(monkeypatch, tmp_path)
-    owner_functions = {
-        "ledger": "_sync_evidence_ledger",
-        "finding": "_sync_finding_status",
-        "action_queue": "_sync_action_queue",
-    }
-    owner_name = owner_functions[failed_owner]
-    original = getattr(validation_runner, owner_name)
-    if failed_owner == "ledger":
-        ledger_path(tmp_path, summary["target"]).unlink()
-
-    monkeypatch.setattr(
-        validation_runner,
-        owner_name,
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError(f"{failed_owner} fault")),
-    )
-    partial = validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)
-    assert partial["status"] == "partial"
-    assert partial[failed_owner]["status"] == "error"
-
-    findings_dir = tmp_path / "findings" / key
-    assert (findings_dir / "findings.json").is_file() is (failed_owner != "finding")
-    assert ledger_path(tmp_path, summary["target"]).is_file() is (failed_owner != "ledger")
-    interrupted_queue = json.loads(queue_path.read_text(encoding="utf-8"))["actions"][0]
-    assert interrupted_queue["status"] == ("queued" if failed_owner == "action_queue" else "candidate")
-
-    monkeypatch.setattr(validation_runner, owner_name, original)
-    recovered = validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)
-    replay = validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)
-
-    finding = json.loads((findings_dir / "findings.json").read_text(encoding="utf-8"))["findings"][0]
-    events = (findings_dir / "mutation-events.jsonl").read_text(encoding="utf-8").splitlines()
-    queue = json.loads(queue_path.read_text(encoding="utf-8"))["actions"][0]
-    rows = ledger_path(tmp_path, summary["target"]).read_text(encoding="utf-8").splitlines()
-
-    assert recovered["status"] == "updated"
-    assert replay["status"] == "deduplicated"
-    assert len(rows) == 1
-    assert len(events) == 1
-    assert finding["runner_operation_id"] == summary["operation_id"]
-    assert queue["metadata"]["runner_operation_id"] == summary["operation_id"]
-    assert queue["attempts"] == 1
-
-
-def test_runner_replay_repairs_finding_event_missing_after_canonical_write(monkeypatch, tmp_path):
-    original_append = finding_index._append_mutation_events
-    failed = {"value": False}
-
-    def fail_once(path, events):
-        if not failed["value"]:
-            failed["value"] = True
-            raise OSError("mutation event fault")
-        return original_append(path, events)
-
-    monkeypatch.setattr(finding_index, "_append_mutation_events", fail_once)
-    summary, queue_path, key = _runner_reconciliation_fixture(monkeypatch, tmp_path)
-    monkeypatch.setattr(finding_index, "_append_mutation_events", original_append)
-
-    recovered = validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)
-    replay = validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)
-    findings_dir = tmp_path / "findings" / key
-    finding = json.loads((findings_dir / "findings.json").read_text(encoding="utf-8"))["findings"][0]
-    events = (findings_dir / "mutation-events.jsonl").read_text(encoding="utf-8").splitlines()
-    queue = json.loads(queue_path.read_text(encoding="utf-8"))["actions"][0]
-
-    assert recovered["status"] == "updated"
-    assert replay["status"] == "deduplicated"
-    assert len(events) == 1
-    assert finding_index.verify_finding_owner_provenance(
-        findings_dir,
-        finding,
-        target=summary["target"],
-    )["valid"] is True
-    assert queue["metadata"]["runner_operation_id"] == summary["operation_id"]
 
 
 def test_request_once_bounds_response_and_records_hash(monkeypatch):
@@ -1417,7 +739,7 @@ def test_request_once_bounds_response_and_records_hash(monkeypatch):
     assert "body_preview" not in snapshot
 
 
-def test_state_changing_without_redline_fails_before_request(monkeypatch, tmp_path):
+def test_state_changing_without_redline_fails_before_request(runner_store, monkeypatch, tmp_path):
     called = False
 
     def fake_request_once(**kwargs):
@@ -1444,7 +766,7 @@ def test_state_changing_without_redline_fails_before_request(monkeypatch, tmp_pa
 
 
 @pytest.mark.parametrize("state_changing", [None, False])
-def test_patch_without_explicit_state_fact_is_not_redline_blocked(
+def test_patch_without_explicit_state_fact_is_not_redline_blocked(runner_store,
     monkeypatch, tmp_path, state_changing
 ):
     called = False
@@ -1473,7 +795,7 @@ def test_patch_without_explicit_state_fact_is_not_redline_blocked(
     assert summary["redline_checked"] is False
 
 
-def test_post_defaults_to_unknown_state_and_private_unique_runs(monkeypatch, tmp_path):
+def test_post_defaults_to_unknown_state_and_private_unique_runs(runner_store, monkeypatch, tmp_path):
     secret = "SECRET_VALIDATION_FIXTURE"
     monkeypatch.setattr(
         validation_runner,
@@ -1509,7 +831,7 @@ def test_post_defaults_to_unknown_state_and_private_unique_runs(monkeypatch, tmp
     ]
 
     assert summaries[0]["summary_path"] != summaries[1]["summary_path"]
-    assert summaries[0]["operation_id"] == summaries[1]["operation_id"]
+    assert summaries[0]["attempt_id"] != summaries[1]["attempt_id"]
     assert all(item["state_changing"] is None for item in summaries)
     assert all(item["redline_checked"] is False for item in summaries)
     public_text = "\n".join(
@@ -1551,7 +873,7 @@ def _boundary_pair_spec(active: str, baseline_header: dict, variant_header: dict
     }
 
 
-def test_request_diff_credential_boundary_dimension_promotes_without_shape_detector(monkeypatch, tmp_path):
+def test_request_diff_credential_boundary_dimension_promotes_without_shape_detector(runner_store, monkeypatch, tmp_path):
     def fake_request_once(**kwargs):
         headers = kwargs.get("headers") or {}
         if "Bearer admin" in str(headers.get("Authorization", "")):
@@ -1576,8 +898,9 @@ def test_request_diff_credential_boundary_dimension_promotes_without_shape_detec
     assert summary["result"] == "tested_finding"
     assert summary["candidate_ready"] is True
     assert summary["expected_check"]["unmet"] == []
-    led = summary.get("ledger_record") or {}
-    assert led.get("result") == "tested_finding"
+    assert validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)["status"] == "updated"
+    operation = runner_store.execution(summary["store_operation_id"])
+    assert all(row["result"] == "tested_finding" for row in operation["observations"])
 
     # Undeclared, the same pair keeps the legacy conservative outcome.
     spec.pop("expected")
@@ -1589,7 +912,7 @@ def test_request_diff_credential_boundary_dimension_promotes_without_shape_detec
     assert undeclared["result"] == "candidate"
 
 
-def test_request_diff_declared_boundary_without_actual_difference_stays_candidate(monkeypatch, tmp_path):
+def test_request_diff_declared_boundary_without_actual_difference_stays_candidate(runner_store, monkeypatch, tmp_path):
     def fake_request_once(**kwargs):
         headers = kwargs.get("headers") or {}
         # Both requests carry the same declared credential, but the response
@@ -1631,7 +954,7 @@ def test_request_diff_declared_boundary_without_actual_difference_stays_candidat
         )
 
 
-def test_request_diff_non_boundary_material_diff_stays_candidate(monkeypatch, tmp_path):
+def test_request_diff_non_boundary_material_diff_stays_candidate(runner_store, monkeypatch, tmp_path):
     def fake_request_once(**kwargs):
         body = '{"page": 1, "items": []}' if "page=1" in kwargs["url"] else '{"page": 2, "items": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]}'
         return _fake_response(kwargs["url"], body=body)
@@ -1656,7 +979,7 @@ def test_request_diff_non_boundary_material_diff_stays_candidate(monkeypatch, tm
     assert summary["candidate_ready"] is False
 
 
-def test_request_diff_sqli_material_diff_without_strong_shape_is_candidate_not_clean(monkeypatch, tmp_path):
+def test_request_diff_sqli_material_diff_without_strong_shape_is_candidate_not_clean(runner_store, monkeypatch, tmp_path):
     """A material diff must never fall to tested_clean just because the
     classifier label is sqli but the shape detector did not confirm."""
 
@@ -1687,7 +1010,7 @@ def test_request_diff_sqli_material_diff_without_strong_shape_is_candidate_not_c
     assert summary["candidate_ready"] is False
 
 
-def test_request_diff_credential_pair_both_sides_succeed_stays_candidate_not_clean(monkeypatch, tmp_path):
+def test_request_diff_credential_pair_both_sides_succeed_stays_candidate_not_clean(runner_store, monkeypatch, tmp_path):
     """Anonymous 200 + denied-credential 200 with identical bodies means the
     endpoint performs no identity check. That pair must stay a reviewable
     candidate; recording tested_clean would invert the meaning."""
@@ -1723,7 +1046,7 @@ def test_request_diff_credential_pair_both_sides_succeed_stays_candidate_not_cle
     )
 
 
-def test_request_diff_missing_auth_expect_auth_pair_promotes_to_tested_finding(monkeypatch, tmp_path):
+def test_request_diff_missing_auth_expect_auth_pair_promotes_to_tested_finding(runner_store, monkeypatch, tmp_path):
     """Identical 200s across a credential boundary plus an explicit
     expect_auth declaration promote through the missing-auth route: the
     runner asserts the fact (the endpoint does not differentiate requesters)
@@ -1764,11 +1087,12 @@ def test_request_diff_missing_auth_expect_auth_pair_promotes_to_tested_finding(m
     assert spec_view.get("expect_auth") is True
     assert summary["expected_check"]["declared"] == ["identical_success_pair"]
     assert summary["expected_check"]["unmet"] == []
-    led = summary.get("ledger_record") or {}
-    assert led.get("result") == "tested_finding"
+    assert validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)["status"] == "updated"
+    operation = runner_store.execution(summary["store_operation_id"])
+    assert all(row["result"] == "tested_finding" for row in operation["observations"])
 
 
-def test_request_diff_expect_auth_trusts_arbitrary_declared_dimension(monkeypatch, tmp_path):
+def test_request_diff_expect_auth_trusts_arbitrary_declared_dimension(runner_store, monkeypatch, tmp_path):
     """When the AI declares expect_auth, the declared active dimension IS the
     credential boundary. The runner must not second-guess the header name
     against a fixed well-known vocabulary: custom auth headers
@@ -1819,7 +1143,7 @@ def test_request_diff_expect_auth_trusts_arbitrary_declared_dimension(monkeypatc
     assert summary_undeclared["candidate_ready"] is False
 
 
-def test_request_diff_expected_declaration_is_category_agnostic(monkeypatch, tmp_path):
+def test_request_diff_expected_declaration_is_category_agnostic(runner_store, monkeypatch, tmp_path):
     """The same error-marker declaration promotes a NoSQLi pair and a
     SQLi pair through the identical channel — and would promote an SSTI or
     command-injection pair the same way. classifier is metadata only."""
@@ -1871,7 +1195,7 @@ def test_request_diff_expected_declaration_is_category_agnostic(monkeypatch, tmp
         assert summary["expected_check"]["unmet"] == []
 
 
-def test_request_diff_declared_expectation_contradicted_falls_to_candidate(monkeypatch, tmp_path):
+def test_request_diff_declared_expectation_contradicted_falls_to_candidate(runner_store, monkeypatch, tmp_path):
     """Anti-forgery: the AI declares a count expansion, the wire shows none —
     the declaration is rejected, the unmet fact is archived, and the result
     never becomes tested_finding on an unconfirmed declaration."""
@@ -1905,7 +1229,7 @@ def test_request_diff_declared_expectation_contradicted_falls_to_candidate(monke
     }
 
 
-def test_request_diff_unknown_expected_fact_name_is_rejected(tmp_path):
+def test_request_diff_unknown_expected_fact_name_is_rejected(runner_store, tmp_path):
     """A typo in a declared fact name is a hard input error, never silently
     ignored — a silently-dropped declaration would silently demote the pair."""
 
@@ -1954,7 +1278,7 @@ def test_request_diff_expected_note_and_digest_distinction(tmp_path):
     assert request_pair_digest(declared) != request_pair_digest(base)
 
 
-def test_request_diff_missing_auth_pair_with_3xx_both_sides_promotes(monkeypatch, tmp_path):
+def test_request_diff_missing_auth_pair_with_3xx_both_sides_promotes(runner_store, monkeypatch, tmp_path):
     """The success class is 2xx/3xx: redirects on both sides still count as
     'the endpoint answered both requesters' for the missing-auth route."""
 
@@ -1987,7 +1311,7 @@ def test_request_diff_missing_auth_pair_with_3xx_both_sides_promotes(monkeypatch
     assert summary["candidate_ready"] is True
 
 
-def test_request_diff_missing_auth_declaration_alone_does_not_override_held_boundary(monkeypatch, tmp_path):
+def test_request_diff_missing_auth_declaration_alone_does_not_override_held_boundary(runner_store, monkeypatch, tmp_path):
     """expect_auth is a declaration, not a verdict: when the boundary held
     (both sides rejected identically) the declared identical-success fact is
     CONTRADICTED on the wire, so the pair falls to candidate with the unmet
@@ -2025,7 +1349,7 @@ def test_request_diff_missing_auth_declaration_alone_does_not_override_held_boun
     assert summary["expected_check"]["unmet"] == ["identical_success_pair"]
 
 
-def test_request_diff_equal_rejections_require_explicit_clean_declaration(monkeypatch, tmp_path):
+def test_request_diff_equal_rejections_require_explicit_clean_declaration(runner_store, monkeypatch, tmp_path):
     """Equal rejections remain unresolved unless a clean expectation was declared."""
 
     def fake_request_once(**kwargs):
@@ -2082,126 +1406,22 @@ def test_request_pair_rejects_unknown_vuln_class_before_replay(tmp_path):
     assert normalized["vuln_class"] == "authz"
 
 
-def test_runner_sync_preserving_validated_finality_keeps_coherent_pointers(
-    monkeypatch, tmp_path, capsys
-):
-    """保留 validated 终态时，validation_summary 与 runner_operation_id 必须同源。
-
-    指针撕裂回归：旧代码保留旧 validation_summary 但写入新 run 的
-    runner_operation_id，三个指针跨两个 run，canonical runner witness 拒绝。
-    """
-    target = "https://target.test"
-    url = "https://target.test/rest/admin/application-configuration"
-    key = _target_key(target)
-    findings_dir = tmp_path / "findings" / key
-    findings_dir.mkdir(parents=True)
-    (findings_dir / "findings.json").write_text(
-        json.dumps(
-            {
-                "target": target,
-                "total": 1,
-                "findings": [
-                    {
-                        "id": "AUTHZ-VALIDATED",
-                        "type": "auth_bypass",
-                        "severity": "high",
-                        "confidence": "confirmed",
-                        "url": url,
-                        "validation_status": "validated",
-                        "validation_summary": "validated/validation-summary.json",
-                        "runner_operation_id": "op-original",
-                        "report_status": "not_generated",
-                    }
-                ],
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-    validation_runner.update_finding_status(
-        findings_dir,
-        "AUTHZ-VALIDATED",
-        validation_status="validated",
-        report_status="not_generated",
-    )
-    findings_before = json.loads((findings_dir / "findings.json").read_text(encoding="utf-8"))
-    bound_op_before = findings_before["findings"][0]["runner_operation_id"]
-
-    monkeypatch.setattr(
-        validation_runner,
-        "request_once",
-        lambda **kwargs: _fake_response(kwargs["url"], body='{"config": {}}'),
-    )
-
-    spec_path = tmp_path / "pair-spec.json"
-    spec_path.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "baseline_request": {"method": "GET", "url": url},
-                "variant_request": {
-                    "method": "GET",
-                    "url": url,
-                    "headers": {"Authorization": "Bearer denied"},
-                },
-                "active_dimension": "header:Authorization",
-                "classifier": "authz",
-                "vuln_class": "Authz",
-                "expected": ["distinct_bodies"],
-                "declaration_intent": "hazard",
-            }
-        ),
-        encoding="utf-8",
-    )
-    rc = validation_runner.main(
-        [
-            "request-diff",
-            "--repo-root",
-            str(tmp_path),
-            "--target",
-            target,
-            "--request-spec",
-            str(spec_path),
-            "--finding-id",
-            "AUTHZ-VALIDATED",
-        ]
-    )
-    summary = json.loads(capsys.readouterr().out)
-    findings_after = json.loads((findings_dir / "findings.json").read_text(encoding="utf-8"))
-    row = findings_after["findings"][0]
-
-    assert rc == 0
-    assert summary["sync"]["finding"]["validation_status"] == "validated"
-    assert row["validation_status"] == "validated"
-    # 保留终态 = 保留同源指针集：新旧 run 的 operation id 不得混写。
-    assert row["runner_operation_id"] == bound_op_before
-    assert row["runner_operation_id"] != summary["operation_id"]
-    assert row["validation_summary"] == "validated/validation-summary.json"
-
-
 # ---------------------------------------------------------------------------
 # record-evidence: register already-executed native observations
 # ---------------------------------------------------------------------------
 
 
-def _native_fixture(tmp_path, *, url="https://target.test/rest/orders/1", finding_id="NATIVE-EVID-1"):
+def _native_fixture(tmp_path, *, url="https://target.test/rest/orders/1", finding_id="NATIVE-EVID-1",
+                    family="Authz", preview=False):
     """Create a canonical candidate finding + recorded raw artifacts for native registration."""
     target = "https://target.test"
     key = _target_key(target)
-    findings_dir = tmp_path / "findings" / key
-    finding_index.upsert_finding(
-        findings_dir,
-        {
-            "id": finding_id,
-            "type": "Authz",
-            "vuln_class": "Authz",
-            "url": url,
-            "method": "POST",
-            "validation_status": "candidate",
-            "report_status": "not_generated",
-        },
-        target=target,
+    store = TargetStore(tmp_path, target, allow_preview=preview)
+    store.initialize(allow_legacy=preview)
+    store.create_finding(
+        command_id="native-finding", finding_id=finding_id, endpoint=url,
+        method="POST", family=family, title="Native fixture",
+        claim="Recorded peer transition", actor="operator",
     )
     artifacts_dir = tmp_path / ".private" / "validation" / key / finding_id
     artifacts_dir.mkdir(parents=True, exist_ok=True)
@@ -2214,10 +1434,11 @@ def _native_fixture(tmp_path, *, url="https://target.test/rest/orders/1", findin
     ):
         path = artifacts_dir / name
         path.write_text(body, encoding="utf-8")
-        artifacts[name.split(".")[0]] = str(path.relative_to(tmp_path))
+        artifacts[name] = str(path.relative_to(tmp_path))
     evidence = {
         "schema_version": 1,
         "source": "browser",
+        "attempt_id": "native-fixture-attempt",
         "generated_at": "2026-09-16T10:00:00Z",
         "result": "tested_finding",
         "observed_difference": "Peer actor transitioned the recorded state; the control did not.",
@@ -2227,8 +1448,8 @@ def _native_fixture(tmp_path, *, url="https://target.test/rest/orders/1", findin
                 "method": "POST",
                 "actor": "owner",
                 "artifacts": {
-                    "request": artifacts["control"],
-                    "response": artifacts["control"],
+                    "request": artifacts["control.request.txt"],
+                    "response": artifacts["control.response.txt"],
                 },
             },
             {
@@ -2238,8 +1459,8 @@ def _native_fixture(tmp_path, *, url="https://target.test/rest/orders/1", findin
                 "object_scope": "other_object_same_org",
                 "variant": "replay",
                 "artifacts": {
-                    "request": artifacts["transition"],
-                    "response": artifacts["transition"],
+                    "request": artifacts["transition.request.bin"],
+                    "response": artifacts["transition.response.txt"],
                 },
             },
         ],
@@ -2283,10 +1504,7 @@ def test_primary_record_evidence_registers_store_operation_without_legacy_writer
         "actor": "peer", "artifacts": artifacts}],
     }
     for writer in ("record_entry", "upsert_finding", "update_finding_status", "save_queue"):
-        monkeypatch.setattr(
-            validation_runner, writer,
-            lambda *args, _writer=writer, **kwargs: pytest.fail(f"primary runner called legacy writer: {_writer}"),
-        )
+        assert not hasattr(validation_runner, writer), writer
     store = TargetStore(tmp_path, target)
     store.initialize()
     store.create_finding(
@@ -2307,6 +1525,371 @@ def test_primary_record_evidence_registers_store_operation_without_legacy_writer
     replay = validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)
     assert replay["status"] == "deduplicated"
     assert store.page("operations")["total"] == 1
+
+
+def _claimed_runner_store(root, *, kind="execution"):
+    store = TargetStore(root, "target.test")
+    store.initialize()
+    store.create_finding(
+        command_id="finding", finding_id="F-claim", endpoint="https://target.test/api/users",
+        method="GET", family="Authz", title="Recorded boundary", claim="Peer read owner data", actor="operator",
+    )
+    subject = {"endpoint": "https://target.test/api/users", "family": "Authz"} if kind == "execution" else {
+        "subject": {"target": "target.test"},
+    }
+    store.create_action(command_id="action", action_id="A-claim", kind=kind,
+                        intent="Compare the recorded actors", execution_key="actor-check", actor="operator", **subject)
+    store.transition_action(command_id="claim", action_id="A-claim", expected_version=1,
+                            status="claimed", actor="operator")
+    raw = root / "evidence" / "target.test" / "native"
+    raw.mkdir(parents=True)
+    artifacts = {}
+    for name, body in (("request", "GET /api/users HTTP/1.1\n"), ("response", "HTTP/1.1 200 OK\n\nowner fixture")):
+        path = raw / f"{name}.txt"
+        path.write_text(body, encoding="utf-8")
+        artifacts[name] = path.relative_to(root).as_posix()
+    evidence = {
+        "schema_version": 1, "source": "native-fixture", "generated_at": "2026-09-24T00:00:00.123456Z",
+        "attempt_id": "native-attempt", "result": "tested_finding", "observed_difference": "Peer received owner fixture",
+        "runs": [{"url": "https://target.test/api/users", "method": "GET", "actor": "peer", "artifacts": artifacts}],
+    }
+    return store, evidence
+
+
+def _complete_fixture_decision(decision):
+    decision["impact"] = "The fixture peer read owner-only data."
+    decision["severity"] = "high"
+    for gate in decision["gates"].values():
+        gate.update(passed=True, notes={"source": "fixture observations"})
+    for question in decision["seven_question_gate"]["questions"].values():
+        question.update(status="pass", basis="The controlled fixture supports this gate.")
+    decision["evidence"]["summary"] = "Peer observation of the owner fixture."
+    decision["report"]["content"] = "# Fixture boundary report\n\nThe peer received owner-only fixture data.\n"
+    return decision
+
+
+def _primary_validation_fixture(root, capsys):
+    import validate
+
+    store, evidence = _claimed_runner_store(root)
+    summary = validation_runner.record_native_evidence(
+        repo_root=root, target="target.test", finding_id="F-claim", evidence=evidence,
+        action_id="A-claim", claim_token="claim", command_actor="operator", state_changing=False,
+    )
+    assert validation_runner.sync_runner_artifacts(summary, repo_root=root)["status"] == "updated"
+    (root / summary["summary_path"]).write_text(json.dumps(summary), encoding="utf-8")
+    args = ["--findings-dir", str(root / "findings" / "target.test"),
+            "--target", "target.test", "--finding-id", "F-claim", "--json"]
+    assert validate.main([*args, "--scaffold"]) == 0
+    decision = _complete_fixture_decision(json.loads(capsys.readouterr().out))
+    decision_path = root / "decision.json"
+    decision_path.write_text(json.dumps(decision), encoding="utf-8")
+    return store, summary, decision, decision_path, [*args, "--decision-json", str(decision_path)]
+
+
+@pytest.mark.parametrize("stage", ["assess", "decide_delivery", "register_report"])
+def test_primary_validation_retries_only_uncommitted_judgment(tmp_path, monkeypatch, capsys, stage):
+    import validate
+
+    store, summary, decision, decision_path, args = _primary_validation_fixture(tmp_path, capsys)
+    before = store.binding()
+    with monkeypatch.context() as failure:
+        def interrupted(*a, **kw):
+            raise validate.StoreError("fixture interrupted judgment")
+        failure.setattr(type(validate.runtime_store(tmp_path, "target.test")), stage, interrupted)
+        assert validate.main(args) == 2
+        assert json.loads(capsys.readouterr().out)["retry"] is True
+    partial = store.finding("F-claim")
+    assert bool(partial["assessment"]) is (stage != "assess")
+    assert bool(partial["deliveries"]) is (stage == "register_report")
+    assert partial["reports"] == []
+    assert (tmp_path / decision["report"]["path"]).is_file()
+    assert validate.main(args) == 0
+    assert json.loads(capsys.readouterr().out)["validation_sync"]["status"] == (
+        "deduplicated" if stage == "register_report" else "updated"
+    )
+    completed = store.finding("F-claim")
+    if stage == "decide_delivery":
+        assert completed["assessment"]["id"] == partial["assessment"]["id"]
+    assert store.binding()["revision"] == before["revision"] + 3
+    assert store.action("A-claim")["status"] == "claimed"
+    binding = store.binding()
+    assert validate.main(args) == 0
+    replayed = json.loads(capsys.readouterr().out)
+    assert replayed["validation_sync"]["status"] == "deduplicated"
+    saved = json.loads(Path(replayed["summary_path"]).read_text())
+    saved["validated_at"] = "2099-01-01T00:00:00Z"
+    assert validate.apply_validation_decision(saved, repo_root=tmp_path)["status"] == "deduplicated"
+    assert store.binding() == binding
+
+    decision["impact"] = "A revised boundary interpretation."
+    decision_path.write_text(json.dumps(decision), encoding="utf-8")
+    assert validate.main([*args, "--preflight"]) == 2
+    assert "assessment changed" in " ".join(json.loads(capsys.readouterr().out)["errors"])
+    assert store.binding() == binding
+    decision["store_preconditions"] = {
+        "assessment_id": completed["assessment"]["id"], "delivery_id": completed["deliveries"][0]["id"],
+    }
+    decision["report"]["path"] = "findings/target.test/revised-report.md"
+    decision_path.write_text(json.dumps(decision), encoding="utf-8")
+    assert validate.main([*args, "--preflight"]) == 0
+    capsys.readouterr()
+    assert validate.main(args) == 0
+    capsys.readouterr()
+    revised = store.finding("F-claim")
+    assert revised["assessment"]["id"] != completed["assessment"]["id"]
+    assert revised["deliveries"][0]["assessment_id"] == revised["assessment"]["id"]
+    assert store.binding()["revision"] == binding["revision"] + 3
+
+
+@pytest.mark.parametrize("damage", ["tampered", "foreign-operation", "partial-operation", "bad-preconditions"])
+def test_primary_validation_preflight_rejects_invalid_proof_without_writes(tmp_path, capsys, damage):
+    import validate
+
+    store, summary, decision, decision_path, args = _primary_validation_fixture(tmp_path, capsys)
+    if damage == "tampered":
+        (tmp_path / summary["runs"][0]["artifacts"]["response"]).write_text("changed fixture")
+    elif damage == "bad-preconditions":
+        decision["store_preconditions"] = {"assessment_id": []}
+        decision_path.write_text(json.dumps(decision), encoding="utf-8")
+    else:
+        store.start_attempt(attempt_id="other", source="fixture", started_at="2026-09-24T00:00:00Z", actor="operator")
+        observation = {
+            "endpoint": "https://target.test/api/users", "method": "GET", "family": "Authz",
+            "observed_at": "2026-09-24T00:00:00Z", "description": "Other recorded attempt",
+            "artifacts": summary["runs"][0]["artifacts"],
+        }
+        receipt = store.record_execution(attempt_id="other", outcome="partial" if damage == "partial-operation" else "complete",
+                                         observations=[observation], actor="operator")
+        summary["store_operation_id"] = receipt["entity_id"]
+        (tmp_path / summary["summary_path"]).write_text(json.dumps(summary), encoding="utf-8")
+    binding = store.binding()
+    assert validate.main([*args, "--preflight"]) == 2
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "preflight_invalid"
+    assert result["errors"]
+    assert not (tmp_path / decision["report"]["path"]).exists()
+    assert store.finding("F-claim")["assessment"] is None
+    assert store.binding() == binding
+
+
+def test_primary_validation_assesses_only_the_selected_operation(tmp_path, capsys):
+    import validate
+
+    store, summary, _, _, args = _primary_validation_fixture(tmp_path, capsys)
+    finding = store.finding("F-claim")
+    store.start_attempt(attempt_id="incomplete", source="fixture", started_at="2026-09-24T00:00:00Z", actor="operator")
+    store.record_execution(attempt_id="incomplete", outcome="partial", actor="operator", observations=[{
+        "endpoint": finding["endpoint"], "method": finding["method"], "family": finding["family"],
+        "observed_at": "2026-09-24T00:00:00Z", "description": "A different incomplete experiment",
+        "artifacts": {"request": summary["runs"][0]["artifacts"]["request"]}, "error": "interrupted",
+    }], candidate={key: finding[key] for key in ("id", "endpoint", "method", "family", "title", "claim")})
+    assert len(store.finding("F-claim")["evidence"]) == 2
+    assert validate.main(args) == 0
+    capsys.readouterr()
+    assert store.finding("F-claim")["assessment"]["verdict"] == "confirmed"
+    assert store.page("operations")["total"] == 2
+
+
+@pytest.mark.parametrize(("gate", "status", "verdict", "delivery"), [
+    ("gate4", False, "confirmed", "ineligible"),
+    ("q5_not_known_behavior", "fail", "confirmed", "ineligible"),
+    ("q7_not_never_submit", "fail", "confirmed", "ineligible"),
+    ("q5_not_known_behavior", "unknown", "confirmed", "deferred"),
+    ("q6_impact_beyond_possible", "fail", "inconclusive", "deferred"),
+    ("gate3", False, "inconclusive", "deferred"),
+])
+def test_primary_validation_separates_technical_and_delivery_judgments(tmp_path, capsys, gate, status, verdict, delivery):
+    import report_generator
+    import validate
+
+    store, _, decision, decision_path, args = _primary_validation_fixture(tmp_path, capsys)
+    if gate.startswith("gate"):
+        decision["gates"][gate]["passed"] = status
+    else:
+        decision["seven_question_gate"]["questions"][gate].update(status=status, basis="Explicit fixture judgment")
+    decision_path.write_text(json.dumps(decision), encoding="utf-8")
+    assert validate.main(args) == 0
+    result = json.loads(capsys.readouterr().out)
+    finding = store.finding("F-claim")
+    assert finding["assessment"]["verdict"] == verdict
+    assert finding["deliveries"][0]["status"] == delivery
+    summary = json.loads(Path(result["summary_path"]).read_text())
+    assert summary["validation_evidence_passed"] is (verdict == "confirmed")
+    assert summary["report_ready"] is False
+    assert summary["delivery_judgment"]["status"] == delivery
+    binding = store.binding()
+    total, _ = report_generator.process_findings_dir(tmp_path / "findings" / "target.test")
+    assert total == 0
+    assert store.binding() == binding
+    assert finding["reports"] == []
+    assert store.action("A-claim")["status"] == "claimed"
+
+
+@pytest.mark.parametrize("lane", ["native", "request"])
+@pytest.mark.parametrize("invalid", ["missing-token", "missing-action", "wrong-token", "wrong-actor", "work", "released", "endpoint", "family"])
+def test_primary_runner_rejects_invalid_claim_before_side_effects(tmp_path, monkeypatch, lane, invalid):
+    store, evidence = _claimed_runner_store(tmp_path, kind="work" if invalid == "work" else "execution")
+    args = {"action_id": "A-claim", "claim_token": "claim", "command_actor": "operator"}
+    if invalid == "missing-token":
+        args.pop("claim_token")
+    elif invalid == "missing-action":
+        args.pop("action_id")
+    elif invalid == "wrong-token":
+        args["claim_token"] = "another-claim"
+    elif invalid == "wrong-actor":
+        args["command_actor"] = "another-operator"
+    elif invalid == "released":
+        store.transition_action(command_id="release", action_id="A-claim", expected_version=2,
+                                status="ready", actor="operator", reason="Changed conditions", claim_token="claim")
+    if invalid in {"endpoint", "family"}:
+        subject = {"endpoint": "https://target.test/other" if invalid == "endpoint" else "https://target.test/api/users",
+                   "family": "sqli" if invalid == "family" else "Authz"}
+        store.create_action(command_id="other-action", action_id="A-other", intent="Another experiment",
+                            execution_key="another-check", actor="operator", **subject)
+        store.transition_action(command_id="other-claim", action_id="A-other", expected_version=1,
+                                status="claimed", actor="operator")
+        args.update(action_id="A-other", claim_token="other-claim")
+    monkeypatch.setattr(validation_runner, "request_once", lambda **kw: pytest.fail("invalid claim reached network"))
+    binding = store.binding()
+    raw_before = {p.relative_to(tmp_path): p.read_bytes() for p in (tmp_path / "evidence").rglob("*") if p.is_file()}
+    with pytest.raises(StoreError):
+        if lane == "native":
+            validation_runner.record_native_evidence(repo_root=tmp_path, target="target.test", finding_id="F-claim",
+                                                     evidence=evidence, **args)
+        else:
+            validation_runner.run_request_diff(repo_root=tmp_path, target="target.test", finding_id="F-new",
+                                                request_spec=_expect_auth_pair_spec(), **args)
+    assert store.binding() == binding
+    assert {p.relative_to(tmp_path): p.read_bytes() for p in (tmp_path / "evidence").rglob("*") if p.is_file()} == raw_before
+    assert not (tmp_path / ".private").exists()
+    assert store.page("findings")["total"] == 1
+
+
+@pytest.mark.parametrize("responses", [0, 1, 2])
+def test_primary_request_claim_survives_partial_registration_and_retry(tmp_path, monkeypatch, responses):
+    store, _ = _claimed_runner_store(tmp_path)
+    calls = []
+
+    def request(**kwargs):
+        calls.append(kwargs)
+        if len(calls) > responses:
+            raise OSError("fixture transport interruption")
+        return _fake_response(kwargs["url"], body=f"fixture {len(calls)}")
+
+    monkeypatch.setattr(validation_runner, "request_once", request)
+    monkeypatch.setattr(validation_runner, "now_utc", lambda: "2026-09-24T00:00:00Z")
+    args = dict(repo_root=tmp_path, target="target.test", finding_id="F-claim", request_spec=_expect_auth_pair_spec(),
+                action_id="A-claim", claim_token="claim", command_actor="operator", attempt_id="request-attempt")
+    summary = validation_runner.run_request_diff(**args)
+    binding = store.binding()
+    with pytest.raises(StoreError, match="attempt already started"):
+        validation_runner.run_request_diff(**args)
+    assert len(calls) == min(responses + 1, 2)
+    assert store.binding() == binding
+    saved = json.loads((tmp_path / summary["summary_path"]).read_text())
+    with monkeypatch.context() as failure:
+        def reject_registration(*a, **kw):
+            raise OSError("fixture registration interruption")
+        failure.setattr(validation_runner, "_record_primary_execution", reject_registration)
+        assert validation_runner.sync_runner_artifacts(saved, repo_root=tmp_path)["status"] == "partial"
+    assert store.binding() == binding
+    assert validation_runner.sync_runner_artifacts(saved, repo_root=tmp_path)["status"] == "updated"
+    operation = store.execution(saved["store_operation_id"])
+    assert operation["attempt"]["action_id"] == "A-claim"
+    assert operation["attempt"]["claim_token"] == "claim"
+    assert operation["outcome"] == ("unknown", "partial", "complete")[responses]
+    assert store.action("A-claim")["status"] == "claimed"
+    binding = store.binding()
+    assert validation_runner.sync_runner_artifacts(saved, repo_root=tmp_path)["status"] == "deduplicated"
+    assert store.binding() == binding
+    completion = dict(command_id="complete", action_id="A-claim", expected_version=2,
+                      status="completed", actor="operator", reason="Recorded execution", claim_token="claim",
+                      completion={"operation_id": saved["store_operation_id"]})
+    if responses == 2:
+        store.transition_action(**completion)
+        assert store.action("A-claim")["status"] == "completed"
+    else:
+        with pytest.raises(StoreError, match="complete observation"):
+            store.transition_action(**completion)
+
+
+def test_primary_native_claim_cli_through_validation_report_and_resume(tmp_path):
+    import subprocess
+    import sys
+
+    root = tmp_path / "isolated root"
+    store, evidence = _claimed_runner_store(root)
+    tools = Path(__file__).resolve().parents[1] / "tools"
+
+    def cli(tool, *args):
+        result = subprocess.run([sys.executable, "-B", str(tools / tool), *map(str, args)],
+                                text=True, capture_output=True, timeout=30)
+        assert result.returncode == 0, result.stdout + result.stderr
+        return json.loads(result.stdout)
+
+    evidence_path = root / "observations.json"
+    evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+    args = ("record-evidence", "--repo-root", root, "--target", "target.test", "--finding-id", "F-claim",
+            "--evidence-json", evidence_path, "--action-id", "A-claim", "--claim-token", "claim",
+            "--actor", "operator", "--no-state-changing", "--json")
+    pending = cli("validation_runner.py", *args, "--no-sync")
+    assert store.page("operations")["total"] == 0
+    assert (root / pending["summary_path"]).is_file()
+    summary = cli("validation_runner.py", *args)
+    operation_id = summary["store_operation_id"]
+    execution = store.execution(operation_id)
+    assert execution["attempt"]["action_id"] == "A-claim"
+    assert execution["attempt"]["claim_token"] == "claim"
+    assert execution["observations"][0]["actor"] == "peer"
+    assert execution["observations"][0]["observed_at"].endswith(".123456+00:00")
+    assert store.action("A-claim")["status"] == "claimed"
+
+    validate_args = ("--findings-dir", root / "findings" / "target.test", "--target", "target.test",
+                     "--finding-id", "F-claim", "--json")
+    binding = store.binding()
+    decision = cli("validate.py", *validate_args, "--scaffold")
+    assert decision["evidence"]["runner_summary"] == summary["summary_path"]
+    assert decision["vuln_class"] == "Authz"
+    _complete_fixture_decision(decision)
+    decision_path = root / "decision.json"
+    decision_path.write_text(json.dumps(decision), encoding="utf-8")
+    assert cli("validate.py", *validate_args, "--decision-json", decision_path, "--preflight")["status"] == "preflight_ok"
+    assert store.binding() == binding
+    result = cli("validate.py", *validate_args, "--decision-json", decision_path)
+    finding = store.finding("F-claim")
+    assert finding["assessment"]["verdict"] == "confirmed"
+    assert finding["deliveries"][0]["status"] == "eligible"
+    assert len(finding["reports"]) == 1
+    assert Path(result["report_path"]).read_text() == decision["report"]["content"]
+    generated = subprocess.run([sys.executable, "-B", str(tools / "report_generator.py"),
+                                str(root / "findings" / "target.test")],
+                               text=True, capture_output=True, timeout=30)
+    assert generated.returncode == 0, generated.stdout + generated.stderr
+    reports = store.finding("F-claim")["reports"]
+    assert len(reports) == 1
+    assert not reports[0]["stale"]
+    assert (root / reports[0]["artifact_ref"]).read_text() == decision["report"]["content"]
+    applied = store.binding()
+    repeated = cli("validate.py", *validate_args, "--decision-json", decision_path)
+    assert repeated["validation_sync"]["status"] == "deduplicated"
+    assert store.binding() == applied
+    assert store.finding("F-claim")["reports"] == reports
+    assert store.action("A-claim")["status"] == "claimed"
+    store.transition_action(command_id="complete", action_id="A-claim", expected_version=2,
+                            status="completed", actor="operator", reason="Recorded execution", claim_token="claim",
+                            completion={"operation_id": operation_id})
+    binding = store.binding()
+    replay = cli("validation_runner.py", *args)
+    assert replay["store_operation_id"] == operation_id
+    assert replay["sync"]["status"] == "deduplicated"
+    cli("checkpoint.py", "--repo-root", root, "--target", "target.test", "--no-refresh-coverage", "--json")
+    resumed = cli("resume.py", "--repo-root", root, "--memory-dir", root / "hunt-memory", "--target", "target.test", "--json")
+    assert resumed["summary"]["target_memory"]["source_kind"] == "store"
+    assert store.action("A-claim")["completion"]["operation_id"] == operation_id
+    assert store.binding() == binding
+    for retired in ("findings/target.test/findings.json", "state/target.test/action_queue.json", "state/target.test/case.json"):
+        assert not (root / retired).exists()
 
 
 def test_primary_native_registration_preserves_each_step_method(tmp_path):
@@ -2368,10 +1951,7 @@ def test_primary_native_registration_preserves_each_step_method(tmp_path):
 def test_primary_request_diff_registers_store_operation_without_legacy_ledger(monkeypatch, tmp_path):
     TargetStore(tmp_path, "https://target.test").initialize()
     for writer in ("record_entry", "upsert_finding", "update_finding_status", "save_queue"):
-        monkeypatch.setattr(
-            validation_runner, writer,
-            lambda *args, _writer=writer, **kwargs: pytest.fail(f"primary runner called legacy writer: {_writer}"),
-        )
+        assert not hasattr(validation_runner, writer), writer
     monkeypatch.setattr(
         validation_runner, "request_once",
         lambda **kwargs: _fake_response(kwargs["url"], body='{"id":1}' if "users/1" in kwargs["url"] else '{"id":2}'),
@@ -2459,30 +2039,26 @@ def test_primary_partial_request_diff_keeps_completed_side_observation(monkeypat
 
 def test_record_evidence_requires_existing_canonical_finding(tmp_path):
     target, _, evidence = _native_fixture(tmp_path)
-    with pytest.raises(ValueError, match="existing canonical finding"):
+    with pytest.raises(ValueError, match="existing primary finding"):
         validation_runner.record_native_evidence(
             repo_root=tmp_path, target=target, finding_id="GHOST-FINDING", evidence=evidence,
         )
 
 
 def test_record_evidence_accepts_unknown_family_without_closing_canonical_coverage(tmp_path):
-    from tools.closure_projection import build_current_cell_projection
-    from tools.closure_resolver import ClosureResolver
-    from tools.evidence_ledger import load_entries
+    from current_truth import current_cell_projection
+    from closure_resolver import ClosureResolver
 
-    target, finding_id, evidence = _native_fixture(tmp_path)
-    finding_index.upsert_finding(
-        tmp_path / "findings" / _target_key(target),
-        {"id": finding_id, "vuln_class": "custom-state-transition", "type": "custom-state-transition"},
-        target=target,
-    )
+    target, finding_id, evidence = _native_fixture(tmp_path, family="custom-state-transition")
     summary = validation_runner.record_native_evidence(
         repo_root=tmp_path, target=target, finding_id=finding_id, evidence=evidence,
     )
     assert summary["vuln_class"] == "custom-state-transition"
-    entries = load_entries(tmp_path, target)
-    assert entries[0]["vuln_class"] == "custom-state-transition"
-    closure = ClosureResolver(build_current_cell_projection(entries))
+    assert validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)["status"] == "updated"
+    store = TargetStore(tmp_path, target)
+    assert all(row["family"] == "custom-state-transition"
+               for row in store.execution(summary["store_operation_id"])["observations"])
+    closure = ClosureResolver(current_cell_projection(tmp_path, target))
     assert not closure.is_cell_closed(summary["url"], "Authz")
     assert not closure.is_cell_closed(summary["url"], "custom-state-transition")
 
@@ -2497,17 +2073,10 @@ def test_record_evidence_rejects_nonv1_schema(tmp_path):
 
 
 def test_record_evidence_rejects_off_target_canonical_url(tmp_path):
-    target, finding_id, _ = _native_fixture(tmp_path, url="https://target.test/rest/orders/1")
-    # retarget finding to an off-target host
-    key = _target_key(target)
-    payload = json.loads((tmp_path / "findings" / key / "findings.json").read_text())
-    payload["findings"][0]["url"] = "https://other.test/rest/orders/1"
-    (tmp_path / "findings" / key / "findings.json").write_text(json.dumps(payload))
-    with pytest.raises(ValueError, match="off target"):
-        validation_runner.record_native_evidence(
-            repo_root=tmp_path, target=target, finding_id=finding_id,
-            evidence={"schema_version": 1, "runs": [{}]},
-        )
+    with pytest.raises(StoreError, match="target"):
+        _native_fixture(tmp_path, url="https://other.test/rest/orders/1")
+    assert TargetStore(tmp_path, "target.test").page("findings")["total"] == 0
+    assert not (tmp_path / ".private").exists()
 
 
 def test_record_evidence_rejects_off_target_run_url(tmp_path):
@@ -2552,6 +2121,11 @@ def test_record_evidence_partial_result_is_not_candidate_ready(tmp_path):
     assert summary["result"] == "partial"
     assert summary["candidate_ready"] is False
     assert summary["status"] == "partial"
+
+    assert validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)["status"] == "updated"
+    operation = TargetStore(tmp_path, target).execution(summary["store_operation_id"])
+    assert operation["outcome"] == "partial"
+    assert operation["observations"][1]["error"] == "connection reset"
 
 
 def test_record_evidence_rejects_invalid_result_word(tmp_path):
@@ -2650,40 +2224,30 @@ def test_record_evidence_different_method_runs_allowed_across_steps(tmp_path):
     assert any(r["method"] == "POST" for r in summary["runs"])
 
 
-def test_record_evidence_sync_updates_finding_and_queue(tmp_path):
+def test_record_evidence_sync_binds_finding_without_matching_unclaimed_actions(tmp_path):
     target, finding_id, evidence = _native_fixture(tmp_path, finding_id="NATIVE-SYNC-1")
-    key = _target_key(target)
-    queue_dir = tmp_path / "state" / key
-    queue_dir.mkdir(parents=True, exist_ok=True)
-    (queue_dir / "action_queue.json").write_text(
-        json.dumps({
-            "schema_version": 1,
-            "target": target,
-            "actions": [
-                {
-                    "id": "AQ-NATIVE",
-                    "status": "queued",
-                    "type": "validation",
-                    "metadata": {"finding_id": finding_id, "url": "https://target.test/rest/orders/1"},
-                }
-            ],
-        }),
-        encoding="utf-8",
+    store = TargetStore(tmp_path, target)
+    store.create_action(
+        command_id="similar-action", action_id="A-unclaimed", kind="execution",
+        endpoint=evidence["runs"][0]["url"], family="Authz", intent="Review the same endpoint",
+        execution_key="independent-review", actor="operator", metadata={"finding_id": finding_id},
     )
+    before = store.action("A-unclaimed")
     summary = validation_runner.record_native_evidence(
         repo_root=tmp_path, target=target, finding_id=finding_id, evidence=evidence,
         state_changing=True, redline_checked=True,
     )
-    sync = validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)
-    assert sync["finding"]["status"] == "updated"
-    payload = json.loads((tmp_path / "findings" / key / "findings.json").read_text())
-    finding = next(f for f in payload["findings"] if f["id"] == finding_id)
-    # runner sync lands the candidate-grade witness; the "validated" finality
-    # itself still belongs to /validate (tested_finding -> candidate here).
-    assert finding["validation_status"] == "candidate"
-    assert finding["runner_operation_id"] == summary["operation_id"]
-    # the candidate now carries a machine-readable witness that /validate can bind
-    assert finding["validation_summary"].endswith(summary["summary_path"])
+    assert validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)["status"] == "updated"
+    finding = store.finding(finding_id)
+    assert finding["assessment"] is None
+    assert {row["operation_id"] for row in finding["evidence"]} == {summary["store_operation_id"]}
+    after = store.action("A-unclaimed")
+    assert {key: value for key, value in after.items() if key != "revision"} == {
+        key: value for key, value in before.items() if key != "revision"
+    }
+    assert store.execution(summary["store_operation_id"])["attempt"]["action_id"] is None
+    assert not (tmp_path / "findings/target.test/findings.json").exists()
+    assert not (tmp_path / "state/target.test/action_queue.json").exists()
 
 
 def test_record_evidence_rejects_malformed_evidence_json(tmp_path, capsys):
@@ -2718,78 +2282,64 @@ def test_record_evidence_rejects_state_changing_without_redline_confirmation(tmp
 
 
 def test_record_evidence_resumes_after_interrupted_sync(tmp_path):
-    """同步中断后按同一 material 重跑：复用 operation/summary，不产生第二份证据。"""
+    import sqlite3
+
     target, finding_id, evidence = _native_fixture(tmp_path, finding_id="NATIVE-RESUME")
-    first = validation_runner.record_native_evidence(
-        repo_root=tmp_path, target=target, finding_id=finding_id, evidence=evidence,
-        state_changing=True, redline_checked=True,
-    )
-    # 模拟 owner 同步在写 findings.json 前中断：摘要已落盘，finding 仍是初始 candidate
-    #（无 runner_operation_id / validation_summary），与真实中断后的现场一致。
-    summary_file = tmp_path / first["summary_path"]
-    assert summary_file.is_file()
-    resumed = validation_runner.record_native_evidence(
-        repo_root=tmp_path, target=target, finding_id=finding_id, evidence=evidence,
-        state_changing=True, redline_checked=True,
-    )
-    assert resumed["operation_id"] == first["operation_id"]
-    assert resumed["summary_path"] == first["summary_path"]
-    # 重跑后 owner 同步可补齐：第二次 sync 必须把 finding 绑到同一 witness
-    sync = validation_runner.sync_runner_artifacts(resumed, repo_root=tmp_path)
-    assert sync["finding"]["status"] == "updated"
-    key = _target_key(target)
-    finding = next(
-        f for f in json.loads((tmp_path / "findings" / key / "findings.json").read_text())["findings"]
-        if f["id"] == finding_id
-    )
-    assert finding["runner_operation_id"] == first["operation_id"]
-    # 只有一份原生证据摘要（重复登记不复制原始材料）
-    assert len(list((tmp_path / "evidence").rglob("summary.json"))) == 1
-
-
-def test_record_evidence_versioned_queue_writes_last_outcome_without_resolving(tmp_path):
-    """versioned（activation_required）action：runner 只写观察，仍保持 running。"""
-    target, finding_id, evidence = _native_fixture(tmp_path, finding_id="NATIVE-VERSIONED")
-    key = _target_key(target)
-    queue_dir = tmp_path / "state" / key
-    queue_dir.mkdir(parents=True, exist_ok=True)
-    endpoint = "https://target.test/rest/orders/1"
-    (queue_dir / "action_queue.json").write_text(
-        json.dumps({
-            "schema_version": 1,
-            "target": target,
-            "actions": [{
-                "id": "AQ-NATIVE-V",
-                "status": "running",
-                "type": "validation",
-                "metadata": {
-                    "finding_id": finding_id,
-                    "endpoint": endpoint,
-                    "depth_contract_version": 1,
-                    "active_dimension": "object-ownership",
-                },
-            }],
-        }),
-        encoding="utf-8",
-    )
-
+    store = TargetStore(tmp_path, target)
     summary = validation_runner.record_native_evidence(
         repo_root=tmp_path, target=target, finding_id=finding_id, evidence=evidence,
         state_changing=True, redline_checked=True,
     )
-    sync = validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)
+    summary_file = tmp_path / summary["summary_path"]
+    saved = summary_file.read_bytes()
+    before = store.binding()
+    # Fail after metadata writes, at the same transaction's audit insert.
+    with sqlite3.connect(store.path) as conn:
+        conn.execute("CREATE TRIGGER reject_audit BEFORE INSERT ON audit "
+                     "BEGIN SELECT RAISE(ABORT, 'fixture audit failure'); END")
+    failed = validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)
+    assert failed["status"] == "partial"
+    assert "fixture audit failure" in failed["store"]["error"]
+    assert store.binding() == before
+    assert store.finding(finding_id)["evidence"] == []
+    assert store.page("operations")["total"] == 0
+    assert summary_file.read_bytes() == saved
+    with sqlite3.connect(store.path) as conn:
+        conn.execute("DROP TRIGGER reject_audit")
+    resumed = json.loads(saved)
+    assert validation_runner.sync_runner_artifacts(resumed, repo_root=tmp_path)["status"] == "updated"
+    assert validation_runner.sync_runner_artifacts(resumed, repo_root=tmp_path)["status"] == "deduplicated"
+    assert store.page("operations")["total"] == 1
+    assert {row["operation_id"] for row in store.finding(finding_id)["evidence"]} == {resumed["store_operation_id"]}
+    assert len(list((tmp_path / "evidence").rglob("summary.json"))) == 1
 
-    assert sync["action_queue"]["status"] == "updated"
-    assert sync["action_queue"]["action_status"] == "running"
-    action = load_queue(tmp_path, target)["actions"][0]
-    assert action["status"] == "running"
-    outcome = action["metadata"]["last_outcome"]
-    assert outcome["status"] == "tested_finding"
-    assert outcome["operation_id"] == summary["operation_id"]
-    assert action["metadata"]["tested_dimensions"] == ["object-ownership"]
+
+def test_record_evidence_claim_stays_open_until_explicit_completion(tmp_path):
+    store, evidence = _claimed_runner_store(tmp_path)
+    summary = validation_runner.record_native_evidence(
+        repo_root=tmp_path, target="target.test", finding_id="F-claim", evidence=evidence,
+        action_id="A-claim", claim_token="claim", command_actor="operator",
+    )
+    assert validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)["status"] == "updated"
+    action = store.action("A-claim")
+    assert action["status"] == "claimed"
+    operation_id = summary["store_operation_id"]
+    assert store.execution(operation_id)["attempt"]["action_id"] == action["id"]
+    assert store.execution(operation_id)["attempt"]["claim_token"] == "claim"
+    store.transition_action(command_id="complete", action_id=action["id"], expected_version=action["version"],
+                            status="completed", reason="Reviewed recorded evidence", actor="operator",
+                            claim_token="claim", completion={"operation_id": operation_id})
+    store.create_action(command_id="report-work", action_id="report", kind="work",
+                        intent="Draft report", execution_key="report", subject={"finding_id": "F-claim"},
+                        metadata={"finding_id": "F-claim"}, actor="operator")
+    before = store.binding()
+    assert validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)["status"] == "deduplicated"
+    assert store.binding() == before
+    assert store.action(action["id"])["status"] == "completed"
+    assert store.action("report")["status"] == "ready"
 
 
-def test_request_diff_invalid_spec_exits_two_without_request(tmp_path, monkeypatch, capsys):
+def test_request_diff_invalid_spec_exits_two_without_request(runner_store, tmp_path, monkeypatch, capsys):
     """invalid request spec 必须 exit 2，且不得发任何请求 (validation-evidence.md:38)。
 
     构造缺 active_dimension 的 spec：validate_request_pair 在发请求前就抛
@@ -2823,7 +2373,7 @@ def test_request_diff_invalid_spec_exits_two_without_request(tmp_path, monkeypat
     assert "invalid request spec" in capsys.readouterr().err
 
 
-def test_request_diff_execution_value_error_is_partial(monkeypatch, tmp_path):
+def test_request_diff_execution_value_error_is_partial(runner_store, monkeypatch, tmp_path):
     """Execution-time scope errors remain partial evidence, not input errors."""
     monkeypatch.setattr(
         validation_runner,
@@ -2842,7 +2392,7 @@ def test_request_diff_execution_value_error_is_partial(monkeypatch, tmp_path):
     assert summary["error"]["type"] == "ValueError"
 
 
-def test_request_diff_invalid_repeat_exits_two_without_request(tmp_path, monkeypatch, capsys):
+def test_request_diff_invalid_repeat_exits_two_without_request(runner_store, tmp_path, monkeypatch, capsys):
     spec = tmp_path / "spec.json"
     payload = _expect_auth_pair_spec()
     payload["repeat"] = "not-an-integer"
@@ -2884,15 +2434,12 @@ def test_preview_request_diff_rejects_before_execution_or_bundle(tmp_path, monke
 
 
 def test_preview_native_registration_preserves_existing_summary(tmp_path):
-    target, finding_id, evidence = _native_fixture(tmp_path)
-    summary = validation_runner.record_native_evidence(
-        repo_root=tmp_path, target=target, finding_id=finding_id, evidence=evidence,
-        state_changing=True, redline_checked=True,
-    )
-    path = tmp_path / summary["summary_path"]
+    target, finding_id, evidence = _native_fixture(tmp_path, preview=True)
+    summary = {"target": target, "finding_id": finding_id, **evidence}
+    path = tmp_path / "evidence" / _target_key(target) / "existing-summary.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(summary))
     before = path.read_bytes()
-    store = TargetStore(tmp_path, target, allow_preview=True)
-    store.initialize(allow_legacy=True)
     with pytest.raises(validation_runner.StoreError, match="preview"):
         validation_runner.record_native_evidence(
             repo_root=tmp_path, target=target, finding_id=finding_id, evidence=evidence,
@@ -2968,3 +2515,97 @@ def test_runner_cli_holds_switch_lock_through_execution_and_registration(tmp_pat
     with pytest.raises(validation_runner.StoreError, match="backend changed"):
         validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)
     assert store.page("operations")["total"] == 1
+
+
+def test_runner_registration_preserves_existing_assessment_and_delivery(tmp_path, capsys, monkeypatch):
+    import validate
+
+    store, _, _, _, args = _primary_validation_fixture(tmp_path, capsys)
+    assert validate.main(args) == 0
+    capsys.readouterr()
+    before = store.finding("F-claim")
+    assert before["assessment"]["verdict"] == "confirmed"
+    monkeypatch.setattr(validation_runner, "request_once", lambda **kw: _fake_response(kw["url"]))
+    summary = validation_runner.run_request_diff(
+        repo_root=tmp_path, target="target.test", finding_id="F-claim", request_spec=_expect_auth_pair_spec(),
+        action_id="A-claim", claim_token="claim", command_actor="operator",
+    )
+    assert validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)["status"] == "updated"
+    after = store.finding("F-claim")
+    assert after["assessment"] == before["assessment"]
+    assert after["deliveries"] == before["deliveries"]
+    assert len(after["evidence"]) > len(before["evidence"])
+    assert store.action("A-claim")["status"] == "claimed"
+
+
+@pytest.mark.parametrize("field,value", [
+    ("endpoint", "https://target.test/another-endpoint"), ("family", "SQLi"), ("method", "DELETE"),
+])
+def test_runner_registration_rejects_finding_identity_conflict(tmp_path, field, value):
+    target, finding_id, evidence = _native_fixture(tmp_path)
+    summary = validation_runner.record_native_evidence(
+        repo_root=tmp_path, target=target, finding_id=finding_id, evidence=evidence,
+    )
+    # A persisted execution cannot be attached to a different claim identity.
+    store = TargetStore(tmp_path, target)
+    candidate = {key: store.finding(finding_id)[key] for key in ("id", "endpoint", "method", "family", "title", "claim")}
+    candidate[field] = value
+    before = store.binding()
+    with pytest.raises(StoreError, match="exact observed endpoint, method and family"):
+        validation_runner._record_primary_execution(
+            store, attempt_id=summary["attempt_id"], actor="validation-runner", started_at=summary["generated_at"],
+            result=summary["result"], runs=summary["runs"], method="POST", methods=None,
+            family="Authz", native=True, candidate=candidate, state_changing=None, redline_checked=False,
+        )
+    assert store.binding() == before
+    assert store.page("operations")["total"] == 0
+
+
+@pytest.mark.parametrize("lane", ["native", "request-diff"])
+def test_runner_exact_query_identity_stays_private_and_registers(tmp_path, monkeypatch, lane):
+    endpoint = "https://target.test/rest/orders/1?token=PRIVATE_VALUE&x=one&x=two"
+    target, finding_id, evidence = _native_fixture(tmp_path, url=endpoint)
+    if lane == "native":
+        summary = validation_runner.record_native_evidence(
+            repo_root=tmp_path, target=target, finding_id=finding_id, evidence=evidence,
+        )
+    else:
+        def response(**kw):
+            return {"status": 200, "headers": {}, "body": "ok", "request_text": "request",
+                    "response_text": "response", "requested_url": kw["url"], "url": kw["url"]}
+        monkeypatch.setattr(validation_runner, "request_once", response)
+        summary = validation_runner.run_request_diff(
+            repo_root=tmp_path, target=target, finding_id=finding_id,
+            request_spec={"schema_version": 1, "classifier": "auth_boundary", "vuln_class": "Authz",
+                          "active_dimension": "query:x", "expected_signal": "boundary check",
+                          "baseline_request": {"method": "POST", "url": endpoint},
+                          "variant_request": {"method": "POST", "url": endpoint.replace("x=two", "x=three")}},
+        )
+    assert "PRIVATE_VALUE" not in json.dumps(summary)
+    assert validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)["status"] == "updated"
+    store = TargetStore(tmp_path, target)
+    observation = store.execution(summary["store_operation_id"])["observations"][0]
+    assert observation["endpoint"] == endpoint
+    assert store.finding(finding_id)["endpoint"] == endpoint
+    assert validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)["status"] == "deduplicated"
+
+
+def test_native_redacted_query_shape_cannot_anchor_exact_finding(tmp_path):
+    target, finding_id, evidence = _native_fixture(tmp_path, url="https://target.test/rest/orders/1?id=42")
+    for run in evidence["runs"]:
+        run["url"] = "https://target.test/rest/orders/1?id="
+    store = TargetStore(tmp_path, target)
+    before = store.binding()
+    with pytest.raises(ValueError, match="exact endpoint"):
+        validation_runner.record_native_evidence(repo_root=tmp_path, target=target, finding_id=finding_id, evidence=evidence)
+    assert store.binding() == before
+
+
+def test_runner_registration_refuses_changed_material_before_any_operation(tmp_path):
+    target, finding_id, evidence = _native_fixture(tmp_path)
+    summary = validation_runner.record_native_evidence(repo_root=tmp_path, target=target, finding_id=finding_id, evidence=evidence)
+    (tmp_path / summary["runs"][0]["artifacts"]["identity"]).write_text("{}")
+    result = validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)
+    assert result["status"] == "partial"
+    assert "changed" in result["store"]["error"]
+    assert TargetStore(tmp_path, target).page("operations")["total"] == 0

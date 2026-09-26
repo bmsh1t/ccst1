@@ -8,10 +8,14 @@ import sys
 
 import case_state_seed
 import target_case_state
+from tools.target_store import TargetStore
 
 
 def test_case_state_seed_keeps_object_without_inventing_actors_or_tests(tmp_path):
     target = "http://127.0.0.1:3002"
+    store = TargetStore(tmp_path, target)
+    store.initialize()
+    before = store.binding()
     browser_dir = tmp_path / "recon" / "127.0.0.1:3002" / "browser"
     browser_dir.mkdir(parents=True)
     (browser_dir / "xhr_endpoints.txt").write_text(
@@ -30,12 +34,15 @@ def test_case_state_seed_keeps_object_without_inventing_actors_or_tests(tmp_path
     assert obj["source"].endswith("browser/xhr_endpoints.txt")
     assert not {"suggested_actors", "suggested_backlog", "commands"} & payload.keys()
     assert not {"owner_actor", "private_marker", "runner", "confidence"} & obj.keys()
-    assert not (tmp_path / "state").exists()
+    assert store.binding() == before
+    assert store.case_context()["objects"] == []
+    assert not (tmp_path / "state" / "127.0.0.1:3002" / "case_state.json").exists()
     assert "request-diff" not in case_state_seed.format_seed(payload)
 
 
 def test_case_state_seed_extracts_query_object_from_browser_params(tmp_path):
     target = "target.com"
+    TargetStore(tmp_path, target).initialize()
     browser_dir = tmp_path / "recon" / "target.com" / "browser"
     browser_dir.mkdir(parents=True)
     (browser_dir / "browser_params.txt").write_text(
@@ -51,6 +58,7 @@ def test_case_state_seed_extracts_query_object_from_browser_params(tmp_path):
 
 
 def test_case_state_seed_does_not_seed_external_protocol_relative_objects(tmp_path):
+    TargetStore(tmp_path, "target.com").initialize()
     urls_dir = tmp_path / "recon" / "target.com" / "urls"
     urls_dir.mkdir(parents=True)
     (urls_dir / "api_endpoints.txt").write_text(
@@ -67,6 +75,7 @@ def test_case_state_seed_does_not_seed_external_protocol_relative_objects(tmp_pa
 
 
 def test_raw_unknown_query_id_is_retained_without_a_confidence_verdict(tmp_path):
+    TargetStore(tmp_path, "target.com").initialize()
     urls_dir = tmp_path / "recon" / "target.com" / "urls"
     urls_dir.mkdir(parents=True)
     (urls_dir / "with_params.txt").write_text(
@@ -83,6 +92,9 @@ def test_raw_unknown_query_id_is_retained_without_a_confidence_verdict(tmp_path)
 
 def test_case_state_seed_extracts_objects_from_browser_json_artifacts(tmp_path):
     target = "http://127.0.0.1:3002"
+    store = TargetStore(tmp_path, target)
+    store.initialize()
+    before = store.binding()
     browser_dir = tmp_path / "recon" / "127.0.0.1:3002" / "browser"
     browser_dir.mkdir(parents=True)
     (browser_dir / "xhr_endpoints.txt").write_text(
@@ -130,6 +142,7 @@ def test_case_state_seed_extracts_objects_from_browser_json_artifacts(tmp_path):
 
 def test_case_state_seed_does_not_infer_ownership_from_existing_actor_sessions(tmp_path):
     target = "target.com"
+    TargetStore(tmp_path, target).initialize()
     target_case_state.add_actor(tmp_path, target, actor="owner_account", role="user")
     target_case_state.add_actor(tmp_path, target, actor="peer_account", role="user")
     target_case_state.add_session(
@@ -168,6 +181,7 @@ def test_case_state_seed_does_not_infer_ownership_from_existing_actor_sessions(t
 
 def test_case_state_seed_ignores_socket_session_ids(tmp_path):
     target = "target.com"
+    TargetStore(tmp_path, target).initialize()
     browser_dir = tmp_path / "recon" / "target.com" / "browser"
     browser_dir.mkdir(parents=True)
     (browser_dir / "xhr_endpoints.txt").write_text(
@@ -185,6 +199,7 @@ def test_case_state_seed_ignores_socket_session_ids(tmp_path):
 
 def test_case_state_seed_does_not_choose_a_peer_for_a_single_session(tmp_path):
     target = "target.com"
+    TargetStore(tmp_path, target).initialize()
     target_case_state.add_actor(tmp_path, target, actor="user_a", role="user")
     target_case_state.add_actor(tmp_path, target, actor="user_b", role="user")
     target_case_state.add_session(
@@ -212,13 +227,14 @@ def test_case_state_seed_does_not_choose_a_peer_for_a_single_session(tmp_path):
 def _inject_legacy_backlog(tmp_path, target: str, records: list[dict]) -> None:
     """把旧待办直接写进 case 文件：Case 已不生产它，只留下迁移材料。"""
     case_path = tmp_path / "state" / target / "case_state.json"
-    state = json.loads(case_path.read_text(encoding="utf-8"))
+    state = {"schema_version": 1, "target": target}
     state["validation_backlog"] = records
     case_path.write_text(json.dumps(state), encoding="utf-8")
 
 
 def test_case_state_seed_skips_existing_objects(tmp_path):
     target = "target.com"
+    TargetStore(tmp_path, target).initialize()
     target_case_state.add_actor(tmp_path, target, actor="user_a", role="user")
     target_case_state.add_object(
         tmp_path,
@@ -247,6 +263,7 @@ def test_case_state_seed_skips_existing_objects(tmp_path):
 def test_case_state_seed_ignores_legacy_backlog_state(tmp_path):
     """seed 只按对象事实判重：旧 backlog 不再是它的跳过依据，也不再被它续写。"""
     target = "target.com"
+    TargetStore(tmp_path, target).initialize()
     target_case_state.add_actor(tmp_path, target, actor="user_a", role="user")
     target_case_state.add_actor(tmp_path, target, actor="user_b", role="user")
     _inject_legacy_backlog(tmp_path, target, [{
@@ -275,6 +292,7 @@ def test_case_state_seed_ignores_legacy_backlog_state(tmp_path):
 
 def test_case_state_seed_reads_js_and_source_intel(tmp_path):
     target = "target.com"
+    TargetStore(tmp_path, target).initialize()
     js_dir = tmp_path / "findings" / "target.com" / "js_intel"
     src_dir = tmp_path / "findings" / "target.com" / "source_intel"
     js_dir.mkdir(parents=True)
@@ -300,6 +318,7 @@ def test_case_state_seed_reads_js_and_source_intel(tmp_path):
 
 def test_case_state_seed_cli_json(tmp_path):
     target = "target.com"
+    TargetStore(tmp_path, target).initialize()
     urls_dir = tmp_path / "recon" / "target.com" / "urls"
     urls_dir.mkdir(parents=True)
     (urls_dir / "api_endpoints.txt").write_text(

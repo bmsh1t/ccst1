@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import shlex
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -12,11 +14,8 @@ import context_pack as context_pack_module
 from autopilot_state import build_autopilot_state, load_closure_projection, stagnation_fingerprint
 from checkpoint import build_checkpoint
 from context_pack import build_context_pack, format_context_pack
-from skill_catalog import SKILL_CATALOG, SKILL_PATHS
-from evidence_ledger import record_entry
 from surface_projection import build_surface_input_manifest, write_surface_projection
-from tools.experience_schema import make_entry_id
-from tools.knowledge_registry import KnowledgeRegistryError
+from tools.target_store import TargetStore
 from tools.target_paths import target_storage_key
 
 
@@ -38,25 +37,19 @@ def _seed_recon(repo_root: Path, target: str, urls: list[str]) -> None:
     (recon_dir / "js" / "endpoints.txt").write_text("", encoding="utf-8")
 
 
-def _seed_target_memory(repo_root: Path, target: str, payload: dict) -> None:
-    goals_dir = repo_root / "memory" / "goals"
-    target_dir = goals_dir / "targets"
-    target_dir.mkdir(parents=True)
-    (goals_dir / "active.json").write_text(
-        json.dumps(
-            {
-                "target": target,
-                "phase": "hunt",
-                "active_goal": "Find high-value API authorization issues",
-                "current_hypothesis": "org_id may be user-controlled",
-            }
-        ),
-        encoding="utf-8",
-    )
-    merged = {"target": target}
-    merged.update(payload)
-    (target_dir / f"{target}.json").write_text(json.dumps(merged), encoding="utf-8")
+@pytest.fixture
+def pack_store(tmp_path):
+    store = TargetStore(tmp_path, "target.com")
+    store.initialize()
+    return store
 
+
+def _remember_hypothesis(store, statement, command_id="hypothesis"):
+    store.remember(
+        command_id=command_id, kind="hypothesis", statement=statement,
+        conditions="Observed fixture surface; not yet validated", reopen_when="New evidence",
+        next_intent="Inspect the referenced surface", evidence=[], actor="operator",
+    )
 
 
 def test_bounded_context_readers_preserve_order_limits_and_error_handling(tmp_path):
@@ -81,7 +74,7 @@ def test_bounded_context_readers_preserve_order_limits_and_error_handling(tmp_pa
     assert context_pack_module._read_jsonl_objects(jsonl_path, limit=0) == []
 
 
-def test_context_pack_reuses_exact_surface_projection(tmp_path, monkeypatch):
+def test_context_pack_reuses_exact_surface_projection(tmp_path, monkeypatch, pack_store):
     _seed_recon(
         tmp_path,
         "target.com",
@@ -108,7 +101,7 @@ def test_context_pack_reuses_exact_surface_projection(tmp_path, monkeypatch):
     def unexpected(*_args, **_kwargs):
         raise AssertionError("exact projection hit must not rebuild surface")
 
-    monkeypatch.setattr(context_pack_module, "load_surface_context", unexpected)
+    monkeypatch.setattr(context_pack_module, "_load_surface_context", unexpected)
     monkeypatch.setattr(context_pack_module, "rank_surface", unexpected)
 
     pack = build_context_pack(tmp_path, target="target.com", focus="api authorization")
@@ -153,7 +146,54 @@ def test_primary_context_pack_exposes_one_store_revision_binding(tmp_path):
     assert binding["store_revision"] == store.binding()["revision"]
 
 
-def _record_primary_context_evidence(store, repo_root, attempt_id):
+def test_primary_context_pack_reads_conditional_memory_without_sqlite_must_read(tmp_path):
+    from tools.target_store import TargetStore
+
+    target = "target.com"
+    store = TargetStore(tmp_path, target)
+    store.initialize()
+    _record_primary_context_evidence(store, tmp_path, "negative")
+    operation_id = store.page("operations")["items"][0]["id"]
+    for index in range(7):
+        store.remember(
+            command_id=f"note-{index}", kind="negative" if index == 6 else "note",
+            statement=f"Review condition {index}",
+            conditions=f"tenant {index}", reopen_when=f"peer session {index}",
+            next_intent=f"compare object {index}",
+            evidence=[{"operation_id": operation_id, "step": 0}] if index == 6 else [],
+            actor="operator",
+        )
+
+    revision = store.binding()["revision"]
+    pack = build_context_pack(tmp_path, target=target)
+    memory = pack["target_experiences"]
+    output = format_context_pack(pack)
+
+    assert memory["total"] == 7
+    assert memory["remaining"] == 2
+    assert len(memory["items"]) == 5
+    assert memory["items"][0]["entry_id"] == "note-6"
+    assert memory["items"][0]["kind"] == "negative"
+    assert store.experience_page(limit=5, cursor=memory["next_cursor"])["items"][0]["id"] == "note-1"
+    next_page = subprocess.run(
+        [*shlex.split(memory["next_command"]), "--json"],
+        capture_output=True, text=True, check=True,
+    )
+    assert "note-1" in next_page.stdout
+    assert "metadata.sqlite3" not in " ".join(pack["must_read"])
+    assert any("Store finding IDs" in item for item in pack["do_not_load"])
+    assert all("findings.json" not in item for item in pack["do_not_load"])
+    assert "conditions=\"tenant 6\"" in output
+    assert "reopen_when=\"peer session 6\"" in output
+    assert "next_intent=\"compare object 6\"" in output
+    assert f"evidence={operation_id}:0" in output
+    assert memory["next_command"] in output
+    assert memory["expand_command"] in output
+    assert "write the selected skill" not in pack["ai_override"]
+    assert store.binding()["revision"] == revision
+
+
+def _record_primary_context_evidence(store, repo_root, attempt_id, *, endpoint=None, family="Authz", actor="anonymous", object_scope="", variant=""):
     artifact = repo_root / "evidence" / target_storage_key(store.target) / f"{attempt_id}.txt"
     artifact.parent.mkdir(parents=True, exist_ok=True)
     artifact.write_text("Recorded response", encoding="utf-8")
@@ -163,7 +203,8 @@ def _record_primary_context_evidence(store, repo_root, attempt_id):
     store.record_execution(
         attempt_id=attempt_id, outcome="complete", actor="operator",
         observations=[{
-            "endpoint": f"https://{store.target}/{attempt_id}", "method": "GET", "family": "Authz",
+            "endpoint": endpoint or f"https://{store.target}/{attempt_id}", "method": "GET", "family": family,
+            "actor": actor, "object_scope": object_scope, "variant": variant,
             "observed_at": "2026-09-22T00:00:00Z", "description": "Recorded object response",
             "artifacts": {"response": artifact.relative_to(repo_root).as_posix()},
             "result": "tested_clean", "state_changing": False,
@@ -236,9 +277,13 @@ def test_primary_context_coverage_ignores_legacy_closure(tmp_path):
     path.write_text(json.dumps({"target": store.target, "endpoints": [{
         "endpoint": "/historical", "cells": {name: {"status": "tested_clean"} for name in VULN_CLASSES},
     }]}), encoding="utf-8")
+    recon_urls = tmp_path / "recon" / store.target / "urls" / "all.txt"
+    recon_urls.parent.mkdir(parents=True)
+    recon_urls.write_text(f"https://{store.target}/current\n", encoding="utf-8")
     before = path.read_bytes(), path.stat().st_mtime_ns, store.binding()
     pack = build_context_pack(tmp_path, target=store.target)
     assert pack["source_summary"]["coverage_gaps"] == len(VULN_CLASSES)
+    assert "/historical" not in json.dumps(pack)
     assert (path.read_bytes(), path.stat().st_mtime_ns, store.binding()) == before
 
 
@@ -257,7 +302,7 @@ def test_primary_context_pack_rejects_revision_change_during_assembly(tmp_path, 
         build_context_pack(tmp_path, target="target.com")
 
 
-def test_state_and_context_projection_are_semantically_repeatable(tmp_path):
+def test_state_and_context_projection_are_semantically_repeatable(tmp_path, pack_store):
     target = "target.com"
     memory_dir = tmp_path / "hunt-memory"
     first_state = build_autopilot_state(str(tmp_path), target, memory_dir=str(memory_dir))
@@ -325,63 +370,14 @@ def test_state_and_context_projection_are_semantically_repeatable(tmp_path):
     )
 
 
-def test_context_pack_never_defaults_to_security_arsenal_skill():
-    """Arsenal stays an on-demand reference layer, not a default selected Skill."""
-    assert "security-arsenal" not in SKILL_PATHS
-    assert all("skills/security-arsenal/SKILL.md" != path for path in SKILL_PATHS.values())
-
-
-def test_skill_catalog_covers_repository_and_derives_primary_routes():
-    repo = Path(__file__).resolve().parents[1]
-    disk_skills = {
-        path.parent.name for path in (repo / "skills").glob("*/SKILL.md")
-    }
-
-    assert set(SKILL_CATALOG) == disk_skills
-    assert set(SKILL_PATHS) == {
-        "bb-methodology",
-        "bug-bounty",
-        "credential-attack",
-        "triage-validation",
-        "web2-recon",
-        "web2-vuln-classes",
-    }
-
-
-def test_context_pack_retired_skill_recommendation_keeps_skill_catalog_import_free(tmp_path):
-    """S1 native loading (batch 3): context_pack no longer imports skill_catalog
-    at all and does not duplicate the platform's skill listing — the routing
-    surface is the on-disk SKILL.md frontmatter surfaced by Claude Code's
-    native skill mechanism, and the recommendation fields are empty
-    compatibility shells."""
-    from tools import skill_catalog
-
-    for name in ("SKILL_CATALOG", "SKILL_PATHS", "SKILL_ROUTE_MODES",
-                 "SKILL_TEST_DIMENSIONS", "skill_route"):
-        assert not hasattr(context_pack_module, name), name
-
+def test_context_pack_leaves_skill_discovery_to_native_platform(tmp_path, pack_store):
     pack = build_context_pack(tmp_path, target="target.com")
-    # The pack no longer publishes a skill catalog: the platform's skill
-    # listing is the single routing surface. Recommendation fields stay as
-    # empty compatibility shells.
     assert "skill_catalog" not in pack
     assert "selected_skill" not in pack
     assert "skill_route" not in pack
 
-    # skill_catalog.skill_route factory stays available for owner-generated
-    # actions (param_discovery) and stays import-independent of the pack.
-    route = skill_catalog.skill_route("web2-vuln-classes", "  API evidence  ")
-    assert route == {
-        "skill_id": "web2-vuln-classes",
-        "skill_path": "skills/web2-vuln-classes/SKILL.md",
-        "reason": "API evidence",
-        "required_dimensions": skill_catalog.SKILL_TEST_DIMENSIONS["web2-vuln-classes"],
-    }
-    route["required_dimensions"].append("caller-local")
-    assert "caller-local" not in skill_catalog.SKILL_TEST_DIMENSIONS["web2-vuln-classes"]
 
-
-def test_must_read_omits_absent_target_state_paths(tmp_path):
+def test_must_read_omits_absent_target_state_paths(tmp_path, pack_store):
     """K-1: after a reset/fresh start, goal-memory files legitimately do not
     exist. must_read must not point at them — a contract listing missing
     files gives the reader no way to tell a defect from a fresh start. Repo
@@ -391,11 +387,13 @@ def test_must_read_omits_absent_target_state_paths(tmp_path):
     assert "memory/goals/active.json" not in pack["must_read"]
     assert "memory/goals/targets/target.com.json" not in pack["must_read"]
     assert "skills/runtime-protocol.md" in pack["must_read"]
+    assert "Showing 0 of 0; 0 more." in format_context_pack(pack)
 
 
-def test_skill_catalog_and_cards_stay_advisory_and_outside_must_read(tmp_path):
+def test_skills_and_cards_stay_outside_must_read(tmp_path, pack_store):
     pack = build_context_pack(tmp_path, target="target.com", focus="api-idor")
-    catalog_paths = {item["path"] for item in SKILL_CATALOG.values()}
+    repo = Path(__file__).resolve().parents[1]
+    skill_paths = {str(path.relative_to(repo)) for path in (repo / "skills").glob("*/SKILL.md")}
 
     assert "CLAUDE.md" not in pack["must_read"]
     assert "SKILL.md" not in pack["must_read"]
@@ -405,7 +403,7 @@ def test_skill_catalog_and_cards_stay_advisory_and_outside_must_read(tmp_path):
     assert "selected_skill" not in pack
     assert "skill_route" not in pack
     assert "skill_catalog" not in pack
-    assert set(pack["must_read"]).isdisjoint(catalog_paths)
+    assert set(pack["must_read"]).isdisjoint(skill_paths)
     assert len(pack["knowledge_cards"]) <= 2
     assert set(pack["knowledge_cards"]).isdisjoint(pack["must_read"])
 
@@ -421,7 +419,7 @@ def test_skill_catalog_and_cards_stay_advisory_and_outside_must_read(tmp_path):
         ("ssrf", "ssrf-url-fetch"),
     ],
 )
-def test_command_and_autopilot_state_recall_share_candidates(tmp_path, capsys, focus, expected_card):
+def test_command_and_autopilot_state_recall_share_candidates(tmp_path, capsys, focus, expected_card, pack_store):
     """Check deterministic entry parity, not live model discovery or file reads."""
     _seed_recon(tmp_path, "target.com", ["https://target.com/"])
     memory_dir = str(tmp_path / "hunt-memory")
@@ -458,8 +456,8 @@ def test_every_disk_skill_is_published_with_description_for_native_selection(tmp
     reference-only / report-only modes. The pack no longer ranks or lists them;
     verify the routing surface is the SKILL.md frontmatter itself."""
     repo = Path(__file__).resolve().parents[1]
-    for skill_id, entry in SKILL_CATALOG.items():
-        skill_file = repo / entry["path"]
+    for skill_file in sorted((repo / "skills").glob("*/SKILL.md")):
+        skill_id = skill_file.parent.name
         assert skill_file.is_file(), skill_id
         text = skill_file.read_text(encoding="utf-8", errors="replace").splitlines()
         assert text and text[0].strip() == "---", skill_id
@@ -472,7 +470,7 @@ def test_every_disk_skill_is_published_with_description_for_native_selection(tmp
         assert any(l.startswith("description:") and l.split(":", 1)[1].strip() for l in frontmatter), skill_id
 
 
-def test_native_pilot_recommendation_surface_fully_retired(tmp_path):
+def test_native_pilot_recommendation_surface_fully_retired(tmp_path, pack_store):
     """S1 batch 3 superseded the bb-methodology pilot: the pack recommends no
     skill at all (empty compatibility shells) and does not duplicate the
     platform's skill listing. The pilot-era `native_skills` field is gone."""
@@ -488,7 +486,7 @@ def test_native_pilot_recommendation_surface_fully_retired(tmp_path):
     assert "Skill recommendation retired (S1 native loading)" in output
 
 
-def test_retired_context_sections_are_json_only(tmp_path):
+def test_retired_context_sections_are_json_only(tmp_path, pack_store):
     pack = build_context_pack(tmp_path, target="target.com")
     pack["facts"] = [{"key": "confirmed", "text": "Keep this confirmed fact"}]
     before = json.dumps(pack, sort_keys=True)
@@ -515,14 +513,14 @@ def test_retired_context_sections_are_json_only(tmp_path):
     assert json.dumps(pack, sort_keys=True) == before
 
 
-def test_memory_continuity_no_longer_drives_recommendation(tmp_path):
+def test_memory_continuity_no_longer_drives_recommendation(tmp_path, pack_store):
     """Target-memory `selected_skills` is historical continuity data; with the
     recommendation layer retired it can no longer put a skill into the pack's
     recommendation slot. The AI reads it from memory and loads skills itself."""
     _seed_recon(tmp_path, "target.com", ["https://api.target.com/"])
-    _seed_target_memory(tmp_path, "target.com", {
-        "selected_skills": ["web2-vuln-classes"],
-    })
+    historical = tmp_path / "memory/goals/targets/target.com.json"
+    historical.parent.mkdir(parents=True)
+    historical.write_text(json.dumps({"target": "target.com", "selected_skills": ["web2-vuln-classes"]}))
 
     pack = build_context_pack(tmp_path, target="target.com")
 
@@ -530,13 +528,11 @@ def test_memory_continuity_no_longer_drives_recommendation(tmp_path):
     assert "skill_route" not in pack
 
 
-def test_api_idor_context_pack_selects_vuln_skill_and_cards(tmp_path):
+def test_api_idor_context_pack_selects_vuln_skill_and_cards(tmp_path, pack_store):
     _seed_recon(tmp_path, "target.com", [
         "https://api.target.com/api/org/123/users?user_id=456",
     ])
-    _seed_target_memory(tmp_path, "target.com", {
-        "active_leads": [{"text": "/api/org/{id}/users may allow org swap"}],
-    })
+    _remember_hypothesis(pack_store, "/api/org/{id}/users may allow org swap")
 
     pack = build_context_pack(tmp_path, target="target.com", focus="api-idor")
     output = format_context_pack(pack)
@@ -554,7 +550,7 @@ def test_api_idor_context_pack_selects_vuln_skill_and_cards(tmp_path):
     assert "AI override" in output
 
 
-def test_context_pack_exposes_registry_metadata_for_selected_cards(tmp_path):
+def test_context_pack_exposes_registry_metadata_for_selected_cards(tmp_path, pack_store):
     # 语义选卡退役：registry metadata（layer/load/purpose）的发现面是
     # card_catalog —— 每张登记卡都带完整 capability 行，选择权在 AI。
     pack = build_context_pack(tmp_path, target="target.com", focus="api-idor")
@@ -566,7 +562,7 @@ def test_context_pack_exposes_registry_metadata_for_selected_cards(tmp_path):
     assert "Knowledge card catalog:" in format_context_pack(pack)
 
 
-def test_target_registry_remap_reaches_context_pack_checkpoint_and_witness(tmp_path):
+def test_target_registry_remap_reaches_context_pack_checkpoint_and_witness(tmp_path, pack_store):
     registry_source = Path(__file__).resolve().parents[1] / "knowledge" / "capabilities.yaml"
     registry = yaml.safe_load(registry_source.read_text(encoding="utf-8"))
     custom_card = "knowledge/cards/target-ssti.md"
@@ -586,12 +582,8 @@ def test_target_registry_remap_reaches_context_pack_checkpoint_and_witness(tmp_p
     card_path = tmp_path / custom_card
     card_path.parent.mkdir(parents=True, exist_ok=True)
     card_path.write_text("# Target SSTI card\n", encoding="utf-8")
-    _seed_target_memory(tmp_path, "target.com", {})
-    active_path = tmp_path / "memory" / "goals" / "active.json"
-    active = json.loads(active_path.read_text(encoding="utf-8"))
-    active["active_goal"] = "Validate one template rendering boundary"
-    active["current_hypothesis"] = "SSTI template injection render payload family"
-    active_path.write_text(json.dumps(active), encoding="utf-8")
+    pack_store.set_active_goal(command_id="goal", goal="Validate one template rendering boundary", actor="operator")
+    _remember_hypothesis(pack_store, "SSTI template injection render payload family")
 
     pack = build_context_pack(
         tmp_path,
@@ -608,7 +600,7 @@ def test_target_registry_remap_reaches_context_pack_checkpoint_and_witness(tmp_p
     assert "rules/playbook-router.md" in pack["required_checks"]
 
 
-def test_observability_ids_route_to_idor_without_becoming_idor_evidence(tmp_path):
+def test_observability_ids_route_to_idor_without_becoming_idor_evidence(tmp_path, pack_store):
     pack = build_context_pack(
         tmp_path,
         target="target.com",
@@ -625,7 +617,7 @@ def test_observability_ids_route_to_idor_without_becoming_idor_evidence(tmp_path
     assert "rules/playbook-router.md" in pack["required_checks"]
 
 
-def test_opa_cedar_routes_to_existing_authz_cards_and_pdp_pep_gate(tmp_path):
+def test_opa_cedar_routes_to_existing_authz_cards_and_pdp_pep_gate(tmp_path, pack_store):
     pack = build_context_pack(
         tmp_path,
         target="target.com",
@@ -638,7 +630,7 @@ def test_opa_cedar_routes_to_existing_authz_cards_and_pdp_pep_gate(tmp_path):
     assert "rules/playbook-router.md" in pack["required_checks"]
 
 
-def test_broad_signed_trace_and_policy_words_do_not_trigger_api_authz_refinements(tmp_path):
+def test_broad_signed_trace_and_policy_words_do_not_trigger_api_authz_refinements(tmp_path, pack_store):
     cases = (
         ("signed payload", ("knowledge/cards/api-idor.md", "knowledge/cards/auth-access.md")),
         ("trace", ("knowledge/cards/api-idor.md",)),
@@ -651,7 +643,7 @@ def test_broad_signed_trace_and_policy_words_do_not_trigger_api_authz_refinement
 
 
 
-def test_missing_parameter_focus_routes_to_discovery_card(tmp_path):
+def test_missing_parameter_focus_routes_to_discovery_card(tmp_path, pack_store):
     _seed_recon(tmp_path, "target.com", [
         "https://api.target.com/search/records",
         "https://api.target.com/forms/query?filter=",
@@ -663,7 +655,7 @@ def test_missing_parameter_focus_routes_to_discovery_card(tmp_path):
     assert "missing-parameter-discovery" in {item.get("id") for item in pack.get("card_catalog", [])}
 
 
-def test_path_pattern_focus_routes_to_management_exposure_card(tmp_path):
+def test_path_pattern_focus_routes_to_management_exposure_card(tmp_path, pack_store):
     _seed_recon(tmp_path, "target.com", [
         "https://www.target.com/app01/login.html",
         "https://www.target.com/app02/stats/records.json",
@@ -676,7 +668,7 @@ def test_path_pattern_focus_routes_to_management_exposure_card(tmp_path):
     assert "path-pattern-management-exposure" in {item.get("id") for item in pack.get("card_catalog", [])}
 
 
-def test_observed_api_path_routes_to_bounded_ancestor_prefix_cards(tmp_path):
+def test_observed_api_path_routes_to_bounded_ancestor_prefix_cards(tmp_path, pack_store):
     pack = build_context_pack(
         tmp_path,
         target="target.com",
@@ -687,7 +679,7 @@ def test_observed_api_path_routes_to_bounded_ancestor_prefix_cards(tmp_path):
     assert "path-pattern-management-exposure" in {item.get("id") for item in pack.get("card_catalog", [])}
 
 
-def test_generic_path_does_not_route_to_ancestor_prefix_discovery(tmp_path):
+def test_generic_path_does_not_route_to_ancestor_prefix_discovery(tmp_path, pack_store):
     pack = build_context_pack(
         tmp_path,
         target="target.com",
@@ -697,19 +689,14 @@ def test_generic_path_does_not_route_to_ancestor_prefix_discovery(tmp_path):
 
 
 
-def test_context_pack_surfaces_actor_matrix_gaps(tmp_path):
+def test_context_pack_surfaces_actor_matrix_gaps(tmp_path, pack_store):
     _seed_recon(tmp_path, "target.com", [
         "https://api.target.com/api/accounts/42/export?account_id=42",
     ])
-    record_entry(
-        tmp_path,
-        target="target.com",
-        endpoint="/api/accounts/42/export",
-        vuln_class="IDOR",
-        actor="owner",
-        object_scope="own",
-        variant="baseline",
-        result="tested_clean",
+    _record_primary_context_evidence(
+        pack_store, tmp_path, "owner-baseline",
+        endpoint="https://api.target.com/api/accounts/42/export", family="IDOR",
+        actor="owner", object_scope="own", variant="baseline",
     )
 
     pack = build_context_pack(
@@ -724,16 +711,16 @@ def test_context_pack_surfaces_actor_matrix_gaps(tmp_path):
     output = format_context_pack(pack)
 
     assert pack["source_summary"]["evidence_ledger_entries"] == 1
-    assert pack["source_summary"]["evidence_source_kind"] == "ledger"
-    assert pack["source_summary"]["evidence_source_status"] == "valid"
+    assert pack["source_summary"]["evidence_source_kind"] == "store"
+    assert pack["source_summary"]["evidence_source_status"] == "ready"
     assert pack["source_summary"]["actor_matrix_gaps"] > 0
-    assert "memory/evidence/target.com/ledger.jsonl" in pack["must_read"]
+    assert all("ledger.jsonl" not in item and "metadata.sqlite3" not in item for item in pack["must_read"])
     assert any("Actor gap" in item and "peer" in item for item in pack["evidence_anchors"])
-    assert any("tools/evidence_ledger.py" in item for item in pack["write_back"])
+    assert any("record-evidence" in item for item in pack["write_back"])
     assert "Actor matrix gaps:" in output
 
 
-def test_context_pack_without_owner_backed_classes_keeps_context_but_no_actor_matrix(tmp_path):
+def test_context_pack_without_owner_backed_classes_keeps_context_but_no_actor_matrix(tmp_path, pack_store):
     _seed_recon(tmp_path, "target.com", ["https://api.target.com/api/accounts/42?account_id=42"])
 
     pack = build_context_pack(
@@ -750,7 +737,7 @@ def test_context_pack_without_owner_backed_classes_keeps_context_but_no_actor_ma
     assert not any("Actor gap:" in item for item in pack["evidence_anchors"])
 
 
-def test_graphql_focus_routes_to_graphql_card(tmp_path):
+def test_graphql_focus_routes_to_graphql_card(tmp_path, pack_store):
     _seed_recon(tmp_path, "target.com", ["https://api.target.com/graphql"])
 
     pack = build_context_pack(tmp_path, target="target.com", focus="graphql")
@@ -759,7 +746,7 @@ def test_graphql_focus_routes_to_graphql_card(tmp_path):
     assert "graphql" in {item.get("id") for item in pack.get("card_catalog", [])}
 
 
-def test_graphql_node_global_id_does_not_route_to_node_runtime_card(tmp_path):
+def test_graphql_node_global_id_does_not_route_to_node_runtime_card(tmp_path, pack_store):
     pack = build_context_pack(
         tmp_path,
         target="target.com",
@@ -770,7 +757,7 @@ def test_graphql_node_global_id_does_not_route_to_node_runtime_card(tmp_path):
     assert "graphql" in {item.get("id") for item in pack.get("card_catalog", [])}  # exact-list retired: state cards may join
 
 
-def test_sqli_focus_routes_to_hidden_surface_card(tmp_path):
+def test_sqli_focus_routes_to_hidden_surface_card(tmp_path, pack_store):
     _seed_recon(tmp_path, "target.com", [
         "https://api.target.com/api/search?q=case",
         "https://api.target.com/api/internal/config",
@@ -782,7 +769,7 @@ def test_sqli_focus_routes_to_hidden_surface_card(tmp_path):
     assert "sqli-hidden-surfaces" in {item.get("id") for item in pack.get("card_catalog", [])}
 
 
-def test_query_semantics_sqli_focus_keeps_visible_input_baseline(tmp_path):
+def test_query_semantics_sqli_focus_keeps_visible_input_baseline(tmp_path, pack_store):
     pack = build_context_pack(
         tmp_path,
         target="target.com",
@@ -793,7 +780,7 @@ def test_query_semantics_sqli_focus_keeps_visible_input_baseline(tmp_path):
     assert "sqli-hidden-surfaces" in {item.get("id") for item in pack.get("card_catalog", [])}
 
 
-def test_api_price_mutation_focus_pairs_api_with_business_logic(tmp_path):
+def test_api_price_mutation_focus_pairs_api_with_business_logic(tmp_path, pack_store):
     pack = build_context_pack(
         tmp_path,
         target="target.com",
@@ -804,7 +791,7 @@ def test_api_price_mutation_focus_pairs_api_with_business_logic(tmp_path):
     assert "business-logic-state-machines" in {item.get("id") for item in pack.get("card_catalog", [])}
 
 
-def test_api_parameter_pollution_focus_routes_to_api_workflow(tmp_path):
+def test_api_parameter_pollution_focus_routes_to_api_workflow(tmp_path, pack_store):
     pack = build_context_pack(
         tmp_path,
         target="target.com",
@@ -815,7 +802,7 @@ def test_api_parameter_pollution_focus_routes_to_api_workflow(tmp_path):
     assert "missing-parameter-discovery" in {item.get("id") for item in pack.get("card_catalog", [])}
 
 
-def test_api_mass_assignment_focus_pairs_api_and_business_logic(tmp_path):
+def test_api_mass_assignment_focus_pairs_api_and_business_logic(tmp_path, pack_store):
     pack = build_context_pack(
         tmp_path,
         target="target.com",
@@ -826,7 +813,7 @@ def test_api_mass_assignment_focus_pairs_api_and_business_logic(tmp_path):
     assert "business-logic-state-machines" in {item.get("id") for item in pack.get("card_catalog", [])}
 
 
-def test_upload_import_focus_routes_to_upload_parser(tmp_path):
+def test_upload_import_focus_routes_to_upload_parser(tmp_path, pack_store):
     _seed_recon(tmp_path, "target.com", [
         "https://api.target.com/api/import/preview",
     ])
@@ -836,7 +823,7 @@ def test_upload_import_focus_routes_to_upload_parser(tmp_path):
     assert "upload-parser" in {item.get("id") for item in pack.get("card_catalog", [])}
 
 
-def test_svg_upload_xxe_focus_keeps_conversion_readback_evidence(tmp_path):
+def test_svg_upload_xxe_focus_keeps_conversion_readback_evidence(tmp_path, pack_store):
     pack = build_context_pack(
         tmp_path,
         target="target.com",
@@ -848,7 +835,7 @@ def test_svg_upload_xxe_focus_keeps_conversion_readback_evidence(tmp_path):
     assert "upload-parser" in {item.get("id") for item in pack.get("card_catalog", [])}
 
 
-def test_upload_execution_focus_routes_to_deep_card(tmp_path):
+def test_upload_execution_focus_routes_to_deep_card(tmp_path, pack_store):
     _seed_recon(tmp_path, "target.com", [
         "https://api.target.com/api/upload/avatar",
     ])
@@ -864,7 +851,7 @@ def test_upload_execution_focus_routes_to_deep_card(tmp_path):
     assert "controlled-rce-impact" in {item.get("id") for item in pack.get("card_catalog", [])}
 
 
-def test_upload_execution_filename_path_traversal_keeps_storage_proof(tmp_path):
+def test_upload_execution_filename_path_traversal_keeps_storage_proof(tmp_path, pack_store):
     _seed_recon(tmp_path, "target.com", [
         "https://api.target.com/my-account/avatar",
     ])
@@ -879,7 +866,7 @@ def test_upload_execution_filename_path_traversal_keeps_storage_proof(tmp_path):
     assert "controlled-rce-impact" in {item.get("id") for item in pack.get("card_catalog", [])}
 
 
-def test_rce_focus_routes_to_controlled_impact_card(tmp_path):
+def test_rce_focus_routes_to_controlled_impact_card(tmp_path, pack_store):
     _seed_recon(tmp_path, "target.com", [
         "https://api.target.com/api/template/render",
     ])
@@ -889,7 +876,7 @@ def test_rce_focus_routes_to_controlled_impact_card(tmp_path):
     assert "controlled-rce-impact" in {item.get("id") for item in pack.get("card_catalog", [])}
 
 
-def test_os_command_injection_focus_surfaces_output_channel_baseline(tmp_path):
+def test_os_command_injection_focus_surfaces_output_channel_baseline(tmp_path, pack_store):
     pack = build_context_pack(
         tmp_path,
         target="target.com",
@@ -900,7 +887,7 @@ def test_os_command_injection_focus_surfaces_output_channel_baseline(tmp_path):
     assert "controlled-rce-impact" in {item.get("id") for item in pack.get("card_catalog", [])}
 
 
-def test_node_prototype_focus_routes_to_node_card(tmp_path):
+def test_node_prototype_focus_routes_to_node_card(tmp_path, pack_store):
     _seed_recon(tmp_path, "target.com", [
         "https://api.target.com/api/profile/preferences",
     ])
@@ -911,11 +898,8 @@ def test_node_prototype_focus_routes_to_node_card(tmp_path):
     assert "node-prototype-pollution" in {item.get("id") for item in pack.get("card_catalog", [])}
 
 
-def test_ranked_technology_stack_is_visible_without_bare_high_risk_routing(tmp_path):
-    pack = build_context_pack(
-        tmp_path,
-        target="target.com",
-        surface_state={
+def test_ranked_technology_stack_is_visible_without_bare_high_risk_routing(tmp_path, pack_store):
+    ranked = {
             "available": True,
             "review_pool": [{
                 "url": "https://api.target.com/profile",
@@ -927,15 +911,17 @@ def test_ranked_technology_stack_is_visible_without_bare_high_risk_routing(tmp_p
             "p1": [],
             "p2": [],
             "stats": {"p1": 0, "p2": 0, "review_pool": 1},
-        },
-    )
+        }
+    ranked["target"] = "target.com"
+    write_surface_projection(tmp_path, "target.com", ranked, manifest=build_surface_input_manifest(tmp_path, "target.com"))
+    pack = build_context_pack(tmp_path, target="target.com")
 
     all_cards = [item.get("file") for item in pack.get("card_catalog", [])]
     assert pack["tech_stack"] == ["Java", "PHP", "Spring"]
     assert "Tech stack: Java, PHP, Spring" in format_context_pack(pack)
 
 
-def test_node_stack_plus_json_shape_routes_to_node_card(tmp_path):
+def test_node_stack_plus_json_shape_routes_to_node_card(tmp_path, pack_store):
     pack = build_context_pack(
         tmp_path,
         target="target.com",
@@ -964,7 +950,7 @@ def test_node_stack_plus_json_shape_routes_to_node_card(tmp_path):
     assert "node-prototype-pollution" in recall_ids
 
 
-def test_wordpress_stack_routes_to_existing_inventory_card(tmp_path):
+def test_wordpress_stack_routes_to_existing_inventory_card(tmp_path, pack_store):
     pack = build_context_pack(
         tmp_path,
         target="target.com",
@@ -987,39 +973,16 @@ def test_wordpress_stack_routes_to_existing_inventory_card(tmp_path):
     assert "wordpress-surface-intelligence" in recall_ids
 
 
-def test_explicit_focus_wins_over_mixed_background_signals(tmp_path):
+def test_explicit_focus_wins_over_mixed_background_signals(tmp_path, pack_store):
     _seed_recon(tmp_path, "target.com", [
         "https://login.target.com/oauth/callback?code=abc&state=xyz",
         "https://api.target.com/.well-known/jwks.json",
         "https://api.target.com/api/profile/preferences",
         "https://api.target.com/api/import?url=https://example.com/feed",
     ])
-    goals_dir = tmp_path / "memory" / "goals"
-    target_dir = goals_dir / "targets"
-    target_dir.mkdir(parents=True)
-    (goals_dir / "active.json").write_text(
-        json.dumps(
-            {
-                "target": "target.com",
-                "phase": "hunt",
-                "active_goal": "Validate routing effects on safe synthetic target",
-                "current_hypothesis": "OAuth account-linking and Node prototype pollution are both possible",
-            }
-        ),
-        encoding="utf-8",
-    )
-    (target_dir / "target.com.json").write_text(
-        json.dumps(
-            {
-                "target": "target.com",
-                "active_leads": [
-                    {"text": "OAuth account-linking lead"},
-                    {"text": "Node Express lodash merge __proto__ lead"},
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
+    pack_store.set_active_goal(command_id="goal", goal="Validate synthetic target", actor="operator")
+    for index, statement in enumerate(("OAuth account-linking lead", "Node Express lodash merge __proto__ lead")):
+        _remember_hypothesis(pack_store, statement, command_id=f"lead-{index}")
 
     auth_pack = build_context_pack(tmp_path, target="target.com", focus="jwt oauth sso")
     node_pack = build_context_pack(tmp_path, target="target.com", focus="node prototype-pollution")
@@ -1028,7 +991,7 @@ def test_explicit_focus_wins_over_mixed_background_signals(tmp_path):
     assert "knowledge/cards/node-prototype-pollution.md" in [item.get("file") for item in node_pack.get("card_catalog", [])]
 
 
-def test_ssrf_internal_focus_routes_to_internal_impact_card(tmp_path):
+def test_ssrf_internal_focus_routes_to_internal_impact_card(tmp_path, pack_store):
     _seed_recon(tmp_path, "target.com", [
         "https://api.target.com/api/import?url=https://example.com/feed",
     ])
@@ -1039,7 +1002,7 @@ def test_ssrf_internal_focus_routes_to_internal_impact_card(tmp_path):
     assert "ssrf-internal-impact" in {item.get("id") for item in pack.get("card_catalog", [])}
 
 
-def test_ssrf_localhost_admin_focus_routes_to_internal_impact(tmp_path):
+def test_ssrf_localhost_admin_focus_routes_to_internal_impact(tmp_path, pack_store):
     pack = build_context_pack(
         tmp_path,
         target="target.com",
@@ -1051,7 +1014,7 @@ def test_ssrf_localhost_admin_focus_routes_to_internal_impact(tmp_path):
     assert "ssrf-url-fetch" in {item.get("id") for item in pack.get("card_catalog", [])}
 
 
-def test_ssrf_blacklist_filter_focus_surfaces_parser_boundary_seed(tmp_path):
+def test_ssrf_blacklist_filter_focus_surfaces_parser_boundary_seed(tmp_path, pack_store):
     pack = build_context_pack(
         tmp_path,
         target="target.com",
@@ -1063,7 +1026,7 @@ def test_ssrf_blacklist_filter_focus_surfaces_parser_boundary_seed(tmp_path):
     assert "ssrf-url-fetch" in {item.get("id") for item in pack.get("card_catalog", [])}
 
 
-def test_internal_admin_without_fetch_context_does_not_load_ssrf_internal(tmp_path):
+def test_internal_admin_without_fetch_context_does_not_load_ssrf_internal(tmp_path, pack_store):
     pack = build_context_pack(
         tmp_path,
         target="target.com",
@@ -1075,7 +1038,7 @@ def test_internal_admin_without_fetch_context_does_not_load_ssrf_internal(tmp_pa
     assert "auth-access" in recall_ids
 
 
-def test_race_payment_focus_inherits_red_lines_from_claude(tmp_path):
+def test_race_payment_focus_inherits_red_lines_from_claude(tmp_path, pack_store):
     _seed_recon(tmp_path, "target.com", [
         "https://api.target.com/api/checkout/payment",
     ])
@@ -1086,19 +1049,11 @@ def test_race_payment_focus_inherits_red_lines_from_claude(tmp_path):
     assert "rules/red-lines.md" not in pack["required_checks"]
 
 
-def test_candidate_finding_routes_to_triage_validation(tmp_path):
-    findings_dir = tmp_path / "findings" / "target.com"
-    findings_dir.mkdir(parents=True)
-    (findings_dir / "findings.json").write_text(
-        json.dumps([
-            {
-                "id": "F-1",
-                "endpoint": "/api/org/123/users",
-                "vuln_class": "IDOR",
-                "validation_status": "candidate",
-            }
-        ]),
-        encoding="utf-8",
+def test_candidate_finding_routes_to_triage_validation(tmp_path, pack_store):
+    pack_store.create_finding(
+        command_id="claim", finding_id="F-1", endpoint="https://target.com/api/org/123/users",
+        method="GET", family="IDOR", title="Object access claim",
+        claim="Compare org membership", actor="operator",
     )
 
     pack = build_context_pack(tmp_path, target="target.com")
@@ -1112,7 +1067,7 @@ def test_candidate_finding_routes_to_triage_validation(tmp_path):
     assert any("F-1" in item for item in pack["evidence_anchors"])
 
 
-def test_explicit_focus_survives_when_recon_is_missing(tmp_path):
+def test_explicit_focus_survives_when_recon_is_missing(tmp_path, pack_store):
     pack = build_context_pack(tmp_path, target="target.com", focus="api-idor")
 
     assert "skill_route" not in pack and "selected_skill" not in pack
@@ -1120,21 +1075,21 @@ def test_explicit_focus_survives_when_recon_is_missing(tmp_path):
     assert "auth-access" in {item.get("id") for item in pack.get("card_catalog", [])}
 
 
-def test_explicit_sqli_focus_without_recon_routes_to_vuln_skill(tmp_path):
+def test_explicit_sqli_focus_without_recon_routes_to_vuln_skill(tmp_path, pack_store):
     pack = build_context_pack(tmp_path, target="target.com", focus="sqli hidden-param")
 
     assert "skill_route" not in pack and "selected_skill" not in pack
     assert "sqli-hidden-surfaces" in {item.get("id") for item in pack.get("card_catalog", [])}
 
 
-def test_explicit_nosql_focus_without_recon_routes_to_nosql_card(tmp_path):
+def test_explicit_nosql_focus_without_recon_routes_to_nosql_card(tmp_path, pack_store):
     pack = build_context_pack(tmp_path, target="target.com", focus="nosql operator-injection")
 
     assert "skill_route" not in pack and "selected_skill" not in pack
     assert "nosql-query-injection" in {item.get("id") for item in pack.get("card_catalog", [])}  # exact-list retired: state cards may join
 
 
-def test_nosql_expression_focus_does_not_match_express_node(tmp_path):
+def test_nosql_expression_focus_does_not_match_express_node(tmp_path, pack_store):
     pack = build_context_pack(
         tmp_path,
         target="target.com",
@@ -1145,14 +1100,14 @@ def test_nosql_expression_focus_does_not_match_express_node(tmp_path):
     assert "nosql-query-injection" in {item.get("id") for item in pack.get("card_catalog", [])}  # exact-list retired: state cards may join
 
 
-def test_explicit_xxe_focus_without_recon_routes_to_xml_parser_card(tmp_path):
+def test_explicit_xxe_focus_without_recon_routes_to_xml_parser_card(tmp_path, pack_store):
     pack = build_context_pack(tmp_path, target="target.com", focus="xxe xml-parser xinclude")
 
     assert "skill_route" not in pack and "selected_skill" not in pack
     assert "xxe-xml-parser" in {item.get("id") for item in pack.get("card_catalog", [])}  # exact-list retired: state cards may join
 
 
-def test_xxe_error_reflection_focus_keeps_parser_evidence_gate(tmp_path):
+def test_xxe_error_reflection_focus_keeps_parser_evidence_gate(tmp_path, pack_store):
     pack = build_context_pack(
         tmp_path,
         target="target.com",
@@ -1163,7 +1118,7 @@ def test_xxe_error_reflection_focus_keeps_parser_evidence_gate(tmp_path):
     assert "xxe-xml-parser" in {item.get("id") for item in pack.get("card_catalog", [])}  # exact-list retired: state cards may join
 
 
-def test_xxe_metadata_ssrf_focus_routes_to_parser_and_internal_impact(tmp_path):
+def test_xxe_metadata_ssrf_focus_routes_to_parser_and_internal_impact(tmp_path, pack_store):
     pack = build_context_pack(
         tmp_path,
         target="target.com",
@@ -1175,7 +1130,7 @@ def test_xxe_metadata_ssrf_focus_routes_to_parser_and_internal_impact(tmp_path):
     assert "ssrf-internal-impact" in {item.get("id") for item in pack.get("card_catalog", [])}
 
 
-def test_xinclude_form_parameter_focus_mentions_assembled_xml_path(tmp_path):
+def test_xinclude_form_parameter_focus_mentions_assembled_xml_path(tmp_path, pack_store):
     pack = build_context_pack(
         tmp_path,
         target="target.com",
@@ -1186,14 +1141,14 @@ def test_xinclude_form_parameter_focus_mentions_assembled_xml_path(tmp_path):
     assert "xxe-xml-parser" in {item.get("id") for item in pack.get("card_catalog", [])}  # exact-list retired: state cards may join
 
 
-def test_explicit_path_traversal_focus_without_recon_routes_to_file_read_card(tmp_path):
+def test_explicit_path_traversal_focus_without_recon_routes_to_file_read_card(tmp_path, pack_store):
     pack = build_context_pack(tmp_path, target="target.com", focus="path-traversal lfi file-read")
 
     assert "skill_route" not in pack and "selected_skill" not in pack
     assert "path-traversal-file-read" in {item.get("id") for item in pack.get("card_catalog", [])}  # exact-list retired: state cards may join
 
 
-def test_explicit_ssti_focus_without_recon_routes_to_template_card(tmp_path):
+def test_explicit_ssti_focus_without_recon_routes_to_template_card(tmp_path, pack_store):
     pack = build_context_pack(
         tmp_path,
         target="target.com",
@@ -1205,14 +1160,14 @@ def test_explicit_ssti_focus_without_recon_routes_to_template_card(tmp_path):
     assert "controlled-rce-impact" in {item.get("id") for item in pack.get("card_catalog", [])}
 
 
-def test_explicit_template_engine_focus_routes_to_ssti_card(tmp_path):
+def test_explicit_template_engine_focus_routes_to_ssti_card(tmp_path, pack_store):
     pack = build_context_pack(tmp_path, target="target.com", focus="erb ruby-template")
 
     assert "skill_route" not in pack and "selected_skill" not in pack
     assert "server-side-template-injection" in {item.get("id") for item in pack.get("card_catalog", [])}
 
 
-def test_template_engine_context_focus_routes_to_ssti_not_node_runtime(tmp_path):
+def test_template_engine_context_focus_routes_to_ssti_not_node_runtime(tmp_path, pack_store):
     focuses = [
         "Tornado template preferred name code context user supplied object documentation",
         "Mako template expression code context render trigger",
@@ -1227,7 +1182,7 @@ def test_template_engine_context_focus_routes_to_ssti_not_node_runtime(tmp_path)
         assert "controlled-rce-impact" in {item.get("id") for item in pack.get("card_catalog", [])}
 
 
-def test_explicit_deserialization_focus_without_recon_routes_to_deser_card(tmp_path):
+def test_explicit_deserialization_focus_without_recon_routes_to_deser_card(tmp_path, pack_store):
     pack = build_context_pack(tmp_path, target="target.com", focus="deserialization signed-object viewstate")
 
     assert "skill_route" not in pack and "selected_skill" not in pack
@@ -1236,7 +1191,7 @@ def test_explicit_deserialization_focus_without_recon_routes_to_deser_card(tmp_p
     assert "controlled-rce-impact" in {item.get("id") for item in pack.get("card_catalog", [])}
 
 
-def test_serialized_session_cookie_deserialization_prioritizes_integrity_and_state_tamper(tmp_path):
+def test_serialized_session_cookie_deserialization_prioritizes_integrity_and_state_tamper(tmp_path, pack_store):
     pack = build_context_pack(
         tmp_path,
         target="target.com",
@@ -1250,7 +1205,7 @@ def test_serialized_session_cookie_deserialization_prioritizes_integrity_and_sta
     assert pack["hypothesis_seeds"] == []
 
 
-def test_deserialization_type_and_application_gadget_focus_keeps_minimal_evidence_gate(tmp_path):
+def test_deserialization_type_and_application_gadget_focus_keeps_minimal_evidence_gate(tmp_path, pack_store):
     pack = build_context_pack(
         tmp_path,
         target="target.com",
@@ -1262,14 +1217,14 @@ def test_deserialization_type_and_application_gadget_focus_keeps_minimal_evidenc
     assert "insecure-deserialization" in recall_ids
 
 
-def test_explicit_browser_boundary_focus_without_recon_routes_to_client_card(tmp_path):
+def test_explicit_browser_boundary_focus_without_recon_routes_to_client_card(tmp_path, pack_store):
     pack = build_context_pack(tmp_path, target="target.com", focus="cors csrf clickjacking dom-xss postmessage")
 
     assert "skill_route" not in pack and "selected_skill" not in pack
     assert "browser-client-boundaries" in {item.get("id") for item in pack.get("card_catalog", [])}  # exact-list retired: state cards may join
 
 
-def test_cors_origin_credentials_focus_does_not_route_to_auth_access(tmp_path):
+def test_cors_origin_credentials_focus_does_not_route_to_auth_access(tmp_path, pack_store):
     pack = build_context_pack(
         tmp_path,
         target="target.com",
@@ -1280,7 +1235,7 @@ def test_cors_origin_credentials_focus_does_not_route_to_auth_access(tmp_path):
     assert "browser-client-boundaries" in {item.get("id") for item in pack.get("card_catalog", [])}  # exact-list retired: state cards may join
 
 
-def test_explicit_dom_navigation_focus_routes_to_browser_boundary_card(tmp_path):
+def test_explicit_dom_navigation_focus_routes_to_browser_boundary_card(tmp_path, pack_store):
     pack = build_context_pack(
         tmp_path,
         target="target.com",
@@ -1292,21 +1247,21 @@ def test_explicit_dom_navigation_focus_routes_to_browser_boundary_card(tmp_path)
     assert "rules/playbook-router.md" in pack["required_checks"]
 
 
-def test_explicit_proxy_cache_focus_without_recon_routes_to_proxy_card(tmp_path):
+def test_explicit_proxy_cache_focus_without_recon_routes_to_proxy_card(tmp_path, pack_store):
     pack = build_context_pack(tmp_path, target="target.com", focus="host-header request-smuggling web-cache-poisoning cache-deception")
 
     assert "skill_route" not in pack and "selected_skill" not in pack
     assert "proxy-cache-boundaries" in {item.get("id") for item in pack.get("card_catalog", [])}  # exact-list retired: state cards may join
 
 
-def test_explicit_websocket_focus_without_recon_routes_to_realtime_card(tmp_path):
+def test_explicit_websocket_focus_without_recon_routes_to_realtime_card(tmp_path, pack_store):
     pack = build_context_pack(tmp_path, target="target.com", focus="websocket cswsh")
 
     assert "skill_route" not in pack and "selected_skill" not in pack
     assert "websocket-realtime-api" in {item.get("id") for item in pack.get("card_catalog", [])}  # exact-list retired: state cards may join
 
 
-def test_websocket_cswsh_authz_origin_focus_does_not_route_to_idor(tmp_path):
+def test_websocket_cswsh_authz_origin_focus_does_not_route_to_idor(tmp_path, pack_store):
     pack = build_context_pack(
         tmp_path,
         target="target.com",
@@ -1317,14 +1272,14 @@ def test_websocket_cswsh_authz_origin_focus_does_not_route_to_idor(tmp_path):
     assert "websocket-realtime-api" in {item.get("id") for item in pack.get("card_catalog", [])}  # exact-list retired: state cards may join
 
 
-def test_explicit_information_disclosure_focus_without_recon_routes_to_info_card(tmp_path):
+def test_explicit_information_disclosure_focus_without_recon_routes_to_info_card(tmp_path, pack_store):
     pack = build_context_pack(tmp_path, target="target.com", focus="information-disclosure source-map debug")
 
     assert "skill_route" not in pack and "selected_skill" not in pack
     assert "information-disclosure-source-config" in {item.get("id") for item in pack.get("card_catalog", [])}  # exact-list retired: state cards may join
 
 
-def test_information_disclosure_stack_trace_focus_does_not_route_to_race(tmp_path):
+def test_information_disclosure_stack_trace_focus_does_not_route_to_race(tmp_path, pack_store):
     pack = build_context_pack(
         tmp_path,
         target="target.com",
@@ -1335,7 +1290,7 @@ def test_information_disclosure_stack_trace_focus_does_not_route_to_race(tmp_pat
     assert "information-disclosure-source-config" in {item.get("id") for item in pack.get("card_catalog", [])}  # exact-list retired: state cards may join
 
 
-def test_explicit_xss_focus_without_recon_routes_to_xss_card(tmp_path):
+def test_explicit_xss_focus_without_recon_routes_to_xss_card(tmp_path, pack_store):
     pack = build_context_pack(tmp_path, target="target.com", focus="xss reflected-xss stored-xss")
 
     assert "skill_route" not in pack and "selected_skill" not in pack
@@ -1344,7 +1299,7 @@ def test_explicit_xss_focus_without_recon_routes_to_xss_card(tmp_path):
     # assertions are retired with the word-list check router.
 
 
-def test_explicit_csp_focus_without_recon_routes_to_xss_and_browser_cards(tmp_path):
+def test_explicit_csp_focus_without_recon_routes_to_xss_and_browser_cards(tmp_path, pack_store):
     pack = build_context_pack(tmp_path, target="target.com", focus="csp content-security-policy sandbox-escape dangling-markup")
 
     assert "skill_route" not in pack and "selected_skill" not in pack
@@ -1353,14 +1308,14 @@ def test_explicit_csp_focus_without_recon_routes_to_xss_and_browser_cards(tmp_pa
     assert "rules/playbook-router.md" in pack["required_checks"]
 
 
-def test_explicit_api_testing_focus_without_recon_routes_to_api_workflow(tmp_path):
+def test_explicit_api_testing_focus_without_recon_routes_to_api_workflow(tmp_path, pack_store):
     pack = build_context_pack(tmp_path, target="target.com", focus="api testing rest-api openapi")
 
     assert "skill_route" not in pack and "selected_skill" not in pack
     assert "api-idor" in {item.get("id") for item in pack.get("card_catalog", [])}
 
 
-def test_explicit_business_logic_focus_without_recon_routes_to_logic_card(tmp_path):
+def test_explicit_business_logic_focus_without_recon_routes_to_logic_card(tmp_path, pack_store):
     pack = build_context_pack(
         tmp_path,
         target="target.com",
@@ -1371,7 +1326,7 @@ def test_explicit_business_logic_focus_without_recon_routes_to_logic_card(tmp_pa
     assert "business-logic-state-machines" in {item.get("id") for item in pack.get("card_catalog", [])}  # exact-list retired: state cards may join
 
 
-def test_explicit_password_reset_focus_without_recon_routes_to_auth_recovery_card(tmp_path):
+def test_explicit_password_reset_focus_without_recon_routes_to_auth_recovery_card(tmp_path, pack_store):
     pack = build_context_pack(
         tmp_path,
         target="target.com",
@@ -1383,7 +1338,7 @@ def test_explicit_password_reset_focus_without_recon_routes_to_auth_recovery_car
     assert "auth-access" in {item.get("id") for item in pack.get("card_catalog", [])}
 
 
-def test_explicit_web_llm_focus_without_recon_routes_to_llm_card(tmp_path):
+def test_explicit_web_llm_focus_without_recon_routes_to_llm_card(tmp_path, pack_store):
     pack = build_context_pack(tmp_path, target="target.com", focus="web-llm prompt-injection rag")
 
     assert "skill_route" not in pack and "selected_skill" not in pack
@@ -1391,7 +1346,7 @@ def test_explicit_web_llm_focus_without_recon_routes_to_llm_card(tmp_path):
     assert "web-llm-tool-chains" in recall_ids  # exact-list retired: state cards may join
 
 
-def test_agent_lifecycle_signals_route_to_web_llm_card(tmp_path):
+def test_agent_lifecycle_signals_route_to_web_llm_card(tmp_path, pack_store):
     signals = (
         "MCP tool description changed",
         "agent rug-pull observed",
@@ -1408,12 +1363,8 @@ def test_agent_lifecycle_signals_route_to_web_llm_card(tmp_path):
         assert "rules/playbook-router.md" in pack["required_checks"], signal
 
 
-def test_target_memory_agent_signal_routes_without_explicit_focus(tmp_path):
-    _seed_target_memory(
-        tmp_path,
-        "target.com",
-        {"active_leads": [{"text": "Observed cross-session memory propagation between agents"}]},
-    )
+def test_target_memory_agent_signal_routes_without_explicit_focus(tmp_path, pack_store):
+    _remember_hypothesis(pack_store, "Observed cross-session memory propagation between agents")
 
     pack = build_context_pack(tmp_path, target="target.com")
 
@@ -1421,7 +1372,7 @@ def test_target_memory_agent_signal_routes_without_explicit_focus(tmp_path):
     assert "web-llm-tool-chains" in recall_ids
 
 
-def test_broad_agent_signal_words_do_not_route_to_web_llm_card(tmp_path):
+def test_broad_agent_signal_words_do_not_route_to_web_llm_card(tmp_path, pack_store):
     for focus in (
         "OpenAPI schema drift",
         "database server schema drift",
@@ -1433,7 +1384,7 @@ def test_broad_agent_signal_words_do_not_route_to_web_llm_card(tmp_path):
         assert "knowledge/cards/web-llm-tool-chains.md" not in pack["knowledge_cards"], focus
 
 
-def test_unprotected_admin_access_control_prioritizes_auth_access(tmp_path):
+def test_unprotected_admin_access_control_prioritizes_auth_access(tmp_path, pack_store):
     pack = build_context_pack(
         tmp_path,
         target="target.com",
@@ -1446,7 +1397,7 @@ def test_unprotected_admin_access_control_prioritizes_auth_access(tmp_path):
     assert "path-pattern-management-exposure" in recall_ids
 
 
-def test_explicit_ssrf_internal_focus_without_recon_routes_to_vuln_skill(tmp_path):
+def test_explicit_ssrf_internal_focus_without_recon_routes_to_vuln_skill(tmp_path, pack_store):
     pack = build_context_pack(tmp_path, target="target.com", focus="ssrf-internal metadata")
 
     assert "skill_route" not in pack and "selected_skill" not in pack
@@ -1454,7 +1405,7 @@ def test_explicit_ssrf_internal_focus_without_recon_routes_to_vuln_skill(tmp_pat
     assert "ssrf-url-fetch" in {item.get("id") for item in pack.get("card_catalog", [])}
 
 
-def test_explicit_oauth_focus_without_recon_routes_to_vuln_skill(tmp_path):
+def test_explicit_oauth_focus_without_recon_routes_to_vuln_skill(tmp_path, pack_store):
     pack = build_context_pack(tmp_path, target="target.com", focus="oauth sso token-binding account-linking")
 
     assert "skill_route" not in pack and "selected_skill" not in pack
@@ -1462,17 +1413,22 @@ def test_explicit_oauth_focus_without_recon_routes_to_vuln_skill(tmp_path):
     assert "auth-access" in {item.get("id") for item in pack.get("card_catalog", [])}
 
 
-def test_dead_end_new_surface_becomes_contradiction(tmp_path):
+def test_unverified_negative_note_remains_advisory_with_new_surface(tmp_path, pack_store):
     _seed_recon(tmp_path, "target.com", ["https://api.target.com/graphql"])
-    _seed_target_memory(tmp_path, "target.com", {
-        "dead_ends": [{"text": "GraphQL introspection disabled; no operation names in JS"}],
-    })
-
+    pack_store.remember(
+        command_id="note", kind="note", statement="GraphQL introspection reportedly disabled",
+        conditions="Unverified operator note; execution evidence unavailable",
+        reopen_when="New operation names or session", next_intent="Inspect GraphQL surface",
+        evidence=[], actor="operator",
+    )
     pack = build_context_pack(tmp_path, target="target.com", focus="graphql")
+    assert pack["target_experiences"]["items"][0]["kind"] == "note"
+    assert pack["source_summary"]["evidence_ledger_entries"] == 0
+    assert "New operation names or session" in format_context_pack(pack)
 
 
 
-def test_distilled_knowledge_cards_route_from_explicit_focus_without_recon(tmp_path):
+def test_distilled_knowledge_cards_route_from_explicit_focus_without_recon(tmp_path, pack_store):
     cases = [
         ("signature scope mismatch saml jwt jku kid duplicate assertion", "knowledge/cards/signature-scope-mismatch.md"),
         ("oauth sso trust email redirect_uri account takeover", "knowledge/cards/auth-sso-token-edge-cases.md"),
@@ -1510,7 +1466,7 @@ def test_distilled_knowledge_cards_route_from_explicit_focus_without_recon(tmp_p
         assert expected_card in [item.get("file") for item in pack.get("card_catalog", [])]
 
 
-def test_json_view_differential_routing_is_precise_and_budgeted(tmp_path):
+def test_json_view_differential_routing_is_precise_and_budgeted(tmp_path, pack_store):
     collision = build_context_pack(
         tmp_path,
         target="target.com",
@@ -1563,7 +1519,7 @@ def test_json_view_differential_routing_is_precise_and_budgeted(tmp_path):
     )
 
 
-def test_public_package_history_routes_to_bounded_recon_intelligence(tmp_path):
+def test_public_package_history_routes_to_bounded_recon_intelligence(tmp_path, pack_store):
     pack = build_context_pack(
         tmp_path,
         target="target.com",
@@ -1574,7 +1530,7 @@ def test_public_package_history_routes_to_bounded_recon_intelligence(tmp_path):
     assert "public-package-artifact-intelligence" in {item.get("id") for item in pack.get("card_catalog", [])}
 
 
-def test_container_image_history_routes_to_public_artifact_card(tmp_path):
+def test_container_image_history_routes_to_public_artifact_card(tmp_path, pack_store):
     pack = build_context_pack(
         tmp_path,
         target="target.com",
@@ -1585,7 +1541,7 @@ def test_container_image_history_routes_to_public_artifact_card(tmp_path):
     assert "public-package-artifact-intelligence" in {item.get("id") for item in pack.get("card_catalog", [])}
 
 
-def test_dependency_confusion_keeps_ci_cd_and_artifact_cards(tmp_path):
+def test_dependency_confusion_keeps_ci_cd_and_artifact_cards(tmp_path, pack_store):
     pack = build_context_pack(
         tmp_path,
         target="target.com",
@@ -1597,14 +1553,14 @@ def test_dependency_confusion_keeps_ci_cd_and_artifact_cards(tmp_path):
     assert "knowledge/cards/cicd-trust-boundaries.md" in all_cards
 
 
-def test_bare_package_build_and_image_do_not_route_to_public_artifact_card(tmp_path):
+def test_bare_package_build_and_image_do_not_route_to_public_artifact_card(tmp_path, pack_store):
     for focus in ("package", "build", "image"):
         pack = build_context_pack(tmp_path, target="target.com", focus=focus)
     all_cards = [item.get("file") for item in pack.get("card_catalog", [])]
 
 
 
-def test_js_runtime_signature_signals_route_to_bounded_recon_branch(tmp_path):
+def test_js_runtime_signature_signals_route_to_bounded_recon_branch(tmp_path, pack_store):
     signals = (
         "js reverse request chain",
         "frontend signature reconstruction",
@@ -1619,7 +1575,7 @@ def test_js_runtime_signature_signals_route_to_bounded_recon_branch(tmp_path):
         assert pack["knowledge_cards"] == [], focus
 
 
-def test_js_runtime_signature_broad_words_do_not_route_new_card(tmp_path):
+def test_js_runtime_signature_broad_words_do_not_route_new_card(tmp_path, pack_store):
     for focus in (
         "signature",
         "encryption",
@@ -1630,7 +1586,7 @@ def test_js_runtime_signature_broad_words_do_not_route_new_card(tmp_path):
     all_cards = [item.get("file") for item in pack.get("card_catalog", [])]
 
 
-def test_custom_protocol_signals_route_to_bounded_recon_branch(tmp_path):
+def test_custom_protocol_signals_route_to_bounded_recon_branch(tmp_path, pack_store):
     signals = (
         "custom binary protocol frame recovery",
         "protocol reverse and message dictionary",
@@ -1645,7 +1601,7 @@ def test_custom_protocol_signals_route_to_bounded_recon_branch(tmp_path):
         assert pack["knowledge_cards"] == [], focus
 
 
-def test_custom_protocol_broad_words_do_not_route_new_card(tmp_path):
+def test_custom_protocol_broad_words_do_not_route_new_card(tmp_path, pack_store):
     for focus in (
         "pcap",
         "protobuf",
@@ -1657,7 +1613,7 @@ def test_custom_protocol_broad_words_do_not_route_new_card(tmp_path):
     all_cards = [item.get("file") for item in pack.get("card_catalog", [])]
 
 
-def test_custom_protocol_keeps_grpc_and_websocket_specialized_cards(tmp_path):
+def test_custom_protocol_keeps_grpc_and_websocket_specialized_cards(tmp_path, pack_store):
     pack = build_context_pack(
         tmp_path,
         target="target.com",
@@ -1671,12 +1627,8 @@ def test_custom_protocol_keeps_grpc_and_websocket_specialized_cards(tmp_path):
     assert "websocket-realtime-api" in recall_ids
 
 
-def test_target_memory_runtime_signal_routes_without_explicit_focus(tmp_path):
-    _seed_target_memory(
-        tmp_path,
-        "target.com",
-        {"active_leads": [{"text": "request initiator captured; local JS rebuild pending"}]},
-    )
+def test_target_memory_runtime_signal_routes_without_explicit_focus(tmp_path, pack_store):
+    _remember_hypothesis(pack_store, "request initiator captured; local JS rebuild pending")
 
     pack = build_context_pack(tmp_path, target="target.com")
 
@@ -1685,26 +1637,47 @@ def test_target_memory_runtime_signal_routes_without_explicit_focus(tmp_path):
     assert "js-runtime-signature-reconstruction" in recall_ids
 
 
-def test_context_pack_projects_target_facts_for_cheap_recovery(tmp_path):
-    _seed_target_memory(tmp_path, "target.com", {
-        "facts": {
-            "cdn-filtering-502": {
-                "text": "CDN filters backend responses: 502 = filtered, 404 = absent",
-                "evidence_refs": ["evidence/target.com/diff.json"],
-                "ts": "2026-09-09T00:00:00Z",
-            },
-            "wildcard-dns": {
-                "text": "random123.target.com resolves to the same CDN: wildcard DNS",
-                "evidence_refs": [],
-                "ts": "2026-09-09T00:00:00Z",
-            },
-        },
-    })
-
+def test_context_pack_recovers_advisory_notes_with_conditions_and_source(tmp_path, pack_store):
+    statements = {
+        "cdn-filtering-502": "CDN may filter backend responses: compare 502 with 404",
+        "wildcard-dns": "random123.target.com resolves to the same CDN",
+    }
+    for entry_id, statement in statements.items():
+        pack_store.remember(
+            command_id=entry_id, kind="note", statement=statement,
+            conditions="Operator observation; not yet validated", reopen_when="DNS or CDN changes",
+            next_intent="Compare baseline", evidence=[], actor="operator",
+        )
+    before = pack_store.binding()
     pack = build_context_pack(tmp_path, target="target.com", focus="cdn")
+    entries = {item["entry_id"]: item for item in pack["target_experiences"]["items"]}
+    assert set(entries) == set(statements)
+    assert pack["facts"] == []
+    output = format_context_pack(pack)
+    for entry_id, statement in statements.items():
+        assert entries[entry_id]["kind"] == "note"
+        assert statement in output
+        assert pack_store.experience(entry_id)["recorded_by"] == "operator"
+    assert "Operator observation; not yet validated" in output
+    assert "DNS or CDN changes" in output
+    assert pack_store.binding() == before
 
-    facts = pack["facts"]
-    assert [item["key"] for item in facts] == ["cdn-filtering-502", "wildcard-dns"]
-    assert facts[0]["text"].startswith("CDN filters backend responses")
-    assert facts[0]["evidence_refs"] == ["evidence/target.com/diff.json"]
-    assert facts[1]["evidence_refs"] == []
+
+def test_write_back_commands_keep_root_and_negative_requirements(tmp_path):
+    root = tmp_path / "root with spaces"
+    store = TargetStore(root, "target.com")
+    store.initialize()
+    _record_primary_context_evidence(store, root, "negative")
+    operation_id = store.page("operations")["items"][0]["id"]
+    pack = build_context_pack(root, target=store.target)
+    for command in pack["write_back"][:4]:
+        argv = shlex.split(command.replace("OPERATION_ID", operation_id))
+        assert argv[argv.index("--repo-root") + 1] == str(root)
+        result = subprocess.run([*argv, "--json"], capture_output=True, text=True, check=True)
+        assert json.loads(result.stdout)["receipt"]["entity_id"]
+    experiences = store.experience_page()["items"]
+    assert sorted(item["kind"] for item in experiences) == ["handoff", "handoff", "hypothesis", "negative"]
+    negative = next(item for item in experiences if item["kind"] == "negative")
+    assert negative["conditions"] == "CONDITIONS"
+    assert negative["reopen_when"] == "REOPEN_WHEN"
+    assert negative["evidence"] == [{"operation_id": operation_id, "step": 0}]

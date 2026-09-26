@@ -13,8 +13,8 @@ Active vulnerability hunting through Claude CLI. Use the scanner as a bounded br
 | 输入 | 谁思考 |
 |---|---|
 | 假设选择、路线、验证深度 | **AI 判断** |
-| probe 的 endpoint/method/actor/variant | **机器推导**（`--from-evidence`/`--from-probe`） |
-| claim 的 family/technique/skill_route/risk_tier | **AI 判断**（按当前假设填写 activation metadata；类别模板已退役） |
+| probe 的 endpoint/method/actor/variant | **执行事实**（Probe/Runner 登记到 Store observation） |
+| claim 的 family/technique/risk_tier | **AI 判断**（按当前假设填写 activation metadata；类别模板已退役） |
 | claim 四件套（hypothesis_id/expected_learning/kill_condition/decision_reason） | **AI 判断**（永不模板化） |
 | target、ledger 落账、锁、witness | **机械** |
 
@@ -49,7 +49,7 @@ BBHUNT_COOKIE='session=REDACTED' python3 tools/hunt.py --target target.com --sca
 Environment auth also supports `BBHUNT_AUTH_HEADER`; auth is propagated into
 the Python helpers and shell recon / scanner toolchain where supported.
 
-Success signal: `findings/<target>/summary.json`, `findings/<target>/findings.json`, or a concrete evidence/probe artifact is written. If no file is written, read the command output instead of restating the methodology.
+Success signal: a concrete scanner/probe artifact is written and any claimed domain registration has a Store receipt. Raw scanner summaries remain advisory. If no artifact is written, inspect the command result.
 
 ## Default Hunt Loop
 
@@ -72,11 +72,11 @@ before touching it.
 ```
 
 A signal with replayable evidence becomes a candidate finding through
-`finding_index` in step 7 — without waiting for the operator to ask. Prose or a
+the Store claim API in step 7 — without waiting for the operator to ask. Prose or a
 raw probe alone is not a finding; `/validate` in step 9 can only run against a
-finding that already exists in `findings/<target>/findings.json`. This mirrors
+finding that already exists in the target Store. This mirrors
 autopilot's promotion contract (Lead -> Signal -> Candidate -> Validated Finding
-through `finding_index` and `/validate`), so hunting outside autopilot does not
+through explicit claim/evidence registration and `/validate`), so hunting outside autopilot does not
 silently drop candidates at session end.
 
 Already-executed native/browser/multi-step evidence enters the same validation
@@ -184,6 +184,6 @@ Rotate when:
 - no auth, object, role, parser, or sink evidence remains;
 - the current first-review surface is exhausted and `/surface` only shows follow-up hints.
 
-Then run `/checkpoint target.com` (write-back contract in
-`commands/checkpoint.md`): its output updates target memory, explains remaining
-coverage, and moves to the next evidence-backed lane.
+Then run `/checkpoint target.com` (read contract in `commands/checkpoint.md`) to
+inspect remaining work and coverage. Explicitly save useful experience/handoff
+through target memory; AI chooses the next evidence-backed lane.

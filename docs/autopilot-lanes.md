@@ -41,7 +41,7 @@ Every dispatch description must therefore carry a content pack:
 - **已完成 (done so far)**: a compact summary of confirmed facts for this
   target — enumerated subdomains/ports, confirmed URLs, known hypotheses and
   their status, relevant evidence refs. Read these from target memory facts
-  and the Evidence Ledger instead of re-deriving them.
+  and Store-backed evidence views instead of re-deriving them.
 - **本轮只做 (this round only)**: the single sub-goal, plus an explicit
   no-repeat boundary — e.g. "do not re-run full subdomain enumeration;
   only probe the three new hosts listed". Incremental work names its delta.
@@ -60,77 +60,56 @@ under-specified task.
 Specialists without owner-write access end their report with a structured
 「待落库」 tail (fact key, summary, evidence refs, suggested owner action);
 the controller writes each entry back immediately through the existing
-owners (`target_memory.py fact/lead/next`, Action Queue, Evidence Ledger)
+Store commands (`target_memory.py fact/lead/next`, Action Queue, native evidence registration)
 before starting the next lane. The controller does not assume the specialist
 already recorded anything.
 
 ## State And Queue
 
-Already-executed browser/native/multi-step evidence uses
-`validation_runner.py record-evidence` against an existing Candidate, then the
-same `/validate` path (`docs/evidence-runners.md#native-evidence-registration`).
-Registration sends no requests and uses existing Ledger/Finding/Queue owners;
-do not replay merely to fit request-diff or fabricate runner-owned fields.
+All ordinary domain commands require an explicitly initialized target Store.
+`hunt.py` initializes a new target before execution; other callers use
+`python3 tools/target_store.py init --store --target <target_shell>` explicitly.
+Legacy data needs explicit import; missing/fenced/damaged state needs recovery.
+Checkpoint, Pickup and preflight never initialize, import, or recreate old owners.
 
-- Every substantive candidate is claimed before replay with
-  `python3 tools/action_queue.py claim --target <target_shell> --id <id> [--from-evidence <probe-or-evidence-json>] --metadata-json '<metadata-object>'`.
-  Dumb queue interface (2026-09-14): `--id` is REQUIRED — the queue never
-  selects work for you; a claim without `--id` is an error. The metadata
-  object is your full judgment write: hypothesis_id/family/technique/
-  skill_route/risk_tier/expected_learning/kill_condition/decision_reason
-  are AI-written and pass through unvalidated. There is no 16-field
-  required gate and no `activation_contract` projection — any JSON the
-  schema holds expresses your hypothesis. Six mechanical write-time
-  invariants still fire: runner-field anti-forgery (`last_outcome`/
-  `tested_dimensions`/`runner_operation_id` are runner-owned — supplying
-  them is rejected), identity guard (re-identifying an existing action's
-  hypothesis_id/family/technique requires `repeat_reason`; a new hypothesis
-  belongs on a NEW action via `add`), hypothesis cap counting, target-evidence
-  binding (supplied refs must exist), execution-key dedup, and sensitive-value
-  rejection. `--from-evidence` derives the mechanical fields (endpoint,
-  method, evidence_ref, baseline_ref) from a target-owned probe/evidence
-  JSON; explicitly supplied `--metadata-json` values override derived values
-  and judgment fields are never derived. The cap is Queue-owned: never
-  submit, repair, or increase it in claim metadata. On claim failure inspect
-  the single diagnostic and stored state once, then stop without
-  guessing/retry.
-- For a target whose backend is `primary`, `action_queue.py` is only a thin
-  adapter over `TargetStore.actions`: `list` is a read-only Store projection,
-  `claim --id` uses Store CAS, and `resolve` requires an explicit Store proof
-  (`operation_id=`, `artifact=`, or `command_id=`) for completion. Do not pass
-  legacy metadata or `--from-evidence` to a primary claim; create the action
-  through the domain command with its concrete subject. The legacy JSON queue is
-  not created or updated for that target.
-- Queue identity rejects duplicate endpoint/method/family/technique/actor/object/
-  workflow/dimension work without new evidence or a recorded repeat reason.
-  Runner alone writes `last_outcome`, `tested_dimensions`, replayable refs, and
-  `runner_operation_id`, keeping the action `running`; `baseline_only` cannot kill.
-- Resolve each action with one evidence-backed continuation (`sibling`, `bypass`,
-  `identity`, `object`, `parser`, `transport`, `workflow`, `chain`, `rotation`, or
-  `blocked`) or supported `kill_condition_met=true`. At most one child preserves
-  parent/hypothesis/evidence lineage; independent follow-ups are separate claimed
-  actions within the batch budget. Missing outcome/decision blocks closure. If the
-  action produced a reusable primitive, record it as `capability_primitives`
-  (capability + target-owned evidence_ref) so checkpoint can chain it.
-- Legacy/versionless `action_queue.py add/resolve --metadata-json` accepts only a
-  JSON object, preserves `next_question`, `expected_learning`, `kill_condition`,
-  `pivot_hints`, and other compatible structured fields, and rejects credentials
-  or authorization headers. Versioned AI metadata never fabricates Runner fields.
-- `capability-chain-review` is advisory. Materialize one normal versioned chain
-  action with persisted lineage when executable; otherwise resolve blocked/dead-end.
-  It never changes running, validation, candidate, report, or Closure priority.
-- `wait_recon` / `wait_scan`: wait or poll, then refresh state. Runtime phase locks are the final duplicate-launch guard.
-- `validate_finding`: call `/validate` only when state returns `validate_finding`. The non-TTY owner is `python3 tools/validate.py --target <target_shell> --finding-id <id> --decision-json <json_file_shell> --json`; the JSON file path is never inline.
-- `resume_action_queue`: read the queue with `python3 tools/action_queue.py list --target <target_shell> --status running` (or `list --status queued`), choose the action your evidence supports, claim it explicitly with `--id`, perform the durable replay, then run `python3 tools/action_queue.py resolve --target <target_shell> --id <id> --status <state> --evidence <why>` and refresh. For continuation resolves, submit the continuation object (`kind`/`dimension`/`question`/`expected_learning`/`reason`) directly in the resolve metadata — AI writes it from the current hypothesis per the published Queue schema; the blank-skeleton generator is retired.
-- State-read discipline (lab-e2e measured): at most ONE full state read per
-  iteration. Bootstrap already carries the bounded state; when more is needed,
-  combine flags (`--bounded --closure --loop-check --json`) into one call.
-  Re-reading bare `--bounded` after a closure read, or looping summary/list
-  queries between actions, is measured waste — the checkpoint write-back or the
-  claimed action defines when a fresh snapshot is actually required.
-- `resume_case_state`: this reason now means only one thing — Case holds an unresolved context obligation (`state.case_state.open_hypotheses > 0`). Case carries no next action and no score; resolve the hypothesis into bounded actor/object/replay evidence with `tools/target_case_state.py` (`add-actor` / `add-session` / `add-object` / `add-hypothesis`), write back through that owner, then refresh. Action identity and execution state belong to the one action source — if the hypothesis implies testable work, claim it there instead of restating it in Case. Never replay a blocked runner implicitly.
-- `review_validation_candidate`, `complete_report_draft`, `run_intel`, `collect_web_intel`, `test_advisory_applicability`, `review_intel_group`, and `recon_no_live_hosts` retain their owner-defined stop/write-back semantics.
-- If `state.root_claim_next` exists, run `/checkpoint` so `finding_index` creates the canonical candidate and queue action, refresh, then use the canonical ID.
+- Already-executed browser/native/multi-step evidence uses
+  `validation_runner.py record-evidence` with an existing Finding and explicit
+  attempt ID. It sends no requests. Raw material and its private exact request
+  identity are published before one Store operation registers observations and
+  links. Registration retry uses the saved attempt/material; a real rerun needs
+  a new attempt. Unknown family remains intact.
+- AI selects work. `action_queue.py claim --target <target_shell> --id <id>`
+  requires an explicit ID; metadata may describe the judgment but cannot forge
+  execution fields, change identity without a repeat reason, or carry credentials.
+  `--from-evidence` and automatic Skill routes are retired. The Store enforces
+  claim/CAS, execution-key conflicts, evidence ownership and completion proof.
+- Action Queue is a thin Store adapter. List is read-only; completion is an
+  explicit resolve with a claim-bound operation, registered artifact, or domain
+  command receipt. Runner registration and report generation never complete it.
+  Non-HTTP review work uses a concrete subject without invented endpoint/family.
+- Already-claimed work remains visible for recovery. Pending actions have a
+  bounded stable-ID page, exact remaining count and expansion command. Coverage,
+  raw claims, scanner/source material and actor gaps remain separate evidence;
+  Checkpoint does not turn them into actions or choose a new route.
+- New follow-ups require explicit actions. Conditional primitives, negative
+  results and next intent go through Experience commands with their conditions
+  and evidence; neither recall nor Checkpoint generates chains automatically.
+- `wait_recon` / `wait_scan` reflect live phase locks. Wait or poll, then refresh;
+  locks remain the duplicate-launch guard.
+- `/validate` reads a complete decision through
+  `python3 tools/validate.py --target <target_shell> --finding-id <id> --decision-json <json_file_shell> --json`.
+  Scaffold and preflight are read-only. Validation publishes AI report text,
+  records separate technical/destination judgments and registers eligible reports.
+  Same-decision retry retains the bytes; a revised decision needs current
+  predecessor IDs and a new report path. `/report` consumes the registered body.
+- Read state once per iteration and expand only the missing evidence. Refresh
+  after a domain mutation; a prior revision cannot authorize current delivery.
+- Case contains actors, sessions, objects and current premises. It has no second
+  queue or automatic replay. Missing context limits that comparison only; AI can
+  select other work. Use `target_case_state.py` to save the needed context.
+- Raw root claims do not become Findings merely by reading Checkpoint. Explicit
+  scanner-material registration creates immutable review work; AI creates a
+  concrete Finding when its target/endpoint/method/family are known.
 - Matching deterministic replay follows `docs/evidence-runners.md` and `python3 tools/validation_runner.py <lane> --target <target_shell> ...`; its first positional argument is `<lane>` and it never accepts `--decision-json`.
 - `request-diff` is the shared request-pair primitive. AI supplies the exact
   baseline/variant and `active_dimension`; SQLi/NoSQLi/etc. are classifiers, not
@@ -174,9 +153,8 @@ do not replay merely to fit request-diff or fabricate runner-owned fields.
   re-imports; manual `--focused-manifest` runs remain available for
   non-round-lane imports.
 - Use `tools/source_intel.py`/`tools/js_reader.py`; `js-reader` is an Agent handoff,
-  not a Queue Skill. Never use `agents/js-reader.md` or `commands/js-read.md` as
-  `skill_route`; a JS-derived Queue action normally uses the real
-  `skills/web2-recon/SKILL.md` route with explicitly selected dimensions.
+  while applicable Skills are loaded through the native platform. A JS-derived
+  Queue action records intent, evidence and experimental dimensions without a Skill route.
   `tools/deep_js_packer.py` requires concrete runtime/chunk/source-map evidence;
   JS volume alone is not a trigger. Partial/unavailable stays open.
 

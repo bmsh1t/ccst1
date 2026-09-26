@@ -87,280 +87,82 @@ Correct: WAF context + target artifact -> one AI-selected pair -> shared
   GitHub/Docker/CDN/OAuth/webhook URLs belong in chain-context artifacts, not in
   direct findings.
 
-## Validation Runner Contracts
+## Validation Runner and Store Evidence Contracts
 
-### 1. Scope / Trigger
+### Scope and signatures
 
-Use deterministic validation runners when a lead needs repeatable replay/diff
-evidence before `/validate`. Runners are the execution plane only: Claude still
-chooses the hypothesis, explains the impact, chains evidence, and decides
-upgrade/downgrade.
+Use `validation_runner.py request-diff --target TARGET --request-spec SPEC` for
+an AI-selected exact request pair, or `record-evidence --target TARGET
+--finding-id ID --evidence-json FILE --attempt-id ID` for already-executed native
+material. Both support `--repo-root`, explicit claim identity and side-effect
+facts. Native registration sends no requests. Shared auth inputs retain the
+AuthSession origin/scope rules; raw headers override only on the initial URL.
 
-`tools/runner_witness.py` is the shared verifier for the immutable runner
-summary, artifact digests, operation material, and Ledger replay consumed by
-both `/validate` and `report_generator.py`. Keep this boundary independent of
-the report projection so either consumer cannot weaken the other's finality
-checks.
+### Contracts
 
-A dedicated lane is admitted only when existing shared runners cannot express
-the required input, observation, or evidence semantics and the execution is
-stable, repeatable, and reusable across targets. Keep one-off target cases as
-bounded AI-selected evidence actions instead of promoting them to lanes.
+- Normal operation requires one initialized, healthy target Store. Target,
+  store generation and claim are checked before execution/publication and again
+  at registration under the target switch lock. Preview/legacy/damage reject.
+- A real execution has its own attempt ID. A registration retry reuses the
+  attempt and immutable raw material; the request lane never resends a started
+  attempt. Operation is a Store registration receipt, not an HTTP request ID.
+- Public summaries contain URL shapes; exact requested URLs are private,
+  digest-bound identity artifacts. Native anchor must exactly match Finding
+  endpoint/method. Both lanes register actual per-step endpoints and methods;
+  empty/redacted query values cannot stand for an exact observed query.
+- Raw requests/responses live in private target-owned files. Native evidence may
+  reference other target-owned existing nonempty artifacts. Registration checks
+  published digests before consuming them. Changed/missing raw material rejects,
+  retains the attempt and creates no operation.
+- `record_execution` atomically persists operation, observations, artifacts,
+  explicit Finding links and audit. An error rolls back metadata, not raw files.
+  `sync.status=partial` is retryable by registration, never by blind replay.
+- Open family names are preserved. A canonical Coverage alias is optional;
+  unknown names cannot accidentally close a standard coverage cell.
+- An observation is not a technical verdict. Unspecified/unmet expectations
+  remain `candidate`; only explicit clean-intent observations may be clean.
+  Complete evidence is required for candidate-ready validation. A transport
+  failure with no published observations is unknown; earlier complete steps
+  survive a partial run without authorizing completion.
+- Explicit `state_changing=true` requires `redline_checked`; method names do not
+  imply effect. Unknown effect remains unknown. Redirects stay within target;
+  sensitive headers require destination-origin authorization.
+- Runner never assesses technical truth, decides destination eligibility,
+  registers an external delivery event, or resolves an Action. Explicit claim
+  completion requires its complete operation or a valid work proof.
+- Scaffold and preflight read only the Store. `/validate --decision-json` binds
+  target/Finding/endpoint/method/family and a complete linked Store operation,
+  checks current raw integrity, and requires explicit gates, Q1–Q7 basis and
+  impact. Optional CVSS does not determine core technical truth.
+- AI report bytes are atomically published before separate assessment,
+  destination decision and eligible report registration. Their deterministic
+  command IDs allow partial retries; a new judgment requires predecessor IDs.
+  Same-decision/same-body retry preserves inode and bytes. Other Finding,
+  stale judgment, missing registered body or changed bytes rejects.
+- `/report` consumes registered AI text and rebuilds its index. Report
+  generation never means external submission or Queue completion.
+- The old Ledger/Finding/Queue compensation and `runner_witness.py` are retired.
+  Historical Ledger JSONL diagnostics remain explicit import/history inputs.
 
-### 2. Signatures
+### Validation matrix and tests
 
-- `python3 tools/validation_runner.py request-diff --target <target> --request-spec <spec.json> [--repeat N] [--browser-observed] [--no-ledger]`
-- Shared auth inputs: `[--auth-file <json-or-env>] [--header 'Name: value']`;
-  explicit raw headers override AuthSession only on the initial URL.
-
-### 3. Contracts
-
-Runner verifies explicit expectations, not keyword evidence scores or inferred impact.
-Unspecified/unmet expectations stay candidates; partial transport preserves earlier
-responses without allowing validation finality. Runner output must include:
-
-- `result`: `tested_finding`, `candidate`, `tested_clean`, `dead_end`, `partial`, or `manual_required`
-- `candidate_ready`: boolean
-- raw request/response artifact paths under `evidence/<target_key>/validation/<finding-id>/`
-- `ledger_record` unless `--no-ledger`
-- stable `operation_id`; Ledger rows also carry the derived `event_id`
-- persisted path-independent `operation_material`; consumers recompute
-  `operation_id` from that material and the current request/response artifact
-  kind+SHA-256 bindings
-- deterministic `artifact_bindings[]` for existing raw artifacts, with `kind`,
-  repo-owned `ref`, and SHA-256; request/response bindings are mandatory for a
-  runner witness consumed by non-TTY `/validate`
-- `sync` unless `--no-sync`: ordered Ledger -> Finding -> Action Queue owner
-  reconciliation. Each owner reports `updated|deduplicated|skipped|error`; any
-  owner error makes top-level `status=partial`, and replay fills only missing work.
-- A runner-declared Ledger `write_status=skipped` remains `sync.ledger.status=skipped`;
-  sync must not replay that intentionally incomplete record or turn it into `partial`.
-- Runner request facts are normalized before network I/O. `state_changing=true`
-  requires `--redline-checked`; `state_changing=false` is authoritative even
-  for `PUT`, `PATCH`, and `DELETE` when the caller has evidence that the replay
-  is a preview/inert/read-only action. If the effect is omitted, the runner
-  preserves it as unknown and does not infer a gate from the method name; the
-  caller may record the fact later. Method names, CVE/PoC labels, and component
-  identity never substitute for an actual side-effect fact.
-- WebSocket, gRPC, LLM/RAG and other protocol-specific observations remain
-  AI-selected actions through the existing browser, HTTP, MCP, subprocess, or
-  source boundary. A protocol name alone does not create a runner; when a
-  transport cannot be expressed by an existing boundary, preserve the raw
-  observation as a candidate/manual action with the same target, evidence,
-  budget, side-effect, and owner-sync requirements.
-
-### 4. Validation & Error Matrix
-
-- Authz public exposure promotes to `tested_finding` only when status is 200
-  and sensitive/admin/config markers appear in the response body, not only in
-  the path. Body-backed markers should come from structured config/auth field
-  names or strong secret-value shapes, not from challenge/tutorial prose that
-  merely mentions words like `password`, `admin`, or `oauth`.
-- The anonymous public-exposure lane is a baseline-only exposure observation.
-  `tested_clean` closes only that exposure hypothesis; it does not establish
-  anonymous denial on a protected resource. Its Ledger variant is `baseline`,
-  while `unauth_denied` is reserved for an explicit protected-resource denial.
-- Authz role replay may return `candidate` even without owner/peer difference
-  when anonymous is denied, both authenticated actors can read the same
-  collection, and that collection has account/identity/authz-shaped fields
-  such as email/username plus role/permissions/token-like keys. This is not a
-  finding by itself; it requires policy, role expectation, or object-specific
-  evidence before report promotion.
-- SQLi result diff promotes to `tested_finding` only when the variant is
-  injection-shaped and every repeat has a material status/count/field/length
-  difference. Ordinary search/filter differences are `tested_clean`.
-- Marker replay promotes to `tested_finding` only when the exact
-  operator-provided request returns the expected inert marker in every repeat.
-  When `--baseline-url` is supplied, every target-owned control response must
-  be successful and non-truncated, must not contain the marker, and the marker
-  must pass the minimum uniqueness check; otherwise the result remains a
-  `candidate` signal, never `tested_clean` or `tested_finding`. The runner must
-  not generate RCE/SSTI/command payloads on its own.
-- IDOR actor-pair promotes to `tested_finding` only when owner succeeds, peer
-  succeeds, and every repeat shows either an operator-provided private marker in
-  the peer response or exact non-trivial owner-body match. Peer access without a
-  marker/body match is `candidate`, not `tested_finding`; consistent 401/403/404
-  is `tested_clean`.
-- If the owner baseline itself fails or is unstable, IDOR actor-pair must return
-  `dead_end`, not `tested_clean`. A failed owner request proves the replay
-  precondition is invalid, not that authorization is safe.
-- `--from-case-state` must fail fast if the referenced backlog/object/actor or
-  usable actor session is missing. It reads public case metadata plus the
-  `private_ref` session artifact through `load_case_state()`; header values must
-  not be stored in `state/<target_key>/case_state.json` or read from skills,
-  knowledge cards, or docs.
-- `--complete-case-state` is local state write-back only. It requires
-  `--from-case-state --backlog-id`, writes the runner result and summary path via
-  `complete-backlog`, and must not alter remote target state.
-- Redirects remain target-owned. On an origin change, caller-sensitive headers
-  are stripped; AuthSession headers are replayed only when the destination
-  origin is explicitly authorized by that session.
-- Replaying one summary uses the same operation/event IDs. Ledger append is
-  locked, one-line, fsynced, and event-ID idempotent; Finding and Queue retain
-  their own monotonic lifecycle and deduplicate by `runner_operation_id`.
-- Finding runner replay may deduplicate by `runner_operation_id` only after
-  `verify_finding_owner_provenance()` succeeds. If canonical `findings.json`
-  was written but `mutation-events.jsonl` append failed, replay must fall
-  through the owner mutation path, append the missing event once, and only then
-  become idempotent.
-- A damaged Ledger row reports bounded path/line/reason diagnostics. Valid rows
-  remain inspectable, but any partial/unreadable Ledger withholds `closed_cells`
-  so corruption cannot authorize closure.
-- Runner state sync maps final outcomes conservatively:
-  - `tested_finding` -> finding `validation_status=candidate`, queue `candidate`;
-    `/validate` remains the only owner that promotes the Finding to `validated`
-  - `tested_clean` -> finding `validation_status=rejected`, queue `tested`
-  - `candidate` -> finding `validation_status=candidate`, queue `candidate`
-  - `dead_end` -> finding `validation_status=rejected`, queue `dead-end`
-  - request diff without a canonical Ledger family -> Ledger `skipped`, never `partial`
-  Missing `findings.json` rows or absent queue actions are `sync.status=skipped`,
-  not runner failures.
-- Scanner SAML signature stripping is finding-grade only when
-  `BBHUNT_SAML_PROTECTED_URL` is an explicit same-target protected resource,
-  the anonymous baseline is denied/redirected, the stripped assertion response
-  issues a Cookie, and a Cookie-backed read-back returns a non-empty, different
-  HTTP 200 response. An ACS `200/302`, login redirect, error page, SPA fallback,
-  absent Cookie, or failed read-back is written only to
-  `manual_review/saml_signature_review.txt`.
-- Ledger/Finding/Queue owner exception -> `sync.status=partial`; persist the
-  summary witness and retry the same operation rather than reporting `updated`.
-- Non-TTY `/validate --decision-json` schema v2 accepts only a schema-v1 runner
-  summary that is `tested_finding` and `candidate_ready=true`. The summary must
-  self-bind its path, match target/finding/endpoint/method, verify every artifact
-  digest, and match the canonical Finding's `validation_summary` and
-  `runner_operation_id`; `verify_finding_owner_provenance()` must pass before any
-  report, summary, Ledger, Queue, Finding, or runtime write.
-
-### 5. Good/Base/Bad Cases
-
-- Good: browser-observed search endpoint replayed with baseline `q=` and one
-  injection-shaped perturbation, repeated twice, stable JSON count diff.
-- Good: exact template-render request replayed twice and both responses contain
-  a harmless marker chosen before replay.
-- Good: owner order endpoint replayed as peer, peer response contains the known
-  owner-private marker in every repeat, and raw owner/peer requests are saved.
-- Good: Queue write fails after Ledger/Finding succeed; replay deduplicates those
-  owners, completes Queue once, and converges without lifecycle downgrade.
-- Base: anonymous admin/config URL returns 200 but body contains only generic
-  `{"ok": true}`; keep as `tested_clean` because the marker is path-only.
-- Bad: ordinary `q=apple` changes product count and is recorded as SQLi. That
-  is normal application filtering, not injection evidence.
-- Bad: runner invents a command/template payload instead of replaying an exact
-  operator-provided safe marker request.
-- Bad: owner and peer contexts are identical; the runner must fail fast instead
-  of treating a self-replay as actor-diff evidence.
-- Bad: a cross-origin redirect copies raw Authorization/Cookie headers merely
-  because the destination is another in-scope subdomain.
-- Bad: an AI-selected protocol observation is promoted from a transport/status
-  signal without raw request/response evidence or a reproducible impact.
-
-### 6. Tests Required
-
-- `tests/test_validation_runner.py` must cover finding and clean outcomes for
-  every runner lane.
-- Regression tests must assert artifact paths, ledger writes, body-backed marker
-  behavior, and injection-shaped probe gating.
-- `tests/test_response_diff.py` must cover JSON count/field snapshots and
-  baseline-vs-variant structural diff output.
-- Runner sync regressions must assert that a replay can close active
-  `validation`, `candidate-evidence-gap`, `ranked-surface`, and `coverage-gap`
-  queue items without requiring a human to run `/validate` only to update state.
-- Fault-injection regressions must fail after each Ledger/Finding/Queue step,
-  replay the same summary, and assert one Ledger event, one Finding mutation,
-  one Queue attempt, stable operation IDs, and converged owner status.
-- Request-diff regressions must assert that a missing canonical Ledger family
-  remains skipped during sync while a canonical family still replays normally.
-- Non-HTTP observations must assert that the selected existing boundary retains
-  raw input/output, target scope, and owner-sync metadata, or remains a manual
-  candidate when that boundary is unavailable.
-- Ledger tests must cover invalid JSON/UTF-8 diagnostics, continuous valid
-  prefix offset, warning bounds, and fail-open closure projection.
-
-### 7. Wrong vs Correct
-
-#### Wrong
-
-Promote a lead because `/admin/ping` contains `admin` in the URL or because a
-normal search term changes result count.
-
-#### Correct
-
-Treat path-only markers and ordinary business filtering as clean/dead-end
-evidence. Promote only when the response body and controlled probe shape satisfy
-the lane-specific evidence gate, then let `/validate` make the report decision.
-Resolve headers per URL and replay the same owner operation until all three
-existing state owners converge; do not invent a cross-file transaction owner.
-For protocol observations, use the existing boundary that can actually preserve
-the input/output and auth context; otherwise retain a manual candidate instead
-of inventing a transport-specific runner or silently dropping headers.
-
-## Scenario: Versioned Action Queue runner observation
-
-### 1. Scope / Trigger
-
-Use when a Checkpoint action has `activation_required=true` and AI has claimed
-it with `depth_contract_version=1`.
-
-### 2. Signatures
-
-- `_sync_action_queue(summary, *, repo_root) -> dict`
-- Versioned observation metadata: `last_outcome`, `tested_dimensions`,
-  `runner_operation_id`, `summary_ref`, `evidence_ref`, `observed_difference`,
-  and `at`.
-
-### 3. Contracts
-
-- Runner sync requires a prior running claim and target-owned summary/evidence
-  refs; it never activates a queued action or decides AI terminal status.
-- The action remains `running` after observation. AI later calls Queue resolve
-  with one continuation or a supported kill.
-- Same operation ID is idempotent; an older `generated_at` cannot overwrite a
-  newer `last_outcome`. Differences are bounded summaries or hashes, never raw
-  request/response secrets. Versioned observations require a non-empty operation
-  ID and reject concrete credential, Authorization, Cookie, token, password, or
-  API-key values before Queue mutation.
-- A versioned observation must include a controlled response difference from the
-  replay (explicit difference, run diff, or observed response fields). An
-  explicitly declared `baseline_only` observation may write replayable baseline
-  context with `observation_kind=baseline_only`, but it remains running and
-  cannot satisfy a kill resolve.
-
-### 4. Validation & Error Matrix
-
-| Condition | Result |
+| Input/failure | Required result |
 |---|---|
-| queued `activation_required` action | `blocked`, no queue mutation |
-| missing operation ID | `blocked`, action remains running |
-| observation contains credential/header values | `blocked`, queue bytes unchanged |
-| missing/off-target summary or evidence ref | `blocked`, action remains running |
-| stale operation timestamp | `stale`, newer outcome preserved |
-| undeclared baseline-only versioned summary | `blocked`, action remains running |
-| explicit `baseline_only` observation | `updated`, action remains running; continuation required |
-| valid observation | `updated`, action remains running |
-| repeated operation ID | `deduplicated` |
+| off-target request, bad claim, redline missing | reject before network/material side effects |
+| same attempt/material | one operation; idempotent registration |
+| changed raw after publication | partial registration; no metadata commit |
+| partial/no-response execution | partial/unknown; preserve existing steps |
+| unknown family | save evidence; no unrelated Coverage closure |
+| assessment/delivery/report command interrupted | retain body and committed receipts; retry only missing commands |
+| report publication interrupted | no partial public body; retryable |
+| known/duplicate/ineligible destination | technical confirmation can remain confirmed |
+| preflight on legacy/missing/fenced/broken Store | explicit failure; no migration or report output |
 
-### 5. Good/Base/Bad Cases
-
-- Good: a stable response diff is stored as `observed_difference` and the next
-  AI decision reads it from durable Queue metadata.
-- Base: a legacy versionless action keeps its existing terminal runner mapping.
-- Bad: `tested_clean` from one request closes a versioned hypothesis before its
-  active dimension and replay evidence are written.
-
-### 6. Tests Required
-
-- `tests/test_autopilot_hypothesis_replay.py` must assert pre-claim blocking,
-  target ownership, operation identity, secret-value rejection, stable diff
-  write-back, stale protection, and running state.
-- `tests/test_validation_runner.py` must retain Ledger/Finding/Queue replay and
-  legacy status mapping regressions.
-
-### 7. Wrong vs Correct
-
-```text
-Wrong: Runner maps one negative request directly to Queue tested/dead-end.
-Correct: Runner records a bounded observation; AI supplies the next bounded
-         continuation or kill through the existing Queue owner.
+`tests/test_validation_runner.py`, `tests/test_validate_target_mode.py`,
+`tests/test_finding_index.py` and `tests/test_target_store.py` cover these
+boundaries, real CLI restart/recovery, current evidence integrity and report
+text preservation. `tests/test_response_diff.py` covers structural diffs;
+`tests/test_current_truth.py` ensures damaged evidence cannot authorize closure.
 
 ## Scenario: ASP.NET ViewState captured-response known-key check
 
@@ -502,4 +304,99 @@ Wrong: Telerik banner -> automatic network key dictionary probe -> Finding.
 Correct: captured response -> offline default-key fingerprinted match
          -> separate controlled impact proof -> existing validation gate.
 ```
-```
+
+## Local comparison fixture request-budget observations
+
+### 1. Scope / Trigger
+
+Applies to the isolated `09-20-native-first-practical-optimization/research/online_*`
+comparison harness, not production target responses or request authorization.
+
+### 2. Signatures
+
+`Fixture.respond()` emits `X-Request-Limit`, `X-Request-Count`, and
+`X-Request-Remaining` in stages 1/2. The generated `http_record.py ACTOR /path`
+preserves the response and exposes `request_budget={limit, used, remaining}`.
+
+### 3. Contracts
+
+`online_fixture.REQUEST_LIMIT=40` owns the cap. Count includes the current request;
+remaining is `max(0, limit-used)`. All arms see identical metadata without an
+extra request or client-side budget ledger. The manifest records
+`budget_observation_version=1`; report protocol v2 and evidence scoring stay unchanged.
+
+### 4. Validation & Error Matrix
+
+- Request 40: handled normally, remaining 0; request 41: recorded 429, budget failed.
+- New stage: count resets; historical stage 0: budget headers absent.
+- Missing, non-integer, nonpositive limit/count, or inconsistent remaining:
+  preserve raw evidence, return `request_budget=null` and
+  `budget_status=unknown_missing_or_invalid_headers`, never infer unlimited budget.
+
+### 5. Good/Base/Bad Cases
+
+Good: show the response's remaining allowance. Base: use own tools with the same
+headers. Bad: raise the cap, expose oracle answers, or turn old failed runs into passes.
+
+### 6. Tests Required
+
+`test_online_compare.py::OnlineComparisonTests.test_recorder_reports_server_budget_without_extra_requests_or_invented_defaults`
+exercises real HTTP/recorder calls at 39/40/41, stage reset, invalid/absent headers,
+preserved raw fields, and exactly one request per invocation. Run via
+`online_compare.py --offline-check`; it never invokes a model.
+
+### 7. Wrong vs Correct
+
+Wrong: missing budget → zero/unlimited, or retry success → replace original score.
+Correct: missing budget → explicit unknown with evidence retained; each new facility
+version gets a separate manifest/run and leaves historical primary scores untouched.
+
+## Local comparison interruption summaries
+
+### 1. Scope / Trigger
+
+The same isolated comparison harness may resume after its parent process exits.
+This concerns research evidence, not production execution recovery.
+
+### 2. Signatures
+
+`online_compare.py --output RUN_ROOT --resume` skips existing stages.
+`summarize_pair.py RUN_ROOT --output NEW_JSON` verifies two- or four-arm v2 runs.
+`diagnose_online.py RUN_ROOT --output NEW_JSON` emits event diagnostics v3.
+
+### 3. Contracts
+
+Before resuming, verify no old process remains and preserve the original status,
+server logs and artifact hashes. The frozen manifest must match. An existing
+`running` stage becomes `interrupted`, never a rerun or a successful replacement.
+Missing finalized score is accepted only for an explicitly interrupted stage;
+requests come from its existing server-log cell, while score, expected coverage
+and wall time remain null. Final usage/cost remain null when absent from the stream.
+Diagnostics do not substitute event intervals for missing total wall time.
+Completed records still require oracle/raw/argv/usage consistency and full quality
+plus valid budget for paired comparisons. No result modifies primary stage files.
+
+### 4. Validation & Error Matrix
+
+- Missing score with `running`/`complete` status: reject; do not silently omit a stage.
+- Interrupted stage: retain a failed/incomplete row; no expansion-gate pass.
+- Missing paired metric: delta is null, not zero or a claimed saving.
+- Existing output file: exit 2 before reading or rewriting experiment results.
+- Source drift: report it and keep the expansion gate false.
+
+### 5. Good/Base/Bad Cases
+
+Good: resume only unstarted stages. Base: retain partial tool/request evidence with
+unknown final costs. Bad: retry a started stage or invent a zero-cost completion.
+
+### 6. Tests Required
+
+`test_four_arm_summary_preserves_interruption_and_requires_full_quality` checks all
+eight stage rows, three baselines, partial metrics, incomplete-coverage rejection,
+read-only evidence and output preservation. The diagnostic message-usage regression
+also checks null wall time and retained tool calls after interruption.
+
+### 7. Wrong vs Correct
+
+Wrong: stale running record → rerun → replace failure with its successful result.
+Correct: preserve partial evidence → interrupted row → run only unstarted cells.

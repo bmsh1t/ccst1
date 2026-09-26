@@ -26,9 +26,10 @@ if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
 from memory.audit_log import AuditLog
-from memory.target_profile import default_memory_dir, load_target_profile, target_filename
+from memory.target_profile import default_memory_dir, target_filename
 from scope_checker import ScopeChecker
-from scope_context import ScopeContext, ScopeContextError
+from tools.scope_context import ScopeContext, ScopeContextError
+from tools.scope_source import load_scope_source, scope_limits
 
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS", "POST"}
 FAILURE_STATUSES = {403, 429}
@@ -104,19 +105,11 @@ def load_guard_state(memory_dir: str | Path, target: str) -> dict:
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError(f"invalid request guard state {path}: {exc}") from exc
 
-    settings = {}
     raw_settings = raw.get("settings", {})
     if not isinstance(raw_settings, dict):
         raise ValueError(f"request guard state {path} settings must be an object")
     try:
-        for key in ("recon_rps", "test_rps", "breaker_threshold", "breaker_cooldown"):
-            if key not in raw_settings:
-                continue
-            if key == "breaker_threshold":
-                settings[key] = max(1, int(raw_settings[key]))
-            else:
-                minimum = 1.0 if key == "breaker_cooldown" else 0.1
-                settings[key] = max(minimum, float(raw_settings[key]))
+        settings = scope_limits(raw_settings)
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError(f"invalid request guard state {path}: {exc}") from exc
 
@@ -157,86 +150,40 @@ def save_guard_state(memory_dir: str | Path, target: str, state: dict) -> Path:
     return path
 
 
-def _resolve_scope_lists(
-    profile: dict | None,
-    target: str,
-    *,
-    scope_domains: list[str] | None = None,
-    excluded_domains: list[str] | None = None,
-    excluded_classes: list[str] | None = None,
-) -> tuple[list[str], list[str], list[str], str]:
-    snapshot = profile.get("scope_snapshot", {}) if profile else {}
-    if not isinstance(snapshot, dict):
-        snapshot = {}
-
-    if scope_domains:
-        domains = scope_domains
-        scope_source = "cli"
-    else:
-        domains = [item for item in snapshot.get("in_scope", []) if isinstance(item, str)]
-        scope_source = "profile" if domains else "missing"
-
-    if excluded_domains:
-        excluded = excluded_domains
-    else:
-        excluded = [item for item in snapshot.get("out_of_scope", []) if isinstance(item, str)]
-
-    if excluded_classes:
-        classes = excluded_classes
-    else:
-        classes = [item for item in snapshot.get("excluded_classes", []) if isinstance(item, str)]
-
-    domains = [item.strip() for item in domains if item and item.strip()]
-    excluded = [item.strip() for item in excluded if item and item.strip()]
-    classes = [item.strip().lower() for item in classes if item and item.strip()]
-
-    # Lightweight fallback for the exact target only. Wildcards must still be explicit.
-    if not domains and target:
-        domains = [target]
-        scope_source = "target_fallback"
-
-    return domains, excluded, classes, scope_source
-
-
 def build_scope_checker(
-    profile: dict | None,
+    source: dict,
     target: str,
     *,
     scope_domains: list[str] | None = None,
     excluded_domains: list[str] | None = None,
     excluded_classes: list[str] | None = None,
 ) -> tuple[ScopeChecker | None, dict]:
-    domains, excluded, classes, scope_source = _resolve_scope_lists(
-        profile,
-        target,
-        scope_domains=scope_domains,
-        excluded_domains=excluded_domains,
-        excluded_classes=excluded_classes,
-    )
     try:
+        base = ScopeContext.from_manifest(source["manifest"], source_ref=source["path"])
+        domains = scope_domains or list(base.in_scope)
+        scope_source = "cli" if scope_domains else source["source"]
         context = ScopeContext(
-            root_target=target,
-            # Keep the historical target fallback in root_target. Explicit
-            # profile/CLI entries add assets without replacing the primary.
-            in_scope=[] if scope_source == "target_fallback" else domains,
-            out_of_scope=excluded,
-            excluded_classes=classes,
+            root_target=base.root_target,
+            in_scope=domains,
+            out_of_scope=[*base.out_of_scope, *(excluded_domains or [])],
+            excluded_classes=[*base.excluded_classes, *(excluded_classes or [])],
+            source_ref=base.source_ref,
         )
     except ScopeContextError as exc:
         return None, {
             "source": "invalid",
-            "domains": domains,
-            "excluded_domains": excluded,
-            "excluded_classes": classes,
+            "domains": scope_domains or [],
+            "excluded_domains": excluded_domains or [],
+            "excluded_classes": excluded_classes or [],
             "unrestricted": False,
             "error": str(exc),
         }
 
     return ScopeChecker.from_context(context), {
         "source": scope_source,
-        "domains": domains,
-        "excluded_domains": excluded,
-        "excluded_classes": classes,
+        "domains": list(context.in_scope) if context.in_scope else [target],
+        "excluded_domains": list(context.out_of_scope),
+        "excluded_classes": list(context.excluded_classes),
         "unrestricted": False,
         "scope_hash": context.scope_hash,
         "summary": context.summary(),
@@ -244,16 +191,14 @@ def build_scope_checker(
 
 
 def _resolve_settings(
-    profile: dict | None,
+    source: dict,
     *,
     recon_rps: float | None = None,
     test_rps: float | None = None,
     breaker_threshold: int | None = None,
     breaker_cooldown: float | None = None,
 ) -> tuple[dict, dict]:
-    snapshot = profile.get("scope_snapshot", {}) if profile else {}
-    if not isinstance(snapshot, dict):
-        snapshot = {}
+    snapshot = source["manifest"]
 
     values = {}
     sources = {}
@@ -278,16 +223,12 @@ def _resolve_settings(
             sources[key] = "cli"
         elif profile_value is not None:
             values[key] = profile_value
-            sources[key] = "profile"
+            sources[key] = source["source"]
         else:
             values[key] = default_value
             sources[key] = "default"
 
-    values["recon_rps"] = max(float(values["recon_rps"]), 0.1)
-    values["test_rps"] = max(float(values["test_rps"]), 0.1)
-    values["breaker_threshold"] = max(int(values["breaker_threshold"]), 1)
-    values["breaker_cooldown"] = max(float(values["breaker_cooldown"]), 1.0)
-    return values, sources
+    return scope_limits(values), sources
 
 
 def _interval_seconds(settings: dict, is_recon: bool) -> float:
@@ -370,6 +311,7 @@ def _is_breaker_failure(response_status: int | None, error: str | None) -> bool:
 def preflight_request(
     *,
     memory_dir: str | Path,
+    repo_root: str | Path | None = None,
     target: str,
     url: str,
     method: str,
@@ -391,17 +333,16 @@ def preflight_request(
     normalized_url = normalize_url(url)
     normalized_method = (method or "").upper()
     host = parse_host(normalized_url)
-    audit = AuditLog(Path(memory_dir) / "audit.jsonl")
-    profile = load_target_profile(memory_dir, target)
+    source = load_scope_source(repo_root or Path(memory_dir).resolve().parent, target, memory_dir=memory_dir)
     checker, scope_info = build_scope_checker(
-        profile,
+        source,
         target,
         scope_domains=scope_domains,
         excluded_domains=excluded_domains,
         excluded_classes=excluded_classes,
     )
     settings, setting_sources = _resolve_settings(
-        profile,
+        source,
         recon_rps=recon_rps,
         test_rps=test_rps,
         breaker_threshold=breaker_threshold,
@@ -410,6 +351,7 @@ def preflight_request(
     current_ts = float(now_ts if now_ts is not None else time.time())
 
     if not host:
+        audit = AuditLog(Path(memory_dir) / "audit.jsonl")
         audit.log_request(
             url=normalized_url or url,
             method=normalized_method,
@@ -439,7 +381,7 @@ def preflight_request(
         scope_check = "pass"
     else:
         scope_check = "fail"
-        advisories.append("target-match advisory: URL is outside the configured target-note snapshot")
+        advisories.append("target-match advisory: URL is outside the configured Scope")
 
     if vuln_class and checker is not None and not checker.is_vuln_class_allowed(vuln_class):
         advisories.append(f"excluded vuln class advisory: {vuln_class}")
@@ -488,6 +430,7 @@ def preflight_request(
 def record_request(
     *,
     memory_dir: str | Path,
+    repo_root: str | Path | None = None,
     target: str,
     url: str,
     method: str,
@@ -507,16 +450,16 @@ def record_request(
     normalized_url = normalize_url(url)
     normalized_method = (method or "").upper()
     host = parse_host(normalized_url)
-    profile = load_target_profile(memory_dir, target)
+    source = load_scope_source(repo_root or Path(memory_dir).resolve().parent, target, memory_dir=memory_dir)
     checker, scope_info = build_scope_checker(
-        profile,
+        source,
         target,
         scope_domains=scope_domains,
         excluded_domains=excluded_domains,
         excluded_classes=excluded_classes,
     )
     settings, setting_sources = _resolve_settings(
-        profile,
+        source,
         breaker_threshold=breaker_threshold,
         breaker_cooldown=breaker_cooldown,
     )
@@ -675,6 +618,7 @@ def format_guard_output(payload: dict, command: str) -> str:
 
 def _add_common_guard_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--target", required=True, help="Target domain")
+    parser.add_argument("--repo-root", default=BASE_DIR, help="Root owning target Scope")
     parser.add_argument("--memory-dir", default="", help="Optional hunt-memory directory")
     parser.add_argument("--json", action="store_true", help="Output JSON")
 
@@ -685,8 +629,8 @@ def _add_scope_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--excluded-classes", default="", help="Comma-separated excluded vuln classes")
 
 
-def _memory_dir_from_args(value: str) -> str:
-    return value or str(default_memory_dir(BASE_DIR))
+def _memory_dir_from_args(value: str, repo_root: str) -> str:
+    return value or str(default_memory_dir(repo_root))
 
 
 def main() -> None:
@@ -738,11 +682,12 @@ def main() -> None:
     status_parser.add_argument("--breaker-threshold", type=int, default=None, help="Display threshold override")
 
     args = parser.parse_args()
-    memory_dir = _memory_dir_from_args(args.memory_dir)
+    memory_dir = _memory_dir_from_args(args.memory_dir, args.repo_root)
 
     if args.command == "preflight":
         payload = preflight_request(
             memory_dir=memory_dir,
+            repo_root=args.repo_root,
             target=args.target,
             url=args.url,
             method=args.method,
@@ -762,6 +707,7 @@ def main() -> None:
     elif args.command == "record":
         payload = record_request(
             memory_dir=memory_dir,
+            repo_root=args.repo_root,
             target=args.target,
             url=args.url,
             method=args.method,

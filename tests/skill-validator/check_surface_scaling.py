@@ -126,7 +126,8 @@ def _worker(mode: str, repo: Path, target: str, tail: str = "") -> dict:
             "observation_total": int(stats.get("observation_total", 0) or 0),
             "observation_untouched": int(stats.get("observation_untouched", 0) or 0),
             "observation_stale": int(stats.get("observation_stale", 0) or 0),
-            "tail_preserved": bool(tail and tail in candidate_urls),
+            "tail_preserved": bool(tail and any(row.get("url") == tail for row in iter_surface_index(repo, target))),
+            "window_order_valid": [row["url"] for row in surface.get("review_pool", [])] == sorted(candidate_urls),
             "index_summary": {
                 key: int(index_summary.get(key, 0) or 0)
                 for key in (
@@ -292,7 +293,9 @@ def _validate(
         if not external_with_params and index_summary.get("unique_urls") != urls:
             failures.append("synthetic exact index row count changed")
         if not external_with_params and not cold.get("tail_preserved"):
-            failures.append("last high-value URL did not reach bounded output")
+            failures.append("last URL disappeared from the complete index")
+        if not cold.get("window_order_valid"):
+            failures.append("default review window is not in neutral URL order")
         if external_index and not external_index.get("exact_identity_match"):
             failures.append("external exact URL identities were not preserved")
         if external_index and index_summary.get("unique_urls") != external_index.get(

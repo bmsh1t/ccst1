@@ -32,10 +32,10 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
-import os
+import shlex
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -59,203 +59,6 @@ DEFAULT_CACHE_TTL_HOURS = 72
 # not applicable. The status is data, NOT a Claude-facing options[] menu.
 COVERAGE_STATUS_VALUES = ("mcp_unavailable", "no_mcp_coverage", "covered")
 DEFAULT_COVERAGE_STATUS = "covered"
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Disclosed-pattern dedup against hunt-memory/patterns.jsonl
-# Per task 05-16-b7-disclosed-pattern-dedup.
-# ─────────────────────────────────────────────────────────────────────────────
-
-# Title → canonical vuln_class inference. Matches are substring (case-
-# insensitive) against the disclosed report title. Order matters: the first
-# matching token wins (so we put more-specific tokens first).
-_TITLE_TO_VULN_CLASS: list[tuple[str, str]] = [
-    # SSRF before SQLi to avoid "SQL" matching "ssrf" titles by accident
-    ("server-side request forgery", "SSRF"),
-    ("ssrf", "SSRF"),
-    ("sql injection", "SQLi"),
-    ("sqli", "SQLi"),
-    ("sql ", "SQLi"),
-    ("idor", "IDOR"),
-    ("insecure direct object", "IDOR"),
-    ("broken object level", "IDOR"),
-    ("authorization", "Authz"),
-    ("authz", "Authz"),
-    ("auth bypass", "Authz"),
-    ("access control", "Authz"),
-    ("privilege escalation", "Authz"),
-    ("graphql", "GraphQL"),
-    ("oauth", "OAuth"),
-    ("open redirect", "OAuth"),
-    ("file upload", "Upload"),
-    ("arbitrary file upload", "Upload"),
-    ("upload", "Upload"),
-    ("webhook", "Webhook"),
-    ("jwt", "JWT"),
-    ("json web token", "JWT"),
-    ("xxe", "XXE"),
-    ("xml external entity", "XXE"),
-    ("rce", "RCE"),
-    ("remote code execution", "RCE"),
-    ("command injection", "RCE"),
-    ("template injection", "RCE"),
-    ("ssti", "RCE"),
-    ("deserialization", "RCE"),
-    ("path traversal", "Path"),
-    ("directory traversal", "Path"),
-    ("lfi", "Path"),
-    ("local file", "Path"),
-    ("csrf", "CSRF"),
-    ("cross-site request forgery", "CSRF"),
-    ("race condition", "Race"),
-    ("race ", "Race"),
-    # XSS goes last so SSRF/CSRF/XXE tokens are matched first
-    ("xss", "XSS"),
-    ("cross-site scripting", "XSS"),
-    ("reflected scripting", "XSS"),
-    ("stored scripting", "XSS"),
-]
-
-
-def _infer_vuln_class_from_title(title: str) -> str:
-    """Best-effort canonical vuln_class from a disclosed report title.
-
-    Returns "" when nothing recognisable matches. Caller should treat empty
-    string as "skip dedup for this report".
-    """
-    if not title:
-        return ""
-    text = title.lower()
-    for token, vc in _TITLE_TO_VULN_CLASS:
-        if token in text:
-            return vc
-    return ""
-
-
-def _format_pattern_ref(pattern: dict) -> str:
-    """Render a short pattern reference for inline dedup tags.
-
-    Uses (technique, target) as the surfaced id since patterns.jsonl does not
-    carry a stable numeric id today. Truncates long technique names so the
-    inline tag stays readable inside a markdown table.
-    """
-    technique = (pattern.get("technique") or "").strip() or "pattern"
-    technique_short = technique[:60]
-    src = (pattern.get("target") or "").strip()
-    if src:
-        return f"{technique_short}@{src}"
-    return technique_short
-
-
-def _dedup_against_local(
-    *,
-    reports: list["DisclosedReport"],
-    target: str,
-    tech_stack: list[str],
-    repo_root: Path,
-) -> tuple[list[tuple["DisclosedReport", str]], dict[str, int]]:
-    """Dedup disclosed reports against hunt-memory/patterns.jsonl.
-
-    Returns:
-        - List of (report, dedup_ref) tuples in input order. `dedup_ref` is
-          the rendered pattern reference (empty string if no match).
-        - Stats dict {"matched": M, "total": N, "same_target_matched": A,
-          "similar_target_matched": B}.
-
-    Same-target match: pattern has the same `target` AND same vuln_class.
-    Similar-target match: pattern has overlapping tech_stack AND same
-    vuln_class (and is not a same-target match).
-    """
-    # Lazy import to avoid hard-binding tests on hunt-memory layout
-    try:
-        from memory.pattern_db import PatternDB
-    except Exception:
-        # If pattern_db is unavailable, dedup as no-op
-        return [(r, "") for r in reports], {"matched": 0, "total": len(reports),
-                                            "same_target_matched": 0,
-                                            "similar_target_matched": 0}
-
-    patterns_path = repo_root / "hunt-memory" / "patterns.jsonl"
-    if not patterns_path.is_file():
-        return [(r, "") for r in reports], {
-            "matched": 0, "total": len(reports),
-            "same_target_matched": 0, "similar_target_matched": 0,
-        }
-    try:
-        db = PatternDB(patterns_path)
-    except Exception:
-        return [(r, "") for r in reports], {
-            "matched": 0, "total": len(reports),
-            "same_target_matched": 0, "similar_target_matched": 0,
-        }
-
-    # Cache match() results by vuln_class so 1000-entry patterns.jsonl + 100
-    # disclosed reports stays well under C3's 5s budget.
-    vc_cache: dict[str, list[dict]] = {}
-
-    def patterns_for_class(vc: str) -> list[dict]:
-        if vc not in vc_cache:
-            try:
-                vc_cache[vc] = db.match(vuln_class=vc)
-            except Exception:
-                vc_cache[vc] = []
-        return vc_cache[vc]
-
-    same_matches = 0
-    similar_matches = 0
-    out: list[tuple["DisclosedReport", str]] = []
-    tech_lower = {t.lower() for t in (tech_stack or [])}
-    for report in reports:
-        vc = _infer_vuln_class_from_title(report.title)
-        if not vc:
-            out.append((report, ""))
-            continue
-        candidates = patterns_for_class(vc)
-        # Prefer same-target match, fall back to tech-overlap match.
-        chosen: dict | None = None
-        match_kind = ""
-        for p in candidates:
-            if (p.get("target") or "").lower() == target.lower():
-                chosen = p
-                match_kind = "same"
-                break
-        if chosen is None and tech_lower:
-            for p in candidates:
-                p_tech = {t.lower() for t in (p.get("tech_stack") or [])}
-                if tech_lower & p_tech:
-                    chosen = p
-                    match_kind = "similar"
-                    break
-        if chosen is None:
-            out.append((report, ""))
-            continue
-        if match_kind == "same":
-            same_matches += 1
-        else:
-            similar_matches += 1
-        out.append((report, _format_pattern_ref(chosen)))
-
-    stats = {
-        "matched": same_matches + similar_matches,
-        "total": len(reports),
-        "same_target_matched": same_matches,
-        "similar_target_matched": similar_matches,
-    }
-    return out, stats
-
-
-def _format_dedup_header(
-    same_stats: dict[str, int],
-    similar_stats: dict[str, int],
-) -> str:
-    total = same_stats["total"] + similar_stats["total"]
-    matched = same_stats["matched"] + similar_stats["matched"]
-    lines = [
-        f"**Pattern dedup**: {matched} of {total} disclosed patterns match local hunt memory.",
-        f"- Same-target dedup: {same_stats['same_target_matched']} of {same_stats['total']}",
-        f"- Similar-target dedup: {similar_stats['similar_target_matched']} of {similar_stats['total']}",
-    ]
-    return "\n".join(lines)
 
 
 def _load_h1_client():
@@ -488,9 +291,7 @@ def render_disclosed_patterns_md(
     seeds: list[str],
     coverage_status: str = DEFAULT_COVERAGE_STATUS,
     *,
-    same_dedup: list[tuple["DisclosedReport", str]] | None = None,
-    similar_dedup: list[tuple["DisclosedReport", str]] | None = None,
-    dedup_header: str = "",
+    repo_root: Path | str = BASE_DIR,
 ) -> str:
     """Render the disclosed_patterns.md document per Contract 1.
 
@@ -501,30 +302,10 @@ def render_disclosed_patterns_md(
     NOT a Claude-facing menu — Claude reads the line as a fact and
     forms its own hypothesis.
 
-    Dedup metadata (task 05-16-b7-disclosed-pattern-dedup):
-      - `same_dedup` / `similar_dedup`: lists of (report, dedup_ref)
-        tuples. When `dedup_ref` is non-empty, the row is tagged inline
-        with `[DEDUP: matches local pattern <ref>]`.
-      - `dedup_header`: header summary section "Pattern dedup: M of N..."
-        rendered between the coverage line and the same-target table.
-      - When `coverage_status == 'mcp_unavailable'`, dedup is omitted
-        regardless of these inputs (per task C4).
+    Local experience is queried explicitly through the Store recall command;
+    title/category similarity does not establish duplicate evidence.
     """
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-
-    # Build quick-lookup maps so the inline tag rendering stays O(1)
-    same_tag_map: dict[int, str] = {}
-    similar_tag_map: dict[int, str] = {}
-    show_dedup = coverage_status != "mcp_unavailable"
-    if show_dedup:
-        if same_dedup:
-            for idx, (_, ref) in enumerate(same_dedup):
-                if ref:
-                    same_tag_map[idx] = ref
-        if similar_dedup:
-            for idx, (_, ref) in enumerate(similar_dedup):
-                if ref:
-                    similar_tag_map[idx] = ref
 
     lines: list[str] = []
     lines.append(f"# Disclosed Patterns — {target}")
@@ -537,9 +318,6 @@ def render_disclosed_patterns_md(
     )
     lines.append(f"_MCP coverage: {coverage_status}_")
     lines.append("")
-    if show_dedup and dedup_header:
-        lines.append(dedup_header)
-        lines.append("")
     lines.append(
         "> Horizontal pattern transfer from HackerOne hacktivity. These are "
         "NOT findings on this target — they are starting points for "
@@ -552,13 +330,11 @@ def render_disclosed_patterns_md(
     if same:
         lines.append("| Date | Severity | State | Title | URL |")
         lines.append("|---|---|---|---|---|")
-        for idx, report in enumerate(same):
+        for report in same:
             title = (report.title or "").replace("|", "\\|")
-            tag = same_tag_map.get(idx, "")
-            tag_suffix = f" [DEDUP: matches local pattern {tag}]" if tag else ""
             lines.append(
                 f"| {report.disclosed_at} | {report.severity} | "
-                f"{report.state} | {title[:80]}{tag_suffix} | {report.url} |"
+                f"{report.state} | {title[:80]} | {report.url} |"
             )
     else:
         lines.append("_No same-target reports surfaced from HackerOne._")
@@ -569,17 +345,28 @@ def render_disclosed_patterns_md(
     if similar:
         lines.append("| Program | Severity | Date | Title | URL |")
         lines.append("|---|---|---|---|---|")
-        for idx, report in enumerate(similar):
+        for report in similar:
             title = (report.title or "").replace("|", "\\|")
             program_disp = report.program_name or report.program
-            tag = similar_tag_map.get(idx, "")
-            tag_suffix = f" [DEDUP: matches local pattern {tag}]" if tag else ""
             lines.append(
                 f"| {program_disp} | {report.severity} | "
-                f"{report.disclosed_at} | {title[:80]}{tag_suffix} | {report.url} |"
+                f"{report.disclosed_at} | {title[:80]} | {report.url} |"
             )
     else:
         lines.append("_No similar-target reports surfaced (no tech-stack hint or empty results)._")
+    lines.append("")
+
+    lines.append("## Target memory")
+    lines.append("")
+    lines.append("Compare these reports with saved target experience and reviewed knowledge:")
+    lines.append("")
+    lines.append("```bash")
+    lines.append(shlex.join([
+        "python3", "tools/experience_recall.py", "--repo-root", str(Path(repo_root).resolve()),
+        "--target", target,
+    ]))
+    lines.append("```")
+    lines.append("Title or vulnerability-class similarity alone does not establish a duplicate.")
     lines.append("")
 
     lines.append("## Inferred hypothesis seeds")
@@ -628,17 +415,16 @@ def write_disclosed_patterns(
             # status from the cached buckets so old caches don't crash.
             coverage_status = "covered" if (same or similar) else "no_mcp_coverage"
     else:
-        tech_stack = _load_tech_stack_hint(repo, target_key)
-        same = search_same_target(resolved_target, h1_client=h1_client)
-        similar = search_similar_targets(
-            resolved_target, tech_stack=tech_stack, h1_client=h1_client
-        )
         if h1_client is None:
+            same, similar = [], []
             coverage_status = "mcp_unavailable"
-        elif not same and not similar:
-            coverage_status = "no_mcp_coverage"
         else:
-            coverage_status = "covered"
+            tech_stack = _load_tech_stack_hint(repo, target_key)
+            same = search_same_target(resolved_target, h1_client=h1_client)
+            similar = search_similar_targets(
+                resolved_target, tech_stack=tech_stack, h1_client=h1_client
+            )
+            coverage_status = "covered" if same or similar else "no_mcp_coverage"
         if not no_mcp:
             _save_cache(repo, resolved_target, {
                 "target": resolved_target,
@@ -649,28 +435,8 @@ def write_disclosed_patterns(
 
     seeds = synthesize_hypothesis_seeds(same, similar, coverage_status)
 
-    # B7: dedup against hunt-memory/patterns.jsonl before render. Skip when
-    # MCP is unavailable — there is nothing to dedup against anyway.
-    if coverage_status != "mcp_unavailable":
-        tech_stack_for_dedup = _load_tech_stack_hint(repo, target_key)
-        same_dedup, same_stats = _dedup_against_local(
-            reports=same, target=resolved_target,
-            tech_stack=tech_stack_for_dedup, repo_root=repo,
-        )
-        similar_dedup, similar_stats = _dedup_against_local(
-            reports=similar, target=resolved_target,
-            tech_stack=tech_stack_for_dedup, repo_root=repo,
-        )
-        dedup_header = _format_dedup_header(same_stats, similar_stats)
-    else:
-        same_dedup = None
-        similar_dedup = None
-        dedup_header = ""
-
     md = render_disclosed_patterns_md(
-        resolved_target, same, similar, seeds, coverage_status,
-        same_dedup=same_dedup, similar_dedup=similar_dedup,
-        dedup_header=dedup_header,
+        resolved_target, same, similar, seeds, coverage_status, repo_root=repo,
     )
 
     if output_path is None:

@@ -195,8 +195,8 @@ def _score(task: SkillEvalTask, *, cards: list[str], seeds: list[str], checks: l
     return score, max_score
 
 
-def _run_with_skills(task: SkillEvalTask) -> tuple[str, int, int]:
-    pack = build_context_pack(REPO_ROOT, target="eval.test", focus=task.focus)
+def _run_with_skills(task: SkillEvalTask, fixture_root: Path) -> tuple[str, int, int]:
+    pack = build_context_pack(fixture_root, target="eval.test", focus=task.focus)
     # Keyword routing retired (2026-09-13 native audit): selection authority
     # is the AI's. The eval surface is catalog discoverability — expected
     # cards must be present in the published catalog for the AI to pull.
@@ -303,13 +303,15 @@ def test_project_skills_pass_skill_creator_quick_validate():
     assert not failures
 
 
-def test_context_pack_skills_outperform_no_skill_keyword_baseline():
-    """并发执行多个任务，证明技能层带来路由、去噪和证据门槛提升。"""
+def test_context_pack_skills_outperform_no_skill_keyword_baseline(tmp_path):
+    """Compare offline catalog/check availability; this is not live model accuracy."""
+    from tools.target_store import TargetStore
+    TargetStore(tmp_path, "eval.test").initialize()
     with_results: dict[str, tuple[int, int]] = {}
     baseline_results: dict[str, tuple[int, int]] = {}
 
     with ThreadPoolExecutor(max_workers=6) as executor:
-        futures = [executor.submit(_run_with_skills, task) for task in EVAL_TASKS]
+        futures = [executor.submit(_run_with_skills, task, tmp_path) for task in EVAL_TASKS]
         for future in as_completed(futures):
             name, score, max_score = future.result()
             with_results[name] = (score, max_score)

@@ -7,6 +7,7 @@ Legacy runtime entry points are not switched by importing this module.
 from __future__ import annotations
 
 import base64
+import binascii
 import fcntl
 import hashlib
 import json
@@ -23,17 +24,52 @@ from urllib.parse import urlsplit
 
 try:
     from tools.evidence_identity import (
-        CANONICAL_VULN_CLASSES, LEDGER_RESULTS, canonical_endpoint_identity, coverage_family, normalize_family,
+        CANONICAL_VULN_CLASSES, LEDGER_RESULTS, canonical_endpoint_identity, coverage_family, extract_endpoint_path, normalize_family,
     )
-    from tools.target_paths import classify_target, target_storage_key, url_belongs_to_target
+    from tools.target_paths import classify_target, open_target_lock_file, target_storage_key, url_belongs_to_target
+    from tools.target_paths import legacy_target_profile_path
+    from tools.scope_context import SCHEMA_VERSION as SCOPE_SCHEMA_VERSION, read_scope_source, write_scope_source_locked
 except ImportError:  # pragma: no cover - direct tools/ execution
     from evidence_identity import (  # type: ignore
-        CANONICAL_VULN_CLASSES, LEDGER_RESULTS, canonical_endpoint_identity, coverage_family, normalize_family,
+        CANONICAL_VULN_CLASSES, LEDGER_RESULTS, canonical_endpoint_identity, coverage_family, extract_endpoint_path, normalize_family,
     )
-    from target_paths import classify_target, target_storage_key, url_belongs_to_target  # type: ignore
+    from target_paths import classify_target, open_target_lock_file, target_storage_key, url_belongs_to_target  # type: ignore
+    from target_paths import legacy_target_profile_path  # type: ignore
+    from scope_context import SCHEMA_VERSION as SCOPE_SCHEMA_VERSION, read_scope_source, write_scope_source_locked
 
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 10
+COMPATIBLE_SCHEMA_VERSIONS = {8, 9, SCHEMA_VERSION}
+COVERAGE_REVIEW_STATUSES = ("tested_clean", "tested_finding", "untested", "n_a")
+ENDPOINT_KIND_VALUES = (
+    "untriaged", "api_endpoint", "page_route", "static_asset", "public_metadata",
+    "route_prefix", "realtime_endpoint", "external_chain_context", "unknown",
+)
+FINAL_ENDPOINT_KIND_SOURCES = frozenset({"ai_triage", "manual", "operator"})
+_COVERAGE_REVIEW_SCHEMA = """
+CREATE TABLE coverage_reviews (
+    id TEXT PRIMARY KEY NOT NULL,
+    endpoint TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('endpoint_kind','cell_status')),
+    family TEXT REFERENCES coverage_classes(name),
+    value TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    source TEXT NOT NULL,
+    recorded_by TEXT NOT NULL,
+    reviewed_at TEXT NOT NULL,
+    historical INTEGER NOT NULL CHECK (historical IN (0,1)),
+    finding_id TEXT REFERENCES findings(id),
+    revision INTEGER NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    CHECK ((kind='endpoint_kind' AND family IS NULL AND finding_id IS NULL
+            AND value IN ('untriaged','api_endpoint','page_route','static_asset','public_metadata',
+                          'route_prefix','realtime_endpoint','external_chain_context','unknown'))
+        OR (kind='cell_status' AND family IS NOT NULL
+            AND value IN ('tested_clean','tested_finding','untested','n_a'))),
+    CHECK (finding_id IS NULL OR (value='tested_finding' AND historical=0))
+);
+CREATE INDEX coverage_reviews_subject ON coverage_reviews(endpoint, kind, family, historical, revision DESC);
+"""
 _SCHEMA = """
 CREATE TABLE store (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -42,7 +78,8 @@ CREATE TABLE store (
     store_id TEXT NOT NULL,
     backend TEXT NOT NULL CHECK (backend IN ('preview','primary')),
     revision INTEGER NOT NULL CHECK (revision >= 0),
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    active_goal TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE coverage_classes (name TEXT PRIMARY KEY NOT NULL);
 CREATE TABLE actions (
@@ -224,7 +261,7 @@ CREATE TABLE delivery_events (
 CREATE INDEX delivery_events_finding_revision ON delivery_events(finding_id, revision DESC);
 CREATE TABLE experiences (
     id TEXT PRIMARY KEY NOT NULL,
-    kind TEXT NOT NULL CHECK (kind IN ('primitive','negative','hypothesis','handoff')),
+    kind TEXT NOT NULL CHECK (kind IN ('primitive','negative','hypothesis','handoff','note')),
     statement TEXT NOT NULL,
     conditions TEXT NOT NULL,
     reopen_when TEXT NOT NULL,
@@ -312,7 +349,7 @@ CREATE TABLE action_completions (
     command_id TEXT REFERENCES audit(command_id),
     CHECK ((operation_id IS NOT NULL) + (artifact_id IS NOT NULL) + (command_id IS NOT NULL) = 1)
 );
-"""
+""" + _COVERAGE_REVIEW_SCHEMA
 
 
 class StoreError(ValueError):
@@ -321,6 +358,10 @@ class StoreError(ValueError):
 
 class ConflictError(StoreError):
     """Stale revision, conflicting identity or reuse of an idempotency key."""
+
+
+class FindingNotFoundError(StoreError):
+    """An admitted Store has no finding with the requested ID."""
 
 
 _ARTIFACT_EVENT_STATES = {
@@ -389,11 +430,7 @@ def target_switch_lock(repo_root: str | Path, target: str, *, exclusive: bool = 
     """Coordinate ordinary target mutations with an explicit cutover."""
     root = Path(repo_root).resolve()
     canonical = classify_target(_text(target, "target"))["target"]
-    key = target_storage_key(canonical)
-    path = root / "state" / key / "locks" / "target-switch.lock"
-    path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-    with path.open("a+", encoding="utf-8") as handle:
-        os.chmod(path, 0o600)
+    with open_target_lock_file(root, canonical, "target-switch.lock") as handle:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
         try:
             yield
@@ -414,11 +451,7 @@ def target_mutation_lock(repo_root: str | Path, target: str):
     with target_switch_lock(repo_root, target):
         root = Path(repo_root).resolve()
         canonical = classify_target(_text(target, "target"))["target"]
-        key = target_storage_key(canonical)
-        path = root / "state" / key / "locks" / "target.lock"
-        path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-        with path.open("a+", encoding="utf-8") as handle:
-            os.chmod(path, 0o600)
+        with open_target_lock_file(root, canonical, "target.lock") as handle:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
             try:
                 yield
@@ -506,10 +539,22 @@ class TargetStore:
             raise StoreError(f"database path must not traverse symlinks: {self.path}")
         if not self.path.is_file():
             raise StoreError(f"target store missing: {self.path}; explicit initialization or migration required")
+        if stat.S_IMODE(self.path.parent.stat().st_mode) & 0o077:
+            raise StoreError(f"target store directory requires mode 0700: {self.path.parent}")
         if stat.S_IMODE(self.path.stat().st_mode) & 0o077:
             raise StoreError(f"target store requires private file permissions: {self.path}")
 
+    def _prepare_store_directory(self) -> None:
+        if self.path.resolve() != self.path:
+            raise StoreError(f"database path must not traverse symlinks: {self.path}")
+        self.path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+
     def initialize(self, *, allow_legacy: bool = False) -> None:
+        self._prepare_store_directory()
+        with target_switch_lock(self.root, self.target, exclusive=True):
+            self._initialize_locked(allow_legacy=allow_legacy)
+
+    def _initialize_locked(self, *, allow_legacy: bool = False) -> None:
         """Create an empty store exclusively; never import or overwrite legacy data.
 
         ``allow_legacy`` is reserved for the isolated-copy migration path, where
@@ -526,16 +571,22 @@ class TargetStore:
         """
         if type(allow_legacy) is not bool:
             raise StoreError("allow_legacy must be boolean")
+        # Domain owners only. Runtime state (session.json) and process locks are
+        # explicitly outside the freeze scope (see the cutover contract), so a
+        # target holding nothing but runtime state is still new: its first write
+        # may claim the role instead of being pinned to the legacy backend.
+        memory_dir = Path(os.environ.get("HUNT_MEMORY_DIR") or self.root / "hunt-memory").expanduser()
         legacy = [
             self.path.parent / name
-            for name in ("session.json", "action_queue.json", "case_state.json", "observations.json")
+            for name in ("action_queue.json", "case_state.json", "observations.json")
         ] + [
             self.root / "findings" / self.key / "findings.json",
             self.root / "findings" / self.key / "mutation-events.jsonl",
             self.root / "memory" / "evidence" / self.key / "ledger.jsonl",
             self.root / "memory" / "goals" / "targets" / f"{self.key}.json",
+            legacy_target_profile_path(memory_dir, self.target),
         ]
-        if not allow_legacy and any(path.exists() for path in legacy):
+        if not allow_legacy and any(path.exists() or path.is_symlink() for path in legacy):
             raise StoreError("legacy target state exists; migrate an isolated copy before cutover")
         if self.path.exists():
             raise FileExistsError(f"target store already exists: {self.path}")
@@ -555,9 +606,17 @@ class TargetStore:
             store_id = uuid.uuid4().hex
             if backend == "primary":
                 self._create_fence(store_id)
-            with self._connection(write=True, check=False) as conn:
+                scope_path = self.path.parent / "scope.json"
+                if scope_path.exists() or scope_path.is_symlink():
+                    read_scope_source(self.root, self.target)
+                else:
+                    write_scope_source_locked(self.root, self.target, {
+                        "schema_version": SCOPE_SCHEMA_VERSION, "root_target": self.target})
+            with self._connection(write=True, check=False, lock=False) as conn:
                 conn.executescript("BEGIN IMMEDIATE;\n" + _SCHEMA)
-                conn.execute("INSERT INTO store VALUES (1, ?, ?, ?, ?, 0, ?)",
+                conn.execute("""INSERT INTO store
+                    (singleton,schema_version,target,store_id,backend,revision,created_at)
+                    VALUES (1, ?, ?, ?, ?, 0, ?)""",
                              (SCHEMA_VERSION, self.target, store_id, backend, _now()))
                 conn.executemany("INSERT INTO coverage_classes VALUES (?)", [(x,) for x in CANONICAL_VULN_CLASSES])
                 conn.commit()
@@ -592,9 +651,17 @@ class TargetStore:
                 "revision": int(row["revision"]),
             }
 
+    def command_receipt(self, command_id: str) -> dict | None:
+        """Read a committed command receipt without replaying its mutation."""
+        command_id = _identifier(command_id, "command_id")
+        with self._connection() as conn:
+            row = conn.execute("SELECT * FROM audit WHERE command_id=?", (command_id,)).fetchone()
+            return dict(row) if row else None
+
     @contextmanager
-    def _connection(self, *, write: bool = False, check: bool = True):
-        guard = target_mutation_lock(self.root, self.target) if write else nullcontext()
+    def _connection(self, *, write: bool = False, check: bool = True, lock: bool = True,
+                    foreign_keys: bool = True):
+        guard = target_mutation_lock(self.root, self.target) if write and lock else nullcontext()
         with guard:
             self._check_path()
             conn = None
@@ -602,14 +669,15 @@ class TargetStore:
                 conn = sqlite3.connect(self.path.as_uri() + ("?mode=rw" if write else "?mode=ro"),
                                        uri=True, timeout=5, isolation_level=None)
                 conn.row_factory = sqlite3.Row
-                conn.execute("PRAGMA foreign_keys=ON")
+                conn.execute(f"PRAGMA foreign_keys={'ON' if foreign_keys else 'OFF'}")
                 conn.execute("PRAGMA synchronous=FULL")
                 if not write:
                     conn.execute("PRAGMA query_only=ON")
                 if check:
                     conn.execute("BEGIN IMMEDIATE" if write else "BEGIN")
                     meta = conn.execute("SELECT * FROM store WHERE singleton=1").fetchone()
-                    if not meta or meta["target"] != self.target or meta["schema_version"] != SCHEMA_VERSION:
+                    if (not meta or meta["target"] != self.target
+                            or meta["schema_version"] not in COMPATIBLE_SCHEMA_VERSIONS):
                         raise StoreError(f"target/schema mismatch in {self.path}; inspect migration state")
                     role = self._check_backend(meta)
                     if write and role == "preview" and not self.allow_preview:
@@ -698,11 +766,11 @@ class TargetStore:
             if ref:
                 self._artifact(ref)
         refs = metadata.get("selected_knowledge_refs")
-        if refs is not None:
+        if "selected_knowledge_refs" in metadata:
             if not isinstance(refs, list) or any(not isinstance(item, str) or not item.strip() for item in refs):
                 raise StoreError("selected_knowledge_refs must be a list of non-empty references")
             cards_root = (self.root / "knowledge" / "cards").resolve()
-            if not cards_root.is_dir():
+            if refs and not cards_root.is_dir():
                 raise StoreError("selected knowledge reference names a missing card directory")
             for ref in refs:
                 path = (self.root / ref).resolve()
@@ -721,34 +789,6 @@ class TargetStore:
         requested = metadata.get("max_hypothesis_actions")
         if cap is not None and requested is not None and requested > cap:
             raise StoreError("max_hypothesis_actions exceeds the stored action cap")
-        route = metadata.get("skill_route")
-        if route is not None:
-            if not isinstance(route, Mapping):
-                raise StoreError("skill_route must be an object")
-            skill_id = str(route.get("skill_id") or "").strip()
-            dimensions = route.get("required_dimensions")
-            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", skill_id):
-                raise StoreError("skill_route requires a plain skill_id")
-            if not isinstance(dimensions, list) or not dimensions or any(not str(item).strip() for item in dimensions):
-                raise StoreError("skill_route requires test dimensions")
-            skills_root = (self.root / "skills").resolve()
-            skill_file = (skills_root / skill_id / "SKILL.md").resolve()
-            if not skill_file.is_relative_to(skills_root) or not skill_file.is_file():
-                raise StoreError(f"skill_route references a missing skill: {skill_id}")
-            try:
-                lines = skill_file.read_text(encoding="utf-8", errors="replace").splitlines()
-            except OSError as exc:
-                raise StoreError(f"skill_route skill is unreadable: {skill_id}") from exc
-            frontmatter_name = next(
-                (match.group(1).strip().strip("\"'") for line in lines[1:] if (match := re.match(r"^name:\s*(.*?)\s*$", line))),
-                "",
-            ) if lines and lines[0].strip() == "---" else ""
-            if frontmatter_name != skill_id:
-                raise StoreError("skill_route skill_id does not match Skill frontmatter")
-            expected_path = f"skills/{skill_id}/SKILL.md"
-            supplied_path = str(route.get("skill_path") or "").strip()
-            if supplied_path and supplied_path != expected_path:
-                raise StoreError(f"skill_route skill_path must be {expected_path}")
 
     def _candidate(self, candidate: Any) -> dict:
         if not isinstance(candidate, dict) or set(candidate) != {"id", "endpoint", "method", "family", "title", "claim"}:
@@ -1395,10 +1435,130 @@ class TargetStore:
 
         return self._command("record_delivery_event", command_id, event_id, actor, material, mutate)
 
+    def coverage_endpoint(self, value: str) -> str:
+        """Validate ownership before projecting an authored review to a path."""
+        value = _text(value, "coverage endpoint")
+        if not value.startswith("/"):
+            value = self._endpoint(value)
+        elif value.startswith("//"):
+            raise StoreError("coverage endpoint must be a target-relative path, not a network-path URL")
+        if any(ord(char) < 32 or ord(char) == 127 or char.isspace() for char in value) or "\\" in value:
+            raise StoreError("invalid coverage endpoint")
+        return extract_endpoint_path(value) or "/"
+
+    @staticmethod
+    def _require_coverage_schema(conn) -> None:
+        if conn.execute("SELECT schema_version FROM store WHERE singleton=1").fetchone()[0] < 10:
+            raise StoreError("coverage review schema upgrade required; run explicit upgrade-schema with a backup")
+
+    def normalize_coverage_review(self, *, endpoint: str, kind: str, value: str,
+                                  family: str | None = None, reason: str = "",
+                                  source: str = "manual", reviewed_at: str = "",
+                                  historical: bool = False, candidate: dict | None = None) -> dict:
+        """Validate a review without reading or writing target state."""
+        endpoint = self.coverage_endpoint(endpoint)
+        if kind == "endpoint_kind":
+            if not isinstance(value, str) or value not in ENDPOINT_KIND_VALUES or family is not None:
+                raise StoreError("endpoint-kind review requires a valid kind and no family")
+        elif kind == "cell_status":
+            if not isinstance(value, str) or value not in COVERAGE_REVIEW_STATUSES:
+                raise StoreError("cell review requires a valid coverage status")
+            family = coverage_family(normalize_family(family))
+            if family is None:
+                raise StoreError("cell review requires a canonical coverage family")
+        else:
+            raise StoreError("unknown coverage review kind")
+        if not isinstance(source, str) or source not in FINAL_ENDPOINT_KIND_SOURCES | {"legacy_import"}:
+            raise StoreError("unknown coverage review source")
+        if type(historical) is not bool or (source == "legacy_import" and not historical):
+            raise StoreError("legacy coverage reviews must be historical")
+        reason = _text(reason, "reason", empty=True)
+        reviewed_at = _text(reviewed_at, "reviewed_at", empty=True)
+        reviewed_at = _timestamp(reviewed_at) if reviewed_at else ""
+        claim = self._candidate(candidate) if candidate is not None else None
+        if claim and (historical or kind != "cell_status" or value != "tested_finding"
+                      or self.coverage_endpoint(claim["endpoint"]) != endpoint
+                      or coverage_family(claim["family"]) != family):
+            raise StoreError("coverage finding claim must match the current cell review")
+        return {"endpoint": endpoint, "kind": kind, "family": family, "value": value,
+                "reason": reason, "source": source, "reviewed_at": reviewed_at,
+                "historical": historical, "candidate": claim}
+
+    def record_coverage_review(self, *, command_id: str, endpoint: str, kind: str, value: str,
+                               actor: str, family: str | None = None, reason: str = "",
+                               source: str = "manual", reviewed_at: str = "",
+                               historical: bool = False, candidate: dict | None = None) -> dict:
+        """Append an authored review, never an execution or closure verdict."""
+        material = self.normalize_coverage_review(
+            endpoint=endpoint, kind=kind, value=value, family=family, reason=reason,
+            source=source, reviewed_at=reviewed_at, historical=historical, candidate=candidate,
+        )
+        claim = material["candidate"]
+
+        def mutate(conn, revision, now):
+            self._require_coverage_schema(conn)
+            if claim:
+                existing = conn.execute("SELECT * FROM findings WHERE id=?", (claim["id"],)).fetchone()
+                if existing:
+                    if any(existing[key] != claim[key] for key in ("endpoint", "method", "family")):
+                        raise ConflictError("coverage finding identity changed")
+                    # The existing claim is immutable; this review retains the new reason.
+                else:
+                    self._ensure_finding(conn, claim, now)
+            conn.execute("""INSERT INTO coverage_reviews
+                (id,endpoint,kind,family,value,reason,source,recorded_by,reviewed_at,
+                 historical,finding_id,revision,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                         (command_id, material["endpoint"], material["kind"], material["family"],
+                          material["value"], material["reason"], material["source"], actor,
+                          material["reviewed_at"] or ("" if material["historical"] else now), int(material["historical"]),
+                          claim["id"] if claim else None, revision, now))
+
+        return self._command("record_coverage_review", command_id, command_id, actor, material, mutate)
+
+    def coverage_review(self, review_id: str) -> dict:
+        review_id = _identifier(review_id, "review_id")
+        with self._connection() as conn:
+            self._require_coverage_schema(conn)
+            row = conn.execute("SELECT * FROM coverage_reviews WHERE id=?", (review_id,)).fetchone()
+            if row is None:
+                raise StoreError(f"coverage review missing: {review_id}")
+            return dict(row)
+
+    def coverage_review_page(self, *, endpoint: str | None = None, latest: bool = True,
+                             limit: int = 50, cursor: str | None = None) -> dict:
+        """Latest authored values or full history, with stable revision-bound pagination."""
+        self._require_limit(limit)
+        if type(latest) is not bool:
+            raise StoreError("latest must be boolean")
+        endpoint = self.coverage_endpoint(endpoint) if endpoint is not None else None
+        with self._connection() as conn:
+            self._require_coverage_schema(conn)
+            meta = dict(conn.execute("SELECT * FROM store WHERE singleton=1").fetchone())
+            binding = {**self._binding(meta, "coverage_reviews"), "endpoint": endpoint, "latest": latest}
+            after = self._cursor_after(binding, cursor)
+            conditions, params = [], []
+            if endpoint is not None:
+                conditions.append("r.endpoint=?")
+                params.append(endpoint)
+            if latest:
+                # Backfilled history must never replace a review authored after cutover.
+                conditions.append("""NOT EXISTS (SELECT 1 FROM coverage_reviews n
+                    WHERE n.endpoint=r.endpoint AND n.kind=r.kind AND n.family IS r.family
+                    AND (n.historical<r.historical OR
+                        (n.historical=r.historical AND n.revision>r.revision)))""")
+            condition = " AND ".join(conditions) or "1"
+            total = conn.execute(f"SELECT count(*) FROM coverage_reviews r WHERE {condition}", params).fetchone()[0]
+            remaining = conn.execute(f"SELECT count(*) FROM coverage_reviews r WHERE {condition} AND r.id>?",
+                                     (*params, after)).fetchone()[0]
+            rows = [dict(row) for row in conn.execute(
+                f"SELECT r.* FROM coverage_reviews r WHERE {condition} AND r.id>? ORDER BY r.id LIMIT ?",
+                (*params, after, limit))]
+            return self._slice(conn, binding, total=total, remaining=remaining, rows=rows, limit=limit)
+
     def remember(self, *, command_id: str, kind: str, statement: str, conditions: str, reopen_when: str,
                  next_intent: str, evidence: list[dict], actor: str,
                  action_id: str | None = None, finding_id: str | None = None) -> dict:
-        if not isinstance(kind, str) or kind not in {"primitive", "negative", "hypothesis", "handoff"}:
+        if not isinstance(kind, str) or kind not in {"primitive", "negative", "hypothesis", "handoff", "note"}:
             raise StoreError("invalid experience kind")
         statement, conditions = _text(statement, "statement"), _text(conditions, "conditions")
         reopen_when = _text(reopen_when, "reopen_when", empty=kind != "negative")
@@ -1413,12 +1573,47 @@ class TargetStore:
         material = (kind, statement, conditions, reopen_when, next_intent, refs, action_id, finding_id)
 
         def mutate(conn, revision, now):
+            if kind == "note":
+                self._require_memory_schema(conn)
             conn.execute("INSERT INTO experiences VALUES (?,?,?,?,?,?,?,?,?,?)",
                          (command_id, kind, statement, conditions, reopen_when, next_intent, action_id, finding_id, actor, now))
             conn.executemany("INSERT INTO experience_observations VALUES (?,?,?)",
                              [(command_id, operation, step) for operation, step in refs])
 
         return self._command("remember", command_id, command_id, actor, material, mutate)
+
+    @staticmethod
+    def _require_memory_schema(conn) -> None:
+        version = conn.execute("SELECT schema_version FROM store WHERE singleton=1").fetchone()[0]
+        if version < 9:
+            raise StoreError("target memory schema upgrade required; run explicit upgrade-memory with a backup")
+
+    def active_goal(self) -> str:
+        with self._connection() as conn:
+            self._require_memory_schema(conn)
+            return str(conn.execute("SELECT active_goal FROM store WHERE singleton=1").fetchone()[0])
+
+    def set_active_goal(self, *, command_id: str, goal: str, actor: str,
+                        expected_revision: int | None = None) -> dict:
+        goal = _text(goal, "active_goal", empty=True)
+        if expected_revision is None:
+            with self._connection() as conn:
+                receipt = conn.execute("SELECT revision FROM audit WHERE command_id=?", (command_id,)).fetchone()
+                # A committed goal command advanced revision exactly once.
+                # Reuse its original CAS input; _command still checks identity/content.
+                expected_revision = (receipt[0] - 1 if receipt else
+                                     conn.execute("SELECT revision FROM store WHERE singleton=1").fetchone()[0])
+        if type(expected_revision) is not int or expected_revision < 0:
+            raise StoreError("expected_revision must be a non-negative integer")
+
+        def mutate(conn, revision, now):
+            self._require_memory_schema(conn)
+            if revision != expected_revision + 1:
+                raise ConflictError("target goal revision changed; reload before updating")
+            conn.execute("UPDATE store SET active_goal=? WHERE singleton=1", (goal,))
+
+        return self._command("set_active_goal", command_id, self.target, actor,
+                             (goal, expected_revision), mutate)
 
     @staticmethod
     def _case_role(value: Any) -> str:
@@ -1592,9 +1787,13 @@ class TargetStore:
 
         return self._command("remember_hypothesis", command_id, hypothesis_id, actor, material, mutate)
 
-    def case_state(self) -> dict:
+    def case_state(self, *, include_hypotheses: bool = True) -> dict:
         """Read-only Case projection; it has no action or ranking fields."""
-        context = self.case_context()
+        if include_hypotheses:
+            context = self.case_context()
+        else:
+            with self._connection() as conn:
+                context = self._case_entities(conn)
         return {
             "schema_version": 1,
             "target": self.target,
@@ -1608,57 +1807,92 @@ class TargetStore:
             "objects": {row["ref"]: {**{k: row[k] for k in ("type", "object_id", "owner_actor", "endpoint", "status", "notes", "private_ref", "created_at", "last_seen")},
                                         "private_marker": "<redacted>" if row.get("private_ref") else ""}
                         for row in context["objects"]},
-            "hypotheses": context["hypotheses"],
+            **({"hypotheses": context["hypotheses"]} if include_hypotheses else {}),
+        }
+
+    def _case_entities(self, conn) -> dict:
+        """Read and verify the entity snapshot without materializing hypothesis history."""
+        meta = dict(conn.execute("SELECT * FROM store").fetchone())
+        actors = [dict(row) for row in conn.execute("SELECT * FROM case_actors ORDER BY id")]
+        sessions = [dict(row) for row in conn.execute("""SELECT id,actor_id AS actor,kind,source,validity,
+            last_checked,notes,private_ref,created_at,last_seen FROM case_sessions ORDER BY id""")]
+        objects = [dict(row) for row in conn.execute("""SELECT ref,object_type AS type,object_id,owner_actor,
+            endpoint,status,notes,private_ref,created_at,last_seen FROM case_objects ORDER BY ref""")]
+        for item in sessions:
+            self._check_private_material(item["private_ref"], "private_ref", ("session_id", item["id"]),
+                                         (("actor", item["actor"]), ("kind", item["kind"])))
+        for item in objects:
+            self._check_private_material(item["private_ref"], "private_ref", ("object_ref", item["ref"]),
+                                         (("owner_actor", item["owner_actor"] or ""),))
+        authenticated = [item for item in sessions if item["private_ref"] and item["validity"].lower() not in {"invalid", "expired", "revoked"}]
+        actor_ids = {item["actor"] for item in authenticated}
+        authz_status = "ready" if len(actor_ids) >= 2 else "partial" if actor_ids else "missing"
+        return {"target": self.target, "target_key": self.key, "store_id": meta["store_id"],
+                "revision": meta["revision"], "created_at": meta["created_at"], "updated_at": meta["created_at"],
+                "actors": actors, "sessions": sessions, "objects": objects,
+                "authz_coverage": {"status": authz_status, "authenticated_actor_count": len(actor_ids),
+                                   "authenticated_session_count": len(authenticated)}}
+
+    def case_object_refs(self) -> set[str]:
+        with self._connection() as conn:
+            return {item["ref"] for item in self._case_entities(conn)["objects"]}
+
+    def case_summary(self) -> dict:
+        with self._connection() as conn:
+            context = self._case_entities(conn)
+            open_hypotheses = conn.execute("""SELECT COUNT(*) FROM experiences e
+                JOIN experience_case_context c ON c.experience_id=e.id
+                WHERE e.kind='hypothesis' AND c.status='open'""").fetchone()[0]
+        return {
+            "target": context["target"], "target_key": context["target_key"],
+            "actors": len(context["actors"]), "sessions": len(context["sessions"]),
+            "authz_coverage": context["authz_coverage"], "objects": len(context["objects"]),
+            "open_hypotheses": open_hypotheses,
+            "object_samples": [
+                {"object_ref": item["ref"], "type": item["type"], "object_id": item["object_id"],
+                 "endpoint": item["endpoint"], "owner_actor": item["owner_actor"],
+                 "private_marker": "<redacted>" if item.get("private_ref") else ""}
+                for item in context["objects"][:8]
+            ],
         }
 
     def case_context(self) -> dict:
         with self._connection() as conn:
-            meta = dict(conn.execute("SELECT * FROM store").fetchone())
-            actors = [dict(row) for row in conn.execute("SELECT * FROM case_actors ORDER BY id")]
-            sessions = [dict(row) for row in conn.execute("""SELECT id,actor_id AS actor,kind,source,validity,
-                last_checked,notes,private_ref,created_at,last_seen FROM case_sessions ORDER BY id""")]
-            objects = [dict(row) for row in conn.execute("""SELECT ref,object_type AS type,object_id,owner_actor,
-                endpoint,status,notes,private_ref,created_at,last_seen FROM case_objects ORDER BY ref""")]
-            for item in sessions:
-                self._check_private_material(item["private_ref"], "private_ref", ("session_id", item["id"]),
-                                             (("actor", item["actor"]), ("kind", item["kind"])))
-            for item in objects:
-                self._check_private_material(item["private_ref"], "private_ref", ("object_ref", item["ref"]),
-                                             (("owner_actor", item["owner_actor"] or ""),))
+            context = self._case_entities(conn)
+            hypothesis_actors: dict[str, list[str]] = {}
+            for row in conn.execute("SELECT experience_id,actor_id FROM experience_case_actors ORDER BY experience_id,actor_id"):
+                hypothesis_actors.setdefault(row["experience_id"], []).append(row["actor_id"])
+            hypothesis_objects: dict[str, str] = {}
+            for row in conn.execute("SELECT experience_id,object_ref FROM experience_case_objects ORDER BY experience_id,object_ref"):
+                hypothesis_objects.setdefault(row["experience_id"], row["object_ref"])
             hypotheses = []
             for row in conn.execute("""SELECT e.id,c.vuln_class,c.endpoint,c.status,c.why_now,c.metadata_json,e.created_at,
                 e.recorded_by FROM experiences e JOIN experience_case_context c ON c.experience_id=e.id
                 WHERE e.kind='hypothesis' ORDER BY e.id"""):
                 item = dict(row)
-                item["actors"] = [x[0] for x in conn.execute(
-                    "SELECT actor_id FROM experience_case_actors WHERE experience_id=? ORDER BY actor_id", (row["id"],))]
-                item["object_ref"] = next((x[0] for x in conn.execute(
-                    "SELECT object_ref FROM experience_case_objects WHERE experience_id=?", (row["id"],))), "")
+                item["actors"] = hypothesis_actors.get(row["id"], [])
+                item["object_ref"] = hypothesis_objects.get(row["id"], "")
                 try:
                     item["metadata"] = json.loads(item.pop("metadata_json"))
                 except (TypeError, ValueError):
                     item["metadata"] = {}
                 hypotheses.append(item)
-            authenticated = [item for item in sessions if item["private_ref"] and item["validity"].lower() not in {"invalid", "expired", "revoked"}]
-            actor_ids = {item["actor"] for item in authenticated}
-            authz_status = "ready" if len(actor_ids) >= 2 else "partial" if actor_ids else "missing"
-            return {"target": self.target, "target_key": self.key, "store_id": meta["store_id"],
-                    "revision": meta["revision"], "created_at": meta["created_at"], "updated_at": meta["created_at"],
-                    "actors": actors, "sessions": sessions, "objects": objects, "hypotheses": hypotheses,
-                    "authz_coverage": {"status": authz_status, "authenticated_actor_count": len(actor_ids),
-                                       "authenticated_session_count": len(authenticated)}}
+            return {**context, "hypotheses": hypotheses}
 
     def verify_operation(self, operation_id: str) -> dict:
         """Check current bytes against registered evidence; no semantic trust is conferred."""
         operation_id = _identifier(operation_id, "operation_id")
         with self._connection() as conn:
-            operation = conn.execute("SELECT * FROM operations WHERE id=?", (operation_id,)).fetchone()
-            if not operation:
-                raise StoreError(f"operation missing: {operation_id}")
-            artifacts = [dict(row) for row in conn.execute("""SELECT DISTINCT a.* FROM artifacts a
-                JOIN observation_artifacts b ON b.artifact_id=a.id WHERE b.operation_id=?""", (operation_id,))]
+            return self._verify_operation(conn, operation_id)
+
+    def _verify_operation(self, conn, operation_id: str) -> dict:
+        operation = conn.execute("SELECT * FROM operations WHERE id=?", (operation_id,)).fetchone()
+        if not operation:
+            raise StoreError(f"operation missing: {operation_id}")
+        artifacts = [dict(row) for row in conn.execute("""SELECT DISTINCT a.* FROM artifacts a
+            JOIN observation_artifacts b ON b.artifact_id=a.id WHERE b.operation_id=?""", (operation_id,))]
         for expected in artifacts:
-            status = self.artifact_status(expected["id"])
+            status = self._artifact_status(conn, expected)
             if not status["bytes_valid"]:
                 path = self.root / expected["ref"]
                 reason = "changed" if path.exists() else "unavailable"
@@ -1670,27 +1904,9 @@ class TargetStore:
         return {"operation_id": operation_id, "artifact_count": len(artifacts), "integrity": "valid",
                 "outcome": operation["outcome"], "semantic_verification": False}
 
-    def _assessment_integrity(self, assessment_id: str) -> bool:
-        """Return whether every operation supporting an assessment is byte-valid."""
-        with self._connection() as conn:
-            operation_ids = [row[0] for row in conn.execute(
-                "SELECT DISTINCT operation_id FROM assessment_observations WHERE assessment_id=?",
-                (assessment_id,),
-            )]
-        try:
-            for operation_id in operation_ids:
-                self.verify_operation(operation_id)
-        except (OSError, ValueError, StoreError):
-            return False
-        return True
-
-    def _report_rows(self, conn, finding_id: str, assessment: dict | None, deliveries: list[dict]) -> list[dict]:
+    def _report_rows(self, conn, rows: list[dict], assessment: dict | None,
+                     deliveries: list[dict], *, assessment_valid: bool) -> list[dict]:
         current_delivery = {str(item["destination"]): item for item in deliveries}
-        assessment_valid = bool(assessment and self._assessment_integrity(str(assessment["id"])))
-        rows = [dict(item) for item in conn.execute("""SELECT r.*, a.ref AS artifact_ref,
-                a.sha256 AS artifact_sha256, a.size AS artifact_size
-            FROM reports r JOIN artifacts a ON a.id=r.artifact_id
-            WHERE r.finding_id=? ORDER BY r.generated_at""", (finding_id,))]
         for report in rows:
             status = self._artifact_status(conn, {
                 "id": report["artifact_id"], "ref": report["artifact_ref"],
@@ -1799,6 +2015,181 @@ class TargetStore:
             meta = dict(conn.execute("SELECT * FROM store").fetchone())
             return self._page_conn(conn, meta, kind, limit=limit, cursor=cursor, status=status)
 
+    def action_summary(self, *, limit: int = 5) -> dict:
+        """Read bounded nonterminal work and exact counts on one Store snapshot."""
+        self._require_limit(limit)
+        with self._connection() as conn:
+            meta = dict(conn.execute("SELECT * FROM store").fetchone())
+            self._require_action_metadata(conn)
+            counts = dict(conn.execute("""SELECT count(*) AS total,
+                count(CASE WHEN status IN ('ready','claimed','blocked') THEN 1 END) AS pending
+                FROM actions""").fetchone())
+            rows = [dict(row) for row in conn.execute("""SELECT * FROM actions
+                WHERE status IN ('ready','claimed','blocked') ORDER BY id LIMIT ?""", (limit,))]
+            by_id = {row["id"]: row for row in rows}
+            selected = {}
+            for name, query in (
+                ("next_action", "SELECT * FROM actions WHERE status IN ('ready','claimed') ORDER BY status='claimed' DESC,created_at,id LIMIT 1"),
+                ("running_action", "SELECT * FROM actions WHERE status='claimed' ORDER BY id LIMIT 1"),
+            ):
+                item = conn.execute(query).fetchone()
+                if item:
+                    selected[name] = by_id.setdefault(item["id"], dict(item))
+                else:
+                    selected[name] = None
+            for row in by_id.values():
+                row["metadata"] = json.loads(row.pop("metadata_json"))
+            families = [row[0] for row in conn.execute("""WITH values_by_action AS (
+                SELECT id,0 AS position,COALESCE(family,
+                    CASE WHEN json_type(metadata_json,'$.family')='text'
+                         THEN json_extract(metadata_json,'$.family') END) AS value
+                    FROM actions WHERE status IN ('ready','claimed')
+                UNION ALL SELECT id,1,json_extract(metadata_json,'$.vuln_class') FROM actions
+                    WHERE status IN ('ready','claimed') AND json_type(metadata_json,'$.vuln_class')='text'
+                ), first_values AS (
+                    SELECT *,row_number() OVER (PARTITION BY value ORDER BY id,position) AS occurrence
+                    FROM values_by_action WHERE value IS NOT NULL
+                ) SELECT value FROM first_values WHERE occurrence=1 ORDER BY id,position""")]
+            return {**self._binding(meta, "actions"), "items": rows, "counts": counts,
+                    "active_families": families, **selected}
+
+    @staticmethod
+    def _require_action_metadata(conn) -> None:
+        # Filtered reads must not hide corrupt terminal metadata.
+        if conn.execute("""SELECT 1 FROM actions WHERE CASE WHEN json_valid(metadata_json)
+                THEN json_type(metadata_json) != 'object' ELSE 1 END LIMIT 1""").fetchone():
+            raise StoreError("stored action metadata is corrupt or not an object")
+
+    def action_page(self, *, statuses: tuple[str, ...] | None = None, action_type: str | None = None,
+                    limit: int = 50, cursor: str | None = None) -> dict:
+        """Filter before paging; explicit history readers may request terminal kinds."""
+        self._require_limit(limit)
+        if statuses is not None and (not isinstance(statuses, (tuple, list)) or not statuses
+                                    or any(value not in self._ACTION_STATES for value in statuses)):
+            raise StoreError("statuses must contain action states")
+        if action_type is not None:
+            action_type = _identifier(action_type, "action type")
+        states = sorted(set(statuses)) if statuses is not None else sorted(self._ACTION_STATES)
+        with self._connection() as conn:
+            meta = dict(conn.execute("SELECT * FROM store").fetchone())
+            self._require_action_metadata(conn)
+            binding = {**self._binding(meta, "actions"), "states": states, "action_type": action_type}
+            after = self._cursor_after(binding, cursor)
+            condition = f"status IN ({','.join('?' for _ in states)})"
+            params = list(states)
+            if action_type is not None:
+                conn.create_function("strip_action_type", 1, str.strip, deterministic=True)
+                condition += """ AND strip_action_type(CASE WHEN json_type(metadata_json,'$.action_context.type')='text'
+                    THEN json_extract(metadata_json,'$.action_context.type') ELSE kind END)=?"""
+                params.append(action_type)
+            total = conn.execute(f"SELECT count(*) FROM actions WHERE {condition}", params).fetchone()[0]
+            remaining = conn.execute(f"SELECT count(*) FROM actions WHERE {condition} AND id>?", (*params, after)).fetchone()[0]
+            rows = [dict(row) for row in conn.execute(f"SELECT * FROM actions WHERE {condition} AND id>? ORDER BY id LIMIT ?",
+                                                     (*params, after, limit))]
+            for row in rows:
+                row["metadata"] = json.loads(row.pop("metadata_json"))
+            return self._slice(conn, binding, total=total, remaining=remaining, rows=rows, limit=limit)
+
+    def final_action_endpoints(self) -> list[dict]:
+        """Latest recorded terminal action per URL; advisory history, never closure."""
+        with self._connection() as conn:
+            self._require_action_metadata(conn)
+            return [dict(row) for row in conn.execute("""SELECT id,endpoint,status FROM (
+                SELECT id,endpoint,status,row_number() OVER (PARTITION BY endpoint ORDER BY id DESC) AS position
+                FROM actions WHERE status IN ('blocked','completed','cancelled') AND endpoint IS NOT NULL
+                ) WHERE position=1 ORDER BY id""")]
+
+    def experience_page(self, *, kinds: list[str] | None = None, query: str = "",
+                        limit: int = 20, cursor: str | None = None) -> dict:
+        """Filter before limiting, then page newest experience with exact remainder."""
+        with self._connection() as conn:
+            meta = dict(conn.execute("SELECT * FROM store WHERE singleton=1").fetchone())
+            return self._experience_page_conn(conn, meta, kinds=kinds, query=query, limit=limit, cursor=cursor)
+
+    def memory_context(self, *, limit: int = 20) -> dict:
+        """Read intent, current Case premise and one experience page on one snapshot.
+
+        This is advisory memory, not Case readiness or authorization; private
+        sessions/objects remain exclusively checked by the Case query.
+        """
+        with self._connection() as conn:
+            self._require_memory_schema(conn)
+            meta = dict(conn.execute("SELECT * FROM store WHERE singleton=1").fetchone())
+            premise = conn.execute("""SELECT c.why_now FROM experiences e
+                JOIN experience_case_context c ON c.experience_id=e.id
+                WHERE e.kind='hypothesis' ORDER BY e.id DESC LIMIT 1""").fetchone()
+            page = self._experience_page_conn(conn, meta, limit=limit)
+            return {"target": self.target, "store_id": meta["store_id"], "revision": meta["revision"],
+                    "created_at": meta["created_at"], "active_goal": meta["active_goal"],
+                    "current_hypothesis": premise[0] if premise else "", "experiences": page}
+
+    def _experience_page_conn(self, conn, meta: dict, *, kinds: list[str] | None = None,
+                              query: str = "", limit: int = 20, cursor: str | None = None) -> dict:
+        self._require_limit(limit)
+        allowed = {"primitive", "negative", "hypothesis", "handoff", "note"}
+        if kinds is not None and (not isinstance(kinds, list) or not kinds
+                                   or any(not isinstance(kind, str) or kind not in allowed for kind in kinds)):
+            raise StoreError("kinds must be a non-empty list of experience kinds")
+        selected = sorted(set(kinds)) if kinds is not None else sorted(allowed)
+        query = _text(query, "query", empty=True).lower()
+        if len(query) > 512:
+            raise StoreError("query exceeds 512 characters")
+        terms = sorted(set(query.split()))
+        binding = {**self._binding(meta, "experiences"), "kinds": selected,
+                   "query": " ".join(terms), "order": "created_at_desc,id_desc"}
+        after = None
+        if cursor is not None:
+            try:
+                if not isinstance(cursor, str) or len(cursor) > 4096:
+                    raise ValueError("invalid cursor")
+                decoded = json.loads(base64.b64decode(cursor, altchars=b"-_", validate=True))
+                if not isinstance(decoded, dict) or set(decoded) != {*binding, "after"}:
+                    raise ValueError("invalid cursor shape")
+                position = decoded.pop("after")
+                if (not isinstance(position, list) or len(position) != 2
+                        or not isinstance(position[0], str) or len(position[0]) > 64):
+                    raise ValueError("invalid cursor position")
+                after = (position[0], _identifier(position[1], "cursor position"))
+            except (ValueError, TypeError, UnicodeError, binascii.Error) as exc:
+                raise StoreError("malformed experience cursor") from exc
+            if decoded != binding:
+                raise ConflictError("cursor target, filter or snapshot changed; restart the query")
+        predicates = [f"kind IN ({','.join('?' for _ in selected)})"]
+        params: list[Any] = list(selected)
+        haystack = "lower(statement || ' ' || conditions || ' ' || reopen_when || ' ' || next_intent)"
+        if terms:
+            predicates.append("(" + " OR ".join(f"instr({haystack}, ?) > 0" for _ in terms) + ")")
+            params.extend(terms)
+        where = " AND ".join(predicates)
+        total = conn.execute(f"SELECT count(*) FROM experiences WHERE {where}", params).fetchone()[0]
+        if after is not None:
+            predicates.append("(created_at,id) < (?,?)")
+            params.extend(after)
+        where = " AND ".join(predicates)
+        remaining = conn.execute(f"SELECT count(*) FROM experiences WHERE {where}", params).fetchone()[0]
+        rows = [dict(row) for row in conn.execute(
+            f"SELECT * FROM experiences WHERE {where} ORDER BY created_at DESC,id DESC LIMIT ?",
+            (*params, limit))]
+        if rows:
+            ids = [row["id"] for row in rows]
+            refs = conn.execute(
+                f"SELECT experience_id,operation_id,step FROM experience_observations "
+                f"WHERE experience_id IN ({','.join('?' for _ in ids)}) ORDER BY operation_id,step", ids)
+            by_id: dict[str, list[dict]] = {item: [] for item in ids}
+            for ref in refs:
+                by_id[ref["experience_id"]].append({"operation_id": ref["operation_id"], "step": ref["step"]})
+            for row in rows:
+                row["evidence"] = by_id[row["id"]]
+        has_more = remaining > len(rows)
+        next_cursor = None
+        if has_more:
+            last = rows[-1]
+            next_cursor = base64.urlsafe_b64encode(json.dumps(
+                {**binding, "after": [last["created_at"], last["id"]]}, sort_keys=True).encode()).decode()
+        return {**binding, "items": rows, "total": total,
+                "remaining": remaining - len(rows), "has_more": has_more,
+                "next_cursor": next_cursor}
+
     def _require_limit(self, limit: int, maximum: int = 1000) -> None:
         if type(limit) is not int or not 1 <= limit <= maximum:
             raise StoreError(f"limit must be between 1 and {maximum}")
@@ -1850,29 +2241,120 @@ class TargetStore:
         with self._connection() as conn:
             meta = dict(conn.execute("SELECT * FROM store").fetchone())
             page = self._page_conn(conn, meta, "findings", limit=limit, cursor=cursor)
-            for row in page["items"]:
-                finding_id = row["id"]
-                assessment = conn.execute(
-                    "SELECT * FROM assessments WHERE finding_id=? ORDER BY revision DESC LIMIT 1",
-                    (finding_id,),
-                ).fetchone()
-                deliveries = [dict(item) for item in conn.execute("""SELECT d.* FROM delivery_decisions d
-                    WHERE d.finding_id=? AND d.revision=(SELECT max(x.revision) FROM delivery_decisions x
-                    WHERE x.finding_id=d.finding_id AND x.destination=d.destination)
-                    ORDER BY d.destination""", (finding_id,))]
-                assessment_value = dict(assessment) if assessment else None
-                assessment_valid = bool(assessment_value and self._assessment_integrity(assessment_value["id"]))
-                for delivery in deliveries:
-                    delivery["stale"] = not assessment_value or delivery["assessment_id"] != assessment_value["id"] or not assessment_valid
-                evidence = [dict(item) for item in conn.execute(
-                    "SELECT operation_id, step FROM finding_observations WHERE finding_id=? ORDER BY operation_id,step",
-                    (finding_id,),
-                )]
-                row["assessment"] = assessment_value
-                row["deliveries"] = deliveries
-                row["reports"] = self._report_rows(conn, finding_id, assessment_value, deliveries)
-                row["evidence"] = evidence
+            self._finding_projections(conn, page["items"])
             return page
+
+    def _finding_states(self, conn, rows: list[dict]) -> None:
+        """Recorded posture only; report existence is not current delivery authority."""
+        if not rows:
+            return
+        by_id = {row["id"]: row for row in rows}
+        placeholders = ",".join("?" for _ in by_id)
+        for row in rows:
+            row.update(assessment=None, report_recorded=False)
+        for item in conn.execute(f"""SELECT a.* FROM assessments a
+                WHERE a.finding_id IN ({placeholders}) AND a.revision=(
+                    SELECT max(x.revision) FROM assessments x WHERE x.finding_id=a.finding_id)""", list(by_id)):
+            by_id[item["finding_id"]]["assessment"] = dict(item)
+        for item in conn.execute(f"""SELECT f.id, EXISTS(
+                SELECT 1 FROM reports r WHERE r.finding_id=f.id) AS recorded
+                FROM findings f WHERE f.id IN ({placeholders})""", list(by_id)):
+            by_id[item["id"]]["report_recorded"] = bool(item["recorded"])
+
+    def finding_state_page(self, *, limit: int = 50, cursor: str | None = None) -> dict:
+        """Page claims and latest recorded posture without expanding evidence history.
+
+        Use finding()/finding_page() or current truth for integrity and delivery
+        decisions. These facts neither verify evidence nor authorize delivery.
+        """
+        self._require_limit(limit)
+        with self._connection() as conn:
+            meta = dict(conn.execute("SELECT * FROM store").fetchone())
+            page = self._page_conn(conn, meta, "findings", limit=limit, cursor=cursor)
+            self._finding_states(conn, page["items"])
+            return page
+
+    def finding_summary(self, *, limit: int = 5) -> dict:
+        """Exact posture counts, a bounded preview and stable follow-ups on one snapshot."""
+        self._require_limit(limit)
+        with self._connection() as conn:
+            meta = dict(conn.execute("SELECT * FROM store").fetchone())
+            counts = dict(conn.execute("""WITH posture AS (
+                SELECT f.id, COALESCE(a.verdict, '') AS verdict,
+                    EXISTS(SELECT 1 FROM reports r WHERE r.finding_id=f.id) AS reported
+                FROM findings f LEFT JOIN assessments a ON a.finding_id=f.id
+                    AND a.revision=(SELECT max(x.revision) FROM assessments x WHERE x.finding_id=f.id)
+                ) SELECT count(*) AS total,
+                    count(CASE WHEN verdict='confirmed' THEN 1 END) AS confirmed,
+                    count(CASE WHEN verdict NOT IN ('confirmed','refuted') THEN 1 END) AS pending_validation,
+                    count(CASE WHEN verdict='confirmed' AND NOT reported THEN 1 END) AS validated_pending_report,
+                    count(CASE WHEN reported THEN 1 END) AS reported,
+                    min(CASE WHEN verdict NOT IN ('confirmed','refuted') THEN id END) AS next_validation,
+                    min(CASE WHEN verdict='confirmed' AND NOT reported THEN id END) AS next_report
+                FROM posture""").fetchone())
+            page = self._page_conn(conn, meta, "findings", limit=limit)
+            rows = {row["id"]: row for row in page["items"]}
+            next_ids = {key: counts.pop(key) for key in ("next_validation", "next_report")}
+            for finding_id in next_ids.values():
+                if finding_id and finding_id not in rows:
+                    rows[finding_id] = dict(conn.execute("SELECT * FROM findings WHERE id=?", (finding_id,)).fetchone())
+            self._finding_states(conn, list(rows.values()))
+            return {**page, "counts": counts,
+                    **{key: rows.get(finding_id) for key, finding_id in next_ids.items()}}
+
+    def _finding_projections(self, conn, rows: list[dict]) -> None:
+        """Batch one page's relations; acquire each supporting operation once per read."""
+        if not rows:
+            return
+        by_id = {row["id"]: row for row in rows}
+        ids = list(by_id)
+        placeholders = ",".join("?" for _ in ids)
+        for row in rows:
+            row.update(assessment=None, deliveries=[], reports=[], evidence=[])
+        assessments = {}
+        for item in conn.execute(f"""SELECT a.* FROM assessments a
+                WHERE a.finding_id IN ({placeholders}) AND a.revision=(
+                    SELECT max(x.revision) FROM assessments x WHERE x.finding_id=a.finding_id)""", ids):
+            assessment = dict(item)
+            by_id[item["finding_id"]]["assessment"] = assessment
+            assessments[item["id"]] = True
+        for item in conn.execute(f"""SELECT d.* FROM delivery_decisions d
+                WHERE d.finding_id IN ({placeholders}) AND d.revision=(
+                    SELECT max(x.revision) FROM delivery_decisions x
+                    WHERE x.finding_id=d.finding_id AND x.destination=d.destination)
+                ORDER BY d.destination""", ids):
+            by_id[item["finding_id"]]["deliveries"].append(dict(item))
+        for item in conn.execute(f"""SELECT finding_id,operation_id,step FROM finding_observations
+                WHERE finding_id IN ({placeholders}) ORDER BY operation_id,step""", ids):
+            by_id[item["finding_id"]]["evidence"].append(
+                {"operation_id": item["operation_id"], "step": item["step"]})
+        for item in conn.execute(f"""SELECT r.*, a.ref AS artifact_ref,
+                a.sha256 AS artifact_sha256, a.size AS artifact_size
+                FROM reports r JOIN artifacts a ON a.id=r.artifact_id
+                WHERE r.finding_id IN ({placeholders}) ORDER BY r.generated_at""", ids):
+            by_id[item["finding_id"]]["reports"].append(dict(item))
+        if assessments:
+            operation_integrity = {}
+            assessment_ids = list(assessments)
+            for ref in conn.execute(f"""SELECT DISTINCT assessment_id,operation_id
+                    FROM assessment_observations
+                    WHERE assessment_id IN ({','.join('?' for _ in assessment_ids)})
+                    ORDER BY operation_id""", assessment_ids):
+                operation_id = ref["operation_id"]
+                if operation_id not in operation_integrity:
+                    try:
+                        self._verify_operation(conn, operation_id)
+                    except (OSError, ValueError, StoreError):
+                        operation_integrity[operation_id] = False
+                    else:
+                        operation_integrity[operation_id] = True
+                assessments[ref["assessment_id"]] &= operation_integrity[operation_id]
+        for row in rows:
+            assessment = row["assessment"]
+            valid = bool(assessment and assessments[assessment["id"]])
+            for delivery in row["deliveries"]:
+                delivery["stale"] = not valid or delivery["assessment_id"] != assessment["id"]
+            self._report_rows(conn, row["reports"], assessment, row["deliveries"], assessment_valid=valid)
 
     def failures(self, *, limit: int = 50, cursor: str | None = None) -> dict:
         """Conditional negative experiences: what was ruled out and under which premise."""
@@ -1908,34 +2390,46 @@ class TargetStore:
             attempt = dict(conn.execute("SELECT * FROM attempts WHERE id=?", (row["attempt_id"],)).fetchone())
             return {**dict(row), "attempt": attempt, "observations": observations}
 
-    def closure_records(self, *, limit: int = 20000) -> dict:
+    def closure_records(self, *, limit: int = 20000, verify: bool = False) -> dict:
         """Canonical evidence records for the one shared closure projection.
 
         Facts only: authored dimensions, actor/object scope, result and artifact
         refs.  Identity status is derived by ``closure_projection`` and never
         stored, so the store keeps no second closure definition.  Records are
-        ordered by observation time, which is the order the projection's
-        "latest record wins per identity" rule reads.
+        ordered by observation time, then registration revision and step, so
+        equal timestamps do not let hash order decide the latest identity.
 
         A truncated prefix would change what closes, so truncation is reported
-        explicitly rather than silently imposed by a small default.
+        explicitly rather than silently imposed by a small default. verify=True
+        acquires current integrity for all referenced operations on this same
+        metadata snapshot; damaged rows remain facts and are returned separately.
         """
         self._require_limit(limit, maximum=20000)
+        if type(verify) is not bool:
+            raise StoreError("verify must be boolean")
         with self._connection() as conn:
             meta = dict(conn.execute("SELECT * FROM store").fetchone())
             total = conn.execute("SELECT count(*) FROM observations").fetchone()[0]
             rows = conn.execute("""SELECT o.operation_id, o.step, o.endpoint, o.method, o.family, o.observed_at,
                     o.description, o.actor, o.object_scope, o.variant, o.error, o.truncated, o.result,
+                    o.state_changing, o.redline_checked,
                     o.identity_dimensions, p.outcome, p.recorded_at, a.action_id,
                     (SELECT art.ref FROM observation_artifacts b JOIN artifacts art ON art.id=b.artifact_id
                      WHERE b.operation_id=o.operation_id AND b.step=o.step ORDER BY b.kind LIMIT 1) AS evidence_ref
                 FROM observations o
                 JOIN operations p ON p.id=o.operation_id
                 JOIN attempts a ON a.id=p.attempt_id
-                ORDER BY o.observed_at, o.operation_id, o.step LIMIT ?""", (limit + 1,)).fetchall()
+                ORDER BY o.observed_at, p.revision, o.step LIMIT ?""", (limit + 1,)).fetchall()
             truncated = len(rows) > limit
             records = [self._closure_record(row) for row in rows[:limit]]
-            return {"target": self.target, "store_id": meta["store_id"], "revision": meta["revision"],
+            invalid_operations = []
+            if verify and not truncated:
+                for operation_id in sorted({row["operation_id"] for row in rows}):
+                    try:
+                        self._verify_operation(conn, operation_id)
+                    except (OSError, ValueError, StoreError) as exc:
+                        invalid_operations.append({"operation_id": operation_id, "reason": " ".join(str(exc).split())[:240]})
+            return {**({"invalid_operations": invalid_operations} if verify else {}), "target": self.target, "store_id": meta["store_id"], "revision": meta["revision"],
                     "records": records, "total": total, "truncated": truncated, "returned": len(records)}
 
     @staticmethod
@@ -1960,6 +2454,8 @@ class TargetStore:
             "variant": row["variant"],
             "error": row["error"],
             "truncated": bool(row["truncated"]),
+            "state_changing": None if row["state_changing"] is None else bool(row["state_changing"]),
+            "redline_checked": bool(row["redline_checked"]),
             "outcome": row["outcome"],
             "action_id": row["action_id"] or "",
             "evidence_ref": row["evidence_ref"] or "",
@@ -2020,22 +2516,17 @@ class TargetStore:
         with self._connection() as conn:
             row = conn.execute("SELECT * FROM findings WHERE id=?", (finding_id,)).fetchone()
             if not row:
-                raise StoreError(f"finding missing: {finding_id}")
-            assessment = conn.execute("SELECT * FROM assessments WHERE finding_id=? ORDER BY revision DESC LIMIT 1", (finding_id,)).fetchone()
-            deliveries = [dict(item) for item in conn.execute("""SELECT d.* FROM delivery_decisions d
-                WHERE d.finding_id=? AND d.revision=(SELECT max(x.revision) FROM delivery_decisions x
-                WHERE x.finding_id=d.finding_id AND x.destination=d.destination) ORDER BY d.destination""", (finding_id,))]
-            assessment_value = dict(assessment) if assessment else None
-            assessment_valid = bool(assessment_value and self._assessment_integrity(assessment_value["id"]))
-            for delivery in deliveries:
-                delivery["stale"] = not assessment_value or delivery["assessment_id"] != assessment_value["id"] or not assessment_valid
-            evidence = [dict(item) for item in conn.execute("""SELECT operation_id, step FROM finding_observations
-                WHERE finding_id=? ORDER BY operation_id,step""", (finding_id,))]
-            reports = self._report_rows(conn, finding_id, assessment_value, deliveries)
-            return {**dict(row), "assessment": assessment_value,
-                    "deliveries": deliveries, "reports": reports,
-                    "delivery_events": self._delivery_event_rows(conn, finding_id, reports),
-                    "evidence": evidence,
+                raise FindingNotFoundError(f"finding missing: {finding_id}")
+            result = dict(row)
+            self._finding_projections(conn, [result])
+            assessment_value = result["assessment"]
+            if assessment_value:
+                assessment_value["evidence"] = [dict(item) for item in conn.execute(
+                    "SELECT operation_id,step FROM assessment_observations WHERE assessment_id=? ORDER BY operation_id,step",
+                    (assessment_value["id"],),
+                )]
+            return {**result,
+                    "delivery_events": self._delivery_event_rows(conn, finding_id, result["reports"]),
                     "revision": conn.execute("SELECT revision FROM store").fetchone()[0]}
 
     def backup(self, destination: str | Path) -> Path:
@@ -2050,10 +2541,93 @@ class TargetStore:
                     source.backup(target)
                 finally:
                     target.close()
-        except BaseException:
+        except BaseException as exc:
             path.unlink(missing_ok=True)
+            if isinstance(exc, sqlite3.DatabaseError):
+                raise StoreError(f"target store backup failed at {path}: {exc}") from exc
             raise
         return path
+
+    def upgrade_memory_schema(self, backup_path: str | Path) -> dict:
+        """Retain the explicit v8-to-v9 entry point for existing callers."""
+        return self._upgrade_schema(backup_path, 9)
+
+    def upgrade_schema(self, backup_path: str | Path) -> dict:
+        """Upgrade supported primary schemas after verifying an isolated backup."""
+        return self._upgrade_schema(backup_path, SCHEMA_VERSION)
+
+    def _upgrade_schema(self, backup_path: str | Path, version: int) -> dict:
+        backup_path = Path(backup_path)
+        if not backup_path.is_absolute() or backup_path.resolve().is_relative_to(self.path.parent):
+            raise StoreError("Store schema backup must be an absolute path outside target state")
+        if not backup_path.parent.is_dir() or stat.S_IMODE(backup_path.parent.stat().st_mode) & 0o077:
+            raise StoreError("Store schema backup directory must exist and be private")
+        with target_switch_lock(self.root, self.target, exclusive=True):
+            with self._connection() as conn:
+                before = dict(conn.execute("SELECT * FROM store WHERE singleton=1").fetchone())
+            if before["backend"] != "primary":
+                raise StoreError("Store schema upgrade requires an active primary Store")
+            if before["schema_version"] >= version:
+                return {"status": "already_current", "target": self.target,
+                        "store_id": before["store_id"], "revision": before["revision"], "backup": None}
+            if before["schema_version"] not in {8, 9}:
+                raise StoreError("Store schema upgrade requires schema v8 or v9")
+
+            backup = self.backup(backup_path)
+            try:
+                with sqlite3.connect(backup.as_uri() + "?mode=ro", uri=True) as copy:
+                    copy.row_factory = sqlite3.Row
+                    saved = dict(copy.execute("SELECT * FROM store WHERE singleton=1").fetchone())
+                    if any(saved[key] != before[key] for key in ("target", "store_id", "backend", "revision", "schema_version")):
+                        raise StoreError("Store schema backup identity or revision changed")
+                    if (copy.execute("PRAGMA integrity_check").fetchone()[0] != "ok"
+                            or copy.execute("PRAGMA foreign_key_check").fetchone()):
+                        raise StoreError("Store schema backup failed integrity checks")
+            except sqlite3.DatabaseError as exc:
+                raise StoreError(f"Store schema backup is unreadable: {backup}: {exc}") from exc
+
+            with self._connection(write=True, lock=False, foreign_keys=False) as conn:
+                current = conn.execute("SELECT store_id,revision,schema_version FROM store WHERE singleton=1").fetchone()
+                if (current["store_id"], current["revision"], current["schema_version"]) != (
+                        before["store_id"], before["revision"], before["schema_version"]):
+                    raise ConflictError("Store changed after Store schema backup; retry with a new backup path")
+                if before["schema_version"] < 9:
+                    conn.execute("""CREATE TABLE experiences_next (
+                        id TEXT PRIMARY KEY NOT NULL,
+                        kind TEXT NOT NULL CHECK (kind IN ('primitive','negative','hypothesis','handoff','note')),
+                        statement TEXT NOT NULL,
+                        conditions TEXT NOT NULL,
+                        reopen_when TEXT NOT NULL,
+                        next_intent TEXT NOT NULL,
+                        action_id TEXT REFERENCES actions(id),
+                        finding_id TEXT REFERENCES findings(id),
+                        recorded_by TEXT NOT NULL,
+                        created_at TEXT NOT NULL
+                    )""")
+                    conn.execute("INSERT INTO experiences_next SELECT * FROM experiences")
+                    conn.execute("DROP TABLE experiences")
+                    conn.execute("ALTER TABLE experiences_next RENAME TO experiences")
+                    conn.execute("CREATE INDEX experiences_kind_id ON experiences(kind, id)")
+                    conn.execute("ALTER TABLE store ADD COLUMN active_goal TEXT NOT NULL DEFAULT ''")
+                if version >= 10:
+                    # executescript would commit the open transaction before running DDL.
+                    for statement in _COVERAGE_REVIEW_SCHEMA.split(";"):
+                        if statement.strip():
+                            conn.execute(statement)
+                revision = before["revision"] + 1
+                conn.execute("UPDATE store SET schema_version=?,revision=? WHERE singleton=1",
+                             (version, revision))
+                if conn.execute("PRAGMA foreign_key_check").fetchone():
+                    raise StoreError("Store schema upgrade broke a Store reference")
+                if conn.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                    raise StoreError("Store schema upgrade failed integrity check")
+                conn.execute("INSERT INTO audit VALUES (?, ?, ?, ?, ?, ?, ?)",
+                             (revision, f"schema-upgrade:v{version}:{before['store_id']}",
+                              "upgrade_schema", self.target, "schema-upgrade",
+                              _digest((before["store_id"], before["schema_version"], version, before["revision"])), _now()))
+                conn.commit()
+            return {"status": "upgraded", "target": self.target, "store_id": before["store_id"],
+                    "revision": revision, "backup": str(backup)}
 
 
 def target_backend(repo_root: str | Path, target: str) -> str:
@@ -2067,3 +2641,87 @@ def target_backend(repo_root: str | Path, target: str) -> str:
     if receipt.exists() or receipt.is_symlink():
         raise StoreError(f"published preview store missing: {store.path}; rebuild or restore the migration artifact")
     return "legacy"
+
+
+def initialize_target_store(repo_root: str | Path, target: str) -> str:
+    """Explicitly claim a fresh target for the primary runtime Store.
+
+    This is an operator/orchestrator boundary, never a domain write fallback.
+    Existing legacy data is rejected so callers must use the migration path;
+    low-level APIs remain legacy-compatible until this function has run.
+    """
+    store = TargetStore(repo_root, target)
+    store._prepare_store_directory()
+    with target_switch_lock(repo_root, target, exclusive=True):
+        backend = target_backend(repo_root, target)
+        if backend == "primary":
+            read_scope_source(repo_root, target)
+            return backend
+        if backend != "legacy":
+            raise StoreError(f"cannot initialize a {backend} target as primary")
+        store._initialize_locked()
+        return "primary"
+
+
+def runtime_store(repo_root: str | Path, target: str) -> TargetStore:
+    """Require the active Store; initialization and legacy import are explicit."""
+    store = TargetStore(repo_root, target)
+    backend = target_backend(repo_root, target)
+    if backend == "legacy":
+        raise StoreError("target is not initialized; use explicit init or legacy import first")
+    if backend != "primary":
+        raise StoreError(f"runtime store is not active: {store.path}")
+    return store
+
+
+def _main() -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Initialize, upgrade or query a target Store explicitly.")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    init = subparsers.add_parser("init", help="claim a fresh target for the primary Store")
+    init.add_argument("--store", action="store_true", required=True, help="required explicit Store intent")
+    init.add_argument("--target", required=True)
+    init.add_argument("--repo-root", default="", help="repository root (defaults to this checkout)")
+    upgrade = subparsers.add_parser("upgrade-memory", help="explicit v8-to-v9 memory schema upgrade")
+    upgrade.add_argument("--target", required=True)
+    upgrade.add_argument("--backup", required=True, help="new absolute backup path outside target state")
+    upgrade.add_argument("--repo-root", default="", help="repository root (defaults to this checkout)")
+    upgrade_all = subparsers.add_parser("upgrade-schema", help="explicit v8/v9-to-v10 Store schema upgrade")
+    upgrade_all.add_argument("--target", required=True)
+    upgrade_all.add_argument("--backup", required=True, help="new absolute backup path outside target state")
+    upgrade_all.add_argument("--repo-root", default="", help="repository root (defaults to this checkout)")
+    findings = subparsers.add_parser("findings", help="read a Finding page or expand one ID")
+    selection = findings.add_mutually_exclusive_group()
+    selection.add_argument("--id", default=None)
+    selection.add_argument("--cursor", default=None)
+    findings.add_argument("--limit", type=int, default=10)
+    case = subparsers.add_parser("case", help="read full Case context without raw private material")
+    for query in (findings, case):
+        query.add_argument("--target", required=True)
+        query.add_argument("--repo-root", default="", help="repository data root")
+    args = parser.parse_args()
+    repo_root = Path(args.repo_root).resolve() if args.repo_root else Path(__file__).resolve().parents[1]
+    try:
+        if args.command == "init":
+            result = {"target": TargetStore(repo_root, args.target).target,
+                      "backend": initialize_target_store(repo_root, args.target)}
+        elif args.command == "upgrade-memory":
+            result = TargetStore(repo_root, args.target).upgrade_memory_schema(args.backup)
+        elif args.command == "upgrade-schema":
+            result = TargetStore(repo_root, args.target).upgrade_schema(args.backup)
+        else:
+            store = runtime_store(repo_root, args.target)
+            if args.command == "case":
+                result = store.case_state()
+            else:
+                result = (store.finding(args.id) if args.id is not None else
+                          store.finding_page(limit=args.limit, cursor=args.cursor))
+    except (OSError, StoreError, ValueError) as exc:
+        parser.error(str(exc))
+    print(json.dumps(result, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised through the CLI
+    raise SystemExit(_main())

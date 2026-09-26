@@ -2,72 +2,23 @@
 
 > 身份、checkpoint、case、observation 和 queue 生命周期契约。
 
-## Scenario: simple-efficient-refactor 结构契约（2026-09-11）
+## Shared domain and projection boundaries
 
-### 1. Scope / Trigger
-
-修改 `tools/autopilot_state*.py`、`tools/autopilot_gate.py`、`tools/autopilot_loop_guard.py`、
-`tools/contracts.py` 或 `action_queue.ingest_checkpoint` 时读取。
-
-### 2. Signatures
-
-- `python3 tools/action_queue.py claim --target <t> --id <id> [--from-evidence <ref>] --metadata-json '<obj>'`（类别模板已退役 2026-09-13：family/technique/skill_route/risk_tier 由 AI 按当前假设填写）
-- `python3 tools/evidence_ledger.py record --target <t> --from-probe <event_id> --result <r> [--notes <n>]`
-- `python3 tools/distill_target.py evidence --target <t> --json`（出题-三元组中转已退役 2026-09-13：AI 读视图直写草稿；脱敏/可溯源 gate 迁入 knowledge_audit）
-- `python3 tools/target_memory.py lead --target <t> --structured-json '{"hypothesis":...,"evidence_ref":...,"next":...,"stop_condition":...}'`
-- `ingest_checkpoint(repo_root, target, *, checkpoint: dict)` — checkpoint 必填（不再懒加载）
-
-### 3. Contracts
-
-- **claim 激活输入**：`final = {**from_evidence_derived, **metadata_json}`；类别模板
-  已退役（原生能力审计 2026-09-13：预设 technique/risk_tier 复制的是类别判断）。
-  四判断字段（hypothesis_id/expected_learning/kill_condition/decision_reason）必须
-  由 AI 显式给出。
-- **模块拆分与 re-export**：autopilot_gate/loop_guard/state_read 被 autopilot_state
-  全量 re-export——外部 import 只从 `tools.autopilot_state` 走；closure/decision
-  投影族留在 state（深耦合 30+ 状态构建函数，搬动会反向循环）。
-- **依赖单向**：checkpoint → action_queue（模块加载期 aq 不得 import ck）；
-  contracts.py 零 import（纯常量）。
-- **/distill 直写式（2026-09-13）**：机器出有界证据视图（ledger/findings/
-  case_state）→ AI 按 card-template 直写完整草稿（含前提/反例/停止条件）→
-  晋升门（knowledge_promote → strict audit）做脱敏红线（裸公网 IPv4/credential
-  形态拒绝）+ target-evidence refs 可溯源校验 → `knowledge/candidates/<slug>.md`。
-
-### 4. Validation & Error Matrix
-
-- --from-probe 未知 event_id → `ValueError("--from-probe event_id ... not found")`
-- 卡正文判断段含裸公网 IPv4 → audit error `card-bare-ipv4`
-- 卡正文含 credential 形态值 → audit error `card-credential-text`
-- target-evidence ref 非目标名下/不存在 → audit error `target-evidence-ref-unowned` / `target-evidence-ref-missing`
-- structured-json 缺任一四字段 → `SystemExit("requires all of: ...")`
-- `ingest_checkpoint(checkpoint=None)` → `ValueError("requires an explicit checkpoint dict")`
-
-### 5. Good/Base/Bad Cases
-
-- Good：`claim --from-evidence probe.json --metadata-json '{family/technique/skill_route/risk_tier + 四判断字段}'` 一条命令完成激活
-- Base：`record --from-probe <event_id> --result tested_clean`（机械字段全复制）
-- Bad：把 family/technique/risk_tier 重新做成类别预设表（退役回潮；判断字段归 AI）
-
-### 6. Tests Required
-
-- `tests/test_distill_target.py`（evidence 视图契约 + 旧中转 API 退役断言）
-- `tests/test_stage_one_ux.py`（9 项：from-probe/summary 一致性/结构化 leads）
-- `tests/test_contracts.py`（4 项：契约同步/零 import 纪律）
-
-### 7. Wrong vs Correct
-
-#### Wrong
-```python
-# 重造类别预设表（把 AI 判断变成机械字段）
-CLAIM_TEMPLATES["x"] = {"family": "IDOR", "technique": "...", "risk_tier": "medium", ...}
-```
-#### Correct
-```python
-# family/technique/skill_route/risk_tier 由 AI 在 --metadata-json 里按当前假设给出；
-# 缺 hypothesis_id 时 Queue 的 FORMAT gate 照样拒绝
-```
-
----
+- Normal domain reads and writes require `runtime_store() -> TargetStore`.
+  Explicit initialization/import/history/recovery are separate operations.
+- Queue owns Action identity, claim and completion; Case owns context;
+  Store operations/observations own execution; assessment and delivery decisions
+  remain separate. Checkpoint and Pack are disposable read-only projections.
+- `claim --id` is explicit. Old `--from-evidence`, Ledger `record/from-probe`,
+  Checkpoint ingestion, automatic pivot and Skill-route admission are retired.
+  AI supplies judgment; the Store validates target, claim, proof and identity.
+- Dependencies remain one way: coordinators call domain commands and queries;
+  domain storage does not import coordinators, CLI or Runner.
+- `/distill` reads bounded Store evidence/conditional experience; AI writes a
+  card draft, then existing audit/promote validates provenance and redaction.
+  Target memory is not a second Finding/Action lifecycle.
+- Validation: Store/current-truth, Action Queue, memory-loop, distillation and
+  explicit migration regressions prove the corresponding contracts.
 
 ## Target Path Canonicalization Contracts
 
@@ -165,217 +116,65 @@ resolved = canonical_target_value(raw_target)
 key = target_storage_key(resolved)
 ```
 
-## Legacy State Migration Semantics
+## Explicit historical migration
 
-The one-shot migration orchestrator (`tools/migrate_legacy_state.py`) is
-retired; the live repo holds no legacy state shapes. The owner-side migration
-semantics it exercised remain in their owners:
-
-- `finding_index.load_finding_index(..., migrate_legacy=True)` normalizes
-  historical list payloads in memory; it never writes a second findings schema.
-- An untyped `source_paths` entry is `needs_review`; no command flag is
-  inferred. A typed `source_bindings` list may be promoted to bounded
-  `source_refs`.
-- An active Queue row with `activation_required=true` but incomplete depth
-  metadata is `needs_review`: report the missing fields and a repair action,
-  but never invent an AI hypothesis, Skill route, evidence reference, or
-  decision reason.
-- `target_paths.migrate_legacy_list_storage` moves list-key state only after
-  the owner runtime names the same canonical list path; otherwise it reports
-  and leaves the legacy directory untouched.
+`target_migration.py` owns preview, import, quarantine disposition and cutover.
+`load_legacy_finding_index` and Ledger JSONL diagnostics are read-only historical
+inputs, never ordinary runtime fallback. Import preserves explicit IDs,
+provenance and unresolved conditions; uncertain/invalid finality cannot become a
+new trusted assessment. Normal queries neither migrate nor overwrite old files.
+List-key runtime migration still verifies the owning canonical list path.
+See `transactional-target-state.md` for manifests, fence, receipt and recovery.
 
 ## Canonical Finding and Report Identity Contracts
 
-### 1. Scope / Trigger
+### APIs and ownership
 
-Use this contract whenever scanner rebuilds, coverage marks, worker joins,
-validation runners, `/validate`, or report generation mutate target-level
-`findings/<target_key>/findings.json` or create structured report drafts.
+- `TargetStore.create_finding` saves an explicit ID/endpoint/method/family claim.
+- `record_execution(candidate=...)` links exact observed identity atomically.
+- `assess` and `decide_delivery` append separate judgments with predecessor IDs.
+- `register_report` binds published bytes to the current assessment/delivery.
+- `record_delivery_event` records an explicit external submission/receipt.
+- `finding_index.load_finding_index` / `find_finding` are Store read adapters.
+- `index_scanner_material` publishes immutable material review work; it does
+  not invent Findings or execution from scanner prose.
+- `report_generator.process_findings_dir` consumes current report eligibility
+  and rebuilds report indexes. Old JSON writer/upsert/status/Queue-sync APIs
+  have been removed.
 
-### 2. Signatures
+### Contracts
 
-- `load_finding_index(findings_dir: str | Path, *, migrate_legacy: bool = True) -> dict[str, Any]`
-- `find_finding(findings_dir, finding_id, *, migrate_legacy: bool = True) -> dict[str, Any] | None`
-- `upsert_finding(findings_dir, finding, *, target=None) -> dict[str, Any]`
-- `upsert_findings(findings_dir, findings, *, target=None) -> dict[str, Any]`
-- `update_finding_status(findings_dir, finding_id, **updates) -> dict | None`
-- `write_finding_index(findings_dir, *, target=None, output=None) -> dict`
-- `report_generator.process_findings_dir(findings_dir) -> tuple[int, list]`
-- `report_generator.sync_report_action_queue(target_name, finding, report_file) -> dict`
+Explicit identity, not endpoint/text similarity, controls claim reuse. Two IDs
+may describe the same endpoint; the same ID with changed identity conflicts.
+Unknown family is preserved even if a renderer uses the generic template.
+Source revision changes produce separately attributable material work, retaining
+older snapshots. Claims without a concrete execution identity remain review
+material; saving a claim never counts as a tested endpoint.
 
-### 3. Contracts
+Current confirmed assessment, current eligible destination decision and intact
+raw evidence jointly authorize report registration. Changes make old report
+bindings stale; history is retained. Publication happens before registration,
+so an interrupted registration preserves recoverable text. Identical valid
+replay creates no new fact; changed registered bytes are never silently repaired.
 
-- Target-level `findings.json` is always an object with `schema_version`,
-  `target`, `total`, `counts`, and `findings[]`. Worker scratch files under
-  `evidence/<target_key>/workers/**/findings.json` remain private list payloads.
-- `finding_index.py` owns target-level schema, normalization, counts, lifecycle
-  preservation, atomic writes, and legacy-list migration. Coverage, worker
-  join, runner, and `/validate` must call its mutation API instead of writing
-  the file directly.
-- Identity matches exact `id` first, then normalized `url|endpoint` plus
-  `vuln_class|type` when an endpoint exists. Rows without endpoints remain
-  distinct by ID; they must not collapse merely because their type matches.
-- Rebuild, legacy migration, and generic upsert must verify existing finalized
-  provenance before signing a new snapshot. Invalid/missing provenance is
-  quarantined as `needs_owner_revalidation/not_generated`; the original claim
-  remains in `claimed_validation_status` / `claimed_report_status` with evidence
-  pointers, but cannot be consumed as finality.
-- Lifecycle merge is monotonic: a candidate cannot downgrade trusted
-  validated/rejected or generated/reported state, and `reported` cannot fall
-  back to `generated`.
-- Root claims should use `kind=finding_claim`, `schema_version=1`. Unknown kinds,
-  invalid schemas, ordinary status JSON, and off-target endpoint/target values
-  are not claims. `claim_sources[{claim_id,source_file,revision}]` is a stable
-  source+content-revision union; scalar claim fields remain compatibility only.
-- A matching runner may fill a missing canonical endpoint/type after target
-  ownership validation and clear matching `incomplete_fields`. It must fail
-  closed on a non-empty identity conflict and must not create a second finding.
-- New validation artifacts are per finding:
-  `<artifact-key>.validation-summary.json` and
-  `<artifact-key>.submission-notes.md`. The row records the actual summary path
-  and SHA-256 digest. `last-validate.json` is a pointer, never evidence.
-- Structured report IDs are persistent target state. Allocation must inspect
-  finding rows, `INDEX.json`, and existing Markdown filenames, then select the
-  next free per-type numeric ID.
-- Canonical finding taxonomy and historical report-template keys are separate
-  contracts. `report_generator` owns the one-way normalization from canonical
-  `type`/`category` to a supported `VULN_TEMPLATES` key; aliases such as
-  `authentication_bypass -> auth_bypass` must be explicit there. Consumers must
-  not rewrite the canonical finding type merely to select a template.
-- Report Markdown is created with exclusive semantics. An existing file is
-  reusable only when its Finding Reference names the same finding ID; another
-  finding's file is never overwritten.
-- Finding owns the durable report binding and Queue reconciliation witness:
-  `report_status`, `report_id`, `report_file`, and `queue_sync`. `INDEX.json`
-  remains a rebuildable projection and must not become a lifecycle owner.
-- Resume may expose explicit external dependencies from a target-owned Finding as
-  a bounded `structured_findings.chain_context` projection. It is inert context
-  only: it must not change target Finding counts, endpoint eligibility, Scope,
-  Queue, Coverage, or Closure, and it must retain target-side evidence refs.
-  Resume/Autopilot projections always force `active=false` for these entries.
-- A rerun must reconcile owner-provenance-valid `generated` findings before
-  rebuilding `INDEX.json`. A unique active report action is resolved through
-  Action Queue; a unique `reported` action is idempotent only when finding or
-  report identity matches. Endpoint-only terminal matches are not sufficient.
+Validate retains AI-authored content. `/report` reuses it without rendering a
+replacement template; generated template reports are for eligible claims with
+no current report. Report indexes are cumulative, root-bound, rebuildable and
+never owners of lifecycle state. No report action is resolved automatically.
 
-### 4. Validation & Error Matrix
+External chain context can be saved as a conditional Experience linked to the
+Finding. Resume renders its provenance/conditions without changing target,
+Scope, counts, Queue or Coverage. It never becomes an instruction or permission.
 
-- Historical list payload -> normalize rows, preserve non-final lifecycle and
-  evidence pointers, quarantine unverified finality, write the canonical object
-  atomically, then return that object.
-- Machine preflight over historical list payload -> read without migration;
-  failed binding leaves every target-owned byte unchanged.
-- Summary missing or digest mismatch -> shared provenance verification fails and
-  finalized consumers downgrade the row to owner revalidation.
-- Machine report path owned by another finding -> reject before the first write;
-  same-finding rerun and byte-identical crash replay remain recoverable.
-- Root claim source content changes -> new revision is reconciled into the same
-  semantic finding; multiple sources remain a stable union after one pass.
-- Duplicate ID or endpoint/class pair -> merge evidence fields and recompute
-  counts; return `created=0` for that row.
-- Same type with two different endpoint-less IDs -> retain two rows.
-- Requested report ID owned by another finding or file -> allocate the next
-  free numeric ID.
-- Report file written before a prior status update crashed -> reuse only when
-  its embedded finding ID matches, then finish the status update.
-- Finding marked `generated` before Queue sync -> retry the Queue owner, persist
-  `queue_sync` through `update_finding_status`, then rebuild the Index.
-- Queue action already `reported` but Finding lacks `queue_sync` -> recognize
-  the same finding/report identity as `unchanged`; do not mutate the Queue again.
-- Multiple equal-rank Queue matches -> persist/return `ambiguous`; do not choose
-  one automatically. Queue exception -> persist `error` so a later run retries.
-- Canonical `authentication_bypass` finding -> select the `auth_bypass` report
-  template and allocate an `auth_bypass_<N>.md` report ID; do not fall back to
-  `misconfig`.
+### Validation
 
-### 5. Good/Base/Bad Cases
-
-- Good: coverage adds one candidate while an existing validated SQLi row and
-  its report fields remain unchanged.
-- Good: a second incremental SQLi report becomes `sqli_002`; `sqli_001.md`
-  remains byte-for-byte unchanged.
-- Good: two findings validated into one directory receive distinct summary and
-  notes paths, and each canonical row verifies its own summary digest.
-- Good: an incomplete root claim is reconciled once, then a matching runner
-  fills its endpoint without changing the finding ID.
-- Good: a validated canonical `authentication_bypass` finding generates an
-  `auth_bypass_001.md` report while its canonical type remains unchanged.
-- Good: interruption after report file, Finding update, Queue resolution, or
-  before Index publish converges on one report/action after one rerun.
-- Base: a legacy worker list is loaded once and rewritten as canonical object.
-- Base: an unverified legacy `validated/generated` row becomes visible as
-  `needs_owner_revalidation` until explicit `/validate` creates fresh provenance.
-- Bad: a consumer reads an object as `[]`, appends its row, and discards every
-  existing finding.
-- Bad: each invocation starts report numbering at one and opens the path with
-  mode `w`.
-- Bad: `report_status=generated` causes the report generator to rebuild only the
-  Index while leaving a matching Queue action active.
-
-### 6. Tests Required
-
-- `tests/test_finding_index.py` must cover list migration, duplicate lifecycle
-  preservation, endpoint-less rows, incremental same-type reports, crash-file
-  reuse/ownership, canonical-to-template aliases, and non-overwrite behavior.
-- Coverage and parallel-worker tests must seed an existing canonical object and
-  prove new rows do not erase it.
-- Validation runner and `/validate` tests must assert the canonical object and
-  counts after their write-back paths.
-- Finality tests must cover direct edit -> rebuild/upsert quarantine, legacy
-  migration quarantine, valid owner revalidation, and monotonic lifecycle merge.
-- Root-claim tests must cover discriminator/schema, scheme-less target ownership,
-  revision replay, multi-source idempotency, and incomplete runner completion.
-- Validation tests must cover two findings in one artifact directory, summary
-  content mutation, cross-finding report ownership, and strict legacy
-  machine-decision zero-write.
-- Report tests must inject interruption after report creation, Finding binding,
-  Queue resolution, and before Index publish; retry must preserve one report ID,
-  one Queue action, terminal `reported`, persisted `queue_sync`, and one Index row.
-- Terminal Queue matching must reject endpoint-only matches from another finding.
-
-### 7. Wrong vs Correct
-
-#### Wrong
-
-```python
-rows = json.loads(path.read_text())
-rows.append(finding)
-path.write_text(json.dumps(rows))
-```
-
-Wrong:
-
-```python
-finding["type"] = "auth_bypass"  # 为报告模板改写 canonical taxonomy
-```
-
-Wrong:
-
-```python
-if finding["report_status"] == "generated":
-    return existing_index_row  # 跳过仍未同步的 Queue owner
-```
-
-#### Correct
-
-```python
-from tools.finding_index import upsert_finding
-
-upsert_finding(findings_dir, finding, target=target)
-```
-
-Correct:
-
-```python
-template_type = _report_vuln_type(finding)  # 仅报告消费者选择模板
-```
-
-Correct:
-
-```python
-queue_sync = sync_report_action_queue(target, finding, finding["report_file"])
-update_finding_status(findings_dir, finding["id"], queue_sync=queue_sync)
-```
+`test_finding_index.py` covers explicit IDs/conflicts/concurrency, scanner
+material revisions, historical reads, eligibility, publication recovery and
+stale/damaged registered reports. `test_validate_target_mode.py` and native
+Runner CLI tests cover exact binding, decision retries, report ownership,
+private endpoint identity and preservation of AI text through `/report`.
+Report generation and evidence registration leave Action completion and
+external delivery events unchanged.
 
 ## Runtime-v2 Checkpoint Witness Contracts
 
@@ -416,7 +215,8 @@ durable work is pending, but a target cannot claim exhaustion without a valid
 }
 ```
 
-`snapshot_digest` is computed from the current Queue, Coverage, Ledger, Finding,
+`snapshot_digest` is computed from the current Queue, Coverage, Store observation
+projection (the read-only Ledger view), Finding,
 Surface, Recon and enrichment projections; the `global_review` field itself is
 excluded from digest material so recording it cannot invalidate its own attestation.
 Every evidence reference must resolve to a non-empty file owned by the target.
@@ -430,28 +230,30 @@ Queue, controller, or state machine is introduced.
 
 - Runtime-v2 `session.json` stores only non-derivable breadcrumbs. It must not
   regain v1 `context_pack`, selected-skill, card, surface, or queue snapshots.
-- Every successful checkpoint atomically replaces a small witness containing
+- `build_checkpoint()` is read-only. An explicit `write_checkpoint_witness()`
+  atomically replaces a small witness containing
   `schema_version`, `kind=autopilot_checkpoint_witness`, `generated_at`,
   `target`, `target_key`, and `context_pack` recommendation fields.
 - Witness context includes the card catalog, card recall compatibility fields,
   `reference_hints`, and `required_checks`; it does not duplicate full surface,
   finding, evidence, or queue bodies. Context Pack no longer emits
-  `selected_skill`/`skill_route`; `skill_route` is AI-authored Queue metadata at
-  claim time, while the checkpoint keeps only its empty legacy shell.
-- A successful checkpoint preserves the prior `global_review` witness while
+  `selected_skill`/`skill_route`; Checkpoint also omits the retired shell.
+  Skill discovery and loading belong to the native platform.
+- Explicit witness publication preserves the prior `global_review` while
   owner writes change its digest; Closure then reports it stale until the
   current snapshot is reviewed again.
 - `round_progress` is the same witness's bounded execution budget. Reads and
   mutations use the checkpoint target lock; active rounds retain their original
   max and unique claimed lane IDs across CLI/context restarts.
 - `settle_round()` holds that same target lock from its Closure preflight through
-  checkpoint/coverage write-back, Queue sync, round closure, and final projection.
+  read-only Checkpoint/current Coverage queries, round closure and final projection.
   The lock is same-thread reentrant so existing checkpoint owner functions remain
   the only mutation paths. A concurrent lane claim waits, then is rejected after
   the round becomes completed; it cannot enter between preflight and first write.
-  If the post-write Surface projection remains stale or unavailable, checkpoint
-  and Queue write-back may persist but round closure is deferred; the active round
-  and all existing evidence remain recoverable.
+  Missing, malformed or stale Surface defers closure and preserves the active
+  round and evidence. Refresh Surface explicitly, then retry settle. It never
+  refreshes Surface or synchronizes Queue as a side effect. Owner-marker drift
+  retries snapshot acquisition once, then reports failure instead of mixing inputs.
 - `checkpoint.py` mutations and `autopilot_state.py` Closure projection use the
   same `checkpoint_witness.validate_round_progress()` structural validator.
   The reader-only recovery flag may expose historical completed lanes with
@@ -460,18 +262,20 @@ Queue, controller, or state machine is introduced.
 - New explicit passive claims (`idle:*`, `monitor:*`, `verify:idle*`,
   `verify:no-change*`, or `idle-no-change`) are rejected before budget mutation;
   duplicate legacy passive lanes keep their started/terminal recovery semantics.
-- The pressure validator reads the witness plus durable queue/ledger artifacts.
-  It validates structural workflow evidence, not exploitability or value.
+- The pressure validator reads the witness, Store Queue and paged operations,
+  checking each operation's current raw bytes. Raw Finding claims and legacy
+  validated JSON cannot create work or prove execution. It validates structural
+  workflow evidence, not exploitability or value.
 
 ### 4. Validation & Error Matrix
 
 - Runtime-v2 session plus complete witness -> context check passes.
 - Session exists but witness is missing -> context check fails and loses the
   context-pack score; do not inspect deprecated v1 session fields.
-- Witness has no recommended skill or no card/reference detail -> context check
-  fails with the precise missing field.
-- Atomic witness write fails -> checkpoint fails fast; do not claim a completed
-  checkpoint without its review artifact.
+- Witness has no required card/reference detail -> context check fails with the
+  precise missing field. Skill route fields are retired.
+- Atomic witness publication fails -> the explicit writer fails fast; a successful
+  read-only Checkpoint does not claim that a witness was saved.
 - Corrupt JSON, invalid `round_progress`, duplicate lane IDs, contradictory
   derived counts, or a max outside `1..MAX_LANES` fail before mutation.
 - Missing lane timestamps fail in both the mutation owner and read-only Closure
@@ -492,10 +296,10 @@ Queue, controller, or state machine is introduced.
 
 ### 5. Good/Base/Bad Cases
 
-- Good: `build_checkpoint()` chooses a Skill/card, writes the witness, and the
-  real pressure validator awards the full context score.
-- Base: an early checkpoint has a recon Skill and coverage card; that is still
-  valid routing evidence.
+- Good: `build_checkpoint()` reads the current facts without writing; explicit
+  witness publication lets the pressure validator inspect its bounded context.
+- Base: an early witness retains its card catalog and reference hints even when
+  no Action has been selected. It does not claim a Skill has been loaded.
 - Good: settle sees no started lane, holds the witness lock across all owner calls,
   closes the round, and a waiting late claim observes the completed round.
 - Bad: tests hand-inject v1 `context_pack` into `session.json` while production
@@ -505,8 +309,8 @@ Queue, controller, or state machine is introduced.
 
 ### 6. Tests Required
 
-- `tests/test_checkpoint.py` must assert witness path, kind, and context parity
-  with the returned checkpoint.
+- `tests/test_checkpoint.py` must assert read-only query behavior and explicit
+  publication's witness path, kind and parity with the supplied Checkpoint.
 - Round projection tests must prove that writer-invalid max-lane and timestamp
   shapes are also rejected by the read-only Closure path.
 - Coordinator tests must race a lane claim against settle and assert the claim
@@ -530,6 +334,7 @@ session["context_pack"] = build_context_pack(...)
 
 ```python
 checkpoint = build_checkpoint(repo, target=target)
+write_checkpoint_witness(repo, target, checkpoint)
 # state/<target_key>/checkpoint_latest.json is the bounded runtime witness.
 ```
 
@@ -546,253 +351,45 @@ same owner functions under its same-thread reentrant scope.
 
 ## Target Case State Contracts
 
-### 1. Scope / Trigger
+### Storage and commands
 
-Use Target Case State when a target has reusable actors, sessions, owned
-objects, private markers, active hypotheses, or validation backlog items. This
-is runtime target memory, not knowledge-card content.
+Actors, sessions and objects use Store Case tables. Current premises are
+Experience hypotheses linked to Case entities. `target_case_state.py` exposes
+`summary`, `show`, `add-actor`, `add-session`, `add-object` and `add-hypothesis`;
+ordinary reads/writes never recreate `case_state.json`. Historical Case backlog
+is handled only by explicit migration, which maps real work into Action Queue.
 
-### 2. Signatures
+### Contracts
 
-- `python3 tools/target_case_state.py summary --target <target> [--json]`
-- `python3 tools/target_case_state.py add-actor --target <target> --actor <id> --role <role>`
-- `python3 tools/target_case_state.py add-session --target <target> --session <id> --actor <actor> --kind <kind> --header-name <name> --header-value <value>`
-- `python3 tools/target_case_state.py add-object --target <target> --object <ref> --type <type> --owner-actor <actor> --endpoint <url> [--private-marker <marker>]`
-- `python3 tools/target_case_state.py add-hypothesis --target <target> --vuln-class <class> [--id <hypothesis_id>] [--metadata-json <object>]`
-- `python3 tools/target_case_state.py add-backlog --target <target> --runner idor-actor-pair --owner-actor <actor> --peer-actor <actor> --object-ref <ref>`
-- `python3 tools/target_case_state.py add-backlog --target <target> ... [--hypothesis-id <hypothesis_id>]`
-- `python3 tools/target_case_state.py next --target <target>`
-- `python3 tools/target_case_state.py complete-backlog --target <target> --id <val_id> --result <status> --evidence-ref <path>`
-- `python3 tools/action_queue.py add --target <target> ... [--metadata-json <object>]`
-- `evidence_ledger.build_summary(..., vuln_classes: list[str] | None = None) -> dict`
+- Case has no separate backlog, next-action selection, route score or automatic
+  replay. An open premise is context, not an executable action or completion.
+- Sessions/objects store private references; credentials and private markers
+  remain protected files (0600, directories 0700). Queries check reference
+  ownership, bytes and binding. Missing/corrupt/off-path material fails visibly.
+  Public summaries/CLI output redact secrets; private headers hydrate only for
+  explicit in-memory consumers.
+- Repeated context updates preserve unrelated headers/object status and use
+  Store commands/audit. Different content under one command ID conflicts;
+  concurrent metadata updates cannot silently lose a committed write.
+- Hypothesis family is open. Descriptive metadata is bounded and secret-free;
+  it does not forge observations, technical judgments or Skill execution.
+- `summary` exposes actors/sessions/objects/open hypotheses, authz context and
+  object samples. `case_state_seed` reads object-shaped observations with their
+  sources. Neither creates an action, chooses an actor, guesses private data,
+  selects a runner or generates a registration command.
+- Missing identity context limits the affected comparison. Other discovery,
+  source/browser work and AI-selected hypotheses remain available.
+- Knowledge suggestions are advisory. An actor matrix is requested only from
+  explicit observed or active-action families; an empty class list means no
+  actor matrix, not an implicit Authz/IDOR method choice.
 
-### 3. Contracts
+### Validation
 
-- Storage path is `state/<target_key>/case_state.json`; do not commit target
-  case state.
-- Actor/session/object/hypothesis/backlog mutations use one target-level
-  `case_state_mutation_lock()` around load, mutation, and atomic replace; a
-  concurrent writer must not silently lose an update.
-- Public session rows contain only metadata and `private_ref`. Header values are
-  stored as `0600` files below `.private/case-state/<target_key>/sessions/`, and
-  `.private` directories are `0700`. `load_case_state()` fails on a missing,
-  malformed, or off-path private reference.
-- `next` must not be a checklist-only output. It must include hypothesis,
-  chain context, why-now reasoning, exact/replay draft when ready, required
-  evidence, missing evidence, downgrade rule, stop condition, chain extensions,
-  and write-back instruction.
-- Raw command may contain local session headers for operator copy/paste, but
-  `redacted_command` must also be emitted for safe summaries.
-- Missing actor/session/object/private marker should produce
-  `next_action=enrich_case_state`, not a fake validation command. A missing
-  private marker is advisory when owner session, peer session, and object
-  endpoint are ready: surface it in `optional_evidence_gaps` and let
-  `validation_runner.py` downgrade unless marker-backed or exact non-trivial
-  owner-body-match evidence appears.
-- Persisted backlog items naming an unsupported or retired runner remain
-  readable but project `next_action=enrich_case_state` with an empty command;
-  they must never execute through a guessed replacement runner.
-- A `request-diff` backlog is ready only when `request_spec_ref`, resolved
-  relative to `repo_root`, names a readable regular JSON file accepted by the
-  shared `request_diff.validate_request_pair()` contract and both baseline and
-  variant URLs belong to the current target. The emitted command must use that
-  same resolved path and explicitly pass `--repo-root` to the runner. Missing,
-  directory, malformed, invalid-shape, or off-target
-  specs project `ready=false`, `next_action=enrich_case_state`, and an empty
-  command without mutating Case State. Readiness is a local material check; it
-  does not probe the server, token validity, or unrelated session freshness.
-- `tools/checkpoint.py` should ingest the active `top_next_action` from case
-  state and surface it ahead of generic coverage-gap / actor-gap follow-ups.
-  Ready backlog items should expose exact replay drafts; not-ready backlog items
-  should expose missing evidence, downgrade rule, stop condition, chain
-  extensions, and write-back shape.
-- A backlog may link to one hypothesis through `hypothesis_id`. Completing a
-  linked backlog writes `metadata.last_outcome` and bounded
-  `metadata.recovery_next_action` on that hypothesis. A `blocked` outcome
-  projects `recover_hypothesis` with an empty replay command; it must not
-  silently rerun the failed runner. `tested_clean`/`dead_end` close the linked
-  hypothesis, while `tested_finding` leaves it as a candidate for `/validate`.
-- Hypothesis `vuln_class` is a non-empty compatibility string, not a closed
-  taxonomy. `add-hypothesis --metadata-json` accepts a JSON object for free
-  family/primitive/chain context and rejects credential-bearing keys or values
-  before mutation, including secrets embedded under descriptive allowlisted
-  fields. `target_case_state.project_hypothesis_metadata()` is the sole
-  bounded projection owner for Case State summaries and Autopilot; it allowlists
-  `family`, `primitive`, `boundary`, `impact`, `chain`, `chain_id`, `dimensions`,
-  `confidence`, `provenance`, `evidence_refs`, `next_question`,
-  `stop_condition`, and descriptive `token_location`, recursively removes
-  sensitive keys/legacy credential-shaped values, and bounds nested values.
-- Knowledge cards and `hypothesis_seeds` are advisory inputs, not family
-  conclusions or Queue actions. Context Pack and Checkpoint may query the actor matrix only from
-  explicit owner-backed canonical families. `build_summary(vuln_classes=None)`
-  keeps the legacy `IDOR/Authz` default; explicit `vuln_classes=[]` means no actor
-  matrix rows, gaps, or record commands.
-- The canonical Coverage taxonomy is a one-way compatibility projection, not the
-  AI hypothesis space. Unknown families and incomplete identity candidates remain
-  executable/open; only an owner-backed Matrix terminal state or a complete
-  validator-confirmed `identity_v2` can close canonical Coverage.
-- `tested_clean` and `dead_end` must not close a backlog that matches a
-  lifecycle-final canonical Finding. `complete_backlog()` rejects the write;
-  summary exposes the same conflict when reading legacy state so Autopilot can
-  reconcile the Finding owner instead of hiding it behind Case State finality.
-- Generic deep actions may carry `hypothesis_id`, `tested_dimensions`,
-  `expected_learning`, `kill_condition`, `next_question`, `attempts`,
-  `last_outcome`, and `pivot_hints` in existing Action Queue `metadata`.
-  `--metadata-json` accepts only a JSON object and fails before queue writes;
-  this is a metadata extension, not a second state owner.
-- Command and rule docs must describe this as case-state-first, not
-  case-state-only. Empty, stale, or irrelevant case state must never block
-  discovery, browser/JS/source enrichment, ranked-surface hunting, or AI
-  chain pivots. New evidence should enrich or supersede case state instead of
-  being forced through an old backlog.
-- `tools/case_state_seed.py` projects object-shaped observations and source
-  references from cached recon/browser/JS/source artifacts. It does not infer
-  owners, private markers, confidence, or priorities, choose actors/runners,
-  generate registration/backlog commands, or create Queue actions. Claude
-  interprets the observations and uses the existing Case State mutation API.
-- Case-state public sessions contain metadata and a private header reference.
-  `load_case_state()` hydrates the full `headers` map in memory for validation;
-  `header_name` / `header_value` remain compatibility fields only and must never
-  be serialized into the public state file.
-
-### 4. Validation & Error Matrix
-
-- Adding a session for a missing actor -> fail-fast.
-- A missing/invalid private session reference -> fail-fast; do not fall back to
-  empty or anonymous headers for an existing actor session.
-- Adding an object with a missing owner actor -> fail-fast.
-- Non-object members or duplicate non-empty IDs in `hypotheses` or
-  `validation_backlog` -> fail-fast with an explicit `ValueError`.
-- `add-backlog --hypothesis-id` referencing an unknown hypothesis, or reusing
-  an existing hypothesis/backlog ID -> fail-fast before mutation.
-- Invalid/non-object `add-hypothesis --metadata-json`, or credential-bearing
-  nested metadata -> fail-fast before mutation without echoing the secret value.
-- Explicit empty actor-matrix families -> empty matrix projection; missing
-  argument -> legacy default; unknown/free hypothesis family -> no invented
-  `Authz`, `IDOR`, or `RCE` projection.
-- IDOR backlog with owner/peer/object/session/private marker present -> ready
-  runner command.
-- Ready backlog command should include `--complete-case-state` when a concrete
-  backlog id exists, so repeated autopilot loops do not re-run stale evidence.
-- Missing peer session -> not ready; return missing evidence.
-- Missing private marker with owner/peer/object ready -> ready replay plus
-  `optional_evidence_gaps=["owner private marker"]`.
-- `request-diff` with a valid target-bound request pair -> ready command using
-  the resolved spec path; missing/invalid/off-target spec -> enrichment with no command.
-- Completing backlog moves it out of active `next` selection.
-- Completing a linked backlog with `blocked` keeps a durable recovery pointer
-  but returns `ready=false`, `next_action=recover_hypothesis`, and no replay
-  command until the recovery step is recorded.
-- Cached object-shaped endpoints with concrete IDs -> seed suggestions; route
-  templates without concrete object IDs -> no object registration.
-- Cached transport/session/cache identifiers such as Socket.IO `sid`, `EIO`,
-  `transport`, timestamps, CSRF tokens, JWTs, or generic session tokens are not
-  business objects and must not create `add-object` / IDOR backlog suggestions.
-
-### 5. Good/Base/Bad Cases
-
-- Good: `user_a` owns `order_123`, `user_b` has a peer session, object has a
-  private marker, and `next` emits an `idor-actor-pair` command plus fallback
-  chain extensions.
-- Base: sessions exist but private marker is missing; keep as enrichment need,
-  but do not block replay. The runner may return `candidate` or `tested_clean`;
-  only marker-backed or exact non-trivial owner-body-match evidence can become
-  `tested_finding`.
-- Base: `/orders/123` in cached artifacts stays an `order_123` object-shaped
-  observation with its source, not an ownership claim or an IDOR backlog.
-- Base: `.private/user-a.json` contains Cookie, CSRF, tenant, and custom auth
-  headers; `target_case_state.py add-session --auth-file` stores all of them in
-  a private session artifact, and `validation_runner.py --from-case-state`
-  replays the full set from the hydrated owner state.
-- Good: `request_spec_ref=fixtures/order-diff.json` resolves under `repo_root`,
-  validates through the shared request-pair parser, stays on target, and the
-  readiness command cites that exact resolved file.
-- Bad: mark a request-diff item ready because the reference string is non-empty,
-  or let a missing/bad/off-target spec emit an executable command.
-- Bad: store target-specific sessions, object IDs, or private markers in
-  `knowledge/`, `skills/`, or tracked docs.
-- Bad: replay only the first Cookie/Bearer header from case state when the
-  actor context also needs CSRF, tenant, org, or custom auth headers.
-- Bad: seed tool invents `user_a` / `user_b`, assigns a private marker from an
-  ordinary ID, or chooses a runner just because an endpoint contains an ID.
-- Bad: treat a blocked backlog's recovery text as an executable runner command,
-  or create a second queue to store hypothesis history.
-
-### 6. Tests Required
-
-- `tests/test_target_case_state.py` must cover empty-state shape, actor/session
-  validation, object registration, hypothesis/backlog insertion, `next`
-  readiness, missing evidence, write-back, CLI JSON output, public-file secret
-  absence/private permissions, and concurrent actor/session mutation.
-- It must also cover hypothesis linkage, blocked recovery without replay,
-  duplicate/corrupt hypothesis/backlog records, and recovery projection through
-  `autopilot_state`/`checkpoint` into Action Queue metadata.
-- Hypothesis metadata tests must cover CLI round-trip, free family/chain values,
-  recursive key/value secret filtering, bounded projection, and descriptive
-  fields such as `token_location` that are not credential values.
-- The local long-loop witness must exercise a localhost compound surface across
-  at least two bounded rounds, preserve queued work and started-lane recovery,
-  and prove that three identical no-information closures become a bounded
-  stagnation handoff rather than false completion. Runtime staging must also
-  cover a real `claude -p` Bash `tool_use -> tool_result` exchange across two
-  independent invocations; the fake backend is protocol evidence, not model
-  quality evidence.
-- Context Pack, Checkpoint, Evidence Ledger, and identity tests must cover empty
-  actor-matrix input, owner-backed family reuse, unknown/incomplete candidates
-  staying open, and complete RCE identity projection through the existing validator.
-- `tests/test_action_queue.py` must cover `--metadata-json` round-trip,
-  duplicate upsert idempotency, and invalid/non-object JSON zero-write behavior.
-- Any future validation-runner integration via `--from-case-state` must assert
-  fail-fast behavior for missing actors/sessions/objects.
-- `tests/test_checkpoint.py` must cover both ready case-state backlog
-  prioritization and enrichment-mode backlog surfacing.
-- `tests/test_case_state_seed.py` must cover object extraction from paths/query
-  params, source/JS artifacts, existing-state de-duplication, unchanged owner
-  state, absent actor/runner/private-marker guesses, and CLI JSON output.
-- `tests/test_target_case_state.py` must cover request-diff missing files,
-  directories, malformed JSON, invalid request pairs, off-target URLs, exact
-  resolved-path command output, unrelated session independence, and zero-write
-  failure behavior.
-
-### 7. Wrong vs Correct
-
-#### Wrong
-
-Write Cookie/Bearer headers directly into the tracked/public case-state JSON, or
-let concurrent callers perform independent load-then-save updates.
-
-#### Correct
-
-Persist target-specific metadata and backlog under `state/<target_key>/case_state.json`,
-keep session headers in its private reference, and let Claude use `next` to
-choose the highest-value chain step before deterministic validation replay.
-
-For a blocked linked hypothesis, preserve the outcome and expose only a
-structured recovery pointer:
-
-```json
-{
-  "hypothesis_id": "hyp_001",
-  "last_outcome": {"status": "blocked", "evidence_ref": "..."},
-  "recovery_next_action": "capture the export route"
-}
-```
-
-The existing Action Queue may carry the same metadata via `--metadata-json`; it
-does not become a new lifecycle or evidence owner.
-
-Wrong: infer `RCE`, `IDOR`, or `Authz` from a selected knowledge card or broad
-keyword and use that inference to close or manufacture Coverage work.
-
-Correct: persist the AI's free hypothesis in Case State/Queue, then project only
-complete owner-backed evidence through the existing identity and Closure owners.
-
-Wrong: treat a non-empty `request_spec_ref` as executable readiness.
-
-Correct: resolve and validate the actual target-bound request pair through the
-shared parser, then emit a command only from that verified local material.
-
----
+`tests/test_target_case_state.py`, `tests/test_case_state_seed.py`,
+`tests/test_context_pack.py` and `tests/test_checkpoint.py` cover Store-only
+context, secret boundaries, stale private references, unknown families,
+object observations and no automatic backlog/Queue creation. Historical
+backlog mapping and damaged legacy input belong to `test_target_migration.py`.
 
 ## Neutral Observation Inventory Contracts
 
@@ -887,401 +484,68 @@ evidence ledger.
 
 ## Autopilot Queue Closure Contracts
 
-### Queue candidate projection idempotency
+### Action and Checkpoint
 
-Runner candidate follow-ups and Checkpoint candidate projections may use different
-human-readable evidence, question, and command text. The Action Queue must not
-interpret that presentation difference as a second lane: active
-`candidate-evidence-gap` rows are merged by their existing finding identity or,
-when no finding ID exists, the existing endpoint/execution identity from
-`_action_identities()`. A Runner rewrite refreshes the stored `dedupe_key`, and
-identity-matched Checkpoint ingestion adopts the incoming key so later replays
-are key-idempotent. Historical duplicate candidate rows are retained as
-`n/a` records with `metadata.dedupe_retired=true`; they are not final owner
-evidence and do not suppress the surviving active lane. This applies only to
-active candidate-gap projections; it does not collapse distinct validation,
-coverage, or final owner actions.
+- Action Queue adapts `TargetStore.actions`; there is one lifecycle, no JSON
+  fallback. Missing initialization, legacy import required, damaged Store and
+  empty initialized Store remain distinct. All reads preserve recovery faults.
+- AI explicitly selects `claim --id`; running work remains visible ahead of
+  unclaimed suggestions. Claims use Store CAS and operator/token identity.
+  Re-claim is idempotent; another operator or stale claim is a conflict.
+- Execution completion requires a complete operation from the current claim.
+  Work completion requires its registered artifact or domain-command receipt.
+  Partial/unknown execution, an arbitrary existing file, or a prose reason
+  cannot forge completion. Blocking closes no Coverage cell.
+- Checkpoint reads pending/blocked actions as a stable-ID page with total,
+  remainder and a root-bound expansion command. It never ingests prose,
+  generates candidates/actions, reconciles old owners or automatically chains
+  primitives. Empty queue returns `continue` with no chosen action; AI decides
+  the next step from visible material. Live phase locks may return wait.
+- Coverage gaps, scanner claims, actor gaps, Case observations and Surface
+  material remain visible outside Action Queue. Their presence does not select
+  a route or prove execution. Explicit material indexing creates immutable
+  review work, not a confirmed Finding.
 
-### 1. Scope / Trigger
+### Evidence and closure
 
-Use these contracts whenever checkpoint, validation runner, report generator,
-coverage matrix, and action queue interact. The goal is not to pass a lab; lab
-or target execution is only a pressure test for whether discovery, validation,
-reporting, and handoff state converge without repeated TODO loops.
+- `current_truth` acquires Store records and verifies current raw evidence.
+  `closure_projection`/`closure_resolver` define identity and closure once;
+  consumers do not infer finality from report text, paths or cached status.
+- Unknown/generic families remain open; Authz/IDOR and distinct parameters,
+  methods, actors or object contexts cannot close one another by path alone.
+  Preserve explicit family-aware identities without guessing dimensions.
+- Evidence damage remains visible, suppresses authorization and forbids a
+  terminal finish. A same-revision file change requires a new integrity read.
+- Coverage authored reviews are advice unless supported by admissible execution
+  evidence. Dead-end/blocked actions do not imply tested-clean or n_a.
+- Raw Surface evidence remains reviewable even after one exact cell closes.
+  Historical observations are context, not a path-wide exclusion or ROI score.
+- Closure reads current Queue/evidence/Case and runtime inputs after mutations.
+  Its actor-context gap is local to affected comparisons, not a blanket ban on
+  anonymous or unrelated work. Unknown/partial work is never reported finished.
 
-### 2. Signatures
+### Findings and reports
 
-- `python3 tools/checkpoint.py --target <target> [--json]`
-- `python3 tools/action_queue.py ingest-checkpoint --target <target>`
-- `python3 tools/action_queue.py next --target <target>`
-- `python3 tools/action_queue.py claim --target <target>`
-- `python3 tools/action_queue.py add --target <target> ... [--metadata-json <object>]`
-- `python3 tools/action_queue.py resolve --target <target> --id <AQ-id> --status <status> --evidence <text> [--notes <text>]`
-- `python3 tools/report_generator.py <findings_dir>`
-- `load_queue(repo_root, target) -> dict`
-- `save_queue(repo_root, target, queue) -> Path`
+- A saved claim is not execution, technical confirmation or delivery eligibility.
+  New evidence never downgrades an existing assessment implicitly.
+- Technical assessment, destination decision, report artifact and external
+  submission are independent facts. Changed assessment/delivery makes older
+  reports stale; current integrity is required to authorize delivery.
+- Validate atomically publishes AI report bytes and registers an eligible
+  artifact after explicit judgments. `/report` reuses registered text and
+  rebuilds cumulative INDEX/SUMMARY from the Store, including empty results.
+  It uses the input Store root and never overwrites registered bodies.
+- Publication/registration/index failure preserves recoverable artifacts.
+  Neither report generation nor evidence registration resolves Queue work.
 
-### 3. Contracts
+### Validation
 
-- `checkpoint.py` exposes unresolved target-owned coverage with its source
-  facts and bounded previews, without a semantic-score threshold. A gap is not
-  a test instruction or evidence of readiness; Claude selects the method and
-  supplies the action contract before execution.
-- Action queue reads return an empty schema only when the file is absent. Bad
-  JSON, non-object payloads, wrong schema versions, and non-list `actions` fail
-  fast with the queue path; checkpoint must surface that failure instead of
-  silently rebuilding from an empty queue.
-- Queue claim and writes hold the target queue lock across complete
-  read-select-mutate-replace. Writes use a same-directory temporary file,
-  `flush/fsync`, then atomic `Path.replace()`; replace failure preserves old bytes.
-- Resolving `validated` or `reported` requires an existing repository-local
-  artifact under a recognized evidence root (`evidence`, `findings`, `reports`,
-  `recon`, or `.private`). An arbitrary source/documentation file such as
-  `README.md` does not satisfy terminal evidence merely because it exists.
-- Resolving a previously claimed (`running`) action as `tested` uses the same
-  locatable-artifact rule. Unclaimed legacy queued rows remain compatible for
-  recovery, but new runners claim before replay and cannot close execution
-  without its artifact.
-- `running` actions always resume before new queued/report/advisory work. Claiming
-  queued work changes it to `running` once; re-claiming running work is idempotent
-  and preserves attempts, notes, evidence, and the queued siblings.
-- Generic high-impact cells such as `/rest/admin x RCE` with no execution sink,
-  parameter, method, or body signal remain visible in coverage counts but must
-  not become immediate ready actions.
-- Actor-matrix gaps are not automatically executable. Anonymous baseline gaps
-  may enter the queue without case state, but owner/peer/low-role/cross-tenant
-  gaps require registered runtime actor/session/object context first. If that
-  context is missing, checkpoint emits a recoverable case-state handoff for the
-  affected role lane while unrelated discovery/replay remains available.
-- The actor/session prerequisite is local to the affected owner/peer comparison
-  lane. Closure exposes `actor_context_gap` with `blocking=true`,
-  `reason=actor_context_required`, and `next_action=resume_case_state` when that
-  context is missing or partial. The handoff must point to `add-actor` /
-  `add-session`; it must never synthesize credentials or silently close the lane.
-  Anonymous, public-exposure, source, browser, injection, workflow, and other
-  independent lanes remain executable. The affected Matrix cells remain
-  unknown/untested rather than becoming `tested_clean`.
-- A persisted checkpoint enrichment lead whose `missing_evidence` is only
-  actor/session/business-object context remains recoverable for an explicit
-  later claim, but is advisory in the automatic Queue projection until that
-  context exists. It must not become `durable_work_pending` merely by being
-  written to `action_queue.json`.
-- Ranked-surface Authz/IDOR/GraphQL/CSRF drafts must also respect the same
-  runtime-context boundary. If actor/session/object context is missing, the
-  replay draft should request exact browser baseline capture or case-state
-  registration first, and the ledger skeleton should use a context-prerequisite
-  signal rather than pretending owner/peer replay evidence exists.
-- Red-line gating must be based on explicit side-effect risk (`red-line`,
-  `state-changing`, `mutation`, `unsafe`, `delete`, destructive behavior), not
-  merely on words such as `actor`, `role`, or `owner` in an authorization replay
-  draft.
-- `checkpoint.py` must filter actions already final in persistent
-  `action_queue.json`; `recommended_executable_action` should be empty when all
-  current suggestions have already been resolved.
-- Re-ingesting checkpoint-generated actions may lower priority or clear stale
-  `redline_required` flags because checkpoint is a current-state projection.
-  Manual/non-checkpoint queue items should preserve conservative priority/risk
-  merging.
-- Legacy `ranked-surface` queue items are advisory unless their `command_hint`
-  contains an exact replay command such as `python3 tools/validation_runner.py`.
-  Older high-priority `ranked-surface` actions must not preempt reports or the
-  current `surface-review` candidate set merely because they were created before
-  the AI-first rename.
-- If `decision` would be `continue`, `hunt`, `enrich`, or `checkpoint` but the
-  filtered queue is empty, return `decision=handoff` instead of a contradictory
-  "continue with no action" state.
-- Checkpoint proposal windows must be wider than the final displayed
-  recommendation count. Persistent action-queue final-state filtering happens
-  after proposal generation; if secondary-sweep, coverage, or already-final
-  ranked-surface items fill the early slots, checkpoint must still expose fresh
-  ranked-surface candidates behind them instead of handing off while P1 surface
-  remains.
-- Checkpoint proposals are versioned structured entries
-  (`{schema_version: 1, text, type, priority, command_hint, metadata}`).
-  Producers that hold structured fields emit them directly; `text` stays
-  human-readable prose for `target_write_back` and target-memory consumers.
-  `_classify_next_action` / `_extract_action_metadata` are a dual-read channel
-  for remaining plain-string producers (recon, enrichment hints, viewstate,
-  secret, cross-evidence, high-risk lanes, secondary-sweep, unsafe-skipped,
-  case-state seed, root-claim evidence gaps) and for legacy on-disk queue
-  items via `validation_runner._action_matches_legacy_marker`; migrated
-  families must not re-grow prose-only extraction paths.
-- `report_generator.py` must mark `report_status=generated` in `findings.json`
-  and best-effort close matching `report` queue items as `reported`.
-- Rebuilding `findings.json` must preserve replay/validation-backed findings
-  that were appended by `validation_runner.py` or `/validate` even when no
-  scanner text line currently reproduces the same ID. Default unvalidated
-  scanner-only orphans may disappear with their source artifact; validated,
-  rejected, partial, reported, or `source_file=evidence/.../summary.json` rows
-  are runtime state and must survive target-owned rebuilds.
-- `report_generator.py` must derive report directories with
-  `target_storage_key()`. URL-form targets such as `http://127.0.0.1:3002`
-  write under `reports/127.0.0.1:3002/`, never `reports/http:/...` or
-  ad-hoc sanitized variants.
-- Report indexes are cumulative state for the target, not "reports generated in
-  this invocation". Re-running `report_generator.py` for one new validated
-  finding must keep previously generated structured reports in
-  `INDEX.json`/`SUMMARY.md`.
-- Context contradictions are advisory evidence only. `checkpoint.py` may show
-  them, but must not enqueue a `context-review` action merely because a remembered
-  dead end token-overlaps with fresh evidence; Claude decides whether it matters.
-- Closure checks for Claude-facing outputs must go through
-  `tools/closure_resolver.py`, not fresh local logic in `checkpoint.py`,
-  `context_pack.py`, `surface.py`, or future consumers. The resolver is a
-  state-dedup gate only: it may answer whether an exact endpoint × vuln_class,
-  artifact review, or newer dead-end closure is final, but it must not rank
-  surfaces, decide value, delete raw attack surface, or infer reportability.
-  Unknown/generic vuln classes fail open; Authz and IDOR do not close each
-  other globally. Placeholder object replay may additionally consult the
-  concrete object's IDOR closure because that lane is explicitly an object
-  replay, not a general Authz/IDOR family rule.
-- `closure_resolver.py` also owns canonical vulnerability aliases used by
-  coverage and identity consumers. `NoSQLi`, `PrototypePollution`,
-  `OpenRedirect`, and `BusinessLogic` are append-only canonical families and do
-  not inherit SQLi, XSS, or Authz disposition. SSTI, command injection,
-  deserialization, LFI, RFI, and other same-family variants remain technique
-  hints. Checkpoint consumes `VULN_CLASSES` directly so every family appears once.
-- Closure identity is endpoint × vulnerability class × technique or an exact queue/finding
-  action, never a bare endpoint path. A closed Authz/IDOR/SQLi/SSRF cell may
-  suppress repetition of that exact lane, but raw `/surface` endpoint evidence
-  remains visible for other classes and fresh browser/JS/source/workflow signals.
-  Surface may attach `ledger_history` / `action_queue_history` as advisory
-  context; it must not convert that history into a path-wide score cliff or
-  exclusion.
-- Already finalized findings (`validated`, `rejected`, or
-  `report_status=generated`) must not be re-promoted as the same exact finding or
-  report action. If the available item is only raw URL surface without that exact
-  identity, keep it reviewable rather than treating the path as globally closed.
-- Resolving an action-queue item as `dead-end` or `blocked` closes that current
-  action only. It must not map the coverage cell to `tested_clean` or `n_a`;
-  only explicit tested/finding/not-applicable evidence may change those states.
-- Validation runner summaries are AI-review evidence, not final findings. A
-  non-final runner candidate that is not owned by an active structured finding
-  should become a checkpoint validation action phrased as "review raw evidence,
-  then `/validate` or ledger downgrade"; checkpoint must not hand off while such
-  evidence is the only open reportability decision.
-- Runner candidate pools must suppress summaries already closed by final
-  structured finding state (`rejected` or `report_status=generated`) or by a
-  later non-runner evidence-ledger row (`tested_clean`, `tested_finding`,
-  `dead_end`, `blocked_redline`, `not_applicable`). Runner-written ledger rows
-  stay visible because they are the evidence needing AI review.
-- `/validate` summaries must preserve the HTTP `method` used by the validated
-  replay, and ledger sync must write that method instead of defaulting every
-  validated endpoint to `GET`.
-- Any ledger row explicitly marked state-changing requires an explicit
-  `redline_checked` decision, regardless of whether it uses `POST`, `PATCH`, form,
-  SOAP, or another method. Missing redline downgrades covering results to terminal
-  `blocked_redline` while retaining `requested_result`; an explicitly
-  non-state-changing preview is not downgraded merely because its method is
-  `PUT`/`PATCH`/`DELETE`. Unknown method effect is an evidence-classification gap,
-  not a red-line conclusion. Ledger appends are serialized per target so concurrent
-  runner writes remain valid JSONL.
-- Coverage-gap proposals must respect evidence-ledger closed cells. If the
-  ledger already has `endpoint x vuln_class` as `tested_clean`,
-  `tested_finding`, `dead_end`, or `not_applicable`, checkpoint should keep the
-  broad coverage count but not propose that cell as the next executable action.
-  Vulnerability-class normalization for this comparison must cover all matrix
-  classes, not default unknown labels to `Authz`.
-
-### 4. Validation & Error Matrix
-
-- Queue file absent -> return the canonical empty queue.
-- Queue JSON/shape/schema invalid -> raise a path-bearing `ValueError`; CLI and
-  checkpoint exit `2` instead of treating the queue as empty.
-- Atomic replace fails -> propagate the error, keep the old queue byte-for-byte,
-  and remove the temporary file.
-- Checkpoint suggestion matches an action queue final dedupe key -> omit it from
-  `next_action_queue`.
-- Checkpoint sees only zero-relevance coverage gaps -> keep coverage statistics,
-  but do not enqueue coverage-gap actions.
-- Checkpoint sees actor-matrix owner/peer gaps with empty case state -> enqueue
-  at most anonymous baseline plus a low-priority enrichment lead, not fake
-  owner/peer replay actions.
-- Checkpoint ranks an IDOR/Authz surface but case state is empty -> keep the
-  surface lead, but phrase it as browser baseline / case-state prerequisite,
-  not as an executable two-actor replay.
-- Surface review pool contains both browser-observed candidates and higher-score
-  score-only candidates -> browser/source/scanner evidence appears first in the
-  review pool; score-only candidates remain visible as tail fillers.
-- Checkpoint re-ingest changes an action from red-line/high-priority to
-  non-red-line/lower-priority -> queued checkpoint action updates to the new
-  projection unless it is already final.
-- Queue contains a report plus a legacy `ranked-surface` action whose
-  `command_hint` is only prose -> report is selected first. Queue contains a
-  legacy `ranked-surface` with an exact `validation_runner.py` command -> treat
-  it as substantive validation work.
-- First N ranked surfaces already final in `action_queue.json` -> checkpoint
-  rolls forward to later P1/P2 ranked surfaces and keeps `decision=continue`.
-- Report draft generated for a validated finding -> update `findings.json` and
-  close matching report queue item.
-- Queue/finding state missing during runner/report sync -> return or record
-  `sync.status=skipped`; do not fail evidence generation.
-- Rebuild `findings.json` with scanner artifacts after runner-created findings
-  exist -> unchanged scanner rows keep validation/report fields; target-owned
-  runner/validate-backed rows absent from scanner text are appended back; off-
-  target rows are not promoted.
-- URL target in structured index -> report output path uses the target storage
-  key; path/query/fragment are ignored for directory naming.
-- A checkpoint contradiction exists but no concrete executable item remains ->
-  output the contradiction under context, but do not create a `context-review`
-  queue item or change handoff/report decisions.
-- A validated/rejected/generated finding reappears with the same finding/action
-  identity -> suppress that duplicate action; a raw endpoint item on the same
-  path remains available for other vulnerability classes or fresh evidence.
-- A runner summary is still candidate-ready and not final in findings/ledger ->
-  checkpoint emits a validation action for AI review instead of handoff.
-- A runner summary has a later AI-review or `/validate` ledger closure ->
-  omit it from the runner candidate pool.
-- `/validate --method POST` confirms a finding -> validation-summary and
-  evidence-ledger row both record `method=POST`.
-- A coverage gap matches a closed ledger cell -> omit the coverage-gap action
-  while leaving the matrix count visible.
-- Coverage alias input such as NoSQLi, deserialization, or RFI -> normalize
-  through the closure owner; high-risk output contains canonical keys plus
-  technique hints, not duplicate alias dispositions.
-- A coverage-gap queue item is resolved as `dead-end` or `blocked` -> leave the
-  matrix cell `untested`; the final queue row prevents immediate exact-action
-  repetition without falsifying coverage.
-- The immediate checkpoint projection may attach `_projection_family` metadata
-  and emit one representative for an existing route-template or a high-volume
-  structural family. This is an execution bound only: exact Queue identities
-  remain endpoint-specific, sibling Matrix cells stay `untested`, and Closure
-  still reads the complete canonical matrix.
-- `_projection_family.size` is the complete family count while `members` is a
-  bounded preview (currently at most 12 endpoints). The preview is advisory,
-  does not assert family equivalence, and must direct AI to the raw Coverage gap
-  window when `size > len(members)` so a queue bound never becomes a judgment
-  bound.
-- Coverage Action Queue dedupe must strip both `Queue projection only:` and
-  `Family projection:` advisory suffixes from the action/evidence text. Changing
-  projection wording must update an existing legacy row rather than retire and
-  replace it.
-
-### 5. Good/Base/Bad Cases
-
-- Good: an interrupted queue replacement leaves the prior durable handoff
-  readable and no `.tmp` file behind.
-- Base: no queue file exists yet, so the owner returns an empty schema and the
-  first action can be added normally.
-- Good: a runner validates a finding, writes raw evidence, updates
-  `findings.json`, and closes the active validation queue item; the next
-  checkpoint moves to report or another evidence-backed action.
-- Good: a runner summary exists for `POST /profile/image/url`; `/validate`
-  records `method=POST`, and subsequent checkpoint state uses that exact method
-  for evidence audit.
-- Good: `GET /rest/products/search x XSS` remains in broad matrix statistics,
-  but a ledger-backed XSS finding suppresses the executable coverage-gap action.
-- Good: a ranked surface returns only `{"version":"x.y.z"}`; runner records
-  `tested_clean` and closes the ranked-surface queue item.
-- Good: a lower-score browser-observed XHR appears before a higher-score
-  score-only helper endpoint in `review_pool`; Claude sees the real workflow
-  evidence first while the helper endpoint remains available as a tail lead.
-- Good: `/api/orders × Authz` is tested clean, so surface shows that lane as
-  history while preserving `/api/orders` for SQLi, workflow, object, and fresh
-  browser/source review.
-- Good: `findings.json` rebuild preserves a validated XSS row whose source is
-  `evidence/<target>/validation/.../summary.json`, while dropping a stale
-  unvalidated scanner-only row whose text artifact no longer exists.
-- Good: generating a new XSS report for `http://127.0.0.1:3002` appends it to
-  the existing `reports/127.0.0.1:3002/INDEX.json` instead of overwriting the
-  index with only the latest report.
-- Base: checkpoint still reports many broad high-value coverage gaps, but none
-  have semantic relevance; the system hands off rather than inventing low-value
-  RCE/SQLi/SSRF TODOs.
-- Base: old `ranked-surface` queue rows without runner commands remain visible
-  for review, but they do not outrank report or current `surface-review`.
-- Bad: a resolved secondary-sweep artifact keeps reappearing as the recommended
-  executable action every checkpoint.
-- Bad: `autopilot_state.py` re-sorts `review_pool` by `-score`, causing a
-  generic high-score path to hide browser/source evidence from the first
-  candidate window.
-- Bad: `finding_index.py` rebuilds from scanner text and silently deletes
-  runner-created validated/candidate rows, causing checkpoint to forget report
-  or validation state.
-- Bad: `report_generator.py` writes a URL target under `reports/http:/...` or
-  rewrites `INDEX.json` to contain only the newest report.
-- Bad: a dead-end memory overlap creates the highest-priority queue item even
-  though it is only advisory context.
-- Bad: checkpoint prints runner candidates that were already rejected/generated
-  or closed by later AI-review ledger rows.
-- Bad: `/validate` confirms a POST-only issue but writes `GET` into the
-  evidence ledger.
-- Bad: a ledger-closed coverage cell keeps reappearing as the next coverage-gap
-  action.
-- Bad: one finalized finding or queue row removes its entire endpoint from raw
-  surface review, hiding unrelated vulnerability classes or newer evidence.
-- Bad: `dead-end` is written as `tested_clean`, or `blocked` is written as `n_a`,
-  merely to reduce coverage noise.
-- Bad: queue becomes empty but checkpoint still says `decision=continue`.
-- Bad: malformed JSON is swallowed as an empty queue and checkpoint overwrites
-  the only recoverable handoff.
-
-### 6. Tests Required
-
-- `tests/test_validation_runner.py` must assert runner sync for structured
-  findings and non-finding ranked-surface actions.
-- `tests/test_finding_index.py` must assert report generation closes matching
-  report queue items.
-- `tests/test_finding_index.py` must assert finding-index rebuilds preserve
-  runner/validate-backed orphan rows, drop default scanner-only orphans, and
-  report generation keeps cumulative target indexes under canonical
-  `target_storage_key()` directories.
-- `tests/test_checkpoint.py` must assert zero-relevance coverage gaps are not
-  queued, semantically relevant gaps still are queued, ledger-closed coverage
-  cells are skipped, final action-queue items are filtered, and empty filtered
-  queues produce handoff-compatible state.
-- `tests/test_checkpoint.py` must assert advisory contradictions are not
-  executable queue items and finalized finding URLs are not re-promoted as
-  surface-review actions.
-- `tests/test_checkpoint.py` must assert non-final validation-runner candidates
-  become AI-review validation actions.
-- `tests/test_structured_findings.py` must assert validation-runner candidate
-  pools filter final findings and later non-runner ledger closures while keeping
-  runner-only evidence visible.
-- `tests/test_validate_target_mode.py` must assert validation summaries and
-  ledger sync preserve explicit HTTP methods.
-- `tests/test_surface_tool.py` must assert evidence-rich review candidates
-  precede score-only tail candidates in `review_pool`.
-- `tests/test_autopilot_state_tool.py` must assert `surface_review_candidates`
-  preserve review-pool order instead of sorting by score.
-- `tests/test_action_queue.py` must assert legacy prose-only `ranked-surface`
-  is advisory while exact runner-backed `ranked-surface` remains substantive.
-- `tests/test_action_queue.py` must assert corrupt JSON, invalid object/actions/
-  schema shapes, path-bearing CLI diagnostics, and atomic replace failure that
-  preserves old bytes and removes temporary files.
-- `tests/test_surface_tool.py` and `tests/test_autopilot_state_tool.py` must
-  assert cell/finding closure does not hide raw endpoint surface.
-- `tests/test_action_queue.py` must assert `dead-end` and `blocked` leave the
-  corresponding coverage cell `untested`.
-
-### 7. Wrong vs Correct
-
-#### Wrong
-
-Optimize a lab by adding target-specific answers, or let checkpoint keep pushing
-generic coverage cells until a human manually suppresses them.
-
-```python
-try:
-    return json.loads(path.read_text())
-except (OSError, json.JSONDecodeError):
-    return empty_queue()
-```
-
-#### Correct
-
-Use the lab to expose project failures, then fix the generic state contract:
-evidence-producing tools close queue items, reports close report actions, and
-checkpoint only asks Claude to execute semantically grounded next steps.
-
-```python
-if not path.is_file():
-    return empty_queue()
-payload = json.loads(path.read_text())  # 损坏或非法 shape 向上抛出
-save_with_same_directory_temp_fsync_and_replace(payload)
-```
-
----
+Queue tests cover explicit claims, concurrency/CAS, metadata trust, proof-bound
+completion and closed-action history. Checkpoint tests cover pages/expansion,
+claimed recovery, no implicit work, current evidence health and private
+same-call read reuse. Finding/Report and Validate tests cover explicit identity,
+unknown families, stale/corrupt reports and interrupted publication/registration.
+`test_target_migration.py` retains explicit legacy import/cutover/recovery tests.
 
 ## Scenario: 真实 Claude CLI Candidate 的断点恢复
 
@@ -1403,7 +667,7 @@ python3 tests/skill-validator/check_autopilot_run.py --target <localhost-target>
 ### 5. Good / Base / Bad Cases
 
 - Good：fresh 只启动 recon 后，existing session 的 bootstrap 已明确给出 surface/context 路径。
-- Good：模型文字中的 confirmed finding 与 `findings.json`、ledger 和 raw artifacts 一一对应。
+- Good：模型文字中的 confirmed finding 与 Store Finding/assessment、operation 和 raw artifacts 一一对应。
 - Base：模型被 provider 拦截；现有 durable state 不变，验收按最后可验证阶段失败或部分通过。
 - Bad：模型把 target-memory prose lead 写成 critical finding，而 durable owner 没有任何证据。
 
@@ -1470,24 +734,17 @@ Python 入口保持 `parse_autopilot_args(argv, *, round_defaults=False)` 和
   report path/content。`decision.severity` 可选（显式值只能是 info/low/medium/high/critical，
   不提供时沿用 Finding 已记录值）；`decision.cvss` 可省略，若存在只作兼容输入校验，
   不写入新摘要或参与核心证据门禁。报告生成不能从历史 CVSS 重算并写回 Finding severity。
-- machine binding 必须通过 `migrate_legacy=False` 只读加载 canonical/legacy payload；target、
-  ID、endpoint、class、evidence 和 report ownership 全部通过后，才允许迁移或首次写入。
-- machine decision 的成功路径只能调用既有 `finding_index` owner。行内
-  `owner_provenance` 与 `mutation-events.jsonl` event 必须匹配 owner、operation、timestamp、
-  target、finding ID、evidence summary 与 stripped-row fingerprint。
-- `validated`/`rejected` 或 `generated`/`reported` 未通过 shared verifier 时，runtime、resume、
-  surface、runner 与 report consumer 必须将其视为 candidate/owner revalidation；不得报告、
-  suppress surface 或关闭 runner candidate。
-- rebuild、legacy migration、通用 upsert 不得给未验证 finality 重签名；它们统一降级为
-  `needs_owner_revalidation` 并保留 `claimed_*`。合法 `/validate` 可以产生新的 validated event。
-- validation summary/notes 路径必须由 `tools/validate.py` 按 finding/report identity 生成并回传；
-  caller 不得拼固定名。canonical row 保存 summary path/digest，shared verifier 校验内容；
-  `last-validate.json` 只是 latest pointer。
-- machine report 首次使用 exclusive create；已有路径只有在同 finding owner 重跑，或 crash
-  replay 内容完全相同时可恢复。被另一 finding 占用时必须在所有 validation write 前拒绝。
+- machine binding 只读当前 Store 的 Finding 和 linked operation，不迁移 legacy payload。
+  原始材料完好、精确 endpoint/method/family/target 与报告归属通过后才允许写入。
+- 成功路径先原子发布 AI 正文，再分别调用 Store assess、decide_delivery、register_report。
+  同命令重试幂等；新判断需要当前 assessment/delivery 前置 IDs，不能覆盖旧裁决。
+- report path 首次原子 exclusive publish；已登记报告只有同 Finding、同裁决、完好且
+  相同字节可复用，不重写 inode/mtime。跨 Finding、过时裁决、缺失/改字节都拒绝。
+- summary/notes 和 latest pointer 是可重建材料，不是裁决 owner。登记失败保留正文并返回
+  retry；不重发请求、不自动完成 Action，也不生成外部 submission event。
 - `--max-lanes N` 仅在 `--deep` 下有效，`N` 为 1..32。bootstrap 的
   `invocation_batch={bounded,max_lanes,handoff}` 是唯一 command/agent 输入；达到 N 个命名
-  substantive lane 后 checkpoint 自动同步 durable queue、说明 handoff 并结束本次 invocation。
+  substantive lane 后显式保存未决 work，再读取 checkpoint、说明 handoff 并结束本次 invocation。
   新发现留给下一次 invocation，不是永久 coverage 上限。
 - `/autopilot-round` 省略参数时只把同一 parser 的 cadence/deep/max-lanes 默认值切为
   `normal/true/8`，用户显式 cadence 与 max-lanes 优先；普通 `/autopilot` 默认值不得变化。
@@ -1522,9 +779,10 @@ Python 入口保持 `parse_autopilot_args(argv, *, round_defaults=False)` 和
 - Ledger health 为 `partial|unreadable` 时，closure 必须保留有效历史供诊断但投影
   `ledger_partial|ledger_unreadable`，禁止 `finish`；loop guard 必须 `continue`，禁止
   `rotate`。损坏状态不是空 Ledger，必须在 JSON projection 中保留 bounded diagnostics。
-- canonical coverage/queue JSON 损坏时 `--closure --json` 必须返回
+- 当前 Store 或证据准入失败时 `--closure --json` 必须返回
   `closure.verdict=error` 且 exit `2`；不得把损坏状态当 empty/handoff/finish。
-- round 结束必须按 checkpoint/write-back → coverage rebuild/find-gaps → closure 排序；lane budget
+- round 结束按只读 Checkpoint → 当前 Coverage/Closure 快照 → 显式 runtime round closure 排序；
+  经验、证据登记与缓存刷新由各自显式命令完成，settle 不补写 Queue 或 Surface。lane budget
   不参与终态选择，Closure 必须从最新 owner 状态重新计算。STATUS 仅由 closure owner 字段投影：
   `finish + can_claim_exhausted + reported>0 -> DONE`，`reported=0 -> EXHAUSTED`，
   `handoff -> CONTINUE`，`blocked -> BLOCKED`，其它 shape -> ERROR。DONE/EXHAUSTED 的
@@ -1559,8 +817,6 @@ Python 入口保持 `parse_autopilot_args(argv, *, round_defaults=False)` 和
 | non-TTY 未给 decision | exit `2`，零 report/ledger/queue/runtime/finding write |
 | decision 与 canonical finding 的 target/ID/endpoint/class 不匹配 | exit `2`，保持既有状态不变 |
 | legacy payload 上的 decision binding 失败 | exit `2`，不得把 list 迁移为 object，也不得创建 event/artifact |
-| 直接 JSON 写 validated/generated | 下次 owner mutation 隔离为 `needs_owner_revalidation`；state 显示 owner revalidation，不生成报告 |
-| owner API 写 validated/generated | verifier 成功；report/runtime 可消费同一 event |
 | summary 被删除或内容 digest 改变 | verifier 失败；所有 finalized consumer 降级 |
 | 两个 finding 请求同一 machine report path | 第二个在首个 write 前失败；原 report/summary/state 不变 |
 | `--max-lanes` 缺 `--deep`、为 0/负数/超 32/重复 | bootstrap `stop_invalid_arguments`，不启动 target work |
@@ -1586,8 +842,6 @@ Python 入口保持 `parse_autopilot_args(argv, *, round_defaults=False)` 和
   `/validate` 产生 owner event，queue resolution 与 report follow-up 能回放同一 finding。
 - Good：同一 validated 目录连续验证两个 finding，二者 summary/notes 路径和 digest 各自独立；
   同 finding 显式重跑可恢复。
-- Base：legacy finalized list 首次 owner 读取迁移为
-  `needs_owner_revalidation`，随后合法 decision 重新建立可信 validated event。
 - Good：`/autopilot localhost --deep --normal --max-lanes 2` 在两条 substantive lane 后留下
   durable queue，并以 handoff 自然结束；下一会话从 queue 继续。
 - Good：`/loop 10m /autopilot-round localhost` 每轮默认只消费三条 lane；终态从 owner 投影为
@@ -1612,12 +866,10 @@ Python 入口保持 `parse_autopilot_args(argv, *, round_defaults=False)` 和
 
 ### 6. Tests Required
 
-- `tests/test_validate_target_mode.py`：non-TTY zero-write、合法 decision 的 target/finding binding
-  与 owner provenance、坏 binding 的无副作用、legacy read-only preflight、per-finding artifact、
-  summary digest mutation 和 report path ownership。
-- `tests/test_finding_index.py`：event round-trip、fingerprint/operation/timestamp mismatch 和 legacy
-  migration/finality quarantine、rebuild/upsert trust normalization；
-  `tests/test_autopilot_run_contract.py`：direct JSON reject、owner API accept。
+- `tests/test_validate_target_mode.py`：non-TTY zero-write、decision 的目标/主张/操作绑定、
+  未初始化与 legacy 拒绝、私有材料完整性、裁决重试与 report path ownership。
+- `tests/test_finding_index.py`：Store 明确身份、材料版本、报告资格/登记/索引中断恢复；
+  `tests/test_target_migration.py`：显式历史导入与隔离 finality。
 - `tests/test_structured_findings.py`、`tests/test_autopilot_state_tool.py`、
   `tests/test_runtime_state.py`、`tests/test_surface_tool.py`、`tests/test_validation_runner.py`、
   `tests/test_report_generator_manual.py`：所有 consumer 的 candidate downgrade/正向 owner 路径。
@@ -1684,7 +936,7 @@ closure 只投影 owner STATUS，unfinished lane 先恢复，并在终态取消 
 
 ### 1. Scope / Trigger
 
-This contract applies when Evidence Ledger, ClosureResolver, Checkpoint,
+This contract applies when Store evidence views, ClosureResolver, Checkpoint,
 Autopilot, or coverage projections create or consume terminal closure state.
 It extends the legacy endpoint x vulnerability projection without changing
 target storage keys, Surface raw URL identity, or Finding IDs.
@@ -1693,82 +945,72 @@ target storage keys, Surface raw URL identity, or Finding IDs.
 
 ```python
 build_closure_cell(endpoint, family, dimensions) -> IdentityBuildResult
-record_entry(..., identity_v2=None, identity_dimensions=None, identity_candidate=None,
-             identity_replaces_event_id="") -> dict
+TargetStore.record_execution(..., observations=[{"identity_dimensions": ...}]) -> dict
 ClosureResolver.is_closure_closed(identity_v2) -> bool
 ClosureResolver.closed_result(endpoint, family, *, identity_v2=None) -> str
 ```
 
 ### 3. Contracts
 
-- Complete keys persist as nested `identity_v2` objects with
-  `schema_version=2`, `kind=closure_cell`, an `EndpointKey`, canonical family,
-  and only that family's required dimensions. Persisted readers require both
-  outer and nested `kind`/`schema_version` markers; missing or legacy markers
-  fail open instead of being upgraded implicitly.
-- A validation runner may accept `--identity-v2-json` for a key created during
-  test planning. It carries that object through its Ledger request unchanged;
-  Ledger still verifies endpoint, family, and overlapping durable facts before
-  allowing `identity_status=complete`.
-- Ledger rows may also persist `identity_candidate`, `identity_status`,
-  `identity_missing_fields`, `identity_conflicts`, and
-  `identity_follow_up_action`. AI candidates are untrusted until deterministic
-  policy, confidence, provenance, evidence-reference, and Ledger-fact agreement
-  gates pass. Deterministically comparable endpoint, family, or method
-  disagreement creates a durable follow-up action and cannot emit `identity_v2`;
-  semantic actor/object/workflow disagreement is carried as an explicit
-  candidate conflict rather than guessed from differently named raw fields.
-- Current family policies are stored in `tools/identity_contract.py`; unknown
-  families and incomplete candidates are fail-open and cannot create a v2
-  terminal cell.
-- `closed_cells_v2` is the only complete family-aware terminal projection.
-  Legacy `closed_cells` may contain only rows without `identity_status`; legacy
-  rows are readable for audit but cannot close a v2 key.
-- Ledger is the durable fact source. Checkpoint and Autopilot may expose v2
-  cells and follow-up actions but must not reconstruct keys from display text.
-- Coverage gap projections preserve an explicit `identity_v2` already attached
-  to an untested cell. They do not synthesize one from endpoint, parameter, or
-  display fields; ClosureResolver remains the validation/comparison owner.
-- Ledger summaries expose `identity_v2_shadow` with deterministic legacy-only
-  and v2-only closure differences during rollout. Checkpoint and Autopilot
-  expose the Ledger's `identity_v2_follow_up_actions` projection so conflicts
-  remain actionable rather than only incrementing a diagnostic counter.
-- Identity enrichment never mutates an existing key. A later complete identity
-  is a new linked cell with the original event ID, evidence reference, and old
-  key (when present) preserved under `identity_replacement`. Current projections
-  omit the replaced event while the append-only Ledger retains both rows.
+- Store persists authored `identity_dimensions`, actor/object scope, method,
+  family, result and artifact references. `closure_records()` returns those
+  facts; `closure_projection.derive_identity_fields()` is the single derivation
+  of `identity_status`, missing/conflicting fields and complete `identity_v2`.
+  Current writers do not persist another derived identity status or create an
+  Action from a conflict.
+- A complete projected key has `schema_version=2`, `kind=closure_cell`, a valid
+  EndpointKey, canonical family and that family's required dimensions.
+  `identity_contract.py` validates encoding and family policy; malformed or
+  incomplete keys never authorize v2 closure. Unknown legal families remain
+  saved and readable without acquiring a canonical terminal cell.
+- Planned Runner identity is checked against the actual endpoint, family and
+  method before registration. Conflicting AI-supplied dimensions cannot replace
+  observed facts. Corrected evidence uses a new explicit registration; historical
+  observations are retained.
+- `closed_cells_v2` contains only complete, supported family-aware identities.
+  Records without an identity claim can contribute to the endpoint-level
+  `closed_cells` view, but cannot close a method/parameter/actor/object-specific
+  v2 key. Coverage preserves explicit keys and does not infer them from display
+  text or a path-only terminal.
+- Explicit legacy inspection can preserve historical `identity_candidate`,
+  `identity_follow_up_action` and `identity_replacement` metadata. The shared
+  projection understands those historical inputs without reviving a legacy
+  writer or generating current work. Its shadow differences and follow-up
+  diagnostics are views, not a second queue or stored identity owner.
+- Store and artifact integrity failures remain explicit. Partial/unreadable
+  evidence suppresses closure authorization while preserving historical facts
+  for diagnosis. A hash proves bytes, not the truth of an AI interpretation.
 
 ### 4. Validation & Error Matrix
 
 | Input | Result |
 |---|---|
-| Complete policy dimensions | `identity_status=complete`; eligible for `closed_cells_v2` |
-| Missing required dimension | `identity_status=incomplete`; recorded but not closeable |
-| AI low confidence/conflict/missing provenance | `follow_up_required`; durable follow-up metadata |
-| Unknown family | `family_policy` missing; fail-open |
-| Legacy path-only terminal | legacy display only; no v2 closure |
-| Malformed `identity_v2` | ignored by v2 resolver; no terminal decision |
-| Ledger partial/unreadable | clear both closure projections and handoff |
+| Complete policy dimensions and intact terminal evidence | Derived complete key eligible for `closed_cells_v2` |
+| Missing required dimension | Incomplete diagnostic; no v2 closure |
+| Endpoint/family/method disagreement | Conflict or registration rejection; no automatic Action |
+| Unknown family | Facts preserved; no canonical v2 terminal |
+| Path-only terminal | Endpoint view only; no v2 closure |
+| Malformed identity | No terminal authorization |
+| Evidence partial/unreadable | Closure suppressed; explicit recovery diagnostic |
 
 ### 5. Good/Base/Bad Cases
 
-- Good: SQLi `GET /search` with parameter `q` and `term` produces two distinct
-  closure keys.
-- Base: a legacy endpoint terminal remains visible in `closed_cells` while a
-  new v2 cell remains open until its complete identity is recorded.
-- Bad: a path-only terminal, AI guess, or endpoint summary closes a method,
-  actor, object, parameter, sink, or workflow-specific cell.
+- Good: SQLi `GET /search` with parameters `q` and `term` produces distinct keys.
+- Base: endpoint-level evidence remains readable while a complete v2 key stays
+  open until its own required dimensions and evidence exist.
+- Bad: a path-only terminal, AI guess or display summary closes every actor,
+  object, parameter, sink or workflow-specific cell.
 
 ### 6. Tests Required
 
-- `tests/test_identity_contract.py`: deterministic encoding, every family
-  policy, missing/conflicting dimensions, and AI candidate gates.
-- `tests/test_evidence_ledger.py`: v2 persistence, legacy separation,
-  candidate follow-up, redline interaction, replay and event-id idempotency.
-- `tests/test_closure_resolver.py`: v2 matching, matrix/path-only fail-open,
-  SPA and query separation.
-- `tests/test_autopilot_state_tool.py` and `tests/test_checkpoint.py`: v2
-  projection visibility and pending identity follow-up behavior.
+- `tests/test_identity_contract.py`: encoding, family policy, missing/conflicting
+  dimensions and candidate validation.
+- `tests/test_target_store.py` and `tests/test_current_truth.py`: durable authored
+  dimensions, derived identity, unknown family preservation and damaged evidence.
+- `tests/test_closure_resolver.py`: exact v2 matching, path-only non-closure,
+  SPA/query separation and explicit historical replacement inputs.
+- Runner, Autopilot and Checkpoint tests: bound identity and projection visibility
+  without generated follow-up Actions or extra durable identity fields.
 
 ### 7. Wrong vs Correct
 
@@ -1776,124 +1018,28 @@ ClosureResolver.closed_result(endpoint, family, *, identity_v2=None) -> str
 Wrong: closed_cells endpoint=/api/search, vuln=SQLi -> close every parameter.
 Correct: closed_cells_v2 compares EndpointKey + family + method + parameter.
 
-Wrong: AI candidate says parameter=q -> immediately mark tested_clean.
-Correct: persist candidate provenance/confidence, validate deterministic fields,
-        then close only after terminal evidence references the complete key.
-
-## Scenario: AI-activated hypothesis depth and bounded continuation
-
-### 1. Scope / Trigger
-
-Use when Checkpoint projects an evidence-backed substantive action that must be
-activated by AI before a validation Runner may execute it. Surface review,
-runtime wait, recovery, and reporting actions remain versionless.
-
-### 2. Signatures
-
-- `claim_next_action(repo_root, target, *, action_id="", metadata=None)`
-- `python3 tools/action_queue.py claim --target TARGET --id ACTION_ID --metadata-json JSON`
-- `resolve_action(repo_root, *, target, action_id, status, result="", notes="", metadata=None)`
-- Checkpoint action metadata: `activation_required`, `knowledge_refs`,
-  `evidence_ref`, `baseline_ref`, `endpoint`, `method`, `input_boundary`, and
-  `max_hypothesis_actions_cap`. An action-owner route may already be present;
-  otherwise AI supplies `skill_route` at claim.
-
-### 3. Contracts
-
-- AI claim metadata uses `depth_contract_version=1`, a canonical primary `skill_route`, `hypothesis_id`, open
-  `family`/`technique`, `active_dimension`, `expected_learning`,
-  `kill_condition`, `risk_tier`, `max_hypothesis_actions`, optional selected knowledge
-  references, and a bounded decision reason.
-- Queue route validation resolves `skill_id` through the shared `SKILL_CATALOG`,
-  requires the catalog's exact repository `skill_path`, and requires non-empty
-  `required_dimensions`. An `active_dimension` outside the selected route is
-  accepted only with a bounded `dimension_override_reason`; the first AI route
-  selection is not a Skill override.
-- Queue computes `execution_key` from endpoint/method/family/technique plus
-  actor/object/workflow/dimension. Same key and evidence cannot repeat; changed
-  evidence requires `repeat_reason`.
-- Claim cannot disable stored `activation_required` or supply Runner-owned
-  `last_outcome`, `tested_dimensions`, or `runner_operation_id`. The first
-  explicit Skill selection does not require an override reason; replacing an
-  action-owner route requires `skill_override_reason`.
-- Missing or empty `selected_knowledge_refs` means Claude did not need a Card
-  for this action and is accepted as `[]`. Non-empty values remain deduplicated;
-  values outside action-owned `knowledge_refs` require a bounded
-  `knowledge_override_reason`.
-- Runner observation writes `last_outcome`, replayable refs, operation ID,
-  `tested_dimensions`, and a bounded observation while the action stays
-  `running`. An explicitly declared `baseline_only` observation is retained as
-  recoverable context and cannot satisfy a kill resolve.
-- AI terminal resolve supplies exactly one continuation kind or
-  `kill_condition_met=true`; continuation materialization is at most one child
-  and preserves the `depth_contract_version=1` hypothesis/parent/evidence
-  lineage. `rotation` creates no child.
-- `capability_primitives` is optional, target-owned, and capped at three; it is
-  evidence lineage, not a second graph or state owner.
-- A finalized versioned action with a target-owned primitive and concrete
-  continuation hint may project one versionless `capability-chain-review` from
-  Checkpoint. Its identity is the existing Queue tuple
-  `source + parent_action_id + sha256(normalized primitive)` using
-  `source_id` plus `metadata.generation`; active/final identities suppress
-  replay, and an immediate `chain` continuation suppresses the review.
-- The review is advisory, outside the hypothesis action cap, and cannot outrank
-  running, validation, candidate, or report work. An executable chain is added
-  as one normal versioned Queue action before the review resolves; unsupported
-  speculation creates no review. Closure remains unchanged.
-
-### 4. Validation & Error Matrix
-
-| Input | Result |
-|---|---|
-| Missing activation or claim-selected route/evidence/budget field | reject before claim mutation |
-| Claim overrides activation or supplies Runner observation fields | reject; queue bytes unchanged |
-| Claim first selects a valid Skill route | accept without `skill_override_reason` |
-| Claim replaces an action-owner Skill route without override reason | reject before claim mutation |
-| Missing or empty `selected_knowledge_refs` | accept and normalize to `[]` |
-| Non-empty selected refs outside action recommendations without reason | reject before claim mutation |
-| Non-empty selected refs outside recommendations with reason | accept and deduplicate |
-| Missing/non-primary Skill, path mismatch, or empty route dimensions | reject before claim mutation |
-| Active dimension outside selected route without override reason | reject before claim mutation |
-| Active dimension outside selected route with bounded override reason | accept and preserve the reason |
-| Same execution key and same evidence | reject duplicate |
-| Runner sync before claim or with off-target/partial evidence | `blocked`, action remains queued/running |
-| Terminal resolve without observed difference, tested dimension, and outcome refs | reject; bytes stay unchanged |
-| Both continuation and kill, or neither | reject before status mutation |
-| Hypothesis action cap reached | reject continuation; preserve current action |
-| Primitive lacks target-owned evidence or concrete continuation hint | no chain review projection |
-| Active/final matching primitive review or immediate chain child exists | suppress duplicate review |
-| Versionless action/metadata absent | retain legacy claim/resolve behavior |
-
-### 5. Good/Base/Bad Cases
-
-- Good: Context Pack recommends Skill/card context; Checkpoint preserves the
-  evidence/baseline boundary without prebinding the recommendation; AI selects
-  the route at claim, Runner observes it, then AI resolves one evidence-backed sibling.
-- Base: a lower-risk action can use a smaller AI-selected cap and remains visible
-  in Coverage even when not selected for deep execution.
-- Bad: a score-only surface or one negative response becomes `tested` without a
-  replayable outcome, tested dimension, or kill/continuation decision.
-
-### 6. Tests Required
-
-- `tests/test_autopilot_hypothesis_replay.py` must cover multi-source activation,
-  pre-claim Runner blocking, activation/Runner-field spoof rejection, route
-  provenance, canonical Skill/path and dimension-override rejection,
-  optional/non-empty knowledge selection, missing write-back, one-child continuation, kill, budget,
-  target-owned refs, and Closure handoff/finish.
-- `tests/test_action_queue.py` must retain legacy pivot/claim/metadata regressions.
-- `tests/test_checkpoint.py` must assert evidence-convergence activation and
-  bounded Coverage window metadata, one-at-a-time primitive review projection,
-  fingerprint idempotency, and immediate-chain suppression.
-
-### 7. Wrong vs Correct
-
-```text
-Wrong: Checkpoint selects a Skill and Runner closes a negative action directly.
-Correct: Checkpoint proposes; AI activates at Queue claim; Runner records only
-         deterministic observation; AI resolves one continuation or supported kill.
+Wrong: an AI candidate naming parameter=q immediately marks it tested_clean.
+Correct: record observed dimensions and evidence, then derive only the exact
+         terminal identity supported by intact facts.
 ```
-```
+
+## AI-owned hypothesis metadata and explicit continuation
+
+`action_queue.py add/claim/resolve --metadata-json` accepts bounded descriptive
+JSON. Family, technique, expected learning, risk, stop conditions and knowledge
+references express the AI's hypothesis; they are not evidence of execution.
+Sensitive content, forged Runner fields, identity conflicts and unsupported
+completion remain rejected by the shared Store/Queue boundary.
+
+No Skill files, `skill_route`, `route_required` or preset `required_dimensions`
+participate in admission. Historical route fields stay opaque. There is no
+Checkpoint-created child/primitive-review action. AI explicitly creates any
+follow-up and saves reusable conditional experience through the memory API.
+Actual observations retain their tested dimensions and complete provenance.
+
+Tests: Action Queue, primary action consumers, native Runner and Checkpoint
+exercise route-free claims, explicit proof, no automatic continuation and
+unchanged actions after registration/reporting.
 
 ## Scenario: Keep AI-selected knowledge refs advisory after family closure
 
@@ -1960,82 +1106,23 @@ Correct: keep the catalog/suggestion advisory; only an AI-selected,
 owner-backed action records the card ref and enters the Queue.
 ```
 
-## Scenario: Invocation-local Autopilot owner projections
+## Invocation-local Autopilot owner projections
 
-### 1. Scope / Trigger
-
-Use when one Autopilot invocation builds State, Context Pack, and Checkpoint
-from the same target. Owner projections may be passed between those calls to
-avoid duplicate reads and to keep the invocation internally consistent.
-
-### 2. Contracts
-
-- A projection is read-only, invocation-local, and bound to the canonical
-  target that produced it. Reusing it for another target must fail closed.
-- Optional snapshot parameters preserve existing direct callers: when omitted,
-  the callee performs its historical load path.
-- Queue snapshots are shallow-copied before selecting or replacing `actions`;
-  selectors must not mutate the caller-owned snapshot.
-- State/Context Pack may reuse runtime, finding, candidate, case, observation,
-  and valid Surface projections from the same invocation. Bounded bootstrap
-  keeps its reduced Surface semantics and must not trigger a full rebuild.
-- Coverage, Ledger, complete Queue, and round progress are closure-owned. Any
-  write to Queue, Coverage, Finding, Ledger, Case, or round state invalidates
-  the affected projection; final Closure and post-write Checkpoint reads must
-  load fresh data.
-- Round guard recording acquires the checkpoint witness lock before the target
-  Queue mutation lock, then computes State/Closure from that locked Queue
-  snapshot. Other code that needs both locks must keep the same order.
-- One Closure evaluation binds `action_queue_next` and its active count to the
-  same invocation-local Queue snapshot; a preloaded State pointer is advisory
-  and never overrides that snapshot.
-- Closure may expose a non-persistent `snapshot_digest` and bounded component
-  generations for diagnostics. If owner file metadata changes during the read,
-  the round coordinator retries once; a second change returns
-  `state_snapshot_stale` with `refresh_state` instead of a terminal verdict.
-- The Closure digest must include every decision projection it consumes,
-  including Case State, Recon budget/continuation, Finding follow-up, Browser,
-  Source, Intel, JS, SQL, JSON, Observation, Surface candidates, and Queue;
-  changing one of these inputs must produce a new digest.
-- Raw artifact readers and explicit cursors remain authoritative; projections
-  must not truncate evidence or become a second persistence owner.
-
-### 3. Validation & Error Matrix
-
-| Input | Result |
-|---|---|
-| Snapshot omitted | Preserve legacy loading and output |
-| Snapshot target differs | Reject before consumption |
-| Missing Case | Preserve `status=missing` behavior |
-| Corrupt Case | Preserve the historical error path |
-| Queue selection | Caller snapshot remains byte-equivalent |
-| Bounded bootstrap | No full Surface context/ranking read |
-| State/Queue/Case write before Closure | Re-read affected closure owner |
-
-### 4. Tests Required
-
-- Instrument owner loaders and prove reduced same-invocation load counts.
-- Compare direct and snapshot paths for action, queue, case, findings,
-  candidates, frontier, and Surface projections.
-- Cover target mismatch, Queue immutability, missing/corrupt Case behavior,
-  and bounded no-rebuild behavior.
-
-### 5. Good/Base/Bad Cases
-
-- Good: Checkpoint passes State's valid Surface and candidate projections while
-  Closure reloads Queue and Ledger after writes.
-- Base: a direct `build_autopilot_state(...)` call omits snapshots and follows
-  the existing loaders.
-- Bad: retaining a pre-write Queue or Coverage snapshot for final Closure, or
-  silently accepting a projection produced for another target.
-
-### 6. Wrong vs Correct
-
-```python
-# Wrong: cross-invocation/global cache or stale snapshot after a write.
-cached_state = GLOBAL_STATE[target]
-
-# Correct: pass an optional, target-bound projection within one invocation and
-# reload closure-owned data after mutation.
-state = build_autopilot_state(repo_root, target, queue_snapshot=queue)
-```
+- Public `build_autopilot_state`, bounded bootstrap and `build_context_pack`
+  discard caller-supplied owner dictionaries and acquire current owners.
+- Within one Checkpoint call, private `_build_autopilot_state` and
+  `_build_context_pack` accept only the Queue/Case/Surface/Coverage/candidate/
+  truth values acquired by that orchestrator. There is no global cache or
+  reuse across calls. Owner revision drift aborts the assembled result.
+- Every new public query performs fresh raw-integrity checks, even when Store
+  revision has not changed. Snapshot reuse does not authorize later writes.
+- Closure binds its next-action display and active count to one acquired Queue;
+  a caller's preloaded pointer cannot override it. Round guard locking order
+  remains checkpoint witness then Queue mutation lock.
+- Closure digest includes each decision input (Case, Recon, Finding, Browser,
+  Source/Intel/JS/SQL/JSON, Observation, Surface and Queue). Drift yields an
+  explicit stale/error result; evidence is never truncated to gain speed.
+- Required tests: owner read budget, public forged/stale snapshot rejection,
+  same-revision raw damage between calls, claimed-action recovery and direct
+  versus reused output equivalence. Offline measurements record connections,
+  materialized rows, process I/O, median/p95, output bytes and backup recovery.

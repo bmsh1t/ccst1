@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
 from tools.target_migration import (
+    backfill_target_memory,
+    backfill_target_patterns,
     import_target,
     import_target_staged,
     quarantine_id,
@@ -15,9 +18,10 @@ from tools.target_migration import (
     restore_legacy_metadata,
 )
 import tools.target_migration as migration
-from tools.action_queue import load_queue, save_queue
-from tools.evidence_ledger import record_entry
-from tools.finding_index import upsert_finding
+from tools.action_queue import load_queue
+import tools.action_queue as action_queue
+import tools.evidence_ledger as evidence_ledger
+import tools.finding_index as finding_index
 from tools.target_store import StoreError, TargetStore, target_backend
 
 
@@ -159,16 +163,9 @@ def test_old_domain_writers_fail_closed_after_primary_activation(tmp_path):
     publish_preview(staged, published, target)
     promote_target(published, target)
 
-    with pytest.raises(StoreError, match="legacy action_queue writer"):
-        save_queue(published, target, load_queue(published, target))
-    with pytest.raises(StoreError, match="legacy evidence ledger writer"):
-        record_entry(published, target=target, endpoint="https://target.test/api/old")
-    with pytest.raises(StoreError, match="legacy finding writer"):
-        upsert_finding(
-            published / "findings" / target,
-            {"id": "F-old", "url": "https://target.test/api/old", "type": "Authz"},
-            target=target,
-        )
+    assert not hasattr(action_queue, "save_queue")
+    assert not hasattr(evidence_ledger, "record_entry")
+    assert not hasattr(finding_index, "upsert_finding")
 
 
 def test_promote_recovers_after_primary_commit_before_archive_activation(tmp_path, monkeypatch):
@@ -381,7 +378,7 @@ def test_report_artifacts_are_copied_and_left_unregistered_for_explicit_rebindin
     assert "reports" in result["sources"]
 
 
-def test_target_memory_is_retained_and_reported_without_fabricating_experience(tmp_path):
+def test_target_memory_imports_historical_advice_with_source_locations(tmp_path):
     source = tmp_path / "source"
     target = _fixture(source, actions=[])
     memory = source / "memory" / "goals" / "targets" / f"{target}.json"
@@ -389,6 +386,8 @@ def test_target_memory_is_retained_and_reported_without_fabricating_experience(t
     memory.write_text(json.dumps({
         "schema_version": 1,
         "target": target,
+        "active_goal": "Investigate peer reads",
+        "scope_notes": [{"text": "Target-owned lab"}],
         "active_leads": [{"ts": "2026-09-21T00:00:00Z", "text": "recheck ownership"}],
         "dead_ends": [{"ts": "2026-09-21T00:01:00Z", "text": "baseline unchanged"}],
         "facts": {"baseline": {"text": "stable", "evidence_refs": []}},
@@ -398,27 +397,281 @@ def test_target_memory_is_retained_and_reported_without_fabricating_experience(t
 
     memory_report = result["legacy"]["target_memory"]
     assert memory_report["status"] == "valid"
-    assert memory_report["entries"] == 3
-    assert memory_report["fields"] == {"active_leads": 1, "dead_ends": 1, "facts": 1}
-    assert "not imported into Experience" in memory_report["disposition"]
+    assert memory_report["entries"] == 5
+    assert memory_report["fields"] == {
+        "scope_notes": 1, "active_leads": 1, "dead_ends": 1, "facts": 1, "active_goal": 1,
+    }
+    assert memory_report["imported_experiences"] == 5
+    assert len(memory_report["experience_map"]) == 5
     assert result["imported"]["observations"] == 0
-    assert not TargetStore(tmp_path / "staging-root", target).page("experiences")["items"]
+    store = TargetStore(tmp_path / "staging-root", target)
+    rows = [store.experience(item["experience_id"]) for item in memory_report["experience_map"]]
+    assert {row["kind"] for row in rows} == {"hypothesis", "note"}
+    assert all(not row["evidence"] for row in rows)
+    assert any("Historical facts[baseline] (unverified): stable" == row["statement"] for row in rows)
+    assert all(item["source_path"] == f"memory/goals/targets/{target}.json"
+               for item in memory_report["experience_map"])
+    assert result["receipt"]["memory_backfill"]["experience_map"] == memory_report["experience_map"]
 
 
-def test_case_private_session_material_is_staged_and_rebound(tmp_path):
-    from tools.target_case_state import add_actor, add_session, load_case_state
+def test_active_memory_backfill_is_manifest_bound_and_replay_safe(tmp_path, monkeypatch, capsys):
+    source = tmp_path / "source"
+    target = _fixture(source, actions=[])
+    memory = source / "memory" / "goals" / "targets" / f"{target}.json"
+    memory.parent.mkdir(parents=True, exist_ok=True)
+    memory.write_text(json.dumps({"schema_version": 1, "target": target,
+                                  "active_leads": [{"text": "compare tenant owners", "ts": "2026-09-01T00:00:00Z"}],
+                                  "dead_ends": [{"text": "old denial", "conditions": "same session",
+                                                 "reopen_when": "new session"}]}), encoding="utf-8")
+    original = migration._import_target_memory
+    monkeypatch.setattr(migration, "_import_target_memory", lambda *args: None)
+    active = tmp_path / "active"
+    import_target_staged(source, active, target)
+    monkeypatch.setattr(migration, "_import_target_memory", original)
+    promote_target(active, target)
+    store = TargetStore(active, target)
+    before = store.binding()["revision"]
+    first = backfill_target_memory(source, active, target)
+    assert first["status"] == "complete"
+    assert len(first["experience_map"]) == 2
+    assert store.binding()["revision"] == before + 2
+    assert store.experience(first["experience_map"][1]["experience_id"])["kind"] == "note"
+    assert backfill_target_memory(source, active, target) == first
+    assert store.binding()["revision"] == before + 2
+    assert migration.main(["--repo-root", str(active), "--target", target,
+                           "--backfill-memory-source", str(source), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["experience_map"] == first["experience_map"]
+    receipt = json.loads((active / "state" / target / "migration-receipt.json").read_text())
+    assert receipt["memory_backfill"] == {key: first[key] for key in
+                                           ("source_manifest_sha256", "source_sha256", "experience_map", "quarantined")}
+    memory.write_text(memory.read_text().replace("old denial", "changed denial"), encoding="utf-8")
+    with pytest.raises(StoreError, match="does not match the source manifest"):
+        backfill_target_memory(source, active, target)
+    assert store.binding()["revision"] == before + 2
+
+
+def test_active_memory_backfill_requires_source_in_cutover_manifest(tmp_path):
+    source = tmp_path / "source"
+    target = _fixture(source, actions=[])
+    active = tmp_path / "active"
+    import_target_staged(source, active, target)
+    promote_target(active, target)
+
+    with pytest.raises(StoreError, match="source is absent from migration manifest"):
+        backfill_target_memory(source, active, target)
+    assert TargetStore(active, target).page("experiences")["items"] == []
+    receipt = json.loads((active / "state" / target / "migration-receipt.json").read_text())
+    assert "memory_backfill" not in receipt
+
+
+def test_active_memory_backfill_recovers_after_store_write_before_receipt(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    target = _fixture(source, actions=[])
+    memory = source / "memory" / "goals" / "targets" / f"{target}.json"
+    memory.parent.mkdir(parents=True)
+    memory.write_text(json.dumps({"schema_version": 1, "target": target,
+                                  "active_leads": [{"text": "compare owner"}, {"text": "compare peer"}]}))
+    original = migration._import_target_memory
+    monkeypatch.setattr(migration, "_import_target_memory", lambda *args: None)
+    active = tmp_path / "active"
+    import_target_staged(source, active, target)
+    monkeypatch.setattr(migration, "_import_target_memory", original)
+    promote_target(active, target)
+    store = TargetStore(active, target)
+    before = store.binding()["revision"]
+
+    saved = migration.TargetStore.remember
+    calls = 0
+
+    def interrupt_mid_import(self, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("interrupted during import")
+        return saved(self, **kwargs)
+
+    monkeypatch.setattr(migration.TargetStore, "remember", interrupt_mid_import)
+    with pytest.raises(RuntimeError, match="during import"):
+        backfill_target_memory(source, active, target)
+    assert store.binding()["revision"] == before + 1
+    monkeypatch.setattr(migration.TargetStore, "remember", saved)
+
+    def interrupt_after_import(*args):
+        original(*args)
+        raise RuntimeError("interrupted before receipt publication")
+
+    monkeypatch.setattr(migration, "_import_target_memory", interrupt_after_import)
+    with pytest.raises(RuntimeError, match="interrupted"):
+        backfill_target_memory(source, active, target)
+    assert store.binding()["revision"] == before + 2
+    receipt_path = active / "state" / target / "migration-receipt.json"
+    assert "memory_backfill" not in json.loads(receipt_path.read_text())
+
+    monkeypatch.setattr(migration, "_import_target_memory", original)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(backfill_target_memory, source, active, target) for _ in range(2)]
+        results = [future.result(timeout=10) for future in futures]
+    assert results[0] == results[1]
+    assert len(results[0]["experience_map"]) == 2
+    assert store.binding()["revision"] == before + 2
+    assert json.loads(receipt_path.read_text())["memory_backfill"]["experience_map"] == results[0]["experience_map"]
+
+
+def test_pattern_backfill_preserves_target_history_without_cross_target_recall(tmp_path):
+    from tools.experience_recall import build_recall_view
 
     source = tmp_path / "source"
     target = _fixture(source, actions=[])
-    add_actor(source, target, actor="user_a", role="user")
-    add_session(
-        source,
-        target,
-        session="sess_a",
-        actor="user_a",
-        kind="bearer",
-        headers={"Authorization": "Bearer fixture-secret"},
-    )
+    pattern_path = source / "hunt-memory" / "patterns.jsonl"
+    pattern_path.parent.mkdir(parents=True)
+    base = {"schema_version": 1, "target": target, "vuln_class": "idor", "tech_stack": ["node"]}
+    rows = [
+        {**base, "ts": "2026-09-01T00:00:00Z", "technique": "owner swap", "outcome": "helped"},
+        {**base, "target": "other.test", "ts": "2026-09-01T00:00:01Z", "technique": "other private"},
+    ]
+    later = {**base, "ts": "2026-09-01T00:00:02Z", "technique": "late intact"}
+    pattern_path.write_bytes(("\n".join(json.dumps(row) for row in rows) + "\nnot-json\n42\n").encode()
+                             + b"\xff\n" + (json.dumps(later) + "\n").encode())
+    backup = pattern_path.with_suffix(".jsonl.1")
+    backup.write_text(json.dumps({**base, "ts": "2026-08-01T00:00:00Z",
+                                  "technique": "stale claim", "outcome": "false-positive"}) + "\n")
+    active = tmp_path / "active"
+    import_target_staged(source, active, target)
+    promote_target(active, target)
+    store = TargetStore(active, target)
+    before = store.binding()["revision"]
+
+    result = backfill_target_patterns(source, active, target)
+    assert result["status"] == "partial" and len(result["experience_map"]) == 3
+    assert result["quarantined"] == [
+        {"source_path": "hunt-memory/patterns.jsonl", "line": 3, "reason": "PatternDB row is not JSON"},
+        {"source_path": "hunt-memory/patterns.jsonl", "line": 4, "reason": "PatternDB row has no target identity"},
+        {"source_path": "hunt-memory/patterns.jsonl", "line": 5, "reason": "PatternDB row is not UTF-8"},
+    ]
+    assert store.binding()["revision"] == before + 3
+    for item in result["experience_map"]:
+        line = (source / item["source_path"]).read_bytes().split(b"\n")[item["line"] - 1]
+        assert hashlib.sha256(line).hexdigest() == item["source_line_sha256"]
+    assert all(store.experience(item["experience_id"])["kind"] == "note"
+               for item in result["experience_map"])
+    view = build_recall_view(active, target=target, kinds=["note"])
+    texts = [entry["text"] for entry in view["target_entries"]]
+    assert any("owner swap" in text for text in texts)
+    assert any("stale claim" in text for text in texts)
+    assert any("late intact" in text for text in texts)
+    assert "other private" not in json.dumps(view)
+    assert backfill_target_patterns(source, active, target) == result
+    assert store.binding()["revision"] == before + 3
+    receipt = json.loads((active / "state" / target / "migration-receipt.json").read_text())
+    assert receipt["pattern_backfill"]["experience_map"] == result["experience_map"]
+    pattern_path.write_bytes(pattern_path.read_bytes() + b"\n")
+    with pytest.raises(StoreError, match="does not match the pinned source"):
+        backfill_target_patterns(source, active, target)
+
+
+def test_pattern_backfill_resumes_pending_receipt_after_partial_store_write(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    target = _fixture(source, actions=[])
+    path = source / "hunt-memory" / "patterns.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text("\n".join(json.dumps({"schema_version": 1, "target": target,
+                                            "ts": f"2026-09-01T00:00:0{index}Z", "vuln_class": "idor",
+                                            "technique": f"attempt {index}", "tech_stack": ["node"]})
+                              for index in range(2)) + "\n")
+    active = tmp_path / "active"
+    import_target_staged(source, active, target)
+    promote_target(active, target)
+    store = TargetStore(active, target)
+    before = store.binding()["revision"]
+    saved = migration.TargetStore.remember
+    calls = 0
+
+    def fail_second(self, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("interrupted")
+        return saved(self, **kwargs)
+
+    monkeypatch.setattr(migration.TargetStore, "remember", fail_second)
+    with pytest.raises(RuntimeError, match="interrupted"):
+        backfill_target_patterns(source, active, target)
+    receipt_path = active / "state" / target / "migration-receipt.json"
+    assert json.loads(receipt_path.read_text())["pattern_backfill"]["status"] == "pending"
+    assert store.binding()["revision"] == before + 1
+    monkeypatch.setattr(migration.TargetStore, "remember", saved)
+    result = backfill_target_patterns(source, active, target)
+    assert result["status"] == "complete" and len(result["experience_map"]) == 2
+    assert store.binding()["revision"] == before + 2
+
+
+def test_memory_import_quarantines_polluted_row_without_losing_valid_advice(tmp_path):
+    source = tmp_path / "source"
+    target = _fixture(source, actions=[])
+    memory = source / "memory" / "goals" / "targets" / f"{target}.json"
+    memory.parent.mkdir(parents=True, exist_ok=True)
+    memory.write_text(json.dumps({"schema_version": 1, "target": target,
+                                  "active_leads": [{"text": "valid lead"},
+                                                   {"text": "{'schema_version': 1, 'echo': True}"}]}), encoding="utf-8")
+    result = import_target_staged(source, tmp_path / "stage", target)
+    assert result["status"] == "partial"
+    assert result["legacy"]["target_memory"]["imported_experiences"] == 1
+    assert any(row.get("field") == "active_leads" and row.get("position") == 1
+               for row in result["quarantined"])
+
+
+def test_memory_import_requires_exact_live_observation_and_entry_target(tmp_path):
+    target = "target.test"
+    source, active = tmp_path / "source", tmp_path / "active"
+    store = TargetStore(active, target)
+    store.initialize()
+    artifact = active / "evidence" / target / "response.txt"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("HTTP 403", encoding="utf-8")
+    store.start_attempt(attempt_id="attempt-1", source="native", started_at="2026-09-23T00:00:00Z",
+                        actor="operator")
+    operation = store.record_execution(
+        attempt_id="attempt-1", outcome="complete", actor="operator",
+        observations=[{"endpoint": f"https://{target}/api/x", "method": "GET", "family": "authz",
+                       "observed_at": "2026-09-23T00:00:00Z", "description": "Peer denied",
+                       "artifacts": {"response": artifact.relative_to(active).as_posix()},
+                       "state_changing": False}],
+    )["entity_id"]
+    memory = source / "memory" / "goals" / "targets" / f"{target}.json"
+    memory.parent.mkdir(parents=True)
+    memory.write_text(json.dumps({"schema_version": 1, "target": target,
+                                  "dead_ends": [{"text": "peer read denied", "conditions": "same tenant",
+                                                 "reopen_when": "new peer session",
+                                                 "evidence_refs": [f"{operation}:0"]},
+                                                {"text": "foreign note", "target": "other.test"}]}), encoding="utf-8")
+    report = {"legacy": {"target_memory": {"status": "valid"}}, "quarantined": []}
+    migration._import_target_memory(report, store, source, target, migration._migration_manifest(source, target))
+    mapping = report["legacy"]["target_memory"]["experience_map"]
+    assert len(mapping) == 1 and mapping[0]["evidence_status"] == "bound"
+    saved = store.experience(mapping[0]["experience_id"])
+    assert saved["kind"] == "negative" and saved["evidence"] == [{"operation_id": operation, "step": 0}]
+    assert report["quarantined"][0]["reason"] == "historical entry declares another target"
+
+
+def test_case_private_session_material_is_staged_and_rebound(tmp_path):
+    source = tmp_path / "source"
+    target = _fixture(source, actions=[])
+    private = {"schema_version": 1, "target": target, "session_id": "sess_a",
+               "actor": "user_a", "kind": "bearer", "headers": {"Authorization": "Bearer fixture-secret"}}
+    private["content_sha256"] = hashlib.sha256(
+        json.dumps(private, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    private_ref = f".private/case-state/{target}/sessions/sess_a-{private['content_sha256'][:16]}.json"
+    material = source / private_ref
+    material.parent.mkdir(parents=True)
+    material.write_text(json.dumps(private))
+    material.chmod(0o600)
+    (source / "state" / target / "case_state.json").write_text(json.dumps({
+        "schema_version": 1, "target": target,
+        "actors": {"user_a": {"role": "user"}},
+        "sessions": {"sess_a": {"actor": "user_a", "kind": "bearer", "private_ref": private_ref}},
+        "objects": {}, "hypotheses": [], "validation_backlog": [],
+    }))
 
     staged = tmp_path / "staging-root"
     result = import_target_staged(source, staged, target)
@@ -426,7 +679,7 @@ def test_case_private_session_material_is_staged_and_rebound(tmp_path):
     assert result["legacy"]["case_context_import"] == {
         "actors": 1, "sessions": 1, "objects": 0, "hypotheses": 0, "quarantined": 0,
     }
-    migrated = load_case_state(staged, target)
+    migrated = TargetStore(staged, target).case_state()
     private_ref = migrated["sessions"]["sess_a"]["private_ref"]
     assert private_ref.startswith(f".private/case-state/{target}/")
     assert (staged / private_ref).is_file()

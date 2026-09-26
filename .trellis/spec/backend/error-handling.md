@@ -9,10 +9,9 @@
   `errors`，`autopilot_bootstrap` 据此停止。
 - **核心逻辑**：可被其他模块调用的函数使用 `ValueError` 或领域异常表达非法状态，不能
   `print()` 后继续。`RuntimePhaseBusy` 是目标 phase 锁冲突的领域异常范例。
-- **交互边界**：`tools/validate.py` 的 prompt 读到 EOF 必须抛
-  `ValidationInputUnavailable`，不能把默认值当作肯定 gate；non-TTY 只能走显式
-  `--decision-json` machine path。machine binding 预检使用
-  `find_finding(..., migrate_legacy=False)` 只读 legacy payload；所有 binding 通过前不得触发迁移。
+- **验证边界**：`tools/validate.py` 只接受显式 `--decision-json`；缺失判断不能以默认肯定
+  gate 代替。scaffold/preflight 只读现有 Store，全部 binding 通过前不得发布报告或提交裁决；
+  普通验证永不隐式初始化/迁移 legacy payload。
 - **持久化**：写入失败必须清理临时文件并继续向上抛出，不能返回成功。原子 writer 在
   `except` 中只做清理，不吞掉原始异常。
 - **CLI 出口**：`main(argv)` 捕获预期的 `KeyError`/`ValueError`，错误写 stderr，返回稳定
@@ -36,8 +35,8 @@
   `/kb`/知识路由继续；启用来源解析后发现 stale/invalid corpus、坏 offset/hash 或 dangling
   ref 时必须返回不可用结果，不能返回部分 payload 或伪可信摘要。
 - append-only 日志单行损坏：跳过该行并在 stderr 输出文件/行号 warning。
-- 非主链 telemetry、session summary 或 queue 同步失败：保留主结果，输出 warning 或
-  `sync.status=skipped`。`HuntJournal.log_session_summary()` 是 best-effort 范例。
+- 非主链 telemetry 或 session summary 失败：保留主结果，输出 warning 或
+  明确诊断。领域登记失败必须返回可重试的 partial/error，不能假装 Queue 同步成功。`HuntJournal.log_session_summary()` 是 best-effort 范例。
 - capability profile 探测失败：返回 advisory unknown profile，不能阻断 target state；
   runtime drift 和参数错误仍是 blocking gate。
 - subprocess cleanup 的 `communicate()`、process-group lookup、SIGTERM 或 SIGKILL
@@ -56,12 +55,11 @@
   的参数/契约错误：stderr 输出恢复动作、返回 `2`，且不得创建 report、summary、ledger、queue、
   runtime 或 canonical finding mutation。
   `decision.cvss` 是可选的外部交付字段；缺失不得制造错误或默认分值。
-- 已存在的 action queue 若为坏 JSON、非 object、错误 schema 或 `actions` 非 list，owner 和 CLI
-  必须 fail-fast 并在错误中包含 queue 路径；只有文件缺失可以投影为空 queue。
+- Action Queue 的普通入口必须通过 Store 准入。未初始化、legacy、preview、坏库或 fence
+  冲突均 fail-fast；只有已初始化且没有行动的 Store 才表示空队列。
 - 不允许 broad `except Exception: pass`。只有明确标注的 best-effort 派生、清理或日志
   路径可捕获 broad exception，并且必须保留可诊断结果。
-- canonical state 损坏不能无提示地伪装成空状态。现有少数 legacy loader 的空回落属于
-  已记录 P2 技术债务，不是新代码模板。
+- 当前 Store 或证据损坏不能伪装为空状态。显式历史 reader 的诊断不提供运行时 fallback。
 - 正式卡 governance log 有坏 JSON、重复 `event_id` 或非法 replay 时，audit 和后续 append
   都必须 fail-fast；诊断包含行号/card/event。修复使用新的补偿事件，不静默跳过后继续改写
   lifecycle。
@@ -78,12 +76,12 @@
   必须继续可用，canonical state 损坏仍返回结构化 error，不能因投影缩小而变成空结果。
 - `python3 tools/validate.py --target <target> --finding-id <id> --decision-json <file> --json`
   是唯一 non-TTY validation signature。decision 先完整验证，再经既有
-  `finding_index` owner 写回；不得接受 stdin EOF、自然语言确认或直接 `findings.json` edit
+  Store assessment/delivery/report 命令写回；不得接受 stdin EOF、自然语言确认或直接 `findings.json` edit
   作为替代输入。
 - `python3 tools/action_queue.py ...` 遇到 queue read/write 的 `OSError`/`ValueError` 时写 stderr
   并返回 `2`；不得把损坏 queue 当作没有 action 后继续 checkpoint 或 handoff。
-- `target_case_state.py` 与 `coverage_matrix.py` 仅在状态文件缺失时返回空投影；已有文件损坏时
-  owner 抛出带路径错误，CLI 写 stderr 并返回 `2`。checkpoint 不得吞掉损坏 case state 后继续。
+- `target_case_state.py` 与 `coverage_matrix.py` 只从 Store 派生当前事实；可重建缓存缺失可重算，
+  Store 或必需私有材料损坏则显式失败。checkpoint 不得吞掉故障后伪造空 Case/已闭合覆盖。
 - `surface.py`、`surface_index.py` 和 `observation_inventory.py` 的 schema/cursor/race/owner
   错误写 stderr 并返回 `2`。page cursor 的 target/revision/filter 不一致是明确错误，调用方从
   新 snapshot 重启，不能猜 offset 后继续。
@@ -118,12 +116,10 @@ except ImportError:  # 兼容 python3 tools/example.py
 - 写入中断 -> 临时文件被清理，原文件仍可读。
 - best-effort 同步失败 -> 主结果保留且 warning/status 可见。
 - non-TTY validate 缺/坏 decision -> exit `2`、所有 target-owned state 保持未创建或字节不变。
-- legacy finding 上的 machine binding 失败 -> exit `2`，且 legacy payload 不迁移、event/report/
-  summary/ledger/queue/runtime 不创建。
-- action queue 损坏/非法 shape -> owner 抛带路径错误、CLI exit `2`；replace 失败 -> 旧字节不变、
-  同目录临时文件清理。
-- validation case state / coverage matrix 损坏或非法 shape -> owner 抛带路径错误、CLI exit `2`；
-  replace 失败 -> 旧字节不变、同目录临时文件清理；checkpoint 遇到损坏 case state 显式失败。
+- legacy-only finding 的 machine binding -> exit `2`；旧 payload 不迁移，报告和领域事实不创建。
+- Store/fence/schema 损坏 -> owner 抛恢复错误、CLI exit `2`；事务失败 -> 元数据和 audit 全回滚。
+- Case 私有材料/已登记证据损坏 -> 当前授权失败；原始历史保留。可重建 Coverage 文件不是 owner。
+- 报告发布失败 -> 无部分正文；裁决或报告登记中断 -> 正文及已提交收据保留，原命令可幂等重试。
 - Surface/inventory 派生：missing/stale/corrupt summary/projection -> 不消费；atomic failure/race ->
   旧字节保留或无新 manifest；cursor snapshot 变化 -> fail-fast；recon finalizer failure -> raw
   artifact 保留且可由显式 refresh 重建。

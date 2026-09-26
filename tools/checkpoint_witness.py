@@ -58,8 +58,7 @@ def is_canonical_coverage_lane_evidence_ref(
     normalized = str(evidence_ref or "").strip().replace("\\", "/").lstrip("./")
     return normalized in {
         f"evidence/{key}/coverage_matrix.json",
-        f"state/{key}/action_queue.json",
-        f"memory/evidence/{key}/ledger.jsonl",
+        f"state/{key}/metadata.sqlite3",
     }
 
 

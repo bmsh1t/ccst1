@@ -20,8 +20,8 @@ Design notes:
     - Schema per design.md Contract 4 (Phase 3): endpoints array
       with nested cells per vuln class.
     - Every observed route stays discoverable; bounded projections limit context, not coverage.
-    - rebuild operates incrementally — re-runs preserve operator
-      annotations (n_a reasons, etc.) unless --force-clean is set.
+    - primary rebuild recovers authored reviews from Store, including with
+      --force-clean; legacy incremental rebuild retains matrix annotations.
     - All cell values are typed enums INTERNALLY (4 statuses) but
       the cell shape is data, NOT a Claude-facing options[] menu.
       `find-gaps` exposes all unresolved cells; --limit only bounds output.
@@ -81,8 +81,10 @@ import html
 import json
 import os
 import re
+import shlex
 import sys
 import tempfile
+import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -95,49 +97,40 @@ if str(BASE_DIR) not in sys.path:
 try:
     from tools.attack_probe_filter import is_attack_probe, sanitize_attack_probe_url
     from tools.closure_resolver import ClosureResolver
-    from tools.evidence_identity import (
-        CANONICAL_VULN_CLASSES,
-        VULN_CLASS_ALIASES as CLOSURE_VULN_CLASS_ALIASES,
-        canonical_vuln_class,
-        collapse_dynamic_path_segments,
-        extract_endpoint_path,
-        normalize_vuln_class,
-        path_with_query,
-        query_param_names,
-    )
-    from tools.finding_index import load_finding_index, upsert_finding
+    from tools.evidence_identity import CANONICAL_VULN_CLASSES, VULN_CLASS_ALIASES as CLOSURE_VULN_CLASS_ALIASES, collapse_dynamic_path_segments, extract_endpoint_path, normalize_vuln_class, path_with_query, query_param_names
     from tools.recon_filters import (
         has_html_unicode_encoding,
         has_malformed_path,
         has_url_encoding_error,
     )
     from tools.route_kinds import load_observations as load_route_kind_observations
-    from tools.surface_index import iter_surface_index, load_surface_index_status
+    from tools.surface_index import build_surface_index_input_manifest, iter_surface_index, load_surface_index_status, recon_source_iterators
     from tools.target_paths import canonical_target_value, target_https_url, target_storage_key, url_belongs_to_target
-    from tools.target_store import StoreError, TargetStore, target_backend, target_switch_lock
+    from tools.target_store import COVERAGE_REVIEW_STATUSES, ENDPOINT_KIND_VALUES, FINAL_ENDPOINT_KIND_SOURCES, StoreError, runtime_store, target_switch_lock
 except ImportError:  # pragma: no cover - top-level tools/ import
     from attack_probe_filter import is_attack_probe, sanitize_attack_probe_url  # type: ignore
     from closure_resolver import ClosureResolver  # type: ignore
     from evidence_identity import (  # type: ignore
         CANONICAL_VULN_CLASSES,
         VULN_CLASS_ALIASES as CLOSURE_VULN_CLASS_ALIASES,
-        canonical_vuln_class,
         collapse_dynamic_path_segments,
         extract_endpoint_path,
         normalize_vuln_class,
         path_with_query,
         query_param_names,
     )
-    from finding_index import load_finding_index, upsert_finding  # type: ignore
     from recon_filters import (  # type: ignore
         has_html_unicode_encoding,
         has_malformed_path,
         has_url_encoding_error,
     )
     from route_kinds import load_observations as load_route_kind_observations  # type: ignore
-    from surface_index import iter_surface_index, load_surface_index_status  # type: ignore
+    from surface_index import build_surface_index_input_manifest, iter_surface_index, load_surface_index_status, recon_source_iterators  # type: ignore
     from target_paths import canonical_target_value, target_https_url, target_storage_key, url_belongs_to_target  # type: ignore
-    from target_store import StoreError, TargetStore, target_backend, target_switch_lock  # type: ignore
+    from target_store import (  # type: ignore
+        COVERAGE_REVIEW_STATUSES, ENDPOINT_KIND_VALUES, FINAL_ENDPOINT_KIND_SOURCES,
+        StoreError, runtime_store, target_switch_lock,
+    )
 
 VULN_CLASSES = CANONICAL_VULN_CLASSES
 VULN_CLASS_ALIASES = {
@@ -149,28 +142,10 @@ HIGH_RISK_LANE_TECHNIQUES = {
     "RCE": ("SSTI", "CommandInjection", "Deserialization"),
     "Path": ("LFI", "RFI"),
 }
-COVERAGE_BUILD_VERSION = 6
-COVERAGE_PROJECTION_SCHEMA_VERSION = 3
-COVERAGE_PROJECTION_KIND = "coverage_matrix_projection"
-COVERAGE_PROJECTION_GAP_LIMIT = 1000
+COVERAGE_BUILD_VERSION = 8
 
 
-STATUS_VALUES = ("tested_clean", "tested_finding", "untested", "n_a")
-
-
-ENDPOINT_KIND_VALUES = (
-    "untriaged",
-    "api_endpoint",
-    "page_route",
-    "static_asset",
-    "public_metadata",
-    "route_prefix",
-    "realtime_endpoint",
-    "external_chain_context",
-    "unknown",
-)
-
-FINAL_ENDPOINT_KIND_SOURCES = {"ai_triage", "manual", "operator"}
+STATUS_VALUES = COVERAGE_REVIEW_STATUSES
 
 STATIC_ASSET_EXTENSIONS = {
     ".js", ".mjs", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg",
@@ -247,8 +222,6 @@ def _matrix_path(repo_root: Path, target: str) -> Path:
     return repo_root / "evidence" / _storage_key(target) / "coverage_matrix.json"
 
 
-def _projection_path(repo_root: Path, target: str) -> Path:
-    return repo_root / "evidence" / _storage_key(target) / "coverage_matrix-summary.json"
 
 
 @contextmanager
@@ -311,23 +284,21 @@ def coverage_source_fingerprint(
     """Bind a rebuilt matrix to its inputs without reading large bodies."""
     repo = Path(repo_root) if repo_root else BASE_DIR
     key = _storage_key(target)
-    backend = target_backend(repo, target)
+    store = runtime_store(repo, target)
     paths = (
         repo / "recon" / key / "urls" / "all_filtered.txt",
         repo / "recon" / key / "urls" / "all.txt",
         repo / "recon" / key / "urls" / "filter.log",
         repo / "recon" / key / "route_kinds.json",
-        repo / "findings" / key / "findings.json",
         repo / "findings" / key / "scanner_pass.json",
         repo / "findings" / key / "summary.json",
     )
-    if backend == "primary":
-        paths += (
-            repo / "recon" / key / "urls" / "raw",
-            repo / "recon" / key / "browser" / "xhr_endpoints.txt",
-            repo / "recon" / key / "browser" / "api_endpoints.txt",
-            repo / "findings" / key / "js_intel" / "hypotheses.json",
-        )
+    paths += (
+        repo / "recon" / key / "urls" / "raw",
+        repo / "recon" / key / "browser" / "xhr_endpoints.txt",
+        repo / "recon" / key / "browser" / "api_endpoints.txt",
+        repo / "findings" / key / "js_intel" / "hypotheses.json",
+    )
     items = []
     for path in paths:
         try:
@@ -356,20 +327,13 @@ def coverage_source_fingerprint(
             "index_binding": manifest.get("index_binding") or {},
             "row_count": int(manifest.get("row_count", 0) or 0),
         })
-    store_binding: dict[str, object] = {}
-    if backend in {"preview", "primary"}:
-        store = TargetStore(repo, target, allow_preview=True)
-        context = store.context(limit=1)
-        store_binding = {
-            "backend": backend,
-            "store_id": str(context.get("store_id") or ""),
-            "revision": int(context.get("revision", 0) or 0),
-        }
+    store_binding = store.binding()
     payload = {
         "build_version": COVERAGE_BUILD_VERSION,
         "inputs": items,
         "surface_index": surface_binding,
         "store": store_binding,
+        "surface_inputs": build_surface_index_input_manifest(repo, target)["fingerprint"],
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
@@ -391,23 +355,8 @@ def matrix_is_fresh(
     return bool(matrix.get("source_fingerprint")) and matrix.get("source_fingerprint") == expected
 
 
-def _file_binding(path: Path) -> dict:
-    stat = path.stat()
-    return {
-        "size": stat.st_size,
-        "mtime_ns": stat.st_mtime_ns,
-        "ctime_ns": stat.st_ctime_ns,
-        "st_dev": stat.st_dev,
-        "st_ino": stat.st_ino,
-    }
 
 
-def _binding_matches(path: Path, binding: dict) -> bool:
-    try:
-        current = _file_binding(path)
-        return current == {key: int(binding[key]) for key in current}
-    except (KeyError, OSError, TypeError, ValueError):
-        return False
 
 
 def _write_json_atomic(path: Path, payload: dict) -> None:
@@ -436,94 +385,11 @@ def _write_json_atomic(path: Path, payload: dict) -> None:
         raise
 
 
-def save_matrix_projection(
-    target: str,
-    matrix: dict,
-    repo_root: Path | str | None = None,
-) -> Path:
-    repo = Path(repo_root) if repo_root else BASE_DIR
-    matrix_path = _matrix_path(repo, target)
-    if not matrix_path.is_file():
-        raise ValueError(f"coverage matrix missing for projection: {matrix_path}")
-    endpoints = []
-    for endpoint in matrix.get("endpoints") or []:
-        if not isinstance(endpoint, dict):
-            continue
-        path = str(endpoint.get("endpoint") or "")
-        if not path:
-            continue
-        cells = {
-            str(vuln_class): dict(cell)
-            for vuln_class, cell in (endpoint.get("cells") or {}).items()
-            if isinstance(cell, dict) and cell.get("status", "untested") != "untested"
-        }
-        endpoints.append({"endpoint": path, "cells": cells})
-    payload = {
-        "kind": COVERAGE_PROJECTION_KIND,
-        "schema_version": COVERAGE_PROJECTION_SCHEMA_VERSION,
-        "target": canonical_target_value(target),
-        "source_fingerprint": str(matrix.get("source_fingerprint") or ""),
-        "matrix_binding": _file_binding(matrix_path),
-        "summary": dict(matrix.get("summary") or _compute_summary(matrix)),
-        "high_risk_lanes": high_risk_lane_summary(matrix),
-        "policy_skips": dict(matrix.get("policy_skips") or {}),
-        "high_value_gaps": high_value_gap_window_from_matrix(
-            matrix,
-            limit=COVERAGE_PROJECTION_GAP_LIMIT,
-        )[0],
-        "endpoints": endpoints,
-    }
-    path = _projection_path(repo, target)
-    _write_json_atomic(path, payload)
-    return path
 
 
-def load_matrix_projection(
-    target: str,
-    repo_root: Path | str | None = None,
-) -> dict | None:
-    repo = Path(repo_root) if repo_root else BASE_DIR
-    if target_backend(repo, target) == "primary":
-        return read_matrix(target, repo)
-    path = _projection_path(repo, target)
-    matrix_path = _matrix_path(repo, target)
-    if not path.is_file() or not matrix_path.is_file():
-        return None
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(payload, dict):
-        return None
-    if payload.get("kind") != COVERAGE_PROJECTION_KIND or payload.get("schema_version") != COVERAGE_PROJECTION_SCHEMA_VERSION:
-        return None
-    if payload.get("target") != canonical_target_value(target):
-        return None
-    binding = payload.get("matrix_binding") if isinstance(payload.get("matrix_binding"), dict) else {}
-    if not _binding_matches(matrix_path, binding):
-        return None
-    source_fingerprint = str(payload.get("source_fingerprint") or "")
-    if source_fingerprint != coverage_source_fingerprint(target, repo):
-        return None
-    endpoints = payload.get("endpoints")
-    gaps = payload.get("high_value_gaps")
-    summary = payload.get("summary")
-    high_risk_lanes = payload.get("high_risk_lanes")
-    if not isinstance(endpoints, list) or not isinstance(gaps, list) or not isinstance(summary, dict):
-        return None
-    if not isinstance(high_risk_lanes, dict):
-        high_risk_lanes = high_risk_lane_summary({"endpoints": endpoints})
-    return {
-        "target": target,
-        "vuln_classes": list(VULN_CLASSES),
-        "source_fingerprint": source_fingerprint,
-        "summary": summary,
-        "high_risk_lanes": high_risk_lanes,
-        "policy_skips": dict(payload.get("policy_skips") or {}),
-        "endpoints": endpoints,
-        "_coverage_gaps": gaps,
-        "_coverage_projection": True,
-    }
+def load_matrix_projection(target: str, repo_root: Path | str | None = None) -> dict:
+    """Read the current Store projection without publishing a cache."""
+    return read_matrix(target, repo_root)
 
 
 def _save_matrix_unlocked(target: str, matrix: dict, repo_root: Path | str | None = None) -> Path:
@@ -542,7 +408,6 @@ def _save_matrix_unlocked(target: str, matrix: dict, repo_root: Path | str | Non
     matrix["high_risk_lanes"] = high_risk_lane_summary(matrix)
     path = _matrix_path(repo, target)
     _write_json_atomic(path, matrix)
-    save_matrix_projection(target, matrix, repo)
     return path
 
 
@@ -637,7 +502,7 @@ def _route_template(endpoint: str) -> str:
 def _has_persisted_coverage_state(endpoint: dict | None) -> bool:
     if not isinstance(endpoint, dict):
         return False
-    return any(
+    return bool(endpoint.get("kind_review") or endpoint.get("reviews")) or any(
         isinstance(cell, dict) and cell.get("status", "untested") != "untested"
         for cell in (endpoint.get("cells") or {}).values()
     )
@@ -784,6 +649,7 @@ def _has_final_endpoint_kind(ep: dict | None) -> bool:
     return (
         str(ep.get("kind_source") or "") in FINAL_ENDPOINT_KIND_SOURCES
         and str(ep.get("endpoint_kind") or "") in ENDPOINT_KIND_VALUES
+        and ep.get("endpoint_kind") != "untriaged"
     )
 
 
@@ -879,12 +745,8 @@ def _load_js_path_artifact_urls(urls_dir: Path) -> set[str]:
 
 
 def _gap_sort_key(gap: dict) -> tuple:
-    """Stable presentation by recorded request facts, never predicted class value."""
-    vuln_class = str(gap.get("vuln_class") or "")
-    class_index = VULN_CLASSES.index(vuln_class) if vuln_class in VULN_CLASSES else len(VULN_CLASSES)
-    route_kind = str(gap.get("route_kind") or "").strip()
-    route_bucket = 0 if route_kind in SERVER_BACKED_ROUTE_KINDS else 2 if route_kind in {"client_route", "static_asset"} else 1
-    return (route_bucket, -bool(gap.get("observed_params")), str(gap.get("endpoint") or ""), class_index)
+    """Stable identity order; recorded route facts do not choose the work."""
+    return (str(gap.get("endpoint") or ""), str(gap.get("vuln_class") or ""))
 
 
 def high_value_gaps_from_matrix(matrix: dict) -> list[dict]:
@@ -905,12 +767,10 @@ def coverage_gaps_with_observed_evidence(gaps: list[dict], matrix: dict | None =
 
     An endpoint row in a full rebuild matrix was itself observed by recon
     (source_count defaults positive there), so gaps on such rows are
-    evidence-backed unless the row explicitly records zero sources. Compact
-    projections carry no source fields, so gaps there speak through their own
-    observation fields.
+    evidence-backed unless the row explicitly records zero sources.
     """
     endpoint_sources: dict[str, int] = {}
-    if isinstance(matrix, dict) and not matrix.get("_coverage_projection"):
+    if isinstance(matrix, dict):
         for item in matrix.get("endpoints") or []:
             if isinstance(item, dict):
                 try:
@@ -973,6 +833,11 @@ def _iter_high_value_gaps(matrix: dict):
                 gap["representative_endpoint"] = representative
             if isinstance(cell.get("identity_v2"), dict):
                 gap["identity_v2"] = cell["identity_v2"]
+            if ep.get("kind_review"):
+                gap["endpoint_kind"] = ep["endpoint_kind"]
+                gap["kind_review"] = ep["kind_review"]
+            if cell.get("review"):
+                gap["review"] = cell["review"]
             yield gap
 
 
@@ -1056,11 +921,10 @@ def high_risk_lane_summary(
     return result
 
 
-def _ensure_endpoint(matrix: dict, endpoint: str) -> dict:
-    """Return the endpoint entry dict; create if missing."""
-    for ep in matrix.get("endpoints", []):
-        if ep.get("endpoint") == endpoint:
-            return ep
+def _ensure_endpoint(endpoints: dict[str, dict], endpoint: str) -> dict:
+    """Reuse one read's endpoint entry without rescanning the growing matrix."""
+    if endpoint in endpoints:
+        return endpoints[endpoint]
     kind = _endpoint_kind(endpoint)
     auto_hints = _endpoint_auto_hints(endpoint)
     new_ep = {
@@ -1072,7 +936,7 @@ def _ensure_endpoint(matrix: dict, endpoint: str) -> dict:
         "observation_count": 0,
         "cells": _empty_cells(endpoint, endpoint_kind=kind),
     }
-    matrix.setdefault("endpoints", []).append(new_ep)
+    endpoints[endpoint] = new_ep
     return new_ep
 
 
@@ -1101,30 +965,26 @@ def rebuild_matrix(
 
 def read_matrix(
     target: str, repo_root: Path | str | None = None, *, as_of: str | None = None,
+    current_only: bool = False,
 ) -> dict:
-    """Read without publishing; as_of labels this read, not a historical query.
+    """Read without publishing; primary always uses Store-authored reviews.
 
-    Primary inputs are checked for drift across assembly. Current truth verifies
-    raw evidence bytes; these checks do not create a filesystem transaction.
+    as_of labels this read, not a historical query. Primary inputs are checked
+    for drift; current truth verifies raw evidence bytes.
     """
     repo = Path(repo_root) if repo_root else BASE_DIR
-    if target_backend(repo, target) != "primary":
-        return load_matrix(target, repo)
+    runtime_store(repo, target)
     reference_time = as_of if as_of is not None else datetime.now(timezone.utc).isoformat(timespec="seconds")
     if not isinstance(reference_time, str) or not reference_time.strip():
         raise ValueError("as_of must be a non-empty timestamp")
     inputs = coverage_source_fingerprint(target, repo)
-    path = _matrix_path(repo, target)
-    historical_binding = _file_binding(path) if path.exists() else None
-    matrix = _rebuild_matrix_unlocked(target, repo)
-    if (inputs != coverage_source_fingerprint(target, repo)
-            or historical_binding != (_file_binding(path) if path.exists() else None)):
+    matrix = _rebuild_matrix_unlocked(target, repo, force_clean=current_only)
+    if inputs != coverage_source_fingerprint(target, repo):
         raise StoreError("primary coverage inputs changed during assembly")
     matrix["as_of"] = matrix["last_updated"] = reference_time
     matrix["source_snapshot"].update({
         "as_of": reference_time,
         "discovery_fingerprint": inputs,
-        "historical_matrix_binding": historical_binding,
     })
     matrix["source_fingerprint"] = hashlib.sha256(json.dumps(
         matrix["source_snapshot"], sort_keys=True, separators=(",", ":"),
@@ -1134,89 +994,53 @@ def read_matrix(
     return matrix
 
 
+def require_matching_truth(matrix: dict, truth: dict) -> None:
+    """Reject reused Coverage if a later evidence acquisition saw different inputs."""
+    if (matrix.get("evidence_source") != truth["source"]
+            or matrix.get("evidence_health") != truth["health"]
+            or matrix.get("closure_projection") != truth["projection"]):
+        raise StoreError("primary coverage evidence changed during assembly; rebuild the view")
+
+
 def _rebuild_matrix_unlocked(
     target: str,
     repo_root: Path | str | None = None,
     *,
     force_clean: bool = False,
 ) -> dict:
-    """Populate the matrix from cached recon URLs + findings.
+    """Project Recon, Store findings, observations and authored reviews.
 
-    Two endpoint sources are scanned:
-      1. recon/<target>/urls/all.txt — observed discovery surface,
-         without path-keyword qualification.
-      2. findings/<target>/findings.json — endpoints discovered
-         through working_hypothesis exploration that may not have
-         appeared in bulk recon (e.g. WordPress REST API paths,
-         /wp-json/* endpoints surfaced via JS inspection). These
-         endpoints are added to the matrix REGARDLESS of recon
-         presence; they carry their original evidence reference.
-
-    For an endpoint discovered through Claude's hypothesis-driven
-    workflow to land in the matrix on rebuild, it must either:
-      (a) be in recon/<target>/urls/all.txt (auto-collected), OR
-      (b) be referenced from findings/<target>/findings.json with
-          {"endpoint": "/path", "vuln_class": "..."}.
-    Operators using `mark_cell` for ad-hoc cells should ALSO append a
-    matching entry to findings.json so the cell survives a rebuild.
-
-    Operator annotations (n_a reasons) and historical endpoint rows are
-    preserved unless force_clean=True. A historical row that is absent from
-    the current Recon input remains visible as retained coverage state; it is
-    not treated as current Recon evidence. Path words never suppress a row.
+    Reviews survive cache deletion and narrower Recon runs. force_clean is
+    retained for call compatibility; cached cells never become current facts.
     """
     repo = Path(repo_root) if repo_root else BASE_DIR
-    findings_backend = target_backend(repo, target)
-    store = TargetStore(repo, target) if findings_backend == "primary" else None
-    store_binding = store.binding() if store is not None else None
-    matrix = _empty_matrix(target) if force_clean else load_matrix(target, repo)
+    store = runtime_store(repo, target)
+    store_binding = store.binding()
+    matrix = _empty_matrix(target)
     if "endpoints" not in matrix:
         matrix["endpoints"] = []
     matrix["vuln_classes"] = list(VULN_CLASSES)
-    if store is not None:
-        # Frozen review material remains inspectable, but is not authorization
-        # from the active owner (including old N/A decisions).
-        for endpoint in matrix["endpoints"]:
-            endpoint.setdefault("historical_cells", dict(endpoint.get("cells") or {}))
-            endpoint["cells"] = _empty_cells(str(endpoint.get("endpoint") or ""))
-
-    # Index existing cells by endpoint for preservation
-    existing = {ep.get("endpoint"): ep for ep in matrix.get("endpoints", [])}
+    existing: dict[str, dict] = {}
+    page = store.coverage_review_page(limit=1000)
+    while True:
+        if page["store_id"] != store_binding["store_id"] or page["revision"] != store_binding["revision"]:
+            raise StoreError("primary coverage inputs changed during assembly")
+        for review in page["items"]:
+            ep = _ensure_endpoint(existing, review["endpoint"])
+            if review["kind"] == "endpoint_kind":
+                ep.update({"endpoint_kind": review["value"], "kind_source": review["source"],
+                           "kind_reason": review["reason"], "kind_triaged_at": review["reviewed_at"],
+                           "kind_review": review})
+            else:
+                ep.setdefault("reviews", {})[review["family"]] = review
+        if not page["has_more"]:
+            break
+        page = store.coverage_review_page(limit=1000, cursor=page["next_cursor"])
 
     # Collect URLs from recon
     target_key = _storage_key(target)
     urls_dir = repo / "recon" / target_key / "urls"
     surface_status = load_surface_index_status(repo, target)
-    urls: list[str] = []
-    # Active is the canonical, filtered view. Older recon directories may only
-    # have *_filtered.txt plus raw all.txt, so retain that read-only fallback.
-    filtered_set: set[str] = set()
-    filtered_path = urls_dir / "all_filtered.txt"
-    active_path = urls_dir / "all.txt"
-    if surface_status.get("status") != "valid":
-        active_is_canonical = active_path.is_file() and (
-            (urls_dir / "raw").is_dir() or not filtered_path.is_file()
-        )
-        if active_is_canonical:
-            source_paths = (active_path,)
-        elif filtered_path.is_file():
-            source_paths = (filtered_path,)
-        else:
-            source_paths = tuple(path for path in (filtered_path, active_path) if path.is_file())
-        for urls_path in source_paths:
-            if not urls_path.is_file():
-                continue
-            try:
-                current_urls = [
-                    line.strip()
-                    for line in urls_path.read_text(encoding="utf-8", errors="ignore").splitlines()
-                    if line.strip()
-                ]
-                if urls_path == filtered_path:
-                    filtered_set.update(current_urls)
-                urls.extend(current_urls)
-            except OSError:
-                continue
     if surface_status.get("status") == "valid":
         source_rows = (
             (str(item.get("url") or ""), item.get("sources") or ("surface",))
@@ -1224,7 +1048,12 @@ def _rebuild_matrix_unlocked(
             if item.get("target_owned") and str(item.get("url") or "")
         )
     else:
-        source_rows = ((raw, ("active",)) for raw in dict.fromkeys(urls))
+        source_rows = (
+            (raw, (label,))
+            for label, values in recon_source_iterators(repo, target)
+            for raw in values
+            if url_belongs_to_target(raw, target)
+        )
 
     # Keep observed routes, parameter names and source provenance.
     js_path_artifacts = _load_js_path_artifact_urls(urls_dir)
@@ -1249,13 +1078,6 @@ def _rebuild_matrix_unlocked(
             if str(source).strip()
         }
         if raw in js_path_artifacts:
-            continue
-        if (
-            filtered_set
-            and raw not in filtered_set
-            and raw.startswith(("http://", "https://"))
-            and not url_belongs_to_target(raw, target)
-        ):
             continue
         if is_attack_probe(raw):
             raw = sanitize_attack_probe_url(raw)
@@ -1399,12 +1221,7 @@ def _rebuild_matrix_unlocked(
                 new_endpoint["representative_endpoint"] = representative
             new_endpoints.append(new_endpoint)
 
-    # Preserve endpoint rows that are no longer present in the current Recon
-    # input. Coverage is a durable view of prior review, not a snapshot that
-    # silently forgets an endpoint when a later Recon run is narrower. Keep the
-    # persisted cells/reasons/evidence intact and only backfill schema defaults
-    # for newly added vulnerability classes. `force_clean=True` starts with an
-    # empty matrix, so it remains the explicit opt-in escape hatch.
+    # Store-authored reviews remain visible after narrower Recon runs.
     current_endpoints = {str(item.get("endpoint") or "") for item in new_endpoints}
     for endpoint, historical_ep in existing.items():
         endpoint = str(endpoint or "")
@@ -1429,83 +1246,39 @@ def _rebuild_matrix_unlocked(
 
     # Apply finding claims from the active owner. Primary targets never read
     # the retired JSON index; the matrix remains a rebuildable projection.
-    findings_path = repo / "findings" / target_key / "findings.json"
-    if findings_backend == "primary":
-        matrix["backend"] = "primary"
-        matrix["target"] = store_binding["target"]
-        matrix["store_id"] = store_binding["store_id"]
-        matrix["store_revision"] = store_binding["revision"]
-        page = store.finding_page(limit=1000)
-        findings = list(page.get("items") or [])
-        while page.get("has_more"):
-            page = store.finding_page(limit=1000, cursor=page.get("next_cursor"))
-            findings.extend(page.get("items") or [])
-        findings_payload = {"findings": findings}
-        findings_evidence_prefix = f"state/{target_key}/metadata.sqlite3#finding/"
-    else:
-        matrix.pop("backend", None)
-        matrix.pop("store_id", None)
-        matrix.pop("store_revision", None)
-        if findings_path.is_file():
-            try:
-                findings_payload = load_finding_index(
-                    findings_path.parent,
-                    target=target,
-                    allow_legacy=True,
-                )
-                findings_evidence_prefix = f"findings/{target_key}/findings.json#"
-            except OSError:
-                findings_payload = {"findings": []}
-                findings_evidence_prefix = f"findings/{target_key}/findings.json#"
-        else:
-            findings_payload = {"findings": []}
-            findings_evidence_prefix = f"findings/{target_key}/findings.json#"
-    try:
-        for finding in findings_payload.get("findings", []):
+    matrix["backend"] = "primary"
+    matrix["target"] = store_binding["target"]
+    matrix["store_id"] = store_binding["store_id"]
+    matrix["store_revision"] = store_binding["revision"]
+    endpoints = {ep["endpoint"]: ep for ep in new_endpoints}
+    page = store.page("findings", limit=1000)
+    while True:
+        for finding in page["items"]:
             raw_endpoint = str(finding.get("endpoint") or finding.get("url") or "")
             ep_path = _canonicalize_endpoint(raw_endpoint)
             params = sorted(query_param_names(raw_endpoint))
-            vc = str(
-                finding.get("family")
-                or finding.get("vuln_class")
-                or finding.get("class")
-                or ""
-            ).strip()
-            if not ep_path or (vc not in VULN_CLASSES and store is None):
+            if not ep_path:
                 continue
             coverage_path = ep_path
-            if not any(
-                isinstance(ep, dict) and ep.get("endpoint") == ep_path
-                for ep in new_endpoints
-            ):
+            if ep_path not in endpoints:
                 template = _route_template(ep_path)
                 if template != ep_path and (
-                    any(
-                        isinstance(ep, dict) and ep.get("endpoint") == template
-                        for ep in new_endpoints
-                    )
-                    or template in existing
+                    template in endpoints or template in existing
                 ):
                     coverage_path = template
             # ensure endpoint exists in matrix even if recon missed it
-            for ep in new_endpoints:
-                if ep["endpoint"] == coverage_path:
-                    ep["observed_params"] = sorted(set(ep.get("observed_params") or []) | set(params))
-                    existing_ep = existing.get(coverage_path)
-                    kind = _effective_endpoint_kind(existing_ep, coverage_path)
-                    ep["auto_hints"] = _endpoint_auto_hints(
-                        coverage_path,
-                        ep.get("observed_params") or [],
-                        all_endpoints=all_seen_endpoints,
-                    )
-                    ep["endpoint_kind"] = kind
-                    _apply_endpoint_applicability(ep, kind)
-                    if store is None:
-                        ep["cells"][vc] = {
-                            "status": "tested_finding",
-                            "evidence_ref": f"{findings_evidence_prefix}{finding.get('id', '')}",
-                        }
-                    break
+            if coverage_path in endpoints:
+                ep = endpoints[coverage_path]
+                ep["observed_params"] = sorted(set(ep.get("observed_params") or []) | set(params))
+                existing_ep = existing.get(coverage_path)
+                kind = _effective_endpoint_kind(existing_ep, coverage_path)
+                ep["auto_hints"] = _endpoint_auto_hints(
+                    coverage_path,
+                    ep.get("observed_params") or [],
+                    all_endpoints=all_seen_endpoints,
+                )
+                ep["endpoint_kind"] = kind
+                _apply_endpoint_applicability(ep, kind)
             else:
                 existing_ep = existing.get(coverage_path)
                 kind = _effective_endpoint_kind(existing_ep, coverage_path)
@@ -1532,82 +1305,93 @@ def _rebuild_matrix_unlocked(
                 ep["source_count"] = int(ep.get("source_count", 0) or 0)
                 ep["observation_count"] = int(ep.get("observation_count", 0) or 0)
                 _apply_endpoint_applicability(ep, kind)
-                if store is None:
-                    ep["cells"][vc] = {
-                        "status": "tested_finding",
-                        "evidence_ref": f"{findings_evidence_prefix}{finding.get('id', '')}",
-                    }
-                new_endpoints.append(ep)
-    except OSError:
-        pass
+                endpoints[coverage_path] = ep
+        if not page["has_more"]:
+            break
+        page = store.page("findings", limit=1000, cursor=page["next_cursor"])
+    new_endpoints = list(endpoints.values())
 
     # Apply scanner_pass.json as advisory scanner-swept metadata. Broad scanner
     # negatives are not proof of absence, so they must not close coverage cells
     # as `tested_clean`; only deterministic validation runners or explicit
     # operator marks may do that.
     _apply_scanner_pass(target_key, repo, new_endpoints)
+    endpoints = {ep["endpoint"]: ep for ep in new_endpoints}
 
     for endpoint in new_endpoints:
         endpoint.pop("weight", None)
-    matrix["endpoints"] = new_endpoints
-    if store is not None:
-        try:
-            from tools.current_truth import current_cell_projection
-        except ImportError:  # pragma: no cover - direct tools/ execution
-            from current_truth import current_cell_projection
-        truth = current_cell_projection(repo, target)
-        source = truth["source"]
-        if (source.get("kind") != "store"
-                or source.get("store_id") != store_binding["store_id"]
-                or source.get("revision") != store_binding["revision"]):
-            raise StoreError("primary coverage inputs changed during assembly")
-        matrix["evidence_source"] = source
-        matrix["evidence_health"] = truth["health"]
-        matrix["closure_projection"] = truth["projection"]
-        observation_ids = sorted(str(row["event_id"]) for row in truth["records"])
-        matrix["source_snapshot"] = {
-            "store": store_binding,
-            "observation_ids": observation_ids,
-            # Immutable operations bind the registered artifact digest identities.
-            "operation_ids": sorted({event_id.rsplit(":", 1)[0] for event_id in observation_ids}),
-            "evidence_health": truth["health"],
-            "authorization_fingerprint": hashlib.sha256(json.dumps(
-                truth["projection"], sort_keys=True, separators=(",", ":"),
-            ).encode("utf-8")).hexdigest(),
+    try:
+        from tools.current_truth import current_cell_projection
+    except ImportError:  # pragma: no cover - direct tools/ execution
+        from current_truth import current_cell_projection
+    truth = current_cell_projection(repo, target)
+    source = truth["source"]
+    if (source.get("kind") != "store"
+            or source.get("store_id") != store_binding["store_id"]
+            or source.get("revision") != store_binding["revision"]):
+        raise StoreError("primary coverage inputs changed during assembly")
+    matrix["evidence_source"] = source
+    matrix["evidence_health"] = truth["health"]
+    matrix["closure_projection"] = truth["projection"]
+    observation_ids = sorted(str(row["event_id"]) for row in truth["records"])
+    matrix["source_snapshot"] = {
+        "store": store_binding,
+        "review_ids": sorted(
+            review["id"] for ep in new_endpoints
+            for review in ([ep["kind_review"]] if ep.get("kind_review") else [])
+            + list((ep.get("reviews") or {}).values())
+        ),
+        "observation_ids": observation_ids,
+        # Immutable operations bind the registered artifact digest identities.
+        "operation_ids": sorted({event_id.rsplit(":", 1)[0] for event_id in observation_ids}),
+        "evidence_health": truth["health"],
+        "authorization_fingerprint": hashlib.sha256(json.dumps(
+            truth["projection"], sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")).hexdigest(),
+    }
+    for record in truth["records"]:
+        endpoint = _canonicalize_endpoint(str(record.get("endpoint") or ""))
+        if endpoint:
+            entry = _ensure_endpoint(endpoints, endpoint)
+            entry["sources"] = sorted(set(entry.get("sources") or []) | {"store-observation"})
+            entry["source_count"] = len(entry["sources"])
+            entry["observation_count"] = int(entry.get("observation_count", 0)) + 1
+            entry["observed_params"] = sorted(set(entry.get("observed_params") or []) | query_param_names(
+                str(record.get("raw_endpoint") or record.get("endpoint") or "")))
+    for endpoint in endpoints.values():
+        # Endpoint-kind N/A defaults remain historical advice. Keep current
+        # scanner metadata on open cells without promoting it to closure.
+        cells = endpoint["cells"]
+        for family, cell in cells.items():
+            if cell.get("status") != "untested":
+                endpoint.setdefault("historical_cells", {}).setdefault(family, dict(cell))
+        endpoint["cells"] = {
+            family: dict(cells[family])
+            if cells.get(family, {}).get("status") == "untested"
+            else {"status": "untested"}
+            for family in VULN_CLASSES
         }
-        for record in truth["records"]:
-            endpoint = _canonicalize_endpoint(str(record.get("endpoint") or ""))
-            if endpoint:
-                _ensure_endpoint(matrix, endpoint)
-        for endpoint in new_endpoints:
-            # Endpoint-kind N/A defaults remain historical advice. Keep current
-            # scanner metadata on open cells without promoting it to closure.
-            cells = endpoint["cells"]
-            for family, cell in cells.items():
-                if cell.get("status") != "untested":
-                    endpoint.setdefault("historical_cells", {}).setdefault(family, dict(cell))
-            endpoint["cells"] = {
-                family: dict(cells[family])
-                if cells.get(family, {}).get("status") == "untested"
-                else {"status": "untested"}
-                for family in VULN_CLASSES
+    # Identity-scoped v2 and exact query/hash closure stay scoped in
+    # closure_projection; never widen them to the path/family grid.
+    for cell in truth["projection"].get("closed_cells") or []:
+        family = str(cell.get("vuln_class") or "")
+        endpoint = _canonicalize_endpoint(str(cell.get("endpoint") or ""))
+        if (endpoint and endpoint == cell.get("endpoint")
+                and family in VULN_CLASSES and cell.get("result") in STATUS_VALUES):
+            _ensure_endpoint(endpoints, endpoint)["cells"][family] = {
+                "status": cell["result"], "evidence_ref": cell.get("evidence_ref", ""),
             }
-        # Identity-scoped v2 and exact query/hash closure stay scoped in
-        # closure_projection; never widen them to the path/family grid.
-        for cell in truth["projection"].get("closed_cells") or []:
-            family = str(cell.get("vuln_class") or "")
-            endpoint = _canonicalize_endpoint(str(cell.get("endpoint") or ""))
-            if (endpoint and endpoint == cell.get("endpoint")
-                    and family in VULN_CLASSES and cell.get("result") in STATUS_VALUES):
-                _ensure_endpoint(matrix, endpoint)["cells"][family] = {
-                    "status": cell["result"], "evidence_ref": cell.get("evidence_ref", ""),
-                }
+    new_endpoints = list(endpoints.values())
+    matrix["endpoints"] = new_endpoints
+    for ep in new_endpoints:
+        for family, review in ep.pop("reviews", {}).items():
+            ep["cells"][family]["review"] = review
     matrix["policy_skips"] = _xss_policy_skip(repo, target_key, new_endpoints)
     matrix["source_fingerprint"] = coverage_source_fingerprint(
         target,
         repo,
     )
-    if store is not None and store.binding() != store_binding:
+    if store.binding() != store_binding:
         raise StoreError("primary coverage inputs changed during assembly")
     return matrix
 
@@ -1773,7 +1557,7 @@ def find_high_value_gaps(
     repo_root: Path | str | None = None,
 ) -> list[dict]:
     """Return untested cells, without a path or class-value filter."""
-    matrix = load_matrix(target, repo_root)
+    matrix = read_matrix(target, repo_root, current_only=True)
     gaps = high_value_gaps_from_matrix(matrix)
     return gaps
 
@@ -1785,7 +1569,7 @@ def needs_endpoint_triage(
     limit: int | None = None,
 ) -> list[dict]:
     """Return endpoints whose semantic kind still needs Claude/operator triage."""
-    matrix = load_matrix(target, repo_root)
+    matrix = read_matrix(target, repo_root, current_only=True)
     items: list[dict] = []
     for ep in matrix.get("endpoints", []):
         if not isinstance(ep, dict):
@@ -1812,10 +1596,7 @@ def needs_endpoint_triage(
             "status_counts": status_counts,
         })
 
-    items.sort(key=lambda item: (
-        -int(item.get("source_count", 0) or 0),
-        str(item.get("endpoint") or ""),
-    ))
+    items.sort(key=lambda item: str(item.get("endpoint") or ""))
     if limit is not None and limit >= 0:
         return items[:limit]
     return items
@@ -1829,8 +1610,10 @@ def mark_endpoint_kind(
     reason: str = "",
     source: str = "ai_triage",
     repo_root: Path | str | None = None,
+    command_id: str | None = None,
+    actor: str = "coverage-matrix",
 ) -> dict:
-    """Persist Claude/operator endpoint-kind triage in the coverage matrix."""
+    """Persist an authored classification through the active domain owner."""
     if kind not in ENDPOINT_KIND_VALUES:
         raise ValueError(
             f"unknown endpoint kind: {kind!r}. "
@@ -1842,19 +1625,16 @@ def mark_endpoint_kind(
             f"Valid sources: {', '.join(sorted(FINAL_ENDPOINT_KIND_SOURCES))}"
         )
     repo = Path(repo_root) if repo_root else BASE_DIR
-    with coverage_matrix_mutation_lock(repo, target):
-        matrix = load_matrix(target, repo)
-        endpoint = _canonicalize_endpoint(endpoint)
-        ep = _ensure_endpoint(matrix, endpoint)
-        observed_params = list(ep.get("observed_params") or [])
-        ep["endpoint_kind"] = kind
-        ep["kind_source"] = source
-        ep["kind_reason"] = reason
-        ep["kind_triaged_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        ep["auto_hints"] = list(ep.get("auto_hints") or _endpoint_auto_hints(endpoint, observed_params))
-        _apply_endpoint_applicability(ep, kind)
-        _save_matrix_unlocked(target, matrix, repo)
-        return ep
+    store = runtime_store(repo, target)
+    receipt = store.record_coverage_review(
+        command_id=command_id if command_id is not None else f"coverage-review:{uuid.uuid4().hex}",
+        endpoint=endpoint, kind="endpoint_kind", value=kind,
+        reason=reason, source=source, actor=actor,
+    )
+    review = store.coverage_review(receipt["entity_id"])
+    return {"endpoint": review["endpoint"], "endpoint_kind": review["value"],
+            "kind_source": review["source"], "kind_reason": review["reason"],
+            "kind_triaged_at": review["reviewed_at"], "kind_review": review, "receipt": receipt}
 
 
 def mark_cell(
@@ -1866,6 +1646,9 @@ def mark_cell(
     reason: str = "",
     repo_root: Path | str | None = None,
     write_finding: bool = False,
+    command_id: str | None = None,
+    actor: str = "coverage-matrix",
+    source: str = "manual",
 ) -> dict:
     """Mark a cell. Raises ValueError on invalid vuln_class/status.
 
@@ -1874,97 +1657,33 @@ def mark_cell(
     any case variant (`sqli`, `SQLI`) — the canonical name is what
     gets stored on disk.
 
-    When `write_finding=True` AND status indicates a finding
-    (`tested_finding`), append a matching entry to
-    `findings/<target>/findings.json`. This keeps the cell durable
-    across `rebuild_matrix` re-runs: without the findings.json entry,
-    a `force_clean` rebuild that the endpoint is not in recon would
-    drop the cell.
+    Primary records are advisory reviews, recovered from Store after rebuild.
+    `write_finding` also saves an unassessed claim in the same transaction for
+    `tested_finding`. It never creates execution evidence or closes a cell.
     """
     vuln_class = normalize_vuln_class(vuln_class)
     if status not in STATUS_VALUES:
         raise ValueError(f"unknown status: {status}")
     repo = Path(repo_root) if repo_root else BASE_DIR
-    with coverage_matrix_mutation_lock(repo, target):
-        matrix = load_matrix(target, repo)
-        endpoint = _canonicalize_endpoint(endpoint)
-        ep = _ensure_endpoint(matrix, endpoint)
-        cell = {"status": status}
-        if reason:
-            cell["reason"] = reason
-        # Primary claims are durable domain facts; publish them before the
-        # rebuildable coverage projection. If projection publication fails,
-        # the claim remains recoverable from Store and can be rebuilt.
-        if write_finding and status == "tested_finding" and target_backend(repo, target) == "primary":
-            _append_primary_finding(repo, target, endpoint, vuln_class, reason)
-        ep["cells"][vuln_class] = cell
-        _save_matrix_unlocked(target, matrix, repo)
-
-        if write_finding and status == "tested_finding":
-            if target_backend(repo, target) != "primary":
-                _append_finding(target, endpoint, vuln_class, reason, repo)
-
-        return cell
-
-
-def _append_finding(
-    target: str,
-    endpoint: str,
-    vuln_class: str,
-    reason: str,
-    repo_root: Path | str | None = None,
-) -> None:
-    """Upsert a canonical finding so the cell survives future rebuilds."""
-    repo = Path(repo_root) if repo_root else BASE_DIR
-    target_key = _storage_key(target)
-    findings_dir = repo / "findings" / target_key
-    upsert_finding(findings_dir, {
-        "endpoint": endpoint,
-        "url": endpoint,
-        "vuln_class": vuln_class,
-        "type": vuln_class.lower(),
-        "category": vuln_class.lower(),
-        "title": f"{vuln_class} finding on {endpoint}",
-        "summary": reason or f"Coverage matrix marked {endpoint} as tested_finding for {vuln_class}",
-        "severity": "medium",
-        "confidence": "confirmed",
-        "reason": reason,
-        "source": "mark_cell",
-        "source_file": "coverage_matrix",
-        "validation_status": "candidate",
-        "report_status": "not_generated",
-    }, target=canonical_target_value(target))
-
-
-def _append_primary_finding(
-    repo_root: Path,
-    target: str,
-    endpoint: str,
-    vuln_class: str,
-    reason: str,
-) -> None:
-    """Persist a coverage finding claim in the primary Store, never legacy JSON."""
-    canonical_target = canonical_target_value(target)
-    finding_id = "coverage_" + hashlib.sha256(
-        f"{canonical_target}|{endpoint}|{vuln_class}".encode("utf-8")
-    ).hexdigest()[:16]
-    absolute_endpoint = target_https_url(canonical_target).rstrip("/") + (endpoint if endpoint.startswith("/") else f"/{endpoint}")
-    store = TargetStore(repo_root, canonical_target)
-    try:
-        store.finding(finding_id)
-    except StoreError as exc:
-        if "finding missing" not in str(exc):
-            raise
-        store.create_finding(
-            command_id=f"coverage-finding:{finding_id}",
-            finding_id=finding_id,
-            endpoint=absolute_endpoint,
-            method="GET",
-            family=vuln_class,
-            title=f"{vuln_class} finding on {endpoint}",
-            claim=reason or f"Coverage matrix recorded {endpoint} as tested_finding for {vuln_class}",
-            actor="coverage-matrix",
-        )
+    store = runtime_store(repo, target)
+    path = store.coverage_endpoint(endpoint)
+    candidate = None
+    if write_finding and status == "tested_finding":
+        finding_id = "coverage_" + hashlib.sha256(
+            f"{store.target}|{path}|{vuln_class}".encode("utf-8")
+        ).hexdigest()[:16]
+        candidate = {
+            "id": finding_id, "endpoint": target_https_url(store.target).rstrip("/") + path,
+            "method": "GET", "family": vuln_class,
+            "title": f"{vuln_class} finding on {path}",
+            "claim": reason or f"Coverage review reports a possible {vuln_class} finding on {path}",
+        }
+    receipt = store.record_coverage_review(
+        command_id=command_id if command_id is not None else f"coverage-review:{uuid.uuid4().hex}",
+        endpoint=path, kind="cell_status", family=vuln_class, value=status,
+        reason=reason, source=source, actor=actor, candidate=candidate,
+    )
+    return {"advisory": True, "review": store.coverage_review(receipt["entity_id"]), "receipt": receipt}
 
 
 def _run_command(argv: list[str] | None = None) -> int:
@@ -1978,7 +1697,7 @@ def _run_command(argv: list[str] | None = None) -> int:
     p_rebuild.add_argument("--repo-root", default=str(BASE_DIR))
     p_rebuild.add_argument("--force-clean", action="store_true")
 
-    p_gaps = sub.add_parser("find-gaps", help="list high-value untested cells")
+    p_gaps = sub.add_parser("find-gaps", help="list unresolved cells in endpoint/class order")
     p_gaps.add_argument("--target", required=True)
     p_gaps.add_argument("--repo-root", default=str(BASE_DIR))
     p_gaps.add_argument(
@@ -1993,7 +1712,9 @@ def _run_command(argv: list[str] | None = None) -> int:
     )
     p_needs_triage.add_argument("--target", required=True)
     p_needs_triage.add_argument("--repo-root", default=str(BASE_DIR))
-    p_needs_triage.add_argument("--limit", type=int, default=50)
+    triage_window = p_needs_triage.add_mutually_exclusive_group()
+    triage_window.add_argument("--limit", type=int, default=50)
+    triage_window.add_argument("--all", action="store_true", help="return every untriaged endpoint")
 
     p_mark_kind = sub.add_parser("mark-endpoint-kind", help="persist Claude/operator endpoint-kind triage")
     p_mark_kind.add_argument("--target", required=True)
@@ -2002,6 +1723,8 @@ def _run_command(argv: list[str] | None = None) -> int:
     p_mark_kind.add_argument("--reason", default="")
     p_mark_kind.add_argument("--source", default="ai_triage", choices=sorted(FINAL_ENDPOINT_KIND_SOURCES))
     p_mark_kind.add_argument("--repo-root", default=str(BASE_DIR))
+    p_mark_kind.add_argument("--command-id", default=None, help="stable ID for retrying one review")
+    p_mark_kind.add_argument("--actor", default="coverage-matrix")
 
     p_mark = sub.add_parser("mark", help="mark a specific cell")
     p_mark.add_argument("--target", required=True)
@@ -2010,17 +1733,38 @@ def _run_command(argv: list[str] | None = None) -> int:
     p_mark.add_argument("--status", required=True, choices=list(STATUS_VALUES))
     p_mark.add_argument("--reason", default="")
     p_mark.add_argument("--repo-root", default=str(BASE_DIR))
+    p_mark.add_argument("--command-id", default=None, help="stable ID for retrying one review")
+    p_mark.add_argument("--actor", default="coverage-matrix")
+    p_mark.add_argument("--source", default="manual", choices=sorted(FINAL_ENDPOINT_KIND_SOURCES))
     p_mark.add_argument(
         "--write-finding",
         action="store_true",
         help=(
-            "Also append an entry to findings/<target>/findings.json so "
-            "the cell survives `rebuild` (only takes effect when "
-            "--status tested_finding)."
+            "Also record an unassessed Finding claim (only for tested_finding); "
+            "review and claim commit together in Store."
         ),
     )
+    p_reviews = sub.add_parser("reviews", help="read Store-authored reviews without rebuilding Coverage")
+    p_reviews.add_argument("--target", required=True)
+    p_reviews.add_argument("--repo-root", default=str(BASE_DIR))
+    p_reviews.add_argument("--endpoint", default=None)
+    p_reviews.add_argument("--history", action="store_true", help="include replaced reviews and imported history")
+    selection = p_reviews.add_mutually_exclusive_group()
+    selection.add_argument("--id", default=None)
+    selection.add_argument("--cursor", default=None)
+    p_reviews.add_argument("--limit", type=int, default=50)
 
     args = parser.parse_args(argv)
+
+    if args.cmd == "reviews":
+        store = runtime_store(Path(args.repo_root), args.target)
+        if args.id is not None:
+            result = store.coverage_review(args.id)
+        else:
+            result = store.coverage_review_page(endpoint=args.endpoint, latest=not args.history,
+                                                limit=args.limit, cursor=args.cursor)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
 
     if args.cmd == "rebuild":
         repo = Path(args.repo_root)
@@ -2042,8 +1786,6 @@ def _run_command(argv: list[str] | None = None) -> int:
                 force_clean=args.force_clean,
             )
             out = save_matrix(args.target, matrix, repo)
-        elif load_matrix_projection(args.target, repo) is None:
-            save_matrix_projection(args.target, matrix, repo)
         summary = matrix.get("summary") or _compute_summary(matrix)
         print(f"coverage_matrix {'reused' if reused else 'written'}: {out}")
         print(
@@ -2063,7 +1805,7 @@ def _run_command(argv: list[str] | None = None) -> int:
         else:
             if args.limit < 0:
                 raise ValueError("--limit must be >= 0")
-            matrix = load_matrix(args.target, args.repo_root)
+            matrix = read_matrix(args.target, args.repo_root, current_only=True)
             items, total = high_value_gap_window_from_matrix(
                 matrix,
                 limit=args.limit,
@@ -2073,18 +1815,38 @@ def _run_command(argv: list[str] | None = None) -> int:
                 "items": items,
                 "total": total,
                 "returned": len(items),
+                "remaining": total - len(items),
                 "truncated": len(items) < total,
                 "limit": args.limit,
                 "scope": "all",
+                "order": "endpoint,vuln_class",
+                "expand_command": shlex.join([
+                    "python3", "tools/coverage_matrix.py", "find-gaps", "--repo-root",
+                    str(Path(args.repo_root).resolve()), "--target", args.target,
+                ]),
             }
         print(json.dumps(payload, indent=2))
         return 0
 
     if args.cmd == "needs-triage":
-        items = needs_endpoint_triage(args.target, args.repo_root, limit=args.limit)
+        if args.limit < 0:
+            raise ValueError("--limit must be >= 0")
+        items = needs_endpoint_triage(args.target, args.repo_root)
+        total = len(items)
+        if not args.all:
+            items = items[:args.limit]
         print(json.dumps({
             "target": args.target,
+            "total": total,
             "total_returned": len(items),
+            "returned": len(items),
+            "remaining": total - len(items),
+            "truncated": len(items) < total,
+            "order": "endpoint",
+            "expand_command": shlex.join([
+                "python3", "tools/coverage_matrix.py", "needs-triage", "--repo-root",
+                str(Path(args.repo_root).resolve()), "--target", args.target, "--all",
+            ]),
             "items": items,
         }, ensure_ascii=False, indent=2))
         return 0
@@ -2097,6 +1859,8 @@ def _run_command(argv: list[str] | None = None) -> int:
             reason=args.reason,
             source=args.source,
             repo_root=args.repo_root,
+            command_id=args.command_id,
+            actor=args.actor,
         )
         print(json.dumps(ep, ensure_ascii=False, indent=2))
         return 0
@@ -2110,6 +1874,9 @@ def _run_command(argv: list[str] | None = None) -> int:
             reason=args.reason,
             repo_root=args.repo_root,
             write_finding=args.write_finding,
+            command_id=args.command_id,
+            actor=args.actor,
+            source=args.source,
         )
         print(json.dumps(cell, indent=2))
         return 0

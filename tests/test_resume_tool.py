@@ -1,22 +1,310 @@
 """Tests for tools/resume.py."""
 
 import json
+import shlex
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
 
 import finding_index
 import resume as resume_tool
 import tools.checkpoint as checkpoint_tool
 from memory.hunt_journal import HuntJournal
-from memory.pattern_db import PatternDB
+from legacy_fixtures import append_legacy_pattern
 from memory.schemas import make_journal_entry, make_pattern_entry
-from memory.target_profile import make_target_profile, save_target_profile
+from memory.target_profile import make_target_profile
+from legacy_fixtures import write_legacy_profile
 from resume import format_resume_output, load_pickup_summary, load_resume_summary
 from runtime_state import update_runtime_state
+from tools.target_store import StoreError, TargetStore
+
+
+@pytest.mark.parametrize("count", [0, 61])
+def test_resume_domain_previews_have_exact_totals_and_complete_cli_expansion(tmp_path, count):
+    repo = tmp_path / "isolated root"
+    target = "resume-domain.test"
+    store = TargetStore(repo, target)
+    store.initialize()
+    for index in range(count):
+        store.create_finding(
+            command_id=f"claim-{index}", finding_id=f"F-{index:04}",
+            endpoint=f"https://{target}/open-{index:04}", method="GET", family="custom",
+            title=f"Saved claim {index}", claim="Unassessed material", actor="operator",
+        )
+    if count:
+        raw = repo / "evidence" / target / "response.txt"
+        raw.parent.mkdir(parents=True)
+        raw.write_text("Recorded response")
+        store.start_attempt(attempt_id="read", source="native", started_at="2026-09-24T00:00:00Z", actor="operator")
+        store.record_execution(attempt_id="read", outcome="complete", actor="operator", observations=[{
+            "endpoint": f"https://{target}/tested-{index:04}", "method": "GET", "family": "sqli",
+            "observed_at": "2026-09-24T00:00:00Z", "description": "Recorded response",
+            "result": "tested_clean", "artifacts": {"response": raw.relative_to(repo).as_posix()},
+            "state_changing": False,
+        } for index in range(count)])
+    before = store.binding()
+    checkout = Path(__file__).resolve().parents[1]
+    command = [sys.executable, "-B", "tools/resume.py", "--repo-root", str(repo), "--target", target]
+    result = subprocess.run(command + ["--json"], cwd=checkout, capture_output=True, text=True, check=True)
+    summary = json.loads(result.stdout)["summary"]
+    expansion = summary["domain_windows"]["findings"]["expand_command"]
+    expanded = subprocess.run(shlex.split(expansion), cwd=checkout, capture_output=True, text=True, check=True)
+    full = json.loads(expanded.stdout)["summary"]
+    expected = {
+        "findings": [f"F-{index:04}" for index in range(count)],
+        "tested_endpoints": [f"/tested-{index:04}" for index in range(count)],
+        "untested_endpoints": [f"/open-{index:04}" for index in range(count)],
+    }
+    for field, values in expected.items():
+        assert field not in summary["owner_projection"]
+        actual = [row["id"] for row in summary[field]] if field == "findings" else summary[field]
+        complete = [row["id"] for row in full[field]] if field == "findings" else full[field]
+        assert actual == values[:5]
+        assert complete == values
+        window = summary["domain_windows"][field]
+        assert (window["total"], window["returned"], window["remaining"]) == (count, min(count, 5), max(count - 5, 0))
+        assert window["expand_command"] == expansion
+        assert full["domain_windows"][field]["remaining"] == 0
+    output = subprocess.run(command, cwd=checkout, capture_output=True, text=True, check=True).stdout
+    assert expansion in output
+    if count:
+        assert "61 endpoints from current coverage; showing=5; remaining=56" in output
+        assert "Finding preview: 5 of 61; remaining=56" in output
+        assert "/tested-0004" in output and "/tested-0005" not in output
+    assert store.binding() == before
+
+
+@pytest.mark.parametrize("entry_count", [0, 7, 23])
+def test_primary_resume_memory_window_is_complete_and_root_bound(tmp_path, entry_count):
+    from tools.target_store import TargetStore
+
+    repo = tmp_path / "isolated root"
+    target = "resume-memory.test"
+    store = TargetStore(repo, target)
+    store.initialize()
+    operation_id = ""
+    if entry_count:
+        artifact = repo / "evidence" / target / "response.txt"
+        artifact.parent.mkdir(parents=True)
+        artifact.write_text("Recorded object response", encoding="utf-8")
+        store.start_attempt(attempt_id="read", source="native",
+                            started_at="2026-09-24T00:00:00Z", actor="operator")
+        store.record_execution(
+            attempt_id="read", outcome="complete", actor="operator",
+            observations=[{
+                "endpoint": f"https://{target}/object", "method": "GET", "family": "Authz",
+                "observed_at": "2026-09-24T00:00:00Z", "description": "Recorded object response",
+                "artifacts": {"response": artifact.relative_to(repo).as_posix()},
+                "result": "tested_clean", "state_changing": False,
+            }],
+        )
+        operation_id = store.page("operations")["items"][0]["id"]
+    for index in range(entry_count):
+        negative = index == entry_count - 1
+        store.remember(
+            command_id=f"memory-{index:02d}", kind="negative" if negative else "note",
+            statement=f"Saved observation {index}", conditions="same tenant",
+            reopen_when="new peer session", next_intent="compare object IDs",
+            evidence=[{"operation_id": operation_id, "step": 0}] if negative else [],
+            actor="operator",
+        )
+    legacy = repo / "memory" / "goals" / "targets" / f"{target}.json"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text("{invalid legacy memory", encoding="utf-8")
+    before = store.binding()
+    checkout = Path(__file__).resolve().parents[1]
+    command = [sys.executable, "-B", str(checkout / "tools" / "resume.py"),
+               "--repo-root", str(repo), "--target", target]
+    result = subprocess.run(command + ["--json"], capture_output=True, text=True, check=True)
+    memory = json.loads(result.stdout)["summary"]["target_memory"]
+    window = memory["experience_window"]
+    entries = memory["recent_entries"]
+    assert len(entries) == min(entry_count, 5)
+    assert window["total"] == entry_count
+    assert window["remaining"] == max(0, entry_count - 5)
+    assert window["has_more"] == (entry_count > 5)
+    recall_args = shlex.split(window["recall_command"])
+    assert recall_args[recall_args.index("--repo-root") + 1] == str(repo.resolve())
+    assert recall_args[recall_args.index("--limit") + 1] == "5"
+    output = subprocess.run(command, capture_output=True, text=True, check=True).stdout
+    seen = [entry["entry_id"] for entry in entries]
+    if entry_count:
+        assert entries[0]["kind"] == "negative"
+        assert entries[0]["evidence_refs"] == [f"{operation_id}:0"]
+        assert "conditions: same tenant" in output
+        assert "reopen_when: new peer session" in output
+        assert f"evidence: {operation_id}:0" in output
+        expand = next(line.removeprefix("  Expand: ") for line in output.splitlines()
+                      if line.startswith("  Expand: "))
+        expanded = subprocess.run(shlex.split(expand) + ["--json"], cwd=checkout,
+                                  capture_output=True, text=True, check=True)
+        assert [row["entry_id"] for row in json.loads(expanded.stdout)["target_entries"]] == seen[:1]
+        next_command = next(line.split("; ", 1)[1] for line in output.splitlines()
+                            if line.startswith("  More: "))
+        while next_command:
+            page_result = subprocess.run(shlex.split(next_command) + ["--json"], cwd=checkout,
+                                         capture_output=True, text=True, check=True)
+            page = json.loads(page_result.stdout)
+            ids = [row["entry_id"] for row in page["target_entries"]]
+            assert ids and not set(ids).intersection(seen)
+            seen.extend(ids)
+            assert page["target_page"]["remaining"] == entry_count - len(seen)
+            cursor = page["target_page"]["next_cursor"]
+            next_command = f"{window['recall_command']} --cursor {shlex.quote(cursor)}" if cursor else ""
+    else:
+        assert "  More: " not in output
+        assert "  Expand: " not in output
+    assert seen == [f"memory-{index:02d}" for index in reversed(range(entry_count))]
+    assert store.binding() == before
+    assert legacy.read_text(encoding="utf-8") == "{invalid legacy memory"
+    assert not (repo / "state" / target / "checkpoint_latest.json").exists()
+
+
+def test_primary_three_round_pickup_keeps_store_memory_without_echo(tmp_path):
+    from tools.target_store import TargetStore
+
+    target = "round-memory.test"
+    store = TargetStore(tmp_path, target)
+    store.initialize()
+    store.create_action(command_id="work-1", action_id="WORK-1", intent="Review owner boundary",
+                        execution_key="owner-boundary", kind="work", subject={"target": target}, actor="operator")
+    store.remember(command_id="memory-1", kind="note", statement="Peer role differs from owner",
+                   conditions="same tenant", reopen_when="new peer session",
+                   next_intent="compare object IDs", evidence=[], actor="operator")
+    tools = Path(__file__).resolve().parent.parent / "tools"
+    legacy = tmp_path / "memory" / "goals" / "targets" / f"{target}.json"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text("{invalid legacy memory", encoding="utf-8")
+
+    for round_number in range(1, 4):
+        store.remember(command_id=f"handoff-{round_number}", kind="handoff",
+                       statement=f"Round {round_number}: continue owner-boundary review",
+                       conditions="same tenant", reopen_when="", next_intent="compare object IDs",
+                       evidence=[], actor="operator")
+        revision = store.binding()["revision"]
+        projection = tmp_path / "state" / target / "surface-projection.json"
+        projection.unlink(missing_ok=True)
+        checkpoint = subprocess.run(
+            [sys.executable, str(tools / "checkpoint.py"), "--repo-root", str(tmp_path),
+             "--target", target, "--no-refresh-coverage", "--json"],
+            text=True, capture_output=True, check=True,
+        )
+        assert json.loads(checkpoint.stdout)["target_write_back"]["handoff"]
+        pickup = subprocess.run(
+            [sys.executable, str(tools / "resume.py"), "--repo-root", str(tmp_path),
+             "--memory-dir", str(tmp_path / "hunt-memory"), "--target", target, "--json"],
+            text=True, capture_output=True, check=True,
+        )
+        memory = json.loads(pickup.stdout)["summary"]["target_memory"]
+        assert memory["source_kind"] == "store"
+        assert memory["experience_window"]["total"] == round_number + 1
+        assert {entry["entry_id"] for entry in memory["recent_entries"]} == {
+            "memory-1", *(f"handoff-{index}" for index in range(1, round_number + 1))
+        }
+        assert any(entry.get("structured", {}).get("reopen_when") == "new peer session"
+                   for entry in memory["recent_entries"])
+        assert store.binding()["revision"] == revision
+        assert store.page("actions")["total"] == 1
+        assert store.page("experiences")["total"] == round_number + 1
+    pickup_text = subprocess.run(
+        [sys.executable, str(tools / "resume.py"), "--repo-root", str(tmp_path),
+         "--memory-dir", str(tmp_path / "hunt-memory"), "--target", target],
+        text=True, capture_output=True, check=True,
+    ).stdout
+    assert "conditions: same tenant" in pickup_text
+    assert "reopen_when: new peer session" in pickup_text
+    assert "--id handoff-3" in pickup_text
+    assert legacy.read_text(encoding="utf-8") == "{invalid legacy memory"
+
+
+def test_primary_resume_ignores_retired_profile(tmp_path):
+    from tools.target_store import TargetStore
+
+    target = "resume-profile.test"
+    TargetStore(tmp_path, target).initialize()
+    memory_dir = tmp_path / "hunt-memory"
+    write_legacy_profile(memory_dir, make_target_profile(
+        target, tech_stack=["retired-stack"], tested_endpoints=["/retired"],
+        untested_endpoints=["/retired-open"], hunt_sessions=99,
+    ))
+
+    summary = load_resume_summary(memory_dir, target, repo_root=tmp_path)
+
+    assert summary is not None
+    assert summary["sessions"] == 0
+    assert summary["tech_stack"] == []
+    assert summary["tested_endpoints"] == []
+    assert "/retired-open" not in summary["untested_endpoints"]
+    assert "legacy_profile" not in summary
+
+
+def test_primary_resume_does_not_promote_historical_journal_result(tmp_path):
+    from tools.target_store import TargetStore
+
+    target = "resume-journal.test"
+    store = TargetStore(tmp_path, target)
+    store.initialize()
+    store.create_finding(
+        command_id="finding-1", finding_id="F-1",
+        endpoint=f"https://{target}/orders/1", method="GET",
+        family="Authz", title="Owner boundary", claim="Unassessed claim", actor="tester",
+    )
+    memory_dir = tmp_path / "hunt-memory"
+    HuntJournal(memory_dir / "journal.jsonl").append(make_journal_entry(
+        target=target, action="remember", vuln_class="idor", endpoint="/orders/1",
+        result="confirmed", severity="high", payout=1500,
+    ))
+
+    summary = load_resume_summary(memory_dir, target, repo_root=tmp_path)
+
+    assert summary["findings"][0]["id"] == "F-1"
+    assert summary["confirmed_findings"] == 0
+    assert summary["confirmed_payout"] is None
+    assert "0 confirmed" in format_resume_output(summary, target)
+
+
+def test_resume_and_pack_bound_finding_reads_without_losing_counts(tmp_path, monkeypatch):
+    from tools.context_pack import build_context_pack
+
+    target = "resume-window.test"
+    store = TargetStore(tmp_path, target)
+    store.initialize()
+    for index in range(12):
+        store.create_finding(command_id=f"finding-{index}", finding_id=f"F-{index:02}",
+                             endpoint=f"https://{target}/claim-{index}", method="GET", family="custom",
+                             title=f"Claim {index}", claim="Unassessed", actor="tester")
+    before = store.binding()
+    materialized = []
+    project = TargetStore._finding_states
+
+    def record_rows(self, conn, rows):
+        materialized.append(len(rows))
+        return project(self, conn, rows)
+
+    monkeypatch.setattr(TargetStore, "_finding_states", record_rows)
+    monkeypatch.setattr(TargetStore, "_finding_projections", lambda *args: pytest.fail("expanded unused history"))
+    summary = load_resume_summary(tmp_path / "memory", target, repo_root=tmp_path)
+    assert materialized == [5]
+    assert len(summary["findings"]) == 5
+    assert summary["domain_windows"]["findings"]["total"] == 12
+    assert summary["domain_windows"]["findings"]["remaining"] == 7
+    assert summary["structured_findings"]["pending_validation"] == 12
+    full = load_resume_summary(tmp_path / "memory", target, repo_root=tmp_path, full_domain_context=True)
+    assert len(full["findings"]) == 12
+    assert full["findings"][:5] == summary["findings"]
+    assert full["domain_windows"]["findings"]["remaining"] == 0
+    pack = build_context_pack(tmp_path, target=target)
+    assert pack["source_summary"]["findings"] == 12
+    assert store.binding() == before
 
 
 class TestResumeSummary:
 
-    def test_loads_profile_journal_and_pattern_matches(self, tmp_hunt_dir, sample_target_profile):
-        save_target_profile(tmp_hunt_dir, sample_target_profile)
+    def test_journal_audit_does_not_restore_retired_profile_or_patterns(self, tmp_hunt_dir, sample_target_profile):
+        TargetStore(tmp_hunt_dir.parent, "target.com").initialize()
+        write_legacy_profile(tmp_hunt_dir, sample_target_profile)
 
         journal = HuntJournal(tmp_hunt_dir / "journal.jsonl")
         journal.append(make_journal_entry(
@@ -47,15 +335,14 @@ class TestResumeSummary:
             session_id="sess-777",
         )
 
-        patterns = PatternDB(tmp_hunt_dir / "patterns.jsonl")
-        patterns.save(make_pattern_entry(
+        append_legacy_pattern(tmp_hunt_dir / "patterns.jsonl", make_pattern_entry(
             target="alpha.com",
             vuln_class="idor",
             technique="numeric_id_swap_with_put_method",
             tech_stack=["graphql", "postgresql"],
             payout=800,
         ))
-        patterns.save(make_pattern_entry(
+        append_legacy_pattern(tmp_hunt_dir / "patterns.jsonl", make_pattern_entry(
             target="target.com",
             vuln_class="idor",
             technique="same_target_pattern",
@@ -63,12 +350,12 @@ class TestResumeSummary:
             payout=900,
         ))
 
-        summary = load_resume_summary(tmp_hunt_dir, "target.com")
+        summary = load_resume_summary(tmp_hunt_dir, "target.com", repo_root=tmp_hunt_dir.parent)
         assert summary is not None
-        assert summary["sessions"] == 3
-        assert summary["confirmed_findings"] == 1
-        assert summary["confirmed_payout"] == 1500
-        assert summary["untested_endpoints"] == ["/api/v2/users/{id}/export"]
+        assert summary["sessions"] == 1
+        assert summary["confirmed_findings"] == 0
+        assert summary["confirmed_payout"] is None
+        assert summary["untested_endpoints"] == []
         assert summary["matched_targets"] == 0  # 跨目标匹配已移除
         assert summary["pattern_matches"] == []  # 跨目标模式匹配已移除（收敛裁定）
         assert summary["latest_session_summary"]["session_id"] == "sess-777"
@@ -78,7 +365,8 @@ class TestResumeSummary:
         assert summary["recent_guard_advisories"] == []
 
     def test_includes_recent_guard_advisories(self, tmp_hunt_dir, sample_target_profile):
-        save_target_profile(tmp_hunt_dir, sample_target_profile)
+        TargetStore(tmp_hunt_dir.parent, "target.com").initialize()
+        write_legacy_profile(tmp_hunt_dir, sample_target_profile)
 
         journal = HuntJournal(tmp_hunt_dir / "journal.jsonl")
         journal.append(make_journal_entry(
@@ -104,82 +392,68 @@ class TestResumeSummary:
             tags=["guard_block", "auto_logged", "block_breaker"],
         ))
 
-        summary = load_resume_summary(tmp_hunt_dir, "target.com")
+        summary = load_resume_summary(tmp_hunt_dir, "target.com", repo_root=tmp_hunt_dir.parent)
 
         assert summary is not None
         assert len(summary["recent_guard_advisories"]) == 2
         assert "breaker_advisory" in summary["recent_guard_advisories"][0]["notes"]
         assert "legacy request_guard block" in summary["recent_guard_advisories"][1]["notes"]
 
-    def test_missing_profile_returns_none(self, tmp_hunt_dir):
-        assert load_resume_summary(tmp_hunt_dir, "missing.com") is None
+    def test_uninitialized_target_rejects_read_without_creating_state(self, tmp_hunt_dir):
+        with pytest.raises(StoreError, match="initializ"):
+            load_resume_summary(tmp_hunt_dir, "missing.com", repo_root=tmp_hunt_dir.parent)
+        assert not (tmp_hunt_dir.parent / "state" / "missing.com" / "metadata.sqlite3").exists()
 
-    def test_canonical_owner_state_resumes_without_legacy_profile(self, tmp_hunt_dir, tmp_path):
-        findings_dir = tmp_path / "findings" / "target.com"
-        created = finding_index.upsert_finding(
-            findings_dir,
-            {
-                "id": "canonical-only",
-                "type": "sqli",
-                "url": "https://target.com/items?id=1",
-                "validation_status": "unvalidated",
-                "report_status": "not_generated",
-            },
-            target="target.com",
-        )
 
+    def test_store_claim_resumes_without_legacy_profile(self, tmp_hunt_dir, tmp_path):
+        store = TargetStore(tmp_path, "target.com")
+        store.initialize()
+        store.create_finding(command_id="claim", finding_id="canonical-only", endpoint="https://target.com/items?id=1",
+                             method="GET", family="sqli", title="SQLi claim", claim="Unassessed claim", actor="operator")
+        before = store.binding()
         summary = load_resume_summary(tmp_hunt_dir, "target.com", repo_root=tmp_path)
-
-        assert created["finding"]["id"] == "canonical-only"
-        assert summary is not None
-        assert summary["legacy_profile"] == {"status": "missing", "error": ""}
+        assert "legacy_profile" not in summary
         assert summary["owner_projection"]["findings_authoritative"] is True
         assert summary["findings"][0]["id"] == "canonical-only"
+        assert summary["tested_endpoints"] == []
         assert summary["sessions"] == 0
+        assert store.binding() == before
 
-    def test_corrupt_legacy_profile_does_not_hide_canonical_state(self, tmp_hunt_dir, tmp_path):
-        findings_dir = tmp_path / "findings" / "target.com"
-        findings_dir.mkdir(parents=True)
-        finding_index.upsert_finding(
-            findings_dir,
-            {
-                "id": "canonical-with-broken-profile",
-                "type": "idor",
-                "url": "https://target.com/orders/1",
-            },
-            target="target.com",
-        )
-        (tmp_hunt_dir / "targets" / "target-com.json").write_text(
-            "{broken\n",
-            encoding="utf-8",
-        )
 
+    def test_corrupt_legacy_profile_does_not_hide_store_claim(self, tmp_hunt_dir, tmp_path):
+        store = TargetStore(tmp_path, "target.com")
+        store.initialize()
+        store.create_finding(command_id="claim", finding_id="canonical-with-broken-profile",
+                             endpoint="https://target.com/orders/1", method="GET", family="idor",
+                             title="Owner boundary", claim="Unassessed claim", actor="operator")
+        legacy = tmp_hunt_dir / "targets" / "target-com.json"
+        legacy.write_text("{broken\n", encoding="utf-8")
         summary = load_resume_summary(tmp_hunt_dir, "target.com", repo_root=tmp_path)
-
-        assert summary is not None
-        assert summary["legacy_profile"]["status"] == "invalid"
-        assert "invalid target profile" in summary["legacy_profile"]["error"]
+        assert "legacy_profile" not in summary
         assert summary["findings"][0]["id"] == "canonical-with-broken-profile"
+        assert legacy.read_text(encoding="utf-8") == "{broken\n"
 
-    def test_canonical_queue_state_is_a_resume_source_without_profile(self, tmp_hunt_dir, tmp_path):
+
+    def test_store_work_resumes_without_profile_or_queue_file(self, tmp_hunt_dir, tmp_path):
+        store = TargetStore(tmp_path, "target.com")
+        store.initialize()
+        store.create_action(command_id="work", action_id="WORK-1", intent="Review current evidence",
+                            execution_key="review", kind="work", subject={"target": "target.com"}, actor="operator")
         queue_path = tmp_path / "state" / "target.com" / "action_queue.json"
-        queue_path.parent.mkdir(parents=True)
-        queue_path.write_text(
-            json.dumps({
-                "schema_version": 1,
-                "target": "target.com",
-                "actions": [],
-            }),
-            encoding="utf-8",
-        )
+        queue_path.mkdir()
+        before = store.binding()
+        summary = load_pickup_summary(tmp_hunt_dir, "target.com", repo_root=tmp_path)
+        assert summary["canonical_sources"] == ["store"]
+        assert "legacy_profile" not in summary
+        assert summary["checkpoint"]["current_action"] == {}
+        assert summary["checkpoint"]["next_action_queue"][0]["id"] == "WORK-1"
+        assert "[WORK-1] queued: Review current evidence" in format_resume_output(summary, "target.com")
+        assert queue_path.is_dir()
+        assert store.binding() == before
 
-        summary = load_resume_summary(tmp_hunt_dir, "target.com", repo_root=tmp_path)
-
-        assert summary is not None
-        assert summary["canonical_sources"] == ["queue"]
-        assert summary["legacy_profile"]["status"] == "missing"
 
     def test_resume_does_not_rewrite_legacy_finding_projection(self, tmp_hunt_dir, tmp_path):
+        TargetStore(tmp_hunt_dir.parent, "target.com").initialize()
         findings_dir = tmp_path / "findings" / "target.com"
         findings_dir.mkdir(parents=True)
         findings_path = findings_dir / "findings.json"
@@ -204,7 +478,8 @@ class TestResumeSummary:
         monkeypatch.chdir(tmp_path)
 
         canonical_target = str(list_file.resolve())
-        save_target_profile(
+        TargetStore(tmp_path, canonical_target).initialize()
+        write_legacy_profile(
             tmp_hunt_dir,
             make_target_profile(
                 canonical_target,
@@ -223,16 +498,17 @@ class TestResumeSummary:
             session_id="sess-list",
         )
 
-        summary = load_resume_summary(tmp_hunt_dir, "scope.txt")
+        summary = load_resume_summary(tmp_hunt_dir, "scope.txt", repo_root=tmp_path)
 
         assert summary is not None
-        assert summary["sessions"] == 2
+        assert summary["sessions"] == 1
         assert summary["resolved_target"] == canonical_target
         assert summary["latest_session_summary"]["session_id"] == "sess-list"
         assert summary["latest_session_summary"]["endpoints_preview"] == ["/graphql"]
 
     def test_includes_repo_source_summary(self, tmp_hunt_dir, sample_target_profile, monkeypatch, tmp_path):
-        save_target_profile(tmp_hunt_dir, sample_target_profile)
+        TargetStore(tmp_hunt_dir.parent, "target.com").initialize()
+        write_legacy_profile(tmp_hunt_dir, sample_target_profile)
 
         repo_root = tmp_path
         exposure_dir = repo_root / "findings" / "target.com" / "exposure"
@@ -247,7 +523,7 @@ class TestResumeSummary:
         )
         monkeypatch.setattr(resume_tool, "BASE_DIR", str(repo_root))
 
-        summary = load_resume_summary(tmp_hunt_dir, "target.com")
+        summary = load_resume_summary(tmp_hunt_dir, "target.com", repo_root=tmp_hunt_dir.parent)
 
         assert summary is not None
         assert summary["repo_source_summary"]["source_kind"] == "local_path"
@@ -255,176 +531,98 @@ class TestResumeSummary:
         assert summary["repo_source_summary"]["ci_findings"] == 1
         assert summary["repo_source_summary"]["summary_hint"] == "local_path, secrets=2, ci=1"
 
-    def test_includes_structured_finding_followup(self, tmp_hunt_dir, sample_target_profile, monkeypatch, tmp_path):
-        save_target_profile(tmp_hunt_dir, sample_target_profile)
-
-        repo_root = tmp_path
-        findings_dir = repo_root / "findings" / "target.com"
-        findings_dir.mkdir(parents=True)
-        (findings_dir / "findings.json").write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "target": "target.com",
-                    "findings": [
-                        {
-                            "id": "sqli_pending",
-                            "type": "sqli",
-                            "severity": "high",
-                            "confidence": "confirmed",
-                            "url": "https://api.target.com/search?q=1",
-                            "validation_status": "unvalidated",
-                            "report_status": "not_generated",
-                        },
-                        {
-                            "id": "mfa_report",
-                            "type": "mfa",
-                            "severity": "medium",
-                            "confidence": "high",
-                            "url": "https://api.target.com/mfa",
-                            "validation_status": "validated",
-                            "report_status": "not_generated",
-                        },
-                    ],
-                }
-            ),
-            encoding="utf-8",
-        )
-        # Lifecycle finality must be emitted by the canonical owner, not a fixture-only JSON edit.
-        updated = finding_index.update_finding_status(
-            findings_dir,
-            "mfa_report",
-            validation_status="validated",
-            report_status="not_generated",
-        )
-        assert updated is not None
-        monkeypatch.setattr(resume_tool, "BASE_DIR", str(repo_root))
-
-        summary = load_resume_summary(tmp_hunt_dir, "target.com")
+    def test_includes_structured_finding_followup(self, tmp_hunt_dir, tmp_path):
+        store = TargetStore(tmp_path, "target.com")
+        store.initialize()
+        store.create_finding(command_id="claim-sqli", finding_id="sqli_pending", endpoint="https://api.target.com/search?q=1",
+                             method="GET", family="sqli", title="SQLi claim", claim="Unassessed claim", actor="operator")
+        candidate = {"id": "mfa_report", "endpoint": "https://api.target.com/mfa", "method": "GET", "family": "mfa",
+                     "title": "MFA boundary", "claim": "Peer data returned"}
+        raw = tmp_path / "evidence" / "target.com" / "response.txt"
+        raw.parent.mkdir(parents=True)
+        raw.write_text("Recorded peer data response", encoding="utf-8")
+        store.start_attempt(attempt_id="read", source="native", started_at="2026-09-24T00:00:00Z", actor="operator")
+        receipt = store.record_execution(attempt_id="read", outcome="complete", actor="operator", candidate=candidate,
+            observations=[{"endpoint": candidate["endpoint"], "method": "GET", "family": "mfa",
+                           "observed_at": "2026-09-24T00:00:00Z", "description": "Peer data returned",
+                           "artifacts": {"response": raw.relative_to(tmp_path).as_posix()}, "state_changing": False}])
+        store.assess(command_id="assess", finding_id="mfa_report", verdict="confirmed", reason="Compared peer boundary",
+                     boundary="Owner/peer isolation", impact="Peer data disclosure", actor="operator",
+                     evidence=[{"operation_id": receipt["entity_id"], "step": 0}], expected_assessment=None)
+        store.decide_delivery(command_id="delivery", finding_id="mfa_report", assessment_id="assess", destination="default",
+                              status="eligible", reason="Reviewed destination", actor="operator", expected_decision=None)
+        before = store.binding()
+        summary = load_resume_summary(tmp_hunt_dir, "target.com", repo_root=tmp_path)
         output = format_resume_output(summary, "target.com")
-
-        assert summary is not None
         assert summary["structured_findings"]["total"] == 2
         assert summary["structured_findings"]["pending_validation"] == 1
         assert summary["structured_findings"]["validated_pending_report"] == 1
         assert summary["structured_findings"]["next_validation"]["id"] == "sqli_pending"
         assert summary["structured_findings"]["next_report"]["id"] == "mfa_report"
         assert "Structured Findings:" in output
-        assert "Next validate: sqli_pending [high/confirmed] sqli https://api.target.com/search?q=1" in output
-        assert "Next report: mfa_report [medium/high] mfa https://api.target.com/mfa" in output
+        assert "Next validate: sqli_pending" in output
+        assert "Next report: mfa_report" in output
+        assert "https://api.target.com/mfa" in output
+        assert store.binding() == before
 
-    def test_preserves_external_dependency_as_inert_chain_context(self, tmp_hunt_dir, sample_target_profile, monkeypatch, tmp_path):
-        save_target_profile(tmp_hunt_dir, sample_target_profile)
 
-        repo_root = tmp_path
-        findings_dir = repo_root / "findings" / "target.com"
-        findings_dir.mkdir(parents=True)
-        (findings_dir / "findings.json").write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "target": "target.com",
-                    "findings": [
-                        {
-                            "id": "target-chain",
-                            "type": "authz",
-                            "url": "https://target.com/login",
-                            "validation_status": "unvalidated",
-                            "report_status": "not_generated",
-                            "assets": [
-                                "https://external.example/admin/",
-                                "//protocol-relative.example/admin/",
-                                "/target-owned/path",
-                            ],
-                            "scope_status": "scope-review",
-                            "chain_context": [
-                                "target login -> external identity provider",
-                            ],
-                            "evidence_ref": "evidence/target.com/chain.md",
-                            "source_refs": ["evidence/target.com/chain-source.json"],
-                            "poc_ref": "evidence/target.com/poc/chain/",
-                        },
-                        {
-                            "id": "off-target-no-chain",
-                            "type": "info",
-                            "url": "https://unrelated.example/",
-                            "assets": ["https://unrelated-chain.example/admin/"],
-                            "validation_status": "unvalidated",
-                            "report_status": "not_generated",
-                        },
-                        {
-                            "id": "empty-without-claim",
-                            "type": "info",
-                            "url": "",
-                            "validation_status": "unvalidated",
-                            "report_status": "not_generated",
-                        },
-                    ],
-                }
-            ),
-            encoding="utf-8",
-        )
-        monkeypatch.setattr(resume_tool, "BASE_DIR", str(repo_root))
-
-        first = load_resume_summary(tmp_hunt_dir, "target.com")
-        second = load_resume_summary(tmp_hunt_dir, "target.com")
+    def test_preserves_external_dependency_as_conditional_linked_note(self, tmp_hunt_dir, tmp_path):
+        store = TargetStore(tmp_path, "target.com")
+        store.initialize()
+        store.create_finding(command_id="claim", finding_id="target-chain", endpoint="https://target.com/login",
+                             method="GET", family="Authz", title="Login boundary", claim="Unassessed claim", actor="operator")
+        store.remember(command_id="dependency-note", kind="note", finding_id="target-chain",
+                       statement="target login -> external identity provider https://external.example/admin/; //protocol-relative.example/admin/",
+                       conditions="External dependency is context; ownership remains unverified",
+                       reopen_when="Scope ownership established", next_intent="Review target login integration",
+                       evidence=[], actor="operator")
+        before = store.binding()
+        first = load_resume_summary(tmp_hunt_dir, "target.com", repo_root=tmp_path)
+        second = load_resume_summary(tmp_hunt_dir, "target.com", repo_root=tmp_path)
         output = format_resume_output(first, "target.com")
-
-        assert first is not None
-        structured = first["structured_findings"]
-        assert structured["total"] == 1
-        assert structured["next_validation"]["id"] == "target-chain"
-        assert structured["chain_context_count"] == 1
-        assert structured["chain_context"] == second["structured_findings"]["chain_context"]
-        context = structured["chain_context"][0]
-        assert context["finding_id"] == "target-chain"
-        assert context["external_assets"] == [
-            "https://external.example/admin/",
-            "//protocol-relative.example/admin/",
-        ]
-        assert context["scope_status"] == "scope-review"
-        assert context["chain_context"] == [
-            "target login -> external identity provider",
-        ]
-        assert "evidence/target.com/chain.md" in context["evidence_refs"]
-        assert "evidence/target.com/chain-source.json" in context["evidence_refs"]
-        assert context["active"] is False
-        assert "Chain Context:" in output
+        assert first["structured_findings"]["total"] == 1
+        assert first["structured_findings"]["next_validation"]["id"] == "target-chain"
+        assert first["target_memory"] == second["target_memory"]
         assert "target login -> external identity provider" in output
         assert "https://external.example/admin/" in output
-        assert "unrelated.example" not in output
-        assert "unrelated-chain.example" not in output
+        assert "//protocol-relative.example/admin/" in output
+        assert "conditions: External dependency is context; ownership remains unverified" in output
+        assert "--id dependency-note" in output
+        assert store.experience("dependency-note")["finding_id"] == "target-chain"
+        assert store.page("actions")["total"] == 0
+        assert store.binding() == before
 
-    def test_recovers_incomplete_root_claim_without_url(self, tmp_hunt_dir, sample_target_profile, monkeypatch, tmp_path):
-        save_target_profile(tmp_hunt_dir, sample_target_profile)
-        repo_root = tmp_path
-        findings_dir = repo_root / "findings" / "target.com"
+
+    def test_explicit_material_review_recovers_incomplete_root_claim_without_url(self, tmp_hunt_dir, tmp_path):
+        store = TargetStore(tmp_path, "target.com")
+        store.initialize()
+        findings_dir = tmp_path / "findings" / "target.com"
         findings_dir.mkdir(parents=True)
-        (findings_dir / "jwt-claim.json").write_text(
-            json.dumps(
-                {
-                    "title": "JWT authentication bypass",
-                    "target": "target.com",
-                    "vulnerability_class": "JWT",
-                    "impact": "Administrator view reached with a forged token.",
-                }
-            ),
-            encoding="utf-8",
-        )
-        finding_index.reconcile_root_finding_claims(findings_dir, target="target.com")
-        monkeypatch.setattr(resume_tool, "BASE_DIR", str(repo_root))
+        source = findings_dir / "jwt-claim.json"
+        source.write_text(json.dumps({"title": "JWT authentication bypass", "target": "target.com",
+            "vulnerability_class": "JWT", "impact": "Administrator view reached with a forged token."}), encoding="utf-8")
+        before = store.binding()
+        summary = load_resume_summary(tmp_hunt_dir, "target.com", repo_root=tmp_path)
+        assert summary["structured_findings"]["total"] == 0
+        assert store.page("actions")["total"] == 0
+        assert store.binding() == before
 
-        summary = load_resume_summary(tmp_hunt_dir, "target.com")
+        indexed = finding_index.index_scanner_material(findings_dir, target="target.com")
+        claim = indexed["root_claims"][0]
+        assert claim["url"] == ""
+        assert claim["claim_status"] == "incomplete"
+        assert "endpoint" in claim["incomplete_fields"]
+        before = store.binding()
+        pickup = load_pickup_summary(tmp_hunt_dir, "target.com", repo_root=tmp_path)
+        assert pickup["checkpoint"]["current_action"] == {}
+        assert pickup["checkpoint"]["next_action_queue"][0]["id"] == indexed["review_action_ids"][0]
+        assert store.page("findings")["total"] == 0
+        assert store.binding() == before
 
-        assert summary is not None
-        structured = summary["structured_findings"]
-        assert structured["pending_validation"] == 1
-        assert structured["next_validation"]["url"] == ""
-        assert structured["next_validation"]["claim_status"] == "incomplete"
-        assert "endpoint" in structured["next_validation"]["incomplete_fields"]
 
     def test_includes_runtime_state_and_recon_artifacts(self, tmp_hunt_dir, sample_target_profile, monkeypatch, tmp_path):
-        save_target_profile(tmp_hunt_dir, sample_target_profile)
+        TargetStore(tmp_hunt_dir.parent, "target.com").initialize()
+        write_legacy_profile(tmp_hunt_dir, sample_target_profile)
         repo_root = tmp_path
         recon_dir = repo_root / "recon" / "target.com"
         (recon_dir / "live").mkdir(parents=True)
@@ -446,7 +644,7 @@ class TestResumeSummary:
         )
         monkeypatch.setattr(resume_tool, "BASE_DIR", str(repo_root))
 
-        summary = load_resume_summary(tmp_hunt_dir, "target.com")
+        summary = load_resume_summary(tmp_hunt_dir, "target.com", repo_root=tmp_hunt_dir.parent)
         output = format_resume_output(summary, "target.com")
 
         assert summary["runtime_state"]["last_executed_workflow"] == "run_vuln_scan"
@@ -456,16 +654,17 @@ class TestResumeSummary:
         assert "Recon Cache: hosts=1, surface=1" in output
 
     def test_pickup_summary_includes_read_only_checkpoint(self, tmp_hunt_dir, sample_target_profile, monkeypatch, tmp_path):
-        save_target_profile(tmp_hunt_dir, sample_target_profile)
+        TargetStore(tmp_hunt_dir.parent, "target.com").initialize()
+        write_legacy_profile(tmp_hunt_dir, sample_target_profile)
         repo_root = tmp_path
         monkeypatch.setattr(resume_tool, "BASE_DIR", str(repo_root))
 
-        summary = load_pickup_summary(tmp_hunt_dir, "target.com")
+        summary = load_pickup_summary(tmp_hunt_dir, "target.com", repo_root=tmp_hunt_dir.parent)
         output = format_resume_output(summary, "target.com")
 
         assert summary is not None
         assert summary["checkpoint"]["available"] is True
-        assert summary["checkpoint"]["decision"] == "refresh-recon"
+        assert summary["checkpoint"]["decision"] == "continue"
         assert set(summary["checkpoint"]) >= {
             "current_action",
             "recent_evidence",
@@ -473,12 +672,12 @@ class TestResumeSummary:
             "next_action",
         }
         assert "Checkpoint:" in output
-        assert "Decision: refresh-recon" in output
+        assert "Decision: continue" in output
         assert "Current action:" in output
         assert "Recent evidence:" in output
         assert "Blocker:" in output
         assert "Target write-back proposals:" in output
-        assert "[c] Run checkpoint write-back when ready" in output
+        assert "[c] Read a fresh Checkpoint; save handoff through target memory" in output
 
     def test_checkpoint_followup_projects_empty_running_and_wait_control_state(self, monkeypatch, tmp_path):
         cases = [
@@ -572,7 +771,7 @@ class TestResumeFormatting:
         output = format_resume_output(summary, "target.com")
         assert "PICKUP: target.com" in output
         assert "1 confirmed ($1500 total)" in output
-        assert "2 endpoints from last recon" in output
+        assert "2 endpoints from current coverage; showing=2; remaining=0" in output
         assert "alpha.com" not in output  # 跨目标模式建议已移除
         assert "Latest Session Snapshot:" in output
         assert "Session: sess-777" in output

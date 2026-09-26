@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from tools.target_store import TargetStore
+
 import re
 from pathlib import Path
 
 from tools.context_pack import build_context_pack
-from tools.skill_catalog import SKILL_CATALOG, SKILL_PATHS
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -16,21 +17,11 @@ DIRECT_ONLY = {
     "web3-audit",
     "meme-coin-audit",
 }
-PRIMARY = {
-    "bb-methodology",
-    "bug-bounty",
-    "credential-attack",
-    "triage-validation",
-    "web2-recon",
-    "web2-vuln-classes",
-}
-
-
 def test_direct_only_skills_have_domain_contracts_and_stay_manual(tmp_path):
+    TargetStore(tmp_path, "target.com").initialize()
     for skill_id in DIRECT_ONLY:
-        entry = SKILL_CATALOG[skill_id]
-        assert entry["route_mode"] == "direct-only"
-        text = (REPO_ROOT / entry["path"]).read_text(encoding="utf-8")
+        text = (REPO_ROOT / "skills" / skill_id / "SKILL.md").read_text(encoding="utf-8")
+        assert "explicitly in scope" in text.split("\n", 3)[2].lower()
         assert "## Direct Execution Contract" in text[:2500]
         for label in ("Entry", "Evidence", "Stop"):
             match = re.search(rf"^- {label}:\s*(.+)$", text, re.MULTILINE)
@@ -41,13 +32,6 @@ def test_direct_only_skills_have_domain_contracts_and_stay_manual(tmp_path):
         assert "## Phase Checkpoints" in text
         assert "```" not in text
         assert not re.search(r"(?m)^\s*(?:curl|grep|adb|frida|forge|python3|bash)\b", text)
-
-    assert {
-        skill_id
-        for skill_id, entry in SKILL_CATALOG.items()
-        if entry["route_mode"] == "direct-only"
-    } == DIRECT_ONLY
-    assert set(SKILL_PATHS) == PRIMARY
 
     # S1 native loading: no recommendation slot and no duplicated skill
     # listing in the pack — the platform's native skill mechanism (driven by

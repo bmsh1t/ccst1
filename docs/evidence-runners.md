@@ -5,7 +5,7 @@
 ## 原则
 
 - Claude 负责选择 hypothesis、攻击面、链路方向、影响判断和报告价值。
-- 工具只负责稳定 replay、diff、raw evidence、ledger 和可复现输出。
+- 工具只负责稳定 replay、diff、raw evidence、Store 观察登记和可复现输出。
 - runner 输出是证据，不是最终结论；是否继续、降级、链式扩展或报告仍由 Claude 判断。
 - 不要为了清队列而运行 runner；只在它能减少漂移、补足证据或复现复杂步骤时使用。
 - MCP/browser/source/JS 观察帮助 Claude 选择真实实验；已有完整执行材料可直接登记，不为接入状态而重复请求。
@@ -23,6 +23,7 @@ canonical Candidate，再登记已存在的原始材料。该入口不执行命�
   "schema_version": 1,
   "source": "browser",
   "generated_at": "2026-09-16T10:00:00Z",
+  "attempt_id": "native-attempt-1",
   "result": "tested_finding",
   "observed_difference": "Control and repeated test-owned transition produced the recorded state difference.",
   "runs": [
@@ -57,13 +58,16 @@ python3 tools/validation_runner.py record-evidence --target TARGET \
 ```
 
 - `generated_at` 写原实验时间，必须含时区；`source` 写实际采集工具。
+- Store 目标必须提供真实 `attempt_id`（材料字段或 `--attempt-id`）。小数秒会完整保留；
+  同一次登记重试沿用 ID，真实重新执行使用新 ID。
 - URL、方法、类别从指定 Finding 读取；`runs` 必须含其精确 endpoint/method 对应的
   执行步骤。多步实验仍选一个 Finding 锚点，其余输入/状态读回/OOB 记录留在同一材料中。
 - 每步 `artifacts.request/response` 指向已有、非空、同目标的原始文件；可附加
-  `screenshot`、`callback`、`trace` 等引用。登记只保留引用和 SHA-256，不复制原始材料。
+  `screenshot`、`callback`、`trace` 等引用。登记只保留引用和 SHA-256，不复制原始材料。精确请求 URL 另存私有身份材料；
+  公开 summary 只含去查询值的形状，不能用它替代精确 endpoint 绑定。
   若 probe JSON 已同时包含 request/response，两项可引用同一个原文件；使用采集返回的
   真实路径，不照抄示例路径或另拆文件。
-- `actor` 使用 Ledger 现有角色词汇（如 anonymous/owner/peer/low_role/admin/cross_tenant）；
+- `actor` 使用 共享观察角色词汇（如 anonymous/owner/peer/low_role/admin/cross_tenant）；
   锚点步骤必须明确角色。`object_scope`、`variant` 可省略，默认 unknown/replay；
   具体账号、会话和业务条件保留在原始证据，不在摘要中写凭据。
 - `result` 是 **AI 对已执行材料的判断**：tested_finding/candidate/tested_clean/dead_end/partial。
@@ -73,13 +77,36 @@ python3 tools/validation_runner.py record-evidence --target TARGET \
   完整实验至少保留输入/输出，不把截图或假设文字单独当执行证明。
 - 发生过状态改变时使用 `--state-changing --redline-checked`，只读实验可用
   `--no-state-changing`；这些记录不追认或扩大原实验的执行许可。
-- 同一材料重复登记复用 operation/path；Ledger → Finding → Queue 同步失败时
+- 同一 attempt/材料重复登记复用 operation/path；Store 事务登记失败时
   返回非零并保留 `sync.status=partial`，修复原因后重跑登记即可，不重发请求。
-  版本化 Queue 仍需预先 claim，登记只写观察，继续/停止仍由 Claude resolve。
+  绑定 Queue 的执行仍需预先 claim，登记只写观察，继续/停止仍由 Claude resolve。
 
 登记成功后按 `/validate` 的 scaffold → 判断 → preflight → apply 流程继续。
 现有 `replayed` 字段表示材料来自已执行实验；此命令本身只做登记，来源由
 `native-evidence:<source>` 明确区分。无需修改 witness、报告 schema 或另立生命周期。
+
+### 绑定已认领行动
+
+`record-evidence` 和 `request-diff` 都可显式传入 Store execution Action 的 claim：
+
+```bash
+python3 tools/validation_runner.py record-evidence --repo-root ROOT --target TARGET \
+  --finding-id FINDING_ID --evidence-json /tmp/native-observations.json \
+  --action-id ACTION_ID --claim-token CLAIM_TOKEN --actor OPERATOR --json
+```
+
+`--actor` 是认领行动的命令操作者，和 `runs[].actor` 的 owner/peer 观察角色分开。
+行动 ID 与 token 必须成对提供，endpoint/family 必须一致；错误、过期 claim 或 work
+行动在请求和材料发布前拒绝。未绑定调用仍可登记独立实验，不按 endpoint 自动认领。
+完整或部分 summary 都保留绑定和操作者，登记失败可用原生入口原 argv 重试，或将已保存
+summary 交给 `sync_runner_artifacts(summary, repo_root=...)` 重试登记。
+`request-diff` 不允许用同一 attempt 再次发送请求；真实重跑必须分配新 attempt。
+登记不完成行动，显式 resolve 使用返回的 `store_operation_id`；partial/unknown 不能完成。
+
+Store 验证的 scaffold、preflight、apply 共用 Finding owner。apply 先原子发布 AI 正文，
+再分别提交技术裁决、目的地资格和可交付报告登记；失败保留正文，原决策可幂等重试。
+`python3 tools/report_generator.py ROOT/findings/TARGET` 复用已登记正文并重建索引；
+只有尚无当前报告的可交付 Finding 才生成新报告。不代表外部提交，也不自动完成 Action。
 
 ## 常用 runner
 
@@ -87,12 +114,12 @@ python3 tools/validation_runner.py record-evidence --target TARGET \
 
 Claude chooses the exact baseline/variant pair and one active input dimension;
 the runner only validates scope/auth facts, replays both requests, stores raw
-evidence privately, and writes the existing Ledger/Finding/Queue projections.
+evidence privately, and registers observations and explicit Finding links in one Store transaction.
 `classifier` is a signal label, not a fixed input generator. Query, form, JSON,
 XML/text, header/cookie, and path pairs can use the same contract. Unsupported
 multipart, compressed, protobuf, and gRPC wire bodies return `manual_required`
 without being marked clean. Use a canonical `vuln_class` when the pair must
-close a Ledger family; an unclassified pair remains reviewable evidence.
+close a canonical Coverage family; an unclassified pair remains reviewable evidence.
 
 ```json
 {
@@ -171,8 +198,9 @@ python3 tools/evidence_ledger.py summary --target <target>
 
 ```bash
 python3 tools/checkpoint.py --target <target>
-python3 tools/action_queue.py ingest-checkpoint --target <target>
-python3 tools/action_queue.py next --target <target>
+python3 tools/action_queue.py list --target <target> --json
+python3 tools/action_queue.py claim --target <target> --id <action-id>
 ```
 
-如果 queue 建议和当前 browser/source/recon 证据冲突，Claude 可以跳过、重排、覆盖，前提是写清理由和下一条证据动作。
+Checkpoint 只展示 Store 中的未决工作和原始候选；AI 显式 add/claim/resolve。
+不会自动提案入队、覆写 Coverage 或补出下一条行动。完成必须引用本次 claim 的 operation、工作产物或领域收据。

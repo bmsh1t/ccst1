@@ -3,59 +3,41 @@
 
 Evidence Ledger 补 coverage_matrix 没覆盖到的一层：同一个 endpoint 是否
 真的做过匿名、owner、peer、低权限、跨租户等差异验证。默认 summary 只读；
-只有 record 子命令会追加写入 `memory/evidence/<target>/ledger.jsonl`。
+当前查询使用 Store；旧 JSONL 仅供显式历史检查和迁移。
 """
 
 from __future__ import annotations
 
 import argparse
-import fcntl
 import json
-import os
 import re
-import shlex
 import sys
-from contextlib import contextmanager
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 try:
-    from tools.closure_projection import identity_fact_conflicts
     from tools.evidence_identity import (
         CLOSED_LEDGER_RESULTS,
         COVERING_RESULTS,
         LEDGER_RESULTS,
         canonical_endpoint_identity,
         normalize_family,
-    )
-    from tools.identity_contract import (
-        ClosureCellKey,
-        build_closure_cell,
-        validate_identity_candidate,
+        observation_supports_coverage,
     )
     from tools.target_paths import canonical_target_value, target_storage_key
-    from tools.target_store import StoreError, target_backend, target_switch_lock
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from closure_projection import identity_fact_conflicts  # type: ignore
     from evidence_identity import (  # type: ignore
         CLOSED_LEDGER_RESULTS,
         COVERING_RESULTS,
         LEDGER_RESULTS,
         canonical_endpoint_identity,
         normalize_family,
-    )
-    from identity_contract import (  # type: ignore
-        ClosureCellKey,
-        build_closure_cell,
-        validate_identity_candidate,
+        observation_supports_coverage,
     )
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
-    from target_store import StoreError, target_backend, target_switch_lock  # type: ignore
 
 
 SCHEMA_VERSION = 1
@@ -132,32 +114,10 @@ VARIANT_ALIASES = {
 }
 
 
-def now_utc() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
 def ledger_path(repo_root: Path | str, target: str) -> Path:
     repo = Path(repo_root)
     key = target_storage_key(canonical_target_value(target))
     return repo / "memory" / "evidence" / key / "ledger.jsonl"
-
-
-@contextmanager
-def ledger_mutation_lock(repo_root: Path | str, target: str):
-    """Serialize one target's append without creating a second state owner."""
-    with target_switch_lock(repo_root, target):
-        backend = target_backend(repo_root, target)
-        if backend != "legacy":
-            raise StoreError(f"legacy evidence ledger writer is disabled for {backend} target {target}")
-        path = ledger_path(repo_root, target)
-        lock_path = path.parent / ".locks" / "ledger.lock"
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        with lock_path.open("a+", encoding="utf-8") as handle:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _dedupe(items: list[str]) -> list[str]:
@@ -174,10 +134,6 @@ def _dedupe(items: list[str]) -> list[str]:
 
 def _canonicalize_endpoint(value: str) -> str:
     return canonical_endpoint_identity(value)
-
-
-def _quote(value: str) -> str:
-    return shlex.quote(str(value))
 
 
 def _normalize(value: str, aliases: dict[str, str], field: str) -> str:
@@ -220,27 +176,6 @@ def normalize_result(value: str) -> str:
 def normalize_ledger_vuln_class(value: str) -> str:
     """Admit open evidence families without widening canonical Coverage."""
     return normalize_family(value)
-
-
-def _identity_follow_up_action(
-    entry: Mapping[str, Any],
-    *,
-    missing_fields: tuple[str, ...] | list[str] = (),
-    conflicts: tuple[str, ...] | list[str] = (),
-    evidence_refs: tuple[str, ...] | list[str] = (),
-) -> dict[str, Any]:
-    refs = _dedupe([
-        *(str(item) for item in evidence_refs),
-        str(entry.get("evidence_ref") or ""),
-    ])
-    return {
-        "kind": "identity_follow_up",
-        "family": str(entry.get("vuln_class") or ""),
-        "endpoint": str(entry.get("endpoint") or ""),
-        "missing_fields": sorted(set(missing_fields)),
-        "conflicts": sorted(set(conflicts)),
-        "evidence_refs": refs,
-    }
 
 
 def load_entries_diagnostic(repo_root: Path | str, target: str) -> dict:
@@ -319,240 +254,6 @@ def load_entries(repo_root: Path | str, target: str) -> list[dict]:
             file=sys.stderr,
         )
     return list(diagnostic.get("entries") or [])
-
-
-def _load_probe_entry(repo_root: Path | str, target: str, event_id: str) -> dict:
-    """Return the ledger entry for one probe event_id (mechanical copy source)."""
-    wanted = str(event_id or "").strip()
-    if not wanted:
-        raise ValueError("--from-probe requires a non-empty event_id")
-    for entry in load_entries(repo_root, target):
-        if str(entry.get("event_id") or "") == wanted:
-            return entry
-    raise ValueError(
-        f"--from-probe event_id {wanted!r} not found in the ledger for {target}"
-    )
-
-
-def record_entry(
-    repo_root: Path | str,
-    *,
-    target: str,
-    endpoint: str,
-    method: str = "GET",
-    vuln_class: str = "IDOR",
-    workflow: str = "",
-    actor: str = "owner",
-    object_scope: str = "unknown",
-    variant: str = "baseline",
-    source: str = "manual",
-    result: str = "lead",
-    browser_observed: bool = False,
-    replayed: bool = False,
-    state_changing: bool | None = False,
-    redline_checked: bool = False,
-    evidence_ref: str = "",
-    notes: str = "",
-    operation_id: str = "",
-    event_id: str = "",
-    identity_v2: Mapping[str, Any] | ClosureCellKey | None = None,
-    identity_dimensions: Mapping[str, Any] | None = None,
-    identity_candidate: Mapping[str, Any] | None = None,
-    identity_replaces_event_id: str = "",
-) -> dict:
-    resolved_target = canonical_target_value(target)
-    backend = target_backend(repo_root, resolved_target)
-    if backend != "legacy":
-        raise StoreError(
-            f"legacy evidence ledger writer is disabled for {backend} target {resolved_target}; "
-            "use the native observation registration command"
-        )
-    canonical_endpoint = _canonicalize_endpoint(endpoint)
-    if not canonical_endpoint:
-        raise ValueError("endpoint is required")
-
-    method_u = str(method or "GET").strip().upper()
-    normalized_vuln = normalize_ledger_vuln_class(vuln_class)
-    normalized_result = normalize_result(result)
-    entry = {
-        "schema_version": SCHEMA_VERSION,
-        "ts": now_utc(),
-        "target": resolved_target,
-        "target_key": target_storage_key(resolved_target),
-        "endpoint": canonical_endpoint,
-        "raw_endpoint": endpoint,
-        "method": method_u,
-        "vuln_class": normalized_vuln,
-        "workflow": str(workflow or "").strip(),
-        "actor": normalize_actor(actor),
-        "object_scope": normalize_object_scope(object_scope),
-        "variant": normalize_variant(variant),
-        "source": str(source or "manual").strip(),
-        "result": normalized_result,
-        "browser_observed": bool(browser_observed),
-        "replayed": bool(replayed),
-        "state_changing": (
-            None
-            if state_changing is None
-            else bool(state_changing)
-        ),
-        "redline_checked": bool(redline_checked),
-        "evidence_ref": str(evidence_ref or "").strip(),
-        "notes": str(notes or "").strip(),
-        "operation_id": str(operation_id or "").strip(),
-        "event_id": str(event_id or "").strip(),
-        "warnings": [],
-    }
-    if sum(value is not None for value in (identity_v2, identity_candidate, identity_dimensions)) > 1:
-        raise ValueError("provide only one of identity_v2, identity_candidate, or identity_dimensions")
-    if (
-        identity_v2 is not None
-        and not isinstance(identity_v2, Mapping)
-        and not callable(getattr(identity_v2, "to_dict", None))
-    ):
-        raise ValueError("identity_v2 must be a closure identity object")
-    if identity_candidate is not None and not isinstance(identity_candidate, Mapping):
-        raise ValueError("identity_candidate must be an object")
-    if identity_dimensions is not None and not isinstance(identity_dimensions, Mapping):
-        raise ValueError("identity_dimensions must be an object")
-    if identity_v2 is not None:
-        identity_payload = (
-            identity_v2.to_dict()
-            if callable(getattr(identity_v2, "to_dict", None))
-            else identity_v2
-        )
-        identity_key = ClosureCellKey.from_dict(identity_payload)
-        conflicts = identity_fact_conflicts(identity_key, entry)
-        entry["identity_status"] = "conflict" if conflicts else "complete"
-        entry["identity_missing_fields"] = []
-        entry["identity_conflicts"] = list(conflicts)
-        if conflicts:
-            entry["identity_follow_up_action"] = _identity_follow_up_action(
-                entry,
-                conflicts=conflicts,
-            )
-        else:
-            entry["identity_v2"] = identity_key.to_dict()
-    elif identity_candidate is not None:
-        candidate_validation = validate_identity_candidate(identity_candidate)
-        candidate = candidate_validation.candidate
-        entry["identity_candidate"] = candidate.to_dict()
-        fact_conflicts = (
-            identity_fact_conflicts(candidate_validation.identity, entry)
-            if candidate_validation.identity is not None
-            else ()
-        )
-        if candidate.endpoint and candidate.endpoint != canonical_endpoint:
-            fact_conflicts = (*fact_conflicts, "endpoint_mismatch")
-        if candidate.family and candidate.family != normalized_vuln:
-            fact_conflicts = (*fact_conflicts, "family_mismatch")
-        candidate_method = str(candidate.dimensions.get("method") or "").upper()
-        if candidate_method and candidate_method != method_u:
-            fact_conflicts = (*fact_conflicts, "method_mismatch")
-        fact_conflicts = tuple(sorted(set(fact_conflicts)))
-        conflicts = tuple(sorted(set((*candidate.conflicts, *fact_conflicts))))
-        if candidate_validation.closeable and not conflicts:
-            entry["identity_v2"] = candidate_validation.identity.to_dict()
-            entry["identity_status"] = "complete"
-        else:
-            entry["identity_status"] = "conflict" if fact_conflicts else "follow_up_required"
-            entry["identity_missing_fields"] = list(candidate.missing_fields)
-            entry["identity_conflicts"] = list(conflicts)
-            entry["identity_follow_up_action"] = _identity_follow_up_action(
-                entry,
-                missing_fields=candidate.missing_fields,
-                conflicts=conflicts,
-                evidence_refs=candidate.evidence_refs,
-            )
-    elif identity_dimensions is not None:
-        identity_result = build_closure_cell(
-            canonical_endpoint,
-            normalized_vuln,
-            identity_dimensions,
-        )
-        fact_conflicts = (
-            identity_fact_conflicts(identity_result.key, entry)
-            if identity_result.key is not None
-            else ()
-        )
-        conflicts = tuple(sorted(set((*identity_result.conflicts, *fact_conflicts))))
-        entry["identity_status"] = (
-            "complete"
-            if identity_result.complete and not conflicts
-            else "conflict"
-            if conflicts
-            else "incomplete"
-        )
-        entry["identity_missing_fields"] = list(identity_result.missing_fields)
-        entry["identity_conflicts"] = list(conflicts)
-        if identity_result.key is not None and not conflicts:
-            entry["identity_v2"] = identity_result.key.to_dict()
-        if conflicts:
-            entry["identity_follow_up_action"] = _identity_follow_up_action(
-                entry,
-                missing_fields=identity_result.missing_fields,
-                conflicts=conflicts,
-            )
-    # Red-line ownership follows the recorded effect, not the request verb.
-    requires_redline = entry["state_changing"] is True
-    if requires_redline and not entry["redline_checked"] and normalized_result in COVERING_RESULTS:
-        entry["requested_result"] = normalized_result
-        entry["result"] = "blocked_redline"
-        entry["redline_decision"] = "blocked"
-        entry["warnings"].append("redline_check_missing_for_state_changing_test")
-    elif entry["redline_checked"]:
-        entry["redline_decision"] = "allowed"
-    elif entry["result"] == "blocked_redline":
-        entry["redline_decision"] = "blocked"
-
-    path = ledger_path(repo_root, resolved_target)
-    with ledger_mutation_lock(repo_root, resolved_target):
-        replacement_event_id = str(identity_replaces_event_id or "").strip()
-        existing_entries: list[dict] = []
-        if entry["event_id"] or replacement_event_id:
-            diagnostic = load_entries_diagnostic(repo_root, resolved_target)
-            existing_entries = list(diagnostic.get("entries") or [])
-        if entry["event_id"]:
-            existing = next(
-                (
-                    item
-                    for item in existing_entries
-                    if str(item.get("event_id") or "") == entry["event_id"]
-                ),
-                None,
-            )
-            if existing is not None:
-                return {**existing, "write_status": "deduplicated"}
-        if replacement_event_id:
-            if str(entry.get("identity_status") or "") != "complete":
-                raise ValueError("identity replacement requires a complete new identity")
-            replaced = next(
-                (
-                    item
-                    for item in existing_entries
-                    if str(item.get("event_id") or "") == replacement_event_id
-                ),
-                None,
-            )
-            if replaced is None or "identity_status" not in replaced:
-                raise ValueError(f"identity replacement event not found: {replacement_event_id}")
-            if (
-                str(replaced.get("endpoint") or "") != entry["endpoint"]
-                or str(replaced.get("vuln_class") or "") != entry["vuln_class"]
-            ):
-                raise ValueError("identity replacement must keep the same endpoint and vulnerability family")
-            entry["identity_replacement"] = {
-                "event_id": replacement_event_id,
-                "evidence_ref": str(replaced.get("evidence_ref") or ""),
-                "identity_v2": replaced.get("identity_v2") if isinstance(replaced.get("identity_v2"), dict) else None,
-            }
-        path.parent.mkdir(parents=True, exist_ok=True)
-        encoded = (json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8")
-        with path.open("ab", buffering=0) as fh:
-            if fh.write(encoded) != len(encoded):
-                raise OSError(f"partial evidence ledger append: {path}")
-            os.fsync(fh.fileno())
-    return {**entry, "write_status": "updated"}
 
 
 _OBJECT_RESOURCE_SEGMENTS = {
@@ -702,17 +403,6 @@ def actor_requirements(
     return requirements
 
 
-def _entry_matches_requirement(entry: dict, requirement: dict) -> bool:
-    return (
-        _canonicalize_endpoint(str(entry.get("endpoint") or "")) == requirement["endpoint"]
-        and str(entry.get("method") or "GET").upper() == requirement["method"]
-        and str(entry.get("vuln_class") or "") == requirement["vuln_class"]
-        and str(entry.get("actor") or "") == requirement["actor"]
-        and str(entry.get("object_scope") or "") == requirement["object_scope"]
-        and str(entry.get("variant") or "") == requirement["variant"]
-    )
-
-
 def _entry_requirement_key(entry: dict) -> tuple[str, str, str, str, str, str]:
     """One requirement-matching key per entry (single canonicalize per entry)."""
     return (
@@ -745,7 +435,9 @@ def actor_matrix_status(entries: list[dict], requirements: list[dict]) -> list[d
         status = "missing"
         if latest:
             result = str(latest.get("result") or "")
-            if result in COVERING_RESULTS:
+            if not observation_supports_coverage(latest):
+                status = "pending"
+            elif result in COVERING_RESULTS:
                 status = "covered"
             elif result == "blocked_redline":
                 status = "blocked"
@@ -776,8 +468,6 @@ def _focus_endpoint_values(focus_endpoints: list[str | dict] | None, entries: li
     return _dedupe([_canonicalize_endpoint(value) for value in values])[:8]
 
 
-
-
 def build_summary(
     repo_root: Path | str,
     *,
@@ -785,7 +475,6 @@ def build_summary(
     focus_endpoints: list[str | dict] | None = None,
     vuln_classes: list[str] | None = None,
     method: str = "GET",
-    _include_aggregate: bool = True,
     _truth: dict | None = None,
 ) -> dict:
     resolved_target = canonical_target_value(target)
@@ -870,115 +559,9 @@ def build_summary(
             "gap_count": len(actor_gaps),
             "covered_count": len([row for row in actor_rows if row.get("status") == "covered"]),
         },
-        "record_commands": [
-            record_command(resolved_target, row)
-            for row in actor_gaps[:5]
-        ],
+        "record_commands": [],
     }
-    if _include_aggregate and source.get("kind") != "store":
-        summary["aggregate_closure"] = _build_aggregate_closure(
-            repo_root,
-            resolved_target,
-            local_summary=summary,
-        )
     return summary
-
-
-def _build_aggregate_closure(
-    repo_root: Path | str,
-    target: str,
-    *,
-    local_summary: dict,
-) -> dict:
-    """Derive a parent-target closure view from child Ledger owners.
-
-    Child JSONL files remain the only event owners. The parent projection only
-    carries bounded counts, closure cells, and source paths, so rebuilding it
-    cannot duplicate or move child evidence.
-    """
-    resolved = canonical_target_value(target)
-    evidence_root = Path(repo_root) / "memory" / "evidence"
-    children = []
-    suffix = "." + resolved.lower().rstrip(".")
-    if evidence_root.is_dir():
-        for path in sorted(evidence_root.glob("*/ledger.jsonl")):
-            child = path.parent.name
-            if child.lower() == resolved.lower() or not child.lower().endswith(suffix):
-                continue
-            child_summary = build_summary(
-                repo_root,
-                target=child,
-                _include_aggregate=False,
-            )
-            children.append(
-                {
-                    "target": child,
-                    "ledger_path": str(path),
-                    "entry_count": int(child_summary.get("entry_count", 0) or 0),
-                    "ledger_status": child_summary.get("ledger_status", "missing"),
-                    "result_counts": dict(child_summary.get("result_counts") or {}),
-                    "closed_cells": [
-                        {**cell, "source_target": child}
-                        for cell in (child_summary.get("closed_cells_v2") or [])[:32]
-                    ],
-                }
-            )
-    local_exists = bool(local_summary.get("path_exists"))
-    result_counts = {result: 0 for result in RESULTS}
-    for result, count in (local_summary.get("result_counts") or {}).items():
-        result_counts[result] = result_counts.get(result, 0) + int(count or 0)
-    for child in children:
-        for result, count in child["result_counts"].items():
-            result_counts[result] = result_counts.get(result, 0) + int(count or 0)
-    return {
-        "status": "derived",
-        "target": resolved,
-        "local_ledger": str(local_summary.get("path") or ""),
-        "local_ledger_exists": local_exists,
-        "children": children[:64],
-        "child_count": len(children),
-        "entry_count": int(local_summary.get("entry_count", 0) or 0)
-        + sum(int(child["entry_count"] or 0) for child in children),
-        "result_counts": result_counts,
-        "closed_cells": [
-            *[
-                {**cell, "source_target": resolved}
-                for cell in (local_summary.get("closed_cells_v2") or [])[:32]
-            ],
-            *[
-                cell
-                for child in children
-                for cell in child.get("closed_cells") or []
-            ],
-        ][:64],
-    }
-
-
-def record_command(target: str, row: dict) -> str:
-    parts = [
-        "python3",
-        "tools/evidence_ledger.py",
-        "record",
-        "--target",
-        target,
-        "--endpoint",
-        str(row.get("endpoint") or ""),
-        "--method",
-        str(row.get("method") or "GET"),
-        "--vuln-class",
-        str(row.get("vuln_class") or "IDOR"),
-        "--actor",
-        str(row.get("actor") or "owner"),
-        "--object-scope",
-        str(row.get("object_scope") or "unknown"),
-        "--variant",
-        str(row.get("variant") or "baseline"),
-        "--result",
-        "tested_clean",
-        "--notes",
-        "observed expected authz/object-boundary behavior",
-    ]
-    return " ".join(_quote(part) for part in parts)
 
 
 def format_summary(summary: dict) -> str:
@@ -1037,69 +620,13 @@ def format_summary(summary: dict) -> str:
     else:
         lines.append("  - none")
 
-    lines.extend(["- Record commands:"])
-    commands = summary.get("record_commands") or []
-    if commands:
-        for command in commands[:5]:
-            lines.append(f"  - {command}")
-    else:
-        lines.append("  - none")
+    lines.append("- Register existing observations: python3 tools/validation_runner.py record-evidence --help")
     return "\n".join(lines)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Evidence ledger and actor matrix for one target.")
     sub = parser.add_subparsers(dest="cmd", required=True)
-
-    p_record = sub.add_parser("record", help="append one explicit evidence ledger entry")
-    p_record.add_argument("--target", required=True)
-    p_record.add_argument("--endpoint", default="")
-    p_record.add_argument("--method", default="GET")
-    p_record.add_argument("--vuln-class", default="IDOR")
-    p_record.add_argument("--workflow", default="")
-    p_record.add_argument("--actor", default="owner")
-    p_record.add_argument("--object-scope", default="unknown")
-    p_record.add_argument("--variant", default="baseline")
-    p_record.add_argument("--source", default="manual")
-    p_record.add_argument("--result", default="lead", choices=list(RESULTS))
-    p_record.add_argument("--browser-observed", action="store_true")
-    p_record.add_argument("--replayed", action="store_true")
-    p_record.add_argument("--state-changing", action="store_true")
-    p_record.add_argument("--redline-checked", action="store_true")
-    p_record.add_argument("--evidence-ref", default="")
-    p_record.add_argument(
-        "--from-probe",
-        default="",
-        help=(
-            "Ledger event_id of an existing probe entry: copy its mechanical "
-            "fields (endpoint/method/actor/variant/evidence_ref) so only "
-            "result/notes remain AI-supplied. Explicit flags still win."
-        ),
-    )
-    p_record.add_argument("--notes", default="")
-    identity_group = p_record.add_mutually_exclusive_group()
-    identity_group.add_argument(
-        "--identity-v2-json",
-        default="",
-        help="prebuilt ClosureCellKey v2 JSON carried unchanged from the planned test",
-    )
-    identity_group.add_argument(
-        "--identity-dimensions-json",
-        default="",
-        help="JSON object with deterministic family-specific closure dimensions",
-    )
-    identity_group.add_argument(
-        "--identity-candidate-json",
-        default="",
-        help="JSON object containing an AI identity candidate",
-    )
-    p_record.add_argument(
-        "--identity-replaces-event-id",
-        default="",
-        help="event_id of an immutable identity row replaced by this complete cell",
-    )
-    p_record.add_argument("--repo-root", default=str(BASE_DIR))
-    p_record.add_argument("--json", action="store_true")
 
     p_summary = sub.add_parser("summary", help="read ledger summary and actor matrix gaps")
     p_summary.add_argument("--target", required=True)
@@ -1114,72 +641,18 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.cmd == "record":
-        if getattr(args, "from_probe", ""):
-            probe = _load_probe_entry(args.repo_root, args.target, args.from_probe)
-            if not args.endpoint or args.endpoint == "/":
-                args.endpoint = probe.get("endpoint") or args.endpoint
-            if args.method == "GET" and probe.get("method"):
-                args.method = probe.get("method")
-            if args.actor == "owner" and probe.get("actor"):
-                args.actor = probe.get("actor")
-            if args.variant == "baseline" and probe.get("variant"):
-                args.variant = probe.get("variant")
-            if not args.evidence_ref and probe.get("evidence_ref"):
-                args.evidence_ref = probe.get("evidence_ref")
-            if args.vuln_class == "IDOR" and probe.get("vuln_class"):
-                args.vuln_class = probe.get("vuln_class")
-        try:
-            identity_v2 = json.loads(args.identity_v2_json) if args.identity_v2_json else None
-            identity_dimensions = json.loads(args.identity_dimensions_json) if args.identity_dimensions_json else None
-            identity_candidate = json.loads(args.identity_candidate_json) if args.identity_candidate_json else None
-        except json.JSONDecodeError as exc:
-            parser.error(f"identity JSON must be valid JSON: {exc.msg}")
-        if identity_v2 is not None and not isinstance(identity_v2, dict):
-            parser.error("--identity-v2-json must contain a JSON object")
-        if identity_dimensions is not None and not isinstance(identity_dimensions, dict):
-            parser.error("--identity-dimensions-json must contain a JSON object")
-        if identity_candidate is not None and not isinstance(identity_candidate, dict):
-            parser.error("--identity-candidate-json must contain a JSON object")
-        if not str(args.endpoint or "").strip():
-            parser.error("--endpoint is required (or supply --from-probe to copy it)")
-        entry = record_entry(
-            args.repo_root,
-            target=args.target,
-            endpoint=args.endpoint,
-            method=args.method,
-            vuln_class=args.vuln_class,
-            workflow=args.workflow,
-            actor=args.actor,
-            object_scope=args.object_scope,
-            variant=args.variant,
-            source=args.source,
-            result=args.result,
-            browser_observed=args.browser_observed,
-            replayed=args.replayed,
-            state_changing=args.state_changing,
-            redline_checked=args.redline_checked,
-            evidence_ref=args.evidence_ref,
-            notes=args.notes,
-            identity_v2=identity_v2,
-            identity_dimensions=identity_dimensions,
-            identity_candidate=identity_candidate,
-            identity_replaces_event_id=args.identity_replaces_event_id,
-        )
-        if args.json:
-            print(json.dumps(entry, ensure_ascii=False, indent=2))
-        else:
-            print(f"evidence ledger recorded: {entry['method']} {entry['endpoint']} x {entry['vuln_class']} -> {entry['result']}")
-        return 0
-
     if args.cmd == "summary":
-        summary = build_summary(
-            args.repo_root,
-            target=args.target,
-            focus_endpoints=args.endpoint,
-            vuln_classes=args.vuln_class or None,
-            method=args.method,
-        )
+        try:
+            summary = build_summary(
+                args.repo_root,
+                target=args.target,
+                focus_endpoints=args.endpoint,
+                vuln_classes=args.vuln_class or None,
+                method=args.method,
+            )
+        except (OSError, ValueError) as exc:
+            print(f"evidence-ledger: {exc}", file=sys.stderr)
+            return 2
         if args.json:
             print(json.dumps(summary, ensure_ascii=False, indent=2))
         else:

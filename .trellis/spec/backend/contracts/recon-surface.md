@@ -328,12 +328,12 @@ Correct: component-leading numeric branch sentence + exact observed branch/versi
     catalog metadata, not a semantic 1-2 card selection.
   - Context Pack does not emit `selected_skill`, `skill_route`,
     `selected_skill_id`, or `why_this_skill`: the skill discovery surface is the
-    platform Skill tool, and route admission/governance import
-    `tools/skill_catalog.py` directly. `knowledge_cards`,
+    platform Skill tool. Queue/Store neither register nor validate Skill routes.
+    `knowledge_cards`,
     `deferred_knowledge_cards`, and `knowledge_card_recall` remain empty
     compatibility projections; they do not enter `must_read`, represent an AI
-    selection, or bind Checkpoint Queue actions. `skill_route` appears only as
-    AI-authored Queue metadata at claim time, never as a Context Pack field.
+    selection, or bind Checkpoint Queue actions. Checkpoint also omits the
+    retired Skill route shell.
     Shared runtime, target state, Ledger, and evidence-specific tool/artifact refs
     remain mandatory inputs; Claude selects and reads a catalog card by current
     information gap and records actual refs when claiming substantive action.
@@ -474,8 +474,8 @@ audit_governance(
 }
 ```
 
-`tools/context_pack.py` 的 `SKILL_CATALOG` 是全部仓库 Skill 的 route-mode owner；
-`SKILL_PATHS` 和 `SKILL_TEST_DIMENSIONS` 只能从其中的 `primary` 项派生。
+本节描述已归档的 capability governance 输出。运行时 Skill 注册表已退役，
+当前发现/加载由平台原生能力和各 Skill 的 frontmatter description 持有。
 
 ### 3. Contracts
 
@@ -503,8 +503,8 @@ audit_governance(
 - Claude Code CLI 自动加载项目 `CLAUDE.md`；Context Pack 的 `must_read` 包含
   `runtime-protocol`、目标状态、Ledger 和证据专用引用，不包含推荐的 primary Skill/Card。
   `selected_skill`/`skill_route`/`selected_skill_id`/`why_this_skill` 已从 Context Pack
-  输出中退役（平台 Skill 工具是发现面），不再作为兼容推荐字段；`skill_route` 只在 AI 写入
-  Queue metadata 时出现。Card 选择字段保持空。根
+  输出中退役（平台 Skill 工具是发现面），不再作为兼容推荐字段；Queue/Store 同样不校验
+  或生成 Skill 路由。Card 选择字段保持空。根
   `SKILL.md` 只用于旧单文件直装，不由正式 `install.sh` 安装，也不进入 Context Pack。
 
 ### 4. Validation & Error Matrix
@@ -579,38 +579,35 @@ Correct: first normalized focus token is a primary Skill -> explicit override; o
   should select that work before report. Checkpoint `next_action` and handoff
   summaries must mirror the final `recommended_executable_action`, not stale
   `autopilot_state.next_action` values such as `report_finding`.
-- Surface review ordering must preserve evidence quality before score hints.
-  `surface.py` should build the Claude-facing review pool from evidence-rich
-  sources first (cross-evidence convergence, browser-observed XHR/API,
-  JS/source hypotheses, scanner candidates, target-memory continuations), then
-  use score-only items only as fallback when no actionable evidence exists.
-  Recon/memory-only facts such as non-standard port, tech-stack overlap, or
-  "untested" are useful in P1/P2 compatibility output, but must not crowd the
-  Claude-facing review pool when browser/source/JS/scanner/parameter/intel
-  evidence exists. `autopilot_state.py` must preserve that review-pool order;
-  do not re-sort by `score`, because score is only an advisory hint and can
-  otherwise push generic paths such as challenge helpers ahead of real
-  browser/source evidence.
+- Surface exposes the first 16 target-owned exact URLs in lexical URL order, with
+  `review_window={order,total,returned,remaining,limit}`. Browser/JS/source/scanner
+  and target-memory context remain available, but source, category, severity and
+  shape never reserve seats or assign business priority. `autopilot_state.py`
+  preserves the window order within mechanical cooldown buckets; an explicitly
+  resumed session focus may be shown first. Retired `p1`/`p2`/`kill` arrays remain empty.
+- FFUF batches select pending eligible targets in URL order. Scope, wordlist
+  binding, budget and completion state still constrain execution; labels and
+  root/host/technology diversity do not choose the next target.
 - Large Surface processing has three separate contracts:
   1. **Completeness**: raw recon plus the full observation inventory retain every
      target-owned observation. Only exact URL strings may be destructively
      deduplicated across sources; query value/order, duplicate key, encoding,
      scheme/port, path case, and trailing slash remain distinct.
   2. **Derived review**: `surface_index.py` performs external sort/provenance
-     union, then `surface.py` scores every unique target-owned row and maintains
-     stable bounded P1/P2/review frontiers. Shape is grouping/navigation after
-     scoring, never a pre-ranking sample or deletion key.
+     union, then `surface.py` considers every unique target-owned row for the
+     bounded URL window. Shape only supports grouping/navigation and never
+     acts as a sample or deletion key.
   3. **Control plane**: bootstrap reads shared control facts, fast recon stat,
      inventory summary, and only an exact-hit bounded projection. It never scans
      large URL/inventory bodies, refreshes cache, mutates lifecycle, or treats a
      missing/stale projection as no attack surface.
-- P1/P2/review top-K and summary samples are attention windows. Overflow and
+- The URL review window and summary samples are attention windows. Overflow and
   untouched rows remain open until an owner-backed action changes their state.
   Long-tail access uses revision-bound cursor paging; page/list reads never imply
   reviewed/tested-clean or automatically enqueue/route a Skill.
-- Full and streaming ranking must remain behaviorally equivalent for candidate
-  identity, stable order, score, score breakdown, reasons, review reason, FFUF
-  sample, evidence convergence, and target ownership. An intentional signal bug
+- Materialized and streaming review must remain behaviorally equivalent for
+  candidate identity, URL order, reasons, review reason, FFUF metadata,
+  evidence convergence, counts, and target ownership. An intentional signal bug
   fix (for example hostname leakage or unbounded short-token matching) requires
   its own before/after regression rather than being hidden inside a performance
   change.
@@ -660,11 +657,11 @@ python3 tools/surface_finalizer.py --repo-root <repo> --target <target> --json
   projection；不得逐行读取大型 URL、解析 monolithic inventory、同步 owner 或执行 ranking。
 - URL 仅以完全相同的 trimmed raw string 做 destructive dedupe。query value/order、duplicate key、
   encoding、scheme/port、path case 和 trailing slash variant 必须保留独立 exact row。
-- Index 合并 provenance 并保存稳定 first-seen sequence；shape/ordered signature 只做导航，不能在
-  scoring 前删除 variant。所有 target-owned exact row 都经过同一 scorer。
-- P1/P2/review frontier 是 bounded 注意力窗口；overflow 和 inventory 中未展示的 observation 仍为
+- Index 合并 provenance 并保存稳定 first-seen sequence；shape/ordered signature 只做导航，不能
+  删除 variant。所有 target-owned exact row 都参与同一个 URL 顺序窗口。
+- URL review window 是 bounded 注意力窗口，返回 total/returned/remaining/limit；overflow 和未展示的 observation 仍为
   `untouched`，不能推导 tested-clean、exhausted、finding 或 Skill route。
-- Projection 必须绑定所有 ranking 输入，且仅在 ranking 前后 manifest fingerprint 一致时原子发布。
+- Projection 必须绑定所有 review 输入，且仅在完整扫描前后 manifest fingerprint 一致时原子发布。
   full state、context-pack/checkpoint 只复用 exact hit；bootstrap/full state 遇到
   miss/stale/invalid 返回 `prepare_surface_context`，closure 保持
   `surface_projection_pending`，不得用 fallback ranking 驱动 hunt 或 finish。
@@ -687,7 +684,7 @@ python3 tools/surface_finalizer.py --repo-root <repo> --target <target> --json
 
 ### 5. Good / Base / Bad Cases
 
-- Good：30 万 exact URL 全部进入 index/scorer，内存只保留 bounded frontier；warm bootstrap 只读小型
+- Good：30 万 exact URL 全部进入 index，完整扫描时仅保留 bounded URL window；warm bootstrap 只读小型
   projection 并在 slash 超时窗口内返回。
 - Good：同 URL 跨 API/param/browser/scanner 来源只有一行且 provenance 完整；不同参数顺序仍为两行。
 - Base：旧 target 尚无 sidecar/projection，bootstrap 返回 refresh/sync 语义，显式 owner 完成一次迁移。
@@ -703,7 +700,7 @@ python3 tools/surface_finalizer.py --repo-root <repo> --target <target> --json
 - Sidecar/projection：missing/stale/corrupt/target mismatch/body binding、atomic failure、input race、
   cache hit 复用和删除后重建。
 - Cursor：status/kind/source filter、全量恰好一次可达、revision/filter reject、读取前后字节不变。
-- Scaling：仅在 `/tmp` 生成 30 万 URL 与百 MB inventory，校验末行强信号、exact identity、untouched
+- Scaling：仅在 `/tmp` 生成 30 万 URL 与百 MB inventory，校验末行仍可由 index 展开、URL 顺序、exact identity、untouched
   lifecycle、RSS/耗时和 source byte preservation；外部 opt-in 验收只输出聚合指标。
 - Runtime：staged install 和 slash-command wiring；tracked 产品面不得包含靶场/外部 target 数据。
 
@@ -720,11 +717,11 @@ return sorted(candidates, key=score, reverse=True)[:16]
 #### Correct
 
 ```python
-# raw/index 保存完整 exact identity；每行评分后只压缩注意力 frontier。
-for sequence, row in iter_surface_index(repo_root, target):
+# raw/index 保存完整 exact identity；默认窗只按 URL 排序，并保留总数与完整展开入口。
+for row in iter_surface_index(repo_root, target):
     if row["target_owned"]:
-        frontiers.add(score_candidate(row), sequence)
-publish_projection(frontiers, exact_input_manifest)
+        window.add(candidate_metadata(row))
+publish_projection(window, exact_input_manifest)
 ```
 
 ## Recon Phase Manifest and Lossless Analysis Inputs
@@ -807,9 +804,9 @@ not a vulnerability judgment layer.
   does not resurrect stale legacy bytes.
 - FFUF/config probes normalize the join boundary once, strip query/fragment from
   the base used for path joins, and must never emit an accidental `//path`.
-- Surface exact URL identity and the complete index remain unchanged. Bounded
-  P1/P2/review frontiers reserve representatives across normalized route shapes;
-  same-shape ties retain the legacy score-descending, first-seen order.
+- Surface exact URL identity and the complete index remain unchanged. The bounded
+  review window uses lexical URL order; route shapes reserve no representatives
+  and metadata never changes ordering. FFUF samples merge by exact URL with no reserved seats.
 - CIDR offset `0` clears prior host/probe pages and canonical `httpx_full.txt`.
   Offset `>0` preserves them, writes only `<offset>.httpx.txt`, then rebuilds
   `httpx_full.txt` as a deterministic deduplicated union. `urls.txt` and status

@@ -24,13 +24,12 @@ import signal
 import ssl
 import subprocess
 import sys
-import tempfile
 import time
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qsl, urlparse
+from urllib.parse import urlparse
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener, urlopen
 
 TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -47,7 +46,7 @@ if TOOLS_DIR not in sys.path:
 
 from memory.hunt_journal import HuntJournal
 from memory.schemas import make_journal_entry
-from memory.target_profile import default_memory_dir, load_target_profile, make_target_profile, save_target_profile
+from memory.target_profile import default_memory_dir
 from tools.auth_session import AuthSession, add_cli_args, session_from_args
 from tools.credential_store import CredentialStore
 from tools.eburst_lane import resolve_eburst
@@ -59,10 +58,10 @@ from tools.runtime_state import (
 )
 from tools.target_paths import (
     classify_target as classify_target_input,
-    target_https_url,
     target_list_entries,
     target_storage_key,
 )
+from tools.target_store import StoreError, initialize_target_store
 
 # Colors
 GREEN = "\033[0;32m"
@@ -477,6 +476,7 @@ def _fetch_url(
     try:
         preflight = preflight_request(
             memory_dir=HUNT_MEMORY_DIR,
+            repo_root=BASE_DIR,
             target=target,
             url=url,
             method=method,
@@ -509,6 +509,7 @@ def _fetch_url(
     try:
         record_request(
             memory_dir=HUNT_MEMORY_DIR,
+            repo_root=BASE_DIR,
             target=target,
             url=url,
             method=method,
@@ -730,58 +731,10 @@ def _load_report_findings(domain):
     return findings
 
 
-def _update_target_profile(domain, *, elapsed_minutes=0, recon_completed=False):
-    """Persist minimal hunt state so resume/intel can read it later."""
-    owner_projection = derive_owner_projection(BASE_DIR, domain)
-    profile = load_target_profile(HUNT_MEMORY_DIR, domain)
-    now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    if profile is None:
-        profile_kwargs = {
-            "scope_snapshot": {"in_scope": [domain], "fetched_at": now_utc},
-            "hunt_sessions": 0,
-            "total_time_minutes": 0,
-        }
-        if not owner_projection.get("available"):
-            profile_kwargs.update(
-                tested_endpoints=[],
-                untested_endpoints=[],
-                findings=[],
-            )
-        profile = make_target_profile(domain, **profile_kwargs)
-
-    profile["last_hunted"] = now_utc
-    profile["hunt_sessions"] = int(profile.get("hunt_sessions", 0)) + 1
-    profile["total_time_minutes"] = round(float(profile.get("total_time_minutes", 0)) + elapsed_minutes, 2)
-
-    tech_stack = _extract_recon_tech_stack(domain)
-    if tech_stack:
-        profile["tech_stack"] = tech_stack
-
-    if recon_completed and not owner_projection.get("available"):
-        discovered = _extract_recon_candidates(domain)
-        tested = _dedupe_keep_order(profile.get("tested_endpoints", []))
-        remaining = [ep for ep in discovered if ep not in set(tested)]
-        profile["untested_endpoints"] = remaining
-
-    if not owner_projection.get("available"):
-        findings = _load_report_findings(domain)
-        if findings:
-            profile["findings"] = findings
-            tested_endpoints = _dedupe_keep_order(
-                profile.get("tested_endpoints", [])
-                + [_normalize_endpoint(item.get("url", "")) for item in findings]
-            )
-            profile["tested_endpoints"] = tested_endpoints
-            remaining = [ep for ep in profile.get("untested_endpoints", []) if ep not in set(tested_endpoints)]
-            profile["untested_endpoints"] = remaining
-
-    save_target_profile(HUNT_MEMORY_DIR, profile)
-
-
-def _session_vuln_classes(domain, *, recon_completed=False, scan_completed=False):
+def _session_vuln_classes(domain, *, recon_completed=False, scan_completed=False, findings=None):
     """Derive a minimal list of vuln classes/scan modes attempted in the session."""
     classes = []
-    for item in _load_report_findings(domain):
+    for item in _load_report_findings(domain) if findings is None else findings:
         label = str(item.get("type") or item.get("vuln_class") or "").strip().lower()
         if label:
             classes.append(label)
@@ -807,21 +760,14 @@ def _auto_log_session_summary(
 ):
     """Auto-log a non-fatal session summary to hunt memory."""
     try:
-        profile = load_target_profile(HUNT_MEMORY_DIR, domain) or {}
         owner_projection = derive_owner_projection(BASE_DIR, domain)
-        findings = (
-            owner_projection.get("findings", [])
-            if owner_projection.get("findings_authoritative")
-            else _load_report_findings(domain)
-        )
-        if owner_projection.get("tested_authoritative"):
-            endpoints_tested = owner_projection.get("tested_endpoints", [])
-        else:
-            endpoints_tested = profile.get("tested_endpoints", []) if isinstance(profile, dict) else []
+        findings = owner_projection.get("findings", [])
+        endpoints_tested = owner_projection.get("tested_endpoints", [])
         vuln_classes = _session_vuln_classes(
             domain,
             recon_completed=recon_completed,
             scan_completed=scan_completed,
+            findings=findings,
         )
         journal = HuntJournal(Path(HUNT_MEMORY_DIR) / "journal.jsonl")
         journal.log_session_summary(
@@ -921,7 +867,6 @@ def _batch_recon_result(canonical_target, recon_ok, started, *, ctf_mode=False):
         reports_generated=0,
         ctf_mode=ctf_mode,
     )
-    _update_target_profile(canonical_target, elapsed_minutes=elapsed_minutes, recon_completed=bool(recon_ok))
     _auto_log_session_summary(
         canonical_target,
         recon_completed=bool(recon_ok),
@@ -1124,9 +1069,9 @@ def _finalize_interrupted_scan(domain):
     target = classify_target(domain)["target"]
     findings_dir = _resolve_findings_dir(domain)
     try:
-        from tools.finding_index import write_finding_index
+        from tools.finding_index import index_scanner_material
 
-        payload = write_finding_index(findings_dir, target=target)
+        payload = index_scanner_material(findings_dir, target=target)
     except Exception as exc:  # Best-effort recovery must not change scan failure semantics.
         log("warn", f"Unable to preserve interrupted scanner candidates for {target}: {exc}")
         return
@@ -1638,7 +1583,6 @@ def _hunt_target_impl(
             ctf_mode=ctf_mode,
         )
         elapsed_minutes = (time.monotonic() - started) / 60.0
-        _update_target_profile(canonical_target, elapsed_minutes=elapsed_minutes, recon_completed=result["recon"])
         _auto_log_session_summary(
             canonical_target,
             recon_completed=result["recon"],
@@ -1725,7 +1669,6 @@ def _hunt_target_impl(
     # a finding to report-ready evidence.
     result["reports"] = 0
     elapsed_minutes = (time.monotonic() - started) / 60.0
-    _update_target_profile(canonical_target, elapsed_minutes=elapsed_minutes, recon_completed=recon_available)
     _auto_log_session_summary(
         canonical_target,
         recon_completed=recon_available,
@@ -1760,9 +1703,14 @@ def hunt_target(
     """Run one target pipeline while preventing duplicate long phases."""
     target_info = classify_target(domain)
     canonical_target = target_info["target"]
+    auth_session = _active_auth_session()
+    if not auth_session.is_empty():
+        auth_session.bind_target(domain)
+    if target_info["kind"] != "list":
+        initialize_target_store(BASE_DIR, canonical_target)
+    if not os.path.exists(os.path.join(WORDLIST_DIR, "common.txt")):
+        setup_wordlists()
     execution_target = str(domain).strip() if "://" in str(domain) else canonical_target
-    if not _active_auth_session().is_empty():
-        _active_auth_session().bind_target(canonical_target)
     return _hunt_target_impl(
         execution_target,
         quick=quick,
@@ -1866,10 +1814,6 @@ Examples:
     if args.target:
         log("info", f"Hunting target: {args.target}")
 
-        # Setup wordlists if missing
-        if not os.path.exists(os.path.join(WORDLIST_DIR, "common.txt")):
-            setup_wordlists()
-
         try:
             result = hunt_target(
                 args.target,
@@ -1881,7 +1825,7 @@ Examples:
                 scanner_skip=args.scanner_skip,
                 ctf_mode=ctf_mode,
             )
-        except RuntimePhaseBusy as exc:
+        except (RuntimePhaseBusy, StoreError, ValueError) as exc:
             log("warn", str(exc))
             sys.exit(2)
         print_dashboard([result])

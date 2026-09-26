@@ -21,6 +21,7 @@ try:
     )
     from tools.intel_sources import DEFAULT_COMPONENT_TTL_SECONDS
     from tools.target_paths import canonical_target_value, target_storage_key
+    from tools.target_store import StoreError
     from tools.technology_inventory import (
         TechnologyInventoryError,
         inventory_source_binding_matches,
@@ -39,6 +40,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     )
     from intel_sources import DEFAULT_COMPONENT_TTL_SECONDS  # type: ignore
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
+    from target_store import StoreError  # type: ignore
     from technology_inventory import (  # type: ignore
         TechnologyInventoryError,
         inventory_source_binding_matches,
@@ -92,7 +94,9 @@ def _score_hint(item: dict) -> int:
 def _final_queue_dispositions(repo_root: str | Path, target: str) -> dict[str, list[dict]]:
     dispositions: dict[str, list[dict]] = {}
     try:
-        queue = load_queue(repo_root, target)
+        queue = load_queue(repo_root, target, statuses=("blocked", "completed", "cancelled"), action_type="intel-advisory")
+    except StoreError:
+        raise
     except ValueError:
         return dispositions
     for item in queue.get("actions") or []:

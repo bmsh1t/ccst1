@@ -321,7 +321,7 @@ def _build_actionable_frontier(
                 queue_next.get("evidence_ref")
                 or metadata.get("evidence_ref")
                 or queue_next.get("evidence")
-                or f"state/{target_storage_key(target)}/action_queue.json"
+                or f"state/{target_storage_key(target)}/metadata.sqlite3"
             ),
             expected_information_gain=str(
                 queue_next.get("next_question")
@@ -349,8 +349,8 @@ def _build_actionable_frontier(
             finding.get("evidence_ref")
             or finding.get("source_file")
             or (
-                f"findings/{target_storage_key(target)}/findings.json#{finding_id}"
-                if finding_id else f"findings/{target_storage_key(target)}/findings.json"
+                f"state/{target_storage_key(target)}/metadata.sqlite3#{finding_id}"
+                if finding_id else f"state/{target_storage_key(target)}/metadata.sqlite3"
             )
         )
         frontier.append(_frontier_item(
@@ -385,7 +385,7 @@ def _build_actionable_frontier(
             action="Resolve the next open Case State hypothesis",
             evidence_ref=str(
                 case_state.get("path")
-                or f"state/{target_storage_key(target)}/case_state.json"
+                or f"state/{target_storage_key(target)}/metadata.sqlite3"
             ),
             expected_information_gain="turn the hypothesis into bounded actor, object, or replay evidence",
             stop_condition="record a bounded hypothesis result or an explicit blocker",
@@ -604,7 +604,7 @@ def _closure_reason_frontier(
             owner="action_queue",
             item_id=str((state.get("action_queue_next") or {}).get("id") or reason),
             action="Resume substantive work from the durable Action Queue",
-            evidence_ref=f"state/{target_key}/action_queue.json",
+            evidence_ref=f"state/{target_key}/metadata.sqlite3",
             expected_information_gain="resolve the selected owner-backed Queue action",
             stop_condition="record a terminal Queue result or bounded blocker",
             priority=85,
@@ -618,7 +618,7 @@ def _closure_reason_frontier(
                 "Import distinct owner/peer actor sessions with tools/target_case_state.py "
                 "add-actor/add-session, then resume the affected role-based lane"
             ),
-            evidence_ref=str(case_state.get("path") or f"state/{target_key}/case_state.json"),
+            evidence_ref=str(case_state.get("path") or f"state/{target_key}/metadata.sqlite3"),
             expected_information_gain="obtain the missing owner/peer actor and session context",
             stop_condition=(
                 "record two distinct usable sessions, or an evidence-backed blocked/not-applicable "
@@ -771,7 +771,7 @@ def _closure_reason_frontier(
             owner="finding",
             item_id="finding-work",
             action="Resolve the canonical Finding owner obligation",
-            evidence_ref=f"findings/{target_key}/findings.json",
+            evidence_ref=f"state/{target_key}/metadata.sqlite3",
             expected_information_gain="resolve the pending Finding lifecycle state",
             stop_condition="record validated, candidate, dead-end, or blocked owner state",
             priority=85,
@@ -833,28 +833,28 @@ def _closure_reason_frontier(
             f"findings/{target_key}/intel",
         ),
         "ledger_partial": (
-            "evidence-ledger", "Repair or reconcile the target-owned Evidence Ledger before closure",
-            f"memory/evidence/{target_key}/ledger.jsonl",
+            "evidence-ledger", "Inspect the target Store and repair unavailable evidence before closure",
+            f"state/{target_key}/metadata.sqlite3",
         ),
         "ledger_unreadable": (
-            "evidence-ledger", "Repair or reconcile the target-owned Evidence Ledger before closure",
-            f"memory/evidence/{target_key}/ledger.jsonl",
+            "evidence-ledger", "Inspect the target Store and repair unavailable evidence before closure",
+            f"state/{target_key}/metadata.sqlite3",
         ),
         "coverage_ledger_evidence_missing": (
-            "evidence-ledger", "Record a matching Evidence Ledger terminal for every projected Coverage cell",
-            f"memory/evidence/{target_key}/ledger.jsonl",
+            "evidence-ledger", "Register the observed evidence supporting each projected Coverage cell",
+            f"state/{target_key}/metadata.sqlite3",
         ),
         "identity_v2_follow_up_pending": (
             "evidence-ledger", "Resolve the pending identity evidence follow-up",
-            f"memory/evidence/{target_key}/ledger.jsonl",
+            f"state/{target_key}/metadata.sqlite3",
         ),
         "identity_v2_candidate_pending": (
             "evidence-ledger", "Resolve the pending identity evidence candidate",
-            f"memory/evidence/{target_key}/ledger.jsonl",
+            f"state/{target_key}/metadata.sqlite3",
         ),
         "identity_v2_incomplete": (
             "evidence-ledger", "Complete the identity evidence required for closure",
-            f"memory/evidence/{target_key}/ledger.jsonl",
+            f"state/{target_key}/metadata.sqlite3",
         ),
     }
     if reason in evidence_specs:
@@ -1016,29 +1016,11 @@ def _build_priority_frontier(
         other_items.append(_execution_frontier_item(_frontier_item(
             owner="finding-claim",
             item_id=str(root_claim.get("id") or root_claim.get("claim_id") or ""),
-            action="collect locatable evidence and reconcile the claim through checkpoint",
+            action="collect locatable evidence and explicitly register the Finding claim",
             evidence_ref=str(root_claim.get("source_file") or root_claim.get("claim_source_file") or ""),
             expected_information_gain="determine whether the claim can enter the canonical Finding lifecycle",
             stop_condition="record a canonical candidate or reject the unsupported claim",
         ), impact_hint=str(root_claim.get("title") or root_claim.get("severity") or "")))
-
-    memory_candidate = (
-        state.get("memory_candidate_next")
-        if isinstance(state.get("memory_candidate_next"), dict)
-        else {}
-    )
-    if memory_candidate:
-        other_items.append(_execution_frontier_item(_frontier_item(
-            owner="target-memory",
-            item_id=str(memory_candidate.get("id") or ""),
-            action=str(
-                memory_candidate.get("action")
-                or "collect evidence for the legacy target-memory candidate"
-            ),
-            evidence_ref=str(memory_candidate.get("evidence_ref") or "target-memory"),
-            expected_information_gain="determine whether the legacy candidate has replayable evidence",
-            stop_condition="reconcile through the canonical Finding owner or record evidence missing",
-        ), impact_hint=str(memory_candidate.get("action") or "")))
 
     continuation = (
         (state.get("recon_artifacts") or {}).get("cidr_continuation")
@@ -1285,9 +1267,8 @@ def _describe_next_step(state: dict) -> str:
         )
     if action == "collect_candidate_evidence":
         followup = (state.get("structured_findings") or {}).get("next_validation") or {}
-        memory_candidate = state.get("memory_candidate_next") or {}
         root_claim = state.get("root_finding_claim_next") or {}
-        candidate = followup if followup else (root_claim if root_claim else memory_candidate)
+        candidate = followup or root_claim
         if followup:
             return (
                 "review candidate {id} on {url}; inspect its recorded evidence and decide the next action."
@@ -1295,7 +1276,7 @@ def _describe_next_step(state: dict) -> str:
         if root_claim:
             return (
                 "inspect root JSON finding claim {id} at {source}; capture locatable raw "
-                "request/response and run /checkpoint to reconcile it as a candidate. "
+                "request/response and explicitly register the claim through its owner. "
                 "Missing fields: {missing}. Do not call it validated or report-ready "
                 "from the claim alone. Never invent an endpoint from the target root."
             ).format(
@@ -1304,26 +1285,12 @@ def _describe_next_step(state: dict) -> str:
                 missing=", ".join(str(item) for item in (root_claim.get("incomplete_fields") or []))
                 or "none",
             )
-        return (
-            "collect raw request/response or a locatable evidence_ref for target-memory "
-            "candidate {id}; do not call /validate from prose alone. Candidate: {action}".format(
-                id=candidate.get("id", "-"),
-                action=candidate.get("action", ""),
-            )
-        )
+        return "Inspect the saved Finding claim and its evidence before choosing work."
     if action == "validate_finding":
         followup = (state.get("structured_findings") or {}).get("next_validation") or {}
         if followup:
             return f"validate structured finding {followup.get('id')} on {compact_url(followup.get('url', ''))}."
-        memory_candidate = state.get("memory_candidate_next") or {}
-        if memory_candidate:
-            return (
-                "validate target-memory candidate {id} after reviewing its linked raw evidence: {action}."
-            ).format(
-                id=memory_candidate.get("id", "-"),
-                action=memory_candidate.get("action", ""),
-            )
-        return "validate the highest-priority structured finding."
+        return "Inspect the saved Finding and select an explicit assessment."
     if action == "review_validation_candidate":
         candidate = state.get("validation_runner_next") or {}
         if candidate:
@@ -1336,7 +1303,7 @@ def _describe_next_step(state: dict) -> str:
         item = state.get("action_queue_next") or {}
         if item:
             return f"resume durable action {item.get('id')}: {item.get('action') or item.get('command_hint')}."
-        return "resume the highest-priority substantive durable action."
+        return "Select an active Store action to resume."
     if action == "resume_case_state":
         return (
             "resume the Case State context obligation: resolve the open hypothesis into bounded "
@@ -1463,8 +1430,6 @@ def _actionable_coverage_gaps(matrix: dict) -> list[dict]:
 
 
 def _coverage_gaps(matrix: dict) -> list[dict]:
-    if matrix.get("_coverage_projection"):
-        return [item for item in matrix.get("_coverage_gaps") or [] if isinstance(item, dict)]
     return high_value_gaps_from_matrix(matrix)
 
 def _coverage_gaps_with_observed_evidence(gaps: list[dict], matrix: dict | None = None) -> list[dict]:

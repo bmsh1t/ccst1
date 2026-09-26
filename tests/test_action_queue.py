@@ -1,4 +1,4 @@
-"""Tests for the persistent autopilot action queue."""
+"""Explicit Action commands backed by the target Store; no automatic proposal writes."""
 
 from __future__ import annotations
 
@@ -12,94 +12,34 @@ import pytest
 
 import action_queue as action_queue_module
 from action_queue import (
-    add_manual_action,
-    build_action,
-    claim_next_action,
-    format_action,
-    ingest_checkpoint,
-    load_queue,
-    main,
-    resolve_action,
-    save_queue,
-    select_next_action,
-    active_action_ids,
-    summarize_queue,
+    add_manual_action, build_action, claim_next_action, format_action, load_queue, load_legacy_queue,
+    main, resolve_action, active_action_ids, summarize_queue,
 )
-from coverage_matrix import load_matrix, mark_cell
-from finding_index import write_finding_index
 from runtime_state import runtime_phase_lock, update_runtime_state
-from tools.target_store import TargetStore, StoreError
+from tools.target_store import StoreError, TargetStore, initialize_target_store
 
 
-def _resolve_unsafe_review_worker(repo_root, target, action_id, output):
+@pytest.fixture
+def store(tmp_path):
+    initialize_target_store(tmp_path, "target.com")
+    return TargetStore(tmp_path, "target.com")
+
+
+def add_work(store, action_id="A1", **kwargs):
+    return add_manual_action(
+        store.root, target=store.target, action_id=action_id, action_type="source-review",
+        evidence="Recorded material", next_question="What does it establish?",
+        action=f"Review material {action_id}", **kwargs,
+    )["action"]
+
+
+def _claim_action_worker(repo_root, target, barrier, output):
     try:
-        resolve_action(
-            repo_root,
-            target=target,
-            action_id=action_id,
-            status="blocked",
-            result=f"blocked-{action_id}",
-        )
-        output.put("ok")
-    except Exception as exc:  # pragma: no cover - surfaced through parent assertion
-        output.put(str(exc))
-
-
-def _claim_action_worker(repo_root, target, output):
-    try:
-        action_id = select_next_action(load_queue(repo_root, target)).get("id", "")
-        claimed = claim_next_action(repo_root, target, action_id=action_id)
-        output.put((claimed.get("id", ""), claimed.get("claim_status", ""), ""))
-    except Exception as exc:  # pragma: no cover - surfaced through parent assertion
-        output.put(("", "error", str(exc)))
-
-
-def _checkpoint() -> dict:
-    return {
-        "next_action_queue": [
-            {
-                "id": "A1",
-                "priority": 75,
-                "type": "coverage-gap",
-                "status": "ready",
-                "action": "Cover high-value matrix gap: /api/admin/users x IDOR.",
-                "command_hint": "focused low-risk probe + evidence ledger",
-                "redline_required": True,
-                "stop_condition": "record tested, blocked, dead-end, or candidate",
-                "metadata": {
-                    "endpoint": "/api/admin/users",
-                    "vuln_class": "Authz",
-                    "weight": "5.0",
-                    "relevance_score": 13,
-                },
-            },
-            {
-                "id": "A2",
-                "priority": 90,
-                "type": "known-software-intel",
-                "status": "ready",
-                "action": "Check known advisories for WordPress plugin X 1.2.3.",
-                "command_hint": "/intel",
-                "redline_required": False,
-            },
-        ]
-    }
-
-
-def _snapshot_files(root: Path) -> dict[str, bytes]:
-    return {
-        str(path.relative_to(root)): path.read_bytes()
-        for path in root.rglob("*")
-        if path.is_file()
-    }
-
-
-def test_primary_store_rejects_legacy_queue_writer(tmp_path):
-    store = TargetStore(tmp_path, "target.com")
-    store.initialize()
-    queue = load_queue(tmp_path, "target.com")
-    with pytest.raises(StoreError, match="legacy action_queue writer"):
-        save_queue(tmp_path, "target.com", queue)
+        barrier.wait(timeout=10)
+        claimed = claim_next_action(repo_root, target, action_id="A1")
+        output.put((claimed["claim_status"], ""))
+    except Exception as exc:
+        output.put(("error", str(exc)))
 
 
 def test_primary_action_commands_use_store_without_legacy_queue_file(tmp_path):
@@ -170,170 +110,8 @@ def test_primary_action_claim_persists_bounded_metadata(tmp_path):
     assert claimed["metadata"]["active_dimension"] == "role"
 
 
-def test_ingest_checkpoint_persists_and_prioritizes(tmp_path):
-    finding_root = tmp_path / "findings" / "target.com"
-    ledger_root = tmp_path / "memory" / "evidence" / "target.com"
-    write_finding_index(finding_root, target="target.com")
-    ledger_root.mkdir(parents=True)
-    (ledger_root / "ledger.jsonl").touch()
-    owner_snapshots = {
-        root: _snapshot_files(root)
-        for root in (finding_root, ledger_root)
-    }
-
-    result = ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
-
-    assert result["stats"]["added"] == 2
-    assert set(result["active"]) == {"AQ-0001", "AQ-0002"}
-
-    queue = load_queue(tmp_path, "target.com")
-    assert summarize_queue(queue)["active"] == 2
-    assert (tmp_path / "state" / "target.com" / "action_queue.json").is_file()
-    assert {root: _snapshot_files(root) for root in owner_snapshots} == owner_snapshots
-
-    claimed = claim_next_action(tmp_path, "target.com", action_id=result["active"][0])
-    resolve_action(
-        tmp_path,
-        target="target.com",
-        action_id=claimed["id"],
-        status="blocked",
-        result="Owner review deferred without a Finding or Evidence conclusion.",
-    )
-    assert {root: _snapshot_files(root) for root in owner_snapshots} == owner_snapshots
-
-
-def test_claim_is_atomic_and_resumes_running_before_new_queued_work(tmp_path):
-    ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
-
-    first_id = select_next_action(load_queue(tmp_path, "target.com"))["id"]
-    first = claim_next_action(tmp_path, "target.com", action_id=first_id)
-    queued_id = next(
-        item["id"]
-        for item in load_queue(tmp_path, "target.com")["actions"]
-        if item["id"] != first_id
-    )
-    resolve_action(
-        tmp_path,
-        target="target.com",
-        action_id=first_id,
-        status="running",
-        notes="preserve replay context",
-    )
-
-    resumed = claim_next_action(tmp_path, "target.com", action_id=first_id)
-    queue = load_queue(tmp_path, "target.com")
-    running = next(item for item in queue["actions"] if item["id"] == first_id)
-
-    assert first["claim_status"] == "claimed"
-    assert resumed["id"] == first_id
-    assert resumed["claim_status"] == "resumed"
-    assert running["status"] == "running"
-    assert running["attempts"] == 1
-    assert running["notes"] == "preserve replay context"
-    assert next(item for item in queue["actions"] if item["id"] == queued_id)["status"] == "queued"
-
-
-def test_concurrent_claims_grant_one_new_execution_permit(tmp_path):
-    target = "target.com"
-    ingest_checkpoint(
-        tmp_path,
-        target,
-        checkpoint={
-            "next_action_queue": [
-                {
-                    "id": "AQ-ONLY",
-                    "priority": 90,
-                    "type": "workflow-lead-review",
-                    "status": "ready",
-                    "action": "Review one durable owner fact.",
-                    "metadata": {"category": "asset-scope-review"},
-                }
-            ]
-        },
-    )
-
-    context = multiprocessing.get_context("fork")
-    output = context.Queue()
-    workers = [
-        context.Process(target=_claim_action_worker, args=(str(tmp_path), target, output))
-        for _ in range(12)
-    ]
-    for process in workers:
-        process.start()
-    results = [output.get(timeout=15) for _ in workers]
-    for process in workers:
-        process.join(timeout=15)
-
-    queue = load_queue(tmp_path, target)
-    action = queue["actions"][0]
-
-    assert all(process.exitcode == 0 for process in workers)
-    assert all(not error for _, _, error in results)
-    assert {action_id for action_id, _, _ in results} == {action["id"]}
-    assert [status for _, status, _ in results].count("claimed") == 1
-    assert [status for _, status, _ in results].count("resumed") == len(workers) - 1
-    assert action["status"] == "running"
-    assert action["attempts"] == 1
-
-
-def test_checkpoint_generated_action_is_idempotent_by_generation(tmp_path):
-    item = {
-        "id": "JSON-INJECT",
-        "priority": 80,
-        "type": "json-inject-review",
-        "status": "ready",
-        "action": "Review JSON injection candidates.",
-        "source": "json-inject",
-        "source_id": "json-inject-lane",
-        "metadata": {"generation": "g1"},
-    }
-
-    first = ingest_checkpoint(tmp_path, "target.com", checkpoint={"next_action_queue": [item]})
-    second = ingest_checkpoint(tmp_path, "target.com", checkpoint={"next_action_queue": [item]})
-
-    assert first["stats"]["added"] == 1
-    assert second["stats"]["added"] == 0
-    assert len(load_queue(tmp_path, "target.com")["actions"]) == 1
-
-
-def test_checkpoint_generated_action_reopens_only_for_a_new_generation(tmp_path):
-    item = {
-        "id": "ASSET-SCOPE",
-        "priority": 88,
-        "type": "workflow-lead-review",
-        "status": "ready",
-        "action": "Review target-linked external asset scope evidence.",
-        "source": "workflow-lead",
-        "source_id": "asset-scope-review",
-        "metadata": {"generation": "g1", "category": "asset-scope-review"},
-    }
-    ingest_checkpoint(tmp_path, "target.com", checkpoint={"next_action_queue": [item]})
-    action = load_queue(tmp_path, "target.com")["actions"][0]
-    resolve_action(
-        tmp_path,
-        target="target.com",
-        action_id=action["id"],
-        status="tested",
-        result="Kept as external chain context.",
-    )
-
-    same = ingest_checkpoint(tmp_path, "target.com", checkpoint={"next_action_queue": [item]})
-    newer = ingest_checkpoint(
-        tmp_path,
-        "target.com",
-        checkpoint={
-            "next_action_queue": [
-                {**item, "metadata": {**item["metadata"], "generation": "g2"}}
-            ]
-        },
-    )
-
-    assert same["stats"]["skipped_final"] == 1
-    assert newer["stats"]["added"] == 1
-    assert summarize_queue(load_queue(tmp_path, "target.com"))["active"] == 1
-
-
 def test_concurrent_manual_actions_do_not_lose_updates(tmp_path):
+    initialize_target_store(tmp_path, "target.com")
     code = """
 import sys
 from tools.action_queue import add_manual_action
@@ -365,169 +143,6 @@ add_manual_action(
 
     queue = load_queue(tmp_path, "target.com")
     assert {item["evidence"] for item in queue["actions"]} == {"first", "second"}
-
-
-def test_target_next_honors_scan_wait_marker_without_deleting_queue(tmp_path):
-    """Wait-marker preemption died with the selector; the queue survives waits.
-
-    A scan phase lock is visible to the AI via runtime state, but the queue
-    file keeps its active actions untouched — nothing is retired, reordered,
-    or hidden while a long phase runs.
-    """
-    ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
-    queued_ids_before = set(active_action_ids(load_queue(tmp_path, "target.com")))
-    update_runtime_state(
-        tmp_path,
-        "target.com",
-        mode="scan_running",
-        last_executed_workflow="run_scan_started",
-    )
-
-    with runtime_phase_lock(tmp_path, "target.com", "scan"):
-        queue = load_queue(tmp_path, "target.com")
-        assert set(active_action_ids(queue)) == queued_ids_before
-        assert summarize_queue(queue)["active"] == 2
-
-    update_runtime_state(
-        tmp_path,
-        "target.com",
-        mode="scan_only",
-        last_executed_workflow="run_vuln_scan",
-    )
-    assert set(active_action_ids(load_queue(tmp_path, "target.com"))) == queued_ids_before
-
-def test_target_next_ignores_orphan_scan_marker_and_keeps_queue_selectable(tmp_path):
-    """A released scan lock leaves the persisted queue exactly as it was."""
-    ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
-    queued_ids_before = set(active_action_ids(load_queue(tmp_path, "target.com")))
-    update_runtime_state(
-        tmp_path,
-        "target.com",
-        mode="scan_running",
-        last_executed_workflow="run_scan_started",
-    )
-
-    assert set(active_action_ids(load_queue(tmp_path, "target.com"))) == queued_ids_before
-
-def test_target_next_honors_recon_wait_marker_without_deleting_queue(tmp_path):
-    """Recon wait does not touch the persisted queue (selector preemption retired)."""
-    ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
-    queued_ids_before = set(active_action_ids(load_queue(tmp_path, "target.com")))
-    update_runtime_state(
-        tmp_path,
-        "target.com",
-        mode="recon_running",
-        last_executed_workflow="run_recon_started",
-    )
-
-    with runtime_phase_lock(tmp_path, "target.com", "recon"):
-        assert set(active_action_ids(load_queue(tmp_path, "target.com"))) == queued_ids_before
-
-    update_runtime_state(
-        tmp_path,
-        "target.com",
-        mode="recon_only",
-        last_executed_workflow="run_recon",
-    )
-    assert set(active_action_ids(load_queue(tmp_path, "target.com"))) == queued_ids_before
-
-def test_action_queue_cli_next_honors_runtime_wait_marker(tmp_path, capsys):
-    """The retired `next` subcommand is gone; `list` shows the queue as-is during waits."""
-    ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
-    update_runtime_state(
-        tmp_path,
-        "target.com",
-        mode="scan_running",
-        last_executed_workflow="run_scan_started",
-    )
-
-    with runtime_phase_lock(tmp_path, "target.com", "scan"):
-        code = main([
-            "--repo-root", str(tmp_path),
-            "list",
-            "--target", "target.com",
-            "--json",
-        ])
-        output = json.loads(capsys.readouterr().out)
-
-        assert code == 0
-        # No wait_scan pointer is synthesized: the durable queue is the truth.
-        assert all(item.get("id") != "runtime-wait" for item in output)
-        assert len(output) == 2
-
-def test_ingest_checkpoint_runtime_wait_does_not_retire_existing_queue(tmp_path):
-    ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
-    queued_ids_before = set(active_action_ids(load_queue(tmp_path, "target.com")))
-    update_runtime_state(
-        tmp_path,
-        "target.com",
-        mode="scan_running",
-        last_executed_workflow="run_scan_started",
-    )
-
-    with runtime_phase_lock(tmp_path, "target.com", "scan"):
-        result = ingest_checkpoint(
-            tmp_path,
-            "target.com",
-            checkpoint={"next_action_queue": []},
-        )
-        queue = load_queue(tmp_path, "target.com")
-
-        assert result["stats"]["retired_stale"] == 0
-        assert set(active_action_ids(queue)) == queued_ids_before
-        assert summarize_queue(queue)["active"] == 2
-
-def test_report_action_does_not_preempt_active_validation_work(tmp_path):
-    """Selector preemption died: a report action and active validation work
-    are both simply present in the stable active list; the AI weighs them."""
-    checkpoint = {
-        "next_action_queue": [
-            {
-                "id": "R1",
-                "priority": 99,
-                "type": "report",
-                "action": "Draft report for validated finding.",
-                "command_hint": "/report",
-                "redline_required": False,
-            },
-            {
-                "id": "V1",
-                "priority": 50,
-                "type": "versioned-endpoint",
-                "action": "Replay the validated difference.",
-                "metadata": {"depth_contract_version": 1},
-            },
-        ]
-    }
-    ingest_checkpoint(tmp_path, "target.com", checkpoint=checkpoint)
-    queue = load_queue(tmp_path, "target.com")
-    types = {item["type"] for item in queue["actions"]}
-    assert {"report", "versioned-endpoint"} <= types
-
-def test_surface_review_does_not_preempt_report_when_no_substantive_work(tmp_path):
-    checkpoint = {
-        "next_action_queue": [
-            {
-                "id": "R1",
-                "priority": 90,
-                "type": "report",
-                "action": "Draft report for validated finding.",
-                "command_hint": "/report",
-                "redline_required": False,
-            },
-            {
-                "id": "S1",
-                "priority": 70,
-                "type": "surface-review",
-                "action": "Review surface candidate https://api.target.com/rest/user.",
-                "command_hint": "AI reviews surface evidence, then chooses the exact lane",
-                "redline_required": False,
-            },
-        ]
-    }
-
-    ingest_checkpoint(tmp_path, "target.com", checkpoint=checkpoint)
-    assert select_next_action(load_queue(tmp_path, "target.com"))["type"] == "report"
 
 
 @pytest.mark.parametrize(
@@ -564,540 +179,8 @@ def test_capability_chain_review_never_preempts_existing_owner_work(other_type, 
     assert set(active_action_ids({"actions": [review, other]})) == {"AQ-REVIEW", "AQ-OWNER"}
 
 
-def test_surface_review_with_runner_replay_preempts_report(tmp_path):
-    """Preemption semantics retired: report and a surface review carrying an
-    exact runner replay both stay in the active list — the AI weighs closure
-    against new evidence itself."""
-    checkpoint = {
-        "next_action_queue": [
-            {
-                "id": "R1",
-                "priority": 90,
-                "type": "report",
-                "action": "Draft report for validated finding.",
-                "command_hint": "/report",
-                "redline_required": False,
-            },
-            {
-                "id": "S1",
-                "priority": 70,
-                "type": "surface-review",
-                "action": "Review surface candidate https://api.target.com/rest/user.",
-                "command_hint": "AI reviews surface evidence, then chooses the exact lane",
-                "redline_required": False,
-                "metadata": {
-                    "endpoint": "/rest/user",
-                    "replay_draft": (
-                        "Run authenticated role replay: "
-                        "python3 tools/validation_runner.py authz-role-replay "
-                        "--target target.com --url https://api.target.com/rest/user"
-                    ),
-                },
-            },
-        ]
-    }
-
-    ingest_checkpoint(tmp_path, "target.com", checkpoint=checkpoint)
-    types = {item["type"] for item in load_queue(tmp_path, "target.com")["actions"]}
-    assert {"report", "surface-review"} <= types
-
-def test_legacy_ranked_surface_without_runner_is_advisory(tmp_path):
-    """Legacy ranked-surface items stay visible in the active list; hiding
-    or steering them was selector behavior that died with the selector."""
-    checkpoint = {
-        "next_action_queue": [
-            {
-                "id": "R1",
-                "priority": 90,
-                "type": "report",
-                "action": "Draft report for validated finding.",
-                "command_hint": "/report",
-                "redline_required": False,
-            },
-            {
-                "id": "OLD1",
-                "priority": 92,
-                "type": "ranked-surface",
-                "action": "Continue top ranked surface https://api.target.com/rest/legacy.",
-                "command_hint": "focused hunt on ranked P1/P2 surface",
-                "redline_required": False,
-            },
-        ]
-    }
-    ingest_checkpoint(tmp_path, "target.com", checkpoint=checkpoint)
-    types = {item["type"] for item in load_queue(tmp_path, "target.com")["actions"]}
-    assert {"report", "ranked-surface"} <= types
-
-def test_current_surface_review_beats_stale_legacy_ranked_surface_when_only_advisory(tmp_path):
-    """Both advisory reviews stay listed; preferring one was selector
-    behavior. The AI reads both and picks."""
-    checkpoint = {
-        "next_action_queue": [
-            {
-                "id": "OLD1",
-                "priority": 92,
-                "type": "ranked-surface",
-                "action": "Continue top ranked surface https://api.target.com/rest/legacy.",
-                "command_hint": "focused hunt on ranked P1/P2 surface",
-                "redline_required": False,
-            },
-            {
-                "id": "S1",
-                "priority": 70,
-                "type": "surface-review",
-                "action": "Review surface candidate https://api.target.com/rest/current.",
-                "command_hint": "AI reviews surface evidence, then chooses the exact lane",
-                "redline_required": False,
-            },
-        ]
-    }
-
-    ingest_checkpoint(tmp_path, "target.com", checkpoint=checkpoint)
-    types = {item["type"] for item in load_queue(tmp_path, "target.com")["actions"]}
-    assert {"ranked-surface", "surface-review"} <= types
-
-def test_low_evidence_top_advisory_surface_review_does_not_drive_next(tmp_path):
-    """Score-only surface reviews stay visible (the exclusion filter died
-    with the selector); the AI judges their evidential weight itself."""
-    queue = load_queue(tmp_path, "target.com")
-    queue["actions"] = [
-        {
-            "id": "AQ-0001",
-            "status": "queued",
-            "priority": 70,
-            "type": "surface-review",
-            "evidence_type": "checkpoint-next-action",
-            "evidence": (
-                "Review surface candidate https://target.com/address/create: "
-                "baseline authz and business-logic checks. Reason: top advisory score. "
-                "AI decision required: choose the exact lane."
-            ),
-            "next_question": "Execute checkpoint action.",
-            "action": (
-                "Review surface candidate https://target.com/address/create: "
-                "baseline authz and business-logic checks. Reason: top advisory score. "
-                "AI decision required: choose the exact lane."
-            ),
-            "command_hint": "AI reviews surface evidence, then chooses the exact lane",
-            "created_at": "2026-01-01T00:00:00Z",
-            "dedupe_key": "old-low-evidence",
-            "source": "checkpoint",
-            "metadata": {
-                "endpoint": "/address/create",
-                "suggested": (
-                    "baseline authz and business-logic checks. Reason: top advisory score. "
-                    "AI decision required: choose the exact lane"
-                ),
-                "replay_draft": "browser-state-first page route; extract the real XHR first",
-            },
-        }
-    ]
-
-    assert active_action_ids(queue) == ["AQ-0001"]
-
-def test_low_evidence_surface_review_with_exact_runner_stays_selectable(tmp_path):
-    queue = load_queue(tmp_path, "target.com")
-    queue["actions"] = [
-        {
-            "id": "AQ-0001",
-            "status": "queued",
-            "priority": 70,
-            "type": "surface-review",
-            "evidence_type": "checkpoint-next-action",
-            "evidence": (
-                "Review surface candidate https://target.com/api/users: "
-                "baseline authz checks. Reason: top advisory score. "
-                "Replay draft: python3 tools/validation_runner.py authz-role-replay "
-                "--target target.com --url https://target.com/api/users"
-            ),
-            "next_question": "Execute checkpoint action.",
-            "action": (
-                "Review surface candidate https://target.com/api/users: "
-                "baseline authz checks. Reason: top advisory score. "
-                "Replay draft: python3 tools/validation_runner.py authz-role-replay "
-                "--target target.com --url https://target.com/api/users"
-            ),
-            "command_hint": "AI reviews surface evidence, then chooses the exact lane",
-            "created_at": "2026-01-01T00:00:00Z",
-            "dedupe_key": "runner-backed-review",
-            "source": "checkpoint",
-            "metadata": {
-                "endpoint": "/api/users",
-                "replay_draft": (
-                    "python3 tools/validation_runner.py authz-role-replay "
-                    "--target target.com --url https://target.com/api/users"
-                ),
-            },
-        }
-    ]
-
-    assert select_next_action(queue)["id"] == "AQ-0001"
-
-
-def test_ingest_checkpoint_preserves_structured_metadata(tmp_path):
-    ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
-
-    queue = load_queue(tmp_path, "target.com")
-    coverage = next(item for item in queue["actions"] if item["type"] == "coverage-gap")
-
-    assert coverage["metadata"]["endpoint"] == "/api/admin/users"
-    assert coverage["metadata"]["vuln_class"] == "Authz"
-    assert "Metadata: endpoint=/api/admin/users" in format_action(coverage)
-
-
-def test_ingest_checkpoint_dedupes_active_actions(tmp_path):
-    first = ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
-    queue_path = tmp_path / "state" / "target.com" / "action_queue.json"
-    first_inode = queue_path.stat().st_ino
-    second = ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
-
-    assert first["stats"]["added"] == 2
-    assert second["stats"]["added"] == 0
-    assert second["stats"]["updated"] == 0
-    assert queue_path.stat().st_ino == first_inode
-    assert {item["id"] for item in load_queue(tmp_path, "target.com")["actions"]} == {"AQ-0001", "AQ-0002"}
-    assert select_next_action(load_queue(tmp_path, "target.com"))["id"] == "AQ-0002"
-
-
-def test_checkpoint_metadata_only_update_is_persisted(tmp_path):
-    ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
-    refreshed = _checkpoint()
-    refreshed["next_action_queue"][0]["metadata"]["validation_path"] = "focused replay"
-
-    result = ingest_checkpoint(tmp_path, "target.com", checkpoint=refreshed)
-
-    assert result["stats"]["updated"] == 1
-    queue = load_queue(tmp_path, "target.com")
-    coverage = next(item for item in queue["actions"] if item["type"] == "coverage-gap")
-    assert coverage["metadata"]["validation_path"] == "focused replay"
-
-
-def test_checkpoint_reingest_can_clear_stale_redline_flag(tmp_path):
-    checkpoint = {
-        "next_action_queue": [
-            {
-                "id": "A1",
-                "priority": 80,
-                "type": "actor-gap",
-                "status": "ready",
-                "action": "Cover actor matrix gap: /api/orders/123 x Authz with anonymous/none/unauth_denied expected=deny status=missing.",
-                "command_hint": "focused replay + tools/evidence_ledger.py record",
-                "redline_required": True,
-                "metadata": {
-                    "endpoint": "/api/orders/123",
-                    "vuln_class": "Authz",
-                    "actor": "anonymous",
-                },
-            }
-        ]
-    }
-    ingest_checkpoint(tmp_path, "target.com", checkpoint=checkpoint)
-    checkpoint["next_action_queue"][0]["redline_required"] = False
-    checkpoint["next_action_queue"][0]["priority"] = 54
-
-    ingest_checkpoint(tmp_path, "target.com", checkpoint=checkpoint)
-
-    queue = load_queue(tmp_path, "target.com")
-    assert queue["actions"][0]["redline_required"] is False
-    assert queue["actions"][0]["priority"] == 54
-
-
-def test_resolve_final_action_prevents_readding_same_todo(tmp_path):
-    ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
-    next_action = select_next_action(load_queue(tmp_path, "target.com"))
-
-    resolved = resolve_action(
-        tmp_path,
-        target="target.com",
-        action_id=next_action["id"],
-        status="dead-end",
-        result="Version not affected after advisory range check.",
-    )
-    assert resolved["status"] == "dead-end"
-
-    second = ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
-    assert second["stats"]["skipped_final"] == 1
-    assert summarize_queue(load_queue(tmp_path, "target.com"))["total"] == 2
-    assert next_action["type"] == "known-software-intel"
-    assert select_next_action(load_queue(tmp_path, "target.com"))["type"] == "coverage-gap"
-
-
-def test_generated_action_updates_queued_generation_and_reopens_after_final(tmp_path):
-    common = {
-        "target": "target.com",
-        "action_type": "deep-js-review",
-        "evidence": "recon/target.com/js/deep_candidates.txt",
-        "next_question": "Which high-value bundles need review?",
-        "action": "Review bounded deep-JS candidates",
-        "source": "recon",
-        "source_id": "deep-js-review",
-    }
-
-    first = add_manual_action(tmp_path, generation="gen-1", **common)
-    updated = add_manual_action(tmp_path, generation="gen-2", **common)
-    queue = load_queue(tmp_path, "target.com")
-
-    assert first["stats"]["added"] == 1
-    assert updated["stats"]["updated"] == 1
-    assert len(queue["actions"]) == 1
-    assert queue["actions"][0]["metadata"]["generation"] == "gen-2"
-
-    resolve_action(
-        tmp_path,
-        target="target.com",
-        action_id=queue["actions"][0]["id"],
-        status="tested",
-        result="Reviewed the selected bundles.",
-    )
-    same = add_manual_action(tmp_path, generation="gen-2", **common)
-    newer = add_manual_action(tmp_path, generation="gen-3", **common)
-
-    assert same["stats"]["skipped_final"] == 1
-    assert newer["stats"]["added"] == 1
-    assert summarize_queue(load_queue(tmp_path, "target.com"))["active"] == 1
-
-
-def test_ingest_checkpoint_retires_stale_checkpoint_queued_actions(tmp_path):
-    ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
-    refreshed = {
-        "next_action_queue": [
-            {
-                "id": "A2",
-                "priority": 90,
-                "type": "known-software-intel",
-                "status": "ready",
-                "action": "Check known advisories for WordPress plugin X 1.2.3.",
-                "command_hint": "/intel",
-                "redline_required": False,
-            },
-        ]
-    }
-
-    result = ingest_checkpoint(tmp_path, "target.com", checkpoint=refreshed)
-    queue = load_queue(tmp_path, "target.com")
-    stale = next(item for item in queue["actions"] if item["id"] == "AQ-0001")
-
-    assert result["stats"]["retired_stale"] == 1
-    assert stale["status"] == "n/a"
-    assert "checkpoint refresh" in stale["result"].lower()
-
-
-def test_ingest_checkpoint_keeps_coverage_identity_across_projection_wording(tmp_path):
-    base = (
-        "Cover high-value matrix gap: /api/orders/list x Path "
-        "(weight=3.5, relevance=14: observed file selector)."
-    )
-    legacy = {
-        "next_action_queue": [{
-            "id": "LEGACY-COVERAGE",
-            "priority": 80,
-            "type": "coverage-gap",
-            "status": "ready",
-            "action": base + " Family projection: key=route; kind=route-template; size=2; samples=/api/orders/list,/api/orders/export.",
-            "command_hint": "focused replay",
-            "metadata": {"endpoint": "/api/orders/list", "vuln_class": "Path"},
-        }]
-    }
-    current = {
-        "next_action_queue": [{
-            "id": "CURRENT-COVERAGE",
-            "priority": 80,
-            "type": "coverage-gap",
-            "status": "ready",
-            "action": base + " Queue projection only: this representative is advisory. Family projection: key=route; kind=route-template; size=2; members=/api/orders/list,/api/orders/export.",
-            "command_hint": "focused replay",
-            "metadata": {"endpoint": "/api/orders/list", "vuln_class": "Path"},
-        }]
-    }
-
-    first = ingest_checkpoint(tmp_path, "target.com", checkpoint=legacy)
-    second = ingest_checkpoint(tmp_path, "target.com", checkpoint=current)
-
-    assert first["stats"]["added"] == 1
-    assert second["stats"]["added"] == 0
-    assert second["stats"]["updated"] == 1
-    assert second["stats"]["retired_stale"] == 0
-    assert len(load_queue(tmp_path, "target.com")["actions"]) == 1
-
-
-def test_ingest_checkpoint_preserves_running_versioned_hypothesis(tmp_path):
-    ingest_checkpoint(
-        tmp_path,
-        "target.com",
-        checkpoint={
-            "next_action_queue": [
-                {
-                    "id": "H-ADMIN",
-                    "priority": 99,
-                    "type": "coverage-gap",
-                    "status": "ready",
-                    "action": "Replay the admin configuration boundary.",
-                    "command_hint": "focused authz replay",
-                    "source": "checkpoint",
-                    "source_id": "admin-authz",
-                    "metadata": {
-                        "endpoint": "/rest/admin/application-configuration",
-                        "depth_contract_version": 1,
-                        "hypothesis_id": "H-admin-config",
-                    },
-                }
-            ]
-        },
-    )
-    queue = load_queue(tmp_path, "target.com")
-    queue["actions"][0]["status"] = "running"
-    save_queue(tmp_path, "target.com", queue)
-
-    refreshed = ingest_checkpoint(
-        tmp_path,
-        "target.com",
-        checkpoint={
-            "next_action_queue": [
-                {
-                    "id": "NEW-ACTION",
-                    "priority": 80,
-                    "type": "coverage-gap",
-                    "status": "ready",
-                    "action": "Review a different evidence-backed lane.",
-                    "command_hint": "focused replay",
-                }
-            ]
-        },
-    )
-    saved = load_queue(tmp_path, "target.com")
-    preserved = next(item for item in saved["actions"] if item["id"] == "AQ-0001")
-
-    assert refreshed["stats"]["retired_stale"] == 0
-    assert preserved["status"] == "running"
-    assert preserved["metadata"]["hypothesis_id"] == "H-admin-config"
-
-
-def test_ingest_checkpoint_retires_stale_running_versionless_action(tmp_path):
-    ingest_checkpoint(
-        tmp_path,
-        "target.com",
-        checkpoint={
-            "next_action_queue": [{
-                "id": "LEGACY",
-                "priority": 80,
-                "type": "coverage-gap",
-                "status": "ready",
-                "action": "Replay the legacy queued check.",
-                "command_hint": "focused replay",
-            }]
-        },
-    )
-    queue = load_queue(tmp_path, "target.com")
-    queue["actions"][0]["status"] = "running"
-    save_queue(tmp_path, "target.com", queue)
-
-    refreshed = ingest_checkpoint(
-        tmp_path,
-        "target.com",
-        checkpoint={
-            "next_action_queue": [{
-                "id": "NEW",
-                "priority": 70,
-                "type": "coverage-gap",
-                "status": "ready",
-                "action": "Review current checkpoint work.",
-                "command_hint": "focused replay",
-            }]
-        },
-    )
-    saved = load_queue(tmp_path, "target.com")
-    legacy = next(item for item in saved["actions"] if item["id"] == "AQ-0001")
-
-    assert refreshed["stats"]["retired_stale"] == 1
-    assert legacy["status"] == "n/a"
-
-
-def test_ingest_checkpoint_retires_stale_partial_validation_candidate(tmp_path):
-    stale_checkpoint = {
-        "next_action_queue": [
-            {
-                "id": "A1",
-                "priority": 100,
-                "type": "validation",
-                "status": "ready",
-                "action": "Run /validate for finding F-old on https://target.com/api/feedbacks.",
-                "command_hint": "/validate",
-                "redline_required": True,
-                "metadata": {
-                    "endpoint": "/api/feedbacks",
-                    "finding_id": "F-old",
-                },
-            }
-        ]
-    }
-    ingest_checkpoint(tmp_path, "target.com", checkpoint=stale_checkpoint)
-    queue = load_queue(tmp_path, "target.com")
-    queue["actions"][0]["status"] = "candidate"
-    queue["actions"][0]["result"] = "validation-summary=/tmp/feedbacks/validation-summary.json"
-    from action_queue import save_queue
-
-    save_queue(tmp_path, "target.com", queue)
-
-    refreshed = {
-        "next_action_queue": [
-            {
-                "id": "A1",
-                "priority": 100,
-                "type": "validation",
-                "status": "ready",
-                "action": "Run /validate for finding F-new on https://target.com/rest/products/search?q=apple.",
-                "command_hint": "/validate",
-                "redline_required": True,
-                "metadata": {
-                    "endpoint": "/rest/products/search",
-                    "finding_id": "F-new",
-                },
-            }
-        ]
-    }
-
-    result = ingest_checkpoint(tmp_path, "target.com", checkpoint=refreshed)
-    saved = load_queue(tmp_path, "target.com")
-    stale = next(item for item in saved["actions"] if item["metadata"]["finding_id"] == "F-old")
-
-    assert result["stats"]["retired_stale"] == 1
-    assert stale["status"] == "n/a"
-    assert select_next_action(saved)["metadata"]["finding_id"] == "F-new"
-
-
-def test_manual_role_replay_is_not_marked_redline_by_keywords(tmp_path):
-    added = add_manual_action(
-        tmp_path,
-        target="api.target.com",
-        action_type="browser-api",
-        evidence_type="browser-xhr",
-        evidence="Dashboard calls /api/internal/export.",
-        next_question="Can anonymous or low-role replay access export data?",
-        action="Replay with anonymous and low-role sessions, then record role diff.",
-        priority=88,
-        command_hint="browser capture + role_diff",
-    )
-    assert added["stats"]["added"] == 1
-
-    queue = load_queue(tmp_path, "api.target.com")
-    action = select_next_action(queue)
-    assert action["id"] == "AQ-0001"
-    assert action["redline_required"] is False
-
-    resolved = resolve_action(
-        tmp_path,
-        target="api.target.com",
-        action_id="AQ-0001",
-        status="candidate",
-        result="Low-role replay returned another tenant export metadata.",
-        notes="Needs exact /validate replay.",
-    )
-    assert resolved["summary"]["by_status"]["candidate"] == 1
-    saved = json.loads((tmp_path / "state" / "api.target.com" / "action_queue.json").read_text())
-    assert saved["actions"][0]["status"] == "candidate"
-
-
 def test_manual_action_cli_accepts_stop_condition_for_high_risk_lane(tmp_path):
+    initialize_target_store(tmp_path, "api.target.com")
     code = main([
         "--repo-root", str(tmp_path),
         "add",
@@ -1120,6 +203,7 @@ def test_manual_action_cli_accepts_stop_condition_for_high_risk_lane(tmp_path):
 
 
 def test_manual_action_cli_writes_metadata_and_preserves_duplicate_queue_behavior(tmp_path):
+    initialize_target_store(tmp_path, "api.target.com")
     metadata = {
         "hypothesis_id": "H-42",
         "family": "custom-template-chain",
@@ -1146,151 +230,7 @@ def test_manual_action_cli_writes_metadata_and_preserves_duplicate_queue_behavio
     queue = load_queue(tmp_path, "api.target.com")
 
     assert len(queue["actions"]) == 1
-    assert queue["actions"][0]["metadata"] == metadata
-
-
-def test_resolve_cli_merges_structured_metadata_idempotently(tmp_path, capsys):
-    """Dumb-interface resolve: AI writes judgment fields wholesale; runner
-    fields are rejected (anti-forgery) and preserved when unsupplied."""
-    initial_metadata = {
-        "hypothesis_id": "H-42",
-        "expected_learning": "A role difference should reveal object scoping.",
-        "kill_condition": "Responses remain identical across both actors.",
-        "next_question": "Can the sibling endpoint be replayed?",
-        "pivot_hints": ["try export"],
-    }
-    # Runner observations enter only through the runner's locked internal
-    # path; simulate that by seeding the queue file directly.
-    assert main([
-        "--repo-root", str(tmp_path),
-        "add",
-        "--target", "api.target.com",
-        "--type", "browser-api",
-        "--evidence", "Observed an object endpoint in the browser trace.",
-        "--next-question", "Can a low-role actor replay the object request?",
-        "--action", "Replay the request with the low-role actor.",
-        "--metadata-json", json.dumps(initial_metadata),
-        "--json",
-    ]) == 0
-
-    # Runner-owned fields in an AI resolve are rejected outright.
-    runner_update = {
-        "next_question": "Does the export endpoint enforce the same object check?",
-        "last_outcome": {"status": "blocked", "notes": "peer session expired"},
-    }
-    argv_runner = [
-        "--repo-root", str(tmp_path),
-        "resolve",
-        "--target", "api.target.com",
-        "--id", "AQ-0001",
-        "--status", "blocked",
-        "--evidence", "peer session expired",
-        "--metadata-json", json.dumps(runner_update),
-        "--json",
-    ]
-    # CLI main() converts ValueError to exit code 2 + stderr.
-    assert main(argv_runner) == 2
-    assert "Runner-owned observation fields" in capsys.readouterr().err
-
-    # Judgment-field writes are wholesale (last write wins) and idempotent;
-    # unsupplied runner fields are preserved, not wiped.
-    update = {
-        "next_question": "Does the export endpoint enforce the same object check?",
-        "expected_learning": "Export responses should preserve object scoping.",
-        "kill_condition": "Both export actors receive the same object body.",
-        "pivot_hints": ["try export", "try GraphQL"],
-    }
-    argv = [
-        "--repo-root", str(tmp_path),
-        "resolve",
-        "--target", "api.target.com",
-        "--id", "AQ-0001",
-        "--status", "blocked",
-        "--evidence", "peer session expired",
-        "--metadata-json", json.dumps(update),
-        "--json",
-    ]
-    assert main(argv) == 0
-    assert main(argv) == 0
-
-    action = load_queue(tmp_path, "api.target.com")["actions"][0]
-    assert action["metadata"] == {
-        "hypothesis_id": "H-42",
-        "expected_learning": "Export responses should preserve object scoping.",
-        "kill_condition": "Both export actors receive the same object body.",
-        "next_question": "Does the export endpoint enforce the same object check?",
-        "pivot_hints": ["try export", "try GraphQL"],
-    }
-
-
-def test_resolve_negative_hypothesis_generates_idempotent_pivots(tmp_path):
-    metadata = {
-        "hypothesis_id": "H-7",
-        "pivot_hints": ["sibling endpoint", "encoding", "baseline"],
-        "expected_learning": "A sibling or encoding variant may differ.",
-        "kill_condition": "Both actor and encoding variants preserve the denial.",
-    }
-    assert add_manual_action(
-        tmp_path,
-        target="api.target.com",
-        action_type="hypothesis",
-        evidence="A target-owned object endpoint was observed.",
-        next_question="Does the baseline deny a peer actor?",
-        action="Replay the baseline object request.",
-        metadata=metadata,
-    )
-
-    first = resolve_action(
-        tmp_path,
-        target="api.target.com",
-        action_id="AQ-0001",
-        status="tested",
-        result="baseline denied",
-    )
-    # tested_dimensions is a runner-owned observation now; without a runner
-    # record nothing counts as tested, so every distinct hint projects a pivot.
-    assert first["hypothesis_continuation"]["added"] == 3
-    queue = load_queue(tmp_path, "api.target.com")
-    pivots = [item for item in queue["actions"] if item["type"] == "hypothesis-pivot"]
-    assert {item["metadata"]["pivot_hint"] for item in pivots} == {"sibling endpoint", "encoding", "baseline"}
-
-    second = resolve_action(
-        tmp_path,
-        target="api.target.com",
-        action_id="AQ-0001",
-        status="tested",
-        result="baseline denied",
-    )
-    assert "hypothesis_continuation" not in second
-    assert len([item for item in load_queue(tmp_path, "api.target.com")["actions"] if item["type"] == "hypothesis-pivot"]) == 3
-
-
-def test_resolve_kill_condition_closes_hypothesis_without_pivots(tmp_path):
-    add_manual_action(
-        tmp_path,
-        target="api.target.com",
-        action_type="hypothesis",
-        evidence="Observed a baseline denial.",
-        next_question="Is the denial stable?",
-        action="Replay the baseline request.",
-        metadata={
-            "hypothesis_id": "H-8",
-            "pivot_hints": ["sibling endpoint"],
-            "kill_condition": "Stable denial across the complete matrix.",
-        },
-    )
-    resolve_action(
-        tmp_path,
-        target="api.target.com",
-        action_id="AQ-0001",
-        status="tested",
-        result="matrix complete",
-        metadata={"kill_condition_met": True},
-    )
-    queue = load_queue(tmp_path, "api.target.com")
-    assert not any(item["type"] == "hypothesis-pivot" for item in queue["actions"])
-    parent = queue["actions"][0]
-    assert parent["metadata"]["hypothesis_status"] == "closed"
+    assert all(queue["actions"][0]["metadata"][key] == value for key, value in metadata.items())
 
 
 def test_target_owned_evidence_ref_rejects_resolver_path_outside_repo(tmp_path, monkeypatch):
@@ -1302,251 +242,17 @@ def test_target_owned_evidence_ref_rejects_resolver_path_outside_repo(tmp_path, 
     assert action_queue_module._target_owned_evidence_ref(tmp_path, "api.target.com", "foreign") == ""
 
 
-@pytest.mark.parametrize("metadata_json", ["not-json", "[]", "null", '"text"'])
-def test_resolve_cli_rejects_non_object_metadata_without_writing(tmp_path, capsys, metadata_json):
-    assert main([
-        "--repo-root", str(tmp_path),
-        "add",
-        "--target", "api.target.com",
-        "--evidence", "Observed an endpoint.",
-        "--next-question", "Can it be replayed?",
-        "--action", "Replay the endpoint.",
-    ]) == 0
-    path = tmp_path / "state" / "api.target.com" / "action_queue.json"
-    before = path.read_bytes()
-
-    code = main([
-        "--repo-root", str(tmp_path),
-        "resolve",
-        "--target", "api.target.com",
-        "--id", "AQ-0001",
-        "--status", "blocked",
-        "--metadata-json", metadata_json,
-    ])
-
-    assert code == 2
-    assert "--metadata-json" in capsys.readouterr().err
-    assert path.read_bytes() == before
-
-
-def test_resolve_cli_rejects_sensitive_metadata_without_writing(tmp_path, capsys):
-    assert main([
-        "--repo-root", str(tmp_path),
-        "add",
-        "--target", "api.target.com",
-        "--evidence", "Observed an endpoint.",
-        "--next-question", "Can it be replayed?",
-        "--action", "Replay the endpoint.",
-    ]) == 0
-    path = tmp_path / "state" / "api.target.com" / "action_queue.json"
-    before = path.read_bytes()
-
-    code = main([
-        "--repo-root", str(tmp_path),
-        "resolve",
-        "--target", "api.target.com",
-        "--id", "AQ-0001",
-        "--status", "blocked",
-        "--metadata-json", json.dumps({"headers": {"Authorization": "secret"}}),
-    ])
-
-    assert code == 2
-    assert "sensitive field" in capsys.readouterr().err
-    assert path.read_bytes() == before
-
-
-def test_action_queue_rejects_required_skill_route_without_dimensions(tmp_path):
-    with pytest.raises(ValueError, match="skill_route"):
-        build_action(
-            target="api.target.com",
-            action_type="hypothesis",
-            evidence="Observed an API object path.",
-            next_question="Can a peer actor read it?",
-            action="Replay the object path with a peer actor.",
-            metadata={"route_required": True},
-        )
-
-
-def test_action_queue_accepts_skill_route_with_required_dimensions(tmp_path, monkeypatch):
-    monkeypatch.setitem(sys.modules, "tools.context_pack", None)
-    monkeypatch.setitem(sys.modules, "context_pack", None)
+@pytest.mark.parametrize("metadata", [{}, {"route_required": True}, {
+    "skill_route": {"skill_id": "../retired-skill", "required_dimensions": []},
+}])
+def test_action_queue_does_not_consume_retired_skill_routes(metadata):
     action = build_action(
-        target="api.target.com",
-        action_type="hypothesis",
-        evidence="Observed an API object path.",
-        next_question="Can a peer actor read it?",
-        action="Replay the object path with a peer actor.",
-        metadata={
-            "route_required": True,
-            "skill_route": {
-                "skill_id": "web2-vuln-classes",
-                "skill_path": "skills/web2-vuln-classes/SKILL.md",
-                "reason": "API evidence",
-                "required_dimensions": ["auth", "object"],
-            },
-        },
+        target="api.target.com", action_type="hypothesis",
+        evidence="Observed an API object path.", next_question="Can a peer actor read it?",
+        action="Replay the object path with a peer actor.", metadata=metadata,
     )
-    assert action["metadata"]["skill_route"]["skill_id"] == "web2-vuln-classes"
-
-
-def test_skill_path_is_derived_from_skill_id_when_omitted():
-    """skill_path 不再是必填：省略时从 skill_id 推导并归一化存储。"""
-    action = build_action(
-        target="api.target.com",
-        action_type="hypothesis",
-        evidence="Observed an API object path.",
-        next_question="Can a peer actor read it?",
-        action="Replay the object path with a peer actor.",
-        metadata={
-            "skill_route": {
-                "skill_id": "web2-vuln-classes",
-                "required_dimensions": ["object_access"],
-            }
-        },
-    )
-    route = action["metadata"]["skill_route"]
-    assert route["skill_path"] == "skills/web2-vuln-classes/SKILL.md"
-
-
-@pytest.mark.parametrize("skill_id", ["made-up", "../outside", "skills/evil"])
-def test_action_queue_rejects_forged_skill_routes(skill_id):
-    """Anti-forgery only: a skill_id that does not resolve to a real Skill
-    file on disk (S1 native loading retired the catalog whitelist, replacing
-    the former 'canonical primary Skill' membership gate)."""
-    with pytest.raises(ValueError, match="skill_route"):
-        build_action(
-            target="api.target.com",
-            action_type="hypothesis",
-            evidence="Observed an API object path.",
-            next_question="Can a peer actor read it?",
-            action="Replay the object path with a peer actor.",
-            metadata={
-                "skill_route": {
-                    "skill_id": skill_id,
-                    "skill_path": f"skills/{skill_id}/SKILL.md",
-                    "required_dimensions": ["auth"],
-                }
-            },
-        )
-
-
-def test_action_queue_accepts_off_catalog_skill_present_on_disk(tmp_path, monkeypatch):
-    """The point of S1: a Skill outside SKILL_CATALOG but real on disk is a
-    valid route. Adding a skill no longer requires touching skill_catalog.py."""
-    skill_dir = Path(action_queue_module.BASE_DIR) / "skills" / "brand-new-lane"
-    assert not skill_dir.exists()
-    skill_dir.mkdir()
-    (skill_dir / "SKILL.md").write_text(
-        "---\n"
-        "name: brand-new-lane\n"
-        "description: Off-catalog skill used by the route-existence test.\n"
-        "---\n\n# Brand New Lane\n",
-        encoding="utf-8",
-    )
-    try:
-        action = build_action(
-            target="api.target.com",
-            action_type="hypothesis",
-            evidence="Observed an API object path.",
-            next_question="Can a peer actor read it?",
-            action="Replay the object path with a peer actor.",
-            metadata={
-                "route_required": True,
-                "skill_route": {
-                    "skill_id": "brand-new-lane",
-                    "skill_path": "skills/brand-new-lane/SKILL.md",
-                    "reason": "New lane evidence",
-                    "required_dimensions": ["auth", "object"],
-                },
-            },
-        )
-        assert action["metadata"]["skill_route"]["skill_id"] == "brand-new-lane"
-    finally:
-        import shutil
-
-        shutil.rmtree(skill_dir)
-
-
-def test_action_queue_rejects_skill_file_with_mismatched_frontmatter_name(tmp_path):
-    """A real SKILL.md whose frontmatter name differs from skill_id is
-    rejected: skill_id cannot alias an existing skill."""
-    skill_dir = Path(action_queue_module.BASE_DIR) / "skills" / "alias-lane"
-    skill_dir.mkdir()
-    (skill_dir / "SKILL.md").write_text(
-        "---\n"
-        "name: some-other-skill\n"
-        "description: Frontmatter name deliberately mismatched.\n"
-        "---\n\n# Some Other Skill\n",
-        encoding="utf-8",
-    )
-    try:
-        with pytest.raises(ValueError, match="frontmatter name"):
-            build_action(
-                target="api.target.com",
-                action_type="hypothesis",
-                evidence="Observed an API object path.",
-                next_question="Can a peer actor read it?",
-                action="Replay the object path with a peer actor.",
-                metadata={
-                    "skill_route": {
-                        "skill_id": "alias-lane",
-                        "skill_path": "skills/alias-lane/SKILL.md",
-                        "required_dimensions": ["auth"],
-                    }
-                },
-            )
-    finally:
-        import shutil
-
-        shutil.rmtree(skill_dir)
-
-
-def test_action_queue_accepts_non_primary_catalog_skills(tmp_path):
-    """route_mode is no longer validated: direct-only / reference-only /
-    report-only skills in the catalog are valid routes (their frontmatter
-    descriptions say when to load them; the queue does not judge routes)."""
-    for skill_id in ("security-arsenal", "report-writing", "cicd-security", "bb-methodology"):
-        action = build_action(
-            target="api.target.com",
-            action_type="hypothesis",
-            evidence="Observed an API object path.",
-            next_question="Can a peer actor read it?",
-            action="Replay the object path with a peer actor.",
-            metadata={
-                "skill_route": {
-                    "skill_id": skill_id,
-                    "skill_path": f"skills/{skill_id}/SKILL.md",
-                    "reason": "Evidence named the lane",
-                    "required_dimensions": ["evidence"],
-                }
-            },
-        )
-        assert action["metadata"]["skill_route"]["skill_id"] == skill_id
-
-
-@pytest.mark.parametrize(
-    "skill_id",
-    ["made-up", "does-not-exist", "nested/does-not-exist", "../outside", "skills/evil"],
-)
-def test_action_queue_rejects_noncanonical_skill_routes(skill_id):
-    """Backward-compatible negative anchor kept from the whitelist era, with
-    file-existence semantics: an id that resolves to no Skill file on disk is
-    rejected (anti-forgery), regardless of any catalog."""
-    with pytest.raises(ValueError, match="skill_route"):
-        build_action(
-            target="api.target.com",
-            action_type="hypothesis",
-            evidence="Observed an API object path.",
-            next_question="Can a peer actor read it?",
-            action="Replay the object path with a peer actor.",
-            metadata={
-                "skill_route": {
-                    "skill_id": skill_id,
-                    "skill_path": f"skills/{skill_id}/SKILL.md",
-                    "required_dimensions": ["auth"],
-                }
-            },
-        )
+    # Historical fields are opaque input; no file is loaded or path synthesized.
+    assert action.get("metadata", {}) == metadata
 
 
 @pytest.mark.parametrize("metadata_json", ["not-json", "[]", "null", '"text"'])
@@ -1581,628 +287,6 @@ def test_manual_action_cli_rejects_sensitive_metadata_without_writing(tmp_path, 
     assert code == 2
     assert "sensitive field" in capsys.readouterr().err
     assert not (tmp_path / "state" / "api.target.com" / "action_queue.json").exists()
-
-
-def test_resolve_accepts_coverage_status_aliases(tmp_path):
-    ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
-    next_action = select_next_action(load_queue(tmp_path, "target.com"))
-
-    resolved = resolve_action(
-        tmp_path,
-        target="target.com",
-        action_id=next_action["id"],
-        status="tested_clean",
-        result="Low-risk replay showed no diff.",
-    )
-
-    assert resolved["status"] == "tested"
-    assert resolved["summary"]["by_status"]["tested"] == 1
-
-
-def test_resolve_coverage_gap_updates_coverage_matrix(tmp_path):
-    ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
-    queue = load_queue(tmp_path, "target.com")
-    coverage = next(item for item in queue["actions"] if item["type"] == "coverage-gap")
-
-    resolved = resolve_action(
-        tmp_path,
-        target="target.com",
-        action_id=coverage["id"],
-        status="tested_clean",
-        result="Low-risk replay showed no role/object difference.",
-    )
-
-    matrix = load_matrix("target.com", repo_root=tmp_path)
-    endpoint = next(item for item in matrix["endpoints"] if item["endpoint"] == "/api/admin/users")
-    cell = endpoint["cells"]["Authz"]
-
-    assert resolved["coverage_update"]["status"] == "updated"
-    assert resolved["coverage_update"]["coverage_status"] == "tested_clean"
-    assert cell["status"] == "tested_clean"
-    assert "Low-risk replay" in cell["reason"]
-
-
-def test_resolve_folded_coverage_gap_updates_template_from_representative(tmp_path):
-    target = "target.com"
-    mark_cell(
-        target,
-        "/api/orders/{id}",
-        "IDOR",
-        "untested",
-        reason="seed folded route",
-        repo_root=tmp_path,
-    )
-    checkpoint = {
-        "next_action_queue": [{
-            "type": "coverage-gap",
-            "status": "ready",
-            "priority": 80,
-            "action": "Replay /api/orders/123 for the folded route.",
-            "command_hint": "focused replay",
-            "metadata": {
-                "endpoint": "/api/orders/123",
-                "coverage_endpoint": "/api/orders/{id}",
-                "vuln_class": "IDOR",
-            },
-        }],
-    }
-    ingest_checkpoint(tmp_path, target, checkpoint=checkpoint)
-    action = load_queue(tmp_path, target)["actions"][0]
-
-    resolved = resolve_action(
-        tmp_path,
-        target=target,
-        action_id=action["id"],
-        status="tested_clean",
-        result="Representative route replay showed no unauthorized object access.",
-    )
-
-    matrix = load_matrix(target, repo_root=tmp_path)
-    endpoints = {item["endpoint"]: item for item in matrix["endpoints"]}
-    assert resolved["coverage_update"]["endpoint"] == "/api/orders/{id}"
-    assert endpoints["/api/orders/{id}"]["cells"]["IDOR"]["status"] == "tested_clean"
-    assert "/api/orders/123" not in endpoints
-
-
-def test_resolve_coverage_gap_candidate_marks_tested_finding(tmp_path):
-    ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
-    queue = load_queue(tmp_path, "target.com")
-    coverage = next(item for item in queue["actions"] if item["type"] == "coverage-gap")
-
-    resolved = resolve_action(
-        tmp_path,
-        target="target.com",
-        action_id=coverage["id"],
-        status="tested_finding",
-        result="Low-role replay returned another tenant's admin user metadata.",
-    )
-
-    matrix = load_matrix("target.com", repo_root=tmp_path)
-    endpoint = next(item for item in matrix["endpoints"] if item["endpoint"] == "/api/admin/users")
-
-    assert resolved["status"] == "candidate"
-    assert resolved["coverage_update"]["coverage_status"] == "tested_finding"
-    assert endpoint["cells"]["Authz"]["status"] == "tested_finding"
-
-
-def test_dead_end_and_blocked_do_not_falsify_coverage_status(tmp_path):
-    for status in ("dead-end", "blocked"):
-        target = f"{status}.target.com"
-        mark_cell(
-            target,
-            "/api/admin/users",
-            "Authz",
-            "untested",
-            reason="seed",
-            repo_root=tmp_path,
-            write_finding=False,
-        )
-        ingest_checkpoint(tmp_path, target, checkpoint=_checkpoint())
-        queue = load_queue(tmp_path, target)
-        coverage = next(item for item in queue["actions"] if item["type"] == "coverage-gap")
-
-        resolved = resolve_action(
-            tmp_path,
-            target=target,
-            action_id=coverage["id"],
-            status=status,
-            result=f"{status} for the current evidence path",
-        )
-
-        matrix = load_matrix(target, repo_root=tmp_path)
-        endpoint = next(item for item in matrix["endpoints"] if item["endpoint"] == "/api/admin/users")
-        assert resolved["coverage_update"]["status"] == "skipped"
-        assert "does not close a coverage cell" in resolved["coverage_update"]["reason"]
-        assert endpoint["cells"]["Authz"]["status"] == "untested"
-
-
-def test_resolve_unsafe_skipped_review_persists_resolution(tmp_path):
-    checkpoint = {
-        "next_action_queue": [
-            {
-                "id": "A1",
-                "priority": 88,
-                "type": "action-gated-review",
-                "status": "ready",
-                "action": "Review action-gated scanner lane abcdef1234567890: 1 unresolved skipped probe line(s). Artifact=findings/target.com/manual_review/unsafe_skipped.txt. Decide tested, blocked, dead-end, n/a, or candidate; record the selected outcome before continuing.",
-                "command_hint": "review legacy unsafe_skipped.txt; resolve queue with tested/blocked/dead-end/n/a/candidate",
-                "redline_required": True,
-                "metadata": {
-                    "unsafe_skipped_id": "abcdef1234567890",
-                    "artifact": "findings/target.com/manual_review/unsafe_skipped.txt",
-                },
-            }
-        ]
-    }
-    ingest_checkpoint(tmp_path, "target.com", checkpoint=checkpoint)
-
-    resolved = resolve_action(
-        tmp_path,
-        target="target.com",
-        action_id="AQ-0001",
-        status="blocked",
-        result="Requires explicit operator opt-in for state-changing scanner probes.",
-    )
-
-    review_path = tmp_path / "state" / "target.com" / "unsafe_skipped_reviews.json"
-    payload = json.loads(review_path.read_text(encoding="utf-8"))
-
-    assert resolved["unsafe_review_update"]["status"] == "updated"
-    assert payload["resolved"]["abcdef1234567890"]["status"] == "blocked"
-    assert "operator opt-in" in payload["resolved"]["abcdef1234567890"]["result"]
-
-
-def test_concurrent_unsafe_review_resolutions_preserve_all_ids(tmp_path):
-    target = "target.com"
-    items = []
-    for index in range(12):
-        unsafe_id = f"unsafe-{index:02d}"
-        items.append(
-            {
-                "id": f"A{index}",
-                "priority": 88,
-                "type": "action-gated-review",
-                "status": "ready",
-                "action": f"Resolve unsafe review {unsafe_id}.",
-                "metadata": {
-                    "unsafe_skipped_id": unsafe_id,
-                    "artifact": f"findings/{target}/manual_review/unsafe_skipped.txt",
-                },
-            }
-        )
-    ingest_checkpoint(tmp_path, target, checkpoint={"next_action_queue": items})
-
-    context = multiprocessing.get_context("fork")
-    output = context.Queue()
-    workers = [
-        context.Process(
-            target=_resolve_unsafe_review_worker,
-            args=(str(tmp_path), target, f"AQ-{index + 1:04d}", output),
-        )
-        for index in range(len(items))
-    ]
-    for process in workers:
-        process.start()
-    results = [output.get(timeout=15) for _ in workers]
-    for process in workers:
-        process.join(timeout=15)
-
-    review_path = tmp_path / "state" / target / "unsafe_skipped_reviews.json"
-    payload = json.loads(review_path.read_text(encoding="utf-8"))
-
-    assert all(process.exitcode == 0 for process in workers)
-    assert results.count("ok") == len(workers)
-    assert set(payload["resolved"]) == {f"unsafe-{index:02d}" for index in range(len(items))}
-    assert all(item["status"] == "blocked" for item in payload["resolved"].values())
-
-
-def test_resolve_validated_and_reported_require_locatable_evidence(tmp_path):
-    ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
-    action = select_next_action(load_queue(tmp_path, "target.com"))
-
-    with pytest.raises(ValueError, match="locatable evidence"):
-        resolve_action(
-            tmp_path,
-            target="target.com",
-            action_id=action["id"],
-            status="validated",
-        )
-    assert next(item for item in load_queue(tmp_path, "target.com")["actions"] if item["id"] == action["id"])["status"] == "queued"
-
-    unrelated_path = tmp_path / "README.md"
-    unrelated_path.write_text("not terminal evidence\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="locatable evidence"):
-        resolve_action(
-            tmp_path,
-            target="target.com",
-            action_id=action["id"],
-            status="validated",
-            result="evidence=README.md",
-        )
-
-    validation_path = tmp_path / "findings" / "target.com" / "validation-summary.json"
-    validation_path.parent.mkdir(parents=True)
-    validation_path.write_text("{}\n", encoding="utf-8")
-    resolved = resolve_action(
-        tmp_path,
-        target="target.com",
-        action_id=action["id"],
-        status="validated",
-        result="validation-summary=findings/target.com/validation-summary.json",
-    )
-    assert resolved["status"] == "validated"
-
-    with pytest.raises(ValueError, match="locatable evidence"):
-        resolve_action(
-            tmp_path,
-            target="target.com",
-            action_id=action["id"],
-            status="reported",
-        )
-
-    report_path = tmp_path / "reports" / "target.com" / "report.md"
-    report_path.parent.mkdir(parents=True)
-    report_path.write_text("# report\n", encoding="utf-8")
-    reported = resolve_action(
-        tmp_path,
-        target="target.com",
-        action_id=action["id"],
-        status="reported",
-        result="report_file=reports/target.com/report.md",
-    )
-    assert reported["status"] == "reported"
-
-
-def test_resolve_tested_requires_locatable_evidence(tmp_path):
-    ingest_checkpoint(
-        tmp_path,
-        "target.com",
-        checkpoint={
-            "next_action_queue": [
-                {
-                    "type": "workflow-sequence",
-                    "status": "ready",
-                    "action": "Replay the recorded workflow.",
-                }
-            ]
-        },
-    )
-    action_id = select_next_action(load_queue(tmp_path, "target.com"))["id"]
-    action = claim_next_action(tmp_path, "target.com", action_id=action_id)
-
-    with pytest.raises(ValueError, match="locatable evidence"):
-        resolve_action(
-            tmp_path,
-            target="target.com",
-            action_id=action["id"],
-            status="tested",
-            result="No material difference was observed.",
-        )
-
-    summary = tmp_path / "evidence" / "target.com" / "validation" / "summary.json"
-    summary.parent.mkdir(parents=True)
-    summary.write_text("{}\n", encoding="utf-8")
-    resolved = resolve_action(
-        tmp_path,
-        target="target.com",
-        action_id=action["id"],
-        status="tested",
-        result=f"summary={summary.relative_to(tmp_path)}",
-    )
-    assert resolved["status"] == "tested"
-
-
-def test_resolve_cli_accepts_evidence_alias(tmp_path):
-    ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
-    next_action = select_next_action(load_queue(tmp_path, "target.com"))
-
-    code = main([
-        "--repo-root", str(tmp_path),
-        "resolve",
-        "--target", "target.com",
-        "--id", next_action["id"],
-        "--status", "tested_finding",
-        "--evidence", "Evidence is strong enough to promote to candidate.",
-        "--json",
-    ])
-
-    assert code == 0
-    saved = load_queue(tmp_path, "target.com")
-    resolved = next(item for item in saved["actions"] if item["id"] == next_action["id"])
-    assert resolved["status"] == "candidate"
-    assert resolved["result"] == "Evidence is strong enough to promote to candidate."
-
-
-def test_keyword_value_does_not_override_same_priority_queue_order(tmp_path):
-    queue = load_queue(tmp_path, "target.com")
-    queue["actions"] = [
-        {
-            "id": "AQ-0001",
-            "status": "queued",
-            "priority": 50,
-            "type": "generic-follow-up",
-            "evidence_type": "generic",
-            "evidence": "Review notes.",
-            "next_question": "What next?",
-            "action": "Check homepage.",
-            "command_hint": "",
-            "created_at": "2026-01-01T00:00:00Z",
-            "dedupe_key": "a",
-        },
-        {
-            "id": "AQ-0002",
-            "status": "queued",
-            "priority": 50,
-            "type": "known-software-intel",
-            "evidence_type": "known-software",
-            "evidence": "WordPress plugin version needs CVE applicability check.",
-            "next_question": "Is the path reachable?",
-            "action": "Check exact affected version and reachable route.",
-            "command_hint": "",
-            "created_at": "2026-01-01T00:00:01Z",
-            "dedupe_key": "b",
-        },
-    ]
-
-    assert select_next_action(queue)["id"] == "AQ-0001"
-
-
-def test_legacy_active_action_gets_stable_id_on_claim_and_resolve(tmp_path):
-    queue = load_queue(tmp_path, "target.com")
-    queue["actions"] = [{
-        "status": "queued",
-        "priority": 70,
-        "type": "legacy-follow-up",
-        "evidence": "Legacy action without a durable id.",
-        "next_question": "Can the evidence be closed?",
-        "action": "Review the bounded evidence packet.",
-        "created_at": "2026-01-01T00:00:00Z",
-        "dedupe_key": "legacy-follow-up",
-    }]
-    save_queue(tmp_path, "target.com", queue)
-
-    selected = select_next_action(load_queue(tmp_path, "target.com"))
-    legacy_id = selected["id"]
-    assert legacy_id.startswith("LEGACY-")
-    assert select_next_action(load_queue(tmp_path, "target.com"))["id"] == legacy_id
-    assert summarize_queue(load_queue(tmp_path, "target.com"))["legacy_missing_id"] == 1
-
-    claimed = claim_next_action(tmp_path, "target.com", action_id=legacy_id)
-    assert claimed["id"] == legacy_id
-    saved = load_queue(tmp_path, "target.com")
-    assert saved["actions"][0]["id"] == legacy_id
-
-    resolved = resolve_action(
-        tmp_path,
-        target="target.com",
-        action_id=legacy_id,
-        status="blocked",
-        result="bounded evidence is insufficient",
-    )
-    assert resolved["status"] == "blocked"
-
-
-def test_candidate_evidence_gap_sorts_ahead_of_plain_validation(tmp_path):
-    queue = load_queue(tmp_path, "target.com")
-    queue["actions"] = [
-        {
-            "id": "AQ-0001",
-            "status": "queued",
-            "priority": 100,
-            "type": "validation",
-            "evidence_type": "checkpoint-next-action",
-            "evidence": "Run /validate for finding F-1.",
-            "next_question": "Validate candidate.",
-            "action": "Run /validate for finding F-1.",
-            "command_hint": "/validate",
-            "created_at": "2026-01-01T00:00:00Z",
-            "dedupe_key": "validate",
-        },
-        {
-            "id": "AQ-0002",
-            "status": "queued",
-            "priority": 105,
-            "type": "candidate-evidence-gap",
-            "evidence_type": "checkpoint-next-action",
-            "evidence": "Candidate evidence gap for SQLi; missing baseline diff.",
-            "next_question": "Fill missing rubric evidence.",
-            "action": "Replay baseline vs perturbation and capture stable diff.",
-            "command_hint": "fill missing rubric evidence, then /validate",
-            "created_at": "2026-01-01T00:00:01Z",
-            "dedupe_key": "gap",
-        },
-    ]
-
-    assert select_next_action(queue)["id"] == "AQ-0002"
-
-
-def test_superseded_candidate_gap_does_not_steer_next_action(tmp_path):
-    queue = load_queue(tmp_path, "target.com")
-    queue["actions"] = [
-        {
-            "id": "AQ-0001",
-            "status": "candidate",
-            "priority": 105,
-            "type": "candidate-evidence-gap",
-            "evidence_type": "checkpoint-next-action",
-            "evidence": "Candidate evidence gap for authz-role-replay-api_users.",
-            "next_question": "Fill missing policy evidence.",
-            "action": "Candidate evidence gap for authz-role-replay-api_users.",
-            "command_hint": "fill missing rubric evidence, then /validate",
-            "created_at": "2026-01-01T00:00:00Z",
-            "dedupe_key": "candidate",
-            "metadata": {
-                "endpoint": "/api/users",
-                "finding_id": "authz-role-replay-api_users",
-            },
-        },
-        {
-            "id": "AQ-0002",
-            "status": "validated",
-            "priority": 60,
-            "type": "surface-review",
-            "evidence_type": "checkpoint-next-action",
-            "evidence": "Validated role replay.",
-            "next_question": "done",
-            "action": "Validated role replay.",
-            "command_hint": "",
-            "created_at": "2026-01-01T00:00:01Z",
-            "dedupe_key": "validated",
-            "metadata": {
-                "endpoint": "/api/users",
-                "finding_id": "authz-role-replay-api_users",
-            },
-        },
-        {
-            "id": "AQ-0003",
-            "status": "queued",
-            "priority": 50,
-            "type": "case-state-enrichment",
-            "evidence_type": "checkpoint-next-action",
-            "evidence": "Find object endpoint.",
-            "next_question": "Find endpoint.",
-            "action": "Find object endpoint.",
-            "command_hint": "",
-            "created_at": "2026-01-01T00:00:02Z",
-            "dedupe_key": "next",
-        },
-    ]
-
-    # The superseded-candidate exclusion died with the selector: the head of
-    # the stable active order is simply the first active action. The AI reads
-    # the full list and applies its own dedup judgment.
-    assert select_next_action(queue)["id"] == "AQ-0001"
-    assert set(active_action_ids(queue)) >= {"AQ-0001", "AQ-0003"}
-
-
-def test_ingest_checkpoint_retires_superseded_candidate_gap(tmp_path):
-    queue = load_queue(tmp_path, "target.com")
-    queue["actions"] = [
-        {
-            "id": "AQ-0001",
-            "status": "candidate",
-            "priority": 105,
-            "type": "candidate-evidence-gap",
-            "evidence_type": "checkpoint-next-action",
-            "evidence": "Candidate evidence gap for authz-role-replay-api_users.",
-            "next_question": "Fill missing policy evidence.",
-            "action": "Candidate evidence gap for authz-role-replay-api_users.",
-            "command_hint": "fill missing rubric evidence, then /validate",
-            "created_at": "2026-01-01T00:00:00Z",
-            "dedupe_key": "candidate",
-            "source": "checkpoint",
-            "metadata": {
-                "endpoint": "/api/users",
-                "finding_id": "authz-role-replay-api_users",
-            },
-        },
-        {
-            "id": "AQ-0002",
-            "status": "validated",
-            "priority": 60,
-            "type": "surface-review",
-            "evidence_type": "checkpoint-next-action",
-            "evidence": "Validated role replay.",
-            "next_question": "done",
-            "action": "Validated role replay.",
-            "command_hint": "",
-            "created_at": "2026-01-01T00:00:01Z",
-            "dedupe_key": "validated",
-            "source": "checkpoint",
-            "metadata": {
-                "endpoint": "/api/users",
-                "finding_id": "authz-role-replay-api_users",
-            },
-        },
-    ]
-    from action_queue import save_queue
-
-    save_queue(tmp_path, "target.com", queue)
-
-    result = ingest_checkpoint(tmp_path, "target.com", checkpoint={"next_action_queue": []})
-    saved = load_queue(tmp_path, "target.com")
-
-    assert result["stats"]["retired_superseded"] == 1
-    assert saved["actions"][0]["status"] == "n/a"
-
-
-def test_ingest_checkpoint_reopens_runner_only_validated_action(tmp_path):
-    checkpoint = {
-        "next_action_queue": [
-            {
-                "id": "A1",
-                "priority": 100,
-                "type": "validation",
-                "status": "ready",
-                "action": (
-                    "Run /validate for finding AUTHZ-SYNC on https://target.com/api/Feedbacks; "
-                    "verify replay, A/B diff, impact, evidence rubric, and red-line safety before report."
-                ),
-                "command_hint": "/validate",
-                "redline_required": True,
-                "stop_condition": "run validate gates",
-            }
-        ]
-    }
-    first = ingest_checkpoint(tmp_path, "target.com", checkpoint=checkpoint)
-    queue = load_queue(tmp_path, "target.com")
-    action = queue["actions"][0]
-    action["status"] = "validated"
-    action["result"] = "validation-runner-result=tested_finding; summary=evidence/target.com/validation/authz/summary.json"
-    from action_queue import save_queue
-
-    save_queue(tmp_path, "target.com", queue)
-
-    second = ingest_checkpoint(tmp_path, "target.com", checkpoint=checkpoint)
-    saved = load_queue(tmp_path, "target.com")
-
-    assert first["stats"]["added"] == 1
-    assert second["stats"]["updated"] == 1
-    assert second["stats"]["skipped_final"] == 0
-    assert saved["actions"][0]["status"] == "queued"
-    assert saved["actions"][0]["id"] in second["active"]
-    assert "runner evidence is candidate-only" in saved["actions"][0]["notes"]
-
-
-def test_legacy_relevance_does_not_break_same_priority_coverage_ties(tmp_path):
-    queue = load_queue(tmp_path, "target.com")
-    common = {
-        "status": "queued",
-        "priority": 75,
-        "type": "coverage-gap",
-        "evidence_type": "checkpoint-next-action",
-        "next_question": "Execute checkpoint action.",
-        "command_hint": "focused low-risk probe + evidence ledger",
-        "created_at": "2026-01-01T00:00:00Z",
-    }
-    queue["actions"] = [
-        {
-            **common,
-            "id": "AQ-0001",
-            "evidence": "Cover high-value matrix gap: /api/v1/admin/users x IDOR.",
-            "action": "Cover high-value matrix gap: /api/v1/admin/users x IDOR.",
-            "dedupe_key": "idor",
-            "metadata": {
-                "endpoint": "/api/v1/admin/users",
-                "vuln_class": "IDOR",
-                "relevance_score": 9,
-            },
-        },
-        {
-            **common,
-            "id": "AQ-0002",
-            "evidence": "Cover high-value matrix gap: /api/v1/admin/users x Authz.",
-            "action": "Cover high-value matrix gap: /api/v1/admin/users x Authz.",
-            "dedupe_key": "authz",
-            "metadata": {
-                "endpoint": "/api/v1/admin/users",
-                "vuln_class": "Authz",
-                "relevance_score": 13,
-            },
-        },
-    ]
-
-    assert select_next_action(queue)["id"] == "AQ-0001"
 
 
 def test_action_identities_keep_vulnerability_and_auth_context_lanes_distinct():
@@ -2258,777 +342,331 @@ def test_queue_fingerprint_ignores_container_timestamps():
     assert action_queue_module.queue_fingerprint(first) == action_queue_module.queue_fingerprint(second)
 
 
-def test_load_queue_rejects_corrupt_or_invalid_canonical_state(tmp_path):
+def test_action_summary_preserves_window_running_selection_and_generation(store, monkeypatch):
+    from tools.checkpoint import build_checkpoint, _evidence_vuln_classes
+    from tools.autopilot_state import _load_action_queue_next
+
+    assert action_queue_module.load_queue_summary(store.root, store.target)["total"] == 0
+    for index in range(20):
+        action_id = f"A-{index:02}"
+        add_work(store, action_id, metadata={"family": "Authz" if index == 18 else "custom"})
+        if index < 10:
+            resolve_action(store.root, target=store.target, action_id=action_id, status="n/a", result="Cancelled")
+    claim_next_action(store.root, store.target, action_id="A-19")
+    full = load_queue(store.root, store.target)
+    snapshot = action_queue_module.load_queue_summary(store.root, store.target)
+    assert (snapshot["total"], snapshot["pending_total"]) == (20, 10)
+    assert snapshot["actions"] == full["actions"][10:15]
+    assert snapshot["running_action"] == snapshot["next_action"] == full["actions"][19]
+    assert _load_action_queue_next(str(store.root), store.target, queue_snapshot=snapshot)["id"] == "A-19"
+    assert _evidence_vuln_classes([], snapshot) == _evidence_vuln_classes([], full)
+    assert action_queue_module.queue_fingerprint(snapshot) == action_queue_module.queue_fingerprint(full)
+    before = store.binding()
+    monkeypatch.setattr(TargetStore, "action_page", lambda *args, **kwargs: pytest.fail("unneeded history read"))
+    # No intel material means the default checkpoint has no terminal review history to read.
+    checkpoint = build_checkpoint(store.root, target=store.target)
+    assert checkpoint["default_candidate"]["id"] == "A-19"
+    assert checkpoint["action_queue_window"]["total"] == 10
+    assert checkpoint["action_queue_window"]["remaining"] == 5
+    assert store.binding() == before
+    resolve_action(store.root, target=store.target, action_id="A-19", status="blocked", result="Need context")
+    fresh = action_queue_module.load_queue_summary(store.root, store.target)
+    assert fresh["next_action"]["id"] == "A-10"
+    assert action_queue_module.queue_fingerprint(fresh) != action_queue_module.queue_fingerprint(snapshot)
+
+
+@pytest.mark.parametrize("damaged", ["{broken", "[]", "null"])
+def test_action_summary_exposes_corrupt_terminal_metadata(store, damaged):
+    import sqlite3
+
+    add_work(store)
+    resolve_action(store.root, target=store.target, action_id="A1", status="n/a", result="Cancelled")
+    with sqlite3.connect(store.path) as conn:
+        conn.execute("UPDATE actions SET metadata_json=?", (damaged,))
+    with pytest.raises(StoreError, match="metadata"):
+        action_queue_module.load_queue_summary(store.root, store.target)
+
+
+def test_action_filtered_pages_bind_filters_and_keep_terminal_history(store):
+    from tools.target_store import ConflictError
+
+    for index in range(7):
+        add_manual_action(store.root, target=store.target, action_id=f"A-{index}",
+                          action_type="intel-advisory" if index % 2 else "source-review",
+                          action="Review advisory", evidence="Recorded material", next_question="Review?")
+    page = store.action_page(statuses=("ready",), action_type="intel-advisory", limit=2)
+    assert [row["id"] for row in page["items"]] == ["A-1", "A-3"]
+    assert page["total"] == 3 and page["remaining"] == 1
+    tail = store.action_page(statuses=("ready",), action_type="intel-advisory", limit=2, cursor=page["next_cursor"])
+    assert [row["id"] for row in tail["items"]] == ["A-5"]
+    with pytest.raises(ConflictError, match="filter"):
+        store.action_page(statuses=("blocked",), action_type="intel-advisory", cursor=page["next_cursor"])
+    with pytest.raises(ConflictError, match="filter"):
+        store.action_page(statuses=("ready",), action_type="source-review", cursor=page["next_cursor"])
+    with pytest.raises(StoreError):
+        store.action_page(statuses=("unknown",))
+    resolve_action(store.root, target=store.target, action_id="A-1", status="n/a", result="Cancelled")
+    assert len(load_queue(store.root, store.target)["actions"]) == 7
+    assert [row["id"] for row in load_queue(store.root, store.target, statuses=("cancelled",), action_type="intel-advisory")["actions"]] == ["A-1"]
+
+
+def test_intel_terminal_filter_uses_descriptive_type_not_storage_kind(store):
+    from tools.intel_continuation import _final_queue_dispositions
+
+    for action_id, action_type in (("intel", "intel-advisory"), ("source", "source-review")):
+        add_manual_action(store.root, target=store.target, action_id=action_id, action_type=action_type,
+                          action="Review advisory", evidence="Recorded material", next_question="Review?")
+        resolve_action(store.root, target=store.target, action_id=action_id, status="n/a", result="Reviewed CVE-2026-12345")
+    assert store.action("intel")["kind"] == "work"
+    dispositions = _final_queue_dispositions(store.root, store.target)
+    assert len(dispositions["CVE-2026-12345"]) == 1
+    store.create_action(command_id="whitespace", action_id="whitespace", kind="work", subject={"target": store.target},
+                        intent="Review advisory", execution_key="whitespace", actor="operator",
+                        metadata={"action_context": {"type": "\tintel-advisory\u2003"}})
+    assert [row["id"] for row in store.action_page(action_type="intel-advisory")["items"]] == ["intel", "whitespace"]
+
+
+def test_action_summary_uses_one_revision_during_concurrent_write(store, monkeypatch):
+    add_work(store, "B")
+    before = store.binding()
+    check = store._require_action_metadata
+
+    def concurrent_write(conn):
+        add_work(store, "A")
+        check(conn)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(store, "_require_action_metadata", concurrent_write)
+        pinned = store.action_summary(limit=1)
+    assert pinned["revision"] == before["revision"]
+    assert pinned["counts"] == {"total": 1, "pending": 1}
+    assert pinned["items"][0]["id"] == "B"
+    assert store.action_summary(limit=1)["items"][0]["id"] == "A"
+
+
+def test_action_summary_preserves_family_order_beyond_preview(store):
+    from tools.checkpoint import _evidence_vuln_classes
+
+    for index in range(8):
+        add_work(store, f"A-{index}", metadata={"family": "custom" if index < 5 else ("GraphQL" if index == 5 else "Authz"),
+                                              "vuln_class": "IDOR" if index == 7 else ""})
+    full = load_queue(store.root, store.target)
+    window = action_queue_module.load_queue_summary(store.root, store.target)
+    assert _evidence_vuln_classes([], window) == _evidence_vuln_classes([], full)
+
+
+def test_explicit_legacy_inspection_rejects_corrupt_or_invalid_state(tmp_path):
     path = tmp_path / "state" / "target.com" / "action_queue.json"
     path.parent.mkdir(parents=True)
 
     path.write_text('{"actions":', encoding="utf-8")
     with pytest.raises(ValueError, match="invalid action queue JSON"):
-        load_queue(tmp_path, "target.com")
+        load_legacy_queue(tmp_path, "target.com")
 
     path.write_text(json.dumps([{"id": "AQ-0001"}]), encoding="utf-8")
     with pytest.raises(ValueError, match="must contain one object"):
-        load_queue(tmp_path, "target.com")
+        load_legacy_queue(tmp_path, "target.com")
 
     path.write_text(json.dumps({"schema_version": 1, "actions": {}}), encoding="utf-8")
     with pytest.raises(ValueError, match="actions must be a list"):
-        load_queue(tmp_path, "target.com")
+        load_legacy_queue(tmp_path, "target.com")
 
     path.write_text(json.dumps({"schema_version": 2, "actions": []}), encoding="utf-8")
     with pytest.raises(ValueError, match="schema_version must be 1"):
-        load_queue(tmp_path, "target.com")
+        load_legacy_queue(tmp_path, "target.com")
 
 
-def test_save_queue_atomic_replace_failure_preserves_previous_bytes(tmp_path, monkeypatch):
-    initial = load_queue(tmp_path, "target.com")
-    initial["actions"] = [{"id": "AQ-0001", "status": "queued"}]
-    path = save_queue(tmp_path, "target.com", initial)
-    previous = path.read_bytes()
 
-    replacement = dict(initial)
-    replacement["actions"] = [{"id": "AQ-0002", "status": "queued"}]
-    original_replace = Path.replace
-
-    def fail_queue_replace(self, target):
-        if self.parent == path.parent and self.name.startswith(f".{path.name}."):
-            raise OSError("synthetic replace failure")
-        return original_replace(self, target)
-
-    monkeypatch.setattr(Path, "replace", fail_queue_replace)
-    with pytest.raises(OSError, match="synthetic replace failure"):
-        save_queue(tmp_path, "target.com", replacement)
-
-    assert path.read_bytes() == previous
-    assert list(path.parent.glob(f".{path.name}.*.tmp")) == []
+def test_retired_queue_writers_and_selection_are_absent(store):
+    for name in ("save_queue", "ingest_checkpoint", "select_next_action", "upsert_actions"):
+        assert not hasattr(action_queue_module, name)
+    with pytest.raises(SystemExit) as exc:
+        main(["ingest-checkpoint", "--target", store.target])
+    assert exc.value.code == 2
+    assert not (store.path.parent / "action_queue.json").exists()
 
 
-def test_action_queue_cli_reports_corrupt_state(tmp_path, capsys):
-    path = tmp_path / "state" / "target.com" / "action_queue.json"
-    path.parent.mkdir(parents=True)
-    path.write_text("{broken\n", encoding="utf-8")
-
-    rc = main(
-        [
-            "--repo-root",
-            str(tmp_path),
-            "summary",
-            "--target",
-            "target.com",
-            "--json",
-        ]
-    )
-
-    assert rc == 2
-    error = capsys.readouterr().err
-    assert "invalid action queue JSON" in error
-    assert str(path) in error
+def test_concurrent_claim_grants_one_execution_permit(store):
+    add_work(store)
+    context = multiprocessing.get_context("fork")
+    output = context.Queue()
+    barrier = context.Barrier(6)
+    processes = [context.Process(target=_claim_action_worker,
+                                args=(str(store.root), store.target, barrier, output)) for _ in range(6)]
+    for process in processes:
+        process.start()
+    results = [output.get(timeout=15) for _ in processes]
+    for process in processes:
+        process.join(timeout=15)
+    assert all(process.exitcode == 0 for process in processes)
+    assert all(not error for _, error in results), results
+    assert [status for status, _ in results].count("claimed") == 1
+    assert [status for status, _ in results].count("resumed") == 5
+    assert store.action("A1")["version"] == 2
 
 
-def _seed_running_versioned_hypothesis(tmp_path, *, status: str = "running") -> dict:
-    """Queue one depth-contract action and move it to the requested status."""
-    ingest_checkpoint(
-        tmp_path,
-        "target.com",
-        checkpoint={
-            "next_action_queue": [
-                {
-                    "id": "H-BOLA",
-                    "priority": 95,
-                    "type": "request-pair",
-                    "status": "ready",
-                    "action": "Replay the object-id swap for the peer basket.",
-                    "command_hint": "request-diff replay",
-                    "source": "checkpoint",
-                    "source_id": "bola-basket",
-                    "metadata": {
-                        "endpoint": "https://target.com/rest/basket/6",
-                        "method": "GET",
-                        "depth_contract_version": 1,
-                        "activation_required": True,
-                        "max_hypothesis_actions_cap": 4,
-                        "hypothesis_id": "H-bola-basket",
-                        "family": "object-authorization",
-                        "technique": "id-swap-cross-actor",
-                        "active_dimension": "path:/rest/basket/1",
-                        "input_boundary": "path segment: basket id",
-                        "expected_learning": "whether the object id is bound to the caller",
-                        "kill_condition": "peer object rejected, or caller's own object returned",
-                        "decision_reason": "object route flagged by surface planning",
-                        "risk_tier": "medium",
-                    },
-                }
-            ]
-        },
-    )
-    queue = load_queue(tmp_path, "target.com")
-    item = queue["actions"][0]
-    item["status"] = status
-    summary = tmp_path / "evidence" / "target.com" / "validation" / "AQ-0001" / "summary.json"
-    summary.parent.mkdir(parents=True, exist_ok=True)
-    summary.write_text("{}\n", encoding="utf-8")
-    diff = tmp_path / "evidence" / "target.com" / "validation" / "AQ-0001" / "diff.json"
-    diff.write_text("{}\n", encoding="utf-8")
-    item.setdefault("metadata", {}).update(
-        {
-            "tested_dimensions": ["path:/rest/basket/1"],
-            "runner_operation_id": "runner:deadbeef",
-            "last_outcome": {
-                "status": "tested_finding",
-                "summary_ref": "evidence/target.com/validation/AQ-0001/summary.json",
-                "evidence_ref": "evidence/target.com/validation/AQ-0001/diff.json",
-                "observed_difference": "body_length 154 -> 1310 | body_length 154 -> 1310",
-                "observation_kind": "controlled_difference",
-                "operation_id": "runner:deadbeef",
-                "at": "2026-09-11T00:00:00Z",
-            },
-        }
-    )
-    save_queue(tmp_path, "target.com", queue)
-    return item
+@pytest.mark.parametrize("phase", ["scan", "recon"])
+def test_runtime_wait_keeps_all_explicit_work_visible(store, phase, capsys):
+    add_work(store, "A1", priority=1)
+    add_work(store, "A2", priority=99)
+    before = store.binding()
+    update_runtime_state(store.root, store.target, mode=f"{phase}_running", last_executed_workflow=f"run_{phase}_started")
+    with runtime_phase_lock(store.root, store.target, phase):
+        assert set(active_action_ids(load_queue(store.root, store.target))) == {"A1", "A2"}
+        assert main(["--repo-root", str(store.root), "list", "--target", store.target, "--json"]) == 0
+        assert {row["id"] for row in json.loads(capsys.readouterr().out)} == {"A1", "A2"}
+    assert store.binding() == before
 
 
-def test_versioned_resolve_accepts_validation_verdict_without_continuation(tmp_path):
-    """A validation verdict is the terminal decision; it must not need a pivot."""
-    _seed_running_versioned_hypothesis(tmp_path)
-    summary_path = tmp_path / "findings" / "target.com" / "AQ-0001-abc.validation-summary.json"
-    summary_path.parent.mkdir(parents=True, exist_ok=True)
-    summary_path.write_text("{}\n", encoding="utf-8")
-
-    resolved = resolve_action(
-        tmp_path,
-        target="target.com",
-        action_id="AQ-0001",
-        status="validated",
-        result="validation-summary=findings/target.com/AQ-0001-abc.validation-summary.json",
-    )
-
-    assert resolved["status"] == "validated"
-    stored = next(item for item in load_queue(tmp_path, "target.com")["actions"] if item["id"] == "AQ-0001")
-    assert stored["metadata"]["hypothesis_status"] == "closed"
-    assert stored["metadata"]["kill_reason"]
-
-
-def test_versioned_resolve_still_requires_continuation_or_kill_for_non_verdict(tmp_path):
-    """The AI-owned resolve path keeps its exactly-one-decision contract."""
-    _seed_running_versioned_hypothesis(tmp_path)
-
-    with pytest.raises(ValueError, match="exactly one continuation or supported kill"):
-        resolve_action(
-            tmp_path,
-            target="target.com",
-            action_id="AQ-0001",
-            status="dead-end",
-            result="evidence=evidence/target.com/validation/AQ-0001/summary.json",
-        )
-
-
-# ---------------------------------------------------------------------------
-# B5 (ai-capability-roadmap batch 7): claim --from-evidence
-# ---------------------------------------------------------------------------
-
-
-def _seed_probe_evidence(tmp_path: Path, target: str = "target.com") -> str:
-    """Write one probe.py-shaped evidence JSON and return its repo-relative ref."""
-    probe_path = tmp_path / "evidence" / target / "probe" / "20260911T000000000Z-deadbeef.json"
-    probe_path.parent.mkdir(parents=True, exist_ok=True)
-    probe_path.write_text(
-        json.dumps(
-            {
-                "kind": "probe",
-                "schema_version": 1,
-                "ts": "2026-09-11T00:00:00Z",
-                "target": target,
-                "request": {
-                    "method": "GET",
-                    "url": f"https://{target}/rest/basket/6",
-                    "headers": {},
-                    "body": "",
-                    "timeout_seconds": 10.0,
-                },
-                "response": {
-                    "status": 200,
-                    "reason": "OK",
-                    "headers": {},
-                    "body": "{}",
-                    "body_sha256": "a" * 64,
-                    "body_retained_bytes": 2,
-                    "body_observed_bytes": 2,
-                    "body_truncated": False,
-                    "final_url": f"https://{target}/rest/basket/6",
-                },
-                "elapsed_ms": 12,
-                "flags": {"state_changing": False, "redline_checked": False},
-            }
-        ),
-        encoding="utf-8",
-    )
-    return str(probe_path.relative_to(tmp_path))
-
-
-def _seed_depth_contract_item(tmp_path: Path) -> str:
-    """Queue one activation_required depth-contract action; return its id."""
-    ingest_checkpoint(
-        tmp_path,
-        "target.com",
-        checkpoint={
-            "next_action_queue": [
-                {
-                    "id": "H-PROBE",
-                    "priority": 95,
-                    "type": "request-pair",
-                    "status": "ready",
-                    "action": "Replay the probe-observed object route.",
-                    "command_hint": "request-diff replay",
-                    "source": "checkpoint",
-                    "source_id": "probe-derived",
-                    "metadata": {
-                        "endpoint": "https://target.com/rest/basket/6",
-                        "method": "GET",
-                        "depth_contract_version": 1,
-                        "activation_required": True,
-                        "max_hypothesis_actions_cap": 4,
-                        "hypothesis_id": "H-probe-basket",
-                        "family": "object-authorization",
-                        "technique": "id-swap-cross-actor",
-                        "active_dimension": "path:/rest/basket/1",
-                        "input_boundary": "path segment: basket id",
-                        "expected_learning": "whether the object id is bound to the caller",
-                        "kill_condition": "peer object rejected, or caller's own object returned",
-                        "decision_reason": "probe lead flagged the object route",
-                        "risk_tier": "medium",
-                    },
-                }
-            ]
-        },
-    )
-    queue = load_queue(tmp_path, "target.com")
-    return str(queue["actions"][0]["id"])
-
-
-_JUDGMENT_ONLY_ACTIVATION = {
-    "depth_contract_version": 1,
-    "hypothesis_id": "H-probe-basket",
-    "family": "object-authorization",
-    "technique": "id-swap-cross-actor",
-    "active_dimension": "path:/rest/basket/1",
-    "input_boundary": "path segment: basket id",
-    "expected_learning": "whether the object id is bound to the caller",
-    "kill_condition": "peer object rejected, or caller's own object returned",
-    "decision_reason": "probe lead flagged the object route",
-    "skill_route": {
-        "skill_id": "web2-vuln-classes",
-        "skill_path": "skills/web2-vuln-classes/SKILL.md",
-        "required_dimensions": ["auth", "object"],
-    },
-    "risk_tier": "medium",
-    "max_hypothesis_actions": 2,
-}
-
-
-def test_claim_from_evidence_derives_mechanical_fields(tmp_path: Path):
-    """--from-evidence fills endpoint/method/evidence_ref/baseline_ref from a probe."""
-    action_id = _seed_depth_contract_item(tmp_path)
-    evidence_ref = _seed_probe_evidence(tmp_path)
-
-    claimed = claim_next_action(
-        tmp_path,
-        "target.com",
-        action_id=action_id,
-        from_evidence=evidence_ref,
-        metadata=dict(_JUDGMENT_ONLY_ACTIVATION),
-    )
-
-    assert claimed["status"] == "running"
-    stored = next(
-        item for item in load_queue(tmp_path, "target.com")["actions"] if item["id"] == action_id
-    )
-    metadata = stored["metadata"]
-    # Mechanical fields were derived from the probe JSON.
-    assert metadata["endpoint"] == "https://target.com/rest/basket/6"
-    assert metadata["method"] == "GET"
-    assert metadata["evidence_ref"] == evidence_ref
-    assert metadata["baseline_ref"] == evidence_ref
-    # The full depth contract still validated (execution key present means the
-    # repeat-fingerprint machinery ran over the derived+judgment metadata).
-    assert metadata["execution_key"].startswith("depth-v1:")
-
-
-def test_claim_from_evidence_metadata_json_overrides_derived_values(tmp_path: Path):
-    """Explicit --metadata-json values win over every derived field."""
-    action_id = _seed_depth_contract_item(tmp_path)
-    evidence_ref = _seed_probe_evidence(tmp_path)
-    # A different target-owned evidence file as the explicit baseline.
-    other = tmp_path / "evidence" / "target.com" / "probe" / "other.json"
-    other.write_text('{"kind": "probe", "request": {"method": "POST", "url": "https://target.com/rest/basket/6"}}', encoding="utf-8")
-    other_ref = str(other.relative_to(tmp_path))
-
-    metadata = dict(_JUDGMENT_ONLY_ACTIVATION)
-    metadata.update({"endpoint": "https://target.com/rest/basket/6?explicit=1", "method": "POST", "baseline_ref": other_ref})
-
-    claimed = claim_next_action(
-        tmp_path,
-        "target.com",
-        action_id=action_id,
-        from_evidence=evidence_ref,
-        metadata=metadata,
-    )
-    assert claimed["status"] == "running"
-    stored = next(
-        item for item in load_queue(tmp_path, "target.com")["actions"] if item["id"] == action_id
-    )
-    assert stored["metadata"]["endpoint"] == "https://target.com/rest/basket/6?explicit=1"
-    assert stored["metadata"]["method"] == "POST"
-    assert stored["metadata"]["baseline_ref"] == other_ref
-    # evidence_ref was not overridden explicitly, so the derived value stands.
-    assert stored["metadata"]["evidence_ref"] == evidence_ref
-
-
-def test_claim_from_evidence_rejects_missing_or_foreign_evidence(tmp_path, monkeypatch):
-    """Anti-forgery: a nonexistent ref or a non-target-owned ref is rejected."""
-    action_id = _seed_depth_contract_item(tmp_path)
-
-    with pytest.raises(ValueError, match="target-owned"):
-        claim_next_action(
-            tmp_path,
-            "target.com",
-            action_id=action_id,
-            from_evidence="evidence/target.com/probe/does-not-exist.json",
-            metadata=dict(_JUDGMENT_ONLY_ACTIVATION),
-        )
-
-    # A file that exists but belongs to another target's storage tree is not
-    # target-owned: the derivation must refuse to adopt it.
-    foreign = tmp_path / "evidence" / "other.test" / "probe" / "foreign.json"
-    foreign.parent.mkdir(parents=True, exist_ok=True)
-    foreign.write_text('{"kind": "probe", "request": {"method": "GET", "url": "https://other.test/x"}}', encoding="utf-8")
-    with pytest.raises(ValueError, match="target-owned"):
-        claim_next_action(
-            tmp_path,
-            "target.com",
-            action_id=action_id,
-            from_evidence=str(foreign.relative_to(tmp_path)),
-            metadata=dict(_JUDGMENT_ONLY_ACTIVATION),
-        )
-
-    # Nothing was claimed: the rejections happen before any queue mutation.
-    queue = load_queue(tmp_path, "target.com")
-    assert queue["actions"][0]["status"] == "queued"
-
-
-def test_claim_from_evidence_does_not_derive_judgment_fields(tmp_path):
-    """Dumb-interface claim: derivation stays mechanical, judgment stays AI's.
-
-    --from-evidence fills only the mechanical fields; the claim succeeds
-    without any judgment fields (the 16-field gate is retired — the queue is
-    a locked file, not a router), and the stored metadata must NOT contain
-    any AI judgment the caller did not supply.
-    """
-    ingest_checkpoint(
-        tmp_path,
-        "target.com",
-        checkpoint={
-            "next_action_queue": [
-                {
-                    "id": "H-PROBE2",
-                    "priority": 95,
-                    "type": "request-pair",
-                    "status": "ready",
-                    "action": "Replay the probe-observed object route.",
-                    "metadata": {
-                        "depth_contract_version": 1,
-                        "activation_required": True,
-                        "max_hypothesis_actions_cap": 4,
-                    },
-                }
-            ]
-        },
-    )
-    evidence_ref = _seed_probe_evidence(tmp_path)
-
-    claimed = claim_next_action(
-        tmp_path,
-        "target.com",
-        action_id="AQ-0001",
-        from_evidence=evidence_ref,
-    )
-    stored = claimed["metadata"]
-    # 机械字段已派生
-    assert stored["evidence_ref"] == evidence_ref
-    assert stored["baseline_ref"] == evidence_ref
-    assert stored["endpoint"] == "https://target.com/rest/basket/6"
-    assert stored["method"] == "GET"
-    # 判断字段不被伪造
-    for judgment in ("hypothesis_id", "family", "technique", "expected_learning",
-                     "kill_condition", "decision_reason"):
-        assert judgment not in stored
-
-
-def test_claim_cli_accepts_from_evidence(tmp_path, capsys):
-    """CLI wiring: --from-evidence + --metadata-json claim end to end."""
-    action_id = _seed_depth_contract_item(tmp_path)
-    evidence_ref = _seed_probe_evidence(tmp_path)
-
-    code = main(
-        [
-            "--repo-root", str(tmp_path),
-            "claim",
-            "--target", "target.com",
-            "--id", action_id,
-            "--from-evidence", evidence_ref,
-            "--metadata-json", json.dumps(_JUDGMENT_ONLY_ACTIVATION),
-            "--json",
-        ],
-    )
-
-    assert code == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["status"] == "running"
-    assert payload["metadata"]["evidence_ref"] == evidence_ref
-    assert payload["metadata"]["baseline_ref"] == evidence_ref
-
-
-def test_claim_from_evidence_non_probe_json_derives_only_evidence_ref(tmp_path):
-    """Non-probe evidence files derive only evidence_ref — baseline is not guessed.
-
-    A probe JSON records the complete request/response pair, so it is its own
-    baseline. A generic evidence JSON (validation summary, observation, etc.)
-    does not carry that guarantee, so endpoint/method/baseline_ref must come
-    from the AI.
-    """
-    action_id = _seed_depth_contract_item(tmp_path)
-    summary = tmp_path / "evidence" / "target.com" / "validation" / "summary.json"
-    summary.parent.mkdir(parents=True, exist_ok=True)
-    summary.write_text(
-        json.dumps({"status": "tested_finding", "notes": "no request pair"}),
-        encoding="utf-8",
-    )
-    summary_ref = str(summary.relative_to(tmp_path))
-
-    # Dumb interface: a non-probe file derives only evidence_ref; the claim
-    # succeeds (no required-fields gate) and baseline_ref is NOT guessed.
-    derived_only = claim_next_action(
-        tmp_path,
-        "target.com",
-        action_id=action_id,
-        from_evidence=summary_ref,
-        metadata=dict(_JUDGMENT_ONLY_ACTIVATION),
-    )
-    assert derived_only["metadata"]["evidence_ref"] == summary_ref
-    assert "baseline_ref" not in derived_only["metadata"]
-    # Supplying baseline_ref (and endpoint/method) from the AI completes the
-    # mechanical fields: the derived evidence_ref was adopted underneath.
-    metadata = dict(_JUDGMENT_ONLY_ACTIVATION)
-    metadata.update(
-        {
-            "endpoint": "https://target.com/rest/basket/6",
-            "method": "GET",
-            "baseline_ref": "evidence/target.com/validation/baseline.json",
-        }
-    )
-    baseline = tmp_path / "evidence" / "target.com" / "validation" / "baseline.json"
-    baseline.write_text('{"kind": "manual-baseline"}', encoding="utf-8")
-    claimed = claim_next_action(
-        tmp_path,
-        "target.com",
-        action_id=action_id,
-        from_evidence=summary_ref,
-        metadata=metadata,
-    )
-    assert claimed["status"] == "running"
-    stored = next(
-        item for item in load_queue(tmp_path, "target.com")["actions"] if item["id"] == action_id
-    )
-    assert stored["metadata"]["evidence_ref"] == summary_ref
-    assert stored["metadata"]["baseline_ref"] == "evidence/target.com/validation/baseline.json"
-
-
-# ---- 2026-09-14 chimera regression: the queue never selects or re-identifies ----
-
-
-def test_claim_without_id_is_rejected(tmp_path):
-    """The 2026-09-14 chimera came from an --id-less claim silently merging a
-    new hypothesis into whatever the selector picked. That path is gone."""
-    ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
+def test_claim_requires_explicit_id_and_never_reidentifies_work(store):
+    add_work(store, metadata={"hypothesis_id": "H1", "family": "authz", "technique": "object-swap"})
+    before = store.binding()
     with pytest.raises(ValueError, match="requires --id"):
-        claim_next_action(tmp_path, "target.com")
+        claim_next_action(store.root, store.target)
+    with pytest.raises(StoreError, match="re-identify"):
+        claim_next_action(store.root, store.target, action_id="A1", metadata={"hypothesis_id": "H2"})
+    assert store.binding() == before
+    claim_next_action(store.root, store.target, action_id="A1", metadata={"active_dimension": "role"})
+    assert claim_next_action(store.root, store.target, action_id="A1", metadata={"active_dimension": "role"})["claim_status"] == "resumed"
+    before = store.binding()
+    with pytest.raises(StoreError, match="different content"):
+        claim_next_action(store.root, store.target, action_id="A1", metadata={"active_dimension": "object"})
+    with pytest.raises(StoreError, match="another operator"):
+        claim_next_action(store.root, store.target, action_id="A1", actor="another")
+    assert store.binding() == before
 
 
-def test_claim_cannot_reidentify_existing_action_hypothesis(tmp_path):
-    """A different hypothesis_id/family/technique on an already-identified
-    action must not overwrite the stored identity (the chimera's field-level
-    mechanism, now guarded even though explicit --id is required)."""
-    ingest_checkpoint(
-        tmp_path,
-        "target.com",
-        checkpoint={
-            "next_action_queue": [
-                {
-                    "id": "EXISTING",
-                    "priority": 80,
-                    "type": "case-state-enrichment",
-                    "action": "Register actor/session/object context.",
-                    "metadata": {
-                        "hypothesis_id": "bola-basket",
-                        "family": "object-authorization",
-                        "technique": "id-swap-cross-actor",
-                        "endpoint": "https://target.com/rest/basket/1",
-                    },
-                }
-            ]
-        },
-    )
-    queue = load_queue(tmp_path, "target.com")
-    action_id = queue["actions"][0]["id"]
-
-    # An AI claiming this action with a DIFFERENT hypothesis identity is the
-    # chimera shape: refuse unless a repeat_reason documents the change.
-    foreign = {
-        "depth_contract_version": 1,
-        "hypothesis_id": "sqli-products-search",
-        "family": "injection",
-        "technique": "union-select-data-extraction",
-        "endpoint": "https://target.com/rest/products/search?q=x",
-        "method": "GET",
-        "active_dimension": "parameter:q",
-        "evidence_ref": "evidence/target.com/probe/p.json",
-        "baseline_ref": "evidence/target.com/probe/p.json",
-        "skill_route": {
-            "skill_id": "web2-vuln-classes",
-            "required_dimensions": ["vulnerability_family"],
-        },
-    }
-    probe = tmp_path / "evidence" / "target.com" / "probe" / "p.json"
-    probe.parent.mkdir(parents=True)
-    probe.write_text("{}", encoding="utf-8")
-
-    with pytest.raises(ValueError, match="re-identify"):
-        claim_next_action(tmp_path, "target.com", action_id=action_id, metadata=foreign)
-
-    # Same identity (or a documented repeat) passes through.
-    same = dict(foreign)
-    same.update({
-        "hypothesis_id": "bola-basket",
-        "family": "object-authorization",
-        "technique": "id-swap-cross-actor",
-        "endpoint": "https://target.com/rest/basket/1",
-    })
-    claimed = claim_next_action(tmp_path, "target.com", action_id=action_id, metadata=same)
-    assert claimed["metadata"]["hypothesis_id"] == "bola-basket"
+@pytest.mark.parametrize("entry", ["add", "claim", "resolve"])
+@pytest.mark.parametrize("field", ["last_outcome", "tested_dimensions", "runner_operation_id"])
+def test_all_action_commands_reject_runner_observation_forgery(store, entry, field):
+    add_work(store)
+    before = store.binding()
+    metadata = {field: "forged"}
+    with pytest.raises(ValueError, match="Runner-owned"):
+        if entry == "add":
+            add_work(store, "A2", metadata=metadata)
+        elif entry == "claim":
+            claim_next_action(store.root, store.target, action_id="A1", metadata=metadata)
+        else:
+            resolve_action(store.root, target=store.target, action_id="A1", status="blocked", result="review", metadata=metadata)
+    assert store.binding() == before
 
 
-def test_claim_runner_fields_rejected_on_all_paths(tmp_path):
-    """Anti-forgery is unconditional: AI metadata carrying runner-owned
-    fields is rejected on claim (not just on versioned claims)."""
-    ingest_checkpoint(
-        tmp_path,
-        "target.com",
-        checkpoint={
-            "next_action_queue": [
-                {
-                    "id": "V1",
-                    "priority": 80,
-                    "type": "versioned-endpoint",
-                    "action": "Replay the observed difference.",
-                }
-            ]
-        },
-    )
-    queue = load_queue(tmp_path, "target.com")
-    action_id = queue["actions"][0]["id"]
-    with pytest.raises(ValueError, match="Runner-owned observation fields"):
-        claim_next_action(
-            tmp_path,
-            "target.com",
-            action_id=action_id,
-            metadata={"last_outcome": {"status": "tested_finding"}},
-        )
+@pytest.mark.parametrize("ref", ["evidence/target.com/missing.json", "evidence/foreign.test/foreign.json"])
+def test_claim_rejects_missing_or_foreign_evidence_refs(store, ref):
+    add_work(store)
+    foreign = store.root / "evidence/foreign.test/foreign.json"
+    foreign.parent.mkdir(parents=True)
+    foreign.write_text("{}")
+    before = store.binding()
+    with pytest.raises((StoreError, OSError), match="artifact|target"):
+        claim_next_action(store.root, store.target, action_id="A1", metadata={"evidence_ref": ref})
+    assert store.binding() == before
 
 
-def test_update_preserves_unsupplied_runner_observation(tmp_path):
-    """Stale-read protection: an AI update that does not carry runner fields
-    must not wipe a persisted runner observation."""
-    ingest_checkpoint(
-        tmp_path,
-        "target.com",
-        checkpoint={
-            "next_action_queue": [
-                {
-                    "id": "V1",
-                    "priority": 80,
-                    "type": "versioned-endpoint",
-                    "action": "Replay the observed difference.",
-                    "metadata": {
-                        "last_outcome": {
-                            "status": "tested_finding",
-                            "evidence_ref": "evidence/target.com/validation/summary.json",
-                        },
-                        "runner_operation_id": "runner:abc123",
-                    },
-                }
-            ]
-        },
-    )
-    queue = load_queue(tmp_path, "target.com")
-    action_id = queue["actions"][0]["id"]
-
-    resolve_action(
-        tmp_path,
-        target="target.com",
-        action_id=action_id,
-        status="running",
-        notes="continuing under the same hypothesis",
-        metadata={"next_question": "Does the sibling object deny the peer actor?"},
-    )
-    stored = load_queue(tmp_path, "target.com")["actions"][0]["metadata"]
-    assert stored["last_outcome"]["status"] == "tested_finding"
-    assert stored["runner_operation_id"] == "runner:abc123"
-    assert stored["next_question"].startswith("Does the sibling")
+def test_claim_accepts_explicit_evidence_without_inferring_judgment(store, capsys):
+    add_work(store)
+    raw = store.root / "evidence/target.com/probe.json"
+    raw.parent.mkdir(parents=True)
+    raw.write_text(json.dumps({"kind": "probe", "request": {"url": "https://target.com/other"}}))
+    metadata = {"evidence_ref": raw.relative_to(store.root).as_posix()}
+    assert main(["--repo-root", str(store.root), "claim", "--target", store.target, "--id", "A1",
+                 "--metadata-json", json.dumps(metadata), "--json"]) == 0
+    claimed = json.loads(capsys.readouterr().out)
+    assert claimed["metadata"]["evidence_ref"] == metadata["evidence_ref"]
+    for field in ("endpoint", "method", "baseline_ref", "hypothesis_id", "family", "kill_condition"):
+        assert field not in claimed["metadata"]
+    assert "--from-evidence" not in action_queue_module.build_parser().format_help()
+    with pytest.raises(SystemExit) as exc:
+        main(["claim", "--target", store.target, "--id", "A1", "--from-evidence", str(raw)])
+    assert exc.value.code == 2
 
 
-def test_hypothesis_cap_still_enforced_at_write_time(tmp_path):
-    """Runaway bound survives the gate removal: per-hypothesis action counts
-    are still enforced when the AI writes metadata."""
-    ingest_checkpoint(
-        tmp_path,
-        "target.com",
-        checkpoint={
-            "next_action_queue": [
-                {
-                    "id": "C1",
-                    "priority": 80,
-                    "type": "hypothesis-continuation",
-                    "action": "Continue the hypothesis.",
-                    "metadata": {
-                        "hypothesis_id": "H-CAP",
-                        "max_hypothesis_actions": 1,
-                    },
-                },
-                {
-                    "id": "C2",
-                    "priority": 79,
-                    "type": "hypothesis-continuation",
-                    "action": "Second action under a fresh hypothesis.",
-                    "metadata": {},
-                },
-            ]
-        },
-    )
-    queue = load_queue(tmp_path, "target.com")
-    first_id = next(item["id"] for item in queue["actions"] if item["metadata"].get("hypothesis_id") == "H-CAP")
-    second_id = next(item["id"] for item in queue["actions"] if item["id"] != first_id)
-
-    claimed = claim_next_action(
-        tmp_path, "target.com", action_id=first_id,
-        metadata={
-            "hypothesis_id": "H-CAP", "max_hypothesis_actions": 1,
-            "endpoint": "https://target.com/rest/basket/1", "method": "GET",
-            "family": "object-authorization", "technique": "id-swap",
-            "active_dimension": "path:/rest/basket/1",
-        },
-    )
-    assert claimed["claim_status"] == "claimed"
-
-    # Claiming the second action under the same exhausted hypothesis is refused.
-    with pytest.raises(ValueError, match="budget is exhausted"):
-        claim_next_action(
-            tmp_path, "target.com", action_id=second_id,
-            metadata={
-                "hypothesis_id": "H-CAP", "max_hypothesis_actions": 1,
-                "endpoint": "https://target.com/rest/basket/2", "method": "GET",
-                "family": "object-authorization", "technique": "id-swap",
-                "active_dimension": "path:/rest/basket/2",
-            },
-        )
+@pytest.mark.parametrize("status", ["tested", "tested_clean", "validated", "reported"])
+def test_completion_aliases_require_claim_and_explicit_owned_proof(store, status):
+    add_work(store)
+    with pytest.raises(StoreError, match="explicit .*proof"):
+        resolve_action(store.root, target=store.target, action_id="A1", status=status, result="looks complete")
+    proof = store.root / "evidence/target.com/review.txt"
+    proof.parent.mkdir(parents=True)
+    proof.write_text("Reviewed source observation")
+    arguments = dict(target=store.target, action_id="A1", status=status,
+                     result=f"artifact={proof.relative_to(store.root)}")
+    with pytest.raises(StoreError, match="explicit claim"):
+        resolve_action(store.root, **arguments)
+    claim_next_action(store.root, store.target, action_id="A1")
+    assert resolve_action(store.root, **arguments)["status"] == "completed"
+    before = store.binding()
+    assert resolve_action(store.root, **arguments)["replayed"] is True
+    assert store.binding() == before
 
 
-def test_hypothesis_cap_binds_pre_populated_add(tmp_path):
-    """cap 回归（2026-09-14 审计）：add 时 metadata 已带 hypothesis_id 的动作，
-    claim 不得跳过预算检查——cap=2 下第 3 个 running 必须被拒，且终态动作
-    不占预算（tested 后释放）。"""
-    import json as _json
-    from action_queue import add_manual_action, claim_next_action, load_queue, resolve_action
-
-    T = "cap-regression.local"
-    base = {
-        "schema_version": 4, "hypothesis_id": "H1", "family": "fam", "technique": "tech",
-        "active_dimension": "input:body", "expected_learning": "learn", "kill_condition": "kc",
-        "decision_reason": "why", "input_boundary": "param", "endpoint": "/e", "method": "GET",
-        "skill_route": {"skill_id": "web2-vuln-classes", "required_dimensions": ["input:body"]},
-        "risk_tier": "low", "max_hypothesis_actions": 2,
-    }
-
-    def _ev(i):
-        p = tmp_path / "findings" / T / f"probe{i}.json"
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(_json.dumps({"i": i}))
-        return f"findings/{T}/probe{i}.json"
-
-    claimed = []
-    for i, ep in enumerate(["/e1", "/e2"], 1):
-        r = add_manual_action(tmp_path, target=T, action_type="probe", evidence=f"ev{i}",
-                               next_question=f"q{i}", action=f"act{i}", priority=50, source="test")
-        aid = r["queue"]["actions"][-1]["id"]
-        claim_next_action(tmp_path, T, action_id=aid,
-                          metadata=dict(base, endpoint=ep, evidence_ref=_ev(i), baseline_ref=_ev(i)))
-        claimed.append(aid)
-
-    # 攻击路径：add 的 metadata 自带 hypothesis_id → 旧代码跳过 cap
-    r3 = add_manual_action(tmp_path, target=T, action_type="probe", evidence="ev3",
-                           next_question="q3", action="act3", priority=50, source="test",
-                           metadata=dict(base, endpoint="/e3", family="fam3",
-                                         evidence_ref=_ev(3), baseline_ref=_ev(3)))
-    aid3 = r3["queue"]["actions"][-1]["id"]
-    with pytest.raises(ValueError, match="hypothesis action budget"):
-        claim_next_action(tmp_path, T, action_id=aid3,
-                          metadata=dict(base, endpoint="/e3", family="fam3",
-                                        evidence_ref=_ev(3), baseline_ref=_ev(3)))
-    running = [a for a in load_queue(tmp_path, T)["actions"] if a["status"] == "running"]
-    assert len(running) == 2
-
-    # 终态释放：第一个 tested 后，第三个动作可 claim
-    resolve_action(tmp_path, target=T, action_id=claimed[0], status="tested",
-                   result=f"done; evidence={_ev(1)}", notes="n")
-    claim_next_action(tmp_path, T, action_id=aid3,
-                      metadata=dict(base, endpoint="/e3", family="fam3",
-                                    evidence_ref=_ev(3), baseline_ref=_ev(3)))
-    running = [a for a in load_queue(tmp_path, T)["actions"] if a["status"] == "running"]
-    assert len(running) == 2
+@pytest.mark.parametrize("change", ["result", "notes", "metadata", "actor"])
+def test_terminal_resolve_rejects_different_command_content(store, change):
+    add_work(store)
+    claim_next_action(store.root, store.target, action_id="A1")
+    args = dict(target=store.target, action_id="A1", status="dead-end", result="No usable fixture material",
+                metadata={"next_question": "Review another source"})
+    resolve_action(store.root, **args)
+    assert resolve_action(store.root, **args)["replayed"] is True
+    before = store.binding()
+    changed = {**args, change: {"next_question": "changed"} if change == "metadata" else "different"}
+    with pytest.raises(StoreError, match="terminal"):
+        resolve_action(store.root, **changed)
+    assert store.binding() == before
 
 
-def test_hypothesis_budget_ignores_writable_metadata_status(tmp_path):
-    """三轮审计回归 1：预算不得从 AI 可写的 metadata 推导。旧实现用
-    `incoming/existing` 里的 `status` 判断"本次 claim 会不会推进到
-    running"，claim 带上 `{"status": "queued"}` 即可让 cap=2 放行第 3 个
-    running。预算只看 Queue 拥有的 per-action `status`。"""
-    T = "cap-bypass.local"
-    base = {
-        "schema_version": 4, "hypothesis_id": "H1", "family": "fam", "technique": "tech",
-        "active_dimension": "input:body", "expected_learning": "learn", "kill_condition": "kc",
-        "decision_reason": "why", "input_boundary": "param", "endpoint": "/e", "method": "GET",
-        "skill_route": {"skill_id": "web2-vuln-classes", "required_dimensions": ["input:body"]},
-        "risk_tier": "low", "max_hypothesis_actions": 2,
-    }
+def test_blocked_resolve_replays_without_rewriting_or_auto_continuation(store):
+    add_work(store, metadata={"hypothesis_id": "H1", "pivot_hints": ["sibling", "encoding"]})
+    args = dict(target=store.target, action_id="A1", status="blocked", result="Awaiting fixture material",
+                metadata={"next_question": "Does another source help?"})
+    assert resolve_action(store.root, **args)["status"] == "blocked"
+    before = store.binding()
+    assert resolve_action(store.root, **args)["replayed"] is True
+    assert store.binding() == before
+    assert store.page("actions")["total"] == 1
+    assert not (store.path.parent / "unsafe_skipped_reviews.json").exists()
+    assert not (store.root / "coverage/target.com/matrix.json").exists()
 
-    def _ev(i):
-        p = tmp_path / "findings" / T / f"probe{i}.json"
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps({"i": i}))
-        return f"findings/{T}/probe{i}.json"
 
-    ids = []
-    for i in (1, 2, 3):
-        r = add_manual_action(tmp_path, target=T, action_type="probe", evidence=f"ev{i}",
-                              next_question=f"q{i}", action=f"act{i}", priority=50, source="test")
-        ids.append(r["queue"]["actions"][-1]["id"])
+@pytest.mark.parametrize("status", ["candidate", "lead", "signal", "running"])
+def test_resolve_does_not_forge_observation_or_reclaim(store, status):
+    add_work(store)
+    before = store.binding()
+    with pytest.raises(StoreError, match="observation state|re-claim"):
+        resolve_action(store.root, target=store.target, action_id="A1", status=status, result="AI judgment")
+    assert store.binding() == before
 
-    for i, aid in enumerate(ids[:2], 1):
-        claim_next_action(tmp_path, T, action_id=aid,
-                          metadata=dict(base, endpoint=f"/e{i}", evidence_ref=_ev(i), baseline_ref=_ev(i)))
 
-    # 攻击路径：claim 元数据里塞一个 running 之外的 status
-    with pytest.raises(ValueError, match="budget is exhausted"):
-        claim_next_action(tmp_path, T, action_id=ids[2],
-                          metadata=dict(base, endpoint="/e3", evidence_ref=_ev(3),
-                                        baseline_ref=_ev(3), status="queued"))
-    running = [a for a in load_queue(tmp_path, T)["actions"] if a["status"] == "running"]
-    assert len(running) == 2
+def test_hypothesis_budget_uses_domain_status_and_releases_only_on_terminal(store):
+    for action_id in ("A1", "A2", "A3"):
+        add_work(store, action_id, metadata={"hypothesis_id": "H1", "max_hypothesis_actions": 2})
+    for action_id in ("A1", "A2"):
+        claim_next_action(store.root, store.target, action_id=action_id)
+    with pytest.raises(StoreError, match="budget is exhausted"):
+        claim_next_action(store.root, store.target, action_id="A3", metadata={"status": "queued"})
+    resolve_action(store.root, target=store.target, action_id="A1", status="blocked", result="Pending context")
+    with pytest.raises(StoreError, match="budget is exhausted"):
+        claim_next_action(store.root, store.target, action_id="A3")
+    resolve_action(store.root, target=store.target, action_id="A1", status="dead-end", result="Abandoned explicit intent")
+    assert claim_next_action(store.root, store.target, action_id="A3")["claim_status"] == "claimed"
+    assert store.action("A2")["status"] == "claimed"
+
+
+@pytest.mark.parametrize("fault", ["uninitialized", "preview", "missing", "corrupt"])
+def test_queue_cli_reports_store_fault_without_legacy_fallback(tmp_path, capsys, fault):
+    store = TargetStore(tmp_path, "target.com", allow_preview=fault == "preview")
+    if fault != "uninitialized":
+        store.initialize(allow_legacy=fault == "preview")
+    if fault == "missing":
+        store.path.unlink()
+    elif fault == "corrupt":
+        store.path.write_bytes(b"broken database")
+    path = tmp_path / "state/target.com/action_queue.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"schema_version": 1, "actions": [{"id": "old"}]}')
+    original = path.read_bytes()
+    assert main(["--repo-root", str(tmp_path), "summary", "--target", store.target, "--json"]) == 2
+    output = capsys.readouterr()
+    assert not output.out and "Traceback" not in output.err
+    assert path.read_bytes() == original

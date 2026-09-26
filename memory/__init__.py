@@ -1,5 +1,5 @@
 """
-Hunt memory system — persistent journal, pattern database, and schema validation.
+Hunt audit/telemetry and historical schema validation.
 
 Runtime data stored at ~/.claude/projects/{project}/hunt-memory/
 This package contains the code (read/write/validate), not the data.
@@ -13,7 +13,6 @@ from memory.schemas import (
 )
 # Migration compatibility re-export: keep `from memory import HuntJournal` stable.
 from memory.hunt_journal import HuntJournal
-from memory.pattern_db import PatternDB
 from memory.audit_log import AuditLog, RateLimiter, CircuitBreaker
 from memory.rotation import (
     DEFAULT_KEEP,
@@ -31,7 +30,6 @@ __all__ = [
     "validate_pattern_entry",
     "validate_audit_entry",
     "HuntJournal",
-    "PatternDB",
     "AuditLog",
     "RateLimiter",
     "CircuitBreaker",

@@ -1,52 +1,48 @@
 ---
-description: 为当前目标生成 autopilot checkpoint、覆盖摘要和目标记忆写回。用法：/checkpoint <target> [--no-apply-target-memory]
+description: 读取当前目标的 checkpoint、覆盖、材料和未决工作。用法：/checkpoint <target>
 ---
 
 # /checkpoint
 
-生成目标 checkpoint。
-
-## 谁思考（认知归属）
-
-| 输入 | 谁思考 |
-|---|---|
-| Global Review 的 decision/next_action、残留 unknowns 判定 | **AI 判断** |
-| evidence_refs/cross_source_links 汇编 | **AI 判断**（人审摘要） |
-| snapshot_digest 绑定、witness、锁序 | **机械** |
-| target_write_back 内容生产 | **机器推导**（state/coverage 投影） |
-
-## 写回契约（权威定义，autopilot 家族只引用本段）
-
-- legacy checkpoint 写回 = `apply_target_memory`（默认开）：把
-  `target_write_back.lead/next/dead_end/handoff` 写入 legacy target memory，并同步
-  witness、受限 Queue/coverage 投影。对 primary 目标，TargetStore 是唯一可写真源：
-  checkpoint/query 只读 Store 快照，禁止写旧 memory、Queue、Ledger 或 Case JSON；显式
-  handoff/experience/action 命令才允许产生对应 Store 事实。`--no-apply-target-memory`
-  仍只影响 legacy memory 写回。
-- 时机由 `checkpoint_trigger`（paranoid/normal/yolo）决定；paranoid = 每个实质状态
-  变更后，normal = 每个 lane batch 后，yolo = 仅 blocker/handoff/finish。
-- 写回后必须刷新 bounded state（owner 写回是 fresh-snapshot 信号）。
-
-autopilot.md / autopilot-round.md / pickup.md / agents/autopilot.md 等文档提到
-"checkpoint 写回 / owner write-back"时指本段契约，不再各自维护完整定义。
-
-这个命令用于 `/autopilot`、`/hunt`、长会话结束、切换目标、或准备汇报前。
-它不是扫描器，也不是报告器；它把当前目标的状态压缩成可续接的目标记忆。
-
-默认对 legacy 目标把 lead / next / dead-end / handoff 写回目标记忆层，并先让
-`finding_index` owner 受限地归档有效 root finding claim，再刷新派生 coverage、通过
-`action_queue` owner 幂等同步可执行 next-action，并原子更新 witness。Primary 目标只
-生成绑定 Store revision 的只读 checkpoint；不希望写 legacy 目标记忆时显式传
-`--no-apply-target-memory`。
-
-## 用法
+从已初始化的活动 Store 读取目标状态。普通查询不创建行动、登记 Finding、发布 Coverage
+缓存或 witness，也不保存目标记忆。缺库、preview、损坏或待导入目标明确报错。
 
 ```bash
 python3 tools/checkpoint.py --target target.com
 python3 tools/checkpoint.py --target target.com --note "finished API authz pass"
-python3 tools/checkpoint.py --target target.com --no-apply-target-memory
-python3 tools/checkpoint.py --target target.com --json
+python3 tools/checkpoint.py --target target.com --repo-root /path/to/data --json
 ```
+
+`--note` 仅在本次输出保留用户意图。需要跨会话保存时，显式使用 `target_memory.py`
+的 note/next/handoff 或 Store 领域命令。`--apply-target-memory` 和
+`--no-apply-target-memory` 只保留兼容解析，前者返回 skipped；两者都不写记忆。
+`--no-refresh-coverage` 同样不会改变只读保证，缓存发布使用显式 Coverage rebuild。
+
+## 输出与展开
+
+- `next_action_queue` 按 ID 展示最多 5 条已保存的未决行动，包括 blocked。
+  `action_queue_window` 提供总量、余量和绑定数据根的完整查询命令；展开包含终态历史。
+- `default_candidate`/`recommended_executable_action` 只指向真实认领中的行动。
+  活跃 Recon/Scan phase 锁返回瞬时 wait 指针；没有认领时保留空指针和 continue。
+- Coverage、Actor Matrix、Case、未裁决 Finding、Runner candidates、条件化经验都保持可见。
+  覆盖缺口有总量、窗口和完整查询入口，不按类别分数代替 AI 选工作。
+- `material_sources` 展示原始 root claims、人工复核/危险动作线索和源码材料的预览、余量及
+  Autopilot state 完整查询。材料不是技术裁决，也不由 Checkpoint 自动入队。
+- `target_write_back.lead/next/dead_end` 为空；`handoff` 是当前状态的展示摘要，不写回源。
+  `runtime_witness.status=not_published` 表示普通查看没有持久副作用。
+
+AI 决定测试顺序、下一行动、全局复核结论和是否重开历史负结果。Store/证据 owner 校验
+目标归属、当前状态、claim、真实完成引用和证据完整性；摘要或 AI 主张不能替代这些事实。
+
+## 显式轮次与复核
+
+`--round-begin`、`--record-round-lane`、`--record-round-lane-result`、
+`--record-round-closure` 和 `--record-global-review` 是写 witness 的独立命令。
+轮次预算、并发 lane claim、证据可用性、终态重放和全局 review 的快照绑定由 owner 校验。
+
+`browser:` lane 的完成引用若是 focused MCP capture manifest，显式 lane-result 命令会导入
+浏览器材料并记录导入结果；失败保留可诊断状态，heartbeat 仍保存。导入默认不登记待审
+行动；需要登记时单独运行 `browser_mcp_import.py --focused-manifest ... --enqueue`。
 
 完成一次有实质 lane 的 Autopilot round 后，目标范围的最终综合复核仍由同一
 Checkpoint owner 记录。先读取 Closure 返回的 `snapshot_digest`，再写入当前证据引用：
@@ -77,124 +73,16 @@ python3 tools/checkpoint.py --target target.com --record-global-review \
 
 恢复方式：重新运行 Closure check，使用返回的最新 `snapshot_digest` 重提交 Global Review。
 
-## 自动读取
+## 相关只读查询
 
 ```bash
 python3 tools/context_pack.py --target <target>
 python3 tools/autopilot_state.py --target <target> --json
-python3 tools/coverage_matrix.py rebuild --target <target>
+python3 tools/coverage_matrix.py find-gaps --target <target>
 python3 tools/evidence_ledger.py summary --target <target>
 python3 tools/target_case_state.py summary --target <target>
 ```
 
-工具会从这些状态生成：
-
-- 当前 decision：`refresh-recon` / `enrich` / `hunt` / `continue` / `validate` / `report` / `checkpoint` / `handoff`
-- `next_action_queue`：建议以结构化 entry（`schema_version: 1` 的
-  `{text, type, priority, command_hint, metadata}`）从生产函数直接携带字段；
-  仍未迁移的文本建议保留 dual-read 分类，`text` 恒为人类可读 prose
-- 覆盖摘要和 high-value gaps
-- Evidence Ledger 摘要和 Actor Matrix gaps
-- Target Case State 摘要（actors / sessions / objects / open hypotheses）与 case-state enrichment action
-- `next_action_queue` 的 durable action queue 同步结果
-- target memory 的 `lead`
-- target memory 的 `next`
-- target memory 的 `dead-end`
-- target memory 的 `handoff`
-- 可复制执行的 `tools/target_memory.py` 命令
-- `/retrospect <target>` 后续沉淀入口
-
-Context Pack 的 Skill/Card/seed/recall 建议会保留在 checkpoint 与 witness 中供诊断，
-但不会仅因未被现有动作表示而生成 durable Queue item，也不会自动成为已选择假设。
-
-## 自动写入边界
-
-默认允许自动写入，仅限：
-
-```text
-state/<target_key>/checkpoint_latest.json
-state/<target_key>/action_queue.json（仅同步 checkpoint 已生成的可执行 action）
-evidence/<target_key>/coverage_matrix.json（使用 --no-refresh-coverage 时不写）
-findings/<target_key>/findings.json（仅通过 finding_index 归档有效 root finding claim）
-findings/<target_key>/mutation-events.jsonl（仅记录上述 owner mutation provenance）
-memory/goals/targets/<target>.json
-memory/goals/sessions/<timestamp>-<target>.md
-```
-
-目标记忆写回随默认执行；传 `--no-apply-target-memory` 时不写上述两个 memory 路径。
-
-禁止自动修改：
-
-```text
-knowledge/cards/*
-skills/*
-rules/*
-reports/*
-```
-
-除上述受限 reconciliation 外，禁止直接改写 root claim、finding lifecycle、validation/report
-artifact。root claim 推荐使用显式 schema：
-
-```json
-{
-  "kind": "finding_claim",
-  "schema_version": 1,
-  "title": "Observed impact",
-  "target": "<target>",
-  "vuln_class": "<class>",
-  "endpoint": "<known-path-or-url>",
-  "impact": "<observed-impact>",
-  "evidence": {"artifact": "<raw-evidence-path>"}
-}
-```
-
-缺失 endpoint/type 可以保留为显式 incomplete claim，不能编造；未知 `kind`、错误 schema、
-off-target endpoint/target 或普通状态 JSON 不会被归档。知识库、Skills、Rules 的沉淀必须走
-`/retrospect`，默认只输出建议。
-
-## 输出格式
-
-```text
-CHECKPOINT DECISION
-- Target:
-- Phase:
-- Decision:
-- Next action:
-- Recommended skill:
-- Recommended knowledge cards:
-- Coverage:
-  - endpoints:
-  - high-value gaps:
-- Case state:
-  - actors:
-  - sessions:
-  - objects:
-  - open hypotheses:
-- Evidence ledger:
-  - entries:
-  - actor matrix gaps:
-  - red-line unchecked:
-  - actor gaps:
-- Durable action queue sync:
-- Target write-back:
-  - lead:
-  - next:
-  - dead-end:
-  - handoff:
-- Retrospect:
-- Apply status:
-```
-
-## 决策解释
-
-- `validate`：存在 pending structured finding，应进入 `/validate`；只有 target-memory prose 时先补可定位原始证据。
-- `report`：存在 validated finding 且没有更高价值可执行深挖动作；含未填占位符的草稿进入 `complete_report_draft`，不是 report-ready。
-- `refresh-recon`：没有可用 recon/surface，不要声称测试完成。
-- `enrich`：browser/source/JS enrichment 可能改变下一步。
-- `hunt`：有 surface review candidates、advisory score hints 或 target-memory continuation。
-- `continue`：有 AI-actionable coverage hint，且无法被当前证据解释为 covered / n/a / blocked / deferred。
-- `continue`：存在 case-state enrichment action（角色差异测试缺少 actor/session/object 上下文）时，优先补齐该上下文；行动本身仍在唯一行动源里认领与裁决。
-- `continue`：coverage gap 为空但 Actor Matrix 仍有缺口时，也不能声称全面完成。
-- `checkpoint`：存在 action-gated scanner lead 或需要人工复核的 lane。
-  Checkpoint 只投影 action owner 已记录的结果；`templates/phased-surface-validation-plan.md` 只记录阶段、证据、停止条件和回写，不新增安全门槛。
-- `handoff`：本轮可停，但必须保留下一步、dead end 和交接摘要。
+需要新鲜状态时重新查询；只有显式 owner 命令可以改变领域事实。旧 JSON/Ledger/Case
+文件仅供显式迁移和历史检查，不作普通查询的后备来源。知识沉淀继续走 `/retrospect`
+和现有审核流程。

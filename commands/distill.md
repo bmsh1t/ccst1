@@ -42,6 +42,12 @@ description: 从当前目标的原始证据直接写知识卡草稿（target-sco
 
 ## 入库三问（AI 判断，写卡前先过）
 
+Store 视图中的 `windows.findings` / `windows.experiences` 给出准确余量、
+`next_command` 和 `expand_command`；`case_expand_command` 展开完整 Case 元数据。
+命令已绑定真实数据根和目标，直接执行；游标因 revision 变化失效时重新生成视图，
+不猜 offset。按 ID/完整 Case 展开是新查询，原始私密会话材料不会输出到 Case JSON。
+隔离根调用格式：`python3 tools/distill_target.py --repo-root ROOT evidence --target TARGET --json`。
+
 一条经验只有**三个问题全部指向"是增量"**才值得成卡：
 
 1. **模型见过吗？**——公开知识/训练数据（教科书技巧、公开靶场的漏洞清单、

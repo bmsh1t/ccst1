@@ -1,17 +1,16 @@
 """
 Target profile storage helpers for hunt-memory/targets/<target>.json.
 
-This is the persistent state used by resume/intel-style workflows.
+Explicit historical import/inspection only; current target state belongs to TargetStore.
 """
 
 import json
 import os
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 from memory.schemas import CURRENT_SCHEMA_VERSION, SchemaError, validate_target_profile
-from tools.target_paths import canonical_target_value
+from tools.target_paths import canonical_target_value, legacy_target_profile_path
 
 
 def now_utc() -> str:
@@ -39,19 +38,12 @@ def default_memory_dir(base_dir: str | Path | None = None) -> Path:
 
 def target_filename(target: str) -> str:
     """Normalize a target name into the on-disk profile filename."""
-    normalized_target = canonical_target_value(target)
-    return (
-        normalized_target
-        .replace(".", "-")
-        .replace("/", "-")
-        .replace("\\", "-")
-        + ".json"
-    )
+    return legacy_target_profile_path("", target).name
 
 
 def target_profile_path(memory_dir: str | Path, target: str) -> Path:
     """Return the expected profile path for a target."""
-    return Path(memory_dir) / "targets" / target_filename(target)
+    return legacy_target_profile_path(memory_dir, target)
 
 
 def make_target_profile(
@@ -110,33 +102,3 @@ def load_target_profile(memory_dir: str | Path, target: str) -> dict | None:
         return validate_target_profile(profile)
     except SchemaError as exc:
         raise ValueError(f"invalid target profile {path}: {exc}") from exc
-
-
-def save_target_profile(memory_dir: str | Path, profile: dict) -> Path:
-    """Validate and save a target profile. Returns the written path."""
-    validated = validate_target_profile(profile)
-    path = target_profile_path(memory_dir, validated["target"])
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=str(path.parent),
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            temp_path = Path(handle.name)
-            handle.write(json.dumps(validated, indent=2) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        temp_path.replace(path)
-    except Exception:
-        if temp_path is not None:
-            try:
-                temp_path.unlink()
-            except FileNotFoundError:
-                pass
-        raise
-    return path

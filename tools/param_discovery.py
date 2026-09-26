@@ -25,19 +25,17 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 try:
-    from tools.action_queue import build_action, load_queue, queue_mutation_lock, save_queue, upsert_actions
+    from tools.action_queue import add_material_review
     from tools.auth_session import AuthSession, add_cli_args, session_from_args
     from tools.browser_surface import public_url_shape
-    from tools.skill_catalog import skill_route
     from tools.deep_budget import project_budget
     from tools.private_artifacts import private_artifact_dir, write_private_text
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
     from tools.validation_runner import request_once
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from action_queue import build_action, load_queue, queue_mutation_lock, save_queue, upsert_actions  # type: ignore
+    from action_queue import add_material_review  # type: ignore
     from auth_session import AuthSession, add_cli_args, session_from_args  # type: ignore
     from browser_surface import public_url_shape  # type: ignore
-    from skill_catalog import skill_route  # type: ignore
     from deep_budget import project_budget  # type: ignore
     from private_artifacts import private_artifact_dir, write_private_text  # type: ignore
     from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # type: ignore
@@ -455,54 +453,14 @@ def _run_discovery(
 
 
 def _sync_action_queue(repo_root: Path, target: str, summary: dict[str, Any]) -> dict[str, Any]:
-    counts = summary["counts"]
-    if summary["status"] == "blocked":
-        status, priority, question = "blocked", 55, "Install Arjun or x8, then resume hidden-parameter discovery."
-    elif summary["status"] in {"partial", "no_input"}:
-        status, priority, question = "lead", 60, "Review parameter discovery errors or provide a target-owned endpoint list, then resume."
-    elif counts["discoveries"]:
-        status, priority, question = "signal", 78, "Review discovered parameters and route each high-value shape into the matching validation runner."
-    else:
-        status, priority, question = "tested", 45, "No hidden parameter signal was observed; continue with the next evidence-backed lane."
-    summary_ref = str(summary["artifacts"]["summary"])
-    resume_hint = " --resume" if not bool((summary.get("cursor") or {}).get("complete", True)) else ""
-    deep_hint = " --deep" if bool((summary.get("budget") or {}).get("adaptive")) else ""
-    action = build_action(
-        target=target,
-        action_type="parameter-discovery",
-        evidence=f"Hidden parameter discovery summary: {summary_ref}",
-        next_question=question,
-        action="Review the structured summary and preserve discovered parameter names as inert surface shapes.",
-        priority=priority,
-        command_hint=f"python3 tools/param_discovery.py --target {shlex.quote(target)} --from-recon --method {shlex.quote(summary['method'])} --repo-root {shlex.quote(str(repo_root))}{deep_hint}{resume_hint}",
-        evidence_type="parameter-discovery-summary",
-        source="param_discovery",
-        source_id="hidden-parameters",
-        metadata={
-            "summary_path": summary_ref,
-            "method": summary["method"],
-            "counts": counts,
-            "session_id": summary.get("session_id", ""),
-            "skill_route": skill_route(
-                "web2-vuln-classes",
-                "Hidden parameter discovery can expose parameter, encoding, auth, sibling, and workflow attack-surface hypotheses.",
-            ),
-            "route_required": True,
-        },
+    result = add_material_review(
+        repo_root, target=target, action_type="parameter-discovery",
+        source="param_discovery", source_id="hidden-parameters",
+        summary_path=summary["artifacts"]["summary"],
+        material={key: value for key, value in summary.items() if key != "action_queue"},
     )
-    action["status"] = status
-    with queue_mutation_lock(repo_root, target):
-        queue = load_queue(repo_root, target)
-        existing = next((item for item in queue.get("actions", []) if isinstance(item, dict) and item.get("source") == "param_discovery" and item.get("source_id") == "hidden-parameters"), None)
-        if existing is None:
-            upsert_actions(queue, [action])
-            existing = action
-        else:
-            prior = str(existing.get("status") or "queued")
-            effective = prior if prior in {"signal", "candidate"} and status == "tested" else status
-            existing.update({"status": effective, "priority": max(int(existing.get("priority", 50) or 50), priority), "evidence": action["evidence"], "next_question": action["next_question"] if effective != "signal" else existing.get("next_question", question), "action": action["action"], "command_hint": action["command_hint"], "result": f"parameter-discovery status={summary['status']}; summary={summary_ref}", "updated_at": action["updated_at"], "metadata": action.get("metadata", {})})
-        path = save_queue(repo_root, target, queue)
-    return {"status": "updated", "path": str(path.relative_to(repo_root)), "action_id": existing.get("id", ""), "queue_status": existing.get("status", status)}
+    return {"status": "updated", "backend": "primary", "action_id": result["action"]["id"],
+            "queue_status": result["action"]["status"]}
 
 
 def discover_parameters(

@@ -24,10 +24,9 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
-from memory.target_profile import default_memory_dir, load_target_profile  # noqa: E402
-from tools.scope_checker import ScopeChecker  # noqa: E402
-from tools.scope_context import ScopeContext, ScopeContextError  # noqa: E402
-from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # noqa: E402
+from tools.scope_context import ScopeContext  # noqa: E402
+from tools.scope_source import load_scope_context  # noqa: E402
+from tools.target_paths import canonical_target_value, target_storage_key  # noqa: E402
 from tools.technology_inventory import inventory_source_binding_matches  # noqa: E402
 
 
@@ -448,9 +447,7 @@ def _asset_relation_candidates(
     *,
     limit: int = DEFAULT_ASSET_RELATION_CANDIDATE_LIMIT,
     cursor: str = "",
-    target: str = "",
-    allowed: ScopeChecker | None = None,
-    excluded: ScopeChecker | None = None,
+    scope: ScopeContext,
 ) -> tuple[list[dict], dict]:
     """流式合并 observation and expose a stable cursor for bounded pages."""
     if limit < 1:
@@ -464,6 +461,8 @@ def _asset_relation_candidates(
         "next_cursor": "",
     }
     if not source.is_file():
+        if cursor:
+            raise ValueError("asset relation cursor source missing")
         return [], stats
 
     source_stat = source.stat()
@@ -473,6 +472,7 @@ def _asset_relation_candidates(
         "ctime_ns": source_stat.st_ctime_ns,
         "st_dev": source_stat.st_dev,
         "st_ino": source_stat.st_ino,
+        "scope_hash": scope.scope_hash,
     }
 
     def _decode_cursor(value: str) -> tuple[int, str] | None:
@@ -531,10 +531,9 @@ def _asset_relation_candidates(
         row["related"] = sorted(set(row["related"]) | set(observation["related"]))[
             :MAX_ASSET_RELATION_LIST_ITEMS
         ]
-        if target and any(
+        if any(
             _parseable_network_asset("url" if "://" in value else "domain", value)
-            and not (excluded and excluded.is_in_scope(value))
-            and _matches_active_scope(value, target, allowed)
+            and scope.allows_active(value)
             for value in observation["related"]
         ):
             row["_target_related"] = True
@@ -685,74 +684,31 @@ def _parseable_network_asset(asset_type: str, value: str) -> bool:
         return False
 
 
-def _asset_scope_context(repo_root: Path, target: str) -> tuple[ScopeChecker | None, ScopeChecker | None]:
-    profile = load_target_profile(default_memory_dir(repo_root), target)
-    snapshot = profile.get("scope_snapshot", {}) if profile else {}
-    if not isinstance(snapshot, dict):
-        snapshot = {}
-    allowed = [item.strip() for item in snapshot.get("in_scope", []) if isinstance(item, str) and item.strip()]
-    excluded = [
-        item.strip()
-        for item in snapshot.get("out_of_scope", [])
-        if isinstance(item, str) and item.strip()
-    ]
-    try:
-        active_context = ScopeContext(
-            root_target=target,
-            in_scope=allowed,
-            out_of_scope=excluded,
-        )
-    except ScopeContextError:
-        # Invalid profile scope must not widen discovery into active scope.
-        return None, None
-    return (
-        ScopeChecker.from_context(active_context),
-        # Keep the legacy exclusion view for callers that explicitly ask
-        # whether a row matched a block pattern; active matching still comes
-        # from the canonical context above.
-        ScopeChecker(excluded) if excluded else None,
-    )
-
-
-def _matches_active_scope(value: str, target: str, allowed: ScopeChecker | None) -> bool:
-    return url_belongs_to_target(value, target) or bool(allowed and allowed.is_in_scope(value))
-
-
 def _related_to_scope(
     row: dict,
-    target: str,
-    allowed: ScopeChecker | None,
-    excluded: ScopeChecker | None,
+    scope: ScopeContext,
 ) -> bool:
     for related in row.get("related", []):
         if not _parseable_network_asset("url" if "://" in related else "domain", related):
             continue
-        if excluded and excluded.is_in_scope(related):
-            continue
-        if _matches_active_scope(related, target, allowed):
+        if scope.allows_active(related):
             return True
     return False
 
 
 def _classify_asset_relation_scope(
     row: dict,
-    target: str,
-    allowed: ScopeChecker | None,
-    excluded: ScopeChecker | None,
+    scope: ScopeContext,
 ) -> None:
     network_asset = _parseable_network_asset(row["asset_type"], row["value"])
-    if network_asset and excluded and excluded.is_in_scope(row["value"]):
-        row["scope_status"] = "excluded"
-        row["scope_reason"] = "matched explicit target-profile exclusion"
-        return
-    if network_asset and _matches_active_scope(row["value"], target, allowed):
-        row["scope_status"] = "in_scope"
-        row["scope_reason"] = "matched active target set"
-        return
+    if network_asset:
+        classification = scope.classify(row["value"])
+        if classification["status"] in {"excluded", "in_scope"}:
+            row["scope_status"] = classification["status"]
+            row["scope_reason"] = classification["reason"]
+            return
 
-    target_linked = bool(row.get("_target_related")) or _related_to_scope(
-        row, target, allowed, excluded
-    )
+    target_linked = bool(row.get("_target_related")) or _related_to_scope(row, scope)
     strong_relation = any(token in row["relation"] for token in STRONG_RELATION_TOKENS)
     majority_owned = float(row.get("ownership_pct", 0)) > 50
     if (
@@ -1335,17 +1291,15 @@ def build_recon_candidates(
     host_rows = _host_candidates(recon_dir)
     ai_rows = _ai_candidates(recon_dir)
     asset_input_path = Path(asset_input) if asset_input else recon_dir / ASSET_RELATION_INPUT_PATH
-    allowed_scope, excluded_scope = _asset_scope_context(Path(repo_root), resolved)
+    scope = load_scope_context(repo_root, resolved)
     asset_rows, asset_stats = _asset_relation_candidates(
         asset_input_path,
         limit=asset_limit,
         cursor=asset_cursor,
-        target=resolved,
-        allowed=allowed_scope,
-        excluded=excluded_scope,
+        scope=scope,
     )
     for row in asset_rows:
-        _classify_asset_relation_scope(row, resolved, allowed_scope, excluded_scope)
+        _classify_asset_relation_scope(row, scope)
         row.pop("_target_related", None)
     asset_summary = _asset_relation_summary(resolved, asset_rows, asset_stats)
     host_ranking_rows, host_ranking_summary = _host_ranking(

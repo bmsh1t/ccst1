@@ -19,19 +19,14 @@ Skills 是按需加载的执行契约。Claude Code CLI 主会话根据当前目
 这些是职责关系，不是每轮必须依次执行的流水线。简单任务直接使用对应 Skill，
 只有跨阶段工作或假设选择不清晰时才加载协调或策略 Skill。
 
-## 路由模式
+## 原生发现与加载
 
-职责与路由模式是两个维度。`tools/skill_catalog.py` 是 Skill ID、路径、
-`route_mode` 和主路线维度的唯一注册表：
+平台从每个 `SKILL.md` 的 frontmatter description 发现 Skill，Claude 按当前证据和信息缺口加载。
+`tools/skill_catalog.py` 运行注册表已退役；Queue/Store 不验证 Skill 文件、路由或预设维度。
+实验的 `active_dimension` 与 Runner 实测 `tested_dimensions` 仍由各自 owner 保存。
 
-| 模式 | 含义 |
-|---|---|
-| `primary` | 可作为主会话路由候选，并供 Action Queue 校验路由；最终分支由 AI 依据目标证据选择 |
-| `direct-only` | 仅用于显式专项工作，不作为通用主路线候选 |
-| `reference-only` | 支持当前工作，不拥有主路线 |
-| `report-only` | 只处理已验证结果的报告表达 |
-
-安装仍保留全部现有 Skill 目录。`direct-only` 不表示未安装，也不改变当前主会话的控制权。
+专项 Skill 的显式范围条件、共享参考和报告职责由各自 description/正文持有；安装仍保留全部
+现有 Skill 目录。这些使用条件不构成第二套路由模式表或每轮必走顺序。
 
 ## 公共边界
 

@@ -1,44 +1,30 @@
 #!/usr/bin/env python3
-"""目标记忆层读写工具。
-
-这个工具只维护当前目标、目标线索和会话交接摘要，不替代已有的
-`hunt-memory`、`findings`、`state` 等运行时数据。
-"""
+"""Store 目标经验与显式目标选择接口；旧文件仅供历史检查和导入。"""
 
 from __future__ import annotations
 
 import argparse
-import fcntl
 import json
 import os
 import re
+import shlex
 import sys
 import tempfile
-from contextlib import contextmanager, nullcontext
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 try:
-    from tools.experience_schema import (
-        EXPERIENCE_KINDS,
-        make_entry_id,
-        normalize_evidence_refs,
-        normalize_experience_kind,
-    )
+    from tools.experience_schema import EXPERIENCE_KINDS
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from experience_schema import (  # type: ignore
-        EXPERIENCE_KINDS,
-        make_entry_id,
-        normalize_evidence_refs,
-        normalize_experience_kind,
-    )
+    from experience_schema import EXPERIENCE_KINDS  # type: ignore
 
 try:
     from tools.target_paths import canonical_target_value, target_storage_key
-    from tools.target_store import StoreError, TargetStore, target_backend, target_switch_lock
+    from tools.target_store import StoreError, runtime_store
 except ImportError:  # pragma: no cover - direct tools/ execution
     from target_paths import canonical_target_value, target_storage_key
-    from target_store import StoreError, TargetStore, target_backend, target_switch_lock  # type: ignore
+    from target_store import StoreError, runtime_store  # type: ignore
 
 SCHEMA_VERSION = 1
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -61,6 +47,10 @@ TARGET_MEMORY_STRING_FIELDS = (
     "current_hypothesis",
 )
 TARGET_MEMORY_SKILL_FIELDS = ("selected_skills", "knowledge_focus")
+OPERATION_REF_HELP = (
+    "OPERATION_ID:STEP from an existing execution receipt; STEP is a zero-based "
+    "observation index (e.g. OPERATION_ID:0), not a file path; repeatable"
+)
 
 # text 字段的污染特征：曾有两处写入方把结构化 proposal 整体 str() 后存进 text
 # （checkpoint 的 _dedupe 与 surface 的回灌链，2026-09-15 治理）。特征锚定
@@ -80,15 +70,6 @@ def text_is_polluted(text: object) -> bool:
 
 def now_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _assert_target_memory_writer_allowed(target: str) -> str:
-    """Keep the legacy memory file read-compatible but never a primary writer."""
-    canonical = canonical_target_value(target)
-    backend = target_backend(BASE_DIR, canonical)
-    if backend != "legacy":
-        raise StoreError(f"legacy target-memory writer is disabled for {backend} target")
-    return canonical
 
 
 def read_json(path: Path, default: dict | None = None) -> dict:
@@ -131,66 +112,21 @@ def write_json(path: Path, payload: dict) -> None:
         raise
 
 
-@contextmanager
-def target_memory_mutation_lock(
-    path: Path,
-    *,
-    repo_root: str | Path | None = None,
-    target: str | None = None,
-):
-    """Serialize one target's target-memory read/modify/write sequence."""
-    path = Path(path)
-    lock_path = path.parent / ".locks" / f"{path.name}.lock"
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    shared = target_switch_lock(repo_root or BASE_DIR, target) if target else nullcontext()
-    with shared:
-        with lock_path.open("a+", encoding="utf-8") as handle:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+def target_memory_path(target: str, repo_root: Path | None = None) -> Path:
+    directory = Path(repo_root) / "memory/goals/targets" if repo_root is not None else TARGETS_DIR
+    return directory / f"{target_storage_key(target)}.json"
 
 
-def write_handoff_file(sessions_dir: Path, target_key: str, content: str) -> Path:
-    """Create one handoff file without replacing an existing handoff."""
-    sessions_dir = Path(sessions_dir)
-    sessions_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    for index in range(1000):
-        suffix = "" if index == 0 else f"-{index}"
-        path = sessions_dir / f"{stamp}-{target_key}{suffix}.md"
-        try:
-            with path.open("x", encoding="utf-8") as handle:
-                handle.write(content)
-                handle.flush()
-                os.fsync(handle.fileno())
-            return path
-        except FileExistsError:
-            continue
-        except Exception:
-            try:
-                path.unlink()
-            except FileNotFoundError:
-                pass
-            raise
-    raise FileExistsError(f"unable to allocate unique handoff file in {sessions_dir}")
-
-
-def target_memory_path(target: str) -> Path:
-    return TARGETS_DIR / f"{target_storage_key(target)}.json"
-
-
-def display_path(path: Path) -> str:
+def display_path(path: Path, repo_root: Path | None = None) -> str:
     """优先显示仓库相对路径；外部测试路径则显示绝对路径。"""
     try:
-        return str(path.relative_to(BASE_DIR))
+        return str(path.relative_to(repo_root or BASE_DIR))
     except ValueError:
         return str(path)
 
 
-def load_active() -> dict:
-    return load_active_file(ACTIVE_PATH)
+def load_active(repo_root: Path | None = None) -> dict:
+    return load_active_file(Path(repo_root) / "memory/goals/active.json" if repo_root is not None else ACTIVE_PATH)
 
 
 def normalize_target_memory(
@@ -281,103 +217,106 @@ def new_target_memory(target: str) -> dict:
     }
 
 
-def load_goal_memory(repo_root: str | Path, target: str) -> dict:
+def load_goal_memory(repo_root: str | Path, target: str, *, experience_limit: int = 20) -> dict:
     """Load the target-memory projection used by CLI coordinators.
 
     Primary targets keep mutable experience in TargetStore.  The legacy JSON
     shape remains a read projection for callers, but archived JSON is never
     consulted after cutover.
     """
+    if type(experience_limit) is not int or not 1 <= experience_limit <= 1000:
+        raise ValueError("experience_limit must be between 1 and 1000")
     repo = Path(repo_root)
     resolved_target = canonical_target_value(target)
     goals_dir = repo / "memory" / "goals"
     active_path = goals_dir / "active.json"
-    target_path = goals_dir / "targets" / f"{target_storage_key(resolved_target)}.json"
     active = {}
     if active_path.is_file():
         active = load_active_file(active_path)
     active_target = canonical_target_value(str(active.get("target", "") or ""))
     active_matches = bool(active_target and active_target == resolved_target)
-    if target_backend(repo, resolved_target) == "primary":
-        store = TargetStore(repo, resolved_target)
-        context = store.case_context()
-        rows: list[dict] = []
-        page = store.page("experiences", limit=1000)
-        while True:
-            rows.extend(item for item in page.get("items", []) if isinstance(item, dict))
-            if not page.get("has_more"):
-                break
-            page = store.page("experiences", limit=1000, cursor=page.get("next_cursor"))
+    store = runtime_store(repo, resolved_target)
+    selected = ({key: active[key] for key in ("schema_version", "target", "updated_at") if key in active}
+                if active_matches else {})
+    context = store.memory_context(limit=experience_limit)
+    page = context["experiences"]
+    rows = page["items"]
 
-        fields = {
-            "active_leads": [],
-            "dead_ends": [],
-            "next_actions": [],
-            "useful_patterns": [],
-            "session_handoffs": [],
+    fields = {
+        "scope_notes": [],
+        "active_leads": [],
+        "dead_ends": [],
+        "next_actions": [],
+        "useful_patterns": [],
+        "session_handoffs": [],
+    }
+    kind_to_field = {
+        "note": "scope_notes",
+        "hypothesis": "active_leads",
+        "negative": "dead_ends",
+        "primitive": "useful_patterns",
+        "handoff": "session_handoffs",
+    }
+    recent_entries = []
+    for row in sorted(rows, key=lambda item: (str(item.get("created_at") or ""), str(item.get("id") or ""))):
+        field = kind_to_field.get(str(row.get("kind") or ""))
+        if not field:
+            continue
+        structured = {
+            key: row[key]
+            for key in ("conditions", "reopen_when", "next_intent")
+            if str(row.get(key) or "").strip()
         }
-        kind_to_field = {
-            "hypothesis": "active_leads",
-            "negative": "dead_ends",
-            "primitive": "useful_patterns",
-            "handoff": "session_handoffs",
+        entry = {
+            "ts": row.get("created_at", ""),
+            "text": str(row.get("statement") or "").strip(),
+            "entry_id": row.get("id", ""),
+            "kind": row.get("kind", ""),
+            "recorded_by": row.get("recorded_by", ""),
+            "evidence_refs": [
+                f"{item.get('operation_id')}:{item.get('step')}"
+                for item in row.get("evidence", [])
+                if isinstance(item, dict)
+            ],
+            "structured": structured or None,
         }
-        for row in sorted(rows, key=lambda item: (str(item.get("created_at") or ""), str(item.get("id") or ""))):
-            field = kind_to_field.get(str(row.get("kind") or ""))
-            if not field:
-                continue
-            expanded = store.experience(str(row.get("id") or ""))
-            structured = {
-                key: expanded[key]
-                for key in ("conditions", "reopen_when", "next_intent")
-                if str(expanded.get(key) or "").strip()
-            }
-            fields[field].append({
-                "ts": row.get("created_at", ""),
-                "text": str(row.get("statement") or "").strip(),
-                "entry_id": row.get("id", ""),
-                "evidence_refs": [
-                    f"{item.get('operation_id')}:{item.get('step')}"
-                    for item in expanded.get("evidence", [])
-                    if isinstance(item, dict)
-                ],
-                "structured": structured or None,
-            })
-        hypotheses = context.get("hypotheses") or []
-        latest_hypothesis = hypotheses[-1] if hypotheses else {}
-        created_at = context.get("created_at", "")
-        target_memory = {
-            "schema_version": SCHEMA_VERSION,
-            "target": resolved_target,
-            "created_at": created_at,
-            "updated_at": rows[-1].get("created_at", created_at) if rows else created_at,
-            "mode": "hunt",
-            "phase": "unknown",
-            "active_goal": "",
-            "current_hypothesis": str(latest_hypothesis.get("why_now") or ""),
-            "scope_notes": [],
-            **fields,
-            "facts": {},
-        }
-        return {
-            "active": active if active_matches else {},
-            "raw_active": active,
-            "target": target_memory,
-            "active_matches": active_matches,
-            "source": {
-                "kind": "store",
-                "store_id": context.get("store_id", ""),
-                "revision": context.get("revision", 0),
-            },
-            "active_path": str(active_path),
-            "target_path": str(store.path),
-        }
-    target_memory = load_target_memory_file(target_path, expected_target=resolved_target)
+        fields[field].append(entry)
+        recent_entries.append(entry)
+        if row["kind"] == "handoff" and row.get("next_intent"):
+            fields["next_actions"].append(entry)
+    created_at = context.get("created_at", "")
+    target_memory = {
+        "schema_version": SCHEMA_VERSION,
+        "target": resolved_target,
+        "created_at": created_at,
+        "updated_at": rows[0].get("created_at", created_at) if rows else created_at,
+        "mode": "hunt",
+        "phase": "unknown",
+        "active_goal": context["active_goal"],
+        "current_hypothesis": context["current_hypothesis"],
+        **fields,
+        "facts": {},
+    }
     return {
-        "active": active if active_matches else {},
+        "active": selected,
         "raw_active": active,
         "target": target_memory,
+        "recent_entries": list(reversed(recent_entries)),
         "active_matches": active_matches,
+        "source": {
+            "kind": "store",
+            "store_id": context.get("store_id", ""),
+            "revision": context.get("revision", 0),
+            "experience_window": {
+                **{key: page[key] for key in ("total", "remaining", "has_more", "next_cursor")},
+                "recall_command": shlex.join([
+                    "python3", "tools/experience_recall.py", "--repo-root", str(repo.resolve()),
+                    "--target", resolved_target, "--limit", str(experience_limit),
+                ]),
+            },
+        },
+        "active_path": str(active_path),
+        "target_path": str(store.path),
     }
 
 
@@ -406,67 +345,75 @@ def load_active_file(path: Path) -> dict:
     return normalized
 
 
-def load_target_memory(target: str) -> dict:
-    canonical_target = canonical_target_value(target)
-    path = target_memory_path(canonical_target)
-    payload = load_target_memory_file(path, expected_target=canonical_target)
-    return payload or new_target_memory(canonical_target)
+def load_target_memory(target: str, repo_root: Path | None = None) -> dict:
+    return load_goal_memory(repo_root or BASE_DIR, target)["target"]
 
 
-def _save_target_memory_unlocked(payload: dict) -> Path:
-    payload = normalize_target_memory(payload)
-    payload["updated_at"] = now_utc()
-    path = target_memory_path(payload["target"])
-    write_json(path, payload)
-    return path
+class TargetSelectionError(StoreError):
+    """The goal commit succeeded, but publishing the target pointer failed."""
+
+    def __init__(self, target: str, receipt: dict, cause: OSError):
+        super().__init__(f"goal committed: {json.dumps(receipt, sort_keys=True)}; target selection failed: {cause}")
+        self.target = target
+        self.receipt = receipt
 
 
-def set_active(args: argparse.Namespace) -> str:
-    canonical_target = _assert_target_memory_writer_allowed(args.target)
-    path = target_memory_path(canonical_target)
-    with target_memory_mutation_lock(path, repo_root=BASE_DIR, target=canonical_target):
-        target_memory = load_target_memory(canonical_target)
-        target_memory["mode"] = args.mode
-        target_memory["phase"] = args.phase
-        if args.goal:
-            target_memory["active_goal"] = args.goal
-        if args.hypothesis:
-            target_memory["current_hypothesis"] = args.hypothesis
-        if args.skill:
-            target_memory["selected_skills"] = args.skill
-        if args.knowledge:
-            target_memory["knowledge_focus"] = args.knowledge
-        target_path = _save_target_memory_unlocked(target_memory)
+def set_active(args: argparse.Namespace) -> str | dict:
+    repo_root = getattr(args, "repo_root", None)
+    canonical_target = canonical_target_value(args.target)
+    store = runtime_store(repo_root or BASE_DIR, canonical_target)
+    retired = ("mode", "phase", "hypothesis", "skill", "knowledge")
+    supplied = [name for name in retired if getattr(args, name, None) not in (None, [])]
+    if supplied:
+        raise StoreError("retired target-memory flags are not Store fields: " + ", ".join(supplied))
+    goal = getattr(args, "goal", None)
+    receipt = None
+    if goal is not None:
+        receipt = store.set_active_goal(
+            command_id=getattr(args, "command_id", None) or f"goal:{uuid.uuid4().hex}",
+            goal=goal, actor="operator", expected_revision=getattr(args, "expected_revision", None),
+        )
+    active = {"schema_version": SCHEMA_VERSION, "target": canonical_target,
+              "updated_at": now_utc()}
+    try:
+        active_path = Path(repo_root) / "memory/goals/active.json" if repo_root is not None else ACTIVE_PATH
+        write_json(active_path, active)
+    except OSError as exc:
+        if receipt is not None:
+            raise TargetSelectionError(canonical_target, receipt, exc) from exc
+        raise
+    if getattr(args, "json", False):
+        return {"target": canonical_target, "receipt": receipt, "selection_status": "selected"}
+    projection = load_goal_memory(repo_root or BASE_DIR, canonical_target)
+    result = format_summary("TARGET SET", active, projection["target"], memory_path=store.path,
+                            repo_root=repo_root)
+    return result + (f"\nGoal receipt: {json.dumps(receipt, sort_keys=True)}" if receipt else "")
 
-        active = {
-            "schema_version": SCHEMA_VERSION,
-            "target": canonical_target,
-            "mode": args.mode,
-            "phase": args.phase,
-            "active_goal": args.goal or target_memory.get("active_goal", ""),
-            "current_hypothesis": args.hypothesis or target_memory.get("current_hypothesis", ""),
-            "selected_skills": args.skill or target_memory.get("selected_skills", []),
-            "knowledge_focus": args.knowledge or target_memory.get("knowledge_focus", []),
-            "target_memory_path": display_path(target_path),
-            "updated_at": now_utc(),
-        }
-        write_json(ACTIVE_PATH, active)
-    return format_summary("TARGET SET", active, target_memory)
 
-
-def resolve_target(explicit_target: str | None) -> str:
+def resolve_target(explicit_target: str | None, repo_root: Path | None = None) -> str:
     if explicit_target:
         return canonical_target_value(explicit_target)
-    active = load_active()
+    active = load_active(repo_root)
     target = active.get("target")
     if not target:
         raise SystemExit("No active target. Run: python3 tools/target_memory.py set <target>")
     return canonical_target_value(target)
 
 
-def append_entry(args: argparse.Namespace, field: str, label: str) -> str:
-    target = _assert_target_memory_writer_allowed(resolve_target(args.target))
-    path = target_memory_path(target)
+def _operation_refs(values: list[str]) -> list[dict]:
+    refs = []
+    for value in values:
+        operation_id, separator, step = value.rpartition(":")
+        if not separator or not operation_id or not step.isdigit():
+            raise StoreError(f"--operation-ref must be {OPERATION_REF_HELP}")
+        refs.append({"operation_id": operation_id, "step": int(step)})
+    return refs
+
+
+def append_entry(args: argparse.Namespace, field: str, label: str) -> str | dict:
+    repo_root = getattr(args, "repo_root", None)
+    target = resolve_target(args.target, repo_root)
+    store = runtime_store(repo_root or BASE_DIR, target)
     structured_raw = str(getattr(args, "structured_json", "") or "")
     structured: dict = {}
     if structured_raw:
@@ -482,39 +429,42 @@ def append_entry(args: argparse.Namespace, field: str, label: str) -> str:
             raise SystemExit(
                 "--structured-json requires all of: " + ", ".join(sorted(required))
             )
-    with target_memory_mutation_lock(path, repo_root=BASE_DIR, target=target):
-        target_memory = load_target_memory(target)
-        entry = {
-            "ts": now_utc(),
-            "text": " ".join(args.text).strip(),
-        }
-        if structured:
-            entry["text"] = entry["text"] or str(structured.get("hypothesis") or "")
-            entry["structured"] = {
-                "hypothesis": str(structured.get("hypothesis") or "").strip(),
-                "evidence_ref": str(structured.get("evidence_ref") or "").strip(),
-                "next": str(structured.get("next") or "").strip(),
-                "stop_condition": str(structured.get("stop_condition") or "").strip(),
-            }
-        if not entry["text"]:
-            raise SystemExit(f"{label} text is required (or supply --structured-json)")
-        if field in {"useful_patterns", "dead_ends"}:
-            default_kind = "dead-end" if field == "dead_ends" else "useful-pattern"
-            evidence_refs = normalize_evidence_refs(getattr(args, "evidence_ref", []))
-            entry["entry_id"] = make_entry_id(
-                target=target,
-                field=field,
-                text=entry["text"],
-                evidence_refs=evidence_refs,
-            )
-            entry["kind"] = normalize_experience_kind(
-                getattr(args, "kind", None), default=default_kind
-            )
-            entry["evidence_refs"] = evidence_refs
-        target_memory.setdefault(field, []).append(entry)
-        _save_target_memory_unlocked(target_memory)
-    suffix = f" [{entry['entry_id']}]" if entry.get("entry_id") else ""
-    return f"{label} saved for {target}{suffix}: {entry['text']}"
+    if structured or getattr(args, "kind", None) is not None:
+        raise StoreError("legacy --structured-json/--kind is not a Store write; use explicit condition fields")
+    if getattr(args, "evidence_ref", []):
+        raise StoreError("legacy path evidence refs cannot establish Store observations; use --operation-ref")
+    statement = " ".join(args.text).strip() or str(structured.get("hypothesis") or "").strip()
+    if not statement:
+        raise StoreError(f"{label} text is required")
+    kind = {"scope_notes": "note", "active_leads": "hypothesis", "next_actions": "handoff",
+            "dead_ends": "negative", "useful_patterns": "primitive"}[field]
+    evidence = _operation_refs(getattr(args, "operation_ref", []) or [])
+    conditions = getattr(args, "conditions", None) or "unknown"
+    reopen_when = getattr(args, "reopen_when", None) or ""
+    next_intent = (getattr(args, "next_intent", None) or str(structured.get("next") or "")
+                   or (statement if field == "next_actions" else ""))
+    if kind == "negative" and (conditions == "unknown" or not reopen_when or not evidence):
+        raise StoreError(
+            "dead-end requires --conditions, --reopen-when and --operation-ref OPERATION_ID:STEP. "
+            "Use an existing execution receipt and zero-based step (e.g. OPERATION_ID:0). "
+            "Without registered evidence, save an advisory note: "
+            "python3 tools/target_memory.py note --target TARGET 'Unverified observation'. "
+            "Run: python3 tools/target_memory.py dead-end --help"
+        )
+    if kind in {"negative", "primitive"} and not evidence:
+        raise StoreError(
+            f"{label} requires --operation-ref {OPERATION_REF_HELP}. "
+            "Without registered evidence, use note --target TARGET 'Unverified observation'."
+        )
+    receipt = store.remember(
+        command_id=getattr(args, "command_id", None) or f"memory:{uuid.uuid4().hex}",
+        kind=kind, statement=statement, conditions=conditions,
+        reopen_when=reopen_when, next_intent=next_intent,
+        evidence=evidence, actor=getattr(args, "actor", "operator"),
+    )
+    if getattr(args, "json", False):
+        return {"target": target, "receipt": receipt}
+    return f"{label} saved for {target} [{receipt['entity_id']}]: {statement}"
 
 
 FACT_KEY_RE = None  # compiled lazily to keep import-time cost unchanged
@@ -530,14 +480,9 @@ def _fact_key_is_valid(key: str) -> bool:
     return bool(FACT_KEY_RE.match(key))
 
 
-def upsert_fact(args: argparse.Namespace) -> str:
-    """Upsert one confirmed-cognition fact under a stable key.
-
-    Same-key writes overwrite text/evidence_refs and refresh the timestamp;
-    facts never append duplicates. This mirrors the blackboard rhythm: every
-    confirmed cognition is recorded immediately so it survives context
-    compaction, and overwrite semantics keep the layer cheap to refresh.
-    """
+def upsert_fact(args: argparse.Namespace) -> str | dict:
+    """Append an advisory Store note, retaining earlier statements."""
+    repo_root = getattr(args, "repo_root", None)
     key = args.key.strip()
     text = " ".join(args.text).strip()
     if not key:
@@ -549,24 +494,19 @@ def upsert_fact(args: argparse.Namespace) -> str:
         )
     if not text:
         raise SystemExit("fact text is required")
-    target = _assert_target_memory_writer_allowed(resolve_target(args.target))
-    path = target_memory_path(target)
-    evidence_refs = normalize_evidence_refs(getattr(args, "evidence_ref", []))
-    with target_memory_mutation_lock(path, repo_root=BASE_DIR, target=target):
-        target_memory = load_target_memory(target)
-        facts = target_memory.get("facts")
-        if facts is None:
-            facts = {}
-        if not isinstance(facts, dict):
-            raise SystemExit("invalid target memory: facts must be a keyed map")
-        facts[key] = {
-            "text": text,
-            "ts": now_utc(),
-            "evidence_refs": evidence_refs,
-        }
-        target_memory["facts"] = facts
-        _save_target_memory_unlocked(target_memory)
-    return f"FACT saved for {target} [{key}]: {text}"
+    target = resolve_target(args.target, repo_root)
+    store = runtime_store(repo_root or BASE_DIR, target)
+    if getattr(args, "evidence_ref", []):
+        raise StoreError("legacy path evidence refs cannot establish Store observations; use --operation-ref")
+    receipt = store.remember(
+        command_id=getattr(args, "command_id", None) or f"memory:{uuid.uuid4().hex}",
+        kind="note", statement=f"{key}: {text}", conditions=getattr(args, "conditions", None) or "unknown",
+        reopen_when="", next_intent="", evidence=_operation_refs(getattr(args, "operation_ref", []) or []),
+        actor=getattr(args, "actor", "operator"),
+    )
+    if getattr(args, "json", False):
+        return {"target": target, "receipt": receipt}
+    return f"FACT recorded as note for {target} [{receipt['entity_id']}]: {key}: {text}"
 
 
 def facts_digest(target_memory: dict, *, limit: int | None = None) -> list[str]:
@@ -586,69 +526,22 @@ def facts_digest(target_memory: dict, *, limit: int | None = None) -> list[str]:
     return lines
 
 
-def write_handoff(args: argparse.Namespace) -> str:
-    target = _assert_target_memory_writer_allowed(resolve_target(args.target))
+def write_handoff(args: argparse.Namespace) -> str | dict:
+    repo_root = getattr(args, "repo_root", None)
+    target = resolve_target(args.target, repo_root)
     summary = " ".join(args.summary).strip()
     if not summary:
         raise SystemExit("handoff summary is required")
-    path = target_memory_path(target)
-    with target_memory_mutation_lock(path, repo_root=BASE_DIR, target=target):
-        target_memory = load_target_memory(target)
-        ts = now_utc()
-        next_actions = target_memory.get("next_actions", [])[-5:]
-        active_leads = target_memory.get("active_leads", [])[-5:]
-        dead_ends = target_memory.get("dead_ends", [])[-5:]
-
-        # Snapshot notice: handoff files are point-in-time snapshots. The
-        # resumed run must rebuild current state via context_pack instead of
-        # treating this file as the present tense.
-        intent = ""
-        intent_match = re.search(r"\[intent=(.+?)\]", summary)
-        if intent_match:
-            intent = intent_match.group(1).strip()
-        lines = [
-            f"# Target Handoff: {target}",
-            "",
-            f"- Time: {ts}",
-            f"- Mode: {target_memory.get('mode', 'hunt')}",
-            f"- Phase: {target_memory.get('phase', 'unknown')}",
-            "- Snapshot: point-in-time; rebuild current state via context_pack",
-            "",
-            "## User Intent",
-            intent or "no explicit intent recorded for this handoff",
-            "",
-            "## Summary",
-            summary,
-            "",
-            "## Active Leads",
-            *format_entries(active_leads),
-            "",
-            "## Next Actions",
-            *format_entries(next_actions),
-            "",
-            "## Recent Dead Ends",
-            *format_entries(dead_ends),
-            "",
-        ]
-        session_path = write_handoff_file(
-            SESSIONS_DIR,
-            target_storage_key(target),
-            "\n".join(lines),
-        )
-        target_memory.setdefault("session_handoffs", []).append(
-            {
-                "ts": ts,
-                "path": display_path(session_path),
-                "summary": summary,
-                "user_intent": intent,
-            }
-        )
-        try:
-            _save_target_memory_unlocked(target_memory)
-        except Exception:
-            session_path.unlink(missing_ok=True)
-            raise
-    return f"Handoff written: {display_path(session_path)}"
+    store = runtime_store(repo_root or BASE_DIR, target)
+    receipt = store.remember(
+        command_id=getattr(args, "command_id", None) or f"memory:{uuid.uuid4().hex}",
+        kind="handoff", statement=summary, conditions=getattr(args, "conditions", None) or "unknown",
+        reopen_when="", next_intent=getattr(args, "next_intent", None) or "",
+        evidence=[], actor=getattr(args, "actor", "operator"),
+    )
+    if getattr(args, "json", False):
+        return {"target": target, "receipt": receipt}
+    return f"Handoff saved for {target} [{receipt['entity_id']}]"
 
 
 def format_entries(entries: list[dict]) -> list[str]:
@@ -657,7 +550,9 @@ def format_entries(entries: list[dict]) -> list[str]:
     return [f"- {item.get('text', '').strip()}" for item in entries if item.get("text")]
 
 
-def format_summary(title: str, active: dict, target_memory: dict) -> str:
+def format_summary(title: str, active: dict, target_memory: dict,
+                   *, memory_path: Path | None = None, repo_root: Path | None = None) -> str:
+    path = memory_path or target_memory_path(target_memory.get("target", ""), repo_root)
     lines = [
         title,
         "=" * len(title),
@@ -669,7 +564,7 @@ def format_summary(title: str, active: dict, target_memory: dict) -> str:
         f"Active leads: {len(target_memory.get('active_leads', []))}",
         f"Next actions: {len(target_memory.get('next_actions', []))}",
         f"Dead ends: {len(target_memory.get('dead_ends', []))}",
-        f"Memory: {display_path(target_memory_path(target_memory.get('target', '')))}",
+        f"Memory: {display_path(path, repo_root)}",
     ]
     fact_lines = facts_digest(target_memory)
     if fact_lines:
@@ -678,101 +573,184 @@ def format_summary(title: str, active: dict, target_memory: dict) -> str:
     return "\n".join(lines)
 
 
-def show(args: argparse.Namespace) -> str:
-    active = load_active()
+def show(args: argparse.Namespace) -> str | dict:
+    repo_root = getattr(args, "repo_root", None)
+    active = load_active(repo_root)
     target = args.target or active.get("target")
     if not target:
+        if getattr(args, "json", False):
+            raise StoreError("No active target. Run: python3 tools/target_memory.py set <target>")
         return "No active target. Run: python3 tools/target_memory.py set <target>"
-    target_memory = load_target_memory(target)
-    # Explicit-target reads must not bleed the global active record into
-    # another target's summary (2026-09-14 audit): the active fields are
-    # only authoritative when the shown target IS the active target.
-    if args.target and active.get("target") and args.target != active.get("target"):
-        active = {}
-    return format_summary("TARGET MEMORY", active, target_memory)
+    projection = load_goal_memory(repo_root or BASE_DIR, target)
+    if getattr(args, "json", False):
+        return projection
+    target_memory = projection["target"] or new_target_memory(target)
+    summary = format_summary("TARGET MEMORY", projection["active"], target_memory,
+                             memory_path=Path(projection["target_path"]) if projection.get("source") else None,
+                             repo_root=repo_root)
+    if projection.get("source", {}).get("kind") != "store":
+        return summary
+    lines = [summary]
+    entries = projection.get("recent_entries", [])
+    if entries:
+        lines.append("Recent experience:")
+        for entry in entries:
+            lines.append(f"- ({entry['kind']}) [{entry['entry_id']}] {entry['text']}")
+            for key in ("conditions", "reopen_when", "next_intent"):
+                value = (entry.get("structured") or {}).get(key)
+                if value:
+                    lines.append(f"  {key}: {value}")
+            if entry.get("evidence_refs"):
+                lines.append(f"  evidence: {', '.join(entry['evidence_refs'])}")
+            lines.append(f"  recorded_by: {entry['recorded_by']}")
+    window = projection["source"]["experience_window"]
+    if window["has_more"]:
+        lines.append(f"More target experiences: {window['remaining']}")
+        lines.append(f"Next cursor: {window['next_cursor']}")
+        lines.append(f"Next page: {window['recall_command']} --cursor {shlex.quote(window['next_cursor'])}")
+    lines.append(f"Expand: {window['recall_command']} --id EXPERIENCE_ID")
+    return "\n".join(lines)
+
+
+class MemoryArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        raise ValueError(f"{message}\n{self.format_usage().strip()}\nRun: {self.prog} --help")
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Manage Claude CLI target memory.")
+    parser = MemoryArgumentParser(
+        description="Read and save target experience in an explicitly initialized Store.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples (TARGET must already be initialized):\n"
+            "  python3 tools/target_memory.py show TARGET\n"
+            "  python3 tools/target_memory.py set TARGET --goal 'Review ownership boundary'\n"
+            "  python3 tools/target_memory.py note --target TARGET 'Unverified routing note'\n"
+            "  python3 tools/target_memory.py handoff --target TARGET 'Resume from saved evidence'\n"
+            "Use dead-end --help or pattern --help for evidence-backed experience.\n"
+            "For a fresh target only: python3 tools/target_store.py init --store --target TARGET\n"
+            "Use --repo-root ROOT on isolated checkouts; reads and memory writes never initialize a Store."
+        ),
+    )
+    parser.add_argument("--repo-root", type=Path, default=None, help="repository data root")
+    parser.add_argument("--json", action="store_true", help="emit structured results and errors")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     show_parser = subparsers.add_parser("show", help="show active target memory")
     show_parser.add_argument("target", nargs="?", help="target to show; defaults to active target")
     show_parser.set_defaults(func=show)
 
-    set_parser = subparsers.add_parser("set", help="set active target")
-    set_parser.add_argument("target")
-    set_parser.add_argument("--mode", default="hunt")
-    set_parser.add_argument("--phase", default="recon")
-    set_parser.add_argument("--goal", default="")
-    set_parser.add_argument("--hypothesis", default="")
-    set_parser.add_argument("--skill", action="append", default=[])
-    set_parser.add_argument("--knowledge", action="append", default=[])
+    set_parser = subparsers.add_parser("set", help="select an initialized target; optionally update its goal")
+    set_parser.add_argument("target", help="required positional TARGET (set does not use --target)")
+    set_parser.add_argument("--mode", default=None, help=argparse.SUPPRESS)
+    set_parser.add_argument("--phase", default=None, help=argparse.SUPPRESS)
+    set_parser.add_argument("--goal", default=None, help="explicit goal update; omitted leaves the goal unchanged")
+    set_parser.add_argument("--expected-revision", type=int, default=None)
+    set_parser.add_argument("--command-id", default=None)
+    set_parser.add_argument("--hypothesis", default=None, help=argparse.SUPPRESS)
+    set_parser.add_argument("--skill", action="append", default=None, help=argparse.SUPPRESS)
+    set_parser.add_argument("--knowledge", action="append", default=None, help=argparse.SUPPRESS)
     set_parser.set_defaults(func=set_active)
 
     for name, field, help_text in (
-        ("note", "scope_notes", "append target note"),
-        ("lead", "active_leads", "append active lead"),
-        ("next", "next_actions", "append next action"),
-        ("dead-end", "dead_ends", "append dead end"),
-        ("pattern", "useful_patterns", "append useful target pattern"),
+        ("note", "scope_notes", "save an advisory note; no execution evidence required"),
+        ("lead", "active_leads", "save an advisory hypothesis"),
+        ("next", "next_actions", "save next intent as a handoff; does not create an Action"),
+        ("dead-end", "dead_ends", "save a negative result with conditions, reopening criteria and evidence"),
+        ("pattern", "useful_patterns", "save a reusable primitive with registered execution evidence"),
     ):
-        item_parser = subparsers.add_parser(name, help=help_text)
-        item_parser.add_argument("text", nargs="*")
-        item_parser.add_argument("--target", default=None)
+        example = f"python3 tools/target_memory.py {name} --target TARGET"
+        if name == "dead-end":
+            example += " --conditions 'same tenant; JSON; release 1' --reopen-when 'role or release changes'"
+        if name in {"dead-end", "pattern"}:
+            example += " --operation-ref OPERATION_ID:0"
+        item_parser = subparsers.add_parser(
+            name, help=help_text, description=help_text,
+            epilog=f"Example: {example} 'Observation or intent'. Evidence refs must already exist in the target Store.",
+        )
+        item_parser.add_argument("text", nargs="*", help="observation or intent text")
+        item_parser.add_argument("--target", default=None, help="explicit target; otherwise use selected target")
+        item_parser.add_argument("--conditions", default=None, help="identity, representation and deployment; required for dead-end")
+        item_parser.add_argument("--reopen-when", default=None, help="changes that invalidate this negative; required for dead-end")
+        item_parser.add_argument("--next-intent", default=None, help="advisory continuation, not an executed action")
+        item_parser.add_argument("--operation-ref", action="append", default=[], help=OPERATION_REF_HELP)
+        item_parser.add_argument("--command-id", default=None)
+        item_parser.add_argument("--actor", default="operator")
         if name in {"lead", "next"}:
             item_parser.add_argument(
                 "--structured-json",
                 default="",
-                help=(
-                    "JSON object {hypothesis, evidence_ref, next, stop_condition} "
-                    "for structured leads/next (plain text stays compatible)"
-                ),
+                help=argparse.SUPPRESS,
             )
         if name in {"pattern", "dead-end"}:
             item_parser.add_argument(
                 "--kind",
                 choices=EXPERIENCE_KINDS,
                 default=None,
-                help="experience kind; defaults to pattern/dead-end based on the command",
+                help=argparse.SUPPRESS,
             )
             item_parser.add_argument(
                 "--evidence-ref",
                 action="append",
                 default=[],
-                help="repository-relative evidence reference; repeatable",
+                help=argparse.SUPPRESS,
             )
         item_parser.set_defaults(func=lambda args, f=field, n=name.upper(): append_entry(args, f, n))
 
-    handoff_parser = subparsers.add_parser("handoff", help="write session handoff markdown")
+    handoff_parser = subparsers.add_parser("handoff", help="save target handoff experience")
     handoff_parser.add_argument("summary", nargs="+")
     handoff_parser.add_argument("--target", default=None)
+    handoff_parser.add_argument("--conditions", default=None)
+    handoff_parser.add_argument("--next-intent", default=None)
+    handoff_parser.add_argument("--command-id", default=None)
+    handoff_parser.add_argument("--actor", default="operator")
     handoff_parser.set_defaults(func=write_handoff)
 
     fact_parser = subparsers.add_parser(
-        "fact", help="upsert a confirmed-cognition fact (same key overwrites)"
+        "fact", help="append a keyed advisory note; preserves earlier notes"
     )
     fact_parser.add_argument("--key", required=True, help="stable fact key, e.g. cdn-filtering-502")
     fact_parser.add_argument("text", nargs="+", help="fact summary text")
     fact_parser.add_argument("--target", default=None)
+    fact_parser.add_argument("--conditions", default=None)
+    fact_parser.add_argument("--operation-ref", action="append", default=[], help=OPERATION_REF_HELP)
+    fact_parser.add_argument("--command-id", default=None)
+    fact_parser.add_argument("--actor", default="operator")
     fact_parser.add_argument(
         "--evidence-ref",
         action="append",
         default=[],
-        help="repository-relative evidence reference; repeatable",
+        help=argparse.SUPPRESS,
     )
     fact_parser.set_defaults(func=upsert_fact)
 
+    for subparser in subparsers.choices.values():
+        subparser.add_argument("--repo-root", type=Path, default=argparse.SUPPRESS,
+                               help="repository data root")
+        subparser.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
+                               help="emit structured results and errors")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    argv = list(sys.argv[1:] if argv is None else argv)
+    json_output = "--json" in argv
     try:
-        print(args.func(args))
-    except (OSError, ValueError) as exc:
-        print(f"target memory command failed: {exc}", file=sys.stderr)
+        args = parser.parse_args(argv)
+        json_output = args.json
+        result = args.func(args)
+        print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else result)
+    except (OSError, ValueError, SystemExit) as exc:
+        if isinstance(exc, SystemExit) and not isinstance(exc.code, str):
+            raise  # argparse --help keeps its normal exit behavior.
+        if json_output:
+            error = {"error": str(exc)}
+            if isinstance(exc, TargetSelectionError):
+                error.update(target=exc.target, receipt=exc.receipt, selection_status="failed")
+            print(json.dumps(error, ensure_ascii=False))
+        else:
+            print(f"target memory command failed: {exc}", file=sys.stderr)
         return 2
     return 0
 

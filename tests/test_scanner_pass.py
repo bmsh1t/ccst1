@@ -19,6 +19,7 @@ def _scanner_fixture(tmp_path, target="scanner-primary.test"):
 
 
 def test_scanner_pass_is_advisory_and_empty_categories_are_not_runs(tmp_path):
+    TargetStore(tmp_path, "scanner-primary.test").initialize()
     findings, recon = _scanner_fixture(tmp_path)
     output = write_scanner_pass(
         target="scanner-primary.test", findings_dir=findings, recon_dir=recon

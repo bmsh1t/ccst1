@@ -1,97 +1,57 @@
 ---
-description: Draft a validated bounty submission, local write-up, or formal penetration-test report. Supports evidence traceability, CVSS, retest, and closeout. Run /validate first. Usage: /report
+description: Draft a report from current validated Store evidence and an independent delivery decision. Usage: /report
 ---
 
 # /report
 
-Generate an editable, submission-ready report draft from validated evidence.
+Generate an editable report artifact for a selected, technically confirmed Finding.
+Load `skills/report-writing/SKILL.md` for report structure, delivery format, tone and evidence presentation.
+This command selects the source and invokes the generator.
 
-This is the primary reporting workflow.
-`skills/report-writing/SKILL.md` is the report-only contract owner for structure,
-tone, platform rendering, and evidence presentation; this command owns only
-entry, source selection, and generator invocation.
-The generator rejects statusless structured rows and raw legacy scanner files by
-default. `--allow-legacy-drafts` is an explicit compatibility path; those drafts
-do not update canonical finding or action-queue lifecycle state.
+## Current evidence and delivery
 
-## Pre-Conditions
+Run `/validate` first. Read the selected Finding from its target Store:
 
-Run `/validate` first. The selected finding's recorded
-`<artifact-key>.validation-summary.json` must show both:
-
-- `seven_question_gate_passed: true`
-- `four_validation_gates_passed: true`
-
-`all_gates_passed: true` is the combined report-readiness signal. If the
-7-Question Gate is `chain_required`, `needs_review`, or `kill`, do not draft a
-standalone report; continue chain-building or evidence collection instead.
-
-Never write a report before validating. N/A submissions hurt your validity ratio.
-
-Use the exact summary path stored in the selected canonical row, or the path
-returned by that finding's `/validate` invocation, as starting context and
-include its gate status plus any recorded CVSS object when the destination requires it.
-`findings/last-validate.json`
-is only a latest pointer and must not bind a report to a finding. If no matching
-summary exists, ask the user for the missing endpoint, evidence, impact, and
-reproduction details before drafting.
-
-When the validation summary contains `finding_id`, `finding_source_file`, or
-`finding_summary`, include those references in the evidence section so the
-report draft remains traceable back to the scanner candidate.
-
-If `findings/<target>/findings.json` exists, prefer it as the candidate index:
-use `id`, `type`, `url`, `severity`, `confidence`, and `source_file` to pick the
-finding, then still require concrete validation evidence before finalizing the
-report.
-
-Reports generated from structured findings include a `Finding Reference` block
-with the candidate id, source artifact, confidence, and summary when available.
-When `generate_reports` runs through the Claude Code agent, its summary also
-surfaces `reports/<target>/INDEX.json` so you can see report id → finding id →
-markdown file mapping without opening the directory manually.
-The corresponding `findings.json` item is updated with `report_status`,
-`report_id`, and `report_file` for later `/pickup` or agent continuation.
-
-## Delivery Contract
-
-Load `skills/report-writing/SKILL.md` for the requested delivery mode. Local/lab
-delivery uses the supplied target record and its setup, target state, replayable
-artifact, exact result, demonstrated
-impact, and limitations. Keep the existing target scope, finding index,
-Evidence Ledger, validation summaries, target memory, and report index as the
-inputs; do not create a second report status or evidence store.
-
-Keep every chain step tied to a validated finding and artifact. Record retest
-time, version/environment, result, residual risk, and artifact refs without
-changing canonical finding status. The manifest carries path, UTC time,
-collector/source, purpose, and SHA-256; redact credentials, session material,
-tokens, PII, unrelated customer data, and raw secrets from the delivered copy.
-
-## Usage
-
-```
-/report
+```bash
+python3 tools/target_store.py findings --repo-root <repo-root> --target <target> --id <finding-id>
 ```
 
-Provide when prompted:
-- Delivery format (formal penetration test / local write-up / HackerOne / Bugcrowd / Intigriti / Immunefi)
-- Bug class
-- Affected endpoint
-- Relevant actors/roles/objects and their IDs when the claim crosses an identity boundary
-- The exact replayable artifact that demonstrates the bug
-- The exact observed result that shows the impact
-- Tech stack (for severity context)
+Automatic generation requires the current confirmed assessment, an eligible delivery decision bound to that
+assessment, and intact target-owned evidence. A validation-summary file or a legacy status alone cannot grant
+report eligibility. Technical validity and destination eligibility are separate: a known, duplicate or accepted-risk
+issue may remain technically confirmed without being eligible for that destination.
 
-## Report Contract
+Use the exact observation, assessment and delivery references returned for the Finding. Review the associated
+validation summary for the boundary, impact, gate reasoning and reproducible evidence. `findings/last-validate.json`
+is only a latest pointer; it cannot bind a report to a Finding. Missing evidence remains an explicit gap.
 
-This command only selects the validated source and invokes the generator.
-Render recorded `cvss.version`, `cvss.score`, and `cvss.vector` only when present
-and required by the destination. If the platform requires CVSS and none was
-recorded, fill its report field per current platform rules without rewriting
-the validation summary or copying a static calibration table.
+## Generate and inspect
 
-Use the protocol-appropriate replayable artifact: HTTP when applicable, or a
-browser, frame, stream, state, callback, or equivalent target-bound record for
-other protocols. Keep the report tied to the canonical finding and do not create
-a second lifecycle.
+```bash
+python3 tools/report_generator.py <repo-root>/findings/<target-key>
+```
+
+The generator reads the Store associated with that findings directory. `findings.json` and raw scanner claims
+are not the current candidate or report-status owner. `--allow-legacy-drafts` has been removed.
+
+Report Markdown is published before the artifact and its assessment/delivery bindings are registered in the
+same target Store. Registration failure retains the document for retry. `reports/<target-key>/INDEX.json` and
+`SUMMARY.md` are rebuildable views; generating or registering a report does not submit it externally or complete
+an Action. Submission is a separate explicit delivery event with its own receipt.
+
+Manual drafts use `report_generator.py --manual --type <type> --url <url> --evidence <text>` and live under
+`reports/<target-key>/drafts/`. They carry no Store report registration or delivery eligibility. A draft can retain
+an incomplete analysis without presenting it as a validated submission.
+
+## Delivery contract
+
+Keep each claim and chain step tied to the selected Finding and raw artifact. Include the requested destination,
+actors/objects, exact replay, observed result, demonstrated impact and limitations. Preserve target scope and
+redact credentials, session material, unrelated personal data and raw secrets from the delivered copy.
+
+Use the protocol-appropriate evidence: HTTP, browser, frame, stream, state transition, callback or another
+recorded target-bound artifact. Retest notes identify time, version/environment, result and residual risk;
+new technical judgments use the explicit assessment API rather than edits to report indexes.
+
+Render recorded CVSS fields only when present and required by the destination. If needed, fill the report's
+CVSS field from the destination's current rules without rewriting execution facts or copying a static table.

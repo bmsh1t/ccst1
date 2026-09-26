@@ -113,24 +113,16 @@ def test_primary_store_is_the_only_source_even_beside_a_leftover_ledger(tmp_path
     }
 
 
-def test_preview_store_reports_its_claim_and_never_answers(tmp_path):
-    _write_ledger(tmp_path, [_ledger_row("/api/legacy")])
+def test_preview_store_is_only_available_to_explicit_migration_readers(tmp_path):
+    path = _write_ledger(tmp_path, [_ledger_row("/api/legacy")])
     store = TargetStore(tmp_path, TARGET, allow_preview=True)
     store.initialize(allow_legacy=True)
-    assert store.backend() == "preview"
     _record(store, tmp_path, endpoint="https://target.test/api/preview-only")
-
-    truth = current_cell_projection(tmp_path, TARGET)
-
-    assert truth["source"]["kind"] == "ledger"
-    assert truth["source"]["store_claim"] == "preview"
-    assert truth["source"]["status"] == "valid"
-    assert truth["source"]["path_label"] == f"memory/evidence/{target_storage_key(TARGET)}/ledger.jsonl"
-    assert _cell_endpoints(truth["projection"]) == {"/api/legacy"}
-    assert all(
-        "preview-only" not in str(cell.get("endpoint") or "")
-        for cell in truth["projection"]["closed_cells"]
-    )
+    before = path.read_bytes()
+    with pytest.raises(StoreError, match="runtime store is not active"):
+        current_cell_projection(tmp_path, TARGET)
+    assert store.page("operations")["total"] == 1
+    assert path.read_bytes() == before
 
 
 def test_missing_primary_database_never_reactivates_leftover_ledger(tmp_path):
@@ -168,7 +160,7 @@ def test_store_with_a_foreign_schema_raises_instead_of_falling_back(tmp_path):
 
 def test_store_without_a_role_column_is_reported_not_guessed(tmp_path):
     directory = tmp_path / "state" / target_storage_key(TARGET)
-    directory.mkdir(parents=True)
+    directory.mkdir(parents=True, mode=0o700)
     path = directory / "metadata.sqlite3"
     with sqlite3.connect(path) as conn:
         conn.execute(
@@ -183,26 +175,14 @@ def test_store_without_a_role_column_is_reported_not_guessed(tmp_path):
         current_cell_projection(tmp_path, TARGET)
 
 
-def test_damaged_ledger_cannot_authorize_a_closure(tmp_path):
-    _write_ledger(tmp_path, [_ledger_row("/api/legacy")], tail="{not json}\n")
-
-    truth = current_cell_projection(tmp_path, TARGET)
-
-    assert truth["source"]["kind"] == "ledger"
-    assert truth["source"]["status"] == "partial"
-    assert truth["health"]["source_kind"] == "ledger"
-    assert truth["health"]["status"] == "partial"
-    assert truth["health"]["invalid_count"] == 1
-    assert truth["projection"]["closed_cells"] == []
-    assert truth["projection"]["closed_cells_v2"] == []
-    assert truth["projection"]["identity_v2_diagnostics"]["suppressed_closed_count"] == 0
-    assert truth["projection"]["identity_v2_diagnostics"]["suppressed_legacy_closed_count"] == 1
-    assert truth["projection"]["identity_v2_shadow"] == {
-        "status": "unavailable",
-        "reason": "ledger_partial",
-    }
-    # The rows themselves stay readable: damage suppresses authorizations, not facts.
-    assert len(truth["records"]) == 1
+@pytest.mark.parametrize("tail", ["", "{not json}\n"])
+def test_legacy_ledger_does_not_replace_an_uninitialized_store(tmp_path, tail):
+    path = _write_ledger(tmp_path, [_ledger_row("/api/legacy")], tail=tail)
+    before = path.read_bytes()
+    with pytest.raises(StoreError, match="not initialized"):
+        current_cell_projection(tmp_path, TARGET)
+    assert path.read_bytes() == before
+    assert not TargetStore(tmp_path, TARGET).path.exists()
 
 
 def test_truncated_store_read_is_damage_too():
@@ -212,9 +192,11 @@ def test_truncated_store_read_is_damage_too():
         root = Path("/repo")
         path = Path("/repo/state/target.test/metadata.sqlite3")
 
-        def closure_records(self) -> dict:
+        def closure_records(self, *, verify=False) -> dict:
+            assert verify is True
             return {
                 "store_id": "store-id",
+                "invalid_operations": [],
                 "revision": 7,
                 "total": 5,
                 "truncated": True,
@@ -239,6 +221,68 @@ def test_truncated_store_read_is_damage_too():
     assert truth["projection"]["closed_cells"] == []
     assert truth["projection"]["identity_v2_diagnostics"]["suppressed_legacy_closed_count"] == 1
     assert truth["projection"]["identity_v2_shadow"]["reason"] == "store_partial"
+
+
+def test_current_truth_checks_every_operation_on_one_snapshot_and_rechecks_next_read(tmp_path, monkeypatch):
+    store = TargetStore(tmp_path, TARGET)
+    store.initialize()
+    operation_ids = []
+    for index in range(30):
+        store.start_attempt(attempt_id=f"try-{index}", source="native", started_at=AT, actor="operator")
+        receipt = store.record_execution(attempt_id=f"try-{index}", outcome="complete", actor="operator",
+            observations=[_observation(tmp_path, endpoint=f"https://{TARGET}/item-{index}")])
+        operation_ids.append(receipt["entity_id"])
+    before = store.binding()
+    checked, connections = [], []
+    verify, connect = store._verify_operation, sqlite3.connect
+
+    def verified(conn, operation_id):
+        checked.append(operation_id)
+        return verify(conn, operation_id)
+
+    def connected(*args, **kwargs):
+        connection = connect(*args, **kwargs)
+        connections.append(connection)
+        return connection
+
+    with monkeypatch.context() as patch:
+        patch.setattr(store, "_verify_operation", verified)
+        patch.setattr(sqlite3, "connect", connected)
+        truth = _store_truth(store)
+    assert len(connections) == 1
+    assert checked == sorted(operation_ids)
+    assert len(truth["records"]) == 30 and truth["health"]["status"] == "ready"
+    assert store.binding() == before
+    raw = tmp_path / ".private/validation/target.test/response.txt"
+    original = raw.read_bytes()
+    raw.write_bytes(b"Changed evidence without metadata revision")
+    damaged = _store_truth(store)
+    assert damaged["source"]["revision"] == before["revision"]
+    assert damaged["health"]["invalid_count"] == 30
+    assert damaged["records"] == truth["records"]
+    assert damaged["projection"]["closed_cells"] == []
+    raw.write_bytes(original)
+
+    events = store._artifact_events
+    changed = False
+
+    def invalidate(conn, artifact_id):
+        nonlocal changed
+        if not changed:
+            changed = True
+            store.record_artifact_event(command_id="revoke", artifact_id=artifact_id, dimension="provenance",
+                                        state="revoked", reason="New review", actor="operator")
+        return events(conn, artifact_id)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(store, "_artifact_events", invalidate)
+        pinned = _store_truth(store)
+    assert changed and pinned["source"]["revision"] == before["revision"]
+    assert pinned["health"]["status"] == "ready"
+    assert _store_truth(store)["health"]["invalid_count"] == 30
+    with monkeypatch.context() as patch:
+        patch.setattr(store, "_verify_operation", lambda *args: pytest.fail("truncated prefix must not authorize closure"))
+        assert store.closure_records(limit=1, verify=True)["truncated"] is True
 
 
 def test_changed_store_artifact_keeps_history_but_cannot_author_closure(tmp_path):
@@ -282,7 +326,9 @@ def test_revoked_artifact_keeps_history_but_cannot_author_closure(tmp_path):
 
 def test_ledger_summary_reuses_the_seam_result_instead_of_reading_again(tmp_path, monkeypatch):
     """A caller holding the truth must not trigger a second read or projection."""
-    _write_ledger(tmp_path, [_ledger_row("/api/owned")])
+    store = TargetStore(tmp_path, TARGET)
+    store.initialize()
+    _record(store, tmp_path, endpoint="https://target.test/api/owned")
     truth = current_cell_projection(tmp_path, TARGET)
 
     def forbidden(*args, **kwargs):
@@ -297,12 +343,14 @@ def test_ledger_summary_reuses_the_seam_result_instead_of_reading_again(tmp_path
     assert summary["identity_v2_diagnostics"] == truth["projection"]["identity_v2_diagnostics"]
     assert summary["evidence_source"] == truth["source"]
     assert summary["entry_count"] == len(truth["records"]) == 1
-    assert summary["ledger_diagnostics"]["source_kind"] == "ledger"
+    assert summary["ledger_diagnostics"]["source_kind"] == "store"
 
 
 def test_ledger_summary_without_a_snapshot_reads_the_one_seam(tmp_path, monkeypatch):
     """Direct callers get the same answer through the same source decision."""
-    _write_ledger(tmp_path, [_ledger_row("/api/owned")])
+    store = TargetStore(tmp_path, TARGET)
+    store.initialize()
+    _record(store, tmp_path, endpoint="https://target.test/api/owned")
     seen: list[tuple] = []
     original = current_cell_projection
 
@@ -316,12 +364,16 @@ def test_ledger_summary_without_a_snapshot_reads_the_one_seam(tmp_path, monkeypa
 
     assert seen and seen[0][1] == TARGET
     assert summary["closed_cells"] == original(tmp_path, TARGET)["projection"]["closed_cells"]
-    assert summary["evidence_source"]["kind"] == "ledger"
+    assert summary["evidence_source"]["kind"] == "store"
 
 
-def test_damaged_ledger_suppression_is_word_for_word_the_seam_rule(tmp_path):
+def test_damaged_store_evidence_suppression_is_word_for_word_the_seam_rule(tmp_path):
     """The ledger's aggregate must not carry a second, weaker damage rule."""
-    _write_ledger(tmp_path, [_ledger_row("/api/owned")], tail="{not json}\n")
+    store = TargetStore(tmp_path, TARGET)
+    store.initialize()
+    _record(store, tmp_path, endpoint="https://target.test/api/owned")
+    artifact = tmp_path / ".private" / "validation" / target_storage_key(TARGET) / "response.txt"
+    artifact.write_text("changed after registration")
 
     truth = current_cell_projection(tmp_path, TARGET)
     summary = build_summary(tmp_path, target=TARGET, focus_endpoints=["/api/owned"])
@@ -331,7 +383,7 @@ def test_damaged_ledger_suppression_is_word_for_word_the_seam_rule(tmp_path):
     assert summary["identity_v2_diagnostics"]["suppressed_legacy_closed_count"] == 1
     assert summary["identity_v2_shadow"] == truth["projection"]["identity_v2_shadow"] == {
         "status": "unavailable",
-        "reason": "ledger_partial",
+        "reason": "store_partial",
     }
 
 
@@ -343,15 +395,10 @@ def test_closure_consumers_read_the_one_seam_and_never_the_ledger_directly():
         assert "load_entries_diagnostic(" not in source, f"{name} reads an evidence source by itself"
         assert "build_current_cell_projection(" not in source, f"{name} re-projects closure cells"
         assert "current_cell_projection(" in source, f"{name} does not consume the truth seam"
-    # surface_projection stays file-side on purpose: it fingerprints the legacy
-    # ledger *file* as a Surface input, not the target's closure truth. The
-    # store becomes a manifest input at cutover, not before.
     projection = (tools / "surface_projection.py").read_text()
-    assert "load_entries_diagnostic(" in projection
-    # ... but even the file-side reader takes the projection from its one
-    # definition instead of through the ledger module.
-    assert "from tools.evidence_ledger import build_current_cell_projection" not in projection
-    assert "from tools.closure_projection import build_current_cell_projection" in projection
+    assert "load_entries_diagnostic(" not in projection
+    assert "build_current_cell_projection(" not in projection
+    assert "current_cell_projection(" in projection
 
     # The damage rule is stated once, beside the projection it guards.
     damage_def = "def suppress_unauthorized_closures("

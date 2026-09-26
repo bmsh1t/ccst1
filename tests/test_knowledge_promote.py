@@ -103,6 +103,53 @@ def test_promote_moves_registers_and_passes_audit(tmp_path):
     assert "id: t-cross-actor" in yaml_text and "knowledge/cards/t-cross-actor.md" in yaml_text
 
 
+def test_store_experience_distills_before_review_and_card_reuses_after_promotion(tmp_path):
+    from tools.distill_target import build_evidence_view
+    from tools.experience_recall import build_recall_view
+    from tools.target_store import TargetStore
+
+    _seed_candidate(tmp_path)
+    store = TargetStore(tmp_path, "t.example")
+    store.initialize()
+    store.start_attempt(attempt_id="attempt-1", source="native", started_at="2026-09-23T00:00:00Z",
+                        actor="operator")
+    operation = store.record_execution(
+        attempt_id="attempt-1", outcome="complete", actor="operator",
+        observations=[{"endpoint": "https://t.example/api/x", "method": "GET", "family": "idor",
+                       "observed_at": "2026-09-23T00:00:00Z", "description": "owner and peer differ",
+                       "artifacts": {"response": "evidence/t.example/probe/p1.json"},
+                       "state_changing": False}],
+    )["entity_id"]
+    store.remember(command_id="experience-1", kind="primitive", statement="Compare owner and peer",
+                   conditions="same object with two actors", reopen_when="new session",
+                   next_intent="replay with a fresh peer", evidence=[{"operation_id": operation, "step": 0}],
+                   actor="operator")
+
+    evidence = build_evidence_view(tmp_path, "t.example")
+    assert "Compare owner and peer" in evidence["view"]
+    assert "same object with two actors" in evidence["view"]
+    candidate = tmp_path / "knowledge" / "candidates" / "t-cross-actor.md"
+    candidate.write_text(candidate.read_text().replace(
+        "cond text", store.experience("experience-1")["conditions"]
+    ))
+    TargetStore(tmp_path, "other.example").initialize()
+    assert build_recall_view(tmp_path, target="other.example")["knowledge_cards"] == []
+    assert build_recall_view(tmp_path, target="other.example")["target_entries"] == []
+
+    promoted = promote(tmp_path, card_id="t-cross-actor", triggers=["idor", "cross-actor"])
+    assert promoted["audit"] == "strict-pass"
+    cross_target = build_recall_view(tmp_path, target="other.example")
+    assert [card["ref"] for card in cross_target["knowledge_cards"]] == [
+        "knowledge/cards/t-cross-actor.md"
+    ]
+    assert "same object with two actors" in (
+        tmp_path / "knowledge" / "cards" / "t-cross-actor.md"
+    ).read_text()
+    assert cross_target["target_entries"] == []
+    own = build_recall_view(tmp_path, target="t.example", kinds=["useful_pattern"])
+    assert [row["entry_id"] for row in own["target_entries"]] == ["experience-1"]
+
+
 def test_promote_rolls_back_on_audit_failure(tmp_path):
     _seed_candidate(tmp_path)
     # 制造 audit 必败：registry 里预登记一个不存在的文件（registry-file-missing）

@@ -1,46 +1,14 @@
-"""Stage-one UX: minimal record, bootstrap summary, structured leads."""
+"""Stage-one UX: bootstrap summary and Store-backed conditional leads."""
 
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
-from tools.evidence_ledger import _load_probe_entry, record_entry
 from tools.autopilot_state import _plain_summary
 from tools.resume import _scene_summary
-
-
-def _seed_ledger(repo: Path, target: str) -> str:
-    # record_entry 的 event_id 由调用方（probe.py）注入——测试模拟 probe 形态
-    record_entry(
-        repo,
-        target=target,
-        endpoint="/api/thing/9",
-        method="POST",
-        vuln_class="IDOR",
-        actor="peer",
-        variant="id_swap",
-        result="lead",
-        evidence_ref="evidence/t.example/probe/1.json",
-        event_id="probe-20260911T000000Z-test01",
-    )
-    return "probe-20260911T000000Z-test01"
-
-
-def test_from_probe_copies_mechanical_fields(tmp_path):
-    event_id = _seed_ledger(tmp_path, "t.example")
-    entry = _load_probe_entry(tmp_path, "t.example", event_id)
-    assert entry["endpoint"] == "/api/thing/9"
-    assert entry["method"] == "POST"
-    assert entry["actor"] == "peer"
-    assert entry["variant"] == "id_swap"
-
-
-def test_from_probe_unknown_event_id_rejected(tmp_path):
-    with pytest.raises(ValueError, match="not found"):
-        _load_probe_entry(tmp_path, "t.example", "nope-404")
+from tools.target_store import StoreError, TargetStore, initialize_target_store
 
 
 def test_plain_summary_derives_from_projection_fields():
@@ -97,42 +65,48 @@ def test_scene_summary_empty_returns_empty():
     assert _scene_summary({"target_leads": [], "checkpoint": {}}) == ""
 
 
-def test_target_memory_structured_lead_roundtrip(tmp_path):
-    """CLI 层 structured lead 落盘形态（dict 带 structured 键）。"""
+def test_target_memory_conditional_lead_roundtrip(tmp_path):
     from tools.target_memory import append_entry, load_target_memory
     import argparse
 
+    initialize_target_store(tmp_path, "t.example")
     args = argparse.Namespace(
-        text=[],
-        target="t.example",
-        structured_json=json.dumps(
-            {
-                "hypothesis": "h",
-                "evidence_ref": "evidence/t.example/probe/1.json",
-                "next": "n",
-                "stop_condition": "s",
-            }
-        ),
-        kind=None,
-        evidence_ref=[],
+        repo_root=tmp_path, text=["h"], target="t.example",
+        conditions="peer session", reopen_when="identity changes", next_intent="n",
+        command_id="lead-roundtrip", json=True,
     )
-    append_entry(args, "active_leads", "LEAD")
-    memory = load_target_memory("t.example")
+    saved = append_entry(args, "active_leads", "LEAD")
+    memory = load_target_memory("t.example", repo_root=tmp_path)
     last = memory["active_leads"][-1]
-    assert last["structured"]["hypothesis"] == "h"
-    assert last["structured"]["stop_condition"] == "s"
+    assert last["entry_id"] == saved["receipt"]["entity_id"]
+    assert last["text"] == "h"
+    assert last["structured"] == {
+        "conditions": "peer session", "reopen_when": "identity changes", "next_intent": "n",
+    }
+    assert last["evidence_refs"] == []
+    assert not (tmp_path / "memory/goals/targets/t.example.json").exists()
 
 
-def test_target_memory_structured_lead_requires_all_four_fields(tmp_path):
+@pytest.mark.parametrize("structured,error", [
+    ({"hypothesis": "h"}, "requires all of"),
+    ({"hypothesis": "h", "evidence_ref": "evidence/t.example/probe/1.json",
+      "next": "n", "stop_condition": "s"}, "legacy --structured-json"),
+])
+def test_target_memory_rejects_legacy_structured_write(tmp_path, structured, error):
     from tools.target_memory import append_entry
     import argparse
 
+    initialize_target_store(tmp_path, "t.example")
+    store = TargetStore(tmp_path, "t.example")
+    revision = store.binding()["revision"]
     args = argparse.Namespace(
+        repo_root=tmp_path,
         text=[],
         target="t.example",
-        structured_json=json.dumps({"hypothesis": "h"}),  # 缺 3 个字段
+        structured_json=json.dumps(structured),
         kind=None,
         evidence_ref=[],
     )
-    with pytest.raises(SystemExit, match="requires all of"):
+    with pytest.raises((SystemExit, StoreError), match=error):
         append_entry(args, "active_leads", "LEAD")
+    assert store.binding()["revision"] == revision

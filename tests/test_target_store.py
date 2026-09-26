@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 import ast
 import hashlib
 import json
+import os
 import sqlite3
 import stat
 import threading
@@ -15,11 +16,12 @@ from tools.target_store import (
     ConflictError,
     StoreError,
     TargetStore,
+    runtime_store,
     target_backend,
     target_cutover_lock,
 )
 from tools.action_queue import add_manual_action
-from tools.finding_index import upsert_finding
+import tools.finding_index as finding_index
 
 
 URL = "https://target.test/api/objects?owner=peer"
@@ -31,6 +33,41 @@ def make_store(root):
     store = TargetStore(root, "target.test")
     store.initialize()
     return store
+
+
+def test_case_context_batches_links_without_losing_hypothesis_context(tmp_path, monkeypatch):
+    store = make_store(tmp_path)
+    for actor_id in ("owner", "peer"):
+        store.upsert_case_actor(command_id=actor_id, actor_id=actor_id, role="user", actor="operator")
+    store.upsert_case_object(command_id="object", object_ref="object", object_type="record",
+                             owner_actor="owner", actor="operator")
+    for index in range(100):
+        store.remember_hypothesis(
+            command_id=f"h-{index:03}", hypothesis_id=f"H-{index:03}", vuln_class="custom",
+            why_now=f"Saved premise {index}", actor_ids=["peer", "owner"] if index % 2 else [],
+            object_ref="object" if index % 3 else "", metadata={"context": index}, actor="operator",
+        )
+    before = store.binding()
+    statements = []
+    connect = sqlite3.connect
+
+    def traced_connection(*args, **kwargs):
+        connection = connect(*args, **kwargs)
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    monkeypatch.setattr(sqlite3, "connect", traced_connection)
+    context = store.case_context()
+    assert len(statements) < 25
+    assert context["revision"] == before["revision"]
+    assert [item["id"] for item in context["hypotheses"]] == [f"H-{index:03}" for index in range(100)]
+    for index, item in enumerate(context["hypotheses"]):
+        assert item["actors"] == (["owner", "peer"] if index % 2 else [])
+        assert item["object_ref"] == ("object" if index % 3 else "")
+        assert item["why_now"] == f"Saved premise {index}"
+        assert item["metadata"] == {"context": index}
+    assert context["authz_coverage"]["status"] == "missing"
+    assert store.binding() == before
 
 
 def create_action(store, action_id="a1"):
@@ -64,6 +101,273 @@ def assessment(store, *, command_id="assess1", verdict="confirmed", expected=Non
                         reason="Explicit operator assessment using the recorded control and actor context",
                         boundary="Actor A must not read actor B's object", impact="Peer data disclosure",
                         evidence=store.finding("f1")["evidence"], actor="operator", expected_assessment=expected)
+
+
+def test_finding_page_batches_relations_and_preserves_complete_paging(tmp_path, monkeypatch):
+    store = make_store(tmp_path)
+    assert store.finding_page()["items"] == []
+    for i in range(61):
+        store.create_finding(command_id=f"claim-{i}", finding_id=f"F-{i:02}",
+                             endpoint=URL, method="GET", family=FAMILY,
+                             title=f"Claim {i}", claim=f"Unverified claim {i}", actor="operator")
+    before = store.binding()
+    statements, connections = [], []
+    connect = sqlite3.connect
+
+    def traced(*args, **kwargs):
+        conn = connect(*args, **kwargs)
+        connections.append(conn)
+        conn.set_trace_callback(statements.append)
+        return conn
+
+    with monkeypatch.context() as patch:
+        patch.setattr(sqlite3, "connect", traced)
+        page = store.finding_page(limit=60)
+    assert len(connections) == 1 and len(statements) < 25
+    assert page["revision"] == before["revision"]
+    assert (page["total"], page["remaining"], page["has_more"]) == (61, 1, True)
+    tail = store.finding_page(limit=60, cursor=page["next_cursor"])
+    assert (tail["remaining"], tail["has_more"], tail["next_cursor"]) == (0, False, None)
+    rows = page["items"] + tail["items"]
+    assert [row["id"] for row in rows] == [f"F-{i:02}" for i in range(61)]
+    for i, row in enumerate(rows):
+        assert (row["title"], row["claim"], row["endpoint"], row["family"]) == (
+            f"Claim {i}", f"Unverified claim {i}", URL, FAMILY)
+        assert row["assessment"] is None
+        assert row["evidence"] == row["deliveries"] == row["reports"] == []
+    assert store.binding() == before
+    store.set_active_goal(command_id="new-revision", goal="Changed premise", actor="operator")
+    with pytest.raises(ConflictError, match="snapshot"):
+        store.finding_page(cursor=page["next_cursor"])
+
+
+def test_finding_summary_is_bounded_exact_and_not_delivery_authority(tmp_path, monkeypatch):
+    from tools.resume import _structured_finding_followup
+    from tools.structured_findings import summarize_structured_findings
+
+    store = make_store(tmp_path)
+    assert store.finding_summary()["counts"] == dict(
+        total=0, confirmed=0, pending_validation=0, validated_pending_report=0, reported=0)
+    record(store, tmp_path)
+    evidence_by_finding = {}
+    for i in range(12):
+        store.create_finding(command_id=f"claim-{i}", finding_id=f"F-{i:02}", endpoint=URL,
+                             method="GET", family=FAMILY, title=f"Claim {i}", claim=f"Claim {i}", actor="operator")
+        if i == 11:
+            continue
+        store.start_attempt(attempt_id=f"attempt-{i}", source="native", started_at=AT, actor="operator")
+        receipt = store.record_execution(attempt_id=f"attempt-{i}", outcome="complete", actor="operator",
+            candidate={**candidate(), "id": f"F-{i:02}", "title": f"Claim {i}", "claim": f"Claim {i}"},
+            observations=[observation(tmp_path)])
+        evidence = [{"operation_id": receipt["entity_id"], "step": 0}]
+        evidence_by_finding[i] = evidence
+        store.assess(command_id=f"assess-{i}", finding_id=f"F-{i:02}",
+                     verdict="confirmed" if i < 10 else "inconclusive", reason="Recorded review",
+                     boundary="Actor boundary", impact="Data disclosure", evidence=evidence,
+                     actor="operator", expected_assessment=None)
+        if i >= 8:
+            continue
+        store.decide_delivery(command_id=f"delivery-{i}", finding_id=f"F-{i:02}", assessment_id=f"assess-{i}",
+                              destination="internal", status="eligible", reason="Review", actor="operator", expected_decision=None)
+        report = tmp_path / "reports" / "target.test" / f"report-{i}.md"
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text(f"Report {i}")
+        store.register_report(command_id=f"report-{i}", report_id=f"report-{i}", finding_id=f"F-{i:02}",
+                              assessment_id=f"assess-{i}", delivery_id=f"delivery-{i}", artifact=str(report), actor="operator")
+    store.assess(command_id="reassessment", finding_id="F-00", verdict="refuted", reason="New review",
+                 boundary="Actor boundary", impact="No disclosure", evidence=evidence_by_finding[0],
+                 actor="operator", expected_assessment="assess-0")
+    before = store.binding()
+    original = store.finding_page()["items"]
+    expected = summarize_structured_findings([{
+        "id": row["id"], "type": row["family"], "severity": "medium",
+        "confidence": (row["assessment"] or {}).get("verdict", ""), "url": row["endpoint"],
+        "validation_status": {"confirmed": "validated", "refuted": "rejected"}.get(
+            (row["assessment"] or {}).get("verdict"), "candidate"),
+        "report_status": "generated" if row["reports"] else "not_generated",
+    } for row in original], tmp_path / "findings" / store.key)
+    states = store._finding_states
+    materialized = []
+
+    def limited(conn, rows):
+        materialized.extend(row["id"] for row in rows)
+        return states(conn, rows)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(store, "_finding_states", limited)
+        patch.setattr(store, "_finding_projections", lambda *args: pytest.fail("summary expanded history"))
+        summary = store.finding_summary()
+    assert len(materialized) == 7
+    assert summary["counts"] == dict(total=13, confirmed=9, pending_validation=3, validated_pending_report=2, reported=8)
+    assert summary["next_validation"]["id"] == "F-10"
+    assert summary["next_report"]["id"] == "F-08"
+    assert _structured_finding_followup(summary, tmp_path, store.target) == expected
+    assert [row["id"] for row in summary["items"]] == [f"F-{i:02}" for i in range(5)]
+    tail = store.finding_state_page(limit=1000, cursor=summary["next_cursor"])
+    assert len(tail["items"]) == summary["remaining"] == 8
+    assert all(not {"reports", "deliveries", "evidence"} & row.keys() for row in tail["items"])
+    assert store.binding() == before
+
+    # Registered history is preserved, but the full authority path still checks current bytes.
+    (tmp_path / "reports/target.test/report-1.md").write_text("Changed")
+    (tmp_path / ".private/validation/target.test/response.txt").write_text("Changed")
+    assert store.finding_summary() == summary
+    report = store.finding("F-01")["reports"][0]
+    assert report["stale"] is True and report["artifact_authorized"] is False
+    with pytest.raises(StoreError):
+        store.finding_summary(limit=0)
+    with pytest.raises(StoreError, match="cursor"):
+        store.finding_state_page(cursor="malformed")
+    store.set_active_goal(command_id="new-revision", goal="New premise", actor="operator")
+    with pytest.raises(ConflictError, match="snapshot"):
+        store.finding_state_page(cursor=summary["next_cursor"])
+
+
+def test_finding_summary_pins_counts_preview_and_followup_to_one_revision(tmp_path, monkeypatch):
+    store = make_store(tmp_path)
+    for index in range(2):
+        store.create_finding(command_id=f"claim-{index}", finding_id=f"f{index}", endpoint=URL,
+                             method="GET", family=FAMILY, title="Claim", claim="Unassessed", actor="operator")
+    before = store.binding()
+    states = store._finding_states
+
+    def concurrent_write(conn, rows):
+        store.create_finding(command_id="new-claim", finding_id="a-new", endpoint=URL,
+                             method="GET", family=FAMILY, title="New claim", claim="Unassessed", actor="operator")
+        return states(conn, rows)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(store, "_finding_states", concurrent_write)
+        snapshot = store.finding_summary(limit=1)
+    assert snapshot["revision"] == before["revision"]
+    assert snapshot["counts"]["total"] == snapshot["total"] == 2
+    assert snapshot["items"][0]["id"] == snapshot["next_validation"]["id"] == "f0"
+    fresh = store.finding_summary(limit=1)
+    assert fresh["counts"]["total"] == fresh["total"] == 3
+    assert fresh["next_validation"]["id"] == "a-new"
+    with pytest.raises(ConflictError, match="snapshot"):
+        store.finding_state_page(cursor=snapshot["next_cursor"])
+
+
+def test_finding_authorization_reuses_one_snapshot_but_rechecks_next_read(tmp_path, monkeypatch):
+    store = make_store(tmp_path)
+    first = record(store, tmp_path)
+    second = record(store, tmp_path, attempt_id="try2")
+    selected = [{"operation_id": second["entity_id"], "step": 0}]
+    store.assess(command_id="selected", finding_id="f1", verdict="confirmed", reason="Selected evidence",
+                 boundary="Actor boundary", impact="Peer data", evidence=selected,
+                 actor="operator", expected_assessment=None)
+    store.decide_delivery(command_id="eligible", finding_id="f1", assessment_id="selected",
+                          destination="internal", status="eligible", reason="Review complete",
+                          actor="operator", expected_decision=None)
+    report = tmp_path / "reports" / "target.test" / "report.md"
+    report.parent.mkdir(parents=True)
+    report.write_text("# Report\n")
+    store.register_report(command_id="report", report_id="report", finding_id="f1",
+                          assessment_id="selected", delivery_id="eligible", artifact=str(report), actor="operator")
+    before = store.binding()
+    checked, connections = [], []
+    verify, connect = store._verify_operation, sqlite3.connect
+
+    def verified(conn, operation_id):
+        checked.append(operation_id)
+        return verify(conn, operation_id)
+
+    def connected(*args, **kwargs):
+        connection = connect(*args, **kwargs)
+        connections.append(connection)
+        return connection
+
+    with monkeypatch.context() as patch:
+        patch.setattr(store, "_verify_operation", verified)
+        patch.setattr(sqlite3, "connect", connected)
+        page = store.finding_page()
+    assert len(connections) == 1 and checked == [second["entity_id"]]
+    row = page["items"][0]
+    assert {ref["operation_id"] for ref in row["evidence"]} == {first["entity_id"], second["entity_id"]}
+    assert row["assessment"]["id"] == "selected"
+    assert row["deliveries"][0]["stale"] is row["reports"][0]["stale"] is False
+    assert store.finding("f1")["assessment"]["evidence"] == selected
+    assert store.binding() == before
+
+    # Same metadata revision does not make previously checked files trustworthy.
+    report.write_text("Changed report")
+    row = store.finding_page()["items"][0]
+    assert row["reports"][0]["stale"] is True
+    assert row["reports"][0]["artifact_authorized"] is False
+    assert row["deliveries"][0]["stale"] is False
+    report.write_text("# Report\n")
+    raw = tmp_path / ".private/validation/target.test/response.txt"
+    original = raw.read_bytes()
+    raw.write_bytes(b"Changed evidence")
+    row = store.finding_page()["items"][0]
+    assert row["assessment"]["verdict"] == "confirmed"
+    assert row["deliveries"][0]["stale"] is row["reports"][0]["stale"] is True
+    assert store.binding() == before
+    raw.write_bytes(original)
+
+    # A concurrent invalidation belongs to the next metadata snapshot, not this page.
+    events = store._artifact_events
+    changed = False
+
+    def invalidate(conn, artifact_id):
+        nonlocal changed
+        if not changed:
+            changed = True
+            store.record_artifact_event(command_id="revoke", artifact_id=artifact_id,
+                                        dimension="provenance", state="revoked", reason="New review", actor="operator")
+        return events(conn, artifact_id)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(store, "_artifact_events", invalidate)
+        pinned = store.finding_page()
+    assert changed and pinned["revision"] == before["revision"]
+    assert pinned["items"][0]["deliveries"][0]["stale"] is False
+    assert pinned["items"][0]["reports"][0]["stale"] is False
+    fresh = store.finding_page()
+    assert fresh["revision"] == before["revision"] + 1
+    assert fresh["items"][0]["deliveries"][0]["stale"] is True
+    assert fresh["items"][0]["reports"][0]["stale"] is True
+
+
+def test_finding_page_keeps_judgments_and_destinations_scoped_to_each_claim(tmp_path):
+    store = make_store(tmp_path)
+    for i in range(3):
+        raw = tmp_path / "evidence/target.test" / f"response-{i}.txt"
+        raw.parent.mkdir(parents=True, exist_ok=True)
+        raw.write_text(f"Response {i}")
+        store.start_attempt(attempt_id=f"try-{i}", source="native", started_at=AT, actor="operator")
+        receipt = store.record_execution(attempt_id=f"try-{i}", outcome="complete", actor="operator",
+            candidate={**candidate(), "id": f"f{i}"}, observations=[{
+                **observation(tmp_path), "artifacts": {"response": raw.relative_to(tmp_path).as_posix()},
+            }])
+        evidence = [{"operation_id": receipt["entity_id"], "step": 0}]
+        store.assess(command_id=f"old-{i}", finding_id=f"f{i}", verdict="confirmed", reason="Initial review",
+                     boundary="Actor boundary", impact="Data disclosure", evidence=evidence,
+                     actor="operator", expected_assessment=None)
+        store.decide_delivery(command_id=f"old-delivery-{i}", finding_id=f"f{i}", assessment_id=f"old-{i}",
+                              destination="old-destination", status="eligible", reason="Old review",
+                              actor="operator", expected_decision=None)
+        store.assess(command_id=f"new-{i}", finding_id=f"f{i}", verdict="confirmed" if i % 2 else "refuted",
+                     reason="Reassessment", boundary="Actor boundary", impact="Data disclosure", evidence=evidence,
+                     actor="operator", expected_assessment=f"old-{i}")
+        store.decide_delivery(command_id=f"current-delivery-{i}", finding_id=f"f{i}", assessment_id=f"new-{i}",
+                              destination="current-destination", status="ineligible", reason="Not delivered",
+                              actor="operator", expected_decision=None)
+    before = store.binding()
+    page = store.finding_page()
+    for i, row in enumerate(page["items"]):
+        assert row["id"] == f"f{i}"
+        assert row["assessment"]["id"] == f"new-{i}"
+        assert row["assessment"]["verdict"] == ("confirmed" if i % 2 else "refuted")
+        assert [d["id"] for d in row["deliveries"]] == [f"current-delivery-{i}", f"old-delivery-{i}"]
+        assert [d["stale"] for d in row["deliveries"]] == [False, True]
+        assert len(row["evidence"]) == 1 and row["reports"] == []
+        assert store.execution(row["evidence"][0]["operation_id"])["attempt"]["id"] == f"try-{i}"
+    (tmp_path / "evidence/target.test/response-1.txt").unlink()
+    damaged = store.finding_page()["items"]
+    assert [row["deliveries"][0]["stale"] for row in damaged] == [False, True, False]
+    assert store.binding() == before
 
 
 def test_execution_identity_atomic_facts_and_separate_decisions(tmp_path):
@@ -152,16 +456,12 @@ def test_primary_action_metadata_keeps_queue_mechanical_boundaries(tmp_path):
     cards = tmp_path / "knowledge" / "cards"
     cards.mkdir(parents=True)
     (cards / "known.md").write_text("# card\n", encoding="utf-8")
-    skill = tmp_path / "skills" / "triage-validation"
-    skill.mkdir(parents=True)
-    (skill / "SKILL.md").write_text("---\nname: triage-validation\n---\n", encoding="utf-8")
     store.create_action(command_id="create:bounded", action_id="bounded", intent="work",
                         execution_key="bounded", actor="operator", kind="work",
                         subject={"target": "target.test"}, metadata={
                             "hypothesis_id": "h1", "max_hypothesis_actions_cap": 1,
                             "max_hypothesis_actions": 1,
                             "selected_knowledge_refs": ["knowledge/cards/known.md"],
-                            "skill_route": {"skill_id": "triage-validation", "required_dimensions": ["role"]},
                         })
     with pytest.raises(StoreError, match="single-dimension"):
         store.transition_action(command_id="claim:bad-dimension", action_id="bounded", expected_version=1,
@@ -178,11 +478,12 @@ def test_primary_action_metadata_keeps_queue_mechanical_boundaries(tmp_path):
                             subject={"target": "target.test"}, metadata={"nested": {"token": "secret"}})
 
 
-def test_primary_store_rejects_legacy_finding_writer(tmp_path):
+def test_primary_store_has_no_legacy_finding_writer(tmp_path):
     store = make_store(tmp_path)
     findings_dir = tmp_path / "findings" / "target.test"
-    with pytest.raises(StoreError, match="legacy finding writer"):
-        upsert_finding(findings_dir, {"id": "f1", "url": URL, "type": FAMILY}, target="target.test")
+    assert not hasattr(finding_index, "upsert_finding")
+    assert store.finding_page()["total"] == 0
+    assert not (findings_dir / "findings.json").exists()
 
 
 def test_report_registration_binds_current_delivery_and_artifact(tmp_path):
@@ -431,6 +732,39 @@ def test_registered_artifact_damage_is_not_empty_or_valid(tmp_path, damage):
     with pytest.raises(StoreError, match="registered evidence"):
         assessment(store)
     assert store.finding("f1")["assessment"] is None
+
+
+def test_operation_verification_checks_all_material_in_one_snapshot(tmp_path, monkeypatch):
+    store = make_store(tmp_path)
+    base = observation(tmp_path)
+    observations = []
+    for index in range(10):
+        path = tmp_path / ".private" / "validation" / "target.test" / f"response-{index}.txt"
+        path.write_text(f"Recorded response {index}")
+        observations.append({**base, "artifacts": {"response": path.relative_to(tmp_path).as_posix()}})
+    store.start_attempt(attempt_id="many-artifacts", source="native", started_at=AT, actor="operator")
+    receipt = store.record_execution(attempt_id="many-artifacts", outcome="complete",
+                                     observations=observations, actor="operator")
+    before = store.binding()
+    connections = []
+    connect = sqlite3.connect
+
+    def traced_connection(*args, **kwargs):
+        connection = connect(*args, **kwargs)
+        connections.append(connection)
+        return connection
+
+    with monkeypatch.context() as patch:
+        patch.setattr(sqlite3, "connect", traced_connection)
+        result = store.verify_operation(receipt["entity_id"])
+    assert len(connections) == 1
+    assert result["artifact_count"] == 10
+    assert result["integrity"] == "valid"
+    assert result["semantic_verification"] is False
+    path.write_text("Changed final response")
+    with pytest.raises(StoreError, match="registered evidence changed"):
+        store.verify_operation(receipt["entity_id"])
+    assert store.binding() == before
 
 
 def test_artifact_invalidations_are_append_only_and_authorization_is_derived(tmp_path):
@@ -728,11 +1062,12 @@ def test_closure_records_stay_honest_about_truncation(tmp_path):
 
 def test_domain_imports_do_not_depend_on_views_executors_or_old_owners():
     tools = Path(__file__).resolve().parents[1] / "tools"
-    allowed = {"evidence_identity", "target_paths"}
-    for name in ("target_store.py", "evidence_identity.py"):
+    allowed = {"evidence_identity", "target_paths", "scope_context"}
+    for name in ("target_store.py", "evidence_identity.py", "scope_context.py"):
         for node in ast.walk(ast.parse((tools / name).read_text())):
             if isinstance(node, ast.ImportFrom) and node.module:
                 module = node.module.removeprefix("tools.")
+                assert not node.module.startswith("memory."), f"legacy owner dependency: {name}"
                 if (tools / (module + ".py")).exists():
                     assert module in allowed, f"reverse dependency: {name} imports {module}"
 
@@ -790,6 +1125,411 @@ def test_preview_writes_require_explicit_isolated_import(tmp_path):
     assert not normal.fence_path.exists()
     with pytest.raises(StoreError, match="boolean"):
         TargetStore(tmp_path, "target.test", allow_preview="yes")
+
+
+def test_runtime_store_hides_migration_role_and_rejects_preview(tmp_path):
+    untouched = tmp_path / "untouched"
+    with pytest.raises(StoreError, match="not initialized.*explicit init or legacy import"):
+        runtime_store(untouched, "target.test")
+    assert not untouched.exists()
+
+    preview = TargetStore(tmp_path, "preview.test", allow_preview=True)
+    preview.initialize(allow_legacy=True)
+    with pytest.raises(StoreError, match="runtime store is not active"):
+        runtime_store(tmp_path, "preview.test")
+
+    active = make_store(tmp_path)
+    assert runtime_store(tmp_path, active.target).path == active.path
+
+    active.path.unlink()
+    with pytest.raises(StoreError, match="fenced target store missing"):
+        runtime_store(tmp_path, active.target)
+
+
+def test_concurrent_explicit_initialization_is_idempotent(tmp_path):
+    from tools.target_store import initialize_target_store
+
+    target = "concurrent-init.test"
+
+    def initialize_and_read(_):
+        backend = initialize_target_store(tmp_path, target)
+        return backend, TargetStore(tmp_path, target).binding()
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(initialize_and_read, range(8)))
+
+    assert {backend for backend, _ in results} == {"primary"}
+    assert {binding["store_id"] for _, binding in results} == {results[0][1]["store_id"]}
+    assert {binding["revision"] for _, binding in results} == {0}
+
+
+def test_explicit_initialization_rejects_legacy_target_profile(tmp_path, monkeypatch):
+    from memory.target_profile import target_profile_path
+    from tools.target_store import initialize_target_store
+
+    memory_dir = tmp_path / "external-hunt-memory"
+    monkeypatch.setenv("HUNT_MEMORY_DIR", str(memory_dir))
+    profile = target_profile_path(memory_dir, "profiled.test")
+    profile.parent.mkdir(parents=True)
+    profile.write_text('{"target":"profiled.test"}', encoding="utf-8")
+
+    with pytest.raises(StoreError, match="legacy target state exists"):
+        initialize_target_store(tmp_path, "profiled.test")
+
+    store = TargetStore(tmp_path, "profiled.test")
+    assert not store.path.exists()
+    assert not store.fence_path.exists()
+
+
+@pytest.mark.parametrize("mask", [0o022, 0o077], ids=["umask022", "umask077"])
+@pytest.mark.parametrize("lock_name", ["switch", "phase", "session", "checkpoint"])
+def test_lock_before_initialization_creates_private_target_directory(tmp_path, monkeypatch, mask, lock_name):
+    from tools.checkpoint import checkpoint_witness_lock
+    from tools.runtime_state import runtime_phase_lock, runtime_state_mutation_lock
+    from tools.target_store import initialize_target_store, target_switch_lock
+
+    monkeypatch.setenv("HUNT_MEMORY_DIR", str(tmp_path / "hunt-memory"))
+    target = "https://Lock-First.test:8443/path"
+    store = TargetStore(tmp_path, target)
+    lock, args = {
+        "switch": (target_switch_lock, ()),
+        "phase": (runtime_phase_lock, ("recon",)),
+        "session": (runtime_state_mutation_lock, ()),
+        "checkpoint": (checkpoint_witness_lock, ()),
+    }[lock_name]
+    previous_mask = os.umask(mask)
+    try:
+        with lock(tmp_path, target, *args):
+            assert stat.S_IMODE(store.path.parent.stat().st_mode) == 0o700
+            assert not store.path.exists() and not store.fence_path.exists()
+        assert store.path.parent == tmp_path / "state" / "lock-first.test:8443"
+        assert not store.path.exists() and not store.fence_path.exists()
+        assert initialize_target_store(tmp_path, target) == "primary"
+        assert store.binding()["revision"] == 0
+        assert stat.S_IMODE(store.path.parent.stat().st_mode) == 0o700
+    finally:
+        os.umask(previous_mask)
+
+
+def test_explicit_initialization_does_not_repair_unsafe_target_directory(tmp_path):
+    from tools.target_store import initialize_target_store
+
+    store = TargetStore(tmp_path, "unsafe-dir.test")
+    store.path.parent.mkdir(parents=True)
+    store.path.parent.chmod(0o755)
+
+    with pytest.raises(StoreError, match="requires mode 0700"):
+        initialize_target_store(tmp_path, store.target)
+    assert stat.S_IMODE(store.path.parent.stat().st_mode) == 0o755
+    assert not store.path.exists() and not store.fence_path.exists()
+
+    store.path.parent.chmod(0o700)
+    initialize_target_store(tmp_path, store.target)
+    store.path.parent.chmod(0o755)
+    with pytest.raises(StoreError, match="requires mode 0700"):
+        initialize_target_store(tmp_path, store.target)
+    assert stat.S_IMODE(store.path.parent.stat().st_mode) == 0o755
+
+
+@pytest.mark.parametrize("lock_name", ["switch", "mutation", "phase", "session", "checkpoint"])
+@pytest.mark.parametrize("obstacle", [
+    "state_symlink", "target_symlink", "locks_symlink", "leaf_symlink", "fifo", "hardlink",
+])
+def test_target_locks_reject_unsafe_paths_without_external_mutation(tmp_path, monkeypatch, lock_name, obstacle):
+    from tools.checkpoint import checkpoint_witness_lock
+    from tools.runtime_state import runtime_phase_lock, runtime_state_mutation_lock
+    from tools.target_store import target_mutation_lock, target_switch_lock
+
+    root = tmp_path / "repo"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "sentinel"
+    sentinel.write_bytes(b"external bytes must survive\n")
+    sentinel.chmod(0o644)
+    target = "lock-path.test"
+    lock, args, filename = {
+        "switch": (target_switch_lock, (), "target-switch.lock"),
+        "mutation": (target_mutation_lock, (), "target.lock"),
+        "phase": (runtime_phase_lock, ("recon",), "recon.lock"),
+        "session": (runtime_state_mutation_lock, (), "session.lock"),
+        "checkpoint": (checkpoint_witness_lock, (), "checkpoint.lock"),
+    }[lock_name]
+    lock_path = root / "state" / target / "locks" / filename
+    if obstacle.endswith("symlink"):
+        blocked_path = {
+            "state_symlink": root / "state",
+            "target_symlink": root / "state" / target,
+            "locks_symlink": lock_path.parent,
+            "leaf_symlink": lock_path,
+        }[obstacle]
+        blocked_path.parent.mkdir(parents=True)
+        blocked_path.symlink_to(sentinel if obstacle == "leaf_symlink" else outside)
+    else:
+        lock_path.parent.mkdir(parents=True)
+        blocked_path = lock_path
+        if obstacle == "hardlink":
+            os.link(sentinel, lock_path)
+        else:
+            os.mkfifo(lock_path)
+            original_open = os.open
+
+            def nonblocking_open(path, flags, *args, **kwargs):
+                if path == filename:
+                    assert flags & os.O_NONBLOCK, "FIFO must never be opened in blocking mode"
+                return original_open(path, flags, *args, **kwargs)
+
+            monkeypatch.setattr(os, "open", nonblocking_open)
+
+    def outside_snapshot():
+        return {
+            path.relative_to(outside): (path.stat(), path.read_bytes() if path.is_file() else None)
+            for path in [outside, *outside.rglob("*")]
+        }
+
+    before = outside_snapshot()
+    blocked_inode = blocked_path.lstat().st_ino
+    with pytest.raises(OSError):
+        with lock(root, target, *args):
+            pytest.fail("unsafe lock acquired")
+    # Reading may update atime; compare inode, mode, links, content and entries.
+    after = outside_snapshot()
+    assert after.keys() == before.keys()
+    for path, (info, content) in before.items():
+        current_info, current_content = after[path]
+        assert (current_info.st_ino, current_info.st_mode, current_info.st_nlink, current_content) == (
+            info.st_ino, info.st_mode, info.st_nlink, content,
+        )
+    assert blocked_path.lstat().st_ino == blocked_inode
+    assert not (root / "state" / target / "metadata.sqlite3").exists()
+    assert not (root / "state" / target / "legacy-frozen.json").exists()
+
+
+def test_cutover_lock_preserves_existing_legacy_directory_modes_and_inode(tmp_path):
+    lock_path = tmp_path / "state" / "legacy.test" / "locks" / "target-switch.lock"
+    lock_path.parent.mkdir(parents=True)
+    for path in (lock_path.parent.parent, lock_path.parent):
+        path.chmod(0o755)
+    lock_path.write_bytes(b"existing lock inode\n")
+    lock_path.chmod(0o644)
+    inode = lock_path.stat().st_ino
+    with target_cutover_lock(tmp_path, "legacy.test"):
+        assert lock_path.stat().st_ino == inode
+        assert stat.S_IMODE(lock_path.stat().st_mode) == 0o600
+    assert lock_path.read_bytes() == b"existing lock inode\n"
+    assert stat.S_IMODE(lock_path.parent.stat().st_mode) == 0o755
+    assert stat.S_IMODE(lock_path.parent.parent.stat().st_mode) == 0o755
+    assert not (lock_path.parent.parent / "metadata.sqlite3").exists()
+    assert not (lock_path.parent.parent / "legacy-frozen.json").exists()
+
+
+@pytest.mark.parametrize("filename", ["", ".", "..", "../escape.lock", "/escape.lock", "nested/lock", "bad\x00lock"])
+def test_target_lock_filename_rejected_before_directory_creation(tmp_path, filename):
+    from tools.target_paths import open_target_lock_file
+
+    root = tmp_path / "absent"
+    with pytest.raises(ValueError, match="single basename"):
+        open_target_lock_file(root, "target.test", filename)
+    assert not root.exists()
+
+
+def test_target_store_init_cli_reports_success_and_rejects_legacy(tmp_path):
+    import subprocess
+    import sys
+
+    script = Path(__file__).resolve().parents[1] / "tools" / "target_store.py"
+    fresh = subprocess.run(
+        [sys.executable, str(script), "init", "--store", "--target", "cli-init.test",
+         "--repo-root", str(tmp_path)],
+        capture_output=True, text=True, check=False,
+    )
+    replay = subprocess.run(
+        [sys.executable, str(script), "init", "--store", "--target", "cli-init.test",
+         "--repo-root", str(tmp_path)],
+        capture_output=True, text=True, check=False,
+    )
+
+    assert fresh.returncode == replay.returncode == 0
+    assert json.loads(fresh.stdout) == {"backend": "primary", "target": "cli-init.test"}
+    assert json.loads(replay.stdout) == json.loads(fresh.stdout)
+
+    legacy = tmp_path / "state" / "cli-legacy.test" / "case_state.json"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text('{"sessions":[]}', encoding="utf-8")
+    refused = subprocess.run(
+        [sys.executable, str(script), "init", "--store", "--target", "cli-legacy.test",
+         "--repo-root", str(tmp_path)],
+        capture_output=True, text=True, check=False,
+    )
+    assert refused.returncode == 2
+    assert "legacy target state exists" in refused.stderr
+    assert not (legacy.parent / "metadata.sqlite3").exists()
+    assert legacy.read_text(encoding="utf-8") == '{"sessions":[]}'
+
+
+def test_target_store_init_cli_help_has_no_target_side_effects(tmp_path):
+    import subprocess
+    import sys
+
+    script = Path(__file__).resolve().parents[1] / "tools" / "target_store.py"
+    result = subprocess.run(
+        [sys.executable, str(script), "init", "--help", "--repo-root", str(tmp_path)],
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0
+    assert not (tmp_path / "state").exists()
+
+
+def _make_v8_store(root, monkeypatch):
+    import tools.target_store as module
+
+    v8_schema = module._SCHEMA.replace(module._COVERAGE_REVIEW_SCHEMA, "").replace(
+        "    created_at TEXT NOT NULL,\n    active_goal TEXT NOT NULL DEFAULT ''\n",
+        "    created_at TEXT NOT NULL\n",
+        1,
+    ).replace(
+        "'primitive','negative','hypothesis','handoff','note'",
+        "'primitive','negative','hypothesis','handoff'",
+        1,
+    )
+    assert v8_schema != module._SCHEMA
+    store = TargetStore(root, "v8-memory.test")
+    with monkeypatch.context() as patch:
+        patch.setattr(module, "_SCHEMA", v8_schema)
+        patch.setattr(module, "SCHEMA_VERSION", 8)
+        store.initialize()
+    store.remember(command_id="v8-hypothesis", kind="hypothesis", statement="Compare peer object",
+                   conditions="Both actors have sessions", reopen_when="", next_intent="Compare response",
+                   evidence=[], actor="operator")
+    store.create_action(command_id="v8-work", action_id="v8-work", kind="work",
+                        subject={"experience_id": "v8-hypothesis"}, intent="Review hypothesis",
+                        execution_key="v8-work", actor="operator")
+    return store
+
+
+def test_memory_schema_upgrade_preserves_v8_facts_and_requires_explicit_backup(tmp_path, monkeypatch):
+    import subprocess
+    import sys
+
+    store = _make_v8_store(tmp_path, monkeypatch)
+    old_revision = store.binding()["revision"]
+    assert store.page("experiences")["total"] == 1
+    with pytest.raises(StoreError, match="upgrade required"):
+        store.active_goal()
+    with pytest.raises(StoreError, match="upgrade required"):
+        store.remember(command_id="v8-note", kind="note", statement="Unverified note",
+                       conditions="unknown", reopen_when="", next_intent="", evidence=[], actor="operator")
+
+    backup = tmp_path / "memory-v8-backup.sqlite3"
+    script = Path(__file__).resolve().parents[1] / "tools" / "target_store.py"
+    upgraded = subprocess.run(
+        [sys.executable, str(script), "upgrade-memory", "--target", store.target,
+         "--repo-root", str(tmp_path), "--backup", str(backup)],
+        capture_output=True, text=True, check=False,
+    )
+    assert upgraded.returncode == 0, upgraded.stderr
+    result = json.loads(upgraded.stdout)
+    assert result["status"] == "upgraded" and result["revision"] == old_revision + 1
+    assert backup.is_file() and stat.S_IMODE(backup.stat().st_mode) == 0o600
+    with sqlite3.connect(backup) as conn:
+        assert conn.execute("SELECT schema_version,revision FROM store").fetchone() == (8, old_revision)
+    with sqlite3.connect(store.path) as conn:
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert conn.execute("SELECT count(*) FROM experiences").fetchone()[0] == 1
+    assert store.action("v8-work")["subject_experience_id"] == "v8-hypothesis"
+    assert store.active_goal() == ""
+    receipt = store.set_active_goal(command_id="set-goal", goal="Map authorization boundary",
+                                    actor="operator", expected_revision=old_revision + 1)
+    assert receipt["revision"] == old_revision + 2
+    assert store.active_goal() == "Map authorization boundary"
+    assert store.set_active_goal(command_id="set-goal", goal="Map authorization boundary",
+                                 actor="operator", expected_revision=old_revision + 1)["replayed"]
+    with pytest.raises(ConflictError, match="revision changed"):
+        store.set_active_goal(command_id="stale-goal", goal="Stale intent", actor="operator",
+                              expected_revision=old_revision + 1)
+    assert store.active_goal() == "Map authorization boundary"
+    store.remember(command_id="new-note", kind="note", statement="Header may affect routing",
+                   conditions="unknown", reopen_when="", next_intent="Inspect response",
+                   evidence=[], actor="operator")
+    assert store.experience("new-note")["kind"] == "note"
+    assert store.upgrade_memory_schema(tmp_path / "unused-backup.sqlite3")["status"] == "already_current"
+    assert not (tmp_path / "unused-backup.sqlite3").exists()
+
+
+def test_memory_schema_upgrade_failure_rolls_back_and_keeps_verified_backup(tmp_path, monkeypatch):
+    import tools.target_store as module
+
+    store = _make_v8_store(tmp_path, monkeypatch)
+    before = store.binding()
+    backup = tmp_path / "memory-v8-failed-backup.sqlite3"
+    with monkeypatch.context() as patch:
+        patch.setattr(module, "_digest", lambda value: (_ for _ in ()).throw(RuntimeError("injected failure")))
+        with pytest.raises(RuntimeError, match="injected failure"):
+            store.upgrade_memory_schema(backup)
+
+    assert backup.is_file()
+    with sqlite3.connect(backup) as conn:
+        assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert conn.execute("SELECT schema_version FROM store").fetchone()[0] == 8
+    with sqlite3.connect(store.path) as conn:
+        assert conn.execute("SELECT schema_version FROM store").fetchone()[0] == 8
+        assert not any(row[1] == "active_goal" for row in conn.execute("PRAGMA table_info(store)"))
+        assert not any(row[0] == "experiences_next" for row in conn.execute("SELECT name FROM sqlite_master"))
+    assert store.binding() == before
+    assert store.page("experiences")["total"] == 1
+
+
+def test_experience_page_filters_before_limit_and_binds_cursor(tmp_path):
+    store = make_store(tmp_path)
+    for index in range(7):
+        store.remember(command_id=f"note-{index}", kind="note",
+                       statement=f"Candidate {index}",
+                       conditions="basket flow" if index < 6 else "unrelated flow",
+                       reopen_when="", next_intent="Compare peer response",
+                       evidence=[], actor="operator")
+
+    first = store.experience_page(kinds=["note"], query="basket", limit=5)
+    assert first["total"] == 6 and first["remaining"] == 1 and first["has_more"]
+    assert len(first["items"]) == 5
+    assert all(item["conditions"] == "basket flow" and item["evidence"] == []
+               for item in first["items"])
+    second = store.experience_page(kinds=["note"], query="basket", limit=5,
+                                   cursor=first["next_cursor"])
+    assert len(second["items"]) == 1 and second["remaining"] == 0
+    assert set(item["id"] for item in first["items"] + second["items"]) == {
+        f"note-{index}" for index in range(6)
+    }
+    with pytest.raises(ConflictError, match="filter or snapshot"):
+        store.experience_page(kinds=["hypothesis"], query="basket", cursor=first["next_cursor"])
+    with pytest.raises(StoreError, match="malformed experience cursor"):
+        store.experience_page(cursor="not-base64")
+    store.remember(command_id="later-note", kind="note", statement="Later candidate",
+                   conditions="basket flow", reopen_when="", next_intent="",
+                   evidence=[], actor="operator")
+    with pytest.raises(ConflictError, match="filter or snapshot"):
+        store.experience_page(kinds=["note"], query="basket", cursor=first["next_cursor"])
+
+
+def test_memory_context_uses_one_snapshot_during_concurrent_write(tmp_path, monkeypatch):
+    store = make_store(tmp_path)
+    store.set_active_goal(command_id="initial-goal", goal="Original", actor="operator", expected_revision=0)
+    before = store.binding()
+    original_page = store._experience_page_conn
+
+    def write_between_reads(conn, meta, **kwargs):
+        store.set_active_goal(command_id="new-goal", goal="Changed", actor="operator",
+                              expected_revision=before["revision"])
+        store.remember(command_id="new-note", kind="note", statement="Changed context",
+                       conditions="new session", reopen_when="", next_intent="", evidence=[], actor="operator")
+        return original_page(conn, meta, **kwargs)
+
+    monkeypatch.setattr(store, "_experience_page_conn", write_between_reads)
+    view = store.memory_context(limit=5)
+    assert view["revision"] == view["experiences"]["revision"] == before["revision"]
+    assert view["active_goal"] == "Original"
+    assert view["experiences"]["total"] == 0
+    assert view["experiences"]["items"] == []
+    assert store.active_goal() == "Changed"
+    assert store.experience_page(limit=5)["total"] == 1
 
 
 def test_primary_fence_survives_database_loss_and_blocks_reinitialization(tmp_path):
@@ -1036,26 +1776,26 @@ def test_command_identity_cannot_diverge_between_facts_and_audit(tmp_path, field
     assert store.action("read1")["status"] == "ready"
 
 
-@pytest.mark.parametrize("writer", ["store", "legacy_queue"])
+@pytest.mark.parametrize("writer", ["store", "queue_adapter"])
 def test_exclusive_cutover_lock_blocks_target_mutations(tmp_path, writer):
-    store = make_store(tmp_path) if writer == "store" else None
+    store = make_store(tmp_path)
     entered = threading.Event()
 
     def mutate():
         entered.set()
-        if store:
+        if writer == "store":
             create_action(store)
         else:
             add_manual_action(
                 tmp_path,
-                target="legacy.test",
+                target=store.target,
                 action_type="manual-review",
                 evidence="Explicit operator request",
                 next_question="What does the stored material show?",
                 action="Review the target-owned material.",
             )
 
-    target = "target.test" if store else "legacy.test"
+    target = store.target
     with target_cutover_lock(tmp_path, target):
         pool = ThreadPoolExecutor(max_workers=1)
         future = pool.submit(mutate)
@@ -1065,7 +1805,5 @@ def test_exclusive_cutover_lock_blocks_target_mutations(tmp_path, writer):
         future.result(timeout=1)
     finally:
         pool.shutdown(wait=True)
-    if store:
-        assert store.action("a1")["status"] == "ready"
-    else:
-        assert (tmp_path / "state" / "legacy.test" / "action_queue.json").is_file()
+    assert store.page("actions")["total"] == 1
+    assert not (tmp_path / "state" / store.target / "action_queue.json").exists()

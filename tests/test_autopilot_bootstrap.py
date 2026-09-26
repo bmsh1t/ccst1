@@ -8,6 +8,7 @@ import shlex
 from tools import autopilot_bootstrap
 from tools import autopilot_state as autopilot_state_module
 from tools.runtime_state import update_runtime_state
+from tools.target_store import TargetStore
 from tools.surface_projection import build_surface_input_manifest, write_surface_projection
 from tools.technology_inventory import load_or_build_inventory
 
@@ -255,8 +256,9 @@ def test_state_read_error_is_structured_without_traceback(monkeypatch, tmp_path)
 
 
 def test_corrupt_runtime_state_stops_bootstrap_without_overwrite(monkeypatch, tmp_path):
+    TargetStore(tmp_path, "example.test").initialize()
     state_file = tmp_path / "state" / "example.test" / "session.json"
-    state_file.parent.mkdir(parents=True)
+    state_file.parent.mkdir(parents=True, exist_ok=True)
     state_file.write_text("{broken", encoding="utf-8")
     monkeypatch.setattr(autopilot_bootstrap, "compare_runtime", _clean_runtime)
     monkeypatch.setattr(autopilot_bootstrap, "build_capability_profile", _capabilities)
@@ -1033,6 +1035,7 @@ def test_bootstrap_projects_recovery_and_draft_completion_handoffs():
 
 
 def _write_fast_recon(repo_root, target: str = "target.com"):
+    TargetStore(repo_root, target).initialize()
     recon_dir = repo_root / "recon" / target
     (recon_dir / "live").mkdir(parents=True)
     (recon_dir / "urls").mkdir()
@@ -1049,26 +1052,10 @@ def _write_fast_recon(repo_root, target: str = "target.com"):
 
 def test_compact_state_never_calls_full_surface_or_full_recon_inspection(monkeypatch, tmp_path):
     _write_fast_recon(tmp_path)
-    findings_dir = tmp_path / "findings" / "target.com"
-    findings_dir.mkdir(parents=True)
-    (findings_dir / "findings.json").write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "target": "target.com",
-                "findings": [
-                    {
-                        "id": "candidate-1",
-                        "type": "idor",
-                        "url": "https://api.target.com/orders/1",
-                        "validation_status": "unvalidated",
-                        "report_status": "not_generated",
-                        "rubric": {"ready": False, "status": "needs-evidence"},
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
+    TargetStore(tmp_path, "target.com").create_finding(
+        command_id="claim:candidate-1", finding_id="candidate-1",
+        endpoint="https://api.target.com/orders/1", method="GET", family="idor",
+        title="Object access claim", claim="Compare owned objects", actor="test",
     )
 
     def unexpected(*_args, **_kwargs):
@@ -1138,6 +1125,7 @@ def test_compact_state_requires_projection_then_consumes_exact_hit(tmp_path):
 
 
 def test_bounded_full_state_entry_never_falls_back_to_surface_ranking(tmp_path, monkeypatch):
+    TargetStore(tmp_path, "target.com").initialize()
     def unexpected(*_args, **_kwargs):
         raise AssertionError("bounded state must not load or rank the full surface")
 
@@ -1224,35 +1212,20 @@ def test_priority_bootstrap_does_not_open_large_artifacts_or_write_target_state(
     with with_params.open("ab") as handle:
         handle.truncate(32 * 1024 * 1024)
     inventory = tmp_path / "state" / "target.com" / "observations.json"
-    inventory.parent.mkdir(parents=True)
+    inventory.parent.mkdir(parents=True, exist_ok=True)
     with inventory.open("wb") as handle:
         handle.truncate(64 * 1024 * 1024)
 
-    findings_dir = tmp_path / "findings" / "target.com"
-    findings_dir.mkdir(parents=True)
-    (findings_dir / "findings.json").write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "target": "target.com",
-                "findings": [
-                    {
-                        "id": "candidate-large",
-                        "type": "idor",
-                        "url": "https://api.target.com/orders/1",
-                        "validation_status": "candidate",
-                        "report_status": "not_generated",
-                        "rubric": {"ready": False, "status": "needs-evidence"},
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
+    TargetStore(tmp_path, "target.com").create_finding(
+        command_id="claim:candidate-large", finding_id="candidate-large",
+        endpoint="https://api.target.com/orders/1", method="GET", family="idor",
+        title="Object access claim", claim="Compare owned objects", actor="test",
     )
     before = {
         path.relative_to(tmp_path).as_posix(): (path.stat().st_size, path.stat().st_mtime_ns)
         for path in tmp_path.rglob("*")
-        if path.is_file()
+        if path.is_file() and not path.name.endswith("-shm")
+        and not (path.name.endswith("-wal") and path.stat().st_size == 0)
     }
     original_open = type(with_params).open
 
@@ -1271,7 +1244,8 @@ def test_priority_bootstrap_does_not_open_large_artifacts_or_write_target_state(
     after = {
         path.relative_to(tmp_path).as_posix(): (path.stat().st_size, path.stat().st_mtime_ns)
         for path in tmp_path.rglob("*")
-        if path.is_file()
+        if path.is_file() and not path.name.endswith("-shm")
+        and not (path.name.endswith("-wal") and path.stat().st_size == 0)
     }
 
     assert state["next_action"] == "validate_finding"

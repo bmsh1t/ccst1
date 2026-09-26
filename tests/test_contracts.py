@@ -19,9 +19,13 @@ def test_validate_terminal_states_match_canonical_usage():
 
 
 def test_checkpoint_queue_lock_order_is_documented_and_enforced():
-    from tools.checkpoint import CHECKPOINT_QUEUE_LOCK_ORDER as cp_order  # re-export
+    import inspect
+    from tools.checkpoint import record_round_closure, record_global_review
 
-    assert cp_order == ("checkpoint_witness_lock", "queue_mutation_lock")
+    assert CHECKPOINT_QUEUE_LOCK_ORDER == ("checkpoint_witness_lock", "queue_mutation_lock")
+    for operation in (record_round_closure, record_global_review):
+        source = inspect.getsource(operation)
+        assert source.index("with checkpoint_witness_lock(") < source.index("with queue_mutation_lock(")
 
 
 def test_ledger_redline_events_are_never_clean():

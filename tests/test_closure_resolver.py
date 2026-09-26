@@ -275,11 +275,11 @@ def test_terminal_vocabulary_is_defined_once_for_ledger_and_closure():
 
 def test_closure_projection_is_defined_once_and_fed_by_both_producers():
     """One cell-closing projection; producers only supply canonical records."""
-    import closure_projection
-    import evidence_ledger
+    from tools import closure_projection, current_truth
 
     assert closure_projection.derive_identity_fields.__module__.endswith("closure_projection")
-    assert evidence_ledger.identity_fact_conflicts.__module__.endswith("closure_projection")
+    assert current_truth.build_current_cell_projection is closure_projection.build_current_cell_projection
+    assert current_truth.suppress_unauthorized_closures is closure_projection.suppress_unauthorized_closures
 
     tools = Path(__file__).resolve().parents[1] / "tools"
     ledger = (tools / "evidence_ledger.py").read_text()

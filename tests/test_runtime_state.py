@@ -1,6 +1,8 @@
 """Tests for lightweight runtime state + recon artifact inspection."""
 
 import json
+import os
+import stat
 import subprocess
 import sys
 import threading
@@ -192,6 +194,45 @@ def test_runtime_phase_lock_rejects_unknown_phase(tmp_path):
     with pytest.raises(ValueError, match="unsupported runtime phase"):
         with runtime_phase_lock(tmp_path, "target.com", "report"):
             pass
+
+
+def test_runtime_phase_lock_status_never_creates_or_chmods(tmp_path):
+    root = tmp_path / "absent"
+    assert runtime_state_module._runtime_phase_lock_status(root, "target.com", "recon") is False
+    assert not root.exists()
+    lock_path = root / "state" / "target.com" / "locks" / "recon.lock"
+    for directory in (root, root / "state", lock_path.parent.parent, lock_path.parent):
+        directory.mkdir()
+        assert runtime_state_module._runtime_phase_lock_status(root, "target.com", "recon") is False
+        assert list(directory.iterdir()) == []
+    lock_path.write_bytes(b"existing metadata\n")
+    lock_path.chmod(0o644)
+    assert runtime_state_module._runtime_phase_lock_status(root, "target.com", "recon") is False
+    assert lock_path.read_bytes() == b"existing metadata\n"
+    assert stat.S_IMODE(lock_path.stat().st_mode) == 0o644
+
+
+@pytest.mark.parametrize("obstacle", ["symlink", "dangling_symlink", "fifo", "hardlink", "directory", "parent_symlink"])
+def test_runtime_phase_lock_status_reports_unsafe_path_as_unknown(tmp_path, obstacle):
+    lock_path = tmp_path / "state" / "target.com" / "locks" / "recon.lock"
+    lock_path.parent.mkdir(parents=True)
+    sentinel = tmp_path / "external"
+    sentinel.write_bytes(b"external lock metadata\n")
+    sentinel.chmod(0o644)
+    if obstacle in {"symlink", "dangling_symlink"}:
+        lock_path.symlink_to(sentinel if obstacle == "symlink" else tmp_path / "missing")
+    elif obstacle == "fifo":
+        os.mkfifo(lock_path)
+    elif obstacle == "hardlink":
+        os.link(sentinel, lock_path)
+    elif obstacle == "directory":
+        lock_path.mkdir()
+    else:
+        lock_path.parent.rmdir()
+        lock_path.parent.symlink_to(tmp_path)
+    assert runtime_state_module._runtime_phase_lock_status(tmp_path, "target.com", "recon") is None
+    assert sentinel.read_bytes() == b"external lock metadata\n"
+    assert stat.S_IMODE(sentinel.stat().st_mode) == 0o644
 
 
 def test_runtime_phase_lock_remains_held_by_inheriting_child(tmp_path):
@@ -444,6 +485,7 @@ def test_write_v2_excludes_deprecated_fields(tmp_path):
 
 def test_derive_state_view_returns_all_layers(tmp_path):
     """derive_state_view exposes persisted + recon + findings + evidence layers."""
+    TargetStore(tmp_path, 'target.com').initialize()
     update_runtime_state(tmp_path, "target.com", mode="agent",
                         last_executed_workflow="run_recon")
     view = derive_state_view(tmp_path, "target.com")
@@ -481,37 +523,27 @@ def test_primary_runtime_queue_projection_ignores_corrupt_legacy_queue(tmp_path)
     assert queue["total"] == 1
 
 
-def test_owner_projection_prefers_canonical_findings_and_coverage(tmp_path):
-    """Current endpoint/finding facts ignore a stale compatibility profile."""
-    from finding_index import upsert_findings
-
-    upsert_findings(
-        tmp_path / "findings" / "target.com",
-        [
-            {
-                "id": "F-1",
-                "target": "target.com",
-                "url": "https://target.com/api/orders?id=7",
-                "type": "sqli",
-                "title": "SQLi candidate",
-            }
-        ],
-        target="target.com",
+def test_owner_projection_uses_registered_observations_and_current_surface(tmp_path):
+    store = TargetStore(tmp_path, "target.com")
+    store.initialize()
+    store.create_finding(
+        command_id="claim", finding_id="F-1", endpoint="https://target.com/api/orders?id=7",
+        method="GET", family="sqli", title="SQLi candidate", claim="Unassessed claim", actor="operator",
     )
-    coverage_path = tmp_path / "evidence" / "target.com" / "coverage_matrix.json"
-    coverage_path.parent.mkdir(parents=True)
-    coverage_path.write_text(
-        json.dumps(
-            {
-                "target": "target.com",
-                "endpoints": [
-                    {"endpoint": "/api/orders", "cells": {"SQLi": {"status": "tested_clean"}}},
-                    {"endpoint": "/api/export", "cells": {"SQLi": {"status": "untested"}}},
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
+    raw = tmp_path / "evidence" / "target.com" / "response.txt"
+    raw.parent.mkdir(parents=True)
+    raw.write_text("Recorded response", encoding="utf-8")
+    store.start_attempt(attempt_id="read", source="native", started_at="2026-09-24T00:00:00Z", actor="operator")
+    store.record_execution(attempt_id="read", outcome="complete", actor="operator", observations=[{
+        "endpoint": "https://target.com/api/orders", "method": "GET", "family": "sqli",
+        "observed_at": "2026-09-24T00:00:00Z", "description": "Recorded response",
+        "result": "tested_clean", "artifacts": {"response": raw.relative_to(tmp_path).as_posix()},
+        "state_changing": False,
+    }])
+    urls = tmp_path / "recon" / "target.com" / "urls" / "all.txt"
+    urls.parent.mkdir(parents=True)
+    urls.write_text("https://target.com/api/orders?id=7\nhttps://target.com/api/export\n", encoding="utf-8")
+    before = store.binding()
 
     projection = derive_owner_projection(tmp_path, "target.com")
 
@@ -520,10 +552,43 @@ def test_owner_projection_prefers_canonical_findings_and_coverage(tmp_path):
     assert projection["untested_authoritative"] is True
     assert "/api/orders" in projection["tested_endpoints"]
     assert "/api/export" in projection["untested_endpoints"]
-    assert projection["findings"][0]["vuln_class"] == "sqli"
+    assert projection["findings"][0]["vuln_class"] == "SQLi"
+    assert store.binding() == before
+
+
+def test_primary_owner_projection_ignores_retired_coverage(tmp_path):
+    target = "target.com"
+    store = TargetStore(tmp_path, target)
+    store.initialize()
+    store.create_finding(
+        command_id="finding-1", finding_id="finding-1",
+        endpoint=f"https://{target}/current", method="GET", family="Authz",
+        title="Current claim", claim="Review current boundary", actor="ai",
+    )
+    matrix_path = tmp_path / "evidence" / target / "coverage_matrix.json"
+    matrix_path.parent.mkdir(parents=True)
+    matrix_path.write_text(json.dumps({"target": target, "endpoints": [
+        {"endpoint": "/retired-tested", "cells": {"Authz": {"status": "tested_clean"}}},
+        {"endpoint": "/retired-untested", "cells": {"Authz": {"status": "untested"}}},
+    ]}), encoding="utf-8")
+    recon_urls = tmp_path / "recon" / target / "urls" / "all.txt"
+    recon_urls.parent.mkdir(parents=True)
+    recon_urls.write_text(f"https://{target}/current-open\n", encoding="utf-8")
+
+    projection = derive_owner_projection(tmp_path, target)
+
+    assert projection["backend"] == "primary"
+    assert projection["tested_authoritative"] is True
+    assert projection["untested_authoritative"] is True
+    assert projection["tested_endpoints"] == []
+    assert "/current-open" in projection["untested_endpoints"]
+    assert "/retired-untested" not in projection["untested_endpoints"]
+    matrix_path.write_text("{broken", encoding="utf-8")
+    assert derive_owner_projection(tmp_path, target)["tested_endpoints"] == []
 
 
 def test_derived_status_preserves_scan_failure_over_ready_artifacts(tmp_path, monkeypatch):
+    TargetStore(tmp_path, 'target.com').initialize()
     update_runtime_state(
         tmp_path,
         "target.com",
@@ -544,6 +609,7 @@ def test_derived_status_preserves_scan_failure_over_ready_artifacts(tmp_path, mo
 
 
 def test_derived_status_exposes_partial_recon_budget(tmp_path, monkeypatch):
+    TargetStore(tmp_path, 'target.com').initialize()
     update_runtime_state(tmp_path, "target.com", mode="recon", last_executed_workflow="run_recon")
     monkeypatch.setattr(
         runtime_state_module,
@@ -561,6 +627,7 @@ def test_derived_status_exposes_partial_recon_budget(tmp_path, monkeypatch):
 
 
 def test_inspect_recon_artifacts_reports_ready_cache(tmp_path):
+    TargetStore(tmp_path, 'target.com').initialize()
     recon_dir = tmp_path / "recon" / "target.com"
     findings_dir = tmp_path / "findings" / "target.com"
     (recon_dir / "live").mkdir(parents=True)
@@ -588,6 +655,7 @@ def test_inspect_recon_artifacts_reports_ready_cache(tmp_path):
 
 
 def test_recon_inspection_projects_pending_cidr_continuation(tmp_path):
+    TargetStore(tmp_path, '10.0.0.0/19').initialize()
     live_dir = tmp_path / "recon" / "10.0.0.0_19" / "live"
     live_dir.mkdir(parents=True)
     (live_dir / "cidr_continuation.json").write_text(
@@ -625,6 +693,7 @@ def test_recon_inspection_projects_pending_cidr_continuation(tmp_path):
 
 
 def test_recon_inspection_rejects_inconsistent_complete_cidr_continuation(tmp_path):
+    TargetStore(tmp_path, '10.0.0.0/19').initialize()
     live_dir = tmp_path / "recon" / "10.0.0.0_19" / "live"
     live_dir.mkdir(parents=True)
     (live_dir / "cidr_continuation.json").write_text(
@@ -645,6 +714,7 @@ def test_recon_inspection_rejects_inconsistent_complete_cidr_continuation(tmp_pa
 
 @pytest.mark.parametrize("content", [b"{broken", b"\xff"])
 def test_recon_inspection_warns_on_invalid_cidr_continuation(tmp_path, content):
+    TargetStore(tmp_path, '10.0.0.0/19').initialize()
     live_dir = tmp_path / "recon" / "10.0.0.0_19" / "live"
     live_dir.mkdir(parents=True)
     (live_dir / "cidr_continuation.json").write_bytes(content)
@@ -667,6 +737,7 @@ def test_recon_inspection_warns_on_invalid_cidr_continuation(tmp_path, content):
 def test_http_probe_outcome_distinguishes_success_zero_from_incomplete(
     tmp_path, status, note, outcome
 ):
+    TargetStore(tmp_path, 'target.com').initialize()
     recon_dir = tmp_path / "recon" / "target.com"
     (recon_dir / "live").mkdir(parents=True)
     (recon_dir / "live" / "httpx_full.txt").write_text("")
@@ -689,6 +760,7 @@ def test_http_probe_outcome_distinguishes_success_zero_from_incomplete(
 
 
 def test_zero_live_hosts_keeps_historical_surface_ready(tmp_path):
+    TargetStore(tmp_path, 'target.com').initialize()
     recon_dir = tmp_path / "recon" / "target.com"
     (recon_dir / "live").mkdir(parents=True)
     (recon_dir / "urls").mkdir()
@@ -705,6 +777,7 @@ def test_zero_live_hosts_keeps_historical_surface_ready(tmp_path):
 
 
 def test_normal_recon_js_inventory_is_a_surface_input(tmp_path):
+    TargetStore(tmp_path, 'target.com').initialize()
     recon_dir = tmp_path / "recon" / "target.com"
     (recon_dir / "live").mkdir(parents=True)
     (recon_dir / "urls").mkdir()
@@ -723,6 +796,7 @@ def test_normal_recon_js_inventory_is_a_surface_input(tmp_path):
 
 
 def test_fast_recon_inspection_uses_stat_presence_without_line_counts(tmp_path, monkeypatch):
+    TargetStore(tmp_path, 'target.com').initialize()
     recon_dir = tmp_path / "recon" / "target.com"
     (recon_dir / "live").mkdir(parents=True)
     (recon_dir / "urls").mkdir()
@@ -748,6 +822,7 @@ def test_fast_recon_inspection_uses_stat_presence_without_line_counts(tmp_path, 
 
 
 def test_inspect_recon_artifacts_counts_exposure_signals(tmp_path):
+    TargetStore(tmp_path, 'target.com').initialize()
     recon_dir = tmp_path / "recon" / "target.com"
     (recon_dir / "live").mkdir(parents=True)
     (recon_dir / "urls").mkdir(parents=True)
@@ -848,6 +923,7 @@ def test_inspect_recon_artifacts_counts_exposure_signals(tmp_path):
 
 
 def test_inspect_recon_artifacts_warns_on_surface_gaps(tmp_path):
+    TargetStore(tmp_path, 'target.com').initialize()
     recon_dir = tmp_path / "recon" / "target.com"
     (recon_dir / "live").mkdir(parents=True)
     (recon_dir / "urls").mkdir(parents=True)
@@ -862,10 +938,11 @@ def test_inspect_recon_artifacts_warns_on_surface_gaps(tmp_path):
     assert payload["available"] is True
     assert payload["ready"] is True
     assert payload["surface_inputs_ready"] is False
-    assert payload["warnings"] == ["no URL, JS, browser, or structured finding surface artifacts found yet"]
+    assert payload["warnings"] == ["no URL, JS, browser, or source-intel surface artifacts found yet"]
 
 
 def test_inspect_recon_prefers_host_aware_ports_with_legacy_fallback(tmp_path):
+    TargetStore(tmp_path, 'target.com').initialize()
     recon_dir = tmp_path / "recon" / "target.com"
     (recon_dir / "ports").mkdir(parents=True)
     legacy = recon_dir / "ports" / "open_ports_all.txt"
@@ -885,6 +962,7 @@ def test_inspect_recon_prefers_host_aware_ports_with_legacy_fallback(tmp_path):
 
 
 def test_inspect_recon_exposes_structured_waf_context(tmp_path):
+    TargetStore(tmp_path, 'target.com').initialize()
     recon_dir = tmp_path / "recon" / "target.com" / "live"
     recon_dir.mkdir(parents=True)
     (recon_dir / "waf_context.json").write_text(
@@ -908,6 +986,7 @@ def test_inspect_recon_exposes_structured_waf_context(tmp_path):
 
 
 def test_inspect_recon_artifacts_accepts_compact_ffuf_surface(tmp_path):
+    TargetStore(tmp_path, 'target.com').initialize()
     recon_dir = tmp_path / "recon" / "target.com"
     (recon_dir / "live").mkdir(parents=True)
     (recon_dir / "urls").mkdir(parents=True)
@@ -939,6 +1018,7 @@ def test_inspect_recon_artifacts_accepts_compact_ffuf_surface(tmp_path):
 
 
 def test_recon_budget_projection_uses_latest_record_and_preserves_advisory_status(tmp_path):
+    TargetStore(tmp_path, 'target.com').initialize()
     recon_dir = tmp_path / "recon" / "target.com"
     recon_dir.mkdir(parents=True)
     manifest = recon_dir / "recon_manifest.jsonl"
@@ -979,6 +1059,7 @@ def test_recon_budget_projection_uses_latest_record_and_preserves_advisory_statu
 
 
 def test_recon_phase_gates_are_projected_from_latest_manifest_rows(tmp_path):
+    TargetStore(tmp_path, 'target.com').initialize()
     recon_dir = tmp_path / "recon" / "target.com"
     (recon_dir / "live").mkdir(parents=True)
     (recon_dir / "urls").mkdir(parents=True)
@@ -1040,6 +1121,7 @@ def test_recon_phase_gates_are_projected_from_latest_manifest_rows(tmp_path):
 
 
 def test_inspect_recon_artifacts_reports_legacy_ffuf_without_parsing_it(tmp_path):
+    TargetStore(tmp_path, 'target.com').initialize()
     recon_dir = tmp_path / "recon" / "target.com"
     (recon_dir / "live").mkdir(parents=True)
     (recon_dir / "urls").mkdir(parents=True)

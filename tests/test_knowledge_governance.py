@@ -1,4 +1,5 @@
 from pathlib import Path
+from tools.target_store import TargetStore
 
 import json
 
@@ -314,6 +315,7 @@ def test_context_loading_prefers_evidence_and_case_pointers_over_methodology_pro
 
 
 def test_distilled_router_cards_are_discoverable_by_context_pack(tmp_path):
+    TargetStore(tmp_path, "target.test").initialize()
     # Keyword selection retired (2026-09-13): discoverability means the card
     # is in the published catalog for AI-side pull.
     for card_name, focus in DISTILLED_ROUTER_TRIGGER_CASES.items():
@@ -325,6 +327,7 @@ def test_distilled_router_cards_are_discoverable_by_context_pack(tmp_path):
 
 
 def test_absorbed_distilled_patterns_route_to_kept_base_cards(tmp_path):
+    TargetStore(tmp_path, "target.test").initialize()
     for focus, expected_card in ABSORBED_DISTILLED_TRIGGER_CASES:
         pack = build_context_pack(tmp_path, target="target.test", focus=focus)
 
@@ -351,6 +354,7 @@ def test_evidence_counterexamples_recall_existing_boundary_cards(tmp_path):
 
     for focus, observation, expected_card in cases:
         target = f"{focus}.test"
+        TargetStore(tmp_path, target).initialize()
         evidence_ref = f"findings/{target}/source_intel/routes.json"
         evidence = tmp_path / evidence_ref
         evidence.parent.mkdir(parents=True)
@@ -368,6 +372,7 @@ def test_evidence_counterexamples_recall_existing_boundary_cards(tmp_path):
 def test_distilled_router_cards_are_discoverable_from_real_evidence_indexes(tmp_path):
     for card_name, evidence in DISTILLED_ROUTER_TRIGGER_CASES.items():
         target = card_name.removesuffix(".md")
+        TargetStore(tmp_path, target).initialize()
         source_dir = tmp_path / "findings" / target / "source_intel"
         source_dir.mkdir(parents=True)
         (source_dir / "routes.json").write_text(
@@ -390,6 +395,7 @@ def test_distilled_router_cards_are_discoverable_from_real_evidence_indexes(tmp_
 
 
 def test_default_knowledge_surface_never_recommends_retired_cards(tmp_path):
+    TargetStore(tmp_path, "retired-contract.test").initialize()
     """退役卡（registry status: retired）不得出现在默认召回面。
 
     record-evidence 收敛轮加入：retire 后卡文件保留、Pack 可见性自动收敛，
@@ -402,7 +408,7 @@ def test_default_knowledge_surface_never_recommends_retired_cards(tmp_path):
 
     assert retired, "registry 应至少有一张 retired 卡作为该契约的活样本"
 
-    pack = build_context_pack(repo, target="retired-contract.test", focus="idor")
+    pack = build_context_pack(tmp_path, target="retired-contract.test", focus="idor")
 
     for field in ("card_catalog", "knowledge_card_recall"):
         surfaced = {

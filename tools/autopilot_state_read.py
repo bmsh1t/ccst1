@@ -17,22 +17,20 @@ import re
 
 try:
     from tools.closure_resolver import canonical_endpoint_path
-    from tools.surface import load_surface_context
     from tools.target_case_state import (
-        case_state_path,
         summary as build_case_state_summary,
     )
     from tools.target_memory import load_goal_memory
     from tools.target_paths import canonical_target_value, target_storage_key
+    from tools.target_store import runtime_store
 except ImportError:  # pragma: no cover - direct tools/ execution
     from closure_resolver import canonical_endpoint_path  # type: ignore
-    from surface import load_surface_context  # type: ignore
     from target_case_state import (  # type: ignore
-        case_state_path,
         summary as build_case_state_summary,
     )
     from target_memory import load_goal_memory  # type: ignore
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
+    from target_store import runtime_store  # type: ignore
 
 _SQL_MATRIX_STATUSES = {"complete_no_hit", "candidate_pending", "partial", "invalid_input"}
 _SQL_MATRIX_LANES = {"query", "form"}
@@ -484,18 +482,10 @@ def _load_case_state_projection(
     case_state_summary: dict | None = None,
 ) -> dict:
     """Load the bounded, secret-free Case State continuation."""
-    path = case_state_path(repo_root, target)
-    if not path.is_file():
-        return {"status": "missing", "path": str(path)}
-    if isinstance(case_state_summary, dict):
-        snapshot_target = canonical_target_value(str(case_state_summary.get("target") or ""))
-        if snapshot_target != canonical_target_value(target):
-            raise ValueError("case state snapshot target does not match requested target")
-    payload = (
-        case_state_summary
-        if isinstance(case_state_summary, dict)
-        else build_case_state_summary(repo_root, target)
-    )
+    store = runtime_store(repo_root, target)
+    path = store.path
+    # Only private assembly forwards a summary acquired in this call.
+    payload = case_state_summary if case_state_summary is not None else build_case_state_summary(repo_root, target)
     # Case 只提供上下文事实。行动身份/执行状态在唯一行动源，Case 侧的旧待办由
     # 迁移报告搬运，因此这里既不投影 next action，也不替它排序或宣布裁决冲突。
     return {

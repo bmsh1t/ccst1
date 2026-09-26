@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
+import stat
+import tempfile
 from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import urlsplit
@@ -18,10 +21,12 @@ from urllib.parse import urlsplit
 try:
     from tools.target_paths import (
         classify_target,
+        canonical_target_value,
+        target_storage_key,
         url_belongs_to_target,
     )
 except ImportError:  # pragma: no cover - direct ``python3 tools/*.py`` use
-    from target_paths import classify_target, url_belongs_to_target
+    from target_paths import canonical_target_value, classify_target, target_storage_key, url_belongs_to_target
 
 
 SCHEMA_VERSION = 1
@@ -395,4 +400,134 @@ class ScopeContext:
         }
 
 
-__all__ = ["SCHEMA_VERSION", "ScopeContext", "ScopeContextError"]
+LIMIT_FIELDS = ("recon_rps", "test_rps", "breaker_threshold", "breaker_cooldown")
+_SCOPE_FIELDS = {"schema_version", "root_target", "in_scope", "out_of_scope",
+                 "excluded_classes", "notes", "fetched_at", *LIMIT_FIELDS}
+
+
+def scope_source_path(repo_root: str | Path, target: str) -> Path:
+    return Path(repo_root).resolve() / "state" / target_storage_key(target) / "scope.json"
+
+
+def scope_limits(payload: dict) -> dict:
+    """Validate configured limits without silently increasing a low rate."""
+    result = {}
+    for key in LIMIT_FIELDS:
+        if key not in payload:
+            continue
+        value = payload[key]
+        try:
+            number = float(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ScopeContextError(f"{key} must be a finite positive number") from exc
+        if isinstance(value, bool) or not math.isfinite(number) or number <= 0:
+            raise ScopeContextError(f"{key} must be a finite positive number")
+        if key == "breaker_threshold":
+            if not number.is_integer():
+                raise ScopeContextError("breaker_threshold must be a positive integer")
+            result[key] = int(number)
+        else:
+            result[key] = number
+    return result
+
+
+def normalize_scope_source(payload: dict, target: str) -> dict:
+    if not isinstance(payload, dict):
+        raise ScopeContextError("scope source must be an object")
+    if set(payload) - _SCOPE_FIELDS:
+        raise ScopeContextError(f"unknown scope fields: {sorted(set(payload) - _SCOPE_FIELDS)}")
+    canonical = canonical_target_value(target)
+    if (not canonical or not isinstance(payload.get("root_target"), str)
+            or canonical_target_value(payload["root_target"]) != canonical):
+        raise ScopeContextError(f"scope source target mismatch for {target}")
+    if type(payload.get("schema_version")) is not int:
+        raise ScopeContextError("scope schema_version must be an integer")
+    context = ScopeContext.from_manifest(payload)
+    result = {
+        "schema_version": SCHEMA_VERSION,
+        "root_target": canonical,
+        "in_scope": list(context.in_scope),
+        "out_of_scope": list(context.out_of_scope),
+        "excluded_classes": list(context.excluded_classes),
+        **scope_limits(payload),
+    }
+    for key in ("notes", "fetched_at"):
+        if key in payload:
+            if not isinstance(payload[key], str):
+                raise ScopeContextError(f"scope {key} must be a string")
+            result[key] = payload[key]
+    return result
+
+
+def _scope_source_bytes(path: Path) -> bytes:
+    if path.resolve() != path:
+        raise ScopeContextError(f"scope source must not traverse symlinks: {path}")
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+        with os.fdopen(fd, "rb") as handle:
+            info = os.fstat(handle.fileno())
+            if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) & 0o077:
+                raise ScopeContextError(f"scope source requires a private regular file: {path}")
+            return handle.read()
+    except OSError as exc:
+        raise ScopeContextError(
+            f"scope source unavailable: {path}; explicitly publish or restore Scope: {exc}"
+        ) from exc
+
+
+def read_scope_source(repo_root: str | Path, target: str) -> dict:
+    """Read the owned file, including a byte identity for explicit replacement."""
+    path = scope_source_path(repo_root, target)
+    raw = _scope_source_bytes(path)
+    try:
+        manifest = normalize_scope_source(json.loads(raw), target)
+    except ValueError as exc:
+        raise ScopeContextError(f"invalid scope source: {path}; explicitly restore Scope: {exc}") from exc
+    return {"manifest": manifest, "source": "scope", "path": str(path),
+            "sha256": hashlib.sha256(raw).hexdigest()}
+
+
+def _sync_scope_directory(path: Path) -> None:
+    fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def write_scope_source_locked(repo_root: str | Path, target: str, payload: dict,
+                              *, expected_sha256: str = "") -> dict:
+    """Publish under the caller's target lock; missing means explicit creation."""
+    manifest = normalize_scope_source(payload, target)
+    path = scope_source_path(repo_root, target)
+    if path.resolve() != path:
+        raise ScopeContextError(f"scope source must not traverse symlinks: {path}")
+    if path.exists():
+        raw = _scope_source_bytes(path)
+        digest = hashlib.sha256(raw).hexdigest()
+        # Exact-byte CAS also permits explicit repair of a corrupt JSON source.
+        # A replay may name the previous digest if its desired content is current.
+        if not expected_sha256 or digest != expected_sha256:
+            current = read_scope_source(repo_root, target)
+            if current["manifest"] == manifest:
+                _sync_scope_directory(path)
+                return {**current, "status": "deduplicated"}
+            raise ScopeContextError("scope source changed; supply its current --expected-sha256")
+    elif expected_sha256:
+        raise ScopeContextError("scope source disappeared; restore the saved Scope before replacing it")
+    path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent,
+                                         prefix=".scope.", suffix=".tmp", delete=False) as handle:
+            temp_path = Path(handle.name)
+            json.dump(manifest, handle, sort_keys=True, indent=2, allow_nan=False)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        temp_path.replace(path)
+        _sync_scope_directory(path)
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+    return {**read_scope_source(repo_root, target), "status": "published"}

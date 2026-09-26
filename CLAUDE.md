@@ -76,6 +76,14 @@ Command discovery comes from `commands/`, not a hand-maintained list here.
 
 - 所有目标工作共用 `skills/runtime-protocol.md#shared-memory-continuity`；普通模式同样由
   Claude 主动恢复记忆、按需召回、重要节点写回，不等待用户提醒。
+- 恢复已初始化目标的最小入口是 `python3 tools/target_memory.py show TARGET`，返回
+  意图、经验、适用/重开条件及展开命令；需要整体行动、证据和覆盖时再用
+  `python3 tools/resume.py --target TARGET`。SQLite 路径是存储位置，日常恢复通过这些
+  只读入口保留目标绑定与完整性检查，无需遍历数据表或先读 Store 实现。
+  重要节点用 `python3 tools/target_memory.py handoff --target TARGET '进展、证据位置与下一步'`
+  保存交接；未登记执行证据的观察用 `note --target TARGET '未验证观察'` 保存建议，
+  不冒充已验证阴性或原语。TARGET 使用本轮明确目标；隔离根加 `--repo-root ROOT`，
+  参数细节按子命令 `--help` 展开。缺库按既有显式初始化/恢复流程处理，不猜测空状态。
 - 无 authoritative bootstrap 时，复杂任务先恢复当前目标事实；缺少所需信息时运行
   `/context-pack`，已读且有效的上下文直接复用。一轮只选一个主 Skill，加载边界按
   `rules/context-loading.md` 执行。

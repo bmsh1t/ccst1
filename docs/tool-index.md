@@ -25,6 +25,7 @@
 | `tools/learn.py` | Legacy tech-stack research | Compatibility backend; not the schema-v2 Intel artifact owner |
 | `tools/scope_checker.py` | Verifying target classification | Deterministic host/URL classifier against active target set |
 | `tools/scope_context.py` | Global Scope owner | Parses text lists/manifest v1, applies exclusions, classifies external context, and emits stable Scope hash |
+| `tools/scope_source.py` | Inspect or explicitly update target Scope | `show` / `publish --manifest` / `publish --profile`; primary Scope lives in `state/<key>/scope.json`, replacement requires its current SHA256 |
 | `tools/target_paths.py` | Computing per-target storage keys | Normalize target string for `recon/`/`findings/` directories |
 
 Primary-domain list input (`targets.txt`) is handled by `tools/recon_engine.sh` as a batch dispatcher: each line writes its own `recon/<domain>/`; `recon/<list-stem>/` is only the manifest/summary index.
@@ -98,10 +99,10 @@ identity, and cloud signals without re-enumerating everything.
 | `tools/browser_surface.py` | Browser evidence dumped | Extract XHR/API/GraphQL/realtime shapes from browser evidence |
 | `tools/deep_js_packer.py` | Concrete webpack/chunk/source-map signal | Evidence-gated Packer bundle/page recovery into existing JS artifacts |
 | `tools/js_reader.py` | JS bundles cached | Prepare js-reader agent materials from cached JS |
-| `tools/surface.py` | Cached recon ready for review | Fully stream/rank the exact target-owned surface, publish bounded AI-first review projection; scores/top-K are advisory hints |
+| `tools/surface.py` | Cached recon ready for review | Stream every exact target-owned URL into a neutral bounded review window; publish counts and complete expansion |
 | `tools/surface_index.py` | Large URL corpus needs exact dedupe or long-tail paging | External-sort exact URL index with provenance union, lossless variants, shape/source/ownership cursor filters |
-| `tools/surface_projection.py` | Bootstrap/context consumers need a fast ranked view | Manifest-bound bounded cache; only exact hits are consumable, stale/missing remains explicit refresh work |
-| `tools/surface_finalizer.py` | Recon completed or derived surface needs recovery | Shared non-fatal recon post-processor for exact index, full streaming rank, inventory summary, and projection |
+| `tools/surface_projection.py` | Bootstrap/context consumers need a fast URL-ordered review view | Manifest-bound bounded cache; only exact hits are consumable, stale/missing remains explicit refresh work |
+| `tools/surface_finalizer.py` | Recon completed or derived surface needs recovery | Shared non-fatal recon post-processor for exact index, complete streaming review, inventory summary, and projection |
 | `tools/surface_js_intel.py` | After js-reader has run | Feed js-reader hypotheses into `surface.py` |
 | `tools/surface_source_intel.py` | After source_intel has run | Feed source route observations into `surface.py` |
 | `tools/finding_index.py` | Listing/querying structured findings | Structured finding index store + query API |
@@ -136,9 +137,13 @@ identity, and cloud signals without re-enumerating everything.
 | `tools/action_queue.py` | Actionable evidence exists or checkpoint has next actions | Persistent action queue: ingest, choose next, resolve, summarize |
 | `tools/target_case_state.py` | Multi-actor/object validation context | Actor/session/object/hypothesis registry and private auth refs; context memory only — no backlog, no route score |
 | `tools/case_state_seed.py` | Browser/recon/JS/source artifacts reveal object IDs but case state is empty | Read object-shaped observations and sources; no actor/runner selection or auto-write |
-| `tools/coverage_matrix.py` | Checking high-value untested cells | Endpoint × vuln-class matrix; emits auto-hints and lets Claude mark endpoint kind |
+| `tools/coverage_matrix.py` | Reviewing unresolved cells and endpoint kinds | Primary mark commands append Store reviews; `reviews [--history] [--id ID]` expands them; rebuilt cells still require execution evidence |
+| `tools/target_store.py upgrade-schema --target TARGET --repo-root ROOT --backup ABSOLUTE_BACKUP` | Enabling Coverage reviews on an existing v8/v9 Store | Explicit verified-backup upgrade to v10; ordinary reads/init do not upgrade |
+| `tools/target_migration.py --backfill-coverage-source SOURCE --repo-root ROOT --target TARGET` | Recovering historical Coverage annotations after cutover | Manifest-bound historical import with source pointers; preserves newer reviews and grants no closure |
 | `tools/resume.py` | Continuing previous target work | `/pickup` backend — summarize prior session+untested endpoints |
-| `tools/remember.py` | Logging finding to hunt memory | `/remember` backend — write to journal/pattern DB |
+| `tools/remember.py` | Recording target experience | `/remember` backend — primary writes Store experience plus journal; legacy PatternDB awaits retirement |
+| `tools/target_migration.py --backfill-memory-source SOURCE --repo-root ROOT --target TARGET` | Old target memory is missing from an already active Store | Explicit, cutover-manifest-bound Experience backfill; inspect receipt mapping and quarantine before use; no re-promotion |
+| `tools/target_migration.py --backfill-pattern-source SOURCE --repo-root ROOT --target TARGET` | Historical PatternDB rows for an active target need recall | Explicit, byte-pinned import of target-owned rows as unverified Store notes; receipt maps source file and line, including rotated logs; no cross-target recall or automatic knowledge promotion |
 | `tools/validate.py` | Pre-report validation gate | 7-Question Gate + 4 gates — runs `/validate` |
 | `tools/report_generator.py` | Drafting submission report | `/report` backend — H1/BC/Intigriti/Immunefi templates |
 | `tools/request_guard.py` | Logging request telemetry | Advisory audit/replay record + breaker telemetry |

@@ -13,7 +13,7 @@ was previously fixed to `BASE_DIR`.
 | `browser_playwright_fallback` | `narrow-root-injected` | `capture_with_playwright(evidence_root=..., recon_root=...)` | existing `--evidence-root` / `--recon-root` |
 | `cf_solver` | `repo-root-dependent` | `load_config`, `check_cookie`, `write_output` | `main --repo-root` |
 | `remember` | `repo-root-dependent` | validation-summary and default memory resolution | `main --repo-root` |
-| `request_guard` | `narrow-root-injected` | `memory_dir` is required by preflight/record/status owners | existing `--memory-dir` |
+| `request_guard` | `repo-root-dependent` | `memory_dir` is required by preflight/record/status owners | existing `--memory-dir` |
 | `resume` | `repo-root-dependent` | `load_resume_summary` / `load_pickup_summary` runtime artifacts | `main --repo-root` |
 | `scanner_pass_writer` | `narrow-root-injected` | `write_scanner_pass(findings_dir, recon_dir, out_path)` | existing explicit paths |
 | `source_hunt` | `repo-root-dependent` | `_exposure_dir` / `run_source_hunt(repo_root=...)` | `main --repo-root` |

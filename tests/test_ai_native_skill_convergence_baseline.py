@@ -148,7 +148,7 @@ def test_runtime_protocol_invalidates_pack_recommendations_after_compaction():
     assert "不从压缩摘要里复用旧推荐" in protocol
 
 
-def test_focus_recall_pulls_deserialization_cards():
+def test_focus_recall_pulls_deserialization_cards(tmp_path):
     """The pull channel must reach the execution-chain cards via the catalog.
 
     Focus-based keyword selection is retired (2026-09-13 native audit): the
@@ -158,7 +158,9 @@ def test_focus_recall_pulls_deserialization_cards():
     sys.path.insert(0, str(REPO_ROOT / "tools"))
     from context_pack import build_context_pack
 
-    pack = build_context_pack(REPO_ROOT, target="127.0.0.1:3001", focus="java deserialization fastjson")
+    from tools.target_store import TargetStore
+    TargetStore(tmp_path, "deserialization.test").initialize()
+    pack = build_context_pack(tmp_path, target="deserialization.test", focus="java deserialization fastjson")
     catalog = " ".join(str(item.get("file")) for item in pack.get("card_catalog") or [])
     assert "insecure-deserialization.md" in catalog
     assert "controlled-rce-impact.md" in catalog
@@ -218,7 +220,7 @@ def test_runtime_protocol_output_contract_is_five_required_fields():
     assert contract_body.count("(必填)") == 5
     # The 8 owner-recorded fields are marked, not deleted.
     for field in (
-        "Target", "Skill", "Phase", "Hypotheses", "Actions taken",
+        "Target", "Phase", "Hypotheses", "Actions taken",
         "Coverage update", "Leads / Signals", "Write-back",
     ):
         assert f"- {field}:" in contract_body
@@ -272,13 +274,10 @@ def test_autopilot_business_model_read_is_native():
     assert "do not\nregenerate or overwrite" in skill
 
 
-def test_action_queue_lanes_doc_documents_from_evidence():
-    """B5 (batch 7): the lane doc advertises the claim --from-evidence surface."""
+def test_action_queue_lanes_doc_keeps_explicit_store_work_and_ai_choice():
     lanes = (REPO_ROOT / "docs" / "autopilot-lanes.md").read_text(encoding="utf-8")
-    assert "--from-evidence" in lanes
-    assert "derives the mechanical fields" in lanes
-    # Dumb-interface contract (2026-09-14): the 16-field gate is retired;
-    # the doc must state --id is required and judgment fields stay AI-written.
-    assert "judgment fields are never derived" in lanes
-    assert "`--id` is REQUIRED" in lanes
-    assert "no 16-field" in lanes
+    assert "explicit" in lanes
+    assert "Store" in lanes
+    assert "--from-evidence" in lanes and "retired" in lanes
+    assert "--id" in lanes
+    assert "AI" in lanes

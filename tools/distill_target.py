@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import sys
 from pathlib import Path
 
@@ -32,55 +33,48 @@ REPO_ROOT = BASE_DIR.parent
 
 try:
     from tools.current_truth import current_cell_projection
-    from tools.evidence_ledger import load_entries
-    from tools.target_paths import canonical_target_value, target_storage_key
-    from tools.target_store import TargetStore, target_backend
+    from tools.target_paths import canonical_target_value
+    from tools.target_store import ConflictError, runtime_store
 except ImportError:  # pragma: no cover - direct tools/ execution
     sys.path.insert(0, str(BASE_DIR))
     from current_truth import current_cell_projection  # type: ignore
-    from evidence_ledger import load_entries  # type: ignore
-    from target_paths import canonical_target_value, target_storage_key  # type: ignore
-    from target_store import TargetStore, target_backend  # type: ignore
+    from target_paths import canonical_target_value  # type: ignore
+    from target_store import ConflictError, runtime_store  # type: ignore
 
 
 def _load_source_evidence(repo: Path, target: str) -> dict:
     """拉三类原始证据（机器事实，非 AI 回忆）。"""
-    key = target_storage_key(target)
-    primary = target_backend(repo, target) == "primary"
-    entries = list(current_cell_projection(repo, target)["records"]) if primary else load_entries(repo, target)
-    findings: list[dict] = []
-    findings_path = repo / "findings" / key / "findings.json"
-    if primary:
-        store = TargetStore(repo, target)
-        page = store.finding_page(limit=1000)
-        while True:
-            for item in page.get("items", []):
-                findings.append({
-                    "id": item["id"],
-                    "type": item["family"],
-                    "url": item["endpoint"],
-                    "summary": item["claim"],
-                    "validation_status": (item.get("assessment") or {}).get("verdict", ""),
-                })
-            if not page.get("has_more"):
-                break
-            page = store.finding_page(limit=1000, cursor=page.get("next_cursor"))
-    elif findings_path.is_file():
-        try:
-            payload = json.loads(findings_path.read_text(encoding="utf-8", errors="replace"))
-            findings = payload if isinstance(payload, list) else payload.get("findings") or []
-        except (OSError, json.JSONDecodeError):
-            findings = []
-    case_state: dict = {}
-    case_path = repo / "state" / key / "case_state.json"
-    if primary:
-        case_state = TargetStore(repo, target).case_state()
-    elif case_path.is_file():
-        try:
-            case_state = json.loads(case_path.read_text(encoding="utf-8", errors="replace"))
-        except (OSError, json.JSONDecodeError):
-            case_state = {}
-    return {"ledger": entries, "findings": findings, "case_state": case_state}
+    store = runtime_store(repo, target)
+    revision = store.binding()["revision"]
+    entries = list(current_cell_projection(repo, target)["records"])
+    finding_page = store.finding_page(limit=10)
+    findings = finding_page["items"]
+    experience_page = store.experience_page(limit=10)
+    experiences = experience_page["items"]
+    windows = {
+        name: {key: page[key] for key in ("total", "remaining", "has_more", "next_cursor",
+                                         "store_id", "revision", "order")}
+        for name, page in (("findings", finding_page), ("experiences", experience_page))
+    }
+    commands = {
+        "findings": ["python3", "tools/target_store.py", "findings", "--repo-root", str(repo.resolve()),
+                     "--limit", "10", "--target", target],
+        "experiences": ["python3", "tools/experience_recall.py", "--repo-root", str(repo.resolve()),
+                        "--json", "--limit", "10", "--target", target],
+    }
+    for name, command in commands.items():
+        window = windows[name]
+        window["next_command"] = (shlex.join([*command, "--cursor", window["next_cursor"]])
+                                  if window["has_more"] else "")
+        window["expand_command"] = shlex.join([*command, "--id", "FINDING_ID" if name == "findings" else "EXPERIENCE_ID"])
+    case_state = store.case_state(include_hypotheses=False)
+    if store.binding()["revision"] != revision:
+        raise ConflictError("target changed during distillation view; retry")
+    return {"target": target, "ledger": entries, "findings": findings, "experiences": experiences,
+            "case_state": case_state, "windows": windows,
+            "case_expand_command": shlex.join([
+                "python3", "tools/target_store.py", "case", "--repo-root", str(repo.resolve()), "--target", target,
+            ])}
 
 
 def _bounded_evidence_view(evidence: dict, limit: int = 40) -> str:
@@ -92,7 +86,7 @@ def _bounded_evidence_view(evidence: dict, limit: int = 40) -> str:
         for e in entries:
             lines.append(
                 "- {event} {method} {endpoint} [{cls}/{actor}/{variant}] result={result} ref={ref}".format(
-                    event=str(e.get("event_id") or "")[:44],
+                    event=str(e.get("event_id") or ""),
                     method=str(e.get("method") or "GET"),
                     endpoint=str(e.get("endpoint") or ""),
                     cls=str(e.get("vuln_class") or ""),
@@ -104,17 +98,42 @@ def _bounded_evidence_view(evidence: dict, limit: int = 40) -> str:
             )
     findings = evidence["findings"][:10]
     if findings:
-        lines.append(f"## Findings（前 {len(findings)} 条）")
+        lines.append(f"## Findings（前 {len(findings)} 条；claim 为最多 160 字预览，完整字段按 ID 展开）")
         for f in findings:
+            assessment = f.get("assessment") or {}
+            technical = assessment.get("verdict") or f.get("validation_status") or f.get("status") or "unassessed"
+            deliveries = f.get("deliveries") or []
             lines.append(
-                "- {id} [{cls}] {title} status={status} endpoint={endpoint}".format(
-                    id=str(f.get("id") or f.get("finding_id") or "")[:24],
-                    cls=str(f.get("vuln_class") or ""),
-                    title=str(f.get("title") or "")[:80],
-                    status=str(f.get("status") or ""),
-                    endpoint=str(f.get("endpoint") or "")[:80],
+                "- {id} [{cls}] {title} technical={status} endpoint={endpoint}".format(
+                    id=str(f.get("id") or f.get("finding_id") or ""),
+                    cls=str(f.get("family") or f.get("vuln_class") or f.get("type") or ""),
+                    title=str(f.get("claim") or f.get("title") or f.get("summary") or "")[:160],
+                    status=technical,
+                    endpoint=str(f.get("endpoint") or f.get("url") or ""),
                 )
             )
+            if assessment:
+                lines.append(f"  reason={assessment.get('reason') or ''} boundary={assessment.get('boundary') or ''}")
+            for delivery in deliveries:
+                lines.append(f"  delivery={delivery['destination']}:{delivery['status']} stale={bool(delivery['stale'])}")
+            if f.get("evidence"):
+                lines.append("  evidence=" + ", ".join(
+                    f"{ref['operation_id']}:{ref['step']}" for ref in f["evidence"][:3]))
+    experiences = evidence.get("experiences") or []
+    if experiences:
+        lines.append(f"## Target Experiences（最近 {len(experiences)} 条）")
+        for item in experiences:
+            lines.append(f"- {item['id']} [{item['kind']}] {item['statement']}")
+            lines.append(f"  conditions={item['conditions']} reopen_when={item['reopen_when']} next_intent={item['next_intent']}")
+            lines.append(f"  recorded_by={item['recorded_by']}")
+            if item.get("evidence"):
+                lines.append("  evidence=" + ", ".join(
+                    f"{ref['operation_id']}:{ref['step']}" for ref in item["evidence"][:3]))
+    for name, window in evidence.get("windows", {}).items():
+        lines.append(f"## {name} window: total={window['total']} remaining={window['remaining']}; order={window['order']}")
+        if window["next_command"]:
+            lines.append(f"  next: {window['next_command']}")
+        lines.append(f"  expand: {window['expand_command']}")
     case_state = evidence["case_state"]
     if case_state:
         actors = case_state.get("actors") or []
@@ -124,6 +143,8 @@ def _bounded_evidence_view(evidence: dict, limit: int = 40) -> str:
             lines.append(f"- actors: {json.dumps(actors, ensure_ascii=False)[:400]}")
         if objects:
             lines.append(f"- objects: {json.dumps(objects, ensure_ascii=False)[:400]}")
+        if evidence.get("case_expand_command"):
+            lines.append(f"- Case preview; full context: {evidence['case_expand_command']}")
     return "\n".join(lines) if lines else "(no target-owned evidence found)"
 
 
@@ -136,9 +157,12 @@ def build_evidence_view(repo: Path, target: str) -> dict:
         "view": _bounded_evidence_view(evidence),
         "evidence_counts": {
             "ledger": len(evidence["ledger"]),
-            "findings": len(evidence["findings"]),
+            "findings": evidence.get("windows", {}).get("findings", {}).get("total", len(evidence["findings"])),
+            "experiences": evidence.get("windows", {}).get("experiences", {}).get("total", len(evidence.get("experiences") or [])),
             "case_state": bool(evidence["case_state"]),
         },
+        "windows": evidence.get("windows") or {},
+        "case_expand_command": evidence.get("case_expand_command", ""),
         "next": (
             "AI 读视图后直接按 knowledge/card-template.md 写完整草稿到 "
             "knowledge/candidates/<slug>.md（maturity: draft，含前提/反例/"

@@ -86,7 +86,7 @@ def build_validate_scaffold(
         "target": target,
         "finding_id": finding_id,
         "endpoint": canonical_endpoint,
-        "vuln_class": str(finding.get("type") or ""),
+        "vuln_class": str(finding.get("family") or finding.get("type") or ""),
         # method 是机械字段：canonical finding 已记录真实 verb，scaffold 照抄。
         # 硬编码 GET 会让原生 POST 发现（record-evidence 路径）永远过不了
         # validate 的 runner method 比对。

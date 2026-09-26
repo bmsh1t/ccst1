@@ -9,6 +9,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
+import subprocess
+from pathlib import Path
+
+from tools.target_store import TargetStore
 
 import pytest
 
@@ -236,100 +241,42 @@ def test_target_memory_set_append_and_handoff_use_canonical_paths(tmp_path, monk
     monkeypatch.setattr(target_memory, "TARGETS_DIR", tmp_path / "memory" / "goals" / "targets")
     monkeypatch.setattr(target_memory, "SESSIONS_DIR", tmp_path / "memory" / "goals" / "sessions")
 
-    summary = target_memory.set_active(
-        argparse.Namespace(
-            target="Example.COM",
-            mode="hunt",
-            phase="recon",
-            goal="map auth boundaries",
-            hypothesis="IDOR on orders",
-            skill=["web2-vuln-classes"],
-            knowledge=["api-idor"],
-        )
-    )
-    assert "TARGET SET" in summary
-    assert "example.com" in summary
-
+    with pytest.raises(ValueError, match="not initialized"):
+        target_memory.set_active(argparse.Namespace(target="Example.COM"))
+    store = TargetStore(tmp_path, "example.com")
+    store.initialize()
+    target_memory.set_active(argparse.Namespace(target="Example.COM", goal="map auth boundaries"))
     saved = target_memory.load_target_memory("Example.COM")
     assert saved["active_goal"] == "map auth boundaries"
-    assert saved["selected_skills"] == ["web2-vuln-classes"]
-
-    msg = target_memory.append_entry(
-        argparse.Namespace(target=None, text=["Try", "two-account", "read-only", "diff"]),
-        "next_actions",
-        "NEXT",
-    )
-    assert "NEXT saved" in msg
-    saved = target_memory.load_target_memory("Example.COM")
-    assert saved["next_actions"][-1]["text"] == "Try two-account read-only diff"
-
-    handoff = target_memory.write_handoff(
-        argparse.Namespace(target="Example.COM", summary=["Recon", "complete"]),
-    )
-    assert "Handoff written" in handoff
-    saved = target_memory.load_target_memory("Example.COM")
-    handoff_path = tmp_path / saved["session_handoffs"][-1]["path"]
-    assert handoff_path.is_file()
-    assert "Try two-account read-only diff" in handoff_path.read_text(encoding="utf-8")
+    target_memory.append_entry(argparse.Namespace(target=None, text=["Try two-account read-only diff"]),
+                               "next_actions", "NEXT")
+    receipt = target_memory.write_handoff(argparse.Namespace(
+        target="Example.COM", summary=["Recon complete"], command_id="handoff-1", json=True,
+    ))
+    assert receipt["receipt"]["entity_id"] == "handoff-1"
+    assert store.experience("handoff-1")["statement"] == "Recon complete"
+    entries = store.experience_page()["items"]
+    assert {item["statement"] for item in entries} == {"Recon complete", "Try two-account read-only diff"}
+    assert not target_memory.target_memory_path("Example.COM").exists()
 
 
-def test_target_memory_fact_upserts_by_key_and_renders_digest(tmp_path, monkeypatch):
-    monkeypatch.setattr(target_memory, "BASE_DIR", tmp_path)
-    monkeypatch.setattr(target_memory, "GOALS_DIR", tmp_path / "memory" / "goals")
-    monkeypatch.setattr(target_memory, "ACTIVE_PATH", tmp_path / "memory" / "goals" / "active.json")
-    monkeypatch.setattr(target_memory, "TARGETS_DIR", tmp_path / "memory" / "goals" / "targets")
-    monkeypatch.setattr(target_memory, "SESSIONS_DIR", tmp_path / "memory" / "goals" / "sessions")
-
-    target_memory.set_active(
-        argparse.Namespace(
-            target="example.com",
-            mode="hunt",
-            phase="recon",
-            goal="",
-            hypothesis="",
-            skill=[],
-            knowledge=[],
-        )
-    )
-
-    first = target_memory.upsert_fact(
-        argparse.Namespace(
-            key="cdn-filtering-502",
-            text=["CDN filters backend responses: 502 = filtered, 404 = absent"],
-            target=None,
-            evidence_ref=["evidence/example.com/diff.json"],
-        )
-    )
-    assert "FACT saved" in first
-    assert "cdn-filtering-502" in first
-
-    second = target_memory.upsert_fact(
-        argparse.Namespace(
-            key="cdn-filtering-502",
-            text=["Confirmed via random-miss baseline: 502 = filtered"],
-            target=None,
-            evidence_ref=["evidence/example.com/baseline.json"],
-        )
-    )
-    assert "FACT saved" in second
-
-    saved = target_memory.load_target_memory("example.com")
-    facts = saved["facts"]
-    assert len(facts) == 1  # same key overwrites, never appends
-    assert facts["cdn-filtering-502"]["text"] == "Confirmed via random-miss baseline: 502 = filtered"
-    assert facts["cdn-filtering-502"]["evidence_refs"] == ["evidence/example.com/baseline.json"]
-
-    digest = target_memory.facts_digest(saved)
-    assert digest == ["- cdn-filtering-502: Confirmed via random-miss baseline: 502 = filtered"]
-
-    with pytest.raises(SystemExit):
-        target_memory.upsert_fact(
-            argparse.Namespace(key="Bad Key!", text=["x"], target=None, evidence_ref=[])
-        )
-    with pytest.raises(SystemExit):
-        target_memory.upsert_fact(
-            argparse.Namespace(key="ok-key", text=[], target=None, evidence_ref=[])
-        )
+def test_target_memory_fact_preserves_advisory_history_and_renders_it(tmp_path):
+    store = TargetStore(tmp_path, "example.com")
+    store.initialize()
+    for command_id, statement in (("fact-1", "502 may be filtered"), ("fact-2", "Random-miss also returns 502")):
+        saved = target_memory.upsert_fact(argparse.Namespace(
+            key="cdn-filtering", text=[statement], target="example.com", repo_root=tmp_path,
+            command_id=command_id, json=True,
+        ))
+        assert saved["receipt"]["entity_id"] == command_id
+    entries = store.experience_page()["items"]
+    assert len(entries) == 2
+    assert all(item["kind"] == "note" and item["evidence"] == [] for item in entries)
+    output = target_memory.show(argparse.Namespace(target="example.com", repo_root=tmp_path))
+    assert "502 may be filtered" in output and "Random-miss also returns 502" in output
+    for key, text in (("Bad Key!", ["x"]), ("ok-key", [])):
+        with pytest.raises(SystemExit):
+            target_memory.upsert_fact(argparse.Namespace(key=key, text=text, target="example.com", repo_root=tmp_path))
 
 
 def test_target_memory_legacy_writer_is_fenced_after_primary_activation(tmp_path, monkeypatch):
@@ -342,13 +289,133 @@ def test_target_memory_legacy_writer_is_fenced_after_primary_activation(tmp_path
     monkeypatch.setattr(target_memory, "SESSIONS_DIR", tmp_path / "memory" / "goals" / "sessions")
     TargetStore(tmp_path, "example.com").initialize()
 
-    with pytest.raises(StoreError, match="legacy target-memory writer is disabled"):
+    with pytest.raises(StoreError, match="retired target-memory flags"):
         target_memory.set_active(
             argparse.Namespace(
                 target="example.com", mode="hunt", phase="recon", goal="", hypothesis="",
                 skill=[], knowledge=[],
             )
         )
+
+
+def test_target_memory_primary_selection_and_goal_are_store_owned(tmp_path, monkeypatch):
+    from tools.target_store import StoreError, TargetStore
+
+    monkeypatch.setattr(target_memory, "BASE_DIR", tmp_path)
+    monkeypatch.setattr(target_memory, "ACTIVE_PATH", tmp_path / "memory" / "goals" / "active.json")
+    monkeypatch.setattr(target_memory, "TARGETS_DIR", tmp_path / "memory" / "goals" / "targets")
+    store = TargetStore(tmp_path, "example.com")
+    store.initialize()
+    before = store.binding()["revision"]
+
+    assert target_memory.main(["set", "example.com"]) == 0
+    assert store.binding()["revision"] == before
+    assert target_memory.load_active()["target"] == "example.com"
+    assert not target_memory.target_memory_path("example.com").exists()
+    assert target_memory.main(["set", "example.com", "--goal", "Map authorization boundary",
+                               "--command-id", "goal-1", "--expected-revision", str(before)]) == 0
+    assert store.active_goal() == "Map authorization boundary"
+    assert store.binding()["revision"] == before + 1
+    assert target_memory.main(["set", "example.com", "--goal", "Map authorization boundary",
+                               "--command-id", "goal-1", "--expected-revision", str(before)]) == 0
+    assert store.binding()["revision"] == before + 1
+    with pytest.raises(StoreError, match="retired target-memory flags"):
+        target_memory.set_active(argparse.Namespace(target="example.com", mode=None,
+                                                    phase=None, goal=None, hypothesis=None,
+                                                    skill=["legacy-route"], knowledge=None))
+    store.remember(command_id="note-1", kind="note", statement="Header may affect routing",
+                   conditions="unverified", reopen_when="", next_intent="Inspect response",
+                   evidence=[], actor="operator")
+    projection = target_memory.load_goal_memory(tmp_path, "example.com")
+    assert projection["target"]["active_goal"] == "Map authorization boundary"
+    assert projection["target"]["scope_notes"][0]["text"] == "Header may affect routing"
+    assert "Map authorization boundary" in target_memory.show(argparse.Namespace(target="example.com"))
+    assert target_memory.main(["note", "Header may affect routing", "--target", "example.com",
+                               "--command-id", "note-2"]) == 0
+    assert target_memory.main(["lead", "Compare peer account", "--target", "example.com",
+                               "--conditions", "same tenant", "--next-intent", "Read control",
+                               "--command-id", "lead-1"]) == 0
+    assert target_memory.main(["next", "Review response", "--target", "example.com",
+                               "--command-id", "next-1"]) == 0
+    assert target_memory.main(["fact", "--key", "route-header", "Header changed route",
+                               "--target", "example.com", "--command-id", "fact-1"]) == 0
+    assert target_memory.main(["handoff", "Resume comparison", "--target", "example.com",
+                               "--command-id", "handoff-1"]) == 0
+    projection = target_memory.load_goal_memory(tmp_path, "example.com")
+    assert [item["text"] for item in projection["target"]["next_actions"]] == ["Review response"]
+    shown = target_memory.show(argparse.Namespace(target="example.com"))
+    assert "conditions: same tenant" in shown
+    assert "next_intent: Read control" in shown
+    assert "[lead-1]" in shown
+    assert "--id EXPERIENCE_ID" in shown
+    assert {item["kind"] for item in store.experience_page(limit=20)["items"]} == {
+        "note", "hypothesis", "handoff"
+    }
+    assert store.experience("fact-1")["statement"] == "route-header: Header changed route"
+    assert not target_memory.target_memory_path("example.com").exists()
+    assert target_memory.main(["dead-end", "No peer read", "--target", "example.com",
+                               "--conditions", "same tenant", "--reopen-when", "new session"]) == 2
+    assert target_memory.main(["pattern", "Check role switch", "--target", "example.com"]) == 2
+    assert target_memory.main(["set", "fresh.example"]) == 2
+    assert not (tmp_path / "state" / "fresh.example" / "metadata.sqlite3").exists()
+
+
+def test_target_memory_show_reports_bounded_store_history(tmp_path, monkeypatch):
+    from tools.target_store import TargetStore
+
+    monkeypatch.setattr(target_memory, "BASE_DIR", tmp_path)
+    monkeypatch.setattr(target_memory, "ACTIVE_PATH", tmp_path / "memory" / "goals" / "active.json")
+    store = TargetStore(tmp_path, "example.com")
+    store.initialize()
+    for index in range(21):
+        store.remember(command_id=f"note-{index}", kind="note", statement=f"Note {index}",
+                       conditions="test session", reopen_when="when role changes",
+                       next_intent="compare response", evidence=[], actor="operator")
+
+    shown = target_memory.show(argparse.Namespace(target="example.com"))
+    assert "More target experiences: 1" in shown
+    assert "Next cursor: " in shown
+    assert "[note-0]" not in shown
+    assert "[note-20]" in shown
+    assert "reopen_when: when role changes" in shown
+    assert len(target_memory.load_goal_memory(tmp_path, "example.com")["recent_entries"]) == 20
+    command = next(line.removeprefix("Next page: ") for line in shown.splitlines()
+                   if line.startswith("Next page: "))
+    before = store.binding()
+    page = subprocess.run(shlex.split(command) + ["--json"], cwd=Path(__file__).resolve().parents[1],
+                          text=True, capture_output=True, check=True)
+    assert [entry["entry_id"] for entry in json.loads(page.stdout)["target_entries"]] == ["note-0"]
+    expand = next(line.removeprefix("Expand: ") for line in shown.splitlines()
+                  if line.startswith("Expand: "))
+    expanded = subprocess.run(shlex.split(expand)[:-1] + ["note-20", "--json"],
+                              cwd=Path(__file__).resolve().parents[1],
+                              text=True, capture_output=True, check=True)
+    assert [entry["entry_id"] for entry in json.loads(expanded.stdout)["target_entries"]] == ["note-20"]
+    assert store.binding() == before
+
+
+def test_target_memory_reads_one_bounded_snapshot_without_loading_full_case(tmp_path, monkeypatch):
+    from tools.target_store import TargetStore
+
+    store = TargetStore(tmp_path, "example.com")
+    store.initialize()
+    store.set_active_goal(command_id="goal", goal="Original intent", actor="operator", expected_revision=0)
+    for index in range(25):
+        store.remember_hypothesis(command_id=f"case-{index:02}", hypothesis_id=f"H-{index:02}",
+                                  vuln_class="authz", why_now=f"Context {index}", actor="operator")
+
+    def no_full_case(*args, **kwargs):
+        raise AssertionError("memory display must not load full Case or private material")
+
+    monkeypatch.setattr(TargetStore, "case_context", no_full_case)
+    before = store.binding()
+    projection = target_memory.load_goal_memory(tmp_path, store.target, experience_limit=5)
+    assert projection["source"]["revision"] == before["revision"]
+    assert projection["target"]["active_goal"] == "Original intent"
+    assert projection["target"]["current_hypothesis"] == "Context 24"
+    assert len(projection["recent_entries"]) == 5
+    assert projection["source"]["experience_window"]["remaining"] == 20
+    assert store.binding() == before
 
 
 def test_target_memory_primary_projection_ignores_archived_json(tmp_path):
@@ -379,52 +446,27 @@ def test_target_memory_primary_projection_ignores_archived_json(tmp_path):
     assert projection["target"]["active_leads"][0]["structured"]["conditions"] == (
         "Both actor sessions are available"
     )
+    active_path = tmp_path / "memory" / "goals" / "active.json"
+    target_memory.write_json(active_path, {"schema_version": 1, "target": "example.com",
+                                           "active_goal": "stale legacy goal", "phase": "stale phase"})
+    projection = target_memory.load_goal_memory(tmp_path, "example.com")
+    assert projection["active"] == {"schema_version": 1, "target": "example.com"}
+    assert projection["target"]["active_goal"] == ""
 
 
-def test_action_queue_ignores_keyword_value_and_legacy_relevance_scores():
-    first = {"id": "a", "status": "queued", "priority": 70, "action": "Review observed input", "created_at": "2026-09-01"}
-    second = {"id": "b", "status": "queued", "priority": 70, "action": "admin GraphQL secret SQLi RCE", "created_at": "2026-09-02", "metadata": {"relevance_score": 999}}
-    assert action_queue.select_next_action({"actions": [second, first]})["id"] == "a"
-    second["priority"] = 80
-    assert action_queue.select_next_action({"actions": [first, second]})["id"] == "b"
-
-
-def test_action_queue_priority_precedes_relevance_for_next_action():
-    """Checkpoint p80 actor gaps must not be displaced by lower-priority gaps.
-
-    `/autopilot` surfaces a recommended_executable_action by priority; the
-    durable action queue should preserve that ordering before applying
-    relevance/high-value tie-breaks.
-    """
-    queue = {
-        "actions": [
-            {
-                "id": "low-priority-high-relevance",
-                "status": "queued",
-                "type": "coverage-gap",
-                "priority": 75,
-                "action": "Cover /rest/admin x Authz",
-                "metadata": {
-                    "endpoint": "/rest/admin",
-                    "vuln_class": "Authz",
-                    "relevance_score": 9,
-                },
-            },
-            {
-                "id": "high-priority-actor-gap",
-                "status": "queued",
-                "type": "actor-gap",
-                "priority": 80,
-                "action": "Cover actor matrix gap",
-                "metadata": {
-                    "endpoint": "/rest/admin",
-                    "vuln_class": "Authz",
-                },
-            },
-        ],
-    }
-
-    assert action_queue.select_next_action(queue)["id"] == "high-priority-actor-gap"
+@pytest.mark.parametrize("selected", ["ordinary", "keyword-rich"])
+def test_action_queue_claim_uses_explicit_id_without_value_ranking(tmp_path, selected):
+    store = TargetStore(tmp_path, "example.com")
+    store.initialize()
+    for action_id, intent, priority in (("ordinary", "Review observed input", 10),
+                                        ("keyword-rich", "admin GraphQL secret SQLi RCE", 99)):
+        store.create_action(command_id="create:" + action_id, action_id=action_id,
+                            intent=intent, priority=priority, kind="work", subject={"target": "example.com"},
+                            execution_key=action_id, actor="test", metadata={"relevance_score": priority})
+    action_queue.claim_next_action(tmp_path, "example.com", action_id=selected)
+    assert store.action(selected)["status"] == "claimed"
+    other = "keyword-rich" if selected == "ordinary" else "ordinary"
+    assert store.action(other)["status"] == "ready"
 
 
 def test_noise_filter_extracts_urls_and_builtin_dedup_keeps_param_signatures(tmp_path):

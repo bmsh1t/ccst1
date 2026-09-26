@@ -62,7 +62,7 @@ OWNER_SOURCES = (
 # Current baseline: action_queue 52 / validation_runner 10 / validate 62 /
 # checkpoint 23 ValueError gates.
 MIN_GATES_PER_SOURCE = {
-    "action_queue.py": 30,
+    "action_queue.py": 15,  # C4 retired JSON writers and compensation gates
     "validation_runner.py": 5,
     "validate.py": 40,
     "checkpoint.py": 15,
@@ -119,6 +119,9 @@ REPORT_PATTERNS = [
     r"global review",
     r"cannot be rewritten",
     r"owned by another finding",
+    r"runner operation must bind this finding.s endpoint and method",
+    r"^(technical assessment|delivery decision) changed;",
+    r"^decision.report.path exists with different bytes:",
 ]
 
 BOUNDED_FAILSAFE_PATTERNS = [

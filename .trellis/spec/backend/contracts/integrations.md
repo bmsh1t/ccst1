@@ -20,6 +20,8 @@ python3 tools/oast_listen.py start|markers|poll|stop --target <target>
 
 ### 3. Contracts
 
+- primary：参数发现与 spray 用 `action_queue.add_material_review()` 保存不可覆盖的结果快照并登记待审 work；扫描状态不写成 candidate/tested 或其他 Action 终态。snapshot 位于原目标材料目录，latest summary 的后续覆盖不改变旧 work 的 artifact 引用；相同结果重放不重复，spray 的发布时间和同步反馈不参与材料身份。
+- primary：OAST 目录使用 canonical target key；start 保留监听代次，poll/stop 追加 action-linked handoff，即使行动已终结也保留新过程事实，但不重开/关闭行动、不产生 Finding。以下 candidate/tested/dead-end 自动映射仅为尚未切换的 legacy 协议。
 - `finish_run()` 先写 `spray_summary`，再在 `action_queue_sync` 写入 `status`、`queue_status`、
   `action_id`、队列路径；同步失败必须写 `warnings`，不能静默丢失 continuation。
 - Spray disposition 为：有效凭据 `candidate`；ambiguous/rate-limited/guarded/locked/unknown
@@ -64,6 +66,7 @@ python3 tools/oast_listen.py start|markers|poll|stop --target <target>
 
 ### 6. Tests Required
 
+- `tests/test_primary_action_consumers.py`：primary 描述性上下文、旧 receipt 重放、OAST 代次/终态后事实、材料快照不可覆盖、重复登记、失败补登记、preview 拒写和零自动裁决。
 - `tests/test_spray_contract.py`：summary/queue 投影、幂等、candidate 不降级、同步失败 warning。
 - `tests/test_spray_http_form.py`：跨 Scope CSRF 拒绝。
 - `tests/test_spray_oauth.py`：跨 Scope redirect 拒绝和 guarded 分类。

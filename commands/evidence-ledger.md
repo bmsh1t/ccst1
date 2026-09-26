@@ -1,90 +1,46 @@
 ---
-description: 记录和检查当前目标的 endpoint 级测试账本与角色差异矩阵。用法：/evidence-ledger <target>
+description: 查看当前目标 Store 中的执行证据、闭合状态与角色差异矩阵。用法：/evidence-ledger <target>
 ---
 
 # /evidence-ledger
 
-检查或记录 Evidence Ledger。
+读取当前目标 Store 的执行观察。选择测试顺序、解释结果和决定后续行动由 AI 完成；摘要不创建行动或技术裁决。
 
-这个命令不是扫描器，也不是新的并行工作流。它服务于 `/context-pack`、
-`/hunt`、`/autopilot`、`/checkpoint`：把“测过什么角色、什么对象、什么 replay
-变体、结果是什么”结构化记录下来，防止只测单账号成功路径就收工。
-
-## 默认只读
-
-先运行 summary：
+## 只读查询
 
 ```bash
 python3 tools/evidence_ledger.py summary --target <target>
+python3 tools/evidence_ledger.py summary --target <target> --endpoint /api/accounts/42/export --vuln-class IDOR --json
 ```
 
-可按 endpoint 聚焦：
+当前事实来自 `state/<target-key>/metadata.sqlite3`。需要指定数据根时加 `--repo-root <repo-root>`。
+未初始化、preview、缺库或坏库会非零退出；不会读旧 JSONL 补值或创建空库。
+新目标使用明确的 `target_store.py init --store --target <target>`；有旧领域数据的目标使用显式导入。
+
+## 登记已执行材料
+
+`evidence_ledger.py record` 和 `--from-probe` 已退役。Probe 通过 Store 保存自己的 attempt 与 observation。
+原生工具、浏览器或多步执行的材料通过统一 Runner 登记到已存在的 Finding：
 
 ```bash
-python3 tools/evidence_ledger.py summary --target <target> --endpoint /api/accounts/42/export --vuln-class IDOR
+python3 tools/validation_runner.py record-evidence \
+  --repo-root <repo-root> --target <target> --finding-id <finding-id> \
+  --evidence-json <native-evidence.json>
 ```
 
-默认读取：
+材料 JSON 必须包含明确的 `attempt_id`、带时区的 `generated_at`、`source`、`result`、
+`observed_difference` 和 `runs`；每步给出实际 URL、method、actor 及目标内 request/response 引用。
+完整格式见 `docs/evidence-runners.md#native-evidence-registration`。
+登记不发请求；同一 attempt 的相同材料可重试，真实重跑必须用新 attempt。登记失败保留原始材料。
+行动关联须显式传 `--action-id`、`--claim-token` 和 `--actor`；不会根据 URL 猜测并完成队列工作。
 
-```text
-memory/evidence/<target>/ledger.jsonl
-```
-
-如果文件不存在，不要当成“已覆盖”；这表示 actor/object/replay 覆盖还没有结构化记录。
-
-## 谁思考（认知归属）
-
-| 输入 | 谁思考 |
-|---|---|
-| `--result`（tested_clean/lead/dead_end...） | **AI 判断**（观察判定） |
-| `--notes` | **AI 判断** |
-| endpoint/method/actor/variant/evidence_ref/vuln_class | **机器推导**（`--from-probe <event_id>` 从 ledger 复制） |
-| event_id 去重、identity 归并、落账 | **机械** |
-
-## 显式记录
-
-只有实际完成某个低风险验证后，才 record：
-
-```bash
-python3 tools/evidence_ledger.py record \
-  --target target.com \
-  --endpoint /api/accounts/42/export \
-  --method GET \
-  --vuln-class IDOR \
-  --actor peer \
-  --object-scope same_org_other \
-  --variant id_swap \
-  --result tested_clean \
-  --source browser \
-  --browser-observed \
-  --replayed \
-  --evidence-ref recon/target.com/browser/xhr_endpoints.txt:1
-```
-
-Evidence Ledger 只记录调用方明确提供的事实、结果和证据，不根据请求形态补充决策。
-
-```bash
-python3 tools/evidence_ledger.py record \
-  --target target.com \
-  --endpoint /api/accounts/42/role \
-  --method PATCH \
-  --vuln-class Authz \
-  --actor low_role \
-  --object-scope own \
-  --variant role_diff \
-  --result blocked_redline \
-  --notes "真实角色修改有破坏性，保持 Lead，需可清理测试资源"
-```
-
-如果安全完成了状态改变类验证，必须加：
-
-```text
---redline-checked
-```
+副作用由实际操作事实说明。确有状态改变时使用 `--state-changing --redline-checked`；
+HTTP method 本身不决定副作用。部分执行、截断或未确认红线的副作用记录保留可查，不能授权已测闭合。
+观察结果与技术裁决分开；Finding 的 confirmed/refuted/inconclusive 由后续显式 `/validate` 写入。
 
 ## Actor Matrix
 
-对于 `IDOR` / `Authz` / `GraphQL` / `CSRF`，默认矩阵关注：
+`IDOR` / `Authz` / `GraphQL` / `CSRF` 的适用矩阵展示实际尚缺的 actor/object/replay 条件：
 
 ```text
 anonymous / none / unauth_denied
@@ -92,34 +48,17 @@ owner / own_object / baseline
 peer / other_object_same_org / id_swap
 low_role / own_object / role_diff
 cross_tenant / cross_tenant_object / tenant_diff
-```
-
-`unauth_denied` 仅表示受保护资源拒绝匿名访问；公开登录页或 IdP hosted
-入口应记录为公开面 baseline，不能据此声称 Authz 已测试通过。
-
-CSRF 还会关注：
-
-```text
 owner / own_object / token_missing
 owner / own_object / origin_diff
 ```
 
-## 输出解释
+后两项用于 CSRF。公开页面可匿名访问不等于受保护资源已经完成 Authz 验证。
+相同 endpoint 的不同 method、actor、对象范围及实验身份不互相覆盖；开放 family 的证据可以保存，
+但不会凭未知类别自动关闭标准 Coverage。
 
-```text
-EVIDENCE LEDGER
-- Entries:
-- Red-line unchecked state-changing records:
-- Recent entries:
-- Actor matrix gaps:
-- Record commands:
-```
+## 输出与恢复
 
-`Actor matrix gaps` 非空时，不能声称该 endpoint 的 authz/IDOR/业务逻辑路径已经完整覆盖。
-
-## 和其他层的关系
-
-- `/context-pack`：执行前把 actor gap 放进上下文。
-- `/checkpoint`：结束前把 actor gap 变成 next action。
-- `/retrospect`：只沉淀可复用经验，不把所有 ledger 行写进知识库。
-- `coverage_matrix`：负责 endpoint × vuln_class；Evidence Ledger 负责 actor/object/replay。
+摘要给出来源 Store/revision、记录数量、最近观察、闭合单元、角色差异和证据损坏诊断。
+最近窗口不限制当前闭合计算。损坏材料保留历史行，同时压制相应授权。
+`/context-pack` 与 `/checkpoint` 读取同一事实源，展示缺口和展开入口；AI 自己决定是否显式创建行动。
+旧 `memory/evidence/<target-key>/ledger.jsonl` 只由历史检查或迁移工具读取，不是当前运行后端。

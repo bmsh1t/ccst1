@@ -9,8 +9,8 @@ events.jsonl 或 capabilities.yaml。终态决定由人工 reviewer 通过
 
 信号定义：
 - action_linkage: active action-owner metadata 中 knowledge signal
-  identity 与卡片 trigger_tags 的命中次数（primary 读 TargetStore，legacy
-  读 action_queue.json；无目标时为 0）。
+  identity 与卡片 trigger_tags 的命中次数（只读活动 TargetStore；无目标时为 0，
+  损坏或未完成切换显式失败，不能据此建议退役卡片）。
 - trigger_overlap: 两张卡 trigger_tags 的 Jaccard 相似度（merge 候选）。
 - source_refs: frontmatter source_refs 数量（corpus-report 案例来源）。
 - recall_log: memory/context-pack 召回记录若存在则计数，否则 0。
@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import stat
 import sys
 from pathlib import Path
 from typing import Any
@@ -34,14 +36,14 @@ try:
         load_card_metadata_by_file,
         parse_knowledge_document,
     )
-    from tools.target_store import StoreError, TargetStore
+    from tools.target_store import StoreError, runtime_store
 except ImportError:  # pragma: no cover - direct tools/ execution
     from knowledge_registry import (  # type: ignore
         KnowledgeRegistryError,
         load_card_metadata_by_file,
         parse_knowledge_document,
     )
-    from target_store import StoreError, TargetStore  # type: ignore
+    from target_store import StoreError, runtime_store  # type: ignore
 
 
 MERGE_OVERLAP_THRESHOLD = 0.6
@@ -76,36 +78,36 @@ def _jaccard(a: set[str], b: set[str]) -> float:
 def _action_linkage_counts(repo_root: Path, tags_by_card: dict[str, set[str]]) -> dict[str, int]:
     """Count card signals from the active action owner, never archived JSON."""
     counts = {card_id: 0 for card_id in tags_by_card}
-    state_dir = repo_root / "state"
+    state_dir = repo_root.resolve() / "state"
     if not state_dir.is_dir():
         return counts
-    tag_index = {tag: card_id for card_id, tags in tags_by_card.items() for tag in tags}
-    for queue_file in state_dir.rglob("action_queue.json"):
-        target_dir = queue_file.parent
-        store_path = target_dir / "metadata.sqlite3"
-        if store_path.is_file():
-            try:
-                store = TargetStore(repo_root, target_dir.name)
-                if store.backend() == "primary":
-                    page = store.page("actions", limit=1000)
-                    rows = list(page.get("items") or [])
-                    while page.get("has_more"):
-                        page = store.page("actions", limit=1000, cursor=page.get("next_cursor"))
-                        rows.extend(page.get("items") or [])
-                    text = json.dumps(rows, ensure_ascii=False, sort_keys=True)
-                    for tag, card_id in tag_index.items():
-                        counts[card_id] += text.count(tag)
-                    continue
-            except (OSError, StoreError, ValueError):
-                # A damaged primary is not legacy evidence. Leave its signal
-                # absent and let the store health surface the underlying fault.
-                continue
+    target_dirs = {path.parent for name in ("metadata.sqlite3", "legacy-frozen.json")
+                   for path in state_dir.glob(f"*/{name}")}
+    for target_dir in sorted(target_dirs):
         try:
-            text = queue_file.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            continue
-        for tag, card_id in tag_index.items():
-            counts[card_id] += text.count(tag)
+            # The fence supplies only a discovery hint. The runtime owner checks
+            # its full identity, permissions, role and database before any query.
+            fence_path = (target_dir / "legacy-frozen.json").absolute()
+            if fence_path.resolve() != fence_path:
+                raise StoreError("Store discovery fence must not traverse symlinks")
+            fd = os.open(fence_path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+            with os.fdopen(fd, encoding="utf-8") as handle:
+                if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                    raise StoreError("Store discovery fence requires a regular file")
+                target = json.loads(handle.read(4097))["target"]
+            store = runtime_store(repo_root, target)
+            if store.path.parent != target_dir.resolve() or target_dir.is_symlink():
+                raise StoreError("Store discovery path does not match target identity")
+            page = store.page("actions", limit=1000)
+            while True:
+                text = json.dumps(page["items"], ensure_ascii=False, sort_keys=True)
+                for card_id, tags in tags_by_card.items():
+                    counts[card_id] += sum(text.count(tag) for tag in tags)
+                if not page["has_more"]:
+                    break
+                page = store.page("actions", limit=1000, cursor=page["next_cursor"])
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise StoreError(f"cannot inspect action signals at {target_dir}: {exc}") from exc
     return counts
 
 
@@ -226,7 +228,11 @@ def main(argv: list[str] | None = None) -> int:
         help="仓库根目录（默认：脚本所在仓库）",
     )
     args = parser.parse_args(argv)
-    result = evaluate_cards(Path(args.repo_root))
+    try:
+        result = evaluate_cards(Path(args.repo_root))
+    except StoreError as exc:
+        print(f"knowledge evaluation failed: {exc}", file=sys.stderr)
+        return 2
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:

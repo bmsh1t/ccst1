@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import sys
 from pathlib import Path
 from urllib.parse import urlparse
@@ -20,12 +21,14 @@ if TOOLS_DIR not in sys.path:
     sys.path.insert(0, TOOLS_DIR)
 
 from memory.target_profile import default_memory_dir  # noqa: E402
+from tools.context_pack import format_target_experiences
 try:
     from tools.action_queue import (
         ACTIVE_STATUSES,
         FINAL_STATUSES,
         _target_owned_nonempty_evidence_ref,
         load_queue,
+        load_queue_summary,
         queue_path,
         queue_fingerprint,
         active_action_ids,
@@ -36,6 +39,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         FINAL_STATUSES,
         _target_owned_nonempty_evidence_ref,
         load_queue,
+        load_queue_summary,
         queue_path,
         queue_fingerprint,
     )
@@ -67,21 +71,22 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     )
 try:
     from tools.request_guard import load_guard_status
-    from tools.resume import load_resume_summary, load_structured_finding_followup
-    from tools.surface import load_surface_context, rank_surface
+    from tools.resume import _load_resume_summary
+    from tools.surface import _load_surface_context, rank_surface
     from tools.observation_inventory import peek_inventory_summary
     from tools.surface_projection import load_surface_projection
 except ImportError:  # pragma: no cover - direct tools/ execution
     from request_guard import load_guard_status
-    from resume import load_resume_summary, load_structured_finding_followup
-    from surface import load_surface_context, rank_surface
+    from resume import _load_resume_summary
+    from surface import _load_surface_context, rank_surface
     from observation_inventory import peek_inventory_summary  # type: ignore
     from surface_projection import load_surface_projection  # type: ignore
+
+# Keep the historical public symbol available to callers and test seams while
+# bounded state construction continues to use the no-side-effect reader above.
+load_surface_context = _load_surface_context
 try:
-    from tools.finding_index import (
-        list_root_finding_claims,
-        verify_finalized_finding_owner_provenance,
-    )
+    from tools.finding_index import list_root_finding_claims
     from tools.runtime_state import (
         _derive_current_status,
         inspect_recon_artifacts,
@@ -99,16 +104,14 @@ try:
         canonical_target_value,
         classify_target,
         compact_url,
-        migrate_legacy_list_storage,
         target_list_entries,
         target_storage_key,
         url_belongs_to_target,
     )
-    from tools.target_store import TargetStore, target_backend
+    from tools.target_store import runtime_store
 except ImportError:  # pragma: no cover - direct tools/ execution
     from finding_index import (  # type: ignore
         list_root_finding_claims,
-        verify_finalized_finding_owner_provenance,
     )
     from runtime_state import (  # type: ignore
         _derive_current_status,
@@ -127,26 +130,14 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         canonical_target_value,
         classify_target,
         compact_url,
-        migrate_legacy_list_storage,
         target_list_entries,
         target_storage_key,
         url_belongs_to_target,
     )
-    from target_store import TargetStore, target_backend  # type: ignore
+    from target_store import runtime_store  # type: ignore
 
 try:
-    from tools.coverage_matrix import (
-        STATUS_VALUES,
-        VULN_CLASSES,
-        _route_template,
-        coverage_gaps_with_observed_evidence,
-        coverage_gaps_with_observed_evidence,
-        high_value_gaps_from_matrix,
-        _is_auto_applicability_na,
-        load_matrix,
-        load_matrix_projection,
-        matrix_is_fresh,
-    )
+    from tools.coverage_matrix import STATUS_VALUES, VULN_CLASSES, _route_template, coverage_gaps_with_observed_evidence, _is_auto_applicability_na, read_matrix
     from tools.current_truth import current_cell_projection
 except ImportError:  # pragma: no cover - direct tools/ execution
     from coverage_matrix import (  # type: ignore
@@ -154,12 +145,8 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         VULN_CLASSES,
         _route_template,
         coverage_gaps_with_observed_evidence,
-        coverage_gaps_with_observed_evidence,
-        high_value_gaps_from_matrix,
         _is_auto_applicability_na,
-        load_matrix,
-        load_matrix_projection,
-        matrix_is_fresh,
+        read_matrix,
     )
     from current_truth import current_cell_projection  # type: ignore
 try:
@@ -180,153 +167,31 @@ try:
 except ImportError:  # pragma: no cover - direct tools/ execution
     from recon_target_selector import load_rotation_status  # type: ignore
 try:
-    from tools.scope_context import ScopeContext, ScopeContextError
+    from tools.scope_source import load_scope_context
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from scope_context import ScopeContext, ScopeContextError  # type: ignore
-try:
-    from tools.target_memory import load_goal_memory
-except ImportError:  # pragma: no cover - direct tools/ execution
-    from target_memory import load_goal_memory  # type: ignore
+    from scope_source import load_scope_context  # type: ignore
 
 
 # Loop Guard 拆分（09-11-simple-efficient-refactor 批次 7）：re-export 保持
 # 全部外部 import 零破坏；函数体已纯搬动到 autopilot_loop_guard.py。
 try:
-    from tools.autopilot_loop_guard import (  # noqa: F401
-        HIGH_VALUE_OBSERVATION_KINDS,
-        _ROTATION_OUTCOMES,
-        _STAGNANT_REASONS,
-        _endpoint_family,
-        _format_loop_guard_line,
-        _ledger_health_projection,
-        _load_loop_guard_projection,
-        _loop_control_projection,
-        _loop_guard_authoritative_reason,
-        _recent_homogeneous_outcomes,
-        _stagnation_continuation,
-        _stagnation_dimensions,
-        _stagnation_obligation,
-        _stagnation_outcome,
-        _stagnation_owner_obligations,
-        _stagnation_text,
-        build_loop_guard_projection,
-        stagnation_fingerprint,
-    )
+    from tools.autopilot_loop_guard import _format_loop_guard_line, _load_loop_guard_projection, _loop_control_projection, _recent_homogeneous_outcomes, _stagnation_continuation, stagnation_fingerprint
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from autopilot_loop_guard import (  # type: ignore  # noqa: F401
-        HIGH_VALUE_OBSERVATION_KINDS,
-        _ROTATION_OUTCOMES,
-        _STAGNANT_REASONS,
-        _endpoint_family,
-        _format_loop_guard_line,
-        _ledger_health_projection,
-        _load_loop_guard_projection,
-        _loop_control_projection,
-        _loop_guard_authoritative_reason,
-        _recent_homogeneous_outcomes,
-        _stagnation_continuation,
-        _stagnation_dimensions,
-        _stagnation_obligation,
-        _stagnation_outcome,
-        _stagnation_owner_obligations,
-        _stagnation_text,
-        build_loop_guard_projection,
-        stagnation_fingerprint,
-    )
+    from autopilot_loop_guard import _format_loop_guard_line, _load_loop_guard_projection, _loop_control_projection, _recent_homogeneous_outcomes, _stagnation_continuation, stagnation_fingerprint
 
 
 # artifact reader 拆分（批次 7）：re-export 保持外部 import 零破坏。
 try:
-    from tools.autopilot_state_read import (  # noqa: F401
-        _JS_TERMINAL_DISPOSITIONS,
-        _SQL_MATRIX_LANES,
-        _SQL_MATRIX_STATUSES,
-        _bounded_count,
-        _has_any_artifact,
-        _has_js_read_signal,
-        _load_case_state_projection,
-        _load_js_intel_projection,
-        _load_json_inject_projection,
-        _load_scanner_summary_projection,
-        _load_sql_matrix_projection,
-        _load_sql_matrix_projections,
-        _probe_cursor_projection,
-        _probe_cursor_valid,
-        _read_batch_lines,
-        _read_batch_manifest_completed,
-        _read_batch_ranked_targets,
-        load_target_goal_memory,
-    )
+    from tools.autopilot_state_read import _JS_TERMINAL_DISPOSITIONS, _has_any_artifact, _has_js_read_signal, _load_case_state_projection, _load_js_intel_projection, _load_json_inject_projection, _load_scanner_summary_projection, _load_sql_matrix_projections, _read_batch_lines, _read_batch_manifest_completed, _read_batch_ranked_targets, load_target_goal_memory
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from autopilot_state_read import (  # type: ignore  # noqa: F401
-        _JS_TERMINAL_DISPOSITIONS,
-        _SQL_MATRIX_LANES,
-        _SQL_MATRIX_STATUSES,
-        _bounded_count,
-        _has_any_artifact,
-        _has_js_read_signal,
-        _load_case_state_projection,
-        _load_js_intel_projection,
-        _load_json_inject_projection,
-        _load_scanner_summary_projection,
-        _load_sql_matrix_projection,
-        _load_sql_matrix_projections,
-        _probe_cursor_projection,
-        _probe_cursor_valid,
-        _read_batch_lines,
-        _read_batch_manifest_completed,
-        _read_batch_ranked_targets,
-        load_target_goal_memory,
-    )
+    from autopilot_state_read import _JS_TERMINAL_DISPOSITIONS, _has_any_artifact, _has_js_read_signal, _load_case_state_projection, _load_js_intel_projection, _load_json_inject_projection, _load_scanner_summary_projection, _load_sql_matrix_projections, _read_batch_lines, _read_batch_manifest_completed, _read_batch_ranked_targets, load_target_goal_memory
 
 
 # frontier/gate 拆分（批次 7）：re-export 保持外部 import 零破坏。
 try:
-    from tools.autopilot_gate import (  # noqa: F401
-        _CLOSURE_REASON_OWNERS,
-        _coverage_gaps,
-        _coverage_gaps_with_observed_evidence,
-        _FRONTIER_LANES,
-        _actionable_coverage_gaps,
-        _blocking_recon_phase_gate,
-        _build_actionable_frontier,
-        _build_priority_frontier,
-        _candidate_items_for_next_action,
-        _closure_frontier_matches,
-        _closure_reason_frontier,
-        _describe_next_step,
-        _execution_frontier_item,
-        _format_priority_frontier_lines,
-        _frontier_item,
-        _hard_gate_projection,
-        _observation_partial_reason,
-        _recon_phase_residuals,
-        _scanner_lane_residuals,
-        describe_next_step,
-    )
+    from tools.autopilot_gate import _actionable_coverage_gaps, _blocking_recon_phase_gate, _build_actionable_frontier, _build_priority_frontier, _candidate_items_for_next_action, _closure_frontier_matches, _closure_reason_frontier, _describe_next_step, _format_priority_frontier_lines, _frontier_item, _hard_gate_projection, _observation_partial_reason, _recon_phase_residuals, _scanner_lane_residuals, describe_next_step
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from autopilot_gate import (  # type: ignore  # noqa: F401
-        _CLOSURE_REASON_OWNERS,
-        _coverage_gaps,
-        _coverage_gaps_with_observed_evidence,
-        _FRONTIER_LANES,
-        _actionable_coverage_gaps,
-        _blocking_recon_phase_gate,
-        _build_actionable_frontier,
-        _build_priority_frontier,
-        _candidate_items_for_next_action,
-        _closure_frontier_matches,
-        _closure_reason_frontier,
-        _describe_next_step,
-        _execution_frontier_item,
-        _format_priority_frontier_lines,
-        _frontier_item,
-        _hard_gate_projection,
-        _observation_partial_reason,
-        _recon_phase_residuals,
-        _scanner_lane_residuals,
-        describe_next_step,
-    )
+    from autopilot_gate import _actionable_coverage_gaps, _blocking_recon_phase_gate, _build_actionable_frontier, _build_priority_frontier, _candidate_items_for_next_action, _closure_frontier_matches, _closure_reason_frontier, _describe_next_step, _format_priority_frontier_lines, _frontier_item, _hard_gate_projection, _observation_partial_reason, _recon_phase_residuals, _scanner_lane_residuals, describe_next_step
 
 PLACEHOLDER_OBJECT_SEGMENTS = {"nan", "undefined", "null", "none", "object", "[object object]"}
 DECISION_PROJECTION_SCHEMA_VERSION = 1
@@ -344,52 +209,21 @@ def _finalized_finding_identities(repo_root: str, resolved_target: str) -> set[s
     This is an egress guard for AI-facing next actions. It does not delete raw
     surface; it only prevents old finalized findings from steering startup.
     """
-    if target_backend(repo_root, resolved_target) == "primary":
-        store = TargetStore(repo_root, resolved_target)
-        identities: set[str] = set()
-        page = store.finding_page(limit=1000)
-        while True:
-            for item in page.get("items", []):
-                assessment = item.get("assessment") or {}
-                verdict = str(assessment.get("verdict") or "").strip().lower()
-                if verdict not in {"confirmed", "refuted"} and not item.get("reports"):
-                    continue
-                endpoint_identity = canonical_endpoint_identity(str(item.get("endpoint") or ""))
-                if endpoint_identity and endpoint_identity != "/":
-                    identities.add(endpoint_identity)
-            if not page.get("has_more"):
-                return identities
-            page = store.finding_page(limit=1000, cursor=page.get("next_cursor"))
-
-    path = Path(repo_root) / "findings" / target_storage_key(resolved_target) / "findings.json"
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return set()
-
+    store = runtime_store(repo_root, resolved_target)
     identities: set[str] = set()
-    for item in payload.get("findings", []):
-        if not isinstance(item, dict):
-            continue
-        validation_status = str(item.get("validation_status") or "").strip().lower()
-        report_status = str(item.get("report_status") or "").strip().lower()
-        if validation_status not in {"validated", "rejected"} and report_status != "generated":
-            continue
-        provenance = verify_finalized_finding_owner_provenance(
-            path.parent,
-            item,
-            target=resolved_target,
-        )
-        if not provenance.get("valid"):
-            # Direct JSON lifecycle claims must not hide a resume target.  The
-            # structured state projects them as owner-revalidation candidates.
-            continue
-        endpoint_identity = canonical_endpoint_identity(
-            str(item.get("url") or item.get("endpoint") or "")
-        )
-        if endpoint_identity and endpoint_identity != "/":
-            identities.add(endpoint_identity)
-    return identities
+    page = store.finding_state_page(limit=1000)
+    while True:
+        for item in page.get("items", []):
+            assessment = item.get("assessment") or {}
+            verdict = str(assessment.get("verdict") or "").strip().lower()
+            if verdict not in {"confirmed", "refuted"} and not item["report_recorded"]:
+                continue
+            endpoint_identity = canonical_endpoint_identity(str(item.get("endpoint") or ""))
+            if endpoint_identity and endpoint_identity != "/":
+                identities.add(endpoint_identity)
+        if not page.get("has_more"):
+            return identities
+        page = store.finding_state_page(limit=1000, cursor=page.get("next_cursor"))
 
 
 def _is_placeholder_surface(item: dict) -> bool:
@@ -687,7 +521,6 @@ def _build_recommended_targets(
             "host": item.get("host", ""),
             "suggested": item.get("suggested", ""),
             "vuln_class": item.get("vuln_class", ""),
-            "score": item.get("score", 0),
             "review_reason": item.get("review_reason", ""),
             "review_index": index,
             "tripped": bool(status.get("tripped", False)),
@@ -856,18 +689,6 @@ def _pick_next_action(
         return "resume_case_state"
     if (cidr_continuation or {}).get("status") == "pending":
         return "run_recon"
-    # Legacy target-memory is only a recovery bridge.  Canonical report
-    # closure must remain reachable once live/resume work above is exhausted.
-    if memory_candidate_next and not (
-        structured_findings.get("draft_completion_pending")
-        or structured_findings.get("validated_pending_report")
-    ):
-        # target memory 是兼容层，不是 durable owner。没有可定位原始证据时，
-        # 它只能把下一会话带回补证据动作，不能直接把 prose 提升为 finding。
-        if bool(memory_candidate_next.get("evidence_available")):
-            return "validate_finding"
-        return "collect_candidate_evidence"
-
     if not has_recon:
         if recon_completed_no_live_hosts:
             return "recon_no_live_hosts"
@@ -1443,242 +1264,6 @@ def _build_enrichment_hints(
     return next_tool_hint, hints
 
 
-def _memory_action_hint(text: str) -> str:
-    lowered = str(text or "").lower()
-    # This is a legacy command parser, not a fuzzy intent classifier:
-    # `/validated` and prose such as "validation" must stay in the visible
-    # memory queue without becoming candidate-evidence work.
-    if re.search(r"(?<!\w)/validate(?![\w-])", lowered):
-        return "/validate"
-    if "/report" in lowered or "report" in lowered:
-        return "/report"
-    if "/recon" in lowered or "recon" in lowered:
-        return "/recon"
-    if "browser" in lowered or "xhr" in lowered:
-        return "browser/playwright probe, then /surface"
-    if "postman" in lowered or "leak" in lowered:
-        return "review leak artifact, record evidence, then /surface"
-    if "oauth" in lowered or "redirect_uri" in lowered:
-        return "focused OAuth replay with red-line check"
-    if "idor" in lowered or "auth" in lowered or "role" in lowered:
-        return "role/object diff with low-risk replay"
-    return "execute smallest safe evidence-producing step"
-
-
-_NUCLEI_ACTION_RE = re.compile(r"\bnuclei\b", re.IGNORECASE)
-_RAW_NUCLEI_CORPUS_RE = re.compile(
-    r"(?:"
-    r"\ball_historical\.txt\b|"
-    r"\ball\.txt\b|"
-    r"\bwith_params\.txt\b|"
-    r"\b(?:gau|wayback|waymore)(?:urls)?\.txt\b|"
-    r"\b(?:raw|historical)\s+(?:urls?|corpus|archive)\b|"
-    r"\b(?:gau|wayback|waymore)\s+urls?\b|"
-    r"历史\s*(?:URL|url|链接|语料|全集)"
-    r")",
-    re.IGNORECASE,
-)
-
-
-def _memory_nuclei_action_requires_replan(text: str) -> bool:
-    """识别违反 broad-scanner 输入契约的旧 Nuclei 建议。"""
-    value = str(text or "")
-    return bool(_NUCLEI_ACTION_RE.search(value) and _RAW_NUCLEI_CORPUS_RE.search(value))
-
-
-_MEMORY_EVIDENCE_REF_RE = re.compile(
-    r"\b(?:evidence(?:_ref)?|raw_(?:request|response|artifact)(?:_path)?)\s*[:=]\s*([^\s,;]+)",
-    re.IGNORECASE,
-)
-
-
-def _memory_evidence_ref(text: str) -> str:
-    """Extract one explicit artifact pointer from legacy target-memory prose.
-
-    Target memory is intentionally human-readable and is not a second evidence
-    schema.  This narrow compatibility parser only recognises an explicit
-    ``Evidence=...``/``evidence_ref=...`` token emitted by checkpoint helpers.
-    Unknown prose remains evidence-missing and therefore cannot promote itself.
-    """
-    match = _MEMORY_EVIDENCE_REF_RE.search(str(text or ""))
-    if not match:
-        return ""
-    return match.group(1).strip().strip("'\"").rstrip(".,;:)]}")
-
-
-def _memory_evidence_available(
-    repo_root: str | Path | None,
-    target: str,
-    evidence_ref: str,
-) -> bool:
-    """Return whether a legacy memory pointer is target-owned and non-empty."""
-    if not repo_root or not target or not evidence_ref:
-        return False
-    try:
-        return bool(_target_owned_nonempty_evidence_ref(repo_root, target, evidence_ref))
-    except (OSError, ValueError):
-        return False
-
-
-def _build_memory_action_queue(
-    target_goal_memory: dict,
-    *,
-    repo_root: str | Path | None = None,
-) -> list[dict]:
-    target_memory = target_goal_memory.get("target") or {}
-    entries = target_memory.get("next_actions") or []
-    if not isinstance(entries, list):
-        return []
-
-    queue: list[dict] = []
-    for idx, item in enumerate(entries[-5:], 1):
-        if isinstance(item, dict):
-            text = str(item.get("text", "") or "").strip()
-        else:
-            text = str(item or "").strip()
-        if not text:
-            continue
-        evidence_ref = _memory_evidence_ref(text)
-        entry = {
-            "id": f"M{idx}",
-            "source": "target_memory",
-            "action": text,
-            "command_hint": _memory_action_hint(text),
-        }
-        if _memory_nuclei_action_requires_replan(text):
-            entry.update(
-                {
-                    "status": "requires_replan",
-                    "executable": False,
-                    "command_hint": (
-                        "use tools/hunt.py --target <target> --scan-only --quick for broad coverage, "
-                        "or build an evidence-driven targeted list with explicit tags/templates"
-                    ),
-                    "replan_reason": "raw historical URL corpora are not general Nuclei inputs",
-                }
-            )
-        if evidence_ref:
-            entry["evidence_ref"] = evidence_ref
-            entry["evidence_available"] = _memory_evidence_available(
-                repo_root,
-                str(target_memory.get("target") or ""),
-                evidence_ref,
-            )
-        else:
-            entry["evidence_available"] = False
-        queue.append(entry)
-    return queue
-
-
-def _select_memory_candidate(memory_action_queue: list[dict]) -> dict:
-    """Return the highest-priority legacy `/validate` handoff, if any.
-
-    A durable action queue and structured finding remain authoritative.  This
-    is only a recovery bridge for targets produced before checkpoint CLI queue
-    synchronisation existed.
-    """
-    for item in memory_action_queue:
-        if item.get("executable") is False:
-            continue
-        if str(item.get("command_hint") or "") == "/validate":
-            return item
-    return {}
-
-
-def _is_substantive_queue_action(item: dict) -> bool:
-    """仅让已有证据状态或明确 replay 命令抢占 fresh recon。"""
-    status = str(item.get("status") or "queued").strip().lower()
-    if status in {"running", "signal", "candidate"}:
-        return True
-    # focused-discovery 已经完成浏览器访问并生成 target-owned 增量证据；它不是
-    # 泛化的 surface TODO，必须让 Autopilot 先审阅并选择最小 replay。
-    if (
-        status == "queued"
-        and str(item.get("source") or "") == "browser-context-discovery"
-        and str(item.get("evidence_type") or "") == "browser-context-discovery"
-    ):
-        return True
-    # Normal Recon 会把完整 JS inventory 压成 bounded deep_candidates，并将
-    # 深析交给 `/js-read`。这是已有 recon-artifact，不应被 fresh recon 过滤掉。
-    action_type = str(item.get("type") or item.get("action_type") or "").strip()
-    evidence_type = str(item.get("evidence_type") or "").strip()
-    command_hint = str(item.get("command_hint") or "").strip()
-    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
-    if (
-        status in {"queued", "ready"}
-        and action_type == "bypass-403"
-        and evidence_type == "access-limit"
-        and "summary.json" in str(item.get("evidence") or "")
-    ):
-        # Legacy summaries remain reviewable after the dedicated executor was
-        # removed; this branch must never create a new 403 execution route.
-        return True
-    if (
-        status in {"queued", "ready"}
-        and action_type == "workflow-lead-review"
-        and str(metadata.get("category") or "") == "asset-scope-review"
-    ):
-        return True
-    if (
-        status in {"queued", "ready"}
-        and action_type == "viewstate-integrity-review"
-        and evidence_type == "checkpoint-next-action"
-    ):
-        return True
-    if status == "queued" and action_type == "case-state-enrichment":
-        missing = metadata.get("missing_evidence")
-        missing_text = " ".join(
-            str(value).strip().casefold()
-            for value in (missing if isinstance(missing, list) else [missing])
-            if str(value).strip()
-        )
-        # A checkpoint lead that only asks for an actor/session/object cannot
-        # produce evidence in an anonymous run. Keep it recoverable, but do
-        # not let it turn a lane-local prerequisite into global Queue work.
-        if any(marker in missing_text for marker in ("actor", "session", "business object")):
-            return False
-        return True
-    if status == "queued" and action_type in {
-        "candidate-evidence-gap",
-        "actor-gap",
-        "action-gated-review",
-        "browser-enrichment",
-    }:
-        return True
-    if status == "queued" and action_type == "coverage-gap":
-        if str(item.get("source") or "") != "checkpoint" or evidence_type != "checkpoint-next-action":
-            return True
-        if int(item.get("attempts", 0) or 0) > 0:
-            return True
-        if any(metadata.get(key) for key in ("hypothesis_id", "evidence_ref", "last_outcome")):
-            return True
-        endpoint = str(metadata.get("coverage_endpoint") or metadata.get("endpoint") or "").strip()
-        vuln_class = str(metadata.get("vuln_class") or "").strip()
-        if not endpoint or not vuln_class:
-            return True
-        return bool(coverage_gaps_with_observed_evidence([metadata]))
-    if status == "queued" and action_type in {"surface-review", "ranked-surface"}:
-        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
-        return "validation_runner.py" in " ".join(
-            (command_hint, str(metadata.get("replay_draft") or ""))
-        )
-    if (
-        status == "queued"
-        and action_type == "deep-js-review"
-        and evidence_type == "recon-artifact"
-        and command_hint.startswith("/js-read ")
-    ):
-        return True
-    command = " ".join(
-        str(value or "").strip()
-        for value in (
-            item.get("command_hint"),
-            metadata.get("replay_draft"),
-        )
-    ).strip()
-    return command.startswith(("python3 ", "/validate ", "curl "))
-
-
 def _queue_snapshot_for_target(
     repo_root: str,
     target: str,
@@ -1691,58 +1276,7 @@ def _queue_snapshot_for_target(
     existing autopilot state code; this is read-only and never becomes a
     second action owner.
     """
-    if target_backend(repo_root, target) == "primary":
-        store = TargetStore(repo_root, target)
-        page = store.page("actions", limit=1000)
-        rows = list(page.get("items") or [])
-        while page.get("has_more"):
-            page = store.page("actions", limit=1000, cursor=page.get("next_cursor"))
-            rows.extend(page.get("items") or [])
-        status_map = {
-            "ready": "queued",
-            "claimed": "running",
-            "blocked": "blocked",
-            "completed": "tested",
-            "cancelled": "n/a",
-        }
-        actions = []
-        for row in rows:
-            metadata = {
-                "execution_key": str(row.get("execution_key") or ""),
-                "store_status": str(row.get("status") or ""),
-            }
-            for key in ("endpoint", "family", "subject_artifact_id", "subject_finding_id", "subject_experience_id"):
-                value = row.get(key)
-                if value not in (None, ""):
-                    metadata[key] = value
-            if row.get("claim_token"):
-                metadata["claim_token"] = row["claim_token"]
-            actions.append({
-                "id": row.get("id", ""),
-                "type": str(row.get("kind") or "work"),
-                "status": status_map.get(str(row.get("status") or ""), "blocked"),
-                "priority": row.get("priority"),
-                "action": row.get("intent", ""),
-                "evidence": row.get("reason", ""),
-                "metadata": metadata,
-                "created_at": row.get("created_at", ""),
-                "updated_at": row.get("updated_at", ""),
-                "source": "target_store",
-            })
-        return {
-            "schema_version": 1,
-            "target": canonical_target_value(target),
-            "backend": "primary",
-            "store_id": page.get("store_id", ""),
-            "revision": page.get("revision", 0),
-            "actions": actions,
-        }
-    if not isinstance(queue_snapshot, dict):
-        return load_queue(repo_root, target)
-    snapshot_target = canonical_target_value(str(queue_snapshot.get("target") or ""))
-    if snapshot_target != canonical_target_value(target):
-        raise ValueError("action queue snapshot target does not match requested target")
-    return queue_snapshot
+    return load_queue(repo_root, target)
 
 
 def _owner_source_markers(repo_root: str | Path, target: str) -> dict[str, tuple[object, ...]]:
@@ -1750,21 +1284,17 @@ def _owner_source_markers(repo_root: str | Path, target: str) -> dict[str, tuple
     resolved = canonical_target_value(target)
     key = target_storage_key(resolved)
     paths = {
-        "action_queue": queue_path(repo_root, resolved),
-        "coverage": Path(repo_root) / "evidence" / key / "coverage_matrix.json",
-        "ledger": Path(repo_root) / "memory" / "evidence" / key / "ledger.jsonl",
         "surface": Path(repo_root) / "state" / key / "surface-projection.json",
         "checkpoint": Path(repo_root) / "state" / key / "checkpoint_latest.json",
-        "target_memory": Path(repo_root) / "memory" / "goals" / "targets" / f"{key}.json",
-        "findings": Path(repo_root) / "findings" / key / "findings.json",
-        "case_state": Path(repo_root) / "state" / key / "case_state.json",
         "runtime": Path(repo_root) / "state" / key / "session.json",
+        "scope": Path(repo_root) / "state" / key / "scope.json",
         "recon": Path(repo_root) / "recon" / key / "recon_manifest.jsonl",
         "browser": Path(repo_root) / "findings" / key / "browser" / "mcp-readiness.json",
         "js_intel": Path(repo_root) / "findings" / key / "js_intel" / "materials.json",
         "intel": Path(repo_root) / "recon" / key / "intel.json",
     }
-    markers: dict[str, tuple[object, ...]] = {}
+    binding = runtime_store(repo_root, resolved).binding()
+    markers: dict[str, tuple[object, ...]] = {"store": (binding["store_id"], binding["revision"])}
     for name, path in paths.items():
         try:
             stat = path.stat()
@@ -1777,38 +1307,23 @@ def _owner_source_markers(repo_root: str | Path, target: str) -> dict[str, tuple
     return markers
 
 
-def _load_substantive_action_queue_next(
+def _load_action_queue_next(
     repo_root: str,
     target: str,
     *,
     queue_snapshot: dict | None = None,
 ) -> dict:
-    """稳定序首项作为 frontier 的 action_queue owner 代表（无推荐语义）。
-
-    排序器已随 dumb-queue refactor 退役（2026-09-14）：这里不做价值排序，
-    取 substantive 过滤后的创建序首项。substantive 过滤保留——它防止
-    已验证工作被 fresh recon 清掉，是防误删语义而非排序。选择权在 AI
-    （autopilot.md priority_frontier 契约）。
-    """
-    queue = dict(_queue_snapshot_for_target(repo_root, target, queue_snapshot))
-    # 过滤方向与旧实现一致：非 active（终态）动作保留参与判定，active 的
-    # 只留 substantive——这个方向决定 "final 之后 frontier 是否为空"。
-    candidates = [
-        item
-        for item in queue.get("actions", [])
-        if isinstance(item, dict)
-        and (
-            str(item.get("status") or "queued") not in ACTIVE_STATUSES
-            or _is_substantive_queue_action(item)
-        )
+    """Return the oldest active Store action without interpreting its intent."""
+    queue = queue_snapshot if queue_snapshot is not None else _queue_snapshot_for_target(repo_root, target)
+    if "next_action" in queue:
+        return queue["next_action"]
+    active = [
+        item for item in queue.get("actions", [])
+        if isinstance(item, dict) and item.get("status") in ACTIVE_STATUSES
     ]
-    if not candidates:
-        return {}
-    active_view = [item for item in candidates if str(item.get("status") or "queued") in ACTIVE_STATUSES]
-    if not active_view:
-        return {}
-    active_view.sort(key=lambda item: (str(item.get("created_at") or ""), str(item.get("id") or "")))
-    return active_view[0]
+    return min(active, key=lambda item: (
+        item.get("status") != "running", str(item.get("created_at") or ""), str(item.get("id") or ""),
+    ), default={})
 
 
 def _recon_completed_without_live_hosts(
@@ -1891,7 +1406,7 @@ def _build_batch_autopilot_state(repo_root: str, target: str, resolved_target: s
         batch_dir / "high_value_targets.json",
         completed,
     )
-    scope = _scope_identity(resolved_target)
+    scope = _scope_identity(repo_root, resolved_target)
     for candidate in candidates:
         candidate["parent_scope_ref"] = str(scope.get("scope_ref") or "")
         candidate["parent_scope_hash"] = str(scope.get("scope_hash") or "")
@@ -1968,11 +1483,11 @@ def _build_batch_autopilot_state(repo_root: str, target: str, resolved_target: s
     return state
 
 
-def _scope_identity(target: str) -> dict:
+def _scope_identity(repo_root: str | Path, target: str) -> dict:
     """Project stable Scope identity without loading recon/discovery bodies."""
     try:
-        context = ScopeContext.from_target(target)
-    except ScopeContextError as exc:
+        context = load_scope_context(repo_root, target)
+    except ValueError as exc:
         return {
             "status": "invalid",
             "scope_ref": str(target or ""),
@@ -1995,6 +1510,8 @@ def _load_autopilot_control_facts(
     fast_recon: bool,
     queue_snapshot: dict | None = None,
     case_state_summary: dict | None = None,
+    coverage_state: dict | None = None,
+    full_domain_context: bool = False,
 ) -> dict:
     """一次性读取 next-action 所需控制事实。
 
@@ -2002,11 +1519,13 @@ def _load_autopilot_control_facts(
     finding reader 禁止 legacy migration。完整诊断路径复用同一事实集合，
     但保留精确 recon 计数。
     """
-    resume_summary = load_resume_summary(
+    resume_summary = _load_resume_summary(
         resolved_memory_dir,
         resolved_target,
         repo_root=repo_root,
         fast_recon=fast_recon,
+        coverage_state=coverage_state,
+        full_domain_context=full_domain_context,
     )
     finalized_identities = _finalized_finding_identities(repo_root, resolved_target)
     guard_status = load_guard_status(resolved_memory_dir, resolved_target)
@@ -2018,18 +1537,12 @@ def _load_autopilot_control_facts(
         if repo_source_available
         else {}
     )
-    structured_findings = load_structured_finding_followup(
-        repo_root,
-        resolved_target,
-        migrate_legacy=False,
+    structured_findings = resume_summary["structured_findings"]
+    root_finding_claims = list_root_finding_claims(
+        Path(repo_root) / "findings" / target_storage_key(resolved_target), target=resolved_target,
     )
-    root_finding_claims = []
-    if target_backend(repo_root, resolved_target) != "primary":
-        root_finding_claims = list_root_finding_claims(
-            Path(repo_root) / "findings" / target_storage_key(resolved_target),
-            target=resolved_target,
-        )
-    root_finding_claim_next = root_finding_claims[0] if root_finding_claims else {}
+    # Raw claims remain visible; only explicitly registered work enters the queue.
+    root_finding_claim_next = {}
     validation_runner_candidates = load_validation_runner_candidate_pool(
         repo_root,
         resolved_target,
@@ -2039,8 +1552,8 @@ def _load_autopilot_control_facts(
         if validation_runner_candidates
         else {}
     )
-    queue = _queue_snapshot_for_target(repo_root, resolved_target, queue_snapshot)
-    action_queue_next = _load_substantive_action_queue_next(
+    queue = queue_snapshot if queue_snapshot is not None else load_queue_summary(repo_root, resolved_target)
+    action_queue_next = _load_action_queue_next(
         repo_root,
         resolved_target,
         queue_snapshot=queue,
@@ -2081,23 +1594,28 @@ def _load_autopilot_control_facts(
         recon_in_progress=recon_in_progress,
     )
     target_goal_memory = load_target_goal_memory(repo_root, resolved_target)
+    case_state = _load_case_state_projection(
+        repo_root,
+        resolved_target,
+        case_state_summary=case_state_summary,
+    )
     has_recon = bool(recon_artifacts.get("ready"))
-    # A runtime session marker alone is not hunt memory: fresh recon creates
-    # that marker before the first handoff. Count only historical profile,
-    # journal, canonical projections, or non-runtime owner state.
-    resume_profile = (resume_summary or {}).get("legacy_profile") or {}
-    owner_projection = (resume_summary or {}).get("owner_projection") or {}
-    canonical_sources = set((resume_summary or {}).get("canonical_sources") or [])
+    # Fresh Recon URLs and runtime breadcrumbs are not saved hunt memory.
+    # Count only explicit work, context, experience and observed domain facts.
+    saved_memory = (resume_summary or {}).get("target_memory") or {}
+    has_store_facts = (
+        bool(queue.get("total", len(queue.get("actions", []))))
+        or any(case_state.get(key) for key in ("actors", "sessions", "objects", "open_hypotheses"))
+        or bool(saved_memory.get("active_goal"))
+        or bool((saved_memory.get("experience_window") or {}).get("total"))
+    )
     has_memory = bool(
         resume_summary
         and (
-            resume_profile.get("status") in {"loaded", "invalid"}
-            or int(resume_summary.get("journal_entries", 0) or 0) > 0
-            or bool(owner_projection.get("available"))
+            int(resume_summary.get("journal_entries", 0) or 0) > 0
             or bool(resume_summary.get("findings"))
             or bool(resume_summary.get("tested_endpoints"))
-            or bool(resume_summary.get("untested_endpoints"))
-            or bool(canonical_sources - {"runtime"})
+            or has_store_facts
         )
     )
     fresh_recon_ready = _fresh_recon_needs_surface_context(
@@ -2115,21 +1633,12 @@ def _load_autopilot_control_facts(
         or (resume_summary or {}).get("recent_guard_blocks", [])
         or []
     )
-    memory_action_queue = _build_memory_action_queue(
-        target_goal_memory,
-        repo_root=repo_root,
-    )
     intel_continuation = inspect_intel_continuation(repo_root, resolved_target)
     browser_evidence = inspect_browser_evidence(repo_root, resolved_target)
     json_inject = _load_json_inject_projection(repo_root, resolved_target)
     sql_matrix = _load_sql_matrix_projections(repo_root, resolved_target)
     js_intel = _load_js_intel_projection(repo_root, resolved_target)
     scanner_summary = _load_scanner_summary_projection(repo_root, resolved_target)
-    case_state = _load_case_state_projection(
-        repo_root,
-        resolved_target,
-        case_state_summary=case_state_summary,
-    )
     return {
         "repo_root": repo_root,
         "resolved_target": resolved_target,
@@ -2160,8 +1669,8 @@ def _load_autopilot_control_facts(
         "fresh_recon_ready": fresh_recon_ready,
         "resume_targets": resume_targets,
         "recent_guard_advisories": recent_guard_advisories,
-        "memory_action_queue": memory_action_queue,
-        "memory_candidate_next": _select_memory_candidate(memory_action_queue),
+        "memory_action_queue": [],
+        "memory_candidate_next": {},
         "intel_continuation": intel_continuation,
         "browser_evidence": browser_evidence,
         "json_inject": json_inject,
@@ -2311,7 +1820,7 @@ def _build_domain_autopilot_state(
         "target": target,
         "resolved_target": resolved_target,
         "target_kind": classify_target(resolved_target)["kind"],
-        "scope": _scope_identity(resolved_target),
+        "scope": _scope_identity(str(facts["repo_root"]), resolved_target),
         "memory_dir": resolved_memory_dir,
         "has_recon": has_recon,
         "has_memory": bool(facts.get("has_memory")),
@@ -2436,8 +1945,6 @@ def build_autopilot_bootstrap_state(
         resolved_target,
         resolved_memory_dir,
         fast_recon=True,
-        queue_snapshot=queue_snapshot,
-        case_state_summary=case_state_summary,
     )
     observation_inventory = peek_inventory_summary(repo_root, resolved_target)
     projection = load_surface_projection(
@@ -2498,14 +2005,23 @@ def build_autopilot_state(
             repo_root,
             target,
             memory_dir=memory_dir,
-            queue_snapshot=queue_snapshot,
-            case_state_summary=case_state_summary,
         )
+    return _build_autopilot_state(repo_root, target, memory_dir=memory_dir)[0]
+
+
+def _build_autopilot_state(
+    repo_root: str, target: str, memory_dir: str | None = None, *,
+    queue_snapshot: dict | None = None, case_state_summary: dict | None = None,
+    coverage_state: dict | None = None,
+    full_domain_context: bool = False,
+) -> tuple[dict, dict]:
+    """Assemble current owner inputs acquired within one Checkpoint call."""
     resolved_memory_dir = memory_dir or str(default_memory_dir(repo_root))
     resolved_target = canonical_target_value(target)
     if classify_target(resolved_target)["kind"] == "list":
-        migrate_legacy_list_storage(repo_root, resolved_target)
-        return _build_batch_autopilot_state(repo_root, target, resolved_target)
+        return _build_batch_autopilot_state(repo_root, target, resolved_target), {}
+    if coverage_state is None:
+        coverage_state = read_matrix(resolved_target, repo_root=repo_root, current_only=True)
     facts = _load_autopilot_control_facts(
         repo_root,
         resolved_target,
@@ -2513,6 +2029,8 @@ def build_autopilot_state(
         fast_recon=False,
         queue_snapshot=queue_snapshot,
         case_state_summary=case_state_summary,
+        coverage_state=coverage_state,
+        full_domain_context=full_domain_context,
     )
     projection = load_surface_projection(
         repo_root,
@@ -2539,14 +2057,14 @@ def build_autopilot_state(
     else:
         # Legacy/missing cache compatibility：显式 full state 仍可重建；slash
         # bootstrap 永远不会走到这个无界 fallback。
-        surface_context = load_surface_context(
+        surface_context = _load_surface_context(
             repo_root,
             resolved_target,
             memory_dir=resolved_memory_dir,
-            write_probe_log=False,
+            coverage_state=coverage_state,
         )
         ranked = rank_surface(surface_context)
-    return _build_domain_autopilot_state(
+    state = _build_domain_autopilot_state(
         target,
         facts,
         ranked,
@@ -2563,6 +2081,7 @@ def build_autopilot_state(
         surface_context=surface_context,
     )
 
+    return state, ranked
 
 _TERMINAL_CLOSURE_ACTIONS = {
     "invalid_batch_target",
@@ -2578,22 +2097,11 @@ def _matrix_is_usable_for_closure(matrix: object) -> bool:
     endpoints = matrix.get("endpoints")
     if not isinstance(endpoints, list) or not endpoints:
         return False
-    if matrix.get("_coverage_projection"):
-        summary = matrix.get("summary")
-        gaps = matrix.get("_coverage_gaps")
-        if not isinstance(summary, dict) or not isinstance(gaps, list):
-            return False
-        try:
-            gap_count = int(summary.get("high_value_gaps_count", -1))
-            if gap_count < 0 or (gap_count > 0 and not gaps):
-                return False
-        except (TypeError, ValueError):
-            return False
     for endpoint in endpoints:
         if not isinstance(endpoint, dict) or not str(endpoint.get("endpoint") or "").strip():
             return False
         cells = endpoint.get("cells")
-        if not isinstance(cells, dict) or (not cells and not matrix.get("_coverage_projection")):
+        if not isinstance(cells, dict) or not cells:
             return False
         for vuln_class, cell in cells.items():
             if vuln_class not in VULN_CLASSES or not isinstance(cell, dict):
@@ -2847,7 +2355,7 @@ def _explicit_partial_reason(state: dict) -> str:
         return "durable_work_pending"
     if state.get("action_queue_next") or state.get("validation_runner_next"):
         return "durable_work_pending"
-    if state.get("root_finding_claim_next") or state.get("memory_candidate_next"):
+    if state.get("root_finding_claim_next"):
         return "finding_work_pending"
     findings = state.get("structured_findings") or {}
     if isinstance(findings, dict) and any(
@@ -3334,14 +2842,14 @@ def build_closure_projection(
         item_id = action or reason
         if reason in {"ledger_partial", "ledger_unreadable"}:
             owner = "evidence-ledger"
-            evidence_ref = f"memory/evidence/{target_key}/ledger.jsonl"
-            action_text = "Repair or reconcile the target-owned Evidence Ledger before closure"
+            evidence_ref = f"state/{target_key}/metadata.sqlite3"
+            action_text = "Inspect the target Store and repair unavailable evidence before closure"
             expected_gain = "restore the evidence owner needed to evaluate canonical closure cells"
-            stop_condition = "publish a readable ledger or record the bounded ledger blocker"
+            stop_condition = "restore current evidence integrity or record the bounded recovery blocker"
         elif reason == "coverage_ledger_evidence_missing":
             owner = "evidence-ledger"
-            evidence_ref = f"memory/evidence/{target_key}/ledger.jsonl"
-            action_text = "Record a matching Evidence Ledger terminal for every projected Coverage cell"
+            evidence_ref = f"state/{target_key}/metadata.sqlite3"
+            action_text = "Register the observed evidence supporting each projected Coverage cell"
             expected_gain = "bind each Coverage terminal to the endpoint and vulnerability result that produced it"
             stop_condition = "record matching owner evidence for every terminal cell, then recompute Closure"
         elif reason in {"checkpoint_stale", "checkpoint_invalid"}:
@@ -3372,7 +2880,7 @@ def build_closure_projection(
             case_state = state.get("case_state") if isinstance(state.get("case_state"), dict) else {}
             evidence_ref = str(
                 case_state.get("path")
-                or f"state/{target_key}/case_state.json"
+                or f"state/{target_key}/metadata.sqlite3"
             )
             action_text = (
                 "Import distinct owner/peer actor sessions through Case State before resuming "
@@ -3384,11 +2892,10 @@ def build_closure_projection(
             )
         elif reason == "finding_work_pending":
             root_claim = state.get("root_finding_claim_next") if isinstance(state.get("root_finding_claim_next"), dict) else {}
-            memory_candidate = state.get("memory_candidate_next") if isinstance(state.get("memory_candidate_next"), dict) else {}
             if root_claim:
                 owner = "finding-claim"
                 item_id = str(root_claim.get("id") or root_claim.get("claim_id") or reason)
-                action_text = "Collect locatable evidence and reconcile the Finding claim through checkpoint"
+                action_text = "Collect locatable evidence and explicitly register the Finding claim"
                 evidence_ref = str(
                     root_claim.get("source_file")
                     or root_claim.get("claim_source_file")
@@ -3396,29 +2903,16 @@ def build_closure_projection(
                 )
                 expected_gain = "determine whether the claim can enter the canonical Finding lifecycle"
                 stop_condition = "record a canonical candidate or reject the unsupported claim"
-            elif memory_candidate:
-                owner = "target-memory"
-                item_id = str(memory_candidate.get("id") or reason)
-                action_text = str(
-                    memory_candidate.get("action")
-                    or "Collect evidence for the legacy target-memory candidate"
-                )
-                evidence_ref = str(
-                    memory_candidate.get("evidence_ref")
-                    or f"memory/evidence/{target_key}/ledger.jsonl"
-                )
-                expected_gain = "determine whether the candidate has replayable evidence"
-                stop_condition = "reconcile through the canonical Finding owner or record evidence missing"
             else:
                 owner = "finding"
                 item_id = reason
                 action_text = "Resolve the canonical Finding owner obligation"
-                evidence_ref = f"findings/{target_key}/findings.json"
+                evidence_ref = f"state/{target_key}/metadata.sqlite3"
                 expected_gain = "resolve the pending Finding lifecycle state"
                 stop_condition = "record validated, candidate, dead-end, or blocked owner state"
         elif reason == "durable_work_pending":
             owner = "action_queue"
-            evidence_ref = f"state/{target_key}/action_queue.json"
+            evidence_ref = f"state/{target_key}/metadata.sqlite3"
             action_text = "Resume substantive work from the durable Action Queue"
             expected_gain = "resolve the selected owner-backed Queue action"
             stop_condition = "record a terminal Queue result or bounded blocker"
@@ -3479,20 +2973,20 @@ def build_closure_projection(
                 evidence_ref = str(
                     finding.get("evidence_ref")
                     or finding.get("source_file")
-                    or f"findings/{target_key}/findings.json"
+                    or f"state/{target_key}/metadata.sqlite3"
                 )
             elif owner == "action_queue":
                 queue_next = state.get("action_queue_next") if isinstance(state.get("action_queue_next"), dict) else {}
                 evidence_ref = str(
                     queue_next.get("evidence_ref")
                     or queue_next.get("evidence")
-                    or f"state/{target_key}/action_queue.json"
+                    or f"state/{target_key}/metadata.sqlite3"
                 )
             elif owner == "case_state":
                 case_state = state.get("case_state") if isinstance(state.get("case_state"), dict) else {}
                 evidence_ref = str(
                     case_state.get("path")
-                    or f"state/{target_key}/case_state.json"
+                    or f"state/{target_key}/metadata.sqlite3"
                 )
             elif owner == "surface-context":
                 projection = state.get("surface_projection") if isinstance(state.get("surface_projection"), dict) else {}
@@ -3993,22 +3487,8 @@ def load_closure_projection(
     target = str(state.get("resolved_target") or state.get("target") or "")
     source_markers_before = _owner_source_markers(repo_root, target)
     matrix_path = Path(repo_root) / "evidence" / target_storage_key(target) / "coverage_matrix.json"
-    matrix = load_matrix_projection(target, repo_root)
-    coverage_stale = False
-    if matrix is None and matrix_path.is_file():
-        matrix = load_matrix(target, repo_root)
-    # Older fixture-only matrices predate source fingerprints and have no
-    # Recon inputs to compare against.  Keep those read-only projections
-    # compatible; any target with a Recon directory must prove freshness.
-    matrix_has_legacy_context = not (
-        Path(repo_root) / "recon" / target_storage_key(target)
-    ).exists()
-    if matrix is not None and not (
-        matrix_is_fresh(target, matrix, repo_root)
-        or (not matrix.get("source_fingerprint") and matrix_has_legacy_context)
-    ):
-        coverage_stale = True
-        matrix = None
+    matrix = read_matrix(target, repo_root, current_only=True)
+    coverage_stale = matrix is None and matrix_path.is_file()
     queue = _queue_snapshot_for_target(repo_root, target, queue_snapshot)
     queue_generation = queue_fingerprint(queue)
     state_queue_generation = str(state.get("action_queue_fingerprint") or "").strip()
@@ -4070,7 +3550,7 @@ def load_closure_projection(
         # Closure must never use a preloaded next-action pointer: it may have
         # been produced before the durable Queue changed. Both this pointer
         # and the active count below come from the same Queue snapshot.
-        "action_queue_next": _load_substantive_action_queue_next(
+        "action_queue_next": _load_action_queue_next(
             repo_root,
             target,
             queue_snapshot=queue,
@@ -4079,7 +3559,6 @@ def load_closure_projection(
         "active_action_queue_count": sum(
             isinstance(item, dict)
             and str(item.get("status") or "queued").strip().lower() in ACTIVE_STATUSES
-            and _is_substantive_queue_action(item)
             for item in queue.get("actions") or []
         ),
         "surface_review_completion": _surface_review_completion(
@@ -4322,7 +3801,7 @@ def _format_root_finding_claim_lines(claims: list[dict]) -> list[str]:
         missing = ", ".join(str(value) for value in (item.get("incomplete_fields") or []))
         lines.append(
             "- {id} [{severity}] {type} {url} source={source} missing={missing}; collect raw proof, "
-            "then run /checkpoint to create the canonical candidate.".format(
+            "register observations or claims explicitly through their owner commands.".format(
                 id=item.get("id", "-"),
                 severity=item.get("severity", "medium"),
                 type=item.get("type", "finding"),
@@ -4467,7 +3946,7 @@ def format_autopilot_state(state: dict) -> str:
         elif state.get("repo_source_available"):
             lines.append("Repo source: available — use read_repo_source_summary")
         if active_goal_memory or target_memory:
-            lines.extend(_format_target_goal_memory_lines(active_goal_memory, target_memory))
+            lines.extend(_format_target_goal_memory_lines(state.get("target_goal_memory") or {}))
         inventory_error = str(observation_inventory.get("error") or "").strip()
         if inventory_error:
             lines.append(f"Observation inventory warning: {inventory_error}")
@@ -4477,29 +3956,6 @@ def format_autopilot_state(state: dict) -> str:
                 f"total={observation_inventory.get('total', 0)}, "
                 f"untouched={observation_inventory.get('untouched', 0)}, "
                 f"stale={observation_inventory.get('stale', 0)}"
-            )
-        memory_action_queue = state.get("memory_action_queue") or []
-        if memory_action_queue:
-            lines.append("Memory action queue:")
-            for item in memory_action_queue[:5]:
-                contract = ""
-                if item.get("status"):
-                    contract = (
-                        f" | status: {item.get('status')}"
-                        f" | executable: {str(item.get('executable', True)).lower()}"
-                    )
-                lines.append(
-                    f"- {item.get('id', '-')}: {item.get('action', '')} "
-                    f"| hint: {item.get('command_hint', '')}{contract}"
-                )
-        memory_candidate = state.get("memory_candidate_next") or {}
-        if memory_candidate:
-            evidence_state = "available" if memory_candidate.get("evidence_available") else "missing"
-            lines.append(
-                "Memory candidate fallback: {id} raw-evidence={evidence}".format(
-                    id=memory_candidate.get("id", "-"),
-                    evidence=evidence_state,
-                )
             )
         lines.extend(_format_root_finding_claim_lines(state.get("root_finding_claims") or []))
         lines.extend(_format_durable_action_lines(state.get("action_queue_next") or {}))
@@ -4561,7 +4017,7 @@ def format_autopilot_state(state: dict) -> str:
     if runtime_derived:
         lines.append(f"Current Derived Status: {runtime_derived.get('status', 'unknown')} ({runtime_derived.get('reason', '')})")
     if active_goal_memory or target_memory:
-        lines.extend(_format_target_goal_memory_lines(active_goal_memory, target_memory))
+        lines.extend(_format_target_goal_memory_lines(state.get("target_goal_memory") or {}))
     next_tool_hint = str(state.get("next_tool_hint", "") or "").strip()
     enrichment_hints = state.get("enrichment_hints") or []
     if next_tool_hint:
@@ -4575,29 +4031,6 @@ def format_autopilot_state(state: dict) -> str:
                 lines.append(f"- {tool}: {reason}")
             elif tool:
                 lines.append(f"- {tool}")
-    memory_action_queue = state.get("memory_action_queue") or []
-    if memory_action_queue:
-        lines.append("Memory action queue:")
-        for item in memory_action_queue[:5]:
-            contract = ""
-            if item.get("status"):
-                contract = (
-                    f" | status: {item.get('status')}"
-                    f" | executable: {str(item.get('executable', True)).lower()}"
-                )
-            lines.append(
-                f"- {item.get('id', '-')}: {item.get('action', '')} "
-                f"| hint: {item.get('command_hint', '')}{contract}"
-            )
-    memory_candidate = state.get("memory_candidate_next") or {}
-    if memory_candidate:
-        evidence_state = "available" if memory_candidate.get("evidence_available") else "missing"
-        lines.append(
-            "Memory candidate fallback: {id} raw-evidence={evidence}".format(
-                id=memory_candidate.get("id", "-"),
-                evidence=evidence_state,
-            )
-        )
     lines.extend(_format_root_finding_claim_lines(state.get("root_finding_claims") or []))
     lines.extend(_format_durable_action_lines(state.get("action_queue_next") or {}))
 
@@ -4689,7 +4122,7 @@ def format_autopilot_state(state: dict) -> str:
         lines.append("Workflow leads:")
         for item in workflow_leads[:3]:
             lines.append(
-                f"- [{item.get('priority', 'medium')}] {item.get('category', 'other')}: "
+                f"- {item.get('category', 'other')}: "
                 f"{item.get('title', '-')}"
             )
             next_action = str(item.get("next_action", "") or "").strip()
@@ -4700,7 +4133,8 @@ def format_autopilot_state(state: dict) -> str:
         if resumed_user_intent:
             lines.append(f"User Intent: {resumed_user_intent}")
         lines.append(f"Sessions: {summary.get('sessions', 0)}")
-        lines.append(f"Untested endpoints: {len(summary.get('untested_endpoints', []))}")
+        untested_window = (summary.get("domain_windows") or {}).get("untested_endpoints") or {}
+        lines.append(f"Untested endpoints: {untested_window.get('total', len(summary.get('untested_endpoints', [])))}")
         if latest_session:
             tried = ", ".join(latest_session.get("vuln_classes", [])[:4]) or "none"
             lines.append(
@@ -4714,8 +4148,9 @@ def format_autopilot_state(state: dict) -> str:
             lines.append(f"Resume targets: {', '.join(state['resume_targets'][:3])}")
 
     lines.append(f"Surface review candidates: {surface.get('stats', {}).get('review_pool', 0)}")
-    lines.append(f"Advisory first-review score hints: {surface.get('stats', {}).get('p1', 0)}")
-    lines.append(f"Advisory follow-up score hints: {surface.get('stats', {}).get('p2', 0)}")
+    surface_window = surface.get("review_window") or {}
+    if surface_window:
+        lines.append(f"Surface order: {surface_window['order']}; remaining: {surface_window['remaining']}")
     surface_continuation = (surface.get("surface_index") or {}).get("continuation") or {}
     if surface_continuation.get("available") and surface_continuation.get("command"):
         lines.append(f"Surface continuation: {surface_continuation['command']}")
@@ -4752,7 +4187,7 @@ def format_autopilot_state(state: dict) -> str:
             )
             reason = f" [{item['review_reason']}]" if item.get("review_reason") else ""
             lines.append(
-                f"{idx}. {compact_url(item['url'])} — {item['suggested']} (score hint {item['score']}){reason}{suffix}"
+                f"{idx}. {compact_url(item['url'])} — {item['suggested']}{reason}{suffix}"
             )
     deferred_candidates = state.get("deferred_surface_candidates") or []
     if deferred_candidates:
@@ -4774,46 +4209,21 @@ def format_autopilot_state(state: dict) -> str:
     return "\n".join(lines)
 
 
-def _format_target_goal_memory_lines(active: dict, target_memory: dict) -> list[str]:
-    """Format compact target-memory context for autopilot output."""
+def _format_target_goal_memory_lines(projection: dict) -> list[str]:
+    """Render the same bounded experiences and expansion commands as Context Pack."""
+    target_memory = projection.get("target") or {}
     lines = ["Target memory:"]
-    goal = str(active.get("active_goal") or target_memory.get("active_goal") or "").strip()
-    hypothesis = str(
-        active.get("current_hypothesis")
-        or target_memory.get("current_hypothesis")
-        or ""
-    ).strip()
-    if goal:
-        lines.append(f"- Goal: {goal}")
-    if hypothesis:
-        lines.append(f"- Hypothesis: {hypothesis}")
-
-    for label, field in (
-        ("Active leads", "active_leads"),
-        ("Next actions", "next_actions"),
-        ("Dead ends", "dead_ends"),
-    ):
-        entries = target_memory.get(field) or []
-        if not isinstance(entries, list):
-            entries = []
-        lines.append(f"- {label}: {len(entries)}")
-        for item in entries[-2:]:
-            if not isinstance(item, dict):
-                continue
-            text = str(item.get("text", "") or "").strip()
-            if text:
-                lines.append(f"  - {text}")
-
-    handoffs = target_memory.get("session_handoffs") or []
-    if isinstance(handoffs, list) and handoffs:
-        latest = handoffs[-1]
-        if isinstance(latest, dict):
-            summary = str(latest.get("summary", "") or "").strip()
-            path = str(latest.get("path", "") or "").strip()
-            if summary:
-                lines.append(f"- Latest handoff: {summary}")
-            if path:
-                lines.append(f"- Handoff path: {path}")
+    for label, field in (("Goal", "active_goal"), ("Hypothesis", "current_hypothesis")):
+        if target_memory.get(field):
+            lines.append(f"- {label}: {target_memory[field]}")
+    window = (projection.get("source") or {}).get("experience_window") or {}
+    command = window.get("recall_command", "")
+    lines.extend(format_target_experiences({
+        **window,
+        "items": projection.get("recent_entries") or [],
+        "next_command": f"{command} --cursor {shlex.quote(window['next_cursor'])}" if window.get("has_more") else "",
+        "expand_command": f"{command} --id EXPERIENCE_ID",
+    }))
     return lines
 
 
@@ -4959,6 +4369,7 @@ def _plain_summary(state: dict) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build combined autopilot state for a target")
     parser.add_argument("--target", required=True, help="Target domain")
+    parser.add_argument("--repo-root", default=BASE_DIR, help="Repository data root")
     parser.add_argument("--memory-dir", default="", help="Optional hunt-memory directory")
     parser.add_argument(
         "--bounded",
@@ -4992,23 +4403,23 @@ def main() -> int:
         queue_snapshot = None
         for attempt in range(2 if args.closure else 1):
             source_markers_before = (
-                _owner_source_markers(BASE_DIR, args.target) if args.closure else {}
+                _owner_source_markers(args.repo_root, args.target) if args.closure else {}
             )
-            queue_snapshot = load_queue(BASE_DIR, args.target) if args.closure else None
+            queue_snapshot = load_queue(args.repo_root, args.target) if args.closure else None
             state_kwargs = {
                 "memory_dir": args.memory_dir or None,
                 "bounded": args.bounded,
             }
             if queue_snapshot is not None:
                 state_kwargs["queue_snapshot"] = queue_snapshot
-            state = build_autopilot_state(BASE_DIR, args.target, **state_kwargs)
+            state = build_autopilot_state(args.repo_root, args.target, **state_kwargs)
             if args.closure:
                 state["closure"] = load_closure_projection(
-                    BASE_DIR,
+                    args.repo_root,
                     state,
                     queue_snapshot=queue_snapshot,
                 )
-                source_markers_after = _owner_source_markers(BASE_DIR, args.target)
+                source_markers_after = _owner_source_markers(args.repo_root, args.target)
                 if source_markers_before != source_markers_after:
                     if attempt == 0:
                         continue
@@ -5028,7 +4439,7 @@ def main() -> int:
                     })
             break
         if args.loop_check:
-            state["loop_guard"] = _load_loop_guard_projection(BASE_DIR, state)
+            state["loop_guard"] = _load_loop_guard_projection(args.repo_root, state)
         if args.bounded:
             state["summary"] = _plain_summary(state)
     except (OSError, ValueError) as exc:

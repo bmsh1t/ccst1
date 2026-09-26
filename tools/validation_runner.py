@@ -15,7 +15,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import re
 import sys
 import time
@@ -36,68 +35,34 @@ try:
     from tools.auth_session import AuthSession, add_cli_args, session_from_args
     from tools.contracts import artifact_digest_material, runner_operation_id
     from tools.action_queue import (
-        ACTIVE_STATUSES,
-        _dedupe_key,
-        _resolve_action_in_queue,
-        _target_owned_evidence_ref,
         _target_owned_nonempty_evidence_ref,
         _validate_observed_difference,
         _write_json_atomic as _write_json,
-        load_queue,
-        queue_mutation_lock,
-        save_queue,
-        summarize_queue,
     )
-    from tools.evidence_ledger import normalize_actor, normalize_object_scope, normalize_variant, record_entry
-    from tools.finding_index import (
-        find_finding,
-        load_finding_index,
-        update_finding_status,
-        upsert_finding,
-        verify_finding_owner_provenance,
-        verify_finalized_finding_owner_provenance,
-    )
+    from tools.evidence_ledger import normalize_actor, normalize_object_scope, normalize_variant
     from tools.response_diff import diff_responses, snapshot_response
-    from tools.runner_witness import _runner_endpoint_matches
     from tools.request_diff import RequestPairError, request_pair_digest, validate_request_pair
     from tools.browser_surface import public_url_shape
-    from tools.evidence_identity import CLOSURE_FAMILIES, canonical_vuln_class, normalize_family
+    from tools.evidence_identity import canonical_vuln_class, normalize_family
     from tools.private_artifacts import private_artifact_dir, write_private_json, write_private_text
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
-    from tools.target_store import StoreError, TargetStore, target_backend, target_switch_lock
+    from tools.target_store import FindingNotFoundError, StoreError, TargetStore, runtime_store, target_switch_lock
 except ImportError:  # pragma: no cover - direct tools/ execution
     from auth_session import AuthSession, add_cli_args, session_from_args  # type: ignore
     from contracts import artifact_digest_material, runner_operation_id  # type: ignore
     from action_queue import (  # type: ignore
-        ACTIVE_STATUSES,
-        _dedupe_key,
-        _resolve_action_in_queue,
-        _target_owned_evidence_ref,
         _target_owned_nonempty_evidence_ref,
         _validate_observed_difference,
         _write_json_atomic as _write_json,
-        load_queue,
-        queue_mutation_lock,
-        save_queue,
-        summarize_queue,
     )
-    from evidence_ledger import normalize_actor, normalize_object_scope, normalize_variant, record_entry  # type: ignore
-    from finding_index import (  # type: ignore
-        find_finding,
-        load_finding_index,
-        update_finding_status,
-        upsert_finding,
-        verify_finding_owner_provenance,
-        verify_finalized_finding_owner_provenance,
-    )
+    from evidence_ledger import normalize_actor, normalize_object_scope, normalize_variant  # type: ignore
     from response_diff import diff_responses, snapshot_response  # type: ignore
-    from runner_witness import _runner_endpoint_matches  # type: ignore
     from request_diff import RequestPairError, request_pair_digest, validate_request_pair  # type: ignore
     from browser_surface import public_url_shape  # type: ignore
-    from evidence_identity import CLOSURE_FAMILIES, canonical_vuln_class, normalize_family  # type: ignore
+    from evidence_identity import canonical_vuln_class, normalize_family  # type: ignore
     from private_artifacts import private_artifact_dir, write_private_json, write_private_text  # type: ignore
     from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # type: ignore
-    from target_store import StoreError, TargetStore, target_backend, target_switch_lock  # type: ignore
+    from target_store import FindingNotFoundError, StoreError, TargetStore, runtime_store, target_switch_lock  # type: ignore
 
 
 SCHEMA_VERSION = 1
@@ -151,23 +116,6 @@ RUNNER_RESULT_TO_FINDING_STATUS = {
     "tested_clean": "rejected",
     "dead_end": "rejected",
 }
-RUNNER_RESULT_TO_QUEUE_STATUS = {
-    # runner 的 tested_finding 仍需交给 AI + /validate 做最终验证。
-    "tested_finding": "candidate",
-    "candidate": "candidate",
-    "tested_clean": "tested",
-    "dead_end": "dead-end",
-}
-QUEUE_UPGRADE_TARGET_STATUSES = {"candidate", "validated"}
-QUEUE_UPGRADABLE_FINAL_STATUSES = {"tested", "dead-end", "blocked"}
-NON_RUNNER_FOLLOWUP_ACTION_TYPES = {"report", "sibling-chain-review"}
-LANE_TO_VULN_CLASS = {
-    "authz_public_exposure": "Authz",
-    "authz_role_replay": "Authz",
-    "marker_replay": "RCE",
-    "idor_actor_pair": "IDOR",
-}
-
 
 def _request_body_text(body: Any, headers: dict[str, str]) -> str:
     """Serialize a text/JSON body without inventing an input value."""
@@ -379,19 +327,9 @@ def _findings_dir(repo_root: Path, target: str) -> Path:
     return repo_root / "findings" / key
 
 
-def _primary_store(repo_root: Path, target: str) -> TargetStore | None:
-    """Return the fixed transactional owner; legacy callers get no store."""
-    backend = target_backend(repo_root, target)
-    if backend == "preview":
-        raise StoreError("preview target does not admit runner execution or registration")
-    return TargetStore(repo_root, target) if backend == "primary" else None
-
-
-def _runner_backend(repo_root: Path, target: str) -> tuple[TargetStore | None, dict[str, str]]:
-    store = _primary_store(repo_root, target)
-    binding = store.binding() if store is not None else {
-        "target": canonical_target_value(target), "backend": "legacy", "store_id": "",
-    }
+def _runner_backend(repo_root: Path, target: str) -> tuple[TargetStore, dict[str, str]]:
+    store = runtime_store(repo_root, target)
+    binding = store.binding()
     return store, {key: str(binding[key]) for key in ("target", "backend", "store_id")}
 
 
@@ -419,11 +357,30 @@ def _store_candidate(store: TargetStore, finding_id: str) -> dict[str, str] | No
     }
 
 
+def _runner_command_context(store: TargetStore, *, action_id: str | None,
+                            claim_token: str | None, command_actor: str,
+                            endpoint: str, family: str) -> dict[str, str]:
+    """Keep the command operator separate from observed HTTP actors."""
+    if (action_id is None) != (claim_token is None):
+        raise StoreError("runner action_id and claim_token must be supplied together")
+    if action_id is None and command_actor == "validation-runner":
+        return {}
+    context = {"command_actor": command_actor}
+    if action_id is not None:
+        action = store.action(action_id)
+        if action["kind"] != "execution":
+            raise StoreError("only execution actions can own execution attempts")
+        if (action["endpoint"], action["family"]) != (endpoint, normalize_family(family)):
+            raise StoreError("runner endpoint and family must match the bound action")
+        context.update(action_id=action_id, claim_token=claim_token)
+    return context
+
+
 def _ensure_primary_finding(store: TargetStore, *, finding_id: str, endpoint: str,
                             method: str, family: str) -> None:
     try:
         store.finding(finding_id)
-    except StoreError:
+    except FindingNotFoundError:
         store.create_finding(
             command_id=f"create-finding:{finding_id}", finding_id=finding_id,
             endpoint=endpoint, method=method, family=family,
@@ -433,7 +390,7 @@ def _ensure_primary_finding(store: TargetStore, *, finding_id: str, endpoint: st
         )
 
 
-def _store_observation(run: dict[str, Any], *, side: str | None, method: str,
+def _store_observation(run: dict[str, Any], *, repo_root: Path, side: str | None, method: str,
                        family: str, observed_at: str, result: str,
                        incomplete: bool,
                        state_changing: bool | None, redline_checked: bool,
@@ -453,6 +410,15 @@ def _store_observation(run: dict[str, Any], *, side: str | None, method: str,
         }
         variant = side
         snapshot = run.get(side) or {}
+    identity_ref = artifacts.get("identity")
+    if not identity_ref:
+        raise StoreError("runner observation requires its private request identity artifact")
+    identity = json.loads((repo_root / identity_ref).read_text(encoding="utf-8"))
+    endpoint = identity["requested_url"]
+    if not isinstance(endpoint, str) or public_url_shape(endpoint) != (
+        run.get("url") if side is None else run.get(f"{side}_url")
+    ):
+        raise StoreError("private request identity does not match the published endpoint shape")
     observed_method = str(run.get("method") or method).strip().upper()
     if "request" not in artifacts:
         raise StoreError(f"primary runner observation is missing {variant} request artifact")
@@ -468,7 +434,7 @@ def _store_observation(run: dict[str, Any], *, side: str | None, method: str,
         "actor": str(run.get("actor") or "anonymous"),
         "object_scope": str(run.get("object_scope") or "none"),
         "variant": variant,
-        "error": str((run.get("error") or {}).get("type") or ""),
+        "error": str(run["error"].get("type") or "") if isinstance(run.get("error"), dict) else str(run.get("error") or ""),
         "truncated": bool(snapshot.get("truncated") or snapshot.get("body_truncated")),
         "state_changing": state_changing,
         "redline_checked": redline_checked,
@@ -494,7 +460,7 @@ def _record_primary_execution(store: TargetStore, *, attempt_id: str, actor: str
         )
         for side in sides:
             observations.append(_store_observation(
-                run, side=side, method=(methods or {}).get(side, method), family=family, observed_at=timestamp,
+                run, repo_root=store.root, side=side, method=(methods or {}).get(side, method), family=family, observed_at=timestamp,
                 result=result if result != "partial" else "", incomplete=result == "partial",
                 state_changing=state_changing,
                 redline_checked=redline_checked,
@@ -520,7 +486,7 @@ def _sync_primary_store(summary: dict[str, Any], *, repo_root: Path, store: Targ
     if result not in {"tested_finding", "tested_clean", "candidate", "dead_end", "partial"}:
         return {"status": "skipped", "reason": "non-execution result"}
     receipt = _record_primary_execution(
-        store, attempt_id=attempt_id, actor="validation-runner",
+        store, attempt_id=attempt_id, actor=summary.get("command_actor", "validation-runner"),
         started_at=str(summary.get("generated_at") or now_utc()), result=result,
         runs=list(summary.get("runs") or []),
         method=str(summary.get("method") or "GET").upper(),
@@ -549,971 +515,22 @@ def _sync_primary_store(summary: dict[str, Any], *, repo_root: Path, store: Targ
             "operation_id": summary["store_operation_id"]}
 
 
-def _normalized_url_for_match(url: str) -> str:
-    parsed = urllib.parse.urlparse(str(url or "").strip())
-    if not parsed.scheme or not parsed.netloc:
-        return str(url or "").strip().rstrip("/")
-    path = parsed.path or "/"
-    query = f"?{parsed.query}" if parsed.query else ""
-    return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}{path}{query}".rstrip("/")
-
-
-def _endpoint_identity_for_match(url: str) -> str:
-    """Normalize full/relative forms to one path+query identity."""
-    raw = str(url or "").strip()
-    if not raw:
-        return ""
-    parsed = urllib.parse.urlparse(raw)
-    if parsed.scheme and parsed.netloc:
-        path = parsed.path or "/"
-        return f"{path}?{parsed.query}" if parsed.query else path
-    if raw.startswith("/"):
-        return raw.rstrip("/") or "/"
-    return _normalized_url_for_match(raw)
-
-
-def _find_existing_finding_id_by_url(
-    findings_dir: Path,
-    *,
-    url: str,
-    finding_type: str,
-    vuln_class: str,
-    target: str | None = None,
-) -> str:
-    payload = load_finding_index(findings_dir, target=target)
-    needle = _normalized_url_for_match(url)
-    if not needle:
-        return ""
-    compatible_types = {str(finding_type or "").lower()}
-    if str(vuln_class or "").lower() == "authz":
-        compatible_types.update({"auth_bypass", "exposure"})
-
-    for item in payload.get("findings", []):
-        if not isinstance(item, dict):
-            continue
-        if _normalized_url_for_match(str(item.get("url") or "")) != needle:
-            continue
-        item_type = str(item.get("type") or item.get("category") or "").lower()
-        item_class = str(item.get("vuln_class") or "").lower()
-        if item_type in compatible_types or item_class == str(vuln_class or "").lower():
-            return str(item.get("id") or "")
-    return ""
-
-
-def _find_existing_finding(
-    findings_dir: Path,
-    finding_id: str,
-    *,
-    target: str | None = None,
-) -> dict[str, Any]:
-    payload = load_finding_index(findings_dir, target=target)
-    for item in payload.get("findings", []):
-        if isinstance(item, dict) and str(item.get("id") or "") == finding_id:
-            return item
-    return {}
-
-
-def _runner_finding_replay_is_valid(
-    findings_dir: Path,
-    finding: dict[str, Any],
-    *,
-    target: str,
-) -> bool:
-    """Only deduplicate a runner row whose owner event is still present."""
-    return bool(verify_finding_owner_provenance(findings_dir, finding, target=target).get("valid"))
-
-
-def _runner_sync_gate_updates(
-    findings_dir: Path,
-    finding_id: str,
-    status: str,
-    *,
-    target: str,
-    validation_summary: str,
-    validated_at: str,
-) -> tuple[dict[str, str], bool]:
-    """Return gate fields for runner sync without downgrading /validate.
-
-    validation_runner creates candidate evidence only.  Re-running it after
-    `/validate` should refresh raw evidence, not erase report readiness
-    or replace the final validation-summary pointer with a runner summary.
-
-    Returns ``(updates, preserved_finality)``: when a still-valid validated
-    finality is preserved, the caller must also keep the existing
-    ``runner_operation_id`` binding — mixing the preserved summary pointers
-    with the new run's operation id tears the pointer set across two runs and
-    the canonical runner witness rejects the finding.  Re-binding to a fresh
-    run goes through ``/validate``, which rewrites every pointer coherently.
-    """
-    existing = _find_existing_finding(findings_dir, finding_id, target=target)
-    if str(existing.get("validation_status") or "") == "validated" and status == "candidate":
-        provenance = verify_finalized_finding_owner_provenance(
-            findings_dir,
-            existing,
-            target=target,
-        )
-        if provenance.get("valid"):
-            return {
-                "validation_status": "validated",
-                "validation_summary": str(existing.get("validation_summary") or validation_summary),
-                "validated_at": str(existing.get("validated_at") or validated_at),
-            }, True
-        # The runner has fresh raw evidence, but a direct prior finality claim
-        # cannot preserve report readiness. Rewrite the lifecycle as a
-        # candidate through the owner API below; the new run's pointers are
-        # then written coherently.
-        updates = {
-            "validation_status": status,
-            "validation_summary": validation_summary,
-            "validated_at": validated_at,
-        }
-        if str(existing.get("report_status") or "").strip().lower() in {"generated", "reported"}:
-            updates["report_status"] = "not_generated"
-        return updates, False
-    return {
-        "validation_status": status,
-        "validation_summary": validation_summary,
-        "validated_at": validated_at,
-    }, False
-
-
-def _classes_equivalent(existing_class: str, vuln_class: str) -> bool:
-    """Two vulnerability-class spellings denote the same closure family.
-
-    经 closure 词汇 owner（canonical_vuln_class）归一后比较：scanner 词汇
-    （auth_bypass/idor）与 closure 词汇（Authz/IDOR）是同一概念的两套拼写。
-    未知类（canonical_vuln_class 返回 ""）回退不区分大小写的裸比较，保持
-    fail-open——裸比较已经接受过任何同形拼写。
-    """
-    existing_canonical = canonical_vuln_class(existing_class)
-    incoming_canonical = canonical_vuln_class(vuln_class)
-    if existing_canonical and incoming_canonical:
-        return existing_canonical == incoming_canonical
-    return existing_class.strip().lower() == vuln_class.strip().lower()
-
-
-def _runner_finding_type(vuln_class: str, lane: str) -> str:
-    value = str(vuln_class or "").strip().lower()
-    lane_value = str(lane or "").strip().lower()
-    if value == "idor" or lane_value == "idor_actor_pair":
-        return "idor"
-    if value == "authz" or lane_value == "authz_public_exposure":
-        return "auth_bypass"
-    if value == "sqli":
-        return "sqli"
-    if value == "rce":
-        return "ssti" if lane_value == "marker_replay" else "cve"
-    return value.replace("-", "_") or "exposure"
-
-
-def _create_runner_finding(
-    findings_dir: Path,
-    summary: dict[str, Any],
-    *,
-    validation_status: str,
-    validation_summary: str,
-    vuln_class: str,
-) -> dict[str, Any]:
-    """Create a structured finding from deterministic runner evidence.
-
-    This bridge is intentionally finding-grade only.  It lets case-state-first
-    validation enter the report queue even when no scanner artifact created a
-    prior findings.json row.
-    """
-    finding_id = str(summary.get("finding_id") or "").strip()
-    target = str(summary.get("target") or "").strip()
-    url = str(summary.get("url") or summary.get("raw_endpoint") or "").strip()
-    lane = str(summary.get("lane") or "").strip()
-    finding_type = _runner_finding_type(vuln_class, lane)
-    lifecycle_label = "Validated" if validation_status == "validated" else "Candidate"
-    confidence = "confirmed" if validation_status == "validated" else "high"
-    result = upsert_finding(findings_dir, {
-        "id": finding_id,
-        "type": finding_type,
-        "category": finding_type,
-        "title": f"{lifecycle_label} {vuln_class or finding_type} on {url or target}",
-        "summary": str(summary.get("result") or "")[:240],
-        "url": url,
-        "severity": str(summary.get("severity") or "unknown"),
-        "confidence": confidence,
-        "source_file": str(summary.get("summary_path") or ""),
-        "line_number": 0,
-        "template_id": "",
-        "raw": f"validation_runner:{lane}:{finding_id}",
-        "validation_status": validation_status,
-        "validation_summary": validation_summary,
-        "validated_at": str(summary.get("generated_at") or now_utc()),
-        "vuln_class": vuln_class,
-        "method": str(summary.get("method") or "GET").strip().upper() or "GET",
-        "runner_operation_id": str(summary.get("operation_id") or ""),
-        "updated_at": now_utc(),
-        "report_status": "not_generated",
-    }, target=target)
-    return result.get("finding") or {}
-
-
-def _normalized_endpoint_identity(value: str) -> str:
-    """将完整 URL 和相对 endpoint 归一为用于精确匹配的路径身份。"""
-    raw = str(value or "").strip()
-    if not raw:
-        return ""
-    parsed = urllib.parse.urlparse(raw)
-    if (parsed.scheme and parsed.netloc) or raw.startswith("/"):
-        path = (parsed.path or "/").rstrip("/") or "/"
-        return f"{path}?{parsed.query}" if parsed.query else path
-    return raw
-
-
-def _summary_backlog_id(summary: dict[str, Any]) -> str:
-    """迁移期身份匹配：只认旧 runner summary 里显式写下的 backlog id。
-
-    Case 不再拥有待办，新 summary 不会带这个 id；保留它是为了让**已经写出**的旧
-    summary 仍能按 id 找到对应 action，而不是按文本相似去猜关联（§7.1）。
-    """
-    case_state_ref = summary.get("case_state_ref") if isinstance(summary.get("case_state_ref"), dict) else {}
-    case_state_write_back = (
-        summary.get("case_state_write_back")
-        if isinstance(summary.get("case_state_write_back"), dict)
-        else {}
-    )
-    backlog_id = str(
-        case_state_ref.get("backlog_id")
-        or case_state_write_back.get("id")
-        or ""
-    ).strip()
-    return backlog_id
-
-
-def _action_metadata(action: dict[str, Any]) -> dict[str, Any]:
-    return action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
-
-
-def _action_matches_backlog(action: dict[str, Any], backlog_id: str) -> bool:
-    if not backlog_id:
-        return False
-    metadata = _action_metadata(action)
-    return backlog_id in {
-        str(action.get("id") or "").strip(),
-        str(action.get("source_id") or "").strip(),
-        str(metadata.get("backlog_id") or "").strip(),
-    }
-
-
-def _action_matches_finding(action: dict[str, Any], finding_id: str) -> bool:
-    if not finding_id:
-        return False
-    metadata = _action_metadata(action)
-    return finding_id in {
-        str(action.get("id") or "").strip(),
-        str(action.get("source_id") or "").strip(),
-        str(metadata.get("finding_id") or "").strip(),
-    }
-
-
-def _action_matches_endpoint(action: dict[str, Any], endpoint: str) -> bool:
-    if not endpoint:
-        return False
-    metadata = _action_metadata(action)
-    return endpoint in {
-        _normalized_endpoint_identity(str(metadata.get("endpoint") or "")),
-        _normalized_endpoint_identity(str(metadata.get("url") or "")),
-    }
-
-
-def _endpoint_markers(url: str) -> list[str]:
-    """Return full URL and path markers for matching validation queue items."""
-    raw = str(url or "").strip()
-    markers = [raw] if raw else []
-    parsed = urllib.parse.urlparse(raw)
-    if parsed.scheme and parsed.netloc:
-        path_query = parsed.path or "/"
-        if parsed.query:
-            path_query = f"{path_query}?{parsed.query}"
-        markers.extend([path_query, parsed.path or "/"])
-    return [item for item in markers if item]
-
-
-def _legacy_marker_match(value: str, marker: str) -> bool:
-    """仅接受完整 marker，避免 `/users` 关闭 `/users-admin`。"""
-    if not marker:
-        return False
-    start = 0
-    while True:
-        index = value.find(marker, start)
-        if index < 0:
-            return False
-        if index:
-            previous = value[index - 1]
-            blocked = "._~%-/" if marker.startswith("/") else "._~%-"
-            if previous.isalnum() or previous in blocked:
-                start = index + 1
-                continue
-        suffix = value[index + len(marker):]
-        if not suffix or suffix[0].isspace() or suffix[0] in ",;:)]}\"'`":
-            return True
-        if suffix[0] == "." and (len(suffix) == 1 or suffix[1].isspace()):
-            return True
-        start = index + 1
-
-
-def _action_matches_legacy_marker(action: dict[str, Any], markers: list[str]) -> bool:
-    if str(action.get("type") or "").lower() not in {
-        "validation", "candidate-evidence-gap", "ranked-surface", "surface-review", "coverage-gap",
-    }:
-        return False
-    haystack = "\n".join(
-        str(action.get(field) or "")
-        for field in ("evidence", "next_question", "action", "command_hint")
-    )
-    return any(_legacy_marker_match(haystack, marker) for marker in markers)
-
-
-def _select_queue_actions_for_summary(
-    queue: dict[str, Any],
-    summary: dict[str, Any],
-    queue_status: str,
-) -> tuple[list[dict[str, Any]], str]:
-    """按 backlog、finding、endpoint、legacy 的顺序选择唯一可关闭 action。"""
-    backlog_id = _summary_backlog_id(summary)
-    finding_id = str(summary.get("finding_id") or "").strip()
-    endpoint = _normalized_endpoint_identity(str(summary.get("url") or summary.get("endpoint") or ""))
-    markers = _endpoint_markers(str(summary.get("url") or summary.get("endpoint") or ""))
-    if finding_id:
-        markers.append(finding_id)
-    matchers = (
-        ("backlog_id", lambda action: _action_matches_backlog(action, backlog_id)),
-        ("finding_id", lambda action: _action_matches_finding(action, finding_id)),
-        ("endpoint", lambda action: _action_matches_endpoint(action, endpoint)),
-        ("legacy_marker", lambda action: _action_matches_legacy_marker(action, markers)),
-    )
-    actions = [item for item in queue.get("actions", []) if isinstance(item, dict)]
-    for match_kind, matcher in matchers:
-        matched = [item for item in actions if matcher(item)]
-        active = [item for item in matched if str(item.get("status") or "queued") in ACTIVE_STATUSES]
-        if active:
-            versioned_running = [
-                item
-                for item in active
-                if str(item.get("status") or "") == "running"
-                and isinstance(item.get("metadata"), dict)
-                and item["metadata"].get("depth_contract_version") == 1
-            ]
-            if versioned_running:
-                return versioned_running, "versioned_endpoint" if match_kind == "endpoint" else match_kind
-            return active, match_kind
-        final = [
-            item for item in matched
-            if queue_status in QUEUE_UPGRADE_TARGET_STATUSES
-            and str(item.get("status") or "") in QUEUE_UPGRADABLE_FINAL_STATUSES
-        ]
-        if final:
-            return final, match_kind
-    return [], ""
-
-
-def _sync_finding_status(summary: dict[str, Any], *, repo_root: Path) -> dict[str, Any]:
-    target = str(summary.get("target") or "").strip()
-    finding_id = str(summary.get("finding_id") or "").strip()
-    result = str(summary.get("result") or "").strip()
-    status = RUNNER_RESULT_TO_FINDING_STATUS.get(result)
-    if not target or not finding_id or not status:
-        return {"status": "skipped", "reason": "missing target/finding/result or non-final runner result"}
-
-    findings_dir = _findings_dir(repo_root, target)
-    summary_path = _summary_path(summary, repo_root)
-    vuln_class = str(summary.get("vuln_class") or "").strip() or LANE_TO_VULN_CLASS.get(
-        str(summary.get("lane") or ""), ""
-    )
-    summary_ref = str(summary_path) if summary_path else str(summary.get("summary_path") or "")
-    generated_at = str(summary.get("generated_at") or now_utc())
-    operation_id = str(summary.get("operation_id") or "").strip()
-    # The runner witness compares the canonical finding's method against the
-    # replayed request, so the owning sync must persist the observed method or
-    # a non-GET lane could never reach validation finality.
-    observed_method = str(summary.get("method") or "GET").strip().upper() or "GET"
-    existing = _find_existing_finding(findings_dir, finding_id, target=target)
-    if (
-        operation_id
-        and str(existing.get("runner_operation_id") or "") == operation_id
-        and _runner_finding_replay_is_valid(findings_dir, existing, target=target)
-    ):
-        return {
-            "status": "deduplicated",
-            "findings_dir": str(findings_dir),
-            "finding_id": finding_id,
-            "operation_id": operation_id,
-        }
-    identity_updates: dict[str, Any] = {}
-    if existing:
-        candidate_url = str(summary.get("url") or summary.get("endpoint") or "").strip()
-        existing_url = str(existing.get("url") or existing.get("endpoint") or "").strip()
-        if candidate_url and not url_belongs_to_target(candidate_url, target):
-            return {
-                "status": "skipped",
-                "reason": f"runner endpoint is off target: {candidate_url}",
-                "finding_id": finding_id,
-            }
-        if existing_url and candidate_url:
-            existing_identity = _endpoint_identity_for_match(existing_url)
-            candidate_identity = _endpoint_identity_for_match(candidate_url)
-            if existing_identity != candidate_identity:
-                return {
-                    "status": "skipped",
-                    "reason": "runner endpoint conflicts with non-empty canonical finding identity",
-                    "finding_id": finding_id,
-                }
-        elif candidate_url:
-            identity_updates["url"] = candidate_url
-
-        incomplete = [str(item) for item in (existing.get("incomplete_fields") or [])]
-        class_incomplete = "vuln_class" in incomplete
-        # Method is runner-owned identity: the witness requires the canonical
-        # row and the replayed request to agree, and a conflict means the row
-        # was bound to a different request shape.
-        existing_method = str(existing.get("method") or "").strip().upper()
-        if existing_method and existing_method != observed_method:
-            return {
-                "status": "skipped",
-                "reason": "runner method conflicts with non-empty canonical finding identity",
-                "finding_id": finding_id,
-            }
-        identity_updates["method"] = observed_method
-        existing_class = str(existing.get("vuln_class") or "").strip()
-        if (
-            existing_class
-            and not class_incomplete
-            and vuln_class
-            # 经 closure 词汇 owner（canonical_vuln_class）归一后比较；
-            # 未知类（返回 ""）回退裸比较，保持 fail-open。
-            and not _classes_equivalent(existing_class, vuln_class)
-        ):
-            return {
-                "status": "skipped",
-                "reason": "runner vulnerability class conflicts with non-empty canonical finding identity",
-                "finding_id": finding_id,
-            }
-        if class_incomplete and vuln_class:
-            finding_type = _runner_finding_type(vuln_class, str(summary.get("lane") or ""))
-            identity_updates["type"] = finding_type
-            identity_updates["category"] = finding_type
-        if identity_updates.get("url"):
-            incomplete = [item for item in incomplete if item != "endpoint"]
-        if vuln_class:
-            incomplete = [item for item in incomplete if item != "vuln_class"]
-        if incomplete != list(existing.get("incomplete_fields") or []):
-            identity_updates["incomplete_fields"] = incomplete
-            identity_updates["claim_status"] = "complete" if not incomplete else "incomplete"
-
-    gate_updates, preserved_finality = _runner_sync_gate_updates(
-        findings_dir,
-        finding_id,
-        status,
-        target=target,
-        validation_summary=summary_ref,
-        validated_at=generated_at,
-    )
-    confidence = "confirmed" if gate_updates["validation_status"] == "validated" else (
-        "high" if result == "tested_finding" else ""
-    )
-    updated = update_finding_status(
-        findings_dir,
-        finding_id,
-        **gate_updates,
-        **identity_updates,
-        vuln_class=vuln_class,
-        confidence=confidence,
-        # 指针撕裂修复：保留终态时同时保留旧的 operation 绑定，validation_summary
-        # 与 runner_operation_id 必须来自同一个 run；只有重写生命周期的分支才
-        # 绑定新 run 的 operation id。
-        **(
-            {"runner_operation_id": str(existing.get("runner_operation_id") or operation_id)}
-            if preserved_finality
-            else {"runner_operation_id": operation_id}
-        ),
-    )
-    if not updated:
-        finding_type = _runner_finding_type(vuln_class, str(summary.get("lane") or ""))
-        existing_id = _find_existing_finding_id_by_url(
-            findings_dir,
-            url=str(summary.get("url") or summary.get("endpoint") or ""),
-            finding_type=finding_type,
-            vuln_class=vuln_class,
-            target=target,
-        )
-        if existing_id:
-            matched_existing = _find_existing_finding(findings_dir, existing_id, target=target)
-            if (
-                operation_id
-                and str(matched_existing.get("runner_operation_id") or "") == operation_id
-                and _runner_finding_replay_is_valid(findings_dir, matched_existing, target=target)
-            ):
-                return {
-                    "status": "deduplicated",
-                    "findings_dir": str(findings_dir),
-                    "finding_id": existing_id,
-                    "requested_finding_id": finding_id,
-                    "operation_id": operation_id,
-                }
-            gate_updates, preserved_finality = _runner_sync_gate_updates(
-                findings_dir,
-                existing_id,
-                status,
-                target=target,
-                validation_summary=summary_ref,
-                validated_at=generated_at,
-            )
-            confidence = "confirmed" if gate_updates["validation_status"] == "validated" else (
-                "high" if result == "tested_finding" else ""
-            )
-            matched_existing = _find_existing_finding(findings_dir, existing_id, target=target)
-            updated = update_finding_status(
-                findings_dir,
-                existing_id,
-                **gate_updates,
-                vuln_class=vuln_class,
-                confidence=confidence,
-                **(
-                    {"runner_operation_id": str(matched_existing.get("runner_operation_id") or operation_id)}
-                    if preserved_finality
-                    else {"runner_operation_id": operation_id}
-                ),
-                method=observed_method,
-            )
-            if updated:
-                return {
-                    "status": "updated",
-                    "findings_dir": str(findings_dir),
-                    "finding_id": existing_id,
-                    "requested_finding_id": finding_id,
-                    "validation_status": updated.get("validation_status", ""),
-                    "matched_by": "url",
-                }
-    if not updated:
-        if result == "tested_finding":
-            created = _create_runner_finding(
-                findings_dir,
-                summary,
-                validation_status=status,
-                validation_summary=str(summary_path) if summary_path else str(summary.get("summary_path") or ""),
-                vuln_class=vuln_class,
-            )
-            return {
-                "status": "created",
-                "findings_dir": str(findings_dir),
-                "finding_id": finding_id,
-                "validation_status": created.get("validation_status", ""),
-            }
-        return {
-            "status": "skipped",
-            "reason": "finding not found",
-            "findings_dir": str(findings_dir),
-            "finding_id": finding_id,
-        }
-    return {
-        "status": "updated",
-        "findings_dir": str(findings_dir),
-        "finding_id": finding_id,
-        "validation_status": updated.get("validation_status", ""),
-    }
-
-
-def _candidate_queue_followup(summary: dict[str, Any]) -> dict[str, Any]:
-    """Keep completed replay evidence visible without choosing the next test."""
-    finding_id = str(summary.get("finding_id") or "").strip()
-    url = str(summary.get("url") or summary.get("endpoint") or "").strip()
-    summary_ref = str(summary.get("summary_path") or "").strip()
-    return {
-        "type": "candidate-evidence-gap",
-        "action": f"Review recorded candidate {finding_id or '-'} on {url or '-'}; evidence={summary_ref or '-'}. AI chooses the next action.",
-        "next_question": "What does the recorded evidence establish, and what remains unknown?",
-        "command_hint": "",
-        "metadata": {
-            "finding_id": finding_id,
-            "url": url,
-            "summary_path": summary_ref,
-            "runner": str(summary.get("lane") or "").strip(),
-        },
-    }
-
-
-def _patch_candidate_queue_followup_in_queue(
-    queue: dict[str, Any],
-    *,
-    action_id: str,
-    summary: dict[str, Any],
-) -> dict[str, Any]:
-    """在已持有 queue lock 的调用方内写入 candidate 后续动作。"""
-    followup = _candidate_queue_followup(summary)
-    patched = False
-    for action in queue.get("actions", []):
-        if not isinstance(action, dict):
-            continue
-        if str(action.get("id") or "") != action_id:
-            continue
-        action["type"] = followup["type"]
-        action["action"] = followup["action"]
-        action["next_question"] = followup["next_question"]
-        action["command_hint"] = followup["command_hint"]
-        metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
-        metadata.update(followup["metadata"])
-        action["metadata"] = metadata
-        action["dedupe_key"] = _dedupe_key(action)
-        patched = True
-        break
-    if not patched:
-        return {"patched": False}
-    return {"patched": True}
-
-
-def _runner_observed_difference(summary: dict[str, Any]) -> str:
-    explicit = str(
-        summary.get("observed_difference")
-        or summary.get("difference_summary")
-        or ""
-    ).strip()
-    if explicit:
-        return " ".join(explicit.split())[:500]
-    observations: list[str] = []
-    runs = summary.get("runs") if isinstance(summary.get("runs"), list) else []
-    for run in runs:
-        if not isinstance(run, dict):
-            continue
-        diff = run.get("diff") if isinstance(run.get("diff"), dict) else {}
-        text = str(diff.get("summary") or run.get("summary") or "").strip()
-        if text:
-            observations.append(" ".join(text.split()))
-            continue
-        changed = diff.get("changed") if isinstance(diff.get("changed"), dict) else {}
-        if changed:
-            observations.append(json.dumps(changed, ensure_ascii=True, sort_keys=True, separators=(",", ":")))
-            continue
-        fields = {
-            key: run.get(key)
-            for key in (
-                "status", "marker_found", "owner_status", "peer_status",
-                "owner_success", "peer_success", "peer_denied", "exact_body_match",
-                "private_body_match", "strong_access",
-            )
-            if key in run
-        }
-        if fields:
-            observations.append(json.dumps(fields, ensure_ascii=True, sort_keys=True, separators=(",", ":")))
-    if observations:
-        return " | ".join(observations)[:500]
-    return ""
-
-
-def _runner_baseline_observation(summary: dict[str, Any]) -> str:
-    """Describe an explicit baseline-only replay without inventing a diff.
-
-    Some safe lanes intentionally execute one anonymous baseline request first.
-    That response is useful for the next AI decision, but it must remain marked
-    as baseline-only so Queue resolve can require a continuation rather than
-    treating it as a supported kill.
-    """
-    if str(summary.get("observation_kind") or "").strip().lower() != "baseline_only":
-        return ""
-    baseline = summary.get("baseline") if isinstance(summary.get("baseline"), dict) else {}
-    if not baseline:
-        return ""
-    fields = {
-        key: baseline.get(key)
-        for key in ("status", "body_length", "content_type", "body_sha256")
-        if baseline.get(key) not in (None, "")
-    }
-    marker_sources = summary.get("marker_sources")
-    if isinstance(marker_sources, dict):
-        body_markers = marker_sources.get("body")
-        if isinstance(body_markers, list):
-            fields["body_marker_count"] = len(body_markers)
-    if not fields:
-        return ""
-    encoded = json.dumps(fields, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
-    return f"baseline-only observation; no controlled variant; response={encoded}"[:500]
-
-
-def _sync_action_queue(summary: dict[str, Any], *, repo_root: Path) -> dict[str, Any]:
-    target = str(summary.get("target") or "").strip()
-    result = str(summary.get("result") or "").strip()
-    queue_status = RUNNER_RESULT_TO_QUEUE_STATUS.get(result)
-    if not target or not queue_status:
-        return {"status": "skipped", "reason": "missing target or non-final runner result"}
-
-    # A runner replay is evidence refresh, not permission to reopen a finding
-    # that the canonical owner has already finalized.  Without this guard an
-    # old tested_finding summary can upgrade a dead-end Queue action back to
-    # candidate after /validate rejected or confirmed the finding.
-    finding_id = str(summary.get("finding_id") or "").strip()
-    if finding_id:
-        findings_dir = _findings_dir(repo_root, target)
-        finding = _find_existing_finding(findings_dir, finding_id, target=target)
-        validation_status = str(finding.get("validation_status") or "").strip().lower()
-        if validation_status in {"validated", "rejected"} and verify_finalized_finding_owner_provenance(
-            findings_dir,
-            finding,
-            target=target,
-        ).get("valid"):
-            return {
-                "status": "deduplicated",
-                "reason": f"finding validation already finalized: {validation_status}",
-                "finding_id": finding_id,
-                "validation_status": validation_status,
-            }
-
-    with queue_mutation_lock(repo_root, target):
-        queue = load_queue(repo_root, target)
-        matches, match_kind = _select_queue_actions_for_summary(queue, summary, queue_status)
-        if not matches:
-            return {"status": "skipped", "reason": "no matching active or upgradable action"}
-        # Checkpoint may add report/sibling follow-ups after the runner action
-        # has already converged.  They are not the replay's owner action and
-        # must not turn an otherwise idempotent replay into an ambiguity.
-        if (
-            str(summary.get("operation_id") or "").strip()
-            and match_kind == "finding_id"
-            and all(str(item.get("type") or "") in NON_RUNNER_FOLLOWUP_ACTION_TYPES for item in matches)
-        ):
-            return {
-                "status": "deduplicated",
-                "reason": "only non-runner follow-up actions match finalized runner evidence",
-                "operation_id": str(summary.get("operation_id") or "").strip(),
-                "ids": [str(item.get("id") or "") for item in matches if item.get("id")],
-            }
-        if len(matches) > 1:
-            return {
-                "status": "ambiguous",
-                "reason": f"multiple {match_kind} queue actions match runner output",
-                "ids": [str(item.get("id") or "") for item in matches if item.get("id")],
-            }
-
-        matched = matches[0]
-        operation_id = str(summary.get("operation_id") or "").strip()
-        metadata = matched.get("metadata") if isinstance(matched.get("metadata"), dict) else {}
-        if metadata.get("activation_required") and metadata.get("depth_contract_version") != 1:
-            return {
-                "status": "blocked",
-                "reason": "substantive queue action must be activated at claim before runner sync",
-                "id": str(matched.get("id") or ""),
-                "match_kind": match_kind,
-            }
-        if operation_id and str(metadata.get("runner_operation_id") or "") == operation_id:
-            return {
-                "status": "deduplicated",
-                "id": str(matched.get("id") or ""),
-                "operation_id": operation_id,
-                "match_kind": match_kind,
-            }
-        summary_ref = _target_owned_evidence_ref(repo_root, target, summary.get("summary_path"))
-        if metadata.get("depth_contract_version") == 1:
-            if not operation_id:
-                return {
-                    "status": "blocked",
-                    "reason": "versioned runner observation requires operation_id",
-                    "id": str(matched.get("id") or ""),
-                }
-            ledger = summary.get("ledger_record") if isinstance(summary.get("ledger_record"), dict) else {}
-            evidence_ref = _target_owned_evidence_ref(
-                repo_root, target, ledger.get("evidence_ref") or summary_ref
-            )
-            if not summary_ref or not evidence_ref:
-                return {
-                    "status": "blocked",
-                    "reason": "versioned runner observation requires target-owned summary and evidence refs",
-                    "id": str(matched.get("id") or ""),
-                }
-            if str(matched.get("status") or "") != "running":
-                return {
-                    "status": "blocked",
-                    "reason": "versioned queue action must be running after an activation claim",
-                    "id": str(matched.get("id") or ""),
-                }
-            active_dimension = str(metadata.get("active_dimension") or "").strip()
-            if not active_dimension:
-                return {
-                    "status": "blocked",
-                    "reason": "versioned queue action is missing active_dimension",
-                    "id": str(matched.get("id") or ""),
-                }
-            observed_at = str(summary.get("generated_at") or now_utc())
-            prior_outcome = metadata.get("last_outcome") if isinstance(metadata.get("last_outcome"), dict) else {}
-            prior_at = str(prior_outcome.get("at") or "")
-            if prior_at and observed_at and observed_at < prior_at:
-                return {
-                    "status": "stale",
-                    "reason": "runner outcome is older than the persisted last_outcome",
-                    "id": str(matched.get("id") or ""),
-                    "operation_id": operation_id,
-                }
-            observed_difference = _runner_observed_difference(summary)
-            observation_kind = "controlled_difference"
-            if not observed_difference:
-                observed_difference = _runner_baseline_observation(summary)
-                if observed_difference:
-                    observation_kind = "baseline_only"
-            if not observed_difference:
-                return {
-                    "status": "blocked",
-                    "reason": "versioned runner observation requires a controlled response difference",
-                    "id": str(matched.get("id") or ""),
-                    "operation_id": operation_id,
-                }
-            try:
-                observed_difference = _validate_observed_difference(observed_difference)
-            except ValueError:
-                return {
-                    "status": "blocked",
-                    "reason": "versioned runner observation contains credential or header values",
-                    "id": str(matched.get("id") or ""),
-                    "operation_id": operation_id,
-                }
-            outcome_metadata = {
-                "runner_operation_id": operation_id,
-                "tested_dimensions": [active_dimension],
-                "last_outcome": {
-                    "status": result,
-                    "summary_ref": summary_ref,
-                    "evidence_ref": evidence_ref,
-                    "observed_difference": observed_difference,
-                    "observation_kind": observation_kind,
-                    "operation_id": operation_id,
-                    "at": observed_at,
-                },
-            }
-            resolved = _resolve_action_in_queue(
-                repo_root,
-                target=target,
-                queue=queue,
-                action_id=str(matched.get("id") or ""),
-                status="running",
-                result=f"validation-runner-observation={result}; summary={summary_ref}",
-                notes=f"runner={summary.get('lane', '')}",
-                metadata=outcome_metadata,
-                runner_observation=True,
-            )
-            path = save_queue(repo_root, target, queue)
-            return {
-                "status": "updated",
-                "id": resolved.get("id", ""),
-                "ids": [str(resolved.get("id") or "")],
-                "updated_count": 1,
-                "action_status": resolved.get("status", ""),
-                "match_kind": match_kind,
-                "path": str(path),
-            }
-        resolved = _resolve_action_in_queue(
-            repo_root,
-            target=target,
-            queue=queue,
-            action_id=str(matched.get("id") or ""),
-            status=queue_status,
-            result=f"validation-runner-result={result}; summary={summary_ref}",
-            notes=f"runner={summary.get('lane', '')}",
-        )
-        response = {
-            "status": "updated",
-            "id": resolved.get("id", ""),
-            "ids": [str(resolved.get("id") or "")],
-            "updated_count": 1,
-            "action_status": resolved.get("status", ""),
-            "match_kind": match_kind,
-        }
-        if queue_status == "candidate":
-            patch = _patch_candidate_queue_followup_in_queue(
-                queue,
-                action_id=str(resolved.get("id") or ""),
-                summary=summary,
-            )
-            response["candidate_followup"] = patch
-        if operation_id:
-            metadata = matched.get("metadata") if isinstance(matched.get("metadata"), dict) else {}
-            metadata["runner_operation_id"] = operation_id
-            matched["metadata"] = metadata
-        path = save_queue(repo_root, target, queue)
-        response["path"] = str(path)
-        return response
-
-
-def _sync_evidence_ledger(summary: dict[str, Any], *, repo_root: Path) -> dict[str, Any]:
-    ledger = summary.get("ledger_record")
-    if ledger is None:
-        return {"status": "skipped", "reason": "runner was invoked with --no-ledger"}
-    if not isinstance(ledger, dict):
-        raise ValueError("runner ledger record must be an object")
-    if ledger.get("write_status") == "skipped":
-        return {
-            "status": "skipped",
-            "reason": str(ledger.get("reason") or "runner skipped the Ledger write"),
-        }
-    request = ledger.get("request") if isinstance(ledger.get("request"), dict) else {
-        "target": ledger.get("target"),
-        "endpoint": ledger.get("raw_endpoint") or ledger.get("endpoint"),
-        "method": ledger.get("method"),
-        "vuln_class": ledger.get("vuln_class"),
-        "actor": ledger.get("actor"),
-        "object_scope": ledger.get("object_scope"),
-        "variant": ledger.get("variant"),
-        "source": ledger.get("source"),
-        "result": ledger.get("result"),
-        "browser_observed": ledger.get("browser_observed"),
-        "replayed": True,
-        "state_changing": ledger.get("state_changing"),
-        "redline_checked": ledger.get("redline_checked"),
-        "evidence_ref": ledger.get("evidence_ref"),
-        "notes": ledger.get("notes"),
-        "operation_id": ledger.get("operation_id") or summary.get("operation_id"),
-        "event_id": ledger.get("event_id"),
-        "identity_v2": ledger.get("identity_v2"),
-    }
-    recorded = record_entry(repo_root, **request)
-    summary["ledger_record"] = recorded
-    return {
-        "status": str(recorded.get("write_status") or "updated"),
-        "event_id": str(recorded.get("event_id") or ""),
-        "operation_id": str(recorded.get("operation_id") or ""),
-    }
-
-
 def sync_runner_artifacts(summary: dict[str, Any], *, repo_root: Path) -> dict[str, Any]:
-    """Replay one runner operation through the existing Ledger/Finding/Queue owners.
-
-    Runner evidence is valuable only if `/autopilot` stops asking for the same
-    validation again.  Keep this best-effort: evidence generation must not fail
-    just because findings.json or action_queue state is absent.
-    """
+    """Register saved evidence atomically without replaying network actions."""
     with _runner_admission(
         repo_root, str(summary.get("target") or ""), expected=summary.get("backend_binding"),
     ) as (store, _):
         if str(summary.get("result") or "") == "skeleton":
             return {"status": "skipped", "reason": "skeleton result does not close validation state"}
-        if store is not None:
-            if not summary.get("backend_binding"):
-                raise StoreError("primary registration requires the execution backend binding")
-            try:
-                receipt = _sync_primary_store(summary, repo_root=repo_root, store=store)
-                return {"status": receipt.get("status", "updated"), "store": receipt}
-            except Exception as exc:
-                return {"status": "partial", "store": {"status": "error", "error": " ".join(str(exc).split())[:500]}}
-        updates: dict[str, Any] = {}
-        for owner, sync in (
-            ("ledger", _sync_evidence_ledger),
-            ("finding", _sync_finding_status),
-            ("action_queue", _sync_action_queue),
-        ):
-            try:
-                updates[owner] = sync(summary, repo_root=repo_root)
-            except Exception as exc:  # owner failure remains replayable from the summary witness
-                updates[owner] = {
-                    "status": "error",
-                    "error": " ".join(str(exc).split())[:500],
-                }
-        statuses = {str(item.get("status") or "") for item in updates.values()}
-        if statuses & {"error", "ambiguous", "blocked"}:
-            status = "partial"
-        elif statuses <= {"skipped", "deduplicated", "stale"}:
-            status = "deduplicated" if statuses & {"deduplicated", "stale"} else "skipped"
-        else:
-            status = "updated"
-        return {"status": status, "operation_id": str(summary.get("operation_id") or ""), **updates}
+        if not summary.get("backend_binding"):
+            raise StoreError("primary registration requires the execution backend binding")
+        try:
+            if _artifact_bindings(summary, repo_root) != summary.get("artifact_bindings"):
+                raise StoreError("runner artifacts changed after publication; registration refused")
+            receipt = _sync_primary_store(summary, repo_root=repo_root, store=store)
+            return {"status": receipt.get("status", "updated"), "store": receipt}
+        except Exception as exc:
+            return {"status": "partial", "store": {"status": "error", "error": " ".join(str(exc).split())[:500]}}
 
 
 def parse_headers(values: list[str] | None) -> dict[str, str]:
@@ -1739,88 +756,6 @@ def _response_diff(baseline: dict[str, Any], variant: dict[str, Any]) -> dict[st
     return payload
 
 
-def _record_ledger_if_needed(
-    *,
-    repo_root: Path,
-    no_ledger: bool,
-    target: str,
-    endpoint: str,
-    method: str,
-    vuln_class: str,
-    actor: str,
-    object_scope: str,
-    variant: str,
-    result: str,
-    source: str,
-    evidence_ref: str,
-    notes: str,
-    browser_observed: bool,
-    redline_checked: bool,
-    state_changing: bool | None = None,
-    identity_v2: dict[str, Any] | None = None,
-    operation_material: dict[str, Any] | None = None,
-    artifact_bindings: list[dict[str, Any]] | None = None,
-    finding_id: str = "",
-) -> dict[str, Any] | None:
-    if no_ledger:
-        return None
-    request = {
-        "target": target,
-        "endpoint": public_url_shape(endpoint),
-        "method": method,
-        "vuln_class": vuln_class,
-        "actor": actor,
-        "object_scope": object_scope,
-        "variant": variant,
-        "source": source,
-        "result": result,
-        "browser_observed": browser_observed,
-        "replayed": True,
-        "state_changing": state_changing,
-        "redline_checked": redline_checked,
-        "evidence_ref": evidence_ref,
-        "notes": notes,
-        "identity_v2": identity_v2,
-    }
-    canonical_operation_material = dict(operation_material or {
-        "target": canonical_target_value(target),
-        "endpoint": public_url_shape(endpoint),
-        "method": str(method or "GET").upper(),
-        "finding_id": str(finding_id or "").strip(),
-        "vuln_class": vuln_class,
-        "actor": actor,
-        "object_scope": object_scope,
-        "variant": variant,
-        "result": result,
-        "source": source.replace("_", "-"),
-        "identity_v2": identity_v2,
-    })
-    if finding_id and "finding_id" not in canonical_operation_material:
-        canonical_operation_material["finding_id"] = str(finding_id).strip()
-    if artifact_bindings is not None:
-        canonical_operation_material["artifact_bindings"] = _artifact_digest_material(artifact_bindings)
-    operation_id = _runner_operation_id(canonical_operation_material)
-    event_id = f"ledger:{hashlib.sha256(operation_id.encode('utf-8')).hexdigest()[:24]}"
-    request["operation_id"] = operation_id
-    request["event_id"] = event_id
-    try:
-        recorded = record_entry(repo_root, **request)
-        if isinstance(recorded, dict):
-            # Ephemeral provenance lets summary finalization recompute the
-            # exact ID without persisting another operation-material schema.
-            recorded["_runner_operation_material"] = canonical_operation_material
-        return recorded
-    except Exception as exc:
-        return {
-            "write_status": "error",
-            "error": " ".join(str(exc).split())[:500],
-            "operation_id": operation_id,
-            "event_id": event_id,
-            "request": request,
-            "_runner_operation_material": canonical_operation_material,
-        }
-
-
 def _merge_request_headers(request: dict[str, Any], extra: dict[str, str] | None) -> dict[str, str]:
     headers = {str(key): str(value) for key, value in (request.get("headers") or {}).items()}
     for key, value in (extra or {}).items():
@@ -2020,13 +955,16 @@ def run_request_diff(
     lane: str = "request_diff",
     source: str = "validation-runner:request-diff",
     attempt_id: str | None = None,
+    action_id: str | None = None,
+    claim_token: str | None = None,
+    command_actor: str = "validation-runner",
 ) -> dict[str, Any]:
     """Replay an AI-selected exact pair and persist shared diff evidence."""
     with _runner_admission(repo_root, target) as (store, backend_binding):
         try:
             spec = validate_request_pair(request_spec)
         except RequestPairError as exc:
-            if not str(exc).startswith("manual_required:"):
+            if not str(exc).startswith("manual_required:") or action_id is not None or claim_token is not None:
                 raise
             finding_id = finding_id or "request-diff-manual"
             bundle = _bundle_dir(repo_root, target, finding_id)
@@ -2049,16 +987,23 @@ def run_request_diff(
         if not url_belongs_to_target(baseline["url"], target) or not url_belongs_to_target(variant["url"], target):
             raise RequestPreflightError("request pair contains an off-target URL")
         finding_id = finding_id or _default_finding_id(lane, baseline["url"])
+        family = _classifier_vuln_class(spec["classifier"], spec.get("vuln_class", "")) or "runner-observation"
+        command_context = _runner_command_context(
+            store, action_id=action_id, claim_token=claim_token, command_actor=command_actor,
+            endpoint=baseline["url"], family=family,
+        )
         started_at = now_utc()
-        if store is not None:
-            attempt_id = attempt_id or f"attempt:{uuid.uuid4().hex}"
-            _ensure_primary_finding(
-                store, finding_id=finding_id, endpoint=public_url_shape(baseline["url"]),
-                method=baseline["method"], family=_classifier_vuln_class(
-                    spec["classifier"], spec.get("vuln_class", "")
-                ) or "runner-observation",
-            )
-            store.start_attempt(attempt_id=attempt_id, source=source, started_at=started_at, actor="validation-runner")
+        attempt_id = attempt_id or f"attempt:{uuid.uuid4().hex}"
+        receipt = store.start_attempt(
+            attempt_id=attempt_id, source=source, started_at=started_at,
+            actor=command_actor, action_id=action_id, claim_token=claim_token,
+        )
+        if receipt["replayed"]:
+            raise StoreError("attempt already started; retry registration from its saved summary or execute with a new attempt_id")
+        _ensure_primary_finding(
+            store, finding_id=finding_id, endpoint=baseline["url"],
+            method=baseline["method"], family=family,
+        )
         bundle = _bundle_dir(repo_root, target, finding_id)
         private_bundle = _private_bundle_dir(repo_root, target, bundle)
         pair_digest = request_pair_digest(spec)
@@ -2110,6 +1055,7 @@ def run_request_diff(
                     "request_pair": _request_pair_spec_view(spec), "request_spec_sha256": pair_digest,
                     "state_changing": effective_state, "redline_checked": redline_checked,
                     "attempt_id": attempt_id or "",
+                    **command_context,
                     "classifier": spec["classifier"], "vuln_class": _classifier_vuln_class(
                         spec["classifier"], spec.get("vuln_class", "")
                     ),
@@ -2162,53 +1108,7 @@ def run_request_diff(
         diff_path = bundle / "diff.json"
         _write_json(diff_path, {"runs": runs, "request_pair": _request_pair_spec_view(spec)})
         diff_summaries = [str(run.get("diff", {}).get("summary") or "") for run in runs]
-        if store is not None:
-            ledger = None
-        elif vuln_class in CLOSURE_FAMILIES:
-            ledger = _record_ledger_if_needed(
-                repo_root=repo_root,
-                no_ledger=no_ledger,
-                target=target,
-                endpoint=baseline["url"],
-                method=baseline["method"],
-                vuln_class=vuln_class,
-                actor="anonymous",
-                object_scope="none",
-                variant="replay",
-                result=result,
-                source=source,
-                evidence_ref=_rel(diff_path, repo_root),
-                notes=f"request-diff classifier={classifier}; {'; '.join(diff_summaries[:3])}",
-                browser_observed=browser_observed,
-                redline_checked=redline_checked,
-                state_changing=effective_state,
-                identity_v2=identity_v2,
-                operation_material={
-                    "target": canonical_target_value(target),
-                    "lane": lane,
-                    "finding_id": finding_id,
-                    "request_spec_sha256": pair_digest,
-                    "header_overlay_sha256": header_overlay_digest,
-                    "auth_session_id": auth_session_id,
-                    "classifier": classifier,
-                    "vuln_class": vuln_class,
-                    "evidence_shape": spec["evidence_shape"],
-                    "active_dimension": spec["active_dimension"],
-                    "repeat": repeat_count,
-                },
-                artifact_bindings=_artifact_bindings(
-                    {"runs": runs, "artifacts": {"diff": _rel(diff_path, repo_root)}},
-                    repo_root,
-                ),
-                finding_id=finding_id,
-            )
-        elif no_ledger:
-            ledger = None
-        else:
-            ledger = {
-                "write_status": "skipped",
-                "reason": "request-diff classifier has no canonical Ledger family; provide vuln_class",
-            }
+        ledger = None
         summary = {
             "schema_version": SCHEMA_VERSION,
             "lane": lane,
@@ -2238,6 +1138,7 @@ def run_request_diff(
             "declaration_intent": declaration_intent,
             "expected_note": spec.get("expected_note", ""),
             "attempt_id": attempt_id or "",
+            **command_context,
         }
         summary_path = bundle / "summary.json"
         return _finalize_runner_summary(summary, summary_path, repo_root, backend_binding=backend_binding)
@@ -2253,6 +1154,9 @@ def record_native_evidence(
     redline_checked: bool = False,
     identity_v2: dict[str, Any] | None = None,
     attempt_id: str | None = None,
+    action_id: str | None = None,
+    claim_token: str | None = None,
+    command_actor: str = "validation-runner",
 ) -> dict[str, Any]:
     """Bind existing raw observations to the same witness as request-diff.
 
@@ -2269,15 +1173,10 @@ def record_native_evidence(
                 raise ValueError(f"native evidence {field} must be a non-empty string")
             return value.strip()
 
-        if store is not None:
-            try:
-                finding = store.finding(finding_id)
-            except StoreError as exc:
-                raise ValueError("record-evidence requires an existing primary finding") from exc
-        else:
-            finding = find_finding(_findings_dir(repo_root, target), finding_id, migrate_legacy=False)
-            if not finding:
-                raise ValueError("record-evidence requires an existing canonical finding; save the Candidate through finding_index first")
+        try:
+            finding = store.finding(finding_id)
+        except StoreError as exc:
+            raise ValueError("record-evidence requires an existing primary finding") from exc
         for key, expected in (("target", target), ("finding_id", finding_id)):
             if key in evidence and evidence[key] != expected:
                 raise ValueError(f"native evidence {key} does not match the selected finding")
@@ -2286,10 +1185,9 @@ def record_native_evidence(
             raise ValueError("canonical finding URL is off target")
         method = str(finding.get("method") or "GET").strip().upper()
         vuln_class = normalize_family(finding.get("vuln_class") or finding.get("family") or finding.get("type"))
-        if store is not None:
-            attempt_id = attempt_id or str(evidence.get("attempt_id") or "").strip()
-            if not attempt_id:
-                raise ValueError("primary record-evidence requires an explicit attempt_id")
+        attempt_id = attempt_id or str(evidence.get("attempt_id") or "").strip()
+        if not attempt_id:
+            raise ValueError("primary record-evidence requires an explicit attempt_id")
         result = required_text(evidence.get("result"), "result")
         if result not in {*RUNNER_RESULT_TO_FINDING_STATUS, "partial"}:
             raise ValueError("native evidence result must be tested_finding, candidate, tested_clean, dead_end, or partial")
@@ -2336,16 +1234,20 @@ def record_native_evidence(
                     run[key] = normalize(required_text(run[key], f"runs[{index}].{key}"))
             run.update(url=public_url_shape(run_url), method=run_method, artifacts=refs)
             runs.append(run)
-            if run_method == method and _runner_endpoint_matches(url, run_url, target):
+            if run_method == method and url == run_url:
                 anchor = run
         if anchor is None:
             raise ValueError("native evidence must include the canonical finding's exact endpoint and method")
         actor = normalize_actor(required_text(anchor.get("actor"), "canonical execution actor"))
-        if store is not None:
-            store.start_attempt(
-                attempt_id=attempt_id, source=source,
-                started_at=captured_at.astimezone(timezone.utc).isoformat(), actor="validation-runner",
-            )
+        command_context = _runner_command_context(
+            store, action_id=action_id, claim_token=claim_token, command_actor=command_actor,
+            endpoint=url, family=vuln_class,
+        )
+        store.start_attempt(
+            attempt_id=attempt_id, source=source,
+            started_at=captured_at.astimezone(timezone.utc).isoformat(), actor=command_actor,
+            action_id=action_id, claim_token=claim_token,
+        )
         summary = {
             "schema_version": SCHEMA_VERSION,
             "lane": "native_evidence",
@@ -2354,10 +1256,10 @@ def record_native_evidence(
             "source": source,
             "target": target,
             "finding_id": finding_id,
-            "url": url,
+            "url": public_url_shape(url),
             "method": method,
             "vuln_class": vuln_class,
-            "generated_at": captured_at.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "generated_at": captured_at.astimezone(timezone.utc).isoformat(),
             "result": result,
             "candidate_ready": result == "tested_finding",
             "observed_difference": observed_difference,
@@ -2366,7 +1268,20 @@ def record_native_evidence(
             "identity_v2": identity_v2,
             "runs": runs,
             "attempt_id": attempt_id or "",
+            **command_context,
         }
+        # Exact request identities stay in private, digest-bound artifacts. Public
+        # URL shapes cannot identify query values for Store observation binding.
+        identity_dir = private_artifact_dir(repo_root, "validation", target_storage_key(target), "identities")
+        for run, raw_run in zip(runs, raw_runs):
+            identity = {"requested_url": raw_run["url"].strip()}
+            content = json.dumps(identity, ensure_ascii=False, sort_keys=True) + "\n"
+            path = identity_dir / f"{hashlib.sha256(content.encode()).hexdigest()}.json"
+            if not path.exists():
+                write_private_text(path, content)
+            elif path.read_text(encoding="utf-8") != content:
+                raise StoreError("private request identity artifact changed")
+            run["artifacts"]["identity"] = _rel(path, repo_root)
         bindings = _artifact_bindings(summary, repo_root)
         digests = {(item["kind"], item["ref"]): item["sha256"] for item in bindings}
         for run in runs:
@@ -2387,21 +1302,7 @@ def record_native_evidence(
         )
         if result == "partial":
             summary["status"] = "partial"
-        if store is not None:
-            summary["ledger_record"] = None
-        else:
-            summary["ledger_record"] = _record_ledger_if_needed(
-                repo_root=repo_root, no_ledger=False, target=target, endpoint=url,
-                method=method, vuln_class=vuln_class,
-                actor=actor,
-                object_scope=str(anchor.get("object_scope") or "unknown"),
-                variant=str(anchor.get("variant") or "replay"), result=result,
-                source=f"native-evidence:{source}", evidence_ref=anchor["artifacts"].get("response") or anchor["artifacts"]["request"],
-                notes=observed_difference, browser_observed=False,
-                redline_checked=redline_checked, state_changing=effective_state,
-                identity_v2=identity_v2, operation_material=material,
-                artifact_bindings=bindings, finding_id=finding_id,
-            )
+        summary["ledger_record"] = None
         return _finalize_runner_summary(summary, summary_path, repo_root, backend_binding=backend_binding)
 
 
@@ -2413,6 +1314,9 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--target", required=True)
         p.add_argument("--finding-id", default="", required=finding_required)
         p.add_argument("--repo-root", default=str(BASE_DIR))
+        p.add_argument("--action-id", help="Bind the attempt to this explicitly claimed execution Action")
+        p.add_argument("--claim-token", help="Current claim token returned by the Action owner")
+        p.add_argument("--actor", default="validation-runner", help="Command operator; must match the Action claimant")
         p.add_argument("--no-sync", action="store_true", help="Do not sync runner result into findings/action_queue state")
         p.add_argument(
             "--identity-v2-json",
@@ -2497,6 +1401,7 @@ def main(argv: list[str] | None = None) -> int:
                         headers=parse_headers(args.header),
                         session=auth_session,
                         attempt_id=args.attempt_id or None,
+                        action_id=args.action_id, claim_token=args.claim_token, command_actor=args.actor,
                     )
                 except (RequestPairError, RequestPreflightError) as exc:
                     # Invalid input must fail before any network I/O.
@@ -2510,6 +1415,7 @@ def main(argv: list[str] | None = None) -> int:
                         evidence=evidence, state_changing=args.state_changing,
                         redline_checked=args.redline_checked, identity_v2=identity_v2,
                         attempt_id=args.attempt_id or None,
+                        action_id=args.action_id, claim_token=args.claim_token, command_actor=args.actor,
                     )
                 except (OSError, ValueError) as exc:
                     parser.error(f"record-evidence: {exc}")
@@ -2522,11 +1428,6 @@ def main(argv: list[str] | None = None) -> int:
                 summary_path = _summary_path(summary, repo_root)
                 if summary_path is not None:
                     _write_json(summary_path, summary)
-                    # The first Finding sync digests the pre-sync summary. Reconcile once
-                    # more after the final summary write so owner provenance binds the
-                    # exact persisted witness consumed by non-interactive validation.
-                    if store is None:
-                        _sync_finding_status(summary, repo_root=repo_root)
             print(json.dumps(summary, ensure_ascii=False, indent=2))
             # --json is accepted for CLI symmetry; the default output is already the
             # machine-readable summary JSON (no human-only trailing block exists).

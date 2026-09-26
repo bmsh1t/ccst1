@@ -19,34 +19,48 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 def test_runner_class_equivalence_table():
-    from validation_runner import _classes_equivalent
+    from tools.evidence_identity import normalize_family
 
-    # 同一概念的两套拼写互相等价
-    assert _classes_equivalent("auth_bypass", "Authz")
-    assert _classes_equivalent("Authz", "auth_bypass")
-    assert _classes_equivalent("auth_bypass", "authz")
-    assert _classes_equivalent("IDOR", "idor")
-    assert _classes_equivalent("idor", "IDOR")
-    # 不同概念不等价
-    assert not _classes_equivalent("auth_bypass", "IDOR")
-    assert not _classes_equivalent("Authz", "sqli")
-    # 未知类：回退裸比较（fail-open：同形通过，异形拒绝）
-    assert _classes_equivalent("weird_unknown", "weird_unknown")
-    assert not _classes_equivalent("weird_unknown", "other_unknown")
-    # 大小写不敏感在两个分支都成立
-    assert _classes_equivalent("Authz", "AUTHZ")
-    assert _classes_equivalent("UNKNOWN_X", "unknown_x")
+    for left, right in (("auth_bypass", "Authz"), ("auth_bypass", "authz"),
+                        ("IDOR", "idor"), ("Authz", "AUTHZ")):
+        assert normalize_family(left) == normalize_family(right)
+    assert normalize_family("UNKNOWN_X") == "UNKNOWN_X"
+    assert normalize_family("unknown_x") == "unknown_x"
+    for left, right in (("auth_bypass", "IDOR"), ("Authz", "sqli"), ("weird_unknown", "other_unknown")):
+        assert normalize_family(left) != normalize_family(right)
 
 
-def test_runner_sync_accepts_scanner_vocab_against_closure_row(tmp_path):
-    """canonical 行是 scanner 词汇（auth_bypass），runner 带 closure 词汇
-    （Authz）时 sync 不再报 class conflict——lab-r5 的原始撞墙场景。"""
-    from validation_runner import _classes_equivalent, _sync_finding_status
+def test_native_runner_accepts_scanner_finding_against_closure_action(tmp_path):
+    from tools.target_store import TargetStore
+    from tools.validation_runner import record_native_evidence, sync_runner_artifacts
 
-    # 直接验证守卫使用的判定函数（sync 全链路需要网络/facts，等价函数是守卫根）
-    assert _classes_equivalent("auth_bypass", "Authz")
-    # 反向同样成立（closure 行 vs scanner runner 输入）
-    assert _classes_equivalent("Authz", "auth_bypass")
+    store = TargetStore(tmp_path, "t.example")
+    store.initialize()
+    store.create_finding(command_id="finding", finding_id="F-1", endpoint="http://t.example/x",
+                         method="GET", family="auth_bypass", title="Claim", claim="Compare sessions", actor="test")
+    store.create_action(command_id="create", action_id="A-1", endpoint="http://t.example/x",
+                        family="Authz", intent="Compare sessions", execution_key="compare", actor="test")
+    store.transition_action(command_id="claim", action_id="A-1", expected_version=1, status="claimed", actor="test")
+    raw = tmp_path / ".private/validation/t.example"
+    raw.mkdir(parents=True)
+    (raw / "request.txt").write_text("GET /x HTTP/1.1\r\nHost: t.example\r\n\r\n")
+    (raw / "response.txt").write_text("HTTP/1.1 403 Forbidden\r\n\r\n")
+    summary = record_native_evidence(
+        repo_root=tmp_path, target="t.example", finding_id="F-1", state_changing=False,
+        action_id="A-1", claim_token="claim", command_actor="test", evidence={
+            "schema_version": 1, "source": "native", "attempt_id": "native-1",
+            "generated_at": "2026-09-24T00:00:00Z", "result": "candidate",
+            "observed_difference": "Recorded session was denied; control comparison remains pending.",
+            "runs": [{"url": "http://t.example/x", "method": "GET", "actor": "anonymous", "artifacts": {
+                "request": ".private/validation/t.example/request.txt",
+                "response": ".private/validation/t.example/response.txt",
+            }}],
+        },
+    )
+    assert summary["vuln_class"] == "Authz"
+    assert sync_runner_artifacts(summary, repo_root=tmp_path)["status"] == "updated"
+    assert store.page("operations")["total"] == 1
+    assert store.finding("F-1")["assessment"] is None
 
 
 def _run_preflight(tmp_path: Path, vuln_class: str, finding_type: str) -> list[str]:
@@ -55,12 +69,12 @@ def _run_preflight(tmp_path: Path, vuln_class: str, finding_type: str) -> list[s
 
     from validate import MachineDecisionPreflightError, run_machine_preflight
 
+    from tools.target_store import TargetStore
+    store = TargetStore(tmp_path, "t.example")
+    store.initialize()
+    store.create_finding(command_id="claim", finding_id="F-1", endpoint="http://t.example/x", method="GET",
+                         family=finding_type, title="Claim", claim="Compare sessions", actor="test")
     findings_dir = tmp_path / "findings" / "t.example"
-    findings_dir.mkdir(parents=True, exist_ok=True)
-    (findings_dir / "findings.json").write_text(json.dumps({
-        "target": "t.example",
-        "findings": [{"id": "F-1", "type": finding_type, "url": "http://t.example/x"}],
-    }), encoding="utf-8")
     decision = {
         "schema_version": 2, "target": "t.example", "finding_id": "F-1",
         "endpoint": "http://t.example/x", "vuln_class": vuln_class, "method": "GET",
@@ -90,7 +104,7 @@ def test_validate_preflight_accepts_scanner_vs_closure_classes(tmp_path):
     errors = _run_preflight(tmp_path, vuln_class="Authz", finding_type="auth_bypass")
     assert not any("vuln_class does not match" in e for e in errors), errors
     # 反向：closure 行 + scanner decision 同样通过
-    errors_back = _run_preflight(tmp_path, vuln_class="auth_bypass", finding_type="Authz")
+    errors_back = _run_preflight(tmp_path / "reverse", vuln_class="auth_bypass", finding_type="Authz")
     assert not any("vuln_class does not match" in e for e in errors_back), errors_back
 
 

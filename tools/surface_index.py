@@ -26,6 +26,7 @@ from pathlib import Path
 from urllib.parse import unquote_plus, urlparse, urlsplit, urlunsplit
 
 try:
+    from tools.target_store import runtime_store
     from tools.target_paths import (
         canonical_target_value,
         resolve_target_url,
@@ -33,6 +34,7 @@ try:
         url_belongs_to_target,
     )
 except ImportError:  # pragma: no cover - direct tools/ execution
+    from target_store import runtime_store  # type: ignore
     from target_paths import (  # type: ignore
         canonical_target_value,
         resolve_target_url,
@@ -128,7 +130,6 @@ def surface_index_summary_path(repo_root: str | Path, target: str) -> Path:
 def _input_paths(repo_root: Path, target: str) -> list[tuple[str, Path]]:
     key = target_storage_key(target)
     recon_dir = repo_root / "recon" / key
-    findings = repo_root / "findings" / key / "findings.json"
     specs = _url_artifact_specs(recon_dir)
     paths = [
         (label, _artifact_path(recon_dir, relative))
@@ -138,7 +139,6 @@ def _input_paths(repo_root: Path, target: str) -> list[tuple[str, Path]]:
         [
             ("js", recon_dir / JS_ENDPOINT_PATH),
             ("httpx", recon_dir / HTTPX_PATH),
-            ("scanner", findings),
         ]
     )
     return paths
@@ -162,9 +162,11 @@ def _url_artifact_specs(recon_dir: Path) -> tuple[tuple[str, Path], ...]:
 
 
 def build_surface_index_input_manifest(repo_root: str | Path, target: str) -> dict:
-    """只用 stat 构建 index 输入绑定，不打开大 URL 文件正文。"""
+    """Bind input file identities and Store revision without reading URL bodies."""
     repo = Path(repo_root).resolve()
     resolved = canonical_target_value(target)
+    store = runtime_store(repo, resolved)
+    store_binding = store.binding()
     items = []
     for label, path in _input_paths(repo, resolved):
         try:
@@ -188,7 +190,10 @@ def build_surface_index_input_manifest(repo_root: str | Path, target: str) -> di
                 "st_ino": int(stat.st_ino) if stat else 0,
             }
         )
-    encoded = json.dumps(items, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    encoded = json.dumps(
+        {"items": items, "store": store_binding},
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    )
     return {
         "kind": MANIFEST_KIND,
         "schema_version": SCHEMA_VERSION,
@@ -196,6 +201,7 @@ def build_surface_index_input_manifest(repo_root: str | Path, target: str) -> di
         "storage_key": target_storage_key(resolved),
         "fingerprint": hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
         "items": items,
+        "store": store_binding,
     }
 
 
@@ -235,34 +241,33 @@ def _iter_js_urls(path: Path, default_host: str) -> Iterator[str]:
         yield resolve_target_url(endpoint, default_host)
 
 
-def _iter_scanner_urls(path: Path) -> Iterator[str]:
-    if not path.is_file():
-        return
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return
-    rows = payload.get("findings", []) if isinstance(payload, dict) else payload
-    if not isinstance(rows, list):
-        return
-    for item in rows:
-        if not isinstance(item, dict):
-            continue
-        value = " ".join(str(item.get("url") or "").strip().splitlines())
-        if value:
-            yield value
-
-
-def _source_iterators(repo_root: Path, target: str) -> list[tuple[str, Iterable[str]]]:
+def recon_source_iterators(repo_root: Path, target: str) -> list[tuple[str, Iterable[str]]]:
+    """Read the same Recon URL sources without building or publishing an index."""
     key = target_storage_key(target)
     recon_dir = repo_root / "recon" / key
     sources: list[tuple[str, Iterable[str]]] = [
         (label, _iter_lines(_artifact_path(recon_dir, relative)))
         for label, relative in _url_artifact_specs(recon_dir)
     ]
-    # 与 legacy rank_surface 的 first-seen 顺序保持一致：scanner 先于 JS。
-    sources.append(("scanner", _iter_scanner_urls(repo_root / "findings" / key / "findings.json")))
     sources.append(("js", _iter_js_urls(recon_dir / JS_ENDPOINT_PATH, _default_host(recon_dir))))
+    return sources
+
+
+def _source_iterators(repo_root: Path, target: str) -> list[tuple[str, Iterable[str]]]:
+    sources = recon_source_iterators(repo_root, target)
+    store = runtime_store(repo_root, target)
+    def current_urls():
+        page = store.page("findings", limit=1000)
+        while True:
+            for row in page["items"]:
+                if row.get("endpoint"):
+                    yield row["endpoint"]
+            if not page["has_more"]:
+                return
+            page = store.page("findings", limit=1000, cursor=page["next_cursor"])
+    findings = current_urls()
+    # Retain the existing first-seen order: claims precede JS inputs.
+    sources.insert(len(sources) - 1, ("finding", findings))
     return sources
 
 

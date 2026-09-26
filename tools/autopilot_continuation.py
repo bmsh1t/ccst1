@@ -15,10 +15,12 @@ from typing import Any
 try:
     from tools.private_artifacts import copy_private_file, private_artifact_dir
     from tools.scope_context import ScopeContext, ScopeContextError
+    from tools.scope_source import load_scope_context
     from tools.target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
     from private_artifacts import copy_private_file, private_artifact_dir
     from scope_context import ScopeContext, ScopeContextError
+    from scope_source import load_scope_context
     from target_paths import canonical_target_value, target_storage_key
 
 
@@ -72,7 +74,7 @@ def create_continuation(
     auth_file: str | Path | None = None,
 ) -> dict[str, Any]:
     repo = Path(repo_root).resolve()
-    scope = ScopeContext.from_target(parent_target)
+    scope = load_scope_context(repo, parent_target)
     selected = canonical_target_value(selected_target)
     if not scope.allows_active(selected):
         raise ScopeContextError(f"selected target is not in parent Scope: {selected}")
@@ -137,13 +139,13 @@ def load_continuation(
         raise ValueError("continuation selected target does not match invocation target")
     parent_target = str(payload.get("parent_target") or "")
     scope_ref = str(payload.get("scope_ref") or "")
-    if parent_target != canonical_target_value(scope_ref):
-        raise ValueError("continuation parent target does not match Scope owner")
     expected_dir = _continuation_dir(repo, parent_target).resolve()
     if path.parent != expected_dir:
         raise ValueError("continuation path does not match its parent target owner")
 
-    scope = ScopeContext.from_target(scope_ref)
+    scope = load_scope_context(repo, parent_target)
+    if scope_ref != (scope.source_ref or scope.root_target):
+        raise ValueError("continuation parent target does not match Scope owner")
     if scope.scope_hash != str(payload.get("scope_hash") or ""):
         raise ValueError("continuation Scope hash is stale")
     if not scope.allows_active(selected):

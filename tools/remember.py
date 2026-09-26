@@ -2,16 +2,15 @@
 """
 remember.py — persist a finding into hunt memory.
 
-Writes:
-- journal.jsonl (always)
-- patterns.jsonl (confirmed + payout > 0 + technique + tech stack)
-- hunt-memory/targets/<target>.json (tested endpoints + findings)
+Primary targets write explicit experience to TargetStore and retain journal audit.
+Legacy target history is available through explicit Store import.
 """
 
 import argparse
 import json
 import os
 import sys
+import uuid
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -20,10 +19,10 @@ if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
 from memory.hunt_journal import HuntJournal
-from memory.pattern_db import PatternDB
-from memory.schemas import make_journal_entry, make_pattern_entry
-from memory.target_profile import default_memory_dir, load_target_profile, make_target_profile, save_target_profile
-from tools.runtime_state import derive_owner_projection
+from memory.schemas import SchemaError, make_journal_entry
+from memory.target_profile import default_memory_dir
+from tools.target_memory import _operation_refs
+from tools.target_store import StoreError, runtime_store
 try:
     from tools.target_paths import canonical_target_value
 except ImportError:  # pragma: no cover - direct tools/ execution
@@ -165,36 +164,6 @@ def load_validate_prefill(
     }
 
 
-def load_or_create_target_profile(memory_dir: str | Path, target: str) -> dict:
-    canonical_target = canonical_target_value(target)
-    profile = load_target_profile(memory_dir, canonical_target)
-    if profile is not None:
-        return profile
-    return make_target_profile(
-        canonical_target,
-        tested_endpoints=[],
-        untested_endpoints=[],
-        findings=[],
-        hunt_sessions=0,
-        total_time_minutes=0,
-    )
-
-
-def merge_finding(profile: dict, finding: dict) -> None:
-    """Replace an equivalent finding or append a new one."""
-    existing = profile.get("findings", [])
-    keep = []
-    for item in existing:
-        same_endpoint = item.get("endpoint") == finding.get("endpoint")
-        same_class = item.get("vuln_class") == finding.get("vuln_class")
-        same_technique = item.get("technique", "") == finding.get("technique", "")
-        if same_endpoint and same_class and same_technique:
-            continue
-        keep.append(item)
-    keep.append(finding)
-    profile["findings"] = keep
-
-
 def remember_finding(
     *,
     memory_dir: str | Path,
@@ -209,8 +178,14 @@ def remember_finding(
     tags: list[str] | None = None,
     tech_stack: list[str] | None = None,
     repo_root: str | Path | None = None,
+    conditions: str = "",
+    reopen_when: str = "",
+    next_intent: str = "",
+    operation_refs: list[str] | None = None,
+    command_id: str | None = None,
+    actor: str = "operator",
 ) -> dict:
-    """Persist a finding to hunt memory and return a summary."""
+    """Append an explicit Store experience and journal audit without a verdict."""
     memory_dir = Path(memory_dir)
     requested_target = target
     canonical_target = canonical_target_value(target)
@@ -218,27 +193,8 @@ def remember_finding(
     tags = tags or []
     requested_tech_stack = dedupe_keep_order([t.lower() for t in (tech_stack or [])])
 
-    owner_projection = derive_owner_projection(
-        repo_root or memory_dir.parent,
-        canonical_target,
-    )
-    journal = HuntJournal(memory_dir / "journal.jsonl")
-    pattern_db = PatternDB(memory_dir / "patterns.jsonl")
-    profile = load_target_profile(memory_dir, canonical_target)
-    if profile is None:
-        profile_kwargs = {
-            "hunt_sessions": 0,
-            "total_time_minutes": 0,
-        }
-        if not owner_projection.get("available"):
-            profile_kwargs.update(
-                tested_endpoints=[],
-                untested_endpoints=[],
-                findings=[],
-            )
-        profile = make_target_profile(canonical_target, **profile_kwargs)
-    profile["target"] = canonical_target
-
+    root = Path(repo_root or memory_dir.parent)
+    store = runtime_store(root, canonical_target)
     entry = make_journal_entry(
         target=canonical_target,
         action="remember",
@@ -251,94 +207,43 @@ def remember_finding(
         notes=notes,
         tags=tags,
     )
-    journal.append(entry)
-
-    if requested_tech_stack:
-        merged_tech = dedupe_keep_order(profile.get("tech_stack", []) + requested_tech_stack)
-        profile["tech_stack"] = merged_tech
-
-    finding_saved = False
-    if owner_projection.get("available"):
-        # Canonical owners are current truth.  Existing legacy fields remain
-        # readable for compatibility but are never refreshed here.
-        finding_saved = result != "rejected"
-    else:
-        tested_endpoints = dedupe_keep_order(profile.get("tested_endpoints", []) + [normalized_endpoint])
-        profile["tested_endpoints"] = tested_endpoints
-        profile["untested_endpoints"] = [
-            item for item in profile.get("untested_endpoints", [])
-            if item != normalized_endpoint
-        ]
-
-    if not owner_projection.get("available") and result != "rejected":
-        merge_finding(profile, {
-            "ts": entry["ts"],
-            "endpoint": normalized_endpoint,
-            "vuln_class": vuln_class,
-            "result": result,
-            "severity": severity or "",
-            "payout": payout or 0,
-            "technique": technique or "",
-            "notes": notes or "",
-            "tags": tags,
-        })
-        finding_saved = True
-
-    save_target_profile(memory_dir, profile)
-
-    pattern_saved = False
-    effective_tech_stack = profile.get("tech_stack", [])
-    # 经验写入门槛（记忆复核断点 B 修复，2026-09-12）：confirmed+payout>0 走原路径
-    # （outcome=helped）；失败反例（false-positive）与未付费有效经验（no-signal）
-    # 只要有 technique 和 tech_stack 也写入模式索引，获得跨目标召回。
-    # 旧四条件门把这三类经验挡在外面，patterns.jsonl 只剩"成功付费"一种视角。
-    if technique and effective_tech_stack:
-        if result == "confirmed" and payout and payout > 0:
-            pattern = make_pattern_entry(
-                target=canonical_target,
-                vuln_class=vuln_class,
-                technique=technique,
-                tech_stack=effective_tech_stack,
-                endpoint=normalized_endpoint,
-                payout=payout,
-                notes=notes,
-                tags=tags,
-                outcome="helped",
-            )
-            pattern_saved = pattern_db.save(pattern)
-        elif result in ("rejected", "false-positive", "dead-end"):
-            pattern = make_pattern_entry(
-                target=canonical_target,
-                vuln_class=vuln_class,
-                technique=technique,
-                tech_stack=effective_tech_stack,
-                endpoint=normalized_endpoint,
-                notes=notes,
-                tags=tags,
-                outcome="false-positive",
-            )
-            pattern_saved = pattern_db.save(pattern)
-        else:
-            pattern = make_pattern_entry(
-                target=canonical_target,
-                vuln_class=vuln_class,
-                technique=technique,
-                tech_stack=effective_tech_stack,
-                endpoint=normalized_endpoint,
-                notes=notes,
-                tags=tags,
-                outcome="no-signal",
-            )
-            pattern_saved = pattern_db.save(pattern)
-
+    refs = _operation_refs(operation_refs or [])
+    if not (technique or notes or refs) and (conditions or reopen_when or next_intent or command_id):
+        raise StoreError("experience conditions or command ID require technique, notes or operation refs")
+    negative = result in {"rejected", "false-positive", "dead-end"}
+    if refs and negative and (not isinstance(conditions, str) or not conditions.strip()
+                              or not isinstance(reopen_when, str) or not reopen_when.strip()):
+        raise StoreError("negative experience requires conditions and reopen_when")
+    receipt = None
+    if technique or notes or refs:
+        kind = "negative" if refs and negative else "primitive" if refs and result == "confirmed" else "note"
+        statement = f"{vuln_class} {normalized_endpoint}: {technique or notes or result}"
+        if notes and technique:
+            statement += f"; {notes}"
+        if kind == "note":
+            statement = f"Unverified {result} account: {statement}"
+        receipt = store.remember(
+            command_id=command_id or f"remember:{uuid.uuid4().hex}", kind=kind,
+            statement=statement, conditions=conditions or "unknown",
+            reopen_when=reopen_when, next_intent=next_intent,
+            evidence=refs, actor=actor,
+        )
+    journal_saved = False
+    if receipt is None or not receipt["replayed"]:
+        try:
+            HuntJournal(memory_dir / "journal.jsonl").append(entry)
+        except OSError as exc:
+            if receipt is not None:
+                raise OSError(f"Store experience committed as {receipt['entity_id']}; journal append failed: {exc}") from exc
+            raise
+        journal_saved = True
     return {
-        "target": requested_target,
-        "resolved_target": canonical_target,
-        "endpoint": normalized_endpoint,
-        "journal_saved": True,
-        "finding_saved": finding_saved,
-        "pattern_saved": pattern_saved,
-        "tech_stack": effective_tech_stack,
+        "target": requested_target, "resolved_target": canonical_target,
+        "endpoint": normalized_endpoint, "journal_saved": journal_saved,
+        "finding_saved": False, "pattern_saved": False,
+        "experience_saved": receipt is not None,
+        "experience_id": receipt["entity_id"] if receipt else None,
+        "tech_stack": requested_tech_stack,
     }
 
 
@@ -364,6 +269,12 @@ def main() -> None:
     parser.add_argument("--notes", default="", help="Optional notes")
     parser.add_argument("--tags", default="", help="Comma-separated tags")
     parser.add_argument("--tech-stack", default="", help="Comma-separated tech stack override")
+    parser.add_argument("--conditions", default="", help="conditions for this target experience")
+    parser.add_argument("--reopen-when", default="", help="condition that reopens a negative result")
+    parser.add_argument("--next-intent", default="", help="suggested next investigation step")
+    parser.add_argument("--operation-ref", action="append", default=[], help="OPERATION_ID:STEP; repeatable")
+    parser.add_argument("--command-id", default=None, help="idempotent Store command ID")
+    parser.add_argument("--actor", default="operator", help="experience author")
     parser.add_argument("--memory-dir", default="", help="Optional hunt-memory directory")
     parser.add_argument("--repo-root", default="", help="Repository root for default memory and validation summary")
     parser.add_argument("--from-validate", action="store_true", help="Prefill fields from last /validate run")
@@ -421,20 +332,29 @@ def main() -> None:
         )
 
     memory_dir = args.memory_dir or str(default_memory_dir(repo_root))
-    summary = remember_finding(
-        memory_dir=memory_dir,
-        target=target,
-        vuln_class=vuln_class,
-        endpoint=endpoint,
-        result=result,
-        severity=severity or None,
-        payout=args.payout,
-        technique=args.technique or None,
-        notes=notes or None,
-        tags=parse_csv(args.tags),
-        tech_stack=parse_csv(args.tech_stack),
-        repo_root=repo_root,
-    )
+    try:
+        summary = remember_finding(
+            memory_dir=memory_dir,
+            target=target,
+            vuln_class=vuln_class,
+            endpoint=endpoint,
+            result=result,
+            severity=severity or None,
+            payout=args.payout,
+            technique=args.technique or None,
+            notes=notes or None,
+            tags=parse_csv(args.tags),
+            tech_stack=parse_csv(args.tech_stack),
+            repo_root=repo_root,
+            conditions=args.conditions,
+            reopen_when=args.reopen_when,
+            next_intent=args.next_intent,
+            operation_refs=args.operation_ref,
+            command_id=args.command_id,
+            actor=args.actor,
+        )
+    except (SchemaError, StoreError, ValueError) as exc:
+        parser.error(str(exc))
     if validate_summary_path is not None:
         summary["validate_summary"] = str(validate_summary_path)
 
@@ -446,8 +366,10 @@ def main() -> None:
     print(f"Target: {summary['target']}")
     print(f"Endpoint: {summary['endpoint']}")
     print(f"Journal: {'yes' if summary['journal_saved'] else 'no'}")
-    print(f"Target profile updated: {'yes' if summary['finding_saved'] or summary['journal_saved'] else 'no'}")
+    print(f"Target profile updated: {'yes' if summary['finding_saved'] else 'no'}")
     print(f"Pattern saved: {'yes' if summary['pattern_saved'] else 'no'}")
+    if summary.get("experience_saved"):
+        print(f"Store experience: {summary['experience_id']}")
     if summary.get("validate_summary"):
         print(f"Validate summary: {summary['validate_summary']}")
     if summary["tech_stack"]:

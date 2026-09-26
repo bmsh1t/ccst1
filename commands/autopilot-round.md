@@ -104,8 +104,10 @@ After terminal heartbeats, run the deterministic settle operation:
 cd -- <repo_root_shell> && python3 tools/autopilot_round.py settle --target <target_shell> --json
 ```
 
-Settle refuses `started` lanes, performs owner write-back and final Closure, and
-leaves the round active when Surface is stale or unavailable. Repeating settle
+Settle refuses `started` lanes, reads Checkpoint/current Coverage and Closure,
+then explicitly closes the runtime round. Stale or unavailable Surface keeps
+the round active; refresh it explicitly before retrying. Settle does not save
+target memory, synchronize Queue or refresh Surface. Repeating settle
 after completion is read-only (`status=already_settled`) and never replays target
 work. If final Closure returns `global_review_required`, `global_review_stale`, or
 `global_review_invalid`, settle returns `status=review_required`; record the review

@@ -30,14 +30,18 @@ if str(BASE_DIR) not in sys.path:
 try:
     from tools.runtime_state import runtime_wait_action
     from tools.target_paths import canonical_target_value, target_storage_key
-    from tools.target_store import StoreError, TargetStore, target_backend, target_switch_lock
+    from tools.target_store import ConflictError, StoreError, TargetStore, runtime_store, target_backend, target_switch_lock
 except ImportError:  # pragma: no cover - direct tools/ execution
     from runtime_state import runtime_wait_action  # type: ignore
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
-    from target_store import StoreError, TargetStore, target_backend, target_switch_lock  # type: ignore
+    from target_store import ConflictError, StoreError, TargetStore, runtime_store, target_backend, target_switch_lock  # type: ignore
 
 
 SCHEMA_VERSION = 1
+ACTION_CONTEXT_FIELDS = (
+    "type", "source", "source_id", "evidence", "next_question", "command_hint",
+    "evidence_type", "safety", "stop_condition",
+)
 ACTIVE_STATUSES = {"queued", "running", "lead", "signal", "candidate"}
 FINAL_STATUSES = {"tested", "dead-end", "blocked", "validated", "reported", "n/a"}
 ALLOWED_STATUSES = ACTIVE_STATUSES | FINAL_STATUSES
@@ -154,95 +158,7 @@ def _validate_action_metadata(metadata: dict | None) -> dict:
                 visit(child, f"{path}[{index}]")
 
     visit(metadata, "metadata")
-    route = metadata.get("skill_route")
-    if route is None:
-        if metadata.get("route_required"):
-            raise ValueError("Action Queue metadata requires a skill_route")
-    elif not isinstance(route, dict):
-        raise ValueError("Action Queue metadata skill_route must be an object")
-    else:
-        skill_id = str(route.get("skill_id") or "").strip()
-        skill_path = str(route.get("skill_path") or "").strip()
-        dimensions = route.get("required_dimensions")
-        if not skill_id:
-            raise ValueError("Action Queue metadata skill_route requires skill_id")
-        # S1 native skill loading (ai-capability-roadmap batch 3): the catalog
-        # whitelist is retired. Which skill fits the evidence is AI judgment
-        # (frontmatter descriptions route it via the native Skill tool); the
-        # only mechanical check left is anti-forgery — the skill_id must
-        # resolve to a real Skill file on disk whose frontmatter name matches
-        # (the same surgery as selected_knowledge_refs). A skill outside the
-        # catalog but present on disk is accepted: adding a skill no longer
-        # requires touching tools/skill_catalog.py.
-        skills_root = (BASE_DIR / "skills").resolve()
-        skill_file = (BASE_DIR / "skills" / skill_id / "SKILL.md").resolve()
-        try:
-            skill_file.relative_to(skills_root)
-        except ValueError:
-            raise ValueError(
-                "Action Queue metadata skill_route skill_id must be a plain "
-                "Skill directory name under skills/ (path escape rejected)"
-            )
-        if not skill_file.is_file():
-            raise ValueError(
-                "Action Queue metadata skill_route must reference an existing "
-                f"Skill file: skills/{skill_id}/SKILL.md"
-            )
-        if _skill_frontmatter_name(skill_file) != skill_id:
-            raise ValueError(
-                "Action Queue metadata skill_route skill_id must match the "
-                "Skill frontmatter name"
-            )
-        expected_path = f"skills/{skill_id}/SKILL.md"
-        if skill_path and skill_path != expected_path:
-            raise ValueError(
-                "Action Queue metadata skill_route skill_path must be "
-                f"{expected_path} (or omitted — it is derived from skill_id)"
-            )
-        # Normalize: always store the derived path so consumers and identity
-        # hashing see one canonical form regardless of whether the caller
-        # supplied it.
-        route["skill_path"] = expected_path
-        # Route dimensions are advisory context, not a membership gate; only
-        # the form (a non-empty list of non-empty labels) is validated.
-        if not isinstance(dimensions, list) or not dimensions or any(not str(item).strip() for item in dimensions):
-            raise ValueError("Action Queue metadata skill_route requires test dimensions")
     return metadata
-
-
-def _skill_frontmatter_name(skill_file: Path) -> str:
-    """Dependency-free read of a SKILL.md frontmatter ``name`` value."""
-    try:
-        lines = skill_file.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return ""
-    if not lines or lines[0].strip() != "---":
-        return ""
-    for line in lines[1:]:
-        if line.strip() == "---":
-            break
-        match = re.match(r"^name:\s*(.*?)\s*$", line)
-        if match:
-            return match.group(1).strip().strip("\"'")
-    return ""
-
-
-def _apply_update(existing: Any, incoming: dict | None) -> dict:
-    """Apply an AI-supplied full metadata write to one action.
-
-    The AI owns every judgment field and writes them explicitly — there is no
-    merge semantic here beyond the mechanical preserves: incoming values
-    replace existing ones wholesale, except Runner-owned observation fields
-    that the caller did not supply are preserved so a stale read cannot wipe
-    a concurrent runner observation. (A caller that *does* supply them is
-    rejected earlier by the write-time guard.)
-    """
-    incoming = _validate_action_metadata(incoming)
-    merged = {**(existing if isinstance(existing, dict) else {}), **incoming}
-    for field in RUNNER_OBSERVATION_FIELDS:
-        if field not in incoming and field in (existing if isinstance(existing, dict) else {}):
-            merged[field] = copy.deepcopy(existing[field])
-    return _validate_action_metadata(merged)
 
 
 def _bounded_metadata_text(value: Any, field: str, *, limit: int = 500) -> str:
@@ -292,454 +208,30 @@ def _target_owned_nonempty_evidence_ref(
     return ref
 
 
-def _execution_key(metadata: dict) -> str:
-    endpoint = str(metadata.get("endpoint") or metadata.get("url") or "").strip()
-    parsed_endpoint = urllib.parse.urlsplit(endpoint)
-    if parsed_endpoint.scheme and parsed_endpoint.netloc:
-        endpoint = (
-            f"{parsed_endpoint.scheme.lower()}://{parsed_endpoint.netloc.lower()}"
-            f"{parsed_endpoint.path.rstrip('/') or '/'}"
-            f"{('?' + parsed_endpoint.query) if parsed_endpoint.query else ''}"
-        )
-    else:
-        endpoint = endpoint.split("#", 1)[0].rstrip("/") or "/"
-    fields = {
-        "endpoint": endpoint,
-        "method": str(metadata.get("method") or "").strip().upper(),
-        "family": str(metadata.get("family") or "").strip().lower(),
-        "technique": str(metadata.get("technique") or "").strip().lower(),
-        "actor": str(metadata.get("actor") or "").strip().lower(),
-        "object_scope": str(metadata.get("object_scope") or "").strip().lower(),
-        "workflow": str(metadata.get("workflow") or "").strip().lower(),
-        "active_dimension": str(metadata.get("active_dimension") or "").strip().lower(),
-    }
-    if not all(fields[key] for key in ("endpoint", "method", "family", "technique", "active_dimension")):
-        raise ValueError("Action Queue depth contract lacks execution identity fields")
-    encoded = json.dumps(fields, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
-    return f"depth-v1:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()[:24]}"
-
-
-def _validate_execution_repeat(queue: dict, item: dict, metadata: dict) -> None:
-    key = str(metadata.get("execution_key") or "")
-    evidence_ref = str(metadata.get("evidence_ref") or "")
-    for other in queue.get("actions", []):
-        if not isinstance(other, dict) or str(other.get("id") or "") == str(item.get("id") or ""):
-            continue
-        other_metadata = other.get("metadata") if isinstance(other.get("metadata"), dict) else {}
-        if str(other_metadata.get("execution_key") or "") != key:
-            continue
-        if str(other_metadata.get("evidence_ref") or "") == evidence_ref:
-            raise ValueError("Action Queue depth contract refuses duplicate execution with the same evidence")
-        if not _compact_text(metadata.get("repeat_reason"), 500):
-            raise ValueError("Action Queue depth contract requires repeat_reason for changed evidence")
-
-
-def _record_card_pulls(repo_root: Path | str, target: str, refs: list[str]) -> None:
-    """Record knowledge-card pulls for outbound governance telemetry.
-
-    Mechanical fact only (card pulled via selected_knowledge_refs); the pull
-    log never blocks the queue path — recording failures degrade to a stderr
-    note, not an exception.
-    """
-    if not refs:
-        return
-    try:
-        from tools.knowledge_pull_log import record_pull
-    except ImportError:  # pragma: no cover - direct tools/ execution
-        from knowledge_pull_log import record_pull  # type: ignore
-    for ref in refs:
-        card_id = Path(ref).stem
-        if not record_pull(repo_root, card=card_id, target=target, source="selected_knowledge_refs"):
-            print(f"action_queue: pull-log append failed for {card_id}", file=sys.stderr)
-
-
-def _validate_write_time_invariants(
-    repo_root: Path | str,
-    target: str,
-    queue: dict,
-    item: dict,
-    incoming: dict | None,
-) -> dict:
-    """Enforce the six mechanical write-time invariants on an AI metadata write.
-
-    These are the properties an agent physically cannot guarantee for itself
-    (concurrent writes, cross-session dedup, anti-forgery, disk facts, runaway
-    bounds). Everything else — which hypothesis this is, what to test, why —
-    is AI judgment and passes through unvalidated: the queue is a locked JSON
-    file, not a router.
-    """
-    existing = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
-    incoming = _validate_action_metadata(incoming or {})
-
-    # 1. Runner-owned observation fields are anti-forgery: only the runner
-    #    writes them (via its locked internal resolve path).
-    runner_fields = RUNNER_OBSERVATION_FIELDS.intersection(incoming)
-    if runner_fields:
-        raise ValueError(
-            "Action Queue metadata cannot supply Runner-owned observation fields: "
-            + ", ".join(sorted(runner_fields))
-        )
-
-    # 1b. Identity guard (2026-09-14 chimera regression): an incoming write
-    #     that would re-identify an already-identified action (different
-    #     hypothesis_id / family / technique) is the chimera's field-level
-    #     mechanism. Refuse unless a repeat_reason documents the change —
-    #     a new hypothesis belongs on a NEW action (add), not by overwriting
-    #     an unrelated one.
-    identity_fields = ("hypothesis_id", "family", "technique")
-    existing_identity = {f: str(existing.get(f) or "").strip() for f in identity_fields}
-    incoming_identity = {f: str(incoming.get(f) or "").strip() for f in identity_fields}
-    conflicts = {
-        f: (existing_identity[f], incoming_identity[f])
-        for f in identity_fields
-        if existing_identity[f] and incoming_identity[f] and existing_identity[f] != incoming_identity[f]
-    }
-    if conflicts and not _compact_text(incoming.get("repeat_reason"), 500):
-        detail = ", ".join(f"{f}: {old!r} -> {new!r}" for f, (old, new) in conflicts.items())
-        raise ValueError(
-            "Action Queue metadata cannot re-identify an existing action "
-            f"({detail}); add a new action for a new hypothesis, or record "
-            "repeat_reason documenting the change"
-        )
-
-    merged = _apply_update(existing, incoming)
-
-    # 2. Queue-owned fields cannot be overridden by an AI write.
-    if "activation_required" in incoming and incoming.get("activation_required") != existing.get("activation_required"):
-        raise ValueError("Action Queue claim cannot override activation_required")
-    if (
-        "max_hypothesis_actions_cap" in incoming
-        and incoming.get("max_hypothesis_actions_cap") != existing.get("max_hypothesis_actions_cap")
-    ):
-        raise ValueError(
-            "Action Queue metadata cannot override Queue-owned max_hypothesis_actions_cap; "
-            "read the stored cap or refresh and re-ingest a missing checkpoint action"
-        )
-
-    # 3. Hypothesis runaway bound: an executing hypothesis keeps a mechanical
-    #    per-hypothesis action count. Counting is mechanical; when the bound is
-    #    exhausted the AI needs a new hypothesis (new evidence), not more
-    #    actions under the same one.
-    cap = merged.get("max_hypothesis_actions")
-    if cap is not None:
-        stored_cap = existing.get("max_hypothesis_actions_cap")
-        if isinstance(cap, bool) or not isinstance(cap, int) or cap < 1:
-            raise ValueError("Action Queue max_hypothesis_actions must be a positive integer")
-        if isinstance(stored_cap, bool) or (stored_cap is not None and (not isinstance(stored_cap, int) or stored_cap < 1)):
-            raise ValueError(
-                f"Action Queue item {item.get('id', '')} has invalid max_hypothesis_actions_cap; "
-                "preserve it for Action Queue owner repair before claim"
-            )
-        effective_cap = stored_cap if isinstance(stored_cap, int) else DEFAULT_HYPOTHESIS_ACTIONS_CAP
-        if cap > effective_cap:
-            raise ValueError("Action Queue metadata exceeds the stored hypothesis action cap")
-        hypothesis_id = str(merged.get("hypothesis_id") or "")
-        if hypothesis_id:
-            # Budget counts EXECUTION admissions, not queue presence: only
-            # actions that are running or already produced evidence (lead/
-            # signal/candidate) occupy the hypothesis budget. Purely `queued`
-            # actions with pre-populated identity do NOT — a batch of 3 queued
-            # under cap=2 would otherwise see each other as spent budget and
-            # none could start (2026-09-14 second-pass audit). The cap still
-            # holds mechanically: claim admits at most cap running actions, and
-            # every later claim re-checks against the running/produced set.
-            current_count = sum(
-                isinstance(action, dict)
-                and str((action.get("metadata") or {}).get("hypothesis_id") or "") == hypothesis_id
-                and str(action.get("id") or "") != str(item.get("id") or "")
-                and str(action.get("status") or "") in {"running", "lead", "signal", "candidate"}
-                for action in queue.get("actions", [])
-            )
-            # The claimed item always occupies the budget after the claim:
-            # `queued` becomes `running`, and every other active status
-            # (running/lead/signal/candidate) already occupies. `current_count`
-            # excludes this item by id, so the claimed item is always +1.
-            #
-            # Never derive this from AI-writable metadata: an earlier revision
-            # asked `incoming["status"]`/`existing["status"]` (metadata, not
-            # queue state) and a claim carrying `{"status": "queued"}` skipped
-            # the +1 — cap=2 admitted a 3rd running action (2026-09-14
-            # third-pass audit). Queue status is Queue-owned; only the stored
-            # per-action `status` is readable here.
-            if current_count + 1 > cap:
-                raise ValueError("Action Queue hypothesis action budget is exhausted")
-
-    # 3b. Knowledge-card and skill anti-forgery (mechanical, not judgment):
-    #     a selected ref must name an existing card file; a supplied
-    #     active_dimension keeps its single-dimension form (execution_key
-    #     consumes it). WHICH card / dimension is chosen stays AI judgment.
-    if "selected_knowledge_refs" in merged:
-        selected_refs = merged["selected_knowledge_refs"]
-        if not isinstance(selected_refs, list) or any(not str(value).strip() for value in selected_refs):
-            raise ValueError("Action Queue selected_knowledge_refs must be a list of non-empty references")
-        deduped = list(dict.fromkeys(str(value).strip() for value in selected_refs))
-        cards_root = Path(repo_root) / "knowledge" / "cards"
-        if cards_root.is_dir():
-            for ref in deduped:
-                if not (Path(repo_root) / ref).is_file():
-                    raise ValueError(f"Action Queue selected_knowledge_refs names a missing card: {ref}")
-        merged["selected_knowledge_refs"] = deduped
-        _record_card_pulls(repo_root, target, deduped)
-    if merged.get("active_dimension") and " " in str(merged["active_dimension"]):
-        raise ValueError("Action Queue active_dimension must be a single-dimension label")
-
-    # 4. Target-owned evidence refs must exist on disk when supplied.
-    if merged.get("evidence_ref"):
-        resolved = _target_owned_evidence_ref(repo_root, target, merged.get("evidence_ref"))
-        if not resolved:
-            raise ValueError(
-                f"Action Queue evidence_ref is not a locatable target-owned file: {merged.get('evidence_ref')}"
-            )
-        merged["evidence_ref"] = resolved
-    if merged.get("baseline_ref"):
-        resolved = _target_owned_evidence_ref(repo_root, target, merged.get("baseline_ref"))
-        if not resolved:
-            raise ValueError(
-                f"Action Queue baseline_ref is not a locatable target-owned file: {merged.get('baseline_ref')}"
-            )
-        merged["baseline_ref"] = resolved
-
-    # 5. Sensitive-field and skill anti-forgery checks already ran inside
-    #    _validate_action_metadata on both incoming and merged.
-
-    # 6. Cross-session execution dedup: same execution identity with the same
-    #    evidence needs a recorded repeat reason; a changed evidence ref is a
-    #    legitimate re-execution.
-    if incoming.get("hypothesis_id") or incoming.get("family") or incoming.get("technique"):
-        merged["execution_key"] = _execution_key(merged)
-        _validate_execution_repeat(queue, item, merged)
-    elif existing.get("execution_key"):
-        merged.setdefault("execution_key", existing["execution_key"])
-
-    return merged
-
-
-def _hypothesis_pivot_actions(item: dict, *, status: str, result: str) -> list[dict]:
-    """Project bounded follow-up actions from an explicitly declared hypothesis.
-
-    The model still supplies the hypothesis and pivot dimensions. The queue
-    only materializes those inert, evidence-backed continuations and dedupes
-    them through its existing owner.
-    """
-    if status not in {"tested", "dead-end"}:
-        return []
-    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
-    if metadata.get("kill_condition_met") is True:
-        return []
-    hypothesis_id = str(metadata.get("hypothesis_id") or "").strip()
-    hints = metadata.get("pivot_hints")
-    if not hypothesis_id or not isinstance(hints, list):
-        return []
-    tested = {
-        str(value).strip().lower()
-        for value in metadata.get("tested_dimensions", [])
-        if str(value).strip()
-    }
-    expected_learning = str(metadata.get("expected_learning") or "").strip()
-    kill_condition = str(metadata.get("kill_condition") or "").strip()
-    route = metadata.get("skill_route") if isinstance(metadata.get("skill_route"), dict) else None
-    actions: list[dict] = []
-    for raw_hint in hints:
-        hint = str(raw_hint or "").strip()
-        if not hint or hint.lower() in tested:
-            continue
-        question = f"Does the {hint} dimension change the result for hypothesis {hypothesis_id}?"
-        pivot_metadata = {
-            "hypothesis_id": hypothesis_id,
-            "parent_action_id": str(item.get("id") or ""),
-            "pivot_hint": hint,
-            "tested_dimensions": sorted(tested),
-            "expected_learning": expected_learning,
-            "kill_condition": kill_condition,
-            "hypothesis_status": "open",
-        }
-        if route:
-            pivot_metadata["skill_route"] = copy.deepcopy(route)
-            if metadata.get("route_required"):
-                pivot_metadata["route_required"] = True
-        actions.append(
-            build_action(
-                target=str(item.get("target") or ""),
-                action_type="hypothesis-pivot",
-                evidence=(
-                    f"Negative result for {hypothesis_id}: "
-                    f"{_compact_text(result or item.get('result') or item.get('evidence') or '', 700)}"
-                ),
-                next_question=question,
-                action=f"Run one bounded, target-owned {hint} follow-up and record its raw evidence.",
-                priority=max(50, int(item.get("priority", 50) or 50) - 5),
-                evidence_type="hypothesis-continuation",
-                source="hypothesis-loop",
-                source_id=f"{item.get('id', '')}:{hypothesis_id}:{hint}",
-                stop_condition=kill_condition or DEFAULT_STOP_CONDITION,
-                metadata=pivot_metadata,
-            )
-        )
-    return actions
-
-
-def _validate_capability_primitives(
-    repo_root: Path | str,
-    target: str,
-    value: Any,
-) -> list[dict]:
-    if value in (None, []):
-        return []
-    if not isinstance(value, list) or len(value) > MAX_CAPABILITY_PRIMITIVES:
-        raise ValueError(f"Action Queue accepts at most {MAX_CAPABILITY_PRIMITIVES} capability primitives")
-    primitives: list[dict] = []
-    for raw in value:
-        if not isinstance(raw, dict):
-            raise ValueError("Action Queue capability primitive must be an object")
-        evidence_ref = _target_owned_evidence_ref(repo_root, target, raw.get("evidence_ref"))
-        if not evidence_ref:
-            raise ValueError("Action Queue capability primitive requires target-owned evidence_ref")
-        primitive = {
-            "capability": _bounded_metadata_text(raw.get("capability"), "capability", limit=240),
-            "evidence_ref": evidence_ref,
-        }
-        hint = _compact_text(raw.get("continuation_hint"), 300)
-        if hint:
-            primitive["continuation_hint"] = hint
-        primitives.append(primitive)
-    return primitives
-
-
-def _versioned_continuation_action(item: dict, metadata: dict, continuation: dict) -> dict:
-    kind = str(continuation.get("kind") or "").strip().lower()
-    dimension = _bounded_metadata_text(continuation.get("dimension"), "continuation.dimension", limit=120)
-    question = _bounded_metadata_text(continuation.get("question"), "continuation.question")
-    expected_learning = _bounded_metadata_text(
-        continuation.get("expected_learning"), "continuation.expected_learning"
-    )
-    reason = _bounded_metadata_text(continuation.get("reason"), "continuation.reason")
-    child_metadata = copy.deepcopy(metadata)
-    for key in (
-        "continuation", "kill_condition_met", "kill_reason", "last_outcome",
-        "tested_dimensions", "runner_operation_id", "execution_key",
-    ):
-        child_metadata.pop(key, None)
-    child_metadata.update({
-        # Keep the child on the versioned path.  The prior AI resolve supplies
-        # the bounded activation context; claim still validates it before the
-        # child becomes executable.
-        "activation_required": True,
-        "active_dimension": dimension,
-        "expected_learning": expected_learning,
-        "decision_reason": reason,
-        "parent_action_id": str(item.get("id") or ""),
-        "continuation_kind": kind,
-        "next_question": question,
-        "hypothesis_status": "open",
-    })
-    route = child_metadata.get("skill_route") if isinstance(child_metadata.get("skill_route"), dict) else {}
-    last_outcome = metadata.get("last_outcome") if isinstance(metadata.get("last_outcome"), dict) else {}
-    child_metadata["baseline_ref"] = str(last_outcome.get("summary_ref") or metadata.get("baseline_ref") or "")
-    child_metadata["evidence_ref"] = str(last_outcome.get("evidence_ref") or last_outcome.get("summary_ref") or "")
-    child_metadata["execution_key"] = _execution_key(child_metadata)
-    return build_action(
-        target=str(item.get("target") or ""),
-        action_type="hypothesis-continuation",
-        evidence=f"{kind} continuation from {item.get('id', '')}: {reason}",
-        next_question=question,
-        action=f"Execute one bounded {kind} continuation for dimension {dimension} and preserve replay evidence.",
-        priority=max(50, int(item.get("priority", 50) or 50) - 5),
-        evidence_type="hypothesis-continuation",
-        source="hypothesis-loop",
-        source_id=f"{item.get('id', '')}:{metadata.get('hypothesis_id', '')}:{kind}:{dimension}",
-        stop_condition=str(metadata.get("kill_condition") or DEFAULT_STOP_CONDITION),
-        metadata=child_metadata,
-    )
-
-
-def _versioned_terminal_plan(
-    repo_root: Path | str,
-    target: str,
-    queue: dict,
-    item: dict,
-    normalized_status: str,
-    incoming: dict,
-    merged: dict,
-) -> dict:
-    if merged.get("depth_contract_version") != DEPTH_CONTRACT_VERSION or normalized_status not in FINAL_STATUSES:
-        return {}
-
-    outcome = merged.get("last_outcome") if isinstance(merged.get("last_outcome"), dict) else {}
-    summary_ref = _target_owned_evidence_ref(repo_root, target, outcome.get("summary_ref"))
-    evidence_ref = _target_owned_evidence_ref(
-        repo_root, target, outcome.get("evidence_ref") or outcome.get("summary_ref")
-    )
-    if not summary_ref or not evidence_ref:
-        raise ValueError("Action Queue versioned resolve requires replayable last_outcome evidence")
-    observed = _validate_observed_difference(outcome.get("observed_difference"))
-    _bounded_metadata_text(outcome.get("operation_id"), "last_outcome.operation_id", limit=160)
-    _bounded_metadata_text(outcome.get("at"), "last_outcome.at", limit=80)
-    active_dimension = str(merged.get("active_dimension") or "").strip()
-    tested = {
-        str(value).strip() for value in merged.get("tested_dimensions", []) if str(value).strip()
-    }
-    if not active_dimension or active_dimension not in tested:
-        raise ValueError("Action Queue versioned resolve requires the active dimension in tested_dimensions")
-    outcome["summary_ref"] = summary_ref
-    outcome["evidence_ref"] = evidence_ref
-    outcome["observed_difference"] = observed
-    merged["last_outcome"] = outcome
-
-    kill = incoming.get("kill_condition_met") is True
-    continuation = incoming.get("continuation") if isinstance(incoming.get("continuation"), dict) else None
-    # A validation verdict is itself the terminal decision for the hypothesis:
-    # the validation owner resolved this action as validated/reported with its
-    # own evidence, so there is nothing left for the AI to declare. Requiring a
-    # continuation or kill here would block the validation write-back path.
-    verdict_terminal = normalized_status in {"validated", "reported"} and not kill and not continuation
-    if kill == bool(continuation) and not verdict_terminal:
-        raise ValueError("Action Queue versioned resolve requires exactly one continuation or supported kill")
-    if kill and str(outcome.get("observation_kind") or "").strip().lower() == "baseline_only":
-        raise ValueError("Action Queue baseline-only observation requires a continuation before kill")
-    merged["capability_primitives"] = _validate_capability_primitives(
-        repo_root, target, incoming.get("capability_primitives", merged.get("capability_primitives"))
-    )
-    if kill or verdict_terminal:
-        merged["kill_reason"] = _bounded_metadata_text(
-            incoming.get("kill_reason") or incoming.get("decision_reason") or (
-                f"hypothesis resolved by validation verdict {normalized_status}" if verdict_terminal else ""
-            ),
-            "kill_reason",
-        )
-        return {"decision": "kill"}
-
-    kind = str(continuation.get("kind") or "").strip().lower()
-    if kind not in CONTINUATION_KINDS:
-        raise ValueError("Action Queue continuation kind is invalid")
-    continuation = copy.deepcopy(continuation)
-    continuation["kind"] = kind
-    for field in ("dimension", "question", "expected_learning", "reason"):
-        _bounded_metadata_text(continuation.get(field), f"continuation.{field}")
-    merged["continuation"] = continuation
-    if kind == "rotation":
-        return {"decision": "rotation"}
-
-    cap = int(merged.get("max_hypothesis_actions", 0) or 0)
-    hypothesis_id = str(merged.get("hypothesis_id") or "")
-    action_count = sum(
-        isinstance(action, dict)
-        and str((action.get("metadata") or {}).get("hypothesis_id") or "") == hypothesis_id
-        for action in queue.get("actions", [])
-    )
-    if action_count >= cap:
-        raise ValueError("Action Queue hypothesis action budget is exhausted")
-    child = _versioned_continuation_action(item, merged, continuation)
-    return {"decision": "continuation", "child": child}
-
-
 def queue_path(repo_root: Path | str, target: str) -> Path:
     repo = Path(repo_root)
     resolved = canonical_target_value(target)
     return repo / "state" / target_storage_key(resolved) / "action_queue.json"
 
 
-def _primary_action_projection(store: TargetStore) -> dict:
+def _primary_action_projection(store: TargetStore, *, statuses: tuple[str, ...] | None = None, action_type: str | None = None) -> dict:
     """Expose Store actions in the legacy CLI shape without creating a file owner."""
+    page = store.action_page(statuses=statuses, action_type=action_type, limit=1000)
+    rows = list(page.get("items") or [])
+    while page.get("has_more"):
+        page = store.action_page(statuses=statuses, action_type=action_type, limit=1000, cursor=page.get("next_cursor"))
+        rows.extend(page.get("items") or [])
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "target": canonical_target_value(store.target),
+        "backend": "primary",
+        "store_id": page.get("store_id", ""),
+        "revision": page.get("revision", 0),
+        "actions": _project_actions(rows),
+    }
+
+
+def _project_actions(rows: list[dict]) -> list[dict]:
     status_map = {
         "ready": "queued",
         "claimed": "running",
@@ -747,11 +239,6 @@ def _primary_action_projection(store: TargetStore) -> dict:
         "completed": "tested",
         "cancelled": "n/a",
     }
-    page = store.page("actions", limit=1000)
-    rows = list(page.get("items") or [])
-    while page.get("has_more"):
-        page = store.page("actions", limit=1000, cursor=page.get("next_cursor"))
-        rows.extend(page.get("items") or [])
     actions = []
     for row in rows:
         metadata = {
@@ -760,6 +247,11 @@ def _primary_action_projection(store: TargetStore) -> dict:
         }
         stored_metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
         metadata.update(copy.deepcopy(stored_metadata))
+        # Older callers may use this open metadata key for unrelated values.
+        # Only descriptive strings project; the original metadata stays visible.
+        context = metadata.get("action_context")
+        context = {key: value for key, value in context.items()
+                   if key in ACTION_CONTEXT_FIELDS and isinstance(value, str)} if isinstance(context, dict) else {}
         for key in ("endpoint", "family", "subject_artifact_id", "subject_finding_id", "subject_experience_id"):
             if row.get(key) not in (None, ""):
                 metadata[key] = row[key]
@@ -776,19 +268,25 @@ def _primary_action_projection(store: TargetStore) -> dict:
             "created_at": row.get("created_at", ""),
             "updated_at": row.get("updated_at", ""),
             "source": "target_store",
+            "result": str(row.get("reason") or ""),
+            **context,
         })
+    return actions
+
+
+def load_queue_summary(repo_root: Path | str, target: str, *, limit: int = 5) -> dict:
+    """Bounded work view; full list/closure readers keep load_queue()."""
+    store = runtime_store(repo_root, target)
+    snapshot = store.action_summary(limit=limit)
     return {
-        "schema_version": SCHEMA_VERSION,
-        "target": canonical_target_value(store.target),
-        "backend": "primary",
-        "store_id": page.get("store_id", ""),
-        "revision": page.get("revision", 0),
-        "actions": actions,
+        "schema_version": SCHEMA_VERSION, "target": canonical_target_value(store.target),
+        "backend": "primary", "store_id": snapshot["store_id"], "revision": snapshot["revision"],
+        "actions": _project_actions(snapshot["items"]),
+        "total": snapshot["counts"]["total"], "pending_total": snapshot["counts"]["pending"],
+        "active_families": snapshot["active_families"],
+        **{key: _project_actions([snapshot[key]])[0] if snapshot[key] else {}
+           for key in ("next_action", "running_action")},
     }
-
-
-def _primary_store(repo_root: Path | str, target: str) -> TargetStore | None:
-    return TargetStore(repo_root, target) if target_backend(repo_root, target) == "primary" else None
 
 
 def _primary_action_id(target: str, action_id: str, built: dict) -> str:
@@ -821,8 +319,9 @@ def _primary_create_action(
     action_id: str = "",
     actor: str = "action-queue",
 ) -> dict:
-    store = TargetStore(repo_root, target)
-    metadata = built.get("metadata") if isinstance(built.get("metadata"), dict) else {}
+    store = runtime_store(repo_root, target)
+    metadata = copy.deepcopy(built.get("metadata") or {})
+    metadata["action_context"] = {key: built[key] for key in ACTION_CONTEXT_FIELDS}
     endpoint = str(metadata.get("endpoint") or metadata.get("url") or "").strip()
     family = str(metadata.get("family") or metadata.get("vuln_class") or "").strip()
     evidence_ref = _target_owned_nonempty_evidence_ref(repo_root, target, metadata.get("evidence_ref"))
@@ -857,19 +356,27 @@ def _primary_create_action(
             ensure_ascii=True, sort_keys=True, separators=(",", ":"),
         ).encode("utf-8")
     ).hexdigest()[:24]
-    receipt = store.create_action(
+    arguments = dict(
         command_id=command_id,
         action_id=store_action_id,
         intent=_primary_action_intent(built),
         execution_key=execution_key,
         actor=actor,
         endpoint=endpoint or None,
-        family=family or None,
+        family=family if kind == "execution" else None,
         kind=kind,
         subject=subject,
         priority=int(built.get("priority", 50) or 50),
-        metadata=metadata,
     )
+    try:
+        receipt = store.create_action(**arguments, metadata=metadata)
+    except ConflictError:
+        # Pre-context receipts bind the original metadata. Replay that exact
+        # payload, never backfill descriptions or weaken new command conflicts.
+        original_metadata = built.get("metadata") or {}
+        if "action_context" in original_metadata:
+            raise
+        receipt = store.create_action(**arguments, metadata=original_metadata)
     return {
         "backend": "primary",
         "receipt": receipt,
@@ -896,17 +403,20 @@ def _primary_claim(
     *,
     action_id: str,
     metadata: dict | None,
-    from_evidence: str,
     actor: str,
 ) -> dict:
-    if from_evidence:
-        raise StoreError("primary action claims do not infer identity from evidence; use explicit action metadata")
-    store = TargetStore(repo_root, target)
+    store = runtime_store(repo_root, target)
     current = store.action(action_id)
     status = str(current.get("status") or "")
     if status == "claimed":
         if current.get("claimed_by") != actor:
             raise StoreError(f"action {action_id} is claimed by another operator")
+        if metadata:
+            store.transition_action(
+                command_id=current["claim_token"], action_id=action_id,
+                expected_version=int(current["version"]) - 1,
+                status="claimed", actor=actor, metadata=metadata,
+            )
         return {**current, "claim_status": "resumed", "previous_status": "claimed"}
     if status != "ready":
         raise StoreError(f"action {action_id} is not ready for claim: {status}")
@@ -915,7 +425,8 @@ def _primary_claim(
         command_id=command_id, action_id=action_id, expected_version=int(current["version"]),
         status="claimed", actor=actor, metadata=metadata,
     )
-    return {**store.action(action_id), "receipt": receipt, "claim_status": "claimed", "previous_status": "ready"}
+    return {**store.action(action_id), "receipt": receipt,
+            "claim_status": "resumed" if receipt["replayed"] else "claimed", "previous_status": "ready"}
 
 
 def _primary_resolve(
@@ -929,7 +440,7 @@ def _primary_resolve(
     metadata: dict | None,
     actor: str,
 ) -> dict:
-    store = TargetStore(repo_root, target)
+    store = runtime_store(repo_root, target)
     current = store.action(action_id)
     requested = _normalize_status(status)
     mapped = {
@@ -943,26 +454,27 @@ def _primary_resolve(
         )
     if mapped == "claimed":
         raise StoreError("primary action re-claim is explicit: use claim, not resolve running")
-    if current.get("status") in {"completed", "cancelled"}:
-        same_terminal = (
-            current["status"] == mapped
-            and ((mapped == "completed" and requested in {"tested", "validated", "reported"})
-                 or (mapped == "cancelled" and requested in {"dead-end", "n/a"}))
-        )
-        if same_terminal:
-            return {**current, "replayed": True}
-        raise StoreError(f"action {action_id} is terminal and cannot resolve as {requested}")
-    claim_token = current.get("claim_token")
-    if current.get("status") == "claimed" and current.get("claimed_by") != actor:
-        raise StoreError(f"action {action_id} is claimed by another operator")
     completion = _primary_completion(result) if mapped == "completed" else None
-    command_id = "action:resolve:" + hashlib.sha256(
-        json.dumps(
-            {"action_id": action_id, "version": current.get("version"), "status": mapped,
-             "result": result, "notes": notes, "completion": completion},
-            ensure_ascii=True, sort_keys=True, separators=(",", ":"),
-        ).encode("utf-8")
-    ).hexdigest()[:24]
+    def command_id_for(version: int) -> str:
+        return "action:resolve:" + hashlib.sha256(
+            json.dumps(
+                {"action_id": action_id, "version": version, "status": mapped,
+                 "result": result, "notes": notes, "completion": completion,
+                 "metadata": metadata, "actor": actor},
+                ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()[:24]
+
+    if current["status"] == mapped:
+        receipt = store.command_receipt(command_id_for(int(current["version"]) - 1))
+        if receipt:
+            return {**current, "receipt": {**receipt, "replayed": True}, "replayed": True}
+    if current["status"] in {"completed", "cancelled"}:
+        raise StoreError(f"action {action_id} is terminal; only the original resolve command can be replayed")
+    claim_token = current.get("claim_token")
+    if current["status"] == "claimed" and current.get("claimed_by") != actor:
+        raise StoreError(f"action {action_id} is claimed by another operator")
+    command_id = command_id_for(int(current["version"]))
     receipt = store.transition_action(
         command_id=command_id, action_id=action_id, expected_version=int(current["version"]),
         status=mapped, actor=actor, reason=_compact_text(notes or result or "", 1000),
@@ -996,10 +508,12 @@ def _empty_queue(target: str) -> dict:
     }
 
 
-def load_queue(repo_root: Path | str, target: str) -> dict:
-    primary = _primary_store(repo_root, target)
-    if primary is not None:
-        return _primary_action_projection(primary)
+def load_queue(repo_root: Path | str, target: str, *, statuses: tuple[str, ...] | None = None, action_type: str | None = None) -> dict:
+    return _primary_action_projection(runtime_store(repo_root, target), statuses=statuses, action_type=action_type)
+
+
+def load_legacy_queue(repo_root: Path | str, target: str) -> dict:
+    """Read frozen queue material for explicit migration or historical inspection."""
     path = queue_path(repo_root, target)
     if not path.is_file():
         return _empty_queue(target)
@@ -1045,31 +559,17 @@ def _semantic_queue_value(value: Any) -> Any:
 
 def queue_fingerprint(queue: dict) -> str:
     """Return a stable generation for the semantic queue projection."""
+    # Store commands advance revision atomically. A window and the full queue
+    # describe the same generation; legacy material still uses its content hash.
+    generation = ({key: queue[key] for key in ("target", "store_id", "revision")}
+                  if queue.get("backend") == "primary" else _semantic_queue_value(queue))
     encoded = json.dumps(
-        _semantic_queue_value(queue),
+        generation,
         ensure_ascii=True,
         sort_keys=True,
         separators=(",", ":"),
     )
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-
-
-def save_queue(repo_root: Path | str, target: str, queue: dict) -> Path:
-    backend = target_backend(repo_root, target)
-    if backend != "legacy":
-        raise StoreError(f"legacy action_queue writer is disabled for {backend} target")
-    path = queue_path(repo_root, target)
-    queue["target"] = canonical_target_value(target)
-    if path.is_file():
-        existing = load_queue(repo_root, target)
-        if _semantic_queue_value(existing) == _semantic_queue_value(queue):
-            # 保留磁盘字节和调用方内存视图，避免无变化 sync 打 stale Surface。
-            queue.clear()
-            queue.update(existing)
-            return path
-    queue["updated_at"] = now_utc()
-    _write_json_atomic(path, queue)
-    return path
 
 
 def _write_json_atomic(path: Path, payload: dict) -> None:
@@ -1163,17 +663,6 @@ def _dedupe_key(action: dict) -> str:
     return re.sub(r"[^a-z0-9:/?&._=-]+", " ", raw).strip()
 
 
-def _coverage_family_projection(action: dict) -> str:
-    if str(action.get("type") or "") != "coverage-gap":
-        return ""
-    match = re.search(
-        r"\s+Family projection:.*$",
-        str(action.get("action") or ""),
-        flags=re.I,
-    )
-    return match.group(0) if match else ""
-
-
 def _normalise_identity_endpoint(value: str) -> str:
     raw = str(value or "").strip()
     if not raw:
@@ -1255,60 +744,6 @@ def _candidate_dedupe_key(action: dict) -> str:
     return f"candidate-evidence-gap {identities[0]}" if identities else ""
 
 
-def _coalesce_candidate_duplicates(queue: dict) -> int:
-    """Retire historical active candidate duplicates without deleting evidence."""
-    owners: dict[str, dict] = {}
-    retired = 0
-
-    def rank(item: dict) -> tuple[int, str]:
-        status = str(item.get("status") or "queued")
-        return ({"running": 0, "candidate": 1, "queued": 2}.get(status, 3), str(item.get("id") or ""))
-
-    def retire(item: dict, owner: dict) -> None:
-        nonlocal retired
-        metadata = item.setdefault("metadata", {})
-        if not isinstance(metadata, dict):
-            metadata = {}
-            item["metadata"] = metadata
-        metadata["dedupe_retired"] = True
-        metadata["dedupe_kept_action_id"] = str(owner.get("id") or "")
-        item["status"] = "n/a"
-        item["dedupe_key"] = f"candidate-evidence-gap-retired-{item.get('id') or retired}"
-        item["result"] = (
-            "Retired duplicate candidate projection; kept action "
-            f"{owner.get('id') or '-'} as the active finding lane."
-        )
-        item["updated_at"] = now_utc()
-        retired += 1
-
-    for item in queue.get("actions", []):
-        if not isinstance(item, dict):
-            continue
-        key = _candidate_dedupe_key(item)
-        if not key:
-            continue
-        owner = owners.get(key)
-        if owner is None:
-            owners[key] = item
-            continue
-        if owner is item:
-            continue
-        if rank(item) < rank(owner):
-            retire(owner, item)
-            owners[key] = item
-        else:
-            retire(item, owner)
-    return retired
-
-
-def _knowledge_signal_identity(action: dict) -> str:
-    """Return the stable identity used only by knowledge-signal reviews."""
-    if str(action.get("type") or "") != "knowledge-signal-review":
-        return ""
-    metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
-    return str(metadata.get("signal_identity") or "").strip()
-
-
 def _is_runner_only_validated(action: dict) -> bool:
     """Return whether a legacy row was closed by validation_runner only.
 
@@ -1327,69 +762,6 @@ def _is_final_action(action: dict) -> bool:
         return False
     status = str(action.get("status") or "")
     return status in FINAL_STATUSES and not _is_runner_only_validated(action)
-
-
-def _final_action_identities(queue: dict) -> set[str]:
-    identities: set[str] = set()
-    for action in queue.get("actions", []):
-        if not isinstance(action, dict):
-            continue
-        if not _is_final_action(action):
-            continue
-        identities.update(_action_identities(action))
-    return identities
-
-
-def _is_superseded_candidate(action: dict, final_identities: set[str]) -> bool:
-    if str(action.get("status") or "") != "candidate":
-        return False
-    if str(action.get("type") or "") != "candidate-evidence-gap":
-        return False
-    identities = _action_identities(action)
-    return bool(identities and identities & final_identities)
-
-
-def _next_id(actions: list[dict]) -> str:
-    highest = 0
-    for action in actions:
-        match = re.fullmatch(r"AQ-(\d+)", str(action.get("id") or ""))
-        if match:
-            highest = max(highest, int(match.group(1)))
-    return f"AQ-{highest + 1:04d}"
-
-
-def _legacy_action_id(action: dict, index: int) -> str:
-    """Stable in-memory identity for legacy rows that predate ``id``."""
-    material = "|".join(
-        str(value or "")
-        for value in (
-            _dedupe_key(action),
-            action.get("source_id"),
-            action.get("created_at"),
-            index,
-        )
-    )
-    return f"LEGACY-{hashlib.sha256(material.encode('utf-8')).hexdigest()[:12]}"
-
-
-def _ensure_active_action_ids(queue: dict) -> int:
-    """Attach stable IDs only to active legacy rows in the current projection."""
-    assigned = 0
-    for index, item in enumerate(queue.get("actions", [])):
-        if (
-            isinstance(item, dict)
-            and not str(item.get("id") or "").strip()
-            and str(item.get("status") or "queued") in ACTIVE_STATUSES
-        ):
-            item["id"] = _legacy_action_id(item, index)
-            item.setdefault("metadata", {})["legacy_identity"] = True
-            assigned += 1
-    return assigned
-
-
-def _action_identity(item: dict, index: int) -> str:
-    value = str(item.get("id") or "").strip()
-    return value or _legacy_action_id(item, index)
 
 
 def _status_rank(status: str) -> int:
@@ -1434,145 +806,6 @@ def _normalize_status(status: str) -> str:
     if value not in ALLOWED_STATUSES:
         raise ValueError(f"invalid status: {status!r}")
     return value
-
-
-def _sync_coverage_matrix_for_action(
-    repo_root: Path | str,
-    target: str,
-    action: dict,
-    normalized_status: str,
-) -> dict:
-    """把 coverage-gap 队列动作的最终状态回写到 coverage matrix。
-
-    action_queue 的状态比 coverage_matrix 更细。只有明确 tested/candidate/
-    validated/reported/n-a 才能改变矩阵事实；dead-end 和 blocked 只关闭当前
-    queue action，不能伪装成 tested_clean 或 not-applicable。精确 action 的
-    去重由持久 queue/closure gate 负责。
-    """
-    if str(action.get("type") or "") != "coverage-gap":
-        return {}
-    coverage_status = COVERAGE_STATUS_BY_ACTION_STATUS.get(normalized_status)
-    if not coverage_status:
-        return {
-            "status": "skipped",
-            "reason": f"action status {normalized_status!r} does not close a coverage cell",
-        }
-    metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
-    endpoint = str(
-        metadata.get("coverage_endpoint") or metadata.get("endpoint") or ""
-    ).strip()
-    vuln_class = str(metadata.get("vuln_class") or "").strip()
-    if not endpoint or not vuln_class:
-        return {
-            "status": "skipped",
-            "reason": "coverage-gap action is missing endpoint/vuln_class metadata",
-        }
-
-    try:
-        from tools.coverage_matrix import mark_cell
-    except ImportError:  # pragma: no cover - direct tools/ execution
-        from coverage_matrix import mark_cell  # type: ignore
-
-    reason_source = (
-        action.get("result")
-        or action.get("notes")
-        or action.get("evidence")
-        or action.get("action")
-        or ""
-    )
-    reason = _compact_text(f"{normalized_status}: {reason_source}", 500)
-    cell = mark_cell(
-        target,
-        endpoint,
-        vuln_class,
-        coverage_status,
-        reason=reason,
-        repo_root=repo_root,
-        write_finding=False,
-    )
-    return {
-        "status": "updated",
-        "endpoint": endpoint,
-        "vuln_class": vuln_class,
-        "coverage_status": coverage_status,
-        "cell": cell,
-    }
-
-
-def _unsafe_review_path(repo_root: Path | str, target: str) -> Path:
-    repo = Path(repo_root)
-    resolved = canonical_target_value(target)
-    return repo / "state" / target_storage_key(resolved) / "unsafe_skipped_reviews.json"
-
-
-@contextmanager
-def _unsafe_review_mutation_lock(repo_root: Path | str, target: str):
-    path = _unsafe_review_path(repo_root, target)
-    lock_path = path.parent / "locks" / "unsafe_review.lock"
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with target_switch_lock(repo_root, target):
-        with lock_path.open("a+", encoding="utf-8") as handle:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-
-
-def _sync_unsafe_skipped_review_for_action(
-    repo_root: Path | str,
-    target: str,
-    action: dict,
-    normalized_status: str,
-) -> dict:
-    """Persist resolution for action-gated scanner manual-review leads."""
-    backend = target_backend(repo_root, target)
-    if backend != "legacy":
-        raise StoreError(f"legacy unsafe-review writer is disabled for {backend} target")
-    if str(action.get("type") or "") not in {"action-gated-review", "unsafe-skipped-review"}:
-        return {}
-    if normalized_status not in UNSAFE_REVIEW_FINAL_STATUSES:
-        return {
-            "status": "skipped",
-            "reason": f"action status {normalized_status!r} does not resolve action-gated review",
-        }
-    metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
-    unsafe_id = str(metadata.get("unsafe_skipped_id") or "").strip()
-    artifact = str(metadata.get("artifact") or "").strip()
-    if not unsafe_id:
-        return {
-            "status": "skipped",
-            "reason": "action-gated review is missing unsafe_skipped_id metadata",
-        }
-
-    path = _unsafe_review_path(repo_root, target)
-    with _unsafe_review_mutation_lock(repo_root, target):
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
-        except (OSError, json.JSONDecodeError):
-            payload = {}
-        if not isinstance(payload, dict):
-            payload = {}
-        resolved = payload.setdefault("resolved", {})
-        if not isinstance(resolved, dict):
-            resolved = {}
-            payload["resolved"] = resolved
-        resolved[unsafe_id] = {
-            "status": normalized_status,
-            "artifact": artifact,
-            "result": _compact_text(action.get("result") or "", 1000),
-            "notes": _compact_text(action.get("notes") or "", 1000),
-            "resolved_at": now_utc(),
-        }
-        payload["schema_version"] = SCHEMA_VERSION
-        payload["target"] = canonical_target_value(target)
-        payload["updated_at"] = now_utc()
-        _write_json_atomic(path, payload)
-    return {
-        "status": "updated",
-        "unsafe_skipped_id": unsafe_id,
-        "path": str(path),
-    }
 
 
 def build_action(
@@ -1627,252 +860,6 @@ def build_action(
     return built
 
 
-def _checkpoint_item_to_action(target: str, item: dict) -> dict:
-    action_text = _compact_text(item.get("action", ""))
-    action_type = _compact_text(item.get("type", "next-action"), 80) or "next-action"
-    command_hint = _compact_text(item.get("command_hint", ""), 300)
-    next_question = (
-        "Execute this evidence-backed checkpoint action and classify the lane "
-        "instead of leaving it as a TODO."
-    )
-    built = build_action(
-        target=target,
-        action_type=action_type,
-        evidence=action_text,
-        next_question=next_question,
-        action=action_text,
-        priority=int(item.get("priority", 50) or 50),
-        command_hint=command_hint,
-        evidence_type="checkpoint-next-action",
-        source=str(item.get("source") or "checkpoint"),
-        source_id=str(item.get("source_id") or item.get("id") or ""),
-        redline_required=bool(item.get("redline_required", False)),
-        stop_condition=str(item.get("stop_condition") or DEFAULT_STOP_CONDITION),
-        metadata=item.get("metadata") if isinstance(item.get("metadata"), dict) else None,
-    )
-    status = str(item.get("status") or "").strip().lower()
-    if status in ALLOWED_STATUSES:
-        built["status"] = status
-    return built
-
-
-def upsert_actions(queue: dict, actions: list[dict]) -> dict:
-    retired_duplicates = _coalesce_candidate_duplicates(queue)
-    existing_by_key: dict[str, dict] = {}
-    for item in queue.get("actions", []):
-        if not isinstance(item, dict):
-            continue
-        key = _candidate_dedupe_key(item) or str(item.get("dedupe_key") or _dedupe_key(item))
-        existing_by_key[key] = item
-    stats = {"added": 0, "updated": retired_duplicates, "skipped_final": 0}
-
-    for action in actions:
-        key = _candidate_dedupe_key(action) or str(action.get("dedupe_key") or _dedupe_key(action))
-        if not key:
-            continue
-        existing = existing_by_key.get(key)
-        if existing:
-            if _is_final_action(existing):
-                stats["skipped_final"] += 1
-                continue
-            before = _semantic_action(existing)
-            if _is_runner_only_validated(existing):
-                existing["status"] = str(action.get("status") or "queued")
-                previous_result = str(existing.get("result") or "").strip()
-                existing["notes"] = _compact_text(
-                    (
-                        f"{existing.get('notes', '')} "
-                        "Reopened: validation_runner evidence is candidate-only; "
-                        "run /validate gates before treating this as validated. "
-                        f"Previous result: {previous_result}"
-                    ),
-                    1000,
-                )
-            if existing.get("source") == "checkpoint" and action.get("source") == "checkpoint":
-                # checkpoint 队列是当前状态投影；允许上游重新排序，避免旧优先级
-                # 把 enrichment lead 压在真正可执行 replay 前面。
-                existing["priority"] = int(action.get("priority", 50) or 50)
-            else:
-                existing["priority"] = max(int(existing.get("priority", 50) or 50), int(action.get("priority", 50) or 50))
-            existing["command_hint"] = existing.get("command_hint") or action.get("command_hint", "")
-            if existing.get("source") == "checkpoint" and action.get("source") == "checkpoint":
-                # checkpoint 是可重复生成的投影；当上游风险判定收窄时，允许清掉
-                # 旧队列里的误报 red-line 标记，避免“actor/role”类文案长期限制执行。
-                existing["redline_required"] = bool(action.get("redline_required"))
-                if (
-                    str(existing.get("status") or "") == "queued"
-                    and str(action.get("type") or "") == "coverage-gap"
-                    and _coverage_family_projection(existing) != _coverage_family_projection(action)
-                ):
-                    for field in ("action", "evidence", "next_question"):
-                        if field in action:
-                            existing[field] = action[field]
-                    existing_metadata = existing.setdefault("metadata", {})
-                    incoming_metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
-                    if isinstance(existing_metadata, dict):
-                        for field in ("family_key", "family_projection", "family_size", "family_members"):
-                            if field in incoming_metadata:
-                                existing_metadata[field] = copy.deepcopy(incoming_metadata[field])
-                            else:
-                                existing_metadata.pop(field, None)
-            else:
-                existing["redline_required"] = bool(existing.get("redline_required") or action.get("redline_required"))
-            if isinstance(action.get("metadata"), dict):
-                metadata = existing.setdefault("metadata", {})
-                if isinstance(metadata, dict):
-                    metadata.update({k: v for k, v in action["metadata"].items() if k not in metadata})
-            # Candidate projections may have matched by stable finding/endpoint
-            # identity even though their presentation-specific dedupe keys differ.
-            # Store the latest key so the next replay is key-idempotent too.
-            existing["dedupe_key"] = key
-            if _semantic_action(existing) != before:
-                existing["updated_at"] = now_utc()
-                stats["updated"] += 1
-            existing_by_key[key] = existing
-            continue
-
-        action["id"] = _next_id(queue.setdefault("actions", []))
-        action["dedupe_key"] = key
-        queue["actions"].append(action)
-        existing_by_key[key] = action
-        stats["added"] += 1
-
-    queue["actions"].sort(key=_action_sort_key)
-    if stats["added"] or stats["updated"]:
-        queue["updated_at"] = now_utc()
-    return stats
-
-
-def upsert_generated_action(queue: dict, action: dict) -> dict:
-    """同一生成源只保留一个 queued 动作；新一代证据可越过旧终态。"""
-    source = str(action.get("source") or "")
-    source_id = str(action.get("source_id") or "")
-    metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
-    generation = str(metadata.get("generation") or "")
-    signal_identity = _knowledge_signal_identity(action)
-    if not source or not source_id or not generation:
-        return upsert_actions(queue, [action])
-
-    matches = [
-        item
-        for item in queue.get("actions", [])
-        if isinstance(item, dict)
-        and str(item.get("source") or "") == source
-        and str(item.get("source_id") or "") == source_id
-    ]
-    for existing in matches:
-        existing_metadata = (
-            existing.get("metadata")
-            if isinstance(existing.get("metadata"), dict)
-            else {}
-        )
-        same_generation = str(existing_metadata.get("generation") or "") == generation
-        same_signal = bool(signal_identity) and (
-            _knowledge_signal_identity(existing) == signal_identity
-        )
-        if _is_final_action(existing) and (same_generation or same_signal):
-            return {"added": 0, "updated": 0, "skipped_final": 1}
-
-    queued = next(
-        (item for item in matches if str(item.get("status") or "") == "queued"),
-        None,
-    )
-    if queued is not None:
-        preserved = {
-            key: queued.get(key)
-            for key in ("id", "status", "attempts", "created_at", "result", "notes")
-        }
-        queued.clear()
-        queued.update(action)
-        queued.update(
-            {
-                key: value
-                for key, value in preserved.items()
-                if value not in (None, "")
-            }
-        )
-        queued["dedupe_key"] = _dedupe_key(queued)
-        queued["updated_at"] = now_utc()
-        queue["actions"].sort(key=_action_sort_key)
-        queue["updated_at"] = now_utc()
-        return {"added": 0, "updated": 1, "skipped_final": 0}
-
-    return upsert_actions(queue, [action])
-
-
-def _retire_stale_checkpoint_actions(queue: dict, fresh_actions: list[dict]) -> int:
-    """Retire unclaimed checkpoint TODOs that disappeared from the latest checkpoint.
-
-    只处理仍未分类的 checkpoint 源 action，避免旧噪声在 queue 里长期滞留。
-    candidate-evidence-gap/validated/manual 等人工推进过的条目不自动改状态。
-    例外：/validate 跑完但未过 gate 的 validation action 会被标为 candidate；
-    如果最新 checkpoint 已经转向其它候选，它不应继续用旧的“再跑 /validate”
-    文案劫持下一步。finding 自身仍保留 partial/candidate 状态，AI 可随时重开。
-    """
-    fresh_keys = {
-        str(action.get("dedupe_key") or _dedupe_key(action))
-        for action in fresh_actions
-        if isinstance(action, dict)
-    }
-    retired = 0
-    ts = now_utc()
-    for item in queue.get("actions", []):
-        if not isinstance(item, dict):
-            continue
-        if str(item.get("source") or "") != "checkpoint":
-            continue
-        status = str(item.get("status") or "queued")
-        action_type = str(item.get("type") or "")
-        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
-        # Only activated versioned work survives a checkpoint refresh.  Legacy
-        # running TODO retirement keeps its existing behavior.
-        if status == "running" and metadata.get("depth_contract_version") == DEPTH_CONTRACT_VERSION:
-            continue
-        stale_checkpoint_todo = status in {"queued", "running"}
-        stale_partial_validation = status == "candidate" and action_type == "validation"
-        if not (stale_checkpoint_todo or stale_partial_validation):
-            continue
-        key = str(item.get("dedupe_key") or _dedupe_key(item))
-        if key in fresh_keys:
-            continue
-        item["status"] = "n/a"
-        item["updated_at"] = ts
-        if not item.get("result"):
-            item["result"] = (
-                "Retired automatically after checkpoint refresh: the action is no longer "
-                "present in the current evidence-backed next_action_queue."
-            )
-        retired += 1
-    return retired
-
-
-def _retire_superseded_candidate_actions(queue: dict) -> int:
-    """Close candidate evidence gaps already superseded by final evidence.
-
-    Runner sync can validate a surface action whose earlier candidate follow-up
-    was also re-ingested under a different checkpoint projection. Keep the raw
-    history, but stop the stale candidate from steering /autopilot again.
-    """
-    final_identities = _final_action_identities(queue)
-    if not final_identities:
-        return 0
-    retired = 0
-    ts = now_utc()
-    for item in queue.get("actions", []):
-        if not isinstance(item, dict):
-            continue
-        if not _is_superseded_candidate(item, final_identities):
-            continue
-        item["status"] = "n/a"
-        item["updated_at"] = ts
-        item["result"] = (
-            "Retired automatically: this candidate evidence gap is superseded "
-            "by final validation evidence for the same finding or endpoint."
-        )
-        retired += 1
-    return retired
-
-
 def add_manual_action(
     repo_root: Path | str,
     *,
@@ -1919,90 +906,57 @@ def add_manual_action(
         stop_condition=stop_condition,
         metadata=action_metadata or None,
     )
-    primary = _primary_store(repo_root, target)
-    if primary is not None:
-        return _primary_create_action(repo_root, target, built, action_id=action_id, actor=actor)
-    with queue_mutation_lock(repo_root, target):
-        queue = load_queue(repo_root, target)
-        stats = (
-            upsert_generated_action(queue, built)
-            if generation
-            else upsert_actions(queue, [built])
-        )
-        path = save_queue(repo_root, target, queue)
-    return {"path": str(path), "stats": stats, "queue": queue}
+    return _primary_create_action(repo_root, target, built, action_id=action_id, actor=actor)
 
 
-def ingest_checkpoint(repo_root: Path | str, target: str, *, checkpoint: dict | None = None) -> dict:
-    """Ingest checkpoint next_action_queue into the durable queue.
-
-    The checkpoint dict must be supplied by the caller (CLI builds it via the
-    Checkpoint owner; ``checkpoint.sync_checkpoint_action_queue`` passes its own
-    built checkpoint). Queue no longer imports Checkpoint — the dependency is
-    one-way: checkpoint -> action_queue.
-    """
-    if checkpoint is None:
-        raise ValueError(
-            "ingest_checkpoint requires an explicit checkpoint dict; callers "
-            "own building it via tools/checkpoint.py (one-way dependency)"
-        )
-
-    actions = [
-        _checkpoint_item_to_action(target, item)
-        for item in checkpoint.get("next_action_queue", []) or []
-        if isinstance(item, dict)
-    ]
-    with queue_mutation_lock(repo_root, target):
-        queue = load_queue(repo_root, target)
-        current_runtime_wait = runtime_wait_action(repo_root, target)
-        runtime_wait_projection = current_runtime_wait in {"wait_recon", "wait_scan"} or str(
-            checkpoint.get("decision") or checkpoint.get("next_action") or ""
-        ) in {"wait_recon", "wait_scan"}
-        stats = {"added": 0, "updated": _coalesce_candidate_duplicates(queue), "skipped_final": 0}
-        for action in actions:
-            result = (
-                upsert_generated_action(queue, action)
-                if str((action.get("metadata") or {}).get("generation") or "")
-                else upsert_actions(queue, [action])
-            )
-            for key, value in result.items():
-                stats[key] = stats.get(key, 0) + int(value or 0)
-        if runtime_wait_projection:
-            # wait_* 是临时执行态，不代表旧 action 过时。
-            stats["retired_stale"] = 0
-            stats["retired_superseded"] = 0
-        else:
-            stats["retired_stale"] = _retire_stale_checkpoint_actions(queue, actions)
-            stats["retired_superseded"] = _retire_superseded_candidate_actions(queue)
-        queue["actions"].sort(key=_action_sort_key)
-        path = save_queue(repo_root, target, queue)
-    return {
-        "path": str(path),
-        "target": canonical_target_value(target),
-        "stats": stats,
-        "active": active_action_ids(queue),
-        "summary": summarize_queue(queue),
-    }
-
-
-def select_next_action(queue: dict) -> dict:
-    """Retired with the priority selector (2026-09-14 dumb-queue refactor).
-
-    Kept only as a compatibility shim for callers that have not migrated to
-    reading the active list directly: it returns the stable-order head of the
-    active actions — the same item the list shows first, with no value
-    judgment implied. New code should read the list / `active_action_ids()`
-    and apply its own selection criteria.
-    """
-    _ensure_active_action_ids(queue)
-    candidates = [
-        item for item in queue.get("actions", [])
-        if isinstance(item, dict) and str(item.get("status") or "queued") in ACTIVE_STATUSES
-    ]
-    if not candidates:
-        return {}
-    candidates.sort(key=_action_sort_key)
-    return candidates[0]
+def add_material_review(
+    repo_root: Path | str, *, target: str, source: str, source_id: str,
+    action_type: str, summary_path: Path | str, material: dict, safety: str = "read_only",
+) -> dict:
+    """Publish an immutable review snapshot, then register work without a verdict."""
+    root = Path(repo_root).resolve()
+    path = Path(summary_path)
+    path = (path if path.is_absolute() else root / path).resolve()
+    key = target_storage_key(canonical_target_value(target))
+    if not any(path.is_relative_to(root / kind / key) for kind in ("recon", "findings")):
+        raise StoreError("review summary must belong to this target's material directories")
+    if not path.is_file() or path.stat().st_size == 0:
+        raise StoreError("review summary must be a published nonempty file")
+    payload = {"source_summary": path.relative_to(root).as_posix(), "material": material}
+    encoded = (json.dumps(payload, sort_keys=True, ensure_ascii=False, allow_nan=False) + "\n").encode()
+    generation = hashlib.sha256(encoded).hexdigest()
+    snapshot = path.with_name(f"{path.stem}.review-{generation}.json")
+    with target_switch_lock(root, target):
+        runtime_store(root, target)
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile("wb", dir=path.parent, delete=False) as handle:
+                temporary = Path(handle.name)
+                handle.write(encoded)
+                handle.flush()
+                os.fsync(handle.fileno())
+            try:
+                os.link(temporary, snapshot)
+            except FileExistsError:
+                if snapshot.is_symlink() or not snapshot.is_file() or snapshot.read_bytes() != encoded:
+                    raise StoreError("existing review snapshot differs from its recorded material")
+            directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        finally:
+            if temporary is not None:
+                temporary.unlink()
+        ref = snapshot.relative_to(root).as_posix()
+    return add_manual_action(
+        root, target=target, action_type=action_type, source=source, source_id=source_id,
+        generation=generation, evidence=f"Recorded material: {ref}",
+        next_question="What does the recorded material establish?",
+        action=f"Review the recorded {source} material before deciding further work.",
+        evidence_type="material-review", safety=safety,
+        metadata={"summary_path": ref, "source_summary_path": payload["source_summary"], "evidence_ref": ref},
+    )
 
 
 def active_action_ids(queue: dict, *, limit: int = 20) -> list[str]:
@@ -2020,77 +974,12 @@ def active_action_ids(queue: dict, *, limit: int = 20) -> list[str]:
     return [str(item.get("id") or "") for item in candidates[:limit] if str(item.get("id") or "")]
 
 
-# B5 (ai-capability-roadmap batch 7): claim --from-evidence derives only the
-# mechanical fields of the activation metadata from a target-owned evidence
-# file. Field mapping:
-#
-#   endpoint     <- probe request url
-#   method       <- probe request method (uppercased)
-#   evidence_ref <- the evidence file path itself (repo-relative)
-#   baseline_ref <- the same path when the evidence is a probe JSON (a probe
-#                  records the raw request/response pair, so it is its own
-#                  baseline); for a non-probe evidence file baseline_ref is
-#                  NOT guessed — the AI must name it
-#
-# Everything else in ACTIVATION_REQUIRED_CLAIM_FIELDS stays AI-supplied. This
-# is format-tax reduction, not gate reduction: the 16-field depth contract,
-# execution repeat fingerprint, capability primitives validation, and the
-# anti-forgery checks all run unchanged on the merged metadata.
-FROM_EVIDENCE_DERIVED_FIELDS = ("endpoint", "method", "evidence_ref", "baseline_ref")
-
-
-def _derive_activation_from_evidence(
-    repo_root: Path | str,
-    target: str,
-    evidence_ref: str,
-) -> dict:
-    """Derive mechanical activation fields from a target-owned evidence ref.
-
-    Accepts a probe JSON (``tools/probe.py`` batch-B1 on-disk shape) or any
-    target-owned JSON evidence file. Returns a partial metadata dict with only
-    the fields that are mechanically derivable; AI-supplied values always win
-    because the caller merges ``{**derived, **metadata}``.
-    """
-    resolved_ref = _target_owned_evidence_ref(repo_root, target, evidence_ref)
-    if not resolved_ref:
-        raise ValueError(
-            "Action Queue --from-evidence requires a target-owned, non-empty "
-            f"evidence file: {evidence_ref}"
-        )
-    derived: dict[str, str] = {"evidence_ref": resolved_ref}
-    path = Path(repo_root) / resolved_ref
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8", errors="replace"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError(
-            f"Action Queue --from-evidence cannot read evidence JSON {resolved_ref}: {exc}"
-        ) from exc
-    if not isinstance(payload, dict):
-        raise ValueError(
-            "Action Queue --from-evidence requires a JSON object: " f"{resolved_ref}"
-        )
-    is_probe = str(payload.get("kind") or "") == "probe"
-    if is_probe:
-        request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
-        url = str(request.get("url") or "").strip()
-        method = str(request.get("method") or "").strip().upper()
-        if url:
-            derived["endpoint"] = url
-        if method:
-            derived["method"] = method
-        # A probe file holds the complete request and response: it is its own
-        # baseline for a same-endpoint replay.
-        derived["baseline_ref"] = resolved_ref
-    return derived
-
-
 def claim_next_action(
     repo_root: Path | str,
     target: str,
     *,
     action_id: str = "",
     metadata: dict | None = None,
-    from_evidence: str = "",
     actor: str = "action-queue",
 ) -> dict:
     """Claim one explicitly named action (dumb queue interface).
@@ -2101,12 +990,6 @@ def claim_next_action(
     came from silently merging a new hypothesis into whatever the selector
     picked).
 
-    ``from_evidence`` (B5) pre-fills the mechanical activation fields
-    (endpoint/method/evidence_ref/baseline_ref) from a target-owned probe or
-    evidence JSON; explicitly supplied ``metadata`` values override the
-    derivation. Judgment fields (hypothesis_id, expected_learning,
-    kill_condition, decision_reason, skill_route, ...) are AI-written and
-    pass through unvalidated beyond the mechanical write-time invariants.
     """
     if not action_id:
         raise ValueError(
@@ -2114,66 +997,10 @@ def claim_next_action(
             "the queue does not select work for you"
         )
     metadata = _validate_action_metadata(metadata)
-    if from_evidence:
-        derived = _derive_activation_from_evidence(repo_root, target, from_evidence)
-        # Explicit AI-supplied metadata wins over every derived value.
-        metadata = {**derived, **(metadata or {})}
-        metadata = _validate_action_metadata(metadata)
-    if _primary_store(repo_root, target) is not None:
-        return _primary_claim(
-            repo_root, target, action_id=action_id, metadata=metadata,
-            from_evidence=from_evidence, actor=actor,
-        )
-    with queue_mutation_lock(repo_root, target):
-        queue = load_queue(repo_root, target)
-        selected = next(
-            (
-                item for index, item in enumerate(queue.get("actions", []))
-                if isinstance(item, dict)
-                and _action_identity(item, index) == action_id
-                and str(item.get("status") or "queued") in ACTIVE_STATUSES
-            ),
-            None,
-        )
-        if selected is None:
-            raise KeyError(f"active action not found: {action_id}")
-        if not str(selected.get("id") or "").strip():
-            selected["id"] = action_id
-            selected.setdefault("metadata", {})["legacy_identity"] = True
-
-        previous = str(selected.get("status") or "queued")
-        claim_status = "resumed" if previous == "running" else "selected"
-        prepared_metadata = _validate_write_time_invariants(
-            repo_root, target, queue, selected, metadata
-        )
-        metadata_changed = prepared_metadata != (
-            selected.get("metadata") if isinstance(selected.get("metadata"), dict) else {}
-        )
-        if prepared_metadata:
-            selected["metadata"] = prepared_metadata
-        existing_metadata = selected.get("metadata") if isinstance(selected.get("metadata"), dict) else {}
-        # A versioned runner may leave a candidate after an observation that
-        # needs another bounded replay.  Special candidate actions (Spray,
-        # OAST, and other evidence-only projections) are not Runner claims and
-        # must remain candidate until their own owner resolves them.
-        candidate_requires_runner_claim = (
-            previous == "candidate"
-            and existing_metadata.get("depth_contract_version") == DEPTH_CONTRACT_VERSION
-        )
-        if previous == "queued" or candidate_requires_runner_claim:
-            selected["status"] = "running"
-            selected["attempts"] = int(selected.get("attempts", 0) or 0) + 1
-            selected["updated_at"] = now_utc()
-            save_queue(repo_root, target, queue)
-            claim_status = "claimed" if previous == "queued" else "reclaimed"
-        elif metadata_changed:
-            selected["updated_at"] = now_utc()
-            save_queue(repo_root, target, queue)
-        return {
-            **copy.deepcopy(selected),
-            "claim_status": claim_status,
-            "previous_status": previous,
-        }
+    return _primary_claim(
+        repo_root, target, action_id=action_id, metadata=metadata,
+        actor=actor,
+    )
 
 
 def resolve_action(
@@ -2188,152 +1015,10 @@ def resolve_action(
     actor: str = "action-queue",
 ) -> dict:
     metadata = _validate_action_metadata(metadata)
-    if _primary_store(repo_root, target) is not None:
-        return _primary_resolve(
-            repo_root, target, action_id=action_id, status=status,
-            result=result, notes=notes, metadata=metadata, actor=actor,
-        )
-    with queue_mutation_lock(repo_root, target):
-        queue = load_queue(repo_root, target)
-        response = _resolve_action_in_queue(
-            repo_root,
-            target=target,
-            queue=queue,
-            action_id=action_id,
-            status=status,
-            result=result,
-            notes=notes,
-            metadata=metadata,
-        )
-        path = save_queue(repo_root, target, queue)
-        response["path"] = str(path)
-        return response
-
-
-def _resolve_action_in_queue(
-    repo_root: Path | str,
-    *,
-    target: str,
-    queue: dict,
-    action_id: str,
-    status: str,
-    result: str = "",
-    notes: str = "",
-    metadata: dict | None = None,
-    runner_observation: bool = False,
-) -> dict:
-    """在调用方已持有 queue lock 时修改一个 action。"""
-    normalized = _normalize_status(status)
-    metadata = _validate_action_metadata(metadata)
-    for index, item in enumerate(queue.get("actions", [])):
-        if not isinstance(item, dict):
-            continue
-        if _action_identity(item, index) != action_id:
-            continue
-        previous = str(item.get("status") or "queued")
-        existing_metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
-        # Runner-owned observation fields are anti-forgery for every caller:
-        # only the runner's locked internal path (runner_observation=True)
-        # writes them. The AI supplies its continuation/judgment fields; any
-        # stale-read runner fields it does not supply are preserved by
-        # _apply_update instead of being wiped.
-        runner_fields = RUNNER_OBSERVATION_FIELDS.intersection(metadata)
-        if runner_fields and not runner_observation:
-            raise ValueError(
-                "Action Queue resolve cannot supply Runner-owned observation fields: "
-                + ", ".join(sorted(runner_fields))
-            )
-        merged_metadata = _apply_update(item.get("metadata"), metadata)
-        if (
-            merged_metadata.get("depth_contract_version") == DEPTH_CONTRACT_VERSION
-            and normalized in FINAL_STATUSES
-            and previous != "running"
-        ):
-            raise ValueError("Action Queue versioned resolve requires a running claimed action")
-        terminal_plan = _versioned_terminal_plan(
-            repo_root,
-            target,
-            queue,
-            item,
-            normalized,
-            metadata,
-            merged_metadata,
-        )
-        # A claimed/running action represents real execution; closing it as
-        # tested must point at target-owned evidence. Versioned runners already
-        # store that evidence in last_outcome, so a free-form resolve note can
-        # close the action after the continuation/kill contract is checked.
-        requires_tested_evidence = (
-            normalized == "tested"
-            and previous == "running"
-            and str(item.get("source") or "") != "manual"
-        )
-        if normalized in TERMINAL_EVIDENCE_STATUSES or requires_tested_evidence:
-            evidence_ref = _locatable_evidence_ref(repo_root, result)
-            if not evidence_ref and requires_tested_evidence:
-                outcome = merged_metadata.get("last_outcome")
-                if isinstance(outcome, dict):
-                    evidence_ref = _target_owned_evidence_ref(
-                        repo_root,
-                        target,
-                        outcome.get("evidence_ref") or outcome.get("summary_ref"),
-                    )
-            if not evidence_ref:
-                raise ValueError(
-                    f"action status {normalized!r} requires a locatable evidence reference in result"
-                )
-        item["status"] = normalized
-        item["updated_at"] = now_utc()
-        item["result"] = _compact_text(result or item.get("result", ""), 1000)
-        item["notes"] = _compact_text(notes or item.get("notes", ""), 1000)
-        if merged_metadata != item.get("metadata"):
-            # Terminal plans can derive owner-side metadata (kill_reason,
-            # hypothesis_status) even when the caller passes no incoming
-            # metadata, so persist whenever the merge changed anything.
-            item["metadata"] = merged_metadata
-        if previous != "running" and normalized in {"running", "tested", "dead-end", "blocked", "lead", "signal", "candidate", "validated"}:
-            item["attempts"] = int(item.get("attempts", 0) or 0) + 1
-        if terminal_plan:
-            child = terminal_plan.get("child")
-            pivot_stats = upsert_actions(queue, [child]) if isinstance(child, dict) else {
-                "added": 0, "updated": 0, "skipped_final": 0,
-            }
-            item.setdefault("metadata", {})["hypothesis_status"] = {
-                "kill": "closed",
-                "rotation": "rotated",
-                "continuation": "open",
-            }[terminal_plan["decision"]]
-        else:
-            pivot_actions = _hypothesis_pivot_actions(
-                item,
-                status=normalized,
-                result=item.get("result", ""),
-            )
-            pivot_stats = upsert_actions(queue, pivot_actions) if pivot_actions else {
-                "added": 0, "updated": 0, "skipped_final": 0,
-            }
-            if pivot_actions:
-                item.setdefault("metadata", {})["hypothesis_status"] = "open"
-            elif isinstance(item.get("metadata"), dict) and item["metadata"].get("kill_condition_met") is True:
-                item["metadata"]["hypothesis_status"] = "closed"
-        coverage_update = _sync_coverage_matrix_for_action(repo_root, target, item, normalized)
-        unsafe_review_update = _sync_unsafe_skipped_review_for_action(repo_root, target, item, normalized)
-        queue["actions"].sort(key=_action_sort_key)
-        response = {
-            "id": action_id,
-            "previous_status": previous,
-            "status": normalized,
-            "active": active_action_ids(queue),
-            "summary": summarize_queue(queue),
-        }
-        if coverage_update:
-            response["coverage_update"] = coverage_update
-        if unsafe_review_update:
-            response["unsafe_review_update"] = unsafe_review_update
-        if pivot_stats["added"]:
-            response["hypothesis_continuation"] = pivot_stats
-        return response
-    raise KeyError(f"action not found: {action_id}")
+    return _primary_resolve(
+        repo_root, target, action_id=action_id, status=status,
+        result=result, notes=notes, metadata=metadata, actor=actor,
+    )
 
 
 def summarize_queue(
@@ -2422,10 +1107,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repo-root", default=str(BASE_DIR), help="Repository root.")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    ingest = sub.add_parser("ingest-checkpoint", help="Ingest checkpoint next_action_queue into persistent action queue.")
-    ingest.add_argument("--target", required=True)
-    ingest.add_argument("--json", action="store_true")
-
     add = sub.add_parser("add", help="Add one manual/evidence-backed action.")
     add.add_argument("--target", required=True)
     add.add_argument("--type", default="next-action")
@@ -2467,16 +1148,6 @@ def build_parser() -> argparse.ArgumentParser:
             "dedup, sensitive-value rejection)."
         ),
     )
-    claim.add_argument(
-        "--from-evidence",
-        default="",
-        help=(
-            "Target-owned probe/evidence JSON path; derives the mechanical "
-            "fields (endpoint, method, evidence_ref, baseline_ref). "
-            "Explicit --metadata-json values override derived values; "
-            "judgment fields are never derived."
-        ),
-    )
     claim.add_argument("--actor", default="action-queue", help="Command actor for primary-store actions.")
     claim.add_argument("--json", action="store_true")
 
@@ -2516,17 +1187,6 @@ def main(argv: list[str] | None = None) -> int:
     repo = Path(args.repo_root)
 
     try:
-        if args.command == "ingest-checkpoint":
-            try:
-                from tools.checkpoint import build_checkpoint
-            except ImportError:  # pragma: no cover - direct tools/ execution
-                from checkpoint import build_checkpoint  # type: ignore
-            result = ingest_checkpoint(
-                repo, args.target, checkpoint=build_checkpoint(repo, args.target)
-            )
-            _print(result, as_json=args.json)
-            return 0
-
         if args.command == "add":
             metadata = _parse_metadata_json(args.metadata_json)
             result = add_manual_action(
@@ -2561,7 +1221,6 @@ def main(argv: list[str] | None = None) -> int:
                 args.target,
                 action_id=args.id,
                 metadata=metadata,
-                from_evidence=str(args.from_evidence or ""),
                 actor=args.actor,
             )
             _print(action if args.json else format_action(action), as_json=args.json)

@@ -2,10 +2,8 @@
 """One read seam for the target's current evidence truth.
 
 Consumers that ask "what does this target's evidence currently close" read this
-module instead of choosing a source themselves.  The two sources are exclusive:
-the per-target store while it holds the ``primary`` role, otherwise the legacy
-evidence ledger.  They are never unioned — retired facts and current facts must
-not both author one closure cell.
+module instead of choosing a source themselves. Normal queries require an active
+Store; legacy ledger inspection and import have explicit historical readers.
 
 The damage rule (unreadable evidence authorizes nothing) is applied here for
 every source, using the one definition in ``closure_projection``: ``closed_cells``
@@ -24,15 +22,13 @@ try:
         build_current_cell_projection,
         suppress_unauthorized_closures,
     )
-    from tools.evidence_ledger import ledger_path, load_entries_diagnostic
-    from tools.target_store import StoreError, TargetStore, target_backend
+    from tools.target_store import TargetStore, runtime_store
 except ImportError:  # pragma: no cover - direct tools/ execution
     from closure_projection import (  # type: ignore
         build_current_cell_projection,
         suppress_unauthorized_closures,
     )
-    from evidence_ledger import ledger_path, load_entries_diagnostic  # type: ignore
-    from target_store import StoreError, TargetStore, target_backend  # type: ignore
+    from target_store import TargetStore, runtime_store  # type: ignore
 
 
 DAMAGED_STATUSES = frozenset({"partial", "unreadable"})
@@ -66,28 +62,10 @@ def _path_label(repo_root: Path, path: Path) -> str:
 
 
 def _store_truth(store: TargetStore) -> dict:
-    reading = store.closure_records()
+    reading = store.closure_records(verify=True)
     records = list(reading.get("records") or [])
     truncated = bool(reading.get("truncated"))
-    invalid_operations = []
-    if not truncated:
-        verify_operation = getattr(store, "verify_operation", None)
-        operation_ids = {
-            str(event_id).rsplit(":", 1)[0]
-            for event_id in (row.get("event_id") for row in records if isinstance(row, dict))
-            if ":" in str(event_id or "")
-        }
-        for operation_id in sorted(operation_ids):
-            try:
-                if verify_operation is not None:
-                    verify_operation(operation_id)
-            except (OSError, ValueError, StoreError) as exc:
-                # The rows remain historical facts, but damaged raw material
-                # cannot authorize a current closure.
-                invalid_operations.append({
-                    "operation_id": operation_id,
-                    "reason": " ".join(str(exc).split())[:240],
-                })
+    invalid_operations = reading["invalid_operations"]
     status = "partial" if truncated or invalid_operations else "ready"
     projection = build_current_cell_projection(records)
     if status == "partial":
@@ -118,48 +96,6 @@ def _store_truth(store: TargetStore) -> dict:
     }
 
 
-def _ledger_truth(store: TargetStore, *, store_claim: str = "") -> dict:
-    diagnostic = load_entries_diagnostic(store.root, store.target)
-    records = list(diagnostic.get("entries") or [])
-    status = str(diagnostic.get("status") or "missing").strip().lower()
-    projection = build_current_cell_projection(records)
-    if status in DAMAGED_STATUSES:
-        projection = suppress_unauthorized_closures(projection, reason=f"ledger_{status}")
-    return {
-        "source": {
-            "kind": "ledger",
-            "status": status,
-            "path_label": _path_label(store.root, ledger_path(store.root, store.target)),
-            "store_id": "",
-            "revision": 0,
-            "truncated": False,
-            "store_claim": store_claim,
-        },
-        "health": {**ledger_health_projection(diagnostic), "source_kind": "ledger"},
-        "records": records,
-        "projection": projection,
-    }
-
-
 def current_cell_projection(repo_root: str | Path, target: str) -> dict:
-    """Return the target's one closure result and the source that authored it.
-
-    ``records`` are the canonical rows the projection was built from, so callers
-    that also need the raw facts (recent outcomes, terminals) read the same
-    rows the closure verdict read.  ``health`` carries the source's damage
-    status plus ``source_kind``; the reason vocabulary is unchanged, so a
-    damaged ledger still reports ``ledger_partial``.
-
-    A store that exists but cannot be read (missing role, foreign schema,
-    loose permissions, unreadable file) raises instead of falling back to the
-    ledger: answering from a source the target left would be a silent lie, and
-    a ``preview`` store is reported at the same time — it is a migration
-    artifact beside live legacy data, so it never answers a read.
-    """
-    store = TargetStore(repo_root, target)
-    role = target_backend(repo_root, target)
-    if role == "legacy":
-        return _ledger_truth(store)
-    if role == "primary":
-        return _store_truth(store)
-    return _ledger_truth(store, store_claim=role)
+    """Read one Store snapshot and suppress closures backed by damaged evidence."""
+    return _store_truth(runtime_store(repo_root, target))

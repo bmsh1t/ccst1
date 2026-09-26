@@ -160,11 +160,12 @@ from target-observed request shapes; one passive observation is not API completi
 results record the next evidence-linked dimension/question in Queue; partial cursors or
 unused dimensions remain resumable, not tested-clean.
 
-For a `primary` target backend, this CLI is a compatibility adapter over
+This CLI is a compatibility adapter over
 `TargetStore.actions`: claim uses the Store version/CAS contract and resolve
 completion must include `operation_id=`, `artifact=`, or `command_id=` proof.
-Legacy Queue metadata and `--from-evidence` are not written to the primary
-store, and no `action_queue.json` is created.
+Descriptive metadata and target-owned evidence references are supplied explicitly.
+`--from-evidence` is retired; no `action_queue.json` is created. Repeating a claim
+resumes the same permit, and a terminal resolve replays only the original command content.
 
 Deep lanes keep normal caps unless `--deep`; parameter discovery, candidate extraction, and
 zero-day fuzzing may project a larger bounded budget from URL/parameter breadth, response
@@ -194,8 +195,8 @@ sections (observed purpose, actors' roles, crown jewels, trust boundaries, sensi
 workflows) from current evidence. When new recon facts arrive, edit the same note; do not
 regenerate or overwrite it. Existing notes are the source of truth for the target's
 business context. Promote Lead -> Signal -> Candidate -> Validated Finding only with practical, replayable raw
-request/response or a locatable evidence ref. Canonical finding writes go through
-`finding_index` and `/validate`; partial/blocked is unresolved, not tested-clean, and
+request/response or a locatable evidence ref. Canonical claims go through `TargetStore.create_finding`; `/validate` records separate
+technical and destination judgments and registers eligible report artifacts; partial/blocked is unresolved, not tested-clean, and
 placeholder reports are not report-ready. Apply the four-layer routing in `skills/runtime-protocol.md`;
 memory/cards are decision inputs, never first-contact
 controllers or closure evidence.
@@ -260,7 +261,7 @@ browser/source/intel, or untouched high-value work means `handoff/partial`, neve
 `finish/complete/exhausted`. Missing owner/peer actor/session context ->
 `closure.actor_context_gap`, a non-blocking lane-local coverage gap; it does not stop
 anonymous/unrelated lanes or permit affected access-control cells to be `tested_clean`.
-Checkpoint unresolved work in existing Action Queue, not passive TODOs. Passing
+Explicitly register unresolved work in the Store Action Queue before taking a read-only Checkpoint. Passing
 `check_autopilot_run.py` proves state-chain integrity, not target exhaustion.
 In the final handoff/finish response, use the classification criteria (not the write
 commands) in `knowledge/promotion-rules.md` and `rules/retrospective.md` to emit exactly

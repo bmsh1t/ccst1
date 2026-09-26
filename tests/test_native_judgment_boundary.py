@@ -30,7 +30,10 @@ def test_source_routes_keep_unfamiliar_inputs_and_real_method_provenance(tmp_pat
     assert "tags" not in observations["routes"][0]
 
 
-def test_browser_novel_evidence_does_not_need_value_keywords(tmp_path):
+@pytest.mark.parametrize("enqueue", [False, True])
+def test_browser_novel_evidence_does_not_need_value_keywords(tmp_path, enqueue):
+    store = TargetStore(tmp_path, "target.test")
+    store.initialize()
     url = "https://target.test/opaque"
     har = tmp_path / "capture.har"
     har.write_text(json.dumps({"log": {"entries": [{
@@ -45,13 +48,22 @@ def test_browser_novel_evidence_does_not_need_value_keywords(tmp_path):
         {"url": "https://external.test/opaque", "har": str(har)},
     ]}), encoding="utf-8")
     args = dict(target="target.test", manifest_path=manifest, repo_root=tmp_path,
-                evidence_root=tmp_path / "evidence", recon_root=tmp_path / "recon", enqueue=False)
+                evidence_root=tmp_path / "evidence", recon_root=tmp_path / "recon", enqueue=enqueue)
     first = browser_mcp_import.import_focused_mcp_manifest(**args)
     second = browser_mcp_import.import_focused_mcp_manifest(**args)
     assert first["counts"]["actionable"] == 1
     assert "high_value" not in first["captures"][0]
     assert first["skipped"][0]["reason"] == "off_target"
     assert second["counts"]["actionable"] == 0
+    assert store.page("actions")["total"] == int(enqueue)
+    if enqueue:
+        action = store.action(first["queue"]["action_id"])
+        assert action["kind"] == "work" and action["status"] == "ready"
+        assert (tmp_path / action["metadata"]["evidence_ref"]).is_file()
+        assert first["queue"]["receipt"]["entity_id"] == action["id"]
+    else:
+        assert "queue" not in first
+    assert not (tmp_path / "state" / store.key / "action_queue.json").exists()
 
 
 def test_legacy_source_routes_survive_malformed_rows_without_restoring_predictions(tmp_path):
@@ -88,6 +100,7 @@ def test_finding_rank_ignores_legacy_rubric_and_prose_keywords():
 
 
 def test_surface_words_do_not_choose_a_class_or_hide_routes(tmp_path):
+    TargetStore(tmp_path, "target.test").initialize()
     urls = ["https://target.test/plain", "https://target.test/admin/payment", "https://target.test/blog/page"]
     recon = tmp_path / "recon" / "target.test"
     (recon / "live").mkdir(parents=True)
@@ -97,7 +110,8 @@ def test_surface_words_do_not_choose_a_class_or_hide_routes(tmp_path):
     ranked = surface.rank_surface(surface.load_surface_context(str(tmp_path), "target.test", memory_dir=str(tmp_path / "memory")))
     rows = {row["url"]: row for row in ranked["review_pool"]}
     assert set(rows) == set(urls)
-    assert len({row["score"] for row in rows.values()}) == 1
+    assert list(rows) == sorted(urls)
+    assert all("score" not in row and "score_breakdown" not in row for row in rows.values())
     assert all("vuln_class" not in row and not row["suggested"] for row in rows.values())
 
 
@@ -195,7 +209,7 @@ def test_primary_surface_rejects_mutation_after_context_before_publication(tmp_p
         return context
 
     monkeypatch.setattr(surface, "load_surface_context", mutate_after_context)
-    with pytest.raises(surface.SurfaceIndexError, match="inputs changed"):
+    with pytest.raises(surface.SurfaceIndexError, match="stale input-manifest-mismatch"):
         surface.build_surface_review(tmp_path, target, memory_dir=tmp_path / "memory")
 
     assert Path(projection_path).read_bytes() == published
@@ -213,6 +227,7 @@ def test_surface_review_excludes_cutover_after_initial_backend_read(tmp_path, mo
 
     from tools.surface_projection import load_surface_projection
     from tools.target_migration import import_target_staged, promote_target, publish_preview
+    from tools.target_store import StoreError
 
     target = "surface-cutover.test"
     source = tmp_path / "source"
@@ -228,7 +243,8 @@ def test_surface_review_excludes_cutover_after_initial_backend_read(tmp_path, mo
     lock_path = repo / "state" / target / "locks" / "target-switch.lock"
     lock_path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
     attempted = Queue()
-    original = surface.target_backend
+    from tools import target_store as target_store_module
+    original = target_store_module.target_backend
     cutover = None
 
     def switch_backend():
@@ -256,12 +272,13 @@ def test_surface_review_excludes_cutover_after_initial_backend_read(tmp_path, mo
                 assert attempted.get(timeout=5) == "blocked"
             return backend
 
-        monkeypatch.setattr(surface, "target_backend", read_backend_then_attempt_cutover)
-        review = surface.build_surface_review(repo, target, memory_dir=tmp_path / "memory")
+        monkeypatch.setattr(target_store_module, "target_backend", read_backend_then_attempt_cutover)
+        with pytest.raises(StoreError, match="runtime store is not active"):
+            surface.build_surface_review(repo, target, memory_dir=tmp_path / "memory")
         cutover.result(timeout=5)
 
-    published = json.loads(Path(review["surface_projection"]["path"]).read_text())
-    assert "store_id" not in published["input_manifest"]["binding"]
+    assert not (repo / "state" / target / "surface-projection.json").exists()
+    assert not (repo / "recon" / target / "surface" / "index.jsonl").exists()
     assert store.finding("F-1")["id"] == "F-1"
     assert load_surface_projection(repo, target, memory_dir=tmp_path / "memory")["status"] != "valid"
     refreshed = surface.build_surface_review(repo, target, memory_dir=tmp_path / "memory")

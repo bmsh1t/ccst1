@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""自动生成 Claude CLI 目标 checkpoint 和目标记忆写回建议。
+"""从活动 Store 读取目标 checkpoint，不生成行动或写回目标记忆。
 
-默认输出建议，并写入可派生 coverage、小型 runtime-v2 checkpoint witness，且通过
-`action_queue` owner 幂等同步可执行的 next-action queue。默认会把 lead / next /
-dead-end / handoff 追加写入目标记忆层；传 `--no-apply-target-memory` 显式关闭。
+普通查询不发布 Coverage 缓存或 checkpoint witness。轮次、heartbeat 和全局
+review 通过各自显式命令记录。
 `browser:` 前缀 round lane 完成时，若其 evidence_ref 指向 focused MCP capture
 manifest（`{"captures": [...]}`），会自动调用 `browser_mcp_import` 的导入函数；
 导入失败只作为 warning 记入 lane 记录，不阻断 heartbeat。知识库、Skills、Rules
@@ -18,6 +17,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import sys
 import tempfile
 import threading
@@ -30,11 +30,6 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 try:
-    from tools.contracts import CHECKPOINT_QUEUE_LOCK_ORDER
-except ImportError:  # pragma: no cover - direct tools/ execution
-    from contracts import CHECKPOINT_QUEUE_LOCK_ORDER  # type: ignore
-
-try:
     from tools.autopilot_args import MAX_LANES
     from tools.checkpoint_witness import (
         is_canonical_coverage_lane_evidence_ref,
@@ -42,49 +37,25 @@ try:
         new_round_lane as _round_lane,
         validate_round_progress as _round_progress,
     )
-    from tools.action_queue import (
-        ACTIVE_STATUSES as ACTION_QUEUE_ACTIVE_STATUSES,
-        FINAL_STATUSES as ACTION_QUEUE_FINAL_STATUSES,
-        _action_identities as action_queue_action_identities,
-        _candidate_dedupe_key as action_queue_candidate_dedupe_key,
-        _checkpoint_item_to_action as action_queue_checkpoint_item_to_action,
-        _dedupe_key as action_queue_dedupe_key,
-        _knowledge_signal_identity as action_queue_knowledge_signal_identity,
-        _target_owned_nonempty_evidence_ref as action_queue_target_owned_nonempty_evidence_ref,
-        _target_owned_evidence_ref as action_queue_target_owned_evidence_ref,
-        ingest_checkpoint as ingest_action_queue_checkpoint,
-        load_queue as load_action_queue,
-        queue_mutation_lock,
-        queue_fingerprint as action_queue_fingerprint,
-    )
+    from tools.action_queue import ACTIVE_STATUSES as ACTION_QUEUE_ACTIVE_STATUSES, FINAL_STATUSES as ACTION_QUEUE_FINAL_STATUSES, _target_owned_nonempty_evidence_ref as action_queue_target_owned_nonempty_evidence_ref, load_queue as load_action_queue, load_queue_summary, queue_mutation_lock, queue_fingerprint as action_queue_fingerprint
     from tools.autopilot_state import (
         _global_review_basis,
         _queue_snapshot_for_target,
         build_autopilot_state,
+        _build_autopilot_state,
         load_closure_projection,
         stagnation_fingerprint,
         validate_global_review,
     )
-    from tools.context_pack import build_context_pack
-    from tools.coverage_matrix import _route_template, coverage_gaps_with_observed_evidence, high_risk_lane_summary, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, rebuild_matrix, save_matrix, save_matrix_projection
+    from tools.context_pack import build_context_pack, _build_context_pack, format_source_queries, format_target_experiences
+    from tools.coverage_matrix import coverage_gaps_with_observed_evidence, high_risk_lane_summary, high_value_gaps_from_matrix, read_matrix, require_matching_truth
     from tools.current_truth import current_cell_projection
-    from tools.evidence_ledger import ACTOR_MATRIX_VULN_CLASSES, build_summary as build_evidence_summary, record_command as evidence_record_command
+    from tools.evidence_ledger import ACTOR_MATRIX_VULN_CLASSES, build_summary as build_evidence_summary
     from tools.case_state_seed import build_case_state_seed
-    from tools.closure_resolver import ClosureResolver, canonical_endpoint_path, extract_endpoint_path
-    from tools.finding_index import list_root_finding_claims, reconcile_root_finding_claims
     from tools.structured_findings import format_validation_runner_candidate_lines
     from tools.target_case_state import summary as build_case_state_summary
-    from tools.target_memory import (
-        load_target_memory_file,
-        new_target_memory,
-        target_memory_mutation_lock,
-        text_is_polluted,
-        write_handoff_file,
-        write_json as write_target_memory_json,
-    )
-    from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
-    from tools.target_store import TargetStore, target_backend
-    from tools.experience_schema import make_entry_id
+    from tools.target_paths import canonical_target_value, open_target_lock_file, target_storage_key
+    from tools.target_store import TargetStore, runtime_store
 except ImportError:  # pragma: no cover - direct tools/ execution
     from autopilot_args import MAX_LANES  # type: ignore
     from checkpoint_witness import (  # type: ignore
@@ -96,15 +67,8 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from action_queue import (  # type: ignore
         ACTIVE_STATUSES as ACTION_QUEUE_ACTIVE_STATUSES,
         FINAL_STATUSES as ACTION_QUEUE_FINAL_STATUSES,
-        _action_identities as action_queue_action_identities,
-        _candidate_dedupe_key as action_queue_candidate_dedupe_key,
-        _checkpoint_item_to_action as action_queue_checkpoint_item_to_action,
-        _dedupe_key as action_queue_dedupe_key,
-        _knowledge_signal_identity as action_queue_knowledge_signal_identity,
         _target_owned_nonempty_evidence_ref as action_queue_target_owned_nonempty_evidence_ref,
-        _target_owned_evidence_ref as action_queue_target_owned_evidence_ref,
-        ingest_checkpoint as ingest_action_queue_checkpoint,
-        load_queue as load_action_queue,
+        load_queue as load_action_queue, load_queue_summary,
         queue_mutation_lock,
         queue_fingerprint as action_queue_fingerprint,
     )
@@ -112,30 +76,20 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         _global_review_basis,
         _queue_snapshot_for_target,
         build_autopilot_state,
+        _build_autopilot_state,
         load_closure_projection,
         stagnation_fingerprint,
         validate_global_review,
     )
-    from context_pack import build_context_pack  # type: ignore
-    from coverage_matrix import _route_template, coverage_gaps_with_observed_evidence, high_risk_lane_summary, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, rebuild_matrix, save_matrix, save_matrix_projection  # type: ignore
+    from context_pack import build_context_pack, _build_context_pack, format_source_queries, format_target_experiences  # type: ignore
+    from coverage_matrix import coverage_gaps_with_observed_evidence, high_risk_lane_summary, high_value_gaps_from_matrix, read_matrix, require_matching_truth  # type: ignore
     from current_truth import current_cell_projection  # type: ignore
-    from evidence_ledger import ACTOR_MATRIX_VULN_CLASSES, build_summary as build_evidence_summary, record_command as evidence_record_command  # type: ignore  # type: ignore
+    from evidence_ledger import ACTOR_MATRIX_VULN_CLASSES, build_summary as build_evidence_summary  # type: ignore  # type: ignore
     from case_state_seed import build_case_state_seed  # type: ignore
-    from closure_resolver import ClosureResolver, canonical_endpoint_path, extract_endpoint_path  # type: ignore
-    from finding_index import list_root_finding_claims, reconcile_root_finding_claims  # type: ignore
     from structured_findings import format_validation_runner_candidate_lines  # type: ignore
     from target_case_state import summary as build_case_state_summary  # type: ignore
-    from target_memory import (  # type: ignore
-        load_target_memory_file,
-        new_target_memory,
-        target_memory_mutation_lock,
-        text_is_polluted,
-        write_handoff_file,
-        write_json as write_target_memory_json,
-    )
-    from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # type: ignore
-    from target_store import TargetStore, target_backend  # type: ignore
-    from experience_schema import make_entry_id  # type: ignore
+    from target_paths import canonical_target_value, open_target_lock_file, target_storage_key  # type: ignore
+    from target_store import TargetStore, runtime_store  # type: ignore
 
 
 def now_utc() -> str:
@@ -179,8 +133,7 @@ _CHECKPOINT_LOCK_STATE = threading.local()
 
 @contextmanager
 def checkpoint_witness_lock(repo_root: Path | str, target: str):
-    lock_path = _checkpoint_witness_path(repo_root, target).parent / "locks" / "checkpoint.lock"
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = Path(repo_root) / "state" / target_storage_key(target) / "locks" / "checkpoint.lock"
     locks = getattr(_CHECKPOINT_LOCK_STATE, "locks", None)
     if locks is None or getattr(_CHECKPOINT_LOCK_STATE, "pid", None) != os.getpid():
         locks = {}
@@ -195,7 +148,7 @@ def checkpoint_witness_lock(repo_root: Path | str, target: str):
         finally:
             existing["depth"] -= 1
         return
-    with lock_path.open("a+", encoding="utf-8") as handle:
+    with open_target_lock_file(repo_root, target, "checkpoint.lock") as handle:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         locks[key] = {"depth": 1}
         try:
@@ -477,8 +430,8 @@ def record_round_lane_result(
                 target,
             ):
                 raise ValueError(
-                    "completed coverage lane requires canonical Coverage Matrix, "
-                    "Action Queue, or Evidence Ledger evidence_ref"
+                    "completed coverage lane requires canonical Coverage Matrix "
+                    "or current TargetStore evidence_ref"
                 )
         expected = {
             "status": terminal_status,
@@ -537,7 +490,6 @@ def write_checkpoint_witness(
         "target": resolved_target,
         "target_key": target_storage_key(resolved_target),
         "context_pack": {
-            "skill_route": context.get("skill_route", {}),
             "knowledge_cards": context.get("knowledge_cards", []),
             "card_catalog": context.get("card_catalog", []),
             "knowledge_card_recall": [
@@ -763,84 +715,6 @@ def record_global_review(
             }
 
 
-def sync_checkpoint_action_queue(
-    repo_root: Path | str,
-    checkpoint: dict,
-) -> dict:
-    """Persist checkpoint proposals through the action-queue owner.
-
-    ``build_checkpoint`` intentionally remains a reusable projection builder.
-    The CLI boundary is the runtime handoff: once a real `/checkpoint` command
-    has produced executable proposals, it must not rely on Claude remembering a
-    second ``ingest-checkpoint`` command before the next session.
-    """
-    repo = Path(repo_root)
-    target = str(checkpoint.get("target") or "").strip()
-    if not target:
-        raise ValueError("checkpoint action queue sync requires a target")
-    result = ingest_action_queue_checkpoint(repo, target, checkpoint=checkpoint)
-    if not isinstance(result, dict):
-        raise ValueError("action queue owner returned an invalid sync result")
-    checkpoint["action_queue_sync"] = result
-    queue = load_action_queue(repo, target)
-    queue_sync = checkpoint["action_queue_sync"]
-    queue_summary = queue_sync.setdefault("summary", {})
-    queue_summary["fingerprint"] = action_queue_fingerprint(queue)
-    queue_sync["fingerprint"] = queue_summary["fingerprint"]
-    # Stable-order active ids (no recommendation) replace the retired
-    # selector headline; the AI applies its own selection criteria.
-    from tools.action_queue import active_action_ids as _active_ids  # local: selector retired
-
-    queue_sync["active"] = _active_ids(queue)
-    checkpoint["knowledge_effect_trace"] = _project_knowledge_effect_trace(
-        checkpoint,
-        queue.get("actions", []),
-    )
-    witness = write_checkpoint_witness(repo, target, checkpoint)
-    checkpoint["runtime_witness"] = {
-        "schema_version": witness["payload"]["schema_version"],
-        "path": str(Path(witness["path"]).relative_to(repo))
-        if Path(witness["path"]).is_relative_to(repo)
-        else str(witness["path"]),
-    }
-    return result
-
-
-def _append_root_claim_queue_items(checkpoint: dict, claims: list[dict], target: str) -> None:
-    """Keep every reconciled root claim recoverable through the durable queue."""
-    queue = checkpoint.get("next_action_queue")
-    if not isinstance(queue, list):
-        return
-    queued_ids = {
-        str((item.get("metadata") or {}).get("finding_id") or "")
-        for item in queue
-        if isinstance(item, dict) and isinstance(item.get("metadata"), dict)
-    }
-    for claim in claims:
-        finding_id = str(claim.get("id") or "").strip()
-        if not finding_id or finding_id in queued_ids:
-            continue
-        source_file = str(claim.get("claim_source_file") or "root JSON claim").strip()
-        location = str(claim.get("url") or source_file).strip()
-        missing = ", ".join(str(item) for item in (claim.get("incomplete_fields") or []) if str(item).strip())
-        queue.extend(
-            _build_next_action_queue(
-                [
-                    "Candidate evidence gap for finding {id} on {location}: root JSON claim "
-                    "from {source} needs locatable raw evidence{missing}. Then rerun /validate "
-                    "with the canonical finding id.".format(
-                        id=finding_id,
-                        location=location,
-                        source=source_file,
-                        missing=f"; missing={missing}" if missing else "",
-                    )
-                ],
-                target,
-            )
-        )
-        queued_ids.add(finding_id)
-
-
 def _dedupe(items: list[str]) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
@@ -889,19 +763,6 @@ def _matrix_summary(matrix: dict, gaps: list[dict]) -> dict:
     lane_summary = matrix.get("high_risk_lanes")
     if not isinstance(lane_summary, dict):
         lane_summary = high_risk_lane_summary(matrix)
-    stored = matrix.get("summary") if isinstance(matrix.get("summary"), dict) else {}
-    if stored and matrix.get("_coverage_projection"):
-        return {
-            "endpoints": len([item for item in endpoints if isinstance(item, dict)]),
-            "total_cells": int(stored.get("total_cells", 0) or 0),
-            "tested_clean": int(stored.get("tested_clean", 0) or 0),
-            "tested_finding": int(stored.get("tested_finding", 0) or 0),
-            "untested": int(stored.get("untested", 0) or 0),
-            "n_a": int(stored.get("n_a", 0) or 0),
-            "high_value_gaps_count": int(stored.get("high_value_gaps_count", len(gaps)) or 0),
-            "actionable_high_value_gaps_count": len(_actionable_coverage_gaps(gaps)),
-            "high_risk_lanes": lane_summary,
-        }
     total_cells = 0
     counts = {
         "tested_clean": 0,
@@ -960,153 +821,6 @@ def _unsafe_leads(state: dict) -> list[dict]:
     ]
 
 
-def _unsafe_skipped_proposals(state: dict) -> list[dict]:
-    proposals: list[dict] = []
-    for lead in _unsafe_leads(state)[:3]:
-        artifact = str(lead.get("artifact") or "").strip()
-        unsafe_id = str(lead.get("unsafe_skipped_id") or "").strip()
-        evidence = str(lead.get("evidence") or "").strip()
-        if not artifact and not unsafe_id:
-            continue
-        proposals.append(_proposal_entry(
-            "Review action-gated scanner lane {unsafe_id}: {evidence}. "
-            "Artifact={artifact}. Decide tested, blocked, dead-end, n/a, or candidate; "
-            "record the selected outcome before continuing.".format(
-                unsafe_id=unsafe_id or "-",
-                evidence=evidence or "side-effect-capable scanner probe was skipped",
-                artifact=artifact or "findings/<target>/manual_review/unsafe_skipped.txt",
-            ),
-            action_type="action-gated-review",
-            priority=93,
-            command_hint="review legacy unsafe_skipped.txt; resolve queue with tested/blocked/dead-end/n/a/candidate",
-            metadata={
-                "unsafe_skipped_id": unsafe_id,
-                "artifact": artifact or "findings/<target>/manual_review/unsafe_skipped.txt",
-            },
-        ))
-    return proposals
-
-
-SECONDARY_SWEEP_CATEGORIES = {"open-200-api-review", "public-metadata"}
-SECONDARY_SWEEP_REQUIRED_LEDGER_CLASSES = {
-    "open-200-api-review": {"Authz"},
-    # Standard metadata review is about "is this ordinary public metadata or an
-    # unusual chain pivot?", not a single vuln class.  Any explicit final ledger
-    # row for the artifact endpoint is enough to stop repeating the same review.
-    "public-metadata": set(),
-}
-URL_IN_ARTIFACT_RE = re.compile(r"https?://[^\s\]\"'<>]+")
-
-
-def _secondary_sweep_leads(state: dict) -> list[dict]:
-    surface = state.get("surface") or {}
-    leads = _json_list(surface.get("workflow_leads"))
-    return [
-        item for item in leads
-        if str(item.get("category") or "").lower() in SECONDARY_SWEEP_CATEGORIES
-    ]
-
-
-def _artifact_endpoints(repo_root: Path | None, target: str, artifact: str) -> list[str]:
-    """Extract target-owned endpoint paths from a manual-review artifact.
-
-    This is a state-closure helper, not an attack-surface classifier: the raw
-    artifact stays on disk, and unreadable/unknown artifacts remain visible to
-    Claude instead of being silently closed.
-    """
-    if repo_root is None:
-        return []
-    artifact_value = str(artifact or "").strip()
-    if not artifact_value:
-        return []
-    path = Path(artifact_value)
-    if not path.is_absolute():
-        path = repo_root / path
-    if not path.is_file():
-        return []
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return []
-
-    endpoints: list[str] = []
-    for match in URL_IN_ARTIFACT_RE.finditer(text):
-        url = match.group(0).rstrip(".,;)]}'\"")
-        if target and not url_belongs_to_target(url, target):
-            continue
-        endpoint = canonical_endpoint_path(url)
-        if endpoint:
-            endpoints.append(endpoint)
-    return _dedupe(endpoints)
-
-
-def _secondary_sweep_closed_by_ledger(
-    lead: dict,
-    *,
-    repo_root: Path | None,
-    target: str,
-    evidence_summary: dict,
-) -> bool:
-    category = str(lead.get("category") or "").strip().lower()
-    artifact = str(lead.get("artifact") or "").strip()
-    endpoints = _artifact_endpoints(repo_root, target, artifact)
-    if not endpoints:
-        return False
-
-    required_classes = SECONDARY_SWEEP_REQUIRED_LEDGER_CLASSES.get(category, set())
-    return ClosureResolver(evidence_summary).are_endpoints_closed(endpoints, required_classes)
-
-
-def _secondary_sweep_proposals(
-    state: dict,
-    *,
-    repo_root: Path | None = None,
-    target: str = "",
-    evidence_summary: dict | None = None,
-) -> list[str]:
-    proposals: list[str] = []
-    for lead in _secondary_sweep_leads(state)[:3]:
-        if _secondary_sweep_closed_by_ledger(
-            lead,
-            repo_root=repo_root,
-            target=target,
-            evidence_summary=evidence_summary or {},
-        ):
-            continue
-        category = str(lead.get("category") or "").strip() or "secondary-sweep"
-        title = str(lead.get("title") or "").strip()
-        artifact = str(lead.get("artifact") or "").strip() or "findings/<target>/manual_review/<artifact>.txt"
-        next_action = str(lead.get("next_action") or "").strip()
-        rationale = str(lead.get("rationale") or "").strip()
-        evidence = str(lead.get("evidence") or "").strip()
-        if not title:
-            continue
-        demoted = category == "public-metadata"
-        proposals.append(_proposal_entry(
-            "Secondary-sweep lead [{category}]: {title}. "
-            "Artifact={artifact}. Why it matters: {rationale}. "
-            "Next action: {next_action}. "
-            "Stop condition: either promote to candidate/chain-intel with concrete evidence, "
-            "or keep demoted with a written reason after reviewing the raw artifact.".format(
-                category=category,
-                title=title[:180],
-                artifact=artifact,
-                rationale=(rationale or evidence or category)[:220],
-                next_action=(next_action or "review the raw observations and choose the next action")[:220],
-            ),
-            action_type="secondary-sweep",
-            priority=52 if demoted else 72,
-            command_hint="review the recorded artifact; AI judges significance and next steps",
-            metadata={
-                "lead_category": category,
-                "lead_title": title[:180],
-                "artifact": artifact,
-                "demoted": demoted,
-            },
-        ))
-    return proposals
-
-
 def _evidence_focus_endpoints(state: dict, coverage_gaps: list[dict]) -> list[str]:
     surface = state.get("surface") or {}
     endpoints: list[str] = []
@@ -1122,13 +836,13 @@ def _evidence_focus_endpoints(state: dict, coverage_gaps: list[dict]) -> list[st
 
 
 def _evidence_vuln_classes(
-    coverage_gaps: list[dict],
+    evidence_records: list[dict],
     queue_snapshot: dict | None = None,
 ) -> list[str]:
     """Collect only explicit canonical families from state owners."""
     classes: list[str] = []
-    for gap in coverage_gaps[:8]:
-        classes.append(str(gap.get("vuln_class") or ""))
+    for record in evidence_records:
+        classes.append(str(record.get("vuln_class") or ""))
     actions = (queue_snapshot or {}).get("actions") if isinstance(queue_snapshot, dict) else []
     for action in actions if isinstance(actions, list) else []:
         if (
@@ -1142,6 +856,7 @@ def _evidence_vuln_classes(
             str(metadata.get("vuln_class") or action.get("vuln_class") or ""),
         ])
 
+    classes.extend((queue_snapshot or {}).get("active_families", []))
     canonical_by_name = {item.casefold(): item for item in ACTOR_MATRIX_VULN_CLASSES}
     return _dedupe([
         canonical_by_name[item.strip().casefold()]
@@ -1158,104 +873,6 @@ def _actor_gaps(evidence_summary: dict) -> list[dict]:
     ]
 
 
-def _case_state_count(case_state: dict | None, key: str) -> int:
-    if not isinstance(case_state, dict):
-        return 0
-    try:
-        return int(case_state.get(key, 0) or 0)
-    except (TypeError, ValueError):
-        return 0
-
-
-def _actor_gap_ready(gap: dict, case_state: dict | None) -> bool:
-    """判断 actor-gap 是否具备进入可执行队列的运行态前置条件。
-
-    anonymous baseline 不依赖目标运行态，可直接验证匿名访问行为。owner/peer/
-    low_role/cross_tenant 这类角色差异验证必须先有 case state 中的 actor、
-    session、object，否则 checkpoint 会生成“看起来可执行、实际缺上下文”的队列。
-    """
-    actor = str(gap.get("actor") or "").strip().lower()
-    if actor == "anonymous":
-        return True
-
-    actors = _case_state_count(case_state, "actors")
-    sessions = _case_state_count(case_state, "sessions")
-    objects = _case_state_count(case_state, "objects")
-    if actor == "owner":
-        return actors >= 1 and sessions >= 1 and objects >= 1
-    if actor in {"peer", "low_role", "cross_tenant"}:
-        return actors >= 2 and sessions >= 2 and objects >= 1
-    return actors >= 1 and sessions >= 1
-
-
-def _actionable_actor_gaps(evidence_summary: dict, case_state: dict | None = None) -> list[dict]:
-    return [
-        gap for gap in _actor_gaps(evidence_summary)
-        if _actor_gap_ready(gap, case_state)
-    ]
-
-
-def _actor_gap_enrichment_proposal(
-    evidence_summary: dict,
-    case_state: dict | None = None,
-) -> str:
-    blocked = [
-        gap for gap in _actor_gaps(evidence_summary)
-        if not _actor_gap_ready(gap, case_state)
-    ]
-    if not blocked:
-        return ""
-
-    first = blocked[0]
-    missing: list[str] = []
-    actors = _case_state_count(case_state, "actors")
-    sessions = _case_state_count(case_state, "sessions")
-    objects = _case_state_count(case_state, "objects")
-    actor = str(first.get("actor") or "").strip().lower()
-    if actor in {"peer", "low_role", "cross_tenant"} and actors < 2:
-        missing.append("second actor")
-    elif actors < 1:
-        missing.append("actor")
-    if actor in {"peer", "low_role", "cross_tenant"} and sessions < 2:
-        missing.append("peer/second session")
-    elif sessions < 1:
-        missing.append("session")
-    if objects < 1:
-        missing.append("business object")
-    missing = _dedupe(missing) or ["case-state actor/session/object"]
-
-    actor_value = str(first.get("actor") or "").strip().lower()
-    return _proposal_entry(
-        (
-            "Case-state enrichment lead: actor matrix has {count} role/object gap(s) "
-            "that are not executable until runtime context is registered. Example: "
-            "{endpoint} x {vuln} with {actor}/{scope}/{variant}. Missing evidence: "
-            "{missing}. Next: register actor/session/object with tools/target_case_state.py "
-            "or use tools/case_state_seed.py suggestions; keep anonymous baselines and "
-            "ranked-surface discovery moving while enrichment is missing."
-        ).format(
-            count=len(blocked),
-            endpoint=first.get("endpoint", ""),
-            vuln=first.get("vuln_class", ""),
-            actor=actor_value,
-            scope=first.get("object_scope", ""),
-            variant=first.get("variant", ""),
-            missing=", ".join(missing),
-        ),
-        action_type="case-state-enrichment",
-        priority=54,
-        command_hint="register actor/session/object with tools/target_case_state.py or review tools/case_state_seed.py",
-        metadata={
-            "endpoint": str(first.get("endpoint") or ""),
-            "vuln_class": str(first.get("vuln_class") or ""),
-            "actor": actor_value,
-            "object_scope": str(first.get("object_scope") or ""),
-            "variant": str(first.get("variant") or ""),
-            "missing_evidence": missing,
-        },
-    )
-
-
 def _case_state_summary(repo_root: Path | str, target: str) -> dict:
     """Load sanitized target case state summary for checkpoint routing.
 
@@ -1264,56 +881,6 @@ def _case_state_summary(repo_root: Path | str, target: str) -> dict:
     """
     payload = build_case_state_summary(repo_root, target)
     return payload if isinstance(payload, dict) else {}
-
-
-def _list_clause(values: object) -> str:
-    if not isinstance(values, list):
-        return ""
-    clean = [str(item or "").strip() for item in values if str(item or "").strip()]
-    return ", ".join(clean)
-
-
-PROPOSAL_ENTRY_SCHEMA_VERSION = 1
-
-
-def _proposal_entry(
-    text: str,
-    *,
-    action_type: str,
-    priority: int,
-    command_hint: str = "",
-    metadata: dict | None = None,
-) -> dict:
-    """One structured proposal entry; text stays human-readable prose.
-
-    Producers that already hold the fields emit them here instead of losing
-    them into a format string. Plain strings remain valid (dual-read): the
-    queue builder classifies and extracts from text exactly as before.
-    """
-    entry = {
-        "schema_version": PROPOSAL_ENTRY_SCHEMA_VERSION,
-        "text": text,
-        "type": action_type,
-        "priority": priority,
-        "command_hint": command_hint,
-    }
-    if metadata:
-        entry["metadata"] = dict(metadata)
-    return entry
-
-
-def _is_proposal_entry(item: object) -> bool:
-    return (
-        isinstance(item, dict)
-        and item.get("schema_version") == PROPOSAL_ENTRY_SCHEMA_VERSION
-        and isinstance(item.get("text"), str)
-    )
-
-
-def _entry_text(item: object) -> str:
-    if _is_proposal_entry(item):
-        return str(item["text"])
-    return str(item or "")
 
 
 def _case_state_seed_summary(repo_root: Path | str, target: str) -> dict:
@@ -1390,1452 +957,6 @@ def _decision_for_action(action: str) -> str:
     return ACTION_DECISIONS.get(str(action or "").strip().lower(), "handoff")
 
 
-def _is_target_memory_echo(lead: object) -> bool:
-    """True for workflow leads projected out of target memory by surface.py.
-
-    surface 把 active_leads/next_actions 投影成软性 workflow lead 参与**排序**；
-    若 checkpoint 再把这条投影写回 target memory，就形成自我嵌套（每轮 handoff
-    多包一层结构外壳，2026-09-15 污染治理）。过滤投影不影响源——人工 lead 仍
-    在 target memory，下一轮 surface 照常读出参与排序。source 枚举自 surface.py
-    的 8 个 lead 来源，仅 target_memory 是记忆回声，其余 7 个均为 live 来源。
-    """
-    if not isinstance(lead, dict):
-        return False
-    return str(lead.get("source") or "") == "target_memory"
-
-
-def _lead_proposals(
-    state: dict,
-    context_pack: dict,
-    *,
-    repo_root: Path | None = None,
-    target: str = "",
-    evidence_summary: dict | None = None,
-) -> list[str]:
-    proposals: list[str] = []
-    surface = state.get("surface") or {}
-    # 排序输入不等于写回输入：workflow_leads 里绝大多数是 target_memory 的
-    # 投影（实测 3001 为 10/11），写回它们等于给记忆喂自己的回声。过滤后
-    # 不补位——窗口由 live 来源自然占据，空即"本轮无新线索"。
-    for lead in [
-        item for item in _json_list(surface.get("workflow_leads"))[:3]
-        if not _is_target_memory_echo(item)
-    ]:
-        if _secondary_sweep_closed_by_ledger(
-            lead,
-            repo_root=repo_root,
-            target=target,
-            evidence_summary=evidence_summary or {},
-        ):
-            continue
-        title = str(lead.get("title") or "").strip()
-        next_action = str(lead.get("next_action") or "").strip()
-        why = str(lead.get("rationale") or lead.get("category") or "workflow lead").strip()
-        category = str(lead.get("category") or "workflow").strip()
-        artifact = str(lead.get("artifact") or lead.get("evidence_ref") or "").strip()
-        if title:
-            wf_metadata: dict = {
-                "lead_title": title[:180],
-                "lead_category": category[:80],
-            }
-            if artifact:
-                wf_metadata["artifact"] = artifact
-            proposals.append(_proposal_entry(
-                "Evidence: Workflow lead: {title}. Why it matters: {why}. "
-                "Category={category}. {artifact_clause}Next action: {next_action}. Stop condition: no reproducible "
-                "behavior difference or new evidence after focused replay.".format(
-                    title=title[:180],
-                    why=why[:180],
-                    category=category[:80],
-                    artifact_clause=(f"Artifact={artifact}. " if artifact else ""),
-                    next_action=next_action[:180] or "inspect the linked artifact",
-                ),
-                action_type="workflow-lead-review",
-                priority=88,
-                command_hint="review the linked artifact and choose the lane, or record a dead-end with evidence",
-                metadata=wf_metadata,
-            ))
-
-    for item in (surface.get("p1") or [])[:2]:
-        url = str(item.get("url") or "").strip()
-        reasons = ", ".join(str(reason) for reason in (item.get("reasons") or [])[:2])
-        suggested = str(item.get("suggested") or "").strip()
-        if url:
-            proposals.append(_proposal_entry(
-                "Evidence: Surface review candidate {url} ({reasons}). Why it matters: "
-                "interesting attack-surface evidence from cached recon/browser/source signals. "
-                "Next action: {suggested}. Keep unassessed behavior open until evidence or an explicit disposition.".format(
-                    url=url,
-                    reasons=reasons or "ranked surface",
-                    suggested=suggested or "review recorded observations and choose the experiment",
-                ),
-                action_type="surface-review",
-                priority=70,
-                command_hint="AI reviews surface evidence, then chooses the exact lane",
-                metadata={
-                    "url": url,
-                    "endpoint": _canonicalize_url_path(url),
-                },
-            ))
-
-    # 去重按 proposal 的 text 键进行并保留 dict 形态——`_dedupe` 的 str(item)
-    # 会把 proposal dict 序列化成 repr，下游 `_entry_text` 认不出结构化条目、
-    # 兜底原样透传，正是 active_leads 嵌套污染的第一现场（2026-09-15 治理）。
-    # 同族的 _next_proposals 走 _bounded_next_proposals（dict 安全），未受影响。
-    seen_texts: set[str] = set()
-    deduped: list[dict] = []
-    for proposal in proposals:
-        text = str(proposal.get("text") or "").strip() if isinstance(proposal, dict) else ""
-        if not text or text in seen_texts:
-            continue
-        seen_texts.add(text)
-        deduped.append(proposal)
-    return deduped[:3]
-
-
-def _canonicalize_url_path(value: str) -> str:
-    return extract_endpoint_path(value)
-
-
-def _ranked_surface_entry(state: dict, url: str) -> dict:
-    surface = state.get("surface") or {}
-    for bucket in ("review_pool", "p1", "p2"):
-        for item in (surface.get(bucket) or []):
-            if isinstance(item, dict) and str(item.get("url") or "").strip() == str(url or "").strip():
-                return item
-    return {}
-
-
-def _ledger_covered_cells(evidence_summary: dict, matrix: dict | None = None) -> ClosureResolver:
-    """Return the unified closure resolver for endpoint/vuln cells."""
-    return ClosureResolver(evidence_summary or {}, matrix or {})
-
-
-def _ledger_covers_cell(
-    covered_cells: ClosureResolver,
-    endpoint: str,
-    vuln_class: str,
-    identity_v2: dict | None = None,
-) -> bool:
-    return covered_cells.is_cell_closed(endpoint, vuln_class, identity_v2=identity_v2)
-
-
-def _ledger_candidate_proposals(evidence_summary: dict, *, limit: int = 3) -> list[str]:
-    """把 Evidence Ledger 里的开放 candidate 变成 AI-facing 验证动作。
-
-    这里不判断 candidate 是否“该报”，只防止 AI 手工验证出的复杂链路
-    被 ledger 吃掉后从 checkpoint 视野里消失。最终升降级仍交给 Claude
-    结合原始证据、7-Question Gate 和四个验证门判断。
-    """
-    proposals: list[str] = []
-    for action in (evidence_summary.get("identity_v2_follow_up_actions") or [])[:limit]:
-        if not isinstance(action, dict):
-            continue
-        endpoint = str(action.get("endpoint") or "").strip()
-        family = str(action.get("family") or "").strip()
-        missing = ", ".join(str(item) for item in (action.get("missing_fields") or []) if str(item))
-        conflicts = ", ".join(str(item) for item in (action.get("conflicts") or []) if str(item))
-        if not endpoint or not family:
-            continue
-        reason = "; ".join(item for item in (f"missing={missing}" if missing else "", f"conflicts={conflicts}" if conflicts else "") if item)
-        proposals.append(_proposal_entry(
-            f"Resolve closure identity for {endpoint} x {family}: {reason or 'deterministic identity gate pending'}. "
-            "Review the referenced evidence and record a linked complete identity or retain the fail-open state.",
-            action_type="closure-identity-review",
-            priority=90,
-            command_hint="record a linked complete identity via evidence_ledger identity flags, or retain fail-open with reason",
-            metadata={
-                "endpoint": endpoint,
-                "family": family,
-                "missing_fields": [str(i) for i in (action.get("missing_fields") or []) if str(i)],
-                "conflicts": [str(i) for i in (action.get("conflicts") or []) if str(i)],
-            },
-        ))
-    candidates = [
-        item
-        for item in [
-            *(evidence_summary.get("open_candidates") or []),
-            *(evidence_summary.get("open_candidates_v2") or []),
-        ]
-        if isinstance(item, dict)
-    ]
-    seen: set[str] = set()
-    for entry in candidates:
-        identity_key = json.dumps(
-            entry.get("identity_v2") or {
-                "endpoint": entry.get("endpoint"),
-                "vuln_class": entry.get("vuln_class"),
-                "method": entry.get("method"),
-                "variant": entry.get("variant"),
-            },
-            sort_keys=True,
-        )
-        if identity_key in seen:
-            continue
-        seen.add(identity_key)
-        if len(proposals) >= limit:
-            break
-        if not isinstance(entry, dict):
-            continue
-        endpoint = str(entry.get("endpoint") or entry.get("raw_endpoint") or "").strip()
-        vuln_class = str(entry.get("vuln_class") or "").strip()
-        method = str(entry.get("method") or "GET").strip().upper()
-        evidence_ref = str(entry.get("evidence_ref") or "").strip()
-        notes = str(entry.get("notes") or "").strip()
-        identity = entry.get("identity_v2") if isinstance(entry.get("identity_v2"), dict) else {}
-        identity_dimensions = identity.get("dimensions") or {}
-        identity_suffix = (
-            f" IdentityV2={json.dumps(identity_dimensions, sort_keys=True, ensure_ascii=True)}."
-            if isinstance(identity_dimensions, dict) and identity_dimensions
-            else ""
-        )
-        if not endpoint or not vuln_class:
-            continue
-        evidence_suffix = f" Evidence={evidence_ref}." if evidence_ref else ""
-        notes_suffix = f" Notes={notes[:220]}." if notes else ""
-        candidate_text = (
-            "Run /validate for ledger candidate {method} {endpoint} x {vuln_class}. "
-            "AI task: review raw evidence, impact, replayability, and side-effect/risk status; "
-            "then promote to finding/report or downgrade with evidence ledger update."
-            "{evidence}{notes} Stop condition: validated finding, tested_clean, "
-            "dead_end, or blocked_redline is recorded.".format(
-                method=method,
-                endpoint=endpoint,
-                vuln_class=vuln_class,
-                evidence=evidence_suffix,
-                notes=notes_suffix,
-            ) + identity_suffix
-        )
-        candidate_metadata: dict = {
-            "endpoint": endpoint,
-            "vuln_class": vuln_class,
-            "method": method,
-        }
-        if evidence_ref:
-            candidate_metadata["evidence_ref"] = evidence_ref
-        if notes:
-            candidate_metadata["summary"] = notes[:240]
-        if isinstance(identity_dimensions, dict) and identity_dimensions:
-            candidate_metadata["identity_v2_dimensions"] = identity_dimensions
-        proposals.append(_proposal_entry(
-            candidate_text,
-            action_type="validation",
-            priority=100,
-            command_hint="/validate",
-            metadata=candidate_metadata,
-        ))
-    return proposals
-
-
-def _workflow_lead_queue_items(
-    state: dict,
-    *,
-    repo_root: Path | None,
-    target: str,
-) -> list[dict]:
-    """Project only artifact-backed critical/high leads into durable work."""
-    if repo_root is None:
-        return []
-    items: list[dict] = []
-    for lead in _json_list((state.get("surface") or {}).get("workflow_leads")):
-        priority_name = str(lead.get("priority") or "medium").strip().lower()
-        if priority_name not in {"critical", "high"}:
-            continue
-        artifact = str(lead.get("artifact") or lead.get("evidence_ref") or "").strip()
-        if not artifact:
-            continue
-        artifact_path = Path(artifact)
-        if not artifact_path.is_absolute():
-            artifact_path = repo_root / artifact_path
-        try:
-            stat = artifact_path.stat()
-        except OSError:
-            # A lead without a locatable artifact remains advisory; do not
-            # create durable work that can never be resumed or audited.
-            continue
-        source_id = str(lead.get("id") or "").strip()
-        if not source_id:
-            source_id = hashlib.sha256(
-                json.dumps(
-                    {
-                        "category": lead.get("category", ""),
-                        "title": lead.get("title", ""),
-                        "artifact": artifact,
-                    },
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ).encode("utf-8")
-            ).hexdigest()[:20]
-        generation = hashlib.sha256(
-            f"{artifact}:{stat.st_size}:{stat.st_mtime_ns}".encode("utf-8")
-        ).hexdigest()[:24]
-        title = str(lead.get("title") or lead.get("category") or "workflow lead").strip()
-        next_action = str(lead.get("next_action") or "inspect the linked artifact").strip()
-        evidence = str(lead.get("evidence") or lead.get("rationale") or "").strip()
-        items.append({
-            "id": f"LEAD-{source_id}",
-            "priority": 98 if priority_name == "critical" else 88,
-            "type": "workflow-lead-review",
-            "status": "ready",
-            "action": (
-                f"Review high-value workflow lead: {title}. {next_action}. "
-                f"Artifact={artifact}. Evidence={evidence[:180]}"
-            ),
-            "command_hint": "",
-            "redline_required": False,
-            "stop_condition": (
-                "record tested, blocked, dead-end, candidate, or validated finding "
-                "with a locatable evidence reference"
-            ),
-            "source": "workflow-lead",
-            "source_id": source_id,
-            "metadata": {
-                "generation": generation,
-                "category": str(lead.get("category") or "workflow").strip(),
-                "priority": priority_name,
-                "artifact": artifact,
-                "evidence_ref": str(lead.get("evidence_ref") or artifact),
-            },
-        })
-    return items
-
-
-def _sibling_queue_item(
-    state: dict,
-    *,
-    repo_root: Path | None,
-    target: str,
-) -> dict:
-    """Queue one bounded lateral probe after a durable candidate result."""
-    if repo_root is None:
-        return {}
-    findings = state.get("structured_findings") or {}
-    candidates = [
-        findings.get("next_validation") or {},
-        findings.get("next_report") or {},
-    ]
-    for finding in candidates:
-        if not isinstance(finding, dict):
-            continue
-        status = str(finding.get("validation_status") or "").strip().lower()
-        if status not in {"candidate", "validated"}:
-            continue
-        finding_id = str(finding.get("id") or "").strip()
-        endpoint = str(finding.get("url") or "").strip()
-        source_file = str(finding.get("source_file") or "").strip()
-        if not finding_id or not endpoint or not url_belongs_to_target(endpoint, target):
-            continue
-        if source_file:
-            source_path = Path(source_file)
-            if not source_path.is_absolute():
-                source_path = repo_root / source_path
-            try:
-                source_stat = source_path.stat()
-            except OSError:
-                continue
-            source_generation = f"{source_file}:{source_stat.st_size}:{source_stat.st_mtime_ns}"
-        else:
-            source_generation = ""
-        generation = hashlib.sha256(
-            f"{finding_id}:{endpoint}:{source_generation}".encode("utf-8")
-        ).hexdigest()[:24]
-        return {
-            "id": f"SIBLING-{finding_id}",
-            "priority": 68 if status == "candidate" else 60,
-            "type": "sibling-chain-review",
-            "status": "ready",
-            "action": (
-                f"Generate one bounded sibling probe for finding {finding_id} at {endpoint}; "
-                "review the generated queue and validate only same-target endpoints."
-            ),
-            "command_hint": (
-                "AI action: from cached target-owned recon URLs, find same-prefix "
-                "ID-bearing sibling endpoints for the finding route (e.g. "
-                "invoices/exports next to orders); compare only observed same-prefix "
-                "or ID-shaped routes, do not run generic dictionary or name guessing; "
-                "review at most 20, then validate only same-target endpoints "
-                "per this action's stop_condition"
-            ),
-            "redline_required": False,
-            "stop_condition": (
-                "record sibling queue reviewed, blocked, dead-end, candidate, or validated; "
-                "do not treat sibling discovery alone as a finding"
-            ),
-            "source": "primary-finding-sibling",
-            "source_id": finding_id,
-            "metadata": {
-                "generation": generation,
-                "finding_id": finding_id,
-                "endpoint": endpoint,
-                "validation_status": status,
-                "evidence_ref": source_file,
-            },
-        }
-    return {}
-
-
-def _runner_candidate_proposals(state: dict, *, limit: int = 2) -> list[str]:
-    """Expose runner evidence as AI review work when no finding row owns it yet."""
-    proposals: list[str] = []
-    for item in (state.get("validation_runner_candidates") or [])[:limit]:
-        if not isinstance(item, dict):
-            continue
-        candidate_id = str(item.get("id") or "").strip()
-        lane = str(item.get("lane") or "").strip()
-        method = str(item.get("method") or "GET").strip().upper()
-        url = str(item.get("url") or "").strip()
-        evidence_ref = str(item.get("summary_path") or "").strip()
-        missing = ", ".join(str(value) for value in (item.get("missing_evidence") or [])[:3])
-        if not url:
-            continue
-        missing_suffix = f" missing={missing}" if missing else ""
-        evidence_suffix = f" Evidence={evidence_ref}." if evidence_ref else ""
-        runner_text = (
-            "Review validation-runner candidate {id} [{lane}] {method} {url}.{missing} "
-            "AI task: read raw request/response evidence, impact, replayability, and policy context; "
-            "then run /validate if reportable, or record tested_clean/dead_end in evidence ledger."
-            "{evidence} Stop condition: validated finding, tested_clean, dead_end, or blocked_redline is recorded.".format(
-                id=candidate_id or "-",
-                lane=lane or "runner",
-                method=method,
-                url=url,
-                missing=missing_suffix,
-                evidence=evidence_suffix,
-            )
-        )
-        runner_metadata: dict = {
-            "finding_id": candidate_id,
-            "url": url,
-            "method": method,
-            "lane": lane,
-            "summary_path": evidence_ref,
-        }
-        if missing:
-            runner_metadata["missing_evidence"] = [
-                str(value).strip()
-                for value in (item.get("missing_evidence") or [])[:3]
-                if str(value).strip()
-            ]
-        proposals.append(_proposal_entry(
-            runner_text,
-            action_type="validation",
-            priority=100,
-            command_hint="/validate if reportable, else record tested_clean/dead_end in evidence ledger",
-            metadata=runner_metadata,
-        ))
-    return proposals
-
-
-def _coverage_family_shape(endpoint: str) -> tuple[str, str]:
-    path = canonical_endpoint_path(endpoint)
-    if not path:
-        return "", ""
-    parts = [part for part in path.strip("/").split("/") if part]
-    template_parts = [
-        part for part in _route_template(path).strip("/").split("/") if part
-    ]
-    shape_parts: list[str] = []
-    prefix_parts: list[str] = []
-    dynamic_seen = False
-    for index, part in enumerate(parts):
-        template_part = template_parts[index] if index < len(template_parts) else part
-        # Route discovery often emits tokens such as ``role-0`` that are
-        # dynamic in practice but not normalized by the canonical template.
-        segment_dynamic = template_part.startswith("{") or bool(
-            re.search(r"(?:^|[-_])\d+$", part)
-        )
-        if segment_dynamic:
-            shape_parts.append("{dynamic}")
-            dynamic_seen = True
-            continue
-        if dynamic_seen:
-            # Keep post-identifier resource names in the family key; two
-            # different child resources must not collapse into one sample.
-            shape_parts.append(part.casefold())
-        else:
-            shape_parts.append("{static}")
-            prefix_parts.append(part.casefold())
-
-    if dynamic_seen:
-        # A path with no stable prefix is too ambiguous for structural merging.
-        if not prefix_parts:
-            return "/".join(shape_parts), ""
-    else:
-        # For static endpoint leaves, preserve the existing resource-parent
-        # grouping (for example /api/orders/list and /api/orders/export).
-        prefix_parts = [part.casefold() for part in parts[:2]]
-    return "/".join(shape_parts), "/" + "/".join(prefix_parts)
-
-
-def _coverage_family_key(gap: dict, template_count: dict[str, int]) -> tuple:
-    endpoint = str(gap.get("endpoint") or "").strip()
-    vuln_class = str(gap.get("vuln_class") or "").strip().casefold()
-    template = _route_template(endpoint)
-    if template_count.get(template, 0) > 1:
-        return ("route-template", vuln_class, template)
-    shape, prefix = _coverage_family_shape(endpoint)
-    if not vuln_class or not shape or not prefix:
-        return ()
-    return ("structural", vuln_class, shape, prefix)
-
-
-_STRUCTURAL_COVERAGE_FAMILY_MIN_MEMBERS = 3
-_COVERAGE_FAMILY_MEMBER_PREVIEW = 12
-
-
-def _checkpoint_coverage_gaps(coverage_gaps: list[dict], matrix: dict, limit: int = 6) -> list[dict]:
-    """Select coverage gaps for the immediate checkpoint queue.
-
-    Coverage itself keeps all untested cells.  The execution queue is a
-    FACT-CARRYING WINDOW, not a filter: every untested high-value cell stays
-    AI-selectable in the matrix, ordering comes from observed route kinds,
-    and the lane budget (not this window) bounds how many get executed.
-    It emits one representative for an existing route-template or high-volume
-    structural family without inferring a test or closure from path words.
-    This bounds context
-    while preserving other high-signal gaps for Claude to reason over. The
-    ``_projection_family`` field is advisory queue metadata; it never mutates a
-    sibling Matrix cell or changes exact Action Queue identity.
-    """
-    eligible = _actionable_coverage_gaps(coverage_gaps)
-
-    template_count: dict[str, int] = {}
-    for gap in eligible:
-        template = _route_template(str(gap.get("endpoint") or "").strip())
-        template_count[template] = template_count.get(template, 0) + 1
-
-    groups: dict[tuple, list[dict]] = {}
-    order: list[tuple] = []
-    for index, gap in enumerate(eligible):
-        family_key = _coverage_family_key(gap, template_count)
-        key = family_key or ("single", index)
-        if key not in groups:
-            groups[key] = []
-            order.append(key)
-        groups[key].append(gap)
-
-    selected: list[dict] = []
-    for key in order:
-        members = groups[key]
-        if (
-            key[0] == "structural"
-            and len(members) < _STRUCTURAL_COVERAGE_FAMILY_MIN_MEMBERS
-        ):
-            for member in members:
-                selected.append(dict(member))
-                if len(selected) >= limit:
-                    return selected
-            continue
-        representative = dict(members[0])
-        if len(members) > 1 and key[0] in {"route-template", "structural"}:
-            endpoints = [
-                str(item.get("endpoint") or "").strip()
-                for item in members
-                if str(item.get("endpoint") or "").strip()
-            ]
-            representative["_projection_family"] = {
-                "key": ":".join(str(value) for value in key),
-                "kind": key[0],
-                "size": len(members),
-                "template": _route_template(endpoints[0]) if endpoints else "",
-                # Keep queue context bounded; the family size tells AI whether
-                # this is only a preview, and raw Coverage remains expandable.
-                "members": endpoints[:_COVERAGE_FAMILY_MEMBER_PREVIEW],
-            }
-        selected.append(representative)
-        if len(selected) >= limit:
-            break
-    return selected
-
-
-def _next_proposals(
-    state: dict,
-    coverage_gaps: list[dict],
-    matrix: dict,
-    target: str,
-    context_pack: dict,
-    evidence_summary: dict,
-    case_state: dict | None = None,
-    repo_root: Path | None = None,
-) -> list[str]:
-    proposals: list[str] = []
-    # Contradictions are Claude-facing advisory context, not executable work.
-    # Promoting them into the action queue makes the tool steer the hunt back to
-    # meta-review whenever a fresh dead-end shares tokens with cached evidence.
-    # Keep them visible in checkpoint output and let the model decide whether
-    # they matter for the next hypothesis.
-
-    findings = _structured_findings(state)
-    next_owner_revalidation = findings.get("next_owner_revalidation") or {}
-    next_validation = findings.get("next_validation") or {}
-    next_report = findings.get("next_report") or {}
-    if next_owner_revalidation:
-        text = (
-            "Owner-provenance recovery for finding {id} on {url}: it claims "
-            "{validation}/{report} but provenance is {reason}. Treat it as a "
-            "candidate, replay locatable raw evidence, then rerun /validate with "
-            "the canonical finding id so finding_index records the transition. "
-            "Do not report or resolve this claim from JSON alone.".format(
-                id=next_owner_revalidation.get("id", "-"),
-                url=next_owner_revalidation.get("url", ""),
-                validation=next_owner_revalidation.get("claimed_validation_status", "-"),
-                report=next_owner_revalidation.get("claimed_report_status", "-"),
-                reason=next_owner_revalidation.get("provenance_reason", "owner-provenance-invalid"),
-            )
-        )
-        proposals.append(_proposal_entry(
-            text,
-            action_type="revalidate_finding_owner",
-            priority=100,
-            command_hint="replay locatable raw evidence, then rerun /validate with the canonical finding id",
-            metadata={
-                "finding_id": str(next_owner_revalidation.get("id") or ""),
-                "url": str(next_owner_revalidation.get("url") or ""),
-            },
-        ))
-    if next_validation:
-        validate_text = (
-            "Run /validate for finding {id} on {url}; verify replay, A/B diff, "
-            "impact, source provenance, and red-line safety before report.".format(
-                id=next_validation.get("id", "-"),
-                url=next_validation.get("url", ""),
-            )
-        )
-        proposals.append(_proposal_entry(
-            validate_text,
-            action_type="validation",
-            priority=100,
-            command_hint="/validate",
-            metadata={
-                "finding_id": str(next_validation.get("id") or "-"),
-                "url": str(next_validation.get("url") or ""),
-            },
-        ))
-    if next_report:
-        report_text = (
-            "Draft report for validated finding {id}; do not submit without human review.".format(
-                id=next_report.get("id", "-"),
-            )
-        )
-        proposals.append(_proposal_entry(
-            report_text,
-            action_type="report",
-            priority=90,
-            command_hint="/report",
-            metadata={
-                "finding_id": str(next_report.get("id") or "-"),
-                "url": str(next_report.get("url") or ""),
-            },
-        ))
-    proposals.extend(_ledger_candidate_proposals(evidence_summary))
-    proposals.extend(_runner_candidate_proposals(state))
-    if not state.get("has_recon"):
-        proposals.append(_proposal_entry(
-            f"Run /recon {target}, then /surface {target}, then rerun /checkpoint {target}.",
-            action_type="recon",
-            priority=85,
-            command_hint="python3 tools/hunt.py --target {t} --recon-only && python3 tools/surface.py --target {t} && python3 tools/checkpoint.py --target {t}".format(t=_quote(target) if target else "target.com"),
-            metadata={"target": target},
-        ))
-
-    next_tool_hint = str(state.get("next_tool_hint") or "").strip()
-    if next_tool_hint:
-        hint = (state.get("enrichment_hints") or [{}])[0] or {}
-        hint_type = next_tool_hint.lower()
-        entry_type = {
-            "run_source_intel": "source-enrichment",
-            "run_js_read": "js-enrichment",
-            "collect_browser_mcp_evidence": "browser-enrichment",
-        }.get(hint_type, "next-action")
-        hint_command = {
-            "run_source_intel": "python3 tools/source_intel.py",
-            "run_js_read": "python3 tools/js_reader.py",
-            "collect_browser_mcp_evidence": "Chrome DevTools/Playwright MCP capture, import artifacts, then /surface",
-        }.get(hint_type, "run the hinted enrichment tool")
-        proposals.append(_proposal_entry(
-            f"Run enrichment {next_tool_hint}: {str(hint.get('reason') or '').strip()}",
-            action_type=entry_type,
-            priority=70,
-            command_hint=hint_command,
-            metadata={"tool_hint": next_tool_hint},
-        ))
-
-    proposals.extend(_unsafe_skipped_proposals(state))
-    proposals.extend(
-        _secondary_sweep_proposals(
-            state,
-            repo_root=repo_root,
-            target=target,
-            evidence_summary=evidence_summary,
-        )
-    )
-    covered_ledger_cells = _ledger_covered_cells(evidence_summary, matrix)
-
-    repo_source_summary = state.get("repo_source_summary") or {}
-    secret_findings = int(repo_source_summary.get("secret_findings", 0) or 0)
-    if secret_findings > 0:
-        proposals.append(_proposal_entry(
-            "Review {count} secret scanner record(s): source, provider, and any actual verification result. "
-            "AI judges ownership and impact from evidence; scanner text is not proof.".format(
-                count=secret_findings,
-            ),
-            action_type="secret-verification",
-            priority=86,
-            command_hint="review the recorded secret scan artifacts",
-            metadata={"secret_findings": secret_findings},
-        ))
-
-    surface = state.get("surface") or {}
-    for lead in _json_list(surface.get("workflow_leads"))[:5]:
-        if str(lead.get("source") or "") != "evidence_convergence":
-            continue
-        title = str(lead.get("title") or "").strip()
-        next_action = str(lead.get("next_action") or "").strip()
-        evidence = str(lead.get("evidence") or lead.get("category") or "").strip()
-        if title:
-            proposals.append(_proposal_entry(
-                "Cross-evidence high-value surface {title}: {evidence}. "
-                "Next action: {next_action}. Stop condition: record tested, "
-                "blocked, dead-end, signal, or candidate after focused replay.".format(
-                    title=title,
-                    evidence=evidence[:180],
-                    next_action=next_action[:180] or "review the linked observations and choose an experiment",
-                ),
-                action_type="evidence-convergence",
-                priority=98,
-                command_hint="focused replay with browser/JS/source evidence",
-                metadata={"lead_title": title[:180], "lead_category": evidence[:80]},
-            ))
-
-    for gap in _checkpoint_coverage_gaps(coverage_gaps, matrix):
-        if _ledger_covers_cell(
-            covered_ledger_cells,
-            str(gap.get("endpoint") or ""),
-            str(gap.get("vuln_class") or ""),
-            gap.get("identity_v2"),
-        ):
-            continue
-        coverage_endpoint = str(gap.get("endpoint") or "")
-        endpoint = str(gap.get("representative_endpoint") or coverage_endpoint)
-        coverage_suffix = (
-            f", coverage_endpoint={coverage_endpoint}"
-            if endpoint != coverage_endpoint else ""
-        )
-        family = gap.get("_projection_family") if isinstance(gap.get("_projection_family"), dict) else {}
-        family_suffix = ""
-        if family:
-            family_members = ",".join(
-                str(value).strip()
-                for value in family.get("members") or []
-                if str(value).strip()
-            )
-            family_size = int(family.get("size", 0) or 0)
-            preview_truncated = family_size > len(family.get("members") or [])
-            expansion_suffix = (
-                " The preview is incomplete; query the raw Coverage gap window "
-                "before choosing another member."
-                if preview_truncated else ""
-            )
-            family_suffix = (
-                " Queue projection only: this representative is advisory and does "
-                "not assert family equivalence. AI remains the judgment owner and "
-                "may choose or expand any listed member; sibling Matrix cells stay "
-                "unclosed until owner evidence.{expansion_suffix} Family projection: "
-                "key={key}; kind={kind}; size={size}; "
-                "members={members}.".format(
-                    key=family.get("key", "family"),
-                    kind=family.get("kind", "route-template"),
-                    size=family_size,
-                    members=family_members or coverage_endpoint,
-                    expansion_suffix=expansion_suffix,
-                )
-            )
-        gap_text = (
-            "Review coverage gap: {endpoint} x {vuln_class}{coverage_suffix}. "
-            "AI chooses the experiment. If concrete side-effect risk appears, mark blocked "
-            "and use low-risk evidence instead.{family_suffix}".format(
-                endpoint=endpoint,
-                vuln_class=gap.get("vuln_class", ""),
-                coverage_suffix=coverage_suffix,
-                family_suffix=family_suffix,
-            )
-        )
-        gap_metadata: dict = {
-            "endpoint": endpoint,
-            "vuln_class": str(gap.get("vuln_class") or ""),
-            "observed_params": list(gap.get("observed_params") or []),
-            "sources": list(gap.get("sources") or []),
-            "source_count": int(gap.get("source_count", 0) or 0),
-            "route_kind": str(gap.get("route_kind") or ""),
-        }
-        if endpoint != coverage_endpoint:
-            gap_metadata["coverage_endpoint"] = coverage_endpoint
-        if family:
-            gap_metadata["family_key"] = str(family.get("key") or "family")
-            gap_metadata["family_projection"] = str(family.get("kind") or "route-template")
-            gap_metadata["family_size"] = int(family.get("size", 0) or 0)
-            gap_metadata["family_members"] = [
-                str(value).strip()
-                for value in family.get("members") or []
-                if str(value).strip()
-            ]
-        proposals.append(_proposal_entry(
-            gap_text,
-            action_type="coverage-gap",
-            priority=94,
-            command_hint="focused low-risk probe + evidence ledger",
-            metadata=gap_metadata,
-        ))
-    for gap in _actionable_actor_gaps(evidence_summary, case_state)[:3]:
-        actor_text = (
-            "Cover actor matrix gap: {endpoint} x {vuln} with {actor}/{scope}/{variant} "
-            "expected={expected} status={status}. Record result with: {cmd}".format(
-                endpoint=gap.get("endpoint", ""),
-                vuln=gap.get("vuln_class", ""),
-                actor=gap.get("actor", ""),
-                scope=gap.get("object_scope", ""),
-                variant=gap.get("variant", ""),
-                expected=gap.get("expected", ""),
-                status=gap.get("status", ""),
-                cmd=evidence_record_command(target, gap),
-            )
-        )
-        proposals.append(_proposal_entry(
-            actor_text,
-            action_type="actor-gap",
-            priority=96,
-            command_hint="focused replay + tools/evidence_ledger.py record",
-            metadata={
-                "endpoint": str(gap.get("endpoint") or ""),
-                "vuln_class": str(gap.get("vuln_class") or ""),
-                "actor": str(gap.get("actor") or ""),
-                "object_scope": str(gap.get("object_scope") or ""),
-                "variant": str(gap.get("variant") or ""),
-            },
-        ))
-    actor_enrichment = _actor_gap_enrichment_proposal(
-        evidence_summary,
-        case_state,
-    )
-    if actor_enrichment:
-        proposals.append(actor_enrichment)
-
-    ranked_surface_added = 0
-    for item in state.get("recommended_targets") or []:
-        if ranked_surface_added >= 4:
-            break
-        url = str(item.get("url") or "").strip()
-        if not url:
-            continue
-        entry = _ranked_surface_entry(state, url)
-        metadata = {
-            "url": url,
-            "endpoint": _canonicalize_url_path(url),
-            "evidence_refs": list(entry.get("evidence_refs") or []),
-            "request_shapes": list(entry.get("request_shapes") or []),
-        }
-        finding_id = str(item.get("finding_id") or entry.get("finding_id") or "").strip()
-        if finding_id:
-            metadata["finding_id"] = finding_id
-        reason = str(item.get("review_reason") or "recorded surface observation").strip()
-        proposals.append(_proposal_entry(
-            f"Review surface candidate {url}. Observations: {reason}. AI chooses the test and required context.",
-            action_type="surface-review",
-            priority=70,
-            command_hint="review linked evidence and choose the next action",
-            metadata=metadata,
-        ))
-        ranked_surface_added += 1
-    # 先按 action 类型保留代表，再填满窗口；同类 finding/runner 条目不能把
-    # coverage、actor 或 ranked-surface 永久挤出 durable queue。
-    return _bounded_next_proposals(proposals, target)
-
-
-def _classify_next_action(text: str, target: str = "") -> tuple[str, int, str]:
-    """Classify a legacy plain-string proposal into queue fields.
-
-    All in-repo producers now emit structured entries (_proposal_entry); this
-    path only serves genuinely external/ad-hoc plain strings (hand-written
-    notes, future tools) and keeps a single safe default instead of
-    re-growing per-family regex branches.
-    """
-    return "next-action", 50, "execute the smallest safe evidence-producing step"
-
-def _bounded_next_proposals(
-    proposals: list,
-    target: str,
-    limit: int = 8,
-) -> list:
-    """保留 action 类型多样性，再用既有优先级填充固定窗口。
-
-    Structured entries contribute their own type/priority; plain strings are
-    classified as before (dual-read).
-    """
-    deduped_by_text: dict[str, object] = {}
-    for proposal in proposals:
-        text = _entry_text(proposal)
-        if text and text not in deduped_by_text:
-            deduped_by_text[text] = proposal
-    deduped = list(deduped_by_text.values())
-    classified = []
-    for index, proposal in enumerate(deduped):
-        if _is_proposal_entry(proposal):
-            action_type = str(proposal.get("type") or "")
-            priority = int(proposal.get("priority") or 0)
-        else:
-            action_type, priority, _ = _classify_next_action(proposal, target)
-        classified.append((index, proposal, action_type, priority))
-    first_by_type: dict[str, tuple[int, object, str, int]] = {}
-    for item in classified:
-        first_by_type.setdefault(item[2], item)
-
-    representatives = sorted(
-        first_by_type.values(),
-        key=lambda item: (-item[3], item[0]),
-    )[:limit]
-    selected = {item[0] for item in representatives}
-    if len(selected) < limit:
-        for item in sorted(classified, key=lambda value: (-value[3], value[0])):
-            selected.add(item[0])
-            if len(selected) >= limit:
-                break
-    return [proposal for index, proposal in enumerate(deduped) if index in selected]
-
-
-def _extract_action_metadata(text: str) -> dict:
-    """Extract machine-readable fields from a legacy plain-string proposal.
-
-    All in-repo producers now emit structured entries carrying metadata
-    dicts; this path only serves genuinely external/ad-hoc plain strings.
-    Keep the one extraction external strings reliably carry (finding id),
-    and re-read the prose itself when richer fields are needed.
-    """
-    value = str(text or "").strip()
-    metadata: dict = {}
-    match = re.search(
-        r"(?:Candidate evidence gap|Run /validate) for finding\s+(?P<finding_id>[^;\s]+)",
-        value,
-        re.I,
-    )
-    if match:
-        metadata["finding_id"] = match.group("finding_id").strip().rstrip(".")
-    return metadata
-
-def _artifact_category_identity(item: dict) -> str:
-    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
-    artifact = str(metadata.get("artifact") or "").strip()
-    category = str(
-        metadata.get("category")
-        or metadata.get("lead_category")
-        or ""
-    ).strip().lower()
-    if not artifact or not category:
-        return ""
-    normalized_artifact = artifact.replace("\\", "/").strip().rstrip("/").lower()
-    return f"{normalized_artifact}::{category}"
-
-
-def _dedupe_artifact_category_items(items: list[dict]) -> list[dict]:
-    """Keep one queue projection for each artifact/category lead."""
-    result: list[dict] = []
-    positions: dict[str, int] = {}
-    for item in items:
-        identity = _artifact_category_identity(item)
-        if not identity or identity not in positions:
-            if identity:
-                positions[identity] = len(result)
-            result.append(item)
-            continue
-        index = positions[identity]
-        existing = result[index]
-        if (
-            str(item.get("source") or "") == "workflow-lead"
-            and str(existing.get("source") or "") != "workflow-lead"
-        ):
-            result[index] = item
-    return result
-
-
-def _build_next_action_queue(next_items: list, target: str = "") -> list[dict]:
-    queue: list[dict] = []
-    for idx, item in enumerate(next_items, 1):
-        text = _entry_text(item)
-        if _is_proposal_entry(item):
-            action_type = str(item.get("type") or "next-action")
-            priority = int(item.get("priority") or 50)
-            command_hint = str(item.get("command_hint") or "")
-            metadata = dict(item.get("metadata") or {})
-        else:
-            action_type, priority, command_hint = _classify_next_action(item, target)
-            metadata = _extract_action_metadata(item)
-        row = {
-            "id": f"A{idx}",
-            "priority": priority,
-            "type": action_type,
-            "status": "ready",
-            "action": text,
-            "command_hint": command_hint,
-            # Checkpoint projects an explicit flag; it does not infer a
-            # red-line requirement from an action type or its wording.
-            "redline_required": False,
-            "stop_condition": (
-                "record tested, blocked, dead-end, candidate, or validated finding "
-                "before moving to the next queued action"
-            ),
-        }
-        if metadata:
-            row["metadata"] = metadata
-        queue.append(row)
-    queue.sort(key=lambda item: (-int(item["priority"]), str(item["id"])))
-    return queue
-
-_ACTIVATABLE_ACTION_TYPES = {
-    "validation", "candidate-evidence-gap", "actor-gap",
-    "coverage-gap", "evidence-convergence", "json-inject-review", "sql-matrix-review",
-}
-_ACTIVATION_EVIDENCE_ROOTS = {".private", "evidence", "findings", "recon", "reports"}
-
-
-def _capability_chain_review_item(
-    repo: Path,
-    target: str,
-    queue: dict | None = None,
-) -> dict:
-    """Project one unreviewed, evidence-backed primitive from the durable Queue."""
-    queue = queue if queue is not None else load_action_queue(repo, target)
-    actions = [item for item in queue.get("actions", []) if isinstance(item, dict)]
-    reviews = [item for item in actions if str(item.get("type") or "") == "capability-chain-review"]
-    if any(str(item.get("status") or "queued") in ACTION_QUEUE_ACTIVE_STATUSES for item in reviews):
-        return {}
-
-    reviewed = {
-        (
-            str(item.get("source_id") or ""),
-            str((item.get("metadata") or {}).get("generation") or ""),
-        )
-        for item in reviews
-        if str(item.get("status") or "") in ACTION_QUEUE_ACTIVE_STATUSES | ACTION_QUEUE_FINAL_STATUSES
-        and isinstance(item.get("metadata"), dict)
-    }
-    chain_parents = {
-        str((item.get("metadata") or {}).get("parent_action_id") or "")
-        for item in actions
-        if isinstance(item.get("metadata"), dict)
-        and str((item.get("metadata") or {}).get("continuation_kind") or "").lower() == "chain"
-    }
-    candidates: list[tuple[str, str, dict, dict]] = []
-    for parent in actions:
-        parent_id = str(parent.get("id") or "").strip()
-        metadata = parent.get("metadata") if isinstance(parent.get("metadata"), dict) else {}
-        continuation = metadata.get("continuation") if isinstance(metadata.get("continuation"), dict) else {}
-        if (
-            not parent_id
-            or metadata.get("depth_contract_version") != 1
-            or str(parent.get("status") or "") not in ACTION_QUEUE_FINAL_STATUSES
-            or str(continuation.get("kind") or "").lower() == "chain"
-            or parent_id in chain_parents
-        ):
-            continue
-        primitives = metadata.get("capability_primitives")
-        if not isinstance(primitives, list):
-            continue
-        for raw in primitives:
-            if not isinstance(raw, dict):
-                continue
-            capability = re.sub(r"\s+", " ", str(raw.get("capability") or "")).strip()[:240]
-            hint = re.sub(r"\s+", " ", str(raw.get("continuation_hint") or "")).strip()[:300]
-            evidence_ref = action_queue_target_owned_evidence_ref(repo, target, raw.get("evidence_ref"))
-            if not capability or not hint or not evidence_ref:
-                continue
-            primitive = {
-                "capability": capability,
-                "evidence_ref": evidence_ref,
-                "continuation_hint": hint,
-            }
-            normalized = {
-                "capability": capability.casefold(),
-                "evidence_ref": evidence_ref,
-                "continuation_hint": hint.casefold(),
-            }
-            fingerprint = hashlib.sha256(
-                json.dumps(normalized, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
-            ).hexdigest()
-            if (parent_id, fingerprint) not in reviewed:
-                candidates.append((parent_id, fingerprint, parent, primitive))
-
-    if not candidates:
-        return {}
-    parent_id, fingerprint, parent, primitive = min(candidates, key=lambda item: (item[0], item[1]))
-    parent_metadata = parent.get("metadata") if isinstance(parent.get("metadata"), dict) else {}
-    return {
-        "id": f"CHAIN-{parent_id}-{fingerprint[:12]}",
-        "priority": 40,
-        "type": "capability-chain-review",
-        "status": "ready",
-        "action": (
-            f"Review capability primitive from {parent_id}: {primitive['capability']}. "
-            f"Assess one bounded continuation: {primitive['continuation_hint']}"
-        ),
-        "command_hint": "add one normal versioned chain action before resolving this review, or record dead-end/blocked",
-        "redline_required": False,
-        "stop_condition": "materialize at most one evidence-backed chain action or record dead-end/blocked",
-        "source": "hypothesis-loop",
-        "source_id": parent_id,
-        "metadata": {
-            "generation": fingerprint,
-            "parent_action_id": parent_id,
-            "parent_hypothesis_id": str(parent_metadata.get("hypothesis_id") or "")[:160],
-            "primitive_lineage": primitive,
-            "primitive_fingerprint": fingerprint,
-        },
-    }
-
-
-def _target_owned_context_refs(repo: Path, target: str, action: dict, context: dict) -> list[str]:
-    metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
-    candidates = [
-        metadata.get("evidence_ref"),
-        metadata.get("summary_path"),
-        metadata.get("artifact"),
-        *(context.get("must_read") or []),
-    ]
-    target_key = target_storage_key(canonical_target_value(target))
-    candidates.extend([
-        f"recon/{target_key}/surface/summary.json",
-        f"evidence/{target_key}/coverage_matrix.json",
-    ])
-    refs: list[str] = []
-    for raw in candidates:
-        value = str(raw or "").strip()
-        if not value:
-            continue
-        path = Path(value)
-        if not path.is_absolute():
-            path = repo / path
-        try:
-            relative = path.resolve().relative_to(repo.resolve())
-        except (OSError, ValueError):
-            continue
-        if (
-            not relative.parts
-            or relative.parts[0] not in _ACTIVATION_EVIDENCE_ROOTS
-            or target_key not in relative.parts
-            or not path.is_file()
-        ):
-            continue
-        ref = str(relative)
-        if ref not in refs:
-            refs.append(ref)
-        if len(refs) >= 4:
-            break
-    return refs
-
-
-def _attach_activation_context(
-    actions: list[dict],
-    *,
-    repo: Path,
-    target: str,
-    context: dict,
-) -> list[dict]:
-    """Seed only Queue-owned activation fields; test shape stays AI-declared.
-
-    ``endpoint``/``method``/``input_boundary`` describe HOW the item will be
-    tested — that judgment belongs to the AI at claim time (the depth contract
-    already requires them there). Pre-deriving them from action text was
-    code-guessing-the-test and its failure silently un-seeded the Queue-owned
-    cap, making every such item permanently unclaimable (acceptance finding
-    V-1). The refs gate stays: an item pointing at no resolvable target-owned
-    evidence is not claimable, which is anti-forgery, not judgment.
-    """
-    knowledge_refs = [str(value) for value in (context.get("knowledge_cards") or []) if str(value).strip()][:4]
-    for action in actions:
-        if not isinstance(action, dict) or str(action.get("type") or "") not in _ACTIVATABLE_ACTION_TYPES:
-            continue
-        metadata = action.setdefault("metadata", {})
-        if not isinstance(metadata, dict):
-            continue
-        refs = _target_owned_context_refs(repo, target, action, context)
-        action_type = str(action.get("type") or "")
-        if action_type == "evidence-convergence" and len(refs) < 2:
-            continue
-        if not refs:
-            continue
-        metadata.update({
-            "activation_required": True,
-            "knowledge_refs": knowledge_refs,
-            "evidence_ref": refs[-1],
-            "evidence_refs": refs,
-            "baseline_ref": refs[0],
-            "max_hypothesis_actions_cap": 4,
-        })
-        action["activation_required"] = True
-    return actions
-
-def _json_inject_queue_item(state: dict, target: str = "") -> dict:
-    projection = state.get("json_inject") or {}
-    status = str(projection.get("status") or "")
-    generation = str(projection.get("input_fingerprint") or "")
-    if status not in {"candidate_pending", "partial", "invalid_input"} or not generation:
-        return {}
-    action = {
-        "candidate_pending": "Review JSON injection candidates and validate locatable raw evidence.",
-        "partial": "Resume the JSON injection lane after resolving its recorded transport or evidence blocker.",
-        "invalid_input": "Review the rejected JSON endpoint input and supply an in-scope POST endpoint.",
-    }[status]
-    summary_path = str(projection.get("path") or "findings/json_inject/summary.json").strip()
-    raw_source_paths = projection.get("source_paths")
-    source_paths = [
-        str(path).strip()
-        for path in (raw_source_paths if isinstance(raw_source_paths, list) else [])
-        if str(path).strip()
-    ][:3]
-    raw_source_refs = projection.get("source_refs")
-    source_refs = [
-        ref for ref in (raw_source_refs if isinstance(raw_source_refs, list) else [])
-        if isinstance(ref, dict) and str(ref.get("path") or "").strip()
-    ][:3]
-    command_hint = (
-        f"Review {_quote(summary_path)}; replay one exact JSON baseline/variant "
-        "through browser, curl, raw sender, or request-diff"
-    )
-    return {
-        "id": "JSON-INJECT",
-        "priority": 88 if status == "candidate_pending" else 62,
-        "type": "json-inject-review",
-        "status": "ready",
-        "action": action,
-        "command_hint": command_hint,
-        "redline_required": False,
-        "stop_condition": "record candidate validation, complete_no_hit, or the explicit blocker",
-        "source": "json-inject",
-        "source_id": "json-inject-lane",
-        "metadata": {
-            "generation": generation,
-            "summary_path": str(projection.get("path") or ""),
-            "summary_status": status,
-            "source_paths": source_paths,
-            "source_refs": source_refs,
-            "waf_plan_ref": str(projection.get("waf_plan_ref") or "").strip(),
-            "waf_plan_sha256": str(projection.get("waf_plan_sha256") or ""),
-            "waf_ai_variants_executed": int(projection.get("waf_ai_variants_executed", 0) or 0),
-        },
-    }
-
-
-def _sql_matrix_queue_items(state: dict, target: str) -> list[dict]:
-    """Project unfinished query/form SQL summaries into durable work."""
-    matrix = state.get("sql_matrix") if isinstance(state.get("sql_matrix"), dict) else {}
-    items: list[dict] = []
-    for lane in ("query", "form"):
-        projection = matrix.get(lane)
-        if not isinstance(projection, dict):
-            continue
-        status = str(projection.get("status") or "").strip().lower()
-        generation = str(projection.get("input_fingerprint") or "").strip()
-        if status not in {"candidate_pending", "partial", "invalid_input"} or not generation:
-            continue
-        if status == "candidate_pending":
-            action = f"Review {lane} SQL matrix candidates and validate each locatable raw evidence path."
-            priority = 92
-        elif status == "invalid_input":
-            action = f"Repair rejected {lane} SQL matrix input, then rerun the bounded lane."
-            priority = 62
-        else:
-            action = f"Resume the {lane} SQL matrix after resolving its recorded evidence or transport blocker."
-            priority = 64
-        source_paths = [str(path) for path in (projection.get("source_paths") or []) if str(path).strip()][:2]
-        summary_path = str(projection.get("path") or f"findings/sql_matrix/{lane}/summary.json").strip()
-        plan_ref = str(projection.get("waf_plan_ref") or "").strip()
-        command_hint = (
-            f"Review {_quote(summary_path)}; replay one exact {lane} SQL "
-            "baseline/variant through browser, curl, raw sender, or request-diff"
-        )
-        candidates = [
-            {
-                key: candidate[key]
-                for key in ("endpoint", "field", "class", "signal")
-                if key in candidate
-            }
-            for candidate in (projection.get("candidates") or [])[:5]
-            if isinstance(candidate, dict)
-        ]
-        items.append({
-            "id": f"SQL-MATRIX-{lane.upper()}",
-            "priority": priority,
-            "type": "sql-matrix-review",
-            "status": "ready",
-            "action": action,
-            "command_hint": command_hint,
-            "redline_required": False,
-            "stop_condition": "record candidate validation, complete_no_hit, invalid_input, or the explicit blocker",
-            "source": "sql-matrix",
-            "source_id": f"sql-matrix-{lane}",
-            "metadata": {
-                "generation": generation,
-                "lane": lane,
-                "summary_path": str(projection.get("path") or ""),
-                "summary_status": status,
-                "reason": str(projection.get("reason") or ""),
-                "candidate_count": int(projection.get("candidate_count", 0) or 0),
-                "candidates": candidates,
-                "waf_plan_ref": plan_ref,
-                "waf_plan_sha256": str(projection.get("waf_plan_sha256") or ""),
-                "waf_ai_variants_executed": int(projection.get("waf_ai_variants_executed", 0) or 0),
-            },
-        })
-    return items
-
-
-def _filter_final_action_queue_items(
-    repo_root: Path,
-    target: str,
-    items: list[dict],
-    existing: dict | None = None,
-) -> list[dict]:
-    """Remove checkpoint actions already closed in persistent action_queue state."""
-    if existing is None:
-        try:
-            existing = load_action_queue(repo_root, target)
-        except Exception:  # pragma: no cover - checkpoint should stay best-effort
-            return items
-
-    def is_final_for_checkpoint(action: dict) -> bool:
-        """Return whether a persisted action should suppress checkpoint work.
-
-        validation_runner historically synced ``tested_finding`` to
-        ``status=validated``. Under the current AI-first contract that only
-        means runner evidence exists; `/validate` must still run the
-        seven-question + four-gate report-readiness audit. Treat those legacy
-        runner-only rows as non-final so they do not hide the real validate
-        action.
-        """
-        status = str(action.get("status") or "")
-        if status not in ACTION_QUEUE_FINAL_STATUSES:
-            return False
-        metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
-        if metadata.get("dedupe_retired") is True:
-            return False
-        result = str(action.get("result") or "").strip()
-        if status == "validated" and result.startswith("validation-runner-result="):
-            return False
-        return True
-
-    def action_identities(action: dict) -> set[str]:
-        """Return stable finding/endpoint identities for stale candidate suppression."""
-        return action_queue_action_identities(action)
-
-    def from_existing_action(action: dict) -> dict:
-        """把持久队列里的候选动作投影回 checkpoint item。"""
-        item = {
-            "id": str(action.get("id") or ""),
-            "priority": int(action.get("priority", 50) or 50),
-            "type": str(action.get("type") or "next-action"),
-            "status": str(action.get("status") or "queued"),
-            "action": str(action.get("action") or action.get("evidence") or ""),
-            "command_hint": str(action.get("command_hint") or ""),
-            "redline_required": bool(action.get("redline_required", False)),
-            "stop_condition": str(action.get("stop_condition") or ""),
-        }
-        metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
-        if metadata:
-            item["metadata"] = metadata
-        return item
-
-    final_keys = {
-        str(action.get("dedupe_key") or action_queue_dedupe_key(action))
-        for action in existing.get("actions", [])
-        if isinstance(action, dict)
-        and is_final_for_checkpoint(action)
-    }
-    final_identities: set[str] = set()
-    final_signal_identities: set[str] = set()
-    for action in existing.get("actions", []):
-        if not isinstance(action, dict):
-            continue
-        if not is_final_for_checkpoint(action):
-            continue
-        final_identities.update(action_identities(action))
-        signal_identity = action_queue_knowledge_signal_identity(action)
-        if signal_identity:
-            final_signal_identities.add(signal_identity)
-
-    active_candidate_by_key: dict[str, dict] = {}
-    active_candidate_key_by_identity: dict[str, str] = {}
-    for action in existing.get("actions", []):
-        if not isinstance(action, dict):
-            continue
-        if str(action.get("status") or "") != "candidate" or str(action.get("type") or "") != "candidate-evidence-gap":
-            continue
-        if action_identities(action) & final_identities:
-            continue
-        key = str(
-            action_queue_candidate_dedupe_key(action)
-            or action.get("dedupe_key")
-            or action_queue_dedupe_key(action)
-        )
-        active_candidate_by_key.setdefault(key, from_existing_action(action))
-        for identity in action_identities(action):
-            active_candidate_key_by_identity.setdefault(identity, key)
-    if not final_keys and not final_signal_identities and not active_candidate_by_key:
-        return items
-
-    filtered: list[dict] = []
-    emitted_candidate_keys: set[str] = set()
-    for item in items:
-        try:
-            queue_shape = action_queue_checkpoint_item_to_action(target, item)
-            key = str(queue_shape.get("dedupe_key") or action_queue_dedupe_key(queue_shape))
-        except Exception:  # pragma: no cover - keep item if matching fails
-            filtered.append(item)
-            continue
-        signal_identity = action_queue_knowledge_signal_identity(queue_shape)
-        if signal_identity and signal_identity in final_signal_identities:
-            continue
-        candidate_key = ""
-        if str(queue_shape.get("type") or "") in {
-            "surface-review",
-            "ranked-surface",
-            "coverage-gap",
-            "evidence-convergence",
-        }:
-            candidate_key = next(
-                (
-                    active_candidate_key_by_identity[identity]
-                    for identity in action_identities(queue_shape)
-                    if identity in active_candidate_key_by_identity
-                ),
-                "",
-            )
-        if candidate_key:
-            key = candidate_key
-        if key not in final_keys:
-            if key in active_candidate_by_key:
-                if key not in emitted_candidate_keys:
-                    filtered.append(active_candidate_by_key[key])
-                    emitted_candidate_keys.add(key)
-                continue
-            filtered.append(item)
-    for key, candidate in active_candidate_by_key.items():
-        if key not in emitted_candidate_keys:
-            filtered.append(candidate)
-    return filtered
-
-
-def _select_default_candidate(target: str, items: list[dict]) -> dict:
-    """稳定序首项填充 recommended_executable_action 兼容字段。
-
-    选择器启发式已随 dumb-queue refactor 退役（2026-09-14）：不再按
-    priority/report-vs-review 规则“挑默认项”——那是替 AI 做的预排序。
-    该字段降级为候选集稳定序首项，仅供旧消费方兼容显示；真正的选择
-    权在 AI（autopilot.md priority_frontier 契约）。
-    """
-    if not items:
-        return {}
-    return items[0]
-
-
 def _runtime_wait_candidate(wait_action: str, target: str) -> dict:
     """Return a transient status pointer for an active long-running phase lock."""
     if wait_action == "wait_recon":
@@ -2859,25 +980,6 @@ def _runtime_wait_candidate(wait_action: str, target: str) -> dict:
         "redline_required": False,
         "stop_condition": "completed workflow is written or the matching phase lock releases",
     }
-
-
-def _dead_end_proposals(state: dict, coverage_gaps: list[dict]) -> list[str]:
-    if state.get("has_recon") and not coverage_gaps:
-        stats = _surface_stats(state)
-        if (
-            not stats["review_pool"]
-            and not stats["p1"]
-            and not stats["p2"]
-            and not stats["observation_untouched"]
-            and not _unsafe_leads(state)
-        ):
-            return [
-                "Evidence: cached surface has no review candidates and no high-value matrix gaps. "
-                "Why it matters: broad cached recon is currently low-signal. "
-                "Next action: only reopen after new recon, browser, source, or target-memory evidence. "
-                "Stop condition: no new evidence source appears."
-            ]
-    return []
 
 
 def _handoff_summary(
@@ -2931,123 +1033,15 @@ def _handoff_summary(
     return summary
 
 
-def _target_memory_path(repo_root: Path, target: str) -> Path:
-    return repo_root / "memory" / "goals" / "targets" / f"{target_storage_key(target)}.json"
-
-
-def _append_unique_entries(memory: dict, field: str, entries: list[str], target: str) -> int:
-    existing = {
-        str(item.get("text") or "").strip()
-        for item in (memory.get(field) or [])
-        if isinstance(item, dict)
-    }
-    added = 0
-    for text in entries:
-        clean = str(text or "").strip()
-        if text_is_polluted(clean):
-            # 写入防线（2026-09-15 污染治理）：结构外壳意味着上游又把
-            # proposal dict str() 了。静默落盘会让污染进入记忆循环；当场
-            # raise 让生产方修，与 action_queue 对非法 metadata 的风格一致。
-            raise ValueError(
-                f"target memory {field} text contains a serialized structure "
-                f"shell and is invalid for writeback ({clean[:80]!r}...) - "
-                "fix the producer"
-            )
-        if not clean or clean in existing:
-            continue
-        item = {"ts": now_utc(), "text": clean}
-        if field in {"dead_ends", "useful_patterns"}:
-            item.update(
-                {
-                    "entry_id": make_entry_id(
-                        target=target,
-                        field=field,
-                        text=clean,
-                        evidence_refs=[],
-                    ),
-                    "kind": "dead-end" if field == "dead_ends" else "useful-pattern",
-                    "evidence_refs": [],
-                }
-            )
-        memory.setdefault(field, []).append(item)
-        existing.add(clean)
-        added += 1
-    return added
-
-
 def apply_target_memory(repo_root: Path | str, target: str, checkpoint: dict) -> dict:
-    repo = Path(repo_root)
+    """Compatibility response: checkpoint projections never write back experience."""
     resolved_target = canonical_target_value(target)
-    if target_backend(repo, resolved_target) == "primary":
-        return {
-            "status": "skipped",
-            "reason": "primary store owns experience and case context; checkpoint is read-only",
-            "target": resolved_target,
-        }
-    path = _target_memory_path(repo, resolved_target)
-    with target_memory_mutation_lock(path, repo_root=repo, target=resolved_target):
-        memory = load_target_memory_file(path, expected_target=resolved_target) or new_target_memory(resolved_target)
-        memory.setdefault("target", resolved_target)
-
-        added = {
-            "lead": _append_unique_entries(
-                memory,
-                "active_leads",
-                checkpoint.get("target_write_back", {}).get("lead", [])[:3],
-                resolved_target,
-            ),
-            "next": _append_unique_entries(
-                memory,
-                "next_actions",
-                checkpoint.get("target_write_back", {}).get("next", [])[:5],
-                resolved_target,
-            ),
-            "dead_end": _append_unique_entries(
-                memory,
-                "dead_ends",
-                checkpoint.get("target_write_back", {}).get("dead_end", [])[:2],
-                resolved_target,
-            ),
-        }
-
-        handoff = str(checkpoint.get("target_write_back", {}).get("handoff") or "").strip()
-        session_path = ""
-        if handoff:
-            sessions_dir = repo / "memory" / "goals" / "sessions"
-            session_file = write_handoff_file(
-                sessions_dir,
-                target_storage_key(resolved_target),
-                "\n".join([
-                    f"# Target Handoff: {resolved_target}",
-                    "",
-                    f"- Time: {now_utc()}",
-                    f"- Decision: {checkpoint.get('decision', '-')}",
-                    "",
-                    "## Summary",
-                    handoff,
-                    "",
-                ]),
-            )
-            try:
-                session_path = str(session_file.relative_to(repo))
-            except ValueError:
-                session_path = str(session_file)
-            handoff_entry = {"ts": now_utc(), "path": session_path, "summary": handoff}
-            existing_handoffs = memory.setdefault("session_handoffs", [])
-            if not any(isinstance(item, dict) and item.get("summary") == handoff for item in existing_handoffs):
-                existing_handoffs.append(handoff_entry)
-                added["handoff"] = 1
-            else:
-                added["handoff"] = 0
-        else:
-            added["handoff"] = 0
-
-        memory["updated_at"] = now_utc()
-        write_target_memory_json(path, memory)
+    from tools.target_store import runtime_store
+    runtime_store(repo_root, resolved_target)
     return {
-        "target_memory_path": str(path.relative_to(repo)) if path.is_relative_to(repo) else str(path),
-        "session_path": session_path,
-        "added": added,
+        "status": "skipped",
+        "reason": "primary store owns experience and case context; checkpoint is read-only",
+        "target": resolved_target,
     }
 
 
@@ -3059,48 +1053,44 @@ def build_checkpoint(
     memory_dir: str | None = None,
     refresh_coverage: bool = True,
 ) -> dict:
+    return _build_checkpoint(repo_root, target=target, note=note, memory_dir=memory_dir,
+                             refresh_coverage=refresh_coverage)[0]
+
+
+def _build_checkpoint(
+    repo_root: Path | str = BASE_DIR,
+    *,
+    target: str,
+    note: str = "",
+    memory_dir: str | None = None,
+    refresh_coverage: bool = True,
+    full_domain_context: bool = False,
+) -> tuple[dict, dict]:
     repo = Path(repo_root)
     resolved_target = canonical_target_value(target)
-    coverage_target = target_storage_key(resolved_target)
-    store_binding = (
-        TargetStore(repo, resolved_target).binding()
-        if target_backend(repo, resolved_target) == "primary" else None
-    )
-    queue_snapshot = (
-        _queue_snapshot_for_target(str(repo), resolved_target)
-        if target_backend(repo, resolved_target) == "primary"
-        else load_action_queue(repo, resolved_target)
-    )
+    store_binding = runtime_store(repo, resolved_target).binding()
+    queue_snapshot = load_queue_summary(repo, resolved_target)
     case_state = _case_state_summary(repo, resolved_target)
-    state = build_autopilot_state(
+    matrix = read_matrix(resolved_target, repo_root=repo, current_only=True)
+    state, ranked_surface = _build_autopilot_state(
         str(repo),
         resolved_target,
         memory_dir=memory_dir,
         queue_snapshot=queue_snapshot,
         case_state_summary=case_state,
+        coverage_state=matrix,
+        full_domain_context=full_domain_context,
     )
-    matrix = load_matrix_projection(resolved_target, repo_root=repo)
     coverage_rebuilt = False
-    if matrix is None:
-        matrix = load_matrix(coverage_target, repo_root=repo)
-        if refresh_coverage and not matrix_is_fresh(coverage_target, matrix, repo_root=repo):
-            matrix = rebuild_matrix(coverage_target, repo_root=repo)
-            if target_backend(repo, resolved_target) != "primary":
-                save_matrix(coverage_target, matrix, repo_root=repo)
-                coverage_rebuilt = True
-        elif matrix_is_fresh(coverage_target, matrix, repo_root=repo):
-            if target_backend(repo, resolved_target) != "primary":
-                save_matrix_projection(coverage_target, matrix, repo_root=repo)
     gaps = list(matrix.get("_coverage_gaps") or _matrix_gaps(matrix))
-    # Legacy Context Pack 可复用本次 seam 结果；primary 会重新读取 owner 并
-    # 复核 raw 完整性，最终 Store binding 检查拒绝组装期间的 revision 漂移。
-    # Store 存在但读不出时 seam 直接抛错，不静默退回 Ledger。
+    # Recheck raw evidence and reject revision drift before publishing this view.
     evidence_truth = current_cell_projection(repo, resolved_target)
-    context = build_context_pack(
+    require_matching_truth(matrix, evidence_truth)
+    context = _build_context_pack(
         repo,
         target=resolved_target,
         memory_dir=memory_dir,
-        surface_state=state.get("surface") if isinstance(state.get("surface"), dict) else None,
+        surface_state=state["surface"] if isinstance(state.get("surface"), dict) else ranked_surface,
         coverage_state=(gaps, matrix),
         validation_runner_candidates=(
             state.get("validation_runner_candidates")
@@ -3114,93 +1104,37 @@ def build_checkpoint(
         repo,
         target=resolved_target,
         focus_endpoints=_evidence_focus_endpoints(state, gaps),
-        vuln_classes=_evidence_vuln_classes(gaps, queue_snapshot),
+        vuln_classes=_evidence_vuln_classes(evidence_truth["records"], queue_snapshot),
         _truth=evidence_truth,
     )
     actor_gaps = _actor_gaps(evidence_summary)
     case_state_seed = _case_state_seed_summary(repo, resolved_target)
 
-    lead = _lead_proposals(
-        state,
-        context,
-        repo_root=repo,
-        target=resolved_target,
-        evidence_summary=evidence_summary,
-    )
-    next_items = _next_proposals(
-        state,
-        gaps,
-        matrix,
-        resolved_target,
-        context,
-        evidence_summary,
-        case_state,
-        repo_root=repo,
-    )
-    next_action_queue = _build_next_action_queue(next_items, resolved_target)
-    json_inject_item = _json_inject_queue_item(state, resolved_target)
-    if json_inject_item:
-        next_action_queue.append(json_inject_item)
-    next_action_queue.extend(_sql_matrix_queue_items(state, resolved_target))
-    next_action_queue.extend(
-        _workflow_lead_queue_items(
-            state,
-            repo_root=repo,
-            target=resolved_target,
-        )
-    )
-    sibling_item = _sibling_queue_item(
-        state,
-        repo_root=repo,
-        target=resolved_target,
-    )
-    if sibling_item:
-        next_action_queue.append(sibling_item)
-    _attach_activation_context(
-        next_action_queue,
-        repo=repo,
-        target=resolved_target,
-        context=context,
-    )
-    chain_review = _capability_chain_review_item(repo, resolved_target, queue_snapshot)
-    if chain_review:
-        next_action_queue.append(chain_review)
-    next_action_queue = _dedupe_artifact_category_items(next_action_queue)
-    next_action_queue = _filter_final_action_queue_items(
-        repo,
-        resolved_target,
-        next_action_queue,
-        queue_snapshot,
-    )
-    dead_ends = _dead_end_proposals(state, gaps)
+    pending = [row for row in queue_snapshot["actions"]
+               if row["status"] in ACTION_QUEUE_ACTIVE_STATUSES | {"blocked"}]
+    pending.sort(key=lambda row: str(row["id"]))
+    next_action_queue = pending[:5]
+    action_queue_window = {
+        **store_binding, "order": "id", "scope": "nonterminal actions", "selection_owner": "ai",
+        "total": queue_snapshot["pending_total"], "returned": len(next_action_queue),
+        "remaining": queue_snapshot["pending_total"] - len(next_action_queue),
+        "expand_command": shlex.join([
+            "python3", "tools/action_queue.py", "--repo-root", str(repo.resolve()),
+            "list", "--target", resolved_target, "--json",
+        ]),
+        "expansion_scope": "fresh query of all stored actions, including terminal history",
+    }
     runtime_wait_action = str(state.get("next_action") or "")
     if runtime_wait_action in {"wait_recon", "wait_scan"}:
         # 活跃 phase gate 属于瞬时执行态，不是持久 queue 工作。只要匹配 flock
         # 仍被持有，就不要 enqueue validation/report/surface candidates。
         decision = _decision_for_action(runtime_wait_action)
-        lead = []
-        next_items = []
-        dead_ends = []
-        next_action_queue = []
         default_candidate = {}
         recommended_executable_action = _runtime_wait_candidate(runtime_wait_action, resolved_target)
     else:
-        queue_next = (
-            state.get("action_queue_next")
-            if isinstance(state.get("action_queue_next"), dict)
-            else {}
-        )
-        default_candidate = (
-            queue_next
-            if str(queue_next.get("status") or "") == "running"
-            else _select_default_candidate(resolved_target, next_action_queue)
-        )
-        effective_action = str(default_candidate.get("type") or runtime_wait_action)
-        decision = _decision_for_action(effective_action if default_candidate else "handoff")
-        # Backward compatibility: older command docs and tests still consume the
-        # historical field name. This remains an advisory pointer; an already
-        # claimed Queue action stays visible instead of being re-ranked here.
+        default_candidate = queue_snapshot["running_action"]
         recommended_executable_action = default_candidate
+        decision = "continue"
     next_action_label = str(
         recommended_executable_action.get("type")
         or decision
@@ -3216,8 +1150,22 @@ def build_checkpoint(
         note=note,
     )
 
+    material_sources = {
+        "root_claims": state.get("root_finding_claims") or [],
+        "workflow_leads": _json_list((state.get("surface") or {}).get("workflow_leads")),
+        "repo_source": [f"findings/{target_storage_key(resolved_target)}/exposure/{name}"
+                        for name in state.get("repo_source_artifacts") or []],
+    }
     checkpoint = {
         "target": resolved_target,
+        "material_sources": {
+            "sources": {name: {"items": rows[:5], "total": len(rows), "remaining": max(0, len(rows) - 5)}
+                        for name, rows in material_sources.items()},
+            "expand_command": shlex.join([
+                "python3", "tools/autopilot_state.py", "--repo-root", str(repo.resolve()),
+                "--target", resolved_target, "--json",
+            ]),
+        },
         "decision": decision,
         "phase": context.get("phase", "unknown"),
         "next_action": next_action_label,
@@ -3225,7 +1173,10 @@ def build_checkpoint(
         # checkpoint so compaction/resume rebuilds intent, not just state.
         "user_intent": note.strip()[:2000] if note.strip() else "",
         "context_pack": {
-            "skill_route": context.get("skill_route", {}),
+            **({
+                "active_goal": context["active_goal"],
+                "target_experiences": context["target_experiences"],
+            }),
             "knowledge_cards": context.get("knowledge_cards", []),
             "card_catalog": context.get("card_catalog", []),
             "knowledge_card_recall": [
@@ -3234,6 +1185,7 @@ def build_checkpoint(
                 if isinstance(item, dict)
             ],
             "evidence_anchors": context.get("evidence_anchors", []),
+            "source_queries": context.get("source_queries", {}),
             "hypothesis_seeds": context.get("hypothesis_seeds", []),
             "reference_hints": context.get("reference_hints", []),
             "required_checks": context.get("required_checks", []),
@@ -3253,6 +1205,11 @@ def build_checkpoint(
                 "total": len(gaps),
                 "returned": min(len(gaps), 10),
                 "remaining": max(0, len(gaps) - 10),
+                "order": "endpoint,vuln_class",
+                "expand_command": shlex.join([
+                    "python3", "tools/coverage_matrix.py", "find-gaps", "--repo-root",
+                    str(repo.resolve()), "--target", resolved_target,
+                ]),
                 "digest": hashlib.sha256(
                     json.dumps(gaps, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
                 ).hexdigest()[:16],
@@ -3285,37 +1242,26 @@ def build_checkpoint(
         "validation_runner_candidates": state.get("validation_runner_candidates") or [],
         "unsafe_skipped": _unsafe_leads(state),
         "target_write_back": {
-            "lead": [_entry_text(item) for item in lead],
-            "next": [_entry_text(item) for item in next_items],
-            "dead_end": [_entry_text(item) for item in dead_ends],
+            "lead": [],
+            "next": [],
+            "dead_end": [],
             "handoff": handoff,
         },
         "next_action_queue": next_action_queue,
+        "action_queue_window": action_queue_window,
         "default_candidate": default_candidate,
         "recommended_executable_action": recommended_executable_action,
         "retrospect": f"/retrospect {resolved_target}",
-        "apply_status": "proposal only; CLI applies target memory by default (--no-apply-target-memory to skip)",
+        "apply_status": "read-only Store view; persist changes through explicit owner commands",
     }
-    if store_binding is not None:
-        if TargetStore(repo, resolved_target).binding() != store_binding:
-            raise ValueError("primary checkpoint inputs changed during assembly")
-        checkpoint["runtime_witness"] = {
-            "status": "not_published",
-            "reason": "primary checkpoint build is read-only; publish via explicit CLI command",
-            "path": str(_checkpoint_witness_path(repo, resolved_target).relative_to(repo)),
-        }
-    else:
-        witness = write_checkpoint_witness(repo, resolved_target, checkpoint)
-        witness_path = Path(witness["path"])
-        checkpoint["runtime_witness"] = {
-            "schema_version": witness["payload"]["schema_version"],
-            "path": str(witness_path.relative_to(repo)) if witness_path.is_relative_to(repo) else str(witness_path),
-        }
-    return checkpoint
-
-
-def _quote(text: str) -> str:
-    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    if TargetStore(repo, resolved_target).binding() != store_binding:
+        raise ValueError("primary checkpoint inputs changed during assembly")
+    checkpoint["runtime_witness"] = {
+        "status": "not_published",
+        "reason": "primary checkpoint build is read-only; publish via explicit CLI command",
+        "path": str(_checkpoint_witness_path(repo, resolved_target).relative_to(repo)),
+    }
+    return checkpoint, state["resume_summary"]
 
 
 def _fmt_list(items: list[str]) -> list[str]:
@@ -3337,15 +1283,18 @@ def _fmt_action_queue(items: list[dict]) -> list[str]:
     for item in items[:5]:
         redline = " red-line-first" if item.get("redline_required") else ""
         lines.append(
-            "  - {id} [{type} p{priority}{redline}] {action} | hint: {hint}".format(
+            "  - {id} [{type} p{priority}{redline}] {action} | status: {status} | hint: {hint}".format(
                 id=item.get("id", ""),
                 type=item.get("type", ""),
                 priority=item.get("priority", ""),
                 redline=redline,
                 action=item.get("action", ""),
+                status=item.get("status", ""),
                 hint=item.get("command_hint", ""),
             )
         )
+        if item.get("result") or item.get("evidence"):
+            lines.append(f"    reason/evidence: {item.get('result') or item.get('evidence')}")
     return lines
 
 
@@ -3424,6 +1373,12 @@ def format_checkpoint(checkpoint: dict) -> str:
     case_state = checkpoint.get("case_state") or {}
     evidence = checkpoint.get("evidence_ledger") or {}
     actor_matrix = evidence.get("actor_matrix") or {}
+    action_window = checkpoint.get("action_queue_window") or {}
+    action_window_lines = ([
+        f"  - Stored nonterminal actions: total={action_window['total']}, "
+        f"returned={action_window['returned']}, remaining={action_window['remaining']}; order=id; AI chooses",
+        f"  - Expand all stored actions (includes terminal history): {action_window['expand_command']}",
+    ] if action_window else [])
     queue_sync = checkpoint.get("action_queue_sync") or {}
     knowledge_trace = checkpoint.get("knowledge_effect_trace")
     if not isinstance(knowledge_trace, dict):
@@ -3438,12 +1393,33 @@ def format_checkpoint(checkpoint: dict) -> str:
             next_id=(queue_sync.get("next") or {}).get("id", "none"),
         )
 
+    material_lines = []
+    materials = checkpoint.get("material_sources") or {}
+    for name, window in (materials.get("sources") or {}).items():
+        if not window["total"]:
+            continue
+        material_lines.append(f"  - {name}: total={window['total']}, remaining={window['remaining']}")
+        for item in window["items"]:
+            if isinstance(item, dict):
+                label = str(item.get("title") or item.get("category") or item.get("id") or "material")
+                if item.get("category") and item["category"] != label:
+                    label += f" [{item['category']}]"
+                ref = str(item.get("source_file") or item.get("artifact") or item.get("source") or "")
+                material_lines.append(f"    - {label} source={ref}")
+            else:
+                material_lines.append(f"    - {item}")
+    if material_lines:
+        material_lines = ["- Discovery material (advisory; AI chooses work):", *material_lines,
+                          f"  - Expand: {materials['expand_command']}"]
     lines = [
         "CHECKPOINT DECISION",
         f"- Target: {checkpoint.get('target', '')}",
         f"- Phase: {checkpoint.get('phase', '')}",
         f"- Decision: {checkpoint.get('decision', '')}",
         f"- Next action: {checkpoint.get('next_action', '')}",
+        *([f"- Active goal: {context['active_goal'] or '-'}"] if "active_goal" in context else []),
+        *format_target_experiences(context.get("target_experiences") or {}),
+        *format_source_queries({"surface": (context.get("source_queries") or {}).get("surface")}),
         "- Recommended knowledge cards:",
         *_fmt_list([str(item) for item in context.get("knowledge_cards", [])]),
         "- Knowledge effect: {suggestion} -> {action} -> {result}".format(
@@ -3467,6 +1443,8 @@ def format_checkpoint(checkpoint: dict) -> str:
         f"  - endpoints: {summary.get('endpoints', 0)}",
         f"  - high-value gaps: {summary.get('high_value_gaps_count', 0)}",
         f"  - actionable high-value gaps: {summary.get('actionable_high_value_gaps_count', 0)}",
+        *([f"  - Full coverage query: {coverage['window']['expand_command']}"]
+          if (coverage.get("window") or {}).get("expand_command") else []),
         "  - high-risk lanes: " + ", ".join(
             f"{name}={item.get('disposition', 'unknown')}"
             for name, item in (coverage.get("high_risk_lanes") or {}).items()
@@ -3511,8 +1489,10 @@ def format_checkpoint(checkpoint: dict) -> str:
             checkpoint.get("validation_runner_candidates") or [],
             limit=5,
         )),
+        *material_lines,
         "- Next action queue:",
         *_fmt_action_queue(checkpoint.get("next_action_queue", [])),
+        *action_window_lines,
         "- Durable action queue sync:",
         f"  - {queue_sync_text}",
         "- Default candidate (compat pointer):",
@@ -3533,7 +1513,7 @@ def format_checkpoint(checkpoint: dict) -> str:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Build an autopilot checkpoint write-back proposal.")
+    parser = argparse.ArgumentParser(description="Read an autopilot checkpoint from the active target Store.")
     parser.add_argument("--target", required=True)
     parser.add_argument("--repo-root", default=str(BASE_DIR))
     parser.add_argument("--memory-dir", default="")
@@ -3543,8 +1523,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--apply-target-memory",
         dest="apply_target_memory",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Write target memory from checkpoint suggestions (default: on; use --no-apply-target-memory to skip)",
+        default=False,
+        help="Compatibility option; checkpoint never writes memory. Use explicit target_memory commands.",
     )
     round_operation = parser.add_mutually_exclusive_group()
     round_operation.add_argument("--round-begin", action="store_true")
@@ -3631,28 +1611,6 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else result["path"])
         return 0
-    backend = target_backend(repo, resolved_target)
-    if backend == "primary":
-        # Primary Store owns actions and findings.  Checkpoint is a read-only
-        # projection here; legacy queue/claim reconciliation would create a
-        # second lifecycle owner beside the transactional store.
-        claim_sync = {"status": "skipped", "reason": "primary store owns findings and actions"}
-    else:
-        # Durable handoff damage must stop before legacy reconciliation, rather
-        # than being interpreted as an empty queue.
-        try:
-            load_action_queue(repo, resolved_target)
-        except (OSError, ValueError, KeyError) as exc:
-            print(f"checkpoint action queue preflight failed: {exc}", file=sys.stderr)
-            return 2
-        try:
-            claim_sync = reconcile_root_finding_claims(
-                repo / "findings" / target_storage_key(resolved_target),
-                target=resolved_target,
-            )
-        except (OSError, ValueError, KeyError) as exc:
-            print(f"checkpoint finding-claim reconciliation failed: {exc}", file=sys.stderr)
-            return 2
     try:
         checkpoint = build_checkpoint(
             repo,
@@ -3664,41 +1622,18 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError, KeyError) as exc:
         print(f"checkpoint state build failed: {exc}", file=sys.stderr)
         return 2
-    checkpoint["root_finding_claim_sync"] = claim_sync
-    if backend == "primary":
-        checkpoint["action_queue_sync"] = {
-            "status": "skipped",
-            "reason": "primary store action projection is read-only",
-        }
-        checkpoint["runtime_witness"] = {
-            "status": "not_published",
-            "reason": "primary checkpoint command is read-only; publish via explicit witness command",
-            "path": str(_checkpoint_witness_path(repo, resolved_target).relative_to(repo)),
-        }
-    else:
-        root_claims = list_root_finding_claims(
-            repo / "findings" / target_storage_key(resolved_target),
-            target=resolved_target,
-            include_reconciled=True,
-        )
-        _append_root_claim_queue_items(checkpoint, root_claims, resolved_target)
-        try:
-            sync_checkpoint_action_queue(repo, checkpoint)
-        except (OSError, ValueError, KeyError) as exc:
-            print(f"checkpoint action queue sync failed: {exc}", file=sys.stderr)
-            return 2
+    checkpoint["action_queue_sync"] = {
+        "status": "skipped",
+        "reason": "primary store action projection is read-only",
+    }
+    checkpoint["runtime_witness"] = {
+        "status": "not_published",
+        "reason": "primary checkpoint command is read-only; publish via explicit witness command",
+        "path": str(_checkpoint_witness_path(repo, resolved_target).relative_to(repo)),
+    }
     if args.apply_target_memory:
         result = apply_target_memory(repo, checkpoint["target"], checkpoint)
-        checkpoint["apply_status"] = (
-            "applied target memory"
-            if result.get("status") != "skipped"
-            else "skipped primary-store legacy memory write"
-        )
         checkpoint["apply_result"] = result
-    else:
-        checkpoint["apply_status"] = (
-            "not applied; rerun without --no-apply-target-memory to write target memory"
-        )
 
     if args.json:
         print(json.dumps(checkpoint, ensure_ascii=False, indent=2))

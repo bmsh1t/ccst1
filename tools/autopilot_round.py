@@ -14,7 +14,6 @@ from pathlib import Path
 
 try:
     from tools.autopilot_args import MAX_LANES
-    from tools.action_queue import load_queue
     from tools.autopilot_state import (
         _finalize_closure_continuation,
         _owner_source_markers,
@@ -22,21 +21,15 @@ try:
         load_closure_projection,
     )
     from tools.checkpoint import (
-        _append_root_claim_queue_items,
         begin_round,
         build_checkpoint,
         checkpoint_witness_lock,
         record_round_closure,
-        sync_checkpoint_action_queue,
     )
-    from tools.finding_index import list_root_finding_claims, reconcile_root_finding_claims
-    from tools.surface import build_surface_review
-    from tools.surface_index import SurfaceIndexError
-    from tools.target_paths import canonical_target_value, target_storage_key
-    from tools.target_store import target_backend, target_switch_lock
+    from tools.target_paths import canonical_target_value
+    from tools.target_store import runtime_store, target_switch_lock
 except ImportError:  # pragma: no cover - direct tools/ execution
     from autopilot_args import MAX_LANES  # type: ignore
-    from action_queue import load_queue  # type: ignore
     from autopilot_state import (  # type: ignore
         _finalize_closure_continuation,
         _owner_source_markers,
@@ -44,36 +37,28 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         load_closure_projection,
     )
     from checkpoint import (  # type: ignore
-        _append_root_claim_queue_items,
         begin_round,
         build_checkpoint,
         checkpoint_witness_lock,
         record_round_closure,
-        sync_checkpoint_action_queue,
     )
-    from finding_index import list_root_finding_claims, reconcile_root_finding_claims  # type: ignore
-    from surface import build_surface_review  # type: ignore
-    from surface_index import SurfaceIndexError  # type: ignore
-    from target_paths import canonical_target_value, target_storage_key  # type: ignore
-    from target_store import target_backend, target_switch_lock  # type: ignore
+    from target_paths import canonical_target_value  # type: ignore
+    from target_store import runtime_store, target_switch_lock  # type: ignore
 
 
 def _closure_snapshot(repo_root: Path | str, target: str) -> tuple[dict, dict]:
     """Read the bounded owner projections used by both coordinator stages."""
     for attempt in range(2):
         source_markers_before = _owner_source_markers(repo_root, target)
-        queue_snapshot = load_queue(repo_root, target)
         state = build_autopilot_state(
             str(repo_root),
             target,
             bounded=True,
-            queue_snapshot=queue_snapshot,
         )
         closure = load_closure_projection(
             str(repo_root),
             state,
             max_lanes_reached=False,
-            queue_snapshot=queue_snapshot,
         )
         if source_markers_before != _owner_source_markers(repo_root, target):
             closure = {
@@ -118,30 +103,6 @@ def _surface_projection_pending(state: dict, closure: dict) -> bool:
         and bool(state.get("has_recon") or state.get("surface_context_required"))
         and str(projection.get("status") or "").strip().lower() != "valid"
     )
-
-
-def _refresh_surface_if_pending(
-    repo_root: Path,
-    target: str,
-    state: dict,
-    closure: dict,
-) -> tuple[dict, dict]:
-    """Refresh the Surface owner before closure when owner writes changed it.
-
-    Lane work and checkpoint write-back can publish inputs after the previous
-    Surface build. Rebuilding after those writes keeps the final closure bound
-    to the same manifest without making every owner remember a refresh command.
-    A malformed or unavailable Surface remains an explicit handoff; checkpoint
-    write-back may persist, but the round itself stays open until the projection
-    is valid again.
-    """
-    if not _surface_projection_pending(state, closure):
-        return state, closure
-    try:
-        build_surface_review(repo_root, target, refresh=True)
-    except (OSError, ValueError, SurfaceIndexError):
-        return state, closure
-    return _closure_snapshot(repo_root, target)
 
 
 def _result(
@@ -241,15 +202,13 @@ def settle_round(
 
     The preflight is deliberately before checkpoint construction.  A started
     lane therefore fails without changing the witness, Queue, or coverage.
-    Primary checkpoints stay read-only; only legacy targets reconcile owners.
+    Checkpoints stay read-only; changes go through explicit Store commands.
     A completed round is a read-only idempotent replay.
     """
     repo = Path(repo_root)
     resolved_target = canonical_target_value(target)
     with target_switch_lock(repo, resolved_target), checkpoint_witness_lock(repo, resolved_target):
-        backend = target_backend(repo, resolved_target)
-        if backend == "preview":
-            raise ValueError("round settle cannot mutate a preview target; complete explicit cutover first")
+        runtime_store(repo, resolved_target)
         state, closure = _closure_snapshot(repo, resolved_target)
         progress = _round_progress(closure)
         if not progress:
@@ -285,40 +244,17 @@ def settle_round(
                 + ", ".join(map(str, progress["invalid_evidence_lanes"]))
             )
 
-        if backend == "legacy":
-            findings_dir = repo / "findings" / target_storage_key(resolved_target)
-            claim_sync = reconcile_root_finding_claims(findings_dir, target=resolved_target)
         checkpoint = build_checkpoint(
             repo,
             target=resolved_target,
             note=note,
             refresh_coverage=refresh_coverage,
         )
-        if backend == "primary":
-            checkpoint["action_queue_sync"] = {
-                "status": "skipped",
-                "reason": "primary store action projection is read-only",
-            }
-        else:
-            checkpoint["root_finding_claim_sync"] = claim_sync
-            _append_root_claim_queue_items(
-                checkpoint,
-                list_root_finding_claims(
-                    findings_dir,
-                    target=resolved_target,
-                    include_reconciled=True,
-                ),
-                resolved_target,
-            )
-            sync_checkpoint_action_queue(repo, checkpoint)
+        checkpoint["action_queue_sync"] = {
+            "status": "skipped",
+            "reason": "primary store action projection is read-only",
+        }
         state, closure = _closure_snapshot(repo, resolved_target)
-        if backend == "legacy":
-            state, closure = _refresh_surface_if_pending(
-                repo,
-                resolved_target,
-                state,
-                closure,
-            )
         if _surface_projection_pending(state, closure):
             return _result(
                 "settle",

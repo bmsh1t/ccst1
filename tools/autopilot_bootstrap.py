@@ -20,6 +20,7 @@ try:
     from tools.runtime_config import is_ctf_mode_enabled
     from tools.runtime_doctor import KIND_ORDER, compare_runtime
     from tools.scope_context import ScopeContext, ScopeContextError
+    from tools.scope_source import load_scope_context
 except ModuleNotFoundError:  # 兼容 `python3 tools/autopilot_bootstrap.py` 直接执行
     from autopilot_args import parse_autopilot_args
     from autopilot_continuation import load_continuation
@@ -28,6 +29,7 @@ except ModuleNotFoundError:  # 兼容 `python3 tools/autopilot_bootstrap.py` 直
     from runtime_config import is_ctf_mode_enabled
     from runtime_doctor import KIND_ORDER, compare_runtime
     from scope_context import ScopeContext, ScopeContextError
+    from scope_source import load_scope_context
 
 
 SCHEMA_VERSION = 1
@@ -846,7 +848,7 @@ def build_autopilot_bootstrap(
                 if public_continuation.get(key) not in (None, "")
             }
         else:
-            scope_context = ScopeContext.from_target(arguments["target"])
+            scope_context = load_scope_context(resolved_repo, arguments["target"])
     except ScopeContextError as exc:
         payload["action"] = "stop_invalid_scope"
         payload["error"] = {

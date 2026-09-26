@@ -96,7 +96,7 @@ def _loop_guard_authoritative_reason(state: dict) -> str:
     case_state = state.get("case_state") or {}
     if int(case_state.get("open_hypotheses", 0) or 0) > 0:
         return "authoritative_case_state_work"
-    if state.get("root_finding_claim_next") or state.get("memory_candidate_next"):
+    if state.get("root_finding_claim_next"):
         return "authoritative_finding_work"
     findings = state.get("structured_findings") or {}
     if isinstance(findings, dict) and any(

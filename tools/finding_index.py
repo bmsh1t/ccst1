@@ -10,14 +10,12 @@ slightly different ways.
 from __future__ import annotations
 
 import argparse
-import fcntl
 import hashlib
 import json
 import os
 import re
 import sqlite3
 import tempfile
-from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -25,11 +23,11 @@ from typing import Any
 try:
     from tools.closure_resolver import canonical_endpoint_identity
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
-    from tools.target_store import StoreError, target_backend, target_switch_lock
+    from tools.target_store import StoreError, target_switch_lock
 except ImportError:  # pragma: no cover - top-level tools/ import
     from closure_resolver import canonical_endpoint_identity
     from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
-    from target_store import StoreError, target_backend, target_switch_lock  # type: ignore
+    from target_store import StoreError, target_switch_lock  # type: ignore
 
 SCHEMA_VERSION = 1
 MUTATION_EVENT_SCHEMA_VERSION = 1
@@ -46,6 +44,7 @@ def _finding_backend_context(findings_dir: str | Path, target: str | None = None
     root = Path(os.path.abspath(findings_dir))
     if root != root.resolve():
         raise StoreError(f"finding directory must not traverse symlinks: {root}")
+    root = next((path for path in (root, *root.parents) if path.parent.name == "findings"), root)
     repo_root = root.parent.parent if root.parent.name == "findings" else root.parent
     key = root.name
     store_path = repo_root / "state" / key / "metadata.sqlite3"
@@ -59,9 +58,6 @@ def _finding_backend_context(findings_dir: str | Path, target: str | None = None
             raise StoreError(f"cannot determine finding backend for {root}") from exc
     elif fence_path.exists() or fence_path.is_symlink():
         raise StoreError(f"fenced target store is unavailable for legacy finding writer: {root}")
-    else:
-        payload = _load_json_value(root / "findings.json")
-        stored_target = payload.get("target") if isinstance(payload, dict) else None
     resolved_target = canonical_target_value(str(stored_target or target or key))
     if target_storage_key(resolved_target) != key or (
         target and canonical_target_value(target) != resolved_target
@@ -80,28 +76,10 @@ def _finding_output_path(findings_dir: str | Path, output: str | Path) -> Path:
     return path
 
 
-def _assert_legacy_writer_allowed(findings_dir: str | Path, target: str | None = None) -> None:
-    """Reject legacy Finding writes once a target Store claims ownership."""
-    repo_root, resolved_target = _finding_backend_context(findings_dir, target)
-    backend = target_backend(repo_root, resolved_target)
-    if backend != "legacy":
-        raise StoreError(f"legacy finding writer is disabled for {backend} target")
 ROOT_CLAIM_KIND = "finding_claim"
 ROOT_CLAIM_SCHEMA_VERSION = 1
 URL_RE = re.compile(r"https?://[^\s|`>'\")]+")
 BRACKET_RE = re.compile(r"\[([^\]]+)\]")
-SOURCE_CODE_SUFFIXES = frozenset({
-    ".c", ".cc", ".cpp", ".cs", ".go", ".h", ".hpp", ".java", ".js",
-    ".jsx", ".kt", ".kts", ".php", ".py", ".rb", ".rs", ".scala",
-    ".swift", ".ts", ".tsx", ".vue",
-})
-SOURCE_GUARD_SHAPE_RE = re.compile(
-    r"(?:\b(?:if|unless|assert|raise|throw|return|continue|break|deny|forbid|"
-    r"authorize|permission|require|ensure|guard|abort|panic)\b|"
-    r"\b(?:contains|includes|has_permission|can_[a-z0-9_]*|is_allowed)\s*\()",
-    re.IGNORECASE,
-)
-SOURCE_COMMENT_PREFIXES = ("#", "//", "/*", "*", "<!--")
 
 CATEGORY_TYPE_MAP = {
     "upload": "upload",
@@ -165,40 +143,12 @@ REPORTABLE_TYPES = {
     "saml",
 }
 
-PRESERVED_FINDING_FIELDS = {
-    "validation_status",
-    "report_status",
-    "validation_summary",
-    "validation_summary_sha256",
-    "validation_report_path",
-    "validated_at",
-    "vuln_class",
-    "updated_at",
-    "report_file",
-    "report_id",
-    "queue_sync",
-    "runner_operation_id",
-    "runner_summary",
-    "runner_summary_path",
-    # 根目录的人工/AI finding claim 仍由本 owner 投影到 canonical index；重建
-    # scanner index 时不能丢失其可追溯来源和稳定 identity。
-    "claim_id",
-    "claim_source_file",
-    "claim_revision",
-    "claim_sources",
-    "claimed_severity",
-    "claim_target",
-    "claim_status",
-    "incomplete_fields",
-    "claimed_validation_status",
-    "claimed_report_status",
-    "owner_revalidation_reason",
-}
 
 # 根目录 JSON 是 Claude/人工常见的临时落点，但它不是 canonical finding
 # lifecycle。以下文件是已有工具的摘要/索引，不能被误判为一个 claim。
 ROOT_CLAIM_EXCLUDED_FILES = {
     "findings.json",
+    "scanner_candidates.json",
     "validation-summary.json",
     "last-validate.json",
     "autopilot_run.json",
@@ -236,22 +186,6 @@ def _now_utc() -> str:
 def mutation_events_path(findings_dir: str | Path) -> Path:
     """Return the append-only owner-provenance path for one target index."""
     return Path(findings_dir) / MUTATION_EVENTS_FILENAME
-
-
-@contextmanager
-def finding_mutation_lock(findings_dir: str | Path, *, target: str | None = None):
-    """串行化单 target canonical findings 的完整 read-modify-write。"""
-    root = Path(findings_dir)
-    repo_root, resolved_target = _finding_backend_context(root, target)
-    with target_switch_lock(repo_root, resolved_target):
-        lock_path = root / ".locks" / "findings.lock"
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        with lock_path.open("a+", encoding="utf-8") as handle:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _canonical_target_or_raw(value: str | None) -> str:
@@ -338,240 +272,6 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def _is_source_backed_finding(finding: dict[str, Any]) -> bool:
-    """判断 finding 的原始来源是否为可执行源码，而不是证据 artifact。"""
-    raw = str(finding.get("source_file") or "").strip()
-    if not raw:
-        return False
-    normalized = raw.removeprefix("repo:").split("#", 1)[0]
-    return Path(normalized).suffix.lower() in SOURCE_CODE_SUFFIXES
-
-
-def _resolve_source_guard_path(findings_dir: str | Path, value: Any) -> Path:
-    """解析 validation summary 中的源码引用，不依赖调用方当前目录。"""
-    raw = str(value or "").strip()
-    if not raw:
-        raise ValueError("source rejection requires source_guard.source_file")
-    normalized = raw.removeprefix("repo:")
-    path = Path(normalized).expanduser()
-    if path.is_absolute():
-        candidates = [path]
-    else:
-        target_dir = Path(findings_dir).resolve()
-        repo_root = target_dir.parent.parent if target_dir.parent.name == "findings" else target_dir
-        candidates = [repo_root / path, target_dir / path]
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate.resolve()
-    raise ValueError(f"source rejection guard file is not readable: {raw}")
-
-
-def _verify_source_rejection_summary(
-    findings_dir: str | Path,
-    finding: dict[str, Any],
-    updates: dict[str, Any],
-) -> None:
-    """在源码 finding 进入 rejected 前确定性验证 guard 引用。
-
-    这里只验证引用真实性，不推断 guard 是否支配危险路径；后者仍由验证流程负责。
-    """
-    if not _is_source_backed_finding(finding):
-        return
-
-    summary_value = str(updates.get("validation_summary") or "").strip()
-    if not summary_value:
-        raise ValueError("source rejection requires a new validation_summary")
-    summary_path = _resolve_finding_artifact_path(findings_dir, summary_value)
-    if summary_path is None or not summary_path.is_file():
-        raise ValueError(f"source rejection validation summary is not readable: {summary_value}")
-    try:
-        summary = json.loads(summary_path.read_text(encoding="utf-8"))
-    except OSError as exc:
-        raise ValueError(f"unable to read source rejection summary: {summary_path}: {exc}") from exc
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"invalid source rejection summary: {summary_path}: {exc.msg}") from exc
-    if not isinstance(summary, dict) or str(summary.get("result") or "").strip().lower() != "rejected":
-        raise ValueError("source rejection validation summary must set result=rejected")
-
-    guard = summary.get("source_guard")
-    if not isinstance(guard, dict):
-        raise ValueError("source rejection validation summary requires source_guard")
-    source_path = _resolve_source_guard_path(
-        findings_dir,
-        guard.get("source_file") or guard.get("file"),
-    )
-    if source_path.suffix.lower() not in SOURCE_CODE_SUFFIXES:
-        raise ValueError("source rejection guard must cite a supported source-code file")
-
-    line_number = guard.get("line_number")
-    if isinstance(line_number, bool) or not isinstance(line_number, int) or line_number < 1:
-        raise ValueError("source rejection source_guard.line_number must be a positive integer")
-    quote = str(guard.get("quote") or "").strip()
-    if not quote:
-        raise ValueError("source rejection source_guard.quote must be non-empty")
-    if not SOURCE_GUARD_SHAPE_RE.search(quote):
-        raise ValueError("source rejection quote does not have guard shape")
-
-    try:
-        lines = source_path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError as exc:
-        raise ValueError(f"unable to read source rejection guard file: {source_path}: {exc}") from exc
-    if line_number > len(lines):
-        raise ValueError("source rejection source_guard.line_number is outside the source file")
-    source_line = lines[line_number - 1]
-    if source_line.lstrip().startswith(SOURCE_COMMENT_PREFIXES):
-        raise ValueError("source rejection guard points to a comment, not executable source")
-    normalized_quote = re.sub(r"\s+", "", quote).lower()
-    normalized_line = re.sub(r"\s+", "", source_line).lower()
-    if not normalized_line.startswith(normalized_quote):
-        raise ValueError("source rejection guard quote does not match the cited source line")
-
-
-def _attach_validation_summary_digest(
-    findings_dir: str | Path,
-    finding: dict[str, Any],
-) -> None:
-    """Bind a locatable validation summary to the row/event snapshot."""
-    path = _resolve_finding_artifact_path(
-        findings_dir,
-        str(finding.get("validation_summary") or ""),
-    )
-    if path is None or not path.is_file():
-        return
-    finding["validation_summary_sha256"] = _sha256_file(path)
-
-
-def _new_mutation_event_id(
-    *,
-    target: str,
-    finding_id: str,
-    operation: str,
-    fingerprint: str,
-    recorded_at: str,
-    ordinal: int,
-) -> str:
-    seed = "|".join((target, finding_id, operation, fingerprint, recorded_at, str(ordinal), str(os.getpid())))
-    return "fmut_" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:20]
-
-
-def _prepare_owner_provenance(
-    findings: list[dict[str, Any]],
-    *,
-    target: str,
-    operation: str,
-) -> list[dict[str, Any]]:
-    """Attach owner metadata to mutated rows and return their audit events.
-
-    The row mutation and event are intentionally built from the same stripped
-    snapshot. Consumers can therefore detect a later direct JSON edit without
-    inventing a second finding lifecycle or parsing caller-specific payloads.
-    """
-    resolved_target = _canonical_target_or_raw(target)
-    recorded_at = _now_utc()
-    events: list[dict[str, Any]] = []
-    for ordinal, finding in enumerate(findings, 1):
-        if not isinstance(finding, dict):
-            continue
-        finding.pop(OWNER_PROVENANCE_FIELD, None)
-        finding_id = str(finding.get("id") or "").strip()
-        if not finding_id:
-            continue
-        fingerprint = finding_row_fingerprint(finding)
-        evidence_summary = finding_evidence_summary(finding)
-        event_id = _new_mutation_event_id(
-            target=resolved_target,
-            finding_id=finding_id,
-            operation=operation,
-            fingerprint=fingerprint,
-            recorded_at=recorded_at,
-            ordinal=ordinal,
-        )
-        provenance = {
-            "event_id": event_id,
-            "owner": FINDING_OWNER,
-            "operation": operation,
-            "recorded_at": recorded_at,
-            "fingerprint": fingerprint,
-        }
-        finding[OWNER_PROVENANCE_FIELD] = provenance
-        events.append(
-            {
-                "schema_version": MUTATION_EVENT_SCHEMA_VERSION,
-                "event_id": event_id,
-                "recorded_at": recorded_at,
-                "owner": FINDING_OWNER,
-                "operation": operation,
-                "target": resolved_target,
-                "finding_id": finding_id,
-                "endpoint": str(finding.get("url") or finding.get("endpoint") or "").strip(),
-                "vuln_class": str(
-                    finding.get("vuln_class")
-                    or finding.get("type")
-                    or finding.get("category")
-                    or ""
-                ).strip(),
-                "validation_status": str(finding.get("validation_status") or "").strip(),
-                "report_status": str(finding.get("report_status") or "").strip(),
-                "evidence_summary": evidence_summary,
-                "finding_fingerprint": fingerprint,
-            }
-        )
-    return events
-
-
-def _append_mutation_events(path: Path, events: list[dict[str, Any]]) -> None:
-    """Append complete owner events with one locked, fsynced write sequence."""
-    if not events:
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    encoded = "".join(
-        json.dumps(event, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
-        for event in events
-    ).encode("utf-8")
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        try:
-            written = os.write(fd, encoded)
-            if written != len(encoded):
-                raise OSError(f"partial finding provenance write: {written}/{len(encoded)} bytes")
-            os.fsync(fd)
-        finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-    finally:
-        os.close(fd)
-
-
-def _write_payload_with_owner_provenance(
-    path: Path,
-    payload: dict[str, Any],
-    *,
-    findings_dir: Path,
-    target: str,
-    operation: str,
-    mutated_findings: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Persist canonical JSON then append matching owner mutation events.
-
-    There is no cross-file transaction in this repository. The canonical index
-    remains the source of truth, while a provenance append failure is surfaced
-    to the caller and intentionally leaves a detectable runtime-invalid row.
-    Retrying the owner mutation repairs that state without an unsafe rollback.
-    """
-    _assert_legacy_writer_allowed(findings_dir, target)
-    for finding in mutated_findings:
-        if isinstance(finding, dict):
-            _attach_validation_summary_digest(findings_dir, finding)
-    events = _prepare_owner_provenance(
-        mutated_findings,
-        target=target,
-        operation=operation,
-    )
-    _write_finding_payload(path, payload)
-    _append_mutation_events(mutation_events_path(findings_dir), events)
-    return events
 
 
 def _load_mutation_events(findings_dir: str | Path) -> tuple[list[dict[str, Any]], list[str]]:
@@ -741,34 +441,6 @@ def _quarantine_finality_claim(
     quarantined.pop(OWNER_PROVENANCE_FIELD, None)
     _sync_legacy_lifecycle_fields(quarantined)
     return quarantined
-
-
-def _normalize_existing_row_for_owner_mutation(
-    findings_dir: str | Path,
-    finding: dict[str, Any],
-    *,
-    target: str,
-) -> dict[str, Any]:
-    """Normalize an existing row without re-authorizing untrusted finality."""
-    normalized = _normalize_finding(finding)
-    provenance = verify_finalized_finding_owner_provenance(
-        findings_dir,
-        normalized,
-        target=target,
-    )
-    if not provenance.get("required") or provenance.get("valid"):
-        return normalized
-    return _quarantine_finality_claim(
-        normalized,
-        reason=str(provenance.get("reason") or "owner-provenance-invalid"),
-    )
-
-
-def _line_count(path: Path) -> int:
-    if not path.is_file():
-        return 0
-    with path.open(encoding="utf-8", errors="replace") as handle:
-        return sum(1 for line in handle if line.rstrip("\n"))
 
 
 def _extract_url(raw: str) -> str:
@@ -1049,6 +721,7 @@ def _root_claim_from_json(
         "claimed_severity": declared_severity,
         "confidence": "needs_review",
         "raw": f"root-finding-claim:{relative_path}",
+        "claim_payload": payload,
         "validation_status": "candidate",
         "report_status": "not_generated",
     }
@@ -1058,98 +731,24 @@ def list_root_finding_claims(
     findings_dir: str | Path,
     *,
     target: str | None = None,
-    include_reconciled: bool = False,
 ) -> list[dict[str, Any]]:
-    """Return direct root JSON claims not yet owned by ``findings.json``.
-
-    This is intentionally read-only so ``autopilot_state`` can surface an
-    interrupted/manual claim before any checkpoint is run.  The CLI checkpoint
-    calls :func:`reconcile_root_finding_claims` to persist the same projection.
-    """
+    """Read raw manual/interrupted claims in path order, without lifecycle authority."""
     root = Path(findings_dir)
     if not root.is_dir():
         return []
     resolved_target = str(target or root.name)
-    canonical = _load_finding_payload(
-        root / "findings.json",
-        root,
-        target=resolved_target,
-        migrate_legacy=False,
-        allow_legacy=True,
-    )
-    reconciled_revisions: set[tuple[str, str]] = set()
-    for item in canonical.get("findings", []):
-        if not isinstance(item, dict):
-            continue
-        for source in _normalized_claim_source_entries(item):
-            source_file = str(source.get("source_file") or "")
-            revision = str(source.get("revision") or "")
-            if source_file and revision:
-                reconciled_revisions.add((source_file, revision))
-
     claims: list[dict[str, Any]] = []
     for path in sorted(root.glob("*.json")):
+        if _is_root_claim_excluded_file(path) or ".review-" in path.name:
+            continue
         payload = _load_json_value(path)
         if not isinstance(payload, dict):
             continue
         claim = _root_claim_from_json(root, path, payload, target=resolved_target)
         if not claim:
             continue
-        if not include_reconciled and (
-            str(claim.get("claim_source_file") or ""),
-            str(claim.get("claim_revision") or ""),
-        ) in reconciled_revisions:
-            continue
         claims.append(claim)
-
-    severity_rank = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
-    claims.sort(
-        key=lambda item: (
-            -severity_rank.get(str(item.get("severity") or "").lower(), 0),
-            str(item.get("claim_source_file") or ""),
-        )
-    )
     return claims
-
-
-def reconcile_root_finding_claims(
-    findings_dir: str | Path,
-    *,
-    target: str | None = None,
-) -> dict[str, Any]:
-    """Persist direct root JSON claims through the canonical finding owner.
-
-    The operation is idempotent.  It intentionally creates only an
-    ``candidate`` requiring linked evidence and canonical validation; it never
-    upgrades a prose claim to ``validated`` or report-ready.
-    """
-    root = Path(findings_dir)
-    resolved_target = str(target or root.name)
-    claims = list_root_finding_claims(root, target=resolved_target)
-    if not claims:
-        return {
-            "status": "noop",
-            "claims": [],
-            "created": 0,
-            "updated": 0,
-            "path": str(root / "findings.json"),
-        }
-
-    result = upsert_findings(root, claims, target=resolved_target)
-    return {
-        "status": "updated",
-        "claims": [
-            {
-                "id": str(item.get("id") or ""),
-                "source_file": str(item.get("claim_source_file") or ""),
-            }
-            for item in result.get("findings", [])
-            if isinstance(item, dict)
-        ],
-        "created": int(result.get("created", 0) or 0),
-        "updated": int(result.get("updated", 0) or 0),
-        "path": str(result.get("path") or root / "findings.json"),
-    }
 
 
 def build_finding_index(findings_dir: str | Path, *, target: str | None = None) -> dict[str, Any]:
@@ -1547,7 +1146,6 @@ def _load_finding_payload(
     findings_dir: Path,
     *,
     target: str | None = None,
-    migrate_legacy: bool = False,
     allow_legacy: bool = False,
 ) -> dict[str, Any]:
     raw = _load_json_value(path)
@@ -1561,98 +1159,15 @@ def _load_finding_payload(
     if not isinstance(raw, list):
         return {}
     payload = _legacy_list_to_index(findings_dir, raw, target=target)
-    if migrate_legacy:
-        _write_payload_with_owner_provenance(
-            path,
-            payload,
-            findings_dir=findings_dir,
-            target=str(payload.get("target") or target or findings_dir.name),
-            operation="legacy_migration",
-            mutated_findings=[
-                item for item in payload.get("findings", []) if isinstance(item, dict)
-            ],
-        )
     return payload
 
 
-def _preserve_existing_finding_state(
-    payload: dict[str, Any],
-    existing: dict[str, Any],
-    *,
-    findings_dir: Path,
-) -> None:
-    """Carry validation/report state across deterministic index rebuilds.
-
-    `findings.json` is not fed only by scanner text files. Evidence runners and
-    `/validate` can append replay-backed candidates whose `source_file` points
-    at `evidence/.../summary.json`. A rebuild must not silently drop those
-    out-of-band rows, otherwise the AI loses validated/candidate state even
-    though the raw evidence still exists.
-    """
-    target = str(payload.get("target") or findings_dir.name)
-    existing_by_id = {
-        str(item.get("id")): _normalize_existing_row_for_owner_mutation(
-            findings_dir,
-            item,
-            target=target,
-        )
-        for item in existing.get("findings", [])
-        if isinstance(item, dict) and item.get("id")
-    }
-    rebuilt_ids: set[str] = set()
-    for finding in payload.get("findings", []):
-        if not isinstance(finding, dict):
-            continue
-        finding_id = str(finding.get("id") or "")
-        if finding_id:
-            rebuilt_ids.add(finding_id)
-        old = existing_by_id.get(finding_id)
-        if not old:
-            continue
-        for field in PRESERVED_FINDING_FIELDS:
-            if field in old:
-                finding[field] = old[field]
-
-    preserved_orphans = []
-    for finding_id, old in existing_by_id.items():
-        if finding_id in rebuilt_ids:
-            continue
-        if not _should_preserve_orphan_finding(old, target=target):
-            continue
-        preserved_orphans.append(dict(old))
-
-    if preserved_orphans:
-        findings = payload.setdefault("findings", [])
-        if isinstance(findings, list):
-            findings.extend(preserved_orphans)
-
-
-def _should_preserve_orphan_finding(finding: dict[str, Any], *, target: str) -> bool:
-    """Return whether a finding absent from scanner text output must survive.
-
-    Default, unreviewed scanner rows are deterministic projections of current
-    `*.txt` artifacts and can disappear when their source line disappears.
-    Replay-backed, validated, rejected, partial, or reported rows are runtime
-    state and must be kept unless they are clearly off-target.
-    """
-    url = str(finding.get("url") or "").strip()
-    if url and target and not url_belongs_to_target(url, target):
-        return False
-
-    validation_status = str(finding.get("validation_status") or "unvalidated")
-    report_status = str(finding.get("report_status") or "not_generated")
-    if validation_status not in {"", "unvalidated"}:
-        return True
-    if report_status not in {"", "not_generated"}:
-        return True
-
-    source_file = str(finding.get("source_file") or "")
-    raw = str(finding.get("raw") or "")
-    if source_file.startswith("evidence/") or "/evidence/" in source_file:
-        return True
-    if raw.startswith("validation_runner:"):
-        return True
-    return False
+def load_legacy_finding_index(
+    findings_dir: str | Path, *, target: str | None = None, allow_legacy: bool = False,
+) -> dict[str, Any]:
+    """Inspect historical Finding metadata without modifying any legacy files."""
+    root = Path(findings_dir)
+    return _load_finding_payload(root / "findings.json", root, target=target, allow_legacy=allow_legacy)
 
 
 def _refresh_finding_counts(payload: dict[str, Any]) -> None:
@@ -1676,261 +1191,6 @@ def _refresh_finding_counts(payload: dict[str, Any]) -> None:
         "type": dict(sorted(type_counts.items())),
         "confidence": dict(sorted(confidence_counts.items())),
     }
-
-
-def _write_finding_index_unlocked(findings_dir: str | Path, *, target: str | None = None, output: str | Path | None = None) -> dict[str, Any]:
-    root = Path(findings_dir)
-    output_path = _finding_output_path(root, output or root / "findings.json")
-    payload = build_finding_index(root, target=target)
-    existing = _load_finding_payload(
-        output_path,
-        root,
-        target=target,
-        migrate_legacy=False,
-    )
-    _preserve_existing_finding_state(payload, existing, findings_dir=root)
-    _refresh_finding_counts(payload)
-    updated_at = _now_utc()
-    payload["updated_at"] = updated_at
-    mutated_findings = [
-        item for item in payload.get("findings", []) if isinstance(item, dict)
-    ]
-    for finding in mutated_findings:
-        finding["updated_at"] = updated_at
-    _write_payload_with_owner_provenance(
-        output_path,
-        payload,
-        findings_dir=root,
-        target=str(payload.get("target") or target or root.name),
-        operation="rebuild_index",
-        mutated_findings=mutated_findings,
-    )
-    return payload
-
-
-def write_finding_index(findings_dir: str | Path, *, target: str | None = None, output: str | Path | None = None) -> dict[str, Any]:
-    output = _finding_output_path(findings_dir, output or Path(findings_dir) / "findings.json")
-    _assert_legacy_writer_allowed(findings_dir, target)
-    with finding_mutation_lock(findings_dir, target=target):
-        _assert_legacy_writer_allowed(findings_dir, target)
-        return _write_finding_index_unlocked(findings_dir, target=target, output=output)
-
-
-def load_finding_index(
-    findings_dir: str | Path,
-    *,
-    migrate_legacy: bool = True,
-    target: str | None = None,
-    allow_legacy: bool = False,
-) -> dict[str, Any]:
-    root = Path(findings_dir)
-    path = root / "findings.json"
-    if not migrate_legacy:
-        return _load_finding_payload(
-            path,
-            root,
-            target=target,
-            migrate_legacy=False,
-            allow_legacy=allow_legacy,
-        )
-    with finding_mutation_lock(root, target=target):
-        return _load_finding_payload(
-            path,
-            root,
-            target=target,
-            migrate_legacy=True,
-            allow_legacy=allow_legacy,
-        )
-
-
-def _upsert_findings_unlocked(
-    findings_dir: str | Path,
-    findings: list[dict[str, Any]],
-    *,
-    target: str | None = None,
-) -> dict[str, Any]:
-    """Create or merge target findings through the canonical mutation boundary."""
-    root = Path(findings_dir)
-    path = root / "findings.json"
-    payload = load_finding_index(
-        root,
-        migrate_legacy=False,
-        target=target,
-        allow_legacy=True,
-    ) or _empty_finding_index(root, target=target)
-    if target:
-        payload["target"] = target
-    payload.setdefault("schema_version", SCHEMA_VERSION)
-    payload.setdefault("findings_dir", str(root))
-
-    resolved_target = str(payload.get("target") or target or root.name)
-    existing_rows = [
-        _normalize_existing_row_for_owner_mutation(
-            root,
-            item,
-            target=resolved_target,
-        )
-        for item in payload.get("findings", [])
-        if isinstance(item, dict)
-    ]
-    payload["findings"] = existing_rows
-    id_to_index = {str(item.get("id")): idx for idx, item in enumerate(existing_rows)}
-    semantic_to_index = {
-        _finding_semantic_key(item): idx
-        for idx, item in enumerate(existing_rows)
-        if _finding_semantic_key(item)[0]
-    }
-
-    created = 0
-    updated = 0
-    mutated: list[dict[str, Any]] = []
-    for raw in findings:
-        if not isinstance(raw, dict):
-            continue
-        candidate = _normalize_finding(raw)
-        # A caller must not be able to forge owner provenance through an input
-        # row. Existing metadata is replaced below by this mutation's event.
-        candidate.pop(OWNER_PROVENANCE_FIELD, None)
-        index = id_to_index.get(str(candidate.get("id") or ""))
-        semantic_key = _finding_semantic_key(candidate)
-        if index is None and semantic_key[0]:
-            index = semantic_to_index.get(semantic_key)
-
-        if index is None:
-            existing_rows.append(candidate)
-            index = len(existing_rows) - 1
-            created += 1
-        else:
-            existing = existing_rows[index]
-            candidate = _merge_finding_rows(existing, candidate)
-            existing_rows[index] = candidate
-            updated += 1
-
-        candidate["updated_at"] = _now_utc()
-        existing_rows[index] = candidate
-        id_to_index[str(candidate.get("id") or "")] = index
-        persisted_semantic_key = _finding_semantic_key(candidate)
-        if persisted_semantic_key[0]:
-            semantic_to_index[persisted_semantic_key] = index
-        mutated.append(candidate)
-
-    payload["updated_at"] = _now_utc()
-    _refresh_finding_counts(payload)
-    _write_payload_with_owner_provenance(
-        path,
-        payload,
-        findings_dir=root,
-        target=str(payload.get("target") or target or root.name),
-        operation="upsert",
-        mutated_findings=mutated,
-    )
-    return {
-        "created": created,
-        "updated": updated,
-        "findings": mutated,
-        "payload": payload,
-        "path": str(path),
-    }
-
-
-def upsert_findings(
-    findings_dir: str | Path,
-    findings: list[dict[str, Any]],
-    *,
-    target: str | None = None,
-) -> dict[str, Any]:
-    _assert_legacy_writer_allowed(findings_dir, target)
-    with finding_mutation_lock(findings_dir, target=target):
-        _assert_legacy_writer_allowed(findings_dir, target)
-        return _upsert_findings_unlocked(findings_dir, findings, target=target)
-
-
-def upsert_finding(
-    findings_dir: str | Path,
-    finding: dict[str, Any],
-    *,
-    target: str | None = None,
-) -> dict[str, Any]:
-    """Single-row convenience wrapper around :func:`upsert_findings`."""
-    result = upsert_findings(findings_dir, [finding], target=target)
-    return {
-        "created": bool(result["created"]),
-        "finding": result["findings"][0] if result["findings"] else {},
-        "payload": result["payload"],
-        "path": result["path"],
-    }
-
-
-def find_finding(
-    findings_dir: str | Path,
-    finding_id: str,
-    *,
-    migrate_legacy: bool = True,
-) -> dict[str, Any] | None:
-    payload = load_finding_index(findings_dir, migrate_legacy=migrate_legacy)
-    for finding in payload.get("findings", []):
-        if isinstance(finding, dict) and finding.get("id") == finding_id:
-            return finding
-    return None
-
-
-def _update_finding_status_unlocked(findings_dir: str | Path, finding_id: str, **updates: Any) -> dict[str, Any] | None:
-    """Update one finding in findings.json and return the updated finding."""
-    path = Path(findings_dir) / "findings.json"
-    payload = load_finding_index(
-        findings_dir,
-        migrate_legacy=False,
-        allow_legacy=True,
-    )
-    if not payload:
-        return None
-
-    updated_finding = None
-    for finding in payload.get("findings", []):
-        if not isinstance(finding, dict) or finding.get("id") != finding_id:
-            continue
-        requested_validation = str(updates.get("validation_status") or "").strip().lower()
-        if requested_validation == "rejected":
-            _verify_source_rejection_summary(findings_dir, finding, updates)
-        for key, value in updates.items():
-            if key == OWNER_PROVENANCE_FIELD:
-                continue
-            if value in (None, ""):
-                continue
-            finding[key] = value
-        requested_report = str(updates.get("report_status") or "").strip().lower()
-        if requested_validation in FINALIZED_VALIDATION_STATUSES:
-            finding.pop("claimed_validation_status", None)
-            finding.pop("owner_revalidation_reason", None)
-        if requested_report in FINALIZED_REPORT_STATUSES:
-            finding.pop("claimed_report_status", None)
-            finding.pop("owner_revalidation_reason", None)
-        _sync_legacy_lifecycle_fields(finding)
-        finding["updated_at"] = _now_utc()
-        updated_finding = finding
-        break
-
-    if updated_finding is None:
-        return None
-
-    _refresh_finding_counts(payload)
-    _write_payload_with_owner_provenance(
-        path,
-        payload,
-        findings_dir=Path(findings_dir),
-        target=str(payload.get("target") or Path(findings_dir).name),
-        operation="status_update",
-        mutated_findings=[updated_finding],
-    )
-    return updated_finding
-
-
-def update_finding_status(findings_dir: str | Path, finding_id: str, **updates: Any) -> dict[str, Any] | None:
-    target = updates.pop("target", None)
-    _assert_legacy_writer_allowed(findings_dir, target)
-    with finding_mutation_lock(findings_dir, target=target):
-        _assert_legacy_writer_allowed(findings_dir, target)
-        return _update_finding_status_unlocked(findings_dir, finding_id, **updates)
 
 
 def format_finding_index(payload: dict[str, Any], *, limit: int = 8) -> str:
@@ -1969,19 +1229,58 @@ def format_finding_index(payload: dict[str, Any], *, limit: int = 8) -> str:
     return "\n".join(lines)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Build findings.json from scanner artifacts")
-    parser.add_argument("findings_dir", help="Directory containing scanner findings")
-    parser.add_argument("--target", default="", help="Target name override")
-    parser.add_argument("--output", default="", help="Output JSON path; defaults to <findings_dir>/findings.json")
-    args = parser.parse_args()
+def index_scanner_material(findings_dir: str | Path, *, target: str | None = None,
+                           output: str | Path | None = None) -> dict[str, Any]:
+    """Register raw candidate material as review work without inventing execution facts."""
+    try:
+        from tools.action_queue import add_material_review
+        from tools.target_store import runtime_store
+    except ImportError:  # pragma: no cover - direct tools/ execution
+        from action_queue import add_material_review
+        from target_store import runtime_store
+    repo, owner = _finding_backend_context(findings_dir, target)
+    root = Path(findings_dir).resolve()
+    destination = _finding_output_path(root, output or root / "scanner_candidates.json")
+    if destination.name != "scanner_candidates.json":
+        raise StoreError("scanner material index must be scanner_candidates.json; legacy findings are immutable")
+    with target_switch_lock(repo, owner):
+        store = runtime_store(repo, owner)
+        payload = build_finding_index(root, target=owner)
+        payload["root_claims"] = list_root_finding_claims(root, target=owner)
+        groups: dict[str, list[dict]] = {}
+        for finding in payload["findings"]:
+            groups.setdefault(finding["source_file"], []).append(finding)
+        for claim in payload["root_claims"]:
+            groups.setdefault(claim["claim_source_file"], []).append(claim)
+        actions = []
+        for source_file, findings in sorted(groups.items()):
+            source_path = root / source_file
+            if source_path.is_symlink() or not source_path.resolve().is_relative_to(root):
+                raise StoreError("scanner material escapes the target directory")
+            action = add_material_review(
+                repo, target=owner, source="scanner", source_id=source_path.relative_to(repo).as_posix(),
+                action_type="scanner-review", summary_path=source_path,
+                material={"kind": "scanner_candidates", "findings": findings},
+            )
+            actions.append(action["action"]["id"])
+        payload.update(kind="scanner_material_index", review_action_ids=actions,
+                       source_binding=store.binding())
+        _write_finding_payload(destination, payload)
+        return payload
 
-    payload = write_finding_index(
-        args.findings_dir,
-        target=args.target or None,
-        output=args.output or None,
-    )
-    print(f"wrote {payload['total']} finding(s) to {args.output or str(Path(args.findings_dir) / 'findings.json')}")
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Index scanner material and register Store review work")
+    parser.add_argument("findings_dir", help="Directory containing scanner findings")
+    parser.add_argument("--target", default="", help="Target owner")
+    parser.add_argument("--output", default="", help="Output path for scanner_candidates.json")
+    args = parser.parse_args()
+    try:
+        payload = index_scanner_material(args.findings_dir, target=args.target or None,
+                                         output=args.output or None)
+    except (OSError, ValueError) as exc:
+        parser.exit(2, f"scanner material registration failed: {exc}\n")
+    print(f"indexed {payload['total']} raw candidate(s); review actions={len(payload['review_action_ids'])}")
 
 
 if __name__ == "__main__":
