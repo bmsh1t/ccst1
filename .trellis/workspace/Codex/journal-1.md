@@ -426,3 +426,39 @@ Implemented shared bounded knowledge recall for natural-language and Autopilot e
 ### Status
 
 [OK] **Completed**
+
+
+## Session 18: 完成 native-first 重构收口
+<!-- trellis-session: v=2 fp=370d667629cf270c -->
+
+**Date**: 2026-09-26
+**Task**: 完成 native-first 重构收口
+**Branch**: `main`
+
+### Summary
+
+完成 Claude 原生优先重构、TargetStore 收敛、锁边界修复与固定在线评估；全套测试 2307 passed，在线增强收益未证实。代码提交 754cfa7，任务已归档。
+
+### Main Changes
+
+- 提交 native-first target state 重构及回归测试
+- 归档固定两轮在线评估与未证实收益结论
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `754cfa7` | refactor: converge native-first target state |
+
+### Testing
+
+- [OK] pytest -q — 2307 passed
+- [OK] git diff --check — passed
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 无；如需后续工作，创建新任务
