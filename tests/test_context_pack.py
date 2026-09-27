@@ -74,6 +74,57 @@ def test_bounded_context_readers_preserve_order_limits_and_error_handling(tmp_pa
     assert context_pack_module._read_jsonl_objects(jsonl_path, limit=0) == []
 
 
+def test_local_intel_health_distinguishes_empty_and_corrupt_material(tmp_path):
+    source_dir = tmp_path / "findings" / "target.com" / "source_intel"
+    source_dir.mkdir(parents=True)
+    routes = source_dir / "routes.json"
+    missing = context_pack_module._load_local_intel(tmp_path, "target.com")
+    assert missing["health"]["invalid_count"] == 0
+    assert missing["health"]["diagnostics"][-1]["status"] == "missing"
+    routes.write_text('{"routes": []}\n', encoding="utf-8")
+
+    healthy = context_pack_module._load_local_intel(tmp_path, "target.com")
+    assert healthy["health"]["status"] == "ready"
+    assert healthy["health"]["invalid_count"] == 0
+
+    routes.write_text("{broken", encoding="utf-8")
+    damaged = context_pack_module._load_local_intel(tmp_path, "target.com")
+    assert damaged["source_intel"]["routes"] == []
+    assert damaged["health"]["status"] == "unavailable"
+    assert damaged["health"]["invalid_count"] == 1
+    assert damaged["health"]["diagnostics"][-1]["path"].endswith("source_intel/routes.json")
+
+
+@pytest.mark.parametrize("source, contents, health", [
+    ("findings/target.com/source_intel/routes.json", b"\xff", "invalid"),
+    ("findings/target.com/source_intel/routes.json", b'{"routes": null}', "invalid"),
+    ("findings/target.com/source_intel/routes.json", b'{"routes": ["broken"]}', "invalid"),
+    ("findings/target.com/js_intel/hypotheses.json", b'[]', "invalid"),
+    ("recon/target.com/browser/forms.json", b'{"forms": {}}', "invalid"),
+    ("recon/target.com/browser/page_js_map.json", b'{"pages": []}', "invalid"),
+    ("recon/target.com/browser/summary.json", b'{broken', "invalid"),
+    ("findings/target.com/source_intel/routes.json", None, "unreadable"),
+])
+def test_context_pack_exposes_local_intel_damage(tmp_path, pack_store, source, contents, health):
+    path = tmp_path / source
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if contents is None:
+        path.mkdir()
+    else:
+        path.write_bytes(contents)
+    before = pack_store.binding()
+    pack = build_context_pack(tmp_path, target=pack_store.target)
+    summary = pack["source_summary"]
+    diagnostic = next(item for item in summary["local_intel_diagnostics"] if item["path"] == source)
+    assert diagnostic["status"] == health
+    assert diagnostic["error"]
+    assert summary["local_intel_invalid_count"] == 1
+    assert summary["local_intel_status"] == "unavailable"
+    assert any(source in item for item in pack["unknowns"])
+    assert source in format_context_pack(pack)
+    assert pack_store.binding() == before
+
+
 def test_context_pack_reuses_exact_surface_projection(tmp_path, monkeypatch, pack_store):
     _seed_recon(
         tmp_path,

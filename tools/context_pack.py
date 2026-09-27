@@ -313,13 +313,31 @@ def _read_json_object(path: Path) -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
-def _read_json_any(path: Path) -> object:
-    if not path.is_file():
-        return None
+def _read_local_intel_json(
+    path: Path, repo_root: Path, *, list_fields: tuple[str, ...] = (), object_fields: tuple[str, ...] = (),
+) -> tuple[dict, dict]:
+    """Read optional intel while preserving missing versus damaged health."""
+    relative = _display(path, repo_root)
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}, {"path": relative, "status": "missing"}
+    except UnicodeError:
+        return {}, {"path": relative, "status": "invalid", "error": "invalid UTF-8"}
+    except json.JSONDecodeError as exc:
+        return {}, {"path": relative, "status": "invalid", "error": f"JSON decode error: {exc.msg}"}
+    except OSError as exc:
+        return {}, {"path": relative, "status": "unreadable", "error": str(exc)}
+    if not isinstance(payload, dict):
+        return {}, {"path": relative, "status": "invalid", "error": "expected a JSON object"}
+    for field in list_fields:
+        if field in payload and (not isinstance(payload[field], list)
+                                 or any(not isinstance(item, dict) for item in payload[field])):
+            return {}, {"path": relative, "status": "invalid", "error": f"{field} must be a list of objects"}
+    for field in object_fields:
+        if field in payload and not isinstance(payload[field], dict):
+            return {}, {"path": relative, "status": "invalid", "error": f"{field} must be an object"}
+    return payload, {"path": relative, "status": "ok"}
 
 
 def _read_lines(path: Path, limit: int = 50) -> list[str]:
@@ -522,16 +540,25 @@ def _load_local_intel(repo_root: Path, target_key: str) -> dict:
     js_dir = repo_root / "findings" / target_key / "js_intel"
     source_dir = repo_root / "findings" / target_key / "source_intel"
 
-    forms_payload = _read_json_any(browser_dir / "forms.json")
+    diagnostics = []
+    browser_summary, detail = _read_local_intel_json(browser_dir / "summary.json", repo_root)
+    diagnostics.append(detail)
+    forms_payload, detail = _read_local_intel_json(browser_dir / "forms.json", repo_root, list_fields=("forms",))
+    diagnostics.append(detail)
     forms = []
     if isinstance(forms_payload, dict) and isinstance(forms_payload.get("forms"), list):
         forms = [item for item in forms_payload["forms"] if isinstance(item, dict)]
 
-    page_js_map = _read_json_object(browser_dir / "page_js_map.json")
+    page_js_map, detail = _read_local_intel_json(
+        browser_dir / "page_js_map.json", repo_root, object_fields=("pages", "js_index"))
+    diagnostics.append(detail)
     pages = page_js_map.get("pages") if isinstance(page_js_map.get("pages"), dict) else {}
     js_index = page_js_map.get("js_index") if isinstance(page_js_map.get("js_index"), dict) else {}
 
-    js_payload = _read_json_object(js_dir / "hypotheses.json")
+    js_payload, detail = _read_local_intel_json(
+        js_dir / "hypotheses.json", repo_root,
+        list_fields=("endpoints", "attack_surface_leads", "ranked_leads", "graphql_operations"))
+    diagnostics.append(detail)
     js_endpoints = [
         item for item in js_payload.get("endpoints", [])
         if isinstance(item, dict) and item.get("path")
@@ -543,7 +570,9 @@ def _load_local_intel(repo_root: Path, target_key: str) -> dict:
         if isinstance(item, dict)
     ]
 
-    source_routes_payload = _read_json_object(source_dir / "routes.json")
+    source_routes_payload, detail = _read_local_intel_json(
+        source_dir / "routes.json", repo_root, list_fields=("routes", "graphql_operations", "signals"))
+    diagnostics.append(detail)
     source_routes = [
         item for item in source_routes_payload.get("routes", [])
         if isinstance(item, dict) and item.get("route")
@@ -554,9 +583,22 @@ def _load_local_intel(repo_root: Path, target_key: str) -> dict:
     ]
     source_signals = [item for item in source_routes_payload.get("signals", []) if isinstance(item, dict)]
 
+    invalid = [item for item in diagnostics if item["status"] in {"invalid", "unreadable"}]
+    valid = [item for item in diagnostics if item["status"] == "ok"]
+    if invalid:
+        health_status = "partial" if valid else "unavailable"
+    else:
+        health_status = "ready" if valid else "unavailable"
+
     return {
+        "health": {
+            "status": health_status,
+            "diagnostics": diagnostics,
+            "invalid_count": len(invalid),
+            "missing_count": sum(item["status"] == "missing" for item in diagnostics),
+        },
         "browser": {
-            "summary": _read_json_object(browser_dir / "summary.json"),
+            "summary": browser_summary,
             "xhr_endpoints": _read_lines(browser_dir / "xhr_endpoints.txt"),
             "api_endpoints": _read_lines(browser_dir / "api_endpoints.txt"),
             "params": _read_lines(browser_dir / "browser_params.txt"),
@@ -938,6 +980,15 @@ def _unknowns(
         items.append("Surface review pool has no candidates; recon may be thin or low-signal.")
     browser = ranked.get("browser") or {}
     local_browser = local_intel.get("browser") or {}
+    local_health = local_intel.get("health") or {}
+    if local_health.get("status") in {"partial", "unavailable"} and local_health.get("invalid_count", 0):
+        items.append(
+            "Local intel material is {status}; inspect: {paths}.".format(
+                status=local_health["status"],
+                paths=", ".join(item["path"] for item in local_health.get("diagnostics", [])
+                                 if item.get("status") in {"invalid", "unreadable"}),
+            )
+        )
     if (
         not browser.get("xhr_count")
         and not browser.get("api_count")
@@ -1094,7 +1145,11 @@ def _local_intel_source_summary(local_intel: dict) -> dict:
     browser = local_intel.get("browser") or {}
     js_intel = local_intel.get("js_intel") or {}
     source_intel = local_intel.get("source_intel") or {}
+    health = local_intel.get("health") or {}
     return {
+        "local_intel_status": health.get("status", "unavailable"),
+        "local_intel_invalid_count": int(health.get("invalid_count", 0) or 0),
+        "local_intel_diagnostics": health.get("diagnostics", []),
         "browser_xhr": len(browser.get("xhr_endpoints") or []),
         "browser_api": len(browser.get("api_endpoints") or []),
         "browser_params": len(browser.get("params") or []),
