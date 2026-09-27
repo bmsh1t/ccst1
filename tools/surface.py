@@ -51,7 +51,9 @@ try:
         surface_value_summary,
     )
     from tools.surface_projection import (
+        MANUAL_REVIEW_INPUTS,
         build_surface_input_manifest,
+        scanner_manual_review_paths,
         write_surface_projection,
     )
     from tools.target_paths import (
@@ -77,7 +79,7 @@ except ImportError:  # pragma: no cover - top-level tools/ import
     from recon_adapter import ReconAdapter
     from runtime_state import _derive_owner_projection, inspect_recon_artifacts, load_runtime_state
     from surface_index import SurfaceIndexError, build_surface_index, iter_surface_index, load_surface_index_status, surface_shape, surface_request_shape, surface_safe_preview, surface_value_summary
-    from surface_projection import build_surface_input_manifest, write_surface_projection
+    from surface_projection import MANUAL_REVIEW_INPUTS, build_surface_input_manifest, scanner_manual_review_paths, write_surface_projection
     from target_paths import (  # type: ignore
         compact_url,
         canonical_target_value,
@@ -190,46 +192,17 @@ def _load_resolved_unsafe_skipped(repo_root: Path, storage_key: str) -> set[str]
 def _load_scanner_manual_review(findings_dir: Path, target: str) -> dict:
     """Load the scanner's complete target-owned manual-review index."""
     storage_key = target_storage_key(target)
-    summary_path = findings_dir / "summary.json"
     display_summary = f"findings/{storage_key}/summary.json"
-    payload = _read_json_object(summary_path)
-    if not payload:
-        return {"summary_path": display_summary, "items": []}
-
-    summary_target = str(payload.get("target") or "").strip()
-    try:
-        if summary_target and canonical_target_value(summary_target) != canonical_target_value(target):
-            return {"summary_path": display_summary, "items": []}
-    except ValueError:
-        return {"summary_path": display_summary, "items": []}
-
-    raw_items = payload.get("manual_review")
-    if not isinstance(raw_items, list):
-        return {"summary_path": display_summary, "items": []}
-
     findings_root = findings_dir.resolve()
-    seen: set[str] = set()
     items: list[dict] = []
-    for item in raw_items:
-        if not isinstance(item, dict):
-            continue
-        raw_path = str(item.get("path") or "").strip()
-        if not raw_path or Path(raw_path).is_absolute():
-            continue
-        try:
-            path = (findings_root / raw_path).resolve()
-            relative_path = path.relative_to(findings_root).as_posix()
-        except (OSError, RuntimeError, ValueError):
-            continue
-        if relative_path in seen or not path.is_file():
-            continue
+    for path in scanner_manual_review_paths(findings_dir, target):
+        relative_path = path.relative_to(findings_root).as_posix()
         try:
             lines = _read_lines(path)
         except (OSError, UnicodeError):
             continue
         if not lines:
             continue
-        seen.add(relative_path)
         items.append({
             "path": f"findings/{storage_key}/{relative_path}",
             "relative_path": relative_path,
@@ -464,7 +437,7 @@ def _build_manual_review_lead_hints(findings_dir: Path, storage_key: str) -> lis
     """Convert scanner manual-review artifacts into soft workflow leads."""
     leads: list[dict] = []
 
-    unsafe_path = findings_dir / "manual_review" / "unsafe_skipped.txt"
+    unsafe_path = findings_dir / MANUAL_REVIEW_INPUTS["unsafe"]
     lines = _read_lines(unsafe_path)
     if lines:
         repo_root = findings_dir.parent.parent
@@ -483,7 +456,7 @@ def _build_manual_review_lead_hints(findings_dir: Path, storage_key: str) -> lis
                 "evidence": f"{len(unresolved)} unresolved skipped probe line(s)",
             })
 
-    open_200_path = findings_dir / "manual_review" / "open_200_api.txt"
+    open_200_path = findings_dir / MANUAL_REVIEW_INPUTS["open_200"]
     open_200 = _read_lines(open_200_path)
     if open_200:
         display_path = f"findings/{storage_key}/manual_review/open_200_api.txt"
@@ -495,7 +468,7 @@ def _build_manual_review_lead_hints(findings_dir: Path, storage_key: str) -> lis
             "evidence": f"{len(open_200)} anonymous substantial 200 response(s)",
         })
 
-    public_metadata_path = findings_dir / "manual_review" / "standard_public_metadata.txt"
+    public_metadata_path = findings_dir / MANUAL_REVIEW_INPUTS["public_metadata"]
     public_metadata = _read_lines(public_metadata_path)
     if public_metadata:
         display_path = f"findings/{storage_key}/manual_review/standard_public_metadata.txt"

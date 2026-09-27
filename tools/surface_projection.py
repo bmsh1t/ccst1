@@ -26,7 +26,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
 
 
 # Bump when selection semantics change; stale derived decisions must not replay.
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 PROJECTION_KIND = "surface_projection"
 MANIFEST_KIND = "surface_input_manifest"
 
@@ -34,6 +34,51 @@ MANIFEST_KIND = "surface_input_manifest"
 # `recon_manifest.jsonl` 在 projection 发布后写入，若纳入指纹会让刚发布的
 # projection 立即变 stale；原始 surface artifact 仍完整保留。
 _GENERATED_RECON_PARTS = frozenset({"surface", "recon_manifest.jsonl"})
+
+MANUAL_REVIEW_INPUTS = {
+    "unsafe": Path("manual_review/unsafe_skipped.txt"),
+    "open_200": Path("manual_review/open_200_api.txt"),
+    "public_metadata": Path("manual_review/standard_public_metadata.txt"),
+}
+
+
+def scanner_manual_review_paths(findings_dir: Path, target: str) -> Iterable[Path]:
+    """Select the summary's target-owned files, including empty review inputs."""
+    summary_path = findings_dir / "summary.json"
+    if not summary_path.is_file():
+        return
+    try:
+        payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(payload, dict):
+        return
+    summary_target = str(payload.get("target") or "").strip()
+    try:
+        if summary_target and canonical_target_value(summary_target) != canonical_target_value(target):
+            return
+    except ValueError:
+        return
+    raw_items = payload.get("manual_review")
+    if not isinstance(raw_items, list):
+        return
+    findings_root = findings_dir.resolve()
+    seen: set[Path] = set()
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        raw_path = str(item.get("path") or "").strip()
+        if not raw_path or Path(raw_path).is_absolute():
+            continue
+        try:
+            path = (findings_root / raw_path).resolve()
+            path.relative_to(findings_root)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if path in seen or not path.is_file():
+            continue
+        seen.add(path)
+        yield path
 
 
 def _semantic_closed_cells(value: object) -> list[dict]:
@@ -118,10 +163,29 @@ def _manifest_roots(
     memory_dir: str | Path | None = None,
 ) -> list[tuple[Path, frozenset[str]]]:
     storage_key = target_storage_key(target)
+    findings_dir = repo_root / "findings" / storage_key
+    # Keep other findings inputs conservative: Coverage, source/JS and evidence
+    # consumers have their own selection rules. Manual-review attachments enter
+    # Surface only through the shared summary selector or specialized handlers.
+    review_paths = set(scanner_manual_review_paths(findings_dir, target))
+    review_paths.update(findings_dir / path for path in MANUAL_REVIEW_INPUTS.values())
+    store = runtime_store(repo_root, target)
+    with store._connection() as conn:
+        # Registered evidence remains an integrity input even without a scanner
+        # summary entry. Store revision alone cannot detect altered file bytes.
+        for row in conn.execute("SELECT ref FROM artifacts"):
+            path = repo_root / row["ref"]
+            if path.is_relative_to(findings_dir / "manual_review"):
+                review_paths.add(path)
+    findings_roots = (
+        [path for path in sorted(findings_dir.iterdir()) if path.name not in {".locks", "manual_review"}]
+        if findings_dir.is_dir() else [findings_dir]
+    )
     return [
         (repo_root / "recon" / storage_key, _GENERATED_RECON_PARTS),
-        (repo_root / "findings" / storage_key, frozenset({".locks"})),
+        *((path, frozenset({".locks"})) for path in findings_roots),
         (repo_root / "state" / storage_key / "metadata.sqlite3", frozenset()),
+        *((path, frozenset()) for path in sorted(review_paths)),
     ]
 
 
