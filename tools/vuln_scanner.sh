@@ -239,7 +239,7 @@ if [ "${BBHUNT_RUNTIME_PHASE_LOCKED:-}" != "scan" ] || [ "${BBHUNT_RUNTIME_LOCK_
     [ -z "$FULL_MODE" ] || PHASE_ARGS+=("$FULL_MODE")
     [ -z "$USER_SKIP_CHECKS" ] || PHASE_ARGS+=("--skip" "$USER_SKIP_CHECKS")
     exec python3 "$BASE_DIR/tools/runtime_phase_exec.py" \
-        --repo-root "$BASE_DIR" --target "$SCANNER_AUTH_TARGET" --phase scan -- \
+        --repo-root "$BASE_DIR" --target "$SCANNER_LOCK_TARGET" --phase scan -- \
         bash "$BASE_DIR/tools/vuln_scanner.sh" "${PHASE_ARGS[@]}"
 fi
 bb_auth_bind_target "$SCANNER_AUTH_TARGET"
@@ -378,7 +378,6 @@ echo "  Recon: $RECON_DIR"
 echo "  Findings: $FINDINGS_DIR"
 echo "  Mode: $SCAN_MODE"
 echo "  Skip: ${SKIP_CHECKS:-none}"
-echo "  Nuclei CVE supplement: ${NUCLEI_CVE_STATUS} (BBHUNT_DISABLE_NUCLEI_CVES=1 to disable)"
 bb_auth_active && bb_auth_banner
 echo "============================================="
 echo ""
@@ -1117,6 +1116,7 @@ fi
 if [ "$NUCLEI_CVE_ENABLED" = "1" ]; then
     NUCLEI_CVE_STATUS="ready"
 fi
+log_info "Nuclei CVE supplement: ${NUCLEI_CVE_STATUS} (BBHUNT_DISABLE_NUCLEI_CVES=1 to disable)"
 
 # ============================================================
 # Check 0: Upload surface candidates

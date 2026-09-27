@@ -2,6 +2,7 @@
 
 import json
 import os
+from contextlib import nullcontext
 from pathlib import Path
 import shutil
 import subprocess
@@ -11,6 +12,7 @@ import pytest
 import finding_index
 import intel_engine
 from tools.target_store import StoreError, TargetStore
+from tools.runtime_state import runtime_phase_lock
 
 
 def _scanner_material(tmp_path):
@@ -151,3 +153,40 @@ def test_direct_scanner_refuses_uninitialized_before_material(tmp_path):
     assert "Traceback" not in result.stderr
     assert not (tmp_path / "findings").exists()
     assert not TargetStore(tmp_path, "scanner.test").path.exists()
+
+
+@pytest.mark.parametrize("manifest_target", ["https://SCANNER.test/app?view=1#tab", "scanner.test", None])
+@pytest.mark.parametrize("busy", [False, True])
+def test_direct_scanner_startup_uses_canonical_lock_identity(tmp_path, manifest_target, busy):
+    repo = Path(__file__).resolve().parents[1]
+    scripts = tmp_path / "tools"
+    scripts.mkdir()
+    for name in ("vuln_scanner.sh", "_auth_helper.sh", "runtime_phase_exec.py"):
+        shutil.copyfile(repo / "tools" / name, scripts / name)
+    store = TargetStore(tmp_path, "scanner.test")
+    store.initialize()
+    before = store.binding()
+    recon = tmp_path / "recon" / store.key
+    recon.mkdir(parents=True)
+    if manifest_target is not None:
+        (recon / "recon_manifest.jsonl").write_text(json.dumps({"target": manifest_target}) + "\n")
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith(("BBHUNT_", "BB_", "NUCLEI_")) and key != "FINDINGS_OUT_DIR"}
+    env["PYTHONPATH"] = str(repo)
+    with runtime_phase_lock(tmp_path, store.target, "scan") if busy else nullcontext():
+        result = subprocess.run(
+            ["bash", str(scripts / "vuln_scanner.sh"), str(recon), "--quick", "--skip", "cves"],
+            env=env, capture_output=True, text=True, timeout=10,
+        )
+    if busy:
+        assert result.returncode == 75, result.stdout + result.stderr
+        assert "runtime phase busy" in result.stderr
+        assert not (tmp_path / "findings").exists()
+        assert not (tmp_path / "state" / store.key / "session.json").exists()
+    else:
+        # Empty recon stops before network I/O, after real wrapper/lock/admission startup.
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "No live hosts data found" in result.stdout, result.stdout + result.stderr
+        assert "Mode: quick" in result.stdout and "Skip: cves" in result.stdout
+        assert "runtime phase busy" not in result.stderr
+    assert store.binding() == before
