@@ -253,9 +253,9 @@ wiring changes.
   isolation, read-only behavior, and unchecked versus checked-but-degraded.
 - `tests/test_autopilot_inline_contract.py` asserts parser wiring and legacy
   guidance; command line count remains within its compact-prompt limit.
-- `tests/test_claude_runtime_integration.py` runs a staged HOME + localhost fake
-  API and asserts root/nested, normal, quick/deep, URL seed/auth, drift stop,
-  empty, list, and seventh-token overflow expansion match bootstrap output.
+- `tests/test_claude_release_wiring.py` runs staged runtime + localhost fake API
+  for real CLI discovery, empty arguments and flag-first quick/deep expansion.
+  Parser/bootstrap edge cases remain covered by their owner tests.
 
 ### 7. Wrong vs Correct
 
@@ -478,7 +478,10 @@ are executable prompt resources, not optional repository documentation.
   Completely external roots such as `~/.claude/skills/playwright-cli/` are not
   drift and must never be pruned by this project.
 - Managed-root nested extras are drift. `--sync --prune` may remove them because
-  the root belongs to this repo; install without `--prune` remains additive.
+  the root belongs to this repo. `install.sh` mirrors each current Skill root
+  with `rsync --delete` when available; its `cp` fallback is additive and requires
+  reviewed cleanup for stale nested files. A whole removed Skill stays installed
+  until explicitly retired. Keep user customizations outside repo-owned roots.
 - `install.sh` copies each complete Skill directory, preserving relative paths
   such as `security-arsenal/references/bypass-patterns.md`.
 - Compare, sync, and prune must use the same repo/runtime file discovery contract.
@@ -541,8 +544,8 @@ are executable prompt resources, not optional repository documentation.
   repo file remains byte-identical.
 - Autopilot prompt tests assert repo-root/drift checks precede state/recon/surface/
   scan and that the preflight contains no `--sync` action.
-- Run targeted pytest, full `pytest -q`, and `git diff --check`; run real doctor
-  read-only and report drift without changing the runtime.
+- Run targeted pytest, full `pytest -q`, and `git diff --check`; release acceptance
+  runs doctor against an explicit staged runtime, never the operator's default.
 
 ### 7. Wrong vs Correct
 
@@ -574,9 +577,7 @@ change. Lexical assertions alone do not prove that Claude CLI loads a file.
 
 - Staged install: `HOME=<tmp-home> bash install.sh`
 - Slash probe:
-  `claude -p --setting-sources user --tools "" --no-session-persistence "/autopilot <args>"`
-- Agent probe:
-  `claude -p --setting-sources user --tools "" --no-session-persistence --agent autopilot <prompt>`
+  `claude -p --setting-sources user --tools Bash --allowedTools 'Bash(python3 *)' --strict-mcp-config --no-session-persistence "/autopilot <args>"`
 - Fake API routing: dummy `ANTHROPIC_API_KEY` plus
   `ANTHROPIC_BASE_URL=http://127.0.0.1:<ephemeral-port>`.
 
@@ -586,19 +587,24 @@ change. Lexical assertions alone do not prove that Claude CLI loads a file.
   they do not call a parser that merely imitates Claude behavior.
 - The fake endpoint accepts the Anthropic Messages POST and returns a complete
   minimal SSE message ending in `message_stop`. It never forwards traffic.
-- Tests set a staged `HOME`/`XDG_CONFIG_HOME`, dummy API key, localhost base URL,
-  empty Claude tool set, no session persistence, and disabled non-essential
-  traffic. Real OAuth/provider/config environment variables are removed.
+- Tests build an allowlisted child environment with staged user/config paths,
+  dummy API key, localhost base URL, no session persistence and disabled
+  non-essential traffic. Only the read-only Python bootstrap needs Bash; a fully
+  empty tool set denies that expansion in Claude Code 2.1.278. The fake endpoint
+  returns text only and never emits tool calls. Real OAuth/provider/config
+  variables are not inherited; MCP config is strict.
 - `/autopilot <args>` must produce `command-message=autopilot`,
   `command-name=/autopilot`, exact raw `command-args` when non-empty, and the
   installed command body with YAML frontmatter removed and its root-aware
-  `$0..$8` bootstrap expansion replaced.
+  `$0..$9` bootstrap expansion replaced. Bootstrap and target reads run from
+  an isolated checkout, not the operator's workspace state. Copy only the flat
+  `memory/*.py` modules; copying the whole `memory/` directory also carries
+  untracked `memory/goals/targets` state into the fixture.
 - Empty slash arguments omit `command-args`. Claude may supply its executable
   shell as dynamic `$0`; the expanded bootstrap must normalize that interface
   fallback to empty argv and still require the exact target.
-- `--agent autopilot` must load the explicitly optional agent prompt from
-  `~/.claude/agents/claude-bug-bounty/autopilot.md`; it is not the slash-command
-  backend.
+- The optional `--agent autopilot` is not the slash-command backend; release
+  acceptance covers the current inline slash entry, not that optional mode.
 - Staged install parity remains a socket-free required layer. Real CLI wiring
   is a second layer that skips explicitly when the binary or localhost sockets
   are unavailable.
@@ -633,15 +639,16 @@ change. Lexical assertions alone do not prove that Claude CLI loads a file.
 
 ### 6. Tests Required
 
-- `tests/test_claude_runtime_integration.py` must execute real Claude CLI against
-  the localhost fake endpoint for target/cadence, flag-first quick/deep, batch
-  list, empty args, and optional agent discovery.
-- The primary command case must compare the captured command text exactly with
-  the staged installed file after frontmatter removal and argument substitution.
+- `tests/test_claude_release_wiring.py` executes real Claude CLI against the
+  localhost fake endpoint for empty arguments and a flag-first quick/deep target.
+  It checks command metadata, parsed bootstrap fields and the remaining installed
+  body exactly. Argument edge cases retain their existing parser tests; do not
+  restore the deleted broad runtime integration test merely to satisfy stale refs.
 - `tests/test_install_script.py` must keep the socket-free staged install and
   `runtime_doctor.compare_runtime(clean)` assertion.
-- Run the wiring test once in a localhost-capable environment and record pass;
-  also run the ordinary sandbox path to verify explicit skip behavior.
+- Run the wiring test in a localhost-capable environment and record the CLI
+  version and pass. An absent CLI or denied bind is an explicit skip, never
+  release evidence; obtain a successful host run before claiming compatibility.
 - Run related runtime/autopilot tests, full pytest, and `git diff --check`.
 
 ### 7. Wrong vs Correct

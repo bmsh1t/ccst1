@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
+
+import pytest
 
 from tools import runtime_doctor
 
@@ -159,3 +162,68 @@ def test_install_script_skips_optional_mcp_prompts_without_a_tty(tmp_path):
 
     assert result.returncode == 0, result.stderr + result.stdout
     assert "Set up Burp MCP now? (y/N): n" in result.stdout
+
+
+@pytest.mark.parametrize("with_rsync", [True, False])
+def test_install_upgrade_and_repeat_preserve_user_state(tmp_path, with_rsync):
+    from tools.target_store import TargetStore
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    for name in ("commands", "skills", "agents"):
+        shutil.copytree(REPO_ROOT / name, checkout / name)
+    shutil.copy2(REPO_ROOT / "install.sh", checkout / "install.sh")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name in ("basename", "dirname", "mkdir", "cp", "cat", "grep", *(["rsync"] if with_rsync else [])):
+        executable = shutil.which(name)
+        if not executable:
+            pytest.skip(f"installer test requires {name}")
+        (bin_dir / name).symlink_to(executable)
+    user_dir = tmp_path / "user"
+    runtime = user_dir / ".claude"
+    env = {"PATH": str(bin_dir), "HOME": str(user_dir)}
+
+    def install():
+        result = subprocess.run(["/bin/bash", str(checkout / "install.sh")], cwd=checkout, env=env,
+                                stdin=subprocess.DEVNULL, text=True, capture_output=True, timeout=20)
+        assert result.returncode == 0, result.stderr + result.stdout
+
+    install()
+    assert runtime_doctor.compare_runtime(checkout, runtime)["clean"]
+    disabled = runtime / "commands/.disabled.sync-check.md"
+    (runtime / "commands/sync-check.md").rename(disabled)
+    preserved = {
+        runtime / "settings.json": b'{"userPreference":true}\n',
+        runtime / "skills/user-skill/SKILL.md": b"User-owned skill\n",
+        checkout / ".private/auth.json": b'{"bearer":"fixture-only"}\n',
+    }
+    for path, body in preserved.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(body)
+    store = TargetStore(checkout, "release.test")
+    store.initialize()
+    store.remember(command_id="saved", kind="note", statement="Preserve upgrade context",
+                   conditions="fixture", reopen_when="", next_intent="", evidence=[], actor="test")
+    binding = store.binding()
+    source_command = checkout / "commands/sync-check.md"
+    source_command.write_text(source_command.read_text() + "\nUpdated command\n")
+    source_resource = checkout / "skills/security-arsenal/release.txt"
+    source_resource.write_text("new resource\n")
+    stale = runtime / "skills/security-arsenal/retired.txt"
+    stale.write_text("old managed resource\n")
+    for _ in range(2):
+        install()
+        assert not (runtime / "commands/sync-check.md").exists()
+        assert disabled.read_bytes() == source_command.read_bytes()
+        assert (runtime / "skills/security-arsenal/release.txt").read_bytes() == source_resource.read_bytes()
+        assert all(path.read_bytes() == body for path, body in preserved.items())
+        assert store.binding() == binding
+        assert store.experience_page()["items"][0]["statement"] == "Preserve upgrade context"
+        comparison = runtime_doctor.compare_runtime(checkout, runtime)
+        assert comparison["clean"] is with_rsync
+        assert stale.exists() is (not with_rsync)
+    if not with_rsync:
+        runtime_doctor.sync_runtime(checkout, runtime, kinds=["skills"], prune=True)
+        assert runtime_doctor.compare_runtime(checkout, runtime)["clean"]
+        assert all(path.read_bytes() == body for path, body in preserved.items())

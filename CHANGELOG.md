@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased — Web2 release acceptance (2026-09-27)
+
+- Added isolated upgrade/reinstall preservation checks for both rsync and copy
+  installation, a real Claude CLI probe against a local fake Messages API, and
+  a loopback HTTP → Store → validation → report → process-restart regression.
+- Documented Linux/Python 3.13 as the acceptance baseline and corrected installer
+  mirror/copy guidance. No new Skills or Web3 lifecycle work.
+- See [release acceptance](docs/web2-release.md) for reproducible gates and scope;
+  this entry does not represent a published version or online model evaluation.
+
 ## Unreleased - AI-First Arsenal Convergence (2026-09-02)
 
 ### Changed

@@ -18,7 +18,7 @@
 <br>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
-[![Python 3.8+](https://img.shields.io/badge/Python-3.8+-3776AB.svg?style=flat-square&logo=python&logoColor=white)](https://python.org)
+[![Python 3.13](https://img.shields.io/badge/Python-3.13-3776AB.svg?style=flat-square&logo=python&logoColor=white)](https://python.org)
 [![Tests](https://img.shields.io/badge/Tests-passing-brightgreen.svg?style=flat-square)](tests/)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-Plugin-D97706.svg?style=flat-square&logo=anthropic&logoColor=white)](https://claude.ai/claude-code)
 
@@ -673,12 +673,17 @@ claude-bug-bounty/
 
 ### Prerequisites
 
-```bash
-# macOS
-brew install go python3 node jq
+The release acceptance baseline is **Linux x86_64 with Python 3.13** and Claude
+Code. Other OS/Python combinations are not covered by this acceptance; the
+former Python 3.8+ claim does not describe the current Store-based tools.
+Go, Node.js and individual recon/scan tools are needed only for their selected
+lanes. A missing optional tool remains an explicit limitation, not a clean scan.
 
-# Linux (Debian/Ubuntu)
-sudo apt install golang python3 nodejs jq
+```bash
+# Debian 13 (requires repositories providing Python 3.13)
+sudo apt install git python3.13 python3.13-venv jq rsync
+# Optional external-tool prerequisites
+sudo apt install golang nodejs
 ```
 
 ### Install
@@ -686,10 +691,24 @@ sudo apt install golang python3 nodejs jq
 ```bash
 git clone https://github.com/shuvonsec/claude-bug-bounty.git
 cd claude-bug-bounty
-chmod +x install.sh && ./install.sh     # Install skills + commands into ~/.claude/
-pip install -r requirements.txt         # Python runtime deps (requests, PyYAML, badsecrets)
-bash install_tools.sh                    # Install recon/scan tools + sisakulint
+python3.13 -m venv .venv
+. .venv/bin/activate
+python -m pip install --require-hashes -r requirements-ci.lock
+bash install.sh                        # Install skills, commands and agents into ~/.claude/
+python tools/runtime_doctor.py --fail-on-drift
 ```
+
+The existing CI lock includes test dependencies and provides the reproducible
+environment used for release acceptance. Launch Claude from this checkout with
+the venv active; Python tools and target data remain in the checkout. Install
+external recon/scan tools separately when needed via `bash install_tools.sh`.
+
+Re-run `bash install.sh` after updating. It preserves disabled commands and
+external Skill roots. With rsync, files inside this repository's Skill roots are
+mirrored, so keep custom Skills in separate roots. Without rsync, stale files
+remain visible to the doctor; review them before explicit cleanup. Installation
+does not migrate target databases. See [Web2 release acceptance](docs/web2-release.md)
+for upgrade, recovery, verification commands and the tested support boundary.
 
 ### API Keys
 

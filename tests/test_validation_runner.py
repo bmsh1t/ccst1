@@ -1896,6 +1896,86 @@ def test_primary_native_claim_cli_through_validation_report_and_resume(tmp_path)
         assert not (root / retired).exists()
 
 
+def test_loopback_http_through_report_and_process_restart(tmp_path, monkeypatch):
+    import subprocess
+    import sys
+
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1")
+    monkeypatch.setenv("no_proxy", "127.0.0.1")
+    received = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            received.append(self.headers.get("Authorization", ""))
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'{"owner":"fixture-only-private-data"}')
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    root = tmp_path / "isolated root"
+    target = f"http://127.0.0.1:{server.server_port}"
+    store = TargetStore(root, target)
+    store.initialize()
+    tools = Path(__file__).resolve().parents[1] / "tools"
+
+    def cli(tool, *args):
+        result = subprocess.run([sys.executable, str(tools / tool), *map(str, args)],
+                                text=True, capture_output=True, timeout=30)
+        assert result.returncode == 0, result.stdout + result.stderr
+        return json.loads(result.stdout)
+
+    try:
+        url = target + "/objects/1"
+        summary = validation_runner.run_request_diff(
+            repo_root=root, target=target, finding_id="HTTP-1", state_changing=False,
+            request_spec={"baseline_request": {"url": url},
+                          "variant_request": {"url": url, "headers": {"Authorization": "Bearer fixture-peer"}},
+                          "active_dimension": "header:Authorization", "classifier": "authz_access",
+                          "vuln_class": "Authz", "evidence_shape": "auth_boundary", "expect_auth": True, "repeat": 1})
+        assert summary["result"] == "tested_finding"
+        sync = validation_runner.sync_runner_artifacts(summary, repo_root=root)
+        assert sync["status"] == "updated"
+        (root / summary["summary_path"]).write_text(json.dumps(summary))
+        assert received == ["", "Bearer fixture-peer"]
+        assert "fixture-only-private-data" not in json.dumps(summary)
+        operation = summary["store_operation_id"]
+        assert store.verify_operation(operation)["integrity"] == "valid"
+        validate_args = ("--target", target, "--findings-dir", root / "findings" / store.key,
+                         "--finding-id", "HTTP-1", "--json")
+        decision = _complete_fixture_decision(cli("validate.py", *validate_args, "--scaffold"))
+        decision.pop("cvss", None)
+        decision_path = root / "decision.json"
+        decision_path.write_text(json.dumps(decision))
+        assert cli("validate.py", *validate_args, "--decision-json", decision_path, "--preflight")["status"] == "preflight_ok"
+        result = cli("validate.py", *validate_args, "--decision-json", decision_path)
+        report = Path(result["report_path"])
+        report_bytes = report.read_bytes()
+        generated = subprocess.run([sys.executable, str(tools / "report_generator.py"),
+                                    str(root / "findings" / store.key)], text=True, capture_output=True, timeout=30)
+        assert generated.returncode == 0, generated.stdout + generated.stderr
+        finding = store.finding("HTTP-1")
+        assert finding["assessment"]["verdict"] == "confirmed"
+        assert finding["deliveries"][0]["status"] == "eligible"
+        assert finding["reports"] and not finding["reports"][0]["stale"]
+        binding = store.binding()
+        assert validation_runner.sync_runner_artifacts(summary, repo_root=root)["status"] == "deduplicated"
+        assert cli("validate.py", *validate_args, "--decision-json", decision_path)["validation_sync"]["status"] == "deduplicated"
+        cli("checkpoint.py", "--repo-root", root, "--target", target, "--no-refresh-coverage", "--json")
+        resumed = cli("resume.py", "--repo-root", root, "--memory-dir", root / "hunt-memory", "--target", target, "--json")
+        assert resumed["summary"]["target_memory"]["source_kind"] == "store"
+        assert store.binding() == binding and report.read_bytes() == report_bytes
+        assert received == ["", "Bearer fixture-peer"]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
 def test_primary_native_registration_preserves_each_step_method(tmp_path):
     target, finding_id = "https://target.test", "NATIVE-PRIMARY-METHODS"
     key = _target_key(target)
