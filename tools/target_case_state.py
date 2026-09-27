@@ -28,13 +28,13 @@ try:
     from tools.auth_session import AuthSession
     from tools.private_artifacts import private_artifact_dir, write_private_json
     from tools.target_paths import canonical_target_value, target_storage_key
-    from tools.target_store import runtime_store
+    from tools.target_store import _identifier, _text, runtime_store
 except ImportError:  # pragma: no cover - direct tools/ execution
     from action_queue import SENSITIVE_OBSERVATION_VALUE_RE  # type: ignore
     from auth_session import AuthSession  # type: ignore
     from private_artifacts import private_artifact_dir, write_private_json  # type: ignore
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
-    from target_store import runtime_store  # type: ignore
+    from target_store import _identifier, _text, runtime_store  # type: ignore
 
 
 SCHEMA_VERSION = 1
@@ -119,6 +119,26 @@ def case_state_path(repo_root: str | Path, target: str) -> Path:
 def _private_digest(payload: dict[str, Any]) -> str:
     encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _case_command_id(kind: str, entity_id: str, material: dict[str, Any], revision: int) -> str:
+    """Repeated material transitions at later revisions are new mutations."""
+    return f"{kind}:{entity_id}:at-{revision}:to-{_private_digest(material)[:16]}"
+
+
+def _same_case_material(store, previous: dict | None, material: dict) -> bool:
+    """Compare the material as the Store persists and projects it."""
+    normalized = {}
+    for field, value in material.items():
+        if field == "actors":
+            normalized[field] = sorted(_identifier(item, "actor_id") for item in value)
+        elif field == "metadata":
+            normalized[field] = json.loads(json.dumps(value, sort_keys=True, allow_nan=False))
+        elif field == "endpoint" and value:
+            normalized[field] = store._endpoint(value)
+        else:
+            normalized[field] = _text(value, field, empty=True)
+    return previous is not None and _private_digest(previous) == _private_digest(normalized)
 
 
 def _object_private_path(repo_root: str | Path, target: str, object_ref: str, digest: str) -> Path:
@@ -248,8 +268,12 @@ def add_actor(
     label = label or str(existing.get("label") or "")
     notes = notes or str(existing.get("notes") or "")
     actor_material = {"role": role_value, "label": label, "notes": notes}
-    store.upsert_case_actor(command_id=f"case-actor:{actor_id}:{_private_digest(actor_material)[:16]}",
-                            actor_id=actor_id, role=role_value, label=label, notes=notes, actor=actor_id)
+    previous = ({"role": existing.get("role", "unknown"), "label": existing.get("label", ""),
+                 "notes": existing.get("notes", "")} if existing else None)
+    if not _same_case_material(store, previous, actor_material):
+        store.upsert_case_actor(
+            command_id=_case_command_id("case-actor", actor_id, actor_material, current["revision"]),
+            actor_id=actor_id, role=role_value, label=label, notes=notes, actor=actor_id)
     return store.case_state()["actors"][actor_id]
 
 
@@ -271,7 +295,8 @@ def add_session(
     actor_id = _require_non_empty(actor, "actor")
     kind_hint = str(kind or "unknown").strip() or "unknown"
     store = runtime_store(repo_root, target)
-    current = next((item for item in store.case_context()["sessions"] if item["id"] == session_id), {})
+    context = store.case_context()
+    current = next((item for item in context["sessions"] if item["id"] == session_id), {})
     loaded_session = dict(current)
     if current:
         _load_private_session(repo_root, target, session_id, loaded_session)
@@ -301,12 +326,18 @@ def add_session(
         validity_value = str(current.get("validity") or "unknown")
     notes_value = notes or str(current.get("notes") or "")
     session_material = {"actor": actor_id, "kind": kind_value, "source": source_value,
-                        "validity": validity_value, "notes": notes_value, "private_ref": private_ref}
-    store.upsert_case_session(
-        command_id=f"case-session:{session_id}:{_private_digest(session_material)[:16]}", session_id=session_id, actor_id=actor_id,
-        kind=kind_value, source=source_value, validity=validity_value,
-        last_checked=str(current.get("last_checked") or ""), notes=notes_value,
-        private_ref=private_ref, actor=actor_id)
+                        "validity": validity_value, "notes": notes_value, "private_ref": private_ref,
+                        "last_checked": str(current.get("last_checked") or "")}
+    previous = ({"actor": current.get("actor", ""), "kind": current.get("kind", "unknown"),
+                 "source": current.get("source", ""), "validity": current.get("validity", ""),
+                 "notes": current.get("notes", ""), "private_ref": current.get("private_ref", ""),
+                 "last_checked": str(current.get("last_checked") or "")} if current else None)
+    if not _same_case_material(store, previous, session_material):
+        store.upsert_case_session(
+            command_id=_case_command_id("case-session", session_id, session_material, context["revision"]),
+            session_id=session_id, actor_id=actor_id, kind=kind_value, source=source_value,
+            validity=validity_value, last_checked=session_material["last_checked"], notes=notes_value,
+            private_ref=private_ref, actor=actor_id)
     return load_case_state(repo_root, target)["sessions"][session_id]
 
 
@@ -326,7 +357,8 @@ def add_object(
     ref = _require_non_empty(object_ref, "object")
     type_value = _require_non_empty(object_type, "type")
     store = runtime_store(repo_root, target)
-    current = next((item for item in store.case_context()["objects"] if item["ref"] == ref), {})
+    context = store.case_context()
+    current = next((item for item in context["objects"] if item["ref"] == ref), {})
     private_ref = str(current.get("private_ref") or "")
     if private_marker:
         private_base = {"schema_version": SCHEMA_VERSION, "target": canonical_target_value(target),
@@ -337,13 +369,22 @@ def add_object(
         private_path = _object_private_path(repo_root, target, ref, content_digest)
         write_private_json(private_path, private_payload)
         private_ref = private_path.relative_to(Path(repo_root)).as_posix()
-    store.upsert_case_object(
-        command_id=f"case-object:{ref}:{_private_digest({'type': type_value, 'object_id': object_id, 'owner': owner_actor, 'endpoint': endpoint, 'status': status, 'notes': notes, 'private_ref': private_ref})[:16]}",
-        object_ref=ref, object_type=type_value,
-        object_id=object_id or str(current.get("object_id") or ""), owner_actor=owner_actor or str(current.get("owner_actor") or ""),
-        endpoint=endpoint or str(current.get("endpoint") or ""),
-        status=str(current.get("status") or "active") if status == "active" and current else status,
-        notes=notes or str(current.get("notes") or ""), private_ref=private_ref, actor=owner_actor or "case")
+    object_material = {"type": type_value, "object_id": object_id or str(current.get("object_id") or ""),
+                       "owner": owner_actor or str(current.get("owner_actor") or ""),
+                       "endpoint": endpoint or str(current.get("endpoint") or ""),
+                       "status": str(current.get("status") or "active") if status == "active" and current else status,
+                       "notes": notes or str(current.get("notes") or ""), "private_ref": private_ref}
+    previous = ({"type": current.get("type", ""), "object_id": current.get("object_id", ""),
+                 "owner": current.get("owner_actor") or "", "endpoint": current.get("endpoint", ""),
+                 "status": current.get("status", ""), "notes": current.get("notes", ""),
+                 "private_ref": current.get("private_ref", "")} if current else None)
+    if not _same_case_material(store, previous, object_material):
+        store.upsert_case_object(
+            command_id=_case_command_id("case-object", ref, object_material, context["revision"]),
+            object_ref=ref, object_type=type_value, object_id=object_material["object_id"],
+            owner_actor=object_material["owner"], endpoint=object_material["endpoint"],
+            status=object_material["status"], notes=object_material["notes"],
+            private_ref=private_ref, actor=owner_actor or "case")
     return next(item for item in store.case_context()["objects"] if item["ref"] == ref)
 
 
@@ -364,13 +405,20 @@ def add_hypothesis(
     vuln_class_value = _require_non_empty(vuln_class, "vuln_class")
     metadata_value = _validate_hypothesis_metadata(metadata)
     store = runtime_store(repo_root, target)
-    record_id = hypothesis_id or _next_id(store.case_context()["hypotheses"], "hyp_")
+    context = store.case_context()
+    record_id = _identifier(hypothesis_id, "hypothesis_id") if hypothesis_id else _next_id(context["hypotheses"], "hyp_")
     hypothesis_material = {"vuln_class": vuln_class_value, "endpoint": endpoint, "object_ref": object_ref,
                            "actors": actors, "why_now": why_now, "status": status, "metadata": metadata_value}
-    store.remember_hypothesis(command_id=f"case-hypothesis:{record_id}:{_private_digest(hypothesis_material)[:16]}", hypothesis_id=record_id,
-                              vuln_class=vuln_class_value, endpoint=endpoint, object_ref=object_ref,
-                              actor_ids=actors, why_now=why_now, status=status,
-                              metadata=metadata_value, actor="case")
+    existing = next((item for item in context["hypotheses"] if item["id"] == record_id), {})
+    previous = ({"vuln_class": existing.get("vuln_class", ""), "endpoint": existing.get("endpoint", ""),
+                 "object_ref": existing.get("object_ref", ""), "actors": existing.get("actors", []),
+                 "why_now": existing.get("why_now", ""), "status": existing.get("status", ""),
+                 "metadata": existing.get("metadata", {})} if existing else None)
+    if not _same_case_material(store, previous, hypothesis_material):
+        store.remember_hypothesis(
+            command_id=_case_command_id("case-hypothesis", record_id, hypothesis_material, context["revision"]),
+            hypothesis_id=record_id, vuln_class=vuln_class_value, endpoint=endpoint, object_ref=object_ref,
+            actor_ids=actors, why_now=why_now, status=status, metadata=metadata_value, actor="case")
     return next(item for item in store.case_context()["hypotheses"] if item["id"] == record_id)
 
 

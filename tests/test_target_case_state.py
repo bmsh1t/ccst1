@@ -206,6 +206,52 @@ def test_legacy_case_updates_preserve_defaulted_existing_values(tmp_path):
     assert state["objects"]["obj_a"]["status"] == "closed"
 
 
+@pytest.mark.parametrize("writer, identity, field", [
+    (target_case_state.add_actor, {"actor": "subject", "role": "user"}, "label"),
+    (target_case_state.add_session, {"session": "session", "actor": "owner"}, "notes"),
+    (target_case_state.add_object, {"object_ref": "object", "object_type": "document"}, "notes"),
+    (target_case_state.add_hypothesis, {"hypothesis_id": "hyp", "vuln_class": "Authz"}, "status"),
+])
+def test_case_update_reversion_is_new_mutation_but_same_value_is_idempotent(tmp_path, writer, identity, field):
+    store = TargetStore(tmp_path, TARGET)
+    store.initialize()
+    target_case_state.add_actor(tmp_path, TARGET, actor="owner", role="user")
+    revision = store.binding()["revision"]
+    values = ("open", "closed", "open", "closed", "open") if field == "status" else ("A", "B", "A", "B", "A")
+    for offset, value in enumerate(values, start=1):
+        assert writer(tmp_path, TARGET, **identity, **{field: value})[field] == value
+        assert store.binding()["revision"] == revision + offset
+        assert writer(tmp_path, TARGET, **identity, **{field: value})[field] == value
+        assert store.binding()["revision"] == revision + offset
+
+
+def test_case_retry_compares_store_normalized_material(tmp_path):
+    store = TargetStore(tmp_path, TARGET)
+    store.initialize()
+    target_case_state.add_actor(tmp_path, TARGET, actor="a")
+    target_case_state.add_actor(tmp_path, TARGET, actor="b")
+    writes = [
+        (target_case_state.add_actor, {"actor": "a", "label": " A "}),
+        (target_case_state.add_session, {"session": "session", "actor": "a", "notes": " A "}),
+        (target_case_state.add_object, {"object_ref": "object", "object_type": " document ",
+                                      "endpoint": f"{TARGET}/objects/1", "notes": " A "}),
+        (target_case_state.add_hypothesis, {"hypothesis_id": " hyp ", "vuln_class": "Authz",
+                                          "actors": ["b", "a"], "why_now": " A ",
+                                          "metadata": {"conditions": ("one", "two")}}),
+    ]
+    for writer, arguments in writes:
+        first = writer(tmp_path, TARGET, **arguments)
+        before = store.binding()
+        assert writer(tmp_path, TARGET, **arguments) == first
+        assert store.binding() == before
+    for value in (True, 1, True):
+        before = store.binding()["revision"]
+        arguments["metadata"] = {"flag": value}
+        updated = target_case_state.add_hypothesis(tmp_path, TARGET, **arguments)
+        assert type(updated["metadata"]["flag"]) is type(value)
+        assert store.binding()["revision"] == before + 1
+
+
 def test_legacy_case_state_rejects_foreign_target_identity(tmp_path):
     path = target_case_state.case_state_path(tmp_path, TARGET)
     path.parent.mkdir(parents=True)
