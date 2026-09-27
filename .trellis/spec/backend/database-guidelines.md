@@ -1,18 +1,26 @@
 # 持久化与状态规范
 
-## 当前事实与已批准迁移
+## 当前事实
 
-下述 JSON/JSONL owner 是未切换目标的兼容协议；primary 使用 `tools/target_store.py`。
-任务记录 `127.0.0.1:3001` 已于 2026-09-22 切换，其他消费者与新目标入口仍在收口。目标架构由
-`docs/architecture-contract.md` 唯一说明，具体 API 见 `contracts/transactional-target-state.md`。
+普通 runtime 已统一使用 `tools/target_store.py`，缺库、legacy、preview 或损坏状态均拒绝，
+不回退 JSON writer。每目标 SQLite 元数据使用标准库 sqlite3；原始证据和不可变报告仍为外置文件。
+真实目标迁移只通过显式授权的导入/恢复，不因仓库代码完成而自动进行。
+架构由 `docs/architecture-contract.md` 说明，API 见 `contracts/transactional-target-state.md`。
 
-已批准每目标 SQLite 元数据 + 外置原始证据，使用标准库 sqlite3，不增加数据库服务或 ORM。
-下面文件协议是切换前的现状/兼容要求，不再是禁止数据库迁移或永久保留旧格式的约束。
-切换必须等到消费者/所有 writer 完成迁移验证；不得在活跃旧目标旁初始化另一个可写后端。
-隔离 Store 已提供 Case actor/session/object 表和 hypothesis 关系；legacy
-`case_state.json` 仍是未切换目标的兼容 owner，primary 激活后不得再写该文件。
+| 当前事实 | 唯一 owner / 入口 | 文件角色 |
+|---|---|---|
+| Action、Case、Finding、执行 observation、assessment、delivery、经验、意图 | `TargetStore`；各 CLI 是薄接口 | `state/<key>/metadata.sqlite3` |
+| Scope 与排除规则 | `scope_context.py`；`scope_source.py` 发布/读取 | `state/<key>/scope.json` |
+| raw 与登记报告 | 原生产者发布，Store 绑定 hash/归属 | 外置不可变材料，private/browser 与 private/validation 按目标隔离 |
+| Coverage、Surface、Context、Checkpoint、Resume | 现有只读投影；current truth 决定证据健康 | 可丢弃/可重建，不回灌领域事实 |
+| 跨目标知识 | Markdown + registry + 现有审核入口 | 只有经登记知识参与跨目标复用 |
+| Journal、telemetry | 现有日志/遥测 owner | 辅助记录，不是当前 Finding/记忆 owner |
 
-## 状态分类与所有者
+## 历史文件协议与仍保留的外置材料
+
+以下文件清单及旧 JSON 写入协议保留供显式历史导入、恢复和仍使用文件的材料/投影查阅。
+其中 findings.json、action_queue.json、case_state.json、ledger.jsonl、目标记忆/profile 的领域写入
+已经退休；“缺失可创建”等旧文件规则不能作为普通 runtime 的 fallback。当前归属以上表为准。
 
 | 数据 | 位置 | 所有者/入口 | 语义 |
 |---|---|---|---|

@@ -46,9 +46,11 @@ table, and do not infer a finding from a pattern match alone.
   hypothesis needs it; choose the concrete test from the observed code.
 - Stop when the invariant is disproven, evidence is insufficient, or the claim
   is proven. Record the next action/reopen condition through canonical owners.
-- Send confirmed candidates through `/validate` and the report-only
-  `skills/report-writing/SKILL.md`; do not treat a static scanner score as a
-  validated finding.
+- Preserve non-HTTP contract/program evidence as analysis artifacts. The Store
+  validation/report lifecycle currently requires a target-owned HTTP(S) Finding;
+  non-HTTP integration is deferred. Do not invent an HTTP URL to register it.
+  Use `/validate` only for an actual HTTP Finding; report-writing methods remain
+  available for an analysis document without claiming Store registration.
 
 ## Output
 
@@ -57,5 +59,5 @@ TARGET: [contract/repository identity]
 HYPOTHESIS: [one boundary and expected learning]
 EVIDENCE: [artifact refs, observed delta, and source locations]
 STATUS: [CONFIRMED / NEXT_ACTION / STOP]
-ACTION: [one bounded next action or /validate]
+ACTION: [one bounded next action; /validate only for an actual HTTP Finding]
 ```

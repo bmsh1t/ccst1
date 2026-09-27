@@ -64,8 +64,9 @@ simulation boundary; concrete command and probe knowledge remains on demand.
 The minimum proof is `identified token/program -> authority or source evidence ->
 controlled baseline -> bounded variant -> holder/pool/permission state change ->
 repeatable read-back`. A scanner hit, retained authority name, low liquidity, or
-failed sell alone does not pass. Route complete evidence to
-`triage-validation`.
+failed sell alone does not pass. `triage-validation` provides assessment methods;
+non-HTTP token/program evidence remains analysis material pending Store lifecycle
+integration. Do not substitute a fictional HTTP identity for a program.
 
 ## Red Lines
 

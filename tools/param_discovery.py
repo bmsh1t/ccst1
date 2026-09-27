@@ -32,6 +32,7 @@ try:
     from tools.private_artifacts import private_artifact_dir, write_private_text
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
     from tools.validation_runner import request_once
+    from tools.scope_source import load_scope_context
 except ImportError:  # pragma: no cover - direct tools/ execution
     from action_queue import add_material_review  # type: ignore
     from auth_session import AuthSession, add_cli_args, session_from_args  # type: ignore
@@ -40,6 +41,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from private_artifacts import private_artifact_dir, write_private_text  # type: ignore
     from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # type: ignore
     from validation_runner import request_once  # type: ignore
+    from scope_source import load_scope_context  # type: ignore
 
 
 def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
@@ -307,6 +309,7 @@ def _fetch_forms(
     url: str,
     *,
     target: str,
+    repo_root: Path,
     session: AuthSession,
     timeout: int,
     fetch_html: Callable[[str], tuple[int | None, str]] | None,
@@ -314,8 +317,10 @@ def _fetch_forms(
     try:
         if fetch_html is None:
             response = request_once(
+                repo_root=repo_root,
                 target=target,
                 url=url,
+                session=session,
                 headers=session.headers_for_url(url),
                 timeout=min(timeout, 30),
                 max_body_bytes=2 * 1024 * 1024,
@@ -326,7 +331,8 @@ def _fetch_forms(
         if status != 200 or not body:
             return [], f"form fetch returned status {status}"
         forms = _extract_post_forms(url, body)
-        return [form for form in forms if url_belongs_to_target(str(form["action"]), target)], None
+        return [form for form in forms if url_belongs_to_target(str(form["action"]), target)
+                and session.allows_url(str(form["action"]))], None
     except Exception as exc:
         return [], f"form fetch failed: {type(exc).__name__}: {exc}"
 
@@ -480,6 +486,7 @@ def discover_parameters(
     repo = Path(repo_root).resolve()
     resolved_target = canonical_target_value(target)
     active_session = (session or AuthSession()).bind_target(target)
+    scope = load_scope_context(repo, target)
     tool_exists = tool_exists or (lambda name: shutil.which(name) is not None)
     selected_methods = tuple(
         dict.fromkeys(
@@ -517,6 +524,9 @@ def discover_parameters(
         values = source_values if not from_recon else _recon_inputs(repo, target, method)
         input_values = _unique(_line_url(value) for value in values)
         accepted, refused = _validate_urls(input_values, target)
+        refused.extend({"url": _safe_url(url), "reason": "excluded by saved Scope"}
+                       for url in accepted if not scope.allows_active(url))
+        accepted = [url for url in accepted if scope.allows_active(url)]
         rejected.extend(refused)
         if method == "GET":
             for url in accepted:
@@ -593,6 +603,7 @@ def discover_parameters(
                 for url in remaining:
                     forms, form_error = _fetch_forms(
                         url,
+                        repo_root=repo,
                         target=target,
                         session=active_session,
                         timeout=timeout,
@@ -604,7 +615,7 @@ def discover_parameters(
                     processed_inputs += 1
                     for form in forms:
                         action_url = str(form["action"])
-                        if not url_belongs_to_target(action_url, target):
+                        if not url_belongs_to_target(action_url, target) or not scope.allows_active(action_url):
                             rejected.append(
                                 {
                                     "url": _safe_url(action_url),

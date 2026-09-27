@@ -444,12 +444,13 @@ Those helper controls stay in **advisory audit/replay** behavior for the supplie
 </details>
 
 <details>
-<summary><b>Persistent Hunt Memory</b> — remember everything</summary>
+<summary><b>Persistent Hunt Memory</b> — explicit experience and bounded recall</summary>
 <br>
 
 - **Journal** — append-only JSONL log of every hunt action (concurrent-safe writes)
-- **Pattern DB** — what technique worked on which tech stack, sorted by payout
-- **Target profiles** — tested/untested endpoints, tech stack, findings
+- **TargetStore** — saved intent, conditional experience, Case context, observations and separate technical/delivery judgments
+- **Recall and recovery** — bounded Store views with evidence references, conditions and expansion commands; source failures remain visible
+- **Historical imports** — PatternDB and target profiles are explicit legacy import inputs, not runtime memory writers
 - **Knowledge promotion** — cross-project reuse only through human-reviewed knowledge cards (`/distill` → `knowledge_promote.py`)
 
 </details>
@@ -579,7 +580,7 @@ closeable only after mapping to one of the canonical coverage cells above.
 | `learn.py` | Legacy tech research compatibility backend |
 | `technology_inventory.py` | Shared httpx JSONL/text component and version inventory owner |
 | `intel_engine.py` | Intel v2 owner: OSV/GHSA/NVD + KEV/EPSS + atomic Surface-consumable artifact |
-| `validate.py` | 4-gate validation — target context, impact, dedup, CVSS |
+| `validate.py` | Explicit evidence-linked technical and delivery decisions; CVSS optional; report severity is explicitly declared or unknown |
 | `report_generator.py` | H1/Bugcrowd/Intigriti report output |
 | `scope_checker.py` | Deterministic target matching with anchored suffix matching |
 | `cicd_scanner.sh` | GitHub Actions SAST — wraps [sisakulint](https://github.com/sisaku-security/sisakulint) remote scan (52 rules, 81.6% GHSA coverage) |
@@ -625,7 +626,9 @@ JSHook remains an explicit runtime-evidence integration. See
 | Module | What It Does |
 |:---|:---|
 | `hunt_journal.py` | Append-only JSONL hunt log (concurrent-safe via `fcntl.flock`) |
-| `pattern_db.py` | Per-target pattern store (2026-09-12 scoping ruling: no automatic cross-target recall) |
+| `tools/target_store.py` | Authoritative per-target intent, experience and evidence-linked domain facts |
+| `tools/experience_recall.py` | Bounded target experience and reviewed knowledge references with source health |
+| `pattern_db.py` | Historical PatternDB import/inspection; no ordinary runtime writes or automatic cross-target recall |
 | `audit_log.py` | Every outbound request logged + advisory per-host pacing/breaker telemetry |
 | `schemas.py` | Schema validation for all entry types (versioned) |
 

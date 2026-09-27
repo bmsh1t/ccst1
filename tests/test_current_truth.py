@@ -234,11 +234,11 @@ def test_current_truth_checks_every_operation_on_one_snapshot_and_rechecks_next_
         operation_ids.append(receipt["entity_id"])
     before = store.binding()
     checked, connections = [], []
-    verify, connect = store._verify_operation, sqlite3.connect
+    verify, connect = store._artifact, sqlite3.connect
 
-    def verified(conn, operation_id):
-        checked.append(operation_id)
-        return verify(conn, operation_id)
+    def verified(ref):
+        checked.append(ref)
+        return verify(ref)
 
     def connected(*args, **kwargs):
         connection = connect(*args, **kwargs)
@@ -246,11 +246,12 @@ def test_current_truth_checks_every_operation_on_one_snapshot_and_rechecks_next_
         return connection
 
     with monkeypatch.context() as patch:
-        patch.setattr(store, "_verify_operation", verified)
+        patch.setattr(store, "_artifact", verified)
         patch.setattr(sqlite3, "connect", connected)
         truth = _store_truth(store)
     assert len(connections) == 1
-    assert checked == sorted(operation_ids)
+    assert checked == [".private/validation/target.test/response.txt"]
+    assert {row["event_id"].rsplit(":", 1)[0] for row in truth["records"]} == set(operation_ids)
     assert len(truth["records"]) == 30 and truth["health"]["status"] == "ready"
     assert store.binding() == before
     raw = tmp_path / ".private/validation/target.test/response.txt"
@@ -281,7 +282,7 @@ def test_current_truth_checks_every_operation_on_one_snapshot_and_rechecks_next_
     assert pinned["health"]["status"] == "ready"
     assert _store_truth(store)["health"]["invalid_count"] == 30
     with monkeypatch.context() as patch:
-        patch.setattr(store, "_verify_operation", lambda *args: pytest.fail("truncated prefix must not authorize closure"))
+        patch.setattr(store, "_artifact", lambda *args: pytest.fail("truncated prefix must not authorize closure"))
         assert store.closure_records(limit=1, verify=True)["truncated"] is True
 
 

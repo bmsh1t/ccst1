@@ -82,7 +82,7 @@ def _collect_target_entries(
     }
 
 
-def _collect_knowledge_cards(repo_root: Path, query_tokens: set[str]) -> list[dict]:
+def _collect_knowledge_cards(repo_root: Path, query_tokens: set[str]) -> tuple[list[dict], dict]:
     """已晋升跨目标知识卡：按 trigger_tags/id 粗筛，正文由 Claude 按引用展开。
 
     准入走正式登记边界（审计 F5）：只有 registry（capabilities.yaml）里
@@ -91,25 +91,28 @@ def _collect_knowledge_cards(repo_root: Path, query_tokens: set[str]) -> list[di
     它们要么走 knowledge_promote 完成登记，要么留在 candidates/。
     """
     try:
-        from tools.knowledge_registry import load_registry, parse_knowledge_document
+        from tools.knowledge_registry import KnowledgeRegistryError, load_registry, parse_knowledge_document
     except ImportError:  # pragma: no cover - direct tools/ execution
-        from knowledge_registry import load_registry, parse_knowledge_document  # type: ignore
+        from knowledge_registry import KnowledgeRegistryError, load_registry, parse_knowledge_document  # type: ignore
 
     try:
         registry = load_registry(repo_root)
         registered_paths = registry.card_paths()
-    except Exception:
-        # registry 缺失/损坏：没有已登记知识可召回，返回空而不是绕过边界
-        # 去 glob 目录（那会把未登记卡当已审核知识输出）。
-        return []
+    except (KnowledgeRegistryError, UnicodeError) as exc:
+        return [], {"status": "unavailable", "error": " ".join(str(exc).split())[:240]}
     entries: list[dict] = []
+    errors = []
     for card_id, rel_path in sorted(registered_paths.items()):
         card_path = repo_root / rel_path
         try:
-            text = card_path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
+            text = card_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            errors.append({"ref": rel_path, "error": type(exc).__name__})
             continue
         parsed = parse_knowledge_document(text)
+        if parsed.frontmatter_error:
+            errors.append({"ref": rel_path, "error": "invalid frontmatter"})
+            continue
         metadata = parsed.metadata if isinstance(parsed.metadata, dict) else {}
         # 只取 frontmatter 的轻量字段做粗筛，不解析全文
         head = " ".join(
@@ -128,7 +131,8 @@ def _collect_knowledge_cards(repo_root: Path, query_tokens: set[str]) -> list[di
         })
         if len(entries) >= KNOWLEDGE_CARD_LIMIT:
             break
-    return entries
+    return entries, {"status": "partial" if errors else "ready",
+                     "invalid_count": len(errors), "errors": errors[:5]}
 
 
 def build_recall_view(
@@ -150,9 +154,9 @@ def build_recall_view(
         repo_root, canonical, selected_kinds, query=query,
         limit=limit, cursor=cursor, experience_id=experience_id,
     )
-    card_entries = (
+    card_entries, knowledge_health = (
         _collect_knowledge_cards(repo_root, query_tokens)
-        if "knowledge_card" in selected_kinds and not experience_id else []
+        if "knowledge_card" in selected_kinds and not experience_id else ([], {"status": "not_requested"})
     )
 
     return {
@@ -176,6 +180,7 @@ def build_recall_view(
         "target_page": target_page,
         "pattern_db": [],
         "knowledge_cards": card_entries,
+        "source_health": {"knowledge": knowledge_health},
         "note": (
             "query 是词项粗筛，相关性判断由 Claude 完成。情节 evidence_refs/structured "
             "按引用展开原始证据；知识卡只列引用，正文按需读取。"
@@ -218,6 +223,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"# Experience recall — {view['target']}"
           + (f" (query: {view['query']})" if view["query"] else ""))
     print()
+    health = view["source_health"]["knowledge"]
+    print("Knowledge source: " + json.dumps(health, ensure_ascii=False))
     if view["target_entries"]:
         print("## 当前目标经验")
         for entry in view["target_entries"]:

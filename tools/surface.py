@@ -1125,7 +1125,7 @@ def _load_surface_context(
         item for item in _primary_scanner_findings(store)
         if item.get("url") and url_belongs_to_target(str(item.get("url") or ""), target)
     ]
-    evidence_truth = current_cell_projection(repo_root, target)
+    evidence_truth = current_cell_projection(repo_root, target, _store=store)
     require_matching_truth(coverage_matrix, evidence_truth)
     action_queue_entries = _primary_action_queue(store)
     intel_context = _load_intel_context(recon_dir)

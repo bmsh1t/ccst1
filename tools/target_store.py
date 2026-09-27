@@ -27,14 +27,14 @@ try:
         CANONICAL_VULN_CLASSES, LEDGER_RESULTS, canonical_endpoint_identity, coverage_family, extract_endpoint_path, normalize_family,
     )
     from tools.target_paths import classify_target, open_target_lock_file, target_storage_key, url_belongs_to_target
-    from tools.target_paths import legacy_target_profile_path
+    from tools.target_paths import legacy_target_profile_path, target_raw_artifact_path
     from tools.scope_context import SCHEMA_VERSION as SCOPE_SCHEMA_VERSION, read_scope_source, write_scope_source_locked
 except ImportError:  # pragma: no cover - direct tools/ execution
     from evidence_identity import (  # type: ignore
         CANONICAL_VULN_CLASSES, LEDGER_RESULTS, canonical_endpoint_identity, coverage_family, extract_endpoint_path, normalize_family,
     )
     from target_paths import classify_target, open_target_lock_file, target_storage_key, url_belongs_to_target  # type: ignore
-    from target_paths import legacy_target_profile_path  # type: ignore
+    from target_paths import legacy_target_profile_path, target_raw_artifact_path  # type: ignore
     from scope_context import SCHEMA_VERSION as SCOPE_SCHEMA_VERSION, read_scope_source, write_scope_source_locked
 
 
@@ -1040,14 +1040,10 @@ class TargetStore:
 
     def _artifact(self, ref: Any) -> dict:
         raw = _text(ref, "artifact ref")
-        path = Path(raw)
-        if not path.is_absolute():
-            path = self.root / path
-        path = path.resolve()
-        roots = [self.root / name / self.key for name in ("evidence", "recon", "findings", "reports")]
-        roots.append(self.root / ".private" / "validation" / self.key)
-        if not any(path.is_relative_to(root) for root in roots):
-            raise StoreError("artifact must belong to this target's raw evidence directories")
+        try:
+            path = target_raw_artifact_path(self.root, self.target, raw)
+        except ValueError as exc:
+            raise StoreError(str(exc)) from exc
         digest = hashlib.sha256()
         # Nonblocking open prevents a malicious FIFO from hanging registration.
         fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
@@ -1892,17 +1888,19 @@ class TargetStore:
         artifacts = [dict(row) for row in conn.execute("""SELECT DISTINCT a.* FROM artifacts a
             JOIN observation_artifacts b ON b.artifact_id=a.id WHERE b.operation_id=?""", (operation_id,))]
         for expected in artifacts:
-            status = self._artifact_status(conn, expected)
-            if not status["bytes_valid"]:
-                path = self.root / expected["ref"]
-                reason = "changed" if path.exists() else "unavailable"
-                raise StoreError(f"registered evidence {reason}: {expected['ref']}")
-            if status["availability"] == "unavailable":
-                raise StoreError(f"registered evidence is explicitly unavailable: {expected['ref']}")
-            if status["provenance"] == "revoked":
-                raise StoreError(f"registered evidence provenance is revoked: {expected['ref']}")
+            self._require_valid_artifact(conn, expected)
         return {"operation_id": operation_id, "artifact_count": len(artifacts), "integrity": "valid",
                 "outcome": operation["outcome"], "semantic_verification": False}
+
+    def _require_valid_artifact(self, conn, expected: dict) -> None:
+        status = self._artifact_status(conn, expected)
+        if not status["bytes_valid"]:
+            reason = "changed" if (self.root / expected["ref"]).exists() else "unavailable"
+            raise StoreError(f"registered evidence {reason}: {expected['ref']}")
+        if status["availability"] == "unavailable":
+            raise StoreError(f"registered evidence is explicitly unavailable: {expected['ref']}")
+        if status["provenance"] == "revoked":
+            raise StoreError(f"registered evidence provenance is revoked: {expected['ref']}")
 
     def _report_rows(self, conn, rows: list[dict], assessment: dict | None,
                      deliveries: list[dict], *, assessment_valid: bool) -> list[dict]:
@@ -2117,7 +2115,11 @@ class TargetStore:
             meta = dict(conn.execute("SELECT * FROM store WHERE singleton=1").fetchone())
             premise = conn.execute("""SELECT c.why_now FROM experiences e
                 JOIN experience_case_context c ON c.experience_id=e.id
-                WHERE e.kind='hypothesis' ORDER BY e.id DESC LIMIT 1""").fetchone()
+                WHERE e.kind='hypothesis'
+                ORDER BY e.created_at DESC,
+                    (SELECT min(a.revision) FROM audit a
+                     WHERE a.entity_id=e.id AND a.command='remember_hypothesis') DESC,
+                    e.id DESC LIMIT 1""").fetchone()
             page = self._experience_page_conn(conn, meta, limit=limit)
             return {"target": self.target, "store_id": meta["store_id"], "revision": meta["revision"],
                     "created_at": meta["created_at"], "active_goal": meta["active_goal"],
@@ -2424,11 +2426,23 @@ class TargetStore:
             records = [self._closure_record(row) for row in rows[:limit]]
             invalid_operations = []
             if verify and not truncated:
-                for operation_id in sorted({row["operation_id"] for row in rows}):
-                    try:
-                        self._verify_operation(conn, operation_id)
-                    except (OSError, ValueError, StoreError) as exc:
-                        invalid_operations.append({"operation_id": operation_id, "reason": " ".join(str(exc).split())[:240]})
+                # Local to this acquisition: a later read must hash the bytes again.
+                checked: dict[str, str] = {}
+                failures: dict[str, str] = {}
+                for row in conn.execute("""SELECT DISTINCT b.operation_id,a.* FROM observation_artifacts b
+                        JOIN artifacts a ON a.id=b.artifact_id ORDER BY b.operation_id,a.id"""):
+                    artifact = dict(row)
+                    operation_id = artifact.pop("operation_id")
+                    if artifact["id"] not in checked:
+                        try:
+                            self._require_valid_artifact(conn, artifact)
+                            checked[artifact["id"]] = ""
+                        except (OSError, ValueError, StoreError) as exc:
+                            checked[artifact["id"]] = " ".join(str(exc).split())[:240]
+                    if checked[artifact["id"]]:
+                        failures.setdefault(operation_id, checked[artifact["id"]])
+                invalid_operations = [{"operation_id": key, "reason": value}
+                                      for key, value in sorted(failures.items())]
             return {**({"invalid_operations": invalid_operations} if verify else {}), "target": self.target, "store_id": meta["store_id"], "revision": meta["revision"],
                     "records": records, "total": total, "truncated": truncated, "returned": len(records)}
 

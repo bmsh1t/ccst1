@@ -29,11 +29,11 @@ if str(BASE_DIR) not in sys.path:
 
 try:
     from tools.runtime_state import runtime_wait_action
-    from tools.target_paths import canonical_target_value, target_storage_key
+    from tools.target_paths import canonical_target_value, target_storage_key, target_raw_artifact_path
     from tools.target_store import ConflictError, StoreError, TargetStore, runtime_store, target_backend, target_switch_lock
 except ImportError:  # pragma: no cover - direct tools/ execution
     from runtime_state import runtime_wait_action  # type: ignore
-    from target_paths import canonical_target_value, target_storage_key  # type: ignore
+    from target_paths import canonical_target_value, target_storage_key, target_raw_artifact_path  # type: ignore
     from target_store import ConflictError, StoreError, TargetStore, runtime_store, target_backend, target_switch_lock  # type: ignore
 
 
@@ -183,10 +183,8 @@ def _target_owned_evidence_ref(repo_root: Path | str, target: str, value: Any) -
         return ""
     repo = Path(repo_root).resolve()
     try:
-        relative = Path(ref).resolve().relative_to(repo)
+        relative = target_raw_artifact_path(repo, target, ref).relative_to(repo)
     except (OSError, ValueError):
-        return ""
-    if target_storage_key(canonical_target_value(target)) not in relative.parts:
         return ""
     return str(relative)
 

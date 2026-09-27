@@ -68,7 +68,9 @@ The minimum proof is `identified revision -> controlled caller/state -> concrete
 invariant or authority differential -> bounded value/permission impact ->
 repeatable read-back`. TVL, a privileged function name, a regex hit, or a failed
 transaction alone does not pass. Use the existing source/fork/subprocess
-boundary and route complete candidates to `triage-validation`.
+boundary. `triage-validation` provides assessment methods; non-HTTP contract
+evidence is not yet integrated with the Store validation/report lifecycle.
+Preserve analysis artifacts without substituting a fictional HTTP identity.
 
 ## Red Lines
 

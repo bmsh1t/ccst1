@@ -48,7 +48,7 @@ def _seed_machine_preflight(tmp_path, *, target="target.com", finding_id="sqli_p
         "cvss": {"score": 8.8, "vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H", "params": {}},
         "evidence": {"summary": "Recorded peer response", "refs": [str(summary_path)], "runner_summary": str(summary_path)},
         "report": {"path": f"findings/{store.key}/validated/{finding_id}.md",
-                   "content": f"# {finding_id}\n\nRecorded private peer data was disclosed.\n"},
+                   "content": f"# {finding_id}\n\nSeverity: critical\n\nRecorded private peer data was disclosed.\n"},
     }
     decision_path = tmp_path / f"{finding_id}.decision.json"
     decision_path.write_text(json.dumps(decision), encoding="utf-8")

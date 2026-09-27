@@ -1324,7 +1324,7 @@ def _rebuild_matrix_unlocked(
         from tools.current_truth import current_cell_projection
     except ImportError:  # pragma: no cover - direct tools/ execution
         from current_truth import current_cell_projection
-    truth = current_cell_projection(repo, target)
+    truth = current_cell_projection(repo, target, _store=store)
     source = truth["source"]
     if (source.get("kind") != "store"
             or source.get("store_id") != store_binding["store_id"]

@@ -46,8 +46,10 @@ it, or stop when the invariant is preserved and no new evidence question remains
   hypothesis. Do not infer a rug vector from a name, age, liquidity amount, or
   regex match alone.
 - Record one boundary, baseline, changed condition, observed delta, impact, and
-  stop/reopen condition. Route a confirmed candidate through the existing
-  validation/report lifecycle.
+  stop/reopen condition. Pure contract/program evidence remains an analysis
+  artifact: non-HTTP Store lifecycle integration is deferred. The existing
+  validation/report lifecycle accepts actual target-owned HTTP(S) Findings;
+  do not fabricate a URL for a token/program identity.
 
 ## Output
 
@@ -57,5 +59,5 @@ CHAIN: [EVM / Solana]
 HYPOTHESIS: [one boundary and expected learning]
 EVIDENCE: [artifact refs and observed delta]
 STATUS: [CONFIRMED / NEXT_ACTION / STOP]
-ACTION: [one bounded next action or /validate]
+ACTION: [one bounded next action; /validate only for an actual HTTP Finding]
 ```

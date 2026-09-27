@@ -96,6 +96,11 @@ def _store_truth(store: TargetStore) -> dict:
     }
 
 
-def current_cell_projection(repo_root: str | Path, target: str) -> dict:
+def current_cell_projection(repo_root: str | Path, target: str, *, _store: TargetStore | None = None) -> dict:
     """Read one Store snapshot and suppress closures backed by damaged evidence."""
-    return _store_truth(runtime_store(repo_root, target))
+    if _store is not None:
+        # Reuse a live owner handle, never previously acquired truth or health.
+        expected = TargetStore(repo_root, target)
+        if _store.path != expected.path or _store.target != expected.target or _store.allow_preview:
+            raise ValueError("current truth Store does not match the selected runtime target")
+    return _store_truth(_store if _store is not None else runtime_store(repo_root, target))

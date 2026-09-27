@@ -141,6 +141,15 @@ AuthSession origin/scope rules; raw headers override only on the initial URL.
   stale judgment, missing registered body or changed bytes rejects.
 - `/report` consumes registered AI text and rebuilds its index. Report
   generation never means external submission or Queue completion.
+- Each index entry reads an explicit Severity declaration from that report's
+  immutable, hash-checked body. Missing, invalid or conflicting declarations
+  display `unknown`, never a category/default medium. A new decision with explicit
+  severity must match its report field at preflight; an omitted severity/CVSS is
+  allowed. Different reports/destinations never share a guessed Finding severity.
+- Raw target ownership is shared by Action/native/Store through
+  `target_paths.target_raw_artifact_path`: target-local evidence/recon/findings/reports
+  and private validation/browser roots only. Target words elsewhere in a path,
+  cross-target references or symlink escapes are not evidence ownership.
 - The old Ledger/Finding/Queue compensation and `runner_witness.py` are retired.
   Historical Ledger JSONL diagnostics remain explicit import/history inputs.
 

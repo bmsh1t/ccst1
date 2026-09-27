@@ -45,13 +45,15 @@ filter_target_urls_copy() {
     # Raw recon artifacts remain discovery-first. This derived file is the
     # active-network view, so a scope-owner failure must stop the scanner.
     if ! PYTHONPATH="$BASE_DIR${PYTHONPATH:+:$PYTHONPATH}" \
-        python3 - "$input_file" "$output_file" "$SCANNER_AUTH_TARGET" "$dropped_file" "$lane_label" <<'PY'
+        python3 - "$input_file" "$output_file" "$SCANNER_AUTH_TARGET" "$dropped_file" "$lane_label" "$BASE_DIR" <<'PY'
 import sys
 from pathlib import Path
 
 from tools.target_paths import url_belongs_to_target
+from tools.scope_source import load_scope_context
 
-source, destination, target, dropped_path, lane = sys.argv[1:]
+source, destination, target, dropped_path, lane, repo_root = sys.argv[1:]
+scope = load_scope_context(repo_root, target)
 dropped = []
 with Path(source).open(encoding="utf-8", errors="replace") as reader, Path(
     destination
@@ -60,7 +62,7 @@ with Path(source).open(encoding="utf-8", errors="replace") as reader, Path(
         value = raw.strip().split()[0] if raw.strip() else ""
         if not value:
             continue
-        if url_belongs_to_target(value, target):
+        if url_belongs_to_target(value, target) and scope.allows_active(value):
             writer.write(value + "\n")
         else:
             dropped.append(value)

@@ -6,8 +6,9 @@ Read before changing `tools/target_store.py` or domain consumers. Normal
 runtime is Store-only; legacy data is available through explicit import,
 history inspection and recovery. The task records one authorized cutover on
 2026-09-22; code changes do not authorize more real-data operations.
-`docs/architecture-contract.md` is the architecture authority. C4/C5 acceptance
-and online capability evidence remain separately tracked in the active task.
+`docs/architecture-contract.md` is the architecture authority. The native-first
+engineering task is archived; online capability gains remain unproven and separate
+from consumer correctness or this audit's repairs.
 
 `runtime_store()` rejects uninitialized, legacy, preview, fenced/missing and
 broken state. `hunt_target()` explicitly initializes before target execution;
@@ -15,6 +16,22 @@ ordinary writers/readers and target selection never initialize implicitly.
 Existing non-private target directories are rejected, not chmod-repaired.
 Locks acquired before explicit initialization must not create a non-private
 target directory that prevents that later initialization.
+
+Current Case premise is the most recently created hypothesis: creation timestamp,
+then its first `remember_hypothesis` audit revision, then stable ID for imported
+ties without a receipt. Replaying/updating an older hypothesis does not recreate
+it. Ordinary experience pages retain `created_at_desc,id_desc` cursor order.
+Distillation preserves current truth's source, health and truncation alongside
+historical verdicts; broken raw never loses its warning at the AI view boundary.
+Knowledge recall reports unavailable registry or partial card reads in text/JSON,
+while retaining usable target experience and refusing unregistered-card fallback.
+
+Closure acquisition batches operation/artifact bindings and verifies each immutable
+artifact identity once on that metadata snapshot. Its local results expire on return;
+the next query rereads raw bytes even if revision is unchanged. Existing owner handles
+can avoid repeated admission reads, but source acquisition and publication freshness
+checks remain. Public Context Pack callers cannot supply cached truth to authorize
+the current view; metadata/discovery drift still rejects assembly.
 
 Current memory consumers use Store-backed `show`, ordinary target memory
 writes, bounded recall and `/remember` experience writes. Staged import maps eligible historical target-memory entries

@@ -1564,7 +1564,7 @@ def _complete_fixture_decision(decision):
     for question in decision["seven_question_gate"]["questions"].values():
         question.update(status="pass", basis="The controlled fixture supports this gate.")
     decision["evidence"]["summary"] = "Peer observation of the owner fixture."
-    decision["report"]["content"] = "# Fixture boundary report\n\nThe peer received owner-only fixture data.\n"
+    decision["report"]["content"] = "# Fixture boundary report\n\nSeverity: high\n\nThe peer received owner-only fixture data.\n"
     return decision
 
 
@@ -1642,7 +1642,8 @@ def test_primary_validation_retries_only_uncommitted_judgment(tmp_path, monkeypa
     assert store.binding()["revision"] == binding["revision"] + 3
 
 
-@pytest.mark.parametrize("damage", ["tampered", "foreign-operation", "partial-operation", "bad-preconditions"])
+@pytest.mark.parametrize("damage", ["tampered", "foreign-operation", "partial-operation", "bad-preconditions",
+                                   "severity-conflict", "severity-missing"])
 def test_primary_validation_preflight_rejects_invalid_proof_without_writes(tmp_path, capsys, damage):
     import validate
 
@@ -1651,6 +1652,9 @@ def test_primary_validation_preflight_rejects_invalid_proof_without_writes(tmp_p
         (tmp_path / summary["runs"][0]["artifacts"]["response"]).write_text("changed fixture")
     elif damage == "bad-preconditions":
         decision["store_preconditions"] = {"assessment_id": []}
+        decision_path.write_text(json.dumps(decision), encoding="utf-8")
+    elif damage.startswith("severity-"):
+        decision["report"]["content"] = "# Fixture\n" + ("Severity: low\n" if damage == "severity-conflict" else "")
         decision_path.write_text(json.dumps(decision), encoding="utf-8")
     else:
         store.start_attempt(attempt_id="other", source="fixture", started_at="2026-09-24T00:00:00Z", actor="operator")

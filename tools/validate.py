@@ -361,7 +361,7 @@ def generate_report_skeleton(info: dict) -> str:
     impact     = info.get("impact", "IMPACT_DESCRIPTION")
     score      = info.get("cvss_score")
     vector     = info.get("cvss_vector", "")
-    sev        = severity_from_score(float(score)) if score is not None else str(info.get("severity") or "MEDIUM").upper()
+    sev        = str(info.get("severity") or "UNKNOWN").upper()
     date       = datetime.now().strftime("%Y-%m-%d")
     cvss_section = ""
     if score is not None or str(vector).strip():
@@ -527,13 +527,13 @@ def build_validation_summary(info: dict, *, all_pass: bool, report_path: str | P
     vuln_class = (info.get("vuln_type") or "").strip().lower()
     cvss_score = info.get("cvss_score")
     severity = str(info.get("severity") or "").strip().lower()
-    if severity not in {"info", "low", "medium", "high", "critical"}:
+    if severity not in {"info", "low", "medium", "high", "critical", "unknown"}:
         # Legacy direct callers may still provide only a score; machine
         # decisions always carry the canonical Finding severity above.
         if cvss_score is not None:
             severity = severity_from_score(float(cvss_score)).lower()
         else:
-            severity = "medium"
+            severity = "unknown"
     gate_info = dict(info)
     if not any(key in gate_info for key in ("gate1_pass", "gate2_pass", "gate3_pass", "gate4_pass")):
         gate_info.update({
@@ -1328,6 +1328,20 @@ def _parse_machine_severity(raw: Any) -> str:
     return severity
 
 
+def _machine_report_severity(decision: dict, content: str) -> str:
+    try:
+        from tools.report_generator import declared_report_severity
+    except ImportError:  # direct tools/ execution
+        from report_generator import declared_report_severity
+
+    declared = declared_report_severity(content)
+    if "severity" in decision:
+        value = _parse_machine_severity(decision["severity"])
+        if declared["severity"] != value:
+            raise ValueError("decision.severity must match an explicit Severity field in report.content")
+    return declared["severity"]
+
+
 def _parse_machine_cvss(raw: Any) -> tuple[float, str, dict[str, str]] | None:
     """Validate optional legacy CVSS metadata when a decision supplies it."""
     if raw is None:
@@ -1483,8 +1497,6 @@ def _build_machine_validation_input(
     seven_questions = _parse_machine_seven_questions(decision.get("seven_question_gate"))
     _parse_machine_cvss(decision.get("cvss"))
     impact = _required_text(decision.get("impact"), "impact")
-    canonical_severity = (prefill.get("_canonical_finding") or {}).get("severity") or "medium"
-    severity = _parse_machine_severity(decision.get("severity", canonical_severity))
     decision_method = normalize_http_method(decision.get("method") or "GET")
     evidence = decision.get("evidence")
     if not isinstance(evidence, dict):
@@ -1508,6 +1520,7 @@ def _build_machine_validation_input(
         findings_dir=findings_dir,
         repo_root=repo_root,
     )
+    severity = _machine_report_severity(decision, report_content)
     _assert_machine_report_path_available(
         findings_dir,
         finding_id=finding_id,
@@ -1725,6 +1738,7 @@ def run_machine_preflight(args: argparse.Namespace) -> dict[str, Any]:
     )
     if report_result is not None and findings_dir is not None and finding_id:
         report_path, report_content = report_result
+        capture(lambda: _machine_report_severity(decision, report_content))
         capture(
             lambda: _assert_machine_report_path_available(
                 findings_dir,

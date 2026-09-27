@@ -1289,7 +1289,7 @@ def _build_context_pack(
     deferred_cards: list[str] = []
     knowledge_card_recall: list[dict[str, object]] = []
     checks = _required_checks(blob, has_candidate)
-    ledger_truth = ledger_truth if ledger_truth is not None else current_cell_projection(repo, resolved_target)
+    ledger_truth = ledger_truth if ledger_truth is not None else current_cell_projection(repo, resolved_target, _store=store)
     require_matching_truth(matrix, ledger_truth)
     evidence_summary = build_evidence_summary(
         repo,

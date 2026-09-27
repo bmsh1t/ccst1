@@ -6,39 +6,26 @@ file-format/CLI compatibility constraints; it does not build another Agent runti
 
 ## Implementation and Cutover Status
 
-The refactor is in progress. `tools/target_store.py` implements transactional domain
-commands and read-only queries. The task records the authorized cutover of
-`127.0.0.1:3001` on 2026-09-22; this is not a claim that every consumer or future
-target already uses the Store. Do not initialize it beside a running legacy target
-or interpret unit-test success as complete consumer migration. Runner/native
-registration, validation, reports, Case, Store queries, Checkpoint and round
-settlement have Store paths. Complete consumer migration, explicit new-target
-initialization, legacy retirement and online capability comparison remain unfinished.
-The explicit `tools/action_queue.py add|claim|resolve|list` surface now has a
-thin Store adapter for initialized targets; uninitialized callers still have
-legacy paths in the current implementation. This is temporary compatibility,
-not the final runtime contract or proof of all-consumer migration.
+The native-first refactor was completed and archived on 2026-09-26. Ordinary
+domain readers and writers require the existing `TargetStore`; uninitialized,
+legacy, preview or damaged state fails visibly instead of selecting a retired
+backend. `/hunt` and the explicit Store init command own fresh initialization.
+Case, Action, observation, assessment, delivery, report and saved experience
+retain separate responsibilities in that single database.
 
-The 2026-09-23 C0-C3 implementation has repaired fenced-database admission,
-explicit `/hunt` initialization, ordinary primary target-memory writes, bounded
-recall, Store Finding distillation, and manifest-bound legacy target-memory import.
-An explicit supplemental import can add historical advice to an active Store
-without re-running cutover. Primary Resume now displays the Store memory window,
-and isolated three-round checkpoint/pickup tests show no projection echo. PatternDB
-target history now has a separate byte-pinned import into unverified Store notes,
-not a second primary recall source. An isolated Store-to-draft-to-promote-to-registry
-test now covers the knowledge reuse mechanism without automatic promotion. These
-are partial C3 results, not completion of all memory consumers: knowledge quality,
-old-owner retirement, and online capability comparison
-still require their own acceptance evidence. The task's `prd.md`, `design.md`
-and `implement.md` retain the C0-C5 exit criteria.
+Historical target cutovers and PatternDB/profile imports require explicit,
+source-bound operations; repository changes do not migrate real data or install
+runtime assets. The archived task records consumer/recovery acceptance. Online
+model capability gains remain unproven; engineering completion does not establish
+them. The subsequent practical audit and its repairs address concrete integration
+defects without reopening the architecture or changing these evidence boundaries.
 
 The Action adapter preserves descriptive producer type/source and material/reading
 references separately from Store kind/status. Parameter-discovery and spray primary
 consumers publish immutable review snapshots before creating pending work; they do
 not turn scanner dispositions into action completion. OAST poll/stop append linked
-handoffs without confirming findings or reopening/closing actions. Legacy behavior
-remains isolated until its consumers are retired.
+handoffs without confirming findings or reopening/closing actions. Legacy data is
+available only through explicit historical inspection, import and recovery.
 
 `tools/evidence_identity.py` already owns the shared vocabulary and endpoint
 normalizers. Ledger and native evidence registration accept valid open-ended
@@ -61,9 +48,7 @@ families; canonical Coverage mapping remains optional and unknown labels cannot 
   initialization. Ordinary writes, queries, checkpoint/resume and previews never
   create a Store or silently select legacy.
 - Store identity/role/schema/fence/receipt checks have one low-level owner.
-  After consumer migration, `runtime_store()` returns a valid Store or raises;
-  it does not offer `None -> legacy`. Interim compatibility must retain the same
-  failure checks until its callers are retired.
+  `runtime_store()` returns a valid Store or raises; it never offers `None -> legacy`.
 - Keep internal `primary/preview` roles, durable fences and migration receipts
   where needed for integrity and recovery. Removing business backend branching
   does not justify renaming the database schema, deleting markers or creating a
@@ -180,7 +165,7 @@ Queries do not create actions, submit judgments, reconcile owners or refresh
 canonical state. Rebuildable caches may be refreshed only through explicit
 operations. Primary Surface may derive recon component inventory in memory, but
 must not publish inventory, probe logs or observation summaries as a read side
-effect; legacy cache refresh remains an explicit compatibility path. Primary
+effect; retired metadata is not a runtime fallback. Primary
 Checkpoint construction publishes neither witness nor Coverage cache. Primary
 round settlement closes the runtime round explicitly without old root-claim/Queue
 coordination or implicit Surface refresh.
@@ -243,8 +228,8 @@ explicit current-value owner in the existing Store row; scope notes do not
 change authorization, runtime phase stays with its runtime owner, and the
 active-target pointer contains target selection metadata only.
 
-The only planned memory schema additions are an `active_goal` column on the
-existing Store singleton and an advisory `note` Experience kind. Import
+The Store singleton already has `active_goal`, and Experience supports advisory
+`note` entries. Import
 manifests and command receipts retain historical
 source identity; per-entry provenance columns or tables require a demonstrated
 consumer need. No keyed-note replacement chain is planned: corrections append

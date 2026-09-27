@@ -46,6 +46,7 @@ try:
     from tools.evidence_identity import canonical_vuln_class, normalize_family
     from tools.private_artifacts import private_artifact_dir, write_private_json, write_private_text
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
+    from tools.scope_source import load_scope_context
     from tools.target_store import FindingNotFoundError, StoreError, TargetStore, runtime_store, target_switch_lock
 except ImportError:  # pragma: no cover - direct tools/ execution
     from auth_session import AuthSession, add_cli_args, session_from_args  # type: ignore
@@ -62,6 +63,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from evidence_identity import canonical_vuln_class, normalize_family  # type: ignore
     from private_artifacts import private_artifact_dir, write_private_json, write_private_text  # type: ignore
     from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # type: ignore
+    from scope_source import load_scope_context  # type: ignore
     from target_store import FindingNotFoundError, StoreError, TargetStore, runtime_store, target_switch_lock  # type: ignore
 
 
@@ -590,8 +592,10 @@ class _TargetRedirectHandler(urllib.request.HTTPRedirectHandler):
         *,
         session: AuthSession | None = None,
         sensitive_header_names: set[str] | None = None,
+        repo_root: Path = BASE_DIR,
     ) -> None:
         self.target = target
+        self.repo_root = repo_root
         self.session = session
         self.sensitive_header_names = {
             str(name).lower() for name in (sensitive_header_names or set())
@@ -601,6 +605,8 @@ class _TargetRedirectHandler(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
         if not url_belongs_to_target(newurl, self.target):
             raise ValueError(f"validation redirect left target scope: {public_url_shape(newurl)}")
+        if not load_scope_context(self.repo_root, self.target).allows_active(newurl):
+            raise ValueError(f"validation redirect outside target scope (excluded by saved Scope): {public_url_shape(newurl)}")
         redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
         if redirected is not None and _request_origin(req.full_url) != _request_origin(newurl):
             for store in (redirected.headers, redirected.unredirected_hdrs):
@@ -638,10 +644,14 @@ def request_once(
     timeout: int = 10,
     max_body_bytes: int = MAX_RESPONSE_BYTES,
     session: AuthSession | None = None,
+    repo_root: Path = BASE_DIR,
 ) -> dict[str, Any]:
     """Replay one HTTP request and return raw evidence fields."""
     if not url_belongs_to_target(url, target):
         raise ValueError(f"validation URL is outside target scope: {public_url_shape(url)}")
+    scope = load_scope_context(repo_root, target)
+    if not scope.allows_active(url):
+        raise RequestPreflightError(f"validation URL excluded by saved Scope: {public_url_shape(url)}")
     if max_body_bytes < 1:
         raise ValueError("max_body_bytes must be positive")
     method_u = str(method or "GET").upper()
@@ -652,6 +662,7 @@ def request_once(
     request_text = _format_request(method_u, url, headers, body_text)
     redirect_handler = _TargetRedirectHandler(
         target,
+        repo_root=repo_root,
         session=session,
         sensitive_header_names={name.lower() for name in headers},
     )
@@ -986,6 +997,9 @@ def run_request_diff(
         effective_state = _validate_request_facts(state_changing, redline_checked)
         if not url_belongs_to_target(baseline["url"], target) or not url_belongs_to_target(variant["url"], target):
             raise RequestPreflightError("request pair contains an off-target URL")
+        scope = load_scope_context(repo_root, target)
+        if not all(scope.allows_active(request["url"]) for request in (baseline, variant)):
+            raise RequestPreflightError("request pair contains a URL excluded by saved Scope")
         finding_id = finding_id or _default_finding_id(lane, baseline["url"])
         family = _classifier_vuln_class(spec["classifier"], spec.get("vuln_class", "")) or "runner-observation"
         command_context = _runner_command_context(
@@ -1031,6 +1045,7 @@ def run_request_diff(
             side = "baseline"
             try:
                 base = request_once(
+                    repo_root=repo_root,
                     target=target, url=baseline["url"], method=baseline["method"],
                     headers=base_headers, body=baseline["body"], timeout=timeout, session=session,
                 )
@@ -1039,6 +1054,7 @@ def run_request_diff(
                 run["baseline"] = _response_snapshot(base)
                 side = "variant"
                 variant_response = request_once(
+                    repo_root=repo_root,
                     target=target, url=variant["url"], method=variant["method"],
                     headers=variant_headers, body=variant["body"], timeout=timeout, session=session,
                 )

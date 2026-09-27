@@ -56,6 +56,13 @@ Profile input requires explicit import, so its exclusions are never silently
 discarded. Preview, damaged fence or missing taken-over database fails closed.
 Consumers use `load_scope_context`: Recon relations, Host verification,
 Autopilot bootstrap/state, continuations and FFUF rotation share the same source.
+Request-diff preflight, shared `request_once` and redirects also read this owner;
+anonymous execution is subject to the same exclusions. AuthSession CLI creation,
+parameter-discovery inputs/forms and scanner derived active inputs consume saved
+Scope. Pass the actual repo root through every caller and preserve any narrower
+AuthSession constraint supplied by the caller. Require both target ownership and
+Scope permission; native post-hoc evidence registration does not
+authorize a new request. External scanner execution retains its own redirect rules.
 Explicit batch text/JSON files remain independent Scope inputs. Continuations
 bind the parent owner and source ref; a changed classification hash rejects
 reuse. FFUF selection applies exclusions before budgeting, and changed Scope

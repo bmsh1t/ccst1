@@ -691,13 +691,45 @@ def _validation_cvss_labels(validation):
     return version, vector
 
 
+def declared_report_severity(content: str) -> dict:
+    """Read only explicit Severity fields outside fenced examples."""
+    values = []
+    pending = False
+    fence = ""
+    for line in content.splitlines():
+        raw = line.strip()
+        if raw.startswith(("```", "~~~")):
+            marker = raw[:3]
+            fence = "" if fence == marker else (fence or marker)
+            continue
+        if fence:
+            continue
+        text = raw.replace("**", "").replace("`", "")
+        if re.fullmatch(r"#{1,6}\s+Severity\s*:? *", text, re.I):
+            pending = True
+            continue
+        field = re.match(r"(?:[-*]\s+)?Severity\s*:\s*(.*)$", text, re.I)
+        if field or (pending and text):
+            value = field.group(1) if field else text
+            match = re.match(r"(critical|high|medium|low|info|unknown)(?=$|\s|[(:—–-])", value, re.I)
+            values.append(match.group(1).lower() if match else "invalid")
+            pending = False
+    if pending:
+        values.append("invalid")
+    if not values:
+        return {"severity": "unknown", "reason": "no explicit severity declaration"}
+    if "invalid" in values or len(set(values)) != 1:
+        return {"severity": "unknown", "reason": "invalid or conflicting severity declarations"}
+    return {"severity": values[0], "reason": "explicit report declaration"}
+
+
 def _report_severity(finding, validation, template):
     """Reuse recorded severity without recalculating it from legacy CVSS."""
     summary_severity = str((validation or {}).get("severity") or "").strip().lower()
     if summary_severity in SEVERITY_MAP:
         return summary_severity
-    finding_severity = str(finding.get("severity") or template.get("severity") or "medium").strip().lower()
-    return finding_severity if finding_severity in SEVERITY_MAP else "medium"
+    finding_severity = str(finding.get("severity") or "unknown").strip().lower()
+    return finding_severity if finding_severity in SEVERITY_MAP else "unknown"
 
 
 def _auth_bypass_narrative(finding, validation):
@@ -1165,7 +1197,7 @@ def _primary_findings(store: TargetStore) -> list[dict]:
                 "summary": finding["claim"],
                 "url": finding["endpoint"],
                 "method": finding["method"],
-                "severity": "medium",
+                "severity": "unknown",
                 "confidence": assessment.get("verdict", ""),
                 "validation_status": "validated" if assessment.get("verdict") == "confirmed" else "",
                 "report_status": "generated" if report_file else "not_generated",
@@ -1216,9 +1248,14 @@ def _process_primary_reports(store, report_dir, target_name):
         for report in finding["reports"]:
             if report["stale"]:
                 continue
+            report_bytes = (store.root / report["artifact_ref"]).read_bytes()
+            if hashlib.sha256(report_bytes).hexdigest() != report["artifact_sha256"]:
+                raise StoreError("registered report changed while reading severity; retry after evidence repair")
+            severity = declared_report_severity(report_bytes.decode("utf-8"))
             entries.append({
                 "id": report["id"], "finding_id": finding["id"],
-                "title": finding["title"], "severity": finding["severity"],
+                "title": finding["title"], "severity": severity["severity"],
+                "severity_reason": severity["reason"],
                 "url": finding["url"], "file": str(store.root / report["artifact_ref"]),
                 "type": _report_vuln_type(finding), "family": finding["type"], "confidence": finding["confidence"],
                 "assessment_id": report["assessment_id"], "delivery_id": report["delivery_id"],

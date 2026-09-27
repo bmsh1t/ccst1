@@ -19,6 +19,18 @@ _HOST_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
 URL_DISPLAY_LIMIT = 240
 
 
+def target_raw_artifact_path(repo_root: str | Path, target: str, ref: str) -> Path:
+    """Resolve a raw reference within this target's public or private evidence roots."""
+    repo = Path(repo_root).resolve()
+    key = target_storage_key(target)
+    path = (repo / ref).resolve()
+    roots = [repo / name / key for name in ("evidence", "recon", "findings", "reports")]
+    roots.extend(repo / ".private" / name / key for name in ("validation", "browser"))
+    if not any(path.is_relative_to(root) for root in roots):
+        raise ValueError("artifact must belong to this target's raw evidence directories")
+    return path
+
+
 def target_scoped_owner_roots(repo_root: str | Path, target: str) -> dict[str, str]:
     """Enumerate EVERY per-target owner state location for a full reset.
 

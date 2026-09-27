@@ -25,10 +25,10 @@ from urllib.parse import urlparse
 
 try:
     from tools.target_paths import canonical_target_value, url_belongs_to_target
-    from tools.scope_context import ScopeContext, ScopeContextError
+    from tools.scope_context import ScopeContext
 except ImportError:  # 兼容 python3 tools/auth_session.py
     from target_paths import canonical_target_value, url_belongs_to_target
-    from scope_context import ScopeContext, ScopeContextError
+    from scope_context import ScopeContext
 
 _HEADER_RE = re.compile(r"^([A-Za-z0-9!#$%&'*+\-.^_`|~]+)\s*:\s*(.+)$")
 
@@ -507,9 +507,9 @@ def session_from_args(args, env: dict[str, str] | None = None) -> AuthSession:
     )
     if target:
         try:
-            session.bind_scope(ScopeContext.from_target(target))
-        except ScopeContextError:
-            # The owning CLI reports invalid target/Scope; auth remains
-            # unbound here so a malformed target cannot receive credentials.
-            session.bind_scope(None)
+            from tools.scope_source import load_scope_context
+        except ImportError:  # direct tools/ execution
+            from scope_source import load_scope_context
+        root = getattr(args, "repo_root", None) or Path(__file__).resolve().parents[1]
+        session.bind_scope(load_scope_context(root, target))
     return session

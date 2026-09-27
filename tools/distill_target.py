@@ -46,7 +46,8 @@ def _load_source_evidence(repo: Path, target: str) -> dict:
     """拉三类原始证据（机器事实，非 AI 回忆）。"""
     store = runtime_store(repo, target)
     revision = store.binding()["revision"]
-    entries = list(current_cell_projection(repo, target)["records"])
+    truth = current_cell_projection(repo, target, _store=store)
+    entries = list(truth["records"])
     finding_page = store.finding_page(limit=10)
     findings = finding_page["items"]
     experience_page = store.experience_page(limit=10)
@@ -71,6 +72,7 @@ def _load_source_evidence(repo: Path, target: str) -> dict:
     if store.binding()["revision"] != revision:
         raise ConflictError("target changed during distillation view; retry")
     return {"target": target, "ledger": entries, "findings": findings, "experiences": experiences,
+            "source": truth["source"], "health": truth["health"],
             "case_state": case_state, "windows": windows,
             "case_expand_command": shlex.join([
                 "python3", "tools/target_store.py", "case", "--repo-root", str(repo.resolve()), "--target", target,
@@ -80,6 +82,10 @@ def _load_source_evidence(repo: Path, target: str) -> dict:
 def _bounded_evidence_view(evidence: dict, limit: int = 40) -> str:
     """把原始证据压成 AI 可读的有界视图。"""
     lines: list[str] = []
+    if evidence.get("health"):
+        lines.append("## Current evidence health: " + json.dumps(evidence["health"], ensure_ascii=False))
+        lines.append(f"source_truncated={bool(evidence['source'].get('truncated'))}; "
+                     "results and technical verdicts below are historical judgments, not current raw integrity.")
     entries = evidence["ledger"][-limit:]
     if entries:
         lines.append(f"## Evidence Ledger（最近 {len(entries)} 条，机器事实）")
@@ -154,6 +160,8 @@ def build_evidence_view(repo: Path, target: str) -> dict:
     return {
         "schema_version": 2,
         "target": target,
+        "source": evidence["source"],
+        "health": evidence["health"],
         "view": _bounded_evidence_view(evidence),
         "evidence_counts": {
             "ledger": len(evidence["ledger"]),
