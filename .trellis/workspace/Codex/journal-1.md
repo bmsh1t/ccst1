@@ -462,3 +462,25 @@ Implemented shared bounded knowledge recall for natural-language and Autopilot e
 ### Next Steps
 
 - 无；如需后续工作，创建新任务
+
+
+## Session 19: 完成八项实战审核修复，暂缓 Web3
+<!-- trellis-session: v=2 fp=9236191f8ac3a327 -->
+
+**Date**: 2026-09-27
+**Task**: 完成八项实战审核修复，暂缓 Web3
+**Branch**: `fix/practical-audit-fixes`
+
+### Summary
+
+完成 F1–F7、F9：保存 Scope 贯通执行、browser raw 统一归属、记忆健康与假设顺序、知识来源诊断、报告明确严重度、读取去重和当前契约。F8/Web3 按用户决定暂缓。全套 2319 passed / 1 failed；唯一文案分类失败修复后，最终定向 27 passed；Scope 相关定向 52 passed。Pack/pickup hash 60→3，distill 21→2，下一次读取仍校验 raw。工作提交 e3931ab；分支 fix/practical-audit-fixes。验收与成本保存在 .trellis/tasks/archive/2026-09/09-26-practical-audit-fixes/research/。归档工件被既有 .gitignore 忽略，已本地保存；未同步 runtime 或修改真实目标。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `e3931ab` | fix: close practical audit integration gaps |
+
+### Status
+
+[OK] **Completed**
