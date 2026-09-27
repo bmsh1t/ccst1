@@ -294,6 +294,8 @@ runtime markers, or target-owned URL filtering changes.
   `runtime_phase_exec.py --target`; the child compares that same identity with
   `BBHUNT_RUNTIME_LOCK_TARGET`. Keep the raw manifest target for auth/scope.
 - Runtime liveness gate: `runtime_phase_in_progress(repo_root, target, phase, runtime_state=None)`.
+- Hunt breadcrumb writer: `_persist_runtime_state(domain, *, mode,
+  last_executed_workflow, ctf_mode=False, enrichment_tools=None)`.
 - Target ownership: `url_belongs_to_target(url, target, allow_subdomains=True)`.
 
 ### 3. Contracts
@@ -340,6 +342,10 @@ runtime markers, or target-owned URL filtering changes.
 - `hunt_target()` acquires `state/<target_key>/locks/<phase>.lock` before writing
   `run_recon_started` or `run_scan_started`. The file descriptor remains open for
   the entire long phase; process exit releases the kernel `flock` automatically.
+- Hunt breadcrumb writes pass only persisted fields to `update_runtime_state()`.
+  Do not query Recon/Finding to populate discarded derived fields: an unavailable
+  projection must not prevent a phase marker from being saved. Readers derive
+  current state; the owner retains its legacy rename and whitelist compatibility.
 - A Claude-facing wait action requires both a matching running breadcrumb
   and its matching target/phase `flock` to still be held. A released lock makes
   the marker orphaned: state, checkpoint, and queue readers must immediately
@@ -360,6 +366,8 @@ runtime markers, or target-owned URL filtering changes.
 
 - Same target + same phase already locked -> raise `RuntimePhaseBusy`; CLI exits
   with code `2`; do not write or clear the real runner's runtime marker.
+- Hunt breadcrumb write failure -> preserve the old session and emit the existing
+  non-fatal warning; do not suppress diagnostics or change phase execution results.
 - Different target or different phase -> locks do not conflict.
 - Direct scanner URL/bare-host/missing-manifest inputs all reach admission when
   unlocked; real same-target scan contention returns `75` before scanner artifacts.
@@ -421,6 +429,9 @@ runtime markers, or target-owned URL filtering changes.
   after context exit succeed; a held lock plus matching marker waits, while a
   released marker is an orphan and does not wait.
 - Busy behavior: `hunt_target()` does not call recon or `_persist_runtime_state`.
+- `tests/test_runtime_state.py` proves hunt breadcrumb writes perform zero
+  Recon/Finding queries, preserve validation breadcrumbs, and retain success,
+  failure, interruption, busy-lock and batch behavior with real session writes.
 - `tests/test_scanner_store_registration.py` exercises the real direct wrapper
   with URL/bare-host/no manifest, both unlocked and under a held canonical lock.
   Empty recon proves admission without network I/O; contention returns 75 with

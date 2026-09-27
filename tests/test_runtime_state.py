@@ -8,8 +8,11 @@ import sys
 import threading
 import time
 from pathlib import Path
+from unittest.mock import Mock
 
+import hunt
 import pytest
+import resume as resume_module
 import runtime_state as runtime_state_module
 import runtime_phase_exec
 
@@ -98,6 +101,103 @@ def test_update_runtime_state_preserves_existing_file_when_atomic_replace_fails(
     assert loaded["mode"] == "scan_running"
     assert loaded["last_executed_workflow"] == "run_scan_started"
     assert not list(state_file.parent.glob(".session.json.*.tmp"))
+
+
+@pytest.mark.parametrize("write_fails", [False, True])
+def test_hunt_breadcrumb_write_does_not_query_derived_state(tmp_path, monkeypatch, write_fails):
+    before = update_runtime_state(
+        tmp_path, "target.com", mode="scan_running",
+        last_executed_workflow="run_scan_started",
+        last_validation_result="validated", last_validated_finding_id="finding-1",
+    )
+    state_file = tmp_path / "state" / "target.com" / "session.json"
+    original_bytes = state_file.read_bytes()
+    recon = Mock(side_effect=OSError("recon unavailable"))
+    findings = Mock(side_effect=ValueError("findings unavailable"))
+    log = Mock()
+    monkeypatch.setattr(hunt, "RECON_DIR", str(tmp_path / "recon"))
+    monkeypatch.setattr(hunt, "log", log)
+    monkeypatch.setattr(runtime_state_module, "inspect_recon_artifacts", recon)
+    monkeypatch.setattr(resume_module, "load_structured_finding_followup", findings)
+    if write_fails:
+        monkeypatch.setattr(Path, "replace", Mock(side_effect=OSError("replace failed")))
+
+    hunt._persist_runtime_state(
+        "target.com", mode="scan_only", last_executed_workflow="run_vuln_scan",
+        ctf_mode=True, enrichment_tools=("run_js_read",),
+    )
+
+    recon.assert_not_called()
+    findings.assert_not_called()
+    if write_fails:
+        assert state_file.read_bytes() == original_bytes
+        assert not list(state_file.parent.glob(".session.json.*.tmp"))
+        log.assert_called_once_with("warn", "Runtime state update failed (non-fatal): replace failed")
+    else:
+        saved = json.loads(state_file.read_text(encoding="utf-8"))
+        assert saved == {
+            **before, "mode": "scan_only", "last_executed_workflow": "run_vuln_scan",
+            "ctf_mode": True, "enrichment_tools": ["run_js_read"],
+            "updated_at": saved["updated_at"],
+        }
+        log.assert_not_called()
+
+
+@pytest.mark.parametrize("phase", ["recon", "scan"])
+@pytest.mark.parametrize("outcome", [True, False, "interrupt", "busy"])
+def test_hunt_phase_breadcrumbs_survive_exit(tmp_path, monkeypatch, phase, outcome):
+    monkeypatch.setattr(hunt, "RECON_DIR", str(tmp_path / "recon"))
+    monkeypatch.setattr(hunt, "_auto_log_session_summary", lambda *args, **kwargs: None)
+    before = update_runtime_state(tmp_path, "target.com", mode="previous")
+
+    def run_phase(*args, **kwargs):
+        state = load_runtime_state(tmp_path, "target.com")
+        assert state["mode"] == f"{phase}_running"
+        assert runtime_phase_in_progress(tmp_path, "target.com", phase, state)
+        if outcome == "interrupt":
+            raise KeyboardInterrupt
+        return outcome
+
+    runner = Mock(side_effect=run_phase)
+    monkeypatch.setattr(hunt, "run_recon" if phase == "recon" else "run_vuln_scan", runner)
+    options = {f"{phase}_only": True}
+    if outcome == "busy":
+        with hunt.runtime_phase_lock(tmp_path, "target.com", phase):
+            with pytest.raises(hunt.RuntimePhaseBusy):
+                hunt._hunt_target_impl("target.com", **options)
+        runner.assert_not_called()
+        assert load_runtime_state(tmp_path, "target.com") == before
+    else:
+        if outcome == "interrupt":
+            with pytest.raises(KeyboardInterrupt):
+                hunt._hunt_target_impl("target.com", **options)
+        else:
+            result = hunt._hunt_target_impl("target.com", **options)
+            assert result[phase] is outcome
+        state = load_runtime_state(tmp_path, "target.com")
+        scan_failed = phase == "scan" and outcome is not True
+        assert state["mode"] == ("scan_failed" if scan_failed else f"{phase}_only")
+        assert state["last_executed_workflow"] == (
+            "run_recon" if phase == "recon" else
+            "run_vuln_scan_failed" if scan_failed else "run_vuln_scan"
+        )
+        assert state["ctf_mode"] is False
+        assert state["enrichment_tools"] == []
+    assert runtime_wait_action(tmp_path, "target.com") == ""
+
+
+def test_hunt_batch_completion_persists_breadcrumb_without_a_store(tmp_path, monkeypatch):
+    target_list = tmp_path / "targets.txt"
+    target_list.write_text("target.com\n", encoding="utf-8")
+    monkeypatch.setattr(hunt, "RECON_DIR", str(tmp_path / "recon"))
+    monkeypatch.setattr(hunt, "_auto_log_session_summary", lambda *args, **kwargs: None)
+
+    result = hunt._batch_recon_result(str(target_list), True, time.monotonic())
+
+    state = load_runtime_state(tmp_path, str(target_list))
+    assert result["batch"] is True
+    assert state["mode"] == "batch_recon"
+    assert state["last_executed_workflow"] == "run_recon_batch"
 
 
 def test_corrupt_runtime_state_is_not_treated_as_empty_or_overwritten(tmp_path):

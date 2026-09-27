@@ -787,37 +787,22 @@ def _persist_runtime_state(
     domain,
     *,
     mode,
-    current_stage,
-    last_completed_step,
-    recon_completed=False,
-    scan_completed=False,
-    reports_generated=0,
+    last_executed_workflow,
     ctf_mode=False,
     enrichment_tools=None,
 ):
-    """Persist lightweight target runtime state for resume/autopilot consumers."""
+    """Persist breadcrumbs without querying the state derived by readers."""
     try:
-        from runtime_state import inspect_recon_artifacts, update_runtime_state
-        from resume import load_structured_finding_followup
+        from runtime_state import update_runtime_state
 
         repo_root = os.path.dirname(os.path.abspath(RECON_DIR))
-        artifacts = inspect_recon_artifacts(repo_root, domain)
-        structured = load_structured_finding_followup(repo_root, domain)
         update_runtime_state(
             repo_root,
             domain,
             mode=mode,
-            current_stage=current_stage,
-            last_completed_step=last_completed_step,
-            recon_completed=bool(recon_completed),
-            recon_ready=bool(artifacts.get("ready")),
-            surface_ready=bool(artifacts.get("surface_inputs_ready")),
-            scan_completed=bool(scan_completed),
-            reports_generated=int(reports_generated or 0),
+            last_executed_workflow=last_executed_workflow,
             ctf_mode=bool(ctf_mode),
             enrichment_tools=list(enrichment_tools or []),
-            pending_validation=int(structured.get("pending_validation", 0) or 0),
-            validated_pending_report=int(structured.get("validated_pending_report", 0) or 0),
         )
     except Exception as exc:
         log("warn", f"Runtime state update failed (non-fatal): {exc}")
@@ -860,11 +845,7 @@ def _batch_recon_result(canonical_target, recon_ok, started, *, ctf_mode=False):
     _persist_runtime_state(
         canonical_target,
         mode="batch_recon",
-        current_stage="batch_recon",
-        last_completed_step="run_recon_batch",
-        recon_completed=bool(recon_ok),
-        scan_completed=False,
-        reports_generated=0,
+        last_executed_workflow="run_recon_batch",
         ctf_mode=ctf_mode,
     )
     _auto_log_session_summary(
@@ -1535,11 +1516,7 @@ def _hunt_target_impl(
                     _persist_runtime_state(
                         canonical_target,
                         mode="recon_running",
-                        current_stage="recon",
-                        last_completed_step="run_recon_started",
-                        recon_completed=False,
-                        scan_completed=False,
-                        reports_generated=0,
+                        last_executed_workflow="run_recon_started",
                         ctf_mode=ctf_mode,
                     )
                 if deep:
@@ -1555,11 +1532,7 @@ def _hunt_target_impl(
             _persist_runtime_state(
                 canonical_target,
                 mode="recon_only" if recon_only else ("quick" if quick else "full"),
-                current_stage="recon",
-                last_completed_step="run_recon",
-                recon_completed=False,
-                scan_completed=False,
-                reports_generated=0,
+                last_executed_workflow="run_recon",
                 ctf_mode=ctf_mode,
             )
             raise
@@ -1575,11 +1548,7 @@ def _hunt_target_impl(
         _persist_runtime_state(
             canonical_target,
             mode="recon_only",
-            current_stage="recon",
-            last_completed_step="run_recon",
-            recon_completed=result["recon"],
-            scan_completed=False,
-            reports_generated=0,
+            last_executed_workflow="run_recon",
             ctf_mode=ctf_mode,
         )
         elapsed_minutes = (time.monotonic() - started) / 60.0
@@ -1591,11 +1560,7 @@ def _hunt_target_impl(
         _persist_runtime_state(
             canonical_target,
             mode="recon_only",
-            current_stage="recon",
-            last_completed_step="run_recon",
-            recon_completed=result["recon"],
-            scan_completed=False,
-            reports_generated=0,
+            last_executed_workflow="run_recon",
             ctf_mode=ctf_mode,
         )
         return result
@@ -1609,11 +1574,7 @@ def _hunt_target_impl(
             _persist_runtime_state(
                 canonical_target,
                 mode="scan_running",
-                current_stage="scan",
-                last_completed_step="run_scan_started",
-                recon_completed=recon_available,
-                scan_completed=False,
-                reports_generated=0,
+                last_executed_workflow="run_scan_started",
                 ctf_mode=ctf_mode,
                 enrichment_tools=result.get("enrichment", []),
             )
@@ -1632,11 +1593,7 @@ def _hunt_target_impl(
         _persist_runtime_state(
             canonical_target,
             mode="scan_failed",
-            current_stage="scan",
-            last_completed_step="run_vuln_scan_failed",
-            recon_completed=recon_available,
-            scan_completed=False,
-            reports_generated=0,
+            last_executed_workflow="run_vuln_scan_failed",
             ctf_mode=ctf_mode,
             enrichment_tools=result.get("enrichment", []),
         )
@@ -1654,11 +1611,7 @@ def _hunt_target_impl(
     _persist_runtime_state(
         canonical_target,
         mode=scan_mode,
-        current_stage="scan",
-        last_completed_step=scan_workflow,
-        recon_completed=recon_available,
-        scan_completed=result["scan"],
-        reports_generated=0,
+        last_executed_workflow=scan_workflow,
         ctf_mode=ctf_mode,
         enrichment_tools=result.get("enrichment", []),
     )
@@ -1678,11 +1631,7 @@ def _hunt_target_impl(
     _persist_runtime_state(
         canonical_target,
         mode=scan_mode,
-        current_stage="report" if result["reports"] else "scan",
-        last_completed_step=scan_workflow,
-        recon_completed=recon_available,
-        scan_completed=result["scan"],
-        reports_generated=result["reports"],
+        last_executed_workflow=scan_workflow,
         ctf_mode=ctf_mode,
         enrichment_tools=result.get("enrichment", []),
     )
