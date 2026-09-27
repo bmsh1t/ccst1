@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 19
+- **Total Sessions**: 20
 - **Last Active**: 2026-09-27
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~486 | Active |
+| `journal-1.md` | ~508 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 20 | 2026-09-27 | Web2 stable release acceptance | `7048517` | `fix/web2-stable-release` |
 | 19 | 2026-09-27 | 完成八项实战审核修复，暂缓 Web3 | `e3931ab` | `fix/practical-audit-fixes` |
 | 18 | 2026-09-26 | 完成 native-first 重构收口 | `754cfa7` | `main` |
 | 17 | 2026-09-12 | 简单高效重构：删状态机/孤儿/死出口 + claim模板/极简record/distill + 拆autopilot_state | `96870fa`, `7812dcc`, `606a7f9`, `e447dc8`, `13d69bc`, `d1a551d`, `8b03881`, `c48e348`, `a76197a`, `db3d82f`, `895f4b0`, `f33570c`, `9d21f00`, `ae6bed6`, `fa63ce5`, `98cce8e` | `main` |

@@ -484,3 +484,25 @@ Implemented shared bounded knowledge recall for natural-language and Autopilot e
 ### Status
 
 [OK] **Completed**
+
+
+## Session 20: Web2 stable release acceptance
+<!-- trellis-session: v=2 fp=eb407cfb9b7addb5 -->
+
+**Date**: 2026-09-27
+**Task**: Web2 stable release acceptance
+**Branch**: `fix/web2-stable-release`
+
+### Summary
+
+Completed Web2 acceptance on Linux x86_64, Python 3.13.5 and Claude Code 2.1.278: locked dependencies, 2328 tests passed with zero skips, Shell contracts and strict audit passed. Real staged CLI loading and loopback HTTP through evidence, judgment, report and process recovery verified. Prior-baseline upgrades passed with rsync and copy. Corrected fixture memory isolation and reran CLI test (1 passed). Support/install docs updated; no Web3 or Skill expansion, publication or personal runtime changes. Evidence: .trellis/tasks/archive/2026-09/09-27-web2-stable-release/research/acceptance-results.md.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `7048517` | test: establish Web2 release acceptance baseline |
+
+### Status
+
+[OK] **Completed**
