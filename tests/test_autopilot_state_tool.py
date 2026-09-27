@@ -4979,6 +4979,7 @@ class TestAutopilotState:
             session_id="sess-focus",
         )
 
+        surface_module.build_surface_review(repo_root, "target.com", memory_dir=str(memory_dir))
         state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(memory_dir))
         assert state["next_action"] == "continue_last_focus"
         assert state["resume_targets"] == ["/graphql"]
@@ -5306,6 +5307,7 @@ class TestAutopilotState:
             now_ts=now_ts,
         )
 
+        surface_module.build_surface_review(repo_root, "target.com", memory_dir=str(memory_dir))
         state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(memory_dir))
         assert state["guard_status"]["tracked_hosts"] == 1
         assert len(state["guard_status"]["tripped_hosts"]) == 1

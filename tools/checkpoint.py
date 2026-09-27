@@ -1156,11 +1156,22 @@ def _build_checkpoint(
         "repo_source": [f"findings/{target_storage_key(resolved_target)}/exposure/{name}"
                         for name in state.get("repo_source_artifacts") or []],
     }
+    material_windows = {
+        name: {"items": rows[:5], "total": len(rows), "remaining": max(0, len(rows) - 5)}
+        for name, rows in material_sources.items()
+    }
+    surface_projection = state.get("surface_projection") or {}
+    workflow_window = material_windows["workflow_leads"]
+    workflow_window.update({
+        key: surface_projection.get(key, "")
+        for key in ("status", "reason", "refresh_command")
+    })
+    if surface_projection.get("status") != "valid":
+        workflow_window.update({"items": [], "total": None, "remaining": None})
     checkpoint = {
         "target": resolved_target,
         "material_sources": {
-            "sources": {name: {"items": rows[:5], "total": len(rows), "remaining": max(0, len(rows) - 5)}
-                        for name, rows in material_sources.items()},
+            "sources": material_windows,
             "expand_command": shlex.join([
                 "python3", "tools/autopilot_state.py", "--repo-root", str(repo.resolve()),
                 "--target", resolved_target, "--json",
@@ -1195,7 +1206,7 @@ def _build_checkpoint(
             "autopilot_state": True,
             "context_pack": True,
             "coverage_rebuilt": coverage_rebuilt,
-            "surface": bool(state.get("surface")),
+            "surface": surface_projection.get("status") == "valid",
         },
         "coverage": {
             "summary": coverage_summary,
@@ -1396,6 +1407,12 @@ def format_checkpoint(checkpoint: dict) -> str:
     material_lines = []
     materials = checkpoint.get("material_sources") or {}
     for name, window in (materials.get("sources") or {}).items():
+        if window.get("status", "valid") != "valid":
+            material_lines.append(
+                f"  - {name}: {window['status']} ({window['reason']}); count unknown"
+            )
+            material_lines.append(f"    - Refresh: {window['refresh_command']}")
+            continue
         if not window["total"]:
             continue
         material_lines.append(f"  - {name}: total={window['total']}, remaining={window['remaining']}")

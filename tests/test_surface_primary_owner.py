@@ -8,7 +8,7 @@ import sys
 
 import pytest
 
-from tools.surface import load_surface_context
+from tools.surface import build_surface_review, load_surface_context
 from tools.surface_projection import load_surface_projection
 from tools.surface_index import SurfaceIndexError, build_surface_index, iter_surface_index, load_surface_index_status, page_surface_index
 from tools.target_store import TargetStore
@@ -209,7 +209,7 @@ def test_primary_pickup_preserves_surface_and_coverage_expansions(tmp_path, coun
     source = root / "recon" / target / "urls" / "api_endpoints.txt"
     source.parent.mkdir(parents=True)
     source.write_text("\n".join(urls), encoding="utf-8")
-    build_surface_index(root, target)
+    build_surface_review(root, target)
     binding = store.binding()
 
     def run(argv):

@@ -2265,6 +2265,8 @@ def test_checkpoint_roundtrip_does_not_feed_its_projection_back_to_memory(tmp_pa
 
 
 def test_checkpoint_keeps_discovery_material_visible_without_registering_work(tmp_path, store):
+    from tools.surface import build_surface_review
+
     _seed_recon(tmp_path, store.target, ["https://api.target.com/profile"])
     findings = tmp_path / "findings" / store.key
     manual = findings / "manual_review"
@@ -2279,6 +2281,7 @@ def test_checkpoint_keeps_discovery_material_visible_without_registering_work(tm
     exposure = findings / "exposure"
     exposure.mkdir()
     (exposure / "repo_source_meta.json").write_text('{"status":"ok","source_kind":"local_path"}')
+    build_surface_review(tmp_path, store.target)
     before = store.binding()
     checkpoint = build_checkpoint(tmp_path, target=store.target)
     sources = checkpoint["material_sources"]["sources"]
@@ -2297,6 +2300,32 @@ def test_checkpoint_keeps_discovery_material_visible_without_registering_work(tm
     assert checkpoint["next_action_queue"] == []
     assert store.page("findings")["total"] == 0
     assert store.binding() == before
+
+
+@pytest.mark.parametrize("projection_status", ["missing", "stale", "valid"])
+def test_checkpoint_distinguishes_unavailable_workflow_material_from_empty(tmp_path, store, projection_status):
+    from tools.surface import build_surface_review
+
+    _seed_recon(tmp_path, store.target, ["https://target.com/object"])
+    if projection_status != "missing":
+        build_surface_review(tmp_path, store.target)
+    if projection_status == "stale":
+        changed = tmp_path / "findings" / store.key / "manual_review" / "open_200_api.txt"
+        changed.parent.mkdir(parents=True, exist_ok=True)
+        changed.write_text("[OPEN-200-REVIEW] 200 1200 https://target.com/object\n")
+    binding = store.binding()
+    checkpoint = build_checkpoint(tmp_path, target=store.target)
+    window = checkpoint["material_sources"]["sources"]["workflow_leads"]
+    assert window["status"] == projection_status
+    assert checkpoint["evidence_reviewed"]["surface"] is (projection_status == "valid")
+    assert window["items"] == []
+    assert window["total"] == (0 if projection_status == "valid" else None)
+    assert window["remaining"] == (0 if projection_status == "valid" else None)
+    if projection_status != "valid":
+        assert window["reason"]
+        assert "workflow_leads: " + projection_status in format_checkpoint(checkpoint)
+        assert window["refresh_command"] in format_checkpoint(checkpoint)
+    assert store.binding() == binding
 
 
 def test_checkpoint_rechecks_raw_bytes_between_calls_without_revision_change(tmp_path, store):

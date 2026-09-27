@@ -1515,9 +1515,9 @@ def _load_autopilot_control_facts(
 ) -> dict:
     """一次性读取 next-action 所需控制事实。
 
-    Bootstrap 使用 ``fast_recon=True``，因此这里只 stat recon artifact，且
-    finding reader 禁止 legacy migration。完整诊断路径复用同一事实集合，
-    但保留精确 recon 计数。
+    Recon readiness uses the same stat-only facts in both modes; full
+    diagnostics additionally retain exact counts. An artifact's presence
+    never proves tested coverage or target exhaustion.
     """
     resume_summary = _load_resume_summary(
         resolved_memory_dir,
@@ -1559,8 +1559,9 @@ def _load_autopilot_control_facts(
         queue_snapshot=queue,
     )
     runtime_state = load_runtime_state(repo_root, resolved_target)
+    recon_control = inspect_recon_artifacts_fast(repo_root, resolved_target)
     recon_artifacts = (
-        inspect_recon_artifacts_fast(repo_root, resolved_target)
+        recon_control
         if fast_recon
         else inspect_recon_artifacts(repo_root, resolved_target)
     )
@@ -1578,7 +1579,7 @@ def _load_autopilot_control_facts(
         Path(repo_root),
         resolved_target,
         runtime_state,
-        recon_artifacts,
+        recon_control,
         {
             key: int((structured_findings or {}).get(key, 0) or 0)
             for key in (
@@ -1590,7 +1591,7 @@ def _load_autopilot_control_facts(
     )
     recon_completed_no_live_hosts = _recon_completed_without_live_hosts(
         runtime_state,
-        recon_artifacts,
+        recon_control,
         recon_in_progress=recon_in_progress,
     )
     target_goal_memory = load_target_goal_memory(repo_root, resolved_target)
@@ -1599,7 +1600,7 @@ def _load_autopilot_control_facts(
         resolved_target,
         case_state_summary=case_state_summary,
     )
-    has_recon = bool(recon_artifacts.get("ready"))
+    has_recon = bool(recon_control.get("ready"))
     # Fresh Recon URLs and runtime breadcrumbs are not saved hunt memory.
     # Count only explicit work, context, experience and observed domain facts.
     saved_memory = (resume_summary or {}).get("target_memory") or {}
@@ -2055,15 +2056,17 @@ def _build_autopilot_state(
             "js_endpoints": [],
         }
     else:
-        # Legacy/missing cache compatibility：显式 full state 仍可重建；slash
-        # bootstrap 永远不会走到这个无界 fallback。
-        surface_context = _load_surface_context(
-            repo_root,
-            resolved_target,
-            memory_dir=resolved_memory_dir,
-            coverage_state=coverage_state,
-        )
-        ranked = rank_surface(surface_context)
+        # Decision facts require the same exact-hit projection in both modes.
+        # A missing/stale projection is refreshed only by the explicit owner.
+        surface_context = {}
+        ranked = {
+            "available": bool(facts.get("has_recon")),
+            "target": resolved_target,
+            "runtime_state": facts.get("runtime_state") or {},
+            "recon_artifacts": facts.get("recon_artifacts") or {},
+            "p1": [], "p2": [], "review_pool": [],
+        }
+    ranked["observation_inventory"] = peek_inventory_summary(repo_root, resolved_target)
     state = _build_domain_autopilot_state(
         target,
         facts,
@@ -2074,6 +2077,7 @@ def _build_autopilot_state(
             "reason": str(projection.get("reason") or ""),
             "path": str(projection.get("path") or ""),
             "input_fingerprint": str(projection.get("input_fingerprint") or ""),
+            "refresh_command": f"python3 tools/surface.py --target {resolved_target} --refresh",
         }, ranked),
         surface_context_required=(
             bool(facts.get("has_recon")) and projection.get("status") != "valid"
@@ -3379,11 +3383,31 @@ _CLOSURE_STATE_KEYS = (
 
 def _closure_state_snapshot(state: dict) -> dict:
     """Keep every state projection that can affect the Closure decision."""
-    return {
+    snapshot = {
         key: state.get(key)
         for key in _CLOSURE_STATE_KEYS
         if key in state
     }
+    if "enrichment_hints" in snapshot:
+        snapshot["enrichment_hints"] = sorted({
+            str(item.get("tool") or "")
+            for item in snapshot["enrichment_hints"] or [] if isinstance(item, dict)
+        })
+    return snapshot
+
+
+def _closure_coverage_snapshot(matrix: dict | None) -> dict | None:
+    """Exclude acquisition labels while retaining the complete Coverage binding."""
+    if not isinstance(matrix, dict):
+        return matrix
+    result = {key: value for key, value in matrix.items() if key not in {"as_of", "last_updated"}}
+    source = matrix.get("source_snapshot")
+    if isinstance(source, dict):
+        result["source_snapshot"] = {key: value for key, value in source.items() if key != "as_of"}
+        result["source_fingerprint"] = hashlib.sha256(json.dumps(
+            result["source_snapshot"], sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+    return result
 
 
 def _closure_snapshot_components(
@@ -3431,6 +3455,7 @@ def _closure_snapshot_digest(
     witness: dict,
 ) -> tuple[str, dict]:
     """Bind Closure to normalized Queue and owner projections."""
+    matrix = _closure_coverage_snapshot(matrix)
     components = _closure_snapshot_components(
         target,
         state,
@@ -3462,7 +3487,12 @@ def _closure_snapshot_digest(
         "closure_state": _closure_state_snapshot(state),
         "target_memory": {
             "goal": state.get("target_goal_memory") or {},
-            "resume": state.get("resume_summary") or {},
+            # Recon is already bound by closure_state; Resume embeds the same
+            # owner in a diagnostic shape (unknown vs exact line counts).
+            "resume": {
+                key: value for key, value in (state.get("resume_summary") or {}).items()
+                if key != "recon_artifacts"
+            },
         },
     }
     encoded = json.dumps(
@@ -3486,6 +3516,12 @@ def load_closure_projection(
     """Read existing closure inputs only for an explicit CLI request."""
     target = str(state.get("resolved_target") or state.get("target") or "")
     source_markers_before = _owner_source_markers(repo_root, target)
+    recon = state.get("recon_artifacts")
+    if isinstance(recon, dict) and "counts_exact" in recon:
+        # Explicit Closure acquisition expands the bootstrap-only stat view.
+        # Bind the same owner facts as full diagnostics, including FFUF health
+        # and missing-input diagnostics, rather than hashing unknown counts.
+        state = {**state, "recon_artifacts": inspect_recon_artifacts(repo_root, target)}
     matrix_path = Path(repo_root) / "evidence" / target_storage_key(target) / "coverage_matrix.json"
     matrix = read_matrix(target, repo_root, current_only=True)
     coverage_stale = matrix is None and matrix_path.is_file()
