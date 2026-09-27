@@ -174,11 +174,11 @@ Checkpoint, Pickup and preflight never initialize, import, or recreate old owner
 
 - `live/wafw00f_hits.txt` is sampled host-level context. AI chooses the target-observed POST/JSON/query/form shape and exact test input, then uses browser/MCP/curl/raw sender directly.
 - Use `validation_runner.py request-diff` only for an exact same-method, one-dimension HTTP pair that benefits from stable replay, response diff, and canonical evidence. Time-shaped candidates use AI interleaved sampling with a stable median/MAD trend. `429`, transport failure, block pages, and WAF observations are not findings; never run a fixed matrix merely because parameters or a WAF exist.
-- Direct or browser evidence that does not fit request-diff remains raw evidence or a target-owned `finding_claim` until ready; persist the Candidate and use `record-evidence` for formal validation. Checkpoint owns the lifecycle handoff.
+- Direct or browser evidence that does not fit request-diff remains raw evidence or a target-owned `finding_claim` until ready; explicitly persist the Candidate through `TargetStore.create_finding` and use `record-evidence` for formal validation. Checkpoint only reads the saved state.
 
 ## Access Limit
 
-- A path/proxy/framework/sibling/normalization signal may trigger an AI-selected exact request for any 401/403/404/405/415 access boundary; WAF is context, not a prerequisite. Execute through browser/curl/raw sender, and use `validation_runner.py request-diff` only when its one-dimension contract fits. Preserve raw evidence and let checkpoint/validate own classification; a status change alone is not proof.
+- A path/proxy/framework/sibling/normalization signal may trigger an AI-selected exact request for any 401/403/404/405/415 access boundary; WAF is context, not a prerequisite. Execute through browser/curl/raw sender, and use `validation_runner.py request-diff` only when its one-dimension contract fits. Preserve raw evidence; AI submits technical and delivery judgments through `/validate`. A status change alone is not proof.
 - Invoke setup helpers on demand: `/root/tool/aitool/zocom/mail_receiver.py` (environment-provided helper, not part of this repo) for self-owned test-account email verification, or `tools/cf_solver.py` for Cloudflare clearance. Persist results through private AuthSession/Case State and keep failures `blocked`/`partial`.
 
 ## Workflow Timing And Case State

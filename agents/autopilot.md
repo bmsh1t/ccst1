@@ -54,7 +54,7 @@ lane contract in `docs/autopilot-lanes.md#state-and-queue` (owner continuation v
 `autopilot_continuation.py create`, never scan the list/manifest itself, `out_of_scope`
 always wins, `invalid_batch_target`/`batch_failed` are terminal).
 
-Startup anti-loop: if `autopilot_state.py` returns `next_action: wait_recon` / `Recon: in progress`, do not announce a fresh start or launch another recon. If it returns `wait_scan` / `Scan: in progress`, do not launch another `scan-only --quick`; wait/poll and rerun state. Runtime phase locks are the final duplicate-launch guard. Repeating startup or scan commands is not progress. Recon completion attempts a non-fatal exact-index/full-stream-ranking finalizer; failure preserves raw recon and leaves `prepare_surface_context` for explicit refresh. `collect_candidate_evidence` uses structured `next_actions`/`missing_labels`, or a memory candidate only after reviewing locatable evidence, otherwise collects raw request/response. The `root_claim_next` -> `/checkpoint` -> canonical-ID -> `validation_runner.py <lane> ...` chain, `/validate` timing, and `complete_report_draft` semantics follow `docs/autopilot-lanes.md#state-and-queue` (never `--decision-json` on the runner).
+Startup anti-loop: if `autopilot_state.py` returns `next_action: wait_recon` / `Recon: in progress`, do not announce a fresh start or launch another recon. If it returns `wait_scan` / `Scan: in progress`, do not launch another `scan-only --quick`; wait/poll and rerun state. Runtime phase locks are the final duplicate-launch guard. Repeating startup or scan commands is not progress. Recon completion attempts a non-fatal exact-index/full-stream-ranking finalizer; failure preserves raw recon and leaves `prepare_surface_context` for explicit refresh. `collect_candidate_evidence` uses structured `next_actions`/`missing_labels`, or a memory candidate only after reviewing locatable evidence, otherwise collects raw request/response. The explicit Store claim -> canonical-ID -> `validation_runner.py <lane> ...` chain, `/validate` timing, and `complete_report_draft` semantics follow `docs/autopilot-lanes.md#state-and-queue` (never `--decision-json` on the runner).
 
 Only add heavier state tools when they directly change the next action: `target_case_state.py` for actor/session/object continuity, `case_state_seed.py` for concrete object IDs, and checkpoint/action_queue/coverage after progress, validation, handoff, or before finish; do not let them drive first contact.
 
@@ -96,14 +96,15 @@ This applies broadly: known software versions, exposed routes, browser XHR/API c
 
 Do not overfit this contract into a fixed checklist. Normalize evidence, choose the next safe action, execute or resolve it, then update state to `tested`, `dead-end`, `blocked`, `lead`, `signal`, or `candidate`.
 
-`tools/checkpoint.py` automatically syncs executable proposals to the durable queue; the
+AI explicitly adds follow-up work through the durable Action Queue owner; the
 authoritative claim/resolve command shapes live in `docs/autopilot-lanes.md#state-and-queue`
-(`action_queue.py next` / `resolve`; `ingest-checkpoint` is legacy/manual recovery only).
-Candidate-only scanner lanes expose their input, selected, and remaining counts without claiming execution; only the retained timing/workflow runners own resumable cursors. In-scope requests execute through the selected medium, AuthSession headers remain origin-scoped, and candidate/partial generations enter the existing Action Queue through checkpoint.
+(`action_queue.py add` / `claim --id` / `resolve`). Checkpoint only reads saved work;
+`ingest-checkpoint` is retired.
+Candidate-only scanner lanes expose their input, selected, and remaining counts without claiming execution; only the retained timing/workflow runners own resumable cursors. In-scope requests execute through the selected medium, AuthSession headers remain origin-scoped, and AI explicitly records follow-up actions for candidate/partial results.
 
 Do not end a run merely because a primary lane is blocked. Checkpoint/finish is allowed only after the remaining high-value lanes have been executed, blocked, dead-end, or clearly not applicable. When auth, WAF, or manual-browser blockers appear, expand into the smallest applicable adjacent high-value lane before considering closure. Examples include auth bootstrap (register, invite, reset, verification), controlled credential access when its prerequisites exist, edge/WAF lanes, and public-side JS/source/version/metadata/sibling-route continuation.
 ## Compact Transition Gate
-- Paranoid checkpoints after each substantive state change; normal after a coherent lane batch; yolo only on blocker/handoff/finish. Every mode writes evidence state. If the caller explicitly supplied `--deep --max-lanes N`, N is only this invocation's named substantive-lane cap: after lane N checkpoint/sync durable queue, state the handoff, and do not start a newly discovered lane.
+- Paranoid checkpoints after each substantive state change; normal after a coherent lane batch; yolo only on blocker/handoff/finish. Every mode writes evidence state. If the caller explicitly supplied `--deep --max-lanes N`, N is only this invocation's named substantive-lane cap: after lane N explicitly save follow-up work and handoff, then read checkpoint, and do not start a newly discovered lane.
 - After a primary Candidate/Validated result, evaluate one bounded evidence-fit sibling or chain before closing.
 - On 401/403/404/405/415 or parser delta, try one evidence-linked bypass family or explicitly close it; after three homogeneous no-information results, resolve and rotate lanes.
 - Refresh rotating form/session tokens from the legitimate baseline page/session before each replay.
@@ -173,7 +174,7 @@ Choose each next action from current state and evidence; use the canonical `/aut
 command and lane contract for execution, validation, checkpoint, and finish details.
 Do not impose a fixed phase or vulnerability order.
 ## High-impact success handoff
-A reproduced exploit or browser-observed impact is not a finding lifecycle transition. After RCE, SSRF, XXE, deserialization, upload, JWT, or another high-impact lane, save exact raw request/response or a locatable browser artifact; if no runner exists, write a target-owned root claim JSON under `findings/<target-key>/` using the explicit schema in `commands/checkpoint.md` (kind/schema_version/required fields), then run `tools/checkpoint.py` for owner candidate/action creation. Do not reuse another tool's status/summary JSON as a claim.
+A reproduced exploit or browser-observed impact is not a finding lifecycle transition. After RCE, SSRF, XXE, deserialization, upload, JWT, or another high-impact lane, save exact raw request/response or a locatable browser artifact, explicitly register the Candidate through `TargetStore.create_finding`, then register native evidence with `validation_runner.py record-evidence` as described in `docs/evidence-runners.md#native-evidence-registration`. Add necessary follow-up through the Action Queue owner. Checkpoint only displays raw root claims; it never creates Findings or Actions from them.
 Missing endpoint data is an explicit incomplete claim; never invent the target root as an endpoint. Refresh state, use the canonical ID for `/validate`, or close the action as blocked/dead-end; terminal prose alone cannot establish confirmed/validated state.
 ## Deep Mode
 

@@ -1,5 +1,5 @@
 ---
-description: 管理 Claude CLI 漏洞挖掘中的活跃目标记忆。用法：/target show | /target set <target> --mode hunt --phase recon | /target lead "..." | /target next "..." | /target handoff "..."
+description: 管理 Claude CLI 漏洞挖掘中的活跃目标记忆。用法：/target show | /target set <target> --goal "..." | /target lead "..." | /target next "..." | /target handoff "..."
 ---
 
 # /target
@@ -25,43 +25,54 @@ description: 管理 Claude CLI 漏洞挖掘中的活跃目标记忆。用法：/
 
 ## 命令
 
-```bash
-python3 tools/target_memory.py show
-python3 tools/target_memory.py show target.com
+首次使用先显式初始化 Store；已有活动 Store 时该命令幂等返回。
+历史待导入、preview 或损坏状态会报错，不会隐式迁移。
 
-python3 tools/target_memory.py set target.com \
-  --mode hunt \
-  --phase recon \
-  --goal "Find high-value Web/API leads" \
-  --hypothesis "Multi-tenant API may have object-level authorization gaps" \
-  --skill bb-methodology \
-  --skill web2-recon \
-  --knowledge attack-surface \
-  --knowledge vuln-patterns
+```bash
+python3 tools/target_store.py init --store --target TARGET
+python3 tools/target_memory.py set TARGET --goal "Find high-value Web/API leads"
+python3 tools/target_memory.py show
+python3 tools/target_memory.py show TARGET
 
 python3 tools/target_memory.py note "Login is account-gated; API paths expose org_id"
 python3 tools/target_memory.py lead "Possible IDOR on /api/org/{id}/users"
 python3 tools/target_memory.py next "Compare org user list access across both accounts"
-python3 tools/target_memory.py dead-end "GraphQL introspection disabled; no operation names in JS"
-python3 tools/target_memory.py pattern "Export endpoints are high-signal on this target"
 python3 tools/target_memory.py handoff "Recon complete; next step is role-diff on org APIs"
+```
+
+`set TARGET` 只选择已初始化目标，省略 `--goal` 会保留原目标意图。
+`--mode`、`--phase`、`--hypothesis`、`--skill`、`--knowledge` 已退役；运行阶段由
+Runtime 管理，结构化假设由 Case 管理，Skill/知识选择由 AI 按当前证据决定。
+其他写入命令可以加 `--target TARGET`，避免依赖活跃目标指针。
+
+`dead-end` 和 `pattern` 必须关联已登记执行。将下例的 `OPERATION_ID:0` 替换为真实
+执行收据 ID 与从零开始的 observation 序号；无执行证据时使用 `note` 保存未验证观察。
+
+```bash
+python3 tools/target_memory.py dead-end "Peer account cannot read this object" \
+  --target TARGET --conditions "same tenant, peer role, tested object" \
+  --reopen-when "role or ownership changes" --operation-ref OPERATION_ID:0
+python3 tools/target_memory.py pattern "Object-owner comparison isolates access behavior" \
+  --target TARGET --operation-ref OPERATION_ID:0
 ```
 
 ## 写入位置
 
 ```text
-memory/goals/active.json
-memory/goals/targets/<target>.json
-memory/goals/sessions/<timestamp>-<target>.md
+memory/goals/active.json                 活跃目标选择指针
+state/<target_key>/metadata.sqlite3       目标意图与经验
 ```
+
+`show` 从同一 Store 读取；旧 `memory/goals/targets/` 和 `sessions/` 文件只供历史检查
+与显式导入，不再作为正常写入位置。
 
 ## 层级边界
 
 目标记忆只保存目标相关状态：
 
 - 活跃目标
-- 当前阶段
-- 当前假设
+- 目标意图
+- 假设线索及适用条件
 - 线索
 - 下一步
 - 已证伪或低价值方向
@@ -80,7 +91,7 @@ memory/goals/sessions/<timestamp>-<target>.md
 
 1. 如果存在，先读取 `memory/goals/active.json`。
 2. 运行 `python3 tools/target_memory.py show`。
-3. 根据 mode、phase 和 active hypothesis 选择相关 skill。
+3. 从 Store、Runtime、Case 与当前证据恢复意图和假设，选择相关 Skill。
 4. 只加载当前线索需要的知识库文件。
 5. 长会话结束前运行 `python3 tools/target_memory.py handoff "...summary..."`。
 

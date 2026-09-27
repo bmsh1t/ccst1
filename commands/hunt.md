@@ -97,20 +97,21 @@ a user reminder; bind each write to the current target:
 ```bash
 python3 tools/target_memory.py lead "..." --target TARGET
 python3 tools/target_memory.py next "..." --target TARGET
-python3 tools/target_memory.py dead-end "..." --target TARGET
+python3 tools/target_memory.py note "Unverified observation and remaining evidence gap" --target TARGET
 python3 tools/target_memory.py handoff "..." --target TARGET
 ```
 
-At the end of a meaningful hunt pass, prefer checkpoint automation over manual
-summary:
+Use `dead-end` only with `--conditions`, `--reopen-when`, and an existing
+`--operation-ref OPERATION_ID:0`; see `commands/target.md` for the evidence contract.
+At the end of a meaningful hunt pass, inspect the read-only checkpoint:
 
 ```bash
 python3 tools/checkpoint.py --target target.com
 ```
 
-Checkpoint writes target memory automatically (see
-`commands/checkpoint.md#写回契约权威定义`); pass `--no-apply-target-memory` only
-when the operator explicitly wants the memory write skipped.
+Checkpoint does not save target memory or create Findings/Actions (see
+`commands/checkpoint.md`). Save useful progress explicitly with the target-memory
+commands above; register Findings/Actions through their Store owners.
 
 Reusable lessons should be promoted through `/retrospect`, not copied directly
 from a target into the knowledge base without review.
@@ -141,7 +142,7 @@ Browser-state surfaces should use the shared browser evidence lane:
 ## High-ROI Lanes
 
 - **Auth / IDOR / role diff**: compare A/B users, object IDs, tenant/account IDs, export/download/report results.
-- **403 / auth boundary**: when a target-owned 401/403 has path, proxy, framework, or sibling evidence, let Claude select the exact path/header/method representation and execute it through browser, curl, or a raw sender. Use `validation_runner.py request-diff` only when the same-method one-dimension pair fits; otherwise retain raw evidence or a target-owned `finding_claim` for checkpoint. A status change alone is not proof.
+- **403 / auth boundary**: when a target-owned 401/403 has path, proxy, framework, or sibling evidence, let Claude select the exact path/header/method representation and execute it through browser, curl, or a raw sender. Use `validation_runner.py request-diff` only when the same-method one-dimension pair fits; otherwise retain raw evidence for explicit Store claim/evidence registration. A status change alone is not proof.
 - **GraphQL**: inspect schema/operation names and compare object/field authorization. Assess mutations by the actual side effects under `rules/red-lines.md` and current operator intent; test-owned reversible flows are not excluded merely because they use mutations.
 - **SSRF / webhook / async**: use `tools/oast_listen.py` only when a URL-fetch or webhook sink exists.
 - **Upload/import/export**: confirm parser/authorization paths with minimal samples; record state-changing leads separately.

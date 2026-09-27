@@ -175,10 +175,10 @@ incomplete cursor resumable.
 
 Named action mechanics, replay, recon continuation, list selection, and owner write-back live
 in the selected lane section. Claim durable Queue work before replay; prose or a raw endpoint
-is never evidence. If `state.root_claim_next` exists, run `/checkpoint` so `finding_index`
-creates the canonical candidate and Queue action before using its ID. Write-back contract
-(what checkpoint writes where, default-on apply, cadence semantics) is defined once in
-`commands/checkpoint.md#写回契约权威定义`.
+is never evidence. Raw root claims remain review material. Register a Candidate explicitly
+through `TargetStore.create_finding`, and add any follow-up through the Action Queue owner
+before using its canonical ID. `/checkpoint` only reads existing domain state; its separate
+explicit witness commands are defined in `commands/checkpoint.md`.
 Memory responsibility is mode-independent: apply
 `skills/runtime-protocol.md#shared-memory-continuity`; cadence controls batching,
 not whether important progress is retained.

@@ -15,7 +15,7 @@
 ## 晋升级别
 
 - 普通通用知识：不新增 Skill。
-- 实战发现的小缺口：补 `context_pack.py` 路由、知识卡、hypothesis seeds 和回归测试。
+- 实战发现的小缺口：补知识卡、Skill 方法或判断规则；机械执行缺口才补工具与回归测试。
 - 重复出现的高价值模式：优先升级成知识卡增强。
 - 稀缺且可迁移的新打法：才进入 Skill 候选。
 - 不好用、冗余、重复或过拟合单个 lab/目标的内容：直接丢弃。
@@ -28,21 +28,21 @@ Skill 或知识卡。
 
 ```text
 经验进知识库
-判断进 rubric
-路由进 context_pack
-下一步进 checkpoint
+判断进 Skills / rules，由 AI 应用
+知识发现进 Context Pack 目录，选择由 AI 完成
+下一步由 AI 显式写入 Action Queue
 重复动作进工具
-结果进 ledger
+结果经 Store observation / assessment 登记
 ```
 
 | 新内容类型 | 应落位置 | 示例 |
 |---|---|---|
 | 稀缺项目经验、边界思路、反例、误判模式 | `knowledge/cards/` | 记录目标无关、可复用且能改变证据判断的边界差异 |
-| 证据门槛、Candidate 判断、降级条件 | `tools/evidence_rubric.py` + `tests/test_evidence_rubric.py` | 匿名敏感配置泄露不需要无意义 actor diff；DNS-only SSRF 不能 candidate-ready |
-| 触发词、上下文路由、知识卡选择 | `tools/context_pack.py` + `tests/test_context_pack.py` | `application-configuration` + unauth 路由到 auth-access；search/filter/sort 路由到 SQLi |
-| 发现后的下一步动作、replay 草案、queue 优先级 | `tools/checkpoint.py` + `tests/test_checkpoint.py` | IDOR 缺 actor diff 时生成 A/B replay skeleton；已验证 finding 转 `/validate` |
+| 证据门槛、Candidate 判断、降级条件 | `skills/`、`rules/`、知识卡 | AI 根据原始证据判断边界与影响；工具校验提交材料与身份绑定 |
+| 上下文路由、知识卡选择 | `skills/runtime-protocol.md`、`knowledge/capabilities.yaml` | Context Pack 提供目录和事实；AI 按信息缺口选择，不新增触发词自动选路 |
+| 发现后的下一步动作、replay 草案、queue 优先级 | AI 判断 + `tools/action_queue.py` 显式 add/claim/resolve | AI 选择角色对照或待验证 Candidate，Checkpoint 只读展示已保存工作 |
 | 稳定重复的 replay、diff、证据保存、格式转换 | `tools/` 下的执行器 + 对应测试 | baseline/variant 请求、响应 diff、MCP artifact 导入、validation runner |
-| 目标专属结果、验证状态、actor matrix、raw evidence 指针 | `memory/evidence/`、`evidence/`、`findings/`、target memory | `tested_finding`、`dead_end`、raw request/response、ledger entry |
+| 目标专属结果、验证状态、actor matrix、raw evidence 指针 | TargetStore observation/assessment/Case 与外部 raw artifact | 保存执行、裁决和证据引用；target memory 只保存条件化经验与意图 |
 | 报告表达、CVSS 默认、提交门控 | `skills/report-writing/`、`tools/validate.py`、`rules/reporting.md` | 影响描述、保守 CVSS、预提交 checklist |
 
 落位前必须问：
@@ -60,7 +60,7 @@ Skill 或知识卡。
 默认执行。
 
 工具化不是限制 AI，而是把重复、机械、易漂移的 replay / diff / 证据保存 /
-ledger 写入交给稳定执行层。AI 的优势必须保留在：
+Store 登记交给稳定执行层。AI 的优势必须保留在：
 
 - 从弱信号联想到高价值攻击面和替代入口。
 - 选择当前最值得验证的假设，而不是顺序跑清单。
@@ -70,7 +70,7 @@ ledger 写入交给稳定执行层。AI 的优势必须保留在：
 - 发现工具没有覆盖的新验证形态，并把稳定部分再晋升到工具层。
 
 因此新增工具必须输出 AI 可继续推理的结构化证据，而不是只输出“通过/失败”。
-最少应包含：baseline、variant、差异摘要、证据路径、风险/红线状态、下一步建议
+最少应包含：baseline、variant、差异摘要、证据路径、风险/红线状态、执行状态与错误；AI 负责下一步
 和停止条件。不要把工具设计成固定扫描清单，也不要让工具结论替代 Claude 对上下文、
 业务影响和链路可能性的判断。
 
