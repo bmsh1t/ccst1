@@ -23,6 +23,7 @@
 
 - 可选 recon/browser/source artifact 不存在：返回空投影或 unavailable，交给状态层决定
   下一步，不能把缺失当作 tested-clean。
+- Context Pack 本地 JSON 读取健康见下方“本地 intel 材料诊断”；坏材料不能折叠为成功空结果。
 - bootstrap 发现 inventory summary 或 surface projection missing/stale/invalid：返回结构化
   `needs_sync`/`prepare_surface_context`，保持零 target-write，不能为“兜底”加载大型 body 或
   执行 ranking。recon 成功后的 surface finalizer 是明确的 best-effort 派生；失败必须保留 raw
@@ -123,3 +124,41 @@ except ImportError:  # 兼容 python3 tools/example.py
 - Surface/inventory 派生：missing/stale/corrupt summary/projection -> 不消费；atomic failure/race ->
   旧字节保留或无新 manifest；cursor snapshot 变化 -> fail-fast；recon finalizer failure -> raw
   artifact 保留且可由显式 refresh 重建。
+
+## 本地 intel 材料诊断
+
+### 1. Scope / Trigger
+
+Context Pack 读取 browser forms/page_js_map/summary、JS hypotheses 和 source routes JSON。
+
+### 2. Signatures
+
+`build_context_pack(...)["source_summary"]` 输出 `local_intel_status`、
+`local_intel_invalid_count`、`local_intel_diagnostics`（path/status/error）。
+
+### 3. Contracts
+
+每个源区分 missing/ok/invalid/unreadable。合法空对象、空集合为 ok；缺失字段保留
+可选语义，已提供集合必须符合对象/对象列表类型。坏源进入 JSON 与文本 unknowns，
+读取不改变源文件或 Store revision。
+
+### 4. Validation & Error Matrix
+
+- FileNotFoundError → missing；其余 OSError（包括目录占位）→ unreadable。
+- 坏 UTF-8/JSON、非对象根或错误集合形态 → invalid，保留路径与原因。
+- 有坏源且有好源 → partial；只有坏/缺源 → unavailable；有好源且无坏源 → ready。
+- 全部缺失 → unavailable 且错误计数为零，保持可选材料兼容行为。
+
+### 5. Good/Base/Bad Cases
+
+Good：空 routes 为 ready、0 条；损坏 routes 为 unavailable、显式错误。
+Base：尚未收集的源是 missing。Bad：解析异常静默返回 `{}` 并显示成功零结果。
+
+### 6. Tests Required
+
+`tests/test_context_pack.py` 验证缺失/合法空、坏编码/JSON/集合结构、读取错误、
+JSON/text 展示路径及 Store binding 不变；与 Finding focused tests 同批验证。
+
+### 7. Wrong vs Correct
+
+`except error: return {}` → 返回空数据并附明确源健康，汇总保留错误与 unknowns。

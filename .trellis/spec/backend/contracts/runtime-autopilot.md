@@ -289,6 +289,10 @@ runtime markers, or target-owned URL filtering changes.
 - Scan phase: `python3 tools/hunt.py --target <single-target> --scan-only --quick`
 - Runtime lock: `runtime_phase_lock(repo_root, target, phase)` where `phase` is
   `recon` or `scan`.
+- Direct scanner: `bash tools/vuln_scanner.sh RECON_DIR [--quick] [--skip MODULES]`.
+  Pass `SCANNER_LOCK_TARGET=canonical_target_value(SCANNER_AUTH_TARGET)` to
+  `runtime_phase_exec.py --target`; the child compares that same identity with
+  `BBHUNT_RUNTIME_LOCK_TARGET`. Keep the raw manifest target for auth/scope.
 - Runtime liveness gate: `runtime_phase_in_progress(repo_root, target, phase, runtime_state=None)`.
 - Target ownership: `url_belongs_to_target(url, target, allow_subdomains=True)`.
 
@@ -357,6 +361,10 @@ runtime markers, or target-owned URL filtering changes.
 - Same target + same phase already locked -> raise `RuntimePhaseBusy`; CLI exits
   with code `2`; do not write or clear the real runner's runtime marker.
 - Different target or different phase -> locks do not conflict.
+- Direct scanner URL/bare-host/missing-manifest inputs all reach admission when
+  unlocked; real same-target scan contention returns `75` before scanner artifacts.
+  An empty recon fixture reaches the explicit no-live-host error without network I/O.
+  Shell status output must follow variable initialization under `set -u`.
 - Unsupported lock phase -> `ValueError`; do not create a phase scheduler implicitly.
 - Fresh list without completed domains -> `next_action=run_batch_recon`.
 - Matching running batch marker plus held recon lock -> `next_action=wait_recon`
@@ -413,6 +421,11 @@ runtime markers, or target-owned URL filtering changes.
   after context exit succeed; a held lock plus matching marker waits, while a
   released marker is an orphan and does not wait.
 - Busy behavior: `hunt_target()` does not call recon or `_persist_runtime_state`.
+- `tests/test_scanner_store_registration.py` exercises the real direct wrapper
+  with URL/bare-host/no manifest, both unlocked and under a held canonical lock.
+  Empty recon proves admission without network I/O; contention returns 75 with
+  no scanner artifacts or runner marker. Do not inject a pre-held child marker
+  or a default Nuclei status into this regression.
 - Batch state: manifest fallback, current-input filtering, empty/all-failed
   terminals, completed-only ranking, and formatted single-domain handoff are asserted.
 - Target ownership: list root/subdomain/port positive cases, third-party negative

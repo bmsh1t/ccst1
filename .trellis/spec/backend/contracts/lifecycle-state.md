@@ -157,6 +157,11 @@ bindings stale; history is retained. Publication happens before registration,
 so an interrupted registration preserves recoverable text. Identical valid
 replay creates no new fact; changed registered bytes are never silently repaired.
 
+Generate a separate artifact for every current eligible delivery of the current
+assessment. An existing `(assessment_id, delivery_id)` report is immutable, even
+when damaged; skip that pair, not the whole Finding. Retry fills other eligible
+destinations and preserves earlier report bytes and registration receipts.
+
 Validate retains AI-authored content. `/report` reuses it without rendering a
 replacement template; generated template reports are for eligible claims with
 no current report. Report indexes are cumulative, root-bound, rebuildable and
@@ -226,6 +231,25 @@ unmapped reviews project `global_review_required`, `global_review_invalid`, or
 Any owner write that changes the digest invalidates the prior review. No new state,
 Queue, controller, or state machine is introduced.
 
+Closure hashes a semantic copy of Coverage: omit only root `as_of`/`last_updated`
+and `source_snapshot.as_of`, then recompute the source fingerprint. Keep all cells,
+Store generation/revision, discovery bindings and evidence health; never substitute
+the high-value-gap fingerprint used by the stagnation guard. The acquired matrix
+and its diagnostic timestamps remain unchanged. Time-dependent validity changes
+still affect current evidence and decisions; freezing the clock is not a fix.
+
+Full and bounded state use the same stat-only Recon readiness and exact-hit Surface
+decision inputs. Full diagnostics retain exact counts; an explicit Closure expands
+bounded Recon through its existing owner before hashing. Resume's duplicate Recon
+subtree is excluded only because Closure binds it directly. Enrichment binds the
+deduplicated tool identities, not presentation reasons. Inventory health and Surface
+metadata come from the same readers. Caller-supplied decision facts remain bound;
+do not reload an entire state to erase an inconvenient difference.
+
+`record_global_review` still strictly compares the submitted digest with its locked
+recalculation. Recording the review must not change that digest or its basis. Old
+reviews may need one explicit re-review after the binding semantics change.
+
 ### 3. Contracts
 
 - Runtime-v2 `session.json` stores only non-derivable breadcrumbs. It must not
@@ -286,6 +310,15 @@ Queue, controller, or state machine is introduced.
 - Missing or stale `global_review` after a completed substantive round must
   project a Checkpoint handoff; a valid digest-matched review must permit the
   existing Closure verdict, while an active Queue follow-up remains durable.
+- Repeated reads across seconds and full/bounded modes -> identical digest/basis
+  for unchanged facts, including after completed-lane/round/review writes.
+  Queue/Coverage/discovery changes and damaged raw evidence -> old review stale;
+  raw damage must invalidate without requiring a Store revision change.
+- `material_sources.sources.workflow_leads` carries Surface `status`, `reason`,
+  `refresh_command`. Missing/stale/invalid projection means `total=null`,
+  `remaining=null`, no usable items, and `evidence_reviewed.surface=false`.
+  Valid empty input means integer zero. Text must show unavailable/count unknown
+  and the refresh command, not claim a successful empty material review.
 - The explicit post-lane `--loop-check --projection-only` projection returns the
   existing `loop_guard` plus a bounded `control` object (`hard_gate`,
   `priority_frontier`, `next_action`, `fallback_action`, and `selection_mode`).
@@ -321,6 +354,11 @@ Queue, controller, or state machine is introduced.
   only the context check.
 - Global-review tests must cover missing/stale/invalid evidence, digest
   self-exclusion, Queue-bound `follow_up`, and prepare/settle idempotency.
+- `tests/test_closure_snapshot_stability.py` advances a controlled read clock,
+  compares full/bounded empty/URL/JS/empty-FFUF/whitespace cases across Surface
+  missing/valid/stale states, and exercises real completed-lane/round/review and
+  owner/evidence invalidation. Checkpoint tests distinguish unknown counts from
+  valid zero and retain unchanged Store binding.
 
 ### 7. Wrong vs Correct
 
@@ -349,6 +387,11 @@ checkpoint witness lock across subsequent writes.
 Correct: `settle_round()` acquires the existing witness lock once and reuses the
 same owner functions under its same-thread reentrant scope.
 
+Wrong: hash acquisition time, strip every owner field until reads agree, or retry
+review writes until they happen in the same second.
+Correct: bind the same current semantic inputs in all modes and retain strict
+locked digest validation plus real-change regression tests.
+
 ## Target Case State Contracts
 
 ### Storage and commands
@@ -371,6 +414,12 @@ is handled only by explicit migration, which maps real work into Action Queue.
 - Repeated context updates preserve unrelated headers/object status and use
   Store commands/audit. Different content under one command ID conflicts;
   concurrent metadata updates cannot silently lose a committed write.
+- Case adapter commands bind their ID to the Store revision and requested material.
+  A→B→A→B is four mutations, not a replay of the first A→B transition. Before
+  writing, compare Store-normalized material (trimmed strings, sorted actor IDs,
+  JSON metadata with scalar types preserved); a same-value retry changes no revision.
+  Keep the existing immutable hypothesis premise conflict; mutable context/status
+  updates do not authorize rewriting its original family/conditions.
 - Hypothesis family is open. Descriptive metadata is bounded and secret-free;
   it does not forge observations, technical judgments or Skill execution.
 - `summary` exposes actors/sessions/objects/open hypotheses, authz context and
@@ -390,6 +439,8 @@ is handled only by explicit migration, which maps real work into Action Queue.
 context, secret boundaries, stale private references, unknown families,
 object observations and no automatic backlog/Queue creation. Historical
 backlog mapping and damaged legacy input belong to `test_target_migration.py`.
+Repeated-cycle and normalized-retry regressions cover actors, sessions, objects
+and mutable hypothesis context; command-ID conflicts remain Store-owned.
 
 ## Neutral Observation Inventory Contracts
 

@@ -665,6 +665,16 @@ python3 tools/surface_finalizer.py --repo-root <repo> --target <target> --json
   full state、context-pack/checkpoint 只复用 exact hit；bootstrap/full state 遇到
   miss/stale/invalid 返回 `prepare_surface_context`，closure 保持
   `surface_projection_pending`，不得用 fallback ranking 驱动 hunt 或 finish。
+- Surface projection/manifest schema 为 7。`scanner_manual_review_paths()` 与 scanner
+  中性索引共享 summary target/path 校验；`MANUAL_REVIEW_INPUTS` 是三个专用 handler 的
+  共同输入定义。顶层 `findings/<target>/manual_review/` 中未被 summary、专用 handler 或
+  Store artifact 引用的复核附件不进入 manifest；包括只为附件创建的父目录。其余 findings
+  输入继续保守绑定。不得排除整个 manual_review，也不得移除 Store revision 校验。
+- 被消费 review 文件即使为空仍绑定；从缺失到出现、编辑、删除或构建期间变化都须失效。
+  Store 已登记 raw artifact 在 revision 未变时仍按文件 metadata 绑定。Checkpoint lane/封轮
+  witness 本身不是 Surface 输入，不能导致 stale；创建 Action 等真实 owner 写入仍会失效。
+- 旧 schema projection 需显式 `surface.py --target TARGET --refresh`，普通 full/Checkpoint
+  读取不自动重建。材料窗口的缺失/过期是 unknown，不等于零条 workflow leads。
 - Observation body 是 lifecycle owner；summary 在 body replace 成功后发布并绑定 body/source。
   `page` cursor 绑定 target、filter 和 body revision，读取不写 lifecycle。
 - Recon finalizer 是 best-effort 派生步骤。失败保留 raw recon 和已有 owner state，后续显式
@@ -681,6 +691,9 @@ python3 tools/surface_finalizer.py --repo-root <repo> --target <target> --json
 | cursor target/filter/revision 不匹配 | exit `2`/抛明确错误；调用方从第一页重启 |
 | finalizer 失败 | recon 仍成功，记录 recoverable failure，不写 closure |
 | high-priority finding/runner/queue 存在 | bootstrap 直接返回对应 action，不打开大型 artifact |
+| 写入未被消费的 manual_review lane 附件或 checkpoint witness | Surface 保持 valid；不增加 Store revision |
+| summary/专用 handler/Store 引用的 review 改变 | Surface stale；保持真实输入失效能力 |
+| v6 projection 被 v7 reader 读取 | 显式刷新；不消费旧摘要或自动改写 |
 
 ### 5. Good / Base / Bad Cases
 
@@ -699,6 +712,9 @@ python3 tools/surface_finalizer.py --repo-root <repo> --target <target> --json
   FFUF/browser/JS/source/scanner/intel/memory/ledger/queue 的 materialized/streaming parity。
 - Sidecar/projection：missing/stale/corrupt/target mismatch/body binding、atomic failure、input race、
   cache hit 复用和删除后重建。
+- `tests/test_surface_projection.py` 覆盖未引用附件 + 完成 lane/封轮仍 valid，实际输入新增/改动/
+  删除、registered artifact 无 revision 变化失效、路径归属、构建竞态，以及 Action 写入失效。
+  Full/Checkpoint 消费测试须先由 `build_surface_review()` 显式发布投影，不能依赖读取时排名。
 - Cursor：status/kind/source filter、全量恰好一次可达、revision/filter reject、读取前后字节不变。
 - Scaling：仅在 `/tmp` 生成 30 万 URL 与百 MB inventory，校验末行仍可由 index 展开、URL 顺序、exact identity、untouched
   lifecycle、RSS/耗时和 source byte preservation；外部 opt-in 验收只输出聚合指标。
@@ -723,6 +739,10 @@ for row in iter_surface_index(repo_root, target):
         window.add(candidate_metadata(row))
 publish_projection(window, exact_input_manifest)
 ```
+
+Wrong: bind every checkpoint attachment, or exempt all manual_review/Store writes.
+Correct: share actual review input selection; preserve integrity and revision
+bindings for the inputs Surface really consumes.
 
 ## Recon Phase Manifest and Lossless Analysis Inputs
 
