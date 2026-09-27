@@ -41,6 +41,8 @@ jobs:
           tests/test_evidence_ledger.py
           tests/test_checkpoint.py
           tests/test_autopilot_round.py
+          tests/test_closure_snapshot_stability.py
+          tests/test_surface_projection.py
           tests/test_ci_contract.py
           tests/test_resume_tool.py
           tests/test_spray_orchestrator.py

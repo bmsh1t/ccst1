@@ -22,6 +22,8 @@ CORE_TESTS = {
     "tests/test_evidence_ledger.py",
     "tests/test_checkpoint.py",
     "tests/test_autopilot_round.py",
+    "tests/test_closure_snapshot_stability.py",
+    "tests/test_surface_projection.py",
 }
 
 
