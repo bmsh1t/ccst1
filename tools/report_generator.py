@@ -1221,25 +1221,30 @@ def _process_primary_reports(store, report_dir, target_name):
         if not _is_reportable_structured_finding(finding):
             continue
         assessment_id = finding["assessment"]["id"]
-        delivery = next(item for item in finding["deliveries"]
-                        if item["status"] == "eligible" and not item["stale"]
-                        and item["assessment_id"] == assessment_id)
-        # Registered bodies are immutable, including damaged historical artifacts.
-        if any(report["assessment_id"] == assessment_id
-               and report["delivery_id"] == delivery["id"]
-               for report in finding["reports"]):
-            continue
-        binding = json.dumps([store.target, finding["id"], assessment_id, delivery["id"]])
-        report_id = "report_" + hashlib.sha256(binding.encode("utf-8")).hexdigest()
-        report_file = str(Path(report_dir) / f"{report_id}.md")
-        content, _ = generate_report(finding, _report_vuln_type(finding), target_name,
-                                     repo_root=store.root)
-        _create_or_reuse_report(report_file, content, finding)
-        store.register_report(
-            command_id=f"report:{report_id}", report_id=report_id, finding_id=finding["id"],
-            assessment_id=assessment_id, delivery_id=delivery["id"], artifact=report_file,
-            actor="report-generator",
-        )
+        deliveries = [item for item in finding["deliveries"]
+                      if item["status"] == "eligible" and not item["stale"]
+                      and item["assessment_id"] == assessment_id]
+        registered_pairs = {
+            (report["assessment_id"], report["delivery_id"])
+            for report in finding["reports"]
+        }
+        for delivery in deliveries:
+            pair = (assessment_id, delivery["id"])
+            # Registered bodies are immutable, including damaged historical artifacts.
+            if pair in registered_pairs:
+                continue
+            binding = json.dumps([store.target, finding["id"], assessment_id, delivery["id"]])
+            report_id = "report_" + hashlib.sha256(binding.encode("utf-8")).hexdigest()
+            report_file = str(Path(report_dir) / f"{report_id}.md")
+            content, _ = generate_report(finding, _report_vuln_type(finding), target_name,
+                                         repo_root=store.root)
+            _create_or_reuse_report(report_file, content, finding)
+            store.register_report(
+                command_id=f"report:{report_id}", report_id=report_id, finding_id=finding["id"],
+                assessment_id=assessment_id, delivery_id=delivery["id"], artifact=report_file,
+                actor="report-generator",
+            )
+            registered_pairs.add(pair)
 
     source_binding = store.binding()
     as_of = datetime.now(timezone.utc).isoformat()

@@ -323,6 +323,33 @@ def test_primary_report_generator_registers_store_report_without_legacy_writes(m
     assert published["as_of"] in (report_path.parent / "SUMMARY.md").read_text()
 
 
+@pytest.mark.parametrize("existing_report", [False, True])
+def test_primary_report_generator_creates_all_current_eligible_destinations(monkeypatch, tmp_path, existing_report):
+    store, findings_dir, _ = _primary_report_fixture(tmp_path)
+    monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
+    if existing_report:
+        total, initial = report_generator.process_findings_dir(findings_dir)
+        assert total == 1
+        original_path = Path(initial[0]["file"])
+        original = original_path.read_bytes()
+    store.decide_delivery(command_id="delivery:secondary", finding_id="f1", assessment_id="assess:f1",
+                          destination="secondary-review", status="eligible", reason="Second destination",
+                          actor="operator", expected_decision=None)
+
+    total, first = report_generator.process_findings_dir(findings_dir)
+    assert total == 2
+    assert {row["destination"] for row in first} == {"internal-review", "secondary-review"}
+    assert len({row["file"] for row in first}) == 2
+    if existing_report:
+        assert original_path.read_bytes() == original
+
+    revision = store.binding()["revision"]
+    total, second = report_generator.process_findings_dir(findings_dir)
+    assert total == 2
+    assert {row["destination"] for row in second} == {"internal-review", "secondary-review"}
+    assert store.binding()["revision"] == revision
+
+
 @pytest.mark.parametrize("backend", ["preview", "frozen", "corrupt"])
 def test_report_publication_refuses_nonlegacy_backend_before_artifacts(tmp_path, monkeypatch, backend):
     target = "example.com"
