@@ -1,0 +1,55 @@
+$ (cd '/root/tool/ccst(rename-_Ya66f2)/ccst' && git -c core.hooksPath=/dev/null -c submodule.recurse=false rev-parse HEAD)
+857dc634828c5363842691dc58edacbdd81589c3
+$ (cd '/root/tool/ccst(rename-_Ya66f2)/ccst' && git -c core.hooksPath=/dev/null -c submodule.recurse=false branch --show-current)
+fix/installer-runtime-file-selection
+$ (cd '/root/tool/ccst(rename-_Ya66f2)/ccst' && git -c core.hooksPath=/dev/null -c submodule.recurse=false diff --name-only)
+$ (cd '/root/tool/ccst(rename-_Ya66f2)/ccst' && git -c core.hooksPath=/dev/null -c submodule.recurse=false status --porcelain=v1)
+M  .trellis/workspace/Codex/index.md
+M  .trellis/workspace/Codex/journal-1.md
+$ (cd '/root/tool/ccst(rename-_Ya66f2)/ccst' && git -c core.hooksPath=/dev/null -c submodule.recurse=false diff --cached --binary)
+[staged journal patch body omitted before publication; sha256=8d9d6801cb745a626465a4fd20b4a43a20e4359fd6f9c1eff4177e3791a893ee]
+$ (cd '/root/tool/ccst(rename-_Ya66f2)/ccst' && git -c core.hooksPath=/dev/null -c submodule.recurse=false rev-parse ccst1/main)
+b078c2634b7685d9aad5a0474be9c59b289ff20f
+$ (cd '/root/tool/ccst(rename-_Ya66f2)/ccst' && git -c core.hooksPath=/dev/null -c submodule.recurse=false rev-parse refs/heads/main)
+0b00619f3975fdff3074d7f98007b57c7b39dc5c
+$ (cd '/root/tool/ccst(rename-_Ya66f2)/ccst' && git -c core.hooksPath=/dev/null -c submodule.recurse=false merge-base --is-ancestor 0b00619f3975fdff3074d7f98007b57c7b39dc5c 857dc634828c5363842691dc58edacbdd81589c3)
+$ (cd '/root/tool/ccst(rename-_Ya66f2)/ccst' && git -c core.hooksPath=/dev/null -c submodule.recurse=false worktree list --porcelain)
+worktree /root/tool/ccst(rename-_Ya66f2)/ccst
+HEAD 857dc634828c5363842691dc58edacbdd81589c3
+branch refs/heads/fix/installer-runtime-file-selection
+Integration worktree: /tmp/ccst-main-integration-_t3to8st
+$ (cd '/root/tool/ccst(rename-_Ya66f2)/ccst' && git -c core.hooksPath=/dev/null -c submodule.recurse=false worktree add --quiet /tmp/ccst-main-integration-_t3to8st main)
+$ (cd /tmp/ccst-main-integration-_t3to8st && git -c core.hooksPath=/dev/null -c submodule.recurse=false rev-parse HEAD)
+0b00619f3975fdff3074d7f98007b57c7b39dc5c
+$ (cd /tmp/ccst-main-integration-_t3to8st && git -c core.hooksPath=/dev/null -c submodule.recurse=false status --porcelain=v1 --untracked-files=all)
+$ (cd /tmp/ccst-main-integration-_t3to8st && git -c core.hooksPath=/dev/null -c submodule.recurse=false merge --ff-only --no-stat 857dc634828c5363842691dc58edacbdd81589c3)
+Updating 0b00619..857dc63
+Fast-forward
+$ (cd '/root/tool/ccst(rename-_Ya66f2)/ccst' && git -c core.hooksPath=/dev/null -c submodule.recurse=false rev-parse refs/heads/main)
+857dc634828c5363842691dc58edacbdd81589c3
+$ (cd '/root/tool/ccst(rename-_Ya66f2)/ccst' && git -c core.hooksPath=/dev/null -c submodule.recurse=false rev-parse 'refs/heads/main^{tree}')
+0e138dc014c806c36883fc11825cc1e0dfef0a06
+$ (cd '/root/tool/ccst(rename-_Ya66f2)/ccst' && git -c core.hooksPath=/dev/null -c submodule.recurse=false rev-parse '857dc634828c5363842691dc58edacbdd81589c3^{tree}')
+0e138dc014c806c36883fc11825cc1e0dfef0a06
+$ (cd /tmp/ccst-main-integration-_t3to8st && git -c core.hooksPath=/dev/null -c submodule.recurse=false status --porcelain=v1 --untracked-files=all)
+$ (cd /tmp/ccst-main-integration-_t3to8st && git -c core.hooksPath=/dev/null -c submodule.recurse=false ls-files --others --ignored --exclude-standard)
+$ (cd '/root/tool/ccst(rename-_Ya66f2)/ccst' && git -c core.hooksPath=/dev/null -c submodule.recurse=false rev-parse HEAD)
+857dc634828c5363842691dc58edacbdd81589c3
+$ (cd '/root/tool/ccst(rename-_Ya66f2)/ccst' && git -c core.hooksPath=/dev/null -c submodule.recurse=false branch --show-current)
+fix/installer-runtime-file-selection
+$ (cd '/root/tool/ccst(rename-_Ya66f2)/ccst' && git -c core.hooksPath=/dev/null -c submodule.recurse=false diff --name-only)
+$ (cd '/root/tool/ccst(rename-_Ya66f2)/ccst' && git -c core.hooksPath=/dev/null -c submodule.recurse=false status --porcelain=v1)
+M  .trellis/workspace/Codex/index.md
+M  .trellis/workspace/Codex/journal-1.md
+$ (cd '/root/tool/ccst(rename-_Ya66f2)/ccst' && git -c core.hooksPath=/dev/null -c submodule.recurse=false diff --cached --binary)
+[staged journal patch body omitted before publication; sha256=8d9d6801cb745a626465a4fd20b4a43a20e4359fd6f9c1eff4177e3791a893ee]
+$ (cd '/root/tool/ccst(rename-_Ya66f2)/ccst' && git -c core.hooksPath=/dev/null -c submodule.recurse=false rev-parse ccst1/main)
+b078c2634b7685d9aad5a0474be9c59b289ff20f
+$ (cd '/root/tool/ccst(rename-_Ya66f2)/ccst' && git -c core.hooksPath=/dev/null -c submodule.recurse=false worktree remove /tmp/ccst-main-integration-_t3to8st)
+$ (cd '/root/tool/ccst(rename-_Ya66f2)/ccst' && git -c core.hooksPath=/dev/null -c submodule.recurse=false worktree list --porcelain)
+worktree /root/tool/ccst(rename-_Ya66f2)/ccst
+HEAD 857dc634828c5363842691dc58edacbdd81589c3
+branch refs/heads/fix/installer-runtime-file-selection
+$ (cd '/root/tool/ccst(rename-_Ya66f2)/ccst' && git -c core.hooksPath=/dev/null -c submodule.recurse=false rev-list --left-right --count main...HEAD)
+0	0
+PASS: main 0b00619f3975fdff3074d7f98007b57c7b39dc5c -> 857dc634828c5363842691dc58edacbdd81589c3; tree 0e138dc014c806c36883fc11825cc1e0dfef0a06; original branch/worktree/staged patch preserved; temporary worktree removed; no new commit, fetch, push or deployment.
