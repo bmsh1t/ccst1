@@ -17,6 +17,8 @@ LOCK_CHECK_PATH = ROOT / "tools" / "check_requirements_lock.py"
 CORE_TESTS = {
     "tests/test_core_foundation_tools.py",
     "tests/test_runtime_state.py",
+    "tests/test_runtime_exec.py",
+    "tests/test_runtime_phase_execution.py",
     "tests/test_finding_index.py",
     "tests/test_action_queue.py",
     "tests/test_evidence_ledger.py",
