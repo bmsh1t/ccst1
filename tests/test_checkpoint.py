@@ -528,6 +528,7 @@ def test_record_global_review_persists_claim_basis(tmp_path, monkeypatch, store)
     payload = json.loads(witness.read_text(encoding="utf-8"))
     assert payload["global_review"]["snapshot_digest"] == digest
     assert payload["global_review"]["basis"] == {
+        "version": 2,
         "queue_fingerprint": "1" * 64,
         "coverage_fingerprint": "2" * 64,
         "closure_state_fingerprint": "3" * 64,

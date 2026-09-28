@@ -184,7 +184,7 @@ def _project_actions(rows: list[dict]) -> list[dict]:
         # Only descriptive strings project; the original metadata stays visible.
         context = metadata.get("action_context")
         context = {key: value for key, value in context.items()
-                   if key in ACTION_CONTEXT_FIELDS and isinstance(value, str)} if isinstance(context, dict) else {}
+                   if key in ACTION_CONTEXT_FIELDS and key != "kind" and isinstance(value, str)} if isinstance(context, dict) else {}
         for key in ("endpoint", "family", "subject_artifact_id", "subject_finding_id", "subject_experience_id"):
             if row.get(key) not in (None, ""):
                 metadata[key] = row[key]
@@ -192,7 +192,8 @@ def _project_actions(rows: list[dict]) -> list[dict]:
             metadata["claim_token"] = row["claim_token"]
         actions.append({
             "id": row.get("id", ""),
-            "type": str(row.get("kind") or "work"),
+            "kind": str(row.get("kind") or "work"),
+            "type": context.get("type") or str(row.get("kind") or "work"),
             "status": status_map.get(str(row.get("status") or ""), "blocked"),
             "priority": row.get("priority"),
             "action": row.get("intent", ""),
@@ -257,8 +258,25 @@ def _primary_create_action(
     metadata["action_context"] = {key: built[key] for key in ACTION_CONTEXT_FIELDS}
     endpoint = str(metadata.get("endpoint") or metadata.get("url") or "").strip()
     family = str(metadata.get("family") or metadata.get("vuln_class") or "").strip()
+    explicit_kind = built.get("kind")
+    if explicit_kind is not None and explicit_kind not in {"execution", "work"}:
+        raise StoreError("action kind must be execution or work")
+    if metadata.get("endpoint") and metadata.get("url") and str(metadata["endpoint"]).strip() != str(metadata["url"]).strip():
+        raise StoreError("action endpoint and url metadata must match")
+    if (explicit_kind == "execution" or (endpoint and family)) and metadata.get("family") and metadata.get("vuln_class") and str(metadata["family"]).strip() != str(metadata["vuln_class"]).strip():
+        raise StoreError("action family and vuln_class metadata must match")
     evidence_ref = target_owned_nonempty_evidence_ref(repo_root, target, metadata.get("evidence_ref"))
-    if endpoint and family:
+    if explicit_kind == "execution" and (not endpoint or not family):
+        raise StoreError("execution actions require endpoint and family metadata")
+    if explicit_kind == "work" and (endpoint or family):
+        raise StoreError("work actions must use a work subject, not endpoint or family metadata")
+    if explicit_kind:
+        kind = explicit_kind
+        subject = None if kind == "execution" else ({"url": endpoint} if endpoint else ({"artifact": evidence_ref} if evidence_ref else {"target": canonical_target_value(target)}))
+        if kind == "work":
+            endpoint = ""
+            family = ""
+    elif endpoint and family:
         kind = "execution"
         subject = None
     elif endpoint:
@@ -695,6 +713,7 @@ def build_action(
     redline_required: bool | None = None,
     stop_condition: str = DEFAULT_STOP_CONDITION,
     metadata: dict | None = None,
+    kind: str | None = None,
 ) -> dict:
     metadata = _validate_action_metadata(metadata)
     ts = now_utc()
@@ -721,6 +740,8 @@ def build_action(
         "result": "",
         "notes": "",
     }
+    if kind is not None:
+        built["kind"] = str(kind).strip().lower()
     if metadata:
         built["metadata"] = {
             _compact_text(key, 80): value
@@ -748,6 +769,7 @@ def add_manual_action(
     safety: str = "non_destructive",
     stop_condition: str = DEFAULT_STOP_CONDITION,
     metadata: dict | None = None,
+    kind: str | None = None,
     action_id: str = "",
     actor: str = "action-queue",
 ) -> dict:
@@ -776,6 +798,7 @@ def add_manual_action(
         safety=safety,
         stop_condition=stop_condition,
         metadata=action_metadata or None,
+        kind=kind,
     )
     return _primary_create_action(repo_root, target, built, action_id=action_id, actor=actor)
 
@@ -902,6 +925,7 @@ def summarize_queue(
     legacy_missing_id = sum(1 for item in actions if not str(item.get("id") or "").strip())
     by_status = Counter(str(item.get("status") or "queued") for item in actions)
     by_type = Counter(str(item.get("type") or "next-action") for item in actions)
+    by_kind = Counter(str(item.get("kind") or "work") for item in actions)
     active = [item for item in actions if str(item.get("status") or "queued") in ACTIVE_STATUSES]
     final = [item for item in actions if str(item.get("status") or "") in FINAL_STATUSES]
     return {
@@ -911,6 +935,7 @@ def summarize_queue(
         "final": len(final),
         "by_status": dict(sorted(by_status.items())),
         "by_type": dict(sorted(by_type.items())),
+        "by_kind": dict(sorted(by_kind.items())),
         "legacy_missing_id": legacy_missing_id,
         "active_ids": active_action_ids(queue),
         "fingerprint": queue_fingerprint(queue),
@@ -922,7 +947,7 @@ def format_action(action: dict) -> str:
         return "No active queued action."
     redline = " red-line-first" if action.get("redline_required") else ""
     lines = [
-        f"{action.get('id')} [{action.get('type')} p{action.get('priority')}{redline}]",
+        f"{action.get('id')} [{action.get('type')} / {action.get('kind', 'work')} p{action.get('priority')}{redline}]",
         f"- Status: {action.get('status')}",
         f"- Evidence: {action.get('evidence')}",
         f"- Next question: {action.get('next_question')}",
@@ -947,6 +972,7 @@ def format_summary(queue: dict, *, repo_root: Path | str | None = None, target: 
         f"- Final: {summary.get('final')}",
         f"- By status: {summary.get('by_status')}",
         f"- By type: {summary.get('by_type')}",
+        f"- By kind: {summary.get('by_kind')}",
         f"- Active ids: {summary.get('active_ids')}",
     ]
     return "\n".join(lines)
@@ -981,6 +1007,7 @@ def build_parser() -> argparse.ArgumentParser:
     add = sub.add_parser("add", help="Add one manual/evidence-backed action.")
     add.add_argument("--target", required=True)
     add.add_argument("--type", default="next-action")
+    add.add_argument("--kind", choices=("work", "execution"), default=None)
     add.add_argument("--evidence-type", default="manual")
     add.add_argument("--source", default="manual")
     add.add_argument("--source-id", default="")
@@ -1076,6 +1103,7 @@ def main(argv: list[str] | None = None) -> int:
                 safety=args.safety,
                 stop_condition=args.stop_condition,
                 metadata=metadata,
+                kind=args.kind,
                 action_id=args.id,
                 actor=args.actor,
             )

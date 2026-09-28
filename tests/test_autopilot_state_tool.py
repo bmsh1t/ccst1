@@ -44,6 +44,8 @@ from autopilot_state import (
     build_autopilot_state,
     format_autopilot_state,
     load_closure_projection,
+    _review_queue_fingerprint,
+    _review_coverage_fingerprint,
     validate_global_review,
     stagnation_fingerprint,
     main as autopilot_state_main,
@@ -225,6 +227,7 @@ def test_global_review_basis_scoping_survives_unrelated_digest_drift(tmp_path, s
             "status": "complete",
             "snapshot_digest": "a" * 64,
             "basis": {
+                "version": 2,
                 "queue_fingerprint": "1" * 64,
                 "coverage_fingerprint": "2" * 64,
                 "closure_state_fingerprint": "3" * 64,
@@ -239,10 +242,132 @@ def test_global_review_basis_scoping_survives_unrelated_digest_drift(tmp_path, s
 
     assert result["status"] == "valid"
     assert result["review"]["basis"] == {
+        "version": 2,
         "queue_fingerprint": "1" * 64,
         "coverage_fingerprint": "2" * 64,
         "closure_state_fingerprint": "3" * 64,
     }
+
+
+def test_global_review_rejects_old_basis_version(tmp_path, store):
+    target = "target.com"
+    evidence_ref = "evidence/target.com/review/summary.json"
+    evidence_path = tmp_path / evidence_ref
+    evidence_path.parent.mkdir(parents=True, exist_ok=True)
+    evidence_path.write_text('{"reviewed":true}\n', encoding="utf-8")
+    result = validate_global_review(
+        tmp_path,
+        target,
+        {
+            "status": "complete",
+            "snapshot_digest": "a" * 64,
+            "basis": {
+                "version": 1,
+                "queue_fingerprint": "1" * 64,
+                "coverage_fingerprint": "2" * 64,
+                "closure_state_fingerprint": "3" * 64,
+            },
+            "evidence_refs": [evidence_ref],
+            "decision": "reviewed",
+        },
+        {"target": target, "actions": []},
+        expected_digest="a" * 64,
+        expected_components={
+            "queue_fingerprint": "1" * 64,
+            "coverage_fingerprint": "2" * 64,
+            "closure_state_fingerprint": "3" * 64,
+        },
+    )
+
+    assert result["status"] == "stale"
+    assert result["reason"] == "global_review_stale"
+    assert result["state_changes"] == [{
+        "field": "basis.version",
+        "provided": 1,
+        "current": 2,
+    }]
+
+
+def test_review_queue_fingerprint_ignores_generation_and_claim_metadata():
+    queue = {
+        "target": "target.com",
+        "store_id": "store-1",
+        "revision": 4,
+        "backend": "primary",
+        "actions": [{
+            "id": "ACTION-1",
+            "kind": "work",
+            "status": "running",
+            "action": "Review owner evidence",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "metadata": {"claim_token": "claim-1", "meaning": "current"},
+        }],
+    }
+    fingerprint = _review_queue_fingerprint(queue)
+    changed_generation = {
+        **queue,
+        "revision": 9,
+        "actions": [{
+            **queue["actions"][0],
+            "updated_at": "2026-01-02T00:00:00Z",
+            "metadata": {"claim_token": "claim-2", "meaning": "current"},
+        }],
+    }
+    changed_meaning = {
+        **queue,
+        "actions": [{**queue["actions"][0], "action": "Review changed evidence"}],
+    }
+    changed_status = {
+        **queue,
+        "actions": [{**queue["actions"][0], "status": "queued"}],
+    }
+
+    assert _review_queue_fingerprint(changed_generation) == fingerprint
+    assert _review_queue_fingerprint(changed_meaning) != fingerprint
+    assert _review_queue_fingerprint(changed_status) != fingerprint
+    assert _review_queue_fingerprint({**queue, "target": "other.test"}) != fingerprint
+    assert _review_queue_fingerprint({**queue, "store_id": "replacement"}) != fingerprint
+
+
+def test_review_coverage_fingerprint_ignores_generations_but_tracks_cells():
+    matrix = {
+        "as_of": "2026-01-01T00:00:00Z",
+        "source_fingerprint": "source-1",
+        "store_revision": 4,
+        "source_snapshot": {
+            "as_of": "2026-01-01T00:00:00Z",
+            "store": {"store_id": "store-1", "revision": 4},
+            "discovery_fingerprint": "discovery-1",
+        },
+        "evidence_source": {"kind": "store", "revision": 4},
+        "endpoints": [{
+            "endpoint": "/object",
+            "cells": {"Authz": {"status": "untested"}},
+        }],
+    }
+    generation_drift = {
+        **matrix,
+        "as_of": "2026-01-02T00:00:00Z",
+        "source_fingerprint": "source-2",
+        "store_revision": 9,
+        "source_snapshot": {
+            "as_of": "2026-01-02T00:00:00Z",
+            "store": {"store_id": "store-1", "revision": 9},
+            "discovery_fingerprint": "discovery-2",
+        },
+        "evidence_source": {"kind": "store", "revision": 9},
+    }
+    changed_cell = {
+        **matrix,
+        "endpoints": [{
+            "endpoint": "/object",
+            "cells": {"Authz": {"status": "tested_clean"}},
+        }],
+    }
+
+    assert _review_coverage_fingerprint(generation_drift) == _review_coverage_fingerprint(matrix)
+    assert _review_coverage_fingerprint(changed_cell) != _review_coverage_fingerprint(matrix)
 
 
 def test_global_review_basis_reports_stale_component_on_claim_drift(tmp_path, store):
@@ -268,6 +393,7 @@ def test_global_review_basis_reports_stale_component_on_claim_drift(tmp_path, st
             "status": "complete",
             "snapshot_digest": "a" * 64,
             "basis": {
+                "version": 2,
                 "queue_fingerprint": "1" * 64,
                 "coverage_fingerprint": "2" * 64,
                 "closure_state_fingerprint": "3" * 64,
@@ -295,7 +421,7 @@ def test_global_review_basis_reports_stale_component_on_claim_drift(tmp_path, st
         {
             "status": "complete",
             "snapshot_digest": "a" * 64,
-            "basis": {"queue_fingerprint": "1" * 64},
+            "basis": {"version": 2, "queue_fingerprint": "1" * 64},
             "evidence_refs": [evidence_ref],
             "decision": "reviewed",
         },
@@ -1950,7 +2076,7 @@ def test_closure_uses_current_queue_next_instead_of_preloaded_pointer(tmp_path, 
     )
 
     queue = load_queue(tmp_path, target)
-    assert closure["snapshot_components"]["queue_fingerprint"] == queue_fingerprint(queue)
+    assert closure["snapshot_components"]["queue_fingerprint"] == _review_queue_fingerprint(queue)
     assert closure["snapshot_digest"]
     assert closure["actionable_frontier"][0]["id"] == "AQ-CURRENT"
     assert all(item["id"] != "AQ-STALE" for item in closure["actionable_frontier"])

@@ -12,8 +12,10 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 try:
     from tools.contracts import WIRE_FACT_NAMES, WIRE_NEEDLE_FACT_NAMES
+    from tools.evidence_identity import normalize_actor, normalize_object_scope, normalize_variant
 except ImportError:  # pragma: no cover - direct tools/ execution
     from contracts import WIRE_FACT_NAMES, WIRE_NEEDLE_FACT_NAMES
+    from evidence_identity import normalize_actor, normalize_object_scope, normalize_variant
 
 
 class RequestPairError(ValueError):
@@ -72,7 +74,20 @@ def _request(value: Any, name: str) -> dict[str, Any]:
     body = value.get("body", "")
     if not isinstance(body, (str, dict, list, int, float, bool)) and body is not None:
         raise RequestPairError("manual_required: request body is not text or JSON")
-    return {"method": method, "url": url, "headers": headers, "body": body if body is not None else ""}
+    observation = {}
+    for field, normalize, default in (
+        ("actor", normalize_actor, "unknown"),
+        ("object_scope", normalize_object_scope, "unknown"),
+        ("variant", normalize_variant, "replay"),
+    ):
+        raw = value.get(field, default)
+        if not isinstance(raw, str) or not raw.strip():
+            raise RequestPairError(f"{name}.{field} must be a non-empty string")
+        try:
+            observation[field] = normalize(raw)
+        except ValueError as exc:
+            raise RequestPairError(f"{name}.{field}: {exc}") from exc
+    return {"method": method, "url": url, "headers": headers, "body": body if body is not None else "", **observation}
 
 
 def _header_key(name: str) -> str:
@@ -251,6 +266,11 @@ def validate_request_pair(spec: dict[str, Any]) -> dict[str, Any]:
             raise RequestPairError("active body dimension must be the only request difference")
     else:
         raise RequestPairError("active_dimension must use query:, path:, header:, cookie:, or body:")
+    subject_side = spec.get("subject_side")
+    if subject_side is None and baseline["url"] == variant["url"]:
+        subject_side = "baseline"
+    if subject_side not in ("baseline", "variant"):
+        raise RequestPairError("subject_side must be baseline or variant; different URLs require an explicit tested side")
     try:
         repeat = max(1, int(spec.get("repeat", 1) or 1))
     except (TypeError, ValueError) as exc:
@@ -344,6 +364,7 @@ def validate_request_pair(spec: dict[str, Any]) -> dict[str, Any]:
         "schema_version": 1,
         "baseline_request": copy.deepcopy(baseline),
         "variant_request": copy.deepcopy(variant),
+        "subject_side": subject_side,
         "active_dimension": active,
         "evidence_shape": str(spec.get("evidence_shape") or "request_diff").strip().lower(),
         "classifier": classifier,

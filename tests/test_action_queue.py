@@ -88,6 +88,40 @@ def test_primary_action_commands_use_store_without_legacy_queue_file(tmp_path):
     assert not (tmp_path / "state" / target / "action_queue.json").exists()
 
 
+def test_explicit_action_kind_validates_identity_and_cannot_be_spoofed(tmp_path):
+    target = "kind-contract.test"
+    store = TargetStore(tmp_path, target)
+    store.initialize()
+    created = add_manual_action(
+        tmp_path, target=target, action_id="EXEC-1", kind="execution",
+        action_type="request-diff", evidence="Recorded pair", next_question="What does it establish?",
+        action="Review the pair", metadata={"endpoint": "https://kind-contract.test/api", "family": "Authz"},
+    )
+    assert created["action"]["kind"] == "execution"
+    row = store.action("EXEC-1")
+    assert row["kind"] == "execution"
+    assert row["endpoint"] == "https://kind-contract.test/api"
+    assert row["family"] == "Authz"
+
+    before = store.binding()
+    with pytest.raises(StoreError, match="require endpoint and family"):
+        add_manual_action(
+            tmp_path, target=target, action_id="EXEC-MISSING", kind="execution",
+            action_type="request-diff", evidence="Recorded pair", next_question="Review?",
+            action="Review the pair", metadata={"endpoint": "https://kind-contract.test/api"},
+        )
+    assert store.binding() == before
+
+    work = add_manual_action(
+        tmp_path, target=target, action_id="WORK-SPOOF", kind="work",
+        action_type="review", evidence="Recorded material", next_question="Review?",
+        action="Review material", metadata={"kind": "execution", "action_context": {"kind": "execution"}},
+    )
+    assert work["action"]["kind"] == "work"
+    assert store.action("WORK-SPOOF")["kind"] == "work"
+    assert load_queue(tmp_path, target)["actions"][-1]["kind"] == "work"
+
+
 def test_primary_action_claim_persists_bounded_metadata(tmp_path):
     target = "primary-claim.test"
     store = TargetStore(tmp_path, target)

@@ -533,3 +533,38 @@ Completed Web2 acceptance on Linux x86_64, Python 3.13.5 and Claude Code 2.1.278
 ### Next Steps
 
 - 第二批仅规划 hunt/direct 子进程公共执行边界；不重写系统。
+
+
+## Session 22: Shared phase execution consolidation
+<!-- trellis-session: v=2 fp=f6e03a8a1853e498 -->
+
+**Date**: 2026-09-28
+**Task**: Shared phase execution consolidation
+**Branch**: `fix/web2-stable-release`
+
+### Summary
+
+Batch 2 completed: hunt/direct live execution share runtime_exec; preserve caller semantics; 140 focused tests passed in 19.88s; no push.
+
+### Main Changes
+
+- Consolidated three live execution paths and signal/process-group cleanup; synchronized runtime contract and PR core tests.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `797eb5a` | refactor: share runtime phase execution |
+| `e2d2e58` | ci: gate shared phase execution regressions |
+
+### Testing
+
+- [OK] Independent six-file focused pytest: 140 passed in 19.88s; final diff and scoped spec-reference checks passed.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Plan batch 3 fact-contract convergence; select one evidence-backed minimal slice before implementation.

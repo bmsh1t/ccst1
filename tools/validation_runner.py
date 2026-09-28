@@ -35,11 +35,12 @@ try:
     from tools.artifact_io import write_json_atomic as _write_json
     from tools.auth_session import AuthSession, add_cli_args, session_from_args
     from tools.contracts import WIRE_FACT_NAMES, WIRE_NEEDLE_FACT_NAMES, artifact_digest_material, runner_operation_id, validate_observed_difference
-    from tools.evidence_ledger import normalize_actor, normalize_object_scope, normalize_variant
+    from tools.evidence_identity import normalize_actor, normalize_object_scope, normalize_variant
     from tools.response_diff import diff_responses, snapshot_response
     from tools.request_diff import RequestPairError, request_pair_digest, validate_request_pair
     from tools.browser_surface import public_url_shape
-    from tools.evidence_identity import canonical_vuln_class, normalize_family
+    from tools.evidence_identity import canonical_endpoint_identity, canonical_vuln_class, normalize_family
+    from tools.identity_contract import ClosureCellKey
     from tools.private_artifacts import private_artifact_dir, write_private_json, write_private_text
     from tools.target_paths import canonical_target_value, target_storage_key, target_owned_nonempty_evidence_ref
     from tools.scope_context import url_belongs_to_target
@@ -49,11 +50,12 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from artifact_io import write_json_atomic as _write_json
     from auth_session import AuthSession, add_cli_args, session_from_args  # type: ignore
     from contracts import WIRE_FACT_NAMES, WIRE_NEEDLE_FACT_NAMES, artifact_digest_material, runner_operation_id, validate_observed_difference  # type: ignore
-    from evidence_ledger import normalize_actor, normalize_object_scope, normalize_variant  # type: ignore
+    from evidence_identity import normalize_actor, normalize_object_scope, normalize_variant  # type: ignore
     from response_diff import diff_responses, snapshot_response  # type: ignore
     from request_diff import RequestPairError, request_pair_digest, validate_request_pair  # type: ignore
     from browser_surface import public_url_shape  # type: ignore
-    from evidence_identity import canonical_vuln_class, normalize_family  # type: ignore
+    from evidence_identity import canonical_endpoint_identity, canonical_vuln_class, normalize_family  # type: ignore
+    from identity_contract import ClosureCellKey  # type: ignore
     from private_artifacts import private_artifact_dir, write_private_json, write_private_text  # type: ignore
     from target_paths import canonical_target_value, target_storage_key, target_owned_nonempty_evidence_ref  # type: ignore
     from scope_context import url_belongs_to_target  # type: ignore
@@ -366,6 +368,7 @@ def _store_observation(run: dict[str, Any], *, repo_root: Path, side: str | None
         artifacts = dict(run.get("artifacts") or {})
         variant = str(run.get("variant") or "native")
         snapshot = run
+        observation = run
     else:
         prefix = f"{side}_"
         endpoint = str(run.get(f"{side}_url") or "")
@@ -376,6 +379,12 @@ def _store_observation(run: dict[str, Any], *, repo_root: Path, side: str | None
         }
         variant = side
         snapshot = run.get(side) or {}
+        # Old saved summaries retain their recorded side-name semantics on retry.
+        # New replays always publish a separate, normalized observation per side.
+        observation = run.get(f"{side}_observation") or run
+        variant = str(observation.get("variant") or variant)
+        if f"{side}_observation" in run:
+            identity_dimensions = observation.get("identity_dimensions") or {}
     identity_ref = artifacts.get("identity")
     if not identity_ref:
         raise StoreError("runner observation requires its private request identity artifact")
@@ -397,8 +406,8 @@ def _store_observation(run: dict[str, Any], *, repo_root: Path, side: str | None
         "observed_at": observed_at,
         "description": str((run.get("diff") or {}).get("summary") or f"{side} runner observation"),
         "artifacts": artifacts,
-        "actor": str(run.get("actor") or "anonymous"),
-        "object_scope": str(run.get("object_scope") or "none"),
+        "actor": str(observation.get("actor") or ("unknown" if side is None else "anonymous")),
+        "object_scope": str(observation.get("object_scope") or ("unknown" if side is None else "none")),
         "variant": variant,
         "error": str(run["error"].get("type") or "") if isinstance(run.get("error"), dict) else str(run.get("error") or ""),
         "truncated": bool(snapshot.get("truncated") or snapshot.get("body_truncated")),
@@ -438,6 +447,12 @@ def _record_primary_execution(store: TargetStore, *, attempt_id: str, actor: str
     outcome = "unknown" if result == "partial" and not observations else (
         "partial" if result == "partial" else "complete"
     )
+    if result == "partial" and candidate and not any(
+        (item["endpoint"], item["method"], item["family"]) ==
+        (candidate["endpoint"], candidate["method"], candidate["family"])
+        for item in observations
+    ):
+        candidate = None
     return store.record_execution(
         attempt_id=attempt_id, outcome=outcome, observations=observations,
         candidate=candidate, actor=actor,
@@ -457,9 +472,9 @@ def _sync_primary_store(summary: dict[str, Any], *, repo_root: Path, store: Targ
         runs=list(summary.get("runs") or []),
         method=str(summary.get("method") or "GET").upper(),
         methods={
-            str(side): str((summary.get("request_pair") or {}).get(f"{side}_request", {}).get("method") or "").upper()
+            str(side): str((summary.get("request_pair") or {}).get(side, {}).get("method") or "").upper()
             for side in ("baseline", "variant")
-            if isinstance((summary.get("request_pair") or {}).get(f"{side}_request"), dict)
+            if isinstance((summary.get("request_pair") or {}).get(side), dict)
         },
         family=str(summary.get("vuln_class") or "runner-observation"),
         native=str(summary.get("lane") or "") == "native_evidence",
@@ -898,11 +913,13 @@ def _request_pair_spec_view(spec: dict[str, Any]) -> dict[str, Any]:
             "method": request["method"],
             "url": public_url_shape(request["url"]),
             "header_names": sorted(str(key).lower() for key in request.get("headers", {})),
+            **{key: request[key] for key in ("actor", "object_scope", "variant")},
         }
 
     return {
         "baseline": view(spec["baseline_request"]),
         "variant": view(spec["variant_request"]),
+        "subject_side": spec["subject_side"],
         "active_dimension": spec["active_dimension"],
         "evidence_shape": spec["evidence_shape"],
         "classifier": spec["classifier"],
@@ -964,11 +981,35 @@ def run_request_diff(
         scope = load_scope_context(repo_root, target)
         if not all(scope.allows_active(request["url"]) for request in (baseline, variant)):
             raise RequestPreflightError("request pair contains a URL excluded by saved Scope")
-        finding_id = finding_id or _default_finding_id(lane, baseline["url"])
+        subject = spec[f"{spec['subject_side']}_request"]
+        finding_id = finding_id or _default_finding_id(lane, subject["url"])
         family = _classifier_vuln_class(spec["classifier"], spec.get("vuln_class", "")) or "runner-observation"
+        observations = {
+            side: {key: spec[f"{side}_request"][key] for key in ("actor", "object_scope", "variant")}
+            for side in ("baseline", "variant")
+        }
+        if identity_v2 is not None:
+            key = ClosureCellKey.from_dict(identity_v2)
+            dimensions = key.dimension_map
+            if (key.endpoint, key.family) != (canonical_endpoint_identity(subject["url"]), family):
+                raise RequestPairError("identity_v2 must match the declared subject endpoint and family")
+            for dimension, value in (("method", subject["method"]), ("actor_relation", subject["actor"]),
+                                     ("object_scope", subject["object_scope"])):
+                if dimension in dimensions and dimensions[dimension] != value:
+                    raise RequestPairError(f"identity_v2.{dimension} conflicts with the subject observation")
+            observations[spec["subject_side"]]["identity_dimensions"] = dimensions
+            identity_v2 = key.to_dict()
+        try:
+            existing = store.finding(finding_id)
+        except FindingNotFoundError:
+            existing = None
+        if existing and (existing["endpoint"], existing["method"], existing["family"]) != (
+            subject["url"], subject["method"], family,
+        ):
+            raise StoreError("declared subject endpoint, method and family must match the existing finding")
         command_context = _runner_command_context(
             store, action_id=action_id, claim_token=claim_token, command_actor=command_actor,
-            endpoint=baseline["url"], family=family,
+            endpoint=subject["url"], family=family,
         )
         started_at = now_utc()
         attempt_id = attempt_id or f"attempt:{uuid.uuid4().hex}"
@@ -979,8 +1020,8 @@ def run_request_diff(
         if receipt["replayed"]:
             raise StoreError("attempt already started; retry registration from its saved summary or execute with a new attempt_id")
         _ensure_primary_finding(
-            store, finding_id=finding_id, endpoint=baseline["url"],
-            method=baseline["method"], family=family,
+            store, finding_id=finding_id, endpoint=subject["url"],
+            method=subject["method"], family=family,
         )
         bundle = _bundle_dir(repo_root, target, finding_id)
         private_bundle = _private_bundle_dir(repo_root, target, bundle)
@@ -1003,6 +1044,8 @@ def run_request_diff(
                 "baseline_url": public_url_shape(baseline["url"]),
                 "variant_url": public_url_shape(variant["url"]),
                 "active_dimension": spec["active_dimension"],
+                "baseline_observation": observations["baseline"],
+                "variant_observation": observations["variant"],
                 "artifacts": {},
             }
             runs.append(run)
@@ -1029,10 +1072,12 @@ def run_request_diff(
                 return _finalize_runner_summary({
                     "schema_version": SCHEMA_VERSION, "lane": lane,
                     "target": canonical_target_value(target), "finding_id": finding_id,
-                    "url": public_url_shape(baseline["url"]), "method": baseline["method"],
+                    "url": public_url_shape(subject["url"]), "method": subject["method"],
                     "generated_at": now_utc(), "result": "partial", "status": "partial",
                     "candidate_ready": False, "runs": runs, "repeat": repeat_count,
                     "request_pair": _request_pair_spec_view(spec), "request_spec_sha256": pair_digest,
+                    "identity_v2": identity_v2,
+                    "auth_session_id": auth_session_id,
                     "state_changing": effective_state, "redline_checked": redline_checked,
                     "attempt_id": attempt_id or "",
                     **command_context,
@@ -1094,8 +1139,8 @@ def run_request_diff(
             "lane": lane,
             "target": canonical_target_value(target),
             "finding_id": finding_id,
-            "url": public_url_shape(baseline["url"]),
-            "method": baseline["method"],
+            "url": public_url_shape(subject["url"]),
+            "method": subject["method"],
             "generated_at": now_utc(),
             "result": result,
             "candidate_ready": candidate_ready,
@@ -1109,6 +1154,7 @@ def run_request_diff(
             "request_spec_sha256": pair_digest,
             "header_overlay_sha256": header_overlay_digest,
             "auth_session_id": auth_session_id,
+            "identity_v2": identity_v2,
             "request_pair": _request_pair_spec_view(spec),
             "repeat": repeat_count,
             "runs": runs,

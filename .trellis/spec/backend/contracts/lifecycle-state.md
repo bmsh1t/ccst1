@@ -19,6 +19,9 @@
   Target memory is not a second Finding/Action lifecycle.
 - Validation: Store/current-truth, Action Queue, memory-loop, distillation and
   explicit migration regressions prove the corresponding contracts.
+- Action Queue `kind` is an owned Store lifecycle field (`work` or `execution`),
+  independent of descriptive `type`; execution actions require endpoint and
+  family, while work actions reject those execution identity fields.
 
 ## Target Path Canonicalization Contracts
 

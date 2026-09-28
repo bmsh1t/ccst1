@@ -3111,6 +3111,7 @@ _SNAPSHOT_VOLATILE_KEYS = frozenset({
 
 _GLOBAL_REVIEW_STATUSES = {"complete", "follow_up"}
 _GLOBAL_REVIEW_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+_GLOBAL_REVIEW_BASIS_VERSION = 2
 # The review's decision answers "is the target-wide picture consistent?" —
 # that claim covers exactly these components. Ledger telemetry, checkpoint
 # witness details, surface projections, and target-memory echoes are not part
@@ -3122,14 +3123,88 @@ _GLOBAL_REVIEW_BASIS_KEYS = (
 )
 
 
-def _global_review_basis(components: dict | None) -> dict[str, str]:
+def _global_review_basis(components: dict | None) -> dict[str, object]:
     """Project closure snapshot components onto the review claim basis."""
     if not isinstance(components, dict):
         return {}
-    return {
+    result: dict[str, object] = {"version": _GLOBAL_REVIEW_BASIS_VERSION}
+    result.update({
         key: str(components.get(key) or "")
         for key in _GLOBAL_REVIEW_BASIS_KEYS
+    })
+    return result
+
+
+def _review_queue_fingerprint(queue: dict) -> str:
+    """Hash action meaning without binding review validity to Store generation."""
+    def semantic(value: object) -> object:
+        if isinstance(value, dict):
+            return {
+                str(key): semantic(item)
+                for key, item in value.items()
+                if str(key) not in {"created_at", "updated_at", "claim_token"}
+            }
+        if isinstance(value, list):
+            return [semantic(item) for item in value]
+        return value
+
+    actions = []
+    for action in queue.get("actions") or []:
+        if not isinstance(action, dict):
+            continue
+        actions.append(_snapshot_normalize(semantic(action)))
+    material = {
+        "target": canonical_target_value(queue.get("target") or ""),
+        "store_id": str(queue.get("store_id") or ""),
+        "actions": actions,
     }
+    encoded = json.dumps(material, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _review_coverage_projection(matrix: dict | None) -> object:
+    """Project Coverage meaning while excluding only cache/generation wrappers."""
+    if not isinstance(matrix, dict):
+        return {}
+    ignored = {
+        "as_of", "last_updated", "source_fingerprint", "discovery_fingerprint",
+        "store_revision",
+    }
+
+    def visit(value: object, parent_key: str = "") -> object:
+        if isinstance(value, dict):
+            return {
+                str(key): visit(item, str(key))
+                for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+                if str(key) not in ignored
+                and not (parent_key in {"store", "evidence_source"} and str(key) == "revision")
+            }
+        if isinstance(value, list):
+            return [visit(item, parent_key) for item in value]
+        return value
+
+    return visit(matrix)
+
+
+def _review_coverage_fingerprint(matrix: dict | None) -> str:
+    encoded = json.dumps(
+        _snapshot_normalize(_review_coverage_projection(matrix)),
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _review_closure_state_snapshot(state: dict) -> dict:
+    """Exclude cache status from the semantic Closure claim basis."""
+    snapshot = _closure_state_snapshot(state)
+    snapshot.pop("surface_projection", None)
+    # Controller routing is a derived projection, not a target fact. Owner
+    # inputs such as Queue, Coverage, Case and current evidence are bound below.
+    snapshot.pop("next_action", None)
+    snapshot.pop("action_queue_next", None)
+    return snapshot
 
 
 def _global_review_error(
@@ -3225,15 +3300,28 @@ def validate_global_review(
     digest = str(review.get("snapshot_digest") or "").strip().lower()
     if status not in _GLOBAL_REVIEW_STATUSES or not _GLOBAL_REVIEW_DIGEST_RE.fullmatch(digest):
         return _global_review_error("invalid", "global_review_invalid")
-    basis = review.get("basis") if isinstance(review.get("basis"), dict) else None
+    raw_basis = review.get("basis")
+    if raw_basis is not None and not isinstance(raw_basis, dict):
+        return _global_review_error("invalid", "global_review_invalid")
+    basis = raw_basis
     if basis is not None:
+        expected_basis = _global_review_basis(expected_components)
+        if not expected_basis:
+            return _global_review_error("invalid", "global_review_invalid")
+        if basis.get("version") != _GLOBAL_REVIEW_BASIS_VERSION:
+            return _global_review_error(
+                "stale",
+                "global_review_stale",
+                state_changes=[{
+                    "field": "basis.version",
+                    "provided": basis.get("version", ""),
+                    "current": _GLOBAL_REVIEW_BASIS_VERSION,
+                }],
+            )
         # Claim-component scoping: compare only the components the review
         # reasons over. Missing components project to empty strings, so an
         # incomplete basis reports per-component entries rather than a
         # separate structural failure.
-        expected_basis = _global_review_basis(expected_components)
-        if not expected_basis:
-            return _global_review_error("invalid", "global_review_invalid")
         current = _global_review_basis(basis)
         changes = [
             {
@@ -3363,7 +3451,6 @@ _CLOSURE_STATE_KEYS = (
     "root_finding_claim_next",
     "validation_runner_next",
     "action_queue_next",
-    "target_goal_memory",
     "memory_candidate_next",
     "resume_targets",
     "surface_review_candidates",
@@ -3430,7 +3517,7 @@ def _closure_snapshot_components(
     surface_projection = surface_projection if isinstance(surface_projection, dict) else {}
     checkpoint_queue = witness.get("action_queue") if isinstance(witness, dict) else {}
     checkpoint_queue = checkpoint_queue if isinstance(checkpoint_queue, dict) else {}
-    closure_state = _closure_state_snapshot(state)
+    closure_state = _review_closure_state_snapshot(state)
     state_encoded = json.dumps(
         _snapshot_normalize(closure_state),
         ensure_ascii=True,
@@ -3439,9 +3526,8 @@ def _closure_snapshot_components(
     )
     return {
         "target": canonical_target_value(target),
-        "queue_fingerprint": queue_fingerprint(queue),
-        "coverage_fingerprint": str((matrix or {}).get("source_fingerprint") or "")
-        or _semantic_coverage_fingerprint(matrix),
+        "queue_fingerprint": _review_queue_fingerprint(queue),
+        "coverage_fingerprint": _review_coverage_fingerprint(matrix),
         "surface_input_fingerprint": str(surface_projection.get("input_fingerprint") or ""),
         "checkpoint_queue_fingerprint": str(checkpoint_queue.get("fingerprint") or ""),
         "ledger_status": str(ledger_health.get("status") or "missing"),
@@ -3491,6 +3577,8 @@ def _closure_snapshot_digest(
         },
         "closure_state": _closure_state_snapshot(state),
         "target_memory": {
+            # Handoff memory is operational context, not a claim about target facts.
+            # Keep it in the full snapshot for diagnostics, outside review basis.
             "goal": state.get("target_goal_memory") or {},
             # Recon is already bound by closure_state; Resume embeds the same
             # owner in a diagnostic shape (unknown vs exact line counts).

@@ -100,6 +100,10 @@ AuthSession origin/scope rules; raw headers override only on the initial URL.
 
 ### Contracts
 
+- Request-diff specs with different baseline/variant URLs must declare
+  `subject_side` (`baseline` or `variant`). The selected side is the sole
+  Finding/Action/attempt identity anchor; omission is rejected before I/O.
+
 - Normal operation requires one initialized, healthy target Store. Target,
   store generation and claim are checked before execution/publication and again
   at registration under the target switch lock. Preview/legacy/damage reject.

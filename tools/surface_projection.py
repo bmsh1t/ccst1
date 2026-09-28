@@ -111,7 +111,6 @@ def _semantic_evidence_ledger(repo_root: Path, target: str) -> dict:
         "kind": "target_store_closure_projection",
         "status": "invalid" if truth["health"].get("status") in {"partial", "unreadable"} else "ready",
         "store_id": truth["source"].get("store_id", ""),
-        "revision": truth["source"].get("revision", 0),
         "closed_cells": _semantic_closed_cells(truth["projection"].get("closed_cells")),
         "closed_cells_v2": _semantic_closed_cells(truth["projection"].get("closed_cells_v2")),
     }

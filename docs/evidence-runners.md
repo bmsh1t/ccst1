@@ -140,9 +140,26 @@ close a canonical Coverage family; an unclassified pair remains reviewable evide
   "evidence_shape": "request_diff",
   "classifier": "sqli",
   "expected_signal": "CHECK_FN",
-  "repeat": 2
+  "repeat": 2,
+  "subject_side": "baseline"
 }
 ```
+
+当 baseline 与 variant 的 URL 不同（例如 path/query 变体）时，必须显式声明
+`subject_side` 为 `baseline` 或 `variant`。Finding、Action、attempt 和摘要均绑定
+该侧的精确 endpoint/method；省略会在发请求前拒绝，避免把变体误登记到另一侧。
+
+Action Queue 的 `kind` 是生命周期字段，与描述性的 `type` 分开：
+
+```bash
+python3 tools/action_queue.py --repo-root ROOT add --target TARGET --kind execution \
+  --type request-diff --metadata-json '{"endpoint":"https://TARGET/path","family":"Authz"}' \
+  --evidence "Recorded request pair" --next-question "What does it establish?" \
+  --action "Review the execution evidence" --json
+```
+
+`execution` 必须同时提供 `endpoint` 和 `family`；普通人工工作使用 `--kind work`，
+且不得携带这两个执行身份字段。冲突输入在 Store 写入前失败。
 
 ```bash
 python3 tools/validation_runner.py request-diff \

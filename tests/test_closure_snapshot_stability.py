@@ -129,6 +129,44 @@ def test_completed_round_review_survives_delayed_full_and_bounded_reads(tmp_path
     assert store.binding() == binding
 
 
+def test_global_review_survives_handoff_memory_write(tmp_path, store):
+    _write(tmp_path, f"recon/{TARGET}/urls/all.txt", f"https://{TARGET}/object\n")
+    surface.build_surface_review(tmp_path, TARGET)
+    initial = _closure(tmp_path, False)
+    recorded = _review(tmp_path, initial["snapshot_digest"])
+
+    store.remember(
+        command_id="handoff-memory",
+        kind="handoff",
+        statement="Continue from the recorded review",
+        conditions="local fixture",
+        reopen_when="",
+        next_intent="resume review",
+        evidence=[],
+        actor="operator",
+    )
+
+    current = _closure(tmp_path, False)
+    assert current["snapshot_digest"] != initial["snapshot_digest"]
+    assert current["global_review"]["status"] == "complete"
+    assert current["global_review"]["basis"] == recorded["global_review"]["basis"]
+
+
+def test_global_review_survives_read_only_checkpoint_build(tmp_path, store):
+    _write(tmp_path, f"recon/{TARGET}/urls/all.txt", f"https://{TARGET}/object\n")
+    surface.build_surface_review(tmp_path, TARGET)
+    initial = _closure(tmp_path, False)
+    recorded = _review(tmp_path, initial["snapshot_digest"])
+    binding = store.binding()
+
+    checkpoint.build_checkpoint(tmp_path, target=TARGET)
+
+    current = _closure(tmp_path, False)
+    assert current["global_review"]["status"] == "complete"
+    assert current["global_review"]["basis"] == recorded["global_review"]["basis"]
+    assert store.binding() == binding
+
+
 @pytest.mark.parametrize("projection", ["missing", "valid", "stale"])
 def test_closure_review_uses_physical_root_identity(tmp_path, store, monkeypatch, projection):
     discovery = _write(tmp_path, f"recon/{TARGET}/urls/all.txt", f"https://{TARGET}/object\n")

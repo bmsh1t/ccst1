@@ -11,6 +11,104 @@ from typing import Mapping, Any
 from urllib.parse import parse_qsl, urlparse
 
 
+ACTOR_ALIASES = {
+    "unknown": "unknown",
+    "anonymous": "anonymous",
+    "anon": "anonymous",
+    "unauth": "anonymous",
+    "unauthenticated": "anonymous",
+    "owner": "owner",
+    "self": "owner",
+    "user_a": "owner",
+    "peer": "peer",
+    "other": "peer",
+    "victim": "peer",
+    "user_b": "peer",
+    "low_role": "low_role",
+    "low-role": "low_role",
+    "lowpriv": "low_role",
+    "member": "low_role",
+    "admin": "admin",
+    "cross_tenant": "cross_tenant",
+    "cross-tenant": "cross_tenant",
+    "tenant_b": "cross_tenant",
+}
+
+OBJECT_ALIASES = {
+    "none": "none",
+    "na": "none",
+    "own": "own_object",
+    "own_object": "own_object",
+    "self": "own_object",
+    "other": "other_object_same_org",
+    "peer": "other_object_same_org",
+    "same_org_other": "other_object_same_org",
+    "other_object_same_org": "other_object_same_org",
+    "cross_tenant": "cross_tenant_object",
+    "cross-tenant": "cross_tenant_object",
+    "tenant_b": "cross_tenant_object",
+    "cross_tenant_object": "cross_tenant_object",
+    "admin": "admin_object",
+    "admin_object": "admin_object",
+    "unknown": "unknown",
+}
+
+VARIANT_ALIASES = {
+    "baseline": "baseline",
+    "allow": "baseline",
+    "unauth": "unauth_denied",
+    "unauth_denied": "unauth_denied",
+    "anonymous_denied": "unauth_denied",
+    "id_swap": "id_swap",
+    "idswap": "id_swap",
+    "object_swap": "id_swap",
+    "role_diff": "role_diff",
+    "role": "role_diff",
+    "tenant_diff": "tenant_diff",
+    "tenant": "tenant_diff",
+    "method_diff": "method_diff",
+    "method": "method_diff",
+    "version_diff": "version_diff",
+    "version": "version_diff",
+    "token_missing": "token_missing",
+    "csrf_missing": "token_missing",
+    "origin_diff": "origin_diff",
+    "referer_diff": "origin_diff",
+    "replay": "replay",
+    "browser_observed": "browser_observed",
+}
+
+
+def _normalize_observation_value(value: str, aliases: dict[str, str], field: str) -> str:
+    key = str(value or "").strip().lower().replace(" ", "_")
+    if key in aliases:
+        return aliases[key]
+    by_canonical: dict[str, list[str]] = {}
+    for input_key, canonical in aliases.items():
+        by_canonical.setdefault(canonical, []).append(input_key)
+
+    groups = []
+    for canonical in sorted(by_canonical):
+        accepted_inputs = sorted(by_canonical[canonical])
+        if accepted_inputs == [canonical]:
+            groups.append(canonical)
+        else:
+            groups.append(f"{canonical} (input: {', '.join(accepted_inputs)})")
+    raise ValueError(f"unknown {field}: {value!r}. Accepted inputs: {'; '.join(groups)}")
+
+
+def normalize_actor(value: str) -> str:
+    return _normalize_observation_value(value or "owner", ACTOR_ALIASES, "actor")
+
+
+def normalize_object_scope(value: str) -> str:
+    return _normalize_observation_value(value or "unknown", OBJECT_ALIASES, "object_scope")
+
+
+def normalize_variant(value: str) -> str:
+    return _normalize_observation_value(value or "baseline", VARIANT_ALIASES, "variant")
+
+
 CANONICAL_VULN_CLASSES = (
     "IDOR", "SSRF", "XSS", "Race", "Authz",
     "GraphQL", "OAuth", "Upload", "Webhook", "JWT",
