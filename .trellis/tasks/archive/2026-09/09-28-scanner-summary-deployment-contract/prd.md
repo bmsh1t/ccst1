@@ -20,7 +20,7 @@
 - Scanner 最终定向验收为 **67 passed, 225 deselected in 1.67s**，包括原 UTF-8 整链失败用例；
   已提交 `e755065` 并归档于 `45fdf1e`。
 - 用户随后 `go` 已确认推进安装筛选；该子任务从 `45fdf1e` 实施，定向验收为 **31 passed in 7.25s**，
-  rsync/cp 均覆盖、无 skip；实现与规范完成，待独立提交和归档。
+  rsync/cp 均覆盖、无 skip；已提交 `8227cd2` 并归档于 `b514282`。
 
 ## Requirements and Task Map
 

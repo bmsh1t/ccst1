@@ -3,7 +3,7 @@
   "name": "scanner-summary-deployment-contract",
   "title": "第四批：Scanner 摘要与部署规则契约核查",
   "description": "架构与能力优先，核查摘要事实归属、证据完整性与续跑信息，以及部署规则和当前运行入口的一致性；仅凭复现决定修复范围，不部署。",
-  "status": "planning",
+  "status": "completed",
   "dev_type": null,
   "scope": "contract-review",
   "package": null,
@@ -11,11 +11,11 @@
   "creator": "Codex",
   "assignee": "Codex",
   "createdAt": "2026-09-28",
-  "completedAt": null,
-  "branch": null,
+  "completedAt": "2026-09-28",
+  "branch": "fix/installer-runtime-file-selection",
   "base_branch": "fix/closure-evidence-snapshot-consistency",
   "worktree_path": null,
-  "commit": null,
+  "commit": "8227cd2",
   "pr_url": null,
   "subtasks": [],
   "children": [
@@ -24,6 +24,6 @@
   ],
   "parent": null,
   "relatedFiles": [],
-  "notes": "Scanner 已提交 e755065 并归档于 45fdf1e；安装筛选实现、31 项独立验收和规范更新完成，待提交/归档。父任务 AC1/AC2/AC3 已验证；未推送/合并/部署，旧暂存日志不动。",
+  "notes": "本轮两项交付全部完成。Scanner: e755065，67 项定向验收，归档 45fdf1e；Installer: 8227cd2，31 项定向验收，归档 b514282。父任务 AC1/AC2/AC3 已核对，汇总分支为当前两个提交所在分支，不代表新增父任务实现。未推送/合并/部署，旧暂存日志不动。",
   "meta": {}
 }
