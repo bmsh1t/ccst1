@@ -495,7 +495,10 @@ are executable prompt resources, not optional repository documentation.
 - Repo-managed Skill files are all regular files under each repo-owned
   `skills/<name>/` directory, recursively, plus shared top-level `skills/*.md`.
 - Flat `commands/*.md` and `agents/*.md` are runtime sources except explicit local
-  development artifacts ending in `.patch.md`. A repo-side patch stays in place
+  development artifacts ending in `.patch.md` (case-insensitive within that
+  existing `*.md` source set). Both installer loops and Doctor apply this rule;
+  shell matching must not add a dependency or raise the required Bash version.
+  A repo-side patch stays in place
   and is never copied; a patch previously copied into runtime is an `EXTRA` that
   explicit prune may remove.
 - Runtime discovery recursively scans only Skill root names owned by the repo.
@@ -532,8 +535,11 @@ are executable prompt resources, not optional repository documentation.
 - Advisory-only drift -> zero with `--fail-on-critical-drift`, non-zero with
   strict `--fail-on-drift`.
 - Managed nested runtime-only file -> `EXTRA`; only explicit `--prune` removes it.
-- Repo `agents/*.patch.md` exists -> ignored as a source; same filename in runtime
-  -> `EXTRA`, and prune must not touch the repo copy.
+- Repo command/agent ends in `.patch.md`, `.PATCH.md`, or `.PaTcH.md` -> ignored
+  during install and Doctor source discovery; same filename already in runtime
+  -> `EXTRA`. Only explicit prune removes it, without touching the repo copy.
+- Ordinary names such as `local.md` or `local.patch-notes.md` -> copied unchanged;
+  patch exclusion must not become a substring filter or enable disabled commands.
 - External Skill root exists -> ignored during compare and preserved during prune.
 - Repo-root marker missing -> `/autopilot` stops and asks the operator to launch
   Claude from this repository.
@@ -563,9 +569,14 @@ are executable prompt resources, not optional repository documentation.
 - Runtime fixtures cover critical diff, missing-critical, advisory-only drift,
   missing/invalid manifest, manifest hash, HackerOne exclusion, and both gates.
 - Runtime fixtures prove external Skill nested resources survive compare/prune.
-- Runtime fixtures prove repo-side `agents/*.patch.md` neither creates `MISSING`
-  nor gets copied, while an old runtime copy is reported/pruned as `EXTRA` and the
-  repo file remains byte-identical.
+- Upgrade/repeat fixtures exercise both `rsync` and additive `cp`, with command
+  and agent patches in lower/upper/mixed case plus ordinary/near-match filenames.
+  Every install retains source bytes, excludes patches, and preserves disabled
+  commands, external Skills, private settings/material, and Store binding.
+- Doctor fixtures cover both kinds and all three patch spellings: repo sources
+  cause no `MISSING`; an old runtime copy is reported/pruned as `EXTRA`, and the
+  repo file remains byte-identical. Missing `rsync` is reported as a test skip,
+  not silently claimed as covered.
 - Autopilot prompt tests assert repo-root/drift checks precede state/recon/surface/
   scan and that the preflight contains no `--sync` action.
 - Run targeted pytest, full `pytest -q`, and `git diff --check`; release acceptance
@@ -585,7 +596,8 @@ Correct:
 ```text
 skills/<managed-root>/**/* -> ~/.claude/skills/<managed-root>/**/*
 doctor -> recurse repo-owned roots; ignore unrelated external roots
-agents/*.md - agents/*.patch.md -> ~/.claude/agents/claude-bug-bounty/*.md
+commands/*.md - case-insensitive *.patch.md -> ~/.claude/commands/*.md
+agents/*.md - case-insensitive *.patch.md -> ~/.claude/agents/claude-bug-bounty/*.md
 full drift -> --fail-on-drift; Autopilot-only drift -> --fail-on-critical-drift
 ```
 

@@ -73,6 +73,9 @@ mkdir -p "${COMMANDS_DIR}"
 
 for cmd_file in "${SCRIPT_DIR}"/commands/*.md; do
     cmd_name=$(basename "$cmd_file")
+    case "${cmd_name}" in
+        *.[pP][aA][tT][cC][hH].md) continue ;;
+    esac
     disabled_path="${COMMANDS_DIR}/.disabled.${cmd_name}"
     active_path="${COMMANDS_DIR}/${cmd_name}"
     if [ -f "${disabled_path}" ] && [ ! -f "${active_path}" ]; then
@@ -91,7 +94,7 @@ mkdir -p "${AGENTS_DIR}"
 for agent_file in "${SCRIPT_DIR}"/agents/*.md; do
     agent_name=$(basename "$agent_file")
     case "${agent_name}" in
-        *.patch.md) continue ;;
+        *.[pP][aA][tT][cC][hH].md) continue ;;
     esac
     cp "$agent_file" "${AGENTS_DIR}/${agent_name}"
     echo "✓ Installed agent: ${agent_name}"

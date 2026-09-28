@@ -18,7 +18,9 @@
 - 两处追加边界已实现；第二次验收为 64 passed/1 failed。新发现 Finding claim 枚举未排除
   Scanner 专属 summary，最新 `go` 已批准追加一条文件归属规则，详情见 Scanner 子任务 verification.md。
 - Scanner 最终定向验收为 **67 passed, 225 deselected in 1.67s**，包括原 UTF-8 整链失败用例；
-  Scanner 实现/规范完成待提交，安装筛选仍未实施。
+  已提交 `e755065` 并归档于 `45fdf1e`。
+- 用户随后 `go` 已确认推进安装筛选；该子任务从 `45fdf1e` 实施，定向验收为 **31 passed in 7.25s**，
+  rsync/cp 均覆盖、无 skip；实现与规范完成，待独立提交和归档。
 
 ## Requirements and Task Map
 
@@ -34,9 +36,9 @@
 
 - [x] AC1（R1）：错误容器、非整数/非有限/布尔计数和坏编码不可成为 valid/missing；已存在
   的合法整数、整数文本、空 lane 集合和缺少旧版可选字段保持兼容；真实剩余工作与原文引用可见。
-- [ ] AC2（R2）：临时副本中安装筛选与 Doctor 一致；开发补丁不复制，禁用命令不恢复启用，
+- [x] AC2（R2）：临时副本中安装筛选与 Doctor 一致；开发补丁不复制，禁用命令不恢复启用，
   外部 Skill/用户设置/Store 不被影响。
-- [ ] AC3（R3）：每个子任务仅执行对应 focused 回归，产品 diff 不跨出批准边界；原始材料与
+- [x] AC3（R3）：每个子任务仅执行对应 focused 回归，产品 diff 不跨出批准边界；原始材料与
   两份旧暂存日志字节/暂存补丁不变，不复用第三批测试结果冒充本批验证。
 
 ## Out of Scope

@@ -4,6 +4,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 from tools import runtime_doctor
 
 
@@ -337,22 +339,25 @@ def test_compare_runtime_includes_shared_skill_markdown_files(tmp_path):
     )
 
 
-def test_agent_development_patch_is_not_a_runtime_source(tmp_path):
+@pytest.mark.parametrize("kind", ["commands", "agents"])
+@pytest.mark.parametrize("suffix", ["patch.md", "PATCH.md", "PaTcH.md"])
+def test_development_patch_is_not_a_runtime_source(tmp_path, kind, suffix):
     repo_root = _repo_fixture(tmp_path / "repo")
-    runtime_root = _runtime_fixture(tmp_path / "runtime")
-    runtime_agent = runtime_root / "agents" / "claude-bug-bounty" / "autopilot.md"
-    runtime_agent.write_text("repo agent\n", encoding="utf-8")
-    repo_patch = repo_root / "agents" / "autopilot-fix.patch.md"
+    runtime_root = tmp_path / "runtime"
+    runtime_dir = runtime_root / runtime_doctor.RUNTIME_SUBDIRS[kind]
+    for source in (repo_root / kind).glob("*.md"):
+        _write(runtime_dir / source.name, source.read_text(encoding="utf-8"))
+    repo_patch = repo_root / kind / f"autopilot-fix.{suffix}"
     _write(repo_patch, "local development patch\n")
 
     clean = runtime_doctor.compare_runtime(
         repo_root=repo_root,
         runtime_root=runtime_root,
-        kinds=["agents"],
+        kinds=[kind],
     )
     assert clean["clean"] is True
     assert clean["kinds"][0]["counts"] == {
-        "ok": 1,
+        "ok": 2 if kind == "commands" else 1,
         "diff": 0,
         "missing": 0,
         "extra": 0,
@@ -360,19 +365,19 @@ def test_agent_development_patch_is_not_a_runtime_source(tmp_path):
 
     # 如果旧实现曾把补丁复制进 runtime，新实现仍应把它识别为 extra，
     # prune 只删除 runtime 副本，不触碰 repo 中的本地开发文件。
-    runtime_patch = runtime_root / "agents" / "claude-bug-bounty" / repo_patch.name
+    runtime_patch = runtime_dir / repo_patch.name
     _write(runtime_patch, "local development patch\n")
     drift = runtime_doctor.compare_runtime(
         repo_root=repo_root,
         runtime_root=runtime_root,
-        kinds=["agents"],
+        kinds=[kind],
     )
     assert drift["kinds"][0]["counts"]["extra"] == 1
 
     changes = runtime_doctor.sync_runtime(
         repo_root=repo_root,
         runtime_root=runtime_root,
-        kinds=["agents"],
+        kinds=[kind],
         prune=True,
     )
     assert str(runtime_patch) in changes["removed"]

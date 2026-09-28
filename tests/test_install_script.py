@@ -173,6 +173,16 @@ def test_install_upgrade_and_repeat_preserve_user_state(tmp_path, with_rsync):
     for name in ("commands", "skills", "agents"):
         shutil.copytree(REPO_ROOT / name, checkout / name)
     shutil.copy2(REPO_ROOT / "install.sh", checkout / "install.sh")
+    markdown_inputs = []
+    for kind in ("commands", "agents"):
+        for name, excluded in (
+            ("local.patch.md", True), ("local.PATCH.md", True), ("local.PaTcH.md", True),
+            ("local.md", False), ("local.patch-notes.md", False),
+        ):
+            source = checkout / kind / name
+            body = f"{kind}/{name}\n".encode()
+            source.write_bytes(body)
+            markdown_inputs.append((source, body, excluded))
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     for name in ("basename", "dirname", "mkdir", "cp", "cat", "grep", *(["rsync"] if with_rsync else [])):
@@ -188,6 +198,13 @@ def test_install_upgrade_and_repeat_preserve_user_state(tmp_path, with_rsync):
         result = subprocess.run(["/bin/bash", str(checkout / "install.sh")], cwd=checkout, env=env,
                                 stdin=subprocess.DEVNULL, text=True, capture_output=True, timeout=20)
         assert result.returncode == 0, result.stderr + result.stdout
+        for source, body, excluded in markdown_inputs:
+            installed = runtime / runtime_doctor.RUNTIME_SUBDIRS[source.parent.name] / source.name
+            assert source.read_bytes() == body
+            if excluded:
+                assert not installed.exists()
+            else:
+                assert installed.read_bytes() == body
 
     install()
     assert runtime_doctor.compare_runtime(checkout, runtime)["clean"]
