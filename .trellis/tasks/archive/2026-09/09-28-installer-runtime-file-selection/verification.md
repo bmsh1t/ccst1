@@ -1,6 +1,6 @@
 # 安装文件筛选一致性：验收与提交计划
 
-状态：实现、定向验收和规范同步完成，待独立提交确认。
+状态：实现、定向验收和规范同步完成，工作提交 8227cd2 已完成，进入收尾归档。
 分支：`fix/installer-runtime-file-selection`；基线：`45fdf1e`。
 前置 Scanner 工作为 `e755065`，已在 `45fdf1e` 归档；不重新运行其 67 项验收冒充本任务验证。
 
@@ -54,3 +54,7 @@ python3 -m pytest -q tests/test_install_script.py tests/test_runtime_doctor.py
 排除 `.trellis/workspace/Codex/index.md` 和 `.trellis/workspace/Codex/journal-1.md`；
 获批后按精确路径提交，不使用裸 `git commit` 吞入旧暂存日志。当前尚未提交安装器修改。
 提交后再归档安装器与父任务；不合并、不 push、不部署。
+
+## 交付与归档
+
+用户回复“提交”后已完成 `8227cd2 fix: align installer patch file filtering`。按既定收尾计划归档本任务与父任务；不调用会改写旧暂存日志的 add_session.py，归档提交同样限定精确路径。

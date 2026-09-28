@@ -52,7 +52,7 @@ python3 -m pytest -q tests/test_install_script.py tests/test_runtime_doctor.py
 ## Verification
 
 上述命令已实际执行：**31 passed in 7.25s**，无 skip；rsync 与 cp 两条升级/重放路径均通过。
-实现、规范更新和定向验收已完成，待独立提交确认；完整结果及审查见 verification.md。
+实现、规范更新和定向验收已完成，已提交 `8227cd2`，进入收尾归档；完整结果及审查见 verification.md。
 
 ## Out of Scope
 

@@ -3,7 +3,7 @@
   "name": "installer-runtime-file-selection",
   "title": "安装器与 Runtime Doctor 文件筛选一致性",
   "description": "修复已复现的 commands 开发补丁被复制、agents 大小写补丁后缀筛选不一致；保留禁用命令与外部 Skill 归属。",
-  "status": "in_progress",
+  "status": "completed",
   "dev_type": null,
   "scope": "runtime-packaging",
   "package": null,
@@ -11,11 +11,11 @@
   "creator": "Codex",
   "assignee": "Codex",
   "createdAt": "2026-09-28",
-  "completedAt": null,
+  "completedAt": "2026-09-28",
   "branch": "fix/installer-runtime-file-selection",
   "base_branch": "fix/scanner-summary-input-contract",
   "worktree_path": null,
-  "commit": null,
+  "commit": "8227cd2",
   "pr_url": null,
   "subtasks": [],
   "children": [],
@@ -26,6 +26,6 @@
     "tests/test_runtime_doctor.py",
     ".trellis/spec/backend/contracts/runtime-autopilot.md"
   ],
-  "notes": "安装器两处筛选已对齐 Doctor，31 项定向验收通过，无 skip，rsync/cp 均覆盖；规范已同步，等待独立提交确认。基线 45fdf1e；不改个人 runtime，不用子代理，旧暂存日志不动。",
+  "notes": "已完成两处 shell 筛选、规范与 31 项定向验收；按用户确认清单提交 8227cd2，收尾归档。rsync/cp 均覆盖，无 skip；未安装个人 runtime、未推送/合并；两份旧暂存日志不动。",
   "meta": {}
 }
