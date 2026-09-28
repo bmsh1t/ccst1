@@ -1,6 +1,6 @@
 # Scanner 子任务：验收与范围补充
 
-状态：最终定向验收已通过，规范已同步，等待独立提交确认。本轮只实施 Scanner，安装器未修改。
+状态：最终定向验收已通过，规范已同步，工作提交 e755065 已完成；用户确认归档。本轮只实施 Scanner，安装器未修改。
 分支：`fix/scanner-summary-input-contract`；基线：`7c3556d`。无子代理、提交或部署。
 
 ## 已实现
@@ -126,3 +126,7 @@ python3 -m pytest -q tests/test_autopilot_state_tool.py tests/test_scanner_pass.
 - 当前未提交；归档与后续安装器实现另按既定任务顺序处理，不合并、不 push、不部署。
 - 用户随后回复“提交”，已确认上述清单。暂存检查仅在 pytest 原始 `second-check.log` 中发现
   框架生成的行尾空格；保留该日志原字节，不当作源码格式错误。其余暂存内容单独通过空白检查。
+
+## 交付与归档
+
+工作提交：`e755065 fix: preserve scanner summary input integrity`。用户后续 `go` 已确认归档并推进安装器子任务。两份旧暂存日志不纳入归档提交，保留其内容和暂存补丁；本次不调用会修改它们的 add_session.py。
