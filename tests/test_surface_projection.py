@@ -34,6 +34,41 @@ def _refresh(root):
     return ranked
 
 
+@pytest.mark.parametrize("field", ["store_id", "revision"])
+def test_projection_binding_matches_owner_and_rejects_mismatch(tmp_path, store, field):
+    _refresh(tmp_path)
+    owner_binding = store.binding()
+    path = surface_projection_path(tmp_path, TARGET)
+    original = path.read_bytes()
+    payload = json.loads(original)
+    binding = payload["input_manifest"]["binding"]
+    assert binding == {
+        "target": TARGET,
+        "policy_version": payload["schema_version"],
+        "as_of": "",
+        "store_id": owner_binding["store_id"],
+        "revision": owner_binding["revision"],
+    }
+    assert isinstance(binding["store_id"], str)
+    assert type(binding["revision"]) is int
+    loaded = load_surface_projection(tmp_path, TARGET)
+    assert loaded["status"] == "valid"
+    assert loaded["surface"] == payload["surface"]
+    assert loaded["input_fingerprint"] == payload["input_fingerprint"]
+    assert path.read_bytes() == original
+
+    binding[field] = "other-store" if field == "store_id" else binding[field] + 1
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    mismatched = path.read_bytes()
+    loaded = load_surface_projection(tmp_path, TARGET)
+    assert loaded["status"] == "stale"
+    assert loaded["reason"] == "store-revision-mismatch"
+    assert loaded["surface"] == {}
+    assert loaded["input_fingerprint"] == payload["input_fingerprint"]
+    assert path.read_bytes() == mismatched
+    assert store.binding() == owner_binding
+
+
 def test_checkpoint_lane_attachment_and_round_closure_preserve_surface(tmp_path, store):
     _refresh(tmp_path)
     binding = store.binding()

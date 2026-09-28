@@ -670,6 +670,9 @@ python3 tools/surface_finalizer.py --repo-root <repo> --target <target> --json
   共同输入定义。顶层 `findings/<target>/manual_review/` 中未被 summary、专用 handler 或
   Store artifact 引用的复核附件不进入 manifest；包括只为附件创建的父目录。其余 findings
   输入继续保守绑定。不得排除整个 manual_review，也不得移除 Store revision 校验。
+- Manifest 构建与投影加载的 Store 身份/版本通过 `TargetStore.binding()` 读取，不在 Surface
+  重复查询 Store 身份表。Wire binding 仍仅为 target/policy_version/as_of/store_id/revision，
+  不合入 backend；保持原读取时点与前后检查，不缓存 binding 或用它替代文件完整性校验。
 - 被消费 review 文件即使为空仍绑定；从缺失到出现、编辑、删除或构建期间变化都须失效。
   Store 已登记 raw artifact 在 revision 未变时仍按文件 metadata 绑定。Checkpoint lane/封轮
   witness 本身不是 Surface 输入，不能导致 stale；创建 Action 等真实 owner 写入仍会失效。
@@ -714,6 +717,8 @@ python3 tools/surface_finalizer.py --repo-root <repo> --target <target> --json
   cache hit 复用和删除后重建。
 - `tests/test_surface_projection.py` 覆盖未引用附件 + 完成 lane/封轮仍 valid，实际输入新增/改动/
   删除、registered artifact 无 revision 变化失效、路径归属、构建竞态，以及 Action 写入失效。
+  Binding 回归须断言 wire 字段/类型与 owner 对应，valid 读取保留内容和指纹，store_id/revision
+  不匹配仍为 `stale/store-revision-mismatch` 且不返回旧候选；读取不改 projection 或 Store。
   Full/Checkpoint 消费测试须先由 `build_surface_review()` 显式发布投影，不能依赖读取时排名。
 - Cursor：status/kind/source filter、全量恰好一次可达、revision/filter reject、读取前后字节不变。
 - Scaling：仅在 `/tmp` 生成 30 万 URL 与百 MB inventory，校验末行仍可由 index 展开、URL 顺序、exact identity、untouched

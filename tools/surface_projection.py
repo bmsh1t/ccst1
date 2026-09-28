@@ -270,8 +270,7 @@ def build_surface_input_manifest(
     )
     binding = {"target": resolved, "policy_version": SCHEMA_VERSION, "as_of": str(as_of or "")}
     store = runtime_store(repo, resolved)
-    with store._connection() as conn:
-        meta = dict(conn.execute("SELECT store_id, revision FROM store WHERE singleton=1").fetchone())
+    meta = store.binding()
     binding.update({"store_id": meta["store_id"], "revision": int(meta["revision"])})
     return {
         "kind": MANIFEST_KIND,
@@ -461,8 +460,7 @@ def load_surface_projection(
         return _projection_result(path, "invalid", "store-binding-missing")
     if not isinstance(binding.get("as_of", ""), str):
         return _projection_result(path, "invalid", "as-of-binding-invalid")
-    with store._connection() as conn:
-        meta = dict(conn.execute("SELECT store_id, revision FROM store WHERE singleton=1").fetchone())
+    meta = store.binding()
     if not payload.get("complete") or not isinstance(payload.get("surface"), dict):
         return _projection_result(path, "invalid", "incomplete-projection")
     try:
