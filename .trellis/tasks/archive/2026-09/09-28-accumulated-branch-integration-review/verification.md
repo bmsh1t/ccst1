@@ -96,3 +96,13 @@ integration.log 中两段 `git diff --cached --binary` 的补丁正文在发布�
 Spec-sync 结论：没有新产品 API、schema、状态 owner 或执行契约变化；分支关系和操作证据属于本任务记录，
 不新增通用 spec/framework。归档路径、提交文件集和暂存保护做定向检查，不重跑产品测试。
 main 保持 `857dc63`；新增提交仅是当前工作分支的任务记录，不自动再次快进 main，不 fetch/push/部署。
+
+
+## 收尾结果
+
+- 工作记录提交：`35b809d5e707afb659a5925d11a6adf7637d9db4`，实际提交文件集精确为上述十个任务文件。
+- 已使用 `task.py archive ... --no-commit` 归档至 `.trellis/tasks/archive/2026-09/09-28-accumulated-branch-integration-review/`；task.json 为 completed，完成日期 2026-09-28。
+- implement.jsonl/check.jsonl 的本任务引用已改为归档路径，并逐条验证可解析和文件存在；旧活动目录不再存在。
+- 归档后复核 main 仍为 `857dc63`，原日志工作区 SHA-256 及暂存二进制补丁仍与既有基线一致。
+- 本记录随精确旧/新任务路径的归档提交保存；其 commit 身份由本文件的 Git 历史给出，不写入自身 SHA。
+- AC1–AC6 完成；没有追加产品变更、产品测试或全局 journal 写入。其他任务保持原状，CI 补门禁尚未开始。

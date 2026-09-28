@@ -1,4 +1,0 @@
-{"file":"docs/architecture-contract.md","reason":"Verify ownership and recovery integrity before efficiency claims."}
-{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Choose sufficient targeted evidence; do not expand into unrelated repair or full-suite repetition."}
-{"file":".trellis/tasks/09-28-accumulated-branch-integration-review/research/findings.md","reason":"Distinguish historical acceptance, source inspection, compatibility changes and live-remote unknowns."}
-{"file":".trellis/tasks/09-28-accumulated-branch-integration-review/implement.md","reason":"Runnable reference/index/worktree preservation check and approval gates."}

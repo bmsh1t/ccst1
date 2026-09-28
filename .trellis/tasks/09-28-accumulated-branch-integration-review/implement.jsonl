@@ -1,4 +1,0 @@
-{"file":"docs/architecture-contract.md","reason":"Single Store owner, evidence retention, read-only projections and capability before efficiency."}
-{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Focused validation and no duplicate owner, framework or unrelated repair."}
-{"file":".trellis/tasks/09-28-accumulated-branch-integration-review/research/refs.json","reason":"Exact Git identities, ancestry, excluded historical refs and original staged patch digest."}
-{"file":".trellis/tasks/09-28-accumulated-branch-integration-review/research/findings.md","reason":"Historical review snapshot, evidence limits and fixed integration route; current authorization is in PRD/implement.md."}
