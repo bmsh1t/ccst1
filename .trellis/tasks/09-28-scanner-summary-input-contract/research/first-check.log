@@ -1,0 +1,36 @@
+.......................................................F.....            [100%]
+=================================== FAILURES ===================================
+_ test_scanner_summary_damage_preserves_store_work_and_closure_diagnostics[\xff\xfe] _
+tests/test_autopilot_state_tool.py:1680: in test_scanner_summary_damage_preserves_store_work_and_closure_diagnostics
+    state = build_autopilot_state(str(tmp_path), store.target, bounded=True)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tools/autopilot_state.py:2016: in build_autopilot_state
+    return build_autopilot_bootstrap_state(
+tools/autopilot_state.py:1955: in build_autopilot_bootstrap_state
+    facts = _load_autopilot_control_facts(
+tools/autopilot_state.py:1533: in _load_autopilot_control_facts
+    resume_summary = _load_resume_summary(
+tools/resume.py:203: in _load_resume_summary
+    owner_projection = _derive_owner_projection(root, profile_target, finding_limit=None if full_domain_context else 5,
+tools/runtime_state.py:1337: in _derive_owner_projection
+    matrix = coverage_state if coverage_state is not None else read_matrix(resolved_target, repo_root=repo, current_only=True)
+                                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tools/coverage_matrix.py:986: in read_matrix
+    matrix = _rebuild_matrix_unlocked(target, repo, force_clean=current_only)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tools/coverage_matrix.py:1394: in _rebuild_matrix_unlocked
+    matrix["policy_skips"] = _xss_policy_skip(repo, target_key, new_endpoints)
+                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tools/coverage_matrix.py:1517: in _xss_policy_skip
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/lib/python3.13/pathlib/_local.py:548: in read_text
+    return PathBase.read_text(self, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/lib/python3.13/pathlib/_abc.py:633: in read_text
+    return f.read()
+           ^^^^^^^^
+<frozen codecs>:325: in decode
+    ???
+E   UnicodeDecodeError: 'utf-8' codec can't decode byte 0xff in position 0: invalid start byte
+1 failed, 60 passed, 225 deselected in 1.54s

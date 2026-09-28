@@ -49,7 +49,7 @@ def scanner_manual_review_paths(findings_dir: Path, target: str) -> Iterable[Pat
         return
     try:
         payload = json.loads(summary_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeError, json.JSONDecodeError):
         return
     if not isinstance(payload, dict):
         return

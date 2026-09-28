@@ -50,7 +50,7 @@ from autopilot_state import (
 )
 from tools.autopilot_state_read import _load_sql_matrix_projection
 from tools.autopilot_loop_guard import build_loop_guard_projection
-from tools.coverage_matrix import CoverageEvidenceChangedError
+from tools.coverage_matrix import CoverageEvidenceChangedError, read_matrix
 from request_guard import record_request
 from runtime_state import runtime_phase_lock, update_runtime_state
 from target_paths import target_storage_key
@@ -62,6 +62,13 @@ def store(tmp_path):
     result = TargetStore(tmp_path, "target.com")
     result.initialize()
     return result
+
+
+@pytest.fixture
+def scanner_summary_path(tmp_path):
+    path = tmp_path / "findings" / "target.com" / "summary.json"
+    path.parent.mkdir(parents=True)
+    return path
 
 
 def test_ranker_advisory_requires_valid_long_tail_and_multiple_evidence_groups(tmp_path, store):
@@ -1568,6 +1575,171 @@ def test_scanner_projection_rejects_inconsistent_accounting(tmp_path, store):
 
     assert projection["status"] == "partial"
     assert projection["lanes"]["sqli"]["accounting_valid"] is False
+
+
+@pytest.mark.parametrize("field", ["input_total", "selected", "remaining"])
+@pytest.mark.parametrize("value", [None, True, False, 0.8, float("inf"), float("nan"), [], {}, "1.5", -1])
+def test_scanner_summary_rejects_lossy_counts_in_reader_and_direct_gate(
+    tmp_path, scanner_summary_path, field, value,
+):
+    lane = {
+        "status": "sampled", "execution_kind": "active_scanner",
+        "input_total": 1, "selected": 1, "remaining": 0,
+        "continuation": "review remaining fixture inputs", field: value,
+    }
+    raw = json.dumps({"target": "target.com", "lane_coverage": {"fixture": lane}}).encode()
+    scanner_summary_path.write_bytes(raw)
+    projection = autopilot_state_module._load_scanner_summary_projection(str(tmp_path), "target.com")
+    assert projection["status"] == "partial"
+    assert projection["lanes"]["fixture"]["accounting_valid"] is False
+    for summary in (projection, {"status": "valid", "path": str(scanner_summary_path), "lanes": {"fixture": lane}}):
+        closure = build_closure_projection({"scanner_summary": summary, "next_action": "handoff"}, _closure_matrix())
+        assert closure["can_claim_exhausted"] is False
+        residual, = closure["scanner_residuals"]
+        assert residual["accounting_valid"] is False
+        assert residual["continuation"] == lane["continuation"]
+        assert residual["evidence_ref"] == str(scanner_summary_path)
+    assert scanner_summary_path.read_bytes() == raw
+
+
+@pytest.mark.parametrize("raw,status", [
+    (None, "missing"),
+    (b'{"target":"target.com"}', "missing"),
+    (b'{"target":"target.com","lane_coverage":{}}', "valid"),
+    (b'{"target":"target.com","lane_coverage":[]}', "partial"),
+    (b'{"target":"target.com","lane_coverage":null}', "partial"),
+    (b'{"target":"target.com","lane_coverage":"bad"}', "partial"),
+    (b'{"target":"target.com","lane_coverage":{"fixture":null}}', "partial"),
+    (b'{"target":"other.test","lane_coverage":{}}', "partial"),
+    (b'[]', "partial"),
+    (b'{', "partial"),
+    (b'\xff\xfe', "partial"),
+])
+def test_scanner_summary_distinguishes_missing_empty_and_corrupt(tmp_path, scanner_summary_path, raw, status):
+    if raw is not None:
+        scanner_summary_path.write_bytes(raw)
+    projection = autopilot_state_module._load_scanner_summary_projection(str(tmp_path), "target.com")
+    assert projection["status"] == status
+    assert projection["path"] == str(scanner_summary_path)
+    residuals = autopilot_state_module._scanner_lane_residuals({"scanner_summary": projection})
+    if status == "partial":
+        assert len(residuals) == 1
+        assert residuals[0]["accounting_valid"] is False
+        assert residuals[0]["closure_blocking"] is True
+        assert residuals[0]["evidence_ref"] == str(scanner_summary_path)
+    else:
+        assert residuals == []
+    assert scanner_summary_path.exists() is (raw is not None)
+    if raw is not None:
+        assert scanner_summary_path.read_bytes() == raw
+
+
+@pytest.mark.parametrize("counts,status,valid,residual_count", [
+    ((3, 2, 1), "sampled", True, 1),
+    (("3", "2", "1"), "sampled", True, 1),
+    ((3, 3, 0), "sampled", True, 0),
+    ((3, 3, 0), "complete", True, 0),
+    ((0, 0, 0), "candidate_only", True, 0),
+    ((0, 0, 0), "skipped", True, 0),
+    ((3, 0, 3), "candidate_only", True, 1),
+    ((3, 0, 3), "skipped", True, 1),
+    ((3, 3, 0), "partial", True, 1),
+    ((3, 3, 0), "sampled", False, 1),
+])
+def test_scanner_summary_preserves_accounting_validity_and_continuation(
+    tmp_path, scanner_summary_path, counts, status, valid, residual_count,
+):
+    lane = dict(zip(("input_total", "selected", "remaining"), counts))
+    lane.update(status=status, accounting_valid=valid, continuation="review fixture tail",
+                execution_kind="candidate_only" if status == "candidate_only" else "active_scanner")
+    scanner_summary_path.write_text(json.dumps({"target": "target.com", "lane_coverage": {"fixture": lane}}))
+    projection = autopilot_state_module._load_scanner_summary_projection(str(tmp_path), "target.com")
+    assert projection["status"] == ("valid" if valid else "partial")
+    assert projection["lanes"]["fixture"]["accounting_valid"] is valid
+    residuals = autopilot_state_module._scanner_lane_residuals({"scanner_summary": projection})
+    assert len(residuals) == residual_count
+    if residuals:
+        assert residuals[0]["accounting_valid"] is valid
+        assert residuals[0]["remaining"] == int(counts[2])
+        assert residuals[0]["review_token"] == f"scanner:fixture:remaining={counts[2]}"
+        assert residuals[0]["execution_kind"] == lane["execution_kind"]
+        assert residuals[0]["continuation"] == "review fixture tail"
+        assert residuals[0]["evidence_ref"] == str(scanner_summary_path)
+
+
+@pytest.mark.parametrize("raw", [
+    b'\xff\xfe',
+    b'{"target":"target.com","lane_coverage":[]}',
+    b'{"target":"target.com","lane_coverage":{"fixture":{"status":"sampled","input_total":1.9,"selected":1.1,"remaining":0.8}}}',
+])
+def test_scanner_summary_damage_preserves_store_work_and_closure_diagnostics(tmp_path, store, scanner_summary_path, raw):
+    store.create_action(command_id="pending", action_id="pending", kind="work", subject={"target": store.target},
+                        intent="Review saved evidence", execution_key="pending", actor="operator")
+    scanner_summary_path.write_bytes(raw)
+    binding = store.binding()
+    state = build_autopilot_state(str(tmp_path), store.target, bounded=True)
+    assert state["scanner_summary"]["status"] == "partial"
+    assert state["action_queue_next"]["id"] == "pending"
+    closure = load_closure_projection(str(tmp_path), state)
+    assert closure["can_claim_exhausted"] is False
+    assert any(item["id"] == "pending" for item in closure["actionable_frontier"])
+    residual, = closure["scanner_residuals"]
+    assert residual["accounting_valid"] is False
+    assert residual["evidence_ref"] == str(scanner_summary_path)
+    assert scanner_summary_path.read_bytes() == raw
+    assert store.binding() == binding
+
+
+@pytest.mark.parametrize("damage", [None, b'{', b'\xff\xfe'])
+def test_scanner_summary_auxiliary_readers_preserve_valid_and_corrupt_inputs(
+    tmp_path, store, scanner_summary_path, damage,
+):
+    review_path = scanner_summary_path.parent / "manual_review" / "fixture.txt"
+    review_path.parent.mkdir()
+    review_path.write_bytes(b"saved review evidence\n")
+    raw = damage if damage is not None else json.dumps({
+        "target": store.target,
+        "skipped_checks": ["xss"],
+        "manual_review": [{"path": "manual_review/fixture.txt"}],
+    }).encode()
+    scanner_summary_path.write_bytes(raw)
+    binding = store.binding()
+
+    matrix = read_matrix(store.target, repo_root=tmp_path, current_only=True)
+    review_paths = list(surface_module.scanner_manual_review_paths(scanner_summary_path.parent, store.target))
+
+    assert bool(matrix["policy_skips"]) is (damage is None)
+    assert review_paths == ([review_path] if damage is None else [])
+    assert scanner_summary_path.read_bytes() == raw
+    assert review_path.read_bytes() == b"saved review evidence\n"
+    assert store.binding() == binding
+
+
+@pytest.mark.parametrize("damage", [None, b'\xff\xfe'])
+def test_scanner_summary_is_not_a_root_claim_and_preserves_standalone_claims(
+    store, scanner_summary_path, damage,
+):
+    claim = {
+        "kind": "finding_claim", "schema_version": 1, "target": store.target,
+        "title": "Saved fixture claim", "endpoint": "/item?id=1", "vuln_class": "sqli",
+        "impact": "Unvalidated fixture observation",
+    }
+    claim_path = scanner_summary_path.parent / "claim.json"
+    claim_raw = json.dumps(claim).encode()
+    claim_path.write_bytes(claim_raw)
+    summary_raw = claim_raw if damage is None else damage
+    scanner_summary_path.write_bytes(summary_raw)
+    binding = store.binding()
+
+    claims = finding_index.list_root_finding_claims(scanner_summary_path.parent, target=store.target)
+
+    assert len(claims) == 1
+    assert claims[0]["claim_source_file"] == "claim.json"
+    assert claims[0]["claim_payload"] == claim
+    assert claims[0]["validation_status"] == "candidate"
+    assert claim_path.read_bytes() == claim_raw
+    assert scanner_summary_path.read_bytes() == summary_raw
+    assert store.binding() == binding
 
 
 def test_residual_global_review_requires_every_token_and_never_restores_exhausted(tmp_path, store):

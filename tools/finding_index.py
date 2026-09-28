@@ -148,6 +148,7 @@ REPORTABLE_TYPES = {
 # lifecycle。以下文件是已有工具的摘要/索引，不能被误判为一个 claim。
 ROOT_CLAIM_EXCLUDED_FILES = {
     "findings.json",
+    "summary.json",
     "scanner_candidates.json",
     "validation-summary.json",
     "last-validate.json",

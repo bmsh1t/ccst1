@@ -1,0 +1,5 @@
+{"file": "docs/architecture-contract.md", "reason": "Single owner; preserve raw evidence, recoverable work and read-only projections before efficiency."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Reproduce before refactoring; no new framework/dependency, no unrelated repairs."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Malformed input cannot become successful empty state; keep diagnostic source and expected error boundaries."}
+{"file": ".trellis/tasks/09-28-scanner-summary-deployment-contract/research/findings.md", "reason": "Baseline reproductions, exact owner locations, confirmed impact and explicit non-goals."}
+{"file": ".trellis/spec/backend/index.md", "reason": "Load only the relevant Scanner/Runtime contract sections via the index; avoid truncating entire large contract files."}

@@ -1515,7 +1515,7 @@ def _xss_policy_skip(repo: Path, target_key: str, endpoints: list[dict]) -> dict
     summary_path = repo / "findings" / target_key / "summary.json"
     try:
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeError, json.JSONDecodeError):
         return {}
     skipped = summary.get("skipped_checks") if isinstance(summary, dict) else None
     if not isinstance(skipped, list) or not any(

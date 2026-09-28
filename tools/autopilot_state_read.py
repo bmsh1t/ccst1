@@ -201,6 +201,24 @@ def _load_json_inject_projection(repo_root: str, target: str) -> dict:
     return projection
 
 
+def _scanner_lane_accounting(item: dict) -> tuple[int, int, int, bool]:
+    """Normalize Scanner counts without truncation or erasing prior invalidity."""
+    counts = []
+    valid = item.get("accounting_valid", True) is True
+    for key in ("input_total", "selected", "remaining"):
+        try:
+            value = item.get(key)
+            if isinstance(value, bool) or not isinstance(value, (int, str)):
+                raise ValueError
+            counts.append(int(value))
+        except ValueError:
+            counts.append(0)
+            valid = False
+    input_total, selected, remaining = counts
+    valid = valid and min(counts) >= 0 and input_total == selected + remaining
+    return input_total, selected, remaining, valid
+
+
 def _load_scanner_summary_projection(repo_root: str, target: str) -> dict:
     """Load bounded scanner lane accounting without treating candidates as tests."""
     path = Path(repo_root) / "findings" / target_storage_key(target) / "summary.json"
@@ -209,7 +227,7 @@ def _load_scanner_summary_projection(repo_root: str, target: str) -> dict:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return projection
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeError, json.JSONDecodeError):
         return {**projection, "status": "partial"}
     if not isinstance(payload, dict):
         return {**projection, "status": "partial"}
@@ -218,36 +236,18 @@ def _load_scanner_summary_projection(repo_root: str, target: str) -> dict:
             return {**projection, "status": "partial"}
     except ValueError:
         return {**projection, "status": "partial"}
-    raw_lanes = payload.get("lane_coverage")
-    if not isinstance(raw_lanes, dict):
+    if "lane_coverage" not in payload:
         return projection
+    raw_lanes = payload["lane_coverage"]
+    if not isinstance(raw_lanes, dict):
+        return {**projection, "status": "partial"}
     lanes = {}
     projection_status = "valid"
     for name, item in raw_lanes.items():
         if not isinstance(item, dict):
             projection_status = "partial"
             continue
-        accounting_valid = True
-        try:
-            values = [item.get(key) for key in ("input_total", "selected", "remaining")]
-            if any(isinstance(value, bool) for value in values):
-                raise ValueError
-            input_total, selected, remaining = (int(value) for value in values)
-            accounting_valid = (
-                input_total >= 0
-                and selected >= 0
-                and remaining >= 0
-                and selected <= input_total
-                and remaining <= input_total
-                and input_total == selected + remaining
-            )
-        except (TypeError, ValueError):
-            input_total = selected = 0
-            try:
-                remaining = max(0, int(item.get("remaining", 0) or 0))
-            except (TypeError, ValueError):
-                remaining = 0
-            accounting_valid = False
+        input_total, selected, remaining, accounting_valid = _scanner_lane_accounting(item)
         if not accounting_valid:
             projection_status = "partial"
         lanes[str(name)] = {

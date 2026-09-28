@@ -1,0 +1,29 @@
+{
+  "id": "scanner-summary-deployment-contract",
+  "name": "scanner-summary-deployment-contract",
+  "title": "第四批：Scanner 摘要与部署规则契约核查",
+  "description": "架构与能力优先，核查摘要事实归属、证据完整性与续跑信息，以及部署规则和当前运行入口的一致性；仅凭复现决定修复范围，不部署。",
+  "status": "planning",
+  "dev_type": null,
+  "scope": "contract-review",
+  "package": null,
+  "priority": "P2",
+  "creator": "Codex",
+  "assignee": "Codex",
+  "createdAt": "2026-09-28",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "fix/closure-evidence-snapshot-consistency",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "09-28-scanner-summary-input-contract",
+    "09-28-installer-runtime-file-selection"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "Scanner 五文件实现及定向验收完成（67 passed），规范已同步，等待独立提交确认。安装筛选未开始；不使用子代理、不自动提交，旧暂存日志不动。",
+  "meta": {}
+}

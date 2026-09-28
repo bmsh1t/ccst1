@@ -28,6 +28,14 @@ bash tools/vuln_scanner.sh <recon_dir> [--quick|--full] [--skip <modules>]
 }
 ```
 
+Scanner 消费契约沿用现有函数，不新增解析框架或状态 owner：
+
+```text
+autopilot_state_read._scanner_lane_accounting(item: dict) -> tuple[int, int, int, bool]
+autopilot_state_read._load_scanner_summary_projection(repo_root: str, target: str) -> dict
+autopilot_gate._scanner_lane_residuals(state: dict) -> list[dict]
+```
+
 ### 3. Contracts
 
 - `recon/<target>/urls/all.txt` 和 collector 原始文件是完整证据语料，不删除、
@@ -128,6 +136,17 @@ bash tools/vuln_scanner.sh <recon_dir> [--quick|--full] [--skip <modules>]
   Nuclei/CVE, SSRF, Open Redirect, and IDOR lanes. Positive remaining input uses
   the same global-review token contract as advisory Recon residuals; candidate-only
   depth is retained and cannot be reported as scanner-tested.
+- Scanner reader 与直接 state 的 gate 共用 `_scanner_lane_accounting()`：三项计数仅接受
+  非布尔整数或 `int(text)` 可解析的整数文本，且非负、`input_total == selected + remaining`。
+  小数、非有限数和错误类型不能有损截断或泄漏转换异常；保留可用计数，无法解析项投影为 0，
+  同时固定 `accounting_valid=false`。已有无效标记不得在再次投影时被洗成有效；显式标记仅接受
+  `true`。损坏仍有 residual、summary path 和 review token，不删除原文或剩余输入。
+- 同源 Scanner summary 的坏 UTF-8 与坏 JSON 必须走各自现有损坏分支：Scanner reader
+  公开 `partial` 和路径；Coverage `_xss_policy_skip` 与 Surface `scanner_manual_review_paths`
+  不从不可解码原文推断 skip 或 review 条目，也不能先抛异常阻断恢复视图。读取不改 Store。
+- `findings/<target>/summary.json` 属于 Scanner，不是独立 Finding claim。
+  `finding_index.ROOT_CLAIM_EXCLUDED_FILES` 在 root JSON 解码前排除它，即使内容呈 claim 形状；
+  独立 `claim.json` 仍保留完整 payload 和未验证候选语义。不要为此扩大通用 JSON reader 的吞错范围。
 - `tools/graphql_audit.sh` writes by default under
   `findings/<target_key>/graphql/<run-id>/`, publishes a bounded `run-summary.json`
   with target identity, operation ID, signal list, and artifact digests, and sends
@@ -156,6 +175,12 @@ bash tools/vuln_scanner.sh <recon_dir> [--quick|--full] [--skip <modules>]
 | 需要历史长尾或专项 CVE | 分页/查询 raw corpus 并构造专项输入，不扩大默认 broad input |
 | manual_review 路径缺失、空、绝对或越出 target findings 根目录 | 不进入 Surface 索引 |
 | 未识别但合法的 manual_review 文件 | 进入中性索引/预览，不生成 workflow lead 或执行动作 |
+| summary 文件缺失，或目标匹配的旧 summary 未提供 lane_coverage | Scanner 投影为 missing，保留可选字段兼容 |
+| lane_coverage 为合法空字典 | valid、空 lanes，不伪造待办或已测试证据 |
+| summary 坏编码/JSON、目标不匹配、错误根或显式 lane 容器类型错误 | Scanner partial，保留 path；无效 lane 项不得成为有效闭合依据 |
+| 计数缺失/布尔/小数/非有限/负数/矛盾，或已有 accounting_valid=false | reader 与直接 gate 均保留无效 residual；不能声称已穷尽 |
+| 合法 sampled 且 remaining=0，或 candidate_only/skipped 且 input_total=0 | 沿用既有 residual 终态规则，不晋升 scanner-tested 深度；partial=0 仍待复核 |
+| Scanner summary 含伪 claim 或坏 UTF-8，同时存在独立 claim | 不解码/登记 summary 为 claim；独立 claim 与原文仍可恢复 |
 
 ### 5. Good / Base / Bad Cases
 
@@ -165,6 +190,8 @@ bash tools/vuln_scanner.sh <recon_dir> [--quick|--full] [--skip <modules>]
   仍可完成。
 - Bad：`nuclei -l recon/<target>/urls/all_historical.txt` 作为默认 broad scan，或
   后台任务被 kill 后沿用旧 summary 宣称 `0 findings / scanner complete`。
+- Scanner 输入边界：Good 为 `3/2/1` 或整数文本保留 continuation/token；Base 为旧版缺字段或
+  合法空 lanes；Bad 为把 `1.9/1.1/0.8` 截成 `1/1/0` 后宣称无剩余工作。
 
 ### 6. Tests Required
 
@@ -178,6 +205,14 @@ bash tools/vuln_scanner.sh <recon_dir> [--quick|--full] [--skip <modules>]
   后续阶段并投影为 advisory；真实中断才投影为 partial。
 - `tests/test_autopilot_state_tool.py`：command/agent/rule 同时固定 wrapper、专项扩展和
   incomplete 语义。
+- 同文件 Scanner summary 回归：每个计数字段的损坏值覆盖 reader→Closure 与直接 gate；
+  缺失/合法空/损坏容器保持区分，整数文本、无效标记、候选深度、continuation/path/token 保持兼容。
+  真实 Store 的 bounded state→Closure 必须在坏 UTF-8/容器/计数下保留 pending action、partial
+  和原文引用，并断言源字节/Store binding 不变；不能用单独 reader 测试代替整链。
+- 同文件辅助消费者回归覆盖坏 JSON/UTF-8 与合法 manual-review/skip；root claim 回归固定
+  summary 排除、独立 claim payload 和原文保留。配合
+  `tests/test_coverage_matrix.py::test_default_xss_skip_is_visible_without_closing_coverage`
+  固定有效 skip 不关闭 XSS cell、新证据可取消 skip。
 - `tests/test_surface_tool.py`：canonical summary 新增未知 manual-review 文件后，断言
   完整 ranked 索引、有界 projection 和默认文本可见；同时覆盖空、缺失、重复、绝对及
   越界路径，并固定未知条目不进入 workflow leads。
@@ -191,6 +226,7 @@ bash tools/vuln_scanner.sh <recon_dir> [--quick|--full] [--skip <modules>]
 
 ```text
 raw historical corpus -> general nuclei -> killed -> 复用旧 summary -> complete
+int(fractional_count) -> remaining=0 -> valid；root *.json -> 无差别解析 Scanner summary
 ```
 
 #### Correct
@@ -198,6 +234,7 @@ raw historical corpus -> general nuclei -> killed -> 复用旧 summary -> comple
 ```text
 raw corpus -> Surface/专项消费者
 live + priority -> ordered_scan_targets -> quick broad scanner -> 正常 consolidation -> summary
+共享严格计数 -> 无效标记与 residual 保留；按文件归属排除 summary -> 独立 claim 继续可恢复
 ```
 
 ## Scenario: Intel Advisory 完整性与版本闭环

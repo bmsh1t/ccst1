@@ -1,0 +1,54 @@
+.......................................................F.........        [100%]
+=================================== FAILURES ===================================
+_ test_scanner_summary_damage_preserves_store_work_and_closure_diagnostics[\xff\xfe] _
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-777/test_scanner_summary_damage_pr0')
+store = <target_store.TargetStore object at 0x7fce2a7af890>
+scanner_summary_path = PosixPath('/tmp/pytest-of-root/pytest-777/test_scanner_summary_damage_pr0/findings/target.com/summary.json')
+raw = b'\xff\xfe'
+
+    @pytest.mark.parametrize("raw", [
+        b'\xff\xfe',
+        b'{"target":"target.com","lane_coverage":[]}',
+        b'{"target":"target.com","lane_coverage":{"fixture":{"status":"sampled","input_total":1.9,"selected":1.1,"remaining":0.8}}}',
+    ])
+    def test_scanner_summary_damage_preserves_store_work_and_closure_diagnostics(tmp_path, store, scanner_summary_path, raw):
+        store.create_action(command_id="pending", action_id="pending", kind="work", subject={"target": store.target},
+                            intent="Review saved evidence", execution_key="pending", actor="operator")
+        scanner_summary_path.write_bytes(raw)
+        binding = store.binding()
+>       state = build_autopilot_state(str(tmp_path), store.target, bounded=True)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_autopilot_state_tool.py:1680: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tools/autopilot_state.py:2016: in build_autopilot_state
+    return build_autopilot_bootstrap_state(
+tools/autopilot_state.py:1955: in build_autopilot_bootstrap_state
+    facts = _load_autopilot_control_facts(
+tools/autopilot_state.py:1552: in _load_autopilot_control_facts
+    root_finding_claims = list_root_finding_claims(
+tools/finding_index.py:744: in list_root_finding_claims
+    payload = _load_json_value(path)
+              ^^^^^^^^^^^^^^^^^^^^^^
+tools/finding_index.py:803: in _load_json_value
+    return json.loads(path.read_text(encoding="utf-8"))
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/lib/python3.13/pathlib/_local.py:548: in read_text
+    return PathBase.read_text(self, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/lib/python3.13/pathlib/_abc.py:633: in read_text
+    return f.read()
+           ^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <encodings.utf_8.IncrementalDecoder object at 0x7fce2c187d70>
+input = b'\xff\xfe', final = True
+
+>   ???
+E   UnicodeDecodeError: 'utf-8' codec can't decode byte 0xff in position 0: invalid start byte
+
+<frozen codecs>:325: UnicodeDecodeError
+=========================== short test summary info ============================
+FAILED tests/test_autopilot_state_tool.py::test_scanner_summary_damage_preserves_store_work_and_closure_diagnostics[\xff\xfe]
+1 failed, 64 passed, 225 deselected in 2.02s

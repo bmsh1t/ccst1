@@ -13,6 +13,7 @@ import re
 
 try:
     from tools.autopilot_loop_guard import HIGH_VALUE_OBSERVATION_KINDS
+    from tools.autopilot_state_read import _scanner_lane_accounting
     from tools.coverage_matrix import (
         coverage_gaps_with_observed_evidence,
         high_value_gaps_from_matrix,
@@ -20,6 +21,7 @@ try:
     from tools.target_paths import compact_url, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
     from autopilot_loop_guard import HIGH_VALUE_OBSERVATION_KINDS  # type: ignore
+    from autopilot_state_read import _scanner_lane_accounting  # type: ignore
     from coverage_matrix import (  # type: ignore
         coverage_gaps_with_observed_evidence,
         high_value_gaps_from_matrix,
@@ -168,27 +170,7 @@ def _scanner_lane_residuals(state: dict) -> list[dict]:
         if not isinstance(item, dict):
             continue
         status = str(item.get("status") or "unknown").strip().lower()
-        accounting_valid = item.get("accounting_valid", True)
-        try:
-            values = [item.get(key) for key in ("input_total", "selected", "remaining")]
-            if any(isinstance(value, bool) for value in values):
-                raise ValueError
-            input_total, selected, remaining = (int(value) for value in values)
-            accounting_valid = bool(accounting_valid) and (
-                input_total >= 0
-                and selected >= 0
-                and remaining >= 0
-                and selected <= input_total
-                and remaining <= input_total
-                and input_total == selected + remaining
-            )
-        except (TypeError, ValueError):
-            input_total = selected = 0
-            try:
-                remaining = max(0, int(item.get("remaining", 0) or 0))
-            except (TypeError, ValueError):
-                remaining = 0
-            accounting_valid = False
+        input_total, selected, remaining, accounting_valid = _scanner_lane_accounting(item)
         terminal = status in {"complete", "completed", "ok", "success"}
         if status == "sampled" and remaining == 0 and accounting_valid:
             terminal = True
