@@ -1553,7 +1553,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lane-status", default="")
     parser.add_argument("--review-status", default="")
     parser.add_argument("--decision", default="")
-    parser.add_argument("--evidence-ref", default="")
+    parser.add_argument("--evidence-ref", default=None)
     parser.add_argument("--snapshot-digest", default="")
     parser.add_argument("--evidence-refs-json", default="[]")
     parser.add_argument("--cross-source-links-json", default="[]")
@@ -1571,6 +1571,8 @@ def main(argv: list[str] | None = None) -> int:
     resolved_target = canonical_target_value(args.target)
     if args.record_global_review:
         try:
+            if args.evidence_ref is not None:
+                raise ValueError("--record-global-review requires --evidence-refs-json, not --evidence-ref")
             evidence_refs = json.loads(args.evidence_refs_json)
             cross_source_links = json.loads(args.cross_source_links_json)
             residual_unknowns = json.loads(args.residual_unknowns_json)
@@ -1599,7 +1601,7 @@ def main(argv: list[str] | None = None) -> int:
                     lane=args.lane,
                     status=args.lane_status,
                     decision=args.decision,
-                    evidence_ref=args.evidence_ref,
+                    evidence_ref=args.evidence_ref or "",
                     next_action=args.next_action,
                 )
             else:

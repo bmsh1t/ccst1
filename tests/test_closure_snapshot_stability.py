@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from tools import autopilot_state, coverage_matrix, surface
+from tools import autopilot_state, checkpoint, coverage_matrix, surface
 from tools.checkpoint import (
     begin_round, record_global_review, record_round_closure,
     record_round_lane, record_round_lane_result,
@@ -126,6 +126,53 @@ def test_completed_round_review_survives_delayed_full_and_bounded_reads(tmp_path
         assert current["global_review"]["status"] == "complete"
         assert current["global_review"]["basis"] == basis
         assert not current["can_claim_exhausted"]
+    assert store.binding() == binding
+
+
+@pytest.mark.parametrize("projection", ["missing", "valid", "stale"])
+def test_closure_review_uses_physical_root_identity(tmp_path, store, monkeypatch, projection):
+    discovery = _write(tmp_path, f"recon/{TARGET}/urls/all.txt", f"https://{TARGET}/object\n")
+    if projection != "missing":
+        surface.build_surface_review(tmp_path, TARGET)
+    if projection == "stale":
+        discovery.write_text(f"https://{TARGET}/object\nhttps://{TARGET}/new\n")
+    alias = tmp_path / "repo-alias"
+    alias.symlink_to(tmp_path, target_is_directory=True)
+    monkeypatch.chdir(tmp_path)
+    binding = store.binding()
+    initial = _closure(tmp_path, False)
+    expected_basis = autopilot_state._global_review_basis(initial["snapshot_components"])
+    witness = tmp_path / "state" / TARGET / "checkpoint_latest.json"
+    before = witness.read_bytes()
+    build_state = checkpoint._build_autopilot_state
+    checkpoint_states = []
+
+    def capture_state(*args, **kwargs):
+        result = build_state(*args, **kwargs)
+        checkpoint_states.append(result[0])
+        return result
+
+    monkeypatch.setattr(checkpoint, "_build_autopilot_state", capture_state)
+    for root in (str(tmp_path), ".", "./", str(alias)):
+        for bounded in (False, True):
+            current = _closure(root, bounded)
+            assert current["snapshot_digest"] == initial["snapshot_digest"]
+            assert autopilot_state._global_review_basis(current["snapshot_components"]) == expected_basis
+        state = autopilot_state.build_autopilot_bootstrap_state(root, TARGET)
+        assert state["surface_projection"]["status"] == projection
+        checkpoint.build_checkpoint(root, target=TARGET)
+        for acquired in (state, checkpoint_states[-1]):
+            current = autopilot_state.load_closure_projection(root, acquired)
+            assert current["snapshot_digest"] == initial["snapshot_digest"]
+    assert len(checkpoint_states) == 4
+    assert witness.read_bytes() == before
+    for record_root, read_root in ((".", tmp_path), (tmp_path, "./")):
+        recorded = _review(record_root, initial["snapshot_digest"])
+        for bounded in (False, True):
+            current = _closure(read_root, bounded)
+            assert current["global_review"]["status"] == "complete"
+            assert current["global_review"]["basis"] == recorded["global_review"]["basis"] == expected_basis
+            assert current["snapshot_digest"] == initial["snapshot_digest"]
     assert store.binding() == binding
 
 

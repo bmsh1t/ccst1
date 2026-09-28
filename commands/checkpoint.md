@@ -57,6 +57,12 @@ python3 tools/checkpoint.py --target target.com --record-global-review \
 
 `follow_up` 必须把 `--next-action` 指向现有活动 Queue action；缺失、过期或无效
 复核会让 Closure 保持 handoff，不会创建新的状态 owner。
+全局复核只接受 `--evidence-refs-json`；`--evidence-ref` 属于 lane-result，
+与 `--record-global-review` 同用时返回 `2`，不写 witness，即使同时传入合法 JSON。
+证据列表缺失、为空、超限或引用不属于目标的非空文件时，诊断的
+`state_changes[].field` 为 `evidence_refs`，`expected` 指明修正要求。
+同一物理仓库的绝对、相对和符号链接根路径共享 Closure 身份；历史非规范路径
+产生的 review 若显示 stale，重新读取 Closure 并明确复核，不自动改写历史 witness。
 
 如果 `snapshot_digest` 已过期，Checkpoint 会拒绝写入并返回可恢复诊断：
 

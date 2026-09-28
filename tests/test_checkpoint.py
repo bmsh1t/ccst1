@@ -336,6 +336,102 @@ def test_primary_checkpoint_cli_preserves_goal_and_conditional_memory(tmp_path, 
     assert not (repo / "state" / target / "action_queue.json").exists()
 
 
+@pytest.mark.parametrize("flags", [
+    ["--evidence-ref", "evidence/target.com/review.txt"],
+    ["--evidence-ref", "first.txt", "--evidence-ref", "second.txt"],
+    ["--evidence-ref="],
+    ["--evidence-ref=", "--evidence-refs-json", '["evidence/target.com/review.txt"]'],
+])
+def test_global_review_cli_rejects_lane_evidence_flag(tmp_path, monkeypatch, capsys, flags):
+    def unexpected_write(*args, **kwargs):
+        pytest.fail("invalid CLI input reached the review mutation owner")
+
+    monkeypatch.setattr(checkpoint_module, "record_global_review", unexpected_write)
+    assert checkpoint_module.main([
+        "--repo-root", str(tmp_path), "--target", "target.com",
+        "--record-global-review", *flags,
+    ]) == 2
+    captured = capsys.readouterr()
+    assert "--evidence-refs-json" in captured.err
+    assert not captured.out
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("flags, expected", [
+    ([], ""), (["--evidence-ref="], ""),
+    (["--evidence-ref", "first.txt", "--evidence-ref", "second.txt"], "second.txt"),
+])
+def test_lane_result_cli_keeps_single_evidence_ref(tmp_path, monkeypatch, capsys, flags, expected):
+    calls = []
+
+    def capture(*args, **kwargs):
+        calls.append(kwargs)
+        return {"path": "witness"}
+
+    monkeypatch.setattr(checkpoint_module, "record_round_lane_result", capture)
+    assert checkpoint_module.main([
+        "--repo-root", str(tmp_path), "--target", "target.com",
+        "--record-round-lane-result", *flags,
+    ]) == 0
+    assert len(calls) == 1
+    assert calls[0]["evidence_ref"] == expected
+    capsys.readouterr()
+
+
+def test_global_review_cli_preserves_json_evidence(tmp_path, store, capsys):
+    begin_round(tmp_path, "target.com", max_lanes=1)
+    refs = ["evidence/target.com/review.txt", "evidence/target.com/other.txt"]
+    for ref in refs:
+        _write_round_evidence(tmp_path, ref)
+    state = checkpoint_module.build_autopilot_state(str(tmp_path), "target.com", bounded=True)
+    closure = checkpoint_module.load_closure_projection(str(tmp_path), state)
+    binding = store.binding()
+    assert checkpoint_module.main([
+        "--repo-root", str(tmp_path), "--target", "target.com", "--record-global-review",
+        "--review-status", "complete", "--snapshot-digest", closure["snapshot_digest"],
+        "--evidence-refs-json", json.dumps(refs), "--decision", "Reviewed current facts", "--json",
+    ]) == 0
+    result = json.loads(capsys.readouterr().out)
+    witness = json.loads(Path(result["path"]).read_text())
+    assert witness["global_review"]["evidence_refs"] == refs
+    assert store.binding() == binding
+
+
+@pytest.mark.parametrize("refs", [
+    None, [], "not-a-list", [""], [None], ["x" * 501], ["ref"] * 17,
+    ["evidence/target.com/missing.txt"], ["evidence/target.com/empty.txt"],
+    ["evidence/other.test/review.txt"],
+])
+def test_global_review_evidence_errors_identify_field_without_writes(tmp_path, store, refs):
+    begin_round(tmp_path, "target.com", max_lanes=1)
+    _write_round_evidence(tmp_path, "evidence/target.com/empty.txt", "")
+    _write_round_evidence(tmp_path, "evidence/other.test/review.txt")
+    state = checkpoint_module.build_autopilot_state(str(tmp_path), "target.com", bounded=True)
+    closure = checkpoint_module.load_closure_projection(str(tmp_path), state)
+    witness = tmp_path / "state/target.com/checkpoint_latest.json"
+    before = witness.read_bytes()
+    binding = store.binding()
+    review = {"status": "complete", "snapshot_digest": closure["snapshot_digest"],
+              "decision": "Reviewed current facts"}
+    if refs is not None:
+        review["evidence_refs"] = refs
+    diagnostic = checkpoint_module.validate_global_review(
+        tmp_path, "target.com", review, {}, expected_digest=closure["snapshot_digest"],
+    )
+    assert diagnostic["status"] == "invalid"
+    assert diagnostic["reason"] == "global_review_invalid"
+    assert diagnostic["state_changes"][0]["field"] == "evidence_refs"
+    assert diagnostic["state_changes"][0]["expected"]
+    with pytest.raises(ValueError, match="global_review_invalid") as caught:
+        record_global_review(
+            tmp_path, "target.com", **{**review, "evidence_refs": refs},
+        )
+    propagated = json.loads(str(caught.value).split(": ", 1)[1])
+    assert propagated == diagnostic
+    assert witness.read_bytes() == before
+    assert store.binding() == binding
+
+
 def test_record_global_review_persists_checkpoint_witness(tmp_path, monkeypatch, store):
     target = "target.com"
     digest = "c" * 64

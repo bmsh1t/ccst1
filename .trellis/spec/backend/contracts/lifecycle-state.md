@@ -228,6 +228,11 @@ projection (the read-only Ledger view), Finding,
 Surface, Recon and enrichment projections; the `global_review` field itself is
 excluded from digest material so recording it cannot invalidate its own attestation.
 Every evidence reference must resolve to a non-empty file owned by the target.
+Global-review CLI accepts `--evidence-refs-json`, not lane-result's single-value
+`--evidence-ref`. Explicit use of the latter (including empty/repeated values or
+with valid JSON) fails before the mutation owner. Lane-result retains its empty
+default and last-value semantics. Evidence-list validation failures identify
+`state_changes[].field=evidence_refs` with an `expected` constraint.
 `follow_up` must name an existing active Queue action. Missing, malformed, stale, or
 unmapped reviews project `global_review_required`, `global_review_invalid`, or
 `global_review_stale`; those are Checkpoint handoffs, not external permission gates.
@@ -248,6 +253,12 @@ subtree is excluded only because Closure binds it directly. Enrichment binds the
 deduplicated tool identities, not presentation reasons. Inventory health and Surface
 metadata come from the same readers. Caller-supplied decision facts remain bound;
 do not reload an entire state to erase an inconvenient difference.
+Bootstrap, full-state acquisition (including Checkpoint's direct call), and Closure
+resolve `repo_root` before deriving paths or default memory locations. Absolute,
+relative and symlink spellings of one physical root share digest/basis; explicit
+memory-dir/environment overrides retain their semantics. No hash fields are
+removed, different physical roots are not merged, and historical noncanonical
+reviews may require an explicit re-review rather than automatic witness rewriting.
 
 `record_global_review` still strictly compares the submitted digest with its locked
 recalculation. Recording the review must not change that digest or its basis. Old
@@ -321,6 +332,8 @@ reviews may need one explicit re-review after the binding semantics change.
   existing Closure verdict, while an active Queue follow-up remains durable.
 - Repeated reads across seconds and full/bounded modes -> identical digest/basis
   for unchanged facts, including after completed-lane/round/review writes.
+  Equivalent root spellings also preserve digest/basis and cross-root-form review
+  validity; real Store revision mismatches still invalidate Surface.
   Queue/Coverage/discovery changes and damaged raw evidence -> old review stale;
   raw damage must invalidate without requiring a Store revision change.
 - Raw damage or restoration between Coverage and truth reads -> direct loader
@@ -370,11 +383,16 @@ reviews may need one explicit re-review after the binding semantics change.
   only the context check.
 - Global-review tests must cover missing/stale/invalid evidence, digest
   self-exclusion, Queue-bound `follow_up`, and prepare/settle idempotency.
+  Evidence failures identify their field without Store/witness changes; wrong CLI
+  flags fail before the owner, valid JSON persists refs, and lane single-value
+  behavior remains unchanged.
 - `tests/test_closure_snapshot_stability.py` advances a controlled read clock,
   compares full/bounded empty/URL/JS/empty-FFUF/whitespace cases across Surface
   missing/valid/stale states, and exercises real completed-lane/round/review and
   owner/evidence invalidation. Checkpoint tests distinguish unknown counts from
   valid zero and retain unchanged Store binding.
+  Path tests use `chdir` and absolute/`.`/`./`/symlink roots in both modes, direct
+  bootstrap and Checkpoint acquisition, and bidirectional recording/validation.
 - Mixed-evidence tests damage and restore registered raw bytes in a real temporary
   Store, assert unchanged revision/owner markers, and reject direct Closure,
   review and round publication with byte-identical prior witnesses. CLI/coordinator

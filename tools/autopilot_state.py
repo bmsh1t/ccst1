@@ -1946,6 +1946,7 @@ def build_autopilot_bootstrap_state(
     case_state_summary: dict | None = None,
 ) -> dict:
     """构建 slash expansion 专用的严格只读、bounded state。"""
+    repo_root = str(Path(repo_root).resolve())
     resolved_memory_dir = memory_dir or str(default_memory_dir(repo_root))
     resolved_target = canonical_target_value(target)
     if classify_target(resolved_target)["kind"] == "list":
@@ -2028,6 +2029,7 @@ def _build_autopilot_state(
     full_domain_context: bool = False,
 ) -> tuple[dict, dict]:
     """Assemble current owner inputs acquired within one Checkpoint call."""
+    repo_root = str(Path(repo_root).resolve())
     resolved_memory_dir = memory_dir or str(default_memory_dir(repo_root))
     resolved_target = canonical_target_value(target)
     if classify_target(resolved_target)["kind"] == "list":
@@ -3278,20 +3280,26 @@ def validate_global_review(
         evidence_refs = _bounded_review_strings(
             review.get("evidence_refs"), field="evidence_refs"
         )
+        if not evidence_refs:
+            raise ValueError("global review evidence_refs must contain at least one reference")
+        resolved_target = canonical_target_value(target)
+        owned_refs = [
+            _target_owned_nonempty_evidence_ref(repo_root, resolved_target, ref)
+            for ref in evidence_refs
+        ]
+        if any(not ref for ref in owned_refs):
+            raise ValueError("global review evidence_refs must resolve to target-owned non-empty files")
+    except ValueError as exc:
+        return _global_review_error(
+            "invalid", "global_review_invalid",
+            state_changes=[{"field": "evidence_refs", "expected": str(exc)}],
+        )
+    try:
         cross_source_links = _bounded_review_links(review.get("cross_source_links", []))
         residual_unknowns = _bounded_review_strings(
             review.get("residual_unknowns", []), field="residual_unknowns"
         )
     except ValueError:
-        return _global_review_error("invalid", "global_review_invalid")
-    if not evidence_refs:
-        return _global_review_error("invalid", "global_review_invalid")
-    resolved_target = canonical_target_value(target)
-    owned_refs = [
-        _target_owned_nonempty_evidence_ref(repo_root, resolved_target, ref)
-        for ref in evidence_refs
-    ]
-    if any(not ref for ref in owned_refs):
         return _global_review_error("invalid", "global_review_invalid")
     decision = " ".join(str(review.get("decision") or "").split())
     next_action = " ".join(str(review.get("next_action") or "").split())
@@ -3525,6 +3533,7 @@ def load_closure_projection(
     queue_snapshot: dict | None = None,
 ) -> dict:
     """Read current closure inputs, rejecting mismatched evidence before publication."""
+    repo_root = str(Path(repo_root).resolve())
     target = str(state.get("resolved_target") or state.get("target") or "")
     source_markers_before = _owner_source_markers(repo_root, target)
     recon = state.get("recon_artifacts")
