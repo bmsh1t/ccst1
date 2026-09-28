@@ -70,7 +70,7 @@ def test_orchestrator_defaults_repo_root_to_script_checkout(tmp_path: Path):
     isolated_tools = checkout / "tools"
     isolated_tools.mkdir(parents=True)
     source_tools = Path(__file__).resolve().parents[1] / "tools"
-    for name in ("spray_orchestrator.sh", "_spray_http_form.py", "spray_contract.py", "target_paths.py"):
+    for name in ("spray_orchestrator.sh", "_spray_http_form.py", "spray_contract.py", "target_paths.py", "scope_context.py"):
         shutil.copy2(source_tools / name, isolated_tools / name)
 
     env = os.environ.copy()

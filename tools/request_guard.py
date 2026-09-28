@@ -15,7 +15,6 @@ import argparse
 import json
 import os
 import sys
-import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,6 +27,7 @@ if BASE_DIR not in sys.path:
 from memory.audit_log import AuditLog
 from memory.target_profile import default_memory_dir, target_filename
 from scope_checker import ScopeChecker
+from tools.artifact_io import write_json_atomic
 from tools.scope_context import ScopeContext, ScopeContextError
 from tools.scope_source import load_scope_source, scope_limits
 
@@ -118,35 +118,12 @@ def load_guard_state(memory_dir: str | Path, target: str) -> dict:
 
 def save_guard_state(memory_dir: str | Path, target: str, state: dict) -> Path:
     path = guard_state_path(memory_dir, target)
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "target": target,
         "settings": state.get("settings", {}),
         "hosts": state.get("hosts", {}),
     }
-    serialized = json.dumps(payload, indent=2, sort_keys=True) + "\n"
-    temp_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=str(path.parent),
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            temp_path = Path(handle.name)
-            handle.write(serialized)
-            handle.flush()
-            os.fsync(handle.fileno())
-        temp_path.replace(path)
-    except Exception:
-        if temp_path is not None:
-            try:
-                temp_path.unlink()
-            except OSError:
-                pass
-        raise
+    write_json_atomic(path, payload, ensure_ascii=True, sort_keys=True)
     return path
 
 

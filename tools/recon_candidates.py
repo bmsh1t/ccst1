@@ -181,6 +181,12 @@ JS_CATEGORY_PATTERNS = (
 )
 
 
+try:
+    from tools.artifact_io import atomic_text_writer, write_json_atomic, write_text_atomic
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from artifact_io import atomic_text_writer, write_json_atomic, write_text_atomic
+
+
 def _iter_lines(path: Path):
     if not path.is_file():
         return
@@ -192,76 +198,17 @@ def _iter_lines(path: Path):
 
 
 def _write_jsonl_atomic(path: Path, rows: list[dict]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=str(path.parent),
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            temp_path = Path(handle.name)
-            for row in rows:
-                handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        temp_path.replace(path)
-    except Exception:
-        if temp_path is not None:
-            temp_path.unlink(missing_ok=True)
-        raise
+    with atomic_text_writer(path) as handle:
+        for row in rows:
+            handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
 
 
 def _write_json_atomic(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=str(path.parent),
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            temp_path = Path(handle.name)
-            json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        temp_path.replace(path)
-    except Exception:
-        if temp_path is not None:
-            temp_path.unlink(missing_ok=True)
-        raise
+    write_json_atomic(path, payload, sort_keys=True)
 
 
 def _write_lines_atomic(path: Path, values: list[str]) -> None:
-    """原子发布有界候选视图；失败时保留上一版文件。"""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=str(path.parent),
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            temp_path = Path(handle.name)
-            if values:
-                handle.write("\n".join(values) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        temp_path.replace(path)
-    except Exception:
-        if temp_path is not None:
-            temp_path.unlink(missing_ok=True)
-        raise
+    write_text_atomic(path, "\n".join(values) + "\n" if values else "")
 
 
 def _stable_rank(value: str) -> int:

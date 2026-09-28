@@ -27,8 +27,10 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 try:
+    from tools.artifact_io import write_text_atomic
     from tools.knowledge_registry import KnowledgeRegistryError, load_registry
 except ImportError:  # pragma: no cover - direct tools/ execution
+    from artifact_io import write_text_atomic
     from knowledge_registry import KnowledgeRegistryError, load_registry  # type: ignore
 
 REGISTRY_RELATIVE = Path("knowledge") / "capabilities.yaml"
@@ -181,32 +183,7 @@ def _apply_status(
 
             _shutil.rmtree(probe_dir, ignore_errors=True)
 
-    # Atomic write (same envelope as knowledge_promote).
-    import os
-    import tempfile
-
-    tmp_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=str(registry_path.parent),
-            prefix=f".{registry_path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            tmp_path = Path(handle.name)
-            handle.write(new_text)
-            handle.flush()
-            os.fsync(handle.fileno())
-        tmp_path.replace(registry_path)
-    except Exception:
-        if tmp_path is not None:
-            try:
-                tmp_path.unlink()
-            except FileNotFoundError:
-                pass
-        raise
+    write_text_atomic(registry_path, new_text)
 
     # Post-write validation: the registry must still parse and the state must
     # hold; otherwise refuse silently-corrupt success.

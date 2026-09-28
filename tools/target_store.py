@@ -26,14 +26,16 @@ try:
     from tools.evidence_identity import (
         CANONICAL_VULN_CLASSES, LEDGER_RESULTS, canonical_endpoint_identity, coverage_family, extract_endpoint_path, normalize_family,
     )
-    from tools.target_paths import classify_target, open_target_lock_file, target_storage_key, url_belongs_to_target
+    from tools.target_paths import classify_target, open_target_lock_file, target_storage_key
+    from tools.scope_context import url_belongs_to_target
     from tools.target_paths import legacy_target_profile_path, target_raw_artifact_path
     from tools.scope_context import SCHEMA_VERSION as SCOPE_SCHEMA_VERSION, read_scope_source, write_scope_source_locked
 except ImportError:  # pragma: no cover - direct tools/ execution
     from evidence_identity import (  # type: ignore
         CANONICAL_VULN_CLASSES, LEDGER_RESULTS, canonical_endpoint_identity, coverage_family, extract_endpoint_path, normalize_family,
     )
-    from target_paths import classify_target, open_target_lock_file, target_storage_key, url_belongs_to_target  # type: ignore
+    from target_paths import classify_target, open_target_lock_file, target_storage_key  # type: ignore
+    from scope_context import url_belongs_to_target  # type: ignore
     from target_paths import legacy_target_profile_path, target_raw_artifact_path  # type: ignore
     from scope_context import SCHEMA_VERSION as SCOPE_SCHEMA_VERSION, read_scope_source, write_scope_source_locked
 

@@ -10,14 +10,18 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import re
 import sys
-import tempfile
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
+
+try:
+    from tools.artifact_io import write_json_atomic as _write_json_atomic
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from artifact_io import write_json_atomic as _write_json_atomic
+
 
 try:
     from tools.target_paths import canonical_target_value, target_storage_key
@@ -669,32 +673,6 @@ def build_inventory_from_sources(
     }
     payload["fingerprint"] = inventory_fingerprint(payload)
     return payload
-
-
-def _write_json_atomic(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=str(path.parent),
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            temp_path = Path(handle.name)
-            handle.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        temp_path.replace(path)
-    except Exception:
-        if temp_path is not None:
-            try:
-                temp_path.unlink()
-            except FileNotFoundError:
-                pass
-        raise
 
 
 def validate_inventory(payload: object) -> dict:

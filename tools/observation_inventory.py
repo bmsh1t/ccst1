@@ -15,12 +15,17 @@ import heapq
 import json
 import os
 import re
-import tempfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 from urllib.parse import urlsplit
+
+try:
+    from tools.artifact_io import atomic_text_writer
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from artifact_io import atomic_text_writer
+
 
 try:
     from tools.target_paths import canonical_target_value, target_storage_key
@@ -171,36 +176,14 @@ def load_inventory(repo_root: str | Path, target: str) -> dict:
 
 
 def _write_json_atomic(path: Path, payload: dict) -> dict:
-    """同目录临时文件 + replace，并返回无需重读正文的内容绑定。"""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path: Path | None = None
+    """Publish and bind the bytes without rereading the complete inventory."""
     digest = hashlib.sha256()
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=str(path.parent),
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            temp_path = Path(handle.name)
-            encoder = json.JSONEncoder(ensure_ascii=False, indent=2)
-            for chunk in encoder.iterencode(payload):
-                handle.write(chunk)
-                digest.update(chunk.encode("utf-8"))
-            handle.write("\n")
-            digest.update(b"\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        temp_path.replace(path)
-    except Exception:
-        if temp_path is not None:
-            try:
-                temp_path.unlink()
-            except FileNotFoundError:
-                pass
-        raise
+    with atomic_text_writer(path) as handle:
+        for chunk in json.JSONEncoder(ensure_ascii=False, indent=2).iterencode(payload):
+            handle.write(chunk)
+            digest.update(chunk.encode("utf-8"))
+        handle.write("\n")
+        digest.update(b"\n")
     stat = path.stat()
     return {
         "size": int(stat.st_size),

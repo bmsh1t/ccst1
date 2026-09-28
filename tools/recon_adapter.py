@@ -18,14 +18,18 @@ import argparse
 import gzip
 import hashlib
 import json
-import os
 import re
-import tempfile
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 from urllib.parse import urlsplit
+
+
+try:
+    from tools.artifact_io import write_json_atomic
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from artifact_io import write_json_atomic
 
 
 FFUF_SUMMARY_SCHEMA = "ffuf-summary-v1"
@@ -475,29 +479,7 @@ class ReconAdapter:
         return metadata
 
     def _write_json_atomic(self, path: Path, payload: dict) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temp_path: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                "w",
-                encoding="utf-8",
-                dir=str(path.parent),
-                prefix=f".{path.name}.",
-                suffix=".tmp",
-                delete=False,
-            ) as handle:
-                temp_path = Path(handle.name)
-                handle.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temp_path, path)
-        except Exception:
-            if temp_path is not None:
-                try:
-                    temp_path.unlink()
-                except FileNotFoundError:
-                    pass
-            raise
+        write_json_atomic(path, payload)
 
     def summarize_ffuf_results(
         self,

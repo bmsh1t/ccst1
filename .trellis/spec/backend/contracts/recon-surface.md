@@ -834,7 +834,7 @@ not a vulnerability judgment layer.
   preserves/appends the ledger. Each row must include `record_type=recon_phase`, `target`,
   `target_key`, `mode`, `phase`, `status`, `artifact`, `count`, `note`, and
   `recorded_at`.
-- Every active request input must pass `tools.target_paths.url_belongs_to_target()`
+- Every active request input must pass `tools.scope_context.url_belongs_to_target()`
   (or its host-equivalent contract) before DNS, HTTP, WAF, port, authenticated
   bulk-tool, or OpenAPI candidate fetching. Raw CT/Chaos/JS/API evidence may keep
   off-target values for review context, but those values never become direct

@@ -5,14 +5,18 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import shlex
 import sys
-import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+
+try:
+    from tools.artifact_io import write_json_atomic as write_json
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from artifact_io import write_json_atomic as write_json
+
 
 try:
     from tools.experience_schema import EXPERIENCE_KINDS
@@ -84,32 +88,6 @@ def read_json(path: Path, default: dict | None = None) -> dict:
     if not isinstance(payload, dict):
         raise ValueError(f"target memory {path} must contain one object")
     return payload
-
-
-def write_json(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=str(path.parent),
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            temp_path = Path(handle.name)
-            handle.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        temp_path.replace(path)
-    except Exception:
-        if temp_path is not None:
-            try:
-                temp_path.unlink()
-            except FileNotFoundError:
-                pass
-        raise
 
 
 def target_memory_path(target: str, repo_root: Path | None = None) -> Path:

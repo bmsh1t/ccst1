@@ -10,6 +10,12 @@ from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 
+try:
+    from tools.contracts import WIRE_FACT_NAMES, WIRE_NEEDLE_FACT_NAMES
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from contracts import WIRE_FACT_NAMES, WIRE_NEEDLE_FACT_NAMES
+
+
 class RequestPairError(ValueError):
     """Raised when a request pair is not an exact, single-dimension replay."""
 
@@ -19,24 +25,13 @@ class RequestPairError(ValueError):
 # runner's vocabulary; the needle is kept verbatim. Short needles are valid:
 # the AI judges what string is discriminative ('49' for a 7*7 SSTI render,
 # '7*7' for an unevaluated template); the runner only checks presence.
-NEEDLE_FACT_NAMES = ("variant_body_contains", "baseline_body_lacks")
+NEEDLE_FACT_NAMES = WIRE_NEEDLE_FACT_NAMES
 NEEDLE_FACT_RE = re.compile(r"^([a-z_]+)::(.+)$", re.S)
 NEEDLE_MAX_CHARS = 200
 
 
 def expected_fact_vocabulary() -> frozenset[str]:
-    """Return the runner's wire-fact vocabulary used to validate ``expected``.
-
-    The vocabulary lives here (parser side) so the parser stays knowledge-free:
-    it validates names, never interprets them. The runner computes the facts.
-    """
-    # Imported lazily to avoid a parser->runner dependency cycle at import time.
-    # Dual path (bare + package) matches the validate.py/report_generator.py convention.
-    try:
-        from validation_runner import WIRE_FACT_NAMES
-    except ImportError:  # pragma: no cover - package import path
-        from tools.validation_runner import WIRE_FACT_NAMES  # type: ignore
-
+    """Return the shared names; only the runner interprets wire observations."""
     return WIRE_FACT_NAMES
 
 
@@ -270,9 +265,9 @@ def validate_request_pair(spec: dict[str, Any]) -> dict[str, Any]:
     vuln_class_raw = str(spec.get("vuln_class") or "").strip()
     if vuln_class_raw:
         try:
-            from tools.closure_resolver import canonical_vuln_class
+            from tools.evidence_identity import canonical_vuln_class
         except ImportError:  # pragma: no cover - direct tools/ execution
-            from closure_resolver import canonical_vuln_class  # type: ignore
+            from evidence_identity import canonical_vuln_class  # type: ignore
         if not canonical_vuln_class(vuln_class_raw):
             raise RequestPairError(
                 "vuln_class must be a canonical closure family (e.g. Authz, IDOR, "

@@ -8,6 +8,7 @@ to persist those records.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import math
 import os
@@ -16,17 +17,158 @@ import stat
 import tempfile
 from pathlib import Path
 from typing import Any, Iterable
-from urllib.parse import urlsplit
+from urllib.parse import urlparse, urlsplit
 
 try:
     from tools.target_paths import (
         classify_target,
         canonical_target_value,
         target_storage_key,
-        url_belongs_to_target,
     )
 except ImportError:  # pragma: no cover - direct ``python3 tools/*.py`` use
-    from target_paths import canonical_target_value, classify_target, target_storage_key, url_belongs_to_target
+    from target_paths import canonical_target_value, classify_target, target_storage_key
+
+
+def _scope_endpoint(
+    value: str,
+    *,
+    inherited_scheme: str = "",
+) -> tuple[str, int | None, str, bool]:
+    """Parse target-scope host, effective port, scheme, and wildcard semantics."""
+    candidate = (value or "").strip()
+    if not candidate:
+        return "", None, "", False
+    try:
+        parsed = urlparse(
+            candidate
+            if "://" in candidate or candidate.startswith("//")
+            else f"//{candidate}"
+        )
+    except ValueError:
+        return "", None, "", False
+    try:
+        port = parsed.port
+    except ValueError:
+        return "", None, "", False
+    scheme = parsed.scheme.lower() or inherited_scheme.lower()
+    if port is None:
+        port = {"http": 80, "https": 443}.get(scheme)
+    host = (parsed.hostname or "").lower()
+    if host.endswith(".."):
+        return "", None, "", False
+    if host.endswith("."):
+        host = host[:-1]
+    wildcard = host.startswith("*.")
+    if wildcard:
+        host = host[2:]
+    return host, port, scheme, wildcard
+
+
+def target_list_entries(path: str, *, preserve_wildcards: bool = False) -> list[str]:
+    """Return normalized primary domains from a readable batch list."""
+    if str(path).lower().endswith(".json"):
+        try:
+            context = ScopeContext.from_file(path)
+        except (OSError, ValueError):
+            return []
+        entries = list(context.in_scope)
+        if context.root_target and not os.path.isfile(context.root_target):
+            if context.root_target not in entries:
+                entries.insert(0, context.root_target)
+        if preserve_wildcards:
+            return entries
+        return [value[2:] if value.startswith("*.") else value for value in entries]
+
+    entries = []
+    seen = set()
+    try:
+        lines = open(path, encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    with lines:
+        for raw in lines:
+            value = raw.strip().strip("\ufeff").rstrip("/").lower()
+            if not value or value.startswith("#"):
+                continue
+            if value.startswith("*.") and not preserve_wildcards:
+                value = value[2:]
+            if value and value not in seen:
+                seen.add(value)
+                entries.append(value)
+    return entries
+
+
+def url_belongs_to_target(url: str, target: str, *, allow_subdomains: bool = True) -> bool:
+    """Return whether a URL should be treated as direct target-owned evidence.
+
+    Discovery may keep third-party URLs as chain context, but direct finding
+    queues should use this check before treating an embedded URL as evidence
+    for the current target.
+    """
+    raw_url = (url or "").strip()
+    if not raw_url:
+        return True
+    if raw_url.startswith("/") and not raw_url.startswith("//"):
+        return True
+
+    target_info = classify_target(canonical_target_value(target))
+    if target_info["kind"] == "list":
+        if str(target_info["target"]).lower().endswith(".json"):
+            try:
+                return ScopeContext.from_file(target_info["target"]).allows_active(raw_url)
+            except (OSError, ValueError):
+                return False
+        for listed_target in target_list_entries(
+            target_info["target"],
+            preserve_wildcards=True,
+        ):
+            # Primary-domain lists are intentionally one level deep. A line
+            # resolving to another local file is not a root target and must
+            # not recurse into nested or self-referential lists.
+            if classify_target(canonical_target_value(listed_target))["kind"] == "list":
+                continue
+            if url_belongs_to_target(
+                raw_url,
+                listed_target,
+                allow_subdomains=allow_subdomains,
+            ):
+                return True
+        return False
+
+    target_value = (target or "").strip()
+    target_host, target_port, target_scheme, target_wildcard = _scope_endpoint(target_value)
+    inherited_scheme = target_scheme or {80: "http", 443: "https"}.get(target_port, "")
+    url_host, url_port, url_scheme, _ = _scope_endpoint(
+        raw_url,
+        inherited_scheme=inherited_scheme,
+    )
+    if not url_host:
+        return False
+
+    if target_info["kind"] == "cidr":
+        try:
+            return ipaddress.ip_address(url_host) in ipaddress.ip_network(target_info["target"], strict=False)
+        except ValueError:
+            return False
+
+    if not target_host:
+        return False
+
+    # Local fixture aliases share scope, but retain their actual URL identity.
+    # Match literals only: resolving arbitrary DNS names would widen ownership.
+    local_hosts = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
+    host_matches = not target_wildcard and (
+        url_host == target_host or (target_host in local_hosts and url_host in local_hosts)
+    )
+    if (allow_subdomains or target_wildcard) and not host_matches and target_host not in local_hosts:
+        host_matches = url_host.endswith("." + target_host)
+    if not host_matches:
+        return False
+    if target_scheme and url_scheme and url_scheme != target_scheme:
+        return False
+    if target_port is not None and url_port != target_port:
+        return False
+    return True
 
 
 SCHEMA_VERSION = 1
@@ -248,7 +390,7 @@ class ScopeContext:
         if not entries:
             raise ScopeContextError(f"scope file has no usable entries: {resolved}")
         # Keep the path as root_target so existing list semantics (ports, CIDR,
-        # and one-level expansion) remain owned by target_paths.
+        # and one-level expansion) stay with the Scope matcher.
         return cls(
             root_target=str(resolved),
             in_scope=entries,

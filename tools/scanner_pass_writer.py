@@ -28,10 +28,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
-import os
 import sys
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -39,6 +36,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
+from tools.artifact_io import write_json_atomic
 from tools.coverage_matrix import VULN_CLASSES, normalize_vuln_class  # noqa: E402
 
 
@@ -180,26 +178,7 @@ def write_scanner_pass(
         out_path = target_root / "scanner_pass.json"
     else:
         out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=str(out_path.parent),
-            prefix=f".{out_path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            temporary = Path(handle.name)
-            handle.write(json.dumps(payload, indent=2) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        temporary.replace(out_path)
-    except Exception:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
-        raise
+    write_json_atomic(out_path, payload, ensure_ascii=True)
     return out_path
 
 

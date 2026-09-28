@@ -15,15 +15,22 @@ import os
 import re
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 from typing import Callable
 from urllib.parse import urlparse
 
 try:
-    from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
+    from tools.artifact_io import write_json_atomic
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # type: ignore
+    from artifact_io import write_json_atomic
+
+
+try:
+    from tools.target_paths import canonical_target_value, target_storage_key
+    from tools.scope_context import url_belongs_to_target
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from target_paths import canonical_target_value, target_storage_key  # type: ignore
+    from scope_context import url_belongs_to_target  # type: ignore
 
 
 SCHEMA_VERSION = 1
@@ -234,19 +241,7 @@ def build_probe_command(resolution: dict, host: str) -> list[str]:
 
 
 def _write_json_atomic(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as handle:
-            temp_path = Path(handle.name)
-            json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        temp_path.replace(path)
-    finally:
-        if temp_path is not None and temp_path.exists():
-            temp_path.unlink()
+    write_json_atomic(path, payload, sort_keys=True)
 
 
 def run_exchange_lane(

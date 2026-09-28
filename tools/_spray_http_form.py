@@ -26,7 +26,7 @@ try:
         prepare_run,
         write_private_json,
     )
-    from tools.target_paths import url_belongs_to_target
+    from tools.scope_context import url_belongs_to_target
 except ImportError:  # pragma: no cover - 支持直接运行 tools 脚本
     from spray_contract import (
         append_attempt,
@@ -36,7 +36,7 @@ except ImportError:  # pragma: no cover - 支持直接运行 tools 脚本
         prepare_run,
         write_private_json,
     )
-    from target_paths import url_belongs_to_target  # type: ignore
+    from scope_context import url_belongs_to_target  # type: ignore
 
 
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Bug-Bounty-Research"

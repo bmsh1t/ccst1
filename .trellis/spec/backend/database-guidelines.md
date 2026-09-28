@@ -119,10 +119,9 @@ Correct: use route identity for coverage and exact Queue endpoint identity for S
 
 ### 替换型 JSON
 
-- canonical 或多读者状态优先使用“同目录临时文件 -> flush/fsync -> `Path.replace()`”模式。
-  真实范例：`tools/finding_index.py::_write_finding_payload()`、
-  `tools/runtime_state.py::_write_json_atomic()`、
-  `tools/checkpoint.py::_write_json_atomic()`。
+- 普通替换型文件复用 `tools/artifact_io.py` 的“同目录临时文件 -> flush/fsync ->
+  `Path.replace()`”实现；`finding_index`、`runtime_state`、`checkpoint` 的旧 writer 名称
+  只是同一函数的导入别名。领域准入和完整 read-modify-write 锁仍由各 owner 持有。
 - `hunt-memory/targets/<target>.json` 只有真正缺失时可投影为新 profile；JSON、schema 或读取
   损坏必须带路径失败，不能回落为空状态后覆盖历史。写入使用同目录临时文件、`fsync` 和原子替换。
 - `hunt-memory/guards/<target>.json` 同样只有真正缺失时返回空 telemetry；坏 JSON、非 object、
@@ -188,6 +187,60 @@ Correct: use route identity for coverage and exact Queue endpoint identity for S
 - 正式卡 governance log 也以个人顺序使用为边界。追加前必须完整读取并 replay 现有事件，
   拒绝在损坏状态上继续写；事件写入后 `flush/fsync`。当前没有跨进程锁，不能宣称并发 writer
   安全，也不能通过编辑历史行纠错；使用显式补偿事件。
+
+## 场景：普通外置文件的共同发布原语
+
+### 1. Scope / Trigger
+
+普通 JSON、文本、JSONL 和流式 inventory 共享机械发布。私密文件权限校验、Scope CAS
+及目录同步、Store fence/receipt、Action 独占不可变 snapshot、Surface 多文件 manifest
+顺序保留各自协议；不能用通用 replace 代替这些保证。
+
+### 2. Signatures
+
+`tools.artifact_io`（仅标准库）：
+
+```python
+atomic_text_writer(path: str | Path) -> Iterator[TextIO]  # contextmanager
+write_text_atomic(path: str | Path, content: str) -> None
+write_json_atomic(path: str | Path, payload: Any, *, ensure_ascii=False, sort_keys=False) -> None
+```
+
+### 3. Contracts
+
+- 自动创建父目录；每次调用在同目录创建独立 0600 临时文件，以 UTF-8 写入。
+- 正常退出时 flush、文件 fsync、关闭、replace；最终文件仍为 0600。
+- JSON 固定 indent=2 和末尾换行。Coverage 显式传 `ensure_ascii=True`；排序消费者
+  显式传 `sort_keys=True`。JSONL、流式 hash/stat 由消费者保持原格式与绑定含义。
+- 无环境变量、锁、领域校验、目录 fsync 或跨文件事务；最后完成 replace 的 writer 生效。
+
+### 4. Validation & Error Matrix
+
+| 条件 | 结果 |
+|---|---|
+| 空文本、空 object/list | 发布对应完整字节 |
+| JSON 无法序列化 | TypeError 等原异常上抛，旧字节保留 |
+| 写入、fsync、replace 失败 | 原异常上抛，旧字节保留，清理临时文件 |
+| KeyboardInterrupt | 中断上抛，清理临时文件；不发布部分内容 |
+| 并行调用 | 临时文件不冲突；调用方负责业务锁和版本校验 |
+
+### 5. Good/Base/Bad Cases
+
+- Good：owner 在其原有锁/准入后调用共享 writer；失败可重新发布。
+- Base：空结果仍是合法产物，Unicode、ASCII、排序选项保持消费者字节格式。
+- Bad：把原子 replace 当成数据库事务、不可变排他创建或 Scope CAS。
+
+### 6. Tests Required
+
+`tests/test_artifact_io.py` 断言字节、0600、旧内容可见性、失败清理和并行临时文件隔离；
+各消费者原有测试覆盖 schema、领域锁与绑定。`tests/test_architecture_boundaries.py`
+拒绝发布原语反向依赖任何 tools 业务模块；两项进入 CI core gate。
+
+### 7. Wrong vs Correct
+
+Wrong：每个 owner 复制 NamedTemporaryFile/fsync/replace，或复用固定 `.tmp` 文件名。
+Correct：`from tools.artifact_io import write_json_atomic`；格式差异用明确选项，
+流式输出使用 `with atomic_text_writer(path) as handle:`，业务协议留在 owner。
 
 ## Schema 与身份
 

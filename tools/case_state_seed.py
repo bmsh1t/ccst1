@@ -21,10 +21,12 @@ if str(BASE_DIR) not in sys.path:
 
 try:
     from tools.target_store import runtime_store
-    from tools.target_paths import canonical_target_value, resolve_target_url, target_storage_key, url_belongs_to_target
+    from tools.target_paths import canonical_target_value, resolve_target_url, target_storage_key
+    from tools.scope_context import url_belongs_to_target
 except ImportError:  # pragma: no cover - direct tools/ execution
     from target_store import runtime_store  # type: ignore
-    from target_paths import canonical_target_value, resolve_target_url, target_storage_key, url_belongs_to_target  # type: ignore
+    from target_paths import canonical_target_value, resolve_target_url, target_storage_key  # type: ignore
+    from scope_context import url_belongs_to_target  # type: ignore
 
 
 OBJECT_TOKEN_MAP = {

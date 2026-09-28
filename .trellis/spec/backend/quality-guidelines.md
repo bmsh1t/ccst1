@@ -224,26 +224,15 @@ Required regressions include a passing audit for the current repository, legacy 
 compatibility, malformed/duplicate/orphan fixtures, frontmatter and reference failures,
 CLI exit modes, and preservation of context-pack catalog discovery and bounded output.
 
-## 大文件拆分纪律（2026-09-11 实测教训）
+## 模块依赖边界
 
-**Pattern: 纯搬动拆分的可行性由依赖深度决定，不由行数决定**
-
-autopilot_state.py 拆分实测：loop_guard（依赖 8 符号）/state_read（依赖 20）/
-gate（依赖 12）纯搬动成功；closure/decision 投影族（依赖 30+ 状态构建函数）
-回退——搬它需要反向 import 会循环。
-
-```
-拆分前先跑依赖分析（AST 收集搬走函数引用的外部符号）：
-  依赖 < 15 个 → 可纯搬动 + re-export
-  依赖 15-30   → 逐个评估，可能要连带搬依赖
-  依赖 > 30    → 不拆，或先做接口设计再拆（纯搬动会循环）
-```
-
-**re-export 模式**：原文件保留全量 `from tools.<new_module> import (...)`，
-外部消费方零破坏。新增分桶测试不受影响（OWNER_SOURCES 不含被拆文件）。
-
-**常见错误**：新模块漏 import（NameError 在运行时而非收集期暴露）——
-搬完立刻 `python -c "import <module>"` + 全量 pytest。
-
-**禁忌**：模块间契约常量循环 import——常量在低层模块硬编码 + 一致性测试绑定。
-（claim_templates 及其循环 import 已随类别模板退役删除，2026-09-13。）
+- 按真实职责拆分；先分析调用者、被搬函数及其依赖，再决定边界，不按文件行数分桶。
+- `tests/test_architecture_boundaries.py` 检查 tools 全图无环，包含函数内 import 和直接
+  执行 fallback；延迟 import 不能作为消除循环的方案。
+- 常量/纯校验共用 `contracts`，身份共用 `evidence_identity`/`target_paths`，Scope
+  匹配共用 `scope_context`。消费者不得反向导入 Runner、CLI 或 Action Queue 私有 helper。
+- 浏览器读取归 `browser_evidence`，目标/会话查询归 `resume_read`；发布和 CLI 编排在上层。
+- 普通原子发布共用 `artifact_io`，调用者保留锁/格式/领域准入；特殊持久化协议见
+  `database-guidelines.md`。禁止为共用 helper 新增业务 owner 或配置框架。
+- 有实际消费者的 re-export 只能引用同一实现，且不能恢复反向依赖；导入位置变化同步
+  Python、Shell 内嵌 Python、测试和规范。搬移后用真实 CLI 子进程检查漏 import。

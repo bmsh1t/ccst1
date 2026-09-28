@@ -15,6 +15,8 @@ WORKFLOW_PATH = ROOT / ".github" / "workflows" / "ci.yml"
 LOCK_PATH = ROOT / "requirements-ci.lock"
 LOCK_CHECK_PATH = ROOT / "tools" / "check_requirements_lock.py"
 CORE_TESTS = {
+    "tests/test_architecture_boundaries.py",
+    "tests/test_artifact_io.py",
     "tests/test_core_foundation_tools.py",
     "tests/test_runtime_state.py",
     "tests/test_runtime_exec.py",

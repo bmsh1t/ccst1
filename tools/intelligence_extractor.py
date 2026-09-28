@@ -26,10 +26,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import sys
-import tempfile
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -40,8 +38,10 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 try:
+    from tools.artifact_io import write_text_atomic
     from tools.target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
+    from artifact_io import write_text_atomic
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
 
 
@@ -328,21 +328,7 @@ def write_intelligence(
         rendered,
         replace_legacy_intelligence_document=True,
     )
-    temporary: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w", encoding="utf-8", dir=str(output_path.parent),
-            prefix=f".{output_path.name}.", suffix=".tmp", delete=False,
-        ) as handle:
-            temporary = Path(handle.name)
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        temporary.replace(output_path)
-    except Exception:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
-        raise
+    write_text_atomic(output_path, content)
     return output_path
 
 

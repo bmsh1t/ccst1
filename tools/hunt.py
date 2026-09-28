@@ -56,11 +56,8 @@ from tools.runtime_state import (
     derive_owner_projection,
     runtime_phase_lock,
 )
-from tools.target_paths import (
-    classify_target as classify_target_input,
-    target_list_entries,
-    target_storage_key,
-)
+from tools.target_paths import classify_target as classify_target_input, target_storage_key
+from tools.scope_context import target_list_entries
 from tools.target_store import StoreError, initialize_target_store
 
 # Colors

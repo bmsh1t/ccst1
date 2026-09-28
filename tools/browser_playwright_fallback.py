@@ -24,11 +24,13 @@ if str(BASE_DIR) not in sys.path:
 try:
     from tools.browser_evidence import compact_browser_evidence
     from tools.browser_mcp_import import import_mcp_browser_evidence
-    from tools.target_paths import canonical_target_value, url_belongs_to_target
+    from tools.target_paths import canonical_target_value
+    from tools.scope_context import url_belongs_to_target
 except ImportError:  # pragma: no cover - direct tools/ execution
     from browser_evidence import compact_browser_evidence  # type: ignore
     from browser_mcp_import import import_mcp_browser_evidence  # type: ignore
-    from target_paths import canonical_target_value, url_belongs_to_target  # type: ignore
+    from target_paths import canonical_target_value  # type: ignore
+    from scope_context import url_belongs_to_target  # type: ignore
 
 
 DEFAULT_TIMEOUT_MS = 30_000

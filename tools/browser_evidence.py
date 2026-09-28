@@ -6,7 +6,9 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 try:
     from tools.target_paths import target_storage_key
@@ -16,6 +18,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_EVIDENCE_ROOT = BASE_DIR / "evidence"
+BROWSER_FRESHNESS_SECONDS = 24 * 60 * 60
 
 
 def _target_key(target: str) -> str:
@@ -110,3 +113,124 @@ def load_last_browser_evidence(target: str, *, evidence_root: str | Path | None 
         return {}
     summary_path = pointer.get("summary_path")
     return compact_browser_evidence(summary_path or pointer)
+
+
+def inspect_mcp_browser_readiness(
+    repo_root: str | Path,
+    target: str,
+    *,
+    freshness_seconds: int = BROWSER_FRESHNESS_SECONDS,
+) -> dict[str, Any]:
+    """Validate the importer-owned latest capture without trusting file presence."""
+    root = Path(repo_root)
+    key = target_storage_key(target)
+    pointer_path = root / "evidence" / key / "browser" / "last-capture.json"
+    result: dict[str, Any] = {
+        "present": False,
+        "ready": False,
+        "status": "missing",
+        "success": False,
+        "core_network": False,
+        "fresh": False,
+        "fingerprint": "",
+        "fingerprint_valid": False,
+        "auth_required": False,
+        "auth_state": "unknown",
+        "summary_path": str(pointer_path),
+        "reason": "missing browser capture",
+    }
+    try:
+        pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return result
+    if not isinstance(pointer, dict):
+        result["reason"] = "invalid browser pointer"
+        return result
+    summary_path = Path(str(pointer.get("summary_path") or ""))
+    if not summary_path.is_absolute():
+        summary_path = pointer_path.parent / summary_path
+    result["summary_path"] = str(summary_path)
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        result["reason"] = "missing or invalid browser summary"
+        return result
+    if not isinstance(summary, dict):
+        result["reason"] = "invalid browser summary"
+        return result
+
+    result["present"] = True
+    result["status"] = str(summary.get("status") or "unknown").strip().lower()
+    result["success"] = bool(summary.get("success"))
+    counts = summary.get("counts") if isinstance(summary.get("counts"), dict) else {}
+    result["core_network"] = int(counts.get("requests", 0) or 0) > 0
+    result["fingerprint"] = str(summary.get("network_fingerprint") or "").strip()
+    artifacts = summary.get("artifacts") if isinstance(summary.get("artifacts"), dict) else {}
+    requests_path = Path(str(artifacts.get("requests_json") or ""))
+    try:
+        result["fingerprint_valid"] = bool(
+            result["fingerprint"]
+            and requests_path.is_file()
+            and hashlib.sha256(requests_path.read_bytes()).hexdigest() == result["fingerprint"]
+        )
+    except OSError:
+        pass
+    private_artifacts = summary.get("private_artifacts") if isinstance(summary.get("private_artifacts"), dict) else {}
+    browser_state = (
+        private_artifacts.get("browser_state")
+        if isinstance(private_artifacts.get("browser_state"), dict)
+        else {}
+    )
+    state_artifact = Path(str(browser_state.get("path") or ""))
+    if state_artifact and not state_artifact.is_absolute():
+        state_artifact = summary_path.parent / state_artifact
+    state_digest = str(browser_state.get("sha256") or "").strip()
+    try:
+        state_artifact_valid = bool(
+            state_artifact.is_file()
+            and (
+                not state_digest
+                or hashlib.sha256(state_artifact.read_bytes()).hexdigest() == state_digest
+            )
+        )
+    except OSError:
+        state_artifact_valid = False
+    result["auth_required"] = bool(summary.get("auth_required") or summary.get("authenticated"))
+    claimed_auth_state = str(summary.get("auth_state") or "").strip().lower()
+    result["auth_state"] = (
+        "present"
+        if state_artifact_valid and claimed_auth_state in {"", "present"}
+        else claimed_auth_state
+        if claimed_auth_state and claimed_auth_state != "present"
+        else "missing"
+    )
+    try:
+        captured_at = datetime.strptime(
+            str(summary.get("captured_at") or ""), "%Y-%m-%dT%H:%M:%SZ"
+        ).replace(tzinfo=timezone.utc)
+    except ValueError:
+        captured_at = None
+    result["fresh"] = bool(
+        captured_at is not None
+        and (datetime.now(timezone.utc) - captured_at).total_seconds() <= freshness_seconds
+    )
+    result["ready"] = bool(
+        result["status"] == "ok"
+        and result["success"]
+        and result["core_network"]
+        and result["fresh"]
+        and result["fingerprint_valid"]
+        and (not result["auth_required"] or result["auth_state"] == "present")
+    )
+    failed = []
+    if result["status"] != "ok":
+        failed.append("status")
+    failed.extend(
+        name
+        for name in ("success", "core_network", "fresh", "fingerprint_valid")
+        if not result[name]
+    )
+    if result["auth_required"] and result["auth_state"] != "present":
+        failed.append("missing_state")
+    result["reason"] = "ready" if result["ready"] else "browser capture is " + ", ".join(failed or ["not ready"])
+    return result

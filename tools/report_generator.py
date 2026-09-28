@@ -20,6 +20,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 try:
+    from tools.artifact_io import write_text_atomic as _write_text_atomic
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from artifact_io import write_text_atomic as _write_text_atomic
+
+
+try:
     from finding_index import _finding_backend_context
     from target_paths import target_storage_key
     from target_store import ConflictError, StoreError, TargetStore, runtime_store, target_mutation_lock, target_switch_lock
@@ -30,34 +36,6 @@ except ImportError:  # pragma: no cover - package import path
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPORTS_DIR = os.path.join(BASE_DIR, "reports")
-
-
-def _write_text_atomic(path: str | Path, content: str) -> None:
-    """Replace one report index file without exposing a partial document."""
-    destination = Path(path)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=str(destination.parent),
-            prefix=f".{destination.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            temporary = Path(handle.name)
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        temporary.replace(destination)
-    except Exception:
-        if temporary is not None:
-            try:
-                temporary.unlink()
-            except FileNotFoundError:
-                pass
-        raise
 
 
 # Severity mappings

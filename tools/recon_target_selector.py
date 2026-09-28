@@ -11,11 +11,15 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
+
+try:
+    from tools.artifact_io import write_text_atomic as _atomic_write
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from artifact_io import write_text_atomic as _atomic_write
+
 
 try:
     from tools.target_paths import canonical_target_value, target_storage_key
@@ -34,32 +38,6 @@ BASE_DIR = Path(__file__).resolve().parents[1]
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _atomic_write(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=str(path.parent),
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            temporary = Path(handle.name)
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    except Exception:
-        if temporary is not None:
-            try:
-                temporary.unlink()
-            except FileNotFoundError:
-                pass
-        raise
 
 
 def _atomic_json(path: Path, payload: dict) -> None:

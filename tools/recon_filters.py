@@ -8,12 +8,16 @@ from collections import Counter
 import argparse
 import hashlib
 import json
-import os
 from pathlib import Path
 import re
 import sys
-import tempfile
 from urllib.parse import parse_qsl, unquote_plus, urlencode, urlparse, urlunsplit
+
+try:
+    from tools.artifact_io import atomic_text_writer, write_text_atomic as _atomic_replace_text
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from artifact_io import atomic_text_writer, write_text_atomic as _atomic_replace_text
+
 
 try:
     from tools.attack_probe_filter import is_attack_probe, sanitize_attack_probe_url
@@ -81,33 +85,6 @@ def _append_log(log_file, lines):
                 handle.write(line.rstrip("\n") + "\n")
     except OSError:
         return
-
-
-def _atomic_replace_text(path: Path, content: str) -> None:
-    """Publish a small text artifact without exposing a partial file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=str(path.parent),
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            temporary = Path(handle.name)
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    except Exception:
-        if temporary is not None:
-            try:
-                temporary.unlink()
-            except FileNotFoundError:
-                pass
-        raise
 
 
 def _active_url(url: str) -> tuple[str, bool]:
@@ -483,14 +460,9 @@ def filter_urls_batch(input_file, output_file, target_domain,
 
     input_path = Path(input_file)
     output_path = Path(output_file)
-    output_temp: Path | None = None
     output_digest = hashlib.sha256()
     try:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
-            "wb", dir=str(output_path.parent), prefix=f".{output_path.name}.", suffix=".tmp", delete=False
-        ) as staged:
-            output_temp = Path(staged.name)
+        with atomic_text_writer(output_path) as staged:
             with input_path.open("r", encoding="utf-8", errors="ignore") as source:
                 for raw in source:
                     original_url = raw.strip()
@@ -540,22 +512,13 @@ def filter_urls_batch(input_file, output_file, target_domain,
                         continue
                     if shape_id:
                         shape_counts[shape_id] += 1
-                    encoded = f"{active_url}\n".encode("utf-8")
-                    staged.write(encoded)
-                    output_digest.update(encoded)
+                    line = f"{active_url}\n"
+                    staged.write(line)
+                    output_digest.update(line.encode("utf-8"))
                     stats['kept'] += 1
-            staged.flush()
-            os.fsync(staged.fileno())
-        os.replace(output_temp, output_path)
-        output_temp = None
     finally:
         if log_handle:
             log_handle.close()
-        if output_temp is not None:
-            try:
-                output_temp.unlink()
-            except FileNotFoundError:
-                pass
     if summary_file:
         summary = {
             "schema_version": 1,

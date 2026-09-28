@@ -56,6 +56,7 @@ from tools.scope_context import read_scope_source, scope_source_path, write_scop
 from tools.scope_source import scope_source_from_profile
 
 try:
+    from tools.artifact_io import write_json_atomic
     from tools.action_queue import load_legacy_queue
     from tools.evidence_identity import LEDGER_RESULTS, canonical_endpoint_identity
     from tools.evidence_ledger import load_entries_diagnostic
@@ -64,6 +65,7 @@ try:
     from tools.target_memory import normalize_target_memory, text_is_polluted
     from tools.target_store import StoreError, TargetStore, target_cutover_lock
 except ImportError:  # pragma: no cover
+    from artifact_io import write_json_atomic
     from action_queue import load_legacy_queue  # type: ignore
     from evidence_identity import LEDGER_RESULTS, canonical_endpoint_identity  # type: ignore
     from evidence_ledger import load_entries_diagnostic  # type: ignore
@@ -1519,10 +1521,7 @@ def _mark_archive_active(root: Path, key: str) -> None:
     path = _archive_receipt_path(root, key)
     receipt = json.loads(path.read_text(encoding="utf-8"))
     receipt["activation_status"] = "active"
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps(receipt, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
-    os.chmod(temporary, 0o600)
-    temporary.replace(path)
+    write_json_atomic(path, receipt, ensure_ascii=True)
 
 
 def _verify_archive_material(root: Path, receipt: dict[str, Any]) -> None:
@@ -1542,10 +1541,7 @@ def _mark_migration_active(root: Path, key: str, archive_path: Path) -> None:
     receipt["backend"] = "primary"
     receipt["activation_status"] = "active"
     receipt["legacy_archive_path"] = archive_path.relative_to(root).as_posix()
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps(receipt, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
-    os.chmod(temporary, 0o600)
-    temporary.replace(path)
+    write_json_atomic(path, receipt, ensure_ascii=True)
 
 
 def restore_legacy_metadata(

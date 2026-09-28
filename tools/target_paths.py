@@ -11,7 +11,7 @@ import re
 import stat
 from contextlib import ExitStack
 from pathlib import Path
-from typing import TextIO
+from typing import Any, TextIO
 from urllib.parse import urljoin, urlparse, urlsplit
 
 
@@ -485,151 +485,72 @@ def migrate_legacy_list_storage(
     }
 
 
-def _scope_endpoint(
-    value: str,
-    *,
-    inherited_scheme: str = "",
-) -> tuple[str, int | None, str, bool]:
-    """Parse target-scope host, effective port, scheme, and wildcard semantics."""
-    candidate = (value or "").strip()
-    if not candidate:
-        return "", None, "", False
-    try:
-        parsed = urlparse(
-            candidate
-            if "://" in candidate or candidate.startswith("//")
-            else f"//{candidate}"
-        )
-    except ValueError:
-        return "", None, "", False
-    try:
-        port = parsed.port
-    except ValueError:
-        return "", None, "", False
-    scheme = parsed.scheme.lower() or inherited_scheme.lower()
-    if port is None:
-        port = {"http": 80, "https": 443}.get(scheme)
-    host = (parsed.hostname or "").lower()
-    if host.endswith(".."):
-        return "", None, "", False
-    if host.endswith("."):
-        host = host[:-1]
-    wildcard = host.startswith("*.")
-    if wildcard:
-        host = host[2:]
-    return host, port, scheme, wildcard
+EVIDENCE_REF_KEYS = {
+    "artifact",
+    "evidence",
+    "evidence_ref",
+    "report",
+    "report_file",
+    "summary",
+    "validation-summary",
+    "validation_summary",
+}
+
+EVIDENCE_ROOTS = {".private", "evidence", "findings", "recon", "reports"}
 
 
-def target_list_entries(path: str, *, preserve_wildcards: bool = False) -> list[str]:
-    """Return normalized primary domains from a readable batch list."""
-    if str(path).lower().endswith(".json"):
+def _locatable_evidence_ref(repo_root: Path | str, result: str) -> str:
+    """Return one existing repo-local evidence path embedded in a result."""
+    repo = Path(repo_root).resolve()
+    text = str(result or "").strip()
+    if not text:
+        return ""
+    candidates: list[str] = []
+    for match in re.finditer(r"(?:^|[;\s])([A-Za-z][A-Za-z0-9_-]*)=(\S+)", text):
+        if match.group(1).lower() in EVIDENCE_REF_KEYS:
+            candidates.append(match.group(2))
+    candidates.extend(re.split(r"[;\s]+", text))
+    for value in candidates:
+        ref = str(value or "").strip().strip("`'\"()[]{}<>,")
+        if not ref or ref.endswith("="):
+            continue
+        path = Path(ref)
+        if not path.is_absolute():
+            path = repo / path
         try:
-            from tools.scope_context import ScopeContext
-        except ImportError:  # pragma: no cover - direct script compatibility
-            from scope_context import ScopeContext
-        try:
-            context = ScopeContext.from_file(path)
+            resolved = path.resolve()
+            relative = resolved.relative_to(repo)
         except (OSError, ValueError):
-            return []
-        entries = list(context.in_scope)
-        if context.root_target and not os.path.isfile(context.root_target):
-            if context.root_target not in entries:
-                entries.insert(0, context.root_target)
-        if preserve_wildcards:
-            return entries
-        return [value[2:] if value.startswith("*.") else value for value in entries]
+            continue
+        if relative.parts and relative.parts[0] in EVIDENCE_ROOTS and resolved.is_file():
+            return str(resolved)
+    return ""
 
-    entries = []
-    seen = set()
+
+def _target_owned_evidence_ref(repo_root: Path | str, target: str, value: Any) -> str:
+    ref = _locatable_evidence_ref(repo_root, str(value or ""))
+    if not ref:
+        return ""
+    repo = Path(repo_root).resolve()
     try:
-        lines = open(path, encoding="utf-8", errors="replace")
+        relative = target_raw_artifact_path(repo, target, ref).relative_to(repo)
+    except (OSError, ValueError):
+        return ""
+    return str(relative)
+
+
+def target_owned_nonempty_evidence_ref(
+    repo_root: Path | str,
+    target: str,
+    value: Any,
+) -> str:
+    """Return a target-owned evidence file only when it contains bytes."""
+    ref = _target_owned_evidence_ref(repo_root, target, value)
+    if not ref:
+        return ""
+    try:
+        if (Path(repo_root) / ref).stat().st_size <= 0:
+            return ""
     except OSError:
-        return []
-    with lines:
-        for raw in lines:
-            value = raw.strip().strip("\ufeff").rstrip("/").lower()
-            if not value or value.startswith("#"):
-                continue
-            if value.startswith("*.") and not preserve_wildcards:
-                value = value[2:]
-            if value and value not in seen:
-                seen.add(value)
-                entries.append(value)
-    return entries
-
-
-def url_belongs_to_target(url: str, target: str, *, allow_subdomains: bool = True) -> bool:
-    """Return whether a URL should be treated as direct target-owned evidence.
-
-    Discovery may keep third-party URLs as chain context, but direct finding
-    queues should use this check before treating an embedded URL as evidence
-    for the current target.
-    """
-    raw_url = (url or "").strip()
-    if not raw_url:
-        return True
-    if raw_url.startswith("/") and not raw_url.startswith("//"):
-        return True
-
-    target_info = classify_target(canonical_target_value(target))
-    if target_info["kind"] == "list":
-        if str(target_info["target"]).lower().endswith(".json"):
-            try:
-                from tools.scope_context import ScopeContext
-            except ImportError:  # pragma: no cover - direct script compatibility
-                from scope_context import ScopeContext
-            try:
-                return ScopeContext.from_file(target_info["target"]).allows_active(raw_url)
-            except (OSError, ValueError):
-                return False
-        for listed_target in target_list_entries(
-            target_info["target"],
-            preserve_wildcards=True,
-        ):
-            # Primary-domain lists are intentionally one level deep. A line
-            # resolving to another local file is not a root target and must
-            # not recurse into nested or self-referential lists.
-            if classify_target(canonical_target_value(listed_target))["kind"] == "list":
-                continue
-            if url_belongs_to_target(
-                raw_url,
-                listed_target,
-                allow_subdomains=allow_subdomains,
-            ):
-                return True
-        return False
-
-    target_value = (target or "").strip()
-    target_host, target_port, target_scheme, target_wildcard = _scope_endpoint(target_value)
-    inherited_scheme = target_scheme or {80: "http", 443: "https"}.get(target_port, "")
-    url_host, url_port, url_scheme, _ = _scope_endpoint(
-        raw_url,
-        inherited_scheme=inherited_scheme,
-    )
-    if not url_host:
-        return False
-
-    if target_info["kind"] == "cidr":
-        try:
-            return ipaddress.ip_address(url_host) in ipaddress.ip_network(target_info["target"], strict=False)
-        except ValueError:
-            return False
-
-    if not target_host:
-        return False
-
-    # Local fixture aliases share scope, but retain their actual URL identity.
-    # Match literals only: resolving arbitrary DNS names would widen ownership.
-    local_hosts = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
-    host_matches = not target_wildcard and (
-        url_host == target_host or (target_host in local_hosts and url_host in local_hosts)
-    )
-    if (allow_subdomains or target_wildcard) and not host_matches and target_host not in local_hosts:
-        host_matches = url_host.endswith("." + target_host)
-    if not host_matches:
-        return False
-    if target_scheme and url_scheme and url_scheme != target_scheme:
-        return False
-    if target_port is not None and url_port != target_port:
-        return False
-    return True
+        return ""
+    return ref

@@ -32,37 +32,31 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 try:
+    from tools.artifact_io import write_json_atomic as _write_json
     from tools.auth_session import AuthSession, add_cli_args, session_from_args
-    from tools.contracts import artifact_digest_material, runner_operation_id
-    from tools.action_queue import (
-        _target_owned_nonempty_evidence_ref,
-        _validate_observed_difference,
-        _write_json_atomic as _write_json,
-    )
+    from tools.contracts import WIRE_FACT_NAMES, WIRE_NEEDLE_FACT_NAMES, artifact_digest_material, runner_operation_id, validate_observed_difference
     from tools.evidence_ledger import normalize_actor, normalize_object_scope, normalize_variant
     from tools.response_diff import diff_responses, snapshot_response
     from tools.request_diff import RequestPairError, request_pair_digest, validate_request_pair
     from tools.browser_surface import public_url_shape
     from tools.evidence_identity import canonical_vuln_class, normalize_family
     from tools.private_artifacts import private_artifact_dir, write_private_json, write_private_text
-    from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
+    from tools.target_paths import canonical_target_value, target_storage_key, target_owned_nonempty_evidence_ref
+    from tools.scope_context import url_belongs_to_target
     from tools.scope_source import load_scope_context
     from tools.target_store import FindingNotFoundError, StoreError, TargetStore, runtime_store, target_switch_lock
 except ImportError:  # pragma: no cover - direct tools/ execution
+    from artifact_io import write_json_atomic as _write_json
     from auth_session import AuthSession, add_cli_args, session_from_args  # type: ignore
-    from contracts import artifact_digest_material, runner_operation_id  # type: ignore
-    from action_queue import (  # type: ignore
-        _target_owned_nonempty_evidence_ref,
-        _validate_observed_difference,
-        _write_json_atomic as _write_json,
-    )
+    from contracts import WIRE_FACT_NAMES, WIRE_NEEDLE_FACT_NAMES, artifact_digest_material, runner_operation_id, validate_observed_difference  # type: ignore
     from evidence_ledger import normalize_actor, normalize_object_scope, normalize_variant  # type: ignore
     from response_diff import diff_responses, snapshot_response  # type: ignore
     from request_diff import RequestPairError, request_pair_digest, validate_request_pair  # type: ignore
     from browser_surface import public_url_shape  # type: ignore
     from evidence_identity import canonical_vuln_class, normalize_family  # type: ignore
     from private_artifacts import private_artifact_dir, write_private_json, write_private_text  # type: ignore
-    from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # type: ignore
+    from target_paths import canonical_target_value, target_storage_key, target_owned_nonempty_evidence_ref  # type: ignore
+    from scope_context import url_belongs_to_target  # type: ignore
     from scope_source import load_scope_context  # type: ignore
     from target_store import FindingNotFoundError, StoreError, TargetStore, runtime_store, target_switch_lock  # type: ignore
 
@@ -85,31 +79,6 @@ DB_ERROR_MARKER_RE = re.compile(
     r"MongoError|CastError|BSON|NoSQL",
     re.I,
 )
-
-# Wire-fact vocabulary: the complete set of mechanically checkable facts the
-# AI may declare in ``expected``. The runner knows these predicates over raw
-# replay observations; it does NOT know vulnerability classes. Any category
-# (SQLi, NoSQLi, SSTI, IDOR, missing-auth, ...) uses the same vocabulary.
-WIRE_FACT_NAMES = frozenset({
-    "error_marker_variant_only",   # variant body shows a DB/parser error marker, baseline does not
-    "count_delta_positive",        # variant JSON count is greater than baseline
-    "count_delta_negative",        # variant JSON count is smaller than baseline
-    "fields_added",                # variant response added JSON fields
-    "fields_removed",              # variant response removed JSON fields
-    "body_length_delta",           # material body-length difference beyond noise threshold
-    "status_delta",                # status codes differ between the sides
-    "material_diff_any",           # any material response difference
-    "identical_success_pair",      # same successful status and complete retained response body
-    "both_sides_rejected",         # same rejected status and complete retained response body
-    "stable_timing_delta",         # variant consistently slower than baseline across repeats
-    "distinct_bodies",             # baseline and variant body bytes differ (no threshold)
-})
-# Needle facts take the form name::<literal substring>; the AI supplies the
-# needle (judgment), the runner verifies presence mechanically (reconciliation).
-WIRE_NEEDLE_FACT_NAMES = frozenset({
-    "variant_body_contains",       # needle appears in EVERY variant body
-    "baseline_body_lacks",         # needle appears in NO baseline body and EVERY variant body
-})
 
 RUNNER_RESULT_TO_FINDING_STATUS = {
     # validation_runner 只证明候选证据包，不代表 /validate gate 已通过。
@@ -1203,7 +1172,7 @@ def record_native_evidence(
         if result not in {*RUNNER_RESULT_TO_FINDING_STATUS, "partial"}:
             raise ValueError("native evidence result must be tested_finding, candidate, tested_clean, dead_end, or partial")
         source = required_text(evidence.get("source"), "source")
-        observed_difference = _validate_observed_difference(
+        observed_difference = validate_observed_difference(
             required_text(evidence.get("observed_difference"), "observed_difference")
         )
         captured_at = datetime.fromisoformat(required_text(evidence.get("generated_at"), "generated_at").replace("Z", "+00:00"))
@@ -1231,7 +1200,7 @@ def record_native_evidence(
                 raise ValueError("incomplete native evidence requires result=partial, never candidate-ready")
             refs = {}
             for kind, value in artifacts.items():
-                ref = _target_owned_nonempty_evidence_ref(repo_root, target, value)
+                ref = target_owned_nonempty_evidence_ref(repo_root, target, value)
                 if not ref:
                     raise ValueError(f"native evidence runs[{index}].artifacts.{kind} must reference a non-empty target-owned file")
                 refs[kind] = ref

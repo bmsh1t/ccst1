@@ -26,7 +26,6 @@ try:
     from tools.action_queue import (
         ACTIVE_STATUSES,
         FINAL_STATUSES,
-        _target_owned_nonempty_evidence_ref,
         load_queue,
         load_queue_summary,
         queue_path,
@@ -37,7 +36,6 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from action_queue import (  # type: ignore
         ACTIVE_STATUSES,
         FINAL_STATUSES,
-        _target_owned_nonempty_evidence_ref,
         load_queue,
         load_queue_summary,
         queue_path,
@@ -71,13 +69,13 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     )
 try:
     from tools.request_guard import load_guard_status
-    from tools.resume import _load_resume_summary
+    from tools.resume_read import load_resume_summary as _load_resume_summary
     from tools.surface import _load_surface_context, rank_surface
     from tools.observation_inventory import peek_inventory_summary
     from tools.surface_projection import load_surface_projection
 except ImportError:  # pragma: no cover - direct tools/ execution
     from request_guard import load_guard_status
-    from resume import _load_resume_summary
+    from resume_read import load_resume_summary as _load_resume_summary
     from surface import _load_surface_context, rank_surface
     from observation_inventory import peek_inventory_summary  # type: ignore
     from surface_projection import load_surface_projection  # type: ignore
@@ -100,14 +98,8 @@ try:
         format_validation_runner_candidate_lines,
         load_validation_runner_candidate_pool,
     )
-    from tools.target_paths import (
-        canonical_target_value,
-        classify_target,
-        compact_url,
-        target_list_entries,
-        target_storage_key,
-        url_belongs_to_target,
-    )
+    from tools.target_paths import canonical_target_value, classify_target, compact_url, target_storage_key, target_owned_nonempty_evidence_ref
+    from tools.scope_context import target_list_entries, url_belongs_to_target
     from tools.target_store import runtime_store
 except ImportError:  # pragma: no cover - direct tools/ execution
     from finding_index import (  # type: ignore
@@ -126,14 +118,8 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         format_validation_runner_candidate_lines,
         load_validation_runner_candidate_pool,
     )
-    from target_paths import (  # type: ignore
-        canonical_target_value,
-        classify_target,
-        compact_url,
-        target_list_entries,
-        target_storage_key,
-        url_belongs_to_target,
-    )
+    from target_paths import canonical_target_value, classify_target, compact_url, target_storage_key, target_owned_nonempty_evidence_ref  # type: ignore
+    from scope_context import target_list_entries, url_belongs_to_target
     from target_store import runtime_store  # type: ignore
 
 try:
@@ -415,7 +401,7 @@ def _checkpoint_round_projection(
     for item in projected_lanes:
         if item["status"] != "completed":
             continue
-        evidence_ref = _target_owned_nonempty_evidence_ref(
+        evidence_ref = target_owned_nonempty_evidence_ref(
             repo_root,
             target,
             item.get("evidence_ref"),
@@ -3284,7 +3270,7 @@ def validate_global_review(
             raise ValueError("global review evidence_refs must contain at least one reference")
         resolved_target = canonical_target_value(target)
         owned_refs = [
-            _target_owned_nonempty_evidence_ref(repo_root, resolved_target, ref)
+            target_owned_nonempty_evidence_ref(repo_root, resolved_target, ref)
             for ref in evidence_refs
         ]
         if any(not ref for ref in owned_refs):

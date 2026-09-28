@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from tools.validate import (
+    from tools.contracts import (
         MACHINE_DECISION_SCHEMA_VERSION,
         SEVEN_QUESTION_DEFINITIONS,
     )
@@ -28,7 +28,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     import sys
 
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from validate import (  # type: ignore
+    from contracts import (  # type: ignore
         MACHINE_DECISION_SCHEMA_VERSION,
         SEVEN_QUESTION_DEFINITIONS,
     )

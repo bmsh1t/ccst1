@@ -3,7 +3,7 @@ import json
 import pytest
 
 from tools.scope_context import ScopeContext, ScopeContextError
-from tools.target_paths import target_list_entries, url_belongs_to_target
+from tools.scope_context import target_list_entries, url_belongs_to_target
 
 
 def test_single_target_keeps_subdomain_and_exclusion_precedence():

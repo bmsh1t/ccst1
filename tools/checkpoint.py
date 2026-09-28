@@ -19,7 +19,6 @@ import os
 import re
 import shlex
 import sys
-import tempfile
 import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -30,6 +29,12 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 try:
+    from tools.artifact_io import write_json_atomic as _write_json_atomic
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from artifact_io import write_json_atomic as _write_json_atomic
+
+
+try:
     from tools.autopilot_args import MAX_LANES
     from tools.checkpoint_witness import (
         is_canonical_coverage_lane_evidence_ref,
@@ -37,7 +42,7 @@ try:
         new_round_lane as _round_lane,
         validate_round_progress as _round_progress,
     )
-    from tools.action_queue import ACTIVE_STATUSES as ACTION_QUEUE_ACTIVE_STATUSES, FINAL_STATUSES as ACTION_QUEUE_FINAL_STATUSES, _target_owned_nonempty_evidence_ref as action_queue_target_owned_nonempty_evidence_ref, load_queue as load_action_queue, load_queue_summary, queue_mutation_lock, queue_fingerprint as action_queue_fingerprint
+    from tools.action_queue import ACTIVE_STATUSES as ACTION_QUEUE_ACTIVE_STATUSES, FINAL_STATUSES as ACTION_QUEUE_FINAL_STATUSES, load_queue as load_action_queue, load_queue_summary, queue_mutation_lock, queue_fingerprint as action_queue_fingerprint
     from tools.autopilot_state import (
         _global_review_basis,
         _queue_snapshot_for_target,
@@ -54,7 +59,7 @@ try:
     from tools.case_state_seed import build_case_state_seed
     from tools.structured_findings import format_validation_runner_candidate_lines
     from tools.target_case_state import summary as build_case_state_summary
-    from tools.target_paths import canonical_target_value, open_target_lock_file, target_storage_key
+    from tools.target_paths import canonical_target_value, open_target_lock_file, target_storage_key, target_owned_nonempty_evidence_ref
     from tools.target_store import TargetStore, runtime_store
 except ImportError:  # pragma: no cover - direct tools/ execution
     from autopilot_args import MAX_LANES  # type: ignore
@@ -67,7 +72,6 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from action_queue import (  # type: ignore
         ACTIVE_STATUSES as ACTION_QUEUE_ACTIVE_STATUSES,
         FINAL_STATUSES as ACTION_QUEUE_FINAL_STATUSES,
-        _target_owned_nonempty_evidence_ref as action_queue_target_owned_nonempty_evidence_ref,
         load_queue as load_action_queue, load_queue_summary,
         queue_mutation_lock,
         queue_fingerprint as action_queue_fingerprint,
@@ -88,39 +92,12 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from case_state_seed import build_case_state_seed  # type: ignore
     from structured_findings import format_validation_runner_candidate_lines  # type: ignore
     from target_case_state import summary as build_case_state_summary  # type: ignore
-    from target_paths import canonical_target_value, open_target_lock_file, target_storage_key  # type: ignore
+    from target_paths import canonical_target_value, open_target_lock_file, target_storage_key, target_owned_nonempty_evidence_ref  # type: ignore
     from target_store import TargetStore, runtime_store  # type: ignore
 
 
 def now_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _write_json_atomic(path: Path, payload: dict) -> None:
-    """Write a runtime witness without exposing a partial JSON document."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=str(path.parent),
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            temp_path = Path(handle.name)
-            handle.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        temp_path.replace(path)
-    except Exception:
-        if temp_path is not None:
-            try:
-                temp_path.unlink()
-            except FileNotFoundError:
-                pass
-        raise
 
 
 def _checkpoint_witness_path(repo_root: Path | str, target: str) -> Path:
@@ -222,7 +199,7 @@ def _invalid_completed_lane_evidence(
         if lane.get("status") != "completed":
             continue
         lane_id = str(lane.get("id") or "")
-        evidence_ref = action_queue_target_owned_nonempty_evidence_ref(
+        evidence_ref = target_owned_nonempty_evidence_ref(
             repo_root,
             target,
             lane.get("evidence_ref"),
@@ -415,7 +392,7 @@ def record_round_lane_result(
         if lane_record is None:
             raise ValueError(f"round lane was not claimed: {lane_id}")
         if terminal_status == "completed":
-            terminal_evidence = action_queue_target_owned_nonempty_evidence_ref(
+            terminal_evidence = target_owned_nonempty_evidence_ref(
                 repo_root,
                 target,
                 terminal_evidence,

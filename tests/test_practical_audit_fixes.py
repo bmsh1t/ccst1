@@ -161,7 +161,7 @@ def test_scanner_active_input_filter_reads_saved_scope_without_changing_discover
 
 
 def test_browser_import_registers_private_raw_and_rejects_foreign_paths(tmp_path):
-    from tools.action_queue import _target_owned_nonempty_evidence_ref
+    from tools.target_paths import target_owned_nonempty_evidence_ref
 
     store = TargetStore(tmp_path, "audit.test")
     store.initialize()
@@ -189,12 +189,12 @@ def test_browser_import_registers_private_raw_and_rejects_foreign_paths(tmp_path
         path = tmp_path / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("bytes")
-        assert _target_owned_nonempty_evidence_ref(tmp_path, store.target, relative) == ""
+        assert target_owned_nonempty_evidence_ref(tmp_path, store.target, relative) == ""
         with pytest.raises(StoreError, match="raw evidence directories"):
             store._artifact(relative)
     link = tmp_path / ".private/browser/audit.test/escaped"
     link.symlink_to(tmp_path / ".private/browser/foreign.test/raw")
-    assert _target_owned_nonempty_evidence_ref(tmp_path, store.target, str(link)) == ""
+    assert target_owned_nonempty_evidence_ref(tmp_path, store.target, str(link)) == ""
     with pytest.raises(StoreError, match="raw evidence directories"):
         store._artifact(str(link))
     raw = tmp_path / ref

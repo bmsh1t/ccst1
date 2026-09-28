@@ -9,11 +9,15 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
+
+try:
+    from tools.artifact_io import write_json_atomic as _write_json_atomic
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from artifact_io import write_json_atomic as _write_json_atomic
+
 
 try:
     from tools.current_truth import current_cell_projection
@@ -281,33 +285,6 @@ def build_surface_input_manifest(
         "fingerprint": hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
         "items": items,
     }
-
-
-def _write_json_atomic(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=str(path.parent),
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            temp_path = Path(handle.name)
-            json.dump(payload, handle, ensure_ascii=False, indent=2)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        temp_path.replace(path)
-    except Exception:
-        if temp_path is not None:
-            try:
-                temp_path.unlink()
-            except FileNotFoundError:
-                pass
-        raise
 
 
 def _bounded_surface(ranked: dict) -> dict:

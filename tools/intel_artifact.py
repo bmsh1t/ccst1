@@ -7,10 +7,14 @@ import argparse
 import base64
 import hashlib
 import json
-import os
-import tempfile
 import urllib.parse
 from pathlib import Path
+
+try:
+    from tools.artifact_io import write_json_atomic as _write_json_atomic
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from artifact_io import write_json_atomic as _write_json_atomic
+
 
 try:
     from tools.target_paths import canonical_target_value, target_storage_key
@@ -143,32 +147,6 @@ def validate_intel_artifact(payload: object) -> dict:
         if not str(source.get("source") or "").strip():
             raise IntelArtifactError("intel source name is missing")
     return payload
-
-
-def _write_json_atomic(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=str(path.parent),
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            temp_path = Path(handle.name)
-            handle.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        temp_path.replace(path)
-    except Exception:
-        if temp_path is not None:
-            try:
-                temp_path.unlink()
-            except FileNotFoundError:
-                pass
-        raise
 
 
 def intel_artifact_path(repo_root: str | Path, target: str) -> Path:

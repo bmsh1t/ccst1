@@ -28,13 +28,11 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 try:
-    from tools.runtime_state import runtime_wait_action
-    from tools.target_paths import canonical_target_value, target_storage_key, target_raw_artifact_path
-    from tools.target_store import ConflictError, StoreError, TargetStore, runtime_store, target_backend, target_switch_lock
+    from tools.target_paths import canonical_target_value, target_storage_key, target_owned_nonempty_evidence_ref
+    from tools.target_store import ConflictError, StoreError, TargetStore, runtime_store, target_switch_lock
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from runtime_state import runtime_wait_action  # type: ignore
-    from target_paths import canonical_target_value, target_storage_key, target_raw_artifact_path  # type: ignore
-    from target_store import ConflictError, StoreError, TargetStore, runtime_store, target_backend, target_switch_lock  # type: ignore
+    from target_paths import canonical_target_value, target_storage_key, target_owned_nonempty_evidence_ref  # type: ignore
+    from target_store import ConflictError, StoreError, TargetStore, runtime_store, target_switch_lock  # type: ignore
 
 
 SCHEMA_VERSION = 1
@@ -72,17 +70,6 @@ COVERAGE_STATUS_BY_ACTION_STATUS = {
 }
 UNSAFE_REVIEW_FINAL_STATUSES = {"tested", "dead-end", "blocked", "n/a", "candidate", "validated", "reported"}
 TERMINAL_EVIDENCE_STATUSES = {"validated", "reported"}
-EVIDENCE_REF_KEYS = {
-    "artifact",
-    "evidence",
-    "evidence_ref",
-    "report",
-    "report_file",
-    "summary",
-    "validation-summary",
-    "validation_summary",
-}
-EVIDENCE_ROOTS = {".private", "evidence", "findings", "recon", "reports"}
 REPORT_ACTION_TYPES = {"report"}
 ADVISORY_REVIEW_ACTION_TYPES = {
     "surface-review", "capability-chain-review", "knowledge-signal-review",
@@ -126,13 +113,6 @@ CONTINUATION_KINDS = {
     "workflow", "chain", "rotation", "blocked",
 }
 MAX_CAPABILITY_PRIMITIVES = 3
-SENSITIVE_OBSERVATION_VALUE_RE = re.compile(
-    r"\b(?:authorization|cookie|set-cookie|x-api-key)\b\s*[\"']?\s*[:=]\s*[\"']?\s*\S+|"
-    r"\bbearer\s+[A-Za-z0-9._~+/=-]{3,}|"
-    r"\b(?:(?:access|id|refresh)[_-]?token|token|password|api[-_ ]?key)\b"
-    r"\s*[\"']?\s*[:=]\s*[\"']?\s*\S+",
-    re.I,
-)
 
 
 def now_utc() -> str:
@@ -159,51 +139,6 @@ def _validate_action_metadata(metadata: dict | None) -> dict:
 
     visit(metadata, "metadata")
     return metadata
-
-
-def _bounded_metadata_text(value: Any, field: str, *, limit: int = 500) -> str:
-    text = _compact_text(value, limit + 1)
-    if not text:
-        raise ValueError(f"Action Queue depth contract requires {field}")
-    if len(text) > limit:
-        raise ValueError(f"Action Queue depth contract {field} exceeds {limit} characters")
-    return text
-
-
-def _validate_observed_difference(value: Any) -> str:
-    text = _bounded_metadata_text(value, "last_outcome.observed_difference")
-    if SENSITIVE_OBSERVATION_VALUE_RE.search(text):
-        raise ValueError("Action Queue observed difference cannot contain credential or header values")
-    return text
-
-
-def _target_owned_evidence_ref(repo_root: Path | str, target: str, value: Any) -> str:
-    ref = _locatable_evidence_ref(repo_root, str(value or ""))
-    if not ref:
-        return ""
-    repo = Path(repo_root).resolve()
-    try:
-        relative = target_raw_artifact_path(repo, target, ref).relative_to(repo)
-    except (OSError, ValueError):
-        return ""
-    return str(relative)
-
-
-def _target_owned_nonempty_evidence_ref(
-    repo_root: Path | str,
-    target: str,
-    value: Any,
-) -> str:
-    """Return a target-owned evidence file only when it contains bytes."""
-    ref = _target_owned_evidence_ref(repo_root, target, value)
-    if not ref:
-        return ""
-    try:
-        if (Path(repo_root) / ref).stat().st_size <= 0:
-            return ""
-    except OSError:
-        return ""
-    return ref
 
 
 def queue_path(repo_root: Path | str, target: str) -> Path:
@@ -322,7 +257,7 @@ def _primary_create_action(
     metadata["action_context"] = {key: built[key] for key in ACTION_CONTEXT_FIELDS}
     endpoint = str(metadata.get("endpoint") or metadata.get("url") or "").strip()
     family = str(metadata.get("family") or metadata.get("vuln_class") or "").strip()
-    evidence_ref = _target_owned_nonempty_evidence_ref(repo_root, target, metadata.get("evidence_ref"))
+    evidence_ref = target_owned_nonempty_evidence_ref(repo_root, target, metadata.get("evidence_ref"))
     if endpoint and family:
         kind = "execution"
         subject = None
@@ -570,64 +505,10 @@ def queue_fingerprint(queue: dict) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def _write_json_atomic(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=str(path.parent),
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            temp_path = Path(handle.name)
-            handle.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        temp_path.replace(path)
-    except Exception:
-        if temp_path is not None:
-            try:
-                temp_path.unlink()
-            except FileNotFoundError:
-                pass
-        raise
-
-
 def _compact_text(value: Any, limit: int = 800) -> str:
     text = str(value or "").strip()
     text = re.sub(r"\s+", " ", text)
     return text[:limit]
-
-
-def _locatable_evidence_ref(repo_root: Path | str, result: str) -> str:
-    """Return one existing repo-local evidence path embedded in a result."""
-    repo = Path(repo_root).resolve()
-    text = str(result or "").strip()
-    if not text:
-        return ""
-    candidates: list[str] = []
-    for match in re.finditer(r"(?:^|[;\s])([A-Za-z][A-Za-z0-9_-]*)=(\S+)", text):
-        if match.group(1).lower() in EVIDENCE_REF_KEYS:
-            candidates.append(match.group(2))
-    candidates.extend(re.split(r"[;\s]+", text))
-    for value in candidates:
-        ref = str(value or "").strip().strip("`'\"()[]{}<>,")
-        if not ref or ref.endswith("="):
-            continue
-        path = Path(ref)
-        if not path.is_absolute():
-            path = repo / path
-        try:
-            resolved = path.resolve()
-            relative = resolved.relative_to(repo)
-        except (OSError, ValueError):
-            continue
-        if relative.parts and relative.parts[0] in EVIDENCE_ROOTS and resolved.is_file():
-            return str(resolved)
-    return ""
 
 
 def _dedupe_key(action: dict) -> str:

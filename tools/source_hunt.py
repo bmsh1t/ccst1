@@ -2,14 +2,18 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-import tempfile
 from pathlib import Path
 
 from repo_ci_scan import scan_repo_ci
 from repo_scan_models import RepoFinding, RepoSourceMeta
 from repo_secret_scan import scan_repo_secrets
 from repo_source import MAX_REPO_SIZE_BYTES, RepoConfirmationRequired, acquire_repo_source
+try:
+    from tools.artifact_io import write_text_atomic as _write_text_atomic
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from artifact_io import write_text_atomic as _write_text_atomic
+
+
 try:
     from tools.target_paths import target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
@@ -28,25 +32,6 @@ def _exposure_dir(target: str, repo_root: str | Path | None = None) -> Path:
 
 def _write_json(path: Path, payload) -> None:
     _write_text_atomic(path, json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
-
-
-def _write_text_atomic(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w", encoding="utf-8", dir=str(path.parent),
-            prefix=f".{path.name}.", suffix=".tmp", delete=False,
-        ) as handle:
-            temporary = Path(handle.name)
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        temporary.replace(path)
-    except Exception:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
-        raise
 
 
 def render_repo_summary(

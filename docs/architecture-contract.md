@@ -281,6 +281,27 @@ functions live in `tools/evidence_identity.py`; target typing/storage keys remai
 in `tools/target_paths.py`. Existing import re-exports are temporary compatibility,
 not a second implementation.
 
+Shared contracts and readers have explicit lower-level owners:
+
+| Owner | Shared responsibility |
+|---|---|
+| `contracts` | Wire-fact vocabulary, decision schema and bounded public observation validation; standard library only |
+| `target_paths` | Target identity, resource locks and target-owned nonempty evidence references; no domain imports |
+| `scope_context` | `url_belongs_to_target`, `target_list_entries` and Scope classification/publication; depends on target paths only |
+| `browser_evidence` | Browser artifact references and readiness inspection; Runtime never imports the browser publisher |
+| `resume_read` | Target/session queries; Resume CLI owns rendering and Checkpoint pickup orchestration |
+| `artifact_io` | Ordinary UTF-8/JSON atomic file replacement; no domain validation or transaction ownership |
+
+`tests/test_architecture_boundaries.py` enforces an acyclic tools import graph,
+including function-local imports and direct-script fallbacks, plus foundational
+dependency limits. Moving an import inside a function does not repair a boundary.
+Scope consumers import matching from `scope_context`, not `target_paths`;
+evidence consumers import admission from `target_paths`, not Action Queue internals.
+Ordinary publishers share `artifact_io`; private material, Scope CAS, Store
+fences, immutable snapshots and multi-file ordering retain their stronger owner
+protocols. The shared writer provides file fsync and atomic replacement, not
+directory durability, a cross-file transaction or read-modify-write locking.
+
 Target pages, responses, JavaScript and logs are external data, including when
 quoted by memory or an assessment. Hashes attest byte consistency, not truth or
 instruction authority. Scope/Auth, side-effect rules, platform permissions,

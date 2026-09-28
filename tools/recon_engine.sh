@@ -197,7 +197,7 @@ import sys
 
 base_dir, target, input_raw, output_raw, mode = sys.argv[1:]
 sys.path.insert(0, base_dir)
-from tools.target_paths import url_belongs_to_target
+from tools.scope_context import url_belongs_to_target
 
 source = Path(input_raw)
 values = []
@@ -987,7 +987,7 @@ import sys
 
 base_dir, target, source, output = sys.argv[1:]
 sys.path.insert(0, base_dir)
-from tools.target_paths import url_belongs_to_target
+from tools.scope_context import url_belongs_to_target
 
 kept = []
 for raw in Path(source).read_text(encoding="utf-8", errors="replace").splitlines():
@@ -3382,7 +3382,8 @@ import sys
 
 base_dir, target, targets_raw, subdomains_raw, output_raw = sys.argv[1:]
 sys.path.insert(0, base_dir)
-from tools.target_paths import canonical_target_value, classify_target, url_belongs_to_target
+from tools.target_paths import canonical_target_value, classify_target
+from tools.scope_context import url_belongs_to_target
 
 targets, subdomains, output = map(Path, (targets_raw, subdomains_raw, output_raw))
 hosts = set()

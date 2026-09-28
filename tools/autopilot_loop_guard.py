@@ -19,14 +19,12 @@ try:
         current_cell_projection,
         ledger_health_projection as _ledger_health_projection,
     )
-    from tools.target_paths import url_belongs_to_target
 except ImportError:  # pragma: no cover - direct tools/ execution
     from closure_resolver import canonical_endpoint_path  # type: ignore
     from current_truth import (  # type: ignore
         current_cell_projection,
         ledger_health_projection as _ledger_health_projection,
     )
-    from target_paths import url_belongs_to_target  # type: ignore
 
 HIGH_VALUE_OBSERVATION_KINDS = frozenset({"exposure", "infra"})
 _ROTATION_OUTCOMES = {"tested_clean", "dead_end"}
@@ -485,5 +483,4 @@ def _endpoint_family(endpoint: object) -> str:
         ":id" if _UUID_SEGMENT_RE.fullmatch(segment) or _VARIABLE_PATH_SEGMENT_RE.fullmatch(segment) else segment
         for segment in path.split("/")
     ) or "/"
-
 

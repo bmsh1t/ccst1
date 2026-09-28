@@ -17,12 +17,16 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import stat
 import sys
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+
+try:
+    from tools.artifact_io import write_text_atomic as _write_text_atomic
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from artifact_io import write_text_atomic as _write_text_atomic
+
 
 try:
     from tools.target_paths import target_storage_key
@@ -111,31 +115,6 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def _write_text_atomic(path: Path, content: str) -> None:
-    temporary: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=str(path.parent),
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            temporary = Path(handle.name)
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        temporary.replace(path)
-    except Exception:
-        if temporary is not None:
-            try:
-                temporary.unlink()
-            except FileNotFoundError:
-                pass
-        raise
 
 
 def _previous_js_hashes(path: Path) -> dict[str, str]:

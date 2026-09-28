@@ -49,7 +49,7 @@ filter_target_urls_copy() {
 import sys
 from pathlib import Path
 
-from tools.target_paths import url_belongs_to_target
+from tools.scope_context import url_belongs_to_target
 from tools.scope_source import load_scope_context
 
 source, destination, target, dropped_path, lane, repo_root = sys.argv[1:]

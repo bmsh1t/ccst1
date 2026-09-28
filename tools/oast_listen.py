@@ -57,6 +57,11 @@ from typing import Optional
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+try:
+    from tools.artifact_io import write_text_atomic
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from artifact_io import write_text_atomic
+
 # ─── Logging to stderr ──────────────────────────────────────────────────────
 _GREEN = "\033[0;32m"
 _RED = "\033[0;31m"
@@ -636,25 +641,8 @@ def _load_markers(paths: dict[str, Path]) -> list[dict]:
 
 
 def _save_markers(paths: dict[str, Path], markers: list[dict]) -> None:
-    """Atomic write, same envelope as the rest of the tool's state files."""
-    import tempfile
-
-    paths["base"].mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(
-        dir=str(paths["base"]), prefix=".markers.", suffix=".tmp"
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(json.dumps(markers, ensure_ascii=False, indent=1))
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp, paths["markers"])
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    """Publish the marker list with its existing indent and no trailing newline."""
+    write_text_atomic(paths["markers"], json.dumps(markers, ensure_ascii=False, indent=1))
 
 
 def cmd_markers(target: str, vuln_class: str, label: str) -> int:

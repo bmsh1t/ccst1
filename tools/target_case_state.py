@@ -24,13 +24,13 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 try:
-    from tools.action_queue import SENSITIVE_OBSERVATION_VALUE_RE
+    from tools.contracts import SENSITIVE_OBSERVATION_VALUE_RE
     from tools.auth_session import AuthSession
     from tools.private_artifacts import private_artifact_dir, write_private_json
     from tools.target_paths import canonical_target_value, target_storage_key
     from tools.target_store import _identifier, _text, runtime_store
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from action_queue import SENSITIVE_OBSERVATION_VALUE_RE  # type: ignore
+    from contracts import SENSITIVE_OBSERVATION_VALUE_RE  # type: ignore
     from auth_session import AuthSession  # type: ignore
     from private_artifacts import private_artifact_dir, write_private_json  # type: ignore
     from target_paths import canonical_target_value, target_storage_key  # type: ignore

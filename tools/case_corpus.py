@@ -24,6 +24,12 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 try:
+    from tools.artifact_io import write_json_atomic as _atomic_json
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from artifact_io import write_json_atomic as _atomic_json
+
+
+try:
     from tools.corpus_projection import normalize_report
     from tools.knowledge_registry import (
         KnowledgeRegistryError,
@@ -142,33 +148,6 @@ def _sha256_file(path: Path) -> str:
 
 def _sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
-
-
-def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
-    """在目标目录内原子写 JSON，失败时清理临时文件。"""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=str(path.parent),
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            temporary = Path(handle.name)
-            handle.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        temporary.replace(path)
-    except Exception:
-        if temporary is not None:
-            try:
-                temporary.unlink()
-            except FileNotFoundError:
-                pass
-        raise
 
 
 def _input_paths(paths: Iterable[Path] | None, work_dir: Path) -> list[Path]:

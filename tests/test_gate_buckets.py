@@ -50,6 +50,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 OWNER_SOURCES = (
+    REPO_ROOT / "tools" / "contracts.py",
     REPO_ROOT / "tools" / "action_queue.py",
     REPO_ROOT / "tools" / "validation_runner.py",
     REPO_ROOT / "tools" / "validate.py",
@@ -59,10 +60,11 @@ OWNER_SOURCES = (
 # Minimum classifiable-gate counts per source. The floors exist so that a
 # broken extractor, a moved owner file, or a wholesale refactor fails loudly
 # instead of letting the bucket assertion pass vacuously on an empty corpus.
-# Current baseline: action_queue 52 / validation_runner 10 / validate 62 /
-# checkpoint 23 ValueError gates.
+# Observation text gates moved from Action Queue to shared contracts; keep
+# both owners in the corpus and preserve their combined minimum of 15.
 MIN_GATES_PER_SOURCE = {
-    "action_queue.py": 15,  # C4 retired JSON writers and compensation gates
+    "contracts.py": 3,
+    "action_queue.py": 12,  # C4 retirement, then three shared text gates moved
     "validation_runner.py": 5,
     "validate.py": 40,
     "checkpoint.py": 15,

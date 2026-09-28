@@ -79,11 +79,9 @@ import fcntl
 import hashlib
 import html
 import json
-import os
 import re
 import shlex
 import sys
-import tempfile
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -93,6 +91,12 @@ from urllib.parse import unquote, urlsplit
 BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
+
+try:
+    from tools.artifact_io import write_json_atomic
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from artifact_io import write_json_atomic
+
 
 try:
     from tools.attack_probe_filter import is_attack_probe, sanitize_attack_probe_url
@@ -105,7 +109,8 @@ try:
     )
     from tools.route_kinds import load_observations as load_route_kind_observations
     from tools.surface_index import build_surface_index_input_manifest, iter_surface_index, load_surface_index_status, recon_source_iterators
-    from tools.target_paths import canonical_target_value, target_https_url, target_storage_key, url_belongs_to_target
+    from tools.target_paths import canonical_target_value, target_https_url, target_storage_key
+    from tools.scope_context import url_belongs_to_target
     from tools.target_store import COVERAGE_REVIEW_STATUSES, ENDPOINT_KIND_VALUES, FINAL_ENDPOINT_KIND_SOURCES, StoreError, runtime_store, target_switch_lock
 except ImportError:  # pragma: no cover - top-level tools/ import
     from attack_probe_filter import is_attack_probe, sanitize_attack_probe_url  # type: ignore
@@ -126,7 +131,8 @@ except ImportError:  # pragma: no cover - top-level tools/ import
     )
     from route_kinds import load_observations as load_route_kind_observations  # type: ignore
     from surface_index import build_surface_index_input_manifest, iter_surface_index, load_surface_index_status, recon_source_iterators  # type: ignore
-    from target_paths import canonical_target_value, target_https_url, target_storage_key, url_belongs_to_target  # type: ignore
+    from target_paths import canonical_target_value, target_https_url, target_storage_key  # type: ignore
+    from scope_context import url_belongs_to_target  # type: ignore
     from target_store import (  # type: ignore
         COVERAGE_REVIEW_STATUSES, ENDPOINT_KIND_VALUES, FINAL_ENDPOINT_KIND_SOURCES,
         StoreError, runtime_store, target_switch_lock,
@@ -225,8 +231,6 @@ def _storage_key(target: str) -> str:
 
 def _matrix_path(repo_root: Path, target: str) -> Path:
     return repo_root / "evidence" / _storage_key(target) / "coverage_matrix.json"
-
-
 
 
 @contextmanager
@@ -360,36 +364,8 @@ def matrix_is_fresh(
     return bool(matrix.get("source_fingerprint")) and matrix.get("source_fingerprint") == expected
 
 
-
-
-
-
 def _write_json_atomic(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=str(path.parent),
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            temp_path = Path(handle.name)
-            handle.write(json.dumps(payload, indent=2) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        temp_path.replace(path)
-    except Exception:
-        if temp_path is not None:
-            try:
-                temp_path.unlink()
-            except FileNotFoundError:
-                pass
-        raise
-
-
+    write_json_atomic(path, payload, ensure_ascii=True)
 
 
 def load_matrix_projection(target: str, repo_root: Path | str | None = None) -> dict:

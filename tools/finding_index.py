@@ -15,18 +15,25 @@ import json
 import os
 import re
 import sqlite3
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 try:
+    from tools.artifact_io import write_json_atomic as _write_finding_payload
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from artifact_io import write_json_atomic as _write_finding_payload
+
+
+try:
     from tools.closure_resolver import canonical_endpoint_identity
-    from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
+    from tools.target_paths import canonical_target_value, target_storage_key
+    from tools.scope_context import url_belongs_to_target
     from tools.target_store import StoreError, target_switch_lock
 except ImportError:  # pragma: no cover - top-level tools/ import
     from closure_resolver import canonical_endpoint_identity
-    from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
+    from target_paths import canonical_target_value, target_storage_key
+    from scope_context import url_belongs_to_target
     from target_store import StoreError, target_switch_lock  # type: ignore
 
 SCHEMA_VERSION = 1
@@ -1113,33 +1120,6 @@ def _legacy_list_to_index(
     payload["findings"] = findings
     _refresh_finding_counts(payload)
     return payload
-
-
-def _write_finding_payload(path: Path, payload: dict[str, Any]) -> None:
-    """Atomically persist the canonical target-level finding payload."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=str(path.parent),
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            temp_path = Path(handle.name)
-            handle.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        temp_path.replace(path)
-    except Exception:
-        if temp_path is not None:
-            try:
-                temp_path.unlink()
-            except FileNotFoundError:
-                pass
-        raise
 
 
 def _load_finding_payload(

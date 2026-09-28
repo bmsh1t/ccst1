@@ -28,19 +28,17 @@ from typing import Any
 from urllib.parse import urlsplit
 
 try:
-    from tools.target_paths import (
-        canonical_target_value,
-        classify_target,
-        target_storage_key,
-        url_belongs_to_target,
-    )
+    from tools.artifact_io import write_json_atomic
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from artifact_io import write_json_atomic
+
+
+try:
+    from tools.target_paths import canonical_target_value, classify_target, target_storage_key
+    from tools.scope_context import url_belongs_to_target
 except ImportError:  # pragma: no cover - 兼容 python3 tools/deep_js_packer.py
-    from target_paths import (
-        canonical_target_value,
-        classify_target,
-        target_storage_key,
-        url_belongs_to_target,
-    )
+    from target_paths import canonical_target_value, classify_target, target_storage_key
+    from scope_context import url_belongs_to_target
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -452,27 +450,7 @@ def resolve_tool_root(explicit: str = "") -> Path | None:
 
 
 def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=path.parent,
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            temp_path = Path(handle.name)
-            json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        temp_path.replace(path)
-    except Exception:
-        if temp_path is not None:
-            temp_path.unlink(missing_ok=True)
-        raise
+    write_json_atomic(path, payload, sort_keys=True)
 
 
 def _base_result(

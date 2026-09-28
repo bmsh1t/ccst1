@@ -11,11 +11,16 @@ import shutil
 import signal
 import subprocess
 import sys
-import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
+
+try:
+    from tools.artifact_io import write_text_atomic as _atomic_text
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from artifact_io import write_text_atomic as _atomic_text
+
 
 try:
     from tools.runtime_state import RuntimePhaseBusy, runtime_phase_lock
@@ -39,21 +44,6 @@ MAX_TIMEOUT_SECONDS = 1_800
 
 def _now_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _atomic_text(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, raw_temp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    temp_path = Path(raw_temp)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(text)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temp_path, path)
-    except Exception:
-        temp_path.unlink(missing_ok=True)
-        raise
 
 
 def _atomic_json(path: Path, payload: dict[str, Any]) -> None:

@@ -82,9 +82,13 @@ using external telemetry storage pass `repo_root`; CLI `--repo-root` owns Scope
 and the default telemetry directory. Telemetry remains advisory, not active
 request admission or a guarantee that every executor enforces the rate.
 
-- Reuse `target_paths.url_belongs_to_target()` for existing single-target,
+- Reuse `scope_context.url_belongs_to_target()` for existing single-target,
   list, port, scheme, IP, and CIDR semantics; do not copy suffix/CIDR logic in
   active consumers.
+- `target_list_entries(path, *, preserve_wildcards=False)` also belongs to
+  `scope_context`. Python and Shell-embedded Python import both matchers from
+  that owner; `target_paths` retains typing, storage identity, locks and raw
+  evidence paths and must not import Scope back through a compatibility alias.
 - Keep discovered but unlisted network assets as `external-chain-context` or
   `scope-review`; only `in_scope` is executable.
 - Invalid manifest/pattern input fails before network I/O. Missing/invalid

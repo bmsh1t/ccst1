@@ -64,6 +64,12 @@ except ImportError:  # pragma: no cover - package import path
     from tools.runtime_config import load_runtime_config
 
 
+try:
+    from tools.contracts import MACHINE_DECISION_SCHEMA_VERSION, SEVEN_QUESTION_DEFINITIONS
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from contracts import MACHINE_DECISION_SCHEMA_VERSION, SEVEN_QUESTION_DEFINITIONS
+
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
@@ -106,18 +112,8 @@ def load_json_file(path: str) -> dict:
         return {"_path": path, "_load_error": str(exc)}
 
 
-SEVEN_QUESTION_DEFINITIONS = (
-    ("q1_replayable_now", "Can I demonstrate this step-by-step right now?"),
-    ("q2_impact_demonstrated", "Is the impact clearly demonstrated?"),
-    ("q3_target_context", "Is the vulnerable asset tied to the supplied target context?"),
-    ("q4_attacker_access", "Does it avoid privileged access an attacker cannot get?"),
-    ("q5_not_known_behavior", "Is this not known or documented behavior?"),
-    ("q6_impact_beyond_possible", "Can impact be proved beyond technically possible?"),
-    ("q7_not_never_submit", "Is this not on the never-submit list unless chained?"),
-)
 SEVEN_QUESTION_KEYS = tuple(key for key, _ in SEVEN_QUESTION_DEFINITIONS)
 SEVEN_QUESTION_STATUSES = {"pass", "fail", "partial", "chain_required", "unknown"}
-MACHINE_DECISION_SCHEMA_VERSION = 2
 RUNNER_SUMMARY_SCHEMA_VERSION = 1
 MACHINE_DECISION_GATE_KEYS = ("gate1", "gate2", "gate3", "gate4")
 CVSS_PARAMETER_KEYS = ("AV", "AC", "AT", "PR", "UI", "VC", "VI", "VA", "SC", "SI", "SA")

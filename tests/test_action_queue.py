@@ -234,12 +234,14 @@ def test_manual_action_cli_writes_metadata_and_preserves_duplicate_queue_behavio
 
 
 def test_target_owned_evidence_ref_rejects_resolver_path_outside_repo(tmp_path, monkeypatch):
+    from tools import target_paths
+
     monkeypatch.setattr(
-        action_queue_module,
+        target_paths,
         "_locatable_evidence_ref",
         lambda *_args: "/tmp/foreign/evidence.json",
     )
-    assert action_queue_module._target_owned_evidence_ref(tmp_path, "api.target.com", "foreign") == ""
+    assert target_paths._target_owned_evidence_ref(tmp_path, "api.target.com", "foreign") == ""
 
 
 @pytest.mark.parametrize("metadata", [{}, {"route_required": True}, {

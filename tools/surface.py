@@ -56,13 +56,8 @@ try:
         scanner_manual_review_paths,
         write_surface_projection,
     )
-    from tools.target_paths import (
-        compact_url,
-        canonical_target_value,
-        resolve_target_url,
-        target_storage_key,
-        url_belongs_to_target,
-    )
+    from tools.target_paths import compact_url, canonical_target_value, resolve_target_url, target_storage_key
+    from tools.scope_context import url_belongs_to_target
     from tools.target_store import TargetStore, runtime_store, target_switch_lock
 except ImportError:  # pragma: no cover - top-level tools/ import
     from closure_resolver import canonical_endpoint_path  # type: ignore
@@ -80,13 +75,8 @@ except ImportError:  # pragma: no cover - top-level tools/ import
     from runtime_state import _derive_owner_projection, inspect_recon_artifacts, load_runtime_state
     from surface_index import SurfaceIndexError, build_surface_index, iter_surface_index, load_surface_index_status, surface_shape, surface_request_shape, surface_safe_preview, surface_value_summary
     from surface_projection import MANUAL_REVIEW_INPUTS, build_surface_input_manifest, scanner_manual_review_paths, write_surface_projection
-    from target_paths import (  # type: ignore
-        compact_url,
-        canonical_target_value,
-        resolve_target_url,
-        target_storage_key,
-        url_belongs_to_target,
-    )
+    from target_paths import compact_url, canonical_target_value, resolve_target_url, target_storage_key  # type: ignore
+    from scope_context import url_belongs_to_target
     from target_store import TargetStore, runtime_store, target_switch_lock  # type: ignore
 try:
     from tools.browser_surface import public_url_shape

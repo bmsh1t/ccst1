@@ -8,10 +8,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import sys
-import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -19,9 +17,17 @@ from typing import Callable
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 try:
-    from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
+    from tools.artifact_io import write_text_atomic as _atomic_write_text
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from artifact_io import write_text_atomic as _atomic_write_text
+
+
+try:
+    from tools.target_paths import canonical_target_value, target_storage_key
+    from tools.scope_context import url_belongs_to_target
 except ImportError:  # pragma: no cover - 兼容 python3 tools/openapi_semantics.py
-    from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
+    from target_paths import canonical_target_value, target_storage_key
+    from scope_context import url_belongs_to_target
 
 
 SCHEMA_VERSION = 1
@@ -94,32 +100,6 @@ def _read_lines(path: Path) -> list[str]:
         for line in path.read_text(encoding="utf-8", errors="replace").splitlines()
         if line.strip()
     ]
-
-
-def _atomic_write_text(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=str(path.parent),
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            temp_path = Path(handle.name)
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        temp_path.replace(path)
-    except Exception:
-        if temp_path is not None:
-            try:
-                temp_path.unlink()
-            except FileNotFoundError:
-                pass
-        raise
 
 
 def _jsonl(records: list[dict]) -> str:

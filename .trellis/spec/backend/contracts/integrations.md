@@ -28,7 +28,7 @@ python3 tools/oast_listen.py start|markers|poll|stop --target <target>
   为活动 `signal`；完整 invalid run 为终态 `tested`；中断、工具或网络未完成为 `lead`。
 - 已有 `candidate` 不得被后续不完整/clean run 降级；队列更新按 target+mode 幂等，metadata
   只允许 summary path、run id、mode、分类计数和 stop reason。
-- CSRF helper URL 和 OAuth 重定向必须通过 `target_paths.url_belongs_to_target()`；跨 Scope
+- CSRF helper URL 和 OAuth 重定向必须通过 `scope_context.url_belongs_to_target()`；跨 Scope
   在网络请求或凭据转发前分类为 guarded/scope error。
 - OAST `start` 创建当前监听代次的活动 `oast-callback`；`poll` 无回调保持活动，有回调
   转为 `candidate` 并记录 callback artifact/count；`stop` 无回调转为 `dead-end`，已有

@@ -142,7 +142,7 @@ def test_finding_page_batches_relations_and_preserves_complete_paging(tmp_path, 
 
 
 def test_finding_summary_is_bounded_exact_and_not_delivery_authority(tmp_path, monkeypatch):
-    from tools.resume import _structured_finding_followup
+    from tools.resume_read import _structured_finding_followup
     from tools.structured_findings import summarize_structured_findings
 
     store = make_store(tmp_path)

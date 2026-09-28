@@ -21,15 +21,19 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 BASE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = BASE_DIR.parent
+
+try:
+    from tools.artifact_io import write_text_atomic as _atomic_write_text
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from artifact_io import write_text_atomic as _atomic_write_text
+
 
 try:
     from tools.knowledge_registry import TARGET_EVIDENCE_REF_TYPE, parse_source_refs
@@ -41,23 +45,6 @@ DIGEST_SCHEMA_VERSION = 1
 DIGEST_DIR = Path("knowledge") / "distill-digests"
 # 判断可复核的最小事实字段；新增字段必须同样满足"无 headers、无 body"。
 FACT_FIELDS = ("method", "path", "status", "body_sha256", "body_bytes", "actor", "ts")
-
-
-def _atomic_write_text(path: Path, text: str) -> None:
-    """同目录 tmp + rename（与 openapi_semantics / knowledge_promote 同形态）。"""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(text)
-            handle.flush()
-        Path(tmp_name).replace(path)
-    except BaseException:
-        try:
-            Path(tmp_name).unlink()
-        except FileNotFoundError:
-            pass
-        raise
 
 
 def _sha256_of(path: Path) -> str:

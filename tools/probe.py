@@ -6,7 +6,7 @@ Task: 09-11-ai-capability-roadmap, batch B1.
 它是“记账的 curl”，不是扫描器：一次请求、无重试、无并发、无 payload 生成。
 每次调用按序做四件事——
 
-1. scope 检查：URL 必须属于 target（复用 ``target_paths.url_belongs_to_target``，
+1. scope 检查：URL 必须属于 target（复用 ``scope_context.url_belongs_to_target``，
    另加 localhost/127.0.0.1 等环回等价）；不匹配则拒绝且不发出任何请求。
 2. 发请求：stdlib ``urllib.request``（method/headers/body/timeout 透传，
    不跟随重定向——与 curl 默认语义一致，3xx 原样返回）。
@@ -58,11 +58,8 @@ try:
         normalize_result,
         normalize_variant,
     )
-    from tools.target_paths import (
-        canonical_target_value,
-        target_storage_key,
-        url_belongs_to_target,
-    )
+    from tools.target_paths import canonical_target_value, target_storage_key
+    from tools.scope_context import url_belongs_to_target
     from tools.target_store import StoreError, runtime_store, target_switch_lock
 except ImportError:  # pragma: no cover - direct tools/ execution
     from evidence_ledger import (  # type: ignore
@@ -72,11 +69,8 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         normalize_result,
         normalize_variant,
     )
-    from target_paths import (  # type: ignore
-        canonical_target_value,
-        target_storage_key,
-        url_belongs_to_target,
-    )
+    from target_paths import canonical_target_value, target_storage_key  # type: ignore
+    from scope_context import url_belongs_to_target
     from target_store import StoreError, runtime_store, target_switch_lock  # type: ignore
 
 DISPLAY_BODY_LIMIT = 4096

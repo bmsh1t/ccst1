@@ -17,7 +17,7 @@ from tools.target_store import TargetStore
 
 import pytest
 
-from tools import action_queue, noise_filter, runtime_config, target_memory, target_paths
+from tools import scope_context, action_queue, noise_filter, runtime_config, target_memory, target_paths
 
 
 def test_resolve_target_url_preserves_protocol_relative_authority():
@@ -152,23 +152,23 @@ def test_target_paths_isolates_same_stem_lists_by_canonical_path(tmp_path):
 
 
 def test_url_belongs_to_target_distinguishes_direct_evidence_from_chain_context():
-    assert target_paths.url_belongs_to_target(
+    assert scope_context.url_belongs_to_target(
         "http://127.0.0.1:3002/rest/admin",
         "http://127.0.0.1:3002/#/",
     )
-    assert not target_paths.url_belongs_to_target(
+    assert not scope_context.url_belongs_to_target(
         "https://steamcommunity.com/sharedfiles/filedetails/?id=1969196030",
         "http://127.0.0.1:3002/#/",
     )
-    assert target_paths.url_belongs_to_target(
+    assert scope_context.url_belongs_to_target(
         "https://api.example.com/v1/users",
         "example.com",
     )
-    assert not target_paths.url_belongs_to_target(
+    assert not scope_context.url_belongs_to_target(
         "http://127.0.0.1:3002application/vnd.ms-word.do",
         "http://127.0.0.1:3002/#/",
     )
-    assert not target_paths.url_belongs_to_target(
+    assert not scope_context.url_belongs_to_target(
         "https://example.com../api",
         "example.com",
     )
@@ -183,17 +183,17 @@ def test_url_belongs_to_target_handles_protocol_relative_wildcard_and_default_po
         "target": "example.com",
     }
     assert target_paths.canonical_target_value("https://*.Example.COM/path") == "*.example.com"
-    assert target_paths.url_belongs_to_target("//api.example.com/v1", "example.com")
-    assert not target_paths.url_belongs_to_target("//evil.example.net/v1", "example.com")
-    assert target_paths.url_belongs_to_target("https://api.example.com/v1", "*.example.com")
-    assert not target_paths.url_belongs_to_target("https://example.com/v1", "*.example.com")
-    assert target_paths.url_belongs_to_target("https://api.example.com/v1", str(scope))
-    assert not target_paths.url_belongs_to_target("https://example.com/v1", str(scope))
-    assert target_paths.url_belongs_to_target("https://example.com/v1", "example.com:443")
-    assert target_paths.url_belongs_to_target("//example.com/v1", "example.com:443")
-    assert target_paths.url_belongs_to_target("http://example.com/v1", "example.com:80")
-    assert target_paths.url_belongs_to_target("https://example.com:443/v1", "https://example.com")
-    assert not target_paths.url_belongs_to_target("http://example.com/v1", "https://example.com")
+    assert scope_context.url_belongs_to_target("//api.example.com/v1", "example.com")
+    assert not scope_context.url_belongs_to_target("//evil.example.net/v1", "example.com")
+    assert scope_context.url_belongs_to_target("https://api.example.com/v1", "*.example.com")
+    assert not scope_context.url_belongs_to_target("https://example.com/v1", "*.example.com")
+    assert scope_context.url_belongs_to_target("https://api.example.com/v1", str(scope))
+    assert not scope_context.url_belongs_to_target("https://example.com/v1", str(scope))
+    assert scope_context.url_belongs_to_target("https://example.com/v1", "example.com:443")
+    assert scope_context.url_belongs_to_target("//example.com/v1", "example.com:443")
+    assert scope_context.url_belongs_to_target("http://example.com/v1", "example.com:80")
+    assert scope_context.url_belongs_to_target("https://example.com:443/v1", "https://example.com")
+    assert not scope_context.url_belongs_to_target("http://example.com/v1", "https://example.com")
 
 
 def test_url_belongs_to_target_checks_each_primary_target_in_list(tmp_path):
@@ -203,19 +203,19 @@ def test_url_belongs_to_target_checks_each_primary_target_in_list(tmp_path):
         encoding="utf-8",
     )
 
-    assert target_paths.url_belongs_to_target(
+    assert scope_context.url_belongs_to_target(
         "https://shop.example.com/orders",
         str(scope),
     )
-    assert target_paths.url_belongs_to_target(
+    assert scope_context.url_belongs_to_target(
         "https://api.example.test:8443/v1/users",
         str(scope),
     )
-    assert not target_paths.url_belongs_to_target(
+    assert not scope_context.url_belongs_to_target(
         "https://api.example.test/v1/users",
         str(scope),
     )
-    assert not target_paths.url_belongs_to_target(
+    assert not scope_context.url_belongs_to_target(
         "https://third-party.test/callback",
         str(scope),
     )
@@ -228,7 +228,7 @@ def test_url_belongs_to_target_does_not_recurse_into_nested_lists(tmp_path, monk
     scope.write_text(f"{nested.name}\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
 
-    assert not target_paths.url_belongs_to_target(
+    assert not scope_context.url_belongs_to_target(
         "https://nested.example.test/api",
         str(scope),
     )

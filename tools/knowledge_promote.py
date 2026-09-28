@@ -18,13 +18,17 @@
 from __future__ import annotations
 
 import argparse
-import os
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+try:
+    from tools.artifact_io import write_text_atomic as _atomic_write_text
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from artifact_io import write_text_atomic as _atomic_write_text
+
 
 try:
     from tools.knowledge_registry import load_registry
@@ -38,33 +42,6 @@ VALID_LOAD_MODES = ("default", "signal-or-default", "signal-only", "on-demand", 
 
 def _slug_to_id(slug: str) -> str:
     return Path(slug).stem
-
-
-def _atomic_write_text(path: Path, content: str) -> None:
-    """原子替换文本文件（tmp 同目录 + fsync + rename），中途崩溃不留半文件。"""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=str(path.parent),
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            temp_path = Path(handle.name)
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        temp_path.replace(path)
-    except Exception:
-        if temp_path is not None:
-            try:
-                temp_path.unlink()
-            except FileNotFoundError:
-                pass
-        raise
 
 
 def _rollback(src: Path, dst: Path, registry_path: Path, original: str, new_digests: list[str] | None = None) -> None:

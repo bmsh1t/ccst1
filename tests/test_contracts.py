@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import pytest
+
 from tools.contracts import (
     CHECKPOINT_QUEUE_LOCK_ORDER,
     LEDGER_REDLINE_EVENTS,
     VALIDATE_TERMINAL_FINDING_STATES,
+    validate_observed_difference,
 )
 
 
@@ -47,7 +50,7 @@ def test_contracts_module_imports_only_stdlib():
             raise AssertionError(f"contracts.py must stay import-free, found: {node.module}")
         if isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name.split(".")[0] not in ("hashlib", "json", "typing", "__future__"):
+                if alias.name.split(".")[0] not in ("hashlib", "json", "re", "typing", "__future__"):
                     raise AssertionError(f"contracts.py must import only stdlib, found: {alias.name}")
 
 
@@ -74,3 +77,16 @@ def test_operation_id_contract_is_stable_and_shared():
     assert op_id == runner_operation_id({"artifact_bindings": artifact_digest_material(bindings)})
     assert validation_runner._artifact_digest_material(bindings) == material
     assert validation_runner._runner_operation_id({"artifact_bindings": material}) == op_id
+
+
+def test_observation_prose_preserves_bounds_and_rejects_secrets():
+    assert validate_observed_difference("  baseline\n differs\tfrom variant  ") == "baseline differs from variant"
+    assert validate_observed_difference("a" * 500) == "a" * 500
+    for value, reason in (
+        (None, "requires"), (" \n\t", "requires"), ("a" * 501, "exceeds 500"),
+        ("Authorization: Bearer abc123", "credential"),
+        ('{"refresh_token": "abc123"}', "credential"),
+        ("Cookie=session123", "credential"),
+    ):
+        with pytest.raises(ValueError, match=reason):
+            validate_observed_difference(value)

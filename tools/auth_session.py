@@ -24,10 +24,12 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 try:
-    from tools.target_paths import canonical_target_value, url_belongs_to_target
+    from tools.target_paths import canonical_target_value
+    from tools.scope_context import url_belongs_to_target
     from tools.scope_context import ScopeContext
 except ImportError:  # 兼容 python3 tools/auth_session.py
-    from target_paths import canonical_target_value, url_belongs_to_target
+    from target_paths import canonical_target_value
+    from scope_context import url_belongs_to_target
     from scope_context import ScopeContext
 
 _HEADER_RE = re.compile(r"^([A-Za-z0-9!#$%&'*+\-.^_`|~]+)\s*:\s*(.+)$")

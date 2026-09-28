@@ -15,7 +15,6 @@ import re
 import signal
 import ssl
 import sys
-import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -48,6 +47,12 @@ GITHUB_ADVISORY_URL = "https://api.github.com/advisories"
 NVD_CVE_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 EPSS_URL = "https://api.first.org/data/v1/epss"
+
+
+try:
+    from tools.artifact_io import write_json_atomic as _write_json_atomic
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from artifact_io import write_json_atomic as _write_json_atomic
 
 
 class IntelSourceError(RuntimeError):
@@ -273,32 +278,6 @@ def fetch_json(
         return json.loads(raw)
     except json.JSONDecodeError as exc:
         raise IntelSourceError(f"invalid JSON from {url}: {exc}") from exc
-
-
-def _write_json_atomic(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=str(path.parent),
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            temp_path = Path(handle.name)
-            handle.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        temp_path.replace(path)
-    except Exception:
-        if temp_path is not None:
-            try:
-                temp_path.unlink()
-            except FileNotFoundError:
-                pass
-        raise
 
 
 def _cache_path(repo_root: str | Path, source: str, query: object) -> Path:

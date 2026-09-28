@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,21 +37,29 @@ from urllib.parse import urlsplit
 import fcntl
 
 try:
-    from tools.browser_mcp_import import (
+    from tools.artifact_io import write_json_atomic as _write_json_atomic
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from artifact_io import write_json_atomic as _write_json_atomic
+
+
+try:
+    from tools.browser_evidence import (
         BROWSER_FRESHNESS_SECONDS,
         inspect_mcp_browser_readiness,
     )
     from tools.recon_adapter import ReconAdapter
     from tools.recon_gate import gate_from_record
     from tools.scope_source import load_scope_context
-    from tools.target_paths import canonical_target_value, open_target_lock_file, target_storage_key, url_belongs_to_target
+    from tools.target_paths import canonical_target_value, open_target_lock_file, target_storage_key
+    from tools.scope_context import url_belongs_to_target
     from tools.target_store import runtime_store, target_switch_lock
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from browser_mcp_import import BROWSER_FRESHNESS_SECONDS, inspect_mcp_browser_readiness
+    from browser_evidence import BROWSER_FRESHNESS_SECONDS, inspect_mcp_browser_readiness
     from recon_adapter import ReconAdapter
     from recon_gate import gate_from_record  # type: ignore
     from scope_source import load_scope_context  # type: ignore
-    from target_paths import canonical_target_value, open_target_lock_file, target_storage_key, url_belongs_to_target
+    from target_paths import canonical_target_value, open_target_lock_file, target_storage_key
+    from scope_context import url_belongs_to_target
     from target_store import runtime_store, target_switch_lock  # type: ignore
 
 SCHEMA_VERSION = 2
@@ -175,39 +182,6 @@ def _runtime_phase_marker_is_fresh(
     if updated_at is None:
         return True
     return (datetime.now(timezone.utc) - updated_at).total_seconds() <= stale_after_seconds
-
-
-def _write_json_atomic(path: Path, payload: dict) -> None:
-    """Atomically write JSON to `path` without exposing half-written state.
-
-    Multiple Claude sessions may read `state/<target>/session.json` while
-    `hunt.py` is writing `*_running` breadcrumbs. Direct `write_text()` can
-    briefly expose truncated JSON, causing readers to miss `wait_recon` /
-    `wait_scan`. Write in the same directory and replace atomically instead.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=str(path.parent),
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            temp_path = Path(handle.name)
-            handle.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        temp_path.replace(path)
-    except Exception:
-        if temp_path is not None:
-            try:
-                temp_path.unlink()
-            except FileNotFoundError:
-                pass
-        raise
 
 
 def _state_dir(repo_root: str | Path, target: str) -> Path:

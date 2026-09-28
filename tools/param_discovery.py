@@ -8,7 +8,6 @@ import hashlib
 import json
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import sys
@@ -25,12 +24,19 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 try:
+    from tools.artifact_io import write_json_atomic as _atomic_json
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from artifact_io import write_json_atomic as _atomic_json
+
+
+try:
     from tools.action_queue import add_material_review
     from tools.auth_session import AuthSession, add_cli_args, session_from_args
     from tools.browser_surface import public_url_shape
     from tools.deep_budget import project_budget
     from tools.private_artifacts import private_artifact_dir, write_private_text
-    from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
+    from tools.target_paths import canonical_target_value, target_storage_key
+    from tools.scope_context import url_belongs_to_target
     from tools.validation_runner import request_once
     from tools.scope_source import load_scope_context
 except ImportError:  # pragma: no cover - direct tools/ execution
@@ -39,20 +45,10 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from browser_surface import public_url_shape  # type: ignore
     from deep_budget import project_budget  # type: ignore
     from private_artifacts import private_artifact_dir, write_private_text  # type: ignore
-    from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # type: ignore
+    from target_paths import canonical_target_value, target_storage_key  # type: ignore
+    from scope_context import url_belongs_to_target  # type: ignore
     from validation_runner import request_once  # type: ignore
     from scope_source import load_scope_context  # type: ignore
-
-
-def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.tmp")
-    try:
-        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        temporary.replace(path)
-    finally:
-        if temporary.exists():
-            temporary.unlink()
 
 
 def _url_digest(values: Iterable[str]) -> str:
