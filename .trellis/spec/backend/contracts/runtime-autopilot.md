@@ -776,9 +776,11 @@ only; runtime flow control must use durable target state.
 
 ### 6. Tests Required
 
-- `tests/test_hunt_wrappers.py` must assert `hunt_target(..., scan_only=True)`
-  writes `scan_running/run_scan_started` before `run_vuln_scan` and a completed
-  `run_vuln_scan` breadcrumb afterwards.
+- `tests/test_runtime_state.py` and `tests/test_runtime_phase_execution.py`
+  must assert running breadcrumbs before phase execution, wait only while the
+  matching lock is held, and terminal breadcrumbs plus reusable locks afterwards.
+  Preserve hunt recon failure's `recon_only/run_recon` versus direct's
+  `recon_failed/run_recon_failed`; these are not interchangeable.
 - `tests/test_runtime_state.py` must assert a child process holding a running
   phase lock yields a wait, then termination releases the lock and clears that
   wait while the marker remains fresh.
@@ -806,8 +808,7 @@ with runtime_phase_lock(repo_root, target, "scan"):
     _persist_runtime_state(
         target,
         mode="scan_running",
-        last_completed_step="run_scan_started",
-        current_stage="scan",
+        last_executed_workflow="run_scan_started",
     )
     # autopilot_state.py renders wait_scan only while this lock is held.
     run_vuln_scan(target, quick=True)
@@ -829,6 +830,8 @@ classify_target(value) -> {"kind": "domain|ip|cidr|list", "target": str}
 target_https_url(value) -> str
 run_argv_command(argv, *, cwd=None, timeout=600, env=None) -> (bool, str)
 run_argv_command_split(argv, *, cwd=None, timeout=600, env=None) -> (bool, str, str)
+run_live_argv_command(argv, *, cwd=None, env=None, timeout=None,
+                      pass_fds=(), require_signal_handlers=False) -> int
 ```
 
 ### 3. Contracts
@@ -854,6 +857,22 @@ run_argv_command_split(argv, *, cwd=None, timeout=600, env=None) -> (bool, str, 
   `shell=False`, and preserves cwd/env, text pipes, timeout diagnostics, and
   process-group SIGTERM/SIGKILL cleanup. Shell helpers remain only for explicit
   static shell syntax.
+- `runtime_exec.run_live_argv_command` is the mechanical owner for hunt recon,
+  hunt scan, and direct phase execution. It reuses argv validation and `_spawn`,
+  inherits stdout/stderr, and returns the raw exit code. It owns SIGINT/SIGTERM
+  installation/restoration; callers retain target locks, breadcrumbs and domain
+  work, with no parallel Popen/wait/signal/kill implementation.
+- Live and captured execution share `_terminate_process_group`: TERM, up to
+  3 seconds grace, then KILL and bounded reaping. A reaped leader is not proof
+  its group is empty; retain the original group ID and check remaining members.
+  ProcessLookupError is a normal exit race; other cleanup errors stay visible.
+- Hunt retains bool results, BASE_DIR cwd, mode/env timeout budgets, credential
+  filtering, inherited lock FDs and best-effort signal registration. Direct
+  retains raw int results (busy=75), inherited cwd/env, timeout=None, parent-held
+  lock without FD inheritance, and require_signal_handlers=True. Recon's exact
+  URL marker, scan's canonical marker, inventory sync and candidate preservation
+  remain caller-owned; neither shell internals nor direct's SIGKILL limitation
+  are changed by this execution helper.
 - Hunt/CVE compatibility paths pass data as separate argv elements; native
   scanner input flags (`-u`/`-l`) replace echo/cat pipelines. Authentication
   remains environment/file based and never enters argv or public logs.
@@ -872,7 +891,10 @@ run_argv_command_split(argv, *, cwd=None, timeout=600, env=None) -> (bool, str, 
 | Bare IPv6 converted to HTTPS | bracketed authority such as `https://[2001:db8::1]` |
 | Empty/non-string argv or non-string element | `ValueError` before `Popen` |
 | Valid URL with reserved path/query characters | canonical host/port plus exact seed URL |
-| Timeout | partial output retained once, process group terminated, stable timeout text |
+| Captured API timeout | partial output retained once, process group terminated, stable timeout text |
+| Live timeout / SIGINT or SIGTERM / spawn or wait failure | group cleanup when spawned, handlers restored, original exception re-raised; cleanup diagnostics go to stderr |
+| Live signal registration fails outside main thread | best-effort continues; strict restores handlers, cleans child and re-raises registration error |
+| Direct child exits 124 | raw 124 and failure breadcrumb; not a wrapper deadline |
 | Concurrent scanner/config checks | distinct temporary inputs, each removed after its command |
 | Residual shell caller | must be static shell syntax with no target/path/header interpolation |
 
@@ -880,6 +902,8 @@ run_argv_command_split(argv, *, cwd=None, timeout=600, env=None) -> (bool, str, 
 
 - Good: `https://example.test/a?next=https://other.test` becomes canonical
   `example.test`, while the exact URL is one argv value for the seed-aware path.
+- Good: an interrupted phase reaps its leader and kills a TERM-ignoring same-group
+  descendant before the caller releases its lock and finishes its breadcrumb.
 - Base: a legacy state lookup receives an invalid historical key and uses the
   read fallback without making it an active target.
 - Bad: join a target or output path into a shell string, treat a scanner-negative
@@ -887,15 +911,22 @@ run_argv_command_split(argv, *, cwd=None, timeout=600, env=None) -> (bool, str, 
 
 ### 6. Tests Required
 
-- `tests/test_core_foundation_tools.py`, `tests/test_hunt_target_types.py`,
+- `tests/test_core_foundation_tools.py`, `tests/test_hunt_initialization.py`,
   `tests/test_scope_context.py`, and `tests/test_autopilot_args.py`: valid
   target/storage compatibility, DNS case/tail-dot normalization, strict
   rejection, IPv6/brackets, exact seed, and no-side-effect invalid entry.
 - `tests/test_runtime_exec.py`: argv shape/spawn flags, combined/split output,
-  cwd/env, timeout partial-output deduplication, and process cleanup.
-- `tests/test_hunt_wrappers.py` and `tests/test_vuln_scanner_script.py`:
-  target/URL/path/option argv identity, bracketed IPv6 origins, unique temporary
-  inputs, cleanup, and scanner result parsing.
+  cwd/env, timeout partial-output deduplication, process cleanup, live handler
+  restoration, non-main-thread policy and original failures with diagnostics.
+- `tests/test_runtime_phase_execution.py`: real local hunt/direct recon/scan
+  success, nonzero, signals, busy, hunt deadline, spawn failure, argv/env/cwd/FD,
+  inherited streams, markers and lock recovery; leader-first exit must not leak
+  a TERM-ignoring same-group descendant. Core PR CI must include this matrix and
+  `tests/test_runtime_exec.py`, enforced by `tests/test_ci_contract.py`.
+- `tests/test_scanner_store_registration.py`: shell/direct canonical lock wiring,
+  busy admission and replayable scanner material. Scanner wrappers must retain
+  unique temporary inputs and cleanup on success/failure; live execution does
+  not replace their result-parsing or material-registration checks.
 
 ### 7. Wrong vs Correct
 
@@ -903,12 +934,14 @@ run_argv_command_split(argv, *, cwd=None, timeout=600, env=None) -> (bool, str, 
 
 ```text
 f'curl "{url}"' -> shell=True -> target/path controls command parsing
+hunt/direct each implement signal handlers and process-group cleanup
 ```
 
 #### Correct
 
 ```text
 ["curl", url] -> shell=False -> existing timeout/output contract -> parser
+phase adapter -> run_live_argv_command(argv, ...) -> one shared cleanup boundary
 ```
 
 ## Scenario: Canonical Checkpoint Decision Projection

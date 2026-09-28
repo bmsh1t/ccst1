@@ -359,87 +359,50 @@ def test_runtime_phase_lock_remains_held_by_inheriting_child(tmp_path):
     assert runtime_phase_is_active(tmp_path, "target.com", "recon") is False
 
 
-def test_direct_phase_runner_returns_busy_without_starting_child(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        runtime_phase_exec.subprocess,
-        "run",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("child must not start")),
-    )
+def test_direct_phase_runner_returns_busy_without_starting_child(tmp_path):
+    sentinel = tmp_path / "started"
+    update_runtime_state(tmp_path, "target.com", mode="previous")
+    state_file = tmp_path / "state" / "target.com" / "session.json"
+    before = state_file.read_bytes()
+    command = [sys.executable, "-c", "from pathlib import Path; import sys; Path(sys.argv[1]).touch()", str(sentinel)]
 
     with runtime_phase_lock(tmp_path, "target.com", "recon"):
-        assert runtime_phase_exec.run_phase_command(
-            tmp_path,
-            "target.com",
-            "recon",
-            ["ignored"],
-        ) == 75
+        assert runtime_phase_exec.run_phase_command(tmp_path, "target.com", "recon", command) == 75
+
+    assert not sentinel.exists()
+    assert state_file.read_bytes() == before
 
 
 def test_direct_phase_runner_marks_child_lock_ownership(tmp_path, monkeypatch):
-    captured = {}
-
-    class FakeProc:
-        returncode = 17
-        pid = 1234
-
-        def wait(self):
-            return self.returncode
-
-    def fake_popen(command, *, env, start_new_session):
-        captured.update({"command": command, "env": env, "start_new_session": start_new_session})
-        return FakeProc()
-
-    monkeypatch.setattr(runtime_phase_exec.subprocess, "Popen", fake_popen)
-    code = runtime_phase_exec.run_phase_command(
-        tmp_path,
-        "target.com",
-        "scan",
-        ["scanner", "--quick"],
-    )
+    runner = Mock(return_value=17)
+    monkeypatch.setattr(runtime_phase_exec, "run_live_argv_command", runner)
+    code = runtime_phase_exec.run_phase_command(tmp_path, "target.com", "scan", ["scanner", "--quick"])
 
     assert code == 17
-    assert captured["command"] == ["scanner", "--quick"]
-    assert captured["env"]["BBHUNT_RUNTIME_PHASE_LOCKED"] == "scan"
-    assert captured["env"]["BBHUNT_RUNTIME_LOCK_TARGET"] == "target.com"
-    assert captured["start_new_session"] is True
+    args, kwargs = runner.call_args
+    assert args == (["scanner", "--quick"],)
+    assert kwargs["env"]["BBHUNT_RUNTIME_PHASE_LOCKED"] == "scan"
+    assert kwargs["env"]["BBHUNT_RUNTIME_LOCK_TARGET"] == "target.com"
+    assert kwargs["timeout"] is None
+    assert kwargs["require_signal_handlers"] is True
+    assert kwargs.get("pass_fds", ()) == ()
+    assert kwargs.get("cwd") is None
     state = load_runtime_state(tmp_path, "target.com")
     assert state["mode"] == "scan_failed"
     assert state["last_executed_workflow"] == "run_vuln_scan_failed"
 
 
-def test_direct_phase_runner_terminates_child_on_interrupt(tmp_path, monkeypatch):
-    captured = []
-
-    class FakeProc:
-        returncode = None
-        pid = 1235
-
-        def wait(self):
-            raise KeyboardInterrupt
-
-    monkeypatch.setattr(
-        runtime_phase_exec.subprocess,
-        "Popen",
-        lambda *args, **kwargs: FakeProc(),
-    )
-    monkeypatch.setattr(
-        runtime_phase_exec,
-        "_terminate_process_group",
-        lambda proc: captured.append(proc),
-    )
-
+def test_direct_phase_runner_finalizes_interrupted_runner(tmp_path, monkeypatch):
+    runner = Mock(side_effect=KeyboardInterrupt)
+    monkeypatch.setattr(runtime_phase_exec, "run_live_argv_command", runner)
     with pytest.raises(KeyboardInterrupt):
-        runtime_phase_exec.run_phase_command(
-            tmp_path,
-            "target.com",
-            "scan",
-            ["scanner", "--deep"],
-        )
+        runtime_phase_exec.run_phase_command(tmp_path, "target.com", "scan", ["scanner", "--deep"])
 
-    assert captured
+    runner.assert_called_once()
     state = load_runtime_state(tmp_path, "target.com")
     assert state["mode"] == "scan_failed"
     assert state["last_executed_workflow"] == "run_vuln_scan_failed"
+    assert runtime_wait_action(tmp_path, "target.com") == ""
 
 
 def test_runtime_phase_liveness_requires_running_marker_and_held_lock(tmp_path):

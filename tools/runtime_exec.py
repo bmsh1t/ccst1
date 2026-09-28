@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 from collections.abc import Sequence
@@ -128,31 +129,70 @@ def _merge_timeout_stream(partial: str, cleanup: str) -> str:
     return _concat_streams(partial, _trim_replayed_prefix(partial, cleanup))
 
 
-def _terminate_process_group(proc: subprocess.Popen[str]) -> tuple[str, str]:
+def _terminate_process_group(
+    proc: subprocess.Popen[str], *, live: bool = False,
+) -> tuple[str, str]:
+    """Reap the child and terminate its session group, even if its leader exits."""
+    diagnostics = ""
+    # Every caller uses start_new_session: the original pid remains the group
+    # identity after the leader exits and getpgid can no longer find it.
+    pgid = proc.pid
     try:
         pgid = os.getpgid(proc.pid)
+    except ProcessLookupError:
+        pass
     except Exception as exc:
-        return "", f"process-group lookup failed: {_bounded_error(exc)}"
+        diagnostics = f"process-group lookup failed: {_bounded_error(exc)}"
 
-    termination_error = ""
+    def collect(timeout: int | float) -> tuple[str, str, bool]:
+        if not live:
+            return _communicate_for(proc, timeout)
+        try:
+            proc.wait(timeout=timeout)
+            return "", "", True
+        except subprocess.TimeoutExpired:
+            return "", "", False
+        except Exception as exc:
+            return "", f"wait failed: {_bounded_error(exc)}", False
+
+    deadline = time.monotonic() + TERMINATION_GRACE_SECONDS
     try:
         os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
     except Exception as exc:
-        termination_error = f"SIGTERM failed: {_bounded_error(exc)}"
+        diagnostics = _append_message(diagnostics, f"SIGTERM failed: {_bounded_error(exc)}")
 
-    stdout, stderr, finished = _communicate_for(proc, TERMINATION_GRACE_SECONDS)
-    if termination_error:
-        stderr = _append_message(stderr, termination_error)
+    stdout, stderr, finished = collect(TERMINATION_GRACE_SECONDS)
     if finished:
-        return stdout, stderr
+        # Reaping the leader alone does not prove its descendants have exited.
+        while True:
+            try:
+                os.killpg(pgid, 0)
+            except ProcessLookupError:
+                return stdout, _append_message(stderr, diagnostics) if diagnostics else stderr
+            except Exception as exc:
+                diagnostics = _append_message(diagnostics, f"process-group probe failed: {_bounded_error(exc)}")
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(0.05, remaining))
 
     try:
         os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
     except Exception as exc:
-        return stdout, _append_message(stderr, f"SIGKILL failed: {_bounded_error(exc)}")
+        diagnostics = _append_message(diagnostics, f"SIGKILL failed: {_bounded_error(exc)}")
 
-    kill_stdout, kill_stderr, _finished = _communicate_for(proc, TERMINATION_GRACE_SECONDS)
-    return _merge_timeout_stream(stdout, kill_stdout), _merge_timeout_stream(stderr, kill_stderr)
+    kill_stdout, kill_stderr, finished = collect(TERMINATION_GRACE_SECONDS)
+    if not finished:
+        kill_stderr = _append_message(kill_stderr, "process cleanup did not finish after SIGKILL")
+    stderr = _merge_timeout_stream(stderr, kill_stderr)
+    if diagnostics:
+        stderr = _append_message(stderr, diagnostics)
+    return _merge_timeout_stream(stdout, kill_stdout), stderr
 
 
 def _spawn(
@@ -163,6 +203,7 @@ def _spawn(
     env: dict[str, str] | None = None,
     stdout: Any = subprocess.PIPE,
     stderr: Any = subprocess.PIPE,
+    pass_fds: tuple[int, ...] = (),
 ) -> subprocess.Popen[str]:
     return subprocess.Popen(
         cmd,
@@ -173,6 +214,7 @@ def _spawn(
         stderr=stderr,
         text=True,
         start_new_session=True,
+        pass_fds=pass_fds,
     )
 
 
@@ -377,6 +419,64 @@ def _normalize_argv(argv: Sequence[str]) -> list[str]:
     ):
         raise ValueError("argv must be a non-empty sequence of strings")
     return list(argv)
+
+
+def _restore_signal_handlers(previous: dict[int, Any]) -> None:
+    for signum, handler in previous.items():
+        try:
+            signal.signal(signum, handler)
+        except (ValueError, RuntimeError) as exc:
+            print(f"signal handler restore failed: {_bounded_error(exc)}", file=sys.stderr)
+    previous.clear()
+
+
+def run_live_argv_command(
+    argv: Sequence[str],
+    *,
+    cwd: str | None = None,
+    env: dict[str, str] | None = None,
+    timeout: int | float | None = None,
+    pass_fds: tuple[int, ...] = (),
+    require_signal_handlers: bool = False,
+) -> int:
+    """Run argv with inherited streams, preserving failures after group cleanup."""
+    command = _normalize_argv(argv)
+    proc = None
+    previous: dict[int, Any] = {}
+    cleaning = False
+
+    def interrupt(_signum, _frame):
+        # Repeated signals must not interrupt the one bounded cleanup attempt.
+        if not cleaning:
+            raise KeyboardInterrupt
+
+    try:
+        proc = _spawn(
+            command, shell=False, cwd=cwd, env=env,
+            stdout=None, stderr=None, pass_fds=pass_fds,
+        )
+        try:
+            for signum in (signal.SIGINT, signal.SIGTERM):
+                handler = signal.getsignal(signum)
+                signal.signal(signum, interrupt)
+                previous[signum] = handler
+        except (ValueError, RuntimeError):
+            _restore_signal_handlers(previous)
+            if require_signal_handlers:
+                raise
+        return proc.wait(timeout=timeout)
+    except BaseException:
+        cleaning = True
+        if proc is not None:
+            try:
+                _stdout, diagnostics = _terminate_process_group(proc, live=True)
+            except Exception as exc:
+                diagnostics = f"process cleanup failed: {_bounded_error(exc)}"
+            if diagnostics:
+                print(diagnostics, file=sys.stderr)
+        raise
+    finally:
+        _restore_signal_handlers(previous)
 
 
 def run_shell_command(

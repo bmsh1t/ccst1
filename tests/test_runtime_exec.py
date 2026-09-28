@@ -409,3 +409,93 @@ def test_trim_replayed_prefix_only_strips_confirmed_duplicate_prefix():
     assert runtime_exec._trim_replayed_prefix("same", "same") == ""
 
 
+@pytest.mark.parametrize("argv", [[], "echo ok", 123, ["echo", 1]])
+def test_live_runner_rejects_bad_argv_before_spawn(monkeypatch, argv):
+    def unexpected(*args, **kwargs):
+        raise AssertionError("must not spawn")
+
+    monkeypatch.setattr(runtime_exec.subprocess, "Popen", unexpected)
+    with pytest.raises(ValueError):
+        runtime_exec.run_live_argv_command(argv)
+
+
+def test_live_runner_spawn_contract_and_handler_restoration(monkeypatch):
+    captured = {}
+    before = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+
+    class FakeProc:
+        def wait(self, timeout=None):
+            captured["timeout"] = timeout
+            assert all(signal.getsignal(sig) != before[sig] for sig in before)
+            return 17
+
+    def spawn(*args, **kwargs):
+        captured.update(kwargs)
+        captured["argv"] = args[0]
+        return FakeProc()
+
+    monkeypatch.setattr(runtime_exec.subprocess, "Popen", spawn)
+    assert runtime_exec.run_live_argv_command(
+        ["command", "one argument"], cwd="/tmp", env={"KEY": "synthetic"}, timeout=7, pass_fds=(11,)
+    ) == 17
+    assert captured == {
+        "argv": ["command", "one argument"], "cwd": "/tmp", "env": {"KEY": "synthetic"},
+        "timeout": 7, "pass_fds": (11,), "shell": False, "stdout": None, "stderr": None,
+        "text": True, "start_new_session": True,
+    }
+    assert all(signal.getsignal(sig) == before[sig] for sig in before)
+
+
+@pytest.mark.parametrize("strict", [False, True])
+def test_live_runner_non_main_thread_signal_registration_policy(strict):
+    from concurrent.futures import ThreadPoolExecutor
+
+    before = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        result = pool.submit(runtime_exec.run_live_argv_command,
+                             [sys.executable, "-c", "pass"], require_signal_handlers=strict)
+        if strict:
+            with pytest.raises(ValueError, match="signal only works"):
+                result.result(timeout=8)
+        else:
+            assert result.result(timeout=8) == 0
+    assert all(signal.getsignal(sig) == before[sig] for sig in before)
+
+
+def test_live_runner_cleanup_faults_preserve_original_failure_and_restore_handlers(monkeypatch, capsys):
+    before = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+    signals = []
+    original = OSError("original wait failure")
+
+    class FakeProc:
+        pid = 999999
+
+        def wait(self, timeout=None):
+            raise original
+
+    def fail_lookup(pid):
+        raise OSError("lookup failure")
+
+    def fail_kill(pgid, sig):
+        signals.append(sig)
+        raise OSError("kill failure")
+
+    monkeypatch.setattr(runtime_exec, "_spawn", lambda *a, **k: FakeProc())
+    monkeypatch.setattr(runtime_exec.os, "getpgid", fail_lookup)
+    monkeypatch.setattr(runtime_exec.os, "killpg", fail_kill)
+    with pytest.raises(OSError) as error:
+        runtime_exec.run_live_argv_command(["command"])
+    assert error.value is original
+    stderr = capsys.readouterr().err
+    for message in ("lookup failed", "SIGTERM failed", "SIGKILL failed", "wait failed"):
+        assert message in stderr
+    assert len(stderr) < 1500
+    assert signals == [signal.SIGTERM, signal.SIGKILL]
+    assert all(signal.getsignal(sig) == before[sig] for sig in before)
+
+
+def test_live_runner_missing_executable_raises_without_changing_handlers():
+    before = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+    with pytest.raises(FileNotFoundError):
+        runtime_exec.run_live_argv_command(["__ccst_missing_executable__"])
+    assert all(signal.getsignal(sig) == before[sig] for sig in before)

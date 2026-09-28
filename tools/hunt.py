@@ -20,7 +20,6 @@ import re
 import ipaddress
 import shutil
 import shlex
-import signal
 import ssl
 import subprocess
 import sys
@@ -51,6 +50,7 @@ from tools.auth_session import AuthSession, add_cli_args, session_from_args
 from tools.credential_store import CredentialStore
 from tools.eburst_lane import resolve_eburst
 from tools.runtime_config import is_ctf_mode_enabled, load_runtime_config
+from runtime_exec import run_live_argv_command
 from tools.runtime_state import (
     RuntimePhaseBusy,
     derive_owner_projection,
@@ -191,76 +191,6 @@ def run_argv(argv, cwd=None, timeout=600, env=None):
     from runtime_exec import run_argv_command
 
     return run_argv_command(argv, cwd=cwd, timeout=timeout, env=env)
-
-
-def _kill_process_group(proc):
-    """Best-effort termination for a spawned subprocess session."""
-    if proc is None:
-        return
-    try:
-        pgid = os.getpgid(proc.pid)
-    except BaseException:
-        return
-
-    try:
-        os.killpg(pgid, signal.SIGTERM)
-    except BaseException:
-        pass
-
-    try:
-        proc.wait(timeout=3)
-        return
-    except subprocess.TimeoutExpired:
-        pass
-    except BaseException:
-        pass
-
-    try:
-        os.killpg(pgid, signal.SIGKILL)
-    except BaseException:
-        pass
-
-    try:
-        proc.wait(timeout=3)
-    except BaseException:
-        return
-
-
-def _install_child_signal_handlers(proc):
-    """Forward parent termination to a spawned process group.
-
-    The handler raises ``KeyboardInterrupt`` after the group is cleaned so the
-    caller's existing failure-state path still runs.  Signal registration is
-    best-effort for library callers running outside the main thread.
-    """
-    previous = {}
-
-    def _forward(_signum, _frame):
-        _kill_process_group(proc)
-        raise KeyboardInterrupt
-
-    try:
-        for signum in (signal.SIGINT, signal.SIGTERM):
-            previous[signum] = signal.getsignal(signum)
-            signal.signal(signum, _forward)
-    except (ValueError, RuntimeError):
-        for signum, handler in previous.items():
-            try:
-                signal.signal(signum, handler)
-            except (ValueError, RuntimeError):
-                pass
-        return None
-    return previous
-
-
-def _restore_child_signal_handlers(previous):
-    if not previous:
-        return
-    for signum, handler in previous.items():
-        try:
-            signal.signal(signum, handler)
-        except (ValueError, RuntimeError):
-            pass
 
 
 def classify_target(target):
@@ -932,8 +862,6 @@ def run_recon(domain, quick=False, deep=False):
     recon_flag = "--quick" if quick else "--deep" if deep else "--normal"
 
     # Run with live output
-    proc = None
-    signal_handlers = None
     try:
         child_env = _runtime_child_env("CHAOS_API_KEY")
         child_env["BBHUNT_RUNTIME_PHASE_LOCKED"] = "recon"
@@ -942,21 +870,18 @@ def run_recon(domain, quick=False, deep=False):
         # it must acquire a lock itself.  Preserve an exact URL here so the
         # child recognises the lock it already inherited.
         child_env["BBHUNT_RUNTIME_LOCK_TARGET"] = recon_target
-        proc = subprocess.Popen(
-            ["bash", script, recon_target, recon_flag],
-            shell=False,
-            cwd=BASE_DIR,
-            env=child_env,
-            start_new_session=True,
-            pass_fds=_RUNTIME_PHASE_LOCK_FDS,
-        )
-        signal_handlers = _install_child_signal_handlers(proc)
         timeout = 1800 if quick else 14400 if deep else 7200
         if target_info["kind"] == "list":
             per_target = 900 if quick else 14400 if deep else 7200
             timeout = max(1800, min(43200, per_target * max(list_count, 1)))
-        proc.wait(timeout=timeout)
-        success = proc.returncode == 0
+        returncode = run_live_argv_command(
+            ["bash", script, recon_target, recon_flag],
+            cwd=BASE_DIR,
+            env=child_env,
+            timeout=timeout,
+            pass_fds=_RUNTIME_PHASE_LOCK_FDS,
+        )
+        success = returncode == 0
         if success and target_info["kind"] != "list":
             try:
                 from observation_inventory import sync_inventory
@@ -968,15 +893,11 @@ def run_recon(domain, quick=False, deep=False):
                 log("warn", f"Observation inventory sync failed for {normalized_target}: {exc}")
         return success
     except subprocess.TimeoutExpired:
-        _kill_process_group(proc)
         log("err", f"Recon timed out for {normalized_target}")
         return False
     except BaseException:
-        _kill_process_group(proc)
         log("err", f"Recon interrupted for {normalized_target}")
         raise
-    finally:
-        _restore_child_signal_handlers(signal_handlers)
 
 
 def _scanner_timeout_seconds(*, quick: bool = False, scanner_full: bool = False) -> int:
@@ -1014,35 +935,25 @@ def run_vuln_scan(domain, quick=False, scanner_full=False, scanner_skip=""):
         scanner_flags.extend(["--skip", scanner_skip])
     cmd = ["bash", script, recon_dir, *scanner_flags]
 
-    proc = None
-    signal_handlers = None
     try:
         child_env = _runtime_child_env()
         child_env["BBHUNT_RUNTIME_PHASE_LOCKED"] = "scan"
         child_env["BBHUNT_RUNTIME_LOCK_TARGET"] = classify_target(domain)["target"]
-        proc = subprocess.Popen(
+        return run_live_argv_command(
             cmd,
-            shell=False,
             cwd=BASE_DIR,
             env=child_env,
-            start_new_session=True,
+            timeout=_scanner_timeout_seconds(quick=quick, scanner_full=scanner_full),
             pass_fds=_RUNTIME_PHASE_LOCK_FDS,
-        )
-        signal_handlers = _install_child_signal_handlers(proc)
-        proc.wait(timeout=_scanner_timeout_seconds(quick=quick, scanner_full=scanner_full))
-        return proc.returncode == 0
+        ) == 0
     except subprocess.TimeoutExpired:
-        _kill_process_group(proc)
         _finalize_interrupted_scan(domain)
         log("err", f"Vulnerability scan timed out for {domain}")
         return False
     except BaseException:
-        _kill_process_group(proc)
         _finalize_interrupted_scan(domain)
         log("err", f"Vulnerability scan interrupted for {domain}")
         raise
-    finally:
-        _restore_child_signal_handlers(signal_handlers)
 
 
 def _finalize_interrupted_scan(domain):

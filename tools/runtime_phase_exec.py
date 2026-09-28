@@ -5,42 +5,15 @@ from __future__ import annotations
 
 import argparse
 import os
-import signal
-import subprocess
 import sys
 from pathlib import Path
 
 try:
+    from tools.runtime_exec import run_live_argv_command
     from tools.runtime_state import RuntimePhaseBusy, runtime_phase_lock, update_runtime_state
 except ImportError:  # pragma: no cover - direct tools/ execution
+    from runtime_exec import run_live_argv_command  # type: ignore
     from runtime_state import RuntimePhaseBusy, runtime_phase_lock, update_runtime_state  # type: ignore
-
-
-def _terminate_process_group(proc: subprocess.Popen) -> None:
-    """Terminate a direct phase child and all descendants."""
-    if proc is None:
-        return
-    try:
-        pgid = os.getpgid(proc.pid)
-    except BaseException:
-        return
-    try:
-        os.killpg(pgid, signal.SIGTERM)
-    except BaseException:
-        pass
-    try:
-        proc.wait(timeout=3)
-        return
-    except BaseException:
-        pass
-    try:
-        os.killpg(pgid, signal.SIGKILL)
-    except BaseException:
-        pass
-    try:
-        proc.wait(timeout=3)
-    except BaseException:
-        pass
 
 
 def run_phase_command(
@@ -63,33 +36,12 @@ def run_phase_command(
             env = os.environ.copy()
             env["BBHUNT_RUNTIME_PHASE_LOCKED"] = phase
             env["BBHUNT_RUNTIME_LOCK_TARGET"] = target
-            proc = None
-            previous_handlers = {}
-
-            def _forward_signal(_signum, _frame):
-                _terminate_process_group(proc)
-                raise KeyboardInterrupt
-
             try:
-                proc = subprocess.Popen(
-                    command,
-                    env=env,
-                    start_new_session=True,
+                returncode = run_live_argv_command(
+                    command, env=env, timeout=None, require_signal_handlers=True,
                 )
-                for signum in (signal.SIGINT, signal.SIGTERM):
-                    previous_handlers[signum] = signal.getsignal(signum)
-                    signal.signal(signum, _forward_signal)
-                returncode = proc.wait()
                 return returncode
-            except BaseException:
-                _terminate_process_group(proc)
-                raise
             finally:
-                for signum, handler in previous_handlers.items():
-                    try:
-                        signal.signal(signum, handler)
-                    except (ValueError, RuntimeError):
-                        pass
                 succeeded = returncode == 0
                 update_runtime_state(
                     repo_root,
