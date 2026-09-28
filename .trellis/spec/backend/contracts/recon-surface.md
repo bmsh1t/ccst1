@@ -213,6 +213,8 @@ autopilot_gate._scanner_lane_residuals(state: dict) -> list[dict]
   summary 排除、独立 claim payload 和原文保留。配合
   `tests/test_coverage_matrix.py::test_default_xss_skip_is_visible_without_closing_coverage`
   固定有效 skip 不关闭 XSS cell、新证据可取消 skip。
+- 既有 PR `core-contracts` job 必须直接运行 `tests/test_autopilot_state_tool.py` 和
+  `tests/test_scanner_pass.py`，由 `tests/test_ci_contract.py` 固定门禁清单；不能只依赖 main 全量测试。
 - `tests/test_surface_tool.py`：canonical summary 新增未知 manual-review 文件后，断言
   完整 ranked 索引、有界 projection 和默认文本可见；同时覆盖空、缺失、重复、绝对及
   越界路径，并固定未知条目不进入 workflow leads。

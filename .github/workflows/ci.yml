@@ -38,13 +38,17 @@ jobs:
           tests/test_runtime_state.py
           tests/test_runtime_exec.py
           tests/test_runtime_phase_execution.py
+          tests/test_install_script.py
+          tests/test_runtime_doctor.py
           tests/test_finding_index.py
           tests/test_action_queue.py
           tests/test_evidence_ledger.py
           tests/test_checkpoint.py
           tests/test_autopilot_round.py
+          tests/test_autopilot_state_tool.py
           tests/test_closure_snapshot_stability.py
           tests/test_surface_projection.py
+          tests/test_scanner_pass.py
           tests/test_ci_contract.py
           tests/test_resume_tool.py
           tests/test_spray_orchestrator.py

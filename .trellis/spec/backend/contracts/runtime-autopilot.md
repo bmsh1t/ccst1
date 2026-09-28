@@ -577,6 +577,9 @@ are executable prompt resources, not optional repository documentation.
   cause no `MISSING`; an old runtime copy is reported/pruned as `EXTRA`, and the
   repo file remains byte-identical. Missing `rsync` is reported as a test skip,
   not silently claimed as covered.
+- The existing PR `core-contracts` job must run `tests/test_install_script.py` and
+  `tests/test_runtime_doctor.py`, enforced by `tests/test_ci_contract.py`; do not
+  defer these regressions solely to the main-branch full suite.
 - Autopilot prompt tests assert repo-root/drift checks precede state/recon/surface/
   scan and that the preflight contains no `--sync` action.
 - Run targeted pytest, full `pytest -q`, and `git diff --check`; release acceptance
