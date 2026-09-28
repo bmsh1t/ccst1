@@ -76,6 +76,13 @@ the explicit Checkpoint error. Public query parameters never admit a fabricated
 Coverage or Queue snapshot. Store revision drift rejects assembly; a later
 current-truth acquisition differing in source, health or closure projection also
 rejects reused Coverage, including raw changes without revision changes.
+`coverage_matrix.require_matching_truth(matrix, truth)` owns that comparison and
+raises `CoverageEvidenceChangedError(StoreError)` with the existing rebuild-view
+message. Closure calls it immediately after acquiring truth, before reading its
+witness or constructing a digest. Direct callers propagate the failure; they do
+not publish a mixed snapshot with a stale flag. Stable partial evidence still
+retains its damage diagnostics and cannot authorize closure. The guard compares
+acquired inputs only: it adds no query, hash rule or filesystem transaction.
 This is per-call input reuse, not an authorization cache.
 
 Default Checkpoint/Autopilot use `action_summary(limit=5)`: five nonterminal

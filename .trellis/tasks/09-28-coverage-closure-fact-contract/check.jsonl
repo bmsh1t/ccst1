@@ -1,0 +1,4 @@
+{"file":"docs/architecture-contract.md","reason":"Verify no mixed authorization facts or lost material, and no second state owner."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Preserve digest semantics, scope and observable capabilities; focused validation only."}
+{"file":".trellis/spec/backend/error-handling.md","reason":"Only acquisition mismatch is retryable; writer failures preserve evidence and unfinished work."}
+{"file":".trellis/tasks/09-28-coverage-closure-fact-contract/research/findings.md","reason":"Audit the real race and preserve one bounded retry without claiming an unobserved false-finish defect."}

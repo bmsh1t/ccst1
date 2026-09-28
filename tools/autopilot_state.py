@@ -137,16 +137,27 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from target_store import runtime_store  # type: ignore
 
 try:
-    from tools.coverage_matrix import STATUS_VALUES, VULN_CLASSES, _route_template, coverage_gaps_with_observed_evidence, _is_auto_applicability_na, read_matrix
+    from tools.coverage_matrix import (
+        STATUS_VALUES,
+        VULN_CLASSES,
+        CoverageEvidenceChangedError,
+        _route_template,
+        coverage_gaps_with_observed_evidence,
+        _is_auto_applicability_na,
+        read_matrix,
+        require_matching_truth,
+    )
     from tools.current_truth import current_cell_projection
 except ImportError:  # pragma: no cover - direct tools/ execution
     from coverage_matrix import (  # type: ignore
         STATUS_VALUES,
         VULN_CLASSES,
+        CoverageEvidenceChangedError,
         _route_template,
         coverage_gaps_with_observed_evidence,
         _is_auto_applicability_na,
         read_matrix,
+        require_matching_truth,
     )
     from current_truth import current_cell_projection  # type: ignore
 try:
@@ -3513,7 +3524,7 @@ def load_closure_projection(
     include_round_projection: bool = True,
     queue_snapshot: dict | None = None,
 ) -> dict:
-    """Read existing closure inputs only for an explicit CLI request."""
+    """Read current closure inputs, rejecting mismatched evidence before publication."""
     target = str(state.get("resolved_target") or state.get("target") or "")
     source_markers_before = _owner_source_markers(repo_root, target)
     recon = state.get("recon_artifacts")
@@ -3543,10 +3554,10 @@ def load_closure_projection(
         if isinstance(item, dict)
         and str(item.get("tool") or "") in {"run_source_intel", "run_js_read"}
     ]
-    # One read of the target's current evidence truth: the source (per-target
-    # store or legacy ledger) and the damage rule both live in the seam, so
-    # Closure, Coverage and the loop guard cannot disagree about the same rows.
+    # Reacquire current truth through its owner and compare the captured inputs
+    # with Coverage before assembling a witness-backed digest.
     truth = current_cell_projection(repo_root, target)
+    require_matching_truth(matrix, truth)
     ledger_entries = list(truth["records"])
     ledger_projection = truth["projection"]
     ledger_health = truth["health"]
@@ -4450,11 +4461,16 @@ def main() -> int:
                 state_kwargs["queue_snapshot"] = queue_snapshot
             state = build_autopilot_state(args.repo_root, args.target, **state_kwargs)
             if args.closure:
-                state["closure"] = load_closure_projection(
-                    args.repo_root,
-                    state,
-                    queue_snapshot=queue_snapshot,
-                )
+                try:
+                    state["closure"] = load_closure_projection(
+                        args.repo_root,
+                        state,
+                        queue_snapshot=queue_snapshot,
+                    )
+                except CoverageEvidenceChangedError:
+                    if attempt == 0:
+                        continue
+                    raise
                 source_markers_after = _owner_source_markers(args.repo_root, args.target)
                 if source_markers_before != source_markers_after:
                     if attempt == 0:

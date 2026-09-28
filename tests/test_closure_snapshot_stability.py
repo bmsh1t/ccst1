@@ -31,6 +31,19 @@ def store(tmp_path):
     return owner
 
 
+@pytest.fixture
+def raw_response(tmp_path, store):
+    raw = _write(tmp_path, f".private/validation/{TARGET}/response.txt", "baseline response")
+    store.start_attempt(attempt_id="attempt", source="native", started_at="2026-09-27T00:00:00Z", actor="operator")
+    store.record_execution(attempt_id="attempt", outcome="complete", actor="operator", observations=[{
+        "endpoint": f"https://{TARGET}/object", "method": "GET", "family": "Authz",
+        "actor": "owner", "object_scope": "own_object", "variant": "baseline", "result": "tested_clean",
+        "description": "Recorded fixture comparison", "observed_at": "2026-09-27T00:00:00Z",
+        "artifacts": {"response": str(raw.relative_to(tmp_path))}, "state_changing": False,
+    }])
+    return raw
+
+
 def _closure(root, bounded):
     return autopilot_state.load_closure_projection(
         str(root), autopilot_state.build_autopilot_state(str(root), TARGET, bounded=bounded),
@@ -117,16 +130,8 @@ def test_completed_round_review_survives_delayed_full_and_bounded_reads(tmp_path
 
 
 @pytest.mark.parametrize("mutation", ["queue", "coverage", "discovery", "evidence"])
-def test_closure_review_still_rejects_changed_owner_facts(tmp_path, store, mutation):
+def test_closure_review_still_rejects_changed_owner_facts(tmp_path, store, raw_response, mutation):
     discovery = _write(tmp_path, f"recon/{TARGET}/urls/all.txt", f"https://{TARGET}/object\n")
-    raw = _write(tmp_path, f"evidence/{TARGET}/response.txt", "baseline response")
-    store.start_attempt(attempt_id="attempt", source="native", started_at="2026-09-27T00:00:00Z", actor="operator")
-    store.record_execution(attempt_id="attempt", outcome="complete", actor="operator", observations=[{
-        "endpoint": f"https://{TARGET}/object", "method": "GET", "family": "Authz",
-        "actor": "owner", "object_scope": "own_object", "variant": "baseline", "result": "tested_clean",
-        "description": "Recorded fixture comparison", "observed_at": "2026-09-27T00:00:00Z",
-        "artifacts": {"response": str(raw.relative_to(tmp_path))}, "state_changing": False,
-    }])
     surface.build_surface_review(tmp_path, TARGET)
     initial = _closure(tmp_path, False)
     _review(tmp_path, initial["snapshot_digest"])
@@ -141,7 +146,7 @@ def test_closure_review_still_rejects_changed_owner_facts(tmp_path, store, mutat
     elif mutation == "discovery":
         discovery.write_text(f"https://{TARGET}/object\nhttps://{TARGET}/new\n")
     else:
-        raw.write_text("changed response")
+        raw_response.write_text("changed response")
     current = _closure(tmp_path, True)
     assert current["snapshot_digest"] != initial["snapshot_digest"]
     assert current["global_review"]["status"] == "stale"
@@ -149,3 +154,45 @@ def test_closure_review_still_rejects_changed_owner_facts(tmp_path, store, mutat
         _review(tmp_path, initial["snapshot_digest"])
     if mutation in {"discovery", "evidence"}:
         assert store.binding() == binding
+
+
+@pytest.mark.parametrize("initially_damaged", [False, True], ids=["damage", "restore"])
+@pytest.mark.parametrize("consumer", ["closure", "review", "round"])
+def test_closure_rejects_mixed_evidence_before_publication(
+    tmp_path, store, raw_response, monkeypatch, initially_damaged, consumer,
+):
+    registered_bytes = raw_response.read_bytes()
+    if initially_damaged:
+        raw_response.write_bytes(b"changed response")
+    initial = _closure(tmp_path, True)
+    _review(tmp_path, initial["snapshot_digest"])
+    state = autopilot_state.build_autopilot_state(str(tmp_path), TARGET, bounded=True)
+    witness = tmp_path / "state" / TARGET / "checkpoint_latest.json"
+    before_witness = witness.read_bytes()
+    binding = store.binding()
+    markers = autopilot_state._owner_source_markers(tmp_path, TARGET)
+    read_matrix = autopilot_state.read_matrix
+    acquired = []
+
+    def acquire_then_change(*args, **kwargs):
+        matrix = read_matrix(*args, **kwargs)
+        acquired.append(matrix)
+        raw_response.write_bytes(registered_bytes if initially_damaged else b"changed response")
+        return matrix
+
+    monkeypatch.setattr(autopilot_state, "read_matrix", acquire_then_change)
+    with pytest.raises(coverage_matrix.CoverageEvidenceChangedError, match="coverage evidence changed"):
+        if consumer == "closure":
+            autopilot_state.load_closure_projection(str(tmp_path), state)
+        elif consumer == "review":
+            _review(tmp_path, initial["snapshot_digest"])
+        else:
+            record_round_closure(tmp_path, TARGET)
+
+    assert len(acquired) == 1
+    assert acquired[0]["evidence_health"]["status"] == ("partial" if initially_damaged else "ready")
+    truth = autopilot_state.current_cell_projection(tmp_path, TARGET)
+    assert truth["health"]["status"] == ("ready" if initially_damaged else "partial")
+    assert store.binding() == binding
+    assert autopilot_state._owner_source_markers(tmp_path, TARGET) == markers
+    assert witness.read_bytes() == before_witness

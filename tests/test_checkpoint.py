@@ -1304,14 +1304,15 @@ def test_shared_coverage_is_built_once_per_checkpoint_or_pack(tmp_path, monkeypa
     assert calls == [store.target]
 
 
-@pytest.mark.parametrize("consumer", ["checkpoint", "pack", "surface"])
+@pytest.mark.parametrize("consumer", ["checkpoint", "pack", "surface", "closure"])
 def test_shared_coverage_rejects_raw_damage_during_assembly(tmp_path, monkeypatch, store, consumer):
-    from tools import checkpoint as checkpoint_module, context_pack, surface
+    from tools import autopilot_state, checkpoint as checkpoint_module, context_pack, surface
 
     _seed_recon(tmp_path, store.target, ["https://api.target.com/users/1"])
     _record_observation(store, endpoint="https://target.com/item", family="Authz", result="tested_clean")
     raw = next((tmp_path / "evidence" / store.key).glob("attempt-*.txt"))
-    module = {"checkpoint": checkpoint_module, "pack": context_pack, "surface": surface}[consumer]
+    module = {"checkpoint": checkpoint_module, "pack": context_pack,
+              "surface": surface, "closure": autopilot_state}[consumer]
     read_truth = module.current_cell_projection
 
     def damage(*args, **kwargs):
@@ -1319,10 +1320,13 @@ def test_shared_coverage_rejects_raw_damage_during_assembly(tmp_path, monkeypatc
         return read_truth(*args, **kwargs)
 
     monkeypatch.setattr(module, "current_cell_projection", damage)
-    build = {"checkpoint": checkpoint_module.build_checkpoint,
-             "pack": context_pack.build_context_pack, "surface": surface.load_surface_context}[consumer]
     with pytest.raises(ValueError, match="coverage evidence changed"):
-        build(tmp_path, target=store.target)
+        if consumer == "closure":
+            autopilot_state.load_closure_projection(str(tmp_path), {"target": store.target})
+        else:
+            build = {"checkpoint": checkpoint_module.build_checkpoint,
+                     "pack": context_pack.build_context_pack, "surface": surface.load_surface_context}[consumer]
+            build(tmp_path, target=store.target)
 
 
 def test_checkpoint_owner_read_budget_is_bounded(tmp_path, monkeypatch, store):

@@ -1,0 +1,4 @@
+{"file":"docs/architecture-contract.md","reason":"Single owner, immutable evidence and read-only snapshots; preserve capability and recovery before efficiency."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Fix the actual cross-consumer inconsistency without new frameworks or unrelated cleanup."}
+{"file":".trellis/spec/backend/error-handling.md","reason":"Typed expected failures, no broad swallowing or retry of stable corruption."}
+{"file":".trellis/tasks/09-28-coverage-closure-fact-contract/research/findings.md","reason":"Reproduced mixed-evidence race, exact caller boundaries and existing bounded recovery contract."}

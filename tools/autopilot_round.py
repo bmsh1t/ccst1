@@ -26,6 +26,7 @@ try:
         checkpoint_witness_lock,
         record_round_closure,
     )
+    from tools.coverage_matrix import CoverageEvidenceChangedError
     from tools.target_paths import canonical_target_value
     from tools.target_store import runtime_store, target_switch_lock
 except ImportError:  # pragma: no cover - direct tools/ execution
@@ -42,6 +43,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         checkpoint_witness_lock,
         record_round_closure,
     )
+    from coverage_matrix import CoverageEvidenceChangedError  # type: ignore
     from target_paths import canonical_target_value  # type: ignore
     from target_store import runtime_store, target_switch_lock  # type: ignore
 
@@ -55,11 +57,16 @@ def _closure_snapshot(repo_root: Path | str, target: str) -> tuple[dict, dict]:
             target,
             bounded=True,
         )
-        closure = load_closure_projection(
-            str(repo_root),
-            state,
-            max_lanes_reached=False,
-        )
+        try:
+            closure = load_closure_projection(
+                str(repo_root),
+                state,
+                max_lanes_reached=False,
+            )
+        except CoverageEvidenceChangedError:
+            if attempt == 0:
+                continue
+            raise
         if source_markers_before != _owner_source_markers(repo_root, target):
             closure = {
                 **closure,

@@ -50,10 +50,11 @@ from autopilot_state import (
 )
 from tools.autopilot_state_read import _load_sql_matrix_projection
 from tools.autopilot_loop_guard import build_loop_guard_projection
+from tools.coverage_matrix import CoverageEvidenceChangedError
 from request_guard import record_request
 from runtime_state import runtime_phase_lock, update_runtime_state
 from target_paths import target_storage_key
-from target_store import TargetStore
+from target_store import StoreError, TargetStore
 
 
 @pytest.fixture
@@ -6091,13 +6092,57 @@ def test_closure_tracks_store_revision_without_legacy_owner_markers(tmp_path, st
             path.write_text("{different historical queue", encoding="utf-8")
         return matrix
     monkeypatch.setattr(autopilot_state_module, "read_matrix", change_during_read)
-    closure = load_closure_projection(str(tmp_path), {"target": store.target, "next_action": "handoff"})
     if source == "store":
-        assert closure["reasons"] == ["state_snapshot_stale"]
-        assert closure["snapshot_stale_sources"] == ["store"]
+        with pytest.raises(CoverageEvidenceChangedError, match="coverage evidence changed"):
+            load_closure_projection(str(tmp_path), {"target": store.target, "next_action": "handoff"})
     else:
+        closure = load_closure_projection(str(tmp_path), {"target": store.target, "next_action": "handoff"})
         assert "state_snapshot_stale" not in closure["reasons"]
         assert closure["reasons"] == ["coverage_empty"]
+
+
+@pytest.mark.parametrize("error_type,failures,attempts,exit_code", [
+    (CoverageEvidenceChangedError, 0, 1, 0),
+    (CoverageEvidenceChangedError, 1, 2, 0),
+    (CoverageEvidenceChangedError, 2, 2, 2),
+    (StoreError, 1, 1, 2),
+    (OSError, 1, 1, 2),
+], ids=["stable", "transient", "persistent", "store-error", "io-error"])
+def test_closure_cli_retries_only_evidence_changes(
+    tmp_path, store, monkeypatch, capsys, error_type, failures, attempts, exit_code,
+):
+    calls = []
+    build_state = autopilot_state_module.build_autopilot_state
+    read_closure = autopilot_state_module.load_closure_projection
+
+    def current_state(*args, **kwargs):
+        calls.append("state")
+        return build_state(*args, **kwargs)
+
+    def current_closure(*args, **kwargs):
+        calls.append("closure")
+        if calls.count("closure") <= failures:
+            raise error_type("closure read failed")
+        return read_closure(*args, **kwargs)
+
+    monkeypatch.setattr(autopilot_state_module, "build_autopilot_state", current_state)
+    monkeypatch.setattr(autopilot_state_module, "load_closure_projection", current_closure)
+    monkeypatch.setattr(sys, "argv", [
+        "autopilot_state.py", "--repo-root", str(tmp_path), "--target", store.target,
+        "--bounded", "--closure", "--json",
+    ])
+    binding = store.binding()
+    assert autopilot_state_main() == exit_code
+    closure = json.loads(capsys.readouterr().out)["closure"]
+    assert calls == ["state", "closure"] * attempts
+    if exit_code:
+        assert closure["verdict"] == "error"
+        assert closure["error"] == {"type": error_type.__name__, "message": "closure read failed"}
+        assert "snapshot_digest" not in closure
+    else:
+        assert closure["snapshot_digest"]
+        assert not closure.get("snapshot_stale")
+    assert store.binding() == binding
 
 
 @pytest.mark.parametrize("action_type,command", [

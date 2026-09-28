@@ -132,6 +132,11 @@ except ImportError:  # pragma: no cover - top-level tools/ import
         StoreError, runtime_store, target_switch_lock,
     )
 
+
+class CoverageEvidenceChangedError(StoreError):
+    """Coverage and a later evidence acquisition no longer describe the same inputs."""
+
+
 VULN_CLASSES = CANONICAL_VULN_CLASSES
 VULN_CLASS_ALIASES = {
     alias: canonical
@@ -999,7 +1004,7 @@ def require_matching_truth(matrix: dict, truth: dict) -> None:
     if (matrix.get("evidence_source") != truth["source"]
             or matrix.get("evidence_health") != truth["health"]
             or matrix.get("closure_projection") != truth["projection"]):
-        raise StoreError("primary coverage evidence changed during assembly; rebuild the view")
+        raise CoverageEvidenceChangedError("primary coverage evidence changed during assembly; rebuild the view")
 
 
 def _rebuild_matrix_unlocked(

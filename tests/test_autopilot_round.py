@@ -17,8 +17,9 @@ from tools.checkpoint import (
     record_round_lane,
     record_round_lane_result,
 )
+from tools.coverage_matrix import CoverageEvidenceChangedError
 from tools.surface_projection import load_surface_projection
-from tools.target_store import TargetStore
+from tools.target_store import StoreError, TargetStore
 
 
 def _witness(tmp_path, target: str = "target.com"):
@@ -100,6 +101,48 @@ def test_closure_snapshot_retries_one_stale_owner_read(monkeypatch, tmp_path):
     _, closure = autopilot_round_module._closure_snapshot(tmp_path, "target.com")
     assert reads == [0, 1]
     assert closure == {"snapshot_digest": "stable"}
+
+
+@pytest.mark.parametrize("error_type,failures,attempts", [
+    (CoverageEvidenceChangedError, 1, 2),
+    (CoverageEvidenceChangedError, 2, 2),
+    (StoreError, 1, 1),
+    (OSError, 1, 1),
+], ids=["transient", "persistent", "store-error", "io-error"])
+def test_closure_snapshot_retries_only_evidence_changes(
+    tmp_path, monkeypatch, error_type, failures, attempts,
+):
+    store = TargetStore(tmp_path, "target.com")
+    store.initialize()
+    binding = store.binding()
+    calls = []
+    failure = error_type("closure read failed")
+    build_state = autopilot_round_module.build_autopilot_state
+    read_closure = autopilot_round_module.load_closure_projection
+
+    def current_state(*args, **kwargs):
+        calls.append("state")
+        return build_state(*args, **kwargs)
+
+    def current_closure(*args, **kwargs):
+        calls.append("closure")
+        if calls.count("closure") <= failures:
+            raise failure
+        return read_closure(*args, **kwargs)
+
+    monkeypatch.setattr(autopilot_round_module, "build_autopilot_state", current_state)
+    monkeypatch.setattr(autopilot_round_module, "load_closure_projection", current_closure)
+    if failures < attempts:
+        state, closure = autopilot_round_module._closure_snapshot(tmp_path, store.target)
+        assert state["target"] == store.target
+        assert closure["snapshot_digest"]
+        assert not closure.get("snapshot_stale")
+    else:
+        with pytest.raises(error_type) as caught:
+            autopilot_round_module._closure_snapshot(tmp_path, store.target)
+        assert caught.value is failure
+    assert calls == ["state", "closure"] * attempts
+    assert store.binding() == binding
 
 
 def test_prepare_round_is_idempotent_and_preserves_checkpoint_budget(tmp_path):

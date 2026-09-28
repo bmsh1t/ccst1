@@ -186,7 +186,8 @@ external delivery events unchanged.
 ### 1. Scope / Trigger
 
 Use this contract whenever checkpoint output, runtime-v2 session state, or the
-`/autopilot` pressure validator changes.
+`/autopilot` pressure validator changes, including Closure evidence acquisition
+before review or round-witness publication.
 
 ### 2. Signatures
 
@@ -196,6 +197,8 @@ Use this contract whenever checkpoint output, runtime-v2 session state, or the
 - `record_round_lane(repo_root, target, *, lane, max_lanes) -> dict`
 - `prepare_round(repo_root, target, max_lanes) -> dict`
 - `settle_round(repo_root, target, *, note="", refresh_coverage=True) -> dict`
+- `load_closure_projection(repo_root, state, ...) -> dict` raises
+  `coverage_matrix.CoverageEvidenceChangedError(StoreError)` for mismatched acquisitions.
 - `record_global_review(repo_root, target, *, status, snapshot_digest, evidence_refs, cross_source_links, residual_unknowns, decision, next_action) -> dict`
 - `validate_round_progress(payload, *, allow_invalid_completed_evidence=False) -> dict`
 - `check_autopilot_run.py --repo-root <repo> --target <target>`
@@ -278,6 +281,12 @@ reviews may need one explicit re-review after the binding semantics change.
   round and evidence. Refresh Surface explicitly, then retry settle. It never
   refreshes Surface or synchronizes Queue as a side effect. Owner-marker drift
   retries snapshot acquisition once, then reports failure instead of mixing inputs.
+- Closure uses Coverage's `require_matching_truth(matrix, truth)` before witness
+  processing and digest construction. `autopilot_state.main()` and the coordinator's
+  `_closure_snapshot()` catch only `CoverageEvidenceChangedError` around that loader
+  call and rebuild state plus Closure once. This uses their existing two-attempt
+  budget, shared with marker drift, not a nested retry loop or external-action replay.
+  `record_global_review()` and `record_round_closure()` propagate it before writing.
 - `checkpoint.py` mutations and `autopilot_state.py` Closure projection use the
   same `checkpoint_witness.validate_round_progress()` structural validator.
   The reader-only recovery flag may expose historical completed lanes with
@@ -314,6 +323,11 @@ reviews may need one explicit re-review after the binding semantics change.
   for unchanged facts, including after completed-lane/round/review writes.
   Queue/Coverage/discovery changes and damaged raw evidence -> old review stale;
   raw damage must invalidate without requiring a Store revision change.
+- Raw damage or restoration between Coverage and truth reads -> direct loader
+  raises the typed mismatch, with no digest or witness mutation. Transient mismatch
+  -> CLI/coordinator reassemble once; a second mismatch -> propagate/CLI exit `2`.
+  Ordinary Store/I/O errors do not gain retries. Two stable partial reads still
+  return the existing `store_partial` diagnostic and suppress closure.
 - `material_sources.sources.workflow_leads` carries Surface `status`, `reason`,
   `refresh_command`. Missing/stale/invalid projection means `total=null`,
   `remaining=null`, no usable items, and `evidence_reviewed.surface=false`.
@@ -335,6 +349,8 @@ reviews may need one explicit re-review after the binding semantics change.
   no Action has been selected. It does not claim a Skill has been loaded.
 - Good: settle sees no started lane, holds the witness lock across all owner calls,
   closes the round, and a waiting late claim observes the completed round.
+- Good: a stable re-acquisition recovers after one evidence mismatch without
+  changing the witness or replaying completed work.
 - Bad: tests hand-inject v1 `context_pack` into `session.json` while production
   runtime-v2 writers never create that shape.
 - Bad: settle checks `unfinished_lanes`, releases or never acquires the witness
@@ -359,6 +375,11 @@ reviews may need one explicit re-review after the binding semantics change.
   missing/valid/stale states, and exercises real completed-lane/round/review and
   owner/evidence invalidation. Checkpoint tests distinguish unknown counts from
   valid zero and retain unchanged Store binding.
+- Mixed-evidence tests damage and restore registered raw bytes in a real temporary
+  Store, assert unchanged revision/owner markers, and reject direct Closure,
+  review and round publication with byte-identical prior witnesses. CLI/coordinator
+  tests assert state/Closure call order, the two-attempt ceiling and no Store/I/O
+  retry; pending-action expansion and lane recovery/idempotence remain covered.
 
 ### 7. Wrong vs Correct
 
@@ -391,6 +412,11 @@ Wrong: hash acquisition time, strip every owner field until reads agree, or retr
 review writes until they happen in the same second.
 Correct: bind the same current semantic inputs in all modes and retain strict
 locked digest validation plus real-change regression tests.
+
+Wrong: treat unchanged Store revision/owner markers as proof that raw evidence
+still matches, or retry every `StoreError` as a race.
+Correct: call `require_matching_truth(matrix, truth)` before digest/witness work;
+only its typed mismatch receives the existing single read retry.
 
 ## Target Case State Contracts
 
