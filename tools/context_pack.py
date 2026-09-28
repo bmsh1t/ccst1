@@ -1193,16 +1193,6 @@ def _owner_backed_vuln_classes(evidence_records: list[dict]) -> list[str]:
     ])
 
 
-def _ledger_relative_path(summary: dict, repo_root: Path) -> str:
-    path = str(summary.get("path") or "").strip()
-    if not path or not summary.get("path_exists"):
-        return ""
-    try:
-        return str(Path(path).relative_to(repo_root))
-    except ValueError:
-        return path
-
-
 def _ledger_anchors(summary: dict) -> list[str]:
     anchors: list[str] = []
     for entry in (summary.get("recent_entries") or [])[-3:]:

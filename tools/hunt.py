@@ -584,59 +584,6 @@ def _normalize_endpoint(value):
     return f"/{raw.lstrip('/')}"
 
 
-def _read_endpoints(path, limit=500):
-    """Read and normalize endpoint candidates from a text file."""
-    if not os.path.isfile(path):
-        return []
-
-    endpoints = []
-    with open(path, encoding="utf-8") as f:
-        for line in f:
-            endpoint = _normalize_endpoint(line)
-            if endpoint:
-                endpoints.append(endpoint)
-            if len(endpoints) >= limit:
-                break
-
-    return _dedupe_keep_order(endpoints)
-
-
-def _extract_recon_candidates(domain):
-    """Collect candidate endpoints for later resume/intel workflows."""
-    recon_dir = _resolve_recon_dir(domain)
-    files = [
-        os.path.join(recon_dir, "urls", "api_endpoints.txt"),
-        os.path.join(recon_dir, "urls", "with_params.txt"),
-        os.path.join(recon_dir, "js", "endpoints.txt"),
-        os.path.join(recon_dir, "api-endpoints.txt"),
-        os.path.join(recon_dir, "idor-candidates.txt"),
-        os.path.join(recon_dir, "ssrf-candidates.txt"),
-        os.path.join(recon_dir, "redirect-candidates.txt"),
-    ]
-
-    endpoints = []
-    for path in files:
-        endpoints.extend(_read_endpoints(path))
-    return _dedupe_keep_order(endpoints)
-
-
-def _extract_recon_tech_stack(domain, limit=12):
-    """从共享组件清单读取目标级技术名称。"""
-    try:
-        from tools.technology_inventory import (
-            component_labels,
-            load_or_build_inventory_for_recon_dir,
-        )
-    except ImportError:  # pragma: no cover - top-level tools/ execution
-        from technology_inventory import component_labels, load_or_build_inventory_for_recon_dir
-
-    inventory = load_or_build_inventory_for_recon_dir(
-        _resolve_recon_dir(domain),
-        target=domain,
-    )
-    return component_labels(inventory, include_versions=False, limit=limit)
-
-
 def _load_report_findings(domain):
     """Load simplified findings from reports/<target>/INDEX.json if present."""
     index_path = os.path.join(_resolve_reports_dir(domain), "INDEX.json")

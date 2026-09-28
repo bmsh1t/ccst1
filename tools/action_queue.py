@@ -754,14 +754,6 @@ def _is_runner_only_validated(action: dict) -> bool:
     )
 
 
-def _is_final_action(action: dict) -> bool:
-    metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
-    if metadata.get("dedupe_retired") is True:
-        return False
-    status = str(action.get("status") or "")
-    return status in FINAL_STATUSES and not _is_runner_only_validated(action)
-
-
 def _status_rank(status: str) -> int:
     if status == "running":
         return 0

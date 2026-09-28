@@ -324,11 +324,6 @@ def _finalize_runner_summary(summary: dict[str, Any], path: Path, repo_root: Pat
     return summary
 
 
-def _findings_dir(repo_root: Path, target: str) -> Path:
-    key = target_storage_key(canonical_target_value(target))
-    return repo_root / "findings" / key
-
-
 def _runner_backend(repo_root: Path, target: str) -> tuple[TargetStore, dict[str, str]]:
     store = runtime_store(repo_root, target)
     binding = store.binding()
