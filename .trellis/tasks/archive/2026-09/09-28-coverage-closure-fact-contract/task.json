@@ -3,7 +3,7 @@
   "name": "coverage-closure-fact-contract",
   "title": "第三批：Coverage 与 Closure 事实契约核查",
   "description": "架构与能力优先，核查事实身份、语义指纹、采集时间及下游视图一致性；以可复现缺口决定最小修复，不预设重构。",
-  "status": "in_progress",
+  "status": "completed",
   "dev_type": null,
   "scope": null,
   "package": null,
@@ -11,11 +11,11 @@
   "creator": "Codex",
   "assignee": "Codex",
   "createdAt": "2026-09-28",
-  "completedAt": null,
+  "completedAt": "2026-09-28",
   "branch": "fix/closure-evidence-snapshot-consistency",
   "base_branch": "fix/web2-stable-release",
   "worktree_path": null,
-  "commit": null,
+  "commit": "916524c5e572f51513eaaff0e42c7e61a029a697",
   "pr_url": null,
   "subtasks": [],
   "children": [],
@@ -31,6 +31,6 @@
     ".trellis/spec/backend/contracts/transactional-target-state.md",
     ".trellis/spec/backend/contracts/lifecycle-state.md"
   ],
-  "notes": "用户 go 已批准实施，随后回复 提交 批准提交计划；主会话完成实现与检查，未使用子代理。定向 pytest 68 passed，规范已同步。两份旧暂存日志字节与暂存补丁均保持不变；未 push。详见 verification.md。",
+  "notes": "用户已批准实施和提交；工作提交 916524c，定向 pytest 68 passed，规范已同步。主会话完成，无子代理、push 或 runtime 安装。两份旧暂存日志保持原状，收尾记录留在任务 verification.md，不调用全局 journal writer。",
   "meta": {}
 }
