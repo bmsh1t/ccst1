@@ -506,3 +506,30 @@ Completed Web2 acceptance on Linux x86_64, Python 3.13.5 and Claude Code 2.1.278
 ### Status
 
 [OK] **Completed**
+
+
+## Session 21: 第一批减负：移除无效 runtime 查询与 PR 回归补齐
+<!-- trellis-session: v=2 fp=ac035e37132d0abd -->
+
+**Date**: 2026-09-28
+**Task**: 第一批减负：移除无效 runtime 查询与 PR 回归补齐
+**Branch**: `fix/web2-stable-release`
+
+### Summary
+
+两项派生查询各 1→0；保留 breadcrumb、恢复及错误处理，Closure/Surface 加入既有 core job；100 tests passed in 18.85s，独立审核通过。未 push。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `3f79faa` | perf: remove discarded hunt runtime queries |
+| `f81bf4a` | ci: gate closure and surface regressions on pull requests |
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 第二批仅规划 hunt/direct 子进程公共执行边界；不重写系统。

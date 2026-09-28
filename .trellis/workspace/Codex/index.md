@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 20
-- **Last Active**: 2026-09-27
+- **Total Sessions**: 21
+- **Last Active**: 2026-09-28
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~508 | Active |
+| `journal-1.md` | ~535 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 21 | 2026-09-28 | 第一批减负：移除无效 runtime 查询与 PR 回归补齐 | `3f79faa`, `f81bf4a` | `fix/web2-stable-release` |
 | 20 | 2026-09-27 | Web2 stable release acceptance | `7048517` | `fix/web2-stable-release` |
 | 19 | 2026-09-27 | 完成八项实战审核修复，暂缓 Web3 | `e3931ab` | `fix/practical-audit-fixes` |
 | 18 | 2026-09-26 | 完成 native-first 重构收口 | `754cfa7` | `main` |
