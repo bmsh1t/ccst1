@@ -2,7 +2,7 @@
 """按证据调用 Packer-InfoFinder 恢复少量高价值前端异步资源。
 
 该工具不属于 Recon 默认流程。它只把上游工具的恢复结果发布到既有
-``recon/<target>/js_dump/``，供 js-reader 和既有证据链继续消费。
+``recon/<target>/js_dump/``，供 Claude 原生 Read/Grep/委派直接消费。
 """
 
 from __future__ import annotations
@@ -376,21 +376,6 @@ def _is_http_url(value: str) -> bool:
     )
 
 
-def _bundle_score(url: str) -> tuple[int, str]:
-    name = (urlsplit(url).path or "").lower()
-    signals = (
-        "runtime",
-        "webpack",
-        "manifest",
-        "main",
-        "app",
-        "index",
-        "bundle",
-        "chunk",
-    )
-    return (sum(token in name for token in signals), url)
-
-
 def select_bundle_urls(
     target: str,
     candidates_path: Path,
@@ -398,7 +383,7 @@ def select_bundle_urls(
     explicit_urls: list[str] | None = None,
     max_bundles: int = DEFAULT_MAX_BUNDLES,
 ) -> list[str]:
-    """选择少量 target-owned bundle；原始候选文件始终保持不变。"""
+    """Preserve explicit or candidate-file order within the acquisition budget."""
     if not 1 <= max_bundles <= MAX_BUNDLES:
         raise ValueError(f"max_bundles must be between 1 and {MAX_BUNDLES}")
 
@@ -424,9 +409,7 @@ def select_bundle_urls(
         if len(selected) > max_bundles:
             raise ValueError(f"at most {max_bundles} bundle URLs are allowed")
         return selected
-    return sorted(
-        selected, key=lambda value: (-_bundle_score(value)[0], _bundle_score(value)[1])
-    )[:max_bundles]
+    return selected[:max_bundles]
 
 
 def resolve_tool_root(explicit: str = "") -> Path | None:
@@ -561,7 +544,7 @@ def _copy_recovered_artifacts(
             )
             or "artifact"
         )
-        # JS/source files continue into js-reader; HTML/SQLite stay原始附件，不解析为第二套 schema。
+        # JS/source files remain raw artifacts for native Read/Grep; HTML/SQLite stay raw attachments.
         is_recovered_source = source.suffix.lower() in {
             ".js",
             ".mjs",

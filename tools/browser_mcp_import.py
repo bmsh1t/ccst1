@@ -488,7 +488,7 @@ def import_mcp_browser_evidence(
         recon_root=recon_root,
         target_key=target_key,
         requests_path=requests_file,
-        snapshot_path=artifacts.get("snapshot_txt", ""),
+        snapshot_path=artifacts.get("snapshot_private_txt", ""),
         capture_dir=str(capture_dir),
         merge_existing=True,
     )

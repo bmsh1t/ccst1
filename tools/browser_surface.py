@@ -115,6 +115,7 @@ def _parse_request_item(item: object) -> dict:
     method = _first_string(item.get("method"), request.get("method")) or "GET"
     resource_type = _first_string(
         item.get("resourceType"),
+        item.get("resource_type"),
         item.get("type"),
         item.get("initiatorType"),
         item.get("_resourceType"),
@@ -221,6 +222,12 @@ def public_url_shape(url: str) -> str:
 
 def _body_shape(body: object) -> dict:
     """把请求 body 压缩为参数与 GraphQL 操作形状，不保留值。"""
+    if isinstance(body, dict) and body.get("kind") == "request-body-shape":
+        return {key: body[key] for key in (
+            "kind", "body_type", "content_type_hint", "parameter_names",
+            "graphql_operations", "graphql_variables", "body_bytes", "body_sha256",
+            "graphql_batch_count",
+        ) if key in body}
     if body in (None, "", [], {}):
         return {
             "kind": "request-body-shape",
@@ -402,9 +409,15 @@ def public_request_shapes(items: list[object]) -> list[dict]:
 
 
 def public_request_payload(payload: object, *, source: str = "") -> dict:
-    """把常见浏览器 envelope 变为统一公共请求列表。"""
+    """保留内部分析请求的精确 URL；body 仍为带原件引用的结构摘要。"""
+    requests = []
+    for index, item in enumerate(_request_items(payload)):
+        shape = public_request_shape(item, request_index=index)
+        if shape:
+            shape["url"] = _parse_request_item(item)["url"]
+            requests.append(shape)
     return {
-        "requests": public_request_shapes(_request_items(payload)),
+        "requests": requests,
         "source": source,
     }
 

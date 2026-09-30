@@ -87,10 +87,11 @@ create or override core validation state.
 When the destination requires CVSS, use observed preconditions and demonstrated
 impact to select metrics; do not infer severity from a bug-class name or scanner label.
 
-## 5. NEVER SUBMIT FROM THE ALWAYS-REJECTED LIST
+## 5. SEPARATE EVIDENCE GAPS FROM DESTINATION EXCLUSIONS
 
-Use the NEVER SUBMIT list and Q7 chain precedence in
-`skills/triage-validation/SKILL.md`; do not maintain a second class list here.
+Use the evidence pitfalls and Q7 destination checks in
+`skills/triage-validation/SKILL.md`. A policy rejection cannot refute technical
+evidence; an unsupported impact cannot become valid because a destination pays.
 
 ## 6. VERIFY DATA ISN'T EXPECTED PUBLIC
 

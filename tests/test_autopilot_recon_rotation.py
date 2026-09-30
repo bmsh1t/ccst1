@@ -28,7 +28,7 @@ def test_pending_directory_rotation_routes_to_recon_after_surface_handoff(tmp_pa
         None,
         surface_context_required=False,
         dir_fuzz_rotation_pending=True,
-    ) == "run_recon"
+    ) == "handoff"
 
 
 def test_rotation_does_not_preempt_surface_or_finding_work(tmp_path):
@@ -38,13 +38,13 @@ def test_rotation_does_not_preempt_surface_or_finding_work(tmp_path):
         None,
         surface_context_required=True,
         dir_fuzz_rotation_pending=True,
-    ) == "prepare_surface_context"
+    ) == "handoff"
     assert _pick_next_action(
         True,
         {"p1": [{"url": "https://target.test/admin"}]},
         None,
         dir_fuzz_rotation_pending=True,
-    ) == "hunt_p1"
+    ) == "handoff"
 
 
 def test_invalid_rotation_ledger_is_advisory_not_an_infinite_recon_loop(tmp_path):

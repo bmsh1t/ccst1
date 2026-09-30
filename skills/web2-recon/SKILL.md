@@ -37,10 +37,10 @@ and lowest reversible cost. Branches are alternatives, not a mandatory order.
 | No active target or scope context | Establish the target record and stop before network work | `commands/target.md` / runtime protocol |
 | No inventory or a materially stale inventory | Run the appropriate `/recon` profile and preserve raw output | `/recon TARGET [--quick|--deep]` |
 | Inventory exists but the valuable surface is unclear | Refresh the bounded Surface view and ask one feature-level question | `/surface`, `tools/surface.py` |
-| Browser, JS, source, schema, or history names a missing host/path/parameter | Choose one evidence-linked expansion, not a generic dictionary | `tools/dns_expand.py --reason <evidence>`, focused FFUF, `/js-read` |
+| Browser, JS, source, schema, or history names a missing host/path/parameter | Choose one evidence-linked expansion, not a generic dictionary | `tools/dns_expand.py --reason <evidence>`, focused FFUF, native Read/Grep |
 | Authenticated API exposes object or role state | Compare the same object/action across owned actors before broad probes | `web2-vuln-classes`, actor-pair evidence |
 | Upload, URL fetch, GraphQL, realtime, import/export, or payment evidence appears | Preserve the request shape and route to the matching card/validation lane | `/surface`, selected Knowledge card, `/validate` |
-| Exposure, component, source, or CI/CD artifact appears | Record provenance and test applicability before any active follow-up; a concrete framework/version fingerprint makes `/intel` the immediate next step, not a deferred one | `/intel`, source or CI/CD tool |
+| Exposure, component, source, or CI/CD artifact appears | Record provenance and test applicability before any active follow-up; a concrete framework/version fingerprint may justify current `/intel` research, chosen by Claude | `/intel`, source or CI/CD tool |
 | Bot-manager or anti-bot challenge blocks content (challenge page instead of real content, or transport-dependent resets) | Do not deepen URL collection against a challenge wall; compare the same path across available transports and choose one that returns real content before any further recon phase | browser lane |
 | A third-party-hosted host or service carries multiple page, behavioral, or brand evidence points tying it to the target organization | Record the ownership observation at `confidence: high` with multiple `sources`, so it routes to `scope-review` with a forced in-scope/external/excluded decision; ownership evidence never expands authorization, and only an explicit target set makes it testable | `tools/recon_candidates.py`, `/surface`, `/scope` |
 | Recon is low-signal but still underexplored | Run one bounded discovery action with a reopen condition; keep unknowns open | `/recon`, browser/source evidence, or a targeted tool |
@@ -91,7 +91,7 @@ responses, hashes, timestamps, tool/version metadata, and artifact paths in the
 target-owned run. Summaries and model explanations are projections; they cannot
 replace raw evidence or promote a Lead.
 
-Use the existing `/recon`, `/surface`, `/js-read`, `tools/recon_engine.sh`, and
+Use native Read/Grep and the existing `/recon`, `/surface`, `tools/recon_engine.sh`, and
 `tools/recon_adapter.py` entrypoints. Do not copy their flags or parser rules
 into this Skill. Detailed FFUF operation and artifact handling live in the
 focused discovery section of `commands/recon.md`.
@@ -220,7 +220,7 @@ replay, or write-back requirements.
 
 - `/recon`: production execution and operator-facing artifact contract.
 - `/surface`: rebuildable attack-surface projection.
-- `/js-read`: evidence-selected JS/source analysis.
+- Claude native Read/Grep: evidence-selected JS/source analysis.
 - `tools/recon_engine.sh`, `tools/recon_adapter.py`, `tools/dns_expand.py`:
   deterministic execution and summaries.
 - `knowledge/cards/coverage-prompts.md`: evidence-driven coverage questions.

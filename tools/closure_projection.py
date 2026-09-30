@@ -16,90 +16,83 @@ try:
         CLOSED_LEDGER_RESULTS,
         LEDGER_RESULTS,
         canonical_endpoint_identity,
+        exact_endpoint_identity,
         observation_supports_coverage,
     )
-    from tools.identity_contract import ClosureCellKey, build_closure_cell
+    from tools.identity_contract import ClosureCellKey
 except ImportError:  # pragma: no cover - direct tools/ execution
     from evidence_identity import (  # type: ignore
         CLOSED_LEDGER_RESULTS,
         LEDGER_RESULTS,
         canonical_endpoint_identity,
+        exact_endpoint_identity,
         observation_supports_coverage,
     )
-    from identity_contract import ClosureCellKey, build_closure_cell  # type: ignore
+    from identity_contract import ClosureCellKey  # type: ignore
 
 
 def _entry_closure_identity(entry: Mapping[str, Any]) -> ClosureCellKey | None:
-    if str(entry.get("identity_status") or "") != "complete":
-        return None
-    payload = entry.get("identity_v2")
-    if not isinstance(payload, Mapping):
+    if entry.get("identity_status") != "complete" or entry.get("evidence_role") != "subject":
         return None
     try:
-        return ClosureCellKey.from_dict(payload)
+        key = ClosureCellKey.from_dict(entry.get("identity_v2"))
     except (TypeError, ValueError, KeyError):
         return None
+    return None if key.schema_version != 3 or identity_fact_conflicts(key, entry) else key
 
 
 def identity_fact_conflicts(key: ClosureCellKey | None, record: Mapping[str, Any]) -> tuple[str, ...]:
-    """Reject a planned identity key that disagrees with the record's own facts."""
+    """Reject an identity key that disagrees with its own recorded facts."""
     if key is None:
         return ()
     conflicts: list[str] = []
-    if str(record.get("endpoint") or "") and key.endpoint != str(record.get("endpoint") or ""):
+    if key.schema_version != 3:
+        conflicts.append("legacy_identity_requires_explicit_replacement")
+    try:
+        endpoint = exact_endpoint_identity(str(record.get("raw_endpoint") or record.get("endpoint") or ""))
+    except ValueError:
+        endpoint = ""
+    if key.endpoint != endpoint:
         conflicts.append("endpoint_mismatch")
-    if str(record.get("vuln_class") or "") and key.family != str(record.get("vuln_class") or ""):
+    if key.family != str(record.get("vuln_class") or ""):
         conflicts.append("family_mismatch")
+    raw = str(record.get("identity_technique") or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if "_".join(part for part in raw.split("_") if part) != key.technique:
+        conflicts.append("technique_mismatch")
     dimensions = key.dimension_map
-    method = str(record.get("method") or "").upper()
-    if "method" in dimensions and method and dimensions["method"] != method:
-        conflicts.append("method_mismatch")
+    if "identity_dimensions" in record and record["identity_dimensions"] != dimensions:
+        conflicts.append("declared_conditions_mismatch")
+    if not record.get("method"):
+        conflicts.append("method_missing")
+    for dimension, fact in (("method", str(record.get("method") or "").upper()),
+                            ("actor_relation", record.get("actor")),
+                            ("actor_role", record.get("actor")),
+                            ("actor", record.get("actor")),
+                            ("object_scope", record.get("object_scope"))):
+        if dimension in dimensions and fact and dimensions[dimension] != fact:
+            conflicts.append(f"{dimension}_mismatch")
     return tuple(sorted(set(conflicts)))
 
 
 def derive_identity_fields(record: dict) -> dict:
-    """Derive identity_status/identity_v2 for a record that carries raw dimensions.
-
-    Producers that persist their own identity status (the legacy Ledger writer)
-    are left untouched: the derivation only fills records that carry
-    ``identity_dimensions``/``identity_v2`` without a stored status, so the store
-    can stay a fact store and this module stays the single derivation.
-    """
-    if "identity_status" in record:
+    """Validate recorded identity claims without upgrading legacy evidence."""
+    if "identity_status" not in record:
+        record["identity_status"] = "incomplete"
+        record["identity_missing_fields"] = ["identity_status"]
         return record
-    payload = record.get("identity_v2")
-    if isinstance(payload, Mapping):
-        try:
-            key = ClosureCellKey.from_dict(payload)
-        except (TypeError, ValueError, KeyError):
-            record["identity_status"] = "conflict"
-            record["identity_conflicts"] = ["unreadable_identity_v2"]
-            return record
-        conflicts = identity_fact_conflicts(key, record)
-        record["identity_status"] = "conflict" if conflicts else "complete"
-        record["identity_missing_fields"] = []
-        record["identity_conflicts"] = list(conflicts)
-        if not conflicts:
-            record["identity_v2"] = key.to_dict()
+    if record.get("identity_status") != "complete":
         return record
-    dimensions = record.get("identity_dimensions")
-    if not isinstance(dimensions, Mapping) or not dimensions:
-        # No dimensions means no identity claim: the record stays legacy-style
-        # and may author the endpoint-level cell the old view closed.
-        return record
-    result = build_closure_cell(str(record.get("endpoint") or ""), str(record.get("vuln_class") or ""), dimensions)
-    conflicts = tuple(sorted(set((*result.conflicts, *identity_fact_conflicts(result.key, record)))))
-    record["identity_status"] = (
-        "complete"
-        if result.complete and not conflicts
-        else "conflict"
-        if conflicts
-        else "incomplete"
-    )
-    record["identity_missing_fields"] = list(result.missing_fields)
-    record["identity_conflicts"] = list(conflicts)
-    if result.key is not None and not conflicts:
-        record["identity_v2"] = result.key.to_dict()
+    try:
+        key = ClosureCellKey.from_dict(record.get("identity_v2"))
+    except (TypeError, ValueError, KeyError):
+        conflicts = ["unreadable_identity_v2"]
+    else:
+        conflicts = list(identity_fact_conflicts(key, record))
+    if record.get("evidence_role") != "subject":
+        conflicts.append("subject_role_required")
+    if conflicts:
+        record["identity_status"] = "conflict"
+        record["identity_conflicts"] = sorted(set(conflicts))
     return record
 
 
@@ -115,7 +108,7 @@ def _replaced_identity_event_ids(entries: list[dict]) -> set[str]:
 
 
 def _project_v2_cells(entries: list[dict]) -> tuple[list[dict], list[dict]]:
-    """Project only complete v2 identities; legacy rows never enter this view."""
+    """Project complete current identities; legacy rows cannot authorize closure."""
     replaced_event_ids = _replaced_identity_event_ids(entries)
     current: dict[str, tuple[int, ClosureCellKey, dict]] = {}
     for sequence, entry in enumerate(entries):
@@ -139,6 +132,7 @@ def _project_v2_cells(entries: list[dict]) -> tuple[list[dict], list[dict]]:
         if not observation_supports_coverage(entry):
             continue
         closed.append({
+            "event_id": str(entry.get("event_id") or ""),
             "identity_v2": key.to_dict(),
             "endpoint": key.endpoint,
             "vuln_class": key.family,
@@ -225,7 +219,7 @@ def _project_legacy_cells(
     for sequence, entry in enumerate(entries):
         if not isinstance(entry, dict):
             continue
-        if not include_identity_rows and "identity_status" in entry:
+        if not include_identity_rows and str(entry.get("identity_status") or "none") != "none":
             continue
         result = str(entry.get("result") or "")
         if result not in LEDGER_RESULTS:
@@ -280,7 +274,9 @@ def _project_legacy_cells(
     return closed_cells, open_candidates
 
 
-def suppress_unauthorized_closures(projection: dict, *, reason: str) -> dict:
+def suppress_unauthorized_closures(
+    projection: dict, *, reason: str, invalid_event_ids: set[str] | None = None,
+) -> dict:
     """Empty closure authorizations that damaged input cannot support.
 
     Evidence that cannot be read in full must not authorize a closure, so
@@ -293,12 +289,16 @@ def suppress_unauthorized_closures(projection: dict, *, reason: str) -> dict:
     """
     legacy_cells = list(projection.get("closed_cells") or [])
     suppressed = dict(projection)
-    suppressed["closed_cells"] = []
-    suppressed["closed_cells_v2"] = []
+    # Filter the reduced current result, never the input history: removing a
+    # damaged latest observation first would resurrect an older conclusion.
+    for field in ("closed_cells", "closed_cells_v2"):
+        suppressed[field] = [cell for cell in projection.get(field, [])
+                             if invalid_event_ids is not None
+                             and cell.get("event_id") not in invalid_event_ids]
     diagnostics = dict(suppressed.get("identity_v2_diagnostics") or {})
-    diagnostics["suppressed_closed_count"] = int(diagnostics.get("closed_count", 0) or 0)
-    diagnostics["suppressed_legacy_closed_count"] = len(legacy_cells)
-    diagnostics["closed_count"] = 0
+    diagnostics["suppressed_closed_count"] = len(projection.get("closed_cells_v2", [])) - len(suppressed["closed_cells_v2"])
+    diagnostics["suppressed_legacy_closed_count"] = len(legacy_cells) - len(suppressed["closed_cells"])
+    diagnostics["closed_count"] = len(suppressed["closed_cells_v2"])
     suppressed["identity_v2_diagnostics"] = diagnostics
     suppressed["identity_v2_shadow"] = {"status": "unavailable", "reason": reason}
     return suppressed
@@ -307,14 +307,17 @@ def suppress_unauthorized_closures(projection: dict, *, reason: str) -> dict:
 def build_current_cell_projection(entries: list[dict]) -> dict:
     """Project current evidence identities and retain a v2 closure projection.
 
-    ``closed_cells`` remains the legacy endpoint projection for old readers.
+    ``closed_cells`` is retained only as an audit projection for old readers;
     ``closed_cells_v2`` is the only projection allowed to close a complete
-    family-aware identity.  Records that carry raw ``identity_dimensions`` but
-    no stored status are derived here, so producers only supply facts.  Caller
+    family-aware identity.  Legacy records never gain identity authority during reads.  Caller
     records are copied, never edited in place.
     """
-    entries = [derive_identity_fields(dict(entry)) if isinstance(entry, dict) else entry for entry in entries]
-    closed_cells, open_candidates = _project_legacy_cells(
+    # Registration succession is an owner fact, independent of the replacement's
+    # readability or observation count. History never regains authority because
+    # its successor has invalid identity or missing evidence.
+    entries = [derive_identity_fields(dict(entry)) if isinstance(entry, dict) else entry
+               for entry in entries if not isinstance(entry, dict) or not entry.get("superseded")]
+    _legacy_cells, open_candidates = _project_legacy_cells(
         entries,
         include_identity_rows=False,
     )
@@ -332,7 +335,7 @@ def build_current_cell_projection(entries: list[dict]) -> dict:
     )
     identity_v2_follow_ups = _project_identity_follow_ups(entries, replaced_event_ids)
     return {
-        "closed_cells": closed_cells,
+        "closed_cells": [],
         "closed_cells_v2": closed_cells_v2,
         "open_candidates": sorted(
             open_candidates,
@@ -348,4 +351,5 @@ def build_current_cell_projection(entries: list[dict]) -> dict:
             "replacement_count": len(replaced_event_ids),
         },
         "identity_v2_shadow": _identity_shadow_diff(shadow_legacy_cells, closed_cells_v2),
+        "legacy_closed_cells_audit": _legacy_cells,
     }

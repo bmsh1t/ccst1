@@ -83,11 +83,11 @@ def test_triage_validation_keeps_live_ab_decision_anchors():
         triage,
         {
             "q7 precedence": (
-                "route with this precedence",
-                "full chain end to end",
+                "destination's current policy",
+                "prove a chain end to end",
                 "chain_required",
                 "do not report",
-                "standalone / alone",
+                "without waiting for optional siblings",
             ),
             "open redirect chain": (
                 "open redirect alone",

@@ -54,8 +54,8 @@ def test_resume_domain_previews_have_exact_totals_and_complete_cli_expansion(tmp
     full = json.loads(expanded.stdout)["summary"]
     expected = {
         "findings": [f"F-{index:04}" for index in range(count)],
-        "tested_endpoints": [f"/tested-{index:04}" for index in range(count)],
-        "untested_endpoints": [f"/open-{index:04}" for index in range(count)],
+        "tested_endpoints": [],
+        "untested_endpoints": [f"/open-{index:04}" for index in range(count)] + [f"/tested-{index:04}" for index in range(count)],
     }
     for field, values in expected.items():
         assert field not in summary["owner_projection"]
@@ -64,15 +64,15 @@ def test_resume_domain_previews_have_exact_totals_and_complete_cli_expansion(tmp
         assert actual == values[:5]
         assert complete == values
         window = summary["domain_windows"][field]
-        assert (window["total"], window["returned"], window["remaining"]) == (count, min(count, 5), max(count - 5, 0))
+        assert (window["total"], window["returned"], window["remaining"]) == (len(values), min(len(values), 5), max(len(values) - 5, 0))
         assert window["expand_command"] == expansion
         assert full["domain_windows"][field]["remaining"] == 0
     output = subprocess.run(command, cwd=checkout, capture_output=True, text=True, check=True).stdout
     assert expansion in output
     if count:
-        assert "61 endpoints from current coverage; showing=5; remaining=56" in output
+        assert "122 endpoints from current coverage; showing=5; remaining=117" in output
         assert "Finding preview: 5 of 61; remaining=56" in output
-        assert "/tested-0004" in output and "/tested-0005" not in output
+        assert "/open-0004" in output and "/open-0005" not in output
     assert store.binding() == before
 
 

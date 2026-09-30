@@ -643,7 +643,7 @@ def build_validation_summary(info: dict, *, all_pass: bool, report_path: str | P
         }
         if "store_command" in machine_decision:
             summary["machine_decision"]["store_command"] = machine_decision["store_command"]
-    # 源归因透传：calibration 回写要读 summary.source_knowledge_refs。
+    # Preserve explicitly adopted knowledge sources in the validation summary.
     adopted_sources = info.get("source_knowledge_refs")
     if isinstance(adopted_sources, list) and adopted_sources:
         summary["source_knowledge_refs"] = [str(item) for item in adopted_sources]
@@ -871,87 +871,6 @@ def _validation_sync_retry_result(
     }
 
 
-def _map_validate_result_to_calibration_outcome(result: str) -> str | None:
-    """(P5-W1 R5) Map /validate result string to a calibration outcome label.
-
-    Returns None for results that should not be recorded (e.g., unknown
-    intermediate states), so callers can skip silently rather than write
-    an invalid row.
-    """
-    if not isinstance(result, str):
-        return None
-    r = result.strip().lower()
-    if r == "confirmed":
-        return "helped"
-    if r == "rejected":
-        return "false_positive"
-    if r in {"partial", "informational"}:
-        return "no_signal"
-    return None
-
-
-def record_validation_calibration(
-    summary: dict,
-    *,
-    session_id: str = "",
-    path=None,
-) -> dict | None:
-    """(P5-W1 R5) Record a calibration outcome derived from a validate summary.
-
-    Returns the written calibration record dict, or None if the summary
-    lacked enough context (no target/vuln_class) or the result mapped to
-    an unsupported outcome. Best-effort: errors are swallowed and None
-    returned, so a calibration write failure never blocks /validate.
-    """
-    try:
-        try:
-            from pattern_calibration import pattern_id_for, record_outcome
-        except ImportError:  # pragma: no cover - package import path
-            from tools.pattern_calibration import pattern_id_for, record_outcome
-
-        target = str(summary.get("target", "") or "").strip()
-        vuln_class = str(summary.get("vuln_class", "") or "").strip()
-        if not target or not vuln_class:
-            return None
-        outcome = _map_validate_result_to_calibration_outcome(
-            str(summary.get("result", "") or "")
-        )
-        if not outcome:
-            return None
-        # technique is not consistently captured in the validate summary;
-        # leave empty so pattern_id aggregates per (target, vuln_class).
-        pid = pattern_id_for({
-            "target": target,
-            "vuln_class": vuln_class,
-            "technique": str(summary.get("technique", "") or ""),
-        })
-        written = record_outcome(
-            pattern_id=pid,
-            outcome=outcome,
-            session_id=session_id,
-            target=target,
-            path=path,
-        )
-        # 源归因（记忆复核断点 C 修复）：经验被跨目标采用时，反馈必须记到
-        # 被采用的来源上（PatternDB 复合 ID 或知识卡路径），否则源经验的
-        # helped/false_positive 统计永远拿不到数据。当前 target 的复合 ID
-        # 照记（本地模式行为不变），来源行额外追加。
-        source_refs = summary.get("source_knowledge_refs")
-        if isinstance(source_refs, list):
-            for source_ref in source_refs:
-                if isinstance(source_ref, str) and source_ref.strip() and source_ref != pid:
-                    record_outcome(
-                        pattern_id=source_ref.strip(),
-                        outcome=outcome,
-                        session_id=session_id,
-                        target=target,
-                        path=path,
-                    )
-        return written
-    except Exception:
-        return None
-
-
 def update_runtime_state_after_validate(
     summary: dict,
     findings_dir: str = "",
@@ -963,12 +882,6 @@ def update_runtime_state_after_validate(
     if not target:
         return
     owner_root = Path(repo_root) if repo_root is not None else _validation_repo_root(findings_dir)
-    # (P5-W1 R5) Record calibration outcome alongside runtime state refresh.
-    record_validation_calibration(
-        summary,
-        session_id=str(summary.get("session_id", "") or ""),
-        path=owner_root / "hunt-memory" / "pattern_calibration.jsonl",
-    )
     try:
         try:
             from runtime_state import inspect_recon_artifacts, update_runtime_state
@@ -1148,7 +1061,7 @@ def _resolve_machine_evidence_refs(values: Any, *, repo_root: Path) -> list[str]
 
 
 def _parse_source_knowledge_refs(values: Any) -> list[str]:
-    """Optional adopted-experience pointers for calibration attribution.
+    """Optional adopted-experience pointers for validation provenance.
 
     接受两类值：知识卡相对路径（knowledge/cards/... 或 knowledge/candidates/...，
     必须真实存在，防笔误）或 PatternDB 复合 ID（含 '|' 的字符串原样保留）。

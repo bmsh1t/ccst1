@@ -195,6 +195,27 @@ def new_target_memory(target: str) -> dict:
     }
 
 
+def _experience_entry(row: dict) -> dict:
+    structured = {
+        key: row[key]
+        for key in ("conditions", "reopen_when", "next_intent")
+        if str(row.get(key) or "").strip()
+    }
+    return {
+        "ts": row.get("created_at", ""),
+        "text": str(row.get("statement") or "").strip(),
+        "entry_id": row.get("id", ""),
+        "kind": row.get("kind", ""),
+        "recorded_by": row.get("recorded_by", ""),
+        "evidence_refs": [
+            f"{item.get('operation_id')}:{item.get('step')}"
+            for item in row.get("evidence", [])
+            if isinstance(item, dict)
+        ],
+        "structured": structured or None,
+    }
+
+
 def load_goal_memory(repo_root: str | Path, target: str, *, experience_limit: int = 20) -> dict:
     """Load the target-memory projection used by CLI coordinators.
 
@@ -240,28 +261,13 @@ def load_goal_memory(repo_root: str | Path, target: str, *, experience_limit: in
         field = kind_to_field.get(str(row.get("kind") or ""))
         if not field:
             continue
-        structured = {
-            key: row[key]
-            for key in ("conditions", "reopen_when", "next_intent")
-            if str(row.get(key) or "").strip()
-        }
-        entry = {
-            "ts": row.get("created_at", ""),
-            "text": str(row.get("statement") or "").strip(),
-            "entry_id": row.get("id", ""),
-            "kind": row.get("kind", ""),
-            "recorded_by": row.get("recorded_by", ""),
-            "evidence_refs": [
-                f"{item.get('operation_id')}:{item.get('step')}"
-                for item in row.get("evidence", [])
-                if isinstance(item, dict)
-            ],
-            "structured": structured or None,
-        }
+        entry = _experience_entry(row)
         fields[field].append(entry)
         recent_entries.append(entry)
-        if row["kind"] == "handoff" and row.get("next_intent"):
-            fields["next_actions"].append(entry)
+    current = context["current_handoff"]
+    current_handoff = _experience_entry(current) if current else None
+    if current and current.get("next_intent"):
+        fields["next_actions"] = [{**current_handoff, "text": current["next_intent"]}]
     created_at = context.get("created_at", "")
     target_memory = {
         "schema_version": SCHEMA_VERSION,
@@ -272,6 +278,7 @@ def load_goal_memory(repo_root: str | Path, target: str, *, experience_limit: in
         "phase": "unknown",
         "active_goal": context["active_goal"],
         "current_hypothesis": context["current_hypothesis"],
+        "current_handoff": current_handoff,
         **fields,
         "facts": {},
     }
@@ -515,7 +522,8 @@ def write_handoff(args: argparse.Namespace) -> str | dict:
         command_id=getattr(args, "command_id", None) or f"memory:{uuid.uuid4().hex}",
         kind="handoff", statement=summary, conditions=getattr(args, "conditions", None) or "unknown",
         reopen_when="", next_intent=getattr(args, "next_intent", None) or "",
-        evidence=[], actor=getattr(args, "actor", "operator"),
+        evidence=_operation_refs(getattr(args, "operation_ref", []) or []),
+        actor=getattr(args, "actor", "operator"),
     )
     if getattr(args, "json", False):
         return {"target": target, "receipt": receipt}
@@ -540,7 +548,7 @@ def format_summary(title: str, active: dict, target_memory: dict,
         f"Goal: {active.get('active_goal') or target_memory.get('active_goal', '')}",
         f"Hypothesis: {active.get('current_hypothesis') or target_memory.get('current_hypothesis', '')}",
         f"Active leads: {len(target_memory.get('active_leads', []))}",
-        f"Next actions: {len(target_memory.get('next_actions', []))}",
+        f"Current next intent (advisory, not Queue): {len(target_memory.get('next_actions', []))}",
         f"Dead ends: {len(target_memory.get('dead_ends', []))}",
         f"Memory: {display_path(path, repo_root)}",
     ]
@@ -549,6 +557,22 @@ def format_summary(title: str, active: dict, target_memory: dict,
         lines.append("Facts:")
         lines.extend(fact_lines)
     return "\n".join(lines)
+
+
+def format_current_handoff(memory: dict) -> list[str]:
+    """Render the shared current handoff without treating history as pending work."""
+    lines = []
+    current = memory.get("current_handoff")
+    if current:
+        lines.append(f"Current handoff: [{current['entry_id']}] {current['text']}")
+        lines.append(f"  conditions: {(current.get('structured') or {}).get('conditions', 'unknown')}")
+        lines.append(f"  evidence: {', '.join(current['evidence_refs']) or 'None'}")
+        lines.append(f"  recorded_by: {current['recorded_by']}")
+    else:
+        lines.append("Current handoff: None")
+    intents = memory.get("next_actions", [])
+    lines.append(f"Current next intent: {intents[0]['text'] if intents else 'None'}")
+    return lines
 
 
 def show(args: argparse.Namespace) -> str | dict:
@@ -569,9 +593,10 @@ def show(args: argparse.Namespace) -> str | dict:
     if projection.get("source", {}).get("kind") != "store":
         return summary
     lines = [summary]
+    lines.extend(format_current_handoff(target_memory))
     entries = projection.get("recent_entries", [])
     if entries:
-        lines.append("Recent experience:")
+        lines.append("Recent experience (bounded history; historical intents are not pending actions):")
         for entry in entries:
             lines.append(f"- ({entry['kind']}) [{entry['entry_id']}] {entry['text']}")
             for key in ("conditions", "reopen_when", "next_intent"):
@@ -680,6 +705,7 @@ def build_parser() -> argparse.ArgumentParser:
     handoff_parser.add_argument("--target", default=None)
     handoff_parser.add_argument("--conditions", default=None)
     handoff_parser.add_argument("--next-intent", default=None)
+    handoff_parser.add_argument("--operation-ref", action="append", default=[], help=OPERATION_REF_HELP)
     handoff_parser.add_argument("--command-id", default=None)
     handoff_parser.add_argument("--actor", default="operator")
     handoff_parser.set_defaults(func=write_handoff)

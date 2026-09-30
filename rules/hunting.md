@@ -148,10 +148,10 @@ brute-force guessed siblings merely because their names sound plausible.
 
 ### A-to-B Signal Method
 
-After confirming bug A, spend a bounded evidence budget checking B and C for
-the same demonstrated mistake before reporting. Keep B as a chain candidate
-only with a concrete next action; report A only after validation, then follow
-the current queue, fingerprint, and budget.
+Save confirmed A immediately and report it when its evidence and destination
+gates pass. Claude may investigate B/C within the remaining budget when shared
+evidence makes that useful; optional siblings never delay A. A combined-impact
+claim still requires proof of every necessary connector.
 
 ### Workflow Surfaces
 
@@ -169,10 +169,9 @@ when the fingerprint repeats, the kill condition is met, the owner budget is
 exhausted, or a prerequisite is unavailable. Prefer fresh context to brute
 force, while allowing a high-information lane to continue beyond a clock
 heuristic. Elapsed time alone cannot rotate, stop, or claim coverage.
-The concrete threshold used by hunt/autopilot flows: after three homogeneous
-no-information results (same endpoint family x vuln class, no evidence delta),
-resolve and rotate to one adjacent high-value lane; documents referencing that
-threshold point here instead of restating it.
+Three homogeneous no-information results are a reassessment hint, not a forced
+rotation or completion rule. Claude chooses whether another sample reduces
+uncertainty, another lane is useful, or the invocation should end within budget.
 
 Validation, reporting, and specialist procedures remain with their owners
 listed at the top of this rule.

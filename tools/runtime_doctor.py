@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import filecmp
+import fcntl
 import hashlib
 import json
 import os
@@ -155,6 +156,16 @@ def _runtime_files(
             path = base / relative_path
             if path.is_file():
                 files[relative_path] = path
+        manifest = runtime_root / ".ccst-installed.json"
+        if manifest.is_file():
+            for relative_path, record in json.loads(manifest.read_text()).items():
+                if record.get("kind") != "skills":
+                    continue
+                path = runtime_root / relative_path
+                if not path.resolve().is_relative_to(base.resolve()):
+                    raise ValueError("invalid installed skill path")
+                if path.is_file():
+                    files[path.relative_to(base).as_posix()] = path
         return files
     return {
         path.name: path
@@ -314,38 +325,123 @@ def sync_runtime(
     *,
     prune: bool = False,
 ) -> dict[str, list[str]]:
+    try:
+        from tools.artifact_io import write_text_atomic
+    except ImportError:  # direct script execution
+        from artifact_io import write_text_atomic
+
     resolved_repo = _repo_root(repo_root)
     resolved_runtime = _runtime_root(runtime_root)
-    copied: list[str] = []
-    removed: list[str] = []
+    resolved_runtime.mkdir(parents=True, exist_ok=True)
+    manifest = resolved_runtime / ".ccst-installed.json"
+    lock_path = resolved_runtime / ".ccst-install.lock"
+    if manifest.is_symlink() or lock_path.is_symlink():
+        raise ValueError("runtime ownership metadata must not be a symlink")
+    copied, removed, conflicts = [], [], []
+    with lock_path.open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        owned = json.loads(manifest.read_text()) if manifest.exists() else {}
+        if not isinstance(owned, dict):
+            raise ValueError("invalid runtime ownership manifest")
+        for rel, record in owned.items():
+            path = Path(rel)
+            if (path.is_absolute() or ".." in path.parts or not isinstance(record, dict)
+                    or record.get("kind") not in KIND_ORDER
+                    or not path.is_relative_to(RUNTIME_SUBDIRS[record["kind"]])
+                    or not isinstance(record.get("sha256"), str)):
+                raise ValueError("invalid runtime ownership entry")
 
-    for kind in kinds or list(KIND_ORDER):
-        if kind not in KIND_ORDER:
-            continue
-        repo_files = _repo_files(resolved_repo, kind)
-        runtime_files = _runtime_files(resolved_runtime, kind, repo_files=repo_files)
-        disabled_runtime_files = _intentional_disabled_runtime_files(runtime_files, kind)
-        for rel_path, src in repo_files.items():
-            disabled_dst = disabled_runtime_files.get(rel_path)
-            if disabled_dst and not (resolved_runtime / RUNTIME_SUBDIRS[kind] / rel_path).exists():
-                dst = disabled_dst
-            else:
-                dst = resolved_runtime / RUNTIME_SUBDIRS[kind] / rel_path
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dst)
-            copied.append(str(dst))
-        if prune:
-            for rel_path, dst in runtime_files.items():
-                if kind == "commands" and rel_path.startswith(DISABLED_COMMAND_PREFIX):
-                    enabled_name = rel_path[len(DISABLED_COMMAND_PREFIX):]
-                    if enabled_name in repo_files:
-                        continue
-                if rel_path in repo_files:
+        selected = [kind for kind in kinds or list(KIND_ORDER) if kind in KIND_ORDER]
+        # A missing source tree is not an intentionally empty release. Check all
+        # selected owners before publishing or deleting even the first file.
+        for kind in selected:
+            if any(record["kind"] == kind for record in owned.values()) and not (resolved_repo / kind).is_dir():
+                raise ValueError(f"runtime source directory missing: {kind}")
+        critical = load_critical_runtime_manifest(resolved_repo)
+        owns_autopilot = any(key in owned for key in
+                            ("commands/autopilot.md", "commands/.disabled.autopilot.md"))
+        if owns_autopilot and critical["status"] != "valid":
+            raise ValueError("runtime source critical manifest is missing or invalid")
+        if critical["status"] == "valid":
+            for entry in critical["paths"]:
+                source = resolved_repo / entry["kind"] / entry["relative_path"]
+                base = resolved_repo / entry["kind"]
+                if (source.is_symlink() or not source.resolve().is_relative_to(base.resolve())
+                        or not source.is_file()):
+                    raise ValueError(f"required runtime source missing or unsafe: {source}")
+                source.read_bytes()  # All required sources must be readable before mutation.
+
+        def digest(path):
+            return hashlib.sha256(path.read_bytes()).hexdigest()
+
+        def safe(path):
+            return (not path.is_symlink()
+                    and path.resolve().is_relative_to(resolved_runtime)
+                    and all(not parent.is_symlink() for parent in path.parents
+                            if parent != resolved_runtime and parent.is_relative_to(resolved_runtime)))
+
+        source_files = {kind: _repo_files(resolved_repo, kind) for kind in selected}
+        for key, record in list(owned.items()):
+            if record["kind"] != "commands" or "commands" not in selected:
+                continue
+            current = resolved_runtime / key
+            alternative_name = (current.name[len(DISABLED_COMMAND_PREFIX):]
+                                if current.name.startswith(DISABLED_COMMAND_PREFIX)
+                                else DISABLED_COMMAND_PREFIX + current.name)
+            alternative = current.with_name(alternative_name)
+            if not current.exists() and safe(alternative) and alternative.is_file():
+                alternative_key = alternative.relative_to(resolved_runtime).as_posix()
+                if alternative_key not in owned:
+                    owned[alternative_key] = record
+                    del owned[key]
+
+        for kind in selected:
+            sources = source_files[kind]
+            desired = set()
+            for rel, src in sources.items():
+                dst = resolved_runtime / RUNTIME_SUBDIRS[kind] / rel
+                original_key = dst.relative_to(resolved_runtime).as_posix()
+                disabled = dst.with_name(DISABLED_COMMAND_PREFIX + dst.name)
+                if kind == "commands" and not dst.exists() and disabled.is_file():
+                    dst = disabled
+                key = dst.relative_to(resolved_runtime).as_posix()
+                desired.add(key)
+                previous = owned.get(key) or owned.get(original_key)
+                expected = digest(src)
+                if (not safe(dst) or (dst.exists() and (not dst.is_file()
+                        or (digest(dst) != expected
+                            and (not previous or digest(dst) != previous["sha256"]))))):
+                    conflicts.append(str(dst))
                     continue
-                dst.unlink(missing_ok=True)
-                removed.append(str(dst))
-
-    return {"copied": copied, "removed": removed}
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                # Atomic publication, with the manifest retaining the prior hash
+                # until publication succeeds. Interrupted retries adopt exact bytes.
+                if not dst.exists() or digest(dst) != expected:
+                    import tempfile
+                    fd, temporary = tempfile.mkstemp(dir=dst.parent, prefix=".ccst-")
+                    os.close(fd)
+                    try:
+                        shutil.copy2(src, temporary)
+                        os.replace(temporary, dst)
+                    finally:
+                        Path(temporary).unlink(missing_ok=True)
+                owned[key] = {"kind": kind, "sha256": expected}
+                if key != original_key:
+                    owned.pop(original_key, None)
+                copied.append(str(dst))
+            if prune:
+                for key, record in list(owned.items()):
+                    if record["kind"] != kind or key in desired:
+                        continue
+                    dst = resolved_runtime / key
+                    if not safe(dst) or (dst.exists() and (not dst.is_file() or digest(dst) != record["sha256"])):
+                        conflicts.append(str(dst))
+                        continue
+                    dst.unlink(missing_ok=True)
+                    owned.pop(key)
+                    removed.append(str(dst))
+        write_text_atomic(manifest, json.dumps(owned, sort_keys=True, indent=2) + "\n")
+    return {"copied": copied, "removed": removed, "conflicts": conflicts}
 
 
 def format_report(payload: dict) -> str:
@@ -419,6 +515,7 @@ def main() -> int:
     args = parser.parse_args()
 
     kinds = _parse_kinds(args.kind)
+    changes = {"conflicts": []}
     if args.sync:
         changes = sync_runtime(args.repo_root, args.runtime_root, kinds=kinds, prune=args.prune)
         if not args.json:
@@ -428,10 +525,16 @@ def main() -> int:
             )
 
     payload = compare_runtime(args.repo_root, args.runtime_root, kinds=kinds)
+    if args.sync:
+        payload["sync"] = changes
     if args.json:
         print(json.dumps(payload, indent=2))
     else:
         print(format_report(payload))
+    if changes["conflicts"]:
+        if not args.json:
+            print("Preserved conflicting files: " + ", ".join(changes["conflicts"]))
+        return 1
     if args.fail_on_drift and not payload["clean"]:
         return 1
     if args.fail_on_critical_drift and not payload["critical_clean"]:

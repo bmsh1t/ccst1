@@ -138,6 +138,7 @@ BOUNDED_FAILSAFE_PATTERNS = [
 ]
 
 FORMAT_PATTERNS = [
+    r"native evidence identity_v2.*(?:must match|conflicts with)",
     # Declared whitelist of format / contract validation vocabulary.
     r"must be",
     r"must contain",
@@ -205,6 +206,8 @@ def classify_gate_message(message: str) -> str | None:
     """
     if _matches_any(DANGER_PATTERNS, message):
         return "DANGER"
+    if re.fullmatch(r"native evidence identity_v2 must match the finding endpoint and family", message):
+        return "FORMAT"
     if _matches_any(CONTENT_GATE_PATTERNS, message):
         # A gate that routes WHAT to test is a content-level gate: it is
         # outside every bucket and must fail the discipline test.

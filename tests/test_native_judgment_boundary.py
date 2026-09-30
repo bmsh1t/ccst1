@@ -4,30 +4,18 @@ import json
 
 import pytest
 
-from tools import browser_mcp_import, repo_secret_scan, source_intel, surface
+from tools import browser_mcp_import, repo_secret_scan, surface
 from tools.structured_findings import finding_rank_key
-from tools.surface_source_intel import build_source_intel_urls, load_source_intel
 from tools.target_store import TargetStore
 
 
-def test_source_routes_keep_unfamiliar_inputs_and_real_method_provenance(tmp_path):
-    repo = tmp_path / "sample"
-    repo.mkdir()
-    (repo / "app.js").write_text(
-        "router.post('/opaque', handler); fetch('/x');\n"
-        "const q = 'mutation UpdateValue { value }';\n"
-        "const socket = new WebSocket('wss://target.test/stream');\n",
-        encoding="utf-8",
-    )
-    result = source_intel.run_source_intel(target="target.test", repo_path=str(repo), repo_root=tmp_path)
-    observations = load_source_intel(tmp_path / "findings" / "target.test")
-    urls = build_source_intel_urls(observations, "https://target.test")
-    assert {"https://target.test/opaque", "https://target.test/x"} <= set(urls)
-    assert any(row["method"] == "POST" and row["source"] == "repo:app.js" for row in urls["https://target.test/opaque"])
-    assert observations["graphql_operations"][0]["operation"] == "mutation"
-    assert any("WebSocket" in row["evidence"] for row in observations["signals"])
-    assert "hypotheses" not in result["artifacts"]
-    assert "tags" not in observations["routes"][0]
+def test_source_route_extractor_is_retired():
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    assert not (root / "tools/source_intel.py").exists()
+    assert not (root / "tools/surface_source_intel.py").exists()
+
+
 
 
 @pytest.mark.parametrize("enqueue", [False, True])
@@ -66,27 +54,19 @@ def test_browser_novel_evidence_does_not_need_value_keywords(tmp_path, enqueue):
     assert not (tmp_path / "state" / store.key / "action_queue.json").exists()
 
 
-def test_legacy_source_routes_survive_malformed_rows_without_restoring_predictions(tmp_path):
-    source_dir = tmp_path / "source_intel"
-    source_dir.mkdir()
-    (source_dir / "hypotheses.jsonl").write_text(
-        json.dumps({"candidate": "/first", "type": "idor"}) + "\n{broken\n" +
-        json.dumps({"candidate": "/last", "method": "POST", "priority": "high"}) + "\n",
-        encoding="utf-8",
-    )
-    observations = load_source_intel(tmp_path)
-    urls = build_source_intel_urls(observations, "https://target.test")
-    assert set(urls) == {"https://target.test/first", "https://target.test/last"}
-    assert urls["https://target.test/last"][0]["method"] == "POST"
-    assert all("type" not in row and "priority" not in row for row in observations["routes"])
+def test_surface_does_not_reintroduce_legacy_source_parser():
+    assert not hasattr(surface, "load_source_intel")
+    assert not hasattr(surface, "build_source_intel_urls")
 
 
-def test_secret_detection_retains_location_and_mask_not_guessed_validity(tmp_path):
+
+
+def test_secret_detection_retains_location_and_value_not_guessed_validity(tmp_path):
     token = "ghp_" + "x" * 24
     (tmp_path / "sample.js").write_text(f'const key = "{token}"; // verified owned\n', encoding="utf-8")
     hit = next(row for row in repo_secret_scan._scan_builtin(str(tmp_path)) if row.rule_id == "github-token")
     assert hit.file_path == "sample.js" and hit.line_number == 1
-    assert hit.secret_preview != token and "..." in hit.secret_preview
+    assert hit.secret_preview == token
     assert hit.source == "builtin"
     assert "secret_triage" not in hit.metadata
 

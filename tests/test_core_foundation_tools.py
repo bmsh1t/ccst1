@@ -342,7 +342,9 @@ def test_target_memory_primary_selection_and_goal_are_store_owned(tmp_path, monk
     assert target_memory.main(["handoff", "Resume comparison", "--target", "example.com",
                                "--command-id", "handoff-1"]) == 0
     projection = target_memory.load_goal_memory(tmp_path, "example.com")
-    assert [item["text"] for item in projection["target"]["next_actions"]] == ["Review response"]
+    assert projection["target"]["next_actions"] == []
+    assert projection["target"]["current_handoff"]["entry_id"] == "handoff-1"
+    assert store.experience("next-1")["next_intent"] == "Review response"
     shown = target_memory.show(argparse.Namespace(target="example.com"))
     assert "conditions: same tenant" in shown
     assert "next_intent: Read control" in shown

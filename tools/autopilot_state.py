@@ -54,9 +54,9 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         validate_round_progress,
     )
 try:
-    from tools.intel_continuation import apply_intel_continuation, inspect_intel_continuation
+    from tools.intel_continuation import inspect_intel_continuation
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from intel_continuation import apply_intel_continuation, inspect_intel_continuation  # type: ignore
+    from intel_continuation import inspect_intel_continuation  # type: ignore
 try:
     from tools.repo_source_artifacts import (
         list_repo_source_artifacts,
@@ -147,14 +147,20 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     )
     from current_truth import current_cell_projection  # type: ignore
 try:
+    from tools.identity_contract import ClosureCellKey
     from tools.closure_resolver import (
+        ClosureResolver,
         canonical_endpoint_identity,
+        exact_endpoint_identity,
         canonical_endpoint_path,
         canonical_vuln_class,
     )
 except ImportError:  # pragma: no cover - direct tools/ execution
+    from identity_contract import ClosureCellKey  # type: ignore
     from closure_resolver import (  # type: ignore
+        ClosureResolver,
         canonical_endpoint_identity,
+        exact_endpoint_identity,
         canonical_endpoint_path,
         canonical_vuln_class,
     )
@@ -179,16 +185,16 @@ except ImportError:  # pragma: no cover - direct tools/ execution
 
 # artifact reader 拆分（批次 7）：re-export 保持外部 import 零破坏。
 try:
-    from tools.autopilot_state_read import _JS_TERMINAL_DISPOSITIONS, _has_any_artifact, _has_js_read_signal, _load_case_state_projection, _load_js_intel_projection, _load_json_inject_projection, _load_scanner_summary_projection, _load_sql_matrix_projections, _read_batch_lines, _read_batch_manifest_completed, _read_batch_ranked_targets, load_target_goal_memory
+    from tools.autopilot_state_read import _load_case_state_projection, _load_json_inject_projection, _load_scanner_summary_projection, _load_sql_matrix_projections, _read_batch_lines, _read_batch_manifest_completed, _read_batch_ranked_targets, load_target_goal_memory
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from autopilot_state_read import _JS_TERMINAL_DISPOSITIONS, _has_any_artifact, _has_js_read_signal, _load_case_state_projection, _load_js_intel_projection, _load_json_inject_projection, _load_scanner_summary_projection, _load_sql_matrix_projections, _read_batch_lines, _read_batch_manifest_completed, _read_batch_ranked_targets, load_target_goal_memory
+    from autopilot_state_read import _load_case_state_projection, _load_json_inject_projection, _load_scanner_summary_projection, _load_sql_matrix_projections, _read_batch_lines, _read_batch_manifest_completed, _read_batch_ranked_targets, load_target_goal_memory
 
 
 # frontier/gate 拆分（批次 7）：re-export 保持外部 import 零破坏。
 try:
-    from tools.autopilot_gate import _actionable_coverage_gaps, _blocking_recon_phase_gate, _build_actionable_frontier, _build_priority_frontier, _candidate_items_for_next_action, _closure_frontier_matches, _closure_reason_frontier, _describe_next_step, _format_priority_frontier_lines, _frontier_item, _hard_gate_projection, _observation_partial_reason, _recon_phase_residuals, _scanner_lane_residuals, describe_next_step
+    from tools.autopilot_gate import _actionable_coverage_gaps, _blocking_recon_phase_gate, _build_actionable_frontier, _build_owner_continuations, _candidate_items_for_next_action, _closure_frontier_matches, _closure_reason_frontier, _describe_next_step, _format_owner_continuations_lines, _frontier_item, _hard_gate_projection, _recon_phase_residuals, _scanner_lane_residuals, describe_next_step
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from autopilot_gate import _actionable_coverage_gaps, _blocking_recon_phase_gate, _build_actionable_frontier, _build_priority_frontier, _candidate_items_for_next_action, _closure_frontier_matches, _closure_reason_frontier, _describe_next_step, _format_priority_frontier_lines, _frontier_item, _hard_gate_projection, _observation_partial_reason, _recon_phase_residuals, _scanner_lane_residuals, describe_next_step
+    from autopilot_gate import _actionable_coverage_gaps, _blocking_recon_phase_gate, _build_actionable_frontier, _build_owner_continuations, _candidate_items_for_next_action, _closure_frontier_matches, _closure_reason_frontier, _describe_next_step, _format_owner_continuations_lines, _frontier_item, _hard_gate_projection, _recon_phase_residuals, _scanner_lane_residuals, describe_next_step
 
 PLACEHOLDER_OBJECT_SEGMENTS = {"nan", "undefined", "null", "none", "object", "[object object]"}
 DECISION_PROJECTION_SCHEMA_VERSION = 1
@@ -200,43 +206,16 @@ def _has_placeholder_object_segment(value: str) -> bool:
     return any(segment in PLACEHOLDER_OBJECT_SEGMENTS for segment in segments)
 
 
-def _finalized_finding_identities(repo_root: str, resolved_target: str) -> set[str]:
-    """Return exact finding identities already validated/rejected/reported.
-
-    This is an egress guard for AI-facing next actions. It does not delete raw
-    surface; it only prevents old finalized findings from steering startup.
-    """
-    store = runtime_store(repo_root, resolved_target)
-    identities: set[str] = set()
-    page = store.finding_state_page(limit=1000)
-    while True:
-        for item in page.get("items", []):
-            assessment = item.get("assessment") or {}
-            verdict = str(assessment.get("verdict") or "").strip().lower()
-            if verdict not in {"confirmed", "refuted"} and not item["report_recorded"]:
-                continue
-            endpoint_identity = canonical_endpoint_identity(str(item.get("endpoint") or ""))
-            if endpoint_identity and endpoint_identity != "/":
-                identities.add(endpoint_identity)
-        if not page.get("has_more"):
-            return identities
-        page = store.finding_state_page(limit=1000, cursor=page.get("next_cursor"))
-
-
 def _is_placeholder_surface(item: dict) -> bool:
     url = str(item.get("url") or item.get("path") or "").strip()
     return _has_placeholder_object_segment(url)
 
 
-def _filter_resume_targets_for_final_state(
+def _filter_resume_targets(
     targets: list[str],
-    finalized_identities: set[str],
 ) -> list[str]:
     filtered: list[str] = []
     for target in targets:
-        endpoint_identity = canonical_endpoint_identity(target)
-        if endpoint_identity and endpoint_identity in finalized_identities:
-            continue
         if _has_placeholder_object_segment(target):
             continue
         filtered.append(target)
@@ -293,8 +272,6 @@ def _is_stale_finalized_scanner_candidate(item: dict) -> bool:
         for key in (
             "evidence_convergence",
             "browser_observed",
-            "js_intel_observed",
-            "source_intel_observed",
         )
     ):
         return False
@@ -351,29 +328,6 @@ def _filter_stale_finalized_scanner_candidates(ranked: dict) -> dict:
         filtered[key] = kept
     filtered["deferred_surface_candidates"] = deferred[:8]
     return filtered
-
-
-APP_LIKE_HINT_TOKENS = (
-    "login",
-    "register",
-    "signup",
-    "signin",
-    "dashboard",
-    "portal",
-    "account",
-    "admin",
-    "workspace",
-    "graphql",
-    "oauth",
-    "sso",
-    "session",
-    "profile",
-    "settings",
-    "checkout",
-    "billing",
-    "websocket",
-    "client-side",
-)
 
 
 def _checkpoint_round_projection(
@@ -656,9 +610,8 @@ def _pick_next_action(
     case_state: dict | None = None,
     resume_targets_bound: bool = False,
 ) -> str:
-    """Bias toward resumable session context before widening to surface review candidates."""
+    """Expose explicit owner work; observations never select an investigation route."""
     structured_findings = structured_findings or {}
-    resume_targets = resume_targets if resume_targets is not None else _build_resume_targets(resume_summary)
     # 活跃 phase gate 必须优先于 validation/report/surface，避免第二个 Claude
     # loop 重启或忽略仍持有 flock 的长任务。
     if recon_in_progress:
@@ -680,10 +633,6 @@ def _pick_next_action(
         return "review_validation_candidate"
     if action_queue_next:
         return "resume_action_queue"
-    # Case 不再提供 next action：它只在自己还有未决假设（上下文义务）时把
-    # 路线拉回 Case State，路线本身仍由 AI 决定。
-    if int((case_state or {}).get("open_hypotheses", 0) or 0) > 0:
-        return "resume_case_state"
     if (cidr_continuation or {}).get("status") == "pending":
         return "run_recon"
     if not has_recon:
@@ -691,27 +640,8 @@ def _pick_next_action(
             return "recon_no_live_hosts"
         return "run_recon"
 
-    latest_session = (resume_summary or {}).get("latest_session_summary") or {}
-    preview = [item for item in latest_session.get("endpoints_preview", []) if item]
-
-    if latest_session and preview and resume_targets and resume_targets_bound:
-        return "continue_last_focus"
-    if latest_session and resume_targets and resume_targets_bound:
-        return "resume_untested"
-
-    if surface_context_required or fresh_recon_ready:
-        return "prepare_surface_context"
-    if ranked.get("review_pool") or ranked.get("p1"):
-        return "hunt_p1"
-    if dir_fuzz_rotation_pending:
-        return "run_recon"
-    if resume_targets and resume_targets_bound:
-        return "resume_untested"
     if structured_findings.get("draft_completion_pending"):
         return "complete_report_draft"
-    # A validated finding is a closure/report asset, not the steering wheel.
-    # Surface/replay/resume work above should stay available when current
-    # evidence exposes stronger live leads; otherwise keep the report visible.
     if structured_findings.get("validated_pending_report"):
         return "report_finding"
     return "handoff"
@@ -804,32 +734,6 @@ def _build_pivot_hint(
     if ci_findings > 0:
         return "repo source shows CI risks; review workflow attack surface before rerunning source hunt."
     return ""
-
-
-def _has_browser_mcp_signal(surface_context: dict, ranked: dict) -> bool:
-    """Return whether cached recon looks app-like enough to justify browser probing."""
-    titles = [
-        str(item.get("title", "") or "").lower()
-        for item in (surface_context.get("hosts") or {}).values()
-        if isinstance(item, dict)
-    ]
-    ranked_values = []
-    for bucket in ("p1", "p2", "review_pool"):
-        for item in ranked.get(bucket) or []:
-            if not isinstance(item, dict):
-                continue
-            ranked_values.extend(str(item.get(key) or "").lower() for key in ("url", "title", "reason"))
-            ranked_values.extend(str(value or "").lower() for value in item.get("tech_stack") or [])
-    for item in ranked.get("workflow_leads") or []:
-        if isinstance(item, str):
-            ranked_values.append(item.lower())
-        elif isinstance(item, dict):
-            ranked_values.extend(str(item.get(key) or "").lower() for key in ("category", "title", "rationale", "next_action"))
-
-    for value in titles + ranked_values:
-        if any(token in value for token in APP_LIKE_HINT_TOKENS):
-            return True
-    return False
 
 
 EXPOSURE_SUMMARY_KEYS = (
@@ -1104,8 +1008,6 @@ def _build_ranker_advisory_hint(
     signal_groups = 0
     for section, keys in (
         ("browser", ("xhr_count", "api_count")),
-        ("js_intel", ("endpoint_count", "lead_count", "graphql_count")),
-        ("source_intel", ("signal_count", "route_count", "graphql_count")),
         ("scanner", ("finding_count",)),
         ("intel", ("signal_count",)),
     ):
@@ -1176,36 +1078,14 @@ def _build_enrichment_hints(
     }:
         return "", []
 
-    storage_key = target_storage_key(resolved_target)
-    recon_dir = os.path.join(repo_root, "recon", storage_key)
-    findings_dir = os.path.join(repo_root, "findings", storage_key)
-
-    browser_evidence = browser_evidence or inspect_browser_evidence(repo_root, resolved_target)
-    browser_ready = bool(browser_evidence.get("ready"))
-    js_intel = _load_js_intel_projection(repo_root, resolved_target)
-    js_intel_ready = str(js_intel.get("status") or "") in {
-        "analyzed", *(_JS_TERMINAL_DISPOSITIONS - {"prepared"})
-    }
-    source_intel_ready = _has_any_artifact(
-        os.path.join(findings_dir, "source_intel", "summary.md"),
-        os.path.join(findings_dir, "source_intel", "routes.json"),
-    )
-    browser_pending = not browser_ready and _has_browser_mcp_signal(surface_context, ranked)
-    source_pending = repo_source_available and not source_intel_ready
-    js_pending = not js_intel_ready and _has_js_read_signal(recon_dir, surface_context)
+    # Browser/source/JS availability is evidence for the AI, never a readiness
+    # gate or auto-selected lane.
+    browser_pending = False
+    source_pending = False
+    js_pending = False
 
     hints = []
     if next_action == "guard_safe_pivot":
-        if repo_source_available and not source_intel_ready:
-            hints.append({
-                "tool": "run_source_intel",
-                "reason": "live hosts are cooling down; source artifacts can still produce offline hypotheses",
-            })
-        if not js_intel_ready and _has_js_read_signal(recon_dir, surface_context):
-            hints.append({
-                "tool": "run_js_read",
-                "reason": "live hosts are cooling down; cached JS can still produce endpoint and parameter leads",
-            })
         hints.extend([
             {
                 "tool": "context_pack",
@@ -1229,27 +1109,6 @@ def _build_enrichment_hints(
     )
     if ranker_hint:
         hints.append(ranker_hint)
-    if browser_pending:
-        reason = (
-            "authenticated browser capture is missing persisted state; recapture Network and complete state"
-            if browser_evidence.get("auth_required") and browser_evidence.get("auth_state") != "present"
-            else "app-like or GraphQL surface signals were detected; use Chrome DevTools or Playwright MCP, then import the observed artifacts"
-        )
-        hints.append({
-            "tool": "collect_browser_mcp_evidence",
-            "reason": reason,
-        })
-    if source_pending:
-        hints.append({
-            "tool": "run_source_intel",
-            "reason": "repo source artifacts exist, but source_intel artifacts have not been generated yet",
-        })
-    if js_pending:
-        hints.append({
-            "tool": "run_js_read",
-            "reason": "cached JS artifacts exist, but js_intel materials have not been prepared yet",
-        })
-
     next_tool_hint = next(
         (
             str(item.get("tool") or "")
@@ -1287,7 +1146,6 @@ def _owner_source_markers(repo_root: str | Path, target: str) -> dict[str, tuple
         "scope": Path(repo_root) / "state" / key / "scope.json",
         "recon": Path(repo_root) / "recon" / key / "recon_manifest.jsonl",
         "browser": Path(repo_root) / "findings" / key / "browser" / "mcp-readiness.json",
-        "js_intel": Path(repo_root) / "findings" / key / "js_intel" / "materials.json",
         "intel": Path(repo_root) / "recon" / key / "intel.json",
     }
     binding = runtime_store(repo_root, resolved).binding()
@@ -1475,7 +1333,7 @@ def _build_batch_autopilot_state(repo_root: str, target: str, resolved_target: s
     }
     state["hard_gate"] = _hard_gate_projection(state)
     state["fallback_action"] = next_action
-    state["priority_frontier"] = []
+    state["owner_continuations"] = []
     state["selection_mode"] = "hard_gate"
     return state
 
@@ -1524,7 +1382,6 @@ def _load_autopilot_control_facts(
         coverage_state=coverage_state,
         full_domain_context=full_domain_context,
     )
-    finalized_identities = _finalized_finding_identities(repo_root, resolved_target)
     guard_status = load_guard_status(resolved_memory_dir, resolved_target)
     tripped_hosts = [item for item in guard_status.get("hosts", []) if item.get("tripped")]
     repo_source_artifacts = list_repo_source_artifacts(repo_root, resolved_target)
@@ -1622,9 +1479,8 @@ def _load_autopilot_control_facts(
         has_memory=has_memory,
         recon_in_progress=recon_in_progress,
     )
-    resume_targets = _filter_resume_targets_for_final_state(
+    resume_targets = _filter_resume_targets(
         _build_resume_targets(resume_summary),
-        finalized_identities,
     )
     recent_guard_advisories = list(
         (resume_summary or {}).get("recent_guard_advisories")
@@ -1635,7 +1491,6 @@ def _load_autopilot_control_facts(
     browser_evidence = inspect_browser_evidence(repo_root, resolved_target)
     json_inject = _load_json_inject_projection(repo_root, resolved_target)
     sql_matrix = _load_sql_matrix_projections(repo_root, resolved_target)
-    js_intel = _load_js_intel_projection(repo_root, resolved_target)
     scanner_summary = _load_scanner_summary_projection(repo_root, resolved_target)
     return {
         "repo_root": repo_root,
@@ -1673,7 +1528,6 @@ def _load_autopilot_control_facts(
         "browser_evidence": browser_evidence,
         "json_inject": json_inject,
         "sql_matrix": sql_matrix,
-        "js_intel": js_intel,
         "scanner_summary": scanner_summary,
         "case_state": case_state,
     }
@@ -1745,7 +1599,7 @@ def _build_domain_autopilot_state(
         resume_targets_bound=resume_targets_bound,
     )
     intel_continuation = facts.get("intel_continuation") or {}
-    next_action = apply_intel_continuation(primary_next_action, intel_continuation)
+    next_action = primary_next_action
     surface_review_candidates = (
         _build_recommended_targets(
             _candidate_items_for_next_action(ranked_for_action, next_action),
@@ -1811,9 +1665,7 @@ def _build_domain_autopilot_state(
 
     recon_completed_no_live_hosts = bool(facts.get("recon_completed_no_live_hosts"))
     recent_guard_advisories = facts.get("recent_guard_advisories") or []
-    browser_required = bool(
-        has_recon and _has_browser_mcp_signal(surface_context or {}, ranked_for_next)
-    )
+    browser_required = False
     state = {
         "target": target,
         "resolved_target": resolved_target,
@@ -1829,7 +1681,6 @@ def _build_domain_autopilot_state(
         "browser_required": browser_required,
         "json_inject": facts.get("json_inject") or {},
         "sql_matrix": facts.get("sql_matrix") or {},
-        "js_intel": facts.get("js_intel") or {},
         "scanner_summary": facts.get("scanner_summary") or {},
         "case_state": facts.get("case_state") or {},
         "runtime_state": facts.get("runtime_state") or {},
@@ -1883,22 +1734,15 @@ def _build_domain_autopilot_state(
         if state["hard_gate"]
         else _build_actionable_frontier(state, None, limit=None)
     )
-    state["priority_frontier"] = (
-        []
-        if state["hard_gate"]
-        else _build_priority_frontier(
-            state,
-            ranked_for_action,
-            actionable_frontier=actionable_frontier,
-        )
-    )
+    # Continuations expose explicit owner work, never observation-derived routes.
+    state["owner_continuations"] = list(actionable_frontier)
     state["selection_mode"] = (
         "hard_gate"
         if state["hard_gate"]
         else "ai_priority"
-        if len(state["priority_frontier"]) > 1
+        if len(state["owner_continuations"]) > 1
         else "direct"
-        if state["priority_frontier"]
+        if state["owner_continuations"]
         else "fallback"
     )
     return state
@@ -2114,10 +1958,6 @@ def _matrix_is_usable_for_closure(matrix: object) -> bool:
     return True
 
 
-def _coverage_has_high_value_gaps(matrix: dict) -> bool:
-    return bool(_actionable_coverage_gaps(matrix))
-
-
 def _coverage_terminal_evidence(
     matrix: dict | None,
     evidence_projection: dict | None,
@@ -2133,18 +1973,7 @@ def _coverage_terminal_evidence(
         return {"status": "unavailable", "missing": [], "checked": 0}
 
     projection = evidence_projection if isinstance(evidence_projection, dict) else {}
-    closed: dict[tuple[str, str], set[str]] = {}
-    for cell in [
-        *(projection.get("closed_cells") or []),
-        *(projection.get("closed_cells_v2") or []),
-    ]:
-        if not isinstance(cell, dict):
-            continue
-        endpoint = canonical_endpoint_identity(str(cell.get("endpoint") or ""))
-        family = canonical_vuln_class(str(cell.get("vuln_class") or ""))
-        result = str(cell.get("result") or "").strip()
-        if endpoint and family and result:
-            closed.setdefault((endpoint, family), set()).add(result)
+    resolver = ClosureResolver(projection, matrix)
 
     expected_results = {
         "tested_clean": {"tested_clean"},
@@ -2156,7 +1985,7 @@ def _coverage_terminal_evidence(
     for endpoint_row in matrix.get("endpoints") or []:
         if not isinstance(endpoint_row, dict):
             continue
-        endpoint = canonical_endpoint_identity(str(endpoint_row.get("endpoint") or ""))
+        endpoint = str(endpoint_row.get("endpoint") or "")
         cells = endpoint_row.get("cells") if isinstance(endpoint_row.get("cells"), dict) else {}
         for raw_family, cell in cells.items():
             if not isinstance(cell, dict):
@@ -2169,7 +1998,8 @@ def _coverage_terminal_evidence(
             family = canonical_vuln_class(str(raw_family))
             checked += 1
             if not endpoint or not family or not (
-                closed.get((endpoint, family), set()) & expected_results.get(status, set())
+                resolver.closed_result(endpoint, family, identity_v2=cell.get("identity_v2"))
+                in expected_results.get(status, set())
             ):
                 missing.append({
                     "endpoint": str(endpoint_row.get("endpoint") or ""),
@@ -2220,7 +2050,7 @@ def _actor_context_gap(case_state: dict, matrix: dict | None) -> dict:
         "status": status if status in {"missing", "partial"} else "incomplete",
         "reason": reason,
         "lanes": relevant_lanes,
-        "blocking": True,
+        "blocking": False,
         "required_context": "owner/peer actor and session context",
         "acquisition_action": (
             "Import two distinct actor sessions through Case State, then rerun the "
@@ -2235,21 +2065,31 @@ def _actor_context_gap(case_state: dict, matrix: dict | None) -> dict:
     }
 
 
-def _final_queue_execution_specs(queue: dict) -> list[dict[str, str]]:
+def _review_endpoint(value: object) -> str:
+    """A path/template cannot establish an asset's review completion."""
+    try:
+        return exact_endpoint_identity(value)
+    except (TypeError, ValueError):
+        return ""
+
+
+def _final_queue_execution_specs(queue: dict) -> list[dict]:
     """Return final Queue dimensions without collapsing vulnerability lanes."""
-    specs: list[dict[str, str]] = []
+    specs: list[dict] = []
     for action in queue.get("actions") or []:
         if not isinstance(action, dict):
             continue
         if str(action.get("status") or "").strip().lower() not in FINAL_STATUSES:
             continue
         metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
-        endpoint = canonical_endpoint_identity(
+        endpoint = _review_endpoint(
             str(metadata.get("endpoint") or metadata.get("url") or "")
         )
         if endpoint:
             specs.append({
                 "endpoint": endpoint,
+                "identity_v2": metadata.get("identity_v2"),
+                "method": str(metadata.get("method") or "").strip().upper(),
                 "vuln_class": str(metadata.get("vuln_class") or "").strip().lower(),
                 "semantic_shape_id": str(metadata.get("semantic_shape_id") or "").strip().lower(),
                 "auth_context": str(metadata.get("auth_context") or "").strip().lower(),
@@ -2276,16 +2116,9 @@ def _surface_review_completion(
     if not _matrix_is_usable_for_closure(matrix):
         return {"status": "unresolved", "unresolved": [{"reason": "coverage_unavailable"}]}
 
-    matrix_by_path = {
-        canonical_endpoint_path(str(item.get("endpoint") or "")): item
-        for item in matrix.get("endpoints") or []
-        if isinstance(item, dict) and canonical_endpoint_path(str(item.get("endpoint") or ""))
-    }
-    high_gap_paths = {
-        canonical_endpoint_path(str(gap.get("endpoint") or ""))
-        for gap in _actionable_coverage_gaps(matrix)
-        if isinstance(gap, dict)
-    }
+    # The real matrix grid contains display paths. Exact current evidence is
+    # carried separately; never reconstruct an origin from the display grid.
+    resolver = ClosureResolver(matrix.get("closure_projection") or {})
     final_specs = _final_queue_execution_specs(queue)
     unresolved = []
     for candidate in candidates:
@@ -2294,31 +2127,35 @@ def _surface_review_completion(
             unresolved.append({"reason": "invalid_candidate"})
             continue
         url = str(candidate.get("url") or "").strip()
-        endpoint = canonical_endpoint_path(url)
-        endpoint_identity = canonical_endpoint_identity(url)
-        coverage_endpoint = (
-            endpoint
-            if endpoint in matrix_by_path
-            else canonical_endpoint_path(_route_template(endpoint))
-        )
-        if not endpoint or not endpoint_identity:
+        endpoint_identity = _review_endpoint(url)
+        candidate_class = str(candidate.get("vuln_class") or "").strip().lower()
+        candidate_shape = str(candidate.get("semantic_shape_id") or "").strip().lower()
+        candidate_auth = str(candidate.get("auth_context") or "").strip().lower()
+        candidate_method = str(candidate.get("method") or "").strip().upper()
+        try:
+            identity = ClosureCellKey.from_dict(candidate.get("identity_v2"))
+        except (TypeError, ValueError, KeyError):
+            identity = None
+        if not endpoint_identity:
             unresolved.append({"url": url, "reason": "missing_endpoint"})
             blocking_unresolved |= candidate_blocking
-        elif coverage_endpoint not in matrix_by_path:
-            unresolved.append({"url": url, "reason": "coverage_endpoint_missing"})
+        elif (identity is None or identity.schema_version != 3
+                or identity.endpoint != endpoint_identity
+                or identity.family.lower() != candidate_class
+                or identity.dimension_map.get("method") != candidate_method):
+            unresolved.append({"url": url, "reason": "coverage_identity_missing"})
             blocking_unresolved |= candidate_blocking
-        elif coverage_endpoint in high_gap_paths:
+        elif not resolver.is_closure_closed(identity):
             unresolved.append({"url": url, "reason": "coverage_gap_pending"})
             blocking_unresolved |= candidate_blocking
         else:
-            candidate_class = str(candidate.get("vuln_class") or "").strip().lower()
-            candidate_shape = str(candidate.get("semantic_shape_id") or "").strip().lower()
-            candidate_auth = str(candidate.get("auth_context") or "").strip().lower()
             matched = any(
                 spec["endpoint"] == endpoint_identity
-                and (not candidate_class or spec["vuln_class"] == candidate_class)
-                and (not candidate_shape or not spec["semantic_shape_id"] or spec["semantic_shape_id"] == candidate_shape)
-                and (not candidate_auth or not spec["auth_context"] or spec["auth_context"] == candidate_auth)
+                and spec["identity_v2"] == identity.to_dict()
+                and bool(candidate_method) and spec["method"] == candidate_method
+                and bool(candidate_class) and spec["vuln_class"] == candidate_class
+                and spec["semantic_shape_id"] == candidate_shape
+                and spec["auth_context"] == candidate_auth
                 for spec in final_specs
             )
             if not matched:
@@ -2371,9 +2208,6 @@ def _explicit_partial_reason(state: dict) -> str:
         )
     ):
         return "finding_work_pending"
-    if state.get("resume_targets") and _resume_targets_bound_to_surface(state):
-        return "surface_work_pending"
-
     return ""
 
 
@@ -2397,8 +2231,6 @@ _CLOSURE_REASON_PRIORITY = {
     "finding_work_pending": 25,
     "case_state_work_pending": 31,
     "actor_context_required": 32,
-    "surface_projection_pending": 35,
-    "surface_work_pending": 36,
     "recon_budget_partial": 40,
     "recon_phase_partial": 40,
     "recon_phase_review_required": 41,
@@ -2410,18 +2242,11 @@ _CLOSURE_REASON_PRIORITY = {
     "coverage_empty": 60,
     "coverage_invalid": 60,
     "coverage_stale": 60,
-    "coverage_high_value_gaps": 61,
     "global_review_required": 62,
     "global_review_stale": 62,
     "global_review_invalid": 62,
     "global_review_form_insufficient": 62,
     "cidr_continuation_pending": 40,
-    "observation_inventory_partial": 70,
-    "observation_high_value_pending": 70,
-    "browser_evidence_partial": 71,
-    "browser_evidence_required": 71,
-    "source_evidence_partial": 72,
-    "js_evidence_partial": 73,
     "json_evidence_partial": 74,
     "json_candidate_pending": 74,
     "sql_evidence_partial": 75,
@@ -2447,7 +2272,6 @@ def _closure_action_for_reason(reason: str, state: dict, current: str) -> str:
     """Map the selected owner continuation to an existing CLI action."""
     exact = {
         "state_snapshot_stale": "refresh_state",
-        "surface_projection_pending": "prepare_surface_context",
         "durable_work_pending": "resume_action_queue",
         "case_state_work_pending": "resume_case_state",
         "actor_context_required": "resume_case_state",
@@ -2455,17 +2279,9 @@ def _closure_action_for_reason(reason: str, state: dict, current: str) -> str:
         "checkpoint_invalid": "refresh_checkpoint",
         "ledger_partial": "repair_evidence_ledger",
         "ledger_unreadable": "repair_evidence_ledger",
-        "surface_work_pending": "surface-review",
         "coverage_missing": "coverage-gap",
         "coverage_empty": "coverage-gap",
         "coverage_invalid": "coverage-gap",
-        "coverage_high_value_gaps": "coverage-gap",
-        "observation_inventory_partial": "surface-review",
-        "observation_high_value_pending": "surface-review",
-        "browser_evidence_partial": "browser-enrichment",
-        "browser_evidence_required": "browser-enrichment",
-        "source_evidence_partial": "source-enrichment",
-        "js_evidence_partial": "js-enrichment",
         "json_evidence_partial": "json-inject-review",
         "json_candidate_pending": "json-inject-review",
         "sql_evidence_partial": "sql-matrix-review",
@@ -2518,7 +2334,6 @@ def _finalize_closure_continuation(
     fallback = _closure_reason_frontier(primary, state, matrix, current_action) if primary else None
     force_fallback = primary in {
         "state_snapshot_stale",
-        "surface_projection_pending",
         "checkpoint_stale",
         "checkpoint_invalid",
         "recon_phase_partial",
@@ -2574,21 +2389,8 @@ def build_closure_projection(
     evidence_source_kind = str(ledger_health.get("source_kind") or "ledger").strip().lower() or "ledger"
     ledger_status = str(ledger_health.get("status") or "missing").strip().lower()
     surface_review = state.get("surface_review_completion") or {}
-    surface_projection = state.get("surface_projection")
-    surface_projection_pending = bool(
-        isinstance(surface_projection, dict)
-        and surface_projection
-        and bool(state.get("has_recon") or state.get("surface_context_required"))
-        and str(surface_projection.get("status") or "").strip().lower() != "valid"
-    )
     case_state = state.get("case_state") or {}
     actor_context_gap = _actor_context_gap(case_state, matrix)
-    # Case 的义务只剩它自己的上下文：未决假设。行动来源与旧裁决冲突不再是 Case
-    # 的问题——前者属于唯一行动源，后者属于迁移报告。
-    case_state_pending = (
-        str(case_state.get("status") or "missing") == "valid"
-        and int(case_state.get("open_hypotheses", 0) or 0) > 0
-    )
     # A legacy session endpoint preview is advisory. It only becomes an
     # executable continuation when current Surface state still owns the path.
     if (
@@ -2621,27 +2423,10 @@ def build_closure_projection(
     elif action in _TERMINAL_CLOSURE_ACTIONS:
         verdict = "blocked"
         reasons.append(action)
-    elif case_state_pending:
-        verdict = "handoff"
-        reasons.append("case_state_work_pending")
-    elif actor_context_gap:
-        verdict = "handoff"
-        action = "resume_case_state"
-        reasons.append("actor_context_required")
-    elif surface_projection_pending:
-        verdict = "handoff"
-        reasons.append("surface_projection_pending")
     elif state.get("_coverage_stale"):
         verdict = "handoff"
         action = "refresh_coverage"
         reasons.append("coverage_stale")
-    elif (
-        str(surface_review.get("status") or "") == "unresolved"
-        and bool(surface_review.get("closure_blocking"))
-    ):
-        verdict = "handoff"
-        action = "review_surface_candidate"
-        reasons.append("surface_work_pending")
     elif action != "handoff":
         verdict = "handoff"
         reasons.append("next_action_pending")
@@ -2654,9 +2439,6 @@ def build_closure_projection(
     elif not _matrix_is_usable_for_closure(matrix):
         verdict = "handoff"
         reasons.append("coverage_invalid")
-    elif _coverage_has_high_value_gaps(matrix):
-        verdict = "handoff"
-        reasons.append("coverage_high_value_gaps")
     elif (
         runtime_ledger_loaded
         and ledger_status not in {"partial", "unreadable"}
@@ -2666,20 +2448,9 @@ def build_closure_projection(
         action = "repair_evidence_ledger"
         reasons.append("coverage_ledger_evidence_missing")
     else:
-        browser = state.get("browser_evidence") or {}
-        source = state.get("repo_source_summary") or {}
-        intel = state.get("intel_continuation") or {}
         json_inject = state.get("json_inject") or {}
         sql_matrix = state.get("sql_matrix") or {}
-        js_intel = state.get("js_intel") or {}
-        enrichment_tools = {
-            str(item.get("tool") or "")
-            for item in state.get("enrichment_hints") or []
-            if isinstance(item, dict)
-        }
-        source_status = str(source.get("status") or "").strip().lower()
         partial_reason = _explicit_partial_reason(state)
-        observation_reason = _observation_partial_reason(state)
         if partial_reason:
             verdict = "handoff"
             reasons.append(partial_reason)
@@ -2703,32 +2474,6 @@ def build_closure_projection(
         ):
             verdict = "handoff"
             reasons.append("sql_evidence_partial")
-        elif str(js_intel.get("status") or "") in {"prepared", "partial"}:
-            verdict = "handoff"
-            reasons.append("js_evidence_partial")
-        elif browser.get("present") and not browser.get("ready"):
-            verdict = "handoff"
-            reasons.append("browser_evidence_partial")
-        elif state.get("browser_required") and not browser.get("ready"):
-            verdict = "handoff"
-            reasons.append("browser_evidence_required")
-        elif source_status in {
-            "partial", "blocked", "failed", "error", "incomplete", "confirmation_required",
-        }:
-            verdict = "handoff"
-            reasons.append("source_evidence_partial")
-        elif "run_source_intel" in enrichment_tools:
-            verdict = "handoff"
-            reasons.append("source_evidence_partial")
-        elif "run_js_read" in enrichment_tools:
-            verdict = "handoff"
-            reasons.append("js_evidence_partial")
-        elif intel.get("blocked"):
-            verdict = "handoff"
-            reasons.append("intel_evidence_blocked")
-        elif observation_reason:
-            verdict = "handoff"
-            reasons.append(observation_reason)
         elif ledger_projection.get("identity_v2_follow_up_actions"):
             verdict = "handoff"
             reasons.append("identity_v2_follow_up_pending")
@@ -2743,22 +2488,13 @@ def build_closure_projection(
 
     # Keep owner blockers that were masked by an earlier branch as secondary
     # diagnostics.  Primary selection below applies the stable precedence.
-    for extra_reason in (
-        _explicit_partial_reason(state),
-        "case_state_work_pending" if case_state_pending else "",
-        "actor_context_required" if actor_context_gap else "",
-        "surface_projection_pending" if surface_projection_pending else "",
-    ):
-        if extra_reason and extra_reason not in reasons:
-            reasons.append(extra_reason)
+    extra_reason = _explicit_partial_reason(state)
+    if extra_reason and extra_reason not in reasons:
+        reasons.append(extra_reason)
 
     if verdict == "handoff" and not actionable_frontier:
         reason = str(reasons[0] if reasons else "")
-        if reason in {
-            "coverage_missing",
-            "coverage_empty",
-            "coverage_invalid",
-        }:
+        if reason in {"coverage_missing", "coverage_empty", "coverage_invalid"}:
             target = str(state.get("resolved_target") or state.get("target") or "")
             actionable_frontier = [_frontier_item(
                 owner="coverage",
@@ -2769,19 +2505,7 @@ def build_closure_projection(
                 ),
                 expected_information_gain="restore a valid bounded coverage projection",
                 stop_condition="record the rebuild as complete or blocked with its reason",
-                priority=80,
             )]
-        elif reason == "surface_projection_pending":
-            projection = state.get("surface_projection") if isinstance(state.get("surface_projection"), dict) else {}
-            actionable_frontier = [_frontier_item(
-                owner="surface",
-                action="Refresh the target-owned Surface projection",
-                evidence_ref=str(projection.get("path") or "surface_projection"),
-                expected_information_gain="restore the bounded Surface index used for review",
-                stop_condition="publish a valid projection or record the source blocker",
-                priority=60,
-            )]
-
     if ledger_status in {"partial", "unreadable"}:
         ledger_reason = f"{evidence_source_kind}_{ledger_status}"
         if ledger_reason not in reasons:
@@ -2825,7 +2549,6 @@ def build_closure_projection(
                 evidence_ref=checkpoint_ref,
                 expected_information_gain="reconcile round progress with the durable lane evidence and current owner state",
                 stop_condition="record a valid lane terminal state or a bounded blocker, then recompute Closure",
-                priority=85,
             ), *actionable_frontier]
         elif reason in {"checkpoint_stale", "checkpoint_invalid"}:
             actionable_frontier = [_frontier_item(
@@ -2835,7 +2558,6 @@ def build_closure_projection(
                 evidence_ref=checkpoint_ref,
                 expected_information_gain="restore a trusted checkpoint binding for round and queue recovery",
                 stop_condition="publish a valid witness or record the checkpoint read/queue mismatch",
-                priority=85,
             ), *actionable_frontier]
 
     if verdict == "handoff" and not actionable_frontier:
@@ -2919,13 +2641,6 @@ def build_closure_projection(
             action_text = "Resume substantive work from the durable Action Queue"
             expected_gain = "resolve the selected owner-backed Queue action"
             stop_condition = "record a terminal Queue result or bounded blocker"
-        elif reason == "surface_work_pending":
-            owner = "surface"
-            projection = state.get("surface_projection") if isinstance(state.get("surface_projection"), dict) else {}
-            evidence_ref = str(projection.get("path") or "surface_projection")
-            action_text = "Review the currently bound target-owned Surface continuation"
-            expected_gain = "turn the retained Surface lead into a concrete owner action or disposition"
-            stop_condition = "record evidence-backed Queue/Ledger disposition or defer without tested-clean"
         else:
             owner = {
                 "run_recon": "recon",
@@ -3003,8 +2718,26 @@ def build_closure_projection(
             evidence_ref=evidence_ref,
             expected_information_gain=expected_gain,
             stop_condition=stop_condition,
-            priority=85,
         )]
+
+    matrix_view = matrix if isinstance(matrix, dict) else {}
+    intel = state.get("intel_continuation") or {}
+    observation_residuals = {
+        "coverage_untested": sum(
+            cell.get("status") == "untested"
+            for endpoint in matrix_view.get("endpoints") or []
+            if isinstance(endpoint, dict) and isinstance(endpoint.get("cells"), dict)
+            for cell in (endpoint.get("cells") or {}).values()
+            if isinstance(cell, dict)
+        ),
+        "case_hypotheses": int(case_state.get("open_hypotheses", 0) or 0),
+        "actor_context": bool(actor_context_gap),
+        "intel": bool(intel) and (intel.get("action") != "complete" or bool(intel.get("blocked"))),
+    }
+    if verdict == "finish" and any(observation_residuals.values()):
+        verdict, action = "blocked", "stop_bounded"
+        reasons = ["bounded_observations_unresolved"]
+        actionable_frontier = []
 
     reasons, actionable_frontier, action = _finalize_closure_continuation(
         reasons,
@@ -3026,6 +2759,8 @@ def build_closure_projection(
         "next_action": action,
         "rotation_hint": _recent_homogeneous_outcomes(ledger_entries or []),
         "surface_review": surface_review,
+        "observation_residuals": observation_residuals,
+        "owner_continuations": actionable_frontier,
         "actionable_frontier": actionable_frontier,
         "identity_v2": {
             "closed_cells": ledger_projection.get("closed_cells_v2") or [],
@@ -3058,7 +2793,7 @@ def build_closure_projection(
     ]
     if bounded_residuals:
         result["bounded_residuals"] = bounded_residuals
-    coverage_policy_skips = dict((matrix or {}).get("policy_skips") or {})
+    coverage_policy_skips = dict(matrix_view.get("policy_skips") or {})
     if coverage_policy_skips:
         result["coverage_policy_skips"] = coverage_policy_skips
     if isinstance(case_state.get("authz_coverage"), dict):
@@ -3441,7 +3176,6 @@ def _snapshot_normalize(value: object) -> object:
 _CLOSURE_STATE_KEYS = (
     "next_action",
     "has_recon",
-    "surface_context_required",
     "recon_in_progress",
     "scan_in_progress",
     "recon_completed_no_live_hosts",
@@ -3453,21 +3187,14 @@ _CLOSURE_STATE_KEYS = (
     "action_queue_next",
     "memory_candidate_next",
     "resume_targets",
-    "surface_review_candidates",
-    "recommended_targets",
     "surface_projection",
-    "observation_inventory",
-    "browser_evidence",
-    "browser_required",
     "repo_source_available",
     "repo_source_artifacts",
     "repo_source_summary",
     "json_inject",
     "sql_matrix",
-    "js_intel",
     "intel_continuation",
     "enrichment_hints",
-    "surface_review_completion",
     "_coverage_stale",
     "round_progress",
 )
@@ -3635,7 +3362,7 @@ def load_closure_projection(
         item
         for item in [*(state.get("enrichment_hints") or []), *artifact_hints]
         if isinstance(item, dict)
-        and str(item.get("tool") or "") in {"run_source_intel", "run_js_read"}
+        and str(item.get("tool") or "") == "recon-ranker"
     ]
     # Reacquire current truth through its owner and compare the captured inputs
     # with Coverage before assembling a witness-backed digest.
@@ -3885,6 +3612,9 @@ def load_closure_projection(
             })
     elif guard:
         closure["round_guard"] = guard
+    # Publish the canonical view after review, race and bounded-stop overrides.
+    # The legacy field remains a read-only alias, not an independent decision.
+    closure["owner_continuations"] = closure.get("actionable_frontier") or []
     return closure
 
 
@@ -3961,7 +3691,7 @@ def format_autopilot_state(state: dict) -> str:
             f"Surface Ranking: {batch.get('surface_ranking', '')}",
             f"Manifest: {batch.get('manifest', '')}",
         ]
-        lines.extend(_format_priority_frontier_lines(state))
+        lines.extend(_format_owner_continuations_lines(state))
         scope = batch.get("scope") or state.get("scope") or {}
         if scope:
             lines.append(f"Scope: {scope.get('scope_ref', '')} ({scope.get('scope_hash', '')})")
@@ -4034,7 +3764,7 @@ def format_autopilot_state(state: dict) -> str:
             f"Memory: {'available' if state['has_memory'] else 'missing'}",
             f"Next action: {state['next_action']}",
         ]
-        lines.extend(_format_priority_frontier_lines(state))
+        lines.extend(_format_owner_continuations_lines(state))
         runtime_workflow = str(
             runtime_state.get("last_executed_workflow")
             or runtime_state.get("current_stage")
@@ -4133,7 +3863,7 @@ def format_autopilot_state(state: dict) -> str:
         f"Next action: {state['next_action']}",
         f"Next step: {_describe_next_step(state)}",
     ]
-    lines.extend(_format_priority_frontier_lines(state))
+    lines.extend(_format_owner_continuations_lines(state))
     if state.get("scan_in_progress"):
         lines.append("Scan: in progress")
     runtime_workflow = str(
@@ -4419,6 +4149,10 @@ def build_decision_projection(state: dict, kind: str) -> dict:
             "round_budget_reached",
             "coverage_stale",
             "surface_review",
+            "observation_residuals",
+            "bounded_residuals",
+            "global_review",
+            "owner_continuations",
             "actionable_frontier",
         )
         if key in closure
@@ -4435,9 +4169,7 @@ def build_decision_projection(state: dict, kind: str) -> dict:
         if key in structured
     }
     for field, keys in (
-        ("browser_evidence", ("present", "ready")),
         ("repo_source_summary", ("status",)),
-        ("observation_inventory", ("status", "reason", "untouched", "stale", "by_kind")),
         ("surface_projection", ("status", "reason", "input_fingerprint", "refresh_command", "continuation")),
         ("case_state", ("status", "actors", "sessions", "authz_coverage", "objects", "open_hypotheses")),
     ):
@@ -4452,13 +4184,7 @@ def build_decision_projection(state: dict, kind: str) -> dict:
         for lane, item in (state.get("sql_matrix") or {}).items()
         if isinstance(item, dict)
     }
-    js_intel = state.get("js_intel") if isinstance(state.get("js_intel"), dict) else {}
-    projection["js_intel"] = {
-        key: js_intel[key]
-        for key in ("status", "reason", "path", "hypotheses_path", "hypothesis_count", "disposition_path")
-        if key in js_intel
-    }
-    for field in ("repo_source_available", "recon_blocker", "browser_required"):
+    for field in ("repo_source_available", "recon_blocker"):
         if field in state:
             projection[field] = state[field]
     return projection
@@ -4466,7 +4192,7 @@ def build_decision_projection(state: dict, kind: str) -> dict:
 
 def _plain_summary(state: dict) -> str:
     """One human-readable line derived from bounded projections (zero new state)."""
-    frontier = state.get("priority_frontier") or []
+    frontier = state.get("owner_continuations") or []
     if isinstance(frontier, list) and frontier and isinstance(frontier[0], dict):
         next_item = str(
             frontier[0].get("action")

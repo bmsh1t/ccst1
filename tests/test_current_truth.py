@@ -93,15 +93,8 @@ def test_primary_store_is_the_only_source_even_beside_a_leftover_ledger(tmp_path
     assert truth["source"]["revision"] >= 1
     assert truth["source"]["path_label"] == f"state/{target_storage_key(TARGET)}/metadata.sqlite3"
     # The projection must agree with the record it read, and never with the ledger.
-    assert truth["projection"]["closed_cells"] == [
-        {
-            "endpoint": truth["records"][0]["endpoint"],
-            "vuln_class": FAMILY,
-            "result": "tested_finding",
-            "ts": truth["records"][0]["ts"],
-            "evidence_ref": truth["records"][0]["evidence_ref"],
-        }
-    ]
+    assert truth["projection"]["closed_cells"] == []
+    assert truth["records"][0]["result"] == "tested_finding"
     assert "/api/leftover" not in _cell_endpoints(truth["projection"])
     assert truth["projection"]["identity_v2_diagnostics"]["closed_count"] == 0
     assert truth["health"] == {
@@ -219,7 +212,7 @@ def test_truncated_store_read_is_damage_too():
     assert truth["source"]["truncated"] is True
     assert truth["source"]["store_claim"] == "primary"
     assert truth["projection"]["closed_cells"] == []
-    assert truth["projection"]["identity_v2_diagnostics"]["suppressed_legacy_closed_count"] == 1
+    assert truth["projection"]["identity_v2_diagnostics"]["suppressed_legacy_closed_count"] == 0
     assert truth["projection"]["identity_v2_shadow"]["reason"] == "store_partial"
 
 
@@ -381,7 +374,7 @@ def test_damaged_store_evidence_suppression_is_word_for_word_the_seam_rule(tmp_p
 
     assert summary["closed_cells"] == []
     assert summary["identity_v2_diagnostics"] == truth["projection"]["identity_v2_diagnostics"]
-    assert summary["identity_v2_diagnostics"]["suppressed_legacy_closed_count"] == 1
+    assert summary["identity_v2_diagnostics"]["suppressed_legacy_closed_count"] == 0
     assert summary["identity_v2_shadow"] == truth["projection"]["identity_v2_shadow"] == {
         "status": "unavailable",
         "reason": "store_partial",
@@ -413,3 +406,35 @@ def test_closure_consumers_read_the_one_seam_and_never_the_ledger_directly():
         assert function.__qualname__ == "ledger_health_projection"
         assert function.__module__.endswith("current_truth")
     assert "def _ledger_health_projection" not in (tools / "autopilot_loop_guard.py").read_text()
+
+
+def test_local_damage_preserves_independent_closure_without_resurrecting_history(tmp_path):
+    from tools.identity_contract import build_closure_cell
+    store = TargetStore(tmp_path, TARGET)
+    store.initialize()
+    def save(attempt, path):
+        ref = tmp_path / 'evidence' / TARGET / f'{attempt}.txt'
+        ref.parent.mkdir(parents=True, exist_ok=True)
+        ref.write_text(f'raw {attempt}')
+        url = f'https://{TARGET}/{path}'
+        key = build_closure_cell(url, 'NewBoundary', {'method': 'GET'}, technique='check').key
+        store.start_attempt(attempt_id=attempt, source='native', started_at=AT, actor='operator')
+        store.record_execution(attempt_id=attempt, outcome='complete', actor='operator', observations=[{
+            'endpoint': url, 'method': 'GET', 'family': 'NewBoundary', 'observed_at': AT,
+            'description': 'Recorded boundary', 'state_changing': False, 'result': 'tested_clean',
+            'artifacts': {'response': ref.relative_to(tmp_path).as_posix()},
+            'identity_status': 'complete', 'identity_technique': 'check',
+            'identity_v2': key.to_dict(), 'identity_dimensions': key.dimension_map,
+            'detail': {'evidence_role': 'subject'},
+        }])
+        return ref
+    save('old', 'same')
+    latest = save('latest', 'same')
+    save('independent', 'other')
+    assert len(_store_truth(store)['projection']['closed_cells_v2']) == 2
+    latest.write_text('changed')
+    truth = _store_truth(store)
+    assert truth['health']['status'] == 'partial'
+    assert [c['endpoint'] for c in truth['projection']['closed_cells_v2']] == [f'https://{TARGET}/other']
+    assert truth['projection']['identity_v2_diagnostics']['suppressed_closed_count'] == 1
+    assert len(truth['records']) == 3

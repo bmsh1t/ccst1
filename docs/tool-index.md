@@ -22,7 +22,6 @@
 | `tools/technology_inventory.py` | Multiple consumers need reliable httpx/Nmap tech, version, service, or CPE data | Shared JSONL/text/Nmap parser and atomic component inventory owner |
 | `tools/web_intel_artifact.py` | Official-source gap | Verified Web Intel recorder: TTL, source groups, atomic index |
 | `tools/disclosure_search.py` / `disclosed-researcher` | Target or comparable disclosed-report pattern may transfer | Bounded disclosed-pattern research; records evidence, not a finding |
-| `tools/learn.py` | Legacy tech-stack research | Compatibility backend; not the schema-v2 Intel artifact owner |
 | `tools/scope_checker.py` | Verifying target classification | Deterministic host/URL classifier against active target set |
 | `tools/scope_context.py` | Global Scope owner | Parses text lists/manifest v1, applies exclusions, classifies external context, and emits stable Scope hash |
 | `tools/scope_source.py` | Inspect or explicitly update target Scope | `show` / `publish --manifest` / `publish --profile`; primary Scope lives in `state/<key>/scope.json`, replacement requires its current SHA256 |
@@ -71,7 +70,6 @@ identity, and cloud signals without re-enumerating everything.
 | `tools/secrets_hunter.sh` | After JS/source collection | trufflehog/noseyparker/gitleaks — verified secret discovery |
 | `tools/cicd_scanner.sh` | GitHub org name detected | sisakulint remote scan of `.github/workflows/*.yml` |
 | `tools/source_hunt.py` | Public repo URL known | `/source-hunt` backend — git history secrets + CI risks |
-| `tools/source_intel.py` | Source/JS bundle cached | Extract route handlers, ID schemas, auth decorators |
 | `tools/repo_source.py` | Need to clone target's public repo | Size-bounded GitHub repo acquisition |
 | `tools/repo_ci_scan.py` | Cloned repo present | YAML-based CI workflow danger pattern check |
 | `tools/repo_secret_scan.py` | Cloned repo present | Filesystem high-signal secret regex sweep |
@@ -98,13 +96,10 @@ identity, and cloud signals without re-enumerating everything.
 | `tools/browser_playwright_fallback.py` | Neither browser MCP backend is usable | Capture one target-owned page with Python Playwright and reuse the MCP importer; never installs browsers |
 | `tools/browser_surface.py` | Browser evidence dumped | Extract XHR/API/GraphQL/realtime shapes from browser evidence |
 | `tools/deep_js_packer.py` | Concrete webpack/chunk/source-map signal | Evidence-gated Packer bundle/page recovery into existing JS artifacts |
-| `tools/js_reader.py` | JS bundles cached | Prepare js-reader agent materials from cached JS |
 | `tools/surface.py` | Cached recon ready for review | Stream every exact target-owned URL into a neutral bounded review window; publish counts and complete expansion |
 | `tools/surface_index.py` | Large URL corpus needs exact dedupe or long-tail paging | External-sort exact URL index with provenance union, lossless variants, shape/source/ownership cursor filters |
 | `tools/surface_projection.py` | Bootstrap/context consumers need a fast URL-ordered review view | Manifest-bound bounded cache; only exact hits are consumable, stale/missing remains explicit refresh work |
 | `tools/surface_finalizer.py` | Recon completed or derived surface needs recovery | Shared non-fatal recon post-processor for exact index, complete streaming review, inventory summary, and projection |
-| `tools/surface_js_intel.py` | After js-reader has run | Feed js-reader hypotheses into `surface.py` |
-| `tools/surface_source_intel.py` | After source_intel has run | Feed source route observations into `surface.py` |
 | `tools/finding_index.py` | Listing/querying structured findings | Structured finding index store + query API |
 | `tools/structured_findings.py` | Reading single finding | Helpers to rank/load structured findings |
 
@@ -136,7 +131,6 @@ identity, and cloud signals without re-enumerating everything.
 | `tools/observation_inventory.py` | Large/resumed recon corpus | Persist neutral untouched/stale observations; stat-bound summary and revision cursor; never routes a Skill |
 | `tools/action_queue.py` | Actionable evidence exists or checkpoint has next actions | Persistent action queue: ingest, choose next, resolve, summarize |
 | `tools/target_case_state.py` | Multi-actor/object validation context | Actor/session/object/hypothesis registry and private auth refs; context memory only — no backlog, no route score |
-| `tools/case_state_seed.py` | Browser/recon/JS/source artifacts reveal object IDs but case state is empty | Read object-shaped observations and sources; no actor/runner selection or auto-write |
 | `tools/coverage_matrix.py` | Reviewing unresolved cells and endpoint kinds | Primary mark commands append Store reviews; `reviews [--history] [--id ID]` expands them; rebuilt cells still require execution evidence |
 | `tools/target_store.py upgrade-schema --target TARGET --repo-root ROOT --backup ABSOLUTE_BACKUP` | Enabling Coverage reviews on an existing v8/v9 Store | Explicit verified-backup upgrade to v10; ordinary reads/init do not upgrade |
 | `tools/target_migration.py --backfill-coverage-source SOURCE --repo-root ROOT --target TARGET` | Recovering historical Coverage annotations after cutover | Manifest-bound historical import with source pointers; preserves newer reviews and grants no closure |
@@ -164,7 +158,7 @@ identity, and cloud signals without re-enumerating everything.
 |---|---|
 | Concrete signal plus unresolved next verification question | smallest safe lookup/replay/diff/enrichment/probe, then checkpoint state |
 | Need to remember user_a/user_b sessions, owned objects, private markers, or an open hypothesis | `target_case_state.py summary` (+ `add-actor`/`add-session`/`add-object`/`add-hypothesis`) |
-| `/orders/123`, `/invoices/42`, `/addresses/7`, `account_id`, `tenantId` appears in cached artifacts | `case_state_seed.py --target <target> --json`, then interpret the source-backed observations |
+| Observed object identifiers in cached artifacts | Native Read/Grep, then explicit Case object registration |
 | Concrete CMS/plugin/theme/library version observed, or network product/CPE identified | `/intel` → `tools/intel_engine.py`; add `/scan-cves` only after AI selects a reachable advisory |
 | 401/403 on interesting endpoint | AI direct browser/curl/raw request; optional `validation_runner.py request-diff` |
 | Anonymous `application-configuration` `200` | AI body review (config/oauth/security-answer content vs ordinary listing); preserve as a request-diff pair when promoting |
@@ -185,8 +179,8 @@ identity, and cloud signals without re-enumerating everything.
 | `subdomains/all.txt` ready | `takeover_scanner.sh` |
 | Live URLs but no params | `param_discovery.py --target TARGET --from-recon` |
 | Exchange/OWA/EWS/Autodiscover signal in `technology_inventory` or URL evidence | `eburst_lane.py --target <target>` (interface check only; use `/spray` for controlled credentials) |
-| Concrete webpack/chunk/source-map signal | `deep_js_packer.py`, then `js_reader.py` |
-| JS bundles cached without recovery evidence | `js_reader.py` (then `js-reader` agent) |
+| Concrete webpack/chunk/source-map signal | `deep_js_packer.py`, then Claude native Read/Grep on recovered paths |
+| JS bundles cached without recovery evidence | Claude native Read/Grep on exact selected paths |
 | Recon done, want bounded breadth context | `vuln_scanner.sh` (candidate/residual summary; AI chooses validation) |
 | Tech stack or identified network service needs CVE applicability | `/intel` → `intel_engine.py`; use `/scan-cves` for a selected reachable advisory |
 | Dashboard / SPA target | Chrome DevTools/Playwright MCP → `browser_mcp_import.py` → `browser_surface.py` |

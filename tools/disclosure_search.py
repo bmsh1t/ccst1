@@ -23,8 +23,8 @@ Design notes:
     - 72-hour cache to avoid re-querying GraphQL on every run.
     - Gracefully no-ops to "no reports found" sections when MCP is
       unreachable or returns empty — never crashes.
-    - Output schema per design.md Contract 1 (free-text seeds, NOT a
-      fixed taxonomy — preserves C1 anti-options[] discipline).
+    - Report tables preserve source metadata; hypothesis generation stays
+      with Claude rather than being inferred from report titles.
 """
 
 from __future__ import annotations
@@ -211,84 +211,10 @@ def search_similar_targets(
     return out[:limit]
 
 
-def synthesize_hypothesis_seeds(
-    same: list[DisclosedReport],
-    similar: list[DisclosedReport],
-    coverage_status: str = DEFAULT_COVERAGE_STATUS,
-) -> list[str]:
-    """Produce free-text hypothesis seeds from the two report buckets.
-
-    PRD R1 + C1: seeds are free text, NOT a fixed taxonomy. The
-    generator looks at observed patterns (recurring titles, common
-    severities, repeating programs) and emits English sentences. The
-    output is NEVER a `[choose one of these]` style menu — Claude
-    treats each seed as a starting prompt for a working_hypothesis,
-    free to ignore or rewrite.
-
-    `coverage_status` (PR-13) selects the FACTUAL fallback sentence
-    when both buckets are empty. The fallback states what the search
-    returned and never instructs Claude where to pivot — Claude forms
-    its own working_hypothesis from the fact.
-    """
-    seeds: list[str] = []
-    if same:
-        for report in same[:3]:
-            if not report.title:
-                continue
-            seeds.append(
-                f"Same target previously paid {report.severity} on "
-                f"'{report.title[:120]}' ({report.disclosed_at}). "
-                f"Consider whether sibling endpoints share that pattern."
-            )
-    if similar:
-        title_counts: dict[str, int] = {}
-        for report in similar:
-            key = report.title.lower().split(":")[0][:60]
-            if key:
-                title_counts[key] = title_counts.get(key, 0) + 1
-        recurring = sorted(title_counts.items(), key=lambda kv: -kv[1])[:3]
-        for key, count in recurring:
-            if count < 2:
-                continue
-            seeds.append(
-                f"{count} similar-target reports share pattern '{key}...'. "
-                f"This is industry-recurring; map to the current target's "
-                f"endpoints with that shape."
-            )
-        if not recurring or recurring[0][1] < 2:
-            for report in similar[:2]:
-                if not report.title:
-                    continue
-                seeds.append(
-                    f"Similar target {report.program} paid on "
-                    f"'{report.title[:120]}'. Pattern may transfer if the "
-                    f"target stack overlaps."
-                )
-    if not seeds:
-        if coverage_status == "mcp_unavailable":
-            seeds.append(
-                "HackerOne MCP is not connected. Disclosed-pattern data is "
-                "unavailable for this run."
-            )
-        elif coverage_status == "no_mcp_coverage":
-            seeds.append(
-                "HackerOne MCP returned no records for this target program "
-                "handle. The target may not be on a public bug-bounty "
-                "platform, or its program may have no disclosed reports yet."
-            )
-        else:
-            seeds.append(
-                "No same-target or similar-target reports surfaced. Treat the "
-                "absence as a green field — no published pattern to copy."
-            )
-    return seeds
-
-
 def render_disclosed_patterns_md(
     target: str,
     same: list[DisclosedReport],
     similar: list[DisclosedReport],
-    seeds: list[str],
     coverage_status: str = DEFAULT_COVERAGE_STATUS,
     *,
     repo_root: Path | str = BASE_DIR,
@@ -313,8 +239,7 @@ def render_disclosed_patterns_md(
     lines.append(f"_Last updated: {now}_")
     lines.append(
         f"_Same-target reports: {len(same)} | "
-        f"Similar-target reports: {len(similar)} | "
-        f"Hypothesis seeds: {len(seeds)}_"
+        f"Similar-target reports: {len(similar)}_"
     )
     lines.append(f"_MCP coverage: {coverage_status}_")
     lines.append("")
@@ -367,12 +292,6 @@ def render_disclosed_patterns_md(
     ]))
     lines.append("```")
     lines.append("Title or vulnerability-class similarity alone does not establish a duplicate.")
-    lines.append("")
-
-    lines.append("## Inferred hypothesis seeds")
-    lines.append("")
-    for idx, seed in enumerate(seeds, 1):
-        lines.append(f"{idx}. {seed}")
     lines.append("")
 
     return "\n".join(lines).rstrip() + "\n"
@@ -433,10 +352,8 @@ def write_disclosed_patterns(
                 "coverage_status": coverage_status,
             })
 
-    seeds = synthesize_hypothesis_seeds(same, similar, coverage_status)
-
     md = render_disclosed_patterns_md(
-        resolved_target, same, similar, seeds, coverage_status, repo_root=repo,
+        resolved_target, same, similar, coverage_status, repo_root=repo,
     )
 
     if output_path is None:

@@ -67,17 +67,13 @@ def test_bounded_context_readers_preserve_order_limits_and_error_handling(tmp_pa
         "\ufffdtail",
     ]
     assert context_pack_module._read_lines(lines_path, limit=0) == []
-    assert context_pack_module._read_jsonl_objects(jsonl_path, limit=2) == [
-        {"id": 1},
-        {"id": 2},
-    ]
-    assert context_pack_module._read_jsonl_objects(jsonl_path, limit=0) == []
+    assert not hasattr(context_pack_module, "_read_jsonl_objects")
 
 
 def test_local_intel_health_distinguishes_empty_and_corrupt_material(tmp_path):
-    source_dir = tmp_path / "findings" / "target.com" / "source_intel"
+    source_dir = tmp_path / "recon" / "target.com" / "browser"
     source_dir.mkdir(parents=True)
-    routes = source_dir / "routes.json"
+    routes = source_dir / "summary.json"
     missing = context_pack_module._load_local_intel(tmp_path, "target.com")
     assert missing["health"]["invalid_count"] == 0
     assert missing["health"]["diagnostics"][-1]["status"] == "missing"
@@ -89,10 +85,10 @@ def test_local_intel_health_distinguishes_empty_and_corrupt_material(tmp_path):
 
     routes.write_text("{broken", encoding="utf-8")
     damaged = context_pack_module._load_local_intel(tmp_path, "target.com")
-    assert damaged["source_intel"]["routes"] == []
+    assert damaged["browser"]["summary"] == {}
     assert damaged["health"]["status"] == "unavailable"
     assert damaged["health"]["invalid_count"] == 1
-    assert damaged["health"]["diagnostics"][-1]["path"].endswith("source_intel/routes.json")
+    assert damaged["health"]["diagnostics"][0]["path"].endswith("browser/summary.json")
 
 
 @pytest.mark.parametrize("source, contents, health", [
@@ -115,6 +111,11 @@ def test_context_pack_exposes_local_intel_damage(tmp_path, pack_store, source, c
     before = pack_store.binding()
     pack = build_context_pack(tmp_path, target=pack_store.target)
     summary = pack["source_summary"]
+    if "/browser/" not in source:
+        assert not any(item["path"] == source for item in summary["local_intel_diagnostics"])
+        assert summary["local_intel_invalid_count"] == 0
+        assert pack_store.binding() == before
+        return
     diagnostic = next(item for item in summary["local_intel_diagnostics"] if item["path"] == source)
     assert diagnostic["status"] == health
     assert diagnostic["error"]
@@ -1732,3 +1733,42 @@ def test_write_back_commands_keep_root_and_negative_requirements(tmp_path):
     assert negative["conditions"] == "CONDITIONS"
     assert negative["reopen_when"] == "REOPEN_WHEN"
     assert negative["evidence"] == [{"operation_id": operation_id, "step": 0}]
+
+
+def test_context_keeps_overlapping_memory_and_surface_without_inferred_conflict(tmp_path, pack_store, monkeypatch):
+    _seed_recon(tmp_path, "target.com", ["https://api.target.com/graphql"])
+    statement = "GraphQL introspection reportedly disabled"
+    pack_store.remember(
+        command_id="overlap-note", kind="note", statement=statement,
+        conditions="Unverified historical note", reopen_when="New response evidence",
+        next_intent="", evidence=[], actor="operator",
+    )
+    load_memory = context_pack_module._load_goal_memory
+
+    def memory_with_dead_end(*args):
+        memory = load_memory(*args)
+        memory["target"]["dead_ends"] = [{"text": statement, "ts": "2026-01-01"}]
+        return memory
+
+    monkeypatch.setattr(context_pack_module, "_load_goal_memory", memory_with_dead_end)
+    before = pack_store.binding()
+    pack = build_context_pack(tmp_path, target="target.com", focus="graphql")
+    assert pack["target_experiences"]["items"][0]["text"] == statement
+    assert any(statement in anchor for anchor in pack["evidence_anchors"])
+    assert any("/graphql" in anchor for anchor in pack["evidence_anchors"])
+    assert not any("Remembered dead end may have new evidence" in item for item in pack["contradictions"])
+    assert "New response evidence" in format_context_pack(pack)
+    assert pack_store.binding() == before
+
+
+def test_context_retains_observable_surface_and_workflow_mismatches(tmp_path, pack_store, monkeypatch):
+    _remember_hypothesis(pack_store, "Inspect saved GraphQL lead")
+    surface = {"available": False, "workflow_leads": [{"title": "Saved workflow lead"}]}
+    monkeypatch.setattr(context_pack_module, "_surface_state", lambda *args, **kwargs: surface)
+    pack = build_context_pack(tmp_path, target="target.com")
+    assert pack["source_queries"]["coverage"]["total"] == 0
+    assert pack["contradictions"] == [
+        "Coverage gaps are empty, but workflow leads still exist; do not treat empty matrix gaps as full exhaustion.",
+        "Target memory has active leads, but local surface is unavailable; use memory as hypothesis, not proof.",
+    ]
+    assert any("Saved workflow lead" in anchor for anchor in pack["evidence_anchors"])

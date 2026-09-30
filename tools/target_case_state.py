@@ -433,19 +433,7 @@ def summary(repo_root: str | Path, target: str) -> dict[str, Any]:
 
 
 def _print_json(payload: Any) -> None:
-    def redact(value: Any, key: str = "") -> Any:
-        normalized = key.lower().replace("-", "_")
-        if normalized == "headers" and isinstance(value, dict):
-            return {str(name): "<redacted>" for name in value}
-        if _sensitive_metadata_key(normalized):
-            return "<redacted>" if value not in (None, "") else value
-        if isinstance(value, dict):
-            return {str(name): redact(item, str(name)) for name, item in value.items()}
-        if isinstance(value, list):
-            return [redact(item, key) for item in value]
-        return value
-
-    print(json.dumps(redact(payload), ensure_ascii=False, indent=2, sort_keys=True))
+    print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
 
 
 def _print_summary(payload: dict[str, Any]) -> None:

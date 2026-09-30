@@ -101,7 +101,7 @@ def test_cli_reports_corrupt_state_with_stable_exit(tmp_path, capsys):
     assert "not initialized" in captured.err
 
 
-def test_add_session_cli_redacts_auth_material_from_stdout(tmp_path, capsys):
+def test_add_session_cli_preserves_internal_auth_material(tmp_path, capsys):
     TargetStore(tmp_path, TARGET).initialize()
     target_case_state.add_actor(tmp_path, TARGET, actor="user_a", role="user")
     secret = "SECRET_CASE_SESSION"
@@ -122,9 +122,12 @@ def test_add_session_cli_redacts_auth_material_from_stdout(tmp_path, capsys):
 
     output = capsys.readouterr().out
     assert rc == 0
-    assert secret not in output
-    assert "<redacted>" in output
-    assert json.loads(output)["headers"] == {"Authorization": "<redacted>"}
+    payload = json.loads(output)
+    assert payload["headers"] == {"Authorization": f"Bearer {secret}"}
+    assert payload["header_value"] == f"Bearer {secret}"
+    private_path = tmp_path / payload["private_ref"]
+    assert private_path.stat().st_mode & 0o777 == 0o600
+    assert private_path.parent.stat().st_mode & 0o777 == 0o700
     assert secret in target_case_state.load_case_state(tmp_path, TARGET)["sessions"]["sess_a"]["headers"]["Authorization"]
 
 
@@ -550,7 +553,7 @@ def test_case_summary_and_seed_do_not_materialize_hypothesis_history(tmp_path, m
 
     monkeypatch.setattr(sqlite3, "Row", count_row)
     assert target_case_state.summary(tmp_path, TARGET) == expected
-    assert build_case_state_seed(tmp_path, TARGET)["status"] == "no_seed_candidates"
+    assert build_case_state_seed(tmp_path, TARGET)["status"] == "retired"
     assert row_count < 80
     row_count = 0
     assert build_evidence_view(tmp_path, TARGET)["evidence_counts"]["experiences"] == 1001

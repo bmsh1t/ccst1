@@ -39,9 +39,9 @@ BBHUNT_ENABLE_AMASS=1 bash tools/recon_engine.sh target.com
 状态交接。所有已产生的原始产物都会保留，后续 `/surface` 或下一轮 Autopilot 可继续消费
 未完成面。
 仍把 Active surface 交给执行消费者，Surface index 同时提供 raw-only 的可重建证据投影；只把逐 bundle
-正则提取、secret grep 和递归 JS 链接分析交给 Surface/Action Queue。裸
+正则提取、secret grep 和递归 JS 链接分析留给 Claude 按需选择，不自动创建 Queue 工作。裸
 `recon_engine.sh TARGET` 保持原 full 行为；Source Map 源文件恢复和动态 chunk 重建继续由
-后续 `/js-read` 深度 lane 按证据选择。Shuji 只消费有效的 v3 Source Map；
+Claude 后续按证据选择的原生阅读或显式恢复工具处理。Shuji 只消费有效的 v3 Source Map；
 通用 AST/去混淆不是 Recon 的固定自动步骤，需要时由 `web2-recon` DeepDive
 在真实 JS/runtime 证据触发后使用当前可用的本地工具或 AI 分析。
 

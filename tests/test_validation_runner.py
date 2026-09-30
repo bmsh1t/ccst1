@@ -15,6 +15,7 @@ import validation_runner
 from evidence_identity import CLOSURE_FAMILIES
 from request_diff import RequestPairError, request_pair_digest, validate_request_pair
 from tools.auth_session import AuthSession
+from tools.identity_contract import ClosureCellKey, EndpointKey
 from tools.target_store import StoreError, TargetStore, initialize_target_store
 
 
@@ -804,6 +805,7 @@ def test_patch_without_explicit_state_fact_is_not_redline_blocked(runner_store,
 
 def test_post_defaults_to_unknown_state_and_private_unique_runs(runner_store, monkeypatch, tmp_path):
     secret = "SECRET_VALIDATION_FIXTURE"
+    query_value = "EXACT_QUERY_FIXTURE"
     monkeypatch.setattr(
         validation_runner,
         "request_once",
@@ -824,7 +826,7 @@ def test_post_defaults_to_unknown_state_and_private_unique_runs(runner_store, mo
                 },
                 "variant_request": {
                     "method": "POST",
-                    "url": f"https://target.test/submit?token={secret}",
+                    "url": f"https://target.test/submit?token={query_value}",
                     "headers": {"Authorization": f"Bearer {secret}"},
                     "body": secret,
                 },
@@ -842,7 +844,7 @@ def test_post_defaults_to_unknown_state_and_private_unique_runs(runner_store, mo
     assert summaries[0]["attempt_id"] != summaries[1]["attempt_id"]
     assert all(item["state_changing"] is None for item in summaries)
     assert all(item["redline_checked"] is False for item in summaries)
-    public_text = "\n".join(
+    analysis_text = "\n".join(
         path.read_text(encoding="utf-8", errors="ignore")
         for path in (tmp_path / "evidence").rglob("*")
         if path.is_file()
@@ -850,7 +852,8 @@ def test_post_defaults_to_unknown_state_and_private_unique_runs(runner_store, mo
     private_files = [path for path in (tmp_path / ".private").rglob("*") if path.is_file()]
     private_bytes = b"\n".join(path.read_bytes() for path in private_files)
 
-    assert secret not in public_text
+    assert query_value in analysis_text
+    assert secret not in analysis_text
     assert secret.encode() in private_bytes
     assert private_files
     assert all(path.stat().st_mode & 0o777 == 0o600 for path in private_files)
@@ -1453,6 +1456,7 @@ def _native_fixture(tmp_path, *, url="https://target.test/rest/orders/1", findin
         "schema_version": 1,
         "source": "browser",
         "attempt_id": "native-fixture-attempt",
+        "subject_step": 1,
         "generated_at": "2026-09-16T10:00:00Z",
         "result": "tested_finding",
         "observed_difference": "Peer actor transitioned the recorded state; the control did not.",
@@ -2663,33 +2667,118 @@ def test_runner_registration_rejects_finding_identity_conflict(tmp_path, field, 
 
 
 @pytest.mark.parametrize("lane", ["native", "request-diff"])
-def test_runner_exact_query_identity_stays_private_and_registers(tmp_path, monkeypatch, lane):
-    endpoint = "https://target.test/rest/orders/1?token=PRIVATE_VALUE&x=one&x=two"
-    target, finding_id, evidence = _native_fixture(tmp_path, url=endpoint)
+@pytest.mark.parametrize("partial", [False, True])
+def test_runner_exact_query_urls_survive_analysis_and_strict_registration(tmp_path, monkeypatch, lane, partial):
+    baseline = "https://target.test/rest/orders/1?q=apple&q=two%2fthree&empty=&flag&space=a+b"
+    variant = baseline.replace("q=apple", "q=apple%27")
+    target, finding_id, evidence = _native_fixture(tmp_path, url=baseline)
+    evidence["subject_step"] = 0
+    evidence["runs"][1]["url"] = variant
+    calls = []
+    raw_before = {}
     if lane == "native":
+        for run in evidence["runs"]:
+            request_path = tmp_path / run["artifacts"]["request"]
+            request_path.write_text(validation_runner._format_request("POST", run["url"], {}))
+            raw_before[request_path] = request_path.read_bytes()
+        if partial:
+            evidence["result"] = "partial"
+            evidence["runs"][1]["error"] = "OSError"
+            del evidence["runs"][1]["artifacts"]["response"]
         summary = validation_runner.record_native_evidence(
             repo_root=tmp_path, target=target, finding_id=finding_id, evidence=evidence,
         )
     else:
         def response(**kw):
-            return {"status": 200, "headers": {}, "body": "ok", "request_text": "request",
-                    "response_text": "response", "requested_url": kw["url"], "url": kw["url"]}
+            calls.append(kw["url"])
+            if partial and len(calls) == 2:
+                raise OSError("synthetic transport failure")
+            return {**_fake_response(kw["url"]),
+                    "request_text": validation_runner._format_request("POST", kw["url"], {})}
         monkeypatch.setattr(validation_runner, "request_once", response)
         summary = validation_runner.run_request_diff(
             repo_root=tmp_path, target=target, finding_id=finding_id,
             request_spec={"schema_version": 1, "classifier": "auth_boundary", "vuln_class": "Authz",
-                          "active_dimension": "query:x", "expected_signal": "boundary check",
-                          "baseline_request": {"method": "POST", "url": endpoint},
-                          "variant_request": {"method": "POST", "url": endpoint.replace("x=two", "x=three")},
+                          "active_dimension": "query:q", "expected_signal": "boundary check",
+                          "baseline_request": {"method": "POST", "url": baseline},
+                          "variant_request": {"method": "POST", "url": variant},
                           "subject_side": "baseline"},
         )
-    assert "PRIVATE_VALUE" not in json.dumps(summary)
-    assert validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)["status"] == "updated"
+        assert calls == [baseline, variant]
+        assert summary["request_pair"]["baseline"]["url"] == baseline
+        assert summary["request_pair"]["variant"]["url"] == variant
+        assert summary["runs"][0]["baseline_url"] == baseline
+        assert summary["runs"][0]["variant_url"] == variant
+        if not partial:
+            diff = json.loads((tmp_path / summary["artifacts"]["diff"]).read_text())
+            assert diff["runs"] == summary["runs"]
+            assert diff["request_pair"] == summary["request_pair"]
+        for side, url in (("baseline", baseline), ("variant", variant)):
+            ref = summary["runs"][0]["artifacts"].get(f"{side}_request")
+            if ref:
+                assert (tmp_path / ref).read_text() == validation_runner._format_request("POST", url, {})
+    assert summary["url"] == baseline
+    if lane == "native":
+        assert [run["url"] for run in summary["runs"]] == [baseline, variant]
+        assert all(path.read_bytes() == content for path, content in raw_before.items())
+    saved = json.loads((tmp_path / summary["summary_path"]).read_text())
+    assert saved == summary
+    if not partial:
+        from tools.structured_findings import load_validation_runner_candidate_pool
+        candidates = load_validation_runner_candidate_pool(tmp_path, target)
+        assert [item["url"] for item in candidates] == [baseline]
     store = TargetStore(tmp_path, target)
-    observation = store.execution(summary["store_operation_id"])["observations"][0]
-    assert observation["endpoint"] == endpoint
-    assert store.finding(finding_id)["endpoint"] == endpoint
-    assert validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)["status"] == "deduplicated"
+    before = store.binding()
+    # Same shape is not the same request. Mutable summary hints cannot downgrade
+    # the representation recorded in the digest-bound private identity.
+    for replacement in (variant, validation_runner.public_url_shape(baseline), ""):
+        tampered = json.loads(json.dumps(saved))
+        tampered["url_representation"] = "shape"
+        tampered["runs"][0]["url" if lane == "native" else "baseline_url"] = replacement
+        result = validation_runner.sync_runner_artifacts(tampered, repo_root=tmp_path)
+        assert result["status"] == "partial"
+        assert "private request identity does not match" in result["store"]["error"]
+        assert store.binding() == before
+        assert store.page("operations")["total"] == 0
+    assert validation_runner.sync_runner_artifacts(saved, repo_root=tmp_path)["status"] == "updated"
+    observations = store.execution(saved["store_operation_id"])["observations"]
+    expected = [baseline] if partial and lane == "request-diff" else [baseline, variant]
+    assert [item["endpoint"] for item in observations] == expected
+    assert store.finding(finding_id)["endpoint"] == baseline
+    assert validation_runner.sync_runner_artifacts(saved, repo_root=tmp_path)["status"] == "deduplicated"
+    assert store.page("operations")["total"] == 1
+    assert len(calls) == (2 if lane == "request-diff" else 0)
+
+
+@pytest.mark.parametrize("lane", ["native_evidence", "request_diff"])
+def test_runner_legacy_saved_shape_registration_and_retry_preserve_bytes(tmp_path, lane):
+    endpoint = "https://target.test/rest/orders/1?q=apple%27&q=two%2fthree"
+    target, finding_id, evidence = _native_fixture(tmp_path, url=endpoint)
+    store = TargetStore(tmp_path, target)
+    store.start_attempt(attempt_id=evidence["attempt_id"], source="legacy-fixture",
+                        started_at=evidence["generated_at"], actor="validation-runner")
+    refs = dict(evidence["runs"][0]["artifacts"])
+    identity_path = tmp_path / refs["request"]
+    identity_path = identity_path.with_name("legacy.identity.json")
+    identity_path.write_text(json.dumps({"requested_url": endpoint}))
+    refs["identity"] = str(identity_path.relative_to(tmp_path))
+    shape = validation_runner.public_url_shape(endpoint)
+    run = ({"url": shape, "method": "POST", "artifacts": refs} if lane == "native_evidence" else
+           {"baseline_url": shape, "artifacts": {f"baseline_{key}": ref for key, ref in refs.items()}})
+    summary = {"schema_version": 1, "lane": lane, "target": target, "finding_id": finding_id,
+               "attempt_id": evidence["attempt_id"], "result": "candidate", "url": shape,
+               "method": "POST", "vuln_class": "Authz", "generated_at": evidence["generated_at"],
+               "runs": [run], "backend_binding": validation_runner._runner_backend(tmp_path, target)[1]}
+    summary["artifact_bindings"] = validation_runner._artifact_bindings(summary, tmp_path)
+    path = tmp_path / "legacy-summary.json"
+    path.write_text(json.dumps(summary))
+    frozen = {path: path.read_bytes(), identity_path: identity_path.read_bytes()}
+    for expected in ("updated", "deduplicated"):
+        saved = json.loads(path.read_text())
+        assert validation_runner.sync_runner_artifacts(saved, repo_root=tmp_path)["status"] == expected
+        assert store.execution(saved["store_operation_id"])["observations"][0]["endpoint"] == endpoint
+        assert all(file.read_bytes() == content for file, content in frozen.items())
+    assert store.page("operations")["total"] == 1
 
 
 def test_native_redacted_query_shape_cannot_anchor_exact_finding(tmp_path):
@@ -2711,3 +2800,164 @@ def test_runner_registration_refuses_changed_material_before_any_operation(tmp_p
     assert result["status"] == "partial"
     assert "changed" in result["store"]["error"]
     assert TargetStore(tmp_path, target).page("operations")["total"] == 0
+
+
+def _declared_subject_spec() -> dict:
+    """A path-dimension pair whose tested side is the variant.
+
+    The baseline reads the caller's own record; the variant reads the whole
+    collection. Read as an IDOR/Authz shape, the baseline side is by
+    construction the safe one, so the variant is the side under test.
+    """
+    return {
+        "schema_version": 1,
+        "baseline_request": {"method": "GET", "url": "https://target.test/api/Users/24",
+                             "actor": "peer", "object_scope": "own_object", "variant": "baseline"},
+        "variant_request": {"method": "GET", "url": "https://target.test/api/Users",
+                            "actor": "peer", "object_scope": "other", "variant": "id_swap"},
+        "subject_side": "variant",
+        "active_dimension": "path:/api/Users",
+        "classifier": "authz",
+        "vuln_class": "Authz",
+        "expected": ["distinct_bodies"],
+    }
+
+
+def _declared_subject_identity(spec: dict, **overrides) -> dict:
+    """Build the subject's closure identity, optionally mutated per dimension."""
+    subject = validate_request_pair(spec)["variant_request"]
+    dimensions = {"method": subject["method"], "actor_role": subject["actor"],
+                  "object_scope": subject["object_scope"]}
+    dimensions.update(overrides.pop("dimensions", {}))
+    key = ClosureCellKey(
+        EndpointKey(overrides.pop("endpoint", subject["url"])),
+        overrides.pop("family", "Authz"),
+        dimensions,
+        "fixture",
+    )
+    return key.to_dict()
+
+
+def _distinct_body_response(**kwargs):
+    if kwargs["url"].endswith("/api/Users"):
+        return _fake_response(kwargs["url"], body='{"data":[{"id":24,"email":"me@target.test"},'
+                                                  '{"id":1,"email":"admin@juice-sh.op"}]}')
+    return _fake_response(kwargs["url"], body='{"data":{"id":24,"email":"me@target.test"}}')
+
+
+def test_declared_variant_subject_anchors_finding_and_action_to_tested_side(tmp_path, monkeypatch):
+    """D19: the runner anchors the finding and the bound action to the declared
+    tested side. A pair whose baseline is the safe side stays bindable when an
+    action is named after the tested URL."""
+    store = TargetStore(tmp_path, "target.test")
+    store.initialize()
+    monkeypatch.setattr(validation_runner, "request_once", _distinct_body_response)
+    spec = _declared_subject_spec()
+    subject = validate_request_pair(spec)["variant_request"]
+    store.create_action(command_id="action", action_id="A-subject", kind="execution",
+                        intent="Read the collection as a peer", execution_key="collection-read",
+                        actor="operator", endpoint=subject["url"], family="Authz")
+    store.transition_action(command_id="claim", action_id="A-subject", expected_version=1,
+                            status="claimed", actor="operator")
+    summary = validation_runner.run_request_diff(
+        repo_root=tmp_path, target="target.test", finding_id="F-subject", request_spec=spec,
+        action_id="A-subject", claim_token="claim", command_actor="operator",
+    )
+    assert summary["url"] == subject["url"]
+    assert store.finding("F-subject")["endpoint"] == subject["url"]
+    assert validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)["status"] == "updated"
+    assert store.execution(summary["store_operation_id"])["attempt"]["action_id"] == "A-subject"
+
+
+def test_declared_variant_subject_refuses_action_bound_to_baseline_side(tmp_path, monkeypatch):
+    """The comparison runs against the declared subject, not the baseline: an
+    action named after the safe side is no longer the action the runner binds."""
+    store = TargetStore(tmp_path, "target.test")
+    store.initialize()
+    monkeypatch.setattr(validation_runner, "request_once",
+                        lambda **kw: pytest.fail("refused claim reached network"))
+    spec = _declared_subject_spec()
+    baseline = validate_request_pair(spec)["baseline_request"]
+    store.create_action(command_id="action", action_id="A-baseline", kind="execution",
+                        intent="Compare the recorded actors", execution_key="actor-check",
+                        actor="operator", endpoint=baseline["url"], family="Authz")
+    store.transition_action(command_id="claim", action_id="A-baseline", expected_version=1,
+                            status="claimed", actor="operator")
+    binding = store.binding()
+    with pytest.raises(StoreError, match="must match the bound action"):
+        validation_runner.run_request_diff(
+            repo_root=tmp_path, target="target.test", finding_id="F-baseline", request_spec=spec,
+            action_id="A-baseline", claim_token="claim", command_actor="operator",
+        )
+    assert store.binding() == binding
+    assert not (tmp_path / ".private").exists()
+
+
+def test_identity_v2_must_match_declared_subject_endpoint_and_family(tmp_path, runner_store, monkeypatch):
+    monkeypatch.setattr(validation_runner, "request_once",
+                        lambda **kw: pytest.fail("gate must fire before any request"))
+    spec = _declared_subject_spec()
+    baseline_url = validate_request_pair(spec)["baseline_request"]["url"]
+    with pytest.raises(validation_runner.RequestPairError, match="must match the declared subject endpoint and family"):
+        validation_runner.run_request_diff(
+            repo_root=tmp_path, target="target.test", finding_id="F-identity", request_spec=spec,
+            identity_v2=_declared_subject_identity(spec, endpoint=baseline_url),
+        )
+
+
+def test_identity_v2_dimension_must_match_subject_observation(tmp_path, runner_store, monkeypatch):
+    monkeypatch.setattr(validation_runner, "request_once",
+                        lambda **kw: pytest.fail("gate must fire before any request"))
+    spec = _declared_subject_spec()
+    with pytest.raises(validation_runner.RequestPairError, match=r"identity_v2\.method conflicts with the subject observation"):
+        validation_runner.run_request_diff(
+            repo_root=tmp_path, target="target.test", finding_id="F-conflict", request_spec=spec,
+            identity_v2=_declared_subject_identity(spec, dimensions={"method": "POST"}),
+        )
+
+
+def test_existing_finding_must_match_declared_subject(tmp_path, runner_store, monkeypatch):
+    monkeypatch.setattr(validation_runner, "request_once",
+                        lambda **kw: pytest.fail("gate must fire before any request"))
+    runner_store.create_finding(command_id="finding", finding_id="F-taken",
+                                endpoint="https://target.test/other", method="GET", family="Authz",
+                                title="Another candidate", claim="Another claim", actor="operator")
+    with pytest.raises(StoreError, match="declared subject endpoint, method and family must match"):
+        validation_runner.run_request_diff(
+            repo_root=tmp_path, target="target.test", finding_id="F-taken",
+            request_spec=_declared_subject_spec(),
+        )
+
+
+def test_identity_v2_matching_the_declared_subject_is_accepted(tmp_path, monkeypatch):
+    """The three gates above refuse mismatches; a matching declaration passes
+    and lands on the subject observation, not the baseline one."""
+    store = TargetStore(tmp_path, "target.test")
+    store.initialize()
+    monkeypatch.setattr(validation_runner, "request_once", _distinct_body_response)
+    spec = _declared_subject_spec()
+    summary = validation_runner.run_request_diff(
+        repo_root=tmp_path, target="target.test", finding_id="F-accepted", request_spec=spec,
+        identity_v2=_declared_subject_identity(spec),
+    )
+    run = summary["runs"][0]
+    assert run["variant_observation"]["identity_dimensions"]["method"] == "GET"
+    assert "identity_dimensions" not in run["baseline_observation"]
+
+
+def test_observation_ledger_records_the_declared_subject(tmp_path, monkeypatch):
+    """D17: each side's declared actor, object scope and variation reach the
+    ledger. Before the pair could declare a subject, an unset actor was filed
+    as a bare `anonymous`, so a replay carrying one actor's credentials could
+    be recorded under a different one."""
+    store = TargetStore(tmp_path, "target.test")
+    store.initialize()
+    monkeypatch.setattr(validation_runner, "request_once", _distinct_body_response)
+    summary = validation_runner.run_request_diff(
+        repo_root=tmp_path, target="target.test", finding_id="F-ledger",
+        request_spec=_declared_subject_spec(),
+    )
+    assert validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)["status"] == "updated"
+    filed = {(row["actor"], row["object_scope"], row["variant"])
+             for row in store.execution(summary["store_operation_id"])["observations"]}
+    assert filed == {("peer", "own_object", "baseline"), ("peer", "other_object_same_org", "id_swap")}

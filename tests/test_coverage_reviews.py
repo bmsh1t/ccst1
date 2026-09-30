@@ -50,7 +50,7 @@ def test_coverage_reads_claims_without_expanding_finding_authorization(tmp_path,
     endpoints = {ep["endpoint"]: ep for ep in matrix["endpoints"]}
     assert endpoints["/only-claim"]["observed_params"] == ["owner"]
     assert all(cell["status"] == "untested" for cell in endpoints["/only-claim"]["cells"].values())
-    assert endpoints["/observed"]["cells"]["Authz"]["status"] == "tested_clean"
+    assert endpoints["/observed"]["cells"]["Authz"]["status"] == "untested"
     raw.write_text("Changed response")
     damaged = coverage.read_matrix(TARGET, tmp_path)
     assert damaged["evidence_health"]["status"] == "partial"
@@ -97,9 +97,9 @@ def test_coverage_merges_complete_claim_pages_reviews_and_observations(tmp_path,
     assert set(endpoints) == {f"/claim-{i}" for i in range(1001)} | {"/observed-only"}
     assert endpoints["/claim-1000"]["observed_params"] == ["alpha", "beta"]
     assert endpoints["/claim-1000"]["cells"]["Authz"]["review"]["id"] == "review"
-    assert endpoints["/claim-1000"]["cells"]["Authz"]["status"] == "tested_clean"
+    assert endpoints["/claim-1000"]["cells"]["Authz"]["status"] == "untested"
     assert endpoints["/observed-only"]["observation_count"] == 2
-    assert endpoints["/observed-only"]["cells"]["Authz"]["status"] == "tested_clean"
+    assert endpoints["/observed-only"]["cells"]["Authz"]["status"] == "untested"
     assert all(cell["status"] == "untested" for cell in endpoints["/claim-0"]["cells"].values())
     assert matrix["source_snapshot"]["review_ids"] == ["review"]
     assert store.binding() == before
@@ -129,9 +129,9 @@ def test_author_inputs_survive_new_process_and_projection_loss(tmp_path, monkeyp
     coverage._matrix_path(root, TARGET).unlink()
     gaps = cli(root, "find-gaps", "--limit", "100")
     assert gaps.returncode == 0, gaps.stderr
-    authz = next(row for row in json.loads(gaps.stdout)["items"] if row["vuln_class"] == "Authz")
-    assert authz["endpoint_kind"] == "route_prefix"
-    assert authz["review"]["reason"] == "Revisit if a handler appears"
+    assert not json.loads(gaps.stdout)["items"]
+    authored = store.coverage_review_page()["items"]
+    assert any(row["reason"] == "Revisit if a handler appears" for row in authored)
     triage = cli(root, "needs-triage", "--all")
     assert json.loads(triage.stdout)["total"] == 0
     assert store.page("attempts")["total"] == store.page("operations")["total"] == 0
@@ -141,7 +141,7 @@ def test_author_inputs_survive_new_process_and_projection_loss(tmp_path, monkeyp
 
     monkeypatch.setattr(coverage, "load_matrix", retired)
     matrix = coverage.read_matrix(TARGET, root)
-    assert matrix["endpoints"][0]["cells"]["Authz"]["status"] == "untested"
+    assert matrix["endpoints"][0]["cells"]["Authz"]["status"] == "n_a"
     assert matrix["source_snapshot"]["review_ids"] == ["cell-1", "kind-1"]
     assert store.binding()["revision"] == revision
     assert not coverage._matrix_path(root, TARGET).exists()
@@ -213,6 +213,8 @@ def test_review_and_claim_commit_together_without_authorizing_finding(tmp_path, 
 @pytest.mark.parametrize("version", [8, 9])
 def test_explicit_upgrade_preserves_old_schema_on_failure_and_recovers(tmp_path, monkeypatch, version):
     schema = domain._SCHEMA.replace(domain._COVERAGE_REVIEW_SCHEMA, "")
+    schema = "\n".join(line for line in schema.splitlines() if not line.strip().startswith(
+        ("identity_status TEXT", "identity_technique TEXT", "identity_v2 TEXT")))
     if version == 8:
         schema = schema.replace("    created_at TEXT NOT NULL,\n    active_goal TEXT NOT NULL DEFAULT ''\n",
                                 "    created_at TEXT NOT NULL\n", 1).replace(
@@ -294,7 +296,7 @@ def test_legacy_reviews_import_and_receipt_survive_new_process(tmp_path):
         "/endpoints/0", "/endpoints/0/cells/Authz"}
     matrix = coverage.read_matrix(TARGET, staging)
     assert matrix["endpoints"][0]["endpoint_kind"] == "route_prefix"
-    assert matrix["endpoints"][0]["cells"]["Authz"]["status"] == "untested"
+    assert matrix["endpoints"][0]["cells"]["Authz"]["status"] == "n_a"
     assert path.read_bytes() == raw
     revision = store.binding()["revision"]
     assert migration.backfill_coverage_reviews(source, staging, TARGET)["status"] == "complete"

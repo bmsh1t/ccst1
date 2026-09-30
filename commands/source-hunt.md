@@ -14,17 +14,7 @@ python3 tools/source_hunt.py --target target.com --repo-path /path/to/local/repo
 python3 tools/source_hunt.py --target target.com --repo-url https://github.com/org/repo --allow-large-repo
 ```
 
-If a local repo path is available, also extract source intelligence:
-
-```bash
-python3 tools/source_intel.py --target target.com --repo-path /path/to/local/repo
-```
-
-If only recon/JS artifacts exist, source intelligence can still mine cached recon context:
-
-```bash
-python3 tools/source_intel.py --target target.com
-```
+Claude may directly Read/Grep the local repository or cached raw artifacts after this scan. No second source parser is required.
 
 ## What This Writes
 
@@ -33,18 +23,12 @@ findings/<target>/exposure/repo_source_meta.json
 findings/<target>/exposure/repo_secrets.json
 findings/<target>/exposure/repo_ci_findings.json
 findings/<target>/exposure/repo_summary.md
-findings/<target>/source_intel/summary.md
-findings/<target>/source_intel/routes.json
 ```
 
 ## Use When
 
 - Public repo URL is visible in target footer, docs, package metadata, GitHub org, or disclosed reports.
 - `/surface` shows source-backed, route/auth, CI/CD, secret, or framework-intel leads.
-- You need route handlers, auth decorators, object IDs, tenant/account boundaries, GraphQL operations, export/download/invite/admin actions, or dangerous sinks.
+- You need source-backed route, auth, object, tenant, GraphQL, export, or dangerous-sink evidence.
 
-After source intel, rerun:
-
-```bash
-python3 tools/surface.py --target target.com
-```
+Read exact paths directly, then choose any explicit validation or queue action.

@@ -106,7 +106,8 @@ def test_phase0_and_intel_route_keep_selection_reason_and_urgency():
     assert "not a favorite class" in methodology
 
     recon = (REPO_ROOT / "skills" / "web2-recon" / "SKILL.md").read_text(encoding="utf-8")
-    assert "immediate next step, not a deferred one" in recon
+    assert "current `/intel` research, chosen by Claude" in recon
+    assert "immediate next step, not a deferred one" not in recon
 
 
 def test_runtime_protocol_has_single_substantive_criterion():

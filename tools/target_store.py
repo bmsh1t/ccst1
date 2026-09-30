@@ -40,8 +40,8 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from scope_context import SCHEMA_VERSION as SCOPE_SCHEMA_VERSION, read_scope_source, write_scope_source_locked
 
 
-SCHEMA_VERSION = 10
-COMPATIBLE_SCHEMA_VERSIONS = {8, 9, SCHEMA_VERSION}
+SCHEMA_VERSION = 11
+COMPATIBLE_SCHEMA_VERSIONS = {8, 9, 10, SCHEMA_VERSION}
 COVERAGE_REVIEW_STATUSES = ("tested_clean", "tested_finding", "untested", "n_a")
 ENDPOINT_KIND_VALUES = (
     "untriaged", "api_endpoint", "page_route", "static_asset", "public_metadata",
@@ -154,6 +154,9 @@ CREATE TABLE observations (
     state_changing INTEGER CHECK (state_changing IN (0,1)),
     redline_checked INTEGER NOT NULL CHECK (redline_checked IN (0,1)),
     result TEXT NOT NULL CHECK (length(result) <= 64),
+    identity_status TEXT NOT NULL DEFAULT 'none' CHECK (identity_status IN ('complete','none','incomplete','conflict')),
+    identity_technique TEXT NOT NULL DEFAULT '' CHECK (length(identity_technique) <= 256),
+    identity_v2 TEXT NOT NULL DEFAULT '{}' CHECK (length(identity_v2) <= 8192),
     identity_dimensions TEXT NOT NULL CHECK (length(identity_dimensions) <= 4096),
     PRIMARY KEY (operation_id, step)
 );
@@ -1139,7 +1142,7 @@ class TargetStore:
     def _observation(self, raw: Any, outcome: str) -> tuple[dict, list[dict]]:
         required = {"endpoint", "method", "family", "observed_at", "description", "artifacts"}
         optional = {"actor", "object_scope", "variant", "error", "truncated", "state_changing", "redline_checked",
-                    "result", "identity_dimensions", "detail"}
+                    "result", "identity_status", "identity_technique", "identity_v2", "identity_dimensions", "detail"}
         if not isinstance(raw, dict) or not required <= raw.keys() or raw.keys() - required - optional:
             raise StoreError("observation has missing or unknown fields")
         fields = {"endpoint": self._endpoint(raw["endpoint"]), "method": self._method(raw["method"]),
@@ -1156,6 +1159,33 @@ class TargetStore:
         if fields["state_changing"] is not None and type(fields["state_changing"]) is not bool:
             raise StoreError("state_changing must be boolean or null")
         fields["result"] = self._observation_result(raw.get("result", ""))
+        status = str(raw.get("identity_status") or "none").strip().lower()
+        if status not in {"complete", "none", "incomplete", "conflict"}:
+            raise StoreError("identity_status must be complete, none, incomplete or conflict")
+        technique = str(raw.get("identity_technique") or "").strip()
+        if len(technique) > 256:
+            raise StoreError("identity_technique is longer than 256 characters")
+        identity_v2 = raw.get("identity_v2")
+        if identity_v2 is None:
+            identity_v2 = {}
+        if not isinstance(identity_v2, Mapping):
+            raise StoreError("identity_v2 must be an object")
+        try:
+            identity_v2_json = json.dumps(dict(identity_v2), ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        except (TypeError, ValueError) as exc:
+            raise StoreError("identity_v2 must be JSON serializable") from exc
+        if len(identity_v2_json.encode("utf-8")) > 8192:
+            raise StoreError("identity_v2 exceeds 8192 bytes")
+        if status == "complete" and (not technique or not identity_v2 or raw.get("identity_technique") is None):
+            raise StoreError("complete identity requires identity_technique and identity_v2")
+        role = json.loads(fields["detail_json"]).get("evidence_role", "unknown")
+        if role not in {"subject", "control", "unknown"}:
+            raise StoreError("evidence_role must be subject, control or unknown")
+        if role == "control" and status != "none":
+            raise StoreError("control evidence requires identity_status none")
+        fields["identity_status"] = status
+        fields["identity_technique"] = technique
+        fields["identity_v2"] = identity_v2_json
         fields["identity_dimensions"] = self._identity_dimensions(raw.get("identity_dimensions"))
         if outcome == "complete" and (fields["error"] or fields["truncated"]):
             raise StoreError("incomplete observations require partial or unknown outcome")
@@ -1251,10 +1281,29 @@ class TargetStore:
                 action = conn.execute("SELECT * FROM actions WHERE id=?", (attempt["action_id"],)).fetchone()
                 if not any(row["endpoint"] == action["endpoint"] and row["family"] == action["family"] for row, _ in prepared):
                     raise StoreError("execution observations must include the bound action's endpoint and family")
+            columns = {str(item[1]) for item in conn.execute("PRAGMA table_info(observations)").fetchall()}
+            has_identity_v3 = {"identity_status", "identity_technique", "identity_v2"} <= columns
+            if not has_identity_v3 and any(
+                row["identity_status"] != "none" or row["identity_technique"] or row["identity_v2"] != "{}"
+                for row, _ in prepared
+            ):
+                raise StoreError("Store schema v11 is required to persist complete observation identity; run explicit upgrade")
             conn.execute("INSERT INTO operations VALUES (?,?,?,?,?,?,?)",
                          (operation_id, attempt_id, expected_operation, revision, outcome, _digest(material), now))
             for step, (row, bindings) in enumerate(prepared):
-                conn.execute("""INSERT INTO observations
+                if has_identity_v3:
+                    conn.execute("""INSERT INTO observations
+                    (operation_id,step,endpoint,method,family,coverage_class,observed_at,description,detail_json,
+                     actor,object_scope,variant,error,truncated,state_changing,redline_checked,result,
+                     identity_status,identity_technique,identity_v2,identity_dimensions)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                             (operation_id, step, row["endpoint"], row["method"], row["family"], coverage_family(row["family"]),
+                              row["observed_at"], row["description"], row["detail_json"], row["actor"], row["object_scope"], row["variant"],
+                              row["error"], row["truncated"], row["state_changing"], row["redline_checked"],
+                              row["result"], row["identity_status"], row["identity_technique"], row["identity_v2"],
+                              row["identity_dimensions"]))
+                else:
+                    conn.execute("""INSERT INTO observations
                     (operation_id,step,endpoint,method,family,coverage_class,observed_at,description,detail_json,
                      actor,object_scope,variant,error,truncated,state_changing,redline_checked,result,identity_dimensions)
                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
@@ -2107,7 +2156,7 @@ class TargetStore:
             return self._experience_page_conn(conn, meta, kinds=kinds, query=query, limit=limit, cursor=cursor)
 
     def memory_context(self, *, limit: int = 20) -> dict:
-        """Read intent, current Case premise and one experience page on one snapshot.
+        """Read intent, current Case premise/handoff and bounded history on one snapshot.
 
         This is advisory memory, not Case readiness or authorization; private
         sessions/objects remain exclusively checked by the Case query.
@@ -2123,9 +2172,11 @@ class TargetStore:
                      WHERE a.entity_id=e.id AND a.command='remember_hypothesis') DESC,
                     e.id DESC LIMIT 1""").fetchone()
             page = self._experience_page_conn(conn, meta, limit=limit)
+            handoffs = self._experience_page_conn(conn, meta, kinds=["handoff"], limit=1)["items"]
             return {"target": self.target, "store_id": meta["store_id"], "revision": meta["revision"],
                     "created_at": meta["created_at"], "active_goal": meta["active_goal"],
-                    "current_hypothesis": premise[0] if premise else "", "experiences": page}
+                    "current_hypothesis": premise[0] if premise else "", "experiences": page,
+                    "current_handoff": handoffs[0] if handoffs else None}
 
     def _experience_page_conn(self, conn, meta: dict, *, kinds: list[str] | None = None,
                               query: str = "", limit: int = 20, cursor: str | None = None) -> dict:
@@ -2316,12 +2367,14 @@ class TargetStore:
         for row in rows:
             row.update(assessment=None, deliveries=[], reports=[], evidence=[])
         assessments = {}
+        manifests = {}
         for item in conn.execute(f"""SELECT a.* FROM assessments a
                 WHERE a.finding_id IN ({placeholders}) AND a.revision=(
                     SELECT max(x.revision) FROM assessments x WHERE x.finding_id=a.finding_id)""", ids):
             assessment = dict(item)
             by_id[item["finding_id"]]["assessment"] = assessment
             assessments[item["id"]] = True
+            manifests[item["id"]] = []
         for item in conn.execute(f"""SELECT d.* FROM delivery_decisions d
                 WHERE d.finding_id IN ({placeholders}) AND d.revision=(
                     SELECT max(x.revision) FROM delivery_decisions x
@@ -2340,6 +2393,17 @@ class TargetStore:
         if assessments:
             operation_integrity = {}
             assessment_ids = list(assessments)
+            for ref in conn.execute(f"""SELECT ao.assessment_id,ao.operation_id,ao.step,
+                    b.kind,a.id AS artifact_id,a.ref,a.sha256
+                    FROM assessment_observations ao
+                    JOIN observation_artifacts b ON b.operation_id=ao.operation_id AND b.step=ao.step
+                    JOIN artifacts a ON a.id=b.artifact_id
+                    WHERE ao.assessment_id IN ({','.join('?' for _ in assessment_ids)})
+                    ORDER BY ao.operation_id,ao.step,b.kind""", assessment_ids):
+                item = dict(ref)
+                assessment_id = item.pop("assessment_id")
+                item["event_id"] = f"{item['operation_id']}:{item['step']}"
+                manifests[assessment_id].append(item)
             for ref in conn.execute(f"""SELECT DISTINCT assessment_id,operation_id
                     FROM assessment_observations
                     WHERE assessment_id IN ({','.join('?' for _ in assessment_ids)})
@@ -2359,6 +2423,19 @@ class TargetStore:
             for delivery in row["deliveries"]:
                 delivery["stale"] = not valid or delivery["assessment_id"] != assessment["id"]
             self._report_rows(conn, row["reports"], assessment, row["deliveries"], assessment_valid=valid)
+            # Read projections only: destination policy and damaged bytes never
+            # rewrite the immutable technical assessment.
+            row["technical_conclusion"] = dict(assessment) if assessment else None
+            row["evidence_integrity"] = {
+                "status": ("valid" if valid else "invalid") if assessment else "unassessed",
+                "assessment_id": assessment["id"] if assessment else None,
+                "references": manifests[assessment["id"]] if assessment else [],
+            }
+            row["destination_decision"] = [
+                {**delivery, "decision": {"eligible": "accept", "ineligible": "reject",
+                                         "deferred": "defer"}[delivery["status"]]}
+                for delivery in row["deliveries"]
+            ]
 
     def failures(self, *, limit: int = 50, cursor: str | None = None) -> dict:
         """Conditional negative experiences: what was ruled out and under which premise."""
@@ -2397,9 +2474,9 @@ class TargetStore:
     def closure_records(self, *, limit: int = 20000, verify: bool = False) -> dict:
         """Canonical evidence records for the one shared closure projection.
 
-        Facts only: authored dimensions, actor/object scope, result and artifact
-        refs.  Identity status is derived by ``closure_projection`` and never
-        stored, so the store keeps no second closure definition.  Records are
+        Facts only: authored identity status/key/technique, actor/object scope,
+        result and artifact refs. ``closure_projection`` validates these claims;
+        Store persistence alone grants no closure authority. Records are
         ordered by observation time, then registration revision and step, so
         equal timestamps do not let hash order decide the latest identity.
 
@@ -2414,10 +2491,18 @@ class TargetStore:
         with self._connection() as conn:
             meta = dict(conn.execute("SELECT * FROM store").fetchone())
             total = conn.execute("SELECT count(*) FROM observations").fetchone()[0]
-            rows = conn.execute("""SELECT o.operation_id, o.step, o.endpoint, o.method, o.family, o.observed_at,
+            columns = {str(item[1]) for item in conn.execute("PRAGMA table_info(observations)").fetchall()}
+            identity_select = (
+                "o.identity_status, o.identity_technique, o.identity_v2, "
+                if {"identity_status", "identity_technique", "identity_v2"} <= columns
+                else "'none' AS identity_status, '' AS identity_technique, '{}' AS identity_v2, "
+            )
+            rows = conn.execute(f"""SELECT o.operation_id, o.step, o.endpoint, o.method, o.family, o.observed_at,
                     o.description, o.actor, o.object_scope, o.variant, o.error, o.truncated, o.result,
-                    o.state_changing, o.redline_checked,
-                    o.identity_dimensions, p.outcome, p.recorded_at, a.action_id,
+                    o.state_changing, o.redline_checked, o.detail_json,
+                    {identity_select}o.identity_dimensions,
+                    p.outcome, p.recorded_at, a.action_id,
+                    EXISTS(SELECT 1 FROM operations newer WHERE newer.supersedes=p.id) AS superseded,
                     (SELECT art.ref FROM observation_artifacts b JOIN artifacts art ON art.id=b.artifact_id
                      WHERE b.operation_id=o.operation_id AND b.step=o.step ORDER BY b.kind LIMIT 1) AS evidence_ref
                 FROM observations o
@@ -2426,13 +2511,26 @@ class TargetStore:
                 ORDER BY o.observed_at, p.revision, o.step LIMIT ?""", (limit + 1,)).fetchall()
             truncated = len(rows) > limit
             records = [self._closure_record(row) for row in rows[:limit]]
+            by_event = {record["event_id"]: record for record in records}
+            for record in records:
+                record.update(schema_version=3, target=self.target, evidence_refs=[])
+            for binding in conn.execute("""SELECT b.operation_id,b.step,b.kind,a.id,a.ref,a.sha256
+                    FROM observation_artifacts b JOIN artifacts a ON a.id=b.artifact_id
+                    ORDER BY b.operation_id,b.step,b.kind"""):
+                event_id = f"{binding['operation_id']}:{binding['step']}"
+                if event_id in by_event:
+                    by_event[event_id]["evidence_refs"].append({
+                        name: binding[name] for name in ("kind", "id", "ref", "sha256")
+                    })
             invalid_operations = []
             if verify and not truncated:
                 # Local to this acquisition: a later read must hash the bytes again.
                 checked: dict[str, str] = {}
                 failures: dict[str, str] = {}
                 for row in conn.execute("""SELECT DISTINCT b.operation_id,a.* FROM observation_artifacts b
-                        JOIN artifacts a ON a.id=b.artifact_id ORDER BY b.operation_id,a.id"""):
+                        JOIN artifacts a ON a.id=b.artifact_id
+                        WHERE NOT EXISTS(SELECT 1 FROM operations newer WHERE newer.supersedes=b.operation_id)
+                        ORDER BY b.operation_id,a.id"""):
                     artifact = dict(row)
                     operation_id = artifact.pop("operation_id")
                     if artifact["id"] not in checked:
@@ -2455,8 +2553,14 @@ class TargetStore:
             dimensions = json.loads(row["identity_dimensions"] or "{}")
         except ValueError:
             dimensions = {}
+        try:
+            identity_v2 = json.loads(row["identity_v2"] or "{}")
+        except ValueError:
+            identity_v2 = {}
         return {
             "event_id": f"{row['operation_id']}:{row['step']}",
+            "superseded": bool(row["superseded"]),
+            "evidence_role": json.loads(row["detail_json"] or "{}").get("evidence_role", "unknown"),
             "raw_endpoint": row["endpoint"],
             "endpoint": endpoint,
             "method": row["method"],
@@ -2475,6 +2579,9 @@ class TargetStore:
             "outcome": row["outcome"],
             "action_id": row["action_id"] or "",
             "evidence_ref": row["evidence_ref"] or "",
+            "identity_status": row["identity_status"] or "none",
+            "identity_technique": row["identity_technique"] or "",
+            "identity_v2": identity_v2 if isinstance(identity_v2, dict) else {},
             "identity_dimensions": dimensions if isinstance(dimensions, dict) else {},
         }
 
@@ -2586,8 +2693,8 @@ class TargetStore:
             if before["schema_version"] >= version:
                 return {"status": "already_current", "target": self.target,
                         "store_id": before["store_id"], "revision": before["revision"], "backup": None}
-            if before["schema_version"] not in {8, 9}:
-                raise StoreError("Store schema upgrade requires schema v8 or v9")
+            if before["schema_version"] not in {8, 9, 10}:
+                raise StoreError("Store schema upgrade requires schema v8, v9 or v10")
 
             backup = self.backup(backup_path)
             try:
@@ -2625,11 +2732,15 @@ class TargetStore:
                     conn.execute("ALTER TABLE experiences_next RENAME TO experiences")
                     conn.execute("CREATE INDEX experiences_kind_id ON experiences(kind, id)")
                     conn.execute("ALTER TABLE store ADD COLUMN active_goal TEXT NOT NULL DEFAULT ''")
-                if version >= 10:
+                if before["schema_version"] < 10 and version >= 10:
                     # executescript would commit the open transaction before running DDL.
                     for statement in _COVERAGE_REVIEW_SCHEMA.split(";"):
                         if statement.strip():
                             conn.execute(statement)
+                if before["schema_version"] < 11 and version >= 11:
+                    conn.execute("ALTER TABLE observations ADD COLUMN identity_status TEXT NOT NULL DEFAULT 'none' CHECK (identity_status IN ('complete','none','incomplete','conflict'))")
+                    conn.execute("ALTER TABLE observations ADD COLUMN identity_technique TEXT NOT NULL DEFAULT '' CHECK (length(identity_technique) <= 256)")
+                    conn.execute("ALTER TABLE observations ADD COLUMN identity_v2 TEXT NOT NULL DEFAULT '{}' CHECK (length(identity_v2) <= 8192)")
                 revision = before["revision"] + 1
                 conn.execute("UPDATE store SET schema_version=?,revision=? WHERE singleton=1",
                              (version, revision))
@@ -2703,7 +2814,7 @@ def _main() -> int:
     upgrade.add_argument("--target", required=True)
     upgrade.add_argument("--backup", required=True, help="new absolute backup path outside target state")
     upgrade.add_argument("--repo-root", default="", help="repository root (defaults to this checkout)")
-    upgrade_all = subparsers.add_parser("upgrade-schema", help="explicit v8/v9-to-v10 Store schema upgrade")
+    upgrade_all = subparsers.add_parser("upgrade-schema", help="explicit v8/v9/v10-to-v11 Store schema upgrade")
     upgrade_all.add_argument("--target", required=True)
     upgrade_all.add_argument("--backup", required=True, help="new absolute backup path outside target state")
     upgrade_all.add_argument("--repo-root", default="", help="repository root (defaults to this checkout)")

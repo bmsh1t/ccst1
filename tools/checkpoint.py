@@ -1536,7 +1536,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cross-source-links-json", default="[]")
     parser.add_argument("--residual-unknowns-json", default="[]")
     parser.add_argument("--next-action", default="")
-    round_operation.add_argument("--record-round-closure", action="store_true")
+    round_operation.add_argument(
+        "--record-round-closure",
+        action="store_true",
+        help=(
+            "Record one completed round. Writes round progress into the checkpoint witness, "
+            "which changes the closure state a recorded global review asserts over: a recorded "
+            "review goes stale when this runs."
+        ),
+    )
     parser.add_argument("--json", action="store_true")
     return parser
 

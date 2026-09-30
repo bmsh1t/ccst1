@@ -247,7 +247,7 @@ def _normalize_endpoint_path(path: str) -> str:
 
 
 def canonical_endpoint_identity(value: str) -> str:
-    """Return an exact endpoint identity while discarding document fragments."""
+    """Return the legacy path identity, not an asset/authorization identity."""
     raw = str(value or "").strip()
     if not raw:
         return ""
@@ -267,6 +267,26 @@ def canonical_endpoint_identity(value: str) -> str:
     if fragment.startswith("/"):
         identity = f"{identity}#{fragment}"
     return identity
+
+
+def exact_endpoint_identity(value: str) -> str:
+    """Retain an absolute asset URL without lossy path/query normalization.
+
+    Relative historical paths have no provable origin. Credentials are not
+    identity metadata. Empty delimiters, percent encoding and SPA routes stay
+    distinct; this deliberately prefers false negatives to merged requests.
+    """
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise ValueError("exact endpoint requires an absolute URL")
+    if any(ord(char) <= 32 or ord(char) == 127 for char in value):
+        raise ValueError("exact endpoint contains whitespace or control characters")
+    parsed = urlparse(value)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("exact endpoint requires an absolute HTTP(S) URL")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("exact endpoint must not contain credentials")
+    parsed.port  # Validate malformed/out-of-range ports without guessing one.
+    return value
 
 
 def canonical_endpoint_path(value: str) -> str:

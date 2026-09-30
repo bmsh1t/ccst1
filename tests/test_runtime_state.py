@@ -613,7 +613,8 @@ def test_owner_projection_uses_registered_observations_and_current_surface(tmp_p
     assert projection["findings_authoritative"] is True
     assert projection["tested_authoritative"] is True
     assert projection["untested_authoritative"] is True
-    assert "/api/orders" in projection["tested_endpoints"]
+    assert "/api/orders" not in projection["tested_endpoints"]
+    assert "/api/orders" in projection["untested_endpoints"]
     assert "/api/export" in projection["untested_endpoints"]
     assert projection["findings"][0]["vuln_class"] == "SQLi"
     assert store.binding() == before

@@ -42,7 +42,7 @@ Run full validation on the current finding before writing a report.
 - 报告同目录的 `<artifact-key>.submission-notes.md`
 - `findings/last-validate.json`（仅为最近一次运行的 convenience pointer）
 - Store assessment/delivery/report records and their command receipts
-- `state/<target>/session.json` runtime breadcrumbs and advisory calibration telemetry
+- `state/<target>/session.json` runtime breadcrumbs; no automatic Pattern calibration writes
 
 ## Resume Source
 
@@ -236,7 +236,7 @@ not a repo-global latest pointer from another finding.
 
 Optional deterministic replay/diff helpers live in `docs/evidence-runners.md`.
 Use them when they make evidence reproducible, but keep `/validate` as the
-report-readiness gate: Claude still decides impact, preconditions, and whether
+report guidance: Claude still decides impact, preconditions, and whether
 the issue is worth reporting.
 
 ## Case-State-Assisted Validation

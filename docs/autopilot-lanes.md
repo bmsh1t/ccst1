@@ -152,11 +152,11 @@ Checkpoint, Pickup and preflight never initialize, import, or recreate old owner
   reason), never a heartbeat failure. An `already_recorded` replay never
   re-imports; manual `--focused-manifest` runs remain available for
   non-round-lane imports.
-- Use `tools/source_intel.py`/`tools/js_reader.py`; `js-reader` is an Agent handoff,
-  while applicable Skills are loaded through the native platform. A JS-derived
-  Queue action records intent, evidence and experimental dimensions without a Skill route.
+- Read exact source/JS artifacts with Claude native Read/Grep or bounded delegation.
+  Raw observations do not create Queue work; only an explicit owner claim does.
   `tools/deep_js_packer.py` requires concrete runtime/chunk/source-map evidence;
   JS volume alone is not a trigger. Partial/unavailable stays open.
+
 
 ## Software And Intel
 
@@ -185,7 +185,7 @@ Checkpoint, Pickup and preflight never initialize, import, or recreate old owner
 
 - When imported HAR/browser Network evidence contains at least two ordered same-target business requests, the AI replays the flow with one bounded remove/repeat perturbation per step, refreshing short-lived tokens observed in the flow, and preserves raw traffic as private evidence; a response difference stays a candidate until AI reviews impact and replayability.
 - When a time-shaped candidate or explicit SQL timing evidence remains after result-diff, the AI runs interleaved baseline/variant samples with an explicit request cap and requires a stable median/MAD trend; one slow response, `429`, WAF block, or transport error stays partial.
-- Case-State First, Not Case-State Only: `case-state-enrichment` (the actor/session/object context a role-differential test still lacks) is high-value continuity, not a scope gate or bug-class selector. Case State carries context only — no backlog and no route score — so stale/missing case state cannot block fresh evidence/AI override; use `tools/target_case_state.py`, `tools/case_state_seed.py`, and the action source for actionable work.
+- Case-State First, Not Case-State Only: `case-state-enrichment` (the actor/session/object context a role-differential test still lacks) is high-value continuity, not a scope gate or bug-class selector. Case State carries context only — no backlog and no route score — so stale/missing case state cannot block fresh evidence/AI override; use `tools/target_case_state.py`, and the action source for actionable work.
 
 ## Credentials And Asset Expansion
 

@@ -5,8 +5,8 @@
      mv 进 cards/ 后 audit 不再报错（原 target-evidence 内联形态不兼容）。
   B. 失败经验召回：patterns.jsonl 不再只收 confirmed+payout>0；三类 outcome
      都可写入、可 match 召回、payout 排序保持、legacy 无 outcome 条目兼容。
-  C. 源归因：validate decision 声明 source_knowledge_refs 时，calibration
-     额外记到被采用的来源 ID 上（跨目标经验拿到自己的反馈）。
+  C. 源归因：validate decision 的 source_knowledge_refs 保持校验；
+     完整验证/重放的来源透传与无校准写入见 test_validate_target_mode。
 """
 
 from __future__ import annotations
@@ -299,35 +299,6 @@ def test_remember_primary_negative_binds_observation_and_reopen_condition(tmp_pa
 
 
 # --- 断点 C：源归因 -----------------------------------------------------------
-
-
-def test_validate_calibration_attributes_to_declared_source(tmp_path):
-    from validate import record_validation_calibration
-
-    summary = {
-        "target": "current.example",
-        "vuln_class": "idor",
-        "result": "confirmed",
-        "technique": "id swap",
-        "source_knowledge_refs": ["source.example|idor|id swap"],
-    }
-    calib_path = tmp_path / "pattern_calibration.jsonl"
-    record_validation_calibration(summary, session_id="s1", path=calib_path)
-    rows = [json.loads(line) for line in calib_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    ids = [row["pattern_id"] for row in rows]
-    # 当前 target 复合 ID + 声明的源 ID 都要有反馈行
-    assert any(pid.startswith("current.example|") for pid in ids)
-    assert "source.example|idor|id swap" in ids
-
-
-def test_validate_calibration_without_source_keeps_legacy_behavior(tmp_path):
-    from validate import record_validation_calibration
-
-    summary = {"target": "t.example", "vuln_class": "idor", "result": "confirmed", "technique": ""}
-    calib_path = tmp_path / "pattern_calibration.jsonl"
-    record_validation_calibration(summary, session_id="s1", path=calib_path)
-    rows = [json.loads(line) for line in calib_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    assert len(rows) == 1 and rows[0]["pattern_id"].startswith("t.example|")
 
 
 def test_parse_source_knowledge_refs_validates_cards():

@@ -463,6 +463,7 @@ def test_native_record_evidence_closes_through_scaffold_preflight_and_validate(t
     target, finding_id, evidence = _native_fixture(
         tmp_path, url="https://target.test/rest/orders/1", finding_id="NATIVE-E2E"
     )
+    evidence["subject_step"] = 1
     evidence_path = tmp_path / "native-evidence.json"
     evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
 
@@ -585,18 +586,39 @@ def test_validate_store_admission_never_recovers_old_owner(tmp_path, capsys, fau
     assert _file_snapshot(tmp_path) == before
 
 
-def test_machine_report_replay_preserves_body_and_isolated_root(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("existing_calibration", [False, True])
+def test_machine_report_replay_preserves_body_and_isolated_root(
+    tmp_path, monkeypatch, capsys, existing_calibration,
+):
     root = tmp_path / "isolated root"
     _, finding_id, findings_dir, decision_path = _seed_machine_preflight(root, family="new-family")
     monkeypatch.setattr(validate, "BASE_DIR", tmp_path / "unrelated checkout")
+    source_refs = ["source.example|idor|id swap"]
+    decision = json.loads(decision_path.read_text())
+    decision["source_knowledge_refs"] = source_refs
+    decision_path.write_text(json.dumps(decision))
+    calibration = root / "hunt-memory" / "pattern_calibration.jsonl"
+    historical = b'{"pattern_id":"historical|idor|swap","outcome":"helped"}\n'
+    if existing_calibration:
+        calibration.parent.mkdir(parents=True, exist_ok=True)
+        calibration.write_bytes(historical)
     args = _decision_args(findings_dir, finding_id, decision_path)
     assert validate.main(args) == 0
     result = json.loads(capsys.readouterr().out)
+    summary_path = Path(result["summary_path"])
+    assert json.loads(summary_path.read_text())["source_knowledge_refs"] == source_refs
+    assert (calibration.read_bytes() if calibration.exists() else None) == (
+        historical if existing_calibration else None
+    )
+    runtime = load_runtime_state(root, "target.com")
+    assert runtime["last_validation_result"] == "confirmed"
+    assert runtime["last_validated_finding_id"] == finding_id
     report = Path(result["report_path"])
     body, stat = report.read_bytes(), report.stat()
     store = TargetStore(root, "target.com")
     binding = store.binding()
     assert store.finding(finding_id)["family"] == "new-family"
+    assert store.finding(finding_id)["assessment"]["verdict"] == "confirmed"
     assert len(store.finding(finding_id)["reports"]) == 1
     assert store.page("findings")["total"] == 1
     assert store.page("operations")["total"] == 1
@@ -606,6 +628,11 @@ def test_machine_report_replay_preserves_body_and_isolated_root(tmp_path, monkey
     assert validate.main(args) == 0
     assert json.loads(capsys.readouterr().out)["validation_sync"]["status"] == "deduplicated"
     assert store.binding() == binding
+    assert json.loads(summary_path.read_text())["source_knowledge_refs"] == source_refs
+    assert (calibration.read_bytes() if calibration.exists() else None) == (
+        historical if existing_calibration else None
+    )
+    assert load_runtime_state(root, "target.com")["last_validated_finding_id"] == finding_id
     assert report.read_bytes() == body
     assert report.stat().st_ino == stat.st_ino
     assert report.stat().st_mtime_ns == stat.st_mtime_ns

@@ -34,14 +34,14 @@ def test_install_script_preserves_disabled_runtime_command_state(tmp_path):
         check=False,
     )
 
-    assert result.returncode == 0, result.stderr + result.stdout
+    assert result.returncode == 1, result.stderr + result.stdout
 
     active_command = runtime_commands / "sync-check.md"
     expected = (REPO_ROOT / "commands" / "sync-check.md").read_text(encoding="utf-8")
 
     assert not active_command.exists()
-    assert disabled_command.read_text(encoding="utf-8") == expected
-    assert "preserved disabled state" in result.stdout
+    assert disabled_command.read_text(encoding="utf-8") == "old disabled content\n"
+    assert "Preserved conflicting files" in result.stdout
 
 
 def test_install_script_copies_shared_skill_markdown_files(tmp_path):
@@ -65,7 +65,6 @@ def test_install_script_copies_shared_skill_markdown_files(tmp_path):
     expected = (REPO_ROOT / "skills" / "runtime-protocol.md").read_text(encoding="utf-8")
 
     assert installed_protocol.read_text(encoding="utf-8") == expected
-    assert "Installed shared skill file: runtime-protocol.md" in result.stdout
 
     installed_bug_bounty = home / ".claude" / "skills" / "bug-bounty" / "SKILL.md"
     modular_bug_bounty = REPO_ROOT / "skills" / "bug-bounty" / "SKILL.md"
@@ -164,8 +163,7 @@ def test_install_script_skips_optional_mcp_prompts_without_a_tty(tmp_path):
     assert "Set up Burp MCP now? (y/N): n" in result.stdout
 
 
-@pytest.mark.parametrize("with_rsync", [True, False])
-def test_install_upgrade_and_repeat_preserve_user_state(tmp_path, with_rsync):
+def test_install_upgrade_and_repeat_preserve_user_state(tmp_path):
     from tools.target_store import TargetStore
 
     checkout = tmp_path / "checkout"
@@ -173,6 +171,9 @@ def test_install_upgrade_and_repeat_preserve_user_state(tmp_path, with_rsync):
     for name in ("commands", "skills", "agents"):
         shutil.copytree(REPO_ROOT / name, checkout / name)
     shutil.copy2(REPO_ROOT / "install.sh", checkout / "install.sh")
+    (checkout / "tools").mkdir()
+    for name in ("runtime_doctor.py", "artifact_io.py"):
+        shutil.copy2(REPO_ROOT / "tools" / name, checkout / "tools" / name)
     markdown_inputs = []
     for kind in ("commands", "agents"):
         for name, excluded in (
@@ -185,7 +186,7 @@ def test_install_upgrade_and_repeat_preserve_user_state(tmp_path, with_rsync):
             markdown_inputs.append((source, body, excluded))
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    for name in ("basename", "dirname", "mkdir", "cp", "cat", "grep", *(["rsync"] if with_rsync else [])):
+    for name in ("basename", "dirname", "mkdir", "cp", "cat", "grep", "python3"):
         executable = shutil.which(name)
         if not executable:
             pytest.skip(f"installer test requires {name}")
@@ -238,9 +239,8 @@ def test_install_upgrade_and_repeat_preserve_user_state(tmp_path, with_rsync):
         assert store.binding() == binding
         assert store.experience_page()["items"][0]["statement"] == "Preserve upgrade context"
         comparison = runtime_doctor.compare_runtime(checkout, runtime)
-        assert comparison["clean"] is with_rsync
-        assert stale.exists() is (not with_rsync)
-    if not with_rsync:
-        runtime_doctor.sync_runtime(checkout, runtime, kinds=["skills"], prune=True)
-        assert runtime_doctor.compare_runtime(checkout, runtime)["clean"]
-        assert all(path.read_bytes() == body for path, body in preserved.items())
+        assert not comparison["clean"]  # unowned extra is visible, never deleted
+        assert stale.exists()
+    runtime_doctor.sync_runtime(checkout, runtime, kinds=["skills"], prune=True)
+    assert stale.exists()  # no ownership receipt: preserve the unknown file
+    assert all(path.read_bytes() == body for path, body in preserved.items())

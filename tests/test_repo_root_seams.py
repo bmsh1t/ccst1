@@ -225,3 +225,36 @@ def test_source_hunt_explicit_root_contains_exposure_bundle(tmp_path, monkeypatc
     assert store.context(limit=1)["revision"] == revision
     assert not legacy.exists()
 
+
+
+def test_repo_secret_values_survive_builtin_external_and_bundle(tmp_path, monkeypatch):
+    import repo_secret_scan
+    import source_hunt
+    from repo_scan_models import RepoSourceMeta
+    from types import SimpleNamespace
+
+    repo = tmp_path / 'source'
+    repo.mkdir()
+    builtin = 'ghp_' + 'A' * 24
+    (repo / 'config.py').write_text(f'token = "{builtin}"\n')
+    values = ['same-FIRST-value-tail', 'same-OTHER-value-tail', ' spaced-secret-value ']
+    external = [dict(RuleID='fixture', File='config.py', StartLine=1, Secret=value)
+                for value in values + values[:1]]
+    monkeypatch.setattr(repo_secret_scan.shutil, 'which', lambda _: '/fixture/gitleaks')
+
+    def scan(command, **kwargs):
+        assert '--redact' not in command
+        Path(command[command.index('--report-path') + 1]).write_text(json.dumps(external))
+        return SimpleNamespace(returncode=1)
+
+    monkeypatch.setattr(repo_secret_scan.subprocess, 'run', scan)
+    findings = repo_secret_scan.scan_repo_secrets(str(repo))
+    assert {f.secret_preview for f in findings if f.source == 'gitleaks'} == set(values)
+    assert len([f for f in findings if f.source == 'gitleaks']) == len(values)
+    assert builtin in {f.secret_preview for f in findings if f.source == 'builtin'}
+    output = source_hunt._write_result_bundle(
+        'target.test', RepoSourceMeta(source_kind='local_path'), findings, [], repo_root=tmp_path)
+    saved = json.loads((output / 'repo_secrets.json').read_text())
+    assert set(values).issubset({item['secret_preview'] for item in saved})
+    script = Path(__file__).resolve().parents[1] / 'tools' / 'secrets_hunter.sh'
+    assert '--redact' not in script.read_text()

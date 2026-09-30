@@ -69,7 +69,7 @@ _run_noseyparker() {
 _run_gitleaks() {
   local target="$1" subcmd="$2"
   log "gitleaks $subcmd $target"
-  gitleaks "$subcmd" --source "$target" --report-format json --report-path "$OUT_DIR/gitleaks.json" --redact \
+  gitleaks "$subcmd" --source "$target" --report-format json --report-path "$OUT_DIR/gitleaks.json" \
     >/dev/null 2>&1 || true
   if [ -s "$OUT_DIR/gitleaks.json" ]; then
     local n; n=$(python3 -c "import json; print(len(json.load(open('$OUT_DIR/gitleaks.json'))))" 2>/dev/null || echo 0)

@@ -1438,13 +1438,8 @@ if ! skip_has auth_bypass && [ -s "$LIVE_URLS" ]; then
                 fi
             done
         done < <(head -10 "$LIVE_URLS")
-        # Suppress SPA-fallback false positives (Angular/React/Vue index.html catchall)
-        if [ -s "$FINDINGS_DIR/auth_bypass/method_tampering.txt" ] && [ -s "$SPA_FP" ]; then
-            (cd "$BASE_DIR" 2>/dev/null && python3 -m tools.noise_filter filter \
-                --findings "$FINDINGS_DIR/auth_bypass/method_tampering.txt" \
-                --fingerprints "$SPA_FP" \
-                --drop "$FINDINGS_DIR/.tmp/method_tampering.suppressed.txt" 2>/dev/null) || true
-        fi
+        # A later GET SPA shell cannot invalidate an observation from another method.
+        # Status-only candidates still require manual verification.
         METHOD_COUNT=$(count_findings "$FINDINGS_DIR/auth_bypass/method_tampering.txt")
         [ "$METHOD_COUNT" -gt 0 ] && log_warn "Method tampering findings: $METHOD_COUNT (manual verification needed)" || log_done "Method tampering: clean"
     fi

@@ -648,24 +648,6 @@ def _carried_identity_dimensions(entry: dict[str, Any]) -> dict[str, str]:
     return {str(key): str(value) for key, value in source.items() if str(value).strip()}
 
 
-def _uncarryable_identity_reason(entry: dict[str, Any], dimensions: dict[str, str]) -> str:
-    """An identity verdict the store cannot represent is quarantined, not flattened.
-
-    Importing such a record as a plain observation would let it author the
-    endpoint-level cell the Ledger left open, which is exactly the laundering
-    this migration must not do.  The claim is reported instead.
-    """
-    status = _text(entry.get("identity_status"))
-    if not status or dimensions:
-        return ""
-    if status == "complete":
-        return "identity is complete but carries no dimensions; its key cannot be rebuilt"
-    return (
-        f"identity verdict '{status}' carries no dimensions; "
-        "importing it as a plain observation would close a cell the Ledger left open"
-    )
-
-
 def _ledger_observation(entry: dict[str, Any], origin: str,
                         rebase_root: Path | None = None,
                         copy_root: Path | None = None) -> tuple[dict[str, Any] | None, str]:
@@ -708,9 +690,12 @@ def _ledger_observation(entry: dict[str, Any], origin: str,
     raw_result = _text(entry.get("result"))
     result = raw_result if raw_result in LEDGER_RESULTS else ""
     dimensions = _carried_identity_dimensions(entry)
-    uncarryable = _uncarryable_identity_reason(entry, dimensions)
-    if uncarryable:
-        return None, uncarryable
+    identity_status = _text(entry.get("identity_status")) or "none"
+    identity_v2 = entry.get("identity_v2") if isinstance(entry.get("identity_v2"), dict) else {}
+    identity_technique = _text(entry.get("identity_technique"))
+    role = _text(entry.get("evidence_role")) or "unknown"
+    if identity_status == "complete" and (not identity_technique or not identity_v2 or role != "subject"):
+        identity_status = "incomplete"
     return {
         "endpoint": endpoint,
         "method": method,
@@ -725,6 +710,10 @@ def _ledger_observation(entry: dict[str, Any], origin: str,
         "state_changing": entry.get("state_changing"),
         "redline_checked": bool(entry.get("redline_checked")),
         "result": result,
+        "detail": {"evidence_role": role},
+        "identity_status": identity_status,
+        "identity_technique": identity_technique,
+        "identity_v2": identity_v2,
         "identity_dimensions": dimensions,
         "artifacts": {"evidence": ref},
     }, ""

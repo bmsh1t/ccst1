@@ -367,9 +367,9 @@ def test_settle_requires_explicit_surface_refresh(tmp_path, monkeypatch, project
     binding = store.binding()
     surface_before = path.read_bytes() if path.exists() else None
     result = settle_round(tmp_path, target, refresh_coverage=False)
-    assert result["status"] == "handoff"
-    assert result["round_progress"]["status"] == "active"
-    assert _witness(tmp_path).read_bytes() == before
+    assert result["status"] == "settled"
+    assert result["round_progress"]["status"] == "completed"
+    assert _witness(tmp_path).read_bytes() != before
     assert (path.read_bytes() if path.exists() else None) == surface_before
     surface_module.build_surface_review(tmp_path, target, refresh=True)
     result = settle_round(tmp_path, target, refresh_coverage=False)

@@ -27,17 +27,18 @@ compact target state. Arguments/runtime remain the only blocking gates. Treat `c
 as advisory: `session_managed` names are not availability claims; use MCP only when visible
 in this Claude session or a listed fallback. Missing/degraded tools never block, trigger
 installation, count as tested-clean, or hide limits in the handoff.
-Matching `capabilities.lanes` only explains readiness/fallback; it never overrides
+Matching `capabilities.lanes` only explains available execution primitives; it never overrides
 owner-selected Action Queue/state lane. Within one invocation, do not rerun the same failed
 source/tool; preserve cached/stale evidence as partial/blocked. `tools/external_arsenal.sh
 --versions` is diagnostics-only, never startup.
-Browser/source uses `docs/autopilot-lanes.md#browser-source-and-js`; obey its
-backend/fallback/recovery/import/switch/close contract. Choose one visible backend or
-target-owned fallback; never probe both or switch mid-workflow.
+Browser/source/JS evidence uses `docs/autopilot-lanes.md#browser-source-and-js` when the
+current hypothesis needs it. Read exact cached artifacts with Claude native Read/Grep or
+the visible browser backend; missing or degraded context is evidence state, not a route
+selection or readiness gate.
 Run project commands as `cd -- <repo_root_shell> && ...`; use `arguments.target_shell`,
 `arguments.hunt_auth_flags`/`--auth-file <arguments.auth_file_shell>` when present, and
 `arguments.recon_flags` only for fresh/refresh recon. Obey cadence, `quick`, `deep`, and
-`invocation_batch`; `--quick` lowers recon cost but never skips browser/source/validation or
+`invocation_batch`; `--quick` lowers recon cost but never skips validation or
 implies completion. `arguments.seed_url` is exact first-contact seed for target.
 Before the first network lane, inspect `config.json.resin`; when enabled, inline its stable
 sticky export from `docs/resin-proxy.md` in the same shell command. If blocked, use current evidence and the request budget to decide reuse/switch and retry depth; use no fixed count.
@@ -80,8 +81,8 @@ never become clean.
 
 ## State Consumption Loop
 ```text
-fresh: TARGET -> RECON -> BUSINESS/CROWN JEWELS -> SURFACE/CONTEXT -> BROWSER/SOURCE/JS TRUTH -> SCANNER QUICK -> WORKFLOW -> HYPOTHESIS -> MINIMAL PROOF -> CHAIN -> VALIDATE -> RECORD/CHECKPOINT
-existing: LOAD -> REVIEW EVIDENCE -> ENRICH -> HUNT -> VALIDATE CANDIDATES -> REPORT/CHECKPOINT
+fresh: TARGET -> RECON -> BUSINESS/CROWN JEWELS -> AI-selected evidence review -> HYPOTHESIS -> MINIMAL PROOF -> CHAIN -> VALIDATE -> RECORD/CHECKPOINT
+existing: LOAD -> REVIEW EVIDENCE -> AI-selected enrichment/hunt -> VALIDATE CANDIDATES -> REPORT/CHECKPOINT
 ```
 Every invocation is state-first. Bootstrap `state` and advisory `capabilities` are the only
 initial inputs. Branch only after that state read. Missing/stale/invalid is work, not no
@@ -101,7 +102,7 @@ Keep each iteration explicit:
 `inspect candidate/context -> AI choose and activate one hypothesis -> claim -> execute one
 bounded action -> read Runner observation -> AI resolve one continuation or kill -> refresh
 bounded state`. Obey a non-empty `state.hard_gate` exactly. Otherwise choose one runnable
-item from `state.priority_frontier`; array order is not priority. Compare business impact,
+item from `owner-backed continuation view`; array order is not priority. Compare business impact,
 evidence strength, crown-jewel/chain fit, expected information gain, request cost, and
 starvation of `closure_blocking` work. A weaker historical Queue/Case/Resume item must not
 automatically preempt a stronger Surface/Finding/Intel candidate. Machine ordering (weights,
@@ -111,7 +112,7 @@ reason; route-kind labels are GET observations and never close a cell or block a
 Selection changes order only:
 never bypasses the selected item's evidence/owner contract, relabel deferred work as tested-clean,
 or remove it from Closure. Consume structured `next_action` and the durable Action Queue as
-compatibility projections/owner contracts. With one frontier item execute it; with none use
+compatibility projections/owner contracts. With one owner continuation execute it; with none use
 `state.fallback_action` and bounded `next_step`. Never treat a single negative request as
 permission to move on:
 ```bash
@@ -203,15 +204,15 @@ controllers or closure evidence.
 ## Transition And Finish Contract
 Apply `arguments.checkpoint_trigger`: paranoid after each substantive state change,
 normal after a coherent lane batch, yolo only on blocker/handoff/finish. Every cadence
-writes evidence state; after a primary Candidate/Validated result try one bounded
-evidence-fit sibling or chain, on 401/403/404/405/415 or parser delta try one
-evidence-linked bypass family or close it, and after three homogeneous no-information
-results resolve and rotate to one adjacent high-value lane. Refresh rotating
-form/session tokens from the legitimate baseline before replay.
+writes evidence state. Claude chooses whether a sibling, chain, response delta or
+additional sample warrants investigation under the remaining budget; confirmed A
+does not wait for optional B/C. Repetition is a reassessment hint, not a fixed
+rotation threshold. Refresh rotating form/session tokens from the legitimate
+baseline when replay requires them.
 
 After every substantive lane, request the explicit read-only loop guard with
 `cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded --loop-check --projection-only --json`.
-This projection also returns bounded `control` (`hard_gate`, `priority_frontier`,
+This projection also returns bounded `control` (`hard_gate`, `owner_continuations`,
 `next_action`, and `fallback_action`); use it as the post-lane state refresh and do not
 run a second ordinary state read unless a later owner write requires a fresh snapshot.
 Consume `loop_guard.repetition_facts` as facts, not verdicts: when it reports
@@ -220,7 +221,7 @@ another check on that family against the current hypothesis — continuing is ri
 when a distinct dimension (actor, variant, object) is still untested; rotating is
 right when the family is exhausted for now. The guard never overrides
 `state.hard_gate`, an already-claimed lane, or any selected item's evidence/owner
-constraints; select from the returned `control.priority_frontier`.
+constraints; select from the returned `owner-backed continuation view`.
 
 `--deep` is a value-first comprehensive depth flag, not a checklist or favorite bug class.
 With `invocation_batch.bounded`, execute at most `max_lanes` named substantive lanes; after lane N do not execute a newly discovered queue item. Evidence import, owner write-back, cleanup, checkpoint, and closure are not new lanes and must still complete; Newly discovered work becomes next-invocation work. Finish on evidence state, not a tool checklist:
@@ -239,8 +240,10 @@ View only; `total`/`truncated` describe the window, and the complete matrix rema
 input. Expand the limit or inspect the matrix as needed; a truncated window never proves completion.
 Read `closure.verdict`, `closure.can_claim_exhausted`, `closure.reasons`, and advisory
 `closure.rotation_hint`. Only `verdict=finish` with `can_claim_exhausted=true` permits a
-`finish/complete/exhausted` claim; `handoff` preserves durable work and `blocked` records
-terminal prerequisite blocker.
+`finish/complete/exhausted` claim; `handoff` preserves durable work. `blocked`
+with `next_action=stop_bounded` ends this invocation without an exhaustion claim;
+`observation_residuals` preserves untested coverage, hypotheses, actor gaps and
+unresolved Intel. These observations do not create mandatory next actions.
 
 Before target-wide `finish`, run Global Review over bounded summaries, then inspect referenced
 evidence on demand. Review Surface and Observation long-tail; Coverage/Ledger/Finding; Case
@@ -256,8 +259,7 @@ and `complete`/`follow_up` to a Queue action. Valid `follow_up` keeps Queue acti
 
 Reaching `max_lanes` ends target work for this invocation; Closure recomputes from
 owners and the budget alone never requires another round. Pending report is closure asset;
-it does not stop. Active substantive Queue work, pending validation/report, partial
-browser/source/intel, or untouched high-value work means `handoff/partial`, never
+it does not stop. Active substantive Queue work, pending validation/report, or explicit owner-backed residuals mean `handoff/partial`, never
 `finish/complete/exhausted`. Missing owner/peer actor/session context ->
 `closure.actor_context_gap`, a non-blocking lane-local coverage gap; it does not stop
 anonymous/unrelated lanes or permit affected access-control cells to be `tested_clean`.

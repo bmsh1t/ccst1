@@ -194,7 +194,7 @@ def test_compact_state_projects_only_the_next_lane_contract():
         "next_action": "handoff",
         "browser_required": True,
     })
-    assert browser["lane_contract"]["id"] == "browser-source-js"
+    assert browser["lane_contract"]["id"] == "controller"
 
 
 def test_compact_state_keeps_sql_matrix_and_js_lifecycle_projection():
@@ -230,10 +230,7 @@ def test_compact_state_keeps_sql_matrix_and_js_lifecycle_projection():
         "class": "sqli_error",
         "signal": "database error",
     }]
-    assert compact["js_intel"] == {
-        "status": "prepared",
-        "path": "findings/example/js_intel/materials.json",
-    }
+    assert "js_intel" not in compact
     assert "do-not-project" not in json.dumps(compact)
 
 
@@ -659,9 +656,7 @@ def test_compact_state_projects_bounded_ai_priority_contract():
     assert compact["fallback_action"] == "resume_action_queue"
     assert compact["selection_mode"] == "ai_priority"
     assert compact["hard_gate"] == {}
-    assert compact["priority_frontier"][0]["owner"] == "surface"
-    assert compact["priority_frontier"][0]["closure_blocking"] is False
-    assert "raw" not in compact["priority_frontier"][0]
+    assert "priority_frontier" not in compact
 
 
 def test_compact_state_keeps_each_priority_frontier_owner_head():
@@ -680,9 +675,7 @@ def test_compact_state_keeps_each_priority_frontier_owner_head():
         "priority_frontier": frontier,
     })
 
-    assert [item["owner"] for item in compact["priority_frontier"]] == [
-        item["owner"] for item in frontier
-    ]
+    assert "priority_frontier" not in compact
 
 
 def test_compact_state_keeps_external_chain_context_inert_and_bounded():
@@ -1084,7 +1077,7 @@ def test_compact_state_requires_projection_then_consumes_exact_hit(tmp_path):
         "target.com",
         memory_dir=str(tmp_path / "hunt-memory"),
     )
-    assert missing["next_action"] == "prepare_surface_context"
+    assert missing["next_action"] == "handoff"
     assert missing["surface_review_candidates"] == []
 
     ranked = {
@@ -1120,7 +1113,7 @@ def test_compact_state_requires_projection_then_consumes_exact_hit(tmp_path):
         memory_dir=str(tmp_path / "hunt-memory"),
     )
     assert hit["surface_projection"]["status"] == "valid"
-    assert hit["next_action"] == "hunt_p1"
+    assert hit["next_action"] == "handoff"
     assert hit["surface_review_candidates"][0]["url"].endswith("orders?id=1")
 
 
@@ -1198,10 +1191,11 @@ def test_compact_state_keeps_intel_advisory_without_preempting_surface(tmp_path)
         memory_dir=str(tmp_path / "hunt-memory"),
     )
 
-    assert state["primary_next_action"] == "hunt_p1"
-    assert state["next_action"] == "hunt_p1"
-    assert state["selection_mode"] == "ai_priority"
-    assert {item["owner"] for item in state["priority_frontier"]} >= {"intel", "surface"}
+    assert state["primary_next_action"] == "handoff"
+    assert state["next_action"] == "handoff"
+    assert state["selection_mode"] == "fallback"
+    assert "priority_frontier" not in state
+    assert state["owner_continuations"] == []
     assert state["next_tool_hint"] == ""
     assert "Intel v2 has not processed" in state["intel_continuation"]["reason"]
 

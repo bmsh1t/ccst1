@@ -30,19 +30,12 @@ turn requests narrower coverage。
 
 ## Runtime Architecture
 
-```text
-Target state / Evidence -> Coverage Matrix -> Skill / Context Router
-                        -> Knowledge Card -> Checks -> Action Queue
-                        -> Shared primitive / Runner -> Evidence Ledger -> Checkpoint
-```
+架构与状态归属的唯一权威：`docs/architecture-contract.md`。
 
-- Target memory 保存当前目标、假设、线索、下一步和交接；不要用旧目标状态替代当前目标。
-- Coverage Matrix 是“是否遗漏”的判断来源；Knowledge Card 只增强召回和深入思路。
-- Skill 选择执行路径，Rules 负责动作安全和完成检查，工具负责可重复 replay、diff、证据和写回。
-- Action Queue、Evidence Ledger 和 Checkpoint 负责动作生命周期、证据闭环和完成判断；
-  有实质 round 完成后，Checkpoint witness 还承载一次跨来源全局复核，Closure 只接受当前
-  snapshot digest 匹配的 `complete` 或已绑定 Queue 的 `follow_up`。
-  不在提示词中建立第二套状态机。
+Claude 原生选择假设、方法、顺序和工具；Skills/知识卡按需提供材料，不建立第二个调度器。
+TargetStore 保存领域事实，原始证据保留为文件；Coverage、Context、Checkpoint 是事实视图，
+不判定所有可能方向已被穷尽。技术判断、证据完整性、交付资格分别记录。
+执行边界见架构契约的保证表：登记和提示词不等价于执行沙箱。
 
 ### Responsibility and Loading Boundary
 
@@ -50,8 +43,8 @@ Target state / Evidence -> Coverage Matrix -> Skill / Context Router
   AI/工具边界、状态 owner 和最小入口路由，不承载专项测试方法。
 - 各层级（Skill、知识卡、Rules、Tools）的职责划分与加载时机统一见
   `skills/runtime-protocol.md` 和 `rules/context-loading.md`；Claude Code CLI
-  当前主会话保留路线、取舍和证据组合的最终判断权，状态由
-  Coverage/Ledger/Queue/Checkpoint 等 owner 持有。
+  当前主会话保留路线、取舍和证据组合的最终判断权，持久化状态由
+  TargetStore 各领域 owner 持有，视图不能成为第二真源。
 
 ## Intent Routing in Claude CLI
 
@@ -80,10 +73,17 @@ Command discovery comes from `commands/`, not a hand-maintained list here.
   意图、经验、适用/重开条件及展开命令；需要整体行动、证据和覆盖时再用
   `python3 tools/resume.py --target TARGET`。SQLite 路径是存储位置，日常恢复通过这些
   只读入口保留目标绑定与完整性检查，无需遍历数据表或先读 Store 实现。
-  重要节点用 `python3 tools/target_memory.py handoff --target TARGET '进展、证据位置与下一步'`
-  保存交接；未登记执行证据的观察用 `note --target TARGET '未验证观察'` 保存建议，
+  重要节点用 `python3 tools/target_memory.py handoff --target TARGET --conditions '适用条件'
+  --next-intent '下一意图' --operation-ref OPERATION_ID:0 '观察、判断及尚缺证据'`
+  保存交接；`--operation-ref` 可重复，无登记证据时省略，正文路径不等于结构化证据绑定。
+  `current_handoff` 独立于有界历史；`next_actions` 仅来自最新交接的显式意图，最新未填则为空，
+  不是 Queue，也不把历史意图当待办。未登记执行证据的观察用 `note --target TARGET '未验证观察'` 保存建议，
   不冒充已验证阴性或原语。TARGET 使用本轮明确目标；隔离根加 `--repo-root ROOT`，
   参数细节按子命令 `--help` 展开。缺库按既有显式初始化/恢复流程处理，不猜测空状态。
+- 每次 Autopilot 启动（含自然语言等价意图）按 `commands/autopilot.md` 执行当轮
+  `autopilot_bootstrap.py` 并读取结果；旧会话/磁盘 Bootstrap 不能替代当前预检。
+- 交接区分原始观察、候选判断、已验证结论和下一步；补 `expected` 只改变 Runner 的
+  机械判定声明，不补足技术证据，不确认 Finding 或证明具体根因。
 - 无 authoritative bootstrap 时，复杂任务先恢复当前目标事实；缺少所需信息时运行
   `/context-pack`，已读且有效的上下文直接复用。一轮只选一个主 Skill，加载边界按
   `rules/context-loading.md` 执行。

@@ -23,7 +23,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
 
 
 INTEL_SCHEMA_VERSION = 2
-INTEL_REVIEW_SCHEMA_VERSION = 1
+INTEL_REVIEW_SCHEMA_VERSION = 2
 SOURCE_STATUSES = {"ok", "partial", "unavailable", "error"}
 COVERAGE_STATUSES = {"ready", "partial", "unavailable", "error"}
 REVIEW_ITEM_LIMIT = 16
@@ -188,11 +188,6 @@ def read_intel_artifact(path: str | Path) -> dict:
     return _with_advisory_source_freshness(validate_intel_artifact(payload))
 
 
-def _score_hint(item: dict) -> int:
-    try:
-        return int(float(item.get("score_hint") or 0))
-    except (TypeError, ValueError):
-        return 0
 
 
 def _bounded_list(value: object, limit: int) -> list:
@@ -236,7 +231,7 @@ def _query_filters(
 
 
 def _query_fingerprint(filters: dict[str, object]) -> str:
-    material = json.dumps(filters, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    material = json.dumps({"order": "component-id-v2", "filters": filters}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
 
 
@@ -278,13 +273,8 @@ def _decode_cursor(
 
 
 def _query_sort_key(item: dict) -> tuple:
-    severity = {"UNKNOWN": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
-    applicability = {"unknown": 0, "likely": 1, "affected": 2}
     component = item.get("component") if isinstance(item.get("component"), dict) else {}
     return (
-        -severity.get(str(item.get("severity") or "UNKNOWN").upper(), 0),
-        -applicability.get(normalize_advisory_applicability(item.get("applicability")), 0),
-        -_score_hint(item),
         str(component.get("name") or "").lower(),
         str(component.get("version") or "").lower(),
         str(item.get("id") or ""),
@@ -485,7 +475,7 @@ def project_intel_review_items(
         item for item in items
         if _is_review_candidate(item, include_stale=include_stale)
     ]
-    candidates.sort(key=lambda item: (-_score_hint(item), str(item.get("id") or "")))
+    candidates.sort(key=_query_sort_key)
     projected = []
     for item in candidates[:max(0, limit)]:
         component = item.get("component") if isinstance(item.get("component"), dict) else {}
@@ -514,8 +504,6 @@ def project_intel_review_items(
             "applicability": item.get("applicability", "unknown"),
             "severity": item.get("severity", "UNKNOWN"),
             "summary": str(item.get("summary") or "")[:500],
-            "score_hint": _score_hint(item),
-            "score_reasons": _bounded_list(item.get("score_reasons"), 12),
             "kev": bool(item.get("kev")),
             "epss": item.get("epss"),
             "source_names": _bounded_list(item.get("source_names"), 8),
@@ -575,7 +563,6 @@ def build_intel_review_projection(
     ordered = sorted(
         groups,
         key=lambda group: (
-            -max((_score_hint(item) for item in group["representatives"]), default=0),
             group["group_key"],
         ),
     )
@@ -602,10 +589,6 @@ def build_intel_review_projection(
                 "advisory_count": int(group.get("advisory_count", 0) or 0),
                 "representative_count": int(group.get("representative_count", 0) or 0),
                 "omitted_count": int(group.get("omitted_count", 0) or 0),
-                "max_score_hint": max(
-                    (_score_hint(item) for item in group.get("representatives") or []),
-                    default=0,
-                ),
                 "reactivate_when": str(group.get("reactivate_when") or "")[:240],
             }
             for group in omitted[:OMITTED_GROUP_INDEX_LIMIT]

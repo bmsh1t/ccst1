@@ -118,13 +118,11 @@ from a target into the knowledge base without review.
 
 ## Optional Enrichment Before Broad Scan
 
-Use these only when the current surface shows the signal:
+Use these only when the current hypothesis needs the signal:
 
 ```bash
 python3 tools/surface.py --target target.com
-python3 tools/js_reader.py --target target.com
-python3 tools/source_intel.py --target target.com
-python3 tools/intelligence_extractor.py target.com
+# Read exact cached JS/source paths with Claude Read/Grep when evidence warrants it.
 ```
 
 Then rerun:

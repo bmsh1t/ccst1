@@ -103,14 +103,14 @@ claude                          # Start Claude Code from this repo root
 /recon target.com               # Discover attack surface
 /surface target.com             # Rank cached recon + memory before active testing
 /hunt target.com                # Test for vulnerabilities
-/js-read target.com             # LLM-read cached JS bundles when present
+# Read cached JS bundles with Claude native Read/Grep when present
 /source-hunt target.com --repo-path /path/to/repo
 /validate                       # Check finding before writing
 /report                         # Generate submission-ready report
 /sync-check                     # Check repo/runtime drift after pulls or weird CLI behavior
 ```
 
-> **AI-first hunt loop:** load target context, rank surface, enrich app-like targets with Chrome DevTools MCP / Playwright MCP artifacts / browser XHR / source_intel / js-reader, attack exact business workflows, preserve leads/signals, then validate only report-ready candidates.
+> **AI-first hunt loop:** load target context, rank surface, enrich app-like targets with Chrome DevTools MCP / Playwright MCP artifacts / browser XHR / raw source and JS artifacts, attack exact business workflows, preserve leads/signals, then validate only report-ready candidates.
 
 **Step 3 — Go Autonomous**
 
@@ -299,7 +299,6 @@ Use this Core 4 when you want a clear Claude Code CLI loop from attack-surface d
 |:---|:---|
 | `/scope <asset>` | Summarize the active target set before testing |
 | `/triage` | Quick 2-minute go/no-go before deep validation |
-| `/js-read target.com` | LLM-read cached JS bundles and write JS attack-surface hypotheses |
 | `/source-hunt target.com` | Source repo scan — secrets, risky configs, GitHub Actions / CI issues |
 | `/chain` | Find B and C from bug A — systematic exploit chaining |
 | `/web3-audit <contract>` | 10-class smart contract checklist + Foundry PoC |
@@ -350,7 +349,6 @@ source of truth and these roles are not an implicit second controller.
 | **autopilot** | Autonomous hunt loop with advisory guard telemetry | Prefer Sonnet -> current session fallback |
 | **recon-agent** | Subdomain enum, live hosts, URL crawl, nuclei | Prefer Haiku *(fast)* → current session fallback |
 | **recon-ranker** | AI review and prioritization of recon + memory evidence | Prefer Haiku *(fast)* -> current session fallback |
-| **js-reader** | Reads cached JS materials into ranked attack-surface hypotheses | Prefer Sonnet -> current session fallback |
 | **report-writer** | Professional reports, impact-first, human tone | Prefer Opus *(quality)* → current session fallback |
 | **validator** | 7-Question Gate + 4-gate finding validation | Prefer Sonnet → current session fallback |
 | **chain-builder** | Systematic A-B-C exploit chaining | Prefer Sonnet → current session fallback |
@@ -577,7 +575,6 @@ closeable only after mapping to one of the canonical coverage cells above.
 | `hunt.py` | Master orchestrator — chains recon, scan, report |
 | `recon_engine.sh` | Subdomain enum + DNS + live hosts + URL crawl |
 | `cf_solver.py` | Optional manual Cloudflare challenge clearance helper; not auto-run |
-| `learn.py` | Legacy tech research compatibility backend |
 | `technology_inventory.py` | Shared httpx JSONL/text component and version inventory owner |
 | `intel_engine.py` | Intel v2 owner: OSV/GHSA/NVD + KEV/EPSS + atomic Surface-consumable artifact |
 | `validate.py` | Explicit evidence-linked technical and delivery decisions; CVSS optional; report severity is explicitly declared or unknown |

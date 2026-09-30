@@ -59,9 +59,9 @@ def test_workflow_is_closeable_without_expanding_coverage_taxonomy():
     assert canonical_vuln_class("workflow") == "Workflow"
 
     cell = build_closure_cell(
-        "/checkout",
+        "https://x.test/checkout",
         "workflow",
-        {"workflow": "checkout", "transition": "pay", "actor": "owner"},
+        {"method": "POST", "workflow": "checkout", "transition": "pay", "actor": "owner"}, technique="checkout_transition",
     )
     assert cell.complete and cell.key is not None
     resolver = ClosureResolver({
@@ -72,7 +72,7 @@ def test_workflow_is_closeable_without_expanding_coverage_taxonomy():
     })
     assert resolver.is_closure_closed(cell.key)
     assert resolver.closed_result(
-        "/checkout", "Workflow", identity_v2=cell.key
+        "https://x.test/checkout", "Workflow", identity_v2=cell.key
     ) == "tested_clean"
 
     with pytest.raises(ValueError, match="unknown vuln_class"):
@@ -86,22 +86,20 @@ def test_closed_cell_from_ledger_closed_cells():
         ]
     })
 
-    assert resolver.is_cell_closed("/api/Users", "Authz") is True
+    assert resolver.is_cell_closed("/api/Users", "Authz") is False
     assert resolver.is_cell_closed("https://x.test/api/Users?p=1", "authz") is False
     assert resolver.is_cell_closed("/api/Users", "SQLi") is False
     assert resolver.is_cell_closed("/other", "Authz") is False
 
 
 def test_spa_hash_routes_do_not_close_each_other_or_root():
-    resolver = from_summary({
-        "closed_cells": [
-            {"endpoint": "/#/search", "vuln_class": "XSS", "ts": "2026-01-01T00:00:00Z"},
-        ]
-    })
+    key = build_closure_cell("https://x.test/#/search", "XSS", {"method": "GET", "source": "q", "sink": "html"}, technique="reflected").key
+    resolver = ClosureResolver({"closed_cells_v2": [{"identity_v2": key.to_dict(), "result": "tested_clean"}]})
+    assert resolver.is_cell_closed("https://x.test/#/search", "XSS", identity_v2=key)
+    assert not resolver.is_cell_closed("https://x.test/#/admin", "XSS", identity_v2=key)
+    assert not resolver.is_cell_closed("https://x.test/", "XSS", identity_v2=key)
+    assert not resolver.is_cell_closed("https://x.test/#/search", "XSS")
 
-    assert resolver.is_cell_closed("/#/search", "XSS") is True
-    assert resolver.is_cell_closed("/#/admin", "XSS") is False
-    assert resolver.is_cell_closed("/", "XSS") is False
 
 
 def test_unknown_vuln_class_never_closes_as_authz():
@@ -117,14 +115,13 @@ def test_unknown_vuln_class_never_closes_as_authz():
 
 
 def test_authz_and_idor_do_not_close_each_other():
-    resolver = from_summary({
-        "closed_cells": [
-            {"endpoint": "/api/Cards", "vuln_class": "IDOR", "ts": "2026-01-01T00:00:00Z"},
-        ]
-    })
+    key = build_closure_cell("https://x.test/api/Cards", "IDOR", {"path_template": "https://x.test/api/Cards", "method": "GET",
+                            "actor_relation": "peer", "object_scope": "other"}, technique="object_swap").key
+    resolver = ClosureResolver({"closed_cells_v2": [{"identity_v2": key.to_dict(), "result": "tested_clean"}]})
+    assert resolver.is_cell_closed("https://x.test/api/Cards", "IDOR", identity_v2=key)
+    assert not resolver.is_cell_closed("https://x.test/api/Cards", "Authz", identity_v2=key)
+    assert not resolver.is_cell_closed("https://x.test/api/Cards", "IDOR")
 
-    assert resolver.is_cell_closed("/api/Cards", "IDOR") is True
-    assert resolver.is_cell_closed("/api/Cards", "Authz") is False
 
 
 def test_recent_entries_never_author_closure():
@@ -183,6 +180,7 @@ def test_legacy_matrix_status_cannot_close_a_v2_identity():
         "kind": "closure_cell",
         "endpoint": {"schema_version": 2, "kind": "endpoint", "endpoint": "/api/search"},
         "family": "SQLi",
+        "technique": "fixture_check",
         "dimensions": {"method": "GET", "parameter": "q"},
     }
 
@@ -196,6 +194,7 @@ def test_v2_query_rejects_endpoint_family_and_schema_disagreement():
         "kind": "closure_cell",
         "endpoint": {"schema_version": 2, "kind": "endpoint", "endpoint": "/api/search"},
         "family": "SQLi",
+        "technique": "fixture_check",
         "dimensions": {"method": "GET", "parameter": "q"},
     }
     resolver = ClosureResolver({
@@ -220,24 +219,18 @@ def test_endpoint_batch_requires_all_endpoints_closed_with_required_class():
         ]
     })
 
-    assert resolver.are_endpoints_closed(["/a", "/b"], required_classes={"Authz"}) is True
+    assert resolver.are_endpoints_closed(["/a", "/b"], required_classes={"Authz"}) is False
     assert resolver.are_endpoints_closed(["/a", "/b", "/missing"], required_classes={"Authz"}) is False
     assert resolver.are_endpoints_closed(["/a"], required_classes={"SQLi"}) is False
-    assert resolver.are_endpoints_closed(["/c"]) is True
+    assert resolver.are_endpoints_closed(["/c"]) is False
     assert resolver.are_endpoints_closed([]) is False
 
 
-def test_closed_after_uses_newer_final_rows_only():
-    resolver = from_summary({
-        "closed_cells": [
-            {"endpoint": "/a", "vuln_class": "Authz", "ts": "2026-06-01T00:00:00Z"},
-        ]
-    })
+def test_endpoint_timestamp_suppression_is_retired():
+    resolver = from_summary({"closed_cells": [{"endpoint": "/a", "vuln_class": "Authz", "ts": "2099-01-01T00:00:00Z"}]})
+    assert not resolver.is_cell_closed("/a", "Authz")
+    assert not hasattr(resolver, "closed_after")
 
-    assert resolver.closed_after(["/a"], "2026-05-01T00:00:00Z") is True
-    assert resolver.closed_after(["/a"], "2026-07-01T00:00:00Z") is False
-    assert resolver.closed_after(["/other"], "2026-05-01T00:00:00Z") is False
-    assert resolver.closed_after(["/a"], "") is False
 
 
 def test_empty_or_malformed_inputs_fail_open():
@@ -248,7 +241,6 @@ def test_empty_or_malformed_inputs_fail_open():
 
     assert resolver.is_cell_closed("/a", "XSS") is False
     assert resolver.are_endpoints_closed(["/a"]) is False
-    assert resolver.closed_after(["/a"], "2026-01-01T00:00:00Z") is False
 
 
 def test_terminal_vocabulary_is_defined_once_for_ledger_and_closure():
@@ -291,25 +283,23 @@ def test_closure_projection_is_defined_once_and_fed_by_both_producers():
     assert "def _project_legacy_cells" not in ledger, "evidence_ledger restates the legacy projection"
     assert "def _identity_fact_conflicts" not in ledger, "evidence_ledger restates identity fact conflicts"
     store = (tools / "target_store.py").read_text()
-    assert "identity_status" not in store, "the store must not derive identity status itself"
+    assert "def derive_identity_fields" not in store, "Store persists claims; projection validates them"
 
-    # A raw record (dimensions, no stored status) is derived by the projection.
+    # Missing status/technique never gets upgraded by the projection.
     record = {
         "event_id": "op:0", "raw_endpoint": "https://x.test/api/orders/42",
         "endpoint": "/api/orders/42", "method": "GET", "vuln_class": "SQLi", "result": "tested_clean",
         "ts": "2026-09-20T01:00:00Z", "identity_dimensions": {"method": "get", "parameter": "id"},
     }
     projection = closure_projection.build_current_cell_projection([record])
-    assert [cell["vuln_class"] for cell in projection["closed_cells_v2"]] == ["SQLi"]
-    assert projection["closed_cells_v2"][0]["identity_v2"]["dimensions"] == {"method": "GET", "parameter": "id"}
-    # Records without dimensions stay in the legacy endpoint projection only.
-    assert projection["closed_cells"] == []
-    legacy = {**record, "event_id": "op:1", "family": "SQLi"}
-    legacy.pop("identity_dimensions")
-    legacy.pop("vuln_class")
-    legacy["vuln_class"] = "SQLi"
-    plain = closure_projection.build_current_cell_projection([legacy])
-    assert plain["closed_cells_v2"] == [] and plain["closed_cells"][0]["vuln_class"] == "SQLi"
+    assert projection["closed_cells_v2"] == []
+    key = build_closure_cell(record["raw_endpoint"], "SQLi", {"method": "GET", "parameter": "id"}, technique="boolean_diff").key
+    complete = {**record, "identity_status": "complete", "evidence_role": "subject",
+                "identity_v2": key.to_dict(), "identity_technique": "boolean_diff", "identity_dimensions": key.dimension_map}
+    projected = closure_projection.build_current_cell_projection([complete])
+    assert projected["closed_cells_v2"][0]["identity_v2"] == key.to_dict()
+    assert projected["closed_cells"] == []
+    assert "identity_status" not in record
 
 
 def test_endpoint_shape_helpers_are_defined_once_and_stay_policy_free():

@@ -54,9 +54,9 @@ lane contract in `docs/autopilot-lanes.md#state-and-queue` (owner continuation v
 `autopilot_continuation.py create`, never scan the list/manifest itself, `out_of_scope`
 always wins, `invalid_batch_target`/`batch_failed` are terminal).
 
-Startup anti-loop: if `autopilot_state.py` returns `next_action: wait_recon` / `Recon: in progress`, do not announce a fresh start or launch another recon. If it returns `wait_scan` / `Scan: in progress`, do not launch another `scan-only --quick`; wait/poll and rerun state. Runtime phase locks are the final duplicate-launch guard. Repeating startup or scan commands is not progress. Recon completion attempts a non-fatal exact-index/full-stream-ranking finalizer; failure preserves raw recon and leaves `prepare_surface_context` for explicit refresh. `collect_candidate_evidence` uses structured `next_actions`/`missing_labels`, or a memory candidate only after reviewing locatable evidence, otherwise collects raw request/response. The explicit Store claim -> canonical-ID -> `validation_runner.py <lane> ...` chain, `/validate` timing, and `complete_report_draft` semantics follow `docs/autopilot-lanes.md#state-and-queue` (never `--decision-json` on the runner).
+Startup anti-loop: if `autopilot_state.py` returns `next_action: wait_recon` / `Recon: in progress`, do not announce a fresh start or launch another recon. If it returns `wait_scan` / `Scan: in progress`, do not launch another `scan-only --quick`; wait/poll and rerun state. Runtime phase locks are the final duplicate-launch guard. Repeating startup or scan commands is not progress. Recon completion attempts a non-fatal exact-index/full-stream-inventory finalizer; failure preserves raw recon and leaves `prepare_surface_context` for explicit refresh. `collect_candidate_evidence` uses structured `next_actions`/`missing_labels`, or a memory candidate only after reviewing locatable evidence, otherwise collects raw request/response. The explicit Store claim -> canonical-ID -> `validation_runner.py <lane> ...` chain, `/validate` timing, and `complete_report_draft` semantics follow `docs/autopilot-lanes.md#state-and-queue` (never `--decision-json` on the runner).
 
-Only add heavier state tools when they directly change the next action: `target_case_state.py` for actor/session/object continuity, `case_state_seed.py` for concrete object IDs, and checkpoint/action_queue/coverage after progress, validation, handoff, or before finish; do not let them drive first contact.
+Only add heavier state tools when they directly change the next action: `target_case_state.py` for actor/session/object continuity, and checkpoint/action_queue/coverage after progress, validation, handoff, or before finish; do not let them drive first contact.
 
 These tools are memory and execution aids, not a pre-flight checklist. Empty/stale/noisy/low-value state must not block fresh recon, broad scan, browser/source enrichment, or AI-generated pivots. If checkpoint/action_queue show no executable next action, `continue_last_focus`, resume targets, and `/surface` score hints are historical context, not commands; re-open only when fresh browser/source/JS/recon evidence or business context contradicts closure. Before executing historical focus on an existing target, do that closed-state sanity check without making checkpoint the first-contact steering wheel.
 
@@ -64,7 +64,6 @@ Read the bounded `observation_inventory` summary before declaring exhaustion; us
 
 - Skills route through `skills/runtime-protocol.md`.
 - Target case state stores actors, session metadata, objects, private markers, and hypotheses under `state/<target_key>/case_state.json`; session headers are private artifacts referenced from that file. It is context memory only: action identity, claim, and execution state live in the one action source, and Case neither ranks routes nor carries a backlog.
-- `case_state_seed.py` projects object-shaped candidates from cached endpoints so Claude can register them with `add-actor`/`add-object`; it neither writes Case State nor emits backlog commands.
 - Knowledge cards come from `knowledge/index.md`; load only matching project cards from context-pack. General technique detail comes from the model and is not stored as a default reference catalogue.
 - Coverage and tool/AI boundary semantics live in `rules/coverage-gate.md`, `rules/hunting.md`,
   and `rules/tool-ai-boundary.md`.
@@ -79,7 +78,7 @@ Use case state as working memory:
 - Open hypothesis -> resolve it into bounded actor/object/replay evidence, then record the finding in the action source where the claim lives; Case does not own the test or its verdict.
 - Missing evidence -> collect the named actor/session/object/private marker, then rerun checkpoint.
 - Blocked runner -> record the bounded recovery step in the action source before claiming fresh work and never replay the blocked runner implicitly.
-- Empty case state + object IDs in cached artifacts -> run `case_state_seed.py --target <target> --json` and review the object candidates it projects.
+- Empty case state + object IDs in cached artifacts -> read the raw artifacts natively, then explicitly record observed objects.
 - New workflow/object/role signal -> extend case state with `add-actor`, `add-session`, `add-object`, or `add-hypothesis`; if it implies testable work, put the action in the one action source rather than restating it in Case.
 - Hypotheses are AI-owned and may use any family, primitive, or chain, including RCE and families
   outside the canonical Coverage taxonomy. Case State/Queue `vuln_class` is a compatibility string;
@@ -102,11 +101,11 @@ authoritative claim/resolve command shapes live in `docs/autopilot-lanes.md#stat
 `ingest-checkpoint` is retired.
 Candidate-only scanner lanes expose their input, selected, and remaining counts without claiming execution; only the retained timing/workflow runners own resumable cursors. In-scope requests execute through the selected medium, AuthSession headers remain origin-scoped, and AI explicitly records follow-up actions for candidate/partial results.
 
-Do not end a run merely because a primary lane is blocked. Checkpoint/finish is allowed only after the remaining high-value lanes have been executed, blocked, dead-end, or clearly not applicable. When auth, WAF, or manual-browser blockers appear, expand into the smallest applicable adjacent high-value lane before considering closure. Examples include auth bootstrap (register, invite, reset, verification), controlled credential access when its prerequisites exist, edge/WAF lanes, and public-side JS/source/version/metadata/sibling-route continuation.
+A blocked primary lane does not force either stopping or testing every other lane. Claude chooses useful alternatives or a bounded stop within the invocation budget. Preserve untested and blocked evidence without claiming exhaustion; raw observations never require new Queue actions.
 ## Compact Transition Gate
 - Paranoid checkpoints after each substantive state change; normal after a coherent lane batch; yolo only on blocker/handoff/finish. Every mode writes evidence state. If the caller explicitly supplied `--deep --max-lanes N`, N is only this invocation's named substantive-lane cap: after lane N explicitly save follow-up work and handoff, then read checkpoint, and do not start a newly discovered lane.
-- After a primary Candidate/Validated result, evaluate one bounded evidence-fit sibling or chain before closing.
-- On 401/403/404/405/415 or parser delta, try one evidence-linked bypass family or explicitly close it; after three homogeneous no-information results, resolve and rotate lanes.
+- Save confirmed findings immediately; optional sibling or chain investigation does not delay independent reporting.
+- Response deltas and repeated outcomes are evidence for Claude to assess; they do not force a bypass family, rotation, or closure.
 - Refresh rotating form/session tokens from the legitimate baseline page/session before each replay.
 
 ## Discovery / Exploitation / Validation Modes
@@ -136,9 +135,9 @@ Missing/unpersisted Network, Console, or complete HttpOnly state is
 partial/blocked, never tested-clean. When browser evidence leaves a specific
 runtime JavaScript question unresolved, JSHook MCP is an optional follow-up
 evidence source.
-- Source/route/auth logic: `python3 tools/source_intel.py --target <target> [--repo-path <repo>]`.
+- Source/route/auth logic: Claude reads exact local repository paths with native Read/Grep or bounded delegation.
 - DNS expansion: after passive Recon, AI may call `python3 tools/dns_expand.py --target <target> --reason "<observed naming/scope gap>" [--wordlist <reviewed-labels>]` when target-specific certificate/JS/source evidence or a naming dialect supports it. The lane is never a baseline checklist item; host count alone is insufficient. Let the tool own permutation, budgets, `puredns` wildcard filtering, scope checks, and atomic merge, then refresh `/surface` when it adds hosts.
-- JS bundles: with concrete webpack/dynamic-import/chunk-map/source-map/missing-chunk evidence, call `python3 tools/deep_js_packer.py ...` on 1-5 bundles or one high-value app entry, then `python3 tools/js_reader.py --target <target>`; JS count alone is not a trigger and partial/unavailable remains unresolved.
+- JS bundles: with concrete webpack/dynamic-import/chunk-map/source-map/missing-chunk evidence, call `python3 tools/deep_js_packer.py ...` on 1-5 bundles or one high-value app entry, then read the recovered raw paths directly; JS count alone is not a trigger.
 - Known component/version: `/intel` / `tools/intel_engine.py`, OSV exact-version results, vendor advisories, NVD/GHSA/WPScan-style sources, CISA KEV, EPSS, and local nuclei template names. Versionless named products use only an explicitly mapped representative NVD page and expose a continuation cursor; generic service/banner identities stay out of product-wide NVD queries. Do not pair the default Intel run with a broad CVE sweep; use `/scan-cves` or `tools/cve_scan.sh` only after AI selects a reachable advisory for an active template probe. Treat `applicability`, source failure/staleness, and route reachability as separate evidence gates.
 - SQL/JSON/WAF: `wafw00f_hits.txt` is sampled host-level context, not per-request proof. AI first chooses a target-observed request shape, exact test input, and stop condition, then uses browser/MCP/curl/raw sender directly. When an exact same-method, one-dimension HTTP pair needs repeatable diff and canonical evidence, optionally call `tools/validation_runner.py request-diff`; time-shaped candidates use AI-selected interleaved sampling with a stable median/MAD trend before any claim. `429`, transport failure, block pages, and WAF observations remain observations, not findings. Do not launch a fixed matrix merely because parameters or a WAF exist.
 - Exchange/OWA/EWS/Autodiscover evidence: run `python3 tools/eburst_lane.py --target <target>` for the bounded target-owned interface check. It resolves external `/root/Tools/EBurst` only when its Python 2 runtime is available; reviewed credentials remain in the existing `/spray` lane.

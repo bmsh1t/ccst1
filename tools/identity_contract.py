@@ -8,22 +8,22 @@ and Finding IDs deliberately remain separate identities.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Mapping
 
 try:
-    from tools.evidence_identity import canonical_endpoint_identity, canonical_vuln_class
+    from tools.evidence_identity import canonical_endpoint_identity, canonical_vuln_class, exact_endpoint_identity, normalize_family
 except ImportError:  # pragma: no cover - direct ``python tools/...`` execution
-    from evidence_identity import canonical_endpoint_identity, canonical_vuln_class  # type: ignore
+    from evidence_identity import canonical_endpoint_identity, canonical_vuln_class, exact_endpoint_identity, normalize_family  # type: ignore
 
 
-IDENTITY_SCHEMA_VERSION = 2
+IDENTITY_SCHEMA_VERSION = 3
 MIN_CANDIDATE_CONFIDENCE = 0.75
 
-# Endpoint is always part of a ClosureCellKey through EndpointKey.  These are
-# the additional family-specific dimensions, kept explicit instead of inferred
-# from display text or a universal identity key.
+# Historical v2 decoder only. New v3 conditions are authored, never selected
+# or declared complete by a family policy.
 FAMILY_POLICIES: dict[str, tuple[str, ...]] = {
     "SQLi": ("method", "parameter"),
     "NoSQLi": ("method", "parameter"),
@@ -47,86 +47,34 @@ FAMILY_POLICIES: dict[str, tuple[str, ...]] = {
     "BusinessLogic": ("workflow", "transition", "actor"),
 }
 
-# A small, deterministic alias table for candidate field names.  Values remain
-# evidence supplied by the caller; aliases never grant completeness by
-# themselves.
-_FIELD_ALIASES: dict[str, dict[str, str]] = {
-    "SQLi": {
-        "http_method": "method",
-        "body_field": "parameter",
-        "input_field": "parameter",
-        "parameter_name": "parameter",
-        "body_parameter": "parameter",
-    },
-    "NoSQLi": {
-        "http_method": "method",
-        "body_field": "parameter",
-        "input_field": "parameter",
-        "parameter_name": "parameter",
-        "body_parameter": "parameter",
-    },
-    "IDOR": {"route_template": "path_template", "actor": "actor_relation", "object": "object_scope"},
-    "GraphQL": {"op": "operation", "arg": "argument"},
-    "XSS": {"source_parameter": "source", "parameter": "source", "output_sink": "sink"},
-    "PrototypePollution": {"source_parameter": "source", "parameter": "source", "output_sink": "sink"},
-    "Authz": {"http_method": "method", "role": "actor_role", "actor": "actor_role", "object": "object_scope"},
-    "OAuth": {"redirect_uri": "redirect_target", "role": "actor"},
-    "JWT": {"http_method": "method", "token": "token_location", "claim": "claim_algorithm", "algorithm": "claim_algorithm"},
-    "CSRF": {"http_method": "method", "action": "state_change", "role": "actor"},
-    "SSRF": {"http_method": "method", "parameter": "input_field", "body_field": "input_field", "destination": "destination_class"},
-    "Race": {"http_method": "method", "concurrency": "concurrency_profile"},
-    "Upload": {"http_method": "method", "parameter": "input_field", "body_field": "input_field", "mime_type": "content_type"},
-    "Webhook": {"http_method": "method", "event_type": "event", "auth_scheme": "authentication_scheme", "authentication": "authentication_scheme"},
-    "XXE": {"http_method": "method", "parameter": "input_field", "body_field": "input_field", "entity": "entity_type"},
-    "RCE": {"http_method": "method", "parameter": "input_field", "body_field": "input_field", "output_sink": "sink"},
-    "Path": {"http_method": "method", "parameter": "input_field", "body_field": "input_field", "route_template": "path_template"},
-    "Workflow": {"flow": "workflow", "step": "transition", "role": "actor"},
-    "OpenRedirect": {"http_method": "method", "input_field": "parameter", "redirect_uri": "redirect_target"},
-    "BusinessLogic": {"flow": "workflow", "step": "transition", "role": "actor"},
-}
-
-
-def _canonical_technique(value: Any, family: str) -> str:
-    """Return the stable technique token carried by a closure identity."""
-    text = str(value or family or "").strip().lower().replace("-", "_").replace(" ", "_")
+def _canonical_technique(value: Any, family: str = "") -> str:
+    """Return only an explicitly supplied stable technique token."""
+    text = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
     return "_".join(part for part in text.split("_") if part)
 
 
 def family_dimensions(family: str) -> tuple[str, ...]:
-    """Return required dimensions for a canonical family, or ``()`` unknown."""
+    """Inspect historical v2 requirements; never use for v3 admission."""
     canonical = canonical_vuln_class(family) or ("Workflow" if str(family or "").strip().lower() == "workflow" else "")
     return FAMILY_POLICIES.get(canonical, ())
-
-
-def _canonical_scalar(field: str, value: Any) -> str:
-    if value is None or isinstance(value, (Mapping, list, tuple, set)):
-        return ""
-    text = str(value).strip()
-    if field == "method":
-        return text.upper()
-    if field in {"path_template", "route", "source_route"} and text:
-        return canonical_endpoint_identity(text)
-    return text
 
 
 def _canonical_dimensions(
     family: str,
     dimensions: Mapping[str, Any] | None,
 ) -> tuple[dict[str, str], tuple[str, ...]]:
-    required = FAMILY_POLICIES.get(family)
-    if required is None:
-        return {}, ("family_policy",)
-    aliases = _FIELD_ALIASES.get(family, {})
+    required = ("method",)
+    if not isinstance(dimensions, Mapping):
+        return {}, ("method", "dimensions_must_be_object")
     values: dict[str, str] = {}
     conflicts: list[str] = []
     for raw_field, raw_value in (dimensions or {}).items():
-        field = str(raw_field).strip().lower().replace("-", "_").replace(" ", "_")
-        field = aliases.get(field, field)
-        if field not in required:
-            conflicts.append(f"unexpected_dimension:{raw_field}")
-            continue
-        value = _canonical_scalar(field, raw_value)
-        if not value:
+        field = raw_field
+        value = raw_value
+        if (not isinstance(field, str) or not field.strip() or field != field.strip() or len(field) > 64
+                or not isinstance(value, str) or not value.strip() or value != value.strip() or len(value) > 256
+                or any(ord(c) < 32 or ord(c) == 127 for c in field + value)):
+            conflicts.append(f"invalid_dimension:{raw_field}")
             continue
         previous = values.get(field)
         if previous is not None and previous != value:
@@ -139,15 +87,16 @@ def _canonical_dimensions(
 
 @dataclass(frozen=True, slots=True)
 class EndpointKey:
-    """The v2 endpoint base identity, independent of Surface/Finding keys."""
+    """Exact v3 asset identity; v2 remains decodable historical metadata."""
 
     endpoint: str
     schema_version: int = IDENTITY_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
-        if self.schema_version != IDENTITY_SCHEMA_VERSION:
+        if type(self.schema_version) is not int or self.schema_version not in {2, IDENTITY_SCHEMA_VERSION}:
             raise ValueError(f"unsupported endpoint identity schema: {self.schema_version}")
-        normalized = canonical_endpoint_identity(self.endpoint)
+        normalized = (exact_endpoint_identity(self.endpoint) if self.schema_version == 3
+                      else canonical_endpoint_identity(self.endpoint))
         if not normalized:
             raise ValueError("endpoint identity is required")
         object.__setattr__(self, "endpoint", normalized)
@@ -162,9 +111,11 @@ class EndpointKey:
             raise ValueError("endpoint identity must be an object")
         if payload.get("kind") != "endpoint":
             raise ValueError("endpoint identity kind must be 'endpoint'")
-        if payload.get("schema_version") != IDENTITY_SCHEMA_VERSION:
-            raise ValueError("endpoint identity schema must be version 2")
-        return cls(str(payload.get("endpoint") or payload.get("canonical") or ""))
+        if type(payload.get("schema_version")) is not int or payload.get("schema_version") not in {2, IDENTITY_SCHEMA_VERSION}:
+            raise ValueError("endpoint identity schema must be version 2 or 3")
+        if payload["schema_version"] == 3 and set(payload) != {"schema_version", "kind", "endpoint"}:
+            raise ValueError("exact endpoint identity contains missing or unknown fields")
+        return cls(str(payload.get("endpoint") or payload.get("canonical") or ""), payload["schema_version"])
 
     @property
     def canonical(self) -> str:
@@ -195,18 +146,33 @@ class ClosureCellKey:
     schema_version: int = IDENTITY_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
-        if self.schema_version != IDENTITY_SCHEMA_VERSION:
+        if type(self.schema_version) is not int or self.schema_version not in {2, IDENTITY_SCHEMA_VERSION}:
             raise ValueError(f"unsupported closure identity schema: {self.schema_version}")
-        if self.family not in FAMILY_POLICIES:
-            raise ValueError(f"unsupported closure family: {self.family!r}")
-        required = FAMILY_POLICIES[self.family]
-        normalized = {field: str(self.dimensions.get(field, "")) for field in required}
-        missing = [field for field, value in normalized.items() if not value]
+        if self.endpoint_key.schema_version != self.schema_version:
+            raise ValueError("closure and endpoint identity versions must match")
+        normalize_family(self.family)
+        if not isinstance(self.dimensions, Mapping):
+            raise ValueError("closure dimensions must be an object")
+        if self.schema_version == 2:
+            required = FAMILY_POLICIES.get(self.family)
+            if required is None or set(self.dimensions) != set(required):
+                raise ValueError("invalid historical family dimensions")
+        else:
+            required = ("method",)
+        normalized = dict(self.dimensions)
+        if len(normalized) > 16 or any(not isinstance(k, str) or not k.strip() or k != k.strip() or len(k) > 64
+               or not isinstance(v, str) or not v.strip() or v != v.strip() or len(v) > 256
+               or any(ord(c) < 32 or ord(c) == 127 for c in k + v)
+               for k, v in normalized.items()):
+            raise ValueError("closure dimensions require non-empty string keys and values")
+        missing = [field for field in required if not normalized.get(field)]
         if missing:
             raise ValueError(f"incomplete closure identity: {', '.join(missing)}")
-        if set(self.dimensions) != set(required):
-            raise ValueError("closure identity contains unexpected dimensions")
-        technique = _canonical_technique(self.technique, self.family)
+        if self.schema_version == 3 and not re.fullmatch(r"[A-Z][A-Z0-9_-]*", normalized["method"]):
+            raise ValueError("closure method must be an explicit uppercase HTTP method")
+        if len(json.dumps(normalized, ensure_ascii=True).encode()) > 4096:
+            raise ValueError("closure dimensions exceed 4096 bytes")
+        technique = _canonical_technique(self.technique)
         if not technique:
             raise ValueError("closure identity technique is required")
         object.__setattr__(self, "dimensions", MappingProxyType(dict(sorted(normalized.items()))))
@@ -257,8 +223,10 @@ class ClosureCellKey:
             raise ValueError("closure identity must be an object")
         if payload.get("kind") != "closure_cell":
             raise ValueError("closure identity kind must be 'closure_cell'")
-        if payload.get("schema_version") != IDENTITY_SCHEMA_VERSION:
-            raise ValueError("closure identity schema must be version 2")
+        if type(payload.get("schema_version")) is not int or payload.get("schema_version") not in {2, IDENTITY_SCHEMA_VERSION}:
+            raise ValueError("closure identity schema must be version 2 or 3")
+        if payload["schema_version"] == 3 and set(payload) != {"schema_version", "kind", "endpoint", "family", "technique", "dimensions"}:
+            raise ValueError("closure identity contains missing or unknown fields (including technique)")
         endpoint = payload.get("endpoint")
         if not isinstance(endpoint, Mapping):
             raise ValueError("closure identity endpoint must be an EndpointKey")
@@ -266,7 +234,8 @@ class ClosureCellKey:
             EndpointKey.from_dict(endpoint),
             str(payload.get("family") or ""),
             payload.get("dimensions") if isinstance(payload.get("dimensions"), Mapping) else {},
-            str(payload.get("technique") or payload.get("family") or ""),
+            str(payload.get("technique") or ""),
+            payload["schema_version"],
         )
 
 
@@ -311,27 +280,30 @@ def build_closure_cell(
     *,
     technique: str = "",
 ) -> IdentityBuildResult:
-    """Normalize one planned test cell; incomplete cells are fail-open."""
-    canonical_family = canonical_vuln_class(family) or ("Workflow" if str(family or "").strip().lower() == "workflow" else "")
-    if not canonical_family or canonical_family not in FAMILY_POLICIES:
-        return IdentityBuildResult(str(family or "").strip(), None, ("family_policy",), ())
+    """Validate declared equality conditions, not semantic sufficiency."""
+    try:
+        canonical_family = normalize_family(family)
+    except ValueError:
+        return IdentityBuildResult(str(family or ""), None, ("family",), ())
     try:
         endpoint_key = endpoint if isinstance(endpoint, EndpointKey) else EndpointKey.from_value(endpoint)
     except (TypeError, ValueError):
         endpoint_key = None
     values, issues = _canonical_dimensions(canonical_family, dimensions)
-    missing = tuple(item for item in issues if item in FAMILY_POLICIES[canonical_family] or item == "family_policy")
+    missing = tuple(item for item in issues if item == "method")
     conflicts = tuple(item for item in issues if item not in missing)
-    if endpoint_key is None:
+    if endpoint_key is None or endpoint_key.schema_version != 3:
         missing = tuple((*missing, "endpoint"))
+    technique_value = _canonical_technique(technique)
+    if not technique_value:
+        missing = tuple((*missing, "technique"))
     if missing or conflicts:
         return IdentityBuildResult(canonical_family, None, tuple(sorted(set(missing))), tuple(sorted(set(conflicts))))
-    return IdentityBuildResult(
-        canonical_family,
-        ClosureCellKey(endpoint_key, canonical_family, values, technique),
-        (),
-        (),
-    )
+    try:
+        key = ClosureCellKey(endpoint_key, canonical_family, values, technique_value)
+    except ValueError as exc:
+        return IdentityBuildResult(canonical_family, None, (), (str(exc),))
+    return IdentityBuildResult(canonical_family, key, (), ())
 
 
 @dataclass(frozen=True, slots=True)
@@ -352,7 +324,7 @@ class IdentityCandidate:
     schema_version: int = IDENTITY_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "technique", _canonical_technique(self.technique, self.family))
+        object.__setattr__(self, "technique", _canonical_technique(self.technique))
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -431,7 +403,10 @@ def normalize_identity_candidate(candidate: Mapping[str, Any]) -> IdentityCandid
     raw_family = str(candidate.get("family") or candidate.get("vuln_class") or "").strip()
     family = canonical_vuln_class(raw_family) or raw_family
     raw_endpoint = str(candidate.get("endpoint") or candidate.get("route") or "").strip()
-    endpoint = canonical_endpoint_identity(raw_endpoint) if raw_endpoint else ""
+    try:
+        endpoint = exact_endpoint_identity(raw_endpoint)
+    except ValueError:
+        endpoint = ""
     raw_dimensions = candidate.get("dimensions")
     if not isinstance(raw_dimensions, Mapping):
         raw_dimensions = {
@@ -439,7 +414,7 @@ def normalize_identity_candidate(candidate: Mapping[str, Any]) -> IdentityCandid
             if key not in {"family", "vuln_class", "endpoint", "route", "technique", "confidence", "provenance", "evidence_refs", "aliases", "missing_fields", "conflicts", "follow_up_tests", "follow_up"}
         }
     canonical_family = canonical_vuln_class(family) or ("Workflow" if str(family or "").strip().lower() == "workflow" else "")
-    values, issues = _canonical_dimensions(canonical_family, raw_dimensions) if canonical_family else ({}, ("family_policy",))
+    values, issues = _canonical_dimensions(family, raw_dimensions)
     explicit_missing = _as_strings(candidate.get("missing_fields"))
     explicit_conflicts = _as_strings(candidate.get("conflicts"))
     confidence_raw = candidate.get("confidence", 0.0)
@@ -451,7 +426,7 @@ def normalize_identity_candidate(candidate: Mapping[str, Any]) -> IdentityCandid
     if not 0.0 <= confidence <= 1.0:
         confidence = max(0.0, min(1.0, confidence))
         explicit_conflicts = tuple((*explicit_conflicts, "confidence_out_of_range"))
-    required_or_policy = set(FAMILY_POLICIES.get(canonical_family, ())) | {"family_policy"}
+    required_or_policy = {"method"}
     missing_items = list(explicit_missing)
     missing_items.extend(item for item in issues if item in required_or_policy)
     if not endpoint:

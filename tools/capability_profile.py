@@ -34,7 +34,6 @@ LANE_IDS = (
     "recon",
     "surface",
     "browser",
-    "source_js",
     "sql",
     "workflow",
     "timing",
@@ -147,11 +146,6 @@ def build_capability_profile(
     recon_engine_ready = _helpers_exist(resolved_repo, "tools/recon_engine.sh")
     scanner_engine_ready = _helpers_exist(resolved_repo, "tools/vuln_scanner.sh")
     local_pipeline_ready = recon_engine_ready and scanner_engine_ready
-    source_js_ready = _helpers_exist(
-        resolved_repo,
-        "tools/source_intel.py",
-        "tools/js_reader.py",
-    )
     browser_mcp_import_ready = _helpers_exist(resolved_repo, "tools/browser_mcp_import.py")
     dns_expansion_ready = _helpers_exist(resolved_repo, "tools/dns_expand.py")
     surface_ready = _helpers_exist(resolved_repo, "tools/surface.py", "tools/surface_projection.py")
@@ -174,7 +168,6 @@ def build_capability_profile(
         "tools/intel_artifact.py",
         "tools/intel_sources.py",
         "tools/intel_continuation.py",
-        "tools/intelligence_extractor.py",
         "tools/technology_inventory.py",
     )
     web_intel_ready = _helpers_exist(resolved_repo, "tools/web_intel_artifact.py")
@@ -217,22 +210,16 @@ def build_capability_profile(
         fallbacks.append("curl-native-http")
     if browser_mcp_import_ready:
         fallbacks.append("browser-mcp-evidence-import")
-    if source_js_ready:
-        fallbacks.append("source-js-enrichment")
 
     recommended_paths = []
     recommended_paths.append("prefer-session-browser-mcp")
     if browser_mcp_import_ready:
         recommended_paths.append("browser-mcp-evidence-import")
-    elif source_js_ready:
-        recommended_paths.append("source-js-enrichment")
 
     if "httpx" in available["recon"] and local_pipeline_ready:
         recommended_paths.append("recon-engine-httpx")
     elif "curl-native-http" in fallbacks:
         recommended_paths.append("recon-limited-native-http")
-    elif source_js_ready:
-        recommended_paths.append("recon-source-js-only")
     else:
         recommended_paths.append("recon-manual-evidence-only")
 
@@ -258,7 +245,6 @@ def build_capability_profile(
                 "httpx-or-curl": "httpx" in available["recon"] or curl_available,
             },
             evidence_required=("target-owned-host-or-url",),
-            degraded=("source-js-enrichment",) if source_js_ready and not ("httpx" in available["recon"] or curl_available) else (),
         ),
         _lane_record(
             "surface",
@@ -283,8 +269,10 @@ def build_capability_profile(
         },
         _lane_record(
             "source_js",
-            {"tools/source_intel.py+js_reader.py": source_js_ready},
+            {"native-read-grep": True},
             evidence_required=("target-source-or-javascript",),
+            classification="ai_selected",
+            runtime_status="ready",
         ),
         _lane_record(
             "sql",

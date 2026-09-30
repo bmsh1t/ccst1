@@ -14,6 +14,7 @@ from evidence_ledger import (
     normalize_actor, normalize_object_scope, normalize_variant, normalize_ledger_vuln_class,
 )
 from tools.target_store import StoreError, TargetStore
+from tools.identity_contract import build_closure_cell
 
 
 @pytest.fixture
@@ -40,6 +41,11 @@ def record_observation(store, *, attempt="first", **facts):
         "artifacts": {"response": raw.relative_to(store.root).as_posix()},
         **facts,
     }
+    identity = build_closure_cell(observation["endpoint"], observation["family"],
+                                  observation["identity_dimensions"], technique="fixture_check")
+    observation.update(identity_status="complete" if identity.complete else "incomplete",
+                       identity_technique="fixture_check", identity_v2=identity.key.to_dict() if identity.key else {},
+                       detail={"evidence_role": "subject"})
     receipt = store.record_execution(attempt_id=attempt, outcome="complete", observations=[observation], actor="operator")
     return receipt, raw
 
@@ -133,17 +139,17 @@ def test_v2_projection_preserves_sql_parameter_identity(store):
 
 
 def test_incomplete_identity_is_preserved_without_authorizing_v2_closure(store):
-    record_observation(store, identity_dimensions={"method": "GET"})
+    record_observation(store, identity_dimensions={"parameter": "q"})
     summary = build_summary(store.root, target=store.target)
     assert summary["entry_count"] == 1
     assert summary["closed_cells_v2"] == []
     assert summary["identity_v2_diagnostics"]["incomplete_count"] == 1
-    assert summary["recent_entries"][0]["identity_dimensions"] == {"method": "GET"}
+    assert summary["recent_entries"][0]["identity_dimensions"] == {"parameter": "q"}
 
 
 def test_open_family_remains_recorded_without_canonical_actor_requirements(store):
     record_observation(store, family="Workflow", endpoint="https://target.com/checkout",
-                       identity_dimensions={"workflow": "checkout", "transition": "pay", "actor": "owner"})
+                       identity_dimensions={"method": "GET", "workflow": "checkout", "transition": "pay", "actor": "owner"})
     summary = build_summary(store.root, target=store.target, vuln_classes=["Workflow"])
     assert summary["closed_cells_v2"][0]["vuln_class"] == "Workflow"
     assert summary["actor_matrix"]["rows"] == []
@@ -170,7 +176,7 @@ def test_summary_retains_cells_and_candidates_outside_recent_window(store):
     summary = build_summary(store.root, target=store.target)
     assert len(summary["recent_entries"]) == 5
     assert all(row["endpoint"] not in {"/api/search", "/api/pending"} for row in summary["recent_entries"])
-    assert any(row["endpoint"] == "/api/search" for row in summary["closed_cells_v2"])
+    assert any(row["endpoint"] == "https://target.com/api/search" for row in summary["closed_cells_v2"])
     assert any(row["endpoint"] == "/api/pending" for row in summary["open_candidates_v2"])
 
 

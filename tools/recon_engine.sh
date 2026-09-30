@@ -3271,7 +3271,7 @@ emit_claude_hint \
 emit_claude_hint_actions \
     "compare api_endpoints access across both owned sessions (owner vs peer) on ${TARGET}" \
     "python3 tools/param_discovery.py --target ${TARGET} --list recon/${RECON_TARGET_KEY}/live/urls.txt --method GET   # mine hidden params" \
-    "spawn js-reader if js_files_filtered/js_files > 0"
+    "expose raw JS paths for native Read/Grep when JS artifacts exist"
 
 # ============================================================
 # Phase 5: JS Analysis
@@ -3290,7 +3290,6 @@ build_target_owned_input "$JS_FILES_FOR_ANALYSIS" "$JS_REQUEST_TARGETS" http-url
 JS_ANALYSIS_STATUS="skipped"
 JS_CANDIDATE_BUILD_STATUS="skipped"
 JS_DEEP_CANDIDATES=0
-JS_DEEP_GENERATION=""
 JS_LINK_ANALYZER="none"
 
 if [ -s "$JS_FILES_FOR_ANALYSIS" ]; then
@@ -3302,17 +3301,7 @@ if [ -s "$JS_FILES_FOR_ANALYSIS" ]; then
         > "$RECON_DIR/logs/js_deep_candidates.json" 2>&1; then
         JS_CANDIDATE_BUILD_STATUS="ok"
         JS_DEEP_CANDIDATES=$(wc -l < "$RECON_DIR/js/deep_candidates.txt" 2>/dev/null | tr -d ' ' || echo 0)
-        JS_DEEP_GENERATION=$(python3 - "$RECON_DIR/js/deep_candidates.txt" <<'PY'
-import hashlib
-import sys
 
-digest = hashlib.sha256()
-with open(sys.argv[1], "rb") as handle:
-    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-        digest.update(chunk)
-print(digest.hexdigest())
-PY
-)
     else
         JS_CANDIDATE_BUILD_STATUS="partial"
         log_warn "Deep-JS candidate view failed; complete JS inventory and prior candidate artifact were preserved"
@@ -3320,25 +3309,10 @@ PY
 
     if js_profile_defers_active_analysis; then
         JS_ANALYSIS_STATUS="deferred"
-        log_done "$RECON_PROFILE profile indexed JS inventory; active bundle analysis deferred to Action Queue"
+        log_done "$RECON_PROFILE profile indexed JS inventory; Claude may inspect the raw paths directly"
         if [ "$JS_CANDIDATE_BUILD_STATUS" != "ok" ]; then
             JS_ANALYSIS_STATUS="partial"
-        elif [ "$JS_DEEP_CANDIDATES" -gt 0 ] && ! python3 "$BASE_DIR/tools/action_queue.py" --repo-root "$BASE_DIR" add \
-            --target "$TARGET" \
-            --type "deep-js-review" \
-            --evidence-type "recon-artifact" \
-            --evidence "recon/${RECON_TARGET_KEY}/js/deep_candidates.txt" \
-            --source "recon" \
-            --source-id "deep-js-review" \
-            --generation "$JS_DEEP_GENERATION" \
-            --next-question "Which JS bundles expose high-value API, auth, source-map, upload, payment, or dynamic-signature behavior?" \
-            --action "Review deep JS candidates selected from the complete JS inventory" \
-            --priority 58 \
-            --command-hint "/js-read $TARGET" \
-            --stop-condition "Resolve only after selected high-value bundles are analyzed, or record an explicit blocked/deferred reason." \
-            > "$RECON_DIR/logs/deep_js_action_queue.log" 2>&1; then
-            JS_ANALYSIS_STATUS="partial"
-            log_warn "Deep-JS candidates were preserved, but Action Queue update failed"
+
         fi
     else
         JS_ANALYSIS_STATUS="ok"
@@ -3494,7 +3468,7 @@ record_recon_phase \
     "$JS_ANALYSIS_STATUS" \
     "recon/${RECON_TARGET_KEY}/js/$(js_profile_defers_active_analysis && echo deep_candidates.txt || echo endpoints.txt)" \
     "$JS_MANIFEST_COUNT" \
-    "all JS URLs remain in urls/js_files.txt; active request inputs are target-owned in js/request_targets.txt; candidate_view=${JS_CANDIDATE_BUILD_STATUS}; link_analyzer=${JS_LINK_ANALYZER}; limit=${JS_CANDIDATE_LIMIT}; quick/normal defer active analysis without closing coverage; input_total=$JS_INPUT_TOTAL; selected=$JS_SELECTED; remaining=$JS_REMAINING; continuation=deep JS queue; closure_blocking=false"
+    "all JS URLs remain in urls/js_files.txt; active request inputs are target-owned in js/request_targets.txt; candidate_view=${JS_CANDIDATE_BUILD_STATUS}; link_analyzer=${JS_LINK_ANALYZER}; limit=${JS_CANDIDATE_LIMIT}; quick/normal defer active analysis without closing coverage; input_total=$JS_INPUT_TOTAL; selected=$JS_SELECTED; remaining=$JS_REMAINING; continuation=native Read/Grep of cached JS when selected; closure_blocking=false"
 emit_claude_hint \
     phase                  js_analysis \
     profile                "$RECON_PROFILE" \
@@ -3506,7 +3480,7 @@ emit_claude_hint \
     secrets_verified       "false (regex-grep only; not interactsh-verified)"
 emit_claude_hint_actions \
     "bash tools/secrets_hunter.sh --js-bundle recon/${RECON_TARGET_KEY}   # trufflehog-verified secrets" \
-    "spawn js-reader on cached materials for endpoint hypotheses" \
+    "expose cached JS paths for native Read/Grep hypothesis work" \
     "tools/oast_listen.py start --target ${TARGET}   # blind callback channel for any RCE/SSRF lead"
 
 # ============================================================

@@ -465,22 +465,11 @@ def surface_request_shape(
 
 
 def surface_safe_preview(value: str, *, limit: int = 240) -> str:
-    """Render a bounded URL preview without exposing opaque query values."""
+    """Render an internal URL preview, preserving values within the size budget."""
     raw = str(value or "").strip()
     if not raw:
         return ""
-    parsed = urlparse(raw)
-    query_parts = []
-    for part in parsed.query.split("&") if parsed.query else []:
-        raw_name, separator, raw_value = part.partition("=")
-        name = unquote_plus(raw_name)[:80]
-        decoded_value = unquote_plus(raw_value) if separator else ""
-        classes = _value_classes(name, raw_value, decoded_value)
-        sensitive = bool(
-            set(classes).intersection({"opaque-name", "long", "encoded", "jwt-like", "base64-like", "json", "graphql"})
-        )
-        query_parts.append(name + ("=..." if separator and sensitive else f"={raw_value}" if separator else ""))
-    preview = parsed._replace(query="&".join(query_parts), fragment="").geturl()
+    preview = raw
     if len(preview) <= max(64, int(limit)):
         return preview
     return preview[: max(64, int(limit)) - 3] + "..."

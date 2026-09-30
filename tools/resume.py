@@ -31,10 +31,10 @@ except ImportError:  # pragma: no cover - direct tools/ execution
 from memory.target_profile import default_memory_dir
 try:
     from tools.context_pack import format_source_queries
-    from tools.target_memory import load_goal_memory
+    from tools.target_memory import load_goal_memory, format_current_handoff
 except ImportError:  # pragma: no cover - direct tools/ execution
     from context_pack import format_source_queries
-    from target_memory import load_goal_memory
+    from target_memory import load_goal_memory, format_current_handoff
 
 
 def format_minutes(total_minutes: int | float) -> str:
@@ -232,6 +232,8 @@ def format_resume_output(summary: dict | None, target: str) -> str:
             lines.append(f"  Showing: {len(entries)}; remaining: {window.get('remaining', 0)}")
             if memory.get("active_goal"):
                 lines.append(f"  Goal: {memory['active_goal']}")
+            lines.extend(format_current_handoff(memory))
+            lines.append("  Recent experience (bounded history; historical intents are not pending actions):")
             for item in entries:
                 lines.append(f"  - [{item.get('entry_id', '')}] ({item.get('kind', '')}) {item.get('text', '')}")
                 structured = item.get("structured") or {}

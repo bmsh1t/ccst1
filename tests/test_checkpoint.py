@@ -1528,7 +1528,7 @@ def test_checkpoint_owner_snapshots_preserve_state_projection(tmp_path, store):
         "case_state",
         "structured_findings",
         "validation_runner_candidates",
-        "priority_frontier",
+        "owner_continuations",
         "surface",
     ):
         assert reused[key] == baseline[key], key
@@ -2044,8 +2044,8 @@ def test_checkpoint_keeps_object_observations_without_automatic_seed_action(tmp_
 
     checkpoint = build_checkpoint(tmp_path, target="target.com")
 
-    assert checkpoint["case_state_seed"]["status"] == "suggestions"
-    assert checkpoint["case_state_seed"]["suggested_objects"][0]["object_ref"] == "order_123"
+    assert checkpoint["case_state_seed"]["status"] == "retired"
+    assert checkpoint["case_state_seed"]["suggested_objects"] == []
     assert all(item["type"] != "case-state-seed" for item in checkpoint["next_action_queue"])
     assert "suggested_backlog" not in checkpoint["case_state_seed"]
     assert all(
@@ -2065,8 +2065,7 @@ def test_checkpoint_keeps_historical_object_shape_without_automatic_seed_action(
 
     checkpoint = build_checkpoint(tmp_path, target="target.com")
 
-    assert checkpoint["case_state_seed"]["suggested_objects"][0]["object_ref"] == "item_0"
-    assert "confidence" not in checkpoint["case_state_seed"]["suggested_objects"][0]
+    assert checkpoint["case_state_seed"]["suggested_objects"] == []
     assert all(item["type"] != "case-state-seed" for item in checkpoint["next_action_queue"])
 
 
@@ -2100,10 +2099,8 @@ def test_checkpoint_keeps_endpointless_object_without_inventing_a_backlog(tmp_pa
     )
 
     checkpoint = build_checkpoint(tmp_path, target="target.com")
-    assert checkpoint["case_state_seed"]["status"] == "suggestions"
-    obj = checkpoint["case_state_seed"]["suggested_objects"][0]
-    assert obj["object_ref"] == "address_7" and obj["endpoint"] == ""
-    assert "private_marker" not in obj
+    assert checkpoint["case_state_seed"]["status"] == "retired"
+    assert checkpoint["case_state_seed"]["suggested_objects"] == []
     assert all(
         item.get("metadata", {}).get("object_ref") != "address_7"
         for item in checkpoint["next_action_queue"]
@@ -2429,14 +2426,25 @@ def test_checkpoint_distinguishes_unavailable_workflow_material_from_empty(tmp_p
     assert store.binding() == binding
 
 
-def test_checkpoint_rechecks_raw_bytes_between_calls_without_revision_change(tmp_path, store):
+def test_checkpoint_rechecks_raw_bytes_between_calls_without_revision_change(tmp_path, store, monkeypatch):
+    acquired = []
+    from tools.target_store import TargetStore as TruthStore
+    original = TruthStore.closure_records
+    def capture(self, **kwargs):
+        result = original(self, **kwargs)
+        if kwargs.get("verify"):
+            acquired.append(result["invalid_operations"])
+        return result
+    monkeypatch.setattr(TruthStore, "closure_records", capture)
     _seed_recon(tmp_path, store.target, ["https://target.com/object"])
     receipt = _record_observation(store, endpoint="https://target.com/object", family="Authz", result="tested_clean")
     before = store.binding()
     first = build_checkpoint(tmp_path, target=store.target)
-    assert first["coverage"]["summary"]["tested_clean"] > 0
+    assert acquired and not any(acquired)
+    acquired.clear()
     observation = store.execution(receipt["entity_id"])["observations"][0]
     (tmp_path / observation["artifacts"][0]["ref"]).write_text("changed response")
     second = build_checkpoint(tmp_path, target=store.target)
+    assert any(acquired)
     assert second["coverage"]["summary"]["tested_clean"] == 0
     assert store.binding() == before

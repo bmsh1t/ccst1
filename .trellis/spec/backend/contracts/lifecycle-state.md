@@ -1224,3 +1224,55 @@ owner-backed action records the card ref and enters the Queue.
   same-revision raw damage between calls, claimed-action recovery and direct
   versus reused output equivalence. Offline measurements record connections,
   materialized rows, process I/O, median/p95, output bytes and backup recovery.
+
+## Exact asset and declared-condition identity (v3)
+
+This supersedes the v2 family-policy closure authorization described above.
+`EndpointKey` v3 requires an absolute HTTP(S) URL without credentials; it preserves
+scheme, host, explicit port, path encoding, query bytes/delimiters and fragments.
+`canonical_endpoint_identity` remains the historical/display path function, not an
+asset authorization key. Store observations keep their raw endpoint independently.
+
+`ClosureCellKey` v3 requires an explicit method and technique plus an authored,
+bounded string-condition map (16 fields, 64-character names, 256-character values,
+4096 serialized bytes). All declared conditions participate in equality. Families
+are open, no Python/YAML family schema prescribes method-specific fields, and
+condition equality does not prove semantic completeness or technical truth.
+Unknown families can be assessed and queried exactly but never map themselves to
+a canonical Coverage class. Attempt/step IDs remain independent execution facts.
+
+Existing `identity_v2` JSON containers and `closed_cells_v2` projection names carry
+the explicit inner schema version; no DDL or automatic data conversion occurs.
+V2 keys remain decodable history, but cannot authorize closure. Missing origins
+are never guessed from target identity. Recovery requires a new explicitly bound
+registration with evidenced v3 conditions, preserving the prior operation.
+
+Native evidence may declare `subject_step` as a zero-based run index. It must
+match the Finding's exact endpoint/method. Omission is accepted only with one
+matching run; ambiguous, invalid or mismatched selection fails before attempt or
+artifact publication. Only the selected step receives subject identity.
+
+Regression: `tests/test_exact_evidence_identity.py`, `test_identity_contract.py`
+and `test_native_first_replay.py` cover exact assets/methods/extra conditions,
+unknown families, subject ambiguity, separate attempts and read-only v2 history.
+
+Resume targets are not suppressed by a finalized Finding's path. Such a path
+loses asset, method and declared-condition dimensions and cannot rule out other
+work. Current assessments remain queryable for AI judgment; concrete placeholder
+filtering and bounded deduplication do not imply technical finality.
+
+## Surface review completion identity
+
+`_surface_review_completion` uses absolute endpoint identity, explicit method,
+family, auth_context and semantic_shape_id when matching a final Queue record.
+Missing method cannot authorize completion; missing context is not a wildcard.
+Relative/folded Coverage paths remain display/grouping data and cannot establish
+another asset's completion. Unresolved advisory candidates remain non-blocking;
+explicitly blocking candidates retain their blocker until identity is supplied.
+
+Surface's exact completion evidence comes from `matrix.closure_projection`, not
+`matrix.endpoints` (a path-only display grid). A candidate supplies a validated v3
+identity consistent with its URL/method/family; the shared resolver verifies that
+identity's current closure. Final Queue metadata must carry the same identity
+and review context. Missing identity remains unresolved, not a path fallback.
+Regression must include actual `read_matrix` output, not just hand-built grids.

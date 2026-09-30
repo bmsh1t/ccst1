@@ -39,7 +39,7 @@ try:
     from tools.response_diff import diff_responses, snapshot_response
     from tools.request_diff import RequestPairError, request_pair_digest, validate_request_pair
     from tools.browser_surface import public_url_shape
-    from tools.evidence_identity import canonical_endpoint_identity, canonical_vuln_class, normalize_family
+    from tools.evidence_identity import canonical_endpoint_identity, canonical_vuln_class, normalize_family, exact_endpoint_identity
     from tools.identity_contract import ClosureCellKey
     from tools.private_artifacts import private_artifact_dir, write_private_json, write_private_text
     from tools.target_paths import canonical_target_value, target_storage_key, target_owned_nonempty_evidence_ref
@@ -54,7 +54,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from response_diff import diff_responses, snapshot_response  # type: ignore
     from request_diff import RequestPairError, request_pair_digest, validate_request_pair  # type: ignore
     from browser_surface import public_url_shape  # type: ignore
-    from evidence_identity import canonical_endpoint_identity, canonical_vuln_class, normalize_family  # type: ignore
+    from evidence_identity import canonical_endpoint_identity, canonical_vuln_class, normalize_family, exact_endpoint_identity  # type: ignore
     from identity_contract import ClosureCellKey  # type: ignore
     from private_artifacts import private_artifact_dir, write_private_json, write_private_text  # type: ignore
     from target_paths import canonical_target_value, target_storage_key, target_owned_nonempty_evidence_ref  # type: ignore
@@ -276,7 +276,7 @@ def _finalize_runner_summary(summary: dict[str, Any], path: Path, repo_root: Pat
     ledger = summary.get("ledger_record") if isinstance(summary.get("ledger_record"), dict) else {}
     # The ledger row is an output, not an identity authority.  Runner-created
     # rows carry their exact input material in memory; summaries reloaded from
-    # disk fall back to the stable public summary projection.  In both cases,
+    # disk fall back to the stable internal summary projection.  In both cases,
     # a caller-supplied nested ``ledger_record.operation_id`` is ignored.
     operation_material = ledger.pop("_runner_operation_material", None)
     if not isinstance(operation_material, dict):
@@ -361,8 +361,7 @@ def _ensure_primary_finding(store: TargetStore, *, finding_id: str, endpoint: st
 def _store_observation(run: dict[str, Any], *, repo_root: Path, side: str | None, method: str,
                        family: str, observed_at: str, result: str,
                        incomplete: bool,
-                       state_changing: bool | None, redline_checked: bool,
-                       identity_dimensions: dict[str, Any] | None = None) -> dict[str, Any]:
+                       state_changing: bool | None, redline_checked: bool) -> dict[str, Any]:
     if side is None:
         endpoint = str(run.get("url") or "")
         artifacts = dict(run.get("artifacts") or {})
@@ -383,16 +382,25 @@ def _store_observation(run: dict[str, Any], *, repo_root: Path, side: str | None
         # New replays always publish a separate, normalized observation per side.
         observation = run.get(f"{side}_observation") or run
         variant = str(observation.get("variant") or variant)
-        if f"{side}_observation" in run:
-            identity_dimensions = observation.get("identity_dimensions") or {}
+    # Identity belongs to this observed step, never to its summary or sibling.
+    identity_dimensions = observation.get("identity_dimensions") or {}
+    identity_v2 = observation.get("identity_v2") or {}
+    identity_status = str(observation.get("identity_status") or "none")
+    identity_technique = str(observation.get("identity_technique") or "")
     identity_ref = artifacts.get("identity")
     if not identity_ref:
         raise StoreError("runner observation requires its private request identity artifact")
     identity = json.loads((repo_root / identity_ref).read_text(encoding="utf-8"))
     endpoint = identity["requested_url"]
-    if not isinstance(endpoint, str) or public_url_shape(endpoint) != (
-        run.get("url") if side is None else run.get(f"{side}_url")
-    ):
+    # The digest-bound identity selects the representation, not mutable summary
+    # metadata. Missing markers belong only to historical shape publications.
+    representation = identity.get("url_representation", "shape")
+    if representation not in ("exact", "shape"):
+        raise StoreError("unsupported private request URL representation")
+    published_endpoint = run.get("url") if side is None else run.get(f"{side}_url")
+    if not isinstance(endpoint, str) or (
+        endpoint if representation == "exact" else public_url_shape(endpoint)
+    ) != published_endpoint:
         raise StoreError("private request identity does not match the published endpoint shape")
     observed_method = str(run.get("method") or method).strip().upper()
     if "request" not in artifacts:
@@ -414,6 +422,10 @@ def _store_observation(run: dict[str, Any], *, repo_root: Path, side: str | None
         "state_changing": state_changing,
         "redline_checked": redline_checked,
         "result": result,
+        "detail": {"evidence_role": str(observation.get("evidence_role") or "unknown")},
+        "identity_status": identity_status,
+        "identity_technique": identity_technique,
+        "identity_v2": identity_v2 or {},
         "identity_dimensions": identity_dimensions or {},
     }
 
@@ -424,8 +436,7 @@ def _record_primary_execution(store: TargetStore, *, attempt_id: str, actor: str
                               family: str, native: bool,
                               candidate: dict[str, str] | None,
                               state_changing: bool | None, redline_checked: bool,
-                              observed_at: str | None = None,
-                              identity_dimensions: dict[str, Any] | None = None) -> dict[str, Any]:
+                              observed_at: str | None = None) -> dict[str, Any]:
     observations = []
     timestamp = observed_at or started_at
     for run in runs:
@@ -439,7 +450,6 @@ def _record_primary_execution(store: TargetStore, *, attempt_id: str, actor: str
                 result=result if result != "partial" else "", incomplete=result == "partial",
                 state_changing=state_changing,
                 redline_checked=redline_checked,
-                identity_dimensions=identity_dimensions,
             ))
     # A transport failure can happen before any response/request artifact is
     # published. Preserve the attempt as an unknown operation instead of
@@ -484,12 +494,6 @@ def _sync_primary_store(summary: dict[str, Any], *, repo_root: Path, store: Targ
         state_changing=summary.get("state_changing"),
         redline_checked=bool(summary.get("redline_checked")),
         observed_at=str(summary.get("generated_at") or now_utc()),
-        identity_dimensions=(
-            summary.get("identity_v2", {}).get("dimensions")
-            if isinstance(summary.get("identity_v2"), dict)
-            and isinstance(summary.get("identity_v2", {}).get("dimensions"), dict)
-            else None
-        ),
     )
     summary["store_operation_id"] = str(receipt.get("entity_id") or "")
     return {"status": "deduplicated" if receipt.get("replayed") else "updated",
@@ -710,6 +714,7 @@ def _write_raw_http(
     identity_path = write_private_json(
         private_dir / f"{prefix}identity.json",
         {
+            "url_representation": "exact",
             "requested_url": response.get("requested_url") or response.get("url", ""),
             "final_url": response.get("final_url") or response.get("url", ""),
             "redirect_chain": response.get("redirect_chain") or [],
@@ -911,7 +916,7 @@ def _request_pair_spec_view(spec: dict[str, Any]) -> dict[str, Any]:
     def view(request: dict[str, Any]) -> dict[str, Any]:
         return {
             "method": request["method"],
-            "url": public_url_shape(request["url"]),
+            "url": request["url"],
             "header_names": sorted(str(key).lower() for key in request.get("headers", {})),
             **{key: request[key] for key in ("actor", "object_scope", "variant")},
         }
@@ -985,20 +990,30 @@ def run_request_diff(
         finding_id = finding_id or _default_finding_id(lane, subject["url"])
         family = _classifier_vuln_class(spec["classifier"], spec.get("vuln_class", "")) or "runner-observation"
         observations = {
-            side: {key: spec[f"{side}_request"][key] for key in ("actor", "object_scope", "variant")}
+            side: {**{key: spec[f"{side}_request"][key] for key in ("actor", "object_scope", "variant")},
+                   "evidence_role": "subject" if side == spec["subject_side"] else "control"}
             for side in ("baseline", "variant")
         }
         if identity_v2 is not None:
             key = ClosureCellKey.from_dict(identity_v2)
             dimensions = key.dimension_map
-            if (key.endpoint, key.family) != (canonical_endpoint_identity(subject["url"]), family):
+            if key.schema_version != 3:
+                raise RequestPairError("historical identity requires an explicit v3 replacement")
+            if (key.endpoint, key.family) != (exact_endpoint_identity(subject["url"]), family):
                 raise RequestPairError("identity_v2 must match the declared subject endpoint and family")
             for dimension, value in (("method", subject["method"]), ("actor_relation", subject["actor"]),
                                      ("object_scope", subject["object_scope"])):
                 if dimension in dimensions and dimensions[dimension] != value:
                     raise RequestPairError(f"identity_v2.{dimension} conflicts with the subject observation")
             observations[spec["subject_side"]]["identity_dimensions"] = dimensions
+            observations[spec["subject_side"]]["identity_status"] = "complete"
+            observations[spec["subject_side"]]["identity_technique"] = key.technique
+            observations[spec["subject_side"]]["identity_v2"] = key.to_dict()
             identity_v2 = key.to_dict()
+        for side in ("baseline", "variant"):
+            observations[side].setdefault("identity_status", "none")
+            observations[side].setdefault("identity_technique", "")
+            observations[side].setdefault("identity_v2", {})
         try:
             existing = store.finding(finding_id)
         except FindingNotFoundError:
@@ -1041,8 +1056,8 @@ def run_request_diff(
             prefix = "" if repeat_count == 1 else f"{idx}."
             run: dict[str, Any] = {
                 "iteration": idx,
-                "baseline_url": public_url_shape(baseline["url"]),
-                "variant_url": public_url_shape(variant["url"]),
+                "baseline_url": baseline["url"],
+                "variant_url": variant["url"],
                 "active_dimension": spec["active_dimension"],
                 "baseline_observation": observations["baseline"],
                 "variant_observation": observations["variant"],
@@ -1072,7 +1087,7 @@ def run_request_diff(
                 return _finalize_runner_summary({
                     "schema_version": SCHEMA_VERSION, "lane": lane,
                     "target": canonical_target_value(target), "finding_id": finding_id,
-                    "url": public_url_shape(subject["url"]), "method": subject["method"],
+                    "url": subject["url"], "method": subject["method"],
                     "generated_at": now_utc(), "result": "partial", "status": "partial",
                     "candidate_ready": False, "runs": runs, "repeat": repeat_count,
                     "request_pair": _request_pair_spec_view(spec), "request_spec_sha256": pair_digest,
@@ -1139,7 +1154,7 @@ def run_request_diff(
             "lane": lane,
             "target": canonical_target_value(target),
             "finding_id": finding_id,
-            "url": public_url_shape(subject["url"]),
+            "url": subject["url"],
             "method": subject["method"],
             "generated_at": now_utc(),
             "result": result,
@@ -1155,6 +1170,8 @@ def run_request_diff(
             "header_overlay_sha256": header_overlay_digest,
             "auth_session_id": auth_session_id,
             "identity_v2": identity_v2,
+            "identity_status": "complete" if identity_v2 else "none",
+            "identity_technique": str(identity_v2.get("technique") or "") if isinstance(identity_v2, dict) else "",
             "request_pair": _request_pair_spec_view(spec),
             "repeat": repeat_count,
             "runs": runs,
@@ -1211,6 +1228,22 @@ def record_native_evidence(
             raise ValueError("canonical finding URL is off target")
         method = str(finding.get("method") or "GET").strip().upper()
         vuln_class = normalize_family(finding.get("vuln_class") or finding.get("family") or finding.get("type"))
+        identity_status = "none"
+        identity_technique = ""
+        if identity_v2 is not None:
+            try:
+                key = ClosureCellKey.from_dict(identity_v2)
+            except (TypeError, ValueError, KeyError) as exc:
+                raise ValueError(f"native evidence identity_v2 is invalid: {exc}") from exc
+            if key.schema_version != 3:
+                raise ValueError("historical identity requires an explicit v3 replacement")
+            if key.endpoint != exact_endpoint_identity(url) or key.family != vuln_class:
+                raise ValueError("native evidence identity_v2 must match the finding endpoint and family")
+            if "method" in key.dimension_map and key.dimension_map["method"] != method:
+                raise ValueError("native evidence identity_v2.method conflicts with the finding method")
+            identity_v2 = key.to_dict()
+            identity_status = "complete"
+            identity_technique = key.technique
         attempt_id = attempt_id or str(evidence.get("attempt_id") or "").strip()
         if not attempt_id:
             raise ValueError("primary record-evidence requires an explicit attempt_id")
@@ -1229,7 +1262,10 @@ def record_native_evidence(
         if not isinstance(raw_runs, list) or not raw_runs:
             raise ValueError("native evidence runs must contain the recorded execution steps")
         runs = []
-        anchor = None
+        anchors = []
+        subject_step = evidence.get("subject_step")
+        if subject_step is not None and (type(subject_step) is not int or not 0 <= subject_step < len(raw_runs)):
+            raise ValueError("native evidence subject_step must be a zero-based run index")
         for index, raw_run in enumerate(raw_runs):
             if not isinstance(raw_run, dict):
                 raise ValueError(f"native evidence runs[{index}] must be an object")
@@ -1258,13 +1294,33 @@ def record_native_evidence(
             for key, normalize in (("actor", normalize_actor), ("object_scope", normalize_object_scope), ("variant", normalize_variant)):
                 if key in run:
                     run[key] = normalize(required_text(run[key], f"runs[{index}].{key}"))
-            run.update(url=public_url_shape(run_url), method=run_method, artifacts=refs)
+            run.update(url=run_url, method=run_method, artifacts=refs)
             runs.append(run)
             if run_method == method and url == run_url:
-                anchor = run
-        if anchor is None:
+                anchors.append(index)
+        if not anchors:
             raise ValueError("native evidence must include the canonical finding's exact endpoint and method")
+        if subject_step is None:
+            if len(anchors) != 1:
+                raise ValueError("native evidence subject_step is required for ambiguous endpoint/method runs")
+            subject_step = anchors[0]
+        if subject_step not in anchors:
+            raise ValueError("native evidence subject_step must match the finding endpoint and method")
+        anchor = runs[subject_step]
         actor = normalize_actor(required_text(anchor.get("actor"), "canonical execution actor"))
+        if identity_v2:
+            dimensions = identity_v2["dimensions"]
+            for dimension, fact in (("actor_relation", actor), ("actor_role", actor),
+                                    ("actor", actor), ("object_scope", anchor.get("object_scope"))):
+                if dimension in dimensions and dimensions[dimension] != fact:
+                    raise ValueError(f"native evidence identity_v2.{dimension} conflicts with the anchor")
+        for run in runs:
+            subject = run is anchor
+            run.update(evidence_role="subject" if subject else "control",
+                       identity_status=identity_status if subject else "none",
+                       identity_technique=identity_technique if subject else "",
+                       identity_v2=identity_v2 if subject else {},
+                       identity_dimensions=identity_v2["dimensions"] if subject and identity_v2 else {})
         command_context = _runner_command_context(
             store, action_id=action_id, claim_token=claim_token, command_actor=command_actor,
             endpoint=url, family=vuln_class,
@@ -1282,7 +1338,7 @@ def record_native_evidence(
             "source": source,
             "target": target,
             "finding_id": finding_id,
-            "url": public_url_shape(url),
+            "url": url,
             "method": method,
             "vuln_class": vuln_class,
             "generated_at": captured_at.astimezone(timezone.utc).isoformat(),
@@ -1292,15 +1348,18 @@ def record_native_evidence(
             "state_changing": effective_state,
             "redline_checked": redline_checked,
             "identity_v2": identity_v2,
+            "identity_status": identity_status,
+            "identity_technique": identity_technique,
             "runs": runs,
+            "subject_step": subject_step,
             "attempt_id": attempt_id or "",
             **command_context,
         }
-        # Exact request identities stay in private, digest-bound artifacts. Public
-        # URL shapes cannot identify query values for Store observation binding.
+        # Bind the internal exact-URL representation to the immutable identity;
+        # registration of old unmarked shape artifacts retains legacy semantics.
         identity_dir = private_artifact_dir(repo_root, "validation", target_storage_key(target), "identities")
         for run, raw_run in zip(runs, raw_runs):
-            identity = {"requested_url": raw_run["url"].strip()}
+            identity = {"url_representation": "exact", "requested_url": raw_run["url"].strip()}
             content = json.dumps(identity, ensure_ascii=False, sort_keys=True) + "\n"
             path = identity_dir / f"{hashlib.sha256(content.encode()).hexdigest()}.json"
             if not path.exists():
@@ -1399,7 +1458,7 @@ def main(argv: list[str] | None = None) -> int:
                 from identity_contract import ClosureCellKey  # type: ignore
             identity_v2 = ClosureCellKey.from_dict(payload).to_dict()
         except (json.JSONDecodeError, TypeError, ValueError, KeyError) as exc:
-            parser.error(f"--identity-v2-json must contain a valid ClosureCellKey v2: {exc}")
+            parser.error(f"--identity-v2-json must contain a valid versioned ClosureCellKey: {exc}")
     repo_root = Path(args.repo_root)
     try:
         with _runner_admission(repo_root, args.target) as (store, _):

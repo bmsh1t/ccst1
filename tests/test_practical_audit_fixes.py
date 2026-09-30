@@ -77,7 +77,8 @@ def test_saved_scope_controls_pair_anonymous_send_redirect_and_auth(tmp_path):
         saved_scope(tmp_path, target, [target])
         before = store.binding()
         pair = {"baseline_request": {"url": origin + "/?id=1"},
-                "variant_request": {"url": origin + "/?id=2"}, "active_dimension": "query:id"}
+                "variant_request": {"url": origin + "/?id=2"},
+                "subject_side": "baseline", "active_dimension": "query:id"}
         with pytest.raises(ValueError, match="saved Scope"):
             run_request_diff(repo_root=tmp_path, target=target, request_spec=pair)
         assert store.binding() == before

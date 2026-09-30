@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
-import heapq
 import json
 import math
 import os
@@ -24,6 +23,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
+from tools.artifact_io import atomic_text_writer, write_json_atomic, write_text_atomic
 from tools.scope_context import ScopeContext  # noqa: E402
 from tools.scope_source import load_scope_context  # noqa: E402
 from tools.target_paths import canonical_target_value, target_storage_key  # noqa: E402
@@ -40,7 +40,7 @@ ASSET_RELATION_WARNING_LIMIT = 10
 MAX_ASSET_RELATION_LINE_BYTES = 1_000_000
 MAX_ASSET_RELATION_LIST_ITEMS = 256
 DEFAULT_ASSET_RELATION_CANDIDATE_LIMIT = 5000
-ASSET_RELATION_CURSOR_VERSION = 1
+ASSET_RELATION_CURSOR_VERSION = 2
 CONFIDENCE_RANK = {"low": 0, "medium": 1, "high": 2}
 HOST_LIKE_ASSET_TYPES = {"domain", "hostname", "url", "ip", "cidr"}
 STRONG_RELATION_TOKENS = (
@@ -102,19 +102,6 @@ HOST_RANKING_CANDIDATE_SOURCES = (
     ("asset_relation_candidates", Path("exposure/asset_relation_candidates.jsonl"), "asset-relation"),
 )
 HOST_RANKING_TECHNOLOGY_PATH = Path("live/technology_inventory.json")
-HOST_RANKING_WEIGHTS = {
-    "live_httpx": 3,
-    "discovery_artifacts": 1,
-    "open_host_ports": 2,
-    "api_endpoints": 5,
-    "with_params": 4,
-    "js_files": 2,
-    "host_pivot_candidates": 5,
-    "ai_asset_candidates": 5,
-    "asset_relation_candidates": 3,
-    "asset_relation_observations": 1,
-    "technology_signals": 2,
-}
 HOST_RANKING_SIGNAL_ORDER = (
     ("live_httpx", "live"),
     ("discovery_artifacts", "discovery"),
@@ -151,40 +138,6 @@ TECHNOLOGY_HINTS = {
     "wordpress",
 }
 
-JS_CATEGORY_PATTERNS = (
-    (
-        "auth",
-        re.compile(r"(?:^|[/_.?&=-])(auth|oauth|sso|login|session|jwt)(?:$|[/_.?&=-])", re.I),
-    ),
-    (
-        "api",
-        re.compile(r"(?:^|[/_.?&=-])(api|graphql|rest|rpc|websocket|ws)(?:$|[/_.?&=-])", re.I),
-    ),
-    (
-        "payment",
-        re.compile(r"(?:^|[/_.?&=-])(payment|billing|checkout|invoice|refund|payout)(?:$|[/_.?&=-])", re.I),
-    ),
-    (
-        "file",
-        re.compile(r"(?:^|[/_.?&=-])(upload|import|export|download|attachment|file)(?:$|[/_.?&=-])", re.I),
-    ),
-    ("source-map", re.compile(r"(?:\.map(?:[?#]|$)|source.?map)", re.I)),
-    (
-        "dynamic",
-        re.compile(r"(?:^|[/_.?&=-])(signature|signed|encrypt|crypto|hmac|nonce|token)(?:$|[/_.?&=-])", re.I),
-    ),
-    (
-        "framework",
-        re.compile(r"(?:^|[/_.?&=-])(webpack|runtime|chunk|bundle|main|app)(?:$|[/_.?&=-])", re.I),
-    ),
-    ("general", None),
-)
-
-
-try:
-    from tools.artifact_io import atomic_text_writer, write_json_atomic, write_text_atomic
-except ImportError:  # pragma: no cover - direct tools/ execution
-    from artifact_io import atomic_text_writer, write_json_atomic, write_text_atomic
 
 
 def _iter_lines(path: Path):
@@ -211,73 +164,24 @@ def _write_lines_atomic(path: Path, values: list[str]) -> None:
     write_text_atomic(path, "\n".join(values) + "\n" if values else "")
 
 
-def _stable_rank(value: str) -> int:
-    return int.from_bytes(hashlib.sha256(value.encode("utf-8")).digest()[:8], "big")
-
-
 def build_js_deep_candidates(
-    input_path: str | Path,
-    output_path: str | Path,
-    *,
-    limit: int = DEFAULT_JS_CANDIDATE_LIMIT,
+    input_path: str | Path, output_path: str | Path, *, limit: int = DEFAULT_JS_CANDIDATE_LIMIT,
 ) -> dict:
-    """按多类固定配额生成有界 JS 深析候选，完整 inventory 保持不变。"""
-    if limit < len(JS_CATEGORY_PATTERNS):
-        raise ValueError(f"JS candidate limit must be >= {len(JS_CATEGORY_PATTERNS)}")
-
-    source = Path(input_path)
-    destination = Path(output_path)
-    per_category = max(1, limit // len(JS_CATEGORY_PATTERNS))
-    buckets: dict[str, list[tuple[int, str]]] = {
-        category: [] for category, _pattern in JS_CATEGORY_PATTERNS
-    }
+    """Publish an input-ordered bounded window, without method/value ranking."""
+    if type(limit) is not int or limit < 1:
+        raise ValueError("JS candidate limit must be positive")
+    source, destination = Path(input_path), Path(output_path)
+    ordered = []
     input_count = 0
-
     for value in _iter_lines(source):
         input_count += 1
-        matched = [
-            category
-            for category, pattern in JS_CATEGORY_PATTERNS[:-1]
-            if pattern is not None and pattern.search(value)
-        ] or ["general"]
-        rank = _stable_rank(value)
-        for category in matched:
-            heap = buckets[category]
-            entry = (-rank, value)
-            if len(heap) < per_category:
-                heapq.heappush(heap, entry)
-            elif rank < -heap[0][0]:
-                heapq.heapreplace(heap, entry)
-
-    category_order = {
-        name: index for index, (name, _pattern) in enumerate(JS_CATEGORY_PATTERNS)
-    }
-    selected: dict[str, set[str]] = {}
-    for category, heap in buckets.items():
-        for _negative_rank, value in heap:
-            selected.setdefault(value, set()).add(category)
-
-    ordered = sorted(
-        selected,
-        key=lambda value: (
-            min(category_order[category] for category in selected[value]),
-            _stable_rank(value),
-            value,
-        ),
-    )[:limit]
+        if len(ordered) < limit:
+            ordered.append(value)
     _write_lines_atomic(destination, ordered)
-    return {
-        "input": str(source),
-        "output": str(destination),
-        "input_count": input_count,
-        "candidate_count": len(ordered),
-        "limit": limit,
-        "truncated": input_count > len(ordered),
-        "category_counts": {
-            category: sum(category in selected[value] for value in ordered)
-            for category, _pattern in JS_CATEGORY_PATTERNS
-        },
-    }
+    return {"input": str(source), "output": str(destination), "input_count": input_count,
+            "candidate_count": len(ordered), "limit": limit,
+            "truncated": input_count > len(ordered), "remaining": input_count - len(ordered),
+            "order": "input", "expansion_ref": str(source.resolve())}
 
 
 def _host_from_line(line: str) -> str:
@@ -422,7 +326,7 @@ def _asset_relation_candidates(
         "scope_hash": scope.scope_hash,
     }
 
-    def _decode_cursor(value: str) -> tuple[int, str] | None:
+    def _decode_cursor(value: str) -> str | None:
         if not value:
             return None
         try:
@@ -436,19 +340,17 @@ def _asset_relation_candidates(
         if payload.get("binding") != source_binding:
             raise ValueError("asset relation cursor source changed")
         try:
-            score = int(payload["score"])
             key = str(payload["key"])
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("invalid asset relation cursor") from exc
         if not key:
             raise ValueError("invalid asset relation cursor")
-        return score, key
+        return key
 
-    def _encode_cursor(score: int, key: str) -> str:
+    def _encode_cursor(key: str) -> str:
         payload = {
             "v": ASSET_RELATION_CURSOR_VERSION,
             "binding": source_binding,
-            "score": int(score),
             "key": key,
         }
         raw = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
@@ -514,21 +416,11 @@ def _asset_relation_candidates(
             row["observed_at"] = observation["observed_at"]
         return row
 
-    def _score(row: dict) -> int:
-        # 高置信度优先，其次多来源/多信号；同分由稳定 key 决定。
-        return (
-            CONFIDENCE_RANK[row["confidence"]] * 1_000_000
-            + len(row["sources"]) * 10_000
-            + len(row["source_refs"]) * 1_000
-            + len(row["signals"]) * 100
-            + len(row["related"])
-        )
-
     with tempfile.TemporaryDirectory(prefix="asset-relations-") as temp_dir:
         database = Path(temp_dir) / "aggregate.sqlite3"
         with sqlite3.connect(database) as connection:
             connection.execute(
-                "CREATE TABLE candidates (key TEXT PRIMARY KEY, payload TEXT NOT NULL, score INTEGER NOT NULL)"
+                "CREATE TABLE candidates (key TEXT PRIMARY KEY, payload TEXT NOT NULL)"
             )
             connection.execute("BEGIN")
             with source.open("rb") as handle:
@@ -567,28 +459,27 @@ def _asset_relation_candidates(
                         observation,
                     )
                     connection.execute(
-                        "INSERT OR REPLACE INTO candidates(key, payload, score) VALUES (?, ?, ?)",
-                        (key, json.dumps(row, ensure_ascii=False, sort_keys=True), _score(row)),
+                        "INSERT OR REPLACE INTO candidates(key, payload) VALUES (?, ?)",
+                        (key, json.dumps(row, ensure_ascii=False, sort_keys=True)),
                     )
             connection.commit()
             stats["unique_count"] = int(
                 connection.execute("SELECT COUNT(*) FROM candidates").fetchone()[0]
             )
-            query = "SELECT key, payload, score FROM candidates"
+            query = "SELECT key, payload FROM candidates"
             params: list[object] = []
             if decoded_cursor is not None:
-                score, key = decoded_cursor
-                query += " WHERE score < ? OR (score = ? AND key > ?)"
-                params.extend((score, score, key))
-            query += " ORDER BY score DESC, key ASC LIMIT ?"
+                query += " WHERE key > ?"
+                params.append(decoded_cursor)
+            query += " ORDER BY key ASC LIMIT ?"
             params.append(limit + 1)
             page_rows = list(connection.execute(query, params))
             has_more = len(page_rows) > limit
             page_rows = page_rows[:limit]
-            rows = [json.loads(payload) for _key, payload, _score in page_rows]
+            rows = [json.loads(payload) for _key, payload in page_rows]
             if has_more and page_rows:
-                last_key, _last_payload, last_score = page_rows[-1]
-                stats["next_cursor"] = _encode_cursor(last_score, last_key)
+                last_key, _last_payload = page_rows[-1]
+                stats["next_cursor"] = _encode_cursor(last_key)
     stats["source_binding"] = source_binding
     stats["truncated"] = bool(stats["next_cursor"])
     return rows, stats
@@ -1068,26 +959,6 @@ def _host_ranking(
             ),
             "technology_signals": sorted(bucket["technology"]),
         }
-        score_details = []
-        score = 0
-        for source_key, signal in HOST_RANKING_SIGNAL_ORDER:
-            count = (
-                len(details["technology_signals"])
-                if source_key == "technology_signals"
-                else details[source_key]
-            )
-            points = min(count, 8) * HOST_RANKING_WEIGHTS[source_key]
-            if not points:
-                continue
-            score += points
-            score_details.append(
-                {
-                    "source": source_key,
-                    "count": count,
-                    "points": points,
-                    "reason": f"{count} {signal} observation(s)",
-                }
-            )
         signals = [
             signal
             for source_key, signal in HOST_RANKING_SIGNAL_ORDER
@@ -1111,14 +982,12 @@ def _host_ranking(
                 "kind": "host-ranking-candidate",
                 "host": host,
                 "value": host,
-                "score": score,
                 "details": details,
                 "source_counts": source_counts,
                 "signals": signals,
-                "score_details": score_details,
             }
         )
-    rows.sort(key=lambda row: (-row["score"], row["host"]))
+    rows.sort(key=lambda row: row["host"])
     aggregate_source_counts = {source_name: 0 for source_name in fixed_source_names}
     for row in rows:
         for source_name in row["source_counts"]:

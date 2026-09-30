@@ -28,6 +28,11 @@ python3 tools/oast_listen.py start|markers|poll|stop --target <target>
   为活动 `signal`；完整 invalid run 为终态 `tested`；中断、工具或网络未完成为 `lead`。
 - 已有 `candidate` 不得被后续不完整/clean run 降级；队列更新按 target+mode 幂等，metadata
   只允许 summary path、run id、mode、分类计数和 stop reason。
+- 内部 preflight/run `request_shape` 保留值和布尔类型；Trevor attempts `raw` 保留原行，
+  Case CLI 输出已加载的内部值。它们不是公开报告。实际认证隔离、private_ref 校验、
+  私有材料0600/0700和 hash/attempt 绑定不变；Queue metadata 不复制凭据。
+- Gitleaks 内部采集不使用 `--redact`；源码 `secret_preview` 保留精确值，去重不能用遮盖后
+  前后缀（不同中段会碰撞）。`tests/test_repo_root_seams.py` 覆盖外部/内建扫描与保存结果。
 - CSRF helper URL 和 OAuth 重定向必须通过 `scope_context.url_belongs_to_target()`；跨 Scope
   在网络请求或凭据转发前分类为 guarded/scope error。
 - OAST `start` 创建当前监听代次的活动 `oast-callback`；`poll` 无回调保持活动，有回调
@@ -61,7 +66,7 @@ python3 tools/oast_listen.py start|markers|poll|stop --target <target>
 - Good：同一 target 的 spray summary 可重复 finish，队列只有一个 mode continuation，candidate
   保持活动并可被 `/autopilot` 选中。
 - Base：OAST 轮询无回调返回成功并保持活动；webhook poll 成功返回 CLI `0`。
-- Bad：把密码/token 写入 attempts、summary、queue metadata，跟随跨域 307/308，或把
+- Bad：把内部原始凭据复制到 queue metadata/共享发布，跟随跨域 307/308，或把
   OAST callback 直接升级为 validated finding。
 
 ### 6. Tests Required

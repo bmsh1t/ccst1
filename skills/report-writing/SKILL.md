@@ -1,6 +1,6 @@
 ---
 name: report-writing
-description: Use only after validation has selected a canonical finding (seven-question and four-gate checks passed) and a report must be drafted. Renders the requested delivery format from the existing finding, Evidence Ledger, and validation summary with evidence traceability; CVSS is optional external delivery metadata and never replaces structured validation.
+description: Draft reports from a current confirmed Store assessment, intact evidence, and an independent eligible destination decision. Preserves evidence traceability and canonical lifecycle; CVSS is optional destination metadata.
 ---
 
 # REPORT WRITING
@@ -12,20 +12,21 @@ structured validation with model judgement.
 
 ## Preconditions
 
-Before drafting a standalone report, resolve the finding's exact validation
-summary from its canonical `validation_summary` field or the matching
-`/validate` result. The summary must contain:
-
-- `seven_question_gate_passed: true`;
-- `four_validation_gates_passed: true`;
-- `all_gates_passed: true`.
+Before publishing a standalone report, query the selected Finding through
+`commands/report.md`. Require its current confirmed assessment, intact
+target-owned evidence, and an eligible delivery decision bound to that
+assessment and destination. Preserve their exact IDs and artifact references.
+Historical validation-summary booleans are diagnostics, not report authority.
+Known, duplicate, or accepted-risk status may reject one destination without
+refuting the technical conclusion or blocking another eligible destination.
 
 CVSS is not a validation-summary precondition. If the destination platform
 requires it and the summary lacks it, the Agent follows that platform's current
 requirements in the delivered report without rewriting the canonical summary.
 
-If the result is `chain_required`, `needs_review`, or `kill`, keep the missing
-evidence or connector as the next action. Do not produce a standalone report.
+If the claimed impact needs an unproven connector, preserve the evidence gap;
+do not present that chain as confirmed. An independently confirmed A can be
+saved and reported immediately; investigation of B/C does not block it.
 `findings/last-validate.json` is only a latest pointer and never binds a report
 to a finding.
 
@@ -35,7 +36,7 @@ Use the existing owners as read-only report inputs:
 
 | Input | Use |
 |---|---|
-| Finding Index | finding ID, target, type, lifecycle, and report binding |
+| Finding Index | finding ID, current technical assessment, independent destination decisions, and report binding |
 | Evidence Ledger | operation identity, actors, artifacts, timestamps, and hashes |
 | Validation summary | gate results and demonstrated impact; historical CVSS is optional read-only metadata |
 | Target/Case State | scope, roles, objects, session and workflow context |
@@ -60,8 +61,8 @@ same for every mode.
 | Intigriti | Specific title, prominent recorded CVSS, reproduction, and business impact |
 | Immunefi | Root cause, affected contract/function, reproducible PoC artifact, state/value impact, and required comparison evidence |
 
-Platform conventions affect rendering only. They do not change evidence gates,
-scope, severity, or canonical status.
+Platform conventions affect rendering and eligibility at that destination.
+They do not rewrite scope, evidence integrity, or the technical assessment.
 
 ## Report Contract
 
@@ -138,8 +139,8 @@ or overwrite the canonical finding lifecycle.
 ## Final Checklist
 
 ```text
-[ ] Canonical finding and exact validation summary selected
-[ ] seven_question_gate_passed, four_validation_gates_passed, and all_gates_passed are true
+[ ] Canonical finding and current confirmed assessment selected
+[ ] Intact evidence and eligible destination decision bind that assessment
 [ ] Target, operation, actors, preconditions, and artifact references match
 [ ] Protocol-appropriate replayable artifact and observed result are included
 [ ] Demonstrated impact is separated from untested or theoretical impact

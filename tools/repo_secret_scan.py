@@ -54,13 +54,6 @@ def _read_text(path: Path) -> str:
     return data.decode("utf-8", errors="replace")
 
 
-def _mask_secret(value: str) -> str:
-    compact = value.strip()
-    if len(compact) <= 8:
-        return compact
-    return f"{compact[:4]}...{compact[-4:]}"
-
-
 def _append_finding(findings: list[RepoFinding], **kwargs) -> None:
     findings.append(RepoFinding(**kwargs))
 
@@ -108,7 +101,7 @@ def _scan_builtin(repo_path: str) -> list[RepoFinding]:
                     line_number=line_number,
                     match_type="pattern",
                     title=title,
-                    secret_preview=_mask_secret(secret_value),
+                    secret_preview=secret_value,
                     evidence_snippet=line.strip()[:200],
                     remediation="Rotate the secret and remove it from source control",
                 )
@@ -127,7 +120,7 @@ def _scan_builtin(repo_path: str) -> list[RepoFinding]:
                         line_number=line_number,
                         match_type="named-value",
                         title="Named secret-like value found",
-                        secret_preview=_mask_secret(value_match.group(1)),
+                        secret_preview=value_match.group(1),
                         evidence_snippet=line.strip()[:200],
                         remediation="Review the value, remove it from source control, and rotate if valid",
                     )
@@ -181,7 +174,7 @@ def _run_gitleaks(repo_path: str) -> list[RepoFinding]:
                 line_number=int(item.get("StartLine") or 0) or None,
                 match_type="external",
                 title=str(item.get("Description") or "External scanner finding"),
-                secret_preview=_mask_secret(secret),
+                secret_preview=secret,
                 evidence_snippet=str(item.get("Match") or secret)[:200],
                 remediation="Review the finding, remove the secret from source control, and rotate it",
             )

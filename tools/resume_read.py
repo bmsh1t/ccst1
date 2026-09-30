@@ -223,6 +223,8 @@ def load_resume_summary(
             "source_kind": memory_source.get("kind", "legacy"),
             "active_goal": target_memory.get("active_goal", ""),
             "recent_entries": memory_view.get("recent_entries") or [],
+            "current_handoff": target_memory["current_handoff"],
+            "next_actions": target_memory["next_actions"],
             "experience_window": experience_window,
         } if target_memory else {},
         "sessions": sum(entry.get("vuln_class") == "session_summary" for entry in entries),

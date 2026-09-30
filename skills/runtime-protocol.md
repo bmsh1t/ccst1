@@ -117,6 +117,14 @@ active target（目标必须已初始化）。`/pickup` 与 Context Pack 是读�
 `selection_status=failed`，使用原 command ID、内容及 expected revision 重试，不创建第二条意图。
 目标尚未明确时先确认，不用旧 active target 替代当前用户意图。
 
+`current_handoff` 是按 `created_at DESC, id DESC` 取得的最新交接，不受 5/20 条历史窗口影响。
+`next_actions` 仅保留该交接显式 `next_intent`（未填则为空），不是 Queue 或执行优先级；
+旧意图保留在历史中，不能因仍可召回就当作当前待办。用 `handoff --conditions ...
+--next-intent ... --operation-ref OPERATION_ID:0` 写回，operation-ref 可重复且必须属于当前
+目标的既有 observation；无绑定的正文证据位置仍只是建议。观察、判断、尚缺证据分别说明，
+补 `expected` 不等于补足技术证据，记忆写入不确认 Finding、不自动晋升知识。
+Autopilot 每次启动都按 `commands/autopilot.md` 执行当轮 Bootstrap，旧快照不能代替预检。
+
 ### 2. Skill layer
 
 主会话根据目标、阶段和证据选择路线：`bug-bounty` 负责协调，`bb-methodology` 负责

@@ -32,11 +32,15 @@ Focused manifest 为 `{"target":"...","captures":[{"url":"https://...","source":
 - Playwright MCP 优先用原生 `filename`，Chrome DevTools MCP 用原生 `filePath`；模型只
   编排 artifact 路径，不复制 tool response 正文。
 - focused capture 只接受绝对 HTTP(S)、同目标、exact 去重后的 AI 选择页面，默认最多 8 条。
-- raw network/console/cookie/storage/state/HAR/screenshot 写 `.private/browser/`；公共侧只保留
-  URL/body/console/snapshot 形状、计数、hash 和私有路径引用。WebSocket frame、SSE event
+- raw network/console/cookie/storage/state/HAR/screenshot 写 `.private/browser/`。内部分析的
+  `requests.json` 与 Recon URL 保留精确查询值、重复参数与编码，不视为可公开发布的材料。
+  `request_shapes.json` 继续按 URL 形状关联元数据；旧去值记录不自动补造原值。
+  Surface 表单从私有原始 snapshot 提取 action 与 hidden 参数名，不从已删 input 的摘要提取。
+  body/console/snapshot 摘要仍保留结构、计数、hash 和原件引用；已有 body shape 再投影不变。
+  WebSocket frame、SSE event
   和 GraphQL batch 也只发布有界的 transport、顺序、marker、大小、SHA-256 及
   `network_private_json` 的 request-index 引用；消息正文只留在 private raw artifact。
-- 缺失/无效 network 时可用 HAR 补公共请求形状；仍缺核心 network 则是 `partial/error`，
+- 缺失/无效 network 时可用 HAR 补内部请求材料；仍缺核心 network 则是 `partial/error`，
   不能解释为 tested-clean。
 - capture `summary.json` 必须先发布，再刷新 page→JS map；否则当前 capture 的 JS 会延迟到
   下一页面并错误归因。Surface 差分包含 XHR、API、参数和 JS。
@@ -67,8 +71,8 @@ Focused manifest 为 `{"target":"...","captures":[{"url":"https://...","source":
 
 ### 6. Tests Required
 
-- `tests/test_browser_mcp_import.py`：真实 MCP envelope、文本输出、HAR fallback、私有值不泄露、
-  URL scope/budget、当前 capture JS 差分、snapshot 去重、实时消息 shape 和队列幂等。
+- `tests/test_browser_analysis_fidelity.py`：MCP/HAR 导入至 Recon/Surface 的精确 URL、旧 shape
+  join、hidden 参数名、body shape 幂等、raw 引用/权限与有界预览；不以 query 去值证明隐私。
 - `tests/test_autopilot_inline_contract.py`：slash command 允许 Bash、Playwright MCP 和
   chrome-devtools MCP，不锁回 Bash-only；固定 first-use probe、瞬时错误单次重试和 blocker handoff。
 
@@ -83,7 +87,7 @@ MCP response body -> model copy -> public evidence / second browser queue
 #### Correct
 
 ```text
-first-use probe -> MCP filename/filePath -> browser_mcp_import -> private raw + public shape -> Surface -> AI selects / explicitly registers review work
+first-use probe -> MCP filename/filePath -> browser_mcp_import -> private raw + exact internal URLs / body shapes -> Surface -> AI selects / explicitly registers review work
 ```
 
 
@@ -285,3 +289,12 @@ Source Map: v3 parse -> safe unique flat sources -> shuji@0.8.0 without --preser
 Wrong: `selected_js_files=[]` -> “没有 JS 材料”或“其余文件安全”。
 
 Correct: selected + skipped(reason/count/path) -> Claude 按证据精确补读或显式调整现有预算。
+
+## Deep-JS acquisition selection
+
+`select_bundle_urls` preserves explicitly supplied URL order. Without explicit
+URLs it uses candidate-file order after existing URL/target checks and exact
+deduplication, capped by max_bundles. Filename-token scoring is retired. Source
+candidates remain unchanged; this window is not a relevance judgment. Resource
+recovery, browser/source-map handling, timeouts and acquisition budgets retain
+their existing contracts. Regression: tests/test_deep_js_selection.py.

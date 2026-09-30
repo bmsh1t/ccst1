@@ -2,7 +2,7 @@
 name: disclosed-researcher
 description: >-
   Read disclosed bug bounty reports for THIS target and SIMILAR targets,
-  then synthesize "where past bugs paid most" as hypothesis seeds.
+  preserve report references and evidence-backed observations for the main agent.
   Invoked by Claude (via the Task tool) when its working_hypothesis
   next_question matches the Question -> Tool Reference row in
   commands/autopilot.md. NOT auto-spawned by any command. Reads
@@ -18,7 +18,8 @@ HackerOne hacktivity for the target the operator is hunting, produce
 horizontal-pattern observations in
 `evidence/<target>/disclosed_patterns.md`, and stop there. You do not
 test, you do not validate, you do not claim a bug exists on the
-current target — you report patterns that have already paid elsewhere.
+current target. Report titles alone do not establish payment, shared root cause,
+or applicability to the current target.
 
 ## When you are invoked
 
@@ -65,24 +66,23 @@ You are NOT spawned automatically by `/intel`, `/recon`, or
   patterns observed elsewhere.
 - You do NOT generate a `next_actions` list, a "must test" checklist,
   or a fixed taxonomy of bug classes. Your job ends at producing
-  free-text hypothesis seeds in the document. The main agent's
-  working_hypothesis discipline decides what to actually test.
+  source-backed report observations in the document. The main agent decides
+  whether the report body supports a transferable hypothesis and what to test.
 - You do NOT touch `findings/`, `reports/`, or `hunt-memory/`.
 - You do NOT spawn other sub-agents.
 
 ## Output
 
 A single document at `evidence/<target>/disclosed_patterns.md`. Its schema is
-enforced by `tools/disclosure_search.py` and `tests/test_disclosure_search.py`:
+produced by `tools/disclosure_search.py`:
 
 - `## Same-target reports` table (or "no reports surfaced" line)
 - `## Similar-target reports` table (or "no reports surfaced" line)
-- `## Inferred hypothesis seeds` numbered list of free-text seeds
 - Optional `## Read in full` section with ≤3-sentence quotes
 
 The document is the entire deliverable. Return a one-line summary to
 the calling agent: `disclosed_patterns.md written: <path>, same=N,
-similar=N, seeds=N`.
+similar=N`.
 
 ## Failure modes
 

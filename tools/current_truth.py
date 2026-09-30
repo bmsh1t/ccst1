@@ -5,12 +5,9 @@ Consumers that ask "what does this target's evidence currently close" read this
 module instead of choosing a source themselves. Normal queries require an active
 Store; legacy ledger inspection and import have explicit historical readers.
 
-The damage rule (unreadable evidence authorizes nothing) is applied here for
-every source, using the one definition in ``closure_projection``: ``closed_cells``
-/``closed_cells_v2`` are emptied and the counts are reported under
-``identity_v2_diagnostics.suppressed_closed_count`` and
-``suppressed_legacy_closed_count``.  Every consumer therefore fails closed on the
-same input, and the reason string names the source kind.
+Known operation-local damage suppresses its reduced current closures without
+resurrecting older evidence. Unknown identity or truncated input suppresses all
+closures. Raw records remain available with explicit health diagnostics.
 """
 
 from __future__ import annotations
@@ -20,12 +17,14 @@ from pathlib import Path
 try:
     from tools.closure_projection import (
         build_current_cell_projection,
+        derive_identity_fields,
         suppress_unauthorized_closures,
     )
     from tools.target_store import TargetStore, runtime_store
 except ImportError:  # pragma: no cover - direct tools/ execution
     from closure_projection import (  # type: ignore
         build_current_cell_projection,
+        derive_identity_fields,
         suppress_unauthorized_closures,
     )
     from target_store import TargetStore, runtime_store  # type: ignore
@@ -66,13 +65,38 @@ def _store_truth(store: TargetStore) -> dict:
     records = list(reading.get("records") or [])
     truncated = bool(reading.get("truncated"))
     invalid_operations = reading["invalid_operations"]
+    invalid_ids = {item["operation_id"] for item in invalid_operations}
+    for record in records:
+        if record.get("superseded") or record.get("identity_status") != "complete":
+            continue
+        identity = record.get("identity_v2") or {}
+        if identity.get("schema_version") != 3:
+            continue  # Historical identity is not current closure authority.
+        checked = derive_identity_fields(dict(record))
+        operation_id = record["event_id"].rsplit(":", 1)[0]
+        if checked.get("identity_status") == "conflict" and operation_id not in invalid_ids:
+            invalid_operations.append({"operation_id": operation_id, "reason": "invalid current identity"})
+            invalid_ids.add(operation_id)
     status = "partial" if truncated or invalid_operations else "ready"
     projection = build_current_cell_projection(records)
     if status == "partial":
-        # A truncated prefix would change what closes, so it is damage like any
-        # other integrity failure: reported in full, but never allowed to
-        # authorize a closure.
-        projection = suppress_unauthorized_closures(projection, reason=f"store_{status}")
+        invalid_ids = {item["operation_id"] for item in invalid_operations}
+        damaged = [record for record in records
+                   if str(record.get("event_id") or "").rsplit(":", 1)[0] in invalid_ids]
+        # Scope damage to whole operations, including controls on which their
+        # subjects depend. Unknown identities or incomplete snapshots remain
+        # global failures; they cannot establish an independent unaffected set.
+        scoped = not truncated and bool(damaged) and all(
+            record.get("evidence_role") == "control"
+            or derive_identity_fields(dict(record)).get("identity_status") == "complete"
+            for record in damaged
+        ) and invalid_ids <= {
+            str(record["event_id"]).rsplit(":", 1)[0] for record in damaged
+        }
+        projection = suppress_unauthorized_closures(
+            projection, reason=f"store_{status}",
+            invalid_event_ids={record["event_id"] for record in damaged} if scoped else None,
+        )
     health = {
         "status": status,
         "source_kind": "store",

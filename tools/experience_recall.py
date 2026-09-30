@@ -129,10 +129,17 @@ def _collect_knowledge_cards(repo_root: Path, query_tokens: set[str]) -> tuple[l
             "ref": rel_path,
             "maturity": maturity,
         })
-        if len(entries) >= KNOWLEDGE_CARD_LIMIT:
-            break
-    return entries, {"status": "partial" if errors else "ready",
-                     "invalid_count": len(errors), "errors": errors[:5]}
+    # Inspect every registered card so a full window cannot hide later errors.
+    return entries[:KNOWLEDGE_CARD_LIMIT], {
+        "status": "partial" if errors else "ready",
+        "invalid_count": len(errors), "errors": errors[:5],
+        "registered_count": len(registered_paths),
+        "matched_count": len(entries),
+        "remaining": max(0, len(entries) - KNOWLEDGE_CARD_LIMIT),
+        "order": "card_id",
+        "filter": "keyword_only" if query_tokens else "none",
+        "catalog_ref": str((repo_root / "knowledge" / "capabilities.yaml").resolve()),
+    }
 
 
 def build_recall_view(
@@ -174,7 +181,8 @@ def build_recall_view(
             "pattern_db": 0,
             "knowledge_cards": len(card_entries),
             "truncated_windows": sum(1 for e in target_entries if e.get("truncated"))
-                                 + int(bool(target_page and target_page["has_more"])),
+                                 + int(bool(target_page and target_page["has_more"]))
+                                 + int(bool(knowledge_health.get("remaining"))),
         },
         "target_entries": target_entries,
         "target_page": target_page,
@@ -184,6 +192,8 @@ def build_recall_view(
         "note": (
             "query 是词项粗筛，相关性判断由 Claude 完成。情节 evidence_refs/structured "
             "按引用展开原始证据；知识卡只列引用，正文按需读取。"
+            "关键词未命中不代表没有相关知识；catalog_ref 指向完整登记目录，"
+            "可原生读取目录中的其余卡片引用，不受推荐窗口限制。"
         ),
     }
 
@@ -225,6 +235,8 @@ def main(argv: list[str] | None = None) -> int:
     print()
     health = view["source_health"]["knowledge"]
     print("Knowledge source: " + json.dumps(health, ensure_ascii=False))
+    if health.get("catalog_ref"):
+        print("Knowledge discovery: " + view["note"])
     if view["target_entries"]:
         print("## 当前目标经验")
         for entry in view["target_entries"]:

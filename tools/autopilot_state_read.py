@@ -3,7 +3,7 @@
 
 从 autopilot_state.py 纯搬动（零逻辑变更，09-11-simple-efficient-refactor 批次 7）：
 按 artifact 形态的磁盘读取与各自投影构建——json_inject/scanner/sql_matrix/
-js_intel/case_state/goal_memory/batch 清单。autopilot_state 保留 re-export。
+case_state/goal_memory/batch 清单。autopilot_state 保留 re-export。
 """
 
 from __future__ import annotations
@@ -34,7 +34,6 @@ except ImportError:  # pragma: no cover - direct tools/ execution
 
 _SQL_MATRIX_STATUSES = {"complete_no_hit", "candidate_pending", "partial", "invalid_input"}
 _SQL_MATRIX_LANES = {"query", "form"}
-_JS_TERMINAL_DISPOSITIONS = {"tested", "blocked", "dead_end", "not_applicable"}
 
 
 def _bounded_count(value: object) -> int:
@@ -377,104 +376,6 @@ def _load_sql_matrix_projections(repo_root: str, target: str) -> dict:
     return {lane: _load_sql_matrix_projection(repo_root, target, lane) for lane in sorted(_SQL_MATRIX_LANES)}
 
 
-def _load_js_intel_projection(repo_root: str, target: str) -> dict:
-    """Keep js-reader's prepared and analyzed lifecycle distinct."""
-    root = Path(repo_root) / "findings" / target_storage_key(target) / "js_intel"
-    materials = root / "materials.json"
-    summary = root / "materials_summary.md"
-    hypotheses = root / "hypotheses.json"
-    disposition = root / "disposition.json"
-    projection = {"status": "not_run", "path": str(materials), "present": False}
-    if materials.is_file() or summary.is_file():
-        projection.update({"status": "prepared", "present": True, "path": str(materials if materials.is_file() else summary)})
-    if materials.is_file():
-        try:
-            material_payload = json.loads(materials.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            projection.update({"status": "partial", "reason": "malformed_materials"})
-            return projection
-        if isinstance(material_payload, dict) and material_payload.get("target"):
-            if canonical_target_value(str(material_payload.get("target"))) != canonical_target_value(target):
-                projection.update({"status": "partial", "reason": "target_mismatch"})
-                return projection
-    if disposition.is_file():
-        try:
-            payload = json.loads(disposition.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            projection.update({"status": "partial", "reason": "malformed_disposition"})
-            return projection
-        disposition_status = str(payload.get("status") or "").strip().lower() if isinstance(payload, dict) else ""
-        if disposition_status not in _JS_TERMINAL_DISPOSITIONS:
-            projection.update({"status": "partial", "reason": "invalid_disposition"})
-            return projection
-        if not isinstance(payload, dict) or not str(payload.get("evidence_ref") or payload.get("reason") or "").strip():
-            projection.update({"status": "partial", "reason": "disposition_missing_evidence"})
-            return projection
-        projection.update({"status": disposition_status, "disposition_path": str(disposition)})
-        return projection
-    payload = None
-    if hypotheses.is_file():
-        try:
-            payload = json.loads(hypotheses.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            projection.update({"status": "partial", "reason": "malformed_hypotheses", "hypotheses_path": str(hypotheses)})
-            return projection
-        # The Claude js-reader contract is a structured report, not a generic
-        # ``hypotheses`` list.  Treat its lead/endpoints fields as analysis
-        # evidence so a valid report with no promoted lead is not misclassified
-        # as an empty or malformed artifact.
-        values = None
-        analysis_format = "hypotheses"
-        for field in ("hypotheses", "attack_surface_leads", "ranked_leads"):
-            candidate = payload.get(field) if isinstance(payload, dict) else None
-            if not isinstance(candidate, list):
-                continue
-            if values is None or not values:
-                values = candidate
-                analysis_format = field
-            if candidate:
-                break
-        report_keys = {
-            "endpoints",
-            "auth_model",
-            "sinks",
-            "graphql_operations",
-            "attack_surface_leads",
-            "noise_observed",
-        }
-        canonical_report = isinstance(payload, dict) and bool(report_keys.intersection(payload))
-        if values is None and canonical_report:
-            values = []
-        if not isinstance(values, list) or (not values and not canonical_report):
-            projection.update({"status": "partial", "reason": "hypotheses_empty", "hypotheses_path": str(hypotheses)})
-            return projection
-        bindings = payload.get("source_bindings") if isinstance(payload, dict) else None
-        if bindings is not None:
-            if not isinstance(bindings, list) or not bindings:
-                projection.update({"status": "partial", "reason": "invalid_source_binding", "hypotheses_path": str(hypotheses)})
-                return projection
-            for binding in bindings:
-                if not isinstance(binding, dict) or not str(binding.get("path") or ""):
-                    projection.update({"status": "partial", "reason": "invalid_source_binding", "hypotheses_path": str(hypotheses)})
-                    return projection
-                source = Path(str(binding["path"]))
-                source = source if source.is_absolute() else Path(repo_root) / source
-                try:
-                    current = hashlib.sha256(source.read_bytes()).hexdigest()
-                except OSError:
-                    current = ""
-                if current != str(binding.get("sha256") or ""):
-                    projection.update({"status": "partial", "reason": "stale_source_binding", "hypotheses_path": str(hypotheses)})
-                    return projection
-        projection.update({
-            "status": "analyzed",
-            "hypotheses_path": str(hypotheses),
-            "hypothesis_count": min(len(values), 100),
-            "analysis_format": analysis_format,
-        })
-    return projection
-
-
 def _load_case_state_projection(
     repo_root: str,
     target: str,
@@ -507,7 +408,7 @@ def load_target_goal_memory(repo_root: str, target: str) -> dict:
 
 
 def _has_js_read_signal(recon_dir: str, surface_context: dict) -> bool:
-    """Return whether cached JS artifacts exist and are worth handing to js-reader."""
+    """Return whether raw JS artifacts exist for optional Claude-native reading."""
     if surface_context.get("js_endpoints"):
         return True
     return _has_any_artifact(

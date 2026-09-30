@@ -308,10 +308,10 @@ def test_knowledge_index_preserves_card_layering_contract():
 def test_context_loading_prefers_evidence_and_case_pointers_over_methodology_prose():
     rules = (_repo_root() / "rules" / "context-loading.md").read_text(encoding="utf-8")
 
-    assert "前沿模型上下文价值判据" in rules
-    assert "方法论 prose 不应默认进入上下文" in rules
-    assert "真实案例指针" in rules
-    assert "蒸馏知识卡默认作为 router / recall 层" in rules
+    assert "docs/architecture-contract.md" in rules
+    assert "默认不加载全量" in rules
+    assert "原始材料按引用展开" in rules
+    assert "不固定先后顺序" in rules
 
 
 def test_distilled_router_cards_are_discoverable_by_context_pack(tmp_path):

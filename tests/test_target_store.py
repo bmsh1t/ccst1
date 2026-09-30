@@ -977,7 +977,7 @@ def test_observation_result_and_identity_dimensions_are_facts(tmp_path):
     assert record["outcome"] == "complete"
 
     # A query never derives identity status: that stays the projection's job.
-    assert "identity_status" not in record
+    assert record["identity_status"] == "none"
 
     # Structure is still checked, and no partial write reaches the store.
     store.start_attempt(attempt_id="try2", source="native", started_at=AT, actor="operator")
@@ -1012,20 +1012,24 @@ def test_observation_detail_is_open_payload_but_not_a_relationship_key(tmp_path)
 def test_closure_records_feed_the_one_shared_projection(tmp_path):
     """Store facts and file-side entries must close exactly the same cells."""
     from tools.closure_projection import build_current_cell_projection
+    from tools.identity_contract import build_closure_cell
 
     store = make_store(tmp_path)
     store.start_attempt(attempt_id="try1", source="native", started_at=AT, actor="operator")
     obs = observation(tmp_path)
     obs["family"] = "Authz"
     obs["result"] = "tested_clean"
-    obs["actor"] = "user_a"
+    obs["actor"] = "admin"
     obs["object_scope"] = "admin_object"
     obs["identity_dimensions"] = {"method": "GET", "actor_role": "admin", "object_scope": "admin_object"}
+    identity = build_closure_cell(obs["endpoint"], "Authz", obs["identity_dimensions"], technique="role_check").key.to_dict()
+    obs.update(identity_status="complete", identity_v2=identity, identity_technique="role_check", detail={"evidence_role": "subject"})
     store.record_execution(attempt_id="try1", outcome="complete", observations=[obs], actor="operator")
 
     store.start_attempt(attempt_id="try2", source="native", started_at=AT, actor="operator")
     partial = observation(tmp_path)
     partial["family"] = "IDOR"
+    partial["identity_status"] = "incomplete"
     partial["result"] = "tested_clean"
     partial["identity_dimensions"] = {"method": "GET", "path_template": "/api/objects"}   # actor_relation/object_scope missing
     store.record_execution(attempt_id="try2", outcome="complete", observations=[partial], actor="operator")
@@ -1039,8 +1043,9 @@ def test_closure_records_feed_the_one_shared_projection(tmp_path):
     assert projection["identity_v2_diagnostics"]["incomplete_count"] == 1
 
     file_side = [{
+        "identity_status": "complete", "identity_v2": identity, "identity_technique": "role_check", "evidence_role": "subject",
         "event_id": "ledger:1", "raw_endpoint": URL, "endpoint": "/api/objects?owner=peer", "method": "GET",
-        "vuln_class": "Authz", "result": "tested_clean", "ts": AT, "actor": "user_a", "object_scope": "admin_object",
+        "vuln_class": "Authz", "result": "tested_clean", "ts": AT, "actor": "admin", "object_scope": "admin_object",
         "variant": "", "evidence_ref": "evidence/target.test/response.txt",
         "identity_dimensions": {"method": "GET", "actor_role": "admin", "object_scope": "admin_object"},
     }]

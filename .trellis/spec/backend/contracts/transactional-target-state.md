@@ -33,6 +33,17 @@ can avoid repeated admission reads, but source acquisition and publication fresh
 checks remain. Public Context Pack callers cannot supply cached truth to authorize
 the current view; metadata/discovery drift still rejects assembly.
 
+`memory_context()` selects `current_handoff` on the same read snapshot as the
+bounded experience page, using `created_at DESC,id DESC` and an independent
+handoff-only limit of one. No handoff returns null. The shared memory loader
+projects `next_actions` as at most one advisory entry whose text is that current
+handoff's explicit `next_intent`; an empty intent never revives an older one.
+Historical pages and Queue rows remain unchanged. Handoff accepts repeatable
+`--operation-ref OPERATION_ID:STEP` through the existing parser and Store foreign
+keys; absent evidence remains valid advice, not an inferred path binding.
+Regression checks cover cross-process refs/rejections/replay, tied timestamps,
+window eviction, empty intent and a concurrent writer between snapshot queries.
+
 Current memory consumers use Store-backed `show`, ordinary target memory
 writes, bounded recall and `/remember` experience writes. Staged import maps eligible historical target-memory entries
 to Experience IDs and records original field/position in the migration receipt;
@@ -107,7 +118,8 @@ offline contracts do not establish online learning gains or complete M8 costs. T
 distillation view now renders Finding claim/family/endpoint, technical verdict,
 destination decision and bounded conditional experience without blank aliases.
 Fresh stores
-use schema v10 with advisory `note`, `active_goal` and structured Coverage reviews;
+use schema v11 with advisory `note`, `active_goal`, structured Coverage reviews
+and persisted observation identity claims;
 existing v8 stores retain their old domain APIs but require explicit
 `upgrade-memory --backup ABSOLUTE_PATH` before using those new memory APIs.
 The plan adds no context table, keyed-note replacement chain or per-entry
@@ -274,8 +286,10 @@ audit would leave mutation-owned claim tokens and receipt references inconsisten
 Database path: `state/<target_storage_key>/metadata.sqlite3`; database mode 0600,
 target directory 0700; symlinked database paths rejected. Initialization must not
 silently repair an existing non-private target directory. New stores use SQLite
-schema v10; v8/v9 retain their existing operations, with an explicit upgrade
-required before Coverage review queries/writes. The recorded target has already cut over. Do
+schema v11; v8/v9 retain their existing operations, with an explicit upgrade
+required before Coverage review queries/writes. Schema v10 remains readable,
+but persisting complete observation identity requires `upgrade-schema` with a
+verified private backup. Reads never upgrade a Store. The recorded target has already cut over. Do
 not change schema merely to hide the `primary` label.
 Unsupported schemas are not automatically upgraded or overwritten. Rebuild
 unpublished preview fixtures from preserved inputs in a new isolated destination.
@@ -1126,9 +1140,12 @@ nested lock reuse. These tests exercise standard flock, not a new lock manager.
 with 1001 hypotheses, full default history, entity-only equivalence and private
 material failures. `tests/test_runner_candidate_store.py` covers exact assessed
 material, independent attempts, raw damage and propagation of non-absence faults.
-`tests/test_disclosed_pattern_dedup.py` preserves reports while rejecting retired
-PatternDB reads; `tests/test_knowledge_eval_draft.py` covers Store-only/CIDR
-discovery and unsafe file rejection in a real process with a timeout.
+`tests/test_disclosed_pattern_dedup.py` preserves report acquisition/cache while rejecting
+retired PatternDB reads and title-generated hypothesis seeds. `knowledge_eval_draft.py`
+and its standalone scoring CLI are retired; `/kb review`, registry and explicit
+promotion/retirement remain. Normal validation and idempotent replay do not append
+Pattern calibration telemetry; existing summaries retain source references and the
+historical calibration module/explicit CLI remains available without implying fresh data.
 Resume domain-window regressions use an empty Store and more than five Findings,
 tested and untested endpoints; execute the emitted full command under a root
 containing spaces and compare every exact ID/endpoint, counts and unchanged
@@ -1273,3 +1290,57 @@ Adjacent Store/migration/Coverage tests retain existing evidence closure behavio
 Wrong: save author input into a disposable matrix, or model it as executed proof.
 Correct: append structured review input to Store; rebuild views and derive closure
 from the existing evidence owner independently.
+
+## Native-first publication projections
+
+### 1. Scope / Trigger
+
+Changes to Finding read models, evidence manifests, or destination-policy views.
+
+### 2. Signatures
+
+`TargetStore.finding(finding_id)` and `finding_page(limit=50, cursor=None)` expose
+`technical_conclusion`, `evidence_integrity`, and `destination_decision` alongside
+existing fields. No new table or mutation command is introduced.
+
+### 3. Contracts
+
+- `technical_conclusion` is the latest immutable assessment, or null. Raw-byte
+  damage and destination rejection never rewrite its verdict/boundary/impact.
+- `evidence_integrity={status, assessment_id, references}` has status
+  `unassessed|valid|invalid`. It verifies existing assessment-supporting operations
+  on this read, not cached summary booleans. References bind operation, step,
+  event ID (`operation_id:step`), artifact kind/id/path and SHA-256.
+- `destination_decision` retains each current destination's ID, reason,
+  assessment binding, native status and staleness; its presentation decision is
+  `eligible→accept`, `ineligible→reject`, `deferred→defer`.
+- No assessment means no claimed verified evidence manifest. Unassessed findings
+  retain their original observation references under `evidence`.
+- Page and single-item projections agree and perform no lifecycle writes.
+
+### 4. Validation & Error Matrix
+
+| Input | Result |
+|---|---|
+| No assessment | null technical conclusion, unassessed integrity |
+| Confirmed assessment + rejected destination | confirmed + valid + reject |
+| Raw bytes changed after assessment | same technical conclusion, invalid integrity, stale decisions |
+| Repeated read / page read | identical projection, unchanged Store revision |
+
+### 5. Good/Base/Bad Cases
+
+Good: publish a confirmed A for its eligible destination while another destination
+rejects it. Base: preserve an unassessed claim without invented validity. Bad:
+convert destination rejection or missing raw bytes into a rewritten verdict.
+
+### 6. Tests Required
+
+`python3 .trellis/tasks/09-29-validation-closure-scope/research/check_closure_replay.py`
+checks native registration → assessment → three destination outcomes → single/page
+reads → damaged evidence, including immutable event/hash references and no writes.
+Existing report tests cover all eligible destinations and immutable report replay.
+
+### 7. Wrong vs Correct
+
+Wrong: destination rejects → technical verdict refuted.
+Correct: immutable confirmed assessment + independently rejected destination.

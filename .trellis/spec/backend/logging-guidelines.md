@@ -59,8 +59,9 @@
 - 完整个人数据或第三方响应正文；
 - 仅对一个目标有效的答案、域名和攻击 payload。
 
-目标专属敏感证据只能进入 gitignored 的目标 artifact，通用卡片和 target-memory 摘要使用
-脱敏内容和 `evidence_ref`。
+目标专属敏感证据保存在目标 artifact；内部 Runner/Browser/Case/Spray 工具输出可保留
+分析所需原值，不能把这些输出视为公开安全日志。目标记忆保存传入正文及 operation 引用，
+不自动遮盖参数；无需重复整份请求。通用卡片/公开交付仍遵循各自发布规则。
 
 ## 示例
 
@@ -106,14 +107,15 @@ optional env:
 
 ### 3. Contracts
 
-- adapter 使用 `subprocess.Popen` 合并 stdout/stderr、逐行转发脱敏输出，并返回外部工具原退出码。
+- adapter 使用 `subprocess.Popen` 合并 stdout/stderr、逐行转发内部原始输出，并返回外部工具原退出码。
 - 每条上游 emitted line 对应一个完整 JSON object，稳定字段为：`schema_version=1`、UTC `ts`、
   `mode`、`tool=trevorspray`、`event`、`user`、`classification`、`credential_valid`、
   `token_issued`、`aadsts_code`、`pwd_sha256_prefix`、`raw`。
 - AADSTS code 优先于文本关键词；只有响应 JSON 顶层 `access_token` key 才能设置
   `token_issued=true`。claims 片段或 raw substring 不算 token。
-- passlist 明文、access/refresh/id token、Okta sessionToken、client secret 和 Bearer value 在
-  console 与 JSONL `raw` 中都必须脱敏。密码只有在 emitted line 可关联 passlist 值时保存短 hash。
+- 内部 console 与 JSONL `raw` 保留 emitted line 的原值（仅去行尾换行）；JSONL 文件0600、
+  运行目录0700。密码关联仍使用短 hash/attempt key，不以原文替换身份键。通用错误 stderr
+  的已有遮盖规则不变，这些内部原始证据不能自动进入跨目标知识或公开交付。
 - 未识别行必须记录 `classification=unknown`，不能丢行或伪装成功。
 
 ### 4. Validation & Error Matrix
@@ -128,13 +130,14 @@ optional env:
 
 ### 5. Good / Base / Bad Cases
 
-- Good：AADSTS50076 输出变成 `valid_password_mfa`，密码/token 全部脱敏，console 与 JSONL 一致。
+- Good：AADSTS50076 输出变成 `valid_password_mfa`，内部 console 与 JSONL raw 一致且原值可核验。
 - Base：heartbeat/未知错误仍写一条 unknown emitted event，供后续 AI 复核。
 - Bad：`trevorspray ... | tee attempts.jsonl` 产生不可解析混合文本，或 raw claims 字符串误判 token。
 
 ### 6. Tests Required
 
-- fake executable：合法 JSONL、实时脱敏 stdout、密码不落盘、退出码 0/非零。
+- `tests/test_spray_orchestrator.py`：离线假进程的合法 JSONL、原值 stdout/落盘、hash/binding、
+  0600/0700 和跨目标 OAuth redirect 拒绝；不使用真实凭据调用。
 - AADSTS/Okta 分类表；顶层 token、嵌套 claims、plain text token 三类边界。
 - shell structural test：O365/Okta 只通过 adapter，禁止重新出现 `tee -a "$AUDIT_LOG"`。
 

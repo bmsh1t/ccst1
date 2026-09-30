@@ -14,7 +14,6 @@ import re
 import shlex
 import sys
 from pathlib import Path
-from urllib.parse import urlparse
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 if str(BASE_DIR) not in sys.path:
@@ -22,7 +21,6 @@ if str(BASE_DIR) not in sys.path:
 
 try:
     from memory.target_profile import default_memory_dir
-    from tools.closure_resolver import ClosureResolver
     from tools.coverage_matrix import high_value_gaps_from_matrix, read_matrix, require_matching_truth
     from tools.evidence_ledger import ACTOR_MATRIX_VULN_CLASSES, build_summary as build_evidence_summary
     from tools.knowledge_registry import (
@@ -37,12 +35,11 @@ try:
     from tools.surface_index import surface_safe_preview
     from tools.surface_projection import load_surface_projection
     from tools.target_paths import compact_url, canonical_target_value, target_storage_key
-    from tools.target_memory import load_active_file, load_goal_memory
+    from tools.target_memory import load_active_file, load_goal_memory, format_current_handoff
     from tools.current_truth import current_cell_projection
     from tools.target_store import TargetStore, runtime_store
 except ImportError:  # pragma: no cover - direct tools/ execution
     from memory.target_profile import default_memory_dir
-    from closure_resolver import ClosureResolver  # type: ignore
     from coverage_matrix import high_value_gaps_from_matrix, read_matrix, require_matching_truth  # type: ignore
     from evidence_ledger import ACTOR_MATRIX_VULN_CLASSES, build_summary as build_evidence_summary  # type: ignore
     from knowledge_registry import (  # type: ignore
@@ -57,7 +54,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from surface_index import surface_safe_preview  # type: ignore
     from surface_projection import load_surface_projection  # type: ignore
     from target_paths import compact_url, canonical_target_value, target_storage_key  # type: ignore
-    from target_memory import load_active_file, load_goal_memory  # type: ignore
+    from target_memory import load_active_file, load_goal_memory, format_current_handoff  # type: ignore
     from current_truth import current_cell_projection  # type: ignore
     from target_store import TargetStore, runtime_store  # type: ignore
 
@@ -303,20 +300,10 @@ def _card_capabilities(
     return [_card_capability(path, repo_root, registry=registry) for path in paths]
 
 
-def _read_json_object(path: Path) -> dict:
-    if not path.is_file():
-        return {}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return payload if isinstance(payload, dict) else {}
-
-
 def _read_local_intel_json(
     path: Path, repo_root: Path, *, list_fields: tuple[str, ...] = (), object_fields: tuple[str, ...] = (),
 ) -> tuple[dict, dict]:
-    """Read optional intel while preserving missing versus damaged health."""
+    """Read bounded browser shape data without turning it into route obligations."""
     relative = _display(path, repo_root)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -359,29 +346,6 @@ def _read_lines(path: Path, limit: int = 50) -> list[str]:
                     continue
                 seen.add(value)
                 items.append(value)
-                if len(items) >= limit:
-                    break
-    except OSError:
-        return []
-    return items
-
-
-def _read_jsonl_objects(path: Path, limit: int = 50) -> list[dict]:
-    if not path.is_file():
-        return []
-    items: list[dict] = []
-    try:
-        with path.open("r", encoding="utf-8", errors="replace") as handle:
-            for line in handle:
-                value = line.strip()
-                if not value:
-                    continue
-                try:
-                    item = json.loads(value)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(item, dict):
-                    items.append(item)
                 if len(items) >= limit:
                     break
     except OSError:
@@ -535,10 +499,12 @@ def _artifact_path(path: Path, repo_root: Path) -> str:
 
 
 def _load_local_intel(repo_root: Path, target_key: str) -> dict:
-    """读取小型浏览器/JS/source 证据索引；不触发扫描或浏览器动作。"""
+    """Read browser shapes and expose raw artifact paths for native inspection.
+
+    JS/source interpretation belongs to Claude's native Read/Grep/delegation.
+    This function deliberately does not parse hypotheses, routes, or signals.
+    """
     browser_dir = repo_root / "recon" / target_key / "browser"
-    js_dir = repo_root / "findings" / target_key / "js_intel"
-    source_dir = repo_root / "findings" / target_key / "source_intel"
 
     diagnostics = []
     browser_summary, detail = _read_local_intel_json(browser_dir / "summary.json", repo_root)
@@ -555,48 +521,18 @@ def _load_local_intel(repo_root: Path, target_key: str) -> dict:
     pages = page_js_map.get("pages") if isinstance(page_js_map.get("pages"), dict) else {}
     js_index = page_js_map.get("js_index") if isinstance(page_js_map.get("js_index"), dict) else {}
 
-    js_payload, detail = _read_local_intel_json(
-        js_dir / "hypotheses.json", repo_root,
-        list_fields=("endpoints", "attack_surface_leads", "ranked_leads", "graphql_operations"))
-    diagnostics.append(detail)
-    js_endpoints = [
-        item for item in js_payload.get("endpoints", [])
-        if isinstance(item, dict) and item.get("path")
+    raw_candidates = [
+        repo_root / "recon" / target_key / "js" / "endpoints.txt",
+        repo_root / "recon" / target_key / "js" / "endpoints_raw.txt",
+        repo_root / "recon" / target_key / "js_dump" / "packer" / "manifest.json",
+        repo_root / "findings" / target_key / "js_intel" / "hypotheses.json",
+        repo_root / "findings" / target_key / "source_intel" / "routes.json",
+        repo_root / "findings" / target_key / "source_intel" / "summary.md",
     ]
-    js_leads = js_payload.get("attack_surface_leads", js_payload.get("ranked_leads", []))
-    js_leads = [item for item in js_leads if isinstance(item, dict)]
-    js_graphql = [
-        item for item in js_payload.get("graphql_operations", [])
-        if isinstance(item, dict)
-    ]
-
-    source_routes_payload, detail = _read_local_intel_json(
-        source_dir / "routes.json", repo_root, list_fields=("routes", "graphql_operations", "signals"))
-    diagnostics.append(detail)
-    source_routes = [
-        item for item in source_routes_payload.get("routes", [])
-        if isinstance(item, dict) and item.get("route")
-    ]
-    source_graphql = [
-        item for item in source_routes_payload.get("graphql_operations", [])
-        if isinstance(item, dict)
-    ]
-    source_signals = [item for item in source_routes_payload.get("signals", []) if isinstance(item, dict)]
-
-    invalid = [item for item in diagnostics if item["status"] in {"invalid", "unreadable"}]
-    valid = [item for item in diagnostics if item["status"] == "ok"]
-    if invalid:
-        health_status = "partial" if valid else "unavailable"
-    else:
-        health_status = "ready" if valid else "unavailable"
+    raw_paths = _dedupe([_artifact_path(path, repo_root) for path in raw_candidates])
+    invalid_count = sum(item["status"] in {"invalid", "unreadable"} for item in diagnostics)
 
     return {
-        "health": {
-            "status": health_status,
-            "diagnostics": diagnostics,
-            "invalid_count": len(invalid),
-            "missing_count": sum(item["status"] == "missing" for item in diagnostics),
-        },
         "browser": {
             "summary": browser_summary,
             "xhr_endpoints": _read_lines(browser_dir / "xhr_endpoints.txt"),
@@ -613,24 +549,9 @@ def _load_local_intel(repo_root: Path, target_key: str) -> dict:
                 _artifact_path(browser_dir / "summary.json", repo_root),
             ]),
         },
-        "js_intel": {
-            "endpoints": js_endpoints,
-            "leads": js_leads,
-            "graphql_operations": js_graphql,
-            "paths": _dedupe([
-                _artifact_path(js_dir / "hypotheses.json", repo_root),
-                _artifact_path(js_dir / "materials_summary.md", repo_root),
-            ]),
-        },
-        "source_intel": {
-            "signals": source_signals,
-            "routes": source_routes,
-            "graphql_operations": source_graphql,
-            "paths": _dedupe([
-                _artifact_path(source_dir / "routes.json", repo_root),
-                _artifact_path(source_dir / "summary.md", repo_root),
-            ]),
-        },
+        "raw_paths": raw_paths,
+        "health": {"status": "unavailable" if invalid_count else "ready",
+                   "invalid_count": invalid_count, "diagnostics": diagnostics},
     }
 
 
@@ -689,37 +610,7 @@ def _local_intel_blob(local_intel: dict) -> list[str]:
             )
         )
 
-    js_intel = local_intel.get("js_intel") or {}
-    for endpoint in (js_intel.get("endpoints") or [])[:10]:
-        pieces.extend([
-            str(endpoint.get("method") or ""),
-            str(endpoint.get("path") or ""),
-            str(endpoint.get("evidence") or ""),
-            str(endpoint.get("auth_required") or ""),
-        ])
-    for lead in (js_intel.get("leads") or [])[:5]:
-        pieces.extend([
-            str(lead.get("title") or ""),
-            str(lead.get("category") or ""),
-            str(lead.get("next_action") or ""),
-        ])
-    for operation in (js_intel.get("graphql_operations") or [])[:5]:
-        pieces.extend([
-            str(operation.get("name") or ""),
-            str(operation.get("type") or operation.get("operation") or ""),
-        ])
-
-    source_intel = local_intel.get("source_intel") or {}
-    for route in (source_intel.get("routes") or [])[:10]:
-        pieces.extend([
-            str(route.get("method") or ""),
-            str(route.get("route") or ""),
-        ])
-    for operation in (source_intel.get("graphql_operations") or [])[:5]:
-        pieces.extend([
-            str(operation.get("name") or ""),
-            str(operation.get("operation") or ""),
-        ])
+    pieces.extend(local_intel.get("raw_paths") or [])
     return [piece for piece in pieces if str(piece).strip()]
 
 
@@ -883,36 +774,8 @@ def _local_intel_anchors(local_intel: dict) -> list[str]:
         suffix = f" hidden_fields={','.join(hidden_fields[:4])}" if hidden_fields else ""
         anchors.append(f"Browser form: {method} {action}{suffix}")
 
-    js_intel = local_intel.get("js_intel") or {}
-    for endpoint in (js_intel.get("endpoints") or [])[:3]:
-        method = str(endpoint.get("method") or "").strip()
-        path = str(endpoint.get("path") or "").strip()
-        source = str(endpoint.get("source_file") or "").strip()
-        auth_required = str(endpoint.get("auth_required") or "").strip()
-        parts = ["JS-reader endpoint:"]
-        if method:
-            parts.append(method)
-        if path:
-            parts.append(path)
-        if source:
-            parts.append(f"source={source}")
-        if auth_required:
-            parts.append(f"auth={auth_required}")
-        anchors.append(" ".join(parts))
-    for lead in (js_intel.get("leads") or [])[:2]:
-        title = str(lead.get("title") or "").strip()
-        category = str(lead.get("category") or "js").strip()
-        if title:
-            anchors.append(f"JS-reader lead [{category}]: {title}")
-
-    source_intel = local_intel.get("source_intel") or {}
-    for signal in (source_intel.get("signals") or [])[:3]:
-        anchors.append(f"Source marker [{signal.get('kind', '')}]: {signal.get('source', '')} :: {signal.get('evidence', '')}")
-    for route in (source_intel.get("routes") or [])[:2]:
-        route_value = str(route.get("route") or "").strip()
-        method = str(route.get("method") or "").strip()
-        if route_value:
-            anchors.append(f"Source route: {method} {route_value}".strip())
+    for path in (local_intel.get("raw_paths") or [])[:4]:
+        anchors.append(f"Raw artifact (read directly): {path}")
     return _dedupe(anchors)
 
 
@@ -935,7 +798,7 @@ def _build_evidence_anchors(
     target_memory = goal_memory.get("target") or {}
     for label, field in (
         ("Target lead", "active_leads"),
-        ("Next action", "next_actions"),
+        ("Current next intent (advisory, not Queue)", "next_actions"),
         ("Dead end", "dead_ends"),
     ):
         for item in (target_memory.get(field) or [])[-2:]:
@@ -961,6 +824,9 @@ def _unknowns(
     local_intel: dict,
 ) -> list[str]:
     items: list[str] = []
+    items.extend(f"Browser material {item['path']}: {item['error']}"
+                 for item in (local_intel.get("health") or {}).get("diagnostics", [])
+                 if item.get("error"))
     if not ranked.get("available"):
         items.append("No surface review pack available from local recon cache.")
     stats = ranked.get("stats") or {}
@@ -980,15 +846,6 @@ def _unknowns(
         items.append("Surface review pool has no candidates; recon may be thin or low-signal.")
     browser = ranked.get("browser") or {}
     local_browser = local_intel.get("browser") or {}
-    local_health = local_intel.get("health") or {}
-    if local_health.get("status") in {"partial", "unavailable"} and local_health.get("invalid_count", 0):
-        items.append(
-            "Local intel material is {status}; inspect: {paths}.".format(
-                status=local_health["status"],
-                paths=", ".join(item["path"] for item in local_health.get("diagnostics", [])
-                                 if item.get("status") in {"invalid", "unreadable"}),
-            )
-        )
     if (
         not browser.get("xhr_count")
         and not browser.get("api_count")
@@ -1006,106 +863,12 @@ def _unknowns(
     return items or ["No major local unknowns surfaced by context_pack."]
 
 
-def _token_overlap(a: str, b: str) -> bool:
-    tokens = {
-        token
-        for token in re.findall(r"[a-z0-9_./:-]{4,}", a.lower())
-        if token not in {"https", "http", "target", "tested", "without", "with"}
-    }
-    haystack = b.lower()
-    return any(token in haystack for token in list(tokens)[:12])
-
-
-URL_TOKEN_RE = re.compile(r"https?://[^\s\]\"'<>]+")
-PATH_TOKEN_RE = re.compile(r"(?<![:/])(/[A-Za-z0-9._~%!$&'()*+,;=:@/-]+(?:\?[A-Za-z0-9._~%!$&'()*+,;=:@/?-]+)?)")
-
-
-def _normalise_path_token(value: str) -> str:
-    raw = str(value or "").strip().rstrip(".,;:)]}'\"")
-    if not raw:
-        return ""
-    if "://" in raw:
-        try:
-            raw = urlparse(raw).path or "/"
-        except ValueError:
-            raw = raw.split("?", 1)[0].split("#", 1)[0]
-    path = raw.split("?", 1)[0].split("#", 1)[0].strip()
-    if not path:
-        return ""
-    if not path.startswith("/"):
-        path = "/" + path
-    if path != "/":
-        path = path.rstrip("/")
-    return path
-
-
-def _entry_ts(item: object) -> str:
-    if isinstance(item, dict):
-        return str(item.get("ts") or "").strip()
-    return ""
-
-
-def _dead_end_paths(text: str) -> list[str]:
-    value = str(text or "")
-    paths: list[str] = []
-    for match in URL_TOKEN_RE.finditer(value):
-        paths.append(_normalise_path_token(match.group(0)))
-    value_without_urls = URL_TOKEN_RE.sub(" ", value)
-    paths.extend([
-        path
-        for path in (_normalise_path_token(match.group(0)) for match in PATH_TOKEN_RE.finditer(value_without_urls))
-        if path and path != "/"
-    ])
-    return _dedupe([path for path in paths if path and path != "/"])
-
-
-def _ledger_closed_after_dead_end(dead_text: str, dead_ts: str, evidence_summary: dict) -> bool:
-    """Return true when newer explicit ledger closure resolves a memory conflict.
-
-    Target memory dead-ends are useful reminders, but once Claude writes a later
-    final ledger row for the same endpoint, repeating "may have new evidence" is
-    stale steering.  This only suppresses the contradiction message; raw memory
-    and evidence remain available for reopening.
-    """
-    if not dead_ts:
-        return False
-    paths = _dead_end_paths(dead_text)
-    if not paths:
-        return False
-    return ClosureResolver(evidence_summary or {}).closed_after(paths, dead_ts)
-
-
 def _contradictions(
-    target: str,
     goal_memory: dict,
     ranked: dict,
     gaps: list[dict],
-    local_intel: dict,
-    evidence_summary: dict | None = None,
 ) -> list[str]:
     items: list[str] = []
-    dead_ends = [
-        {"text": _entry_text(item), "ts": _entry_ts(item)}
-        for item in ((goal_memory.get("target") or {}).get("dead_ends") or [])[-5:]
-        if _entry_text(item)
-    ]
-    new_evidence = "\n".join(
-        [_surface_anchor(item) for item in (ranked.get("review_pool") or ranked.get("p1", []))[:5]]
-        + [
-            f"{lead.get('title', '')} {lead.get('next_action', '')}"
-            for lead in _json_list(ranked.get("workflow_leads"))[:5]
-        ]
-        + [_gap_anchor(gap) for gap in gaps[:5]]
-        + _local_intel_blob(local_intel)[:20]
-    )
-    for dead in dead_ends:
-        dead_text = str(dead.get("text") or "")
-        if _ledger_closed_after_dead_end(dead_text, str(dead.get("ts") or ""), evidence_summary or {}):
-            continue
-        if _token_overlap(dead_text, new_evidence):
-            items.append(
-                f"Remembered dead end may have new evidence now: {dead_text[:140]}"
-            )
     workflow_leads = _json_list(ranked.get("workflow_leads"))
     if not gaps and workflow_leads:
         items.append(
@@ -1135,32 +898,24 @@ def _write_back_commands(repo_root: Path, target: str) -> list[str]:
 
 
 def _local_intel_paths(local_intel: dict) -> list[str]:
-    paths: list[str] = []
-    for section in ("browser", "js_intel", "source_intel"):
-        paths.extend(((local_intel.get(section) or {}).get("paths") or [])[:3])
+    paths = list(((local_intel.get("browser") or {}).get("paths") or [])[:5])
+    paths.extend((local_intel.get("raw_paths") or [])[:6])
     return _dedupe(paths)
 
 
 def _local_intel_source_summary(local_intel: dict) -> dict:
     browser = local_intel.get("browser") or {}
-    js_intel = local_intel.get("js_intel") or {}
-    source_intel = local_intel.get("source_intel") or {}
     health = local_intel.get("health") or {}
     return {
-        "local_intel_status": health.get("status", "unavailable"),
-        "local_intel_invalid_count": int(health.get("invalid_count", 0) or 0),
+        "local_intel_status": health.get("status", "ready"),
+        "local_intel_invalid_count": health.get("invalid_count", 0),
         "local_intel_diagnostics": health.get("diagnostics", []),
         "browser_xhr": len(browser.get("xhr_endpoints") or []),
         "browser_api": len(browser.get("api_endpoints") or []),
         "browser_params": len(browser.get("params") or []),
         "browser_forms": len(browser.get("forms") or []),
         "browser_pages_with_js": int(browser.get("page_count") or 0),
-        "js_intel_endpoints": len(js_intel.get("endpoints") or []),
-        "js_intel_leads": len(js_intel.get("leads") or []),
-        "js_intel_graphql": len(js_intel.get("graphql_operations") or []),
-        "source_intel_signals": len(source_intel.get("signals") or []),
-        "source_intel_routes": len(source_intel.get("routes") or []),
-        "source_intel_graphql": len(source_intel.get("graphql_operations") or []),
+        "raw_artifact_paths": len(local_intel.get("raw_paths") or []),
     }
 
 
@@ -1173,12 +928,6 @@ def _focus_endpoints_for_ledger(ranked: dict, gaps: list[dict], local_intel: dic
         endpoints.append(str(gap.get("endpoint") or ""))
     browser = local_intel.get("browser") or {}
     endpoints.extend((browser.get("xhr_endpoints") or [])[:4])
-    js_intel = local_intel.get("js_intel") or {}
-    for endpoint in (js_intel.get("endpoints") or [])[:3]:
-        endpoints.append(str(endpoint.get("path") or ""))
-    source_intel = local_intel.get("source_intel") or {}
-    for route in (source_intel.get("routes") or [])[:3]:
-        endpoints.append(str(route.get("route") or ""))
     return _dedupe(endpoints)[:8]
 
 
@@ -1392,6 +1141,8 @@ def _build_context_pack(
         "target_experiences": {
             **experience_window,
             "items": goal_memory.get("recent_entries") or [],
+            "current_handoff": goal_memory["target"]["current_handoff"],
+            "next_actions": goal_memory["target"]["next_actions"],
             "next_command": (
                 f"{recall_command} --cursor {shlex.quote(experience_window['next_cursor'])}"
                 if experience_window.get("has_more") else ""
@@ -1435,7 +1186,7 @@ def _build_context_pack(
         "alternative_angles": [],
         "unknowns": _unknowns(ranked, goal_memory, matrix, findings, local_intel)
         + _ledger_unknowns(evidence_summary),
-        "contradictions": _contradictions(resolved_target, goal_memory, ranked, gaps, local_intel, evidence_summary),
+        "contradictions": _contradictions(goal_memory, ranked, gaps),
         "actor_matrix_gaps": (evidence_summary.get("actor_matrix") or {}).get("gaps", [])[:8],
         "do_not_load": [
             "full skills/* tree",
@@ -1487,7 +1238,8 @@ def format_target_experiences(experiences: dict) -> list[str]:
     experience_lines = []
     if experiences:
         experience_lines = [
-            "- Target experiences:",
+            *format_current_handoff(experiences),
+            "- Target experiences (bounded history; historical intents are not pending actions):",
             *_format_list([
                 "[{id}/{kind}] {text} | conditions={conditions} | reopen_when={reopen} | "
                 "next_intent={next_intent} | evidence={evidence}".format(

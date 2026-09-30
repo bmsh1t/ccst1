@@ -100,7 +100,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
 
 try:
     from tools.attack_probe_filter import is_attack_probe, sanitize_attack_probe_url
-    from tools.closure_resolver import ClosureResolver
+    from tools.closure_resolver import ClosureResolver, STRUCTURAL_NA_MARKERS, is_structural_na
     from tools.evidence_identity import CANONICAL_VULN_CLASSES, VULN_CLASS_ALIASES as CLOSURE_VULN_CLASS_ALIASES, collapse_dynamic_path_segments, extract_endpoint_path, normalize_vuln_class, path_with_query, query_param_names
     from tools.recon_filters import (
         has_html_unicode_encoding,
@@ -114,7 +114,7 @@ try:
     from tools.target_store import COVERAGE_REVIEW_STATUSES, ENDPOINT_KIND_VALUES, FINAL_ENDPOINT_KIND_SOURCES, StoreError, runtime_store, target_switch_lock
 except ImportError:  # pragma: no cover - top-level tools/ import
     from attack_probe_filter import is_attack_probe, sanitize_attack_probe_url  # type: ignore
-    from closure_resolver import ClosureResolver  # type: ignore
+    from closure_resolver import ClosureResolver, STRUCTURAL_NA_MARKERS, is_structural_na  # type: ignore
     from evidence_identity import (  # type: ignore
         CANONICAL_VULN_CLASSES,
         VULN_CLASS_ALIASES as CLOSURE_VULN_CLASS_ALIASES,
@@ -640,8 +640,10 @@ def _effective_endpoint_kind(existing_ep: dict | None, endpoint: str) -> str:
     return _endpoint_kind(endpoint)
 
 
-def _na_cell(reason: str) -> dict[str, str]:
-    return {"status": "n_a", "reason": reason}
+def _na_cell(reason: str, *, code: str) -> dict[str, str]:
+    return {"status": "n_a", "reason": reason, "structural_code": code,
+            "structural_marker": STRUCTURAL_NA_MARKERS[code],
+            "structural_source": "coverage:endpoint_kind"}
 
 
 def _empty_cells(
@@ -662,20 +664,19 @@ def _empty_cells(
     # `/rest/admin × 15 类` 这种虚假 coverage gap 干扰专家循环；真实子端点
     # 仍保留为独立行继续验证。
     if kind == "minified_js_pseudo" or "minified_js_pseudo" in hints:
+        code = "minified_js_property_chain"
         reason = "minified JS property-chain artifact; not an HTTP handler endpoint"
     elif kind == "route_prefix":
+        code = "route_prefix"
         reason = "route prefix/container; AI-triaged as not a direct replay endpoint"
 
     if reason:
-        return {vc: _na_cell(reason) for vc in VULN_CLASSES}
+        return {vc: _na_cell(reason, code=code) for vc in VULN_CLASSES}
     return {vc: {"status": "untested"} for vc in VULN_CLASSES}
 
 
 def _is_auto_applicability_na(cell: dict) -> bool:
-    if cell.get("status") != "n_a":
-        return False
-    reason = str(cell.get("reason") or "")
-    return any(marker in reason for marker in AUTO_APPLICABILITY_NA_MARKERS)
+    return is_structural_na(cell)
 
 
 def _apply_endpoint_applicability(ep: dict, endpoint_kind: str) -> None:
@@ -1344,24 +1345,16 @@ def _rebuild_matrix_unlocked(
         # scanner metadata on open cells without promoting it to closure.
         cells = endpoint["cells"]
         for family, cell in cells.items():
-            if cell.get("status") != "untested":
+            if cell.get("status") != "untested" and not is_structural_na(cell):
                 endpoint.setdefault("historical_cells", {}).setdefault(family, dict(cell))
         endpoint["cells"] = {
             family: dict(cells[family])
-            if cells.get(family, {}).get("status") == "untested"
+            if cells.get(family, {}).get("status") == "untested" or is_structural_na(cells.get(family, {}))
             else {"status": "untested"}
             for family in VULN_CLASSES
         }
     # Identity-scoped v2 and exact query/hash closure stay scoped in
     # closure_projection; never widen them to the path/family grid.
-    for cell in truth["projection"].get("closed_cells") or []:
-        family = str(cell.get("vuln_class") or "")
-        endpoint = _canonicalize_endpoint(str(cell.get("endpoint") or ""))
-        if (endpoint and endpoint == cell.get("endpoint")
-                and family in VULN_CLASSES and cell.get("result") in STATUS_VALUES):
-            _ensure_endpoint(endpoints, endpoint)["cells"][family] = {
-                "status": cell["result"], "evidence_ref": cell.get("evidence_ref", ""),
-            }
     new_endpoints = list(endpoints.values())
     matrix["endpoints"] = new_endpoints
     for ep in new_endpoints:

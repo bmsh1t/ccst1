@@ -82,6 +82,12 @@ The native platform owns Skill discovery and loading. Queue/Store do not require
 Skill routes, inspect Skill files or prescribe method dimensions. Knowledge cards
 retain `tools/knowledge_registry.py`; Context Pack adds no second registry.
 
+Cached JS and source are read through native Read/Grep, without materials, reader
+wrappers or local cognitive extractors. Live `/intel` retains its independent
+advisory/version/provider/freshness contract. Observation residuals can prevent
+an exhaustion claim without creating a mandatory next action; the current
+session can end within budget while keeping those residuals visible.
+
 ## Domain Facts and Ownership
 
 | Concept | Durable meaning | Not its responsibility |
@@ -352,3 +358,49 @@ New domain facts or invariants require focused owner, transaction and consumer
 tests. Module boundaries follow real responsibilities, not line-count targets.
 No ORM, generic repository framework, event bus, event-sourcing runtime, database
 service or duplicate Agent capability is required.
+
+## Stable-kernel clarification (2026-09-30)
+
+This section supersedes earlier v2 closure and all-or-nothing local-damage
+wording. Identity v3 preserves absolute asset URL, explicit method, technique
+and bounded declared conditions. Attempt/step identifies an execution occurrence;
+conditions identify comparability; path/family views identify presentation groups.
+They are not interchangeable. Historical v2 stays readable but cannot authorize
+closure without an explicit evidence-bound replacement. No silent upgrade or
+family-policy interpreter is introduced. Identical declarations do not establish
+semantic sufficiency. Native multi-step evidence explicitly selects subject_step;
+only an unambiguous single match can omit it.
+
+For complete snapshots with identifiable damaged operations, suppress their
+current closures after history reduction; never drop bad input and revive an
+older conclusion. Damage includes controls in the same operation. Unknown
+identities or truncated snapshots remain global integrity failures. Negative
+results are condition-bound; stopping or deprioritizing work is not refutation.
+
+Object inference, Recon business-value scoring/category quotas and the old learn
+backend are retired. Inventory, source references, stable pagination and execution
+budgets remain. The protected Checkpoint caller retains a no-I/O retired seed
+adapter, not an object detector. Knowledge/Skill method content is outside this
+refactor; its loading/storage boundaries change, not its substance.
+
+Installation and synchronization share runtime_doctor and a hash-based ownership
+receipt. Only unchanged owned retired files can be removed. Unknown legacy files,
+local modifications and unsafe paths are preserved with diagnostics. Disabled
+commands stay disabled. No repo-wide deletion runs over shared user directories.
+
+### Execution guarantee boundaries
+
+| Entry/boundary | Actual guarantee | Not guaranteed |
+|---|---|---|
+| Validation Runner HTTP | Initial and redirected target/Scope checks before send; explicit side-effect declaration gate | Inferring all side effects from arbitrary requests |
+| AuthSession | Credential replay bound to target/allowed origins and saved Scope | General network isolation |
+| Hunt request telemetry | Advisory throttling and observations; authenticated redirect strips credentials outside its credential boundary | Universal scope enforcement or sandboxing |
+| Native evidence registration | Target-owned references, identity/subject checks and atomic metadata | Preventing an already executed request |
+| Native shell/browser/MCP | Restrictions supplied by platform permissions and deployment network/process isolation | Enforcement by this repository on unrestricted platform tools |
+
+Do not label an unrestricted deployment as constrained. Use platform execution
+permissions for operations requiring approval, rather than inventing a command
+parser or semantic danger classifier in this project. Scope/Auth checks remain
+necessary within project executors; post-hoc evidence checks never substitute for
+them. Engineering regressions establish these guarantees, not model capability
+gains or exhaustive discovery.

@@ -52,8 +52,7 @@ python3 tools/context_pack.py --target <target>
    - `recon/<target>/browser/xhr_endpoints.txt`
    - `recon/<target>/browser/api_endpoints.txt`
    - `recon/<target>/browser/browser_params.txt`
-   - `findings/<target>/js_intel/hypotheses.json`
-   - `findings/<target>/source_intel/routes.json`
+   - raw JS/source paths surfaced as `must_read` references
 6. 从 Store observation 和当前材料完整性检查生成只读证据摘要。
 7. 从 `knowledge/capabilities.yaml` 发布知识卡目录；Skill 发现使用 Claude Code 原生目录。
 8. 输出证据锚点、已记录的 Actor Matrix 缺口、未知项、矛盾点和 owner 写回入口。

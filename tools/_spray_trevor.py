@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""将 TREVORspray 文本流转换为脱敏、逐事件可解析的 JSONL。"""
+"""将 TREVORspray 文本流转换为保留原值、逐事件可解析的 JSONL。"""
 
 from __future__ import annotations
 
@@ -254,7 +254,7 @@ def build_attempt_event(line: str, *, mode: str, passwords: tuple[str, ...]) -> 
         "user": _extract_user(parsed, line),
         **classification,
         "pwd_sha256_prefix": _password_hash_for_line(line, passwords),
-        "raw": redact_passwords(line.rstrip("\r\n"), passwords),
+        "raw": line.rstrip("\r\n"),
     }
 
 

@@ -13,7 +13,7 @@ from tools.target_store import StoreError, TargetStore, initialize_target_store
 
 def test_plain_summary_derives_from_projection_fields():
     state = {
-        "priority_frontier": [{"action": "probe /rest/basket/1"}],
+        "owner_continuations": [{"action": "probe /rest/basket/1"}],
         "hard_gate": {"action": "resume_action_queue"},
         "runtime_derived": {"queue": {"active": 3}},
     }
@@ -22,7 +22,7 @@ def test_plain_summary_derives_from_projection_fields():
     assert "resume_action_queue" in summary
     assert "3 active" in summary
     # 一致性：frontier 首项与 hard_gate 都出现在摘要里
-    assert state["priority_frontier"][0]["action"] in summary
+    assert state["owner_continuations"][0]["action"] in summary
     assert state["hard_gate"]["action"] in summary
 
 

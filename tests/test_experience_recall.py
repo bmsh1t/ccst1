@@ -350,3 +350,131 @@ def test_truncation_marker_boundary_is_exact(tmp_path: Path) -> None:
         assert view["target_page"]["remaining"] == stored - want_count
         assert view["counts"]["target_entries"] == want_count, stored
         assert view["counts"]["truncated_windows"] == want_marker, stored
+
+
+def test_knowledge_window_exposes_catalog_and_late_damage(tmp_path, capsys):
+    _seed(tmp_path)
+    registry = tmp_path / 'knowledge' / 'capabilities.yaml'
+    with registry.open('a') as out:
+        for index in range(12):
+            card_id = f'zz-card-{index:02}'
+            out.write(f'  - id: {card_id}\n    kind: card\n'
+                      f'    file: knowledge/cards/{card_id}.md\n'
+                      '    layer: case-router\n    load: on-demand\n    purpose: validate\n'
+                      '    triggers: [basket]\n')
+            if index < 11:
+                (tmp_path / 'knowledge' / 'cards' / f'{card_id}.md').write_text(
+                    f'---\nid: {card_id}\ntrigger_tags: [basket]\n---\nbody')
+    before = registry.read_bytes()
+    view = build_recall_view(tmp_path, target='t.example', kinds=['knowledge_card'])
+    health = view['source_health']['knowledge']
+    assert len(view['knowledge_cards']) == 10
+    assert health['registered_count'] == 13
+    assert health['matched_count'] == 12 and health['remaining'] == 2
+    assert health['status'] == 'partial' and health['invalid_count'] == 1
+    assert view['counts']['truncated_windows'] == 1
+    assert Path(health['catalog_ref']).read_bytes() == before
+    assert 'zz-card-10' in Path(health['catalog_ref']).read_text()
+    miss = build_recall_view(tmp_path, target='t.example', query='支付回调')
+    assert miss['knowledge_cards'] == []
+    assert miss['source_health']['knowledge']['filter'] == 'keyword_only'
+    assert miss['source_health']['knowledge']['registered_count'] == 13
+    assert main(['--repo-root', str(tmp_path), '--target', 't.example', '--query', '支付回调']) == 0
+    assert str(registry) in capsys.readouterr().out
+    assert registry.read_bytes() == before
+
+
+@pytest.mark.parametrize("limit", [5, 20])
+def test_current_handoff_survives_history_window_and_does_not_revive_old_intent(tmp_path, monkeypatch, limit):
+    from tools import target_memory, target_store
+
+    store = TargetStore(tmp_path, "handoff.test")
+    store.initialize()
+    empty = target_memory.load_goal_memory(tmp_path, store.target, experience_limit=limit)
+    assert empty["target"]["current_handoff"] is None
+    assert empty["target"]["next_actions"] == []
+    assert empty["recent_entries"] == []
+    store.create_action(command_id="create", action_id="old-action", intent="Old work",
+                        execution_key="old", actor="test", kind="work", subject={"target": store.target})
+    store.transition_action(command_id="cancel", action_id="old-action", expected_version=1,
+                            status="cancelled", reason="No longer needed", actor="test")
+    queue_before = store.action_page()["items"]
+    monkeypatch.setattr(target_store, "_now", lambda: "2026-09-30T00:00:00Z")
+
+    def remember(entry_id, kind="handoff", intent=""):
+        store.remember(command_id=entry_id, kind=kind, statement=f"Saved {entry_id}",
+                       conditions="saved evidence", reopen_when="", next_intent=intent,
+                       evidence=[], actor="test")
+
+    remember("handoff-a", intent="Old intent")
+    remember("handoff-b", intent="Current intent")
+    view = target_memory.load_goal_memory(tmp_path, store.target, experience_limit=limit)
+    assert view["target"]["current_handoff"]["entry_id"] == "handoff-b"
+    assert [e["text"] for e in view["target"]["next_actions"]] == ["Current intent"]
+    assert {e["entry_id"] for e in view["target"]["session_handoffs"]} == {"handoff-a", "handoff-b"}
+    from tools.context_pack import build_context_pack, format_context_pack
+    from tools.resume_read import load_resume_summary
+    from tools.resume import format_resume_output
+
+    current_pack = build_context_pack(tmp_path, target=store.target)
+    assert [e["text"] for e in current_pack["target_experiences"]["next_actions"]] == ["Current intent"]
+    assert any("Current next intent (advisory, not Queue): Current intent" == anchor
+               for anchor in current_pack["evidence_anchors"])
+    assert not any("Old intent" in anchor for anchor in current_pack["evidence_anchors"])
+    remember("handoff-c")
+    for index in range(limit + 1):
+        remember(f"note-{index:03}", kind="note", intent="Note is not a handoff")
+    before = store.binding()
+    view = target_memory.load_goal_memory(tmp_path, store.target, experience_limit=limit)
+    assert view["target"]["current_handoff"]["entry_id"] == "handoff-c"
+    assert view["target"]["next_actions"] == []
+    assert view["target"]["session_handoffs"] == []
+    assert len(view["recent_entries"]) == limit
+    window = view["source"]["experience_window"]
+    assert window["total"] == limit + 4 and window["remaining"] == 4
+    history = store.experience_page(limit=limit, cursor=window["next_cursor"])
+    assert {e["id"] for e in history["items"]} >= {"handoff-a", "handoff-b", "handoff-c"}
+    assert store.experience("handoff-a")["next_intent"] == "Old intent"
+    rendered = target_memory.show(target_memory.build_parser().parse_args(
+        ["show", store.target, "--repo-root", str(tmp_path)]))
+    assert "Current handoff: [handoff-c]" in rendered
+    assert "Current next intent: None" in rendered
+    assert "bounded history; historical intents are not pending actions" in rendered
+    pack = build_context_pack(tmp_path, target=store.target)
+    resume = load_resume_summary(tmp_path / "hunt-memory", store.target, repo_root=tmp_path)
+    for memory, output in [
+        (pack["target_experiences"], format_context_pack(pack)),
+        (resume["target_memory"], format_resume_output(resume, store.target)),
+    ]:
+        assert memory["current_handoff"] == view["target"]["current_handoff"]
+        assert memory["next_actions"] == []
+        assert "Current handoff: [handoff-c]" in output
+        assert "Current next intent: None" in output
+        assert "Old intent" not in output
+    assert store.action_page()["items"] == queue_before
+    assert store.binding() == before
+
+
+def test_current_handoff_and_history_share_snapshot_during_writer_commit(tmp_path, monkeypatch):
+    store = TargetStore(tmp_path, "handoff.test")
+    store.initialize()
+    before = store.binding()
+    original = store._experience_page_conn
+    wrote = False
+
+    def concurrent_write(conn, meta, **kwargs):
+        nonlocal wrote
+        page = original(conn, meta, **kwargs)
+        if not wrote:
+            wrote = True
+            store.remember(command_id="new-handoff", kind="handoff", statement="New progress",
+                           conditions="new session", reopen_when="", next_intent="New intent",
+                           evidence=[], actor="test")
+        return page
+
+    monkeypatch.setattr(store, "_experience_page_conn", concurrent_write)
+    context = store.memory_context(limit=5)
+    assert context["current_handoff"] is None
+    assert context["experiences"]["items"] == []
+    assert context["revision"] == context["experiences"]["revision"] == before["revision"]
+    assert store.memory_context()["current_handoff"]["id"] == "new-handoff"

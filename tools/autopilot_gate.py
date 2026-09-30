@@ -1,18 +1,13 @@
 #!/usr/bin/env python3
-"""Autopilot frontier/gate projections (extracted module).
+"""Autopilot governance projections.
 
-从 autopilot_state.py 纯搬动（零逻辑变更，09-11-simple-efficient-refactor 批次 7）：
-priority frontier 构建、actionable frontier、hard gate 投影与 closure reason
-frontier。autopilot_state 保留 re-export。
+Only explicit owner continuations and mechanical hard gates are projected;
+observations remain input for the AI session, not machine-authored work.
 """
 
 from __future__ import annotations
 
-import json
-import re
-
 try:
-    from tools.autopilot_loop_guard import HIGH_VALUE_OBSERVATION_KINDS
     from tools.autopilot_state_read import _scanner_lane_accounting
     from tools.coverage_matrix import (
         coverage_gaps_with_observed_evidence,
@@ -20,7 +15,6 @@ try:
     )
     from tools.target_paths import compact_url, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from autopilot_loop_guard import HIGH_VALUE_OBSERVATION_KINDS  # type: ignore
     from autopilot_state_read import _scanner_lane_accounting  # type: ignore
     from coverage_matrix import (  # type: ignore
         coverage_gaps_with_observed_evidence,
@@ -34,8 +28,6 @@ _CLOSURE_REASON_OWNERS = {
     "finding_work_pending": {"finding", "finding-claim", "target-memory"},
     "case_state_work_pending": {"case_state"},
     "actor_context_required": {"case_state"},
-    "surface_projection_pending": {"surface", "surface-context"},
-    "surface_work_pending": {"surface"},
     "recon_phase_partial": {"recon"},
     "recon_phase_review_required": {"checkpoint"},
     "scanner_lane_review_required": {"checkpoint"},
@@ -43,14 +35,7 @@ _CLOSURE_REASON_OWNERS = {
     "coverage_empty": {"coverage"},
     "coverage_invalid": {"coverage"},
     "coverage_stale": {"coverage"},
-    "coverage_high_value_gaps": {"coverage"},
     "coverage_ledger_evidence_missing": {"evidence-ledger"},
-    "observation_inventory_partial": {"observation"},
-    "observation_high_value_pending": {"observation"},
-    "browser_evidence_partial": {"browser"},
-    "browser_evidence_required": {"browser"},
-    "source_evidence_partial": {"source-intel"},
-    "js_evidence_partial": {"js-intel"},
     "json_evidence_partial": {"json-inject"},
     "json_candidate_pending": {"json-inject"},
     "sql_evidence_partial": {"sql-matrix"},
@@ -203,23 +188,6 @@ def _scanner_lane_residuals(state: dict) -> list[dict]:
         })
     return sorted(residuals, key=lambda item: item["lane"])
 
-def _observation_partial_reason(state: dict) -> str:
-    """Return the bounded Observation prerequisite after actionable lanes."""
-    inventory = state.get("observation_inventory") or {}
-    inventory_status = str(inventory.get("status") or "")
-    if inventory_status and inventory_status != "valid":
-        return "observation_inventory_partial"
-    by_kind = inventory.get("by_kind") if isinstance(inventory.get("by_kind"), dict) else {}
-    for kind in HIGH_VALUE_OBSERVATION_KINDS:
-        try:
-            untouched = int((by_kind.get(kind) or {}).get("present_untouched", 0) or 0)
-        except (TypeError, ValueError):
-            untouched = 0
-        if untouched > 0:
-            return "observation_high_value_pending"
-    return ""
-
-
 def _hard_gate_projection(state: dict) -> dict:
     """Return only target-state conditions that forbid cross-owner arbitration."""
     action = str(state.get("next_action") or "")
@@ -264,7 +232,6 @@ def _frontier_item(
     expected_information_gain: str,
     stop_condition: str,
     item_id: str = "",
-    priority: int | None = None,
 ) -> dict:
     """Build a bounded read-only action handoff from an existing owner."""
     item = {
@@ -277,8 +244,6 @@ def _frontier_item(
         )[:300],
         "stop_condition": " ".join(str(stop_condition or "").split())[:300],
     }
-    if priority is not None:
-        item["priority"] = int(priority or 0)
     return item
 
 
@@ -288,7 +253,11 @@ def _build_actionable_frontier(
     *,
     limit: int | None = None,
 ) -> list[dict]:
-    """Project executable work without creating a second state owner."""
+    """Expose only explicit owner claims and durable continuations.
+
+    Raw observations, coverage gaps, surface candidates, and browser readiness
+    remain views/residuals; they never become controller-authored work here.
+    """
     target = str(state.get("resolved_target") or state.get("target") or "")
     frontier: list[dict] = []
 
@@ -305,203 +274,57 @@ def _build_actionable_frontier(
                 or queue_next.get("evidence")
                 or f"state/{target_storage_key(target)}/metadata.sqlite3"
             ),
-            expected_information_gain=str(
-                queue_next.get("next_question")
-                or "resolve the queued evidence question"
-            ),
-            stop_condition=str(
-                queue_next.get("stop_condition")
-                or "record a terminal owner result or a bounded blocker"
-            ),
-            priority=int(queue_next.get("priority", 0) or 0),
+            expected_information_gain=str(queue_next.get("next_question") or "resolve the queued evidence question"),
+            stop_condition=str(queue_next.get("stop_condition") or "record a terminal owner result or a bounded blocker"),
         ))
 
     findings = state.get("structured_findings") if isinstance(state.get("structured_findings"), dict) else {}
-    for key, label in (
-        ("next_owner_revalidation", "revalidate finding owner"),
-        ("next_validation", "validate finding"),
-        ("next_draft_completion", "complete finding report draft"),
-        ("next_report", "report validated finding"),
-    ):
+    for key, label in (("next_owner_revalidation", "revalidate finding owner"), ("next_validation", "validate finding"), ("next_draft_completion", "complete finding report draft"), ("next_report", "report validated finding")):
         finding = findings.get(key) if isinstance(findings.get(key), dict) else {}
         if not finding:
             continue
         finding_id = str(finding.get("id") or "")
-        evidence_ref = str(
-            finding.get("evidence_ref")
-            or finding.get("source_file")
-            or (
-                f"state/{target_storage_key(target)}/metadata.sqlite3#{finding_id}"
-                if finding_id else f"state/{target_storage_key(target)}/metadata.sqlite3"
-            )
-        )
         frontier.append(_frontier_item(
             owner="finding",
             item_id=finding_id,
-            action=str(
-                finding.get("required_action")
-                or finding.get("action")
-                or label
-            ),
-            evidence_ref=evidence_ref,
-            expected_information_gain=str(
-                finding.get("next_question")
-                or finding.get("missing_evidence")
-                or "resolve the finding evidence gate"
-            ),
-            stop_condition=str(
-                finding.get("downgrade_rule")
-                or "record validated, candidate, dead-end, or blocked owner state"
-            ),
-            priority=100 if key in {"next_owner_revalidation", "next_validation"} else 90,
+            action=str(finding.get("required_action") or finding.get("action") or label),
+            evidence_ref=str(finding.get("evidence_ref") or finding.get("source_file") or f"state/{target_storage_key(target)}/metadata.sqlite3#{finding_id}"),
+            expected_information_gain=str(finding.get("next_question") or finding.get("missing_evidence") or "resolve the finding evidence gate"),
+            stop_condition=str(finding.get("downgrade_rule") or "record validated, candidate, dead-end, or blocked owner state"),
         ))
         break
 
-    case_state = state.get("case_state") if isinstance(state.get("case_state"), dict) else {}
-    # Case 不再携带行动或评分：它进入 frontier 只因为自己的上下文义务（未决假设）。
-    # 行动来源由 action_queue / 唯一行动源的投影负责。
-    if int(case_state.get("open_hypotheses", 0) or 0) > 0:
-        frontier.append(_frontier_item(
-            owner="case_state",
-            item_id="open-hypothesis",
-            action="Resolve the next open Case State hypothesis",
-            evidence_ref=str(
-                case_state.get("path")
-                or f"state/{target_storage_key(target)}/metadata.sqlite3"
-            ),
-            expected_information_gain="turn the hypothesis into bounded actor, object, or replay evidence",
-            stop_condition="record a bounded hypothesis result or an explicit blocker",
-            priority=95,
-        ))
-
-    observation_inventory = state.get("observation_inventory") if isinstance(state.get("observation_inventory"), dict) else {}
-    observation_reason = _observation_partial_reason(state)
-    if observation_reason:
-        target = str(state.get("resolved_target") or state.get("target") or "")
-        if observation_reason == "observation_high_value_pending":
-            action = "Review the bounded high-value Observation inventory sample"
-            expected_information_gain = "turn exposure/infra observations into a target-owned action or explicit disposition"
-            stop_condition = "touch, review, park, or enqueue each sampled observation; never infer tested-clean from omission"
-        else:
-            action = "Synchronize or repair the target-owned Observation inventory"
-            expected_information_gain = "restore a valid bound summary and expose the bounded untouched sample"
-            stop_condition = "publish a valid inventory summary or record the missing, stale, or invalid blocker"
-        frontier.append(_frontier_item(
-            owner="observation",
-            item_id=observation_reason,
-            action=action,
-            evidence_ref=str(
-                observation_inventory.get("summary_path")
-                or f"state/{target_storage_key(target)}/observations-summary.json"
-            ),
-            expected_information_gain=expected_information_gain,
-            stop_condition=stop_condition,
-            priority=72,
-        ))
-
-    gaps = _actionable_coverage_gaps(matrix) if isinstance(matrix, dict) else []
-    if gaps:
-        gap = gaps[0]
-        coverage_endpoint = str(gap.get("endpoint") or "")
-        endpoint = str(gap.get("representative_endpoint") or coverage_endpoint)
-        vuln_class = str(gap.get("vuln_class") or "")
-        frontier.append(_frontier_item(
-            owner="coverage",
-            item_id=f"{vuln_class}:{coverage_endpoint}",
-            action=f"Review the high-value {vuln_class} coverage gap at {endpoint}",
-            evidence_ref=str(
-                state.get("_coverage_evidence_ref")
-                or f"evidence/{target_storage_key(target)}/coverage_matrix.json"
-            ),
-            expected_information_gain=(
-                f"obtain a disposition for {vuln_class} on {coverage_endpoint}"
-            ),
-            stop_condition="record tested, blocked, dead-end, not_applicable, or candidate with evidence",
-            priority=80,
-        ))
-
-    json_inject = state.get("json_inject") if isinstance(state.get("json_inject"), dict) else {}
-    if str(json_inject.get("status") or "") in {"partial", "invalid_input", "candidate_pending"}:
-        frontier.append(_frontier_item(
-            owner="json-inject",
-            action="Resume the bounded JSON input evidence lane",
-            evidence_ref=str(json_inject.get("path") or "findings/json_inject/summary.json"),
-            expected_information_gain="resolve the pending JSON response or candidate signal",
-            stop_condition="record candidate, tested-clean, dead-end, or the explicit input blocker",
-            priority=75,
-        ))
-    for lane, item in (state.get("sql_matrix") or {}).items():
-        if not isinstance(item, dict) or str(item.get("status") or "") not in {"partial", "invalid_input", "candidate_pending"}:
+    for owner, item, default_action, default_gain in (
+        ("validation-runner", state.get("validation_runner_next"), "review validation candidate", "apply the canonical evidence gate"),
+        ("finding-claim", state.get("root_finding_claim_next"), "register the Finding claim", "determine whether the claim enters the canonical lifecycle"),
+    ):
+        if not isinstance(item, dict) or not item:
             continue
+        item_id = str(item.get("id") or item.get("claim_id") or item.get("lane") or "")
         frontier.append(_frontier_item(
-            owner="sql-matrix",
-            item_id=str(lane),
-            action=f"Resume the bounded {lane} SQL evidence lane",
-            evidence_ref=str(item.get("path") or f"findings/sql_matrix/{lane}/summary.json"),
-            expected_information_gain="resolve the pending SQL response difference",
-            stop_condition="record candidate, tested-clean, dead-end, or the explicit input blocker",
-            priority=75,
-        ))
-    js_intel = state.get("js_intel") if isinstance(state.get("js_intel"), dict) else {}
-    if str(js_intel.get("status") or "") in {"prepared", "partial"}:
-        frontier.append(_frontier_item(
-            owner="js-intel",
-            action="Read and disposition the prepared JavaScript evidence",
-            evidence_ref=str(js_intel.get("path") or js_intel.get("hypotheses_path") or "findings/js_intel/materials.json"),
-            expected_information_gain="turn the prepared JS material into a bounded endpoint or parameter action",
-            stop_condition="record analyzed, blocked, dead-end, or not-applicable disposition",
-            priority=70,
-        ))
-    browser = state.get("browser_evidence") if isinstance(state.get("browser_evidence"), dict) else {}
-    if browser.get("present") and not browser.get("ready"):
-        frontier.append(_frontier_item(
-            owner="browser",
-            action="Repair or complete the existing browser evidence import",
-            evidence_ref=str(browser.get("path") or "findings/browser/mcp-readiness.json"),
-            expected_information_gain="persist the observed browser state and request evidence needed for replay",
-            stop_condition="import complete evidence or record the bounded browser blocker",
-            priority=70,
-        ))
-    source = state.get("repo_source_summary") if isinstance(state.get("repo_source_summary"), dict) else {}
-    if str(source.get("status") or "").lower() in {"partial", "blocked", "failed", "error", "incomplete", "confirmation_required"}:
-        artifacts = state.get("repo_source_artifacts") or []
-        target = str(state.get("resolved_target") or state.get("target") or "")
-        evidence_ref = str(
-            artifacts[0] if artifacts else f"findings/{target_storage_key(target)}/exposure/repo_source_meta.json"
-        )
-        if artifacts and not evidence_ref.startswith("findings/"):
-            evidence_ref = f"findings/{target_storage_key(target)}/exposure/{evidence_ref}"
-        frontier.append(_frontier_item(
-            owner="source-intel",
-            action="Complete or disposition the repository-source evidence review",
-            evidence_ref=evidence_ref,
-            expected_information_gain="resolve the source exposure status and any target-owned lead",
-            stop_condition="record source review complete, blocked, or confirmation-required",
-            priority=65,
+            owner=owner,
+            item_id=item_id,
+            action=str(item.get("next_action") or item.get("required_action") or default_action),
+            evidence_ref=str(item.get("summary_path") or item.get("source_file") or item.get("evidence_ref") or ""),
+            expected_information_gain=str(item.get("classifier") or item.get("title") or default_gain),
+            stop_condition="record the owner result or a bounded downgrade",
         ))
 
-    for hint in state.get("enrichment_hints") or []:
-        if not isinstance(hint, dict) or not hint.get("executable", True):
-            continue
-        tool = str(hint.get("tool") or "").strip()
-        if not tool or tool == "recon-ranker":
-            continue
+    continuation = (state.get("recon_artifacts") or {}).get("cidr_continuation") if isinstance((state.get("recon_artifacts") or {}).get("cidr_continuation"), dict) else {}
+    if continuation.get("status") in {"pending", "invalid"}:
+        status = str(continuation.get("status"))
         frontier.append(_frontier_item(
-            owner="enrichment",
-            action=tool,
-            evidence_ref=str(
-                hint.get("evidence_ref")
-                or hint.get("path")
-                or "enrichment_artifacts"
-            ),
-            expected_information_gain=str(hint.get("reason") or "produce the missing enrichment artifact"),
-            stop_condition="artifact is written and its owner disposition is recorded",
-            priority=60,
+            owner="recon",
+            item_id=f"cidr:{continuation.get('next_offset', status)}",
+            action=("Repair the invalid CIDR continuation before resuming Recon" if status == "invalid" else f"continue bounded CIDR recon from offset {continuation.get('next_offset', 0)}"),
+            evidence_ref=str(continuation.get("path") or f"recon/{target_storage_key(target)}/live/cidr_continuation.json"),
+            expected_information_gain=("repair the invalid CIDR cursor" if status == "invalid" else "cover the remaining target-owned CIDR hosts"),
+            stop_condition="advance or complete the durable cursor, or record its explicit blocker",
         ))
 
     deduped: list[dict] = []
     seen: set[tuple[str, str]] = set()
-    for item in sorted(frontier, key=lambda row: (-row["priority"], row["owner"], row["id"])):
+    for item in frontier:
         key = (str(item.get("owner") or ""), str(item.get("id") or item.get("action") or ""))
         if key in seen:
             continue
@@ -512,7 +335,7 @@ def _build_actionable_frontier(
 
 def _execution_frontier_item(item: dict, *, impact_hint: str = "") -> dict:
     """Remove controller ranking while retaining owner facts for AI arbitration."""
-    projected = {key: value for key, value in item.items() if key != "priority"}
+    projected = dict(item)
     owner = str(projected.get("owner") or "")
     projected.update({
         "lane": _FRONTIER_LANES.get(owner, "controller"),
@@ -552,7 +375,6 @@ def _closure_reason_frontier(
                 "from one stable snapshot"
             ),
             stop_condition="recompute Closure with a stable snapshot or record the owner blocker",
-            priority=100,
         )
     if reason in {
         "global_review_required",
@@ -569,17 +391,6 @@ def _closure_reason_frontier(
                 "reconcile the completed target Surface, Coverage, Ledger, Finding, and residual unknowns"
             ),
             stop_condition="record complete/follow_up review with current evidence or a bounded blocker",
-            priority=75,
-        )
-    if reason == "surface_projection_pending":
-        projection = state.get("surface_projection") if isinstance(state.get("surface_projection"), dict) else {}
-        return _frontier_item(
-            owner="surface",
-            action="Refresh the target-owned Surface projection",
-            evidence_ref=str(projection.get("path") or "surface_projection"),
-            expected_information_gain="restore the bounded Surface index used for review",
-            stop_condition="publish a valid projection or record the source blocker",
-            priority=60,
         )
     if reason in {"durable_work_pending"}:
         return _frontier_item(
@@ -589,7 +400,6 @@ def _closure_reason_frontier(
             evidence_ref=f"state/{target_key}/metadata.sqlite3",
             expected_information_gain="resolve the selected owner-backed Queue action",
             stop_condition="record a terminal Queue result or bounded blocker",
-            priority=85,
         )
     if reason in {"case_state_work_pending", "actor_context_required"}:
         case_state = state.get("case_state") if isinstance(state.get("case_state"), dict) else {}
@@ -606,7 +416,6 @@ def _closure_reason_frontier(
                 "record two distinct usable sessions, or an evidence-backed blocked/not-applicable "
                 "disposition; never synthesize credentials"
             ),
-            priority=85,
         )
     if reason in {"checkpoint_stale", "checkpoint_invalid"}:
         return _frontier_item(
@@ -616,7 +425,6 @@ def _closure_reason_frontier(
             evidence_ref=f"state/{target_key}/checkpoint_latest.json",
             expected_information_gain="restore a trusted checkpoint binding for round and queue recovery",
             stop_condition="publish a valid witness or record the checkpoint read/queue mismatch",
-            priority=85,
         )
     if reason == "recon_phase_partial":
         phase, gate, bounded = _blocking_recon_phase_gate(state)
@@ -648,7 +456,6 @@ def _closure_reason_frontier(
                 f"record {phase} with remaining=0 or an explicit owner-backed disposition, "
                 "then recompute Closure"
             ),
-            priority=85,
         )
     if reason == "recon_phase_review_required":
         residuals = _recon_phase_residuals(state, closure_blocking=False)
@@ -674,7 +481,6 @@ def _closure_reason_frontier(
                 f"record {item['review_token']} in the current global review or "
                 "create an owner-backed follow-up Queue action"
             ),
-            priority=84,
         )
     if reason == "scanner_lane_review_required":
         residuals = _scanner_lane_residuals(state)
@@ -697,7 +503,6 @@ def _closure_reason_frontier(
                 f"record {item['review_token']} in the current global review or "
                 "create an owner-backed validation Queue action"
             ),
-            priority=83,
         )
     if reason in {
         "runtime_phase_active",
@@ -746,7 +551,6 @@ def _closure_reason_frontier(
             ),
             expected_information_gain=expected_information_gain,
             stop_condition=stop_condition,
-            priority=85,
         )
     if reason == "finding_work_pending":
         return _frontier_item(
@@ -756,44 +560,8 @@ def _closure_reason_frontier(
             evidence_ref=f"state/{target_key}/metadata.sqlite3",
             expected_information_gain="resolve the pending Finding lifecycle state",
             stop_condition="record validated, candidate, dead-end, or blocked owner state",
-            priority=85,
-        )
-    if reason in {"surface_work_pending"}:
-        projection = state.get("surface_projection") if isinstance(state.get("surface_projection"), dict) else {}
-        return _frontier_item(
-            owner="surface",
-            item_id=reason,
-            action="Review the currently bound target-owned Surface continuation",
-            evidence_ref=str(projection.get("path") or "surface_projection"),
-            expected_information_gain="turn the retained Surface lead into a concrete owner action or disposition",
-            stop_condition="record evidence-backed Queue/Ledger disposition or defer without tested-clean",
-            priority=80,
         )
     evidence_specs = {
-        "observation_inventory_partial": (
-            "observation", "Synchronize or repair the target-owned Observation inventory",
-            f"state/{target_key}/observations-summary.json",
-        ),
-        "observation_high_value_pending": (
-            "observation", "Review the bounded high-value Observation inventory sample",
-            f"state/{target_key}/observations-summary.json",
-        ),
-        "browser_evidence_partial": (
-            "browser", "Repair or complete the existing browser evidence import",
-            "findings/browser/mcp-readiness.json",
-        ),
-        "browser_evidence_required": (
-            "browser", "Complete the browser evidence required for this surface",
-            "findings/browser/mcp-readiness.json",
-        ),
-        "source_evidence_partial": (
-            "source-intel", "Complete or disposition the repository-source evidence review",
-            f"findings/{target_key}/exposure/repo_source_meta.json",
-        ),
-        "js_evidence_partial": (
-            "js-intel", "Read and disposition the prepared JavaScript evidence",
-            f"findings/{target_key}/js_intel/materials.json",
-        ),
         "json_evidence_partial": (
             "json-inject", "Resume the bounded JSON input evidence lane",
             "findings/json_inject/summary.json",
@@ -848,7 +616,6 @@ def _closure_reason_frontier(
             evidence_ref=evidence_ref,
             expected_information_gain="restore the owner evidence needed for deterministic Closure",
             stop_condition="record a complete owner result or bounded blocker, then recompute Closure",
-            priority=80,
         )
     if reason == "next_action_pending" and current_action not in {"", "handoff"}:
         owner = {
@@ -879,9 +646,8 @@ def _closure_reason_frontier(
                 evidence_ref=f"state/{target_key}/session.json",
                 expected_information_gain="resolve the selected owner action",
                 stop_condition="record the owner result or a bounded blocker, then recompute Closure",
-                priority=85,
             )
-    if reason in {"coverage_missing", "coverage_empty", "coverage_invalid", "coverage_high_value_gaps"}:
+    if reason in {"coverage_missing", "coverage_empty", "coverage_invalid"}:
         return _frontier_item(
             owner="coverage",
             item_id=reason,
@@ -892,261 +658,22 @@ def _closure_reason_frontier(
             ),
             expected_information_gain="restore a valid bounded coverage projection",
             stop_condition="record the rebuild as complete or blocked with its reason",
-            priority=80,
         )
     return None
 
 
-def _build_priority_frontier(
+def _build_owner_continuations(
     state: dict,
     ranked: dict | None = None,
     *,
     actionable_frontier: list[dict] | None = None,
 ) -> list[dict]:
-    """Expose bounded owner heads for cross-owner AI selection without new state."""
-    target = str(state.get("resolved_target") or state.get("target") or "")
-    queue_next = (
-        state.get("action_queue_next")
-        if isinstance(state.get("action_queue_next"), dict)
-        else {}
-    )
-    structured = (
-        state.get("structured_findings")
-        if isinstance(state.get("structured_findings"), dict)
-        else {}
-    )
-
-    other_items: list[dict] = []
-    if actionable_frontier is None:
-        actionable_frontier = _build_actionable_frontier(state, None, limit=None)
-    for item in actionable_frontier:
-        owner = str(item.get("owner") or "")
-        impact_hint = ""
-        if owner == "action_queue":
-            metadata = (
-                queue_next.get("metadata")
-                if isinstance(queue_next.get("metadata"), dict)
-                else {}
-            )
-            impact_hint = str(
-                metadata.get("business_impact")
-                or metadata.get("expected_learning")
-                or queue_next.get("next_question")
-                or queue_next.get("evidence")
-                or ""
-            )
-        elif owner == "finding":
-            finding_id = str(item.get("id") or "")
-            finding = next(
-                (
-                    structured.get(key)
-                    for key in (
-                        "next_owner_revalidation",
-                        "next_validation",
-                        "next_draft_completion",
-                        "next_report",
-                    )
-                    if isinstance(structured.get(key), dict)
-                    and str(structured[key].get("id") or "") == finding_id
-                ),
-                {},
-            )
-            impact_hint = " ".join(
-                str(finding.get(key) or "")
-                for key in ("severity", "confidence", "title", "impact")
-                if finding.get(key)
-            )
-        elif owner == "case_state":
-            # Case 的 head 是上下文义务，不是行动投影：直接用它的义务描述。
-            impact_hint = str(item.get("expected_information_gain") or "")
-        other_items.append(
-            _execution_frontier_item(item, impact_hint=impact_hint)
-        )
-
-    runner = (
-        state.get("validation_runner_next")
-        if isinstance(state.get("validation_runner_next"), dict)
-        else {}
-    )
-    if runner:
-        other_items.append(_execution_frontier_item(_frontier_item(
-            owner="validation-runner",
-            item_id=str(runner.get("id") or runner.get("lane") or ""),
-            action=str(
-                runner.get("next_action")
-                or "review validation candidate and apply the canonical evidence gate"
-            ),
-            evidence_ref=str(runner.get("summary_path") or runner.get("evidence_ref") or ""),
-            expected_information_gain=str(
-                runner.get("classifier")
-                or "determine whether the runner evidence supports canonical validation"
-            ),
-            stop_condition="validate through the Finding owner or record a bounded downgrade",
-        ), impact_hint=str(
-            runner.get("vuln_class")
-            or runner.get("evidence_shape")
-            or runner.get("result")
-            or ""
-        )))
-
-    root_claim = (
-        state.get("root_finding_claim_next")
-        if isinstance(state.get("root_finding_claim_next"), dict)
-        else {}
-    )
-    if root_claim:
-        other_items.append(_execution_frontier_item(_frontier_item(
-            owner="finding-claim",
-            item_id=str(root_claim.get("id") or root_claim.get("claim_id") or ""),
-            action="collect locatable evidence and explicitly register the Finding claim",
-            evidence_ref=str(root_claim.get("source_file") or root_claim.get("claim_source_file") or ""),
-            expected_information_gain="determine whether the claim can enter the canonical Finding lifecycle",
-            stop_condition="record a canonical candidate or reject the unsupported claim",
-        ), impact_hint=str(root_claim.get("title") or root_claim.get("severity") or "")))
-
-    continuation = (
-        (state.get("recon_artifacts") or {}).get("cidr_continuation")
-        if isinstance((state.get("recon_artifacts") or {}).get("cidr_continuation"), dict)
-        else {}
-    )
-    if continuation.get("status") in {"pending", "invalid"}:
-        continuation_status = str(continuation.get("status") or "pending")
-        continuation_action = (
-            "Repair the invalid CIDR continuation before resuming Recon"
-            if continuation_status == "invalid"
-            else f"continue bounded CIDR recon from offset {continuation.get('next_offset', 0)}"
-        )
-        other_items.append(_execution_frontier_item(_frontier_item(
-            owner="recon",
-            item_id=f"cidr:{continuation.get('next_offset', continuation_status)}",
-            action=continuation_action,
-            evidence_ref=str(continuation.get("path") or f"recon/{target_storage_key(target)}/live/cidr_continuation.json"),
-            expected_information_gain=(
-                "repair the invalid CIDR cursor and resume target-owned Recon coverage"
-                if continuation_status == "invalid"
-                else f"cover the remaining {continuation.get('remaining_hosts', 'unknown')} CIDR hosts"
-            ),
-            stop_condition=(
-                "publish a valid cursor or record the bounded Recon blocker"
-                if continuation_status == "invalid"
-                else "advance or complete the durable cursor, or record its explicit blocker"
-            ),
-        ), impact_hint="remaining target-owned CIDR coverage"))
-
-    intel = (
-        state.get("intel_continuation")
-        if isinstance(state.get("intel_continuation"), dict)
-        else {}
-    )
-    intel_action = str(intel.get("action") or "complete")
-    if intel_action != "complete":
-        advisory = intel.get("advisory") if isinstance(intel.get("advisory"), dict) else {}
-        review = (
-            intel.get("review_projection")
-            if isinstance(intel.get("review_projection"), dict)
-            else {}
-        )
-        other_items.append(_execution_frontier_item(_frontier_item(
-            owner="intel",
-            item_id=str(advisory.get("id") or intel_action),
-            action=intel_action,
-            evidence_ref=str(
-                review.get("path")
-                or intel.get("intel_path")
-                or intel.get("inventory_path")
-                or "software-intel"
-            ),
-            expected_information_gain=str(intel.get("reason") or "resolve the software intelligence gap"),
-            stop_condition="record applicability, a bounded blocker, or a final owner disposition",
-        ), impact_hint=" ".join(
-            str(advisory.get(key) or "")
-            for key in ("severity", "applicability", "id")
-            if advisory.get(key)
-        )))
-
-    projection = (
-        state.get("surface_projection")
-        if isinstance(state.get("surface_projection"), dict)
-        else {}
-    )
-    if state.get("has_recon") and str(projection.get("status") or "") != "valid":
-        other_items.append(_execution_frontier_item(_frontier_item(
-            owner="surface-context",
-            action=str(projection.get("refresh_command") or "prepare the target-owned Surface context"),
-            evidence_ref=str(projection.get("path") or "surface_projection"),
-            expected_information_gain="produce the bounded Surface candidates needed for evidence-led selection",
-            stop_condition="publish a valid projection or record the source blocker",
-        ), impact_hint="required discovery context"))
-
-    surface_items: list[dict] = []
-    surface_candidates = (
-        state.get("surface_review_candidates")
-        or state.get("recommended_targets")
-        or []
-    )
-    if not surface_candidates and isinstance(ranked, dict):
-        surface_candidates = _candidate_items_for_next_action(ranked, "hunt_p1")
-    for candidate in surface_candidates[:2]:
-        if not isinstance(candidate, dict):
-            continue
-        url = str(candidate.get("url") or "")
-        item = _execution_frontier_item(_frontier_item(
-            owner="surface",
-            item_id=url,
-            action=str(candidate.get("suggested") or f"review {url}"),
-            evidence_ref=str(projection.get("path") or "surface_projection"),
-            expected_information_gain=str(
-                candidate.get("review_reason")
-                or "determine whether this Surface candidate supports a concrete hypothesis"
-            ),
-            stop_condition="record evidence-backed Queue/Ledger disposition or park it without tested-clean",
-        ), impact_hint=str(
-            candidate.get("review_reason")
-            or candidate.get("suggested")
-            or candidate.get("vuln_class")
-            or ""
-        ))
-        item.update({
-            "evidence_status": "discovery",
-            "closure_blocking": False,
-            "runnable": not bool(candidate.get("tripped")),
-        })
-        surface_items.append(item)
-
-    deduped: list[dict] = []
-    seen: set[tuple[str, str]] = set()
-    for item in [*other_items, *surface_items]:
-        key = (str(item.get("owner") or ""), str(item.get("id") or item.get("action") or ""))
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(item)
-    by_owner: dict[str, dict] = {}
-    owner_order: list[str] = []
-    for item in deduped:
-        owner = str(item.get("owner") or "controller")
-        if owner in by_owner:
-            continue
-        by_owner[owner] = item
-        owner_order.append(owner)
-
-    # Keep the important control-plane heads visible even when lower-priority
-    # owners produced a long list of actionable items. Remaining owners keep
-    # their first local head; no cross-owner score or static total is applied.
-    important_owners = (
-        "action_queue",
-        "finding",
-        "validation-runner",
-        "intel",
-        "surface",
-    )
-    ordered_owners = [
-        owner for owner in important_owners if owner in by_owner
-    ] + [owner for owner in owner_order if owner not in important_owners]
-    return [by_owner[owner] for owner in ordered_owners]
+    """Compatibility view of explicit owner continuations; never ranks observations."""
+    items = actionable_frontier if actionable_frontier is not None else _build_actionable_frontier(state, None, limit=None)
+    return [_execution_frontier_item(item) for item in items]
 
 
-def _format_priority_frontier_lines(state: dict) -> list[str]:
+def _format_owner_continuations_lines(state: dict) -> list[str]:
     """Render the bounded controller handoff without dumping owner payloads."""
     mode = str(state.get("selection_mode") or "").strip()
     hard_gate = state.get("hard_gate") if isinstance(state.get("hard_gate"), dict) else {}
@@ -1157,13 +684,13 @@ def _format_priority_frontier_lines(state: dict) -> list[str]:
         lines.append(f"Hard gate: {action}" + (f" ({reason})" if reason else ""))
         return lines
 
-    frontier = [item for item in (state.get("priority_frontier") or []) if isinstance(item, dict)]
+    frontier = [item for item in (state.get("owner_continuations") or []) if isinstance(item, dict)]
     if not frontier:
         fallback = str(state.get("fallback_action") or state.get("next_action") or "handoff").strip()
         lines.append(f"Fallback action: {fallback}")
         return lines
 
-    lines.append("Priority frontier (AI selects; array order is not priority):")
+    lines.append("Owner continuations (AI selects; array order is not priority):")
     for item in frontier[:3]:
         owner = str(item.get("owner") or "controller").strip()
         action = " ".join(str(item.get("action") or "").split())[:180]

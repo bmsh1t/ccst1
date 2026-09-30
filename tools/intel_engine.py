@@ -16,7 +16,6 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Import learn.py functions (same repo)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(BASE_DIR)
 sys.path.insert(0, BASE_DIR)
@@ -28,9 +27,9 @@ SHARED_TOOLS_DIR = os.environ.get(
     os.environ.get("OSMEDEUS_TOOLS_DIR", os.path.join(os.path.expanduser("~"), "Tools")),
 )
 
-from learn import severity_order
 from tools.runtime_state import derive_owner_projection
 try:
+    from tools.artifact_io import write_text_atomic
     from tools.intel_artifact import (
         INTEL_SCHEMA_VERSION,
         IntelArtifactError,
@@ -47,7 +46,6 @@ try:
         fetch_json,
         fetch_kev,
     )
-    from tools.intelligence_extractor import merge_managed_section, write_intelligence
     from tools.target_paths import canonical_target_value, target_storage_key
     from tools.technology_inventory import (
         component_labels,
@@ -57,6 +55,7 @@ try:
     )
     from tools.web_intel_artifact import build_web_intel_source, load_web_intel_projection
 except ImportError:  # pragma: no cover - direct tools/ execution
+    from artifact_io import write_text_atomic
     from intel_artifact import (  # type: ignore
         INTEL_SCHEMA_VERSION,
         IntelArtifactError,
@@ -73,7 +72,6 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         fetch_json,
         fetch_kev,
     )
-    from intelligence_extractor import merge_managed_section, write_intelligence  # type: ignore
     from target_paths import canonical_target_value, target_storage_key
     from technology_inventory import (  # type: ignore
         TechnologyInventoryError,
@@ -264,27 +262,10 @@ def run_identity_intel(target: str, timeout: int = 180, *, repo_root: str | Path
         f"- emails: `{os.path.relpath(emails_path, resolved_repo_root)}`",
         f"- leaksearch: `{os.path.relpath(leaksearch_path, resolved_repo_root)}`",
         "",
-        "Next hypotheses:",
-        "- 检查登录/SSO/找回密码是否存在账号枚举或租户枚举。",
-        "- 若 LeakSearch 有命中，将其作为身份/凭据证据，按观察到的登录面选择后续验证。",
-        "- 将邮箱模式与邀请流、OAuth/SAML、support/admin 面结合验证。",
+        "Claude 可直接读取这些原始产物，自主选择假设与后续调查；来源结果不构成漏洞结论。",
         "",
     ]
-    with open(summary_path, "w", encoding="utf-8") as handle:
-        handle.write("\n".join(summary))
-
-    intelligence_path = Path(resolved_repo_root) / "evidence" / target_key / "intelligence.md"
-    intelligence_path.parent.mkdir(parents=True, exist_ok=True)
-    existing = intelligence_path.read_text(encoding="utf-8", errors="replace") if intelligence_path.is_file() else ""
-    intelligence_path.write_text(
-        merge_managed_section(
-            existing,
-            "identity-intel",
-            "\n".join(summary),
-            legacy_heading_prefix="# Identity Intel",
-        ),
-        encoding="utf-8",
-    )
+    write_text_atomic(summary_path, "\n".join(summary))
 
     return {
         "emailfinder_status": emailfinder_status,
@@ -334,10 +315,6 @@ def prioritize_intel(results: list[dict], memory: dict) -> dict:
             high.append(entry)
         else:
             info.append(entry)
-
-    # Sort each category by severity
-    critical.sort(key=lambda x: severity_order(x.get("severity", "UNKNOWN")))
-    high.sort(key=lambda x: severity_order(x.get("severity", "UNKNOWN")))
 
     memory_context = {}
     if memory.get("last_hunted"):
@@ -745,105 +722,6 @@ def enrich_advisories(
     return enriched
 
 
-def _age_days(value: str, now: datetime) -> int | None:
-    text = str(value or "").strip()
-    if not text:
-        return None
-    try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
-        try:
-            parsed = datetime.strptime(text[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc)
-        except ValueError:
-            return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return max(0, (now.astimezone(timezone.utc) - parsed.astimezone(timezone.utc)).days)
-
-
-def score_advisory(item: dict, *, now: datetime | None = None) -> tuple[int, list[str]]:
-    """生成可解释的 advisory review hint；该分数不是漏洞结论。"""
-    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-    score = 0
-    reasons: list[str] = []
-    applicability = str(item.get("applicability") or "unknown")
-    applicability_scores = {"affected": 40, "likely": 25, "unknown": 0, "not_affected": -100}
-    delta = applicability_scores.get(applicability, 0)
-    score += delta
-    reasons.append(f"applicability={applicability} ({delta:+d})")
-
-    component = item.get("component") if isinstance(item.get("component"), dict) else {}
-    if component.get("version") and applicability in {"affected", "likely"}:
-        score += 15
-        reasons.append("observed exact version (+15)")
-    elif not component.get("version"):
-        score -= 10
-        reasons.append("version unknown (-10)")
-    if component.get("hosts") or component.get("urls"):
-        score += 10
-        reasons.append("target-observed component (+10)")
-
-    if item.get("kev"):
-        score += 50
-        reasons.append("CISA KEV (+50)")
-    try:
-        epss = float(item.get("epss")) if item.get("epss") is not None else None
-    except (TypeError, ValueError):
-        epss = None
-    if epss is not None:
-        if epss >= 0.7:
-            score += 30
-            reasons.append("EPSS>=0.7 (+30)")
-        elif epss >= 0.3:
-            score += 15
-            reasons.append("EPSS>=0.3 (+15)")
-        elif epss >= 0.1:
-            score += 5
-            reasons.append("EPSS>=0.1 (+5)")
-    if item.get("poc_available"):
-        score += 15
-        reasons.append("public POC/reference signal (+15)")
-    if item.get("nuclei_templates"):
-        score += 12
-        reasons.append("local Nuclei/CVE template signal (+12)")
-
-    try:
-        cvss = float(item.get("cvss")) if item.get("cvss") is not None else None
-    except (TypeError, ValueError):
-        cvss = None
-    if cvss is not None:
-        if cvss >= 9.0:
-            score += 15
-            reasons.append("CVSS>=9 (+15)")
-        elif cvss >= 7.0:
-            score += 10
-            reasons.append("CVSS>=7 (+10)")
-    else:
-        severity = _severity(item.get("severity"))
-        if severity == "CRITICAL":
-            score += 15
-            reasons.append("critical severity (+15)")
-        elif severity == "HIGH":
-            score += 10
-            reasons.append("high severity (+10)")
-
-    age = _age_days(str(item.get("published") or ""), current)
-    if age is not None:
-        if age <= 30:
-            score += 20
-            reasons.append("published<=30d (+20)")
-        elif age <= 90:
-            score += 15
-            reasons.append("published<=90d (+15)")
-        elif age <= 365:
-            score += 8
-            reasons.append("published<=365d (+8)")
-    if item.get("source_names") == ["nvd"] and applicability == "unknown":
-        score -= 10
-        reasons.append("NVD keyword-only relevance (-10)")
-    return score, reasons
-
-
 def prioritize_advisories(advisories: list[dict], memory: dict, *, now: datetime | None = None) -> dict:
     tested_cves = {str(value).upper() for value in memory.get("tested_cves", [])}
     critical: list[dict] = []
@@ -858,26 +736,27 @@ def prioritize_advisories(advisories: list[dict], memory: dict, *, now: datetime
         item["already_tested"] = bool(identifiers & tested_cves) and not str(
             component.get("version") or ""
         ).strip()
-        score, reasons = score_advisory(item, now=now)
-        item["score_hint"] = score
-        item["score_reasons"] = reasons
+        item.pop("score_hint", None)
+        item.pop("score_reasons", None)
         if item["already_tested"]:
             item["note"] = "Already tested in target memory; keep for history, not first review."
             info.append(item)
         elif item.get("applicability") == "not_affected":
             item["note"] = "Observed version is outside the affected set reported by the source."
             info.append(item)
-        elif score >= 90:
-            item["note"] = "High-confidence advisory lead; verify affected route and runtime reachability."
+        elif _severity(item.get("severity")) == "CRITICAL":
+            item["note"] = "Source-reported critical severity; applicability still requires evidence."
             critical.append(item)
-        elif score >= 55:
-            item["note"] = "Prioritized advisory lead; confirm version and reachable code path."
+        elif _severity(item.get("severity")) == "HIGH":
+            item["note"] = "Source-reported high severity; applicability still requires evidence."
             high.append(item)
         else:
             item["note"] = "Advisory context only; applicability or exploitability remains incomplete."
             info.append(item)
 
-    sort_key = lambda item: (-int(item.get("score_hint") or 0), str(item.get("id") or ""))
+    sort_key = lambda item: (str((item.get("component") or {}).get("name") or ""),
+                             str((item.get("component") or {}).get("version") or ""),
+                             str(item.get("id") or ""))
     critical.sort(key=sort_key)
     high.sort(key=sort_key)
     info.sort(key=sort_key)
@@ -1086,15 +965,6 @@ def build_target_intel(
     _ = program
     resolved_target = canonical_target_value(target)
     identity_runner = identity_runner or run_identity_intel
-    try:
-        local_path = write_intelligence(resolved_target, repo_root)
-        try:
-            local_ref = str(local_path.relative_to(Path(repo_root)))
-        except ValueError:
-            local_ref = str(local_path)
-        local_intelligence = {"status": "ok", "path": local_ref}
-    except Exception as exc:  # 本地提取失败不应抹掉 advisory 结果。
-        local_intelligence = {"status": "error", "error": str(exc)}
     inventory = load_or_build_inventory(repo_root, resolved_target)
     components = _merge_components(
         list(inventory.get("components") or []),
@@ -1168,7 +1038,6 @@ def build_target_intel(
         "high": prioritized["high"],
         "info": prioritized["info"],
         "memory_context": _memory_projection(memory),
-        "local_intelligence": local_intelligence,
         "identity_intel": identity,
         "total": len(advisories),
         "stats": {
@@ -1206,11 +1075,6 @@ def format_output(target: str, intel: dict) -> str:
         if name:
             component_labels_display.append(f"{name}@{version}" if version else name)
     lines.append(f"Coverage: {coverage}")
-    local_intelligence = intel.get("local_intelligence") or {}
-    if local_intelligence:
-        local_status = str(local_intelligence.get("status") or "unknown")
-        local_detail = str(local_intelligence.get("path") or local_intelligence.get("error") or "")
-        lines.append(f"Local intelligence: {local_status}" + (f" ({local_detail})" if local_detail else ""))
     if component_labels_display:
         lines.append(f"Components: {', '.join(component_labels_display)}")
 
@@ -1240,7 +1104,7 @@ def format_output(target: str, intel: dict) -> str:
         lines.append(
             f"    component={component_name}@{version} "
             f"applicability={item.get('applicability', 'unknown')} "
-            f"score={item.get('score_hint', 0)} kev={bool(item.get('kev'))} epss={epss_text}"
+            f"kev={bool(item.get('kev'))} epss={epss_text}"
         )
         if item.get("nuclei_templates"):
             lines.append(f"    local templates: {', '.join(item['nuclei_templates'][:5])}")

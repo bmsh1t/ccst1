@@ -6,123 +6,98 @@
 
 ### 1. Scope / Trigger
 
-Use this contract whenever `/autopilot` command/agent wording, session/resume
-semantics, specialist delegation, or Claude CLI product documentation changes.
+Apply when changing native reading, Autopilot route/closure projections, or
+command/agent guidance. Observations inform Claude; explicit owner work and
+mechanical safety, evidence and recovery constraints govern execution.
 
 ### 2. Signatures
 
-- Claude slash command: `/autopilot <target> [--paranoid|--normal|--yolo|--quick|--deep]`
-- Optional Claude subagent: explicit invocation of `agents/autopilot.md`
+- `/autopilot <target> [--paranoid|--normal|--yolo|--quick|--deep]` runs inline.
+- `build_closure_projection(state, matrix, ledger_entries=None)` is read-only.
+- `load_closure_projection(repo_root, state, ...)` reacquires owner snapshots.
+- `build_decision_projection(state, "closure"|"loop_check")` preserves the
+  canonical `owner_continuations` view and relevant residual diagnostics.
 
 ### 3. Contracts
 
-- `/autopilot` runs inline in the current Claude session. That session is the
-  sole controller for target-state writes, checkpoint, and finish decisions.
-- The slash command does not create a second controller or session. Its mode
-  flags are current-session behavioral instructions and all durable state is
-  written through the canonical target owners.
-- Specialists default to zero. The current AI session decides whether and how
-  many bounded, non-nesting specialists are useful through the platform's
-  delegation tool from the independent evidence questions, expected context
-  reduction or useful parallelism, and `max_lanes`. Specialist work stays inside
-  the selected lanes and request/evidence budgets and cannot expand `max_lanes`;
-  specialists must not run full recon/scans, write final closure, or control
-  finish. The current AI session selects work, collects results, writes
-  through canonical owners, and decides closure.
-- Every specialist call answers a distinct evidence question with bounded
-  context/request cost and expected information gain; stop when no independent
-  question remains or direct work is more valuable. Specialists never create
-  additional substantive lanes or extend the invocation budget. The optional
-  `recon-ranker` second opinion runs at most once for the current frontier
-  projection.
-- `agents/autopilot.md` is explicit and optional; it is a bounded specialist
-  prompt and never a second controller for the slash command.
+- The current Claude session alone selects hypotheses, routes, depth and stop
+  points, and coordinates writes through existing owners. No second controller.
+- Specialists default to zero; optional bounded independent questions stay within
+  selected lanes and request/evidence budgets. No nested controller, full scan,
+  final closure writer or extension of `max_lanes` is delegated.
+- Cached JS/source paths go directly to native Read/Grep. `js_reader`,
+  `source_intel`, `intelligence_extractor` and `/js-read` are retired. Historical
+  artifacts stay readable without becoming prerequisites or a new fact source.
+- Recon can preserve raw JS and bounded discovery views but cannot create a
+  deep-JS Queue obligation from file presence. Claude explicitly chooses work.
+- Surface rank, resume previews, Case hypotheses, actor gaps and Intel advice
+  do not select a route or enter the owner continuation array. Intel provider
+  errors remain visible in `intel_continuation`, never a clean result.
+- `owner_continuations` represents explicit Queue/Finding/runner work and durable
+  Recon continuation. Runtime locks, target initialization, evidence integrity,
+  budgets and transaction recovery retain their existing owners.
+- Closure's `actionable_frontier` is a legacy read-only alias. Publish
+  `owner_continuations` after every review/race/bounded-stop override, so an empty
+  final continuation cannot retain an earlier action. Loop `control` uses the
+  same canonical field; array order is not AI priority.
+- `observation_residuals` records untested cell count, unresolved Case hypotheses,
+  actor gap and incomplete Intel without creating new actions. With no owner
+  obligation, unresolved observations yield `blocked` + `stop_bounded` and
+  `can_claim_exhausted=false`, not a target exhaustion claim.
+- Actor/session gaps are non-blocking context for unrelated work, not automatic
+  session acquisition. Actual role-based evidence still requires the relevant
+  identity boundary. Advisory review never impersonates execution evidence.
+- `_coverage_terminal_evidence(matrix, evidence_projection, record_count=0)`
+  queries `ClosureResolver.closed_result(..., identity_v2=cell.get("identity_v2"))`.
+  A complete subject result cannot authorize an identity-free family terminal.
+  Controlled structural N/A is separate; marker text alone is insufficient.
+- Checkpoint cadence remains paranoid/normal/yolo. Repetition, siblings and
+  response deltas inform AI choices, not fixed testing/rotation sequences.
+- Round budgets and explicit lane completion remain mandatory. Budget exhaustion
+  alone creates no new work. `recon_phase_partial` binds its recovery head to the
+  actual phase, artifact and remaining count; other Recon work cannot substitute.
 
 ### 4. Validation & Error Matrix
 
-- No target argument -> ask for the exact target in the current Claude session.
-- Specialist unavailable/fails -> keep control in the current session and
-  continue or record the precise blocker; do not start another controller.
-- Resource-constrained host -> remain inline with zero specialists; do not
-  auto-detect memory or silently change execution mode.
-- Cadence remains compact: paranoid checkpoints after each substantive state
-  change, normal after a coherent evidence lane, and yolo only at blocker,
-  handoff, or finish; all modes write evidence state.
-- Candidate/Validated evidence gets one bounded sibling/chain fit check;
-  401/403/404/405/415 or parser deltas get one evidence-linked bypass family;
-  three homogeneous no-information results rotate to an adjacent lane; rotating
-  form/session tokens refresh from the legal baseline before replay.
-- Repeated partial prerequisites continue only while a substantive Queue,
-  Finding, Case State, or other authoritative owner still exposes work. Generic
-  bounded Surface window churn does not reset the guard; without semantic
-  progress the third identical Closure projects `blocked/stagnant_prerequisite`.
-  Missing owner/peer actor or session context is a lane-local access-control
-  coverage gap, not an external test-permission gate: when an IDOR/Authz/GraphQL
-  lane is relevant it is projected as a blocking, recoverable
-  `actor_context_required` handoff with `next_action=resume_case_state`. It blocks
-  only the affected role-based closure claim; anonymous and unrelated evidence
-  lanes remain available before that closure point.
-  A queued checkpoint enrichment lead that only names this missing context is
-  retained for explicit recovery but is excluded from automatic substantive
-  Queue/Closure work until context is available or the AI claims it.
-- `/autopilot-round` claims only owner-selected substantive lanes. New explicit
-  idle/no-change/monitor lane IDs are rejected without budget mutation; legacy
-  claimed passive lanes remain recoverable. Round-close stagnation reads the
-  post-round Closure state, ignores rebuild timestamps and advisory Surface
-  churn, and converges unchanged `next_action_pending` or
-  `coverage_high_value_gaps` through the existing three-round guard.
-  If a post-write Surface projection is still stale or unavailable, settle
-  leaves the round active and hands off without recording a stagnation guard.
-- Closure continuation is a read-only projection of the existing owner heads:
-  Action Queue, Finding, Case State, and semantic high-value Coverage gaps.
-  Each `closure.actionable_frontier[]` item must carry an `owner`, `action`,
-  `evidence_ref`, `expected_information_gain`, and `stop_condition`. The
-  `recon_phase_partial` reason must bind its first frontier item to the exact
-  blocking Recon phase, artifact, remaining count, and recorded continuation;
-  another Recon-owned item such as a CIDR cursor cannot replace that phase head.
-  Advisory bounded samples with `closure_blocking=false` remain diagnostics.
-  `round_progress.budget_reached` is the single budget signal; the old
-  `--max-lanes-reached` CLI flag was removed (2026-09-11, zero-D — zero real
-  production use; the function parameter survives with default `False` for
-  test/doc clarity). After a lane budget is consumed, Closure is recomputed and
-  the budget alone cannot create `STATUS: CONTINUE`. An active round whose
-  terminal lanes still need `--record-round-closure` is an explicit
-  `round_closure_pending` owner action, not budget-only work.
-- Stagnation fingerprints include only semantic owner/evidence state and
-  unresolved actionable Coverage identity. Rebuild timestamps, operation IDs,
-  container generation, URL-variant `source_count`, and low-value Surface
-  window churn must not reset the no-progress guard.
+| Input | Required result |
+|---|---|
+| Only raw JS/source/browser/Case/Intel observations | No automatic route or Queue insertion |
+| Untested coverage, no explicit owner work | `stop_bounded`, retained residuals, no exhaustion |
+| Active runtime phase or explicit Queue work | Existing lock/owner continuation preserved |
+| Evidence or snapshot damage | Visible integrity/recovery error, never empty success |
+| Exact subject closure with identity-free tested Coverage cell | `missing_matching_ledger_terminal` |
+| Valid global review consumes bounded residuals | Both continuation fields cleared |
+| Snapshot races during review | Both fields expose the current recovery head |
+| Repeated identity enrichment | Same summary path; historical `intelligence.md` untouched |
 
 ### 5. Good/Base/Bad Cases
 
-- Good: `/autopilot target --normal` continues in the current Claude session,
-  uses persisted target state, and may ask bounded specialists independent
-  evidence questions before the current session writes the results.
-- Base: no specialist is useful; the current session performs the whole loop.
-- Bad: documentation says `/autopilot` created a fresh local agent session, or
-  a specialist starts another agent/full scanner and competes for state writes.
+Good: read raw JS directly, save a confirmed A immediately, choose optional B/C
+within budget, and report unresolved context at bounded stop.
+Base: no specialist or next investigation is useful; remain in the same session.
+Bad: rename a frontier while keeping its automatic route control, or claim
+exhaustion merely because the inferred frontier was deleted.
 
 ### 6. Tests Required
 
-- `tests/test_autopilot_inline_contract.py` must assert inline/single-controller,
-  AI-selected bounded delegation, lane-budget preservation, optional agent
-  separation, and absence of a partially implemented
-  `--isolated` flag.
-- Existing command/agent line-count and autopilot prompt contract tests must pass.
+Run `python3 .trellis/tasks/09-29-native-first-boundary-optimization/research/check_native_first.py`
+for observation/owner separation, lock preservation, malformed matrix input,
+bounded residuals, final alias consistency, Intel artifacts and protected edits.
+Run `python3 .trellis/tasks/09-29-validation-closure-scope/research/check_closure_replay.py`
+for actual Runner/Store replay and both accepted/rejected terminal-check branches.
+Import/syntax checks alone do not exercise late-bound resolver names.
+Run `bash -n tools/recon_engine.sh` when changing the JS collection branch.
+Existing legacy tests that import retired readers are not a reason to resurrect
+those readers. Migrate those assertions to native-reading boundaries, preserving
+user-owned edits. `test_js_reader.py` checks retirement instead of the deleted API.
 
 ### 7. Wrong vs Correct
 
-Wrong:
-
 ```text
-/autopilot target --normal creates a second controller/session state tree
-```
-
-Correct:
-
-```text
-/autopilot target --normal = current Claude session
-interrupted work = checkpoint/state recovery in the current Claude session
+Wrong: observed JS / missing actor / Intel lead -> mandatory route or session task
+Correct: observations -> native reasoning; explicit owner command -> durable work
+Wrong: no generated frontier -> target exhausted
+Correct: unresolved observations -> bounded stop with residuals and no exhaustion claim
 ```
 
 ## Claude CLI Autopilot Argument Contract
@@ -1214,3 +1189,43 @@ Correct:
 ```text
 bounded invocation ends -> show one advisory review -> preserve all runtime state
 ```
+
+## Ownership-bound runtime installation
+
+### Scope / Trigger
+Installer and runtime_doctor changes share one publication/retirement path.
+### Signatures
+`sync_runtime(repo_root, runtime_root, kinds=None, prune=False)` returns copied,
+removed and conflicts; CLI --sync returns nonzero when conflicts are preserved.
+### Contracts
+`.ccst-installed.json` records relative destination, kind and installed SHA256.
+An exclusive local file lock serializes sync. Files are replaced atomically;
+manifest publication follows successful writes. Only owned, unchanged obsolete
+files are pruned. No owner receipt means no automatic overwrite of different
+bytes and no deletion. Disabled commands retain their name and state.
+### Validation & Error Matrix
+Unknown/malformed ownership metadata fails visibly. Path escape/symlink or local
+modification preserves the destination and reports conflict. An interrupted retry
+may adopt exact current source bytes; it does not guess ownership of different bytes.
+### Good/Base/Bad Cases
+Good: update unchanged managed content. Base: repeat is idempotent. Bad: deleting
+all extra Markdown under a shared commands directory.
+### Tests Required
+Temporary runtime upgrade, whole-skill retirement, unowned/local changes,
+disabled command and installer parity; never test against real HOME.
+### Wrong vs Correct
+Wrong: repo-wide rsync --delete. Correct: owner receipt plus current hash, then
+remove only unchanged obsolete files. Legacy filename similarity is not ownership.
+
+Before any file publication or pruning, sync checks every selected previously
+owned source directory exists. For an installation owning the autopilot command,
+the source critical manifest must be valid. A missing checkout is not an empty
+release. Source inventory collection precedes writes. Reconcile an owned command's
+active-to-disabled rename before computing removals, even when the source command
+has already been retired. Local changes still conflict and retain their receipt.
+
+Source admission validates each path declared in the critical runtime manifest:
+existence, regular-file/readability and containment, before publishing or deleting
+anything. This applies to a skills-only sync too. Receipt coordination handles
+both active→disabled and disabled→active; the prior installed hash follows the
+command identity. User edits retain a conflict and their ownership receipt.

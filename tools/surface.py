@@ -81,31 +81,9 @@ except ImportError:  # pragma: no cover - top-level tools/ import
 try:
     from tools.browser_surface import public_url_shape
     from tools.intel_artifact import advisory_is_actionable
-    from tools.surface_js_intel import (
-        build_js_lead_hints,
-        build_js_intel_urls,
-        js_intel_counts,
-        load_js_intel_hypotheses,
-    )
-    from tools.surface_source_intel import (
-        build_source_intel_urls,
-        load_source_intel,
-        source_intel_counts,
-    )
 except ImportError:  # pragma: no cover - top-level tools/ import
     from browser_surface import public_url_shape  # type: ignore
     from intel_artifact import advisory_is_actionable  # type: ignore
-    from surface_js_intel import (
-        build_js_lead_hints,
-        build_js_intel_urls,
-        js_intel_counts,
-        load_js_intel_hypotheses,
-    )
-    from surface_source_intel import (
-        build_source_intel_urls,
-        load_source_intel,
-        source_intel_counts,
-    )
 
 
 def _dedupe_keep_order(items):
@@ -670,43 +648,6 @@ def _sort_workflow_leads(leads: list[dict]) -> list[dict]:
                                                for key in ("source", "title", "category", "evidence")))
 
 
-def _build_evidence_convergence_leads(
-    *,
-    browser_urls: set[str],
-    js_intel_urls: dict[str, list[dict]],
-    source_intel_urls: dict[str, list[dict]],
-) -> list[dict]:
-    """把 browser / JS / source 的交叉命中转成可执行 workflow lead。"""
-    leads: list[dict] = []
-    all_urls = sorted(set(browser_urls) | set(js_intel_urls) | set(source_intel_urls))
-    for url in all_urls:
-        sources = []
-        if url in browser_urls:
-            sources.append("browser")
-        if js_intel_urls.get(url):
-            sources.append("js")
-        if source_intel_urls.get(url):
-            sources.append("source")
-        if len(sources) < 2:
-            continue
-
-        js_methods = _dedupe_keep_order([
-            str(item.get("method", "")).upper()
-            for item in js_intel_urls.get(url, [])[:3]
-            if item.get("method")
-        ])
-        action_bits = []
-        if js_methods:
-            action_bits.append("JS methods: " + ", ".join(js_methods[:3]))
-        leads.append({
-            "source": "evidence_convergence",
-            "title": url,
-            "category": "+".join(sources),
-            "evidence": "; ".join(action_bits) or ", ".join(sources),
-        })
-    return leads[:5]
-
-
 def _read_httpx_hosts(
     recon_dir: Path,
     target: str = "",
@@ -769,10 +710,7 @@ def _has_actionable_review_evidence(item: dict) -> bool:
     if any(
         item.get(key)
         for key in (
-            "evidence_convergence",
             "browser_observed",
-            "js_intel_observed",
-            "source_intel_observed",
             "scanner_findings",
             "target_memory_hits",
             "intel_signals",
@@ -1094,8 +1032,6 @@ def _load_surface_context(
     intel_context = _load_intel_context(recon_dir)
     intel_signals = intel_context["signals"]
     ffuf_summary = ReconAdapter(recon_dir).get_ffuf_summary()
-    js_intel = load_js_intel_hypotheses(findings_dir)
-    source_intel = load_source_intel(findings_dir)
     scanner_manual_review = _load_scanner_manual_review(findings_dir, target)
     manual_review_leads = _build_manual_review_lead_hints(findings_dir, storage_key)
     observation_inventory = _sync_observation_inventory(repo_root, target)
@@ -1153,8 +1089,6 @@ def _load_surface_context(
         "intel_signals": intel_signals,
         "intel": intel_context,
         "ffuf_summary": ffuf_summary,
-        "js_intel": js_intel,
-        "source_intel": source_intel,
         "scanner_manual_review": scanner_manual_review,
         "manual_review_leads": manual_review_leads,
         "observation_inventory": observation_inventory,
@@ -1243,7 +1177,7 @@ def _build_semantic_surface(context: dict, candidates: list[dict]) -> list[dict]
         entry["representatives"].append(str(item.get("url") or ""))
         for signal in (item.get("value_summary") or {}).get("signals", []):
             entry["value_classes"].update(str(value) for value in signal.get("classes", []) if str(value))
-        for source in ("browser" if item.get("browser_observed") else "", "js" if item.get("js_intel_observed") else "", "source" if item.get("source_intel_observed") else "", "scanner" if item.get("scanner_findings") else ""):
+        for source in ("browser" if item.get("browser_observed") else "", "scanner" if item.get("scanner_findings") else ""):
             if source:
                 entry["sources"].add(source)
 
@@ -1290,29 +1224,19 @@ def _build_semantic_surface(context: dict, candidates: list[dict]) -> list[dict]
 
 def _iter_rankable_surface_rows(
     context: dict,
-    js_intel_urls: dict[str, list[dict]],
-    source_intel_urls: dict[str, list[dict]],
 ) -> Iterator[tuple[str, set[str], int, bool | None]]:
     """统一 list 与 exact index，保留完整 URL 来源和首次观察序号。"""
     index_status = context.get("surface_index") or {}
-    extra_sources: dict[str, set[str]] = {}
-    for url in js_intel_urls:
-        extra_sources.setdefault(url, set()).add("js_intel")
-    for url in source_intel_urls:
-        extra_sources.setdefault(url, set()).add("source_intel")
-
     if index_status.get("status") == "valid":
         # 先只收集 probe-derived inert identity。若直接边读边 yield，文件后段
         # 的 probe 可能 sanitize 成前段已经输出过的正常 URL，导致候选重复
         # 和 total_candidates 虚增。两次流式遍历仍为 O(N)，且只为 probe 子集
         # 保留内存。
         index_repo = context.get("repo_root") or Path(BASE_DIR)
-        max_sequence = -1
         probe_rows: dict[str, tuple[int, set[str], bool | None]] = {}
         for row in iter_surface_index(index_repo, context["target"]):
             raw_url = str(row.get("url") or "")
             sequence = int(row.get("sequence", 0) or 0)
-            max_sequence = max(max_sequence, sequence)
             if not is_attack_probe(raw_url):
                 continue
             safe_url = sanitize_attack_probe_url(raw_url)
@@ -1340,8 +1264,6 @@ def _iter_rankable_surface_rows(
             if probe_match is not None:
                 sequence = min(sequence, probe_match[0])
                 sources.update(probe_match[1])
-            if raw_url in extra_sources:
-                sources.update(extra_sources.pop(raw_url))
             target_owned = row.get("target_owned") if isinstance(row.get("target_owned"), bool) else None
             if probe_match is not None and target_owned is None:
                 target_owned = probe_match[2]
@@ -1350,11 +1272,7 @@ def _iter_rankable_surface_rows(
         # Probe-shaped rows 数量通常很小；只对该子集做 safe URL 合并，避免
         # 为全部 30 万正常 URL 维护 Python seen set。
         for safe_url, (sequence, sources, target_owned) in sorted(probe_rows.items(), key=lambda item: item[1][0]):
-            if safe_url in extra_sources:
-                sources.update(extra_sources.pop(safe_url))
             yield safe_url, sources, sequence, target_owned
-        for offset, (url, sources) in enumerate(extra_sources.items(), 1):
-            yield url, set(sources), max_sequence + offset, None
         return
 
     api_urls = list(context.get("api_urls") or [])
@@ -1387,8 +1305,6 @@ def _iter_rankable_surface_rows(
         ("browser_api", browser_api_urls),
         ("scanner", scanner_urls),
         ("js", js_urls),
-        ("js_intel", list(js_intel_urls)),
-        ("source_intel", list(source_intel_urls)),
     ):
         for url in values:
             if not url:
@@ -1446,7 +1362,6 @@ def rank_surface(context: dict) -> dict:
         and str(item.get("kind") or "") == "url"
         and url_belongs_to_target(str(item.get("value") or "").strip(), context["target"])
     }
-    js_intel = context.get("js_intel") or {}
     scanner_findings_by_url = {}
     for finding in context.get("scanner_findings", []):
         url = finding.get("url")
@@ -1471,11 +1386,6 @@ def rank_surface(context: dict) -> dict:
     if context["hosts"]:
         default_host = next(iter(context["hosts"].values())).get("url", "")
 
-    js_intel_urls = build_js_intel_urls(js_intel, default_host)
-    source_intel_urls = build_source_intel_urls(
-        context.get("source_intel") or {},
-        default_host,
-    )
     ffuf_summary = context.get("ffuf_summary") or {}
     ffuf_urls = {
         str(item.get("url") or "")
@@ -1485,16 +1395,8 @@ def rank_surface(context: dict) -> dict:
     frontiers = _SurfaceReviewWindow(ffuf_urls)
     external_context_count = 0
     external_context_sample: list[tuple[int, str]] = []
-    convergence_browser_urls: set[str] = set()
-    convergence_source_intel_urls = {
-        url: list(items)
-        for url, items in source_intel_urls.items()
-    }
-
     for raw_url, source_tags, sequence, indexed_target_owned in _iter_rankable_surface_rows(
         context,
-        js_intel_urls,
-        source_intel_urls,
     ):
         target_owned = indexed_target_owned
         if target_owned is False or (target_owned is None and not url_belongs_to_target(raw_url, context["target"])):
@@ -1518,27 +1420,6 @@ def rank_surface(context: dict) -> dict:
         suggested = ""
         if browser_observed:
             reasons.append("browser-observed surface")
-        matching_js_intel_endpoints = js_intel_urls.get(raw_url, [])
-        if matching_js_intel_endpoints:
-            reasons.append("js-reader endpoint observation")
-        matching_source_routes = list(source_intel_urls.get(raw_url, []))
-        if matching_source_routes:
-            convergence_source_intel_urls[raw_url] = list(
-                matching_source_routes
-            )
-            reasons.append("source route observation")
-
-        convergence_sources = []
-        if browser_observed:
-            convergence_sources.append("browser")
-        if matching_js_intel_endpoints:
-            convergence_sources.append("js")
-        if matching_source_routes:
-            convergence_sources.append("source")
-        if len(convergence_sources) >= 2:
-            reasons.append("cross-evidence convergence: " + "+".join(convergence_sources))
-            if browser_observed:
-                convergence_browser_urls.add(raw_url)
         if api_observed:
             reasons.append("recon API observation")
         if query_keys:
@@ -1588,22 +1469,6 @@ def rank_surface(context: dict) -> dict:
             if isinstance(browser_request_shapes, dict)
             else []
         )
-        for endpoint in matching_js_intel_endpoints:
-            method = str(endpoint.get("method") or "").upper()
-            if method:
-                observed_request_shapes.append({
-                    "method": method,
-                    "resource_type": "js",
-                    "body": endpoint.get("body_shape") if isinstance(endpoint.get("body_shape"), dict) else {},
-                })
-        for hypothesis in matching_source_routes:
-            method = str(hypothesis.get("method") or "").upper()
-            if method:
-                observed_request_shapes.append({
-                    "method": method,
-                    "resource_type": "source",
-                    "body": hypothesis.get("body_shape") if isinstance(hypothesis.get("body_shape"), dict) else {},
-                })
         deduped_request_shapes = []
         seen_request_shapes = set()
         for request_shape in observed_request_shapes:
@@ -1642,13 +1507,6 @@ def rank_surface(context: dict) -> dict:
                 evidence_refs.append(
                     f"recon/{target_storage_key(context['target'])}/browser/page_js_map.json"
                 )
-        if matching_js_intel_endpoints:
-            evidence_refs.extend([
-                f"findings/{target_storage_key(context['target'])}/js_intel/hypotheses.json",
-                f"findings/{target_storage_key(context['target'])}/js_intel/materials.json",
-            ])
-        if matching_source_routes:
-            evidence_refs.append(f"findings/{target_storage_key(context['target'])}/source_intel/routes.json")
         if evidence_refs:
             entry["evidence_refs"] = _dedupe_keep_order(evidence_refs)
         new_observation = new_observations.get(raw_url)
@@ -1670,28 +1528,6 @@ def rank_surface(context: dict) -> dict:
             ]
         if browser_observed:
             entry["browser_observed"] = True
-        if matching_js_intel_endpoints:
-            entry["js_intel_observed"] = True
-            entry["js_intel_endpoints"] = [
-                {
-                    "method": item.get("method", ""),
-                    "source_file": item.get("source_file", ""),
-                    "auth_required": item.get("auth_required", ""),
-                }
-                for item in matching_js_intel_endpoints[:5]
-            ]
-        if matching_source_routes:
-            entry["source_intel_observed"] = True
-            entry["source_intel_routes"] = [
-                {
-                    "route": item.get("route", ""),
-                    "method": item.get("method", ""),
-                    "source": item.get("source", ""),
-                }
-                for item in matching_source_routes[:5]
-            ]
-        if len(convergence_sources) >= 2:
-            entry["evidence_convergence"] = convergence_sources
         if scanner_findings:
             entry["scanner_findings"] = [
                 {
@@ -1734,18 +1570,12 @@ def rank_surface(context: dict) -> dict:
     lead_items = _sort_workflow_leads(
         _build_exposure_lead_hints(context.get("recon_artifacts") or {}, context["target"])
         + _build_target_memory_lead_hints(target_goal_memory)
-        + _build_evidence_convergence_leads(
-            browser_urls=convergence_browser_urls,
-            js_intel_urls=js_intel_urls,
-            source_intel_urls=convergence_source_intel_urls,
-        )
         + _build_cf_bypass_refresh_leads(context)
         + _build_external_url_context_leads(
             context,
             [url for _sequence, url in external_context_sample],
             total_count=external_context_count,
         )
-        + build_js_lead_hints(js_intel)
         + list(context.get("manual_review_leads") or [])
     )
     workflow_leads = _dedupe_keep_order([
@@ -1830,8 +1660,6 @@ def rank_surface(context: dict) -> dict:
             "signal_count": len(context.get("intel_signals", [])),
         },
         "ffuf": ffuf_summary,
-        "js_intel": js_intel_counts(js_intel),
-        "source_intel": source_intel_counts(context.get("source_intel") or {}),
         "workflow_leads": workflow_leads,
         "browser": {
             "xhr_count": int(
@@ -1848,14 +1676,6 @@ def rank_surface(context: dict) -> dict:
                     f"recon/{target_storage_key(context['target'])}/browser/xhr_endpoints.txt",
                     f"recon/{target_storage_key(context['target'])}/browser/api_endpoints.txt",
                     f"recon/{target_storage_key(context['target'])}/browser/page_js_map.json",
-                )
-                if (context.get("repo_root") and (Path(context["repo_root"]) / path).is_file())
-            ],
-            "js": [
-                path
-                for path in (
-                    f"findings/{target_storage_key(context['target'])}/js_intel/hypotheses.json",
-                    f"findings/{target_storage_key(context['target'])}/js_intel/materials.json",
                 )
                 if (context.get("repo_root") and (Path(context["repo_root"]) / path).is_file())
             ],
@@ -2025,7 +1845,7 @@ def format_surface_output(ranked: dict, target: str) -> str:
     host_ranking_count = _count_recon_artifact(recon_artifacts, "host_ranking")
     if host_ranking_count:
         lines.append(
-            f"- Host ranking: {host_ranking_count} all-host soft priority rows "
+            f"- Host inventory: {host_ranking_count} all-host source rows "
             "(advisory; raw recon remains authoritative)"
         )
     observation_inventory = ranked.get("observation_inventory") or {}
@@ -2188,7 +2008,7 @@ def format_surface_output(ranked: dict, target: str) -> str:
             lines.append(
                 f"- Advisory review: {advisory.get('id', '-')} "
                 f"[{advisory.get('severity', '-')}/{advisory.get('applicability', 'unknown')}] "
-                f"score={advisory.get('score_hint', 0)} component={component_name}@{version}"
+                f"component={component_name}@{version}"
             )
     intel_count = intel_meta.get("signal_count", 0)
     if intel_count:
@@ -2208,28 +2028,6 @@ def format_surface_output(ranked: dict, target: str) -> str:
                 break
     else:
         lines.append("- No local intel signals yet.")
-
-    lines.extend(["", "Source Intel:"])
-    source_counts = ranked.get("source_intel", {})
-    if source_counts.get("signal_count") or source_counts.get("route_count") or source_counts.get("graphql_count"):
-        lines.append(
-            f"- Source-intel markers: {source_counts.get('signal_count', 0)}, "
-            f"routes: {source_counts.get('route_count', 0)}, "
-            f"GraphQL operations: {source_counts.get('graphql_count', 0)}"
-        )
-    else:
-        lines.append("- No source observations yet.")
-
-    lines.extend(["", "JS Reader Intel:"])
-    js_counts = ranked.get("js_intel", {})
-    if js_counts.get("endpoint_count") or js_counts.get("lead_count") or js_counts.get("graphql_count"):
-        lines.append(
-            f"- JS-reader hypotheses: {js_counts.get('endpoint_count', 0)} endpoints, "
-            f"{js_counts.get('lead_count', 0)} leads, "
-            f"{js_counts.get('graphql_count', 0)} GraphQL operations"
-        )
-    else:
-        lines.append("- No js-reader hypotheses yet.")
 
     lines.extend(["", "Browser Surface:"])
     browser_counts = ranked.get("browser", {})
@@ -2283,8 +2081,6 @@ def _surface_options(ranked: dict, target: str) -> list[str]:
     if review_count > 0:
         options.append(f"review the AI surface pool ({review_count} candidates) and choose the next evidence step")
         options.append("spawn chain-builder after Claude chooses a candidate from the evidence")
-    if recon_counts.get("js_endpoints", 0) > 0:
-        options.append("spawn js-reader on cached JS bundles for endpoint hypotheses")
     if recon_counts.get("browser_xhr_urls", 0) > 0 or recon_counts.get("browser_api_urls", 0) > 0:
         options.append("inspect browser-observed XHR/API endpoints before broad fuzz")
     if recon_counts.get("structured_findings", 0) > 0:
@@ -2296,7 +2092,7 @@ def _surface_options(ranked: dict, target: str) -> list[str]:
         options.append(f"rerun /recon {target} to refresh stale artifacts ({', '.join(missing[:2])})")
     # Always offer at least one orthogonal exit so the agent isn't locked in.
     if len(options) < 2:
-        options.append(f"switch to source-intel if {target} has a relevant public repo URL")
+        options.append(f"inspect raw source or JavaScript artifacts directly when a relevant local path exists")
     return options
 
 

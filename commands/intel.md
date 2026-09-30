@@ -45,14 +45,15 @@ workflow rather than the component advisory artifact.
   template or create a finding.
 - Runs optional identity intel only with `tools/intel_engine.py --with-identity`:
   `emailfinder` and `LeakSearch` via the shared Osmedeus-compatible tools directory or PATH.
-- In the same main invocation, mines cached recon / JS / source artifacts for emails, internal hostnames, webhook URL patterns, secret prefixes, customer mentions, internal API paths, and employee handles; `local_intelligence` records `ok` or a diagnostic `error` without hiding advisory results.
+- Reads the target-owned technology inventory and current advisory sources; raw recon, JS, and source artifacts remain available for Claude to inspect directly when a hypothesis needs them.
 - Atomically publishes schema-v2 `recon/<target>/intel.json`, then `/surface`
   consumes it through the shared Intel decoder.
 - When official sources leave a bounded gap, `/autopilot` may collect verified
   Web Intel through `tools/web_intel_artifact.py`; search snippets alone never
   become advisory evidence. The recorder writes `evidence/<target>/web-intel/`.
-- Appends identity/source context to `evidence/<target>/intelligence.md` and
-  identity hints under `evidence/<target>/identity_intel/`.
+- Optional identity enrichment writes raw results and its atomic `summary.md`
+  under `evidence/<target>/identity_intel/`. Existing `intelligence.md` is
+  historical evidence and is never rewritten or required by this command.
 
 ## Applicability And Failure Semantics
 
@@ -78,8 +79,11 @@ workflow rather than the component advisory artifact.
 
 ## Autopilot Continuation
 
-When compact state returns `run_intel`, run `/intel` and refresh state. When it
-returns `collect_web_intel`, use the bounded `recommended` query, verify the
+`intel_continuation` is an advisory observation, not a mandatory next action or
+cross-lane blocker. Claude chooses whether to refresh Intel, investigate a lead,
+or stop with the unresolved source/applicability state recorded.
+When choosing `run_intel`, run `/intel` and refresh state. When choosing
+`collect_web_intel`, use the bounded `recommended` query, verify the
 source body, include the supporting exact `body_excerpt`, then record a
 provider-neutral JSON payload. Select Grok Search or
 Smartsearch for the query; do not call both unless the first result is insufficient
@@ -90,12 +94,12 @@ python3 tools/web_intel_artifact.py record --target TARGET --input WEB_INTEL.jso
 python3 tools/intel_engine.py --target TARGET
 ```
 
-When it returns `test_advisory_applicability`, add the advisory to the existing
+When choosing `test_advisory_applicability`, add the advisory to the existing
 `action_queue`, perform the smallest safe reachability/version check, preserve
 raw evidence, and resolve the same action. A blocked provider or unavailable
-source is recorded as `blocked`/handoff; it is never treated as clean.
+source remains an explicit source failure; it is never treated as clean.
 
-When it returns `review_intel_group`, the bounded sidecar has closed its
+For `review_intel_group`, the bounded sidecar has closed its
 representatives but still has raw advisory facts outside the default context.
 Use the read-only query to inspect the group a page at a time; the query never
 mutates Intel state:

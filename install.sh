@@ -36,79 +36,15 @@ prompt_yes_no() {
 }
 
 INSTALL_DIR="${HOME}/.claude/skills"
-mkdir -p "${INSTALL_DIR}"
-
-echo "Installing Claude Bug Bounty skills..."
-echo ""
-
-for shared_skill_file in "${SCRIPT_DIR}"/skills/*.md; do
-    [ -e "$shared_skill_file" ] || continue
-    cp "$shared_skill_file" "${INSTALL_DIR}/$(basename "$shared_skill_file")"
-    echo "✓ Installed shared skill file: $(basename "$shared_skill_file")"
-done
-
-# Install skills: rsync mirrors each managed directory, including removal of
-# obsolete nested files. It does NOT remove an installed skill whose source
-# directory was deleted (no repo-wide --delete over the shared
-# ~/.claude/skills). Retiring a whole skill in this repo requires removing
-# its installed directory manually.
-if command -v rsync >/dev/null 2>&1; then
-    for skill_dir in "${SCRIPT_DIR}"/skills/*/; do
-        skill_name=$(basename "$skill_dir")
-        rsync -a --delete "${skill_dir}" "${INSTALL_DIR}/${skill_name}"
-        echo "✓ Installed skill (mirrored): ${skill_name}"
-    done
-else
-    for skill_dir in "${SCRIPT_DIR}"/skills/*/; do
-        skill_name=$(basename "$skill_dir")
-        mkdir -p "${INSTALL_DIR}/${skill_name}"
-        cp -a "${skill_dir}." "${INSTALL_DIR}/${skill_name}/"
-        echo "✓ Installed skill (copied): ${skill_name}"
-    done
-fi
-
-# Install commands
 COMMANDS_DIR="${HOME}/.claude/commands"
-mkdir -p "${COMMANDS_DIR}"
-
-for cmd_file in "${SCRIPT_DIR}"/commands/*.md; do
-    cmd_name=$(basename "$cmd_file")
-    case "${cmd_name}" in
-        *.[pP][aA][tT][cC][hH].md) continue ;;
-    esac
-    disabled_path="${COMMANDS_DIR}/.disabled.${cmd_name}"
-    active_path="${COMMANDS_DIR}/${cmd_name}"
-    if [ -f "${disabled_path}" ] && [ ! -f "${active_path}" ]; then
-        cp "$cmd_file" "${disabled_path}"
-        echo "✓ Installed command (preserved disabled state): ${cmd_name}"
-        continue
-    fi
-    cp "$cmd_file" "${active_path}"
-    echo "✓ Installed command: ${cmd_name}"
-done
-
-# Install agents
 AGENTS_DIR="${HOME}/.claude/agents/claude-bug-bounty"
-mkdir -p "${AGENTS_DIR}"
 
-for agent_file in "${SCRIPT_DIR}"/agents/*.md; do
-    agent_name=$(basename "$agent_file")
-    case "${agent_name}" in
-        *.[pP][aA][tT][cC][hH].md) continue ;;
-    esac
-    cp "$agent_file" "${AGENTS_DIR}/${agent_name}"
-    echo "✓ Installed agent: ${agent_name}"
-done
+echo "Installing managed Claude runtime files..."
+python3 "${SCRIPT_DIR}/tools/runtime_doctor.py" \
+    --repo-root "${SCRIPT_DIR}" --runtime-root "${HOME}/.claude" --sync --prune
 
-echo ""
-echo "Done! Skills installed to ${INSTALL_DIR}"
-echo "Commands installed to ${COMMANDS_DIR}"
-echo "Agents installed to ${AGENTS_DIR}"
-echo "Re-run this installer after pulling updates so Claude Code sees the latest slash commands."
-echo "With rsync, repo-owned skill directories are mirrored, including removal of obsolete nested files."
-echo "Without rsync, installation is additive; inspect stale files with runtime_doctor.py before pruning."
-echo "A whole skill deleted from this repo stays installed until removed manually; unrelated skill roots are preserved."
-echo "For drift checks without a full reinstall, use: python3 tools/runtime_doctor.py"
+echo "Done. Managed retired files removed; unrelated files and local conflicts preserved."
+echo "Legacy files without installation ownership are not automatically deleted."
 echo ""
 
 # Offer Burp MCP setup

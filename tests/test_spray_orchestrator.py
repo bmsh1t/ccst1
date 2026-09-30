@@ -293,3 +293,77 @@ def test_orchestrator_rejects_mode_specific_flag_conflicts(tmp_path: Path):
     )
     assert completed.returncode == 1
     assert "--insecure is only valid" in completed.stderr
+
+
+def test_internal_spray_shape_and_trevor_evidence_preserve_values(tmp_path, monkeypatch, capsys):
+    import hashlib
+    import io
+    from types import SimpleNamespace
+    from tools import _spray_trevor as trevor, spray_contract as contract
+
+    users, passes, _ = _inputs(tmp_path)
+    password = 'Secret"\\#1'
+    passes.write_text(password + '\n')
+    env = {
+        'SPRAY_REPO_ROOT': str(tmp_path), 'SPRAY_TARGET_URL': 'http://127.0.0.1:9/login',
+        'SPRAY_MODE': 'o365', 'SPRAY_USERS_FILE': str(users), 'SPRAY_PASSES_FILE': str(passes),
+        'SPRAY_DELAY': '0', 'SPRAY_JITTER': '0', 'SPRAY_DRY_RUN': 'true',
+        'SPRAY_PREFLIGHT': '', 'SPRAY_RESUME': '', 'SPRAY_PREFLIGHT_OUTPUT': '',
+        'SPRAY_TREVOR_BIN': '/fixture/trevorspray',
+    }
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    shape = {'client_secret_set': True, 'nested': [{'password': password, 'session': False}],
+             'headers': {'Authorization': 'Bearer synthetic-token'}}
+    binding = {'fixture': 'exact'}
+    preflight = contract.prepare_run('o365', config_binding=binding, request_shape=shape)
+    saved = json.loads(preflight.preflight_path.read_text())
+    assert saved['request_shape'] == shape
+    assert preflight.preflight_path.stat().st_mode & 0o777 == 0o600
+    monkeypatch.setenv('SPRAY_DRY_RUN', 'false')
+    monkeypatch.setenv('SPRAY_PREFLIGHT', str(preflight.preflight_path))
+    context = contract.prepare_run('o365', config_binding=binding, request_shape=shape)
+    manifest = json.loads((context.run_dir / 'run.json').read_text())
+    assert manifest['request_shape'] == shape == context.shape
+    assert manifest['binding'] == saved['binding'] == context.binding
+    assert context.binding['passwords_sha256'] == hashlib.sha256((password + '\n').encode()).hexdigest()
+    raw = json.dumps({'user': 'alice@example.test', 'password': password,
+                      'access_token': 'synthetic-token', 'client_secret': 'synthetic-client'})
+    stopped = []
+    process = SimpleNamespace(stdout=io.StringIO(raw + '\n'), terminate=lambda: stopped.append(True),
+                              wait=lambda: 0)
+    monkeypatch.setattr(trevor, 'prepare_run', lambda *args, **kwargs: context)
+    monkeypatch.setattr(trevor.subprocess, 'Popen', lambda *args, **kwargs: process)
+    monkeypatch.setattr(trevor, 'finish_run', lambda *args, **kwargs: None)
+    try:
+        assert trevor.run() == 0
+        assert raw in capsys.readouterr().out
+        events = [json.loads(line) for line in context.attempts_path.read_text().splitlines()]
+        assert len(events) == 1
+        event = events[0]
+        assert event['raw'] == raw
+        assert event['classification'] == 'valid_token'
+        assert event['attempt_key'] == context.attempt_key('alice@example.test', password)
+        assert event['pwd_sha256_prefix'] == hashlib.sha256(password.encode()).hexdigest()[:12]
+        assert stopped == [True]
+        assert context.attempts_path.stat().st_mode & 0o777 == 0o600
+        assert context.run_dir.stat().st_mode & 0o777 == 0o700
+        assert (context.private_dir / 'trevor-inputs/passwords.txt').read_text() == password + '\n'
+        assert (context.private_dir / 'trevor-inputs/passwords.txt').stat().st_mode & 0o777 == 0o600
+    finally:
+        contract._release_run_lock(context)
+
+
+def test_spray_oauth_redirect_still_blocks_cross_target_credentials():
+    import pytest
+    from urllib.request import Request
+    from tools._spray_oauth import ScopedRedirectHandler, ScopeRedirectError
+
+    request = Request('https://target.test/token', data=b'password=synthetic-password',
+                      headers={'Authorization': 'Bearer synthetic-token'})
+    for status in (302, 307, 308):
+        with pytest.raises(ScopeRedirectError, match='leaves target scope'):
+            ScopedRedirectHandler('target.test').redirect_request(
+                request, None, status, '', {}, 'https://other.test/token')
+    assert request.data == b'password=synthetic-password'
+    assert request.get_header('Authorization') == 'Bearer synthetic-token'

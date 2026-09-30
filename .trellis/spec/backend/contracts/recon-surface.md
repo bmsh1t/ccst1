@@ -276,8 +276,12 @@ live + priority -> ordered_scan_targets -> quick broad scanner -> 正常 consoli
   CVE/GHSA、组件名和完整版本 token 回退，`1.2` 不得命中 `1.20`。
 - continuation 检查 inventory raw source 时复用 inventory owner 的 size/mtime/format/path/
   SHA-256 binding；同尺寸覆盖并恢复 mtime 仍必须返回 `run_intel`。
-- Intel continuation 是建议性补充：可以替换 `continue_last_focus`、`resume_untested` 和
-  `handoff`，但不得抢占 `hunt_p1`/`hunt_p2`；Intel 候选仍保留在 `priority_frontier` 供 AI 取舍。
+- Intel continuation 是建议性观察，不替换 Autopilot 的 `next_action`，也不进入
+  `owner_continuations`。provider failure/stale/applicability 残余保持可见；只有显式
+  Queue claim 或真实运行/恢复状态代表已选择的工作。
+- `run_identity_intel()` 只发布 `evidence/<target>/identity_intel/` 原始结果与原子
+  `summary.md`；不调用本地认知提取器、不覆盖历史 `intelligence.md`。缺工具为
+  `missing`，失败为 `partial`，异常不能抹掉独立 advisory 结果。
 - OSV 与 GitHub component query 默认最多 4 路并发，不截断 eligible components；合并顺序、
   cache/stale/error 统计必须保持原始 component query 顺序。NVD 继续遵循其分页和限速契约。
 - KEV 不只是已有 advisory 的 enrichment：对已观测/声明组件匹配的 KEV-only CVE 也必须生成
@@ -395,9 +399,15 @@ Correct: component-leading numeric branch sentence + exact observed branch/versi
     response, unavailable login, or zero-token run is not a passing observation.
   - 新增 signal-only 路由必须覆盖“精确信号 + 宽泛背景”回归，并保证相关卡片在 catalog 中
     可发现；不得重新引入关键词选卡、selected/deferred 预算或自动读取顺序。
-  - `hypothesis_seeds` 和 `alternative_angles` 只提供有界建议与诊断；Checkpoint 可保留其有界
-    投影，但不得因建议存在而生成 Queue 动作或已选择的 activation hypothesis。ViewState 等
-    专项投影必须读取原始 `source_summary` 证据信号，不能把 seed 文本当成证据 owner。
+  - Context Pack 不按记忆/材料词项重叠生成冲突或重开建议；保留“Coverage 无 gap 不等于
+    无 workflow leads”“缺少 Surface 时记忆不是现场证据”等可观察状态提示。兼容字段
+    `hypothesis_seeds` / `alternative_angles` 不恢复自动推理或 Queue 写入。专项投影读取
+    原始 `source_summary`，不能把建议文字当证据 owner。
+  - Disclosure 工具仅发布查询所得报告表、来源和缓存状态，不从标题拼出已获奖励、
+    行业重复或 sibling 假设。读取正文后的相关性判断由当前 Agent 负责。
+  - method-tampering 的 PUT/DELETE/PATCH 状态观察不再经过 noise_filter 的后续 GET
+    SPA 删除旁路；原观察保留为待验证材料，不是已确认 Finding。unsafe opt-in、scope、
+    限额与其他 noise_filter/route_kinds 功能不变；完整原方法响应采集不由本次取消过滤补造。
   - 已观察 API path 的祖先前缀补漏只处理同目标、去除 query/fragment 的路径：
     每个 seed 最多 3 个非根前缀、每轮最多 12 个候选，API 文档优先，management
     候选需要框架证据。保留 `seed_refs` 和派生字段，并用 soft-404/响应结构门禁；
@@ -1612,3 +1622,32 @@ Scope Review Action Queue -> explicit target-set proof -> active work
 ```
 
 ---
+
+## Knowledge recall discovery window
+
+`experience_recall` keeps a bounded card-reference window, not a relevance verdict.
+The knowledge source health reports registered and matched counts, exact remaining
+valid matches, ordering, filter type and an absolute `catalog_ref` to the existing
+registry. Native reading of that catalog exposes all registered card paths,
+including entries outside the window or keyword filter. No second registry or
+search service is introduced. Inspect every registered card before reporting
+health; missing or malformed cards after the display limit must remain visible.
+An empty keyword match is not evidence that relevant knowledge does not exist.
+
+## Neutral Recon inventory
+
+JS candidate windows preserve input order and expose remaining count plus the
+complete source path. Category quotas and business-value ranking are retired.
+Host inventory keeps its historical host_ranking.jsonl filename but contains
+source facts, not a computed score. Asset-relation pages use stable identity keys;
+cursor v2 rejects old score-order cursors. Raw observations and source provenance
+remain accessible. Scope classification and active-request budgets are unchanged.
+
+Intel preserves all source advisory facts but no longer generates or consumes a
+custom weighted score for eligibility, grouping or ordering. Source severity
+labels are descriptive; component/version/id order is stable, not priority.
+Current actionable advisories remain accessible regardless of weighted score.
+Review projection v2 invalidates prior scoring-based views; query cursor filter
+fingerprints include the ordering contract. KEV/EPSS remain facts, not a locally
+invented priority score. Live provider acquisition/freshness/Scope contracts stay
+unchanged. Regression: tests/test_intel_neutral_selection.py.

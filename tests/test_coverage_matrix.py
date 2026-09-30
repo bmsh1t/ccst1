@@ -105,7 +105,7 @@ def test_primary_projection_uses_current_truth_without_publishing(tmp_path):
     # Old annotations remain explicit historical input until imported into Store.
     assert load_matrix(target, tmp_path)["endpoints"][0]["cells"]["XSS"]["reason"] == "historical applicability"
     assert endpoints["/candidate"]["cells"]["Authz"]["status"] == "untested"
-    assert endpoints["/verified"]["cells"]["Authz"]["status"] == "tested_clean"
+    assert endpoints["/verified"]["cells"]["Authz"]["status"] == "untested"
     assert endpoints["/variant"]["cells"]["Authz"]["status"] == "untested"
     assert matrix["closure_projection"] == current_cell_projection(tmp_path, target)["projection"]
     assert matrix["store_revision"] == store.binding()["revision"]
@@ -184,12 +184,12 @@ def test_primary_terminal_dispositions_filter_only_exact_authorized_gaps(tmp_pat
     assert all(row["cells"]["Authz"]["status"] == "untested" for row in matrix["endpoints"])
     gaps = coverage_matrix_module.high_value_gaps_from_matrix(matrix)
     assert {gap["endpoint"] for gap in gaps if gap["vuln_class"] == "Authz"} == {
-        "/query", "/fragment", "/scoped",
+        "/exact", "/query", "/fragment", "/scoped",
     }
-    assert matrix["closure_projection"]["closed_cells_v2"][0]["result"] == result
+    assert matrix["closure_projection"]["closed_cells_v2"] == []
     summary = matrix["summary"]
     assert summary["high_value_gaps_count"] == summary["actionable_high_value_gaps_count"] == len(gaps)
-    assert summary["untested"] == len(gaps) + 1
+    assert summary["untested"] == len(gaps)
     assert coverage_matrix_module.high_value_gap_window_from_matrix(matrix, limit=1)[1] == len(gaps)
 
     raw.write_text("corrupted", encoding="utf-8")
@@ -870,7 +870,7 @@ class TestRebuildMatrix:
         assert child_ep["endpoint_kind"] == "untriaged"
         assert child_ep["cells"]["Authz"]["status"] == "untested"
 
-    def test_ai_marked_route_prefix_is_advisory_and_keeps_gaps(self, tmp_path, store):
+    def test_ai_marked_route_prefix_closes_only_container(self, tmp_path, store):
         _seed_recon(tmp_path, "x.com", [
             "https://x.com/rest/admin",
             "https://x.com/rest/admin/application-configuration",
@@ -891,12 +891,12 @@ class TestRebuildMatrix:
         save_matrix("x.com", rebuilt, repo_root=tmp_path)
         by_endpoint = {ep["endpoint"]: ep for ep in rebuilt["endpoints"]}
         assert by_endpoint["/rest/admin"]["endpoint_kind"] == "route_prefix"
-        assert {cell["status"] for cell in by_endpoint["/rest/admin"]["cells"].values()} == {"untested"}
+        assert {cell["status"] for cell in by_endpoint["/rest/admin"]["cells"].values()} == {"n_a"}
         assert by_endpoint["/rest/admin/application-configuration"]["cells"]["Authz"]["status"] == "untested"
 
         gaps = find_high_value_gaps("x.com", repo_root=tmp_path)
         gap_endpoints = {gap["endpoint"] for gap in gaps}
-        assert "/rest/admin" in gap_endpoints
+        assert "/rest/admin" not in gap_endpoints
         assert "/rest/admin/application-configuration" in gap_endpoints
 
     def test_needs_triage_lists_untriaged_endpoints_with_hints(self, tmp_path, store):

@@ -1006,80 +1006,6 @@ def run_repo_source_hunt(domain, repo_url="", repo_path="", allow_large_repo=Fal
     return result.get("status") == "ok"
 
 
-def run_source_intel(domain, repo_path="", repo_url=""):
-    """Extract source-level routes and source-marker observations."""
-    if repo_url and not repo_path:
-        log("warn", "run_source_intel does not clone repo_url directly; pass --repo-path or run source-hunt first.")
-
-    from source_intel import run_source_intel as _run_source_intel
-
-    result = _run_source_intel(
-        target=domain,
-        repo_path=repo_path,
-        repo_root=BASE_DIR,
-    )
-    log(
-        "ok",
-        "Source intel: "
-        f"{result.get('route_count', 0)} routes, "
-        f"{result.get('graphql_count', 0)} GraphQL ops, "
-        f"{result.get('signal_count', 0)} source markers",
-    )
-    return bool(result.get("source_count") or result.get("route_count"))
-
-
-def read_source_intel(domain):
-    """Read source-intel summary artifacts for a target."""
-    summary_path = os.path.join(_resolve_findings_dir(domain), "source_intel", "summary.md")
-    if not os.path.isfile(summary_path):
-        return f"No source_intel artifacts found for {domain}. Run run_source_intel first."
-    return open(summary_path, encoding="utf-8", errors="replace").read()[:4000]
-
-
-def run_js_read(domain):
-    """Prepare JS materials for the js-reader agent.
-
-    Reads cached recon JS files + extracted artifacts, applies vendor /
-    minified / oversize filters, and writes findings/<target>/js_intel/
-    materials.{json,md}. The js-reader agent then reads materials.json
-    and the most promising JS files via the Read tool.
-    """
-    from pathlib import Path
-
-    from js_reader import prepare_materials
-
-    result = prepare_materials(
-        target=domain,
-        repo_root=Path(BASE_DIR),
-    )
-    log(
-        "ok",
-        f"JS materials: {result['selected_count']} JS files queued, "
-        f"{result['skipped_count']} skipped, "
-        f"source_intel={result['source_intel_present']}",
-    )
-    return bool(
-        result.get("selected_count")
-        or result.get("skipped_count")
-        or result.get("recon_artifacts_present")
-    )
-
-
-def read_js_intel(domain):
-    """Read js-reader hypotheses (or fall back to materials summary)."""
-    js_intel_dir = os.path.join(_resolve_findings_dir(domain), "js_intel")
-    hypotheses_path = os.path.join(js_intel_dir, "hypotheses.json")
-    if os.path.isfile(hypotheses_path):
-        return open(hypotheses_path, encoding="utf-8", errors="replace").read()[:4000]
-    materials_summary = os.path.join(js_intel_dir, "materials_summary.md")
-    if os.path.isfile(materials_summary):
-        return (
-            open(materials_summary, encoding="utf-8", errors="replace").read()[:4000]
-            + "\n\n(materials prepared but no hypotheses yet — invoke the js-reader agent.)"
-        )
-    return f"No js_intel artifacts found for {domain}. Run run_js_read first."
-
-
 def run_param_discovery(domain, deep=False):
     """Thin compatibility wrapper around the canonical parameter owner."""
     from pathlib import Path
@@ -1293,41 +1219,6 @@ def _load_classic_autopilot_state(target: str) -> dict:
         return {}
 
 
-def _run_classic_enrichment_hints(
-    target: str,
-) -> list[str]:
-    """Consume runtime enrichment hints before the classic scanner lane."""
-    state = _load_classic_autopilot_state(target)
-    if not state:
-        return []
-
-    ordered_tools = []
-    next_tool_hint = str(state.get("next_tool_hint", "") or "").strip()
-    if next_tool_hint:
-        ordered_tools.append(next_tool_hint)
-    for item in state.get("enrichment_hints", []) or []:
-        tool = str(item.get("tool", "") or "").strip()
-        if tool and tool not in ordered_tools:
-            ordered_tools.append(tool)
-
-    executed = []
-    for tool_name in ordered_tools:
-        ok = False
-        if tool_name == "run_source_intel":
-            ok = run_source_intel(target)
-        elif tool_name == "run_js_read":
-            ok = run_js_read(target)
-        else:
-            continue
-
-        if ok:
-            executed.append(tool_name)
-
-    if executed:
-        log("info", "Classic AI enrichment: " + ", ".join(executed))
-    return executed
-
-
 def _hunt_target_impl(
     domain,
     quick=False,
@@ -1422,7 +1313,7 @@ def _hunt_target_impl(
 
     recon_available = result["recon"] or os.path.isdir(_resolve_recon_dir(canonical_target))
     if not scan_only and recon_available:
-        result["enrichment"] = _run_classic_enrichment_hints(canonical_target)
+        result["enrichment"] = []
 
     try:
         with _phase_execution_lock(repo_root, canonical_target, "scan"):

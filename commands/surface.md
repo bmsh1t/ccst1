@@ -37,8 +37,8 @@ The remaining file inputs are raw material, runtime breadcrumbs or rebuildable i
 - Store Findings and raw scanner candidate artifacts
 - `state/<target>/session.json` runtime breadcrumbs
 - `hunt-memory/journal.jsonl` session audit; current tested endpoints and experience come from Store
-- `findings/<target>/js_intel/` from `/js-read`
-- `findings/<target>/source_intel/` from source intelligence
+- raw cached JS paths remain available for Claude native Read/Grep
+- raw source paths are read directly by Claude when explicitly selected
 - `recon/<target>/browser/` browser-observed XHR/API surface
 - `recon/<target>/dirs/ffuf_summary.json` compact FFUF observations; full results stay in `ffuf_results.jsonl.gz`
 - `recon/<target>/dirs/ffuf_target_plan.json` current bounded FFUF target selection and pending count
@@ -68,8 +68,8 @@ The remaining file inputs are raw material, runtime breadcrumbs or rebuildable i
 - FFUF target batches use the same neutral URL order over pending targets; scope, budget, wordlist
   binding, and the completion ledger still govern eligibility and cross-round continuation.
 - `state/<target>/surface-projection.json` is a small, manifest-bound cache. `/autopilot` consumes it
-  only on an exact fingerprint hit. Missing/stale/invalid means `prepare_surface_context`, not clean,
-  exhausted, reviewed, or absent attack surface.
+  only on an exact fingerprint hit. Missing/stale/invalid remains diagnostic, not a mandatory
+  route or proof of clean/exhausted/reviewed/absent attack surface; refresh explicitly when useful.
 - Recon completion attempts the same finalizer once. A finalizer failure is non-fatal to raw recon;
   rerun this command with `--refresh` to rebuild the derived index and projection.
 
@@ -127,6 +127,6 @@ python3 tools/recon_adapter.py --recon-dir recon/<target_key> --read-ffuf --sign
 ```text
 /recon target.com
 /surface target.com
-# optional: /js-read, /source-hunt, /intel, /cloud-recon, /secrets-hunt when the review pack shows a signal
+# optional: native Read/Grep, /source-hunt, /intel, /cloud-recon, /secrets-hunt when useful
 /hunt target.com
 ```

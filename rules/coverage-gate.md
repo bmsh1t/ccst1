@@ -30,7 +30,7 @@ Claude 不能直接说“测试完成”或“没有发现问题”，除非已�
 | `candidate` | 证据足够，应该进入 `/validate` |
 | `blocked` | 被权限、环境、账号、红线或信息不足阻塞 |
 | `n/a` | 明确不适用 |
-| `dead-end` | 已证伪或低价值，继续投入不划算 |
+| `dead-end` | 有证据支持、限定于记录条件的负面结果；低价值或暂停本身不属于此状态 |
 
 ### AI 接口状态（4 态）
 
@@ -41,7 +41,7 @@ Claude 不能直接说“测试完成”或“没有发现问题”，除非已�
 | `untested` | 尚未判断或尚未测试（含已计划未执行的 `queued`） |
 | `investigating` | 已在调查中：`lead` / `signal` / `candidate`，或被阻塞的 `blocked` |
 | `confirmed` | 该方向已确证：finding 级证据，或 candidate 通过 `/validate` |
-| `ruled_out` | 已收敛为不再追：`tested`（未发现有效线索）/ `n/a` / `dead-end` |
+| `ruled_out` | 在记录条件下未成立或不适用：`tested` / `n/a` / `dead-end`；不代表永久排除。暂停、预算结束、低优先仍保留原认知状态 |
 
 交付前检查（COVERAGE SUMMARY）的字段分组是这些理由内容的展开面，
 不构成第二套状态接口。

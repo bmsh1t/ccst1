@@ -14,7 +14,7 @@ Schema v2 (current):
     What is derived on demand via `derive_state_view()`:
       - recon_artifacts counts and readiness (inspect_recon_artifacts)
       - finding_index counts (validation / report pending)
-      - browser / js_intel / source_intel artifact presence
+      - browser artifact presence
 
 v1 → v2 migration:
     `load_runtime_state()` reads v1 files transparently. `last_completed_step`
@@ -747,7 +747,6 @@ def inspect_recon_artifacts(repo_root: str | Path, target: str) -> dict:
         "browser_api_urls": _line_count(recon_dir / "browser" / "api_endpoints.txt"),
         "ffuf_observations": ffuf_observations,
         "ffuf_legacy_raw_files": ffuf_legacy_raw_files,
-        "source_intel": 1 if _source_intel_present(findings_dir) else 0,
     }
     exposure_counts, exposure_paths = _inspect_exposure_counts(recon_dir)
     asset_relations = _asset_relation_state(repo_root, recon_dir, target)
@@ -771,7 +770,6 @@ def inspect_recon_artifacts(repo_root: str | Path, target: str) -> dict:
             "browser_xhr_urls",
             "browser_api_urls",
             "ffuf_observations",
-            "source_intel",
         )
     )
 
@@ -985,14 +983,6 @@ def _http_probe_state(recon_dir: Path) -> dict:
     }
 
 
-def _source_intel_present(findings_dir: Path) -> bool:
-    source_dir = findings_dir / "source_intel"
-    return any(
-        _artifact_has_bytes(source_dir / name)
-        for name in ("hypotheses.jsonl", "routes.json", "summary.md")
-    )
-
-
 def inspect_browser_evidence(
     repo_root: str | Path,
     target: str,
@@ -1069,12 +1059,10 @@ def inspect_recon_artifacts_fast(repo_root: str | Path, target: str) -> dict:
             Path("dirs/ffuf-results-summary.json"),
         )
     )
-    source_intel_ready = _source_intel_present(findings_dir)
     counts.update(
         {
             "ffuf_observations": None if ffuf_ready else 0,
             "ffuf_legacy_raw_files": 0,
-            "source_intel": None if source_intel_ready else 0,
         }
     )
 
@@ -1106,7 +1094,7 @@ def inspect_recon_artifacts_fast(repo_root: str | Path, target: str) -> dict:
             "browser_xhr_urls",
             "browser_api_urls",
         )
-    ) or ffuf_ready or source_intel_ready
+    ) or ffuf_ready
     http_probe = _http_probe_state(recon_dir)
     phase_gates = _phase_gate_state(recon_dir)
     run_budget = _run_budget_state(recon_dir)
@@ -1209,7 +1197,7 @@ def derive_state_view(repo_root: str | Path, target: str) -> dict:
       - persisted: contents of session.json (post v1→v2 migration)
       - recon: inspect_recon_artifacts() result
       - findings: counts derived from finding_index
-      - evidence: presence flags for browser/js_intel/source_intel artifacts
+      - evidence: presence flags for browser evidence and native hypothesis artifacts
       - derived: current status from recon/finding/queue owners plus failure breadcrumb
     """
     repo_root_p = Path(repo_root)
@@ -1237,8 +1225,6 @@ def derive_state_view(repo_root: str | Path, target: str) -> dict:
         ),
         "browser_evidence_ready": bool(browser_evidence.get("ready")),
         "browser_evidence": browser_evidence,
-        "js_intel_present": (findings_dir / "js_intel" / "materials.json").is_file(),
-        "source_intel_present": (findings_dir / "source_intel").is_dir(),
     }
 
     return {

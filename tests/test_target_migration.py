@@ -1388,12 +1388,8 @@ def _closed_v2_shape(projection):
     )
 
 
-def test_plain_record_still_closes_its_endpoint_cell_after_migration(tmp_path):
-    """A record that made no identity claim keeps authoring the endpoint cell.
-
-    This is the migration's closure guarantee: the store's legacy view closes
-    exactly the cells the file-side legacy view closed.
-    """
+def test_plain_record_remains_audit_only_after_migration(tmp_path):
+    """Legacy identity-free evidence remains readable but never closes a cell."""
     rows = [_ledger_row()]
     target = _fixture(tmp_path, ledger=rows,
                       evidence=[("evidence/target.test/validation/AQ-9/run/diff.json", b"{}")])
@@ -1406,7 +1402,7 @@ def test_plain_record_still_closes_its_endpoint_cell_after_migration(tmp_path):
 
     file_side = _file_side_projection(*rows)
     store_side = _store_side_projection(tmp_path, target)
-    assert _closed_shape(store_side) == _closed_shape(file_side) == [("/api/object", "Authz", "tested_finding")]
+    assert _closed_shape(store_side) == _closed_shape(file_side) == []
     assert store_side["closed_cells_v2"] == file_side["closed_cells_v2"] == []
 
 
@@ -1415,11 +1411,11 @@ def test_terminal_verdict_and_complete_identity_survive_the_import(tmp_path):
     payload = b'{"diff": "peer read"}'
     row = _ledger_row(
         result="tested_clean",
-        identity_status="complete",
+        identity_status="complete", evidence_role="subject", identity_technique="explicit_role_check",
         identity_v2={
             "schema_version": 2, "kind": "closure_cell",
             "endpoint": {"schema_version": 2, "kind": "endpoint", "endpoint": "/api/object"},
-            "family": "Authz", "technique": "authz",
+            "family": "Authz", "technique": "explicit_role_check",
             "dimensions": {"method": "GET", "actor_role": "anonymous", "object_scope": "none"},
         },
     )
@@ -1441,7 +1437,8 @@ def test_terminal_verdict_and_complete_identity_survive_the_import(tmp_path):
     store_side = _store_side_projection(tmp_path, target)
     file_side = _file_side_projection(row)
     assert _closed_v2_shape(store_side) == _closed_v2_shape(file_side)
-    assert store_side["closed_cells_v2"][0]["identity_v2"] == row["identity_v2"]
+    assert record["identity_v2"] == row["identity_v2"]
+    assert store_side["closed_cells_v2"] == file_side["closed_cells_v2"] == []
     assert store_side["closed_cells"] == file_side["closed_cells"] == []
 
 
@@ -1478,12 +1475,8 @@ def test_partial_identity_is_carried_as_facts_and_stays_open(tmp_path):
     assert store_side["identity_v2_diagnostics"]["incomplete_count"] == 1
 
 
-def test_identity_verdict_without_its_dimensions_is_quarantined(tmp_path):
-    """A conflicting identity verdict cannot be represented, so it is reported.
-
-    Importing it as a plain observation would make the store close a cell the
-    Ledger left open, so the record is quarantined instead of flattened.
-    """
+def test_identity_conflict_is_preserved_without_closure(tmp_path):
+    """Schema 11 preserves conflicts as non-authoring observations."""
     rows = [_ledger_row(result="tested_clean", identity_status="conflict",
                         identity_conflicts=["method_mismatch"])]
     target = _fixture(tmp_path, ledger=rows,
@@ -1491,13 +1484,12 @@ def test_identity_verdict_without_its_dimensions_is_quarantined(tmp_path):
 
     result = import_target(tmp_path, target)
 
-    assert result["imported"]["observations"] == 0
-    assert result["legacy"]["identity_carry"]["uncarryable_identity_claims"] == 1
-    assert any(row["owner"] == "ledger" and "would close a cell the Ledger left open" in row["reason"]
-               for row in result["quarantined"])
-    assert TargetStore(tmp_path, target).closure_records()["records"] == []
+    assert result["imported"]["observations"] == 1
+    assert result["legacy"]["identity_carry"]["uncarryable_identity_claims"] == 0
+    records = TargetStore(tmp_path, target).closure_records()["records"]
+    assert records[0]["identity_status"] == "conflict"
+    assert _store_side_projection(tmp_path, target)["closed_cells_v2"] == []
     assert _file_side_projection(*rows)["closed_cells"] == []
-
 
 def test_verdict_outside_the_shared_vocabulary_is_reported_not_improvised(tmp_path):
     payload = b"{}"
@@ -1533,9 +1525,9 @@ def test_refused_record_leaves_a_reported_gap_not_a_silent_one(tmp_path):
     assert result["legacy"]["observations"] == []
     assert any(row["owner"] == "ledger" and "no raw evidence reference" in row["reason"]
                for row in result["quarantined"])
-    # The file side did close that cell; the store refuses to close what it
-    # could not bind, and the difference is stated rather than hidden.
-    assert _closed_shape(_file_side_projection(*rows)) == [("/api/other", "Authz", "tested_finding")]
+    # Neither source authorizes identity-free closure; missing raw evidence
+    # additionally prevents importing the observation.
+    assert _closed_shape(_file_side_projection(*rows)) == []
     assert _closed_shape(_store_side_projection(tmp_path, target)) == []
 
 

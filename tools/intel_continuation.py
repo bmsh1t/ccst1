@@ -60,8 +60,6 @@ INTEL_PREEMPTIBLE_ACTIONS = {
 }
 GROUP_DISPOSITION_KEY = "__intel_groups__"
 INTEL_REFRESH_TTL_SECONDS = DEFAULT_COMPONENT_TTL_SECONDS
-_SEVERITY_RANK = {"UNKNOWN": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
-_APPLICABILITY_RANK = {"unknown": 0, "likely": 1, "affected": 2}
 
 
 def _mtime_ns(path: Path) -> int:
@@ -84,11 +82,6 @@ def _parse_utc(value: object) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
-def _score_hint(item: dict) -> int:
-    try:
-        return int(float(item.get("score_hint") or 0))
-    except (TypeError, ValueError):
-        return 0
 
 
 def _final_queue_dispositions(repo_root: str | Path, target: str) -> dict[str, list[dict]]:
@@ -272,16 +265,8 @@ def _bound_inventory_sources(repo: Path, inventory: dict) -> list[tuple[dict, Pa
     return bound_sources
 
 
-def _high_value_advisory(item: dict) -> bool:
-    if item.get("already_tested") or not advisory_is_actionable(item):
-        return False
-    score = _score_hint(item)
-    return bool(
-        item.get("applicability") in {"affected", "likely"}
-        or item.get("severity") in {"CRITICAL", "HIGH"}
-        or item.get("kev")
-        or score >= 40
-    )
+def _pending_advisory(item: dict) -> bool:
+    return not item.get("already_tested") and advisory_is_actionable(item)
 
 
 def _pending_review_groups(
@@ -581,14 +566,11 @@ def inspect_intel_continuation(
     ]
     candidates = [
         item for item in advisories
-        if _high_value_advisory(item)
+        if _pending_advisory(item)
         and not _has_final_disposition(item, final_dispositions)
     ]
     candidates.sort(
         key=lambda item: (
-            -_SEVERITY_RANK.get(str(item.get("severity") or "UNKNOWN").upper(), 0),
-            -_APPLICABILITY_RANK.get(str(item.get("applicability") or "unknown").lower(), 0),
-            -_score_hint(item),
             str(item.get("id") or ""),
         )
     )
@@ -598,7 +580,7 @@ def inspect_intel_continuation(
         return {
             **base,
             "action": "test_advisory_applicability",
-            "reason": "a high-value advisory still needs target reachability/applicability evidence",
+            "reason": "an unreviewed advisory needs target applicability evidence; ordering is not priority",
             "advisory": {
                 "id": selected.get("id", ""),
                 "aliases": list(selected.get("aliases") or [])[:8],
@@ -610,7 +592,8 @@ def inspect_intel_continuation(
                 },
                 "applicability": selected.get("applicability", "unknown"),
                 "severity": selected.get("severity", "UNKNOWN"),
-                "score_hint": selected.get("score_hint", 0),
+                "kev": bool(selected.get("kev")),
+                "epss": selected.get("epss"),
                 "source_refs": list(selected.get("source_refs") or [])[:5],
             },
             "review_projection": {

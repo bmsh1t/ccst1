@@ -299,8 +299,6 @@ def _bounded_surface(ranked: dict) -> dict:
         "scanner",
         "intel",
         "ffuf",
-        "js_intel",
-        "source_intel",
         "browser",
         "semantic_surface",
         "surface_index",

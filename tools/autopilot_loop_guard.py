@@ -26,22 +26,12 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         ledger_health_projection as _ledger_health_projection,
     )
 
-HIGH_VALUE_OBSERVATION_KINDS = frozenset({"exposure", "infra"})
 _ROTATION_OUTCOMES = {"tested_clean", "dead_end"}
 _STAGNANT_REASONS = {
-    "browser_evidence_partial",
-    "browser_evidence_required",
-    "observation_inventory_partial",
-    "observation_high_value_pending",
-    "source_evidence_partial",
-    "js_evidence_partial",
-    "surface_projection_pending",
     "intel_evidence_blocked",
     "json_evidence_partial",
     "sql_evidence_partial",
     "next_action_pending",
-    "surface_work_pending",
-    "coverage_high_value_gaps",
     "coverage_ledger_evidence_missing",
     "actor_context_required",
 }
@@ -89,11 +79,6 @@ def _loop_guard_authoritative_reason(state: dict) -> str:
         or state.get("validation_runner_next")
     ):
         return "authoritative_durable_work"
-    # Case 只保留上下文义务：未决假设是它唯一还能拉住路线的理由，待办与
-    # next-action 已归唯一行动源，不在这里复述。
-    case_state = state.get("case_state") or {}
-    if int(case_state.get("open_hypotheses", 0) or 0) > 0:
-        return "authoritative_case_state_work"
     if state.get("root_finding_claim_next"):
         return "authoritative_finding_work"
     findings = state.get("structured_findings") or {}
@@ -107,9 +92,6 @@ def _loop_guard_authoritative_reason(state: dict) -> str:
         )
     ):
         return "authoritative_finding_work"
-    intel = state.get("intel_continuation") or {}
-    if isinstance(intel, dict) and intel.get("blocked"):
-        return "authoritative_intel_work"
     return ""
 
 def build_loop_guard_projection(state: dict, ledger_entries: list[dict] | None = None) -> dict:
@@ -321,25 +303,10 @@ def stagnation_fingerprint(state: dict, closure: dict) -> str:
         "reason": reason,
         "next_action": str(closure.get("next_action") or ""),
     }
-    if reason.startswith("browser_evidence_"):
-        payload["browser"] = {
-            key: (state.get("browser_evidence") or {}).get(key)
-            for key in ("present", "ready", "status")
-        }
-    elif reason == "source_evidence_partial":
-        payload["source"] = {
-            key: (state.get("repo_source_summary") or {}).get(key)
-            for key in ("status", "input_fingerprint")
-        }
-    elif reason == "intel_evidence_blocked":
+    if reason == "intel_evidence_blocked":
         payload["intel"] = {
             "blocked": (state.get("intel_continuation") or {}).get("blocked") or [],
             "reason": (state.get("intel_continuation") or {}).get("reason") or "",
-        }
-    elif reason == "surface_projection_pending":
-        payload["surface_projection"] = {
-            key: (state.get("surface_projection") or {}).get(key)
-            for key in ("status", "reason", "input_fingerprint")
         }
     elif reason == "json_evidence_partial":
         payload["json"] = {
@@ -355,23 +322,6 @@ def stagnation_fingerprint(state: dict, closure: dict) -> str:
             for lane, item in (state.get("sql_matrix") or {}).items()
             if isinstance(item, dict)
         }
-    elif reason == "js_evidence_partial":
-        payload["js"] = {
-            key: (state.get("js_intel") or {}).get(key)
-            for key in ("status", "reason", "hypothesis_count")
-        }
-    elif reason.startswith("observation_"):
-        inventory = state.get("observation_inventory") or {}
-        by_kind = inventory.get("by_kind") if isinstance(inventory.get("by_kind"), dict) else {}
-        payload["observations"] = {
-            "status": inventory.get("status"),
-            "high_value_untouched": {
-                kind: int((by_kind.get(kind) or {}).get("present_untouched", 0) or 0)
-                for kind in HIGH_VALUE_OBSERVATION_KINDS
-            },
-        }
-    elif reason == "coverage_high_value_gaps":
-        payload["coverage"] = str(state.get("_stagnation_coverage") or "")
     elif reason == "coverage_ledger_evidence_missing":
         evidence = closure.get("coverage_terminal_evidence")
         missing = evidence.get("missing") if isinstance(evidence, dict) else []
@@ -435,7 +385,7 @@ def _loop_control_projection(state: dict) -> dict:
 
     hard_gate = state.get("hard_gate") if isinstance(state.get("hard_gate"), dict) else {}
     frontier = []
-    for item in state.get("priority_frontier") or []:
+    for item in state.get("owner_continuations") or []:
         if not isinstance(item, dict):
             continue
         frontier.append({
@@ -462,7 +412,7 @@ def _loop_control_projection(state: dict) -> dict:
             "action": text(hard_gate.get("action"), 120),
             "reason": text(hard_gate.get("reason"), 300),
         } if hard_gate else {},
-        "priority_frontier": frontier,
+        "owner_continuations": frontier,
     }
 
 def _format_loop_guard_line(state: dict) -> str:
@@ -483,4 +433,3 @@ def _endpoint_family(endpoint: object) -> str:
         ":id" if _UUID_SEGMENT_RE.fullmatch(segment) or _VARIABLE_PATH_SEGMENT_RE.fullmatch(segment) else segment
         for segment in path.split("/")
     ) or "/"
-

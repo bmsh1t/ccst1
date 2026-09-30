@@ -11,12 +11,23 @@ from __future__ import annotations
 # A matrix is a projection owned by Coverage; only structural N/A cells are
 # self-authenticating.  Every observed terminal result must come from the
 # Evidence Ledger so a hand-edited matrix cannot close a lane by itself.
-_STRUCTURAL_NA_MARKERS = (
-    "static asset;",
-    "standard/public metadata;",
-    "route prefix/container;",
-    "minified JS property-chain artifact;",
-)
+STRUCTURAL_NA_MARKERS = {
+    "static_asset": "static asset;",
+    "public_metadata": "standard/public metadata;",
+    "route_prefix": "route prefix/container;",
+    "minified_js_property_chain": "minified JS property-chain artifact;",
+}
+
+
+def is_structural_na(cell: dict) -> bool:
+    """Only the controlled Coverage writer grants identity-free N/A."""
+    marker = STRUCTURAL_NA_MARKERS.get(str(cell.get("structural_code") or ""))
+    return bool(
+        marker and cell.get("status") == "n_a"
+        and cell.get("structural_source") == "coverage:endpoint_kind"
+        and cell.get("structural_marker") == marker
+        and str(cell.get("reason") or "").startswith(marker)
+    )
 
 
 try:
@@ -24,14 +35,14 @@ try:
         CANONICAL_VULN_CLASSES, CLOSED_LEDGER_RESULTS, CLOSED_MATRIX_STATUSES,
         CLOSURE_ONLY_FAMILIES, CLOSURE_FAMILIES,
         VULN_CLASS_ALIASES, canonical_vuln_class, extract_endpoint_parts,
-        extract_endpoint_path, canonical_endpoint_identity, canonical_endpoint_path,
+        extract_endpoint_path, canonical_endpoint_identity, canonical_endpoint_path, exact_endpoint_identity,
     )
 except ImportError:  # pragma: no cover - direct tools/ execution
     from evidence_identity import (
         CANONICAL_VULN_CLASSES, CLOSED_LEDGER_RESULTS, CLOSED_MATRIX_STATUSES,
         CLOSURE_ONLY_FAMILIES, CLOSURE_FAMILIES,
         VULN_CLASS_ALIASES, canonical_vuln_class, extract_endpoint_parts,
-        extract_endpoint_path, canonical_endpoint_identity, canonical_endpoint_path,
+        extract_endpoint_path, canonical_endpoint_identity, canonical_endpoint_path, exact_endpoint_identity,
     )
 
 
@@ -51,9 +62,7 @@ class ClosureResolver:
 
     def __init__(self, evidence_summary: dict | None = None, matrix: dict | None = None) -> None:
         self._closed_classes: dict[str, set[str]] = {}
-        self._closed_ts: dict[str, str] = {}
         self._closed_results: dict[tuple[str, str], str] = {}
-        self._closed_result_ts: dict[tuple[str, str], str] = {}
         self._closed_v2: dict[str, tuple[str, str]] = {}
         self._ingest_ledger(evidence_summary or {})
         self._ingest_matrix(matrix or {})
@@ -62,7 +71,6 @@ class ClosureResolver:
         self,
         endpoint: str,
         vuln_class: str,
-        ts: str = "",
         result: str = "",
     ) -> None:
         ep = canonical_endpoint_identity(endpoint)
@@ -70,17 +78,10 @@ class ClosureResolver:
         if not ep or not vc:
             return
         self._closed_classes.setdefault(ep, set()).add(vc)
-        ts = str(ts or "").strip()
-        if ts:
-            self._closed_ts[ep] = max(self._closed_ts.get(ep, ""), ts)
         result = str(result or "").strip()
         if result:
             key = (ep, vc)
-            previous_ts = self._closed_result_ts.get(key, "")
-            # 有时间戳时保留最新终态；旧记录没有时间戳时按 append 顺序覆盖。
-            if not previous_ts or not ts or ts >= previous_ts:
-                self._closed_results[key] = result
-                self._closed_result_ts[key] = ts
+            self._closed_results[key] = result
 
     def _ingest_ledger(self, evidence_summary: dict) -> None:
         for cell in evidence_summary.get("closed_cells_v2") or []:
@@ -93,6 +94,8 @@ class ClosureResolver:
                 key = _closure_cell_key(identity)
             except (ImportError, TypeError, ValueError, KeyError):
                 continue
+            if key.schema_version != 3:
+                continue
             result = str(cell.get("result") or "").strip()
             if result not in CLOSED_LEDGER_RESULTS:
                 continue
@@ -101,18 +104,7 @@ class ClosureResolver:
             previous = self._closed_v2.get(identity_key)
             if previous is None or not previous[1] or not ts or ts >= previous[1]:
                 self._closed_v2[identity_key] = (result, ts)
-        for cell in evidence_summary.get("closed_cells") or []:
-            if not isinstance(cell, dict):
-                continue
-            result = str(cell.get("result") or "").strip()
-            if result and result not in CLOSED_LEDGER_RESULTS:
-                continue
-            self._mark(
-                str(cell.get("endpoint") or ""),
-                str(cell.get("vuln_class") or ""),
-                str(cell.get("ts") or ""),
-                result,
-            )
+        # Legacy endpoint×family cells remain audit-only and never authorize closure.
 
     def _ingest_matrix(self, matrix: dict) -> None:
         """Ingest only structural N/A projections from Coverage.
@@ -132,16 +124,8 @@ class ClosureResolver:
             for vuln_class, cell in cells.items():
                 if not isinstance(cell, dict):
                     continue
-                status = str(cell.get("status") or "")
-                reason = str(cell.get("reason") or "")
-                if status == "n_a" and any(
-                    marker in reason for marker in _STRUCTURAL_NA_MARKERS
-                ):
-                    self._mark(
-                        endpoint,
-                        str(vuln_class),
-                        result=status,
-                    )
+                if is_structural_na(cell):
+                    self._mark(endpoint, str(vuln_class), result="n_a")
 
     def is_cell_closed(
         self,
@@ -160,7 +144,7 @@ class ClosureResolver:
             except (ImportError, TypeError, ValueError, KeyError):
                 return False
             if (
-                key.endpoint != canonical_endpoint_identity(endpoint)
+                key.endpoint != endpoint
                 or key.family != canonical_vuln_class(vuln_class)
             ):
                 return False
@@ -194,7 +178,7 @@ class ClosureResolver:
             except (ImportError, TypeError, ValueError, KeyError):
                 return ""
             if (
-                key.endpoint != canonical_endpoint_identity(endpoint)
+                key.endpoint != endpoint
                 or key.family != canonical_vuln_class(vuln_class)
             ):
                 return ""
@@ -234,18 +218,6 @@ class ClosureResolver:
             elif not classes:
                 return False
         return True
-
-    def closed_after(self, endpoint_paths: list[str], ts: str) -> bool:
-        """任一 endpoint 是否在 ts 之后出现终态关闭。"""
-        ts = str(ts or "").strip()
-        if not ts:
-            return False
-        for raw in endpoint_paths or []:
-            ep = canonical_endpoint_identity(raw)
-            if ep and self._closed_ts.get(ep, "") > ts:
-                return True
-        return False
-
 
 def from_summary(evidence_summary: dict | None, matrix: dict | None = None) -> ClosureResolver:
     return ClosureResolver(evidence_summary, matrix)

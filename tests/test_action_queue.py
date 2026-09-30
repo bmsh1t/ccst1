@@ -122,6 +122,73 @@ def test_explicit_action_kind_validates_identity_and_cannot_be_spoofed(tmp_path)
     assert load_queue(tmp_path, target)["actions"][-1]["kind"] == "work"
 
 
+@pytest.mark.parametrize("metadata", [
+    {"endpoint": "https://target.com/api"},
+    {"family": "Authz"},
+    {"vuln_class": "Authz"},
+])
+def test_declared_work_kind_refuses_an_execution_subject(store, metadata):
+    """Declaring a work subject while supplying an execution subject is a
+    contradiction, not a silent downgrade: the shape is declared once."""
+    before = store.binding()
+    with pytest.raises(StoreError, match="work subject"):
+        add_manual_action(
+            store.root, target=store.target, action_id="WORK-CONTRADICTION", kind="work",
+            action_type="review", evidence="Recorded material", next_question="Review?",
+            action="Review material", metadata=metadata,
+        )
+    assert store.binding() == before
+
+
+def test_unknown_explicit_kind_is_refused(store):
+    """`kind` is a closed vocabulary; a typo must not fall back to inference."""
+    before = store.binding()
+    with pytest.raises(StoreError, match="kind must be execution or work"):
+        add_manual_action(
+            store.root, target=store.target, action_id="KIND-UNKNOWN", kind="probe",
+            action_type="review", evidence="Recorded material", next_question="Review?",
+            action="Review material",
+        )
+    assert store.binding() == before
+
+
+@pytest.mark.parametrize(("metadata", "message"), [
+    ({"endpoint": "https://target.com/a", "url": "https://target.com/b"},
+     "endpoint and url metadata must match"),
+    ({"endpoint": "https://target.com/api", "family": "Authz", "vuln_class": "IDOR"},
+     "family and vuln_class metadata must match"),
+])
+def test_action_metadata_must_not_contradict_itself(store, metadata, message):
+    """Two spellings of the same field must agree, so the identity the runner
+    binds (endpoint, family) cannot be read two ways."""
+    before = store.binding()
+    with pytest.raises(StoreError, match=message):
+        add_manual_action(
+            store.root, target=store.target, action_id="META-CONTRADICTION",
+            action_type="request-diff", evidence="Recorded pair", next_question="Review?",
+            action="Review the pair", metadata=metadata,
+        )
+    assert store.binding() == before
+
+
+def test_action_kind_is_visible_before_claim(store):
+    """D18: whether an action is structurally bindable is now readable before
+    claiming it, alongside the descriptive type it always exposed."""
+    add_manual_action(
+        store.root, target=store.target, action_id="EXEC-VISIBLE", kind="execution",
+        action_type="request-diff", evidence="Recorded pair", next_question="Review?",
+        action="Review the pair",
+        metadata={"endpoint": "https://target.com/api", "family": "Authz"},
+    )
+    add_work(store, action_id="WORK-VISIBLE")
+    queue = load_queue(store.root, store.target)
+    assert {item["id"]: item["kind"] for item in queue["actions"]} == {
+        "EXEC-VISIBLE": "execution", "WORK-VISIBLE": "work"}
+    assert summarize_queue(queue)["by_kind"] == {"execution": 1, "work": 1}
+    execution = next(item for item in queue["actions"] if item["id"] == "EXEC-VISIBLE")
+    assert "/ execution" in format_action(execution)
+
+
 def test_primary_action_claim_persists_bounded_metadata(tmp_path):
     target = "primary-claim.test"
     store = TargetStore(tmp_path, target)

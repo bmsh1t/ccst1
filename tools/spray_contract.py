@@ -191,17 +191,6 @@ def _new_run_id() -> str:
     return f"{stamp}-{os.getpid()}"
 
 
-def _redact_value(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {
-            str(key): "[REDACTED]" if SECRET_KEY_RE.search(str(key)) else _redact_value(item)
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [_redact_value(item) for item in value]
-    return value
-
-
 @dataclass
 class RunContext:
     mode: str
@@ -422,7 +411,7 @@ def prepare_run(
             "expires_at": (created + PREFLIGHT_TTL).isoformat().replace("+00:00", "Z"),
             "run_id": run_id,
             "binding": binding,
-            "request_shape": _redact_value(request_shape),
+            "request_shape": request_shape,
             "estimated_duration_seconds": max(
                 0,
                 (binding["password_count"] - 1) * (binding["delay"] + binding["jitter"] // 2),
@@ -496,7 +485,7 @@ def prepare_run(
             "run_id": run_id,
             "created_at": utc_now(),
             "binding": binding,
-            "request_shape": _redact_value(request_shape),
+            "request_shape": request_shape,
             "preflight": str(Path(preflight_arg).resolve()) if preflight_arg else None,
         }
         manifest_path = run_dir / "run.json"

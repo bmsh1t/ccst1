@@ -103,6 +103,22 @@ AuthSession origin/scope rules; raw headers override only on the initial URL.
 - Request-diff specs with different baseline/variant URLs must declare
   `subject_side` (`baseline` or `variant`). The selected side is the sole
   Finding/Action/attempt identity anchor; omission is rejected before I/O.
+- Native `subject_step` explicitly selects a zero-based run index. Without it,
+  only one exact endpoint/method match is accepted; ambiguous runs reject before
+  any attempt or artifact publication.
+- Schema-11 observations persist `identity_status`, `identity_technique`,
+  `identity_v2` and `detail.evidence_role`. Native multi-step registration assigns
+  identity only to the explicitly selected exact endpoint/method anchor; other steps remain
+  control/none. Identity status and technique are never inherited from siblings.
+- `closure_records()` exposes version-3 event envelopes and immutable
+  `operation_id:step` IDs with request/response artifact hashes. Only complete
+  subject v3 identities with matching raw technique authorize exact closure.
+  V3 retains the absolute asset URL, method and all declared conditions; v2 is
+  readable historical metadata only and is never implicitly upgraded.
+  Legacy status/technique absence and control rows never close a family grid.
+- `tests/test_native_first_replay.py` covers temporary Store replay, explicit
+  schema-10 upgrade, all-family dimension isolation, native subject/control,
+  publication manifests and changed-byte suppression. No live target is used.
 
 - Normal operation requires one initialized, healthy target Store. Target,
   store generation and claim are checked before execution/publication and again
@@ -110,10 +126,17 @@ AuthSession origin/scope rules; raw headers override only on the initial URL.
 - A real execution has its own attempt ID. A registration retry reuses the
   attempt and immutable raw material; the request lane never resends a started
   attempt. Operation is a Store registration receipt, not an HTTP request ID.
-- Public summaries contain URL shapes; exact requested URLs are private,
-  digest-bound identity artifacts. Native anchor must exactly match Finding
-  endpoint/method. Both lanes register actual per-step endpoints and methods;
-  empty/redacted query values cannot stand for an exact observed query.
+- Runner summary/diff files are internal target analysis artifacts, not public
+  exports. Their subject, request-pair and per-step URLs preserve exact query
+  values, duplicate keys and encoding. Raw requests and auth/error-log boundaries
+  are unchanged; public export redaction remains a separate responsibility.
+- New digest-bound private request identities carry `url_representation=exact`;
+  registration compares their requested URL exactly against each published step.
+  Historical unmarked identities retain shape-only summary compatibility on
+  registration/retry without rewriting old evidence or inventing missing values.
+  The immutable identity, not mutable summary metadata, selects the comparison.
+  Unknown representations reject. Native anchors still exactly match Finding
+  endpoint/method; both lanes register actual per-step endpoints and methods.
 - Raw requests/responses live in private target-owned files. Native evidence may
   reference other target-owned existing nonempty artifacts. Registration checks
   published digests before consuming them. Changed/missing raw material rejects,
@@ -413,3 +436,22 @@ also checks null wall time and retained tool calls after interruption.
 
 Wrong: stale running record → rerun → replace failure with its successful result.
 Correct: preserve partial evidence → interrupted row → run only unstarted cells.
+
+## Local integrity failure boundary
+
+`current_cell_projection` validates all artifacts on its captured Store snapshot.
+Known damaged operations invalidate their own subject/control-dependent closures
+only after latest-record reduction. Never remove damaged input first: doing so
+would resurrect old evidence. Unknown identities or truncated acquisition still
+suppress all closure authority. History and diagnostics remain readable.
+Regression: `test_local_damage_preserves_independent_closure_without_resurrecting_history`.
+
+## Registration succession precedes closure interpretation
+
+`TargetStore.closure_records` exposes owner-derived `superseded` for each historic
+observation using operations.supersedes, including replacements with zero rows.
+Projection drops superseded registrations from authorization before interpreting
+identity, without deleting history. Invalid v3 identity in the current
+registration is a visible integrity error; it never reactivates the predecessor.
+Artifact verification for current closure excludes superseded operations. A new
+attempt remains a separate execution; this rule does not merge similar attempts.

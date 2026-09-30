@@ -1,11 +1,13 @@
 """Scanner material survives Store registration without becoming a verdict."""
 
+import hashlib
 import json
 import os
 from contextlib import nullcontext
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -13,6 +15,77 @@ import finding_index
 import intel_engine
 from tools.target_store import StoreError, TargetStore
 from tools.runtime_state import runtime_phase_lock
+
+
+@pytest.mark.parametrize("allow_unsafe", [False, True])
+def test_method_candidates_survive_get_spa_shell_without_reprobe(tmp_path, allow_unsafe):
+    repo = Path(__file__).resolve().parents[1]
+    store = TargetStore(tmp_path, "scanner.test")
+    store.initialize()
+    root = tmp_path / "findings/scanner.test"
+    (root / "auth_bypass").mkdir(parents=True)
+    (root / ".tmp").mkdir()
+    live = tmp_path / "live.txt"
+    live.write_text("https://scanner.test/resource\n")
+    fingerprint = tmp_path / "spa.json"
+    shell = b'<html><div id="app"></div></html>'
+    fingerprint.write_text(json.dumps({"fingerprints": {"https://scanner.test": {
+        "status": 200, "body_sha": hashlib.sha256(shell).hexdigest(),
+        "body_size": len(shell), "content_type": "text/html",
+    }}}))
+    calls = tmp_path / "calls.txt"
+    noise_runner = tmp_path / "noise_runner.py"
+    noise_runner.write_text(
+        "import sys\nfrom pathlib import Path\nfrom tools import noise_filter\n"
+        f"calls = Path({str(calls)!r})\n"
+        "def get(url, timeout=6):\n"
+        "    with calls.open('a') as out: out.write('GET ' + url + '\\n')\n"
+        f"    return 200, {shell!r}, 'text/html'\n"
+        "noise_filter._http_get = get\n"
+        "sys.argv = [sys.argv[0], *sys.argv[3:]]\n"
+        "raise SystemExit(noise_filter.main())\n"
+    )
+    scanner = (repo / "tools/vuln_scanner.sh").read_text()
+    guard = scanner.split("scanner_probe_guard() {", 1)[1].split('\n}\n', 1)[0]
+    block = scanner.split("# 8e: HTTP method tampering", 1)[1].split("\nif skip_has idor;", 1)[0]
+    block = block.split("\n", 1)[1]
+    script = """
+log_warn() { echo "$*"; }
+log_step() { :; }
+log_done() { :; }
+skip_has() { return 1; }
+count_findings() { if [ -f "$1" ]; then wc -l < "$1"; else echo 0; fi; }
+curl() { printf '%s\\n' "$*" >> "$CALLS"; printf 204; }
+python3() { "$PYTHON" "$NOISE_RUNNER" "$@"; }
+BB_AUTH_ARGS=(-H 'X-Test: fixture')
+""" + "scanner_probe_guard() {" + guard + "\n}\n" + block
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=10,
+                            env={**os.environ, "PYTHONPATH": str(repo), "PYTHON": sys.executable,
+                                 "NOISE_RUNNER": str(noise_runner), "CALLS": str(calls),
+                                 "BASE_DIR": str(repo), "FINDINGS_DIR": str(root),
+                                 "LIVE_URLS": str(live), "SPA_FP": str(fingerprint),
+                                 "ALLOW_UNSAFE_HTTP_TESTS": "1" if allow_unsafe else "0"})
+    assert result.returncode == 0, result.stdout + result.stderr
+    requests = calls.read_text().splitlines() if calls.exists() else []
+    assert len(requests) == (3 if allow_unsafe else 0)
+    assert not any(line.startswith("GET ") for line in requests)
+    candidate = root / "auth_bypass/method_tampering.txt"
+    if allow_unsafe:
+        assert candidate.read_text().splitlines() == [
+            f"{method} 204 https://scanner.test/resource" for method in ("PUT", "DELETE", "PATCH")]
+        assert all("X-Test: fixture" in line for line in requests)
+        assert "manual verification needed" in result.stdout
+        material = finding_index.index_scanner_material(root)
+        assert material["review_action_ids"]
+        for action_id in material["review_action_ids"]:
+            snapshot = tmp_path / store.action(action_id)["subject_artifact"]["ref"]
+            findings = json.loads(snapshot.read_text())["material"]["findings"]
+            assert all(row["validation_status"] == "unvalidated" for row in findings)
+    else:
+        assert not candidate.exists()
+        assert "ALLOW_UNSAFE_HTTP_TESTS=1" in (root / "manual_review/unsafe_skipped.txt").read_text()
+    assert store.finding_page()["total"] == 0
+    assert store.page("operations")["total"] == 0
 
 
 def _scanner_material(tmp_path):

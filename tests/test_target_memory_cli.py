@@ -126,6 +126,8 @@ def test_memory_cli_explains_failed_negative_and_recovers_as_advisory_note(tmp_p
     restored = _command(tmp_path, "show", store.target)
     entry = next(e for e in restored["recent_entries"] if e["entry_id"] == "unverified-denial")
     assert entry["kind"] == "note" and entry["evidence_refs"] == []
+    assert restored["target"]["current_handoff"] is None
+    assert restored["target"]["next_actions"] == []
     assert not (tmp_path / "memory/goals/active.json").exists()
 
 
@@ -169,4 +171,124 @@ def test_goal_cli_retry_without_revision_preserves_later_intent(tmp_path):
     assert store.active_goal() == "Later intent"
     assert _command(tmp_path, "set", store.target, "--goal", "Different content",
                     "--command-id", "original", exit_code=2)["error"]
+    assert store.binding() == before
+
+
+def test_handoff_operation_refs_are_bound_atomic_and_idempotent_across_processes(tmp_path):
+    store = TargetStore(tmp_path, "memory-cli.test")
+    store.initialize()
+    operations = []
+    for index in range(2):
+        artifact = tmp_path / "evidence" / store.target / f"response-{index}.txt"
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_text(f"Recorded response {index}")
+        store.start_attempt(attempt_id=f"read-{index}", source="native", actor="test",
+                            started_at="2026-09-30T00:00:00Z")
+        receipt = store.record_execution(
+            attempt_id=f"read-{index}", outcome="complete", actor="test", observations=[{
+                "endpoint": f"https://{store.target}/object", "method": "GET", "family": "Authz",
+                "observed_at": "2026-09-30T00:00:00Z", "description": "Recorded response",
+                "artifacts": {"response": artifact.relative_to(tmp_path).as_posix()},
+                "state_changing": False,
+            }],
+        )
+        operations.append(receipt["entity_id"])
+    arguments = ["handoff", "Candidate; impact not established", "--target", store.target,
+                 "--command-id", "handoff-bound", "--conditions", "saved response only",
+                 "--next-intent", "Compare existing control", "--actor", "session-a"]
+    for operation in operations:
+        arguments.extend(["--operation-ref", f"{operation}:0"])
+    saved = _command(tmp_path, *arguments)
+    before = store.binding()
+    assert _command(tmp_path, *arguments)["receipt"] == {**saved["receipt"], "replayed": True}
+    assert _command(tmp_path, *["Changed statement" if a == "Candidate; impact not established" else a
+                                for a in arguments], exit_code=2)["error"]
+    assert store.binding() == before
+    current = _command(tmp_path, "show", store.target)["target"]["current_handoff"]
+    assert current["entry_id"] == "handoff-bound"
+    assert current["evidence_refs"] == sorted(f"{operation}:0" for operation in operations)
+    assert current["recorded_by"] == "session-a"
+    assert current["structured"]["conditions"] == "saved response only"
+
+    for ref in ["bad-ref", f"{operations[0]}:-1", f"{operations[0]}:1", "missing-operation:0"]:
+        result = _command(tmp_path, "handoff", "Rejected", "--target", store.target,
+                          "--command-id", "rejected", "--operation-ref", ref, exit_code=2)
+        assert result["error"]
+        assert store.binding() == before
+    other = TargetStore(tmp_path, "other.test")
+    other.initialize()
+    other_before = other.binding()
+    assert _command(tmp_path, "handoff", "Foreign reference", "--target", other.target,
+                    "--operation-ref", f"{operations[0]}:0", exit_code=2)["error"]
+    assert other.binding() == other_before
+    assert other.experience_page()["total"] == 0
+    assert store.experience_page()["total"] == 1
+
+
+def test_memory_preserves_raw_url_values_across_processes_and_projections(tmp_path):
+    from tools import experience_recall
+    from tools.context_pack import build_context_pack, format_context_pack
+    from tools.resume import format_resume_output
+    from tools.resume_read import load_resume_summary
+
+    root = tmp_path / "isolated root"
+    store = TargetStore(root, "raw-memory.test")
+    store.initialize()
+    baseline = "https://raw-memory.test/search?q=apple"
+    variant = "https://raw-memory.test/search?q=apple%27"
+    signed = (
+        "https://raw-memory.test/search?q=apple&q=apple%27&empty="
+        "&encoded=%2527%2f%2F+%20&token=eyJhbGciOiJub25lIn0.eyJmaXh0dXJlIjp0cnVlfQ.fake"
+        "&X-Amz-Signature=0123456789abcdef&label=%E8%8B%B9%E6%9E%9C#fixture"
+    )
+    conditions = f"Synthetic input only: {signed}; 苹果"
+    next_intent = f"Compare saved inputs {baseline} versus {variant}; retain {signed}"
+    statements = {
+        "raw-note": f"Note: {baseline} differs from {variant}; {signed}",
+        "raw-handoff": f"Handoff: {variant} is not {baseline}; {signed}",
+    }
+    for entry_id, statement in statements.items():
+        _command(root, entry_id.removeprefix("raw-"), statement,
+                 "--target", store.target, "--command-id", entry_id,
+                 "--conditions", conditions, "--next-intent", next_intent)
+        saved = store.experience(entry_id)
+        assert saved["statement"] == statement
+        assert saved["conditions"] == conditions
+        assert saved["next_intent"] == next_intent
+
+    before = store.binding()
+    shown = _command(root, "show", store.target)
+    assert {entry["entry_id"]: entry["text"] for entry in shown["recent_entries"]} == statements
+    for entry in shown["recent_entries"]:
+        assert entry["structured"]["conditions"] == conditions
+        assert entry["structured"]["next_intent"] == next_intent
+
+    recall_args = [sys.executable, "-B", str(Path(experience_recall.__file__)),
+                   "--repo-root", str(root), "--target", store.target]
+    for json_mode in (True, False):
+        result = subprocess.run(recall_args + (["--json"] if json_mode else []),
+                                capture_output=True, text=True, timeout=20)
+        assert result.returncode == 0, result.stderr
+        if json_mode:
+            entries = json.loads(result.stdout)["target_entries"]
+            assert {entry["entry_id"]: entry["text"] for entry in entries} == statements
+            for entry in entries:
+                assert entry["conditions"] == conditions
+                assert entry["next_intent"] == next_intent
+        else:
+            for value in [*statements.values(), conditions, next_intent]:
+                assert value in result.stdout
+
+    pack = build_context_pack(root, target=store.target)
+    resume = load_resume_summary(root / "hunt-memory", store.target, repo_root=root)
+    for memory in (shown["target"], pack["target_experiences"], resume["target_memory"]):
+        current = memory["current_handoff"]
+        assert current["entry_id"] == "raw-handoff"
+        assert current["text"] == statements["raw-handoff"]
+        assert current["structured"]["conditions"] == conditions
+        assert current["structured"]["next_intent"] == next_intent
+        assert [entry["text"] for entry in memory["next_actions"]] == [next_intent]
+    for output in (format_context_pack(pack), format_resume_output(resume, store.target)):
+        for value in (statements["raw-handoff"], conditions, next_intent):
+            assert value in output
     assert store.binding() == before

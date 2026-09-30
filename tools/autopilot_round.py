@@ -79,13 +79,14 @@ def _closure_snapshot(repo_root: Path | str, target: str) -> tuple[dict, dict]:
             }
             reasons, frontier, next_action = _finalize_closure_continuation(
                 ["state_snapshot_stale"],
-                closure.get("actionable_frontier") or [],
+                closure.get("owner_continuations") or closure.get("actionable_frontier") or [],
                 state,
                 None,
                 "refresh_state",
             )
             closure.update({
                 "reasons": reasons,
+                "owner_continuations": frontier,
                 "actionable_frontier": frontier,
                 "next_action": next_action,
             })
@@ -97,19 +98,6 @@ def _closure_snapshot(repo_root: Path | str, target: str) -> tuple[dict, dict]:
 def _round_progress(closure: dict) -> dict:
     progress = closure.get("round_progress")
     return dict(progress) if isinstance(progress, dict) else {}
-
-
-def _surface_projection_pending(state: dict, closure: dict) -> bool:
-    reasons = closure.get("reasons") if isinstance(closure, dict) else []
-    if "surface_projection_pending" in (reasons or []):
-        return True
-    projection = state.get("surface_projection") if isinstance(state, dict) else {}
-    return (
-        isinstance(projection, dict)
-        and bool(projection)
-        and bool(state.get("has_recon") or state.get("surface_context_required"))
-        and str(projection.get("status") or "").strip().lower() != "valid"
-    )
 
 
 def _result(
@@ -262,16 +250,6 @@ def settle_round(
             "reason": "primary store action projection is read-only",
         }
         state, closure = _closure_snapshot(repo, resolved_target)
-        if _surface_projection_pending(state, closure):
-            return _result(
-                "settle",
-                resolved_target,
-                status="handoff",
-                state=state,
-                closure=closure,
-                round_progress=progress,
-                checkpoint=checkpoint,
-            )
         closed = record_round_closure(repo, resolved_target)
         final_state, final_closure = _closure_snapshot(repo, resolved_target)
         final_reason = str((final_closure.get("reasons") or [""])[0])

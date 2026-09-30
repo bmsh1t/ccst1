@@ -34,11 +34,24 @@ def _repo_fixture(root: Path) -> Path:
     return root
 
 
+def _record_installed_files(root: Path) -> None:
+    import hashlib
+    entries = {}
+    for kind in runtime_doctor.KIND_ORDER:
+        base = root / runtime_doctor.RUNTIME_SUBDIRS[kind]
+        for path in base.rglob('*'):
+            if path.is_file() and 'playwright-cli' not in path.parts:
+                entries[path.relative_to(root).as_posix()] = {
+                    'kind': kind, 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+    (root / '.ccst-installed.json').write_text(json.dumps(entries))
+
+
 def _runtime_fixture(root: Path) -> Path:
     _write(root / "commands" / "autopilot.md", AUTOPILOT_COMMAND)
     _write(root / "commands" / "doctor.md", "stale runtime doctor\n")
     _write(root / "agents" / "claude-bug-bounty" / "autopilot.md", "old agent\n")
     _write(root / "skills" / "bug-bounty" / "SKILL.md", "repo skill\n")
+    _record_installed_files(root)
     return root
 
 
@@ -48,6 +61,7 @@ def _runtime_fixture_with_disabled_command(root: Path) -> Path:
     _write(root / "commands" / "doctor.md", "stale runtime doctor\n")
     _write(root / "agents" / "claude-bug-bounty" / "autopilot.md", "old agent\n")
     _write(root / "skills" / "bug-bounty" / "SKILL.md", "repo skill\n")
+    _record_installed_files(root)
     return root
 
 
@@ -367,6 +381,7 @@ def test_development_patch_is_not_a_runtime_source(tmp_path, kind, suffix):
     # prune 只删除 runtime 副本，不触碰 repo 中的本地开发文件。
     runtime_patch = runtime_dir / repo_patch.name
     _write(runtime_patch, "local development patch\n")
+    _record_installed_files(runtime_root)
     drift = runtime_doctor.compare_runtime(
         repo_root=repo_root,
         runtime_root=runtime_root,
@@ -395,6 +410,7 @@ def test_compare_and_sync_runtime_recursively_manages_skill_resources(tmp_path):
     _write(repo_reference, "repo nested reference\n")
     _write(runtime_reference, "old nested reference\n")
     _write(stale_reference, "stale managed resource\n")
+    _record_installed_files(runtime_root)
     _write(external_reference, "external resource\n")
 
     payload = runtime_doctor.compare_runtime(
@@ -560,3 +576,27 @@ def test_runtime_doctor_main_json_and_fail_on_drift(tmp_path, monkeypatch, capsy
     )
 
     assert runtime_doctor.main() == 0
+
+
+def test_managed_upgrade_retirement_and_user_conflicts(tmp_path):
+    repo, runtime = tmp_path / 'repo', tmp_path / 'runtime'
+    (repo / 'commands').mkdir(parents=True)
+    (repo / 'skills' / 'retired').mkdir(parents=True)
+    command = repo / 'commands' / 'test.md'
+    command.write_text('first')
+    skill = repo / 'skills' / 'retired' / 'SKILL.md'
+    skill.write_text('old skill')
+    assert not runtime_doctor.sync_runtime(repo, runtime)['conflicts']
+    unrelated = runtime / 'commands' / 'user.md'
+    unrelated.write_text('mine')
+    command.write_text('second')
+    skill.unlink()
+    result = runtime_doctor.sync_runtime(repo, runtime, prune=True)
+    assert (runtime / 'commands' / 'test.md').read_text() == 'second'
+    assert not (runtime / 'skills' / 'retired' / 'SKILL.md').exists()
+    assert unrelated.read_text() == 'mine'
+    (runtime / 'commands' / 'test.md').write_text('customized')
+    command.unlink()
+    result = runtime_doctor.sync_runtime(repo, runtime, prune=True)
+    assert str(runtime / 'commands' / 'test.md') in result['conflicts']
+    assert (runtime / 'commands' / 'test.md').read_text() == 'customized'

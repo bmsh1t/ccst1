@@ -1,17 +1,18 @@
 ---
 name: triage-validation
-description: Use when a finding reaches candidate quality and must be validated before any report claim — it answers the seven questions and four gates, resolves chain precedence, and routes the evidence to REPORT, CHAIN_REQUIRED, DOWNGRADE, or DO_NOT_REPORT. Preserves exploration context (leads stay leads when a concrete next action remains); report presentation itself belongs to report-writing.
+description: Validate candidate evidence and demonstrated impact, keeping technical conclusions separate from destination policy. Resolve missing chain evidence without blocking independently confirmed findings; report presentation belongs to report-writing.
 ---
 
 # TRIAGE & VALIDATION
 
-Any non-pass stops the current claimed report or severity. Route it explicitly
-to CHAIN_REQUIRED, DOWNGRADE, or DO_NOT_REPORT; keep a Lead/Signal only when a
-concrete next evidence action remains.
+Missing technical evidence stops the unsupported claim or severity. Destination
+exclusions stop delivery to that destination only, not technical confirmation.
+Record conclusions and delivery decisions through their separate Store owners.
 
-The seven questions and four gates are evidence gates, not a timer or a global
-coverage claim. A gate passes only when the target identity, request/response,
-impact, and reproducibility required by that gate are present. Elapsed time alone never makes a Candidate report-ready, validated, rejected, or complete;
+The questions and gates record technical evidence and destination policy, not
+a timer or a global coverage claim. Technical gates require the target identity,
+raw artifacts, impact, and reproducibility; policy gates require the destination
+rule and an explicit decision. Elapsed time alone never makes a Candidate report-ready, validated, rejected, or complete;
 preserve the current evidence and next action when a bounded review is
 interrupted.
 
@@ -27,19 +28,20 @@ Lead -> Signal -> Candidate -> Validated Finding -> Report
   seeds.
 - `/triage` and `/validate` act on Candidates and decide whether they become
   Validated Findings.
-- A failed reportability gate means **do not report** the current claim. A Q6
-  proof gap may instead downgrade the demonstrated primitive, and a Q7 chain
-  gap may remain CHAIN_REQUIRED.
-- Chain seeds on the never-submit list stay chain candidates when there is a
-  specific next hop to prove.
+- A technical proof gap may downgrade the claim or remain CHAIN_REQUIRED.
+  A destination-policy failure keeps the technical finding and records an
+  ineligible or deferred decision for that destination.
+- Chain seeds remain evidence inputs when a specific next hop is worth testing.
 
 ---
 
 ## THE 7-QUESTION GATE
 
-Ask IN ORDER. A non-pass stops the current claim, then routes by meaning:
+Answer each applicable question from evidence; choose the investigation order
+and reuse evidence rather than repeating a fixed test sequence:
 
-- Q1-Q5 failure, or Q7 with no valid chain path → **DO_NOT_REPORT**.
+- Missing Q1-Q4 technical proof → do not assert the unsupported claim.
+- Q5/Q7 destination exclusion → reject that destination without technical rewrite.
 - Q6 proves only a lower impact → **DOWNGRADE** to that demonstrated impact.
 - Q7 has a concrete but unproven connector → **CHAIN_REQUIRED**.
 - All required evidence passes → **REPORT**.
@@ -121,7 +123,10 @@ Search:
 3. For local/lab work, record external-program checks as not applicable rather
    than treating their absence as a validation failure.
 
-**If acknowledged/design decision → DO NOT REPORT.**
+Acknowledged, duplicate, or accepted-risk behavior is a destination-policy
+fact, not evidence that the boundary violation did not occur. Record the policy
+source and accept/reject/defer decision separately. Intended public behavior
+without a violated boundary may be technically refuted by the actual evidence.
 
 ---
 
@@ -141,29 +146,20 @@ Search:
 
 ---
 
-### Q7: Is this a known-invalid bug class?
+### Q7: Does the destination accept this demonstrated claim?
 
-Check the NEVER SUBMIT list below, then route with this precedence:
-
-1. On NEVER SUBMIT **and** it also appears in the CONDITIONALLY VALID chain
-   table, **and** the candidate already demonstrates the full chain end to end
-   → **REPORT** at the chained severity.
-2. On NEVER SUBMIT **and** chain-eligible, chain **not yet built** but a
-   concrete next hop exists (e.g., open redirect + an OAuth `redirect_uri` to
-   test) → **CHAIN_REQUIRED**, not DO_NOT_REPORT. Build and prove the chain first.
-3. On NEVER SUBMIT, not chain-eligible, or no concrete next hop
-   → **DO NOT REPORT.**
-
-"Standalone / alone" in the NEVER SUBMIT list means the primitive **by itself**
-is not reportable — it does not forbid the chained finding. The CONDITIONALLY
-VALID table lists common chain shapes, not an exhaustive allowlist; an
-evidence-backed connector outside the table remains eligible for review.
+Check the destination's current policy and record its source and reason.
+No class name is an automatic technical rejection. Missing impact is an
+evidence gap; an excluded class is a destination decision. The examples below
+are pitfalls, not an allowlist. A required but unproven impact connector stays
+CHAIN_REQUIRED; a complete chain or independently valid primitive is assessed
+at its demonstrated impact without waiting for optional siblings.
 
 ---
 
 ### Q7b: Verify the identity boundary
 
-For authenticated candidates, record at minimum:
+For identity-boundary candidates, record the relevant actor/session comparison:
 
 ```text
 1. Session ID used
@@ -175,21 +171,22 @@ For authenticated candidates, record at minimum:
 
 IDOR/BOLA must cross a real identity boundary, priv-esc must work from the
 lower-privileged identity, and auth bypass must survive without a valid session.
-Use `session_id` / audit artifacts to confirm the same request under each identity.
+Use `session_id` / audit artifacts for the identities needed by the claim;
+anonymous, cross-role and stale-session checks are not mandatory for unrelated claims.
 
 ---
 
 ## 4 PRE-SUBMISSION GATES
 
-Run in sequence after Q1-Q7; every applicable gate must pass. Gates reuse the
+Evaluate the applicable gates independently. Gates reuse the
 Q answers rather than re-checking them — each gate below only adds what the
 questions do not already cover:
 
 - **Gate 0 — Reality Check**: Q1's reproduction record is the source of truth.
   No additional check beyond Q1; a failed Q1 is a failed Gate 0.
 - **Gate 1 — Impact Validation**: the Q2 answer names a real victim and a
-  concrete "attacker can now DO X"; "see non-sensitive data" fails unless the
-  program pays for info disclosure.
+  concrete "attacker can now DO X". Public/non-sensitive data alone does not
+  prove a confidentiality violation; payment policy cannot decide technical impact.
 - **Gate 2 — Deduplication**: the Q5 search record must exist for this
   endpoint and bug class (external: disclosed reports + target-repo issues;
   all modes: changelog/API/design docs; local/lab: record external checks as
@@ -201,12 +198,13 @@ questions do not already cover:
 
 ---
 
-## NEVER SUBMIT LIST
+## Evidence Pitfalls and Destination Exclusions
 
-> **Routing note:** Items below marked "alone / standalone / without ..." are
-> chain-eligible — see the CONDITIONALLY VALID table. Apply Q7 precedence: a
-> demonstrated chain → REPORT; a concrete-but-unbuilt chain → CHAIN_REQUIRED;
-> only a bare primitive with no next hop → DO NOT REPORT.
+These common signals do not prove the claimed impact by themselves. Evaluate
+the actual boundary and evidence, then apply any destination exclusion separately.
+Logout/session lifetime, concurrent sessions, and CSV formula execution are not
+blanket-invalid classes: show the relevant revocation/data/trust-boundary failure;
+OS code execution is required only for a claim of OS code execution.
 
 ```
 Missing CSP / HSTS / security headers
@@ -215,7 +213,7 @@ GraphQL introspection alone (no auth bypass, no IDOR demonstrated)
 Banner / version disclosure without working CVE exploit
 Clickjacking on non-sensitive pages (no sensitive action PoC)
 Tabnabbing
-CSV injection (no actual code execution shown)
+CSV formula interpretation without demonstrated security impact
 CORS wildcard (*) without credential exfil proof of concept
 Logout CSRF
 Self-XSS (only exploits own account)
@@ -224,8 +222,6 @@ OAuth client_secret in mobile app (known, expected)
 SSRF DNS callback only (no internal service access or data)
 Host header injection alone (no password reset poisoning PoC)
 Rate limit on non-critical forms (search, contact, login with Cloudflare)
-Session not invalidated on logout
-Concurrent sessions
 Internal IP in error message
 Mixed content
 SSL weak ciphers
@@ -271,7 +267,8 @@ Privacy-policy wording, cookie banners, footer ICP filing numbers
 
 ## CONDITIONALLY VALID — CHAIN REQUIRED
 
-Build the chain first, prove it works end to end, THEN report.
+Prove a chain end to end before claiming its combined impact. This does not
+delay saving/reporting an independently confirmed primitive or sibling.
 
 > If the candidate **already** proves the chain end to end, it is no longer
 > "chain required" — verdict is **REPORT** at the Valid Result severity. Use

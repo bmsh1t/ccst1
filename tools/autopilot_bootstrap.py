@@ -218,7 +218,8 @@ def _compact_intel_continuation(value: object) -> dict[str, Any]:
             },
             "applicability": str(advisory.get("applicability") or "unknown"),
             "severity": str(advisory.get("severity") or "UNKNOWN"),
-            "score_hint": advisory.get("score_hint", 0),
+            "kev": bool(advisory.get("kev")),
+            "epss": advisory.get("epss"),
             "source_refs": source_refs,
         }
     raw_group = continuation.get("review_group")
@@ -426,8 +427,6 @@ def _lane_contract_projection(state: dict[str, Any]) -> dict[str, Any]:
         lane = "workflow-case"
     elif action in {"run_intel", "collect_web_intel", "test_advisory_applicability", "review_intel_group"}:
         lane = "software-intel"
-    elif state.get("browser_required"):
-        lane = "browser-source-js"
     else:
         lane = "controller"
     ref, reason = _LANE_CONTRACTS[lane]
@@ -527,7 +526,6 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
     observation_inventory = state.get("observation_inventory") or {}
     json_inject = state.get("json_inject") or {}
     sql_matrix = state.get("sql_matrix") or {}
-    js_intel = state.get("js_intel") or {}
     case_state = state.get("case_state") or {}
     batch = state.get("batch") or {}
     intel_continuation = _compact_intel_continuation(state.get("intel_continuation"))
@@ -662,12 +660,6 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
         ),
         "batch": compact_batch,
         "intel_continuation": intel_continuation,
-        "browser_required": bool(state.get("browser_required")),
-        "browser_evidence": {
-            key: (state.get("browser_evidence") or {})[key]
-            for key in ("present", "ready", "status", "auth_required", "auth_state")
-            if key in (state.get("browser_evidence") or {})
-        },
         "surface_projection": compact_surface_projection,
         "observation_inventory": {
             key: observation_inventory[key]
@@ -726,14 +718,6 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
             for lane, item in sql_matrix.items()
             if lane in {"query", "form"} and isinstance(item, dict)
         },
-        "js_intel": {
-            key: js_intel[key]
-            for key in (
-                "status", "reason", "path", "present", "hypotheses_path",
-                "hypothesis_count", "disposition_path",
-            )
-            if key in js_intel
-        },
         "case_state": {
             key: case_state[key]
             for key in (
@@ -751,9 +735,9 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
             )[:5]
             if isinstance(item, dict)
         ],
-        "priority_frontier": [
+        "owner_continuations": [
             _compact_candidate(item)
-            for item in (state.get("priority_frontier") or [])
+            for item in (state.get("owner_continuations") or [])
             if isinstance(item, dict)
         ],
         "workflow_leads": workflow_leads,
