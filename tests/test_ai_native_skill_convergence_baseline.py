@@ -149,6 +149,26 @@ def test_runtime_protocol_invalidates_pack_recommendations_after_compaction():
     assert "不从压缩摘要里复用旧推荐" in protocol
 
 
+def test_recovery_guidance_checks_inherited_constraints_without_full_source_read():
+    """Guard the consumed guidance, not a claim that a model obeyed it."""
+    protocol = (REPO_ROOT / "skills/runtime-protocol.md").read_text(encoding="utf-8")
+    command = (REPO_ROOT / "commands/autopilot.md").read_text(encoding="utf-8")
+    assert "原始观察与继承判断" in protocol
+    assert "只核对该操作的当前命令契约" in protocol
+    assert "不全量读源码或命令文档" in protocol
+    assert "继承、未核实" in protocol
+    assert "缺失或不可比较才保留顺序未知" in protocol
+    assert "可达性未知也不抹去可判定的历史顺序" in protocol
+    assert "记忆写入不确认 Finding、不自动晋升知识" in protocol
+    recovery = command.split("Recovery follows", 1)[1].split("Keep each iteration explicit:", 1)[0]
+    assert "commands/validate.md" in recovery
+    assert "not the whole source tree" in recovery
+    assert "inherited/unverified, not a current fact" in recovery
+    assert "source," in recovery and "timezone and precision" in recovery
+    assert "missing/incomparable times leave order unknown" in recovery
+    assert "reachability erase a known historical order" in recovery
+
+
 def test_focus_recall_pulls_deserialization_cards(tmp_path):
     """The pull channel must reach the execution-chain cards via the catalog.
 

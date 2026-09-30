@@ -210,8 +210,8 @@ wiring changes.
 - `tests/test_capability_profile.py` covers full/empty PATH fixtures, helper-gated
   fallbacks, fixed MCP declarations, bounded/path-free lane output, per-lane
   isolation, read-only behavior, and unchecked versus checked-but-degraded.
-- `tests/test_autopilot_inline_contract.py` asserts parser wiring and legacy
-  guidance; command line count remains within its compact-prompt limit.
+- Parser wiring is covered by `tests/test_autopilot_args.py` and
+  `tests/test_autopilot_bootstrap.py`; the former inline-contract test file is retired.
 - `tests/test_claude_release_wiring.py` runs staged runtime + localhost fake API
   for real CLI discovery, empty arguments and flag-first quick/deep expansion.
   Parser/bootstrap edge cases remain covered by their owner tests.
@@ -405,8 +405,9 @@ runtime markers, or target-owned URL filtering changes.
   precedence plus the human-readable evidence action, including the
   `viewstate-integrity-review` checkpoint route.
 - Bootstrap/prompt wiring: `tests/test_autopilot_bootstrap.py` asserts rubric list
-  bounds and raw-payload exclusion; `tests/test_autopilot_startup_contract.py`
-  asserts command/optional-agent consumption and state refresh before `/validate`.
+  bounds and raw-payload exclusion. Command/runtime guidance is covered by
+  `tests/test_ai_native_skill_convergence_baseline.py`; the former startup-contract
+  test file is retired.
 - Run targeted tests plus full `pytest -q` and `git diff --check`.
 
 ### 7. Wrong vs Correct
@@ -1156,9 +1157,9 @@ Memory recommendations
 
 ### 6. Tests Required
 
-- `tests/test_autopilot_inline_contract.py` asserts exact final-only frequency,
-  three-bucket shape, evidence requirements, no automatic writes, and no change
-  to routing/state/closure/capabilities.
+- The former `test_autopilot_inline_contract.py` is retired. Final-only frequency,
+  three-bucket shape and advisory-only behavior remain review requirements; do
+  not cite that absent file as executable coverage.
 
 ### 7. Wrong vs Correct
 
@@ -1224,3 +1225,43 @@ source/state changes still must. Prior digests may become stale on this change;
 refresh and explicitly review, never rewrite historical witnesses.
 `test_closure_digest_ignores_advice_but_preserves_intel_facts` covers prose/tool-hint
 stability, immutable input and source/remaining/status/query-change invalidation.
+
+
+## Scenario: Recover inherited constraints without promoting them to facts
+
+### 1. Scope / Trigger
+A current handoff contains a tool restriction, admission rule or next-operation
+constraint that the agent plans to act on or repeat in a new handoff.
+
+### 2. Signatures
+Existing guidance owners: `skills/runtime-protocol.md#shared-memory-continuity`
+and the consumed recovery summary in `commands/autopilot.md`. No CLI or schema change.
+
+### 3. Contracts
+Separate recorded observations from inherited judgments. Check only the relevant
+operation's current command contract before treating inherited restrictions as
+current facts; unverified statements stay explicitly inherited/unverified.
+Compare source timestamps with timezone and precision for historical order.
+Historical order does not prove current reachability, and unknown reachability
+does not erase comparable historical ordering. Do not rewrite historical memory.
+
+### 4. Validation & Error Matrix
+- Contract not checked: label inherited/unverified, not a confirmed current gate.
+- Missing/incomparable timestamps: order unknown; do not invent chronology.
+- Comparable historical timestamps: retain order, current reachability separate.
+- Successful memory write: transport result only, not semantic acceptance.
+
+### 5. Good/Base/Bad Cases
+Good: consult the next operation's current command guidance before carrying a gate.
+Base: reuse still-valid observations without rereading the whole source tree.
+Bad: copy a historical admission rule as fact or automatically promote a Finding.
+
+### 6. Tests Required
+`test_recovery_guidance_checks_inherited_constraints_without_full_source_read`
+in `tests/test_ai_native_skill_convergence_baseline.py` checks both consumed and
+shared guidance. It does not prove model obedience; live acceptance remains separate.
+
+### 7. Wrong vs Correct
+Wrong: old handoff says blocked -> new handoff asserts blocked without checking.
+Correct: inspect relevant current contract -> retain or revise current judgment,
+leaving old memory untouched and unchecked claims explicitly unverified.

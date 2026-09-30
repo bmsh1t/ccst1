@@ -102,6 +102,14 @@ refresh, and exemption semantics all live there). Recall follows the information
 current target/scope/owner facts must be read or restored (never guessed from generic
 knowledge), but generic judgment needs no card lookup to proceed, and no Queue item
 requires a forced pre-claim Pack call — the card catalog is published for AI-side pull.
+Recovery follows `skills/runtime-protocol.md#shared-memory-continuity`: separate recorded
+observations from inherited judgments. Before using an inherited tool/admission restriction
+or next-operation constraint in an action or new handoff, check only that operation's current
+command contract (e.g. `commands/validate.md`), not the whole source tree; otherwise label it
+inherited/unverified, not a current fact. Compare recorded timestamps with their source,
+timezone and precision for historical order; missing/incomparable times leave order unknown.
+Historical order does not establish present reachability, nor does unknown present
+reachability erase a known historical order.
 Keep each iteration explicit:
 `inspect candidate/context -> AI choose and activate one hypothesis -> claim -> execute one
 bounded action -> read Runner observation -> AI resolve one continuation or kill -> refresh
