@@ -870,7 +870,7 @@ def build_autopilot_bootstrap(
     try:
         payload["capabilities"] = build_capability_profile(resolved_repo)
     except Exception:
-        # 能力快照只能影响推荐路径，任何探测异常都不能阻断 target state。
+        # 本地依赖事实仅供参考；检查异常不能阻断 target state。
         payload["capabilities"] = unknown_capability_profile("profile-error")
 
     try:

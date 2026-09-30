@@ -134,7 +134,7 @@ def test_bootstrap_applies_continuation_before_runtime_or_target_state(monkeypat
     monkeypatch.setattr(
         autopilot_bootstrap,
         "build_capability_profile",
-        lambda _repo: {"schema_version": 1, "checked": True, "status": "ready"},
+        lambda _repo: {"schema_version": 2, "checked": True, "status": "checked"},
     )
     monkeypatch.setattr(
         autopilot_bootstrap,
@@ -178,6 +178,7 @@ def test_bootstrap_blocks_stale_continuation_before_runtime(monkeypatch, tmp_pat
         raise AssertionError("stale continuation must stop before runtime or target state")
 
     monkeypatch.setattr(autopilot_bootstrap, "compare_runtime", unexpected)
+    monkeypatch.setattr(autopilot_bootstrap, "build_capability_profile", unexpected)
     monkeypatch.setattr(autopilot_bootstrap, "build_autopilot_bootstrap_state", unexpected)
 
     payload = autopilot_bootstrap.build_autopilot_bootstrap(
@@ -199,6 +200,7 @@ def test_anonymous_continuation_rejects_child_auth_injection(monkeypatch, tmp_pa
         raise AssertionError("auth conflict must stop before runtime")
 
     monkeypatch.setattr(autopilot_bootstrap, "compare_runtime", unexpected)
+    monkeypatch.setattr(autopilot_bootstrap, "build_capability_profile", unexpected)
     payload = autopilot_bootstrap.build_autopilot_bootstrap(
         [
             "api.target.example",
@@ -220,7 +222,7 @@ def test_batch_bootstrap_carries_auth_into_continuation_create_args(monkeypatch,
     monkeypatch.setattr(
         autopilot_bootstrap,
         "build_capability_profile",
-        lambda _repo: {"schema_version": 1, "checked": True, "status": "ready"},
+        lambda _repo: {"schema_version": 2, "checked": True, "status": "checked"},
     )
     monkeypatch.setattr(
         autopilot_bootstrap,

@@ -22,13 +22,17 @@ reports compact critical runtime
 paths/counts, points to `/sync-check`, requests explicit confirmation before any sync, and
 stops. Advisory drift does not block. Never sync
 automatically. Only `continue` may act.
-Bootstrap order is arguments, read-only runtime compare, advisory capability profile, then
-compact target state. Arguments/runtime remain the only blocking gates. Treat `capabilities`
-as advisory: `session_managed` names are not availability claims; use MCP only when visible
-in this Claude session or a listed fallback. Missing/degraded tools never block, trigger
-installation, count as tested-clean, or hide limits in the handoff.
-Matching `capabilities.lanes` only explains available execution primitives; it never overrides
-owner-selected Action Queue/state lane. Within one invocation, do not rerun the same failed
+Bootstrap order is arguments/Scope/Auth validation, read-only runtime compare, advisory
+local dependency facts, then compact target state. Treat `capabilities` schema v2 as
+facts only: flat `available`/`missing` tool names and `local_files` presence are not
+execution readiness. `session_status=unchecked` and `session_managed` names never claim
+MCP availability; a present browser importer is not a browser backend. Use MCP only
+when visible in this Claude session. Execution owners still check actual dependencies.
+Missing tools do not block Bootstrap or trigger installation; never count them as
+tested-clean or hide handoff limits.
+Schema v2 removes categorized availability, core/optional labels, fallbacks,
+recommended paths and lane readiness/classification/fingerprints; it selects no route.
+Within one invocation, do not rerun the same failed
 source/tool; preserve cached/stale evidence as partial/blocked. `tools/external_arsenal.sh
 --versions` is diagnostics-only, never startup.
 Browser/source/JS evidence uses `docs/autopilot-lanes.md#browser-source-and-js` when the

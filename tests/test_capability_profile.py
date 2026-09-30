@@ -1,46 +1,71 @@
-"""capability_profile: lane construction must never crash the bootstrap.
-
-回归：`_lane_record("workflow")` / `_lane_record("timing")` 曾漏传必填
-`inputs`，`build_capability_profile()` 直接 TypeError，bootstrap 的能力快照
-降级为 `unknown/profile-error`，14 条 lane 全部失明（外部实测报障）。
-"""
+"""Startup discovery reports local facts, never family or MCP readiness."""
 
 from __future__ import annotations
 
-import sys
+import json
+import subprocess
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
+from tools import capability_profile
 from tools.target_store import TargetStore
-from tools.capability_profile import build_capability_profile
+from tools.capability_profile import build_capability_profile, unknown_capability_profile
 from tools.autopilot_bootstrap import build_autopilot_bootstrap
 
 
-LANE_IDS = {
-    "recon", "surface", "browser", "source_js", "sql", "workflow", "timing",
-    "idor_authz", "waf", "cloud", "oast", "web3", "intel", "credential",
-}
+def test_local_discovery_full_and_empty_are_not_readiness(monkeypatch, tmp_path):
+    calls = []
+
+    def which(name):
+        calls.append(name)
+        return "/private/bin/" + name
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("discovery must not execute tools")
+
+    monkeypatch.setattr(subprocess, "run", unexpected)
+    monkeypatch.setattr(subprocess, "Popen", unexpected)
+    monkeypatch.setattr(capability_profile, "resolve_eburst", lambda **kw: {"status": "ready"})
+    for path in capability_profile.LOCAL_FILES:
+        local = tmp_path / path
+        local.parent.mkdir(parents=True, exist_ok=True)
+        local.write_text("fixture")
+    profile = build_capability_profile(tmp_path, which=which)
+    assert profile["available"] == list(capability_profile.LOCAL_TOOLS)
+    assert profile["missing"] == []
+    assert all(profile["local_files"].values())
+    assert len(calls) == len(set(calls)) == len(capability_profile.LOCAL_TOOLS) - 1
+    assert "/private" not in json.dumps(profile)
+    assert profile["status"] == "checked"
+    assert profile["session_status"] == "unchecked"
+    assert profile["session_managed"] == ["chrome-devtools-mcp", "playwright-mcp"]
+    for path in capability_profile.LOCAL_FILES:
+        (tmp_path / path).unlink()
+    monkeypatch.setattr(capability_profile, "resolve_eburst", lambda **kw: {"status": "missing_interpreter"})
+    missing = build_capability_profile(tmp_path, which=lambda _: None)
+    assert missing["available"] == []
+    assert missing["missing"] == list(capability_profile.LOCAL_TOOLS)
+    assert not any(missing["local_files"].values())
+    assert missing["checked"] is True
+    assert missing["status"] == "checked"
+    assert unknown_capability_profile()["checked"] is False
+    assert unknown_capability_profile()["status"] == "unknown"
+    assert set(profile) == {
+        "schema_version", "checked", "status", "available", "missing", "local_files",
+        "session_managed", "session_status",
+    }
+    assert profile["schema_version"] == 2
 
 
-def test_capability_profile_builds_all_lanes_without_error():
-    profile = build_capability_profile()
-    assert profile["checked"] is True
-    lane_ids = {lane["id"] for lane in profile["lanes"]}
-    assert lane_ids == LANE_IDS
-    for lane in profile["lanes"]:
-        # 每条 lane 都是真实记录（不是 profile-error 占位）
-        assert lane["checked"] is True
-        assert lane["classification"] != "unknown"
-        assert "profile-error" not in lane.get("degraded", [])
-
-
-def test_ai_carried_lanes_bind_http_transport():
-    """workflow/timing/sql 的 readiness 由 AI HTTP transport 决定，不再缺 inputs。"""
-    profile = build_capability_profile()
-    lanes = {lane["id"]: lane for lane in profile["lanes"]}
-    for lane_id in ("workflow", "timing", "sql"):
-        assert "ai-http-transport" in lanes[lane_id]["tool_refs"], lane_id
+def test_importer_presence_does_not_claim_session_backend(monkeypatch, tmp_path):
+    importer = tmp_path / "tools/browser_mcp_import.py"
+    importer.parent.mkdir()
+    importer.write_text("fixture")
+    monkeypatch.setattr(capability_profile, "resolve_eburst", lambda **kw: {"status": "missing_script"})
+    profile = build_capability_profile(tmp_path, which=lambda _: None)
+    assert profile["local_files"]["tools/browser_mcp_import.py"] is True
+    assert profile["available"] == []
+    assert profile["session_status"] == "unchecked"
+    assert "ready" not in json.dumps(profile)
 
 
 def _prepare_runtime_fixture(tmp_path):
@@ -85,9 +110,10 @@ def test_bootstrap_carry_real_capability_profile(monkeypatch, tmp_path):
     )
     caps = payload["capabilities"]
     assert caps["checked"] is True
-    assert caps["status"] in ("ready", "degraded")
+    assert caps["status"] == "checked"
     assert caps.get("reason", "") != "profile-error"
-    assert len(caps["lanes"]) == len(LANE_IDS)
+    assert "lanes" not in caps
+    assert caps["session_status"] == "unchecked"
 
 
 def test_bootstrap_stops_on_missing_runtime_short_circuits_capability(monkeypatch, tmp_path):

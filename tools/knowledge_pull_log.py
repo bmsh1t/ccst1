@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Knowledge-card pull log: mechanical record of card usage during hunts.
+"""Knowledge-card pull log: optional mechanical record of card read events.
 
 Outbound-governance telemetry (2026-09-14): the promote gate controls what
-enters the card library; this module records what actually gets used, so
-``/kb review`` can show never-recalled cards for the three-question audit.
+enters the card library; this module preserves explicitly recorded events for
+``/kb review``. Coverage is incomplete: zero records does not mean unused,
+and event frequency is not a measure of knowledge quality.
 
 Records are bare mechanical facts — card id, target storage key, timestamp,
 and the surface that pulled the card. Whether a pull *changed an action* is
@@ -63,7 +64,7 @@ def record_pull(
 def pull_stats(repo_root: Path | str) -> dict[str, dict[str, Any]]:
     """Aggregate pull counts per card: {"card-id": {"pulls": N, "last_pull": ts}}.
 
-    A missing or unreadable log yields an empty dict (no cards pulled yet),
+    A missing or unreadable log yields an empty dict (no available records),
     never an error — review must work on a fresh clone.
     """
     path = pull_log_path(repo_root)
@@ -96,7 +97,7 @@ def pull_stats(repo_root: Path | str) -> dict[str, dict[str, Any]]:
 def main(argv: list[str] | None = None) -> int:
     """薄 CLI：record 一条 kb-card-read 拉取（配合原生 Read 使用）。
 
-    契约：先 Read `knowledge/cards/<slug>.md`（原生能力），再用本命令记
+    普通原生 Read 无需调用本命令；如需记录，先 Read 卡片，再显式记
     遥测——不为计数绕开原生 Read。验证卡文件存在，不存在拒绝记录
     （防笔误污染出库数据）。
     """
@@ -104,7 +105,7 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(
         prog="knowledge_pull_log.py",
-        description="Record one knowledge-card pull (source=kb-card-read) after a native Read.",
+        description="Optionally record one knowledge-card pull (source=kb-card-read) after a native Read.",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
     p_record = sub.add_parser("record", help="record one card read")

@@ -10,9 +10,9 @@
   continuation 时适用。
 - 浏览器执行 owner 是当前 Claude 会话中的 Playwright MCP 和 Chrome DevTools MCP；本项目不
   通过 Bash 启动 `agent-browser` 或 `playwright-cli`，CLI 只可作为历史 raw-parser 测试输入。
-- `capability_profile` 只能把本地 importer 报为 `artifact_bridge`；它不能从 helper 文件存在
-  推断 live MCP。会话 MCP 未被当前控制器 probe 时保持 `ready=false`、
-  `runtime_status=unchecked`，并通过 `bridge_ready` 单独表达导入能力。
+- `capability_profile` v2 只在 `local_files` 中报告本地 importer 是否存在；不能据此推断
+  live MCP。`session_status=unchecked`，实际会话工具必须由当前控制器确认，
+  不再发布漏洞类别 readiness 或 bridge_ready 判定。
 
 ### 2. Signatures
 

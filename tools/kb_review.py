@@ -31,8 +31,9 @@ def build_review(repo_root: Path | str, *, limit: int = 0) -> list[dict]:
     """One row per registered card (retired included), pulls=0 first.
 
     Facts only: card id, registry layer/load/purpose/status, card-file
-    maturity (frontmatter), pull count and last pull. The three-question
-    verdict is AI judgment and never lives here.
+    maturity (frontmatter), recorded pull count and last recorded pull.
+    Optional telemetry has incomplete coverage; zero does not mean unused.
+    The three-question verdict is AI judgment and never lives here.
     """
     registry = load_registry(repo_root)
     stats = pull_stats(repo_root)
@@ -67,9 +68,10 @@ def build_review(repo_root: Path | str, *, limit: int = 0) -> list[dict]:
             "maturity": maturity,
             "pulls": int(pull.get("pulls", 0) or 0),
             "last_pull": str(pull.get("last_pull") or ""),
+            "pull_coverage": "incomplete",
         })
 
-    # Never-pulled first (the retire-audit surface), then by pull count asc,
+    # Zero recorded events first, then by recorded count asc,
     # then layer, then id — deterministic display order, not a recommendation.
     rows.sort(key=lambda r: (r["pulls"], r["layer"], r["card"]))
     if limit and limit > 0:
@@ -88,9 +90,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.json:
         print(json.dumps(rows, ensure_ascii=False, indent=1))
     else:
-        never = sum(1 for r in rows if r["pulls"] == 0)
+        unrecorded = sum(1 for r in rows if r["pulls"] == 0)
         retired = sum(1 for r in rows if r["status"] == "retired")
-        print(f"cards: {len(rows)} | never-pulled: {never} | retired: {retired}")
+        print("pull_coverage: incomplete; recorded events only, not usage or knowledge quality.")
+        print(f"cards: {len(rows)} | zero-recorded-pulls: {unrecorded} | retired: {retired}")
         print(f"{'card':44s} {'layer':12s} {'maturity':9s} {'status':8s} {'pulls':6s} last_pull")
         for r in rows:
             print(

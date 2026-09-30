@@ -1344,3 +1344,12 @@ Existing report tests cover all eligible destinations and immutable report repla
 
 Wrong: destination rejects → technical verdict refuted.
 Correct: immutable confirmed assessment + independently rejected destination.
+
+## Optional card-read telemetry
+Native card Read does not require `knowledge_pull_log record`. Explicit record,
+`kb_card` read-and-record, historical JSONL and CLI flags remain available.
+`kb_review` keeps its list/previous fields and deterministic recorded-count order,
+adding `pull_coverage=incomplete`; zero means no readable recorded events, not
+unused or low-quality knowledge. Do not reconstruct complete usage from Action
+metadata or create another automatic telemetry owner. `tests/test_kb_outbound.py`
+checks no-write reads, historic/malformed-log compatibility and unchanged ordering.

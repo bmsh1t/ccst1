@@ -2109,6 +2109,51 @@ def test_closure_digest_changes_when_decision_state_changes(tmp_path, store):
     )
 
 
+def test_closure_digest_ignores_advice_but_preserves_intel_facts(tmp_path, store):
+    from copy import deepcopy
+
+    state = {
+        "target": "target.com", "resolved_target": "target.com", "next_action": "handoff",
+        "enrichment_hints": [{"tool": "old-helper", "reason": "old suggestion"}],
+        "intel_continuation": {
+            "action": "review_intel_group", "reason": "old wording", "blocked": [],
+            "review_group": {
+                "omitted_count": 2, "query_command": "read page-2",
+                "owner_binding": {"sha256": "source-a"},
+            },
+            "review_projection": {"available": True, "omitted_group_count": 1},
+        },
+    }
+
+    def project(value):
+        return load_closure_projection(str(tmp_path), value, max_lanes_reached=False)
+
+    original = project(state)
+    changed = deepcopy(state)
+    changed["enrichment_hints"] = [{"tool": "different-helper", "reason": "new suggestion"}]
+    changed["intel_continuation"]["reason"] = "new wording"
+    rendered = project(changed)
+    assert original["snapshot_digest"] == rendered["snapshot_digest"]
+    assert original["snapshot_components"]["closure_state_fingerprint"] == rendered["snapshot_components"]["closure_state_fingerprint"]
+    assert state["intel_continuation"]["reason"] == "old wording"
+
+    for path, value in [
+        (("action",), "complete"),
+        (("blocked",), [{"source": "nvd", "status": "unavailable"}]),
+        (("review_group", "omitted_count"), 3),
+        (("review_group", "query_command"), "read page-3"),
+        (("review_group", "owner_binding", "sha256"), "source-b"),
+        (("review_projection", "available"), False),
+        (("review_projection", "omitted_group_count"), 2),
+    ]:
+        changed = deepcopy(state)
+        destination = changed["intel_continuation"]
+        for key in path[:-1]:
+            destination = destination[key]
+        destination[path[-1]] = value
+        assert project(changed)["snapshot_digest"] != original["snapshot_digest"], path
+
+
 def test_invalid_cidr_continuation_has_recon_frontier(tmp_path, store):
     target = "target.com"
     closure = build_closure_projection(

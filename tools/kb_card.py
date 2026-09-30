@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""读取一张知识卡并记录 pull（/kb card 的机械端）。
+"""可选脚本化入口：读取一张知识卡并记录 pull。
 
-出库遥测的第二个信号源（2026-09-14）：`selected_knowledge_refs` 记录
-"卡被选为假设依据"（强信号），本命令记录"卡被主动查阅"（中信号）。
-被动装载（Pack/context-pack）刻意不记——机械投喂不冒充使用信号。
+普通 /kb card 使用原生 Read，无需记录。本命令为需要一次调用读+记的
+管道保留；事件只代表显式查阅，不衡量知识质量，也不覆盖所有使用。
 
-用法（/kb card <name> 的契约入口）：
-  python3 tools/kb_card.py --name <slug> [--target <target>] [--json]
+用法：
+  python3 tools/kb_card.py --name <slug> [--target <target>] [--repo-root <path>]
 """
 
 from __future__ import annotations

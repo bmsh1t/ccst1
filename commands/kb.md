@@ -49,10 +49,10 @@ description: 使用知识库层为当前 Skill 补充思路、案例和停止条
 ### `/kb card <name>`
 
 读取指定知识卡。**默认直接 Read `knowledge/cards/<slug>.md`**（原生能力，
-零包装）；读完补一行遥测（主动查阅 = 出库 review 的中信号；被动装载刻意不记）：
+零包装）；普通读卡不要求额外写入。需要显式记录查阅事件时，可选执行：
 
 ```bash
-# 先 Read 卡片正文，然后：
+# 可选：原生 Read 后记录一次查阅事件
 python3 tools/knowledge_pull_log.py record --card api-idor --target <target_shell>
 ```
 
@@ -105,8 +105,10 @@ python3 tools/case_corpus.py build --input distill/work/batch_000.jsonl
 python3 tools/kb_review.py --json
 ```
 
-输出每张卡：card / layer / maturity / status / pulls / last_pull，
-`pulls=0` 置顶。基于清单做**三问试金石**判定（AI 判断，逐卡出
+输出每张卡：card / layer / maturity / status / pulls / last_pull / pull_coverage。
+统计仅反映已记录事件，`pull_coverage=incomplete`；零计数不代表从未使用，
+频次不代表知识质量。保留 pulls、layer、card 升序（零记录置顶）仅为稳定展示。
+基于卡片内容和证据做**三问试金石**判定（AI 判断，逐卡出
 keep/retire/borderline 建议 + 理由），**人最终裁决**：
 
 1. **模型见过吗？**（公开知识/训练数据——公开靶场漏洞、教科书技巧）→ 见过不是增量

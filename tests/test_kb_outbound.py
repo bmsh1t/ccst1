@@ -285,3 +285,54 @@ def test_show_explicit_target_does_not_bleed_active(tmp_path: Path) -> None:
     assert "BETA" not in out
     assert "ALPHA-GOAL" in out
     assert "ALPHA-HYP" in out
+
+
+# ---- optional telemetry review ----
+
+
+def test_native_read_needs_no_record_and_review_marks_incomplete(tmp_path: Path) -> None:
+    from kb_review import build_review
+
+    _seed_registry(tmp_path, [("read-card", ""), ("old-card", "retired")])
+    assert "card" in (tmp_path / "knowledge/cards/read-card.md").read_text()
+    rows = build_review(tmp_path)
+    assert [row["card"] for row in rows] == ["old-card", "read-card"]
+    assert all(row["pulls"] == 0 and row["last_pull"] == "" for row in rows)
+    assert all(row["pull_coverage"] == "incomplete" for row in rows)
+    assert not pull_log_path(tmp_path).exists()
+
+
+def test_review_cli_preserves_history_json_shape_and_limit(tmp_path: Path) -> None:
+    import subprocess
+    import sys
+
+    _seed_registry(tmp_path, [("recorded-card", ""), ("zero-card", "")])
+    log = pull_log_path(tmp_path)
+    log.write_text('bad line\n' + json.dumps({
+        "card": "recorded-card", "ts": "2026-09-14T00:00:00Z", "source": "selected_knowledge_refs",
+    }) + '\n', encoding="utf-8")
+    before = log.read_bytes()
+    cli = [sys.executable, str(Path(__file__).resolve().parents[1] / "tools/kb_review.py"),
+           "--repo-root", str(tmp_path)]
+    rows = json.loads(subprocess.check_output(cli + ["--json"], text=True))
+    assert [row["card"] for row in rows] == ["zero-card", "recorded-card"]
+    assert rows[1]["pulls"] == 1
+    assert rows[1]["last_pull"] == "2026-09-14T00:00:00Z"
+    assert all(row["pull_coverage"] == "incomplete" for row in rows)
+    assert json.loads(subprocess.check_output(cli + ["--json", "--limit", "1"], text=True)) == rows[:1]
+    output = subprocess.check_output(cli, text=True)
+    assert "zero-recorded-pulls: 1" in output
+    assert "pull_coverage: incomplete" in output
+    assert "never-pulled" not in output
+    assert log.read_bytes() == before
+
+
+def test_empty_review_cli_remains_json_list(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    from kb_review import main
+
+    _seed_registry(tmp_path, [])
+    registry = tmp_path / "knowledge/capabilities.yaml"
+    registry.write_text("schema_version: 1\ncapabilities: []\n", encoding="utf-8")
+    assert main(["--repo-root", str(tmp_path), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == []
+    assert not pull_log_path(tmp_path).exists()

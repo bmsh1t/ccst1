@@ -135,36 +135,20 @@ wiring changes.
   state. Invalid arguments/context or critical runtime drift never call the
   capability profile or `build_autopilot_state()`; advisory drift continues and
   clean root/nested invocations emit the same conclusion.
-- Bootstrap `capabilities` is a bounded, target-independent advisory projection:
-  `schema_version`, `checked`, `status`, categorized `available`, fixed
-  `session_managed`, `fallbacks`, `missing_core`, `missing_optional`,
-  `recommended_paths`, and fixed ordered `lanes` records. Each lane record has
-  `id`, `checked`, `ready`, bounded `missing/degraded/evidence_required/tool_refs`,
-  `profile_version`, and a path-free `input_fingerprint`.
-  It may use only `shutil.which()` and repo-owned file checks; never run version
-  probes, network requests, installers, browsers, scanners, or subprocesses.
-- Capability lane readiness is explicit rather than inferred from helper files:
-  Cloud requires a provider enumerator (`cloud_enum` or `s3scanner`) in addition
-  to `cloud_recon.sh`; OAST requires a real `interactsh-client`; Web3 reports
-  `static_review` as `degraded` when the repository Skill/command exists without
-  the `forge` execution backend. `runtime_status` distinguishes `ready`,
-  `degraded`, `unavailable`, and `unchecked`; missing optional backends never
-  become tested-clean evidence.
-- `session_managed` names such as chrome-devtools/playwright MCP are declarations,
-  not availability claims. Claude checks its actual session tool surface, then
-  uses the visible MCP tools, source/JS, native curl, or manual evidence fallbacks;
-  it never launches a local browser CLI through Bash.
-- Capability `degraded` or `unknown` never changes `action=continue`, requests an
-  install, or means a lane is tested-clean. An internal profile exception becomes
-  `checked=false`, `status=unknown`, `reason=profile-error`, then target state is
-  still read. ProjectDiscovery `httpx` identity remains the recon engine's runtime
-  responsibility; the profile reports only a PATH candidate.
-- `missing_core` explains degraded default paths (`curl`, `httpx`, or missing
-  repo-owned recon/scanner engines); `missing_optional` contains browser/recon/
-  scanner enhancements whose absence alone does not make the profile degraded.
-- Lane readiness is advisory and local-only. It may constrain or explain a
-  fallback but never overrides the Action Queue/state-selected lane, claims a
-  session MCP is available, or records a lane as tested-clean.
+- Bootstrap `capabilities.schema_version=2` is a bounded target-independent local
+  dependency view: `checked`, `status=checked|unknown`, flat `available`/`missing`,
+  `local_files`, fixed `session_managed`, and `session_status=unchecked`.
+  It no longer publishes category readiness, lanes, recommendations or fingerprints;
+  v1 external consumers must explicitly adapt. No historical snapshots are rewritten.
+- Checks use PATH/file presence and the existing EBurst owner resolver only; never
+  run version probes, subprocesses, networks, installers or browsers. Presence is
+  not execution success; HTTPX tool identity remains Recon's responsibility.
+- Session MCP names remain declarations, always unchecked here. A local browser
+  importer file does not imply a session browser is available. The Agent uses its
+  actually exposed tools; executors still enforce selected-path dependencies.
+- Missing dependencies do not block Bootstrap or imply tested-clean. Profile errors
+  return `checked=false`, `status=unknown`, `reason=profile-error`, empty fact sets;
+  empty unknown sets do not claim absence. Target state still runs after fail-soft.
 - URL-form targets keep canonical host state but retain exact path/query as
   `seed_url`; a valid relative `--auth-file` resolves against invocation cwd and
   is passed only to hunt/recon/scan paths.
@@ -187,8 +171,8 @@ wiring changes.
 - invalid arguments/context or critical runtime drift -> `capabilities.checked=false`; profile and
   target state are not called
 - advisory-only runtime drift -> project bounded advisory paths, then continue
-- clean runtime + optional tools missing -> `capabilities.status=degraded` or
-  `ready` with bounded missing/fallback hints; `action=continue`
+- clean runtime + tools missing -> `capabilities.status=checked`, names in `missing`;
+  `action=continue` without installation or inferred lane readiness
 - capability probe raises -> `capabilities.status=unknown`,
   `reason=profile-error`; target state still runs and `action=continue`
 
@@ -203,7 +187,7 @@ wiring changes.
 - Base: `/autopilot` receives only the dynamic shell fallback and emits
   `ask_target`, never a synthetic target state for that executable path.
 - Base: `nuclei` is missing but curl/native scanner helpers exist; bootstrap
-  recommends `scanner-native-http` and continues without installation.
+  records `nuclei` in `missing` and continues without installation.
 - Base: an unrelated command differs in the installed runtime; full doctor stays
   dirty, but `runtime.critical_clean=true` and bootstrap continues.
 - Good: browser MCP is visible in the current Claude session; Claude uses it even
@@ -1229,3 +1213,14 @@ existence, regular-file/readability and containment, before publishing or deleti
 anything. This applies to a skills-only sync too. Receipt coordination handles
 both active→disabled and disabled→active; the prior installed hash follows the
 command identity. User edits retain a conflict and their ownership receipt.
+
+## Closure display separation
+Closure state snapshots omit `enrichment_hints` and only the top-level Intel
+`reason` explanation. Intel action, blocked facts, advisory data, review-group
+queries, long-tail counts and source/disposition bindings remain digest inputs.
+Nested reason fields and query commands are not blindly stripped: they may carry
+unrepresented source/cursor facts. Display changes must not expire a review;
+source/state changes still must. Prior digests may become stale on this change;
+refresh and explicitly review, never rewrite historical witnesses.
+`test_closure_digest_ignores_advice_but_preserves_intel_facts` covers prose/tool-hint
+stability, immutable input and source/remaining/status/query-change invalidation.

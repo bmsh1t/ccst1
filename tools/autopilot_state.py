@@ -3194,7 +3194,6 @@ _CLOSURE_STATE_KEYS = (
     "json_inject",
     "sql_matrix",
     "intel_continuation",
-    "enrichment_hints",
     "_coverage_stale",
     "round_progress",
 )
@@ -3207,11 +3206,11 @@ def _closure_state_snapshot(state: dict) -> dict:
         for key in _CLOSURE_STATE_KEYS
         if key in state
     }
-    if "enrichment_hints" in snapshot:
-        snapshot["enrichment_hints"] = sorted({
-            str(item.get("tool") or "")
-            for item in snapshot["enrichment_hints"] or [] if isinstance(item, dict)
-        })
+    intel = snapshot.get("intel_continuation")
+    if isinstance(intel, dict):
+        # Only top-level explanation is presentation. Retain actions, blocked
+        # facts, long-tail queries and all source/disposition bindings.
+        snapshot["intel_continuation"] = {key: value for key, value in intel.items() if key != "reason"}
     return snapshot
 
 

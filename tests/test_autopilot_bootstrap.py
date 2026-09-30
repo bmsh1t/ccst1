@@ -293,19 +293,14 @@ def test_runtime_read_error_is_structured_before_target_state(monkeypatch, tmp_p
 
 def _capabilities(_repo_root):
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "checked": True,
-        "status": "ready",
-        "available": {
-            "browser": [],
-            "recon": ["httpx"],
-            "scanner": ["nuclei"],
-        },
+        "status": "checked",
+        "available": ["httpx", "nuclei"],
+        "missing": ["curl"],
+        "local_files": {"tools/browser_mcp_import.py": True},
         "session_managed": ["chrome-devtools-mcp", "playwright-mcp"],
-        "fallbacks": ["curl-native-http"],
-        "missing_core": [],
-        "missing_optional": [],
-        "recommended_paths": ["recon-engine-httpx"],
+        "session_status": "unchecked",
     }
 
 
