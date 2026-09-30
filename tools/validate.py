@@ -1134,8 +1134,8 @@ def _validate_machine_runner_witness(
         raise ValueError("runner target does not match decision.target")
     if str(runner.get("finding_id") or "").strip() != finding_id:
         raise ValueError("runner finding_id does not match decision.finding_id")
-    if runner.get("result") != "tested_finding" or runner.get("candidate_ready") is not True:
-        raise ValueError("primary runner summary must be a candidate-ready tested_finding")
+    # Runner labels describe observations, not admission to an AI judgment.
+    # The linked Store operation and its current raw bytes remain authoritative.
     operation_id = _required_text(runner.get("store_operation_id"), "evidence.runner_summary.store_operation_id")
     execution = store.execution(operation_id)
     if execution["outcome"] != "complete" or not execution.get("observations"):

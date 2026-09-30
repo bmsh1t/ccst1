@@ -148,7 +148,7 @@ AuthSession origin/scope rules; raw headers override only on the initial URL.
   unknown names cannot accidentally close a standard coverage cell.
 - An observation is not a technical verdict. Unspecified/unmet expectations
   remain `candidate`; only explicit clean-intent observations may be clean.
-  Complete evidence is required for candidate-ready validation. A transport
+  Complete evidence is required for machine review admission. A transport
   failure with no published observations is unknown; earlier complete steps
   survive a partial run without authorizing completion.
 - Explicit `state_changing=true` requires `redline_checked`; method names do not
@@ -160,7 +160,12 @@ AuthSession origin/scope rules; raw headers override only on the initial URL.
 - Scaffold and preflight read only the Store. `/validate --decision-json` binds
   target/Finding/endpoint/method/family and a complete linked Store operation,
   checks current raw integrity, and requires explicit gates, Q1–Q7 basis and
-  impact. Optional CVSS does not determine core technical truth.
+  impact. Optional CVSS does not determine core technical truth. Runner
+  `result`/`candidate_ready` and declared `expected` are not review admission
+  gates: complete candidate, tested-clean and native operations may be reviewed
+  without relabeling evidence or sending another request. Explicit technical
+  gates determine confirmed versus inconclusive; failed/unknown technical gates
+  do not mean refuted. Partial operations still reject even for negative review.
 - AI report bytes are atomically published before separate assessment,
   destination decision and eligible report registration. Their deterministic
   command IDs allow partial retries; a new judgment requires predecessor IDs.
@@ -440,6 +445,42 @@ also checks null wall time and retained tool calls after interruption.
 
 Wrong: stale running record → rerun → replace failure with its successful result.
 Correct: preserve partial evidence → interrupted row → run only unstarted cells.
+
+## Scenario: Review admission independent of Runner labels
+
+### 1. Scope / Trigger
+`/validate --decision-json` preflight and apply share owner-bound evidence admission.
+
+### 2. Signatures
+`_validate_machine_runner_witness(...) -> tuple[Path, str]` returns the summary
+path and verified Store operation ID; decision schema and Store APIs are unchanged.
+
+### 3. Contracts
+A complete linked operation, not `result` or `candidate_ready`, authorizes review.
+AI must still supply explicit gates and impact basis. Review never reruns requests
+or rewrites the original Runner summary. Assessment and delivery remain separate.
+
+### 4. Validation & Error Matrix
+- Missing expected/candidate/tested_clean/dead_end label: not an admission error.
+- Partial operation or no observations: reject before writes, even for negative review.
+- Unbound Finding/endpoint/method, changed raw artifacts or stale CAS: reject.
+- Failed/unknown technical gates: inconclusive, no eligible report; not refuted.
+
+### 5. Good/Base/Bad Cases
+Good: review a complete no-expected pair as inconclusive without new execution.
+Base: unchanged tested_finding review. Bad: rename candidate to manufacture proof.
+
+### 6. Tests Required
+`test_machine_review_admission_is_independent_of_native_labels`,
+`test_machine_reviews_request_diff_without_expected_or_new_execution`, and
+`test_candidate_admission_keeps_operation_guards` in `test_validate_target_mode.py`
+check explicit verdicts, no preflight writes, unchanged evidence, no requests,
+and partial/unbound/tampered rejection in both preflight and apply.
+
+### 7. Wrong vs Correct
+Wrong: missing expected means existing evidence cannot be assessed.
+Correct: verify actual operation and provenance, then record the explicit judgment;
+wire declarations never substitute for impact evidence.
 
 ## Local integrity failure boundary
 

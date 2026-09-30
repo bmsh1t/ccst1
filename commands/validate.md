@@ -118,11 +118,12 @@ output-only generator, validation code is unchanged. The target, ID, endpoint an
 the canonical row before any write occurs; the report path stays below that
 row's `findings/<target>/` directory.
 
-The runner summary must be a candidate-ready `tested_finding` from
-`validation_runner` schema v1. Its target, finding, endpoint and method must
-match the decision; its self path, stable operation ID, request/response
-artifact SHA-256 bindings, canonical Finding summary/operation binding, and
-Finding owner provenance must all verify before preflight succeeds.
+The runner summary must reference a complete, owner-bound Store operation with
+observations. `candidate` (including no declared `expected`), `tested_clean`,
+and native evidence can be reviewed without relabeling the original summary or
+rerunning requests. Runner labels and satisfied wire expectations neither prove
+impact nor determine the technical verdict. Target/Finding/endpoint/method
+linkage and the operation's current raw artifact integrity must verify.
 
 For already-executed browser, probe, raw or multi-step evidence, first register
 the saved observations against this Candidate without sending requests again:
@@ -156,6 +157,9 @@ Gate 4 (duplicate), Q5 (known/documented), and Q7 (destination exclusions) gover
 delivery separately. A real, evidenced boundary violation can remain confirmed
 while delivery is ineligible or deferred. Known behavior alone neither confirms
 nor refutes a violation; a missing technical gate still prevents confirmation.
+The existing machine decision maps failed/unknown technical gates to
+`inconclusive`, not `refuted`; it has no explicit refutation field. Partial
+operations still fail admission, including for non-confirming reviews.
 Report generation requires both confirmation and current eligible delivery.
 
 To check a decision before applying it, add `--preflight`. This reads the

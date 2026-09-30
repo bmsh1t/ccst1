@@ -13,7 +13,8 @@ from target_store import StoreError, TargetStore, initialize_target_store
 
 
 def _seed_machine_preflight(tmp_path, *, target="target.com", finding_id="sqli_preflight",
-                            endpoint="https://target.com/rest/products/search?q=test", family="sqli", method="GET"):
+                            endpoint="https://target.com/rest/products/search?q=test", family="sqli", method="GET",
+                            runner_result="tested_finding"):
     store = TargetStore(tmp_path, target)
     initialize_target_store(tmp_path, target)
     store.create_finding(command_id=f"claim:{finding_id}", finding_id=finding_id, endpoint=endpoint,
@@ -27,7 +28,7 @@ def _seed_machine_preflight(tmp_path, *, target="target.com", finding_id="sqli_p
         path.write_text(body, encoding="utf-8")
         artifacts[kind] = path.relative_to(tmp_path).as_posix()
     evidence = {"schema_version": 1, "attempt_id": f"attempt:{finding_id}", "source": "native",
-                "generated_at": "2026-09-24T00:00:00Z", "result": "tested_finding",
+                "generated_at": "2026-09-24T00:00:00Z", "result": runner_result,
                 "observed_difference": "Recorded peer data differs from the owner control response",
                 "runs": [{"url": endpoint, "method": method, "actor": "peer", "artifacts": artifacts}]}
     summary = validation_runner.record_native_evidence(
@@ -696,3 +697,111 @@ def test_machine_report_atomic_publication_failure_is_recoverable(tmp_path, monk
     assert validate.main(args) == 0
     capsys.readouterr()
     assert path.read_text() == decision["report"]["content"]
+
+
+@pytest.mark.parametrize("runner_result", ["candidate", "tested_clean", "dead_end"])
+@pytest.mark.parametrize("judgment", ["pass", "fail", "unknown"])
+def test_machine_review_admission_is_independent_of_native_labels(tmp_path, capsys, runner_result, judgment):
+    target, finding_id, findings_dir, decision_path = _seed_machine_preflight(
+        tmp_path, runner_result=runner_result,
+    )
+    decision = json.loads(decision_path.read_text())
+    decision["gates"]["gate3"]["passed"] = judgment == "pass"
+    decision["seven_question_gate"]["questions"]["q6_impact_beyond_possible"] = {
+        "status": judgment, "basis": "Explicit review of recorded response and claimed impact",
+    }
+    decision_path.write_text(json.dumps(decision))
+    runner_path = Path(decision["evidence"]["runner_summary"])
+    runner_bytes = runner_path.read_bytes()
+    runner = json.loads(runner_bytes)
+    assert runner["result"] == runner_result
+    assert runner["candidate_ready"] is False
+    store = TargetStore(tmp_path, target)
+    operation_before = store.execution(runner["store_operation_id"])
+    before = _file_snapshot(tmp_path)
+    args = _decision_args(findings_dir, finding_id, decision_path)
+    assert validate.main([*args, "--preflight"]) == 0
+    capsys.readouterr()
+    assert _file_snapshot(tmp_path) == before
+    assert validate.main(args) == 0
+    result = json.loads(capsys.readouterr().out)
+    finding = store.finding(finding_id)
+    assert finding["assessment"]["verdict"] == ("confirmed" if judgment == "pass" else "inconclusive")
+    assert result["report_ready"] is (judgment == "pass")
+    assert len(finding["reports"]) == (1 if judgment == "pass" else 0)
+    assert finding["assessment"]["evidence"] == [{"operation_id": runner["store_operation_id"], "step": 0}]
+    assert runner_path.read_bytes() == runner_bytes
+    assert store.execution(runner["store_operation_id"]) == operation_before
+
+
+def test_machine_reviews_request_diff_without_expected_or_new_execution(tmp_path, monkeypatch, capsys):
+    from test_validation_runner import _fake_response
+
+    target, finding_id, findings_dir, decision_path = _seed_machine_preflight(tmp_path)
+    decision = json.loads(decision_path.read_text())
+    endpoint = decision["endpoint"]
+    bodies = iter(['{"value":"first"}', '{"value":"other"}'])
+    monkeypatch.setattr(validation_runner, "request_once", lambda **kw: _fake_response(kw["url"], body=next(bodies)))
+    summary = validation_runner.run_request_diff(
+        repo_root=tmp_path, target=target, finding_id=finding_id, attempt_id="no-expected",
+        request_spec={"schema_version": 1, "baseline_request": {"method": "GET", "url": endpoint},
+                      "variant_request": {"method": "GET", "url": endpoint, "headers": {"X-Test": "variant"}},
+                      "active_dimension": "header:X-Test", "classifier": "sqli"},
+        state_changing=False,
+    )
+    assert summary["result"] == "candidate"
+    assert summary["candidate_ready"] is False
+    assert summary["expected_check"] == {}
+    assert validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)["status"] == "updated"
+    summary_path = tmp_path / summary["summary_path"]
+    summary_path.write_text(json.dumps(summary))
+    original = summary_path.read_bytes()
+    decision["evidence"].update(runner_summary=str(summary_path), refs=[str(summary_path)])
+    decision["gates"]["gate3"]["passed"] = False
+    decision["seven_question_gate"]["questions"]["q6_impact_beyond_possible"] = {
+        "status": "unknown", "basis": "A body difference alone does not demonstrate impact",
+    }
+    decision_path.write_text(json.dumps(decision))
+    monkeypatch.setattr(validation_runner, "request_once", lambda **kw: pytest.fail("review must not execute requests"))
+    args = _decision_args(findings_dir, finding_id, decision_path)
+    before = _file_snapshot(tmp_path)
+    assert validate.main([*args, "--preflight"]) == 0
+    capsys.readouterr()
+    assert _file_snapshot(tmp_path) == before
+    assert validate.main(args) == 0
+    capsys.readouterr()
+    finding = TargetStore(tmp_path, target).finding(finding_id)
+    assert finding["assessment"]["verdict"] == "inconclusive"
+    assert finding["reports"] == []
+    assert {ref["operation_id"] for ref in finding["assessment"]["evidence"]} == {summary["store_operation_id"]}
+    assert summary_path.read_bytes() == original
+
+
+@pytest.mark.parametrize("fault", ["partial", "unbound", "tampered"])
+def test_candidate_admission_keeps_operation_guards(tmp_path, capsys, fault):
+    target, finding_id, findings_dir, decision_path = _seed_machine_preflight(
+        tmp_path, runner_result="partial" if fault == "partial" else "candidate",
+    )
+    decision = json.loads(decision_path.read_text())
+    runner_path = Path(decision["evidence"]["runner_summary"])
+    runner = json.loads(runner_path.read_text())
+    expected_error = "complete primary runner evidence"
+    if fault == "unbound":
+        _, _, _, other_path = _seed_machine_preflight(tmp_path, finding_id="other", runner_result="candidate")
+        other = json.loads(other_path.read_text())
+        other_runner = json.loads(Path(other["evidence"]["runner_summary"]).read_text())
+        runner["store_operation_id"] = other_runner["store_operation_id"]
+        runner_path.write_text(json.dumps(runner))
+        expected_error = "bind this finding"
+    elif fault == "tampered":
+        (tmp_path / runner["artifact_bindings"][0]["ref"]).write_text("changed raw bytes")
+        expected_error = "changed"
+    before = _file_snapshot(tmp_path)
+    args = _decision_args(findings_dir, finding_id, decision_path)
+    assert validate.main([*args, "--preflight"]) == 2
+    errors = json.loads(capsys.readouterr().out)["errors"]
+    assert any(expected_error in error for error in errors)
+    assert validate.main(args) == 2
+    capsys.readouterr()
+    assert _file_snapshot(tmp_path) == before
+    assert TargetStore(tmp_path, target).finding(finding_id)["assessment"] is None
