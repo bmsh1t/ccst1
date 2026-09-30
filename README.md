@@ -399,10 +399,10 @@ documents the preferred model class for each role.
 - **Output cap & bootstrap persistence.** 50KB UTF-8 safe truncation on
   tool observations; `bootstrap_context` and `bootstrap_state` now survive
   `save()` / `load()` instead of being lost on session reload.
-- **Validation calibration.** `tools/validate.py --result` maps confirmed /
-  rejected / partial / informational outcomes into
-  `pattern_calibration.jsonl`, feeding the deprioritisation logic for
-  patterns that consistently false-positive.
+- **Validation calibration (historical).** This release introduced automatic
+  outcome tracking in `pattern_calibration.jsonl`. Automatic writes from
+  validation are now retired; historical data remains available for explicit
+  inspection, not current target routing.
 - **Test suite 1426 / 1426 in ~12 s.** Phase 5 added 30 loop-detector tests
   + 33 chain-hint tests + output-cap, bootstrap, vision-auto, validate-mapping
   coverage.

@@ -1451,9 +1451,7 @@ def _build_machine_validation_input(
         "finding_source_file": prefill.get("source_file", ""),
         "finding_summary": prefill.get("summary", ""),
         "seven_question_gate": seven_questions,
-        # 源归因（记忆复核断点 C 修复）：AI 声明本次验证实际采用的经验来源
-        # （知识卡路径或 PatternDB 模式 ID）。缺省时回退当前 target 的复合 ID，
-        # 行为与旧版完全一致。
+        # Keep only explicitly declared sources; absence does not imply attribution.
         "source_knowledge_refs": _parse_source_knowledge_refs(decision.get("source_knowledge_refs")),
         "machine_decision": {
             "schema_version": MACHINE_DECISION_SCHEMA_VERSION,

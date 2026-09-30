@@ -168,6 +168,10 @@ AuthSession origin/scope rules; raw headers override only on the initial URL.
   stale judgment, missing registered body or changed bytes rejects.
 - `/report` consumes registered AI text and rebuilds its index. Report
   generation never means external submission or Queue completion.
+- Validation refresh preserves runtime breadcrumbs and explicit
+  `source_knowledge_refs` without generating pattern scores or appending to
+  `hunt-memory/pattern_calibration.jsonl`. Historical calibration inspection
+  remains explicit; existing files are neither rewritten nor deleted.
 - Each index entry reads an explicit Severity declaration from that report's
   immutable, hash-checked body. Missing, invalid or conflicting declarations
   display `unknown`, never a category/default medium. A new decision with explicit

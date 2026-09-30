@@ -5,7 +5,7 @@
      mv 进 cards/ 后 audit 不再报错（原 target-evidence 内联形态不兼容）。
   B. 失败经验召回：patterns.jsonl 不再只收 confirmed+payout>0；三类 outcome
      都可写入、可 match 召回、payout 排序保持、legacy 无 outcome 条目兼容。
-  C. 源归因：validate decision 的 source_knowledge_refs 保持校验；
+  C. 验证刷新：runtime breadcrumb 保留且不写校准；显式来源保持校验；
      完整验证/重放的来源透传与无校准写入见 test_validate_target_mode。
 """
 
@@ -298,7 +298,50 @@ def test_remember_primary_negative_binds_observation_and_reopen_condition(tmp_pa
     assert saved["evidence"] == [{"operation_id": operation["entity_id"], "step": 0}]
 
 
-# --- 断点 C：源归因 -----------------------------------------------------------
+# --- 断点 C：验证刷新与显式来源 ----------------------------------------------
+
+
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize("result", ["confirmed", "rejected", "partial", "informational", "unknown"])
+def test_validate_refresh_preserves_runtime_without_calibration(tmp_path, existing, result):
+    from validate import update_runtime_state_after_validate
+    from runtime_state import load_runtime_state
+    from tools.target_store import TargetStore
+
+    store = TargetStore(tmp_path, "current.example")
+    store.initialize()
+    binding = store.binding()
+    calib_path = tmp_path / "hunt-memory" / "pattern_calibration.jsonl"
+    historical = b'{"pattern_id":"source.example|idor|id swap","outcome":"helped"}\n'
+    if existing:
+        calib_path.parent.mkdir()
+        calib_path.write_bytes(historical)
+        stat = calib_path.stat()
+
+    summary = {
+        "target": "current.example",
+        "vuln_class": "idor",
+        "result": result,
+        "finding_id": "finding-1",
+        "technique": "id swap",
+        "source_knowledge_refs": ["source.example|idor|id swap"],
+    }
+    update_runtime_state_after_validate(summary, repo_root=tmp_path)
+
+    state = load_runtime_state(tmp_path, "current.example")
+    assert state["target"] == "current.example"
+    assert state["mode"] == "validate"
+    assert "current_stage" not in state
+    assert state["last_executed_workflow"] == "validate_finding"
+    assert state["last_validation_result"] == result
+    assert state["last_validated_finding_id"] == "finding-1"
+    assert store.binding() == binding
+    if existing:
+        assert calib_path.read_bytes() == historical
+        assert calib_path.stat().st_ino == stat.st_ino
+        assert calib_path.stat().st_mtime_ns == stat.st_mtime_ns
+    else:
+        assert not calib_path.parent.exists()
 
 
 def test_parse_source_knowledge_refs_validates_cards():
