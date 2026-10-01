@@ -518,7 +518,8 @@ def test_intel_terminal_filter_uses_descriptive_type_not_storage_kind(store):
 
     for action_id, action_type in (("intel", "intel-advisory"), ("source", "source-review")):
         add_manual_action(store.root, target=store.target, action_id=action_id, action_type=action_type,
-                          action="Review advisory", evidence="Recorded material", next_question="Review?")
+                          action="Review advisory", evidence="Recorded material", next_question="Review?",
+                          metadata={"advisory_id": "CVE-2026-12345"})
         resolve_action(store.root, target=store.target, action_id=action_id, status="n/a", result="Reviewed CVE-2026-12345")
     assert store.action("intel")["kind"] == "work"
     dispositions = _final_queue_dispositions(store.root, store.target)

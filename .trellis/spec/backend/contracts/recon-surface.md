@@ -253,6 +253,7 @@ live + priority -> ordered_scan_targets -> quick broad scanner -> 正常 consoli
 - `_nvd_summary_version_boundary(summary, component) -> dict`
 - `inventory_source_binding_matches(binding, path) -> bool`
 - `prioritize_advisories(advisories, memory, *, now=None) -> dict`
+- `inspect_intel_continuation(repo_root, target, *, now=None) -> dict`
 
 ### 3. Contracts
 
@@ -271,9 +272,17 @@ live + priority -> ordered_scan_targets -> quick broad scanner -> 正常 consoli
 - `tested_cves` 是无组件/版本的 legacy 历史，只能关闭无版本 advisory。
 - 有版本 advisory 的终态复用归 action queue 的 advisory + component + version
   disposition 所有；target memory 的 CVE-only 标签不能越过该绑定。
-- continuation 只消费终态 `type=intel-advisory`。存在 `advisory_id`、`component`、
-  `version` metadata 时三个字段必须精确匹配；无结构化 binding 的 legacy action 才按
-  CVE/GHSA、组件名和完整版本 token 回退，`1.2` 不得命中 `1.20`。
+- continuation 只消费 Store `blocked/completed/cancelled` 的 `type=intel-advisory`
+  （Queue 展示为 `blocked/tested/n/a`），仅索引显式 `metadata.advisory_id`。
+  metadata 示例：`{"advisory_id":"CVE-2026-12345","component":{"name":"COMPONENT","version":"1.2"}}`。
+  ID/alias、组件名与版本须按现有去空格/大小写规范精确匹配；版本字段必须显式存在，
+  空字符串只绑定未知版本。兼容嵌套 `component.display_name`、顶层 `version` 回退，以及
+  平铺 `component_name`/字符串 `component` + `version`/`component_version`。
+  描述、证据、结果、笔记或无关 metadata 内的 CVE/组件/版本文本不构成绑定。
+- 旧 prose-only 处置保留为历史，但不能隐藏当前候选；读取不重开/创建行动、不改领域状态。
+  重新出现的真实待审 residual 可使既有 Closure 审核过期，不改写旧审核或补造绑定。
+  group 仍要求 `intel_group_key` + 当前精确 `intel_owner_binding`；刷新后旧组处置失效，
+  长尾/游标/来源健康保留，组处置不能把 provider partial/error 变成 complete。
 - continuation 检查 inventory raw source 时复用 inventory owner 的 size/mtime/format/path/
   SHA-256 binding；同尺寸覆盖并恢复 mtime 仍必须返回 `run_intel`。
 - Intel continuation 是建议性观察，不替换 Autopilot 的 `next_action`，也不进入
@@ -300,7 +309,10 @@ live + priority -> ordered_scan_targets -> quick broad scanner -> 正常 consoli
 | legacy CVE 命中且 advisory 有版本 | `already_tested=false`，继续版本适用性闭环 |
 | legacy CVE 命中且 advisory 无版本 | 保持兼容，`already_tested=true` |
 | 其它类型终态 action 含相同 CVE/组件/版本文本 | 不关闭 Intel advisory |
+| intel-advisory 仅有文字提及，或非终态但绑定齐全 | 保留候选，Queue/Store 历史不变 |
 | 结构化 metadata 任一 binding 字段不匹配 | 不回退文本、不关闭 advisory |
+| 版本字段缺失，或未知版本绑定用于已知版本 | 不关闭 advisory |
+| 同一 ID/alias、组件、显式版本与处置均匹配 | 不再重复列为当前待审；不等价于漏洞证据 |
 | raw source 同尺寸换内容并恢复 mtime | SHA-256 mismatch，返回 `run_intel` |
 | OSV/GitHub 某个并发 query 失败 | 保留其它 query 结果并按输入顺序输出 `partial/error` 统计 |
 | KEV 有 CVE 但 NVD 当前无对应记录 | 合并为 `source=kev`、`kev_only=true` 的候选，并继续 EPSS enrichment |
@@ -327,13 +339,17 @@ live + priority -> ordered_scan_targets -> quick broad scanner -> 正常 consoli
 - `tests/test_intel_sources.py` 覆盖 NVD 多页合并、partial 语义、摘要 branch-before 边界、
   跨组件轮询、墙钟截止、缓存续跑、产品/分支保守回退、OSV/GitHub 并发上限和保序。
 - `tests/test_intel_engine.py` 覆盖 versioned 与 unversioned memory closure。
-- `tests/test_intel_continuation.py` 覆盖 action 类型、metadata、legacy token、组件版本、raw
-  source digest binding 和 continuation 抢占优先级。
+- `tests/test_intel_continuation.py` 用真实 Store/公开 inspect 覆盖纯文字不闭合、终态与类型、
+  alias/组件/显式版本、add/resolve 绑定、原件/sidecar、组刷新/游标/长尾、来源降级与 TTL；
+  读取前后断言 Store binding、Queue 和领域历史不变。
+- `tests/test_intel_artifact_store_boundary.py` 保留 missing/fenced/legacy Store 拒绝；
+  `tests/test_autopilot_state_tool.py::test_closure_digest_ignores_advice_but_preserves_intel_facts`
+  固定展示文案与真实 Intel 闭合事实的区别。不恢复建议抢占主路线的旧契约。
 
 ### 7. Wrong vs Correct
 
 ```text
-Wrong: any final action containing `1.2` -> close advisory for component `1.20`
+Wrong: final action prose contains CVE + component + exact version -> close advisory
 Correct: CVE-only memory -> history; exact intel-advisory+component+version binding -> closure
 Wrong: summary contains component name + any `before` -> mark affected
 Correct: component-leading numeric branch sentence + exact observed branch/version -> applicability

@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 import shlex
 from datetime import datetime, timezone
@@ -100,24 +99,15 @@ def _final_queue_dispositions(repo_root: str | Path, target: str) -> dict[str, l
         ):
             continue
         metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
-        material = json.dumps(
-            {
-                "action": item.get("action", ""),
-                "evidence": item.get("evidence", ""),
-                "result": item.get("result", ""),
-                "notes": item.get("notes", ""),
-                "metadata": metadata,
-            },
-            ensure_ascii=False,
-        )
-        disposition = {"metadata": metadata, "material": material.lower()}
+        disposition = {"metadata": metadata}
         group_key = str(metadata.get("intel_group_key") or "").strip()
         if group_key:
             disposition["group_key"] = group_key
             disposition["owner_binding"] = metadata.get("intel_owner_binding")
             dispositions.setdefault(GROUP_DISPOSITION_KEY, []).append(disposition)
-        for match in _IDENTIFIER_RE.finditer(material):
-            dispositions.setdefault(match.group(0).upper(), []).append(disposition)
+        advisory_id = str(metadata.get("advisory_id") or "").strip().upper()
+        if advisory_id:
+            dispositions.setdefault(advisory_id, []).append(disposition)
     return dispositions
 
 
@@ -130,35 +120,9 @@ def _advisory_identifiers(item: dict) -> set[str]:
     }
 
 
-def _strict_token_present(material: str, value: str) -> bool:
-    """匹配完整组件/版本 token，避免 `1.2` 命中 `1.20`。"""
-    token = str(value or "").strip().lower()
-    if not token:
-        return False
-    return bool(
-        re.search(
-            rf"(?<![a-z0-9._+~-]){re.escape(token)}(?![a-z0-9._+~-])",
-            material,
-        )
-    )
-
-
-def _metadata_disposition_matches(item: dict, metadata: dict) -> bool | None:
-    """返回结构化 binding 的匹配结果；无 binding 字段时交给 legacy 文本。"""
+def _metadata_disposition_matches(item: dict, metadata: dict) -> bool:
+    """只复用显式 advisory、组件名和版本一致的 binding。"""
     component_binding = metadata.get("component")
-    has_binding = any(
-        key in metadata
-        for key in (
-            "advisory_id",
-            "component",
-            "component_name",
-            "version",
-            "component_version",
-        )
-    )
-    if not has_binding:
-        return None
-
     if isinstance(component_binding, dict):
         bound_name = str(
             component_binding.get("name") or component_binding.get("display_name") or ""
@@ -193,22 +157,6 @@ def _metadata_disposition_matches(item: dict, metadata: dict) -> bool | None:
     )
 
 
-def _legacy_disposition_matches(item: dict, material: str) -> bool:
-    component = item.get("component") if isinstance(item.get("component"), dict) else {}
-    name = str(component.get("name") or "").strip().lower()
-    version = str(component.get("version") or "").strip().lower()
-    if not name or not _strict_token_present(material, name):
-        return False
-    if version:
-        return _strict_token_present(material, version)
-    unknown_markers = (
-        f"{name}@unknown",
-        f"{name} version unknown",
-        f"{name} unknown version",
-    )
-    return any(marker in material for marker in unknown_markers)
-
-
 def _has_final_disposition(item: dict, dispositions: dict[str, list[dict]]) -> bool:
     """同一 advisory 只有在观测版本也一致时才复用既有终态。"""
     for identifier in _advisory_identifiers(item):
@@ -218,13 +166,7 @@ def _has_final_disposition(item: dict, dispositions: dict[str, list[dict]]) -> b
                 if isinstance(disposition.get("metadata"), dict)
                 else {}
             )
-            metadata_match = _metadata_disposition_matches(item, metadata)
-            if metadata_match is True:
-                return True
-            if metadata_match is None and _legacy_disposition_matches(
-                item,
-                str(disposition.get("material") or ""),
-            ):
+            if _metadata_disposition_matches(item, metadata):
                 return True
     return False
 

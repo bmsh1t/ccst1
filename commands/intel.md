@@ -99,6 +99,26 @@ When choosing `test_advisory_applicability`, add the advisory to the existing
 raw evidence, and resolve the same action. A blocked provider or unavailable
 source remains an explicit source failure; it is never treated as clean.
 
+Use `action_type=intel-advisory` (`--type intel-advisory` on the CLI) and
+explicit `--metadata-json` when adding or resolving that action:
+
+```json
+{"advisory_id":"CVE-2026-12345","component":{"name":"COMPONENT","version":"VERSION"}}
+```
+
+The ID must match the advisory ID or an alias; component name and observed
+version must match exactly after trimming and case normalization. The existing
+flat form is also accepted: `component_name` (or string `component`) plus
+`version` (or `component_version`). Nested `component.display_name` can supply
+the name, and top-level `version` can supply a missing nested version.
+Version must be explicitly present: `"version":""` binds an unknown version,
+not a known version; omitting it does not bind either.
+Only Store `blocked`, `completed`, or `cancelled` actions count as dispositions
+(the Queue adapter displays them as `blocked`, `tested`, or `n/a`). Mentions in
+descriptions, evidence, results, notes, or unrelated metadata do not count.
+Old prose-only records are preserved but no longer suppress candidates. State
+inspection does not reopen or create actions, execute requests, or change findings.
+
 For `review_intel_group`, the bounded sidecar has closed its
 representatives but still has raw advisory facts outside the default context.
 Use the read-only query to inspect the group a page at a time; the query never
