@@ -216,7 +216,12 @@ def test_source_hunt_explicit_root_contains_exposure_bundle(tmp_path, monkeypatc
             )
         ],
     )
-    monkeypatch.setattr(source_hunt, "scan_repo_ci", lambda _path: [])
+    def empty_ci(_path, *, artifact_dir, repo_commit):
+        source_hunt._write_json(artifact_dir / "repo_workflows.json", {
+            "status": "complete", "remaining_files": 0, "workflows": [],
+        })
+        return []
+    monkeypatch.setattr(source_hunt, "scan_repo_ci", empty_ci)
 
     result = source_hunt.run_source_hunt(target="target.test", repo_root=root)
 

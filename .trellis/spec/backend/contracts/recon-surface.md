@@ -1654,3 +1654,64 @@ Review projection v2 invalidates prior scoring-based views; query cursor filter
 fingerprints include the ordering contract. KEV/EPSS remain facts, not a locally
 invented priority score. Live provider acquisition/freshness/Scope contracts stay
 unchanged. Regression: tests/test_intel_neutral_selection.py.
+
+
+## Scenario: Preserved workflow sources and unassessed CI signals
+
+### 1. Scope / Trigger
+`source-hunt` scans a local checkout or a bounded acquired clone. Retiring CI
+impact/confidence guesses requires retained source bytes before clone cleanup.
+
+### 2. Signatures
+`scan_repo_ci(repo_path, *, artifact_dir=None, repo_commit="") -> list[RepoFinding]`
+retains its list API and four historical rule IDs. The source-hunt CLI/options
+and prior bundle filenames remain. Optional artifact_dir writes a workflow inventory
+and content-addressed snapshots; direct list-only calls reject incomplete scans.
+
+### 3. Contracts
+CI severity/confidence are unknown; metadata.status=candidate. Trigger/checkout,
+self-hosted/event, expression/run and unpinned-reference co-occurrence are facts for
+review, not exploitability or Finding authority. Unknown/invalid configuration is
+not negative evidence. Preserve all unpinned references for a job, not only the first.
+
+`repo_workflows.json` contains schema_version, repo_commit, complete/partial status,
+total/remaining file counts, deferred_paths for unscanned file names, and per-file records: source file_path, status, and
+size/hash/artifact where available. Source `artifact` paths are relative to the
+inventory directory, as are candidate workflow_artifact refs; line_number locates
+the original job context. UTF-8 decoding/parsing uses the same bytes saved in the
+snapshot, preserving BOM/CRLF and even invalid source bytes. Output files are 0600;
+content-addressed snapshots are atomically created, reused only for identical bytes,
+never overwritten. Missing/modified sources cannot become verified evidence.
+
+repo_commit is acquired Git HEAD context, not a clean-worktree assertion. Per-file
+hash is the exact observation identity. Repo size approval, clone and secret scanner
+behavior remain; no remote substitution or new dependency. No Store writes/assessment
+or automatic Queue activation. Missing workflows means no GitHub Actions files found,
+not that other CI formats were scanned or the repository is safe.
+
+### 4. Validation & Error Matrix
+- Bad encoding/YAML/root/jobs/steps: retain bounded bytes; per-file invalid; continue others.
+- Malformed job among valid jobs: retain valid-job candidates and flag the workflow invalid.
+- Source links/nonregular files or linked output directories: do not read through/publish outside them.
+- More than 256 files or a file above 1 MiB: partial and explicit remainder/oversized, not clean.
+- Snapshot hash conflict or publication failure: nonzero; retain old bytes/manifests; cleanup temp clone.
+- Incomplete scan with artifact_dir: preserve candidates/diagnostics, source-hunt exits 2.
+- Confirmation needed before acquisition: not_run inventory, no reuse of old complete status.
+- Damaged/inconsistent inventory in consumer: workflow_status=invalid, not complete.
+
+### 5. Good/Base/Bad Cases
+Good: exact workflow is still readable after temporary clone deletion.
+Base: local modified working tree records its HEAD context plus different actual source hash.
+Bad: infer attacker-code execution from pull_request_target and default checkout alone.
+
+### 6. Tests Required
+`tests/test_repo_ci_scan.py` covers old signal discovery, unassessed semantics,
+exact bytes/hash/job lines, all unpinned refs, empty/unmatched/invalid material,
+limits, source/output path safety, corruption, local commit context, failure cleanup
+and post-clone source access. `test_repo_root_seams.py` checks explicit-root outputs
+and no Store mutation; Resume/Autopilot retain candidates and incomplete source health.
+
+### 7. Wrong vs Correct
+Wrong: pattern matched -> high-confidence vulnerability -> source clone removed.
+Correct: preserve bounded exact workflow -> expose signals + diagnostics -> AI reviews
+conditions/ref/permissions/data flow -> explicit domain actions if warranted.

@@ -732,7 +732,7 @@ def _build_pivot_hint(
     if secret_findings > 0:
         return "repo source shows secrets; verify credential usability before widening live probing."
     if ci_findings > 0:
-        return "repo source shows CI risks; review workflow attack surface before rerunning source hunt."
+        return "repo source shows CI review candidates; inspect saved workflows and trust boundaries."
     return ""
 
 

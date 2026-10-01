@@ -24,8 +24,10 @@ BASE_DIR = TOOLS_DIR.parent
 
 
 def _exposure_dir(target: str, repo_root: str | Path | None = None) -> Path:
-    root = Path(repo_root) if repo_root is not None else BASE_DIR
+    root = (Path(repo_root) if repo_root is not None else BASE_DIR).resolve()
     path = root / "findings" / target_storage_key(target) / "exposure"
+    if path != path.resolve():
+        raise ValueError("repo-source output must not traverse symlinks")
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -38,6 +40,7 @@ def render_repo_summary(
     meta: RepoSourceMeta,
     secret_findings: list[RepoFinding],
     ci_findings: list[RepoFinding],
+    workflow_scan: dict | None = None,
 ) -> str:
     lines = [
         "# Repository Source Hunt Summary",
@@ -46,6 +49,7 @@ def render_repo_summary(
         f"- Repo URL: {meta.repo_url or '(local only)'}",
         f"- Repo path: {meta.repo_path or '(temporary clone)'}",
         f"- Repo ref: {meta.repo_ref or '(n/a)'}",
+        f"- Repo commit context: {meta.repo_commit or 'unknown/non-Git'} (working-tree bytes may differ)",
         f"- Size bytes: {meta.size_bytes}",
         f"- File count: {meta.file_count}",
         f"- Probe complete: {meta.probe_complete}",
@@ -62,6 +66,12 @@ def render_repo_summary(
         for finding in (secret_findings + ci_findings)[:10]:
             location = f"{finding.file_path}:{finding.line_number}" if finding.line_number else finding.file_path
             lines.append(f"- [{finding.severity}] {finding.rule_id} :: {location}")
+    if workflow_scan is not None:
+        lines.extend([
+            f"- Workflow scan: {workflow_scan['status']}; remaining files: {workflow_scan['remaining_files']}",
+            "- CI entries are review candidates, not severity/impact judgments.",
+            "- Workflow originals and diagnostics: repo_workflows.json; snapshots: repo_workflows/",
+        ])
     return "\n".join(lines) + "\n"
 
 
@@ -72,6 +82,7 @@ def _write_result_bundle(
     ci_findings: list[RepoFinding],
     *,
     repo_root: str | Path | None = None,
+    workflow_scan: dict | None = None,
 ) -> Path:
     exposure_dir = _exposure_dir(target, repo_root)
     _write_json(exposure_dir / "repo_source_meta.json", meta.to_dict())
@@ -79,7 +90,7 @@ def _write_result_bundle(
     _write_json(exposure_dir / "repo_ci_findings.json", [finding.to_dict() for finding in ci_findings])
     _write_text_atomic(
         exposure_dir / "repo_summary.md",
-        render_repo_summary(meta, secret_findings, ci_findings),
+        render_repo_summary(meta, secret_findings, ci_findings, workflow_scan),
     )
     return exposure_dir
 
@@ -103,6 +114,10 @@ def run_source_hunt(
     except RepoConfirmationRequired as exc:
         exc.meta.status = "confirmation_required"
         exposure_dir = _write_result_bundle(target, exc.meta, [], [], repo_root=repo_root)
+        _write_json(exposure_dir / "repo_workflows.json", {
+            "schema_version": 1, "status": "not_run", "total_files": None,
+            "remaining_files": None, "workflows": [],
+        })
         return {
             "status": "confirmation_required",
             "exposure_dir": str(exposure_dir),
@@ -111,27 +126,33 @@ def run_source_hunt(
 
     try:
         secret_findings = scan_repo_secrets(resolved_repo_path)
-        ci_findings = scan_repo_ci(resolved_repo_path)
+        exposure_dir = _exposure_dir(target, repo_root)
+        ci_findings = scan_repo_ci(resolved_repo_path, artifact_dir=exposure_dir, repo_commit=source_meta.repo_commit)
+        workflow_scan = json.loads((exposure_dir / "repo_workflows.json").read_text(encoding="utf-8"))
+        if workflow_scan["status"] != "complete":
+            source_meta.status = "partial"
         exposure_dir = _write_result_bundle(
             target,
             source_meta,
             secret_findings,
             ci_findings,
             repo_root=repo_root,
+            workflow_scan=workflow_scan,
         )
         return {
-            "status": "ok",
+            "status": source_meta.status,
             "exposure_dir": str(exposure_dir),
             "source_meta": source_meta.to_dict(),
             "secret_count": len(secret_findings),
             "ci_count": len(ci_findings),
+            "workflow_status": workflow_scan["status"],
         }
     finally:
         if temp_dir is not None:
             temp_dir.cleanup()
 
 
-def main() -> int:
+def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Repository source leak and CI risk scanner")
     parser.add_argument("--target", required=True, help="Target/program name used under findings/<target>/")
     parser.add_argument("--repo-url", default="", help="GitHub public repo URL or owner/repo reference")
@@ -142,16 +163,19 @@ def main() -> int:
         action="store_true",
         help=f"Allow clone when the repo exceeds {MAX_REPO_SIZE_BYTES} bytes or file-count thresholds",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
-    result = run_source_hunt(
-        target=args.target,
-        repo_url=args.repo_url,
-        repo_path=args.repo_path,
-        allow_large_repo=args.allow_large_repo,
-        interactive=True,
-        repo_root=args.repo_root or None,
-    )
+    try:
+        result = run_source_hunt(
+            target=args.target,
+            repo_url=args.repo_url,
+            repo_path=args.repo_path,
+            allow_large_repo=args.allow_large_repo,
+            interactive=True,
+            repo_root=args.repo_root or None,
+        )
+    except (OSError, ValueError, RuntimeError) as exc:
+        parser.error(str(exc))
     summary_path = Path(result["exposure_dir"]) / "repo_summary.md"
     print(summary_path.read_text(encoding="utf-8"))
     return 0 if result["status"] == "ok" else 2

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -91,6 +92,17 @@ def probe_github_repo(repo_ref: str) -> RepoSourceMeta:
     )
 
 
+def _local_commit(repo_path: str) -> str:
+    """Record HEAD as context only; source snapshots may include local changes."""
+    try:
+        result = subprocess.run(["git", "-C", repo_path, "rev-parse", "--verify", "HEAD"],
+                                capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    commit = result.stdout.strip()
+    return commit if result.returncode == 0 and re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", commit) else ""
+
+
 def probe_local_repo(repo_path: str) -> RepoSourceMeta:
     path = Path(repo_path).expanduser().resolve()
     if not path.is_dir():
@@ -108,6 +120,7 @@ def probe_local_repo(repo_path: str) -> RepoSourceMeta:
     return RepoSourceMeta(
         source_kind="local_path",
         repo_path=str(path),
+        repo_commit=_local_commit(str(path)),
         size_bytes=size_bytes,
         file_count=file_count,
         probe_complete=True,
@@ -139,6 +152,7 @@ def clone_github_repo(meta: RepoSourceMeta) -> tuple[str, tempfile.TemporaryDire
         raise RuntimeError(error_msg)
 
     meta.clone_performed = True
+    meta.repo_commit = _local_commit(str(repo_dir))
     return str(repo_dir), temp_dir
 
 

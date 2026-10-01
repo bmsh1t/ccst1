@@ -18,6 +18,7 @@ KNOWN_REPO_SOURCE_ARTIFACTS = (
     "repo_source_meta.json",
     "repo_secrets.json",
     "repo_ci_findings.json",
+    "repo_workflows.json",
     "repo_summary.md",
 )
 
@@ -63,6 +64,7 @@ def load_repo_source_summary(repo_root: str | Path, target: str) -> dict:
                 summary["status"] = str(meta.get("status", "") or "")
                 summary["source_kind"] = str(meta.get("source_kind", "") or "")
                 summary["clone_performed"] = bool(meta.get("clone_performed", False))
+                summary["repo_commit"] = str(meta.get("repo_commit") or "")
         except (OSError, json.JSONDecodeError):
             pass
 
@@ -85,6 +87,27 @@ def load_repo_source_summary(repo_root: str | Path, target: str) -> dict:
         if confirmation_required and not summary.get("status"):
             summary["status"] = "confirmation_required"
 
+    workflows = exposure_dir / "repo_workflows.json"
+    if workflows.exists():
+        try:
+            payload = json.loads(workflows.read_text(encoding="utf-8"))
+            if (not isinstance(payload, dict) or payload.get("status") not in {"complete", "partial", "not_run"}
+                    or not isinstance(payload.get("workflows"), list)):
+                raise ValueError("invalid workflow inventory")
+            rows = payload["workflows"]
+            if any(not isinstance(row, dict) or row.get("status") not in {"ok", "invalid", "unavailable", "oversized"}
+                   or not isinstance(row.get("file_path"), str) for row in rows):
+                raise ValueError("invalid workflow rows")
+            remaining = payload.get("remaining_files")
+            if payload["status"] != "not_run" and (type(remaining) is not int or remaining < 0):
+                raise ValueError("invalid workflow remainder")
+            if payload["status"] == "complete" and (remaining or any(row["status"] != "ok" for row in rows)):
+                raise ValueError("incomplete workflow inventory claimed complete")
+            summary["workflow_status"] = payload["status"]
+            summary["workflow_remaining"] = remaining
+        except (OSError, ValueError):
+            summary["workflow_status"] = "invalid"
+
     status = str(summary.get("status", "") or "").strip()
     source_kind = str(summary.get("source_kind", "") or "").strip()
     secret_findings = int(summary.get("secret_findings", 0) or 0)
@@ -95,6 +118,8 @@ def load_repo_source_summary(repo_root: str | Path, target: str) -> dict:
         summary_hint = "confirmation required before clone"
     elif source_kind:
         summary_hint = f"{source_kind}, secrets={secret_findings}, ci={ci_findings}"
+        if summary.get("workflow_status"):
+            summary_hint += f", workflows={summary['workflow_status']}"
 
     if summary_hint:
         summary["summary_hint"] = summary_hint

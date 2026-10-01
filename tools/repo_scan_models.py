@@ -18,6 +18,7 @@ class RepoSourceMeta:
     probe_truncated: bool = False
     clone_performed: bool = False
     status: str = "ok"
+    repo_commit: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
