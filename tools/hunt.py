@@ -271,8 +271,8 @@ def _write_text_lines(path, lines):
 
 
 def _extract_generated_report_count(output):
-    """Parse the legacy report-generator stdout for the current generation count."""
-    match = re.search(r"Generated\s+(\d+)\s+reports", str(output or ""), re.IGNORECASE)
+    """Read the current registered-report count; retain old generator output compatibility."""
+    match = re.search(r"(?:Generated|Indexed)\s+(\d+)\s+(?:current\s+)?reports", str(output or ""), re.IGNORECASE)
     if not match:
         return None
     try:
@@ -1059,13 +1059,13 @@ def run_post_param_discovery(domain, cookies="", deep=False):
 
 
 def generate_reports(domain):
-    """Generate reports for findings."""
+    """Rebuild report indexes; missing authored bodies remain pending."""
     findings_dir = _resolve_findings_dir(domain)
     if not os.path.isdir(findings_dir):
         log("warn", f"No findings for {domain}")
         return 0
 
-    log("info", f"Generating reports for {domain}...")
+    log("info", f"Indexing reports and pending drafts for {domain}...")
     script = os.path.join(BASE_DIR, "tools", "report_generator.py")
     success, output = run_argv(
         [sys.executable, script, findings_dir],
@@ -1074,15 +1074,9 @@ def generate_reports(domain):
     )
     print(output)
 
-    generated_count = _extract_generated_report_count(output)
-    if generated_count is not None:
-        return generated_count
-
-    # Count generated reports
-    report_dir = _resolve_reports_dir(domain)
-    if os.path.isdir(report_dir):
-        return len([f for f in os.listdir(report_dir) if f.endswith(".md") and f != "SUMMARY.md"])
-    return 0
+    # Old Markdown on disk may be stale; only the successful current index counts.
+    count = _extract_generated_report_count(output) if success else None
+    return count if count is not None else 0
 
 
 def show_status():

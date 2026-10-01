@@ -106,7 +106,8 @@ summary 交给 `sync_runner_artifacts(summary, repo_root=...)` 重试登记。
 Store 验证的 scaffold、preflight、apply 共用 Finding owner。apply 先原子发布 AI 正文，
 再分别提交技术裁决、目的地资格和可交付报告登记；失败保留正文，原决策可幂等重试。
 `python3 tools/report_generator.py ROOT/findings/TARGET` 复用已登记正文并重建索引；
-只有尚无当前报告的可交付 Finding 才生成新报告。不代表外部提交，也不自动完成 Action。
+缺少正文的可交付 Finding 列入 `pending_drafts`，不自动套模板。用 `--body-file` 及明确的
+`--finding-id` / `--assessment-id` / `--delivery-id` 发布新正文；不代表外部提交，也不自动完成 Action。
 
 ## 常用 runner
 

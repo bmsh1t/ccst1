@@ -1,57 +1,94 @@
 ---
-description: Draft a report from current validated Store evidence and an independent delivery decision. Usage: /report
+description: Author and publish an evidence-backed report for a current confirmed Finding and eligible destination. Usage: /report
 ---
 
 # /report
 
-Generate an editable report artifact for a selected, technically confirmed Finding.
-Load `skills/report-writing/SKILL.md` for report structure, delivery format, tone and evidence presentation.
-This command selects the source and invokes the generator.
+AI authors the report; the tool checks owner bindings, publishes exact bytes and indexes current reports.
+Load `skills/report-writing/SKILL.md` for evidence standards, destination format and writing guidance.
+There is no category-based narrative, default impact, remediation or severity generator.
 
 ## Current evidence and delivery
 
-Run `/validate` first. Read the selected Finding from its target Store:
+Read the selected Finding from its target Store:
 
 ```bash
-python3 tools/target_store.py findings --repo-root <repo-root> --target <target> --id <finding-id>
+python3 tools/target_store.py findings --repo-root ROOT --target TARGET --id FINDING_ID
 ```
 
-Automatic generation requires the current confirmed assessment, an eligible delivery decision bound to that
-assessment, and intact target-owned evidence. A validation-summary file or a legacy status alone cannot grant
-report eligibility. Technical validity and destination eligibility are separate: a known, duplicate or accepted-risk
-issue may remain technically confirmed without being eligible for that destination.
+Publication requires its current confirmed assessment, intact target-owned evidence, and an eligible delivery
+bound to that assessment and destination. Use `/validate` if the technical judgment is still missing; a legacy
+status or validation-summary file alone cannot grant eligibility. A known, duplicate or accepted-risk issue
+may remain technically confirmed without being eligible for a particular destination.
 
-Use the exact observation, assessment and delivery references returned for the Finding. Review the associated
-validation summary for the boundary, impact, gate reasoning and reproducible evidence. `findings/last-validate.json`
-is only a latest pointer; it cannot bind a report to a Finding. Missing evidence remains an explicit gap.
+Use the exact observation, assessment and delivery IDs returned by the Store. Every claimed boundary crossing
+and impact must have reproducible evidence; a scanner match or plausible chain is not sufficient. Preserve
+assumptions and missing connectors rather than embellishing the claim. `findings/last-validate.json` is only a
+latest pointer, not a binding. The publisher enforces existing judgments, not the semantic truth of prose.
 
-## Generate and inspect
+## Inspect current reports and missing drafts
 
 ```bash
-python3 tools/report_generator.py <repo-root>/findings/<target-key>
+python3 tools/report_generator.py ROOT/findings/TARGET
 ```
 
-The generator reads the Store associated with that findings directory. `findings.json` and raw scanner claims
-are not the current candidate or report-status owner. `--allow-legacy-drafts` has been removed.
+Without a body submission, this only rebuilds `reports/TARGET/INDEX.json` and `SUMMARY.md` from the Store.
+`pending_drafts` lists each current eligible Finding/assessment/delivery pair that has no registered report.
+Missing text remains `needs_draft`; it does not block indexing other valid reports or cause template fallback.
+CLI output always shows the missing-draft count and canonical INDEX/SUMMARY paths, including mixed results.
+Damaged or stale registered reports remain historical Store records and are not silently recreated.
+`findings.json`, raw scanner claims and index entries are not lifecycle owners.
 
-Report Markdown is published before the artifact and its assessment/delivery bindings are registered in the
-same target Store. Registration failure retains the document for retry. `reports/<target-key>/INDEX.json` and
-`SUMMARY.md` are rebuildable views; generating or registering a report does not submit it externally or complete
-an Action. Submission is a separate explicit delivery event with its own receipt.
+## Author and publish
 
-Manual drafts use `report_generator.py --manual --type <type> --url <url> --evidence <text>` and live under
-`reports/<target-key>/drafts/`. They carry no Store report registration or delivery eligibility. A draft can retain
-an incomplete analysis without presenting it as a validated submission.
+Write the destination-specific Markdown draft using the native editor. Follow the report Skill, cite actual
+artifacts, and remove credentials, session material, unrelated personal data and raw secrets from the delivered
+copy. Preserve controlled originals separately. The tool does not rewrite or sanitize submitted prose.
 
-## Delivery contract
+Publish the draft with all four explicit inputs:
 
-Keep each claim and chain step tied to the selected Finding and raw artifact. Include the requested destination,
-actors/objects, exact replay, observed result, demonstrated impact and limitations. Preserve target scope and
-redact credentials, session material, unrelated personal data and raw secrets from the delivered copy.
+```bash
+python3 tools/report_generator.py ROOT/findings/TARGET \
+  --finding-id FINDING_ID --assessment-id ASSESSMENT_ID --delivery-id DELIVERY_ID \
+  --body-file ROOT/reports/TARGET/drafts/report.md
+```
 
-Use the protocol-appropriate evidence: HTTP, browser, frame, stream, state transition, callback or another
-recorded target-bound artifact. Retest notes identify time, version/environment, result and residual risk;
-new technical judgments use the explicit assessment API rather than edits to report indexes.
+The body must be non-empty UTF-8. Each destination gets its own explicit submission; no body is automatically
+reused for another destination. The IDs must still select the current confirmed assessment and eligible
+delivery, with intact evidence. `/validate`'s own authored-report publication remains unchanged.
 
-Render recorded CVSS fields only when present and required by the destination. If needed, fill the report's
-CVSS field from the destination's current rules without rewriting execution facts or copying a static table.
+Published Markdown bytes are immutable. Complete file publication precedes Store registration; interruption
+retains the file for retry with the same IDs and identical body. Different bytes under the same publication ID,
+unknown/truncated existing files, symlinked output, stale IDs or invalid evidence are refused, not overwritten.
+A new judgment requires new owner IDs. Existing reports and prior destination decisions are never rewritten.
+
+The index retains all current registered reports, including reports registered through `/validate` or the
+explicit Store API. Severity is read only from each registered body's declaration; absent/invalid/conflicting
+values remain unknown. CVSS is optional destination metadata, not an automatic severity calculator.
+Publication does not submit a report externally or complete a Queue Action. External submission has its own
+explicit delivery event and receipt.
+
+## Manual notes and screenshots
+
+```bash
+python3 tools/report_generator.py --manual --type TYPE --url URL --param PARAM --evidence TEXT
+```
+
+This records supplied inputs under `reports/TARGET/drafts/` with an unassessed label. It creates no technical
+conclusion, severity, impact or remediation. `--body-file FILE` can instead seed an editable authored draft.
+Manual filenames are opaque IDs; do not rely on the retired per-category numeric naming scheme.
+
+`--poc-images IMAGE ...` attaches content-addressed screenshots to a manual draft, never to a registered report
+(including stale reports registered directly under `drafts/`). Symlinked, hardlinked or nonregular draft files
+are refused; damaged existing Store state does not fall back to an unregistered interpretation.
+Before publication, finalize its text and evidence presentation. The publisher copies the draft's adjacent
+`poc_screenshots/` directory without changing relative links or overwriting different image bytes. Keep unrelated
+files out of that directory. Other relative attachment links must already resolve from the published report's
+directory. Screenshots used as technical proof still require the normal observation/artifact registration.
+
+## Scope of retirement
+
+`generate_report()` and the category templates/narrative helpers are retired, not moved to another registry.
+Call `process_findings_dir(..., finding_id=..., assessment_id=..., delivery_id=..., body_file=...)` for publication;
+its existing `(total_reports, report_index)` result is retained. Calling it with only the directory indexes current
+reports and pending drafts. No historical body, raw evidence, Store schema or report eligibility rule is migrated.

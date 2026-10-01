@@ -139,7 +139,7 @@ identity, and cloud signals without re-enumerating everything.
 | `tools/target_migration.py --backfill-memory-source SOURCE --repo-root ROOT --target TARGET` | Old target memory is missing from an already active Store | Explicit, cutover-manifest-bound Experience backfill; inspect receipt mapping and quarantine before use; no re-promotion |
 | `tools/target_migration.py --backfill-pattern-source SOURCE --repo-root ROOT --target TARGET` | Historical PatternDB rows for an active target need recall | Explicit, byte-pinned import of target-owned rows as unverified Store notes; receipt maps source file and line, including rotated logs; no cross-target recall or automatic knowledge promotion |
 | `tools/validate.py` | Pre-report validation gate | 7-Question Gate + 4 gates — runs `/validate` |
-| `tools/report_generator.py` | Drafting submission report | `/report` backend — H1/BC/Intigriti/Immunefi templates |
+| `tools/report_generator.py` | Publishing authored reports | `/report` backend — explicit body + current assessment/delivery binding; current index and pending drafts; unassessed manual notes |
 | `tools/request_guard.py` | Logging request telemetry | Advisory audit/replay record + breaker telemetry |
 | `tools/memory_gc.py` | Hunt-memory JSONL too big | Inspect/rotate audit/journal/pattern JSONL files |
 | `tools/runtime_config.py` | Reading repo-local config | Shared loader for active `config.json` context/sections (`ctf_mode`, Resin, and optional solver settings) |

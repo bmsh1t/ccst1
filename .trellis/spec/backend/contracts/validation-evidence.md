@@ -171,8 +171,10 @@ AuthSession origin/scope rules; raw headers override only on the initial URL.
   command IDs allow partial retries; a new judgment requires predecessor IDs.
   Same-decision/same-body retry preserves inode and bytes. Other Finding,
   stale judgment, missing registered body or changed bytes rejects.
-- `/report` consumes registered AI text and rebuilds its index. Report
-  generation never means external submission or Queue completion.
+- `/report` indexes registered AI text; missing bodies remain `pending_drafts`.
+  Publishing new text requires explicit body/Finding/current assessment/current eligible
+  delivery inputs. It never generates category narratives or implies external submission
+  or Queue completion.
 - Validation refresh preserves runtime breadcrumbs and explicit
   `source_knowledge_refs` without generating pattern scores or appending to
   `hunt-memory/pattern_calibration.jsonl`. Historical calibration inspection
@@ -500,3 +502,60 @@ identity, without deleting history. Invalid v3 identity in the current
 registration is a visible integrity error; it never reactivates the predecessor.
 Artifact verification for current closure excludes superseded operations. A new
 attempt remains a separate execution; this rule does not merge similar attempts.
+
+
+## Scenario: Authored report publication without narrative templates
+
+### 1. Scope / Trigger
+An eligible destination needs a report body or the report index needs refreshing.
+AI owns method/impact reasoning and wording; deterministic owners retain eligibility,
+evidence integrity and publication. Category templates and `generate_report()` are retired.
+
+### 2. Signatures
+`process_findings_dir(findings_dir, *, finding_id="", assessment_id="", delivery_id="", body_file=None)`
+returns the unchanged `(total_reports, report_index)` tuple. The CLI exposes those
+four inputs as `--finding-id`, `--assessment-id`, `--delivery-id`, `--body-file`.
+The no-input call only indexes; the four-input call publishes then indexes.
+
+### 3. Contracts
+All four publication inputs are explicit; no implicit latest judgment selection.
+The Finding must have a current confirmed assessment and current eligible delivery,
+with intact linked observations. Publish the provided UTF-8 bytes unchanged before
+Store registration. Existing target/Finding/assessment/delivery report IDs remain
+stable; retry only identical bytes. Never guess completeness from narrative markers.
+INDEX/SUMMARY include derived `pending_drafts` per unreported eligible destination;
+no new state table. Missing text does not block other valid reports. Registered stale
+bodies are omitted from the current index, retained on disk and in history.
+Manual mode records supplied inputs or a supplied draft without default impact,
+remediation or severity. Attachments go to manual drafts; known `poc_screenshots/`
+assets are copied with no-overwrite publication so relative links survive. Attachment
+edits reject linked/nonregular/out-of-layout drafts and consult existing Store report
+refs under its mutation lock, including stale reports registered directly in drafts.
+An absent Store permits new manual notes; a damaged existing Store never downgrades.
+
+### 4. Validation & Error Matrix
+- Missing any of the four inputs, empty/non-UTF8 body: reject; no report metadata.
+- Wrong/stale assessment/delivery, unconfirmed or ineligible destination, damaged
+  evidence: reject before report publication. Store rechecks at registration.
+- Existing different bytes, nonregular/symlinked output or invalid registered artifact:
+  reject, retain old bytes; never recreate a deleted registered body on explicit retry.
+- Registration/index failure: retain complete body/committed receipts; identical retry.
+- Missing draft: needs_draft in derived index; no automatic report or owner mutation.
+- Invalid/absent severity declaration: unknown, not a category-derived fallback.
+
+### 5. Good/Base/Bad Cases
+Good: two independently eligible destinations receive explicitly submitted, distinct
+bodies. Base: /validate's existing registered body is indexed without rewriting it.
+Bad: infer administrative impact from a marker or create text because an item is eligible.
+
+### 6. Tests Required
+`tests/test_finding_index.py` covers explicit CLI input, all-destination publication,
+exact CRLF/Unicode bytes, pending drafts alongside valid reports, stale/foreign IDs,
+raw tampering, no-overwrite retry and manual screenshot relocation.
+`tests/test_validate_target_mode.py` and `tests/test_validation_runner.py` preserve
+/validate's own report path. Hunt counts successful indexed reports, not stale files.
+
+### 7. Wrong vs Correct
+Wrong: family=auth_bypass -> critical impact paragraph -> registered report.
+Correct: evidence-backed explicit judgments -> AI-authored destination text ->
+owner-bound immutable publication; no text means an unresolved draft, not a finding.

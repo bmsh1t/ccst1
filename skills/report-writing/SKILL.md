@@ -6,7 +6,7 @@ description: Draft reports from a current confirmed Store assessment, intact evi
 # REPORT WRITING
 
 This is a `report-only` Skill. Use it after validation has selected a canonical
-finding. Render the existing finding, Evidence Ledger, validation summary, and
+finding. Author the report from the existing finding, Evidence Ledger, validation summary, and
 target record; do not create a second finding/report lifecycle or replace
 structured validation with model judgement.
 
@@ -17,6 +17,11 @@ Before publishing a standalone report, query the selected Finding through
 target-owned evidence, and an eligible delivery decision bound to that
 assessment and destination. Preserve their exact IDs and artifact references.
 Historical validation-summary booleans are diagnostics, not report authority.
+AI writes destination-specific Markdown; `report_generator.py` does not fill in category narratives.
+Submit its body with explicit Finding, current assessment and eligible delivery IDs using
+`commands/report.md`. Missing text stays pending; finalize screenshots and wording before
+publication because registered bytes are immutable. A draft may record uncertainty without
+claiming a reportable vulnerability. The publisher checks bindings, not the truth of prose.
 Known, duplicate, or accepted-risk status may reject one destination without
 refuting the technical conclusion or blocking another eligible destination.
 

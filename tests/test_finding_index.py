@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -286,6 +287,33 @@ def test_root_claim_classifier_rejects_scheme_less_off_target_identity(tmp_path)
     assert finding_index.list_root_finding_claims(findings_dir, target="target.com") == []
 
 
+def _authored_body(finding):
+    refs = "\n".join(f"{ref['operation_id']}:{ref['step']}" for ref in finding["evidence"])
+    return (f"# Authored {finding['id']}\n\nSeverity: unknown\n\n"
+            f"- **Finding ID:** {finding['id']}\n- **Claim family:** {finding['family']}\n"
+            f"\n## Evidence\n{refs}\n\nBoundary: {finding['assessment']['boundary']}\n")
+
+
+def _publish_all_authored_reports(findings_dir):
+    """Fixture author explicitly submits a distinct body for each eligible binding."""
+    root, target = finding_index._finding_backend_context(findings_dir)
+    store = report_generator.runtime_store(root, target)
+    for finding in store.finding_page(limit=1000)["items"]:
+        assessment = finding.get("assessment") or {}
+        if assessment.get("verdict") != "confirmed":
+            continue
+        pairs = {(r["assessment_id"], r["delivery_id"]) for r in finding["reports"]}
+        for delivery in finding["deliveries"]:
+            if (delivery["status"] != "eligible" or delivery["stale"]
+                    or (assessment["id"], delivery["id"]) in pairs):
+                continue
+            draft = root / "authored-report.md"
+            draft.write_text(_authored_body(finding) + f"\nDestination: {delivery['destination']}\n")
+            report_generator.process_findings_dir(findings_dir, finding_id=finding["id"],
+                assessment_id=assessment["id"], delivery_id=delivery["id"], body_file=draft)
+    return report_generator.process_findings_dir(findings_dir)
+
+
 def _primary_report_fixture(tmp_path: Path, *, delivery_status: str = "eligible"):
     store = TargetStore(tmp_path, "example.com")
     store.initialize()
@@ -300,12 +328,12 @@ def _primary_report_fixture(tmp_path: Path, *, delivery_status: str = "eligible"
     return store, findings_dir, findings_path
 
 
-def test_primary_report_generator_registers_store_report_without_legacy_writes(monkeypatch, tmp_path):
+def test_explicit_report_publication_registers_store_report_without_legacy_writes(monkeypatch, tmp_path):
     store, findings_dir, findings_path = _primary_report_fixture(tmp_path)
     before = findings_path.read_bytes()
     monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
 
-    total, index = report_generator.process_findings_dir(str(findings_dir))
+    total, index = _publish_all_authored_reports(str(findings_dir))
 
     assert total == 1
     report_path = Path(index[0]["file"])
@@ -328,7 +356,7 @@ def test_primary_report_generator_creates_all_current_eligible_destinations(monk
     store, findings_dir, _ = _primary_report_fixture(tmp_path)
     monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
     if existing_report:
-        total, initial = report_generator.process_findings_dir(findings_dir)
+        total, initial = _publish_all_authored_reports(findings_dir)
         assert total == 1
         original_path = Path(initial[0]["file"])
         original = original_path.read_bytes()
@@ -336,7 +364,7 @@ def test_primary_report_generator_creates_all_current_eligible_destinations(monk
                           destination="secondary-review", status="eligible", reason="Second destination",
                           actor="operator", expected_decision=None)
 
-    total, first = report_generator.process_findings_dir(findings_dir)
+    total, first = _publish_all_authored_reports(findings_dir)
     assert total == 2
     assert {row["destination"] for row in first} == {"internal-review", "secondary-review"}
     assert len({row["file"] for row in first}) == 2
@@ -344,7 +372,7 @@ def test_primary_report_generator_creates_all_current_eligible_destinations(monk
         assert original_path.read_bytes() == original
 
     revision = store.binding()["revision"]
-    total, second = report_generator.process_findings_dir(findings_dir)
+    total, second = _publish_all_authored_reports(findings_dir)
     assert total == 2
     assert {row["destination"] for row in second} == {"internal-review", "secondary-review"}
     assert store.binding()["revision"] == revision
@@ -366,7 +394,7 @@ def test_report_publication_refuses_nonlegacy_backend_before_artifacts(tmp_path,
     ]}))
     monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
     with pytest.raises(ValueError):
-        report_generator.process_findings_dir(findings_dir)
+        _publish_all_authored_reports(findings_dir)
     assert not (tmp_path / "reports").exists()
 
 
@@ -387,7 +415,7 @@ def test_report_publication_rejects_owner_rebinding(tmp_path, monkeypatch, rebin
         (tmp_path / "reports/legacy.example").symlink_to(primary_dir, target_is_directory=True)
     monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
     with pytest.raises(ValueError):
-        report_generator.process_findings_dir(findings_dir)
+        _publish_all_authored_reports(findings_dir)
     assert primary_path.read_bytes() == before
     assert not (primary_dir / "INDEX.json").exists()
     assert not (tmp_path / "reports/example.com").exists()
@@ -413,13 +441,13 @@ def test_primary_report_index_rejects_delivery_drift(tmp_path, monkeypatch, inte
             return original(*args, **kwargs)
         result = original(*args, **kwargs)
         reads += 1
-        if reads == 2:
+        if reads == 1:
             revoke()
         return result
 
     monkeypatch.setattr(report_generator, name, drift)
     with pytest.raises(report_generator.ConflictError, match="snapshot changed"):
-        report_generator.process_findings_dir(findings_dir)
+        _publish_all_authored_reports(findings_dir)
     assert store.finding("f1")["reports"][0]["stale"] is True
     assert not (tmp_path / "reports/example.com/INDEX.json").exists()
     assert not (tmp_path / "reports/example.com/SUMMARY.md").exists()
@@ -436,7 +464,7 @@ def test_primary_report_generator_reads_store_without_legacy_finding_index(monke
 
     monkeypatch.setattr(finding_index, "load_legacy_finding_index", forbidden)
 
-    total, index = report_generator.process_findings_dir(str(findings_dir))
+    total, index = _publish_all_authored_reports(str(findings_dir))
 
     assert total == 1
     assert index[0]["finding_id"] == "f1"
@@ -457,16 +485,16 @@ def test_primary_report_retry_preserves_body_and_only_registers_once(monkeypatch
 
     monkeypatch.setattr(owner, name, interrupted)
     with pytest.raises(OSError, match="injected publication failure"):
-        report_generator.process_findings_dir(str(findings_dir))
+        _publish_all_authored_reports(str(findings_dir))
     report_path = next((tmp_path / "reports" / "example.com").glob("report_*.md"))
     body = report_path.read_bytes()
     registered = store.finding("f1")["reports"]
     assert len(registered) == (0 if failure == "registration" else 1)
     monkeypatch.setattr(owner, name, original)
-    total, index = report_generator.process_findings_dir(str(findings_dir))
+    total, index = _publish_all_authored_reports(str(findings_dir))
     revision = store.binding()["revision"]
     assert total == 1
-    assert report_generator.process_findings_dir(str(findings_dir)) == (total, index)
+    assert _publish_all_authored_reports(str(findings_dir)) == (total, index)
     assert store.binding()["revision"] == revision
     assert report_path.read_bytes() == body
     assert len(store.finding("f1")["reports"]) == 1
@@ -482,7 +510,7 @@ def test_primary_report_index_preserves_all_registered_reports(monkeypatch, tmp_
         raise AssertionError("primary must not call a legacy owner")
 
     monkeypatch.setattr(finding_index, "load_legacy_finding_index", forbidden)
-    _, first = report_generator.process_findings_dir(str(findings_dir))
+    _, first = _publish_all_authored_reports(str(findings_dir))
     report_file = Path(first[0]["file"])
     second = report_file.with_name("operator-report.md")
     second.write_text("Independent registered report")
@@ -490,7 +518,7 @@ def test_primary_report_index_preserves_all_registered_reports(monkeypatch, tmp_
                           assessment_id="assess:f1", delivery_id="delivery:f1", artifact=str(second),
                           actor="operator")
     revision = store.binding()["revision"]
-    total, index = report_generator.process_findings_dir(str(findings_dir))
+    total, index = _publish_all_authored_reports(str(findings_dir))
     assert total == 2
     assert {row["id"] for row in index} == {first[0]["id"], "operator-report"}
     assert store.binding()["revision"] == revision
@@ -501,13 +529,13 @@ def test_primary_report_index_preserves_all_registered_reports(monkeypatch, tmp_
 def test_primary_report_rerun_removes_stale_index_without_rewriting_artifacts(monkeypatch, tmp_path, damaged):
     store, findings_dir, _ = _primary_report_fixture(tmp_path)
     monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
-    _, index = report_generator.process_findings_dir(str(findings_dir))
+    _, index = _publish_all_authored_reports(str(findings_dir))
     report = Path(index[0]["file"])
     artifact = report if damaged == "report" else tmp_path / "evidence/example.com/validation/f1/response.txt"
     artifact.write_text("damaged")
     body = report.read_bytes()
     revision = store.binding()["revision"]
-    assert report_generator.process_findings_dir(str(findings_dir)) == (0, [])
+    assert _publish_all_authored_reports(str(findings_dir)) == (0, [])
     assert report.read_bytes() == body
     assert store.binding()["revision"] == revision
     assert json.loads((report.parent / "INDEX.json").read_text())["reports"] == []
@@ -517,7 +545,7 @@ def test_primary_report_rerun_removes_stale_index_without_rewriting_artifacts(mo
 def test_primary_new_assessment_gets_new_report_without_rebinding_old_body(monkeypatch, tmp_path):
     store, findings_dir, _ = _primary_report_fixture(tmp_path)
     monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
-    _, first = report_generator.process_findings_dir(str(findings_dir))
+    _, first = _publish_all_authored_reports(str(findings_dir))
     old_path = Path(first[0]["file"])
     body = old_path.read_bytes()
     store.assess(command_id="assess:f1:2", finding_id="f1", verdict="confirmed", reason="Rechecked",
@@ -526,7 +554,7 @@ def test_primary_new_assessment_gets_new_report_without_rebinding_old_body(monke
     store.decide_delivery(command_id="delivery:f1:2", finding_id="f1", assessment_id="assess:f1:2",
                           destination="internal-review", status="eligible", reason="Rechecked",
                           actor="operator", expected_decision="delivery:f1")
-    total, current = report_generator.process_findings_dir(str(findings_dir))
+    total, current = _publish_all_authored_reports(str(findings_dir))
     assert total == 1
     assert current[0]["id"] != first[0]["id"]
     assert current[0]["assessment_id"] == "assess:f1:2"
@@ -676,24 +704,24 @@ def test_material_writer_rejects_cross_target_destination(tmp_path, bypass):
     assert not (other / "scanner_candidates.json").exists()
 
 
-@pytest.mark.parametrize("family, report_type, title", [
-    ("sqli", "sqli", "SQL Injection"),
-    ("JWT", "jwt", "JWT Validation Weakness"),
-    ("authentication_bypass", "auth_bypass", "Authentication/Authorization Bypass"),
-    ("unmapped-protocol-boundary", "misconfig", "Security Misconfiguration"),
+@pytest.mark.parametrize("family, report_type", [
+    ("sqli", "sqli"),
+    ("JWT", "jwt"),
+    ("authentication_bypass", "auth_bypass"),
+    ("unmapped-protocol-boundary", "unmapped_protocol_boundary"),
 ])
-def test_report_generation_preserves_family_and_evidence_refs(tmp_path, family, report_type, title):
+def test_report_publication_preserves_authored_family_and_evidence_refs(tmp_path, family, report_type):
     store = TargetStore(tmp_path, "example.com")
     store.initialize()
     _, operation = _register_finding(store, family=family)
     findings_dir = tmp_path / "findings" / store.key
     findings_dir.mkdir(parents=True)
-    total, index = report_generator.process_findings_dir(findings_dir)
+    total, index = _publish_all_authored_reports(findings_dir)
     assert total == 1
     assert index[0]["type"] == report_type
     assert index[0]["family"] == store.finding("f1")["family"]
     text = Path(index[0]["file"]).read_text()
-    assert title in text
+    assert "# Authored f1" in text
     assert "**Finding ID:** f1" in text
     assert f"**Claim family:** {store.finding('f1')['family']}" in text
     assert operation["entity_id"] in text
@@ -705,20 +733,20 @@ def test_report_generation_preserves_family_and_evidence_refs(tmp_path, family, 
 def test_report_eligibility_does_not_change_technical_fact(tmp_path, delivery_status):
     store, root, _ = _primary_report_fixture(tmp_path, delivery_status=delivery_status)
     before = store.binding()
-    assert report_generator.process_findings_dir(root) == (0, [])
+    assert _publish_all_authored_reports(root) == (0, [])
     assert store.finding("f1")["assessment"]["verdict"] == "confirmed"
     assert store.binding() == before
 
 
 def test_report_incremental_generation_preserves_existing_report_and_skips_unassessed_claim(tmp_path):
     store, root, _ = _primary_report_fixture(tmp_path)
-    _, first = report_generator.process_findings_dir(root)
+    _, first = _publish_all_authored_reports(root)
     first_path = Path(first[0]["file"])
     before = first_path.read_bytes(), first_path.stat().st_mtime_ns
     _register_finding(store, "f2")
     store.create_finding(command_id="unassessed", finding_id="f3", endpoint="https://example.com/untested",
                          method="GET", family="sqli", title="Unassessed", claim="Review needed", actor="operator")
-    total, second = report_generator.process_findings_dir(root)
+    total, second = _publish_all_authored_reports(root)
     assert total == 2
     assert {row["finding_id"] for row in second} == {"f1", "f2"}
     assert len({row["id"] for row in second}) == 2
@@ -733,7 +761,7 @@ def test_report_generation_requires_explicit_action_completion(tmp_path):
                         subject={"finding_id": "f1"}, intent="Draft report", execution_key="report:f1", actor="operator")
     claim = store.transition_action(command_id="claim", action_id="REPORT", expected_version=1,
                                     status="claimed", actor="operator")
-    _, index = report_generator.process_findings_dir(root)
+    _, index = _publish_all_authored_reports(root)
     assert store.action("REPORT")["status"] == "claimed"
     store.transition_action(command_id="done", action_id="REPORT", expected_version=2,
                             status="completed", claim_token=claim["command_id"], actor="operator",
@@ -750,7 +778,7 @@ def test_report_retry_handles_unregistered_publication_without_overwriting_other
         raise OSError("registration interrupted")
     monkeypatch.setattr(TargetStore, "register_report", interrupted)
     with pytest.raises(OSError, match="registration interrupted"):
-        report_generator.process_findings_dir(root)
+        _publish_all_authored_reports(root)
     path = next((tmp_path / "reports" / store.key).glob("report_*.md"))
     full = path.read_bytes()
     if content == "unrelated":
@@ -759,15 +787,15 @@ def test_report_retry_handles_unregistered_publication_without_overwriting_other
         path.write_text("# Interrupted report\n\n- **Finding ID:** f1\n")
     before = path.read_bytes(), path.stat().st_mtime_ns
     monkeypatch.setattr(TargetStore, "register_report", original)
-    if content == "unrelated":
+    if content in {"unrelated", "partial"}:
         with pytest.raises(FileExistsError):
-            report_generator.process_findings_dir(root)
+            _publish_all_authored_reports(root)
         assert (path.read_bytes(), path.stat().st_mtime_ns) == before
         assert store.finding("f1")["reports"] == []
     else:
-        total, index = report_generator.process_findings_dir(root)
+        total, index = _publish_all_authored_reports(root)
         assert total == 1 and index[0]["finding_id"] == "f1"
-        assert report_generator._REPORT_TERMINATOR in path.read_text()
+        assert path.read_bytes() == full
         if content == "complete":
             assert (path.read_bytes(), path.stat().st_mtime_ns) == before
             assert path.read_bytes() == full
@@ -777,16 +805,39 @@ def test_report_retry_handles_unregistered_publication_without_overwriting_other
 
 def test_report_missing_registered_artifact_stays_explicitly_stale(tmp_path):
     store, root, _ = _primary_report_fixture(tmp_path)
-    _, index = report_generator.process_findings_dir(root)
+    _, index = _publish_all_authored_reports(root)
     path = Path(index[0]["file"])
     path.unlink()
     before = store.binding()
-    assert report_generator.process_findings_dir(root) == (0, [])
+    assert _publish_all_authored_reports(root) == (0, [])
     report = store.finding("f1")["reports"][0]
     assert report["stale"] is True
     assert report["artifact_available"] is False
     assert not path.exists()
     assert store.binding() == before
+
+
+@pytest.mark.parametrize("damage", ["missing", "changed", "revoked"])
+def test_explicit_report_retry_does_not_repair_registered_artifact(tmp_path, damage):
+    store, root, _ = _primary_report_fixture(tmp_path)
+    draft = tmp_path / "draft.md"
+    draft.write_text("# Authored report\n")
+    args = dict(finding_id="f1", assessment_id="assess:f1", delivery_id="delivery:f1", body_file=draft)
+    _, index = report_generator.process_findings_dir(root, **args)
+    path = Path(index[0]["file"])
+    if damage == "missing":
+        path.unlink()
+    elif damage == "changed":
+        path.write_text("other operator's bytes")
+    else:
+        report = store.finding("f1")["reports"][0]
+        store.record_artifact_event(command_id="revoke-report", artifact_id=report["artifact_id"],
+                                    dimension="provenance", state="revoked", reason="withdrawn", actor="operator")
+    before = store.binding(), path.read_bytes() if path.exists() else None
+    with pytest.raises(StoreError, match="registered report"):
+        report_generator.process_findings_dir(root, **args)
+    assert (store.binding(), path.read_bytes() if path.exists() else None) == before
+    assert store.finding("f1")["reports"][0]["stale"] is True
 
 
 def test_report_uses_canonical_url_target_directory(tmp_path):
@@ -796,7 +847,7 @@ def test_report_uses_canonical_url_target_directory(tmp_path):
     _register_finding(store, family="XSS", endpoint=target + "/#/search?q=marker")
     root = tmp_path / "findings" / store.key
     root.mkdir(parents=True)
-    total, index = report_generator.process_findings_dir(root)
+    total, index = _publish_all_authored_reports(root)
     assert total == 1
     assert Path(index[0]["file"]).parent == tmp_path / "reports" / store.key
     assert not (tmp_path / "reports" / "http:").exists()
@@ -810,7 +861,7 @@ def test_legacy_report_path_has_no_normal_runtime_fallback(tmp_path):
                                   "validation_status": "validated"}]))
     before = source.read_bytes()
     with pytest.raises(StoreError, match="import"):
-        report_generator.process_findings_dir(root)
+        _publish_all_authored_reports(root)
     assert source.read_bytes() == before
     assert not (tmp_path / "reports").exists()
     assert not (tmp_path / "state" / "example.com" / "metadata.sqlite3").exists()
@@ -855,211 +906,267 @@ def test_refutation_requires_linked_unchanged_evidence(tmp_path, damage):
         assert store.binding() == before
 
 
-
-def test_manual_report_renderer_uses_validation_summary_for_auth_bypass_narrative(monkeypatch, tmp_path):
-    findings_dir = tmp_path / "findings" / "example.com"
-    findings_dir.mkdir(parents=True)
-    validation_dir = tmp_path / "evidence" / "example.com" / "validation" / "authz-1"
-    validation_dir.mkdir(parents=True)
-    validation_summary = validation_dir / "summary.json"
-    validation_summary.write_text(
-        json.dumps(
-            {
-                "summary_path": "evidence/example.com/validation/authz-1/summary.json",
-                "markers": ["secret-like"],
-                "artifacts": {
-                    "baseline_request": "evidence/example.com/validation/authz-1/baseline.request.txt",
-                    "baseline_response": "evidence/example.com/validation/authz-1/baseline.response.txt",
-                },
-                "baseline": {"status": 200},
-                "evidence_rubric": {"summary": "authz:candidate-ready score=100 satisfied=4/4"},
-                "all_gates_passed": True,
-                "seven_question_gate_passed": True,
-                "seven_question_gate_decision": "pass",
-                "four_validation_gates_passed": True,
-            }
-        ),
-        encoding="utf-8",
-    )
-    (findings_dir / "findings.json").write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "target": "example.com",
-                "total": 1,
-                "findings": [
-                    {
-                        "id": "authz_abc123",
-                        "type": "auth_bypass",
-                        "category": "auth_bypass",
-                        "title": "AUTH_BYPASS on feedbacks",
-                        "summary": "200 1734 https://example.com/api/Feedbacks",
-                        "url": "https://example.com/api/Feedbacks",
-                        "severity": "high",
-                        "confidence": "confirmed",
-                        "validation_status": "validated",
-                        "validation_summary": str(validation_summary),
-                        "report_status": "not_generated",
-                        "source_file": "auth_bypass/unauth_api_access.txt",
-                        "line_number": 1,
-                        "template_id": "",
-                        "raw": "200 1734 https://example.com/api/Feedbacks",
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-    finding = json.loads((findings_dir / "findings.json").read_text())["findings"][0]
-    before = validation_summary.read_bytes()
-    report_text, _ = report_generator.generate_report(
-        finding, report_generator._report_vuln_type(finding), "example.com", repo_root=tmp_path,
-    )
-    assert "Unauthenticated Sensitive Data Exposure" in report_text
-    assert "secret-like" in report_text
-    assert "Validation Summary" in report_text
-    assert "Baseline Response" in report_text
-    assert "(CVSS:" not in report_text
-    assert validation_summary.read_bytes() == before
-    assert not (tmp_path / "reports").exists()
+def test_report_without_body_exposes_pending_destinations_without_writes(tmp_path):
+    store, root, _ = _primary_report_fixture(tmp_path)
+    store.decide_delivery(command_id="delivery:second", finding_id="f1", assessment_id="assess:f1",
+                          destination="second", status="eligible", reason="Separate policy",
+                          actor="operator", expected_decision=None)
+    before = store.binding()
+    assert report_generator.process_findings_dir(root) == (0, [])
+    index = json.loads((tmp_path / "reports/example.com/INDEX.json").read_text())
+    assert {row["delivery_id"] for row in index["pending_drafts"]} == {"delivery:f1", "delivery:second"}
+    assert all(row["status"] == "needs_draft" for row in index["pending_drafts"])
+    assert store.binding() == before and store.finding("f1")["reports"] == []
+    assert list((tmp_path / "reports/example.com").glob("report_*.md")) == []
 
 
-
-def test_manual_report_renderer_preserves_legacy_cvss_without_regrading(monkeypatch, tmp_path):
-    findings_dir = tmp_path / "findings" / "example.com"
-    findings_dir.mkdir(parents=True)
-    validation_dir = tmp_path / "evidence" / "example.com" / "validation" / "cvss-critical"
-    validation_dir.mkdir(parents=True)
-    validation_summary = validation_dir / "summary.json"
-    validation_summary.write_text(
-        json.dumps(
-            {
-                "all_gates_passed": True,
-                "seven_question_gate_passed": True,
-                "four_validation_gates_passed": True,
-                "cvss_score": 9.8,
-                "cvss_version": "3.1",
-                "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
-                "severity": "medium",
-            }
-        ),
-        encoding="utf-8",
-    )
-    (findings_dir / "findings.json").write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "target": "example.com",
-                "total": 1,
-                "findings": [
-                    {
-                        "id": "cvss-critical",
-                        "type": "sqli",
-                        "category": "sqli",
-                        "title": "SQL injection",
-                        "url": "https://example.com/search?q=x",
-                        "severity": "medium",
-                        "confidence": "confirmed",
-                        "validation_status": "validated",
-                        "validation_summary": str(validation_summary),
-                        "report_status": "not_generated",
-                        "source_file": "sqli/findings.txt",
-                        "raw": "SQLI-POC-VERIFIED",
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-    finding = json.loads((findings_dir / "findings.json").read_text())["findings"][0]
-    before = validation_summary.read_bytes()
-    report_text, _ = report_generator.generate_report(
-        finding, report_generator._report_vuln_type(finding), "example.com", repo_root=tmp_path,
-    )
-    assert "**MEDIUM** (CVSS: 9.8)" in report_text
-    assert "CVSS Version: `3.1`" in report_text
-    assert "CVSS Vector: `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`" in report_text
-    assert validation_summary.read_bytes() == before
-    assert not (tmp_path / "reports").exists()
+def test_report_explicit_body_bytes_destinations_and_pending_index(tmp_path):
+    store, root, _ = _primary_report_fixture(tmp_path)
+    draft = tmp_path / "draft.md"
+    body = b"# Authored\r\n\r\nSeverity: low\r\nCVSS: 8.7 (destination metadata)\r\n"
+    draft.write_bytes(body)
+    store.decide_delivery(command_id="delivery:second", finding_id="f1", assessment_id="assess:f1",
+                          destination="second", status="eligible", reason="Separate policy",
+                          actor="operator", expected_decision=None)
+    args = dict(finding_id="f1", assessment_id="assess:f1", delivery_id="delivery:f1", body_file=draft)
+    total, index = report_generator.process_findings_dir(root, **args)
+    path = Path(index[0]["file"])
+    assert total == 1 and path.read_bytes() == body and index[0]["severity"] == "low"
+    before = store.binding(), path.stat().st_ino
+    assert report_generator.process_findings_dir(root, **args) == (total, index)
+    assert (store.binding(), path.stat().st_ino) == before
+    pending = json.loads((path.parent / "INDEX.json").read_text())["pending_drafts"]
+    assert [row["delivery_id"] for row in pending] == ["delivery:second"]
+    other = b"# Destination-specific report\nSeverity: info\n"
+    draft.write_bytes(other)
+    total, index = report_generator.process_findings_dir(root, **{**args, "delivery_id": "delivery:second"})
+    assert total == 2 and path.read_bytes() == body
+    assert {Path(row["file"]).read_bytes() for row in index} == {body, other}
+    assert not json.loads((path.parent / "INDEX.json").read_text())["pending_drafts"]
+    assert store.finding("f1")["delivery_events"] == []
+    with pytest.raises(FileExistsError):
+        report_generator.process_findings_dir(root, **args)
+    assert path.read_bytes() == body
 
 
+@pytest.mark.parametrize("fault", ["empty", "whitespace", "missing", "binary", "fifo", "assessment", "delivery", "evidence", "partial-args"])
+def test_report_explicit_publication_rejects_invalid_input_before_metadata(tmp_path, fault):
+    store, root, _ = _primary_report_fixture(tmp_path)
+    body = tmp_path / "draft.md"
+    body.write_text("# Reviewed body\n")
+    args = dict(finding_id="f1", assessment_id="assess:f1", delivery_id="delivery:f1", body_file=body)
+    if fault in {"empty", "whitespace", "binary"}:
+        body.write_bytes({"empty": b"", "whitespace": b" \n\t", "binary": b"\xff"}[fault])
+    elif fault == "missing":
+        body.unlink()
+    elif fault == "fifo":
+        body.unlink()
+        os.mkfifo(body)
+    elif fault == "assessment":
+        args["assessment_id"] = "other-assessment"
+    elif fault == "delivery":
+        args["delivery_id"] = "other-delivery"
+    elif fault == "partial-args":
+        args.pop("delivery_id")
+    else:
+        (tmp_path / "evidence/example.com/validation/f1/response.txt").write_text("changed")
+    before = store.binding()
+    with pytest.raises((OSError, ValueError, StoreError)):
+        report_generator.process_findings_dir(root, **args)
+    assert store.binding() == before and store.finding("f1")["reports"] == []
+    assert list((tmp_path / "reports/example.com").glob("report_*.md")) == []
 
-def test_manual_report_renderer_uses_write_sink_auth_bypass_narrative(monkeypatch, tmp_path):
-    findings_dir = tmp_path / "findings" / "example.com"
-    findings_dir.mkdir(parents=True)
-    validation_dir = tmp_path / "evidence" / "example.com" / "validation" / "forged-review"
-    validation_dir.mkdir(parents=True)
-    validation_summary = validation_dir / "summary.json"
-    validation_summary.write_text(
-        json.dumps(
-            {
-                "summary_path": "evidence/example.com/validation/forged-review/summary.json",
-                "method": "PUT",
-                "endpoint": "/rest/products/1/reviews",
-                "markers": ["anonymous_state_change", "author_spoof", "public_ui_visibility"],
-                "ai_assessment": (
-                    "Anonymous requests can create public reviews whose author field is taken "
-                    "from the request body."
-                ),
-                "artifacts": {
-                    "anonymous_request": "evidence/example.com/validation/forged-review/request.txt",
-                    "anonymous_response_body": "evidence/example.com/validation/forged-review/response.body",
-                },
-                "evidence_rubric": {
-                    "summary": "authz/business-logic:validated via anonymous state change"
-                },
-                "all_gates_passed": True,
-                "seven_question_gate_passed": True,
-                "seven_question_gate_decision": "report",
-                "four_validation_gates_passed": True,
-            }
-        ),
-        encoding="utf-8",
-    )
-    (findings_dir / "findings.json").write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "target": "example.com",
-                "total": 1,
-                "findings": [
-                    {
-                        "id": "authz_forged_review",
-                        "type": "auth_bypass",
-                        "category": "auth_bypass",
-                        "title": "Forged review author",
-                        "summary": (
-                            "Anonymous PUT accepts author from request body and renders the "
-                            "review as admin@example.com."
-                        ),
-                        "url": "https://example.com/rest/products/1/reviews",
-                        "method": "PUT",
-                        "severity": "medium",
-                        "confidence": "confirmed",
-                        "validation_status": "validated",
-                        "validation_summary": str(validation_summary),
-                        "report_status": "not_generated",
-                        "source_file": "evidence/example.com/validation/forged-review/summary.json",
-                        "line_number": 0,
-                        "template_id": "",
-                        "raw": "manual-ai-validated:forged-review",
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-    finding = json.loads((findings_dir / "findings.json").read_text())["findings"][0]
-    before = validation_summary.read_bytes()
-    report_text, _ = report_generator.generate_report(
-        finding, report_generator._report_vuln_type(finding), "example.com", repo_root=tmp_path,
-    )
-    assert "Unauthenticated Content Impersonation" in report_text
-    assert "unauthenticated `PUT` request" in report_text
-    assert "Send a `PUT` request" in report_text
-    assert "request.txt" in report_text
-    assert "author field" in report_text
-    assert "Navigate to the following URL" not in report_text
-    assert "returned HTTP 200" not in report_text
-    assert validation_summary.read_bytes() == before
-    assert not (tmp_path / "reports").exists()
+
+def test_report_missing_draft_does_not_block_existing_valid_report(tmp_path):
+    store, root, _ = _primary_report_fixture(tmp_path)
+    _, first = _publish_all_authored_reports(root)
+    original = Path(first[0]["file"]).read_bytes()
+    _register_finding(store, "waiting")
+    before = store.binding()
+    total, index = report_generator.process_findings_dir(root)
+    assert total == 1 and index == first and Path(index[0]["file"]).read_bytes() == original
+    pending = json.loads((Path(index[0]["file"]).parent / "INDEX.json").read_text())["pending_drafts"]
+    assert [row["finding_id"] for row in pending] == ["waiting"]
+    assert store.binding() == before
+
+
+def test_manual_draft_keeps_inputs_without_category_narratives(tmp_path, monkeypatch):
+    monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
+    path = Path(report_generator.create_manual_report("auth_bypass", "https://example.com/api", "id", "Observed HTTP 200"))
+    text = path.read_text()
+    assert path.parent.name == "drafts" and "not assessed, registered, or submitted" in text
+    assert "Observed HTTP 200" in text and "Parameter: id" in text
+    assert "CRITICAL" not in text and "attacker can" not in text and "Remediation" not in text
+    image = tmp_path / "sample.png"
+    image.write_bytes(b"fixture image")
+    report_generator.attach_poc_images(str(path), [str(image)])
+    saved = next((path.parent / "poc_screenshots").glob("*.png"))
+    assert f"poc_screenshots/{saved.name}" in path.read_text()
+    assert saved.read_bytes() == image.read_bytes()
+    assert not (tmp_path / "state").exists()
+
+
+def test_authored_manual_body_preserves_cvss_and_has_no_category_rewrite(tmp_path, monkeypatch):
+    monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
+    body = tmp_path / "input.md"
+    raw = "# Observed boundary\nSeverity: medium\nCVSS: 9.8\nExplicit limitations.\n"
+    body.write_text(raw)
+    output = Path(report_generator.create_manual_report("sqli", "https://example.com/", body_file=body))
+    assert output.read_text().endswith(raw)
+    assert "SQL Injection" not in output.read_text()
+    assert not (tmp_path / "state").exists()
+
+
+def test_report_cli_submits_explicit_body_and_rejects_partial_binding(tmp_path):
+    store, root, _ = _primary_report_fixture(tmp_path)
+    body = tmp_path / "input.md"
+    body.write_text("# Authored\nSeverity: medium\nExact supplied bytes.\n")
+    cmd = [sys.executable, str(Path(report_generator.__file__).resolve()), str(root), "--body-file", str(body)]
+    rejected = subprocess.run(cmd, text=True, capture_output=True, timeout=30)
+    assert rejected.returncode == 2 and store.finding("f1")["reports"] == []
+    submitted = subprocess.run([*cmd, "--finding-id", "f1", "--assessment-id", "assess:f1", "--delivery-id", "delivery:f1"],
+                               text=True, capture_output=True, timeout=30)
+    assert submitted.returncode == 0, submitted.stderr
+    report = store.finding("f1")["reports"][0]
+    assert (tmp_path / report["artifact_ref"]).read_bytes() == body.read_bytes()
+
+
+def test_manual_screenshots_survive_publication_without_mutating_registered_body(tmp_path, monkeypatch):
+    store, root, _ = _primary_report_fixture(tmp_path)
+    monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
+    draft = Path(report_generator.create_manual_report("sqli", "https://example.com/", evidence="Supplied observation"))
+    image = tmp_path / "shot.png"
+    image.write_bytes(b"image fixture")
+    report_generator.attach_poc_images(str(draft), [str(image)])
+    raw = draft.read_bytes()
+    total, index = report_generator.process_findings_dir(root, finding_id="f1", assessment_id="assess:f1",
+                                                        delivery_id="delivery:f1", body_file=draft)
+    report = Path(index[0]["file"])
+    assert total == 1 and report.read_bytes() == raw
+    name = next((draft.parent / "poc_screenshots").glob("*.png")).name
+    assert (report.parent / "poc_screenshots" / name).read_bytes() == image.read_bytes()
+    with pytest.raises(ValueError, match="manual draft"):
+        report_generator.attach_poc_images(str(report), [str(image)])
+    assert report.read_bytes() == raw
+
+
+@pytest.mark.parametrize("stale", [False, True])
+def test_attach_images_rejects_draft_registered_directly_in_store(tmp_path, monkeypatch, stale):
+    store, _, _ = _primary_report_fixture(tmp_path)
+    monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
+    draft = Path(report_generator.create_manual_report("sqli", "https://example.com/"))
+    store.register_report(command_id="direct-report", report_id="direct-report", finding_id="f1",
+                          assessment_id="assess:f1", delivery_id="delivery:f1", artifact=str(draft), actor="operator")
+    if stale:
+        store.decide_delivery(command_id="revoke", finding_id="f1", assessment_id="assess:f1",
+                              destination="internal-review", status="ineligible", reason="withdrawn",
+                              actor="operator", expected_decision="delivery:f1")
+    image = tmp_path / "shot.png"
+    image.write_bytes(b"screenshot")
+    before = draft.read_bytes(), store.binding()
+    with pytest.raises(StoreError, match="registered report"):
+        report_generator.attach_poc_images(draft, [image])
+    assert (draft.read_bytes(), store.binding()) == before
+    assert not (draft.parent / "poc_screenshots").exists()
+
+
+@pytest.mark.parametrize("kind", ["symlink", "directory-symlink", "hardlink", "outside", "fifo"])
+def test_attach_images_rejects_unsafe_draft_paths(tmp_path, monkeypatch, kind):
+    reports = tmp_path / "reports"
+    monkeypatch.setattr(report_generator, "REPORTS_DIR", str(reports))
+    draft = Path(report_generator.create_manual_report("sqli", "https://example.com/"))
+    before = draft.read_bytes()
+    candidate = draft.parent / "alias.md"
+    if kind == "symlink":
+        candidate.symlink_to(draft)
+    elif kind == "directory-symlink":
+        alias = reports / "other.example"
+        alias.symlink_to(draft.parent.parent, target_is_directory=True)
+        candidate = alias / "drafts" / draft.name
+    elif kind == "hardlink":
+        os.link(draft, candidate)
+    elif kind == "outside":
+        candidate = tmp_path / "outside" / "drafts" / "note.md"
+        candidate.parent.mkdir(parents=True)
+        candidate.write_bytes(before)
+    else:
+        os.mkfifo(candidate)
+    image = tmp_path / "shot.png"
+    image.write_bytes(b"screenshot")
+    with pytest.raises((ValueError, StoreError)):
+        report_generator.attach_poc_images(candidate, [image])
+    assert draft.read_bytes() == before
+    assert not (draft.parent / "poc_screenshots").exists()
+    assert not (tmp_path / "state").exists()
+
+
+@pytest.mark.parametrize("damage", ["missing-db", "missing-fence", "corrupt-db"])
+def test_attach_images_does_not_fall_back_from_damaged_store(tmp_path, monkeypatch, damage):
+    store, _, _ = _primary_report_fixture(tmp_path)
+    monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
+    draft = Path(report_generator.create_manual_report("sqli", "https://example.com/"))
+    if damage == "missing-db":
+        store.path.unlink()
+    elif damage == "missing-fence":
+        store.fence_path.unlink()
+    else:
+        store.path.write_bytes(b"broken")
+    image = tmp_path / "shot.png"
+    image.write_bytes(b"screenshot")
+    before = draft.read_bytes()
+    with pytest.raises((StoreError, finding_index.StoreError)):
+        report_generator.attach_poc_images(draft, [image])
+    assert draft.read_bytes() == before
+    assert not (draft.parent / "poc_screenshots").exists()
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_report_cli_always_displays_pending_count_and_canonical_index_paths(tmp_path, existing):
+    store, root, _ = _primary_report_fixture(tmp_path)
+    if existing:
+        body = root / "validate-authored-report.md"
+        body.write_text("# Existing validation report\nSeverity: low\n")
+        store.register_report(command_id="direct-report", report_id="direct-report", finding_id="f1",
+                              assessment_id="assess:f1", delivery_id="delivery:f1", artifact=str(body), actor="operator")
+        _register_finding(store, "waiting")
+    before = store.binding()
+    result = subprocess.run([sys.executable, str(Path(report_generator.__file__).resolve()), str(root)],
+                            text=True, capture_output=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert f"Indexed {int(existing)} current reports" in result.stdout
+    assert "Awaiting authored drafts: 1" in result.stdout
+    assert f"Index: {tmp_path}/reports/example.com/INDEX.json" in result.stdout
+    assert f"Summary: {tmp_path}/reports/example.com/SUMMARY.md" in result.stdout
+    assert store.binding() == before
+
+
+@pytest.mark.parametrize("success, output, expected", [
+    (True, "[+] Indexed 0 current reports", 0),
+    (True, "[+] Indexed 2 current reports", 2),
+    (True, "[+] Generated 3 reports", 3),
+    (False, "[+] Indexed 2 current reports", 0),
+    (True, "unknown result", 0),
+])
+def test_hunt_report_count_uses_current_index_not_stale_files(tmp_path, monkeypatch, success, output, expected):
+    import hunt
+    root = tmp_path / "findings"
+    root.mkdir()
+    stale = tmp_path / "reports"
+    stale.mkdir()
+    (stale / "old.md").write_text("stale historical report")
+    monkeypatch.setattr(hunt, "_resolve_findings_dir", lambda target: str(root))
+    monkeypatch.setattr(hunt, "_resolve_reports_dir", lambda target: str(stale))
+    monkeypatch.setattr(hunt, "run_argv", lambda *a, **kw: (success, output))
+    assert hunt.generate_reports("example.com") == expected
+
+
+def test_report_publication_rejects_dangling_screenshot_directory(tmp_path):
+    store, root, _ = _primary_report_fixture(tmp_path)
+    draft = tmp_path / "draft.md"
+    draft.write_text("# Authored report\n")
+    (tmp_path / "poc_screenshots").symlink_to(tmp_path / "missing", target_is_directory=True)
+    before = store.binding()
+    with pytest.raises(StoreError, match="real directory"):
+        report_generator.process_findings_dir(root, finding_id="f1", assessment_id="assess:f1",
+                                               delivery_id="delivery:f1", body_file=draft)
+    assert store.binding() == before and store.finding("f1")["reports"] == []
