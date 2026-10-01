@@ -52,6 +52,38 @@ def _remember_hypothesis(store, statement, command_id="hypothesis"):
     )
 
 
+@pytest.mark.parametrize("argv, target, focus", [
+    ([], "active.test", ""),
+    (["sqli"], "active.test", "sqli"),
+    (["web2-recon", "new-unlisted-focus"], "active.test", "web2-recon new-unlisted-focus"),
+    (["检查权限边界"], "active.test", "检查权限边界"),
+    (["target.test", "api-idor"], "target.test", "api-idor"),
+    (["http://target.test/search?q=apple%27", "sqli"], "target.test", "sqli"),
+    (["127.0.0.1:3001", "auth"], "127.0.0.1:3001", "auth"),
+    (["--target", "target.test", "api/v2", "--focus", "header:X-Test"],
+     "target.test", "api/v2 header:X-Test"),
+    (["--focus", "skill.with.punctuation"], "active.test", "skill.with.punctuation"),
+])
+def test_context_cli_preserves_target_focus_and_active_pointer(tmp_path, monkeypatch, capsys, argv, target, focus):
+    active = tmp_path / "memory/goals/active.json"
+    active.parent.mkdir(parents=True)
+    active.write_text(json.dumps({"target": "active.test"}))
+    before = active.read_bytes()
+    monkeypatch.setattr(context_pack_module, "build_context_pack", lambda repo, **kw: {
+        "target": kw["target"], "focus": kw["focus"],
+    })
+    assert context_pack_module.main([*argv, "--repo-root", str(tmp_path), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"target": target, "focus": focus}
+    assert active.read_bytes() == before
+
+
+@pytest.mark.parametrize("argv", [[], ["new-unlisted-focus"]])
+def test_context_cli_missing_target_still_requires_explicit_selection(tmp_path, argv):
+    with pytest.raises(SystemExit, match="No target resolved"):
+        context_pack_module.main([*argv, "--repo-root", str(tmp_path), "--json"])
+    assert not (tmp_path / "memory").exists()
+
+
 def test_bounded_context_readers_preserve_order_limits_and_error_handling(tmp_path):
     lines_path = tmp_path / "lines.txt"
     lines_path.write_bytes(b"\nalpha\nalpha\nbeta\n\xfftail\ngamma\n")

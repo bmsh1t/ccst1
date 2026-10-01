@@ -399,6 +399,9 @@ Correct: component-leading numeric branch sentence + exact observed branch/versi
     response, unavailable login, or zero-token run is not a passing observation.
   - 新增 signal-only 路由必须覆盖“精确信号 + 宽泛背景”回归，并保证相关卡片在 catalog 中
     可发现；不得重新引入关键词选卡、selected/deferred 预算或自动读取顺序。
+  - Context CLI 用参数形状兼容旧 target/focus 位置参数，保留显式 `--target` / `--focus`
+    及 active target 回退；不维护第二份 Skill/focus 白名单。focus 只作原样问题输入，
+    不是 Skill 路由或能力准入。带标点的歧义 focus 继续用显式 `--focus`，不改变旧解析语义。
   - Context Pack 不按记忆/材料词项重叠生成冲突或重开建议；保留“Coverage 无 gap 不等于
     无 workflow leads”“缺少 Surface 时记忆不是现场证据”等可观察状态提示。兼容字段
     `hypothesis_seeds` / `alternative_angles` 不恢复自动推理或 Queue 写入。专项投影读取
