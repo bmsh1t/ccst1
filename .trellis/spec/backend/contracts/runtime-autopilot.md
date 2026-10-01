@@ -13,6 +13,8 @@ mechanical safety, evidence and recovery constraints govern execution.
 ### 2. Signatures
 
 - `/autopilot <target> [--paranoid|--normal|--yolo|--quick|--deep]` runs inline.
+- `build_autopilot_state(repo_root, target, memory_dir=None, *, bounded=False, ...)`
+  exposes the same owner facts in full or bounded form.
 - `build_closure_projection(state, matrix, ledger_entries=None)` is read-only.
 - `load_closure_projection(repo_root, state, ...)` reacquires owner snapshots.
 - `build_decision_projection(state, "closure"|"loop_check")` preserves the
@@ -25,6 +27,16 @@ mechanical safety, evidence and recovery constraints govern execution.
 - Specialists default to zero; optional bounded independent questions stay within
   selected lanes and request/evidence budgets. No nested controller, full scan,
   final closure writer or extension of `max_lanes` is delegated.
+- State does not infer a need for `recon-ranker` from evidence-group counts or
+  long-tail size. The existing read-only agent remains explicitly callable through
+  native discovery and `/autopilot` guidance. Do not replace retired thresholds
+  with an always-on recommendation or a second capability registry.
+- `next_tool_hint` / `enrichment_hints` remain compatibility fields. Ordinary
+  state emits empty values; full-state `guard_safe_pivot` retains cached
+  `context_pack` / `checkpoint` hints, while bounded state omits those hints.
+  Existing Intel hints are unchanged. Bootstrap may still compact an explicitly
+  supplied legacy ranker hint; this is serialization, not automatic invocation.
+  Surface facts, exact URLs, references, statistics and pagination stay available.
 - Cached JS/source paths go directly to native Read/Grep. `js_reader`,
   `source_intel`, `intelligence_extractor` and `/js-read` are retired. Historical
   artifacts stay readable without becoming prerequisites or a new fact source.
@@ -62,6 +74,8 @@ mechanical safety, evidence and recovery constraints govern execution.
 | Input | Required result |
 |---|---|
 | Only raw JS/source/browser/Case/Intel observations | No automatic route or Queue insertion |
+| Empty, sparse or multi-source long-tail Surface | Preserve facts/cursors; no automatic ranker recommendation |
+| All hosts tripped by request guard | Cached-evidence pivot and full hints retained; bounded output stays compact |
 | Untested coverage, no explicit owner work | `stop_bounded`, retained residuals, no exhaustion |
 | Active runtime phase or explicit Queue work | Existing lock/owner continuation preserved |
 | Evidence or snapshot damage | Visible integrity/recovery error, never empty success |
@@ -79,6 +93,11 @@ Bad: rename a frontier while keeping its automatic route control, or claim
 exhaustion merely because the inferred frontier was deleted.
 
 ### 6. Tests Required
+
+`tests/test_autopilot_bootstrap.py::test_state_preserves_surface_facts_without_choosing_ranker`
+checks full/bounded state across empty/sparse/rich evidence, exact facts/cursors,
+Store binding and source-byte preservation. Existing explicit-hint serialization,
+cached-evidence guard, owner continuation and closure-advice digest tests remain.
 
 Run `python3 .trellis/tasks/09-29-native-first-boundary-optimization/research/check_native_first.py`
 for observation/owner separation, lock preservation, malformed matrix input,
@@ -1219,6 +1238,8 @@ command identity. User edits retain a conflict and their ownership receipt.
 Closure state snapshots omit `enrichment_hints` and only the top-level Intel
 `reason` explanation. Intel action, blocked facts, advisory data, review-group
 queries, long-tail counts and source/disposition bindings remain digest inputs.
+Closure acquisition does not regenerate or filter specialist recommendations;
+advice remains display-only and cannot create an owner obligation.
 Nested reason fields and query commands are not blindly stripped: they may carry
 unrepresented source/cursor facts. Display changes must not expire a review;
 source/state changes still must. Prior digests may become stale on this change;

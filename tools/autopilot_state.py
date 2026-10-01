@@ -949,177 +949,6 @@ def _format_infra_signal_lines(target: str, recon_artifacts: dict) -> list[str]:
     return lines
 
 
-def _build_ranker_advisory_hint(
-    *,
-    surface_projection: dict,
-    ranked: dict,
-    next_action: str,
-    browser_pending: bool = False,
-    source_pending: bool = False,
-    js_pending: bool = False,
-) -> dict:
-    """Offer the optional read-only ranker only for evidence-rich long tails."""
-    if str((surface_projection or {}).get("status") or "").strip().lower() != "valid":
-        return {}
-    if next_action in {
-        "run_recon",
-        "wait_recon",
-        "wait_scan",
-        "revalidate_finding_owner",
-        "collect_candidate_evidence",
-        "validate_finding",
-        "review_validation_candidate",
-        "resume_action_queue",
-        "prepare_surface_context",
-        "complete_report_draft",
-        "recon_no_live_hosts",
-        "report_finding",
-        "run_intel",
-        "collect_web_intel",
-        "test_advisory_applicability",
-        "review_intel_group",
-        "guard_safe_pivot",
-    }:
-        return {}
-    if browser_pending or source_pending or js_pending:
-        return {}
-
-    stats = ranked.get("stats") if isinstance(ranked.get("stats"), dict) else {}
-    review_count = int(stats.get("review_pool", 0) or 0)
-    shape_count = max(
-        int(stats.get("semantic_shape_count", 0) or 0),
-        int(stats.get("semantic_shapes", 0) or 0),
-    )
-    raw_count = max(
-        int(stats.get("raw_urls", 0) or 0),
-        int(stats.get("exact_unique", 0) or 0),
-    )
-    untouched = int(stats.get("observation_untouched", 0) or 0)
-    stale = int(stats.get("observation_stale", 0) or 0)
-    long_tail = bool(
-        untouched > 0
-        or stale > 0
-        or shape_count > max(review_count, 1)
-        or raw_count > max(review_count, 1)
-    )
-    if not long_tail:
-        return {}
-
-    signal_groups = 0
-    for section, keys in (
-        ("browser", ("xhr_count", "api_count")),
-        ("scanner", ("finding_count",)),
-        ("intel", ("signal_count",)),
-    ):
-        value = ranked.get(section) if isinstance(ranked.get(section), dict) else {}
-        if any(int(value.get(key, 0) or 0) > 0 for key in keys):
-            signal_groups += 1
-    if ranked.get("workflow_leads"):
-        signal_groups += 1
-    if any(
-        isinstance(item, dict) and item.get("tech_stack")
-        for item in (ranked.get("review_pool") or [])
-    ):
-        signal_groups += 1
-    if signal_groups < 2:
-        return {}
-
-    tail_labels = []
-    if untouched:
-        tail_labels.append(f"{untouched} untouched observations")
-    if stale:
-        tail_labels.append(f"{stale} stale observations")
-    if shape_count > max(review_count, 1):
-        tail_labels.append(f"{shape_count} semantic shapes")
-    if not tail_labels:
-        tail_labels.append(f"{raw_count} exact surface entries")
-    return {
-        "tool": "recon-ranker",
-        "mode": "advisory",
-        "executable": False,
-        "reason": (
-            "valid Surface projection leaves "
-            + ", ".join(tail_labels[:2])
-            + f" and {signal_groups} evidence groups; use one read-only ranker review "
-            "only if Claude needs a second opinion before selecting the next lane"
-        ),
-    }
-
-
-def _build_enrichment_hints(
-    *,
-    repo_root: str,
-    resolved_target: str,
-    surface_context: dict,
-    ranked: dict,
-    surface_projection: dict | None = None,
-    repo_source_available: bool,
-    next_action: str,
-    browser_evidence: dict | None = None,
-) -> tuple[str, list[dict]]:
-    """Suggest the most useful enrichment tool before widening generic hunting."""
-    if next_action in {
-        "run_recon",
-        "wait_recon",
-        "wait_scan",
-        "revalidate_finding_owner",
-        "collect_candidate_evidence",
-        "validate_finding",
-        "review_validation_candidate",
-        "resume_action_queue",
-        "prepare_surface_context",
-        "complete_report_draft",
-        "recon_no_live_hosts",
-        "report_finding",
-        "run_intel",
-        "collect_web_intel",
-        "test_advisory_applicability",
-        "review_intel_group",
-    }:
-        return "", []
-
-    # Browser/source/JS availability is evidence for the AI, never a readiness
-    # gate or auto-selected lane.
-    browser_pending = False
-    source_pending = False
-    js_pending = False
-
-    hints = []
-    if next_action == "guard_safe_pivot":
-        hints.extend([
-            {
-                "tool": "context_pack",
-                "reason": "select the safest cached-evidence route while live requests are paused",
-            },
-            {
-                "tool": "checkpoint",
-                "reason": "record the live lockout as blocked and preserve concrete next actions",
-            },
-        ])
-        next_tool_hint = hints[0]["tool"] if hints else ""
-        return next_tool_hint, hints
-
-    ranker_hint = _build_ranker_advisory_hint(
-        surface_projection=surface_projection or {},
-        ranked=ranked,
-        next_action=next_action,
-        browser_pending=browser_pending,
-        source_pending=source_pending,
-        js_pending=js_pending,
-    )
-    if ranker_hint:
-        hints.append(ranker_hint)
-    next_tool_hint = next(
-        (
-            str(item.get("tool") or "")
-            for item in hints
-            if item.get("executable", True) and item.get("tool") != "recon-ranker"
-        ),
-        "",
-    )
-    return next_tool_hint, hints
-
-
 def _queue_snapshot_for_target(
     repo_root: str,
     target: str,
@@ -1540,7 +1369,6 @@ def _build_domain_autopilot_state(
     *,
     observation_inventory: dict,
     surface_projection: dict,
-    surface_context: dict | None = None,
     surface_context_required: bool = False,
     include_enrichment: bool = True,
 ) -> dict:
@@ -1628,34 +1456,20 @@ def _build_domain_autopilot_state(
         recent_guard_advisories=facts.get("recent_guard_advisories") or [],
         repo_source_summary=facts.get("repo_source_summary") or {},
     )
-    if include_enrichment:
-        next_tool_hint, enrichment_hints = _build_enrichment_hints(
-            repo_root=str(facts["repo_root"]),
-            resolved_target=resolved_target,
-            surface_context=surface_context or {},
-            ranked=ranked_for_next,
-            surface_projection=surface_projection,
-            repo_source_available=bool(facts.get("repo_source_available")),
-            next_action=next_action,
-            browser_evidence=facts.get("browser_evidence") or {},
-        )
-    else:
-        # Bounded bootstrap reuses the same readiness checks but exposes only
-        # the non-executable specialist advisory.
-        _, bounded_hints = _build_enrichment_hints(
-            repo_root=str(facts["repo_root"]),
-            resolved_target=resolved_target,
-            surface_context=surface_context or {},
-            ranked=ranked_for_next,
-            surface_projection=surface_projection,
-            repo_source_available=bool(facts.get("repo_source_available")),
-            next_action=next_action,
-            browser_evidence=facts.get("browser_evidence") or {},
-        )
-        next_tool_hint = ""
+    next_tool_hint = ""
+    enrichment_hints = []
+    if include_enrichment and next_action == "guard_safe_pivot":
+        next_tool_hint = "context_pack"
         enrichment_hints = [
-            item for item in bounded_hints if item.get("tool") == "recon-ranker"
-        ][:1]
+            {
+                "tool": "context_pack",
+                "reason": "select the safest cached-evidence route while live requests are paused",
+            },
+            {
+                "tool": "checkpoint",
+                "reason": "record the live lockout as blocked and preserve concrete next actions",
+            },
+        ]
     if next_action in {"run_intel", "collect_web_intel", "test_advisory_applicability", "review_intel_group"}:
         next_tool_hint = next_action
         enrichment_hints = [{
@@ -1889,19 +1703,9 @@ def _build_autopilot_state(
         ranked["target"] = resolved_target
         ranked["runtime_state"] = facts.get("runtime_state") or {}
         ranked["recon_artifacts"] = facts.get("recon_artifacts") or {}
-        surface_context = {
-            "target": resolved_target,
-            "available": bool(facts.get("has_recon")),
-            "recon_dir": str(
-                Path(repo_root) / "recon" / target_storage_key(resolved_target)
-            ),
-            "hosts": {},
-            "js_endpoints": [],
-        }
     else:
         # Decision facts require the same exact-hit projection in both modes.
         # A missing/stale projection is refreshed only by the explicit owner.
-        surface_context = {}
         ranked = {
             "available": bool(facts.get("has_recon")),
             "target": resolved_target,
@@ -1925,7 +1729,6 @@ def _build_autopilot_state(
         surface_context_required=(
             bool(facts.get("has_recon")) and projection.get("status") != "valid"
         ),
-        surface_context=surface_context,
     )
 
     return state, ranked
@@ -3348,21 +3151,6 @@ def load_closure_projection(
     queue = _queue_snapshot_for_target(repo_root, target, queue_snapshot)
     queue_generation = queue_fingerprint(queue)
     state_queue_generation = str(state.get("action_queue_fingerprint") or "").strip()
-    _, artifact_hints = _build_enrichment_hints(
-        repo_root=repo_root,
-        resolved_target=target,
-        surface_context={},
-        ranked=state.get("surface") or {},
-        repo_source_available=bool(state.get("repo_source_available")),
-        next_action="handoff",
-        browser_evidence={"ready": True},
-    )
-    enrichment_hints = [
-        item
-        for item in [*(state.get("enrichment_hints") or []), *artifact_hints]
-        if isinstance(item, dict)
-        and str(item.get("tool") or "") == "recon-ranker"
-    ]
     # Reacquire current truth through its owner and compare the captured inputs
     # with Coverage before assembling a witness-backed digest.
     truth = current_cell_projection(repo_root, target)
@@ -3400,7 +3188,6 @@ def load_closure_projection(
         "_checkpoint_health": checkpoint_health,
         "_ledger_projection": ledger_projection,
         "_evidence_source": evidence_source,
-        "enrichment_hints": enrichment_hints,
         "_coverage_evidence_ref": f"evidence/{target_storage_key(target)}/coverage_matrix.json",
         "_coverage_stale": coverage_stale,
         # Closure must never use a preloaded next-action pointer: it may have

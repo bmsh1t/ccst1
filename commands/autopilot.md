@@ -63,7 +63,9 @@ controller and only owner of lane claims/state write-back. Specialists default t
 justified delegation loads
 `docs/autopilot-lanes.md#inline-specialist-propagation` for its single delegation contract
 and bounded questions/mode/batch rules.
-optional `recon-ranker` stays read-only and is never a lane owner. Before a named lane,
+Optional `recon-ranker` stays read-only and is never a lane owner. Invoke it only
+when a concrete question benefits from a second opinion; runtime does not decide
+that need from evidence-group or long-tail counts. Before a named lane,
 consume bootstrap `state.lane_contract`: it names the lane (`id`, `ref`, `reason`) and, when
 `text_available=true`, already carries that section's text inline — use it directly instead of
 re-reading the doc. Only when `text_available=false` (or when a newly observed evidence signal

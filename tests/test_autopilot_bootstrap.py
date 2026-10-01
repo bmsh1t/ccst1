@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import shlex
 
+import pytest
+
 from tools import autopilot_bootstrap
 from tools import autopilot_state as autopilot_state_module
 from tools.runtime_state import update_runtime_state
@@ -135,38 +137,61 @@ def test_compact_state_exposes_only_read_only_ranker_advisory():
     }]
 
 
-def test_bootstrap_emits_ranker_advisory_for_valid_multi_source_long_tail(tmp_path):
-    _write_fast_recon(tmp_path)
+@pytest.mark.parametrize("bounded", [False, True])
+@pytest.mark.parametrize("raw_count,evidence_groups", [(0, 0), (1, 1), (40, 3)])
+def test_state_preserves_surface_facts_without_choosing_ranker(tmp_path, bounded, raw_count, evidence_groups):
+    recon_dir = _write_fast_recon(tmp_path)
+    continuation = {
+        "available": raw_count > 1,
+        "next_cursor": "CURSOR" if raw_count > 1 else "",
+        "command": "python3 tools/surface_index.py page --target target.com --cursor CURSOR" if raw_count > 1 else "",
+    }
     ranked = {
         "available": True,
         "target": "target.com",
         "p1": [],
         "p2": [],
         "review_pool": [{
-            "url": "https://api.target.com/orders",
-            "score": 5,
+            "url": "https://api.target.com/orders?id=1&id=2%27",
             "tech_stack": ["nginx"],
-        }],
-        "browser": {"xhr_count": 1, "api_count": 0},
-        "source_intel": {"hypothesis_count": 1},
+        }] if raw_count else [],
+        "browser": {"xhr_count": evidence_groups, "api_count": 0},
+        "intel": {"signal_count": evidence_groups},
+        "evidence_refs": [str(recon_dir / "live" / "httpx_full.txt")],
+        "surface_index": {"status": "valid", "row_count": raw_count, "continuation": continuation},
         "stats": {
-            "total_candidates": 8,
-            "review_pool": 1,
-            "semantic_shape_count": 3,
-            "raw_urls": 8,
-            "observation_untouched": 2,
+            "total_candidates": raw_count,
+            "review_pool": min(raw_count, 1),
+            "semantic_shape_count": raw_count,
+            "raw_urls": raw_count,
+            "observation_untouched": max(raw_count - 1, 0),
         },
     }
     manifest = build_surface_input_manifest(tmp_path, "target.com")
     write_surface_projection(tmp_path, "target.com", ranked, manifest=manifest)
 
-    state = autopilot_state_module.build_autopilot_bootstrap_state(
-        str(tmp_path), "target.com", memory_dir=str(tmp_path / "hunt-memory")
+    store = TargetStore(tmp_path, "target.com")
+    before = store.binding()
+    raw_before = {path: path.read_bytes() for path in recon_dir.rglob("*") if path.is_file()}
+    state = autopilot_state_module.build_autopilot_state(
+        str(tmp_path), "target.com", memory_dir=str(tmp_path / "hunt-memory"), bounded=bounded,
     )
 
-    assert state["enrichment_hints"][0]["tool"] == "recon-ranker"
-    assert state["enrichment_hints"][0]["mode"] == "advisory"
+    assert state["surface_projection"]["status"] == "valid"
+    for key in ("stats", "browser", "intel", "review_pool", "evidence_refs"):
+        assert state["surface"][key] == ranked[key]
+    assert state["surface"]["surface_index"]["row_count"] == raw_count
+    assert state["enrichment_hints"] == []
     assert state["next_tool_hint"] == ""
+    assert state["owner_continuations"] == []
+    assert state["hard_gate"] == {}
+    compact = autopilot_bootstrap.compact_autopilot_state(state)
+    assert compact["enrichment_hints"] == []
+    if continuation["available"]:
+        assert state["surface_projection"]["continuation"] == continuation
+        assert compact["surface_projection"]["continuation"] == continuation
+    assert store.binding() == before
+    assert {path: path.read_bytes() for path in recon_dir.rglob("*") if path.is_file()} == raw_before
 
 
 def test_compact_state_projects_only_the_next_lane_contract():

@@ -25,8 +25,6 @@ from memory.schemas import make_journal_entry, make_pattern_entry
 from memory.target_profile import make_target_profile
 from legacy_fixtures import write_legacy_profile
 from autopilot_state import (
-    _build_enrichment_hints,
-    _build_ranker_advisory_hint,
     _build_recommended_targets,
     _checkpoint_round_projection,
     _filter_ranked_placeholders,
@@ -69,69 +67,6 @@ def scanner_summary_path(tmp_path):
     path = tmp_path / "findings" / "target.com" / "summary.json"
     path.parent.mkdir(parents=True)
     return path
-
-
-def test_ranker_advisory_requires_valid_long_tail_and_multiple_evidence_groups(tmp_path, store):
-    ranked = {
-        "stats": {
-            "review_pool": 4,
-            "semantic_shape_count": 12,
-            "raw_urls": 40,
-            "observation_untouched": 3,
-            "observation_stale": 1,
-        },
-        "browser": {"xhr_count": 2, "api_count": 0},
-        "source_intel": {"hypothesis_count": 1},
-        "review_pool": [{"url": "https://target.test/orders", "tech_stack": ["nginx"]}],
-    }
-
-    hint = _build_ranker_advisory_hint(
-        surface_projection={"status": "valid"},
-        ranked=ranked,
-        next_action="handoff",
-    )
-
-    assert hint["tool"] == "recon-ranker"
-    assert hint["mode"] == "advisory"
-    assert hint["executable"] is False
-    assert "untouched observations" in hint["reason"]
-    assert _build_ranker_advisory_hint(
-        surface_projection={"status": "stale"},
-        ranked=ranked,
-        next_action="handoff",
-    ) == {}
-    assert _build_ranker_advisory_hint(
-        surface_projection={"status": "valid"},
-        ranked=ranked,
-        next_action="handoff",
-        browser_pending=True,
-    ) == {}
-
-
-def test_ranker_advisory_never_becomes_next_tool_hint(tmp_path, store):
-    next_tool, hints = _build_enrichment_hints(
-        repo_root=str(tmp_path),
-        resolved_target="target.test",
-        surface_context={},
-        ranked={
-            "stats": {
-                "review_pool": 1,
-                "semantic_shape_count": 3,
-                "raw_urls": 8,
-                "observation_untouched": 2,
-            },
-            "browser": {"xhr_count": 1},
-            "source_intel": {"hypothesis_count": 1},
-            "review_pool": [{"url": "https://target.test/orders", "tech_stack": ["nginx"]}],
-        },
-        surface_projection={"status": "valid"},
-        repo_source_available=False,
-        next_action="handoff",
-        browser_evidence={"ready": True},
-    )
-
-    assert next_tool == ""
-    assert [item["tool"] for item in hints] == ["recon-ranker"]
 
 
 def test_global_review_requires_current_nonempty_target_evidence(tmp_path, store):
@@ -4714,8 +4649,14 @@ class TestAutopilotState:
         assert state["next_action"] == "guard_safe_pivot"
         assert state["guard_status"]["ready_hosts"] == 0
         assert state["next_tool_hint"] == "context_pack"
+        assert [hint["tool"] for hint in state["enrichment_hints"]] == ["context_pack", "checkpoint"]
         assert "cached recon/browser/JS/source evidence" in output
         assert "residential" not in output.lower()
+        bounded = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(memory_dir), bounded=True)
+        assert bounded["next_action"] == "guard_safe_pivot"
+        assert bounded["guard_status"]["ready_hosts"] == 0
+        assert bounded["next_tool_hint"] == ""
+        assert bounded["enrichment_hints"] == []
 
     def test_pending_structured_finding_is_visible_without_keyword_evaluation(self, tmp_path, store):
         repo_root = tmp_path
