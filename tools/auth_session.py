@@ -392,16 +392,15 @@ class AuthSession:
         return overlay
 
     def export_to_env(self, env: dict[str, str] | None = None) -> None:
-        """Mutate an env mapping in place, clearing stale auth vars when empty."""
+        """Replace derived and raw auth env vars with this session's export."""
         target_env = env if env is not None else os.environ
         overlay = self.env_overlay()
-        if overlay:
-            target_env.update(overlay)
-        else:
-            target_env.pop(ENV_HEADERS, None)
-            target_env.pop(ENV_SESSION_ID, None)
-            target_env.pop(ENV_TARGET, None)
-            target_env.pop(ENV_ORIGINS, None)
+        for key in (
+            ENV_HEADERS, ENV_SESSION_ID, ENV_TARGET, ENV_ORIGINS,
+            ENV_HEADER_IN, ENV_COOKIE, ENV_BEARER, ENV_API_KEY,
+        ):
+            target_env.pop(key, None)
+        target_env.update(overlay)
 
     def redacted(self) -> dict[str, str]:
         """Human-safe view: show header names with masked values."""

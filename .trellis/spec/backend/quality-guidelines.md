@@ -56,6 +56,15 @@
   header/origin merge 前失败，显式 auth file 缺失、不可读、损坏或与 CLI target 冲突时必须在
   target I/O 前失败。Shell direct entry 遇到已绑定到其它 target 的 ambient session 仍清空认证并
   按 anonymous 继续，不能重绑旧凭据或把无目标内 URL 当成功。
+- 认证环境往返契约：
+  1. Scope / Trigger：已选定会话导出到父/子进程环境；不改变初次来源选择或 Scope/重定向规则。
+  2. Signatures：`AuthSession.export_to_env(env=None)` 原地替换；仅 `None` 使用 `os.environ`。
+  3. Contracts：先生成 overlay，再删除 `BBHUNT_AUTH_HEADERS/BBHUNT_SESSION_ID/BBHUNT_AUTH_TARGET/BBHUNT_AUTH_ORIGINS`
+     及 `BBHUNT_AUTH_HEADER/BBHUNT_COOKIE/BBHUNT_BEARER/BBHUNT_API_KEY`，最后写入 overlay；不动其它键和原会话。
+  4. Validation / Error：空会话清空八键；缺失键忽略，坏旧值直接替换；overlay 生成失败不得先清环境，不吞异常。
+  5. Cases：非空保留当前 headers/ID/scheme/port/显式 Origin；无绑定不继承旧 target；旧 raw 凭据不得重载复活。
+  6. Tests：`tests/test_auth_session.py` 覆盖污染/空环境、幂等、来源兼容及真实 Shell URL 参数；使用合成凭据。
+  7. Wrong → Correct：`env.update(session.env_overlay())` 会保留旧授权范围 → `session.export_to_env(env)` 完整替换。
 - Public anonymous-exposure detection must not classify entire response prose as
   sensitive evidence. Weak markers such as `admin`, `password`, `oauth`, or
   `security question` only count when they come from structured key paths,
