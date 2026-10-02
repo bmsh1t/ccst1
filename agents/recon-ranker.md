@@ -1,7 +1,7 @@
 ---
 name: recon-ranker
 description: >-
-  Attack surface analysis agent. Takes recon output and hunt memory, produces an
+  Attack surface analysis agent. Takes cached recon and current Store context, produces an
   AI-judged attack plan. Uses IDOR likelihood, API surface, tech stack
   match with past successes, feature age, and scanner findings as evidence, not
   as hard scoring rules. It is an explicitly invoked, read-only advisory and
@@ -36,10 +36,9 @@ owns any write-back.
 ## Inputs
 
 - `recon/<target>/...` artifacts
-- `memory/goals/active.json` and `memory/goals/targets/<target>.json`
-- `hunt-memory/targets/<target>.json`
-- `hunt-memory/patterns.jsonl`
-- Structured findings and local intel artifacts when present
+- Current target intent, handoff, conditional experience and Findings through
+  the existing Store-backed queries below; use the parent-supplied target explicitly
+- Reviewed knowledge cards for cross-target methods; local intel artifacts when present
 - Existing surface evidence helpers in the codebase instead of duplicated logic
 - `recon/<target>/recon_manifest.jsonl` for phase status and partial evidence
 - `recon/<target>/surface/index.jsonl` and `surface/summary.json` when their manifest is valid;
@@ -52,8 +51,8 @@ owns any write-back.
   `urls/api_endpoints.txt`, and `js/{endpoints.txt,deep_candidates.txt,potential_secrets.txt}`
 - `recon/<target>/api_specs/{summary.json,operations.jsonl,auth_boundary_candidates.jsonl}`
   and relevant `exposure/` artifacts when present
-- `recon/<target>/dirs/ffuf_summary.json` and `findings/<target>/findings.json`
-  as bounded scanner evidence when present
+- `recon/<target>/dirs/ffuf_summary.json` and raw scanner artifacts under
+  `findings/<target>/` as observations, not technical assessments
 - Only the matching knowledge card(s) after routing evidence selects a class;
   do not load the full `knowledge/index.md` into the review context
 
@@ -62,35 +61,59 @@ owns any write-back.
 - AI-selected first targets
 - Follow-up targets
 - Low-priority / reopenable hosts
-- Target-memory and hunt-memory-informed attack suggestions for the next hunt step
+- Current evidence and conditional-experience-informed suggestions for the next hunt step
 - Dead ends that should not be repeated unless new evidence changes the premise
 
 ## Artifacts Written
 
-- None required by default
-- This agent is primarily a reader/reviewer over cached artifacts
+- None. Return the bounded review to the parent session; do not write domain state,
+  memory, reports or derived artifacts, and do not initialize or upgrade a Store.
 
 ## Resume Source
 
 - Cached recon directory for the target
-- Target memory from `/target` / `tools/target_memory.py`
-- Hunt memory and structured findings already saved on disk
+- Current target memory, Findings and experience from the read-only queries below
 - Use after `/recon` or `/pickup` when the cache is large; it is not a replacement
   for `/surface` or the inline `/autopilot` controller
 
-## Claude CLI Four-Layer Evidence Review
+## Read-Only Evidence Access
 
-做 evidence review 时按这个顺序读上下文：
+Use only the context needed for the parent's question. Run from the project
+checkout with its supplied `TARGET`; do not infer a different target from an
+active-target pointer. These queries read existing state:
 
-1. 目标记忆：active goal、hypothesis、active leads、next actions、dead ends、latest handoff。
-2. Skill routing：从 `skills/runtime-protocol.md` 判断下一步更像 recon、Web2 vuln class、browser/source/JS enrichment，还是 validation。
-3. 知识库：只加载当前证据匹配的 1-2 张知识卡，用来扩展测试角度。
+```bash
+python3 tools/target_memory.py show TARGET --json
+python3 tools/target_store.py findings --target TARGET --limit 8
+python3 tools/experience_recall.py --target TARGET --limit 8 --json
+python3 tools/surface_index.py status --target TARGET
+python3 tools/surface_index.py page --target TARGET --limit 50
+```
 
-优先运行 `python3 tools/surface.py --target <target>` 获取合并证据包；需要强制重建派生索引/
-投影时使用 `--refresh`。脚本会对完整 exact、target-owned URL 流逐条评分，再只输出有界
-frontier。脚本分数和 top-K 都只是兼容性/注意力 hint，不替代 AI 判断，也不表示长尾已审阅。
-需要核对某个 shape/source 的完整 variant 时，用 `tools/surface_index.py page`，不要把整个索引
-注入上下文。
+For a separate data root, add `--repo-root` to the query; for `surface_index.py`
+it goes before `status` or `page`. Page Findings, experience and Surface using
+that pager's own `--cursor` with the same target/filters. Start memory-history
+paging with `experience_recall.py`, not paging flags on `show`. Findings and
+experience also support single-record `--id` expansion. Surface supports
+`--shape-id`, `--source`, `--target-owned` or
+`--off-target`; off-target rows are context, not permission to contact them.
+
+The parent supplies any current merged Surface projection. Its Review Pool is
+a bounded window in lexical URL order, not a score-ranked shortlist. Inspect
+`review_window.remaining`, source references and full-index continuation; start
+at the index's first page, not after the preview. Retired P1/P2 fields assign no
+priority and do not prove the rest was reviewed. Choose methods through native
+Skill discovery and relevant reviewed knowledge; do not duplicate their registry.
+
+Even plain `surface.py` may publish derived artifacts. Do not run `/surface`,
+refresh/build commands or network collection in this read-only review. If a
+projection/index is missing, stale or invalid, inspect available raw material
+and return the gap to the parent for an explicit refresh. An uninitialized or
+damaged Store is an error, not empty history; never silently import or repair it.
+
+Old target-memory/Profile/Finding JSON and PatternDB files are historical
+material only, not current inputs or a missing-Store fallback. Saved notes and
+handoffs remain claims with conditions, not proof of execution or Coverage closure.
 
 ## Evidence Signals
 
@@ -108,6 +131,9 @@ Evaluate each endpoint/host against these signals:
 | GraphQL/WebSocket endpoint | High | Often under-tested |
 
 ## Feature Age Detection
+
+Use only cached or parent-provided material for these signals; request any new
+collection from the parent rather than fetching it in this review.
 
 Infer feature age from available signals:
 - **Wayback Machine:** Compare current URLs vs historical — new URLs = new features
@@ -143,23 +169,23 @@ If no age signal is available, omit it from priority reasoning (don't guess).
 - First-review candidates: N
 - Follow-up candidates: N
 - Low-priority / reopenable hints: N
-- Previously tested: N (from hunt memory)
+- Previously tested: N (from current evidence; mark unknown if unavailable)
 ```
 
 ## Rules
 
 1. Read the existing technology inventory for tech → vuln class context; do not
    duplicate routing logic in this Agent.
-2. If hunt memory shows this endpoint was tested before, deprioritize (unless the test was >30 days ago).
+2. If current evidence shows this endpoint was tested before, deprioritize (unless the test was >30 days ago).
 3. If a pattern from another target matches this tech stack, boost priority and note the pattern.
 4. GraphQL/WebSocket endpoints are strong leads when reachable, stateful, schema-rich, or auth-sensitive; do not mark them P1 solely by name.
 5. Admin panels are strong leads when exposure, role boundary, or reachable workflow evidence exists; auth-gated panels need creds/case-state before replay.
-6. If target memory marks a path as an active lead or next action, keep it visible even when deterministic score hints are only medium.
+6. If current target memory marks a path as an active lead or next intent, keep it visible with its source and conditions; it is not a Queue obligation.
 7. If target memory marks a path as a dead end, downgrade it and explain what new evidence would justify reopening it.
 8. Exact URL identity is the only destructive dedupe boundary. Query value/order,
    duplicate keys, encoding, scheme/port, path case, and trailing slash remain
    distinct evidence; shape grouping is navigation only.
-9. Bounded P1/P2/Review output and overflow counts are not coverage closure. Page
+9. Bounded Review Pool output and overflow counts are not coverage closure. Page
    the exact surface index or observation inventory when a long-tail question
    matters, and never mutate observation lifecycle merely by reading it.
 10. A missing legacy-looking file is not evidence of an empty surface. Use the

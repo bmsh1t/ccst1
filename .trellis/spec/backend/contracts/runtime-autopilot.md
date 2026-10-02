@@ -31,6 +31,13 @@ mechanical safety, evidence and recovery constraints govern execution.
   long-tail size. The existing read-only agent remains explicitly callable through
   native discovery and `/autopilot` guidance. Do not replace retired thresholds
   with an always-on recommendation or a second capability registry.
+- The ranker reads current target memory/Findings/experience through existing
+  Store queries with an explicit target, and raw evidence or current cached
+  projections. Retired JSON/PatternDB is history, not a missing-Store fallback.
+  Even plain `surface.py` can publish projections: refresh/build/init/repair
+  belongs to the parent, not this read-only specialist. Missing/stale/invalid
+  inputs remain gaps; available raw material is still reviewable. Each pager
+  keeps its own target/filter-bound cursor; `target_memory show` is not a pager.
 - `next_tool_hint` / `enrichment_hints` remain compatibility fields. Ordinary
   state emits empty values; full-state `guard_safe_pivot` retains cached
   `context_pack` / `checkpoint` hints, while bounded state omits those hints.
@@ -98,6 +105,10 @@ exhaustion merely because the inferred frontier was deleted.
 checks full/bounded state across empty/sparse/rich evidence, exact facts/cursors,
 Store binding and source-byte preservation. Existing explicit-hint serialization,
 cached-evidence guard, owner continuation and closure-advice digest tests remain.
+`tests/test_recon_ranker_contract.py` executes the ranker's documented CLI queries
+against current/empty/missing/stale fixtures, including exact URL and Finding
+pagination, current handoff and unchanged Store binding/raw files. Agent smoke
+tests retain frontmatter/tool compatibility; no model behavior is inferred.
 
 Run `python3 .trellis/tasks/09-29-native-first-boundary-optimization/research/check_native_first.py`
 for observation/owner separation, lock preservation, malformed matrix input,
