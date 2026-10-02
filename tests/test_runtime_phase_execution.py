@@ -31,7 +31,7 @@ root = Path(os.environ['PHASE_TEST_ROOT'])
 mode = os.environ.get('PHASE_TEST_MODE', 'exit')
 (root / 'child.pid').write_text(str(os.getpid()))
 grandchild = None
-if mode != 'exit':
+if mode not in ('exit', 'hold'):
     code = "import os, signal, time; from pathlib import Path; "
     if mode == 'leader-exits':
         code += "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
@@ -169,16 +169,15 @@ def test_phase_real_exit_preserves_argv_environment_fd_and_streams(phase_root, m
     record = json.loads((phase_root / "ready.json").read_text())
     assert record["env"]["BBHUNT_RUNTIME_PHASE_LOCKED"] == phase
     assert record["env"]["BBHUNT_RUNTIME_LOCK_TARGET"] == (URL if entry == "hunt" and phase == "recon" else TARGET)
+    assert record["locks"] == [str(phase_root / "state" / TARGET / "locks" / f"{phase}.lock")]
     if entry == "hunt":
         assert record["cwd"] == str(phase_root)
-        assert record["locks"] == [str(phase_root / "state" / TARGET / "locks" / f"{phase}.lock")]
         assert record["env"]["H1_API_TOKEN"] is None
         assert record["env"]["RESIN_PROXY_TOKEN"] is None
         assert record["env"]["CHAOS_API_KEY"] == ("synthetic-chaos" if phase == "recon" else None)
         assert record["argv"] == ([URL, "--quick"] if phase == "recon" else [str(phase_root / "recon" / TARGET), "--quick", "--skip", "module with spaces"])
     else:
         assert record["cwd"] == str(phase_root / "caller")
-        assert record["locks"] == []
         assert record["argv"] == [URL, "arg with spaces"]
         assert record["env"]["H1_API_TOKEN"] == "synthetic-h1"
     output = capfd.readouterr()
@@ -208,6 +207,88 @@ def test_direct_child_exit_124_is_not_a_wrapper_deadline(phase_root, monkeypatch
     monkeypatch.setenv("PHASE_TEST_EXIT", "124")
     assert _entry(phase_root, "direct", phase) == 124
     _assert_finished(phase_root, "direct", phase, False)
+
+
+def _check_direct_wrapper_sigkill(root, phase):
+    # This helper runs in its own process so orphan reaping never affects pytest.
+    import ctypes
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(36, 1, 0, 0, 0) != 0:  # PR_SET_CHILD_SUBREAPER
+        raise OSError(ctypes.get_errno(), "could not enable test child reaping")
+    cli = [sys.executable, str(ROOT / "tools" / "runtime_phase_exec.py"),
+           "--repo-root", str(root), "--target", TARGET, "--phase", phase, "--"]
+    wrapper = subprocess.Popen(
+        [*cli, sys.executable, str(root / "child.py")],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+
+    def deadline(_signum, _frame):
+        raise TimeoutError("direct SIGKILL regression exceeded its deadline")
+
+    try:
+        # Leave time for finally to reap children before the outer hard timeout.
+        signal.signal(signal.SIGALRM, deadline)
+        signal.alarm(20)
+        _wait_for(lambda: (root / "ready.json").exists(), wrapper)
+        record = json.loads((root / "ready.json").read_text())
+        child_pid = record["pid"]
+        assert record["grandchild"] is None
+        assert record["locks"] == [str(root / "state" / TARGET / "locks" / f"{phase}.lock")]
+        assert runtime_wait_action(root, TARGET) == f"wait_{phase}"
+        state_file = root / "state" / TARGET / "session.json"
+        before = state_file.read_bytes()
+
+        wrapper.kill()
+        assert wrapper.wait(timeout=5) == -signal.SIGKILL
+        assert _alive(child_pid)
+        assert runtime_wait_action(root, TARGET) == f"wait_{phase}"
+        sentinel = root / "duplicate-started"
+        duplicate = subprocess.run(
+            [*cli, sys.executable, "-c",
+             "import sys; from pathlib import Path; Path(sys.argv[1]).touch()", str(sentinel)],
+            capture_output=True, text=True, timeout=5,
+        )
+        assert duplicate.returncode == 75, duplicate.stderr
+        assert not sentinel.exists()
+        assert state_file.read_bytes() == before
+    finally:
+        signal.alarm(0)
+        if wrapper.poll() is None:
+            wrapper.kill()
+        wrapper.wait(timeout=5)
+        # After the wrapper is reaped, any surviving test child belongs to us,
+        # even if it failed before publishing its readiness/PID files.
+        children = Path(f"/proc/self/task/{os.getpid()}/children").read_text().split()
+        for child in children:
+            pid = int(child)
+            try:
+                os.killpg(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            _wait_for(lambda: os.waitpid(pid, os.WNOHANG)[0] == pid, timeout=5)
+
+    with pytest.raises(ChildProcessError):
+        os.waitpid(child_pid, os.WNOHANG)
+    assert runtime_wait_action(root, TARGET) == ""
+    assert state_file.read_bytes() == before
+    with runtime_phase_lock(root, TARGET, phase):
+        pass
+
+
+@pytest.mark.parametrize("phase", ["recon", "scan"])
+def test_direct_wrapper_sigkill_keeps_child_lock_until_reaped(phase_root, phase):
+    code = (
+        "import runpy, sys; ns = runpy.run_path(sys.argv[1]); "
+        "ns['_check_direct_wrapper_sigkill'](ns['Path'](sys.argv[2]), sys.argv[3])"
+    )
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join((str(ROOT), str(ROOT / "tools"))),
+           "PHASE_TEST_MODE": "hold"}
+    result = subprocess.run(
+        [sys.executable, "-c", code, str(Path(__file__).resolve()), str(phase_root), phase],
+        env=env, capture_output=True, text=True, timeout=35,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def _run_interrupted(root, entry, phase, *, signum=None, timeout=None, mode="hang"):

@@ -26,7 +26,7 @@ def run_phase_command(
         raise ValueError("phase command is required")
     returncode: int | None = None
     try:
-        with runtime_phase_lock(repo_root, target, phase):
+        with runtime_phase_lock(repo_root, target, phase, include_fd=True) as (_path, lock_fd):
             update_runtime_state(
                 repo_root,
                 target,
@@ -39,6 +39,7 @@ def run_phase_command(
             try:
                 returncode = run_live_argv_command(
                     command, env=env, timeout=None, require_signal_handlers=True,
+                    pass_fds=(lock_fd,),
                 )
                 return returncode
             finally:

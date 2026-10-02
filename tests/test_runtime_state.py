@@ -374,7 +374,13 @@ def test_direct_phase_runner_returns_busy_without_starting_child(tmp_path):
 
 
 def test_direct_phase_runner_marks_child_lock_ownership(tmp_path, monkeypatch):
-    runner = Mock(return_value=17)
+    def check_live_lock_fd(*args, **kwargs):
+        lock_fd, = kwargs["pass_fds"]
+        lock_path = tmp_path / "state" / "target.com" / "locks" / "scan.lock"
+        assert os.path.samestat(os.fstat(lock_fd), lock_path.stat())
+        return 17
+
+    runner = Mock(side_effect=check_live_lock_fd)
     monkeypatch.setattr(runtime_phase_exec, "run_live_argv_command", runner)
     code = runtime_phase_exec.run_phase_command(tmp_path, "target.com", "scan", ["scanner", "--quick"])
 
@@ -385,7 +391,6 @@ def test_direct_phase_runner_marks_child_lock_ownership(tmp_path, monkeypatch):
     assert kwargs["env"]["BBHUNT_RUNTIME_LOCK_TARGET"] == "target.com"
     assert kwargs["timeout"] is None
     assert kwargs["require_signal_handlers"] is True
-    assert kwargs.get("pass_fds", ()) == ()
     assert kwargs.get("cwd") is None
     state = load_runtime_state(tmp_path, "target.com")
     assert state["mode"] == "scan_failed"

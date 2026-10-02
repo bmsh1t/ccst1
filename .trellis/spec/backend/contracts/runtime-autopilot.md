@@ -873,11 +873,18 @@ run_live_argv_command(argv, *, cwd=None, env=None, timeout=None,
   ProcessLookupError is a normal exit race; other cleanup errors stay visible.
 - Hunt retains bool results, BASE_DIR cwd, mode/env timeout budgets, credential
   filtering, inherited lock FDs and best-effort signal registration. Direct
-  retains raw int results (busy=75), inherited cwd/env, timeout=None, parent-held
-  lock without FD inheritance, and require_signal_handlers=True. Recon's exact
+  retains raw int results (busy=75), inherited cwd/env, timeout=None, inherited
+  lock FDs, and require_signal_handlers=True. Recon's exact
   URL marker, scan's canonical marker, inventory sync and candidate preservation
-  remain caller-owned; neither shell internals nor direct's SIGKILL limitation
-  are changed by this execution helper.
+  remain caller-owned; shell internals are unchanged by this execution helper.
+- Both phase adapters acquire `runtime_phase_lock(..., include_fd=True)` and pass
+  the returned FD through `pass_fds=(lock_fd,)`. The context only closes its own
+  FD, never explicitly unlocks the shared open-file-description. If the direct
+  wrapper is SIGKILLed while its work child retains that FD, the lock and wait
+  remain active and another same-phase start returns 75 without rewriting state.
+  SIGKILL cannot run finally: the running marker remains historical after the
+  final lock holder exits, but no longer causes wait. Do not add PID/time guesses
+  or claim coverage of descendants that deliberately close the FD.
 - Hunt/CVE compatibility paths pass data as separate argv elements; native
   scanner input flags (`-u`/`-l`) replace echo/cat pipelines. Authentication
   remains environment/file based and never enters argv or public logs.
@@ -900,6 +907,8 @@ run_live_argv_command(argv, *, cwd=None, env=None, timeout=None,
 | Live timeout / SIGINT or SIGTERM / spawn or wait failure | group cleanup when spawned, handlers restored, original exception re-raised; cleanup diagnostics go to stderr |
 | Live signal registration fails outside main thread | best-effort continues; strict restores handlers, cleans child and re-raises registration error |
 | Direct child exits 124 | raw 124 and failure breadcrumb; not a wrapper deadline |
+| Direct wrapper SIGKILL, work child still holds lock FD | wait remains; duplicate returns 75 without spawning or changing the running marker |
+| Final inherited lock holder exits after wrapper SIGKILL | lock releases; stale running marker no longer implies active wait; next start can acquire the lock |
 | Concurrent scanner/config checks | distinct temporary inputs, each removed after its command |
 | Residual shell caller | must be static shell syntax with no target/path/header interpolation |
 
@@ -926,7 +935,10 @@ run_live_argv_command(argv, *, cwd=None, env=None, timeout=None,
 - `tests/test_runtime_phase_execution.py`: real local hunt/direct recon/scan
   success, nonzero, signals, busy, hunt deadline, spawn failure, argv/env/cwd/FD,
   inherited streams, markers and lock recovery; leader-first exit must not leak
-  a TERM-ignoring same-group descendant. Core PR CI must include this matrix and
+  a TERM-ignoring same-group descendant. Direct SIGKILL regressions use a real
+  wrapper CLI and an isolated test subreaper to prove child-held lock, busy=75,
+  unchanged marker and final release/reaping without changing pytest's process
+  ownership. Core PR CI must include this matrix and
   `tests/test_runtime_exec.py`, enforced by `tests/test_ci_contract.py`.
 - `tests/test_scanner_store_registration.py`: shell/direct canonical lock wiring,
   busy admission and replayable scanner material. Scanner wrappers must retain
@@ -940,6 +952,7 @@ run_live_argv_command(argv, *, cwd=None, env=None, timeout=None,
 ```text
 f'curl "{url}"' -> shell=True -> target/path controls command parsing
 hunt/direct each implement signal handlers and process-group cleanup
+parent-only phase lock -> wrapper death releases the lock while work survives
 ```
 
 #### Correct
@@ -947,6 +960,7 @@ hunt/direct each implement signal handlers and process-group cleanup
 ```text
 ["curl", url] -> shell=False -> existing timeout/output contract -> parser
 phase adapter -> run_live_argv_command(argv, ...) -> one shared cleanup boundary
+include_fd=True -> pass_fds=(lock_fd,) -> final holder closing releases the lock
 ```
 
 ## Scenario: Canonical Checkpoint Decision Projection
