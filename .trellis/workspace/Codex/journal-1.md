@@ -604,3 +604,24 @@ Completed the approved baseline-only partial registration fix; preserved family,
 ### Next Steps
 
 - F03 complete. Select the next task separately; no F04/F05 work started.
+
+
+## Session 24: Restore Codex session and close F04 authorization race
+<!-- trellis-session: v=2 fp=4e7f3d81036433b6 -->
+
+**Date**: 2026-10-03
+**Task**: Restore Codex session and close F04 authorization race
+
+### Summary
+
+Restored session 01a1016e-27bf-7083-8d46-2cf3a74934c9, activated F04, added commit-time artifact authorization checks for execution completion, covered subject/control invalidation, restoration, replay, unrelated writes, and pre-transaction hashing, then committed 704009c and archived the task.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `704009cb8f1a49b31e40824e04bc5c1904c4b19a` | fix: close action completion authorization race |
+
+### Status
+
+[OK] **Completed**
