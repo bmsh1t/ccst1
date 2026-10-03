@@ -10,6 +10,10 @@ history inspection and recovery. The task records one authorized cutover on
 engineering task is archived; online capability gains remain unproven and separate
 from consumer correctness or this audit's repairs.
 
+Action-bound partial registration also applies when a different-URL control was
+published but the declared subject failed before publication. Registration must
+preserve that partial execution without claiming that the subject ran.
+
 `runtime_store()` rejects uninitialized, legacy, preview, fenced/missing and
 broken state. `hunt_target()` explicitly initializes before target execution;
 ordinary writers/readers and target selection never initialize implicitly.
@@ -189,7 +193,8 @@ test counts, for acceptance.
   actor)`: save an unassessed claim independently of any observation.
 - `start_attempt(attempt_id, source, started_at, actor, action_id=None, claim_token=None)`.
 - `record_execution(attempt_id, outcome, observations, actor, candidate=None,
-  expected_operation=None)`: publish files before invocation.
+  expected_operation=None)`: publish files before invocation; outcome is
+  `complete`, `partial` or `unknown`, and only `unknown` accepts no observations.
 - `assess(command_id, finding_id, verdict, reason, boundary, impact, evidence,
   actor, expected_assessment)`: explicit technical judgment, not a detector.
 - `decide_delivery(command_id, finding_id, assessment_id, destination, status,
@@ -461,6 +466,24 @@ Supplemental evidence for the same attempt requires `expected_operation` naming
 the current registration. Old registrations remain immutable; unknown external
 effects can be supplemented without replaying a request. No automatic action
 completion, finding confirmation, report eligibility or next-action generation.
+
+For an Action-bound nonempty registration, `partial` requires at least one
+observation matching the Action family, but not necessarily its endpoint.
+`complete` and nonempty `unknown` require one observation matching both endpoint
+and family; separate matching observations are insufficient. Other valid family
+observations may coexist. All rows still pass target, artifact, timestamp and
+identity validation; an optional Finding candidate still requires its exact
+endpoint/method/family. The attempt/action relation is caller-declared attribution,
+not proof of membership in a saved request plan or semantic relevance. No source,
+side, role or mutable summary can supply that missing guarantee.
+
+First `start_attempt` checks the current claim/operator. Registration retains the
+attempt relation without rechecking a current claim, so identical material and
+operator can replay after an explicit `blocked` transition. First registration
+adds one operation and revision; identical replay adds neither. Registration
+does not release a claim: `transition_action` still checks claimant/token/version
+and refuses release while any sibling attempt lacks a registration. Neither
+partial nor unknown can supply the complete operation required for completion.
 
 Observation required keys: endpoint, method, family, observed_at, description,
 artifacts. Optional keys: actor, object_scope, variant, error, truncated,
@@ -1051,6 +1074,13 @@ through `tests/legacy_fixtures.py`, not a production writer restored for tests.
 | Completion audit fails | Roll back proof, artifact binding and status; keep raw output |
 | Same bytes, distinct attempts | Distinct operations |
 | Unknown then recovered evidence | Explicit predecessor; no new execution implied |
+| Bound partial with matching family at another endpoint | Register actual observations; preserve claim and caller-declared association limit |
+| Partial with matching and other valid families | Accept; at least one matching family, not all rows |
+| Bound complete/nonempty unknown without a single endpoint/family match | Reject, including matches split across separate rows |
+| Wrong-family partial, off-target observation, or empty partial/complete | Reject; operation and revision unchanged |
+| Empty unknown | Register unknown effect; no fabricated observation |
+| Partial registered but sibling attempt pending, or wrong claimant/token/version | Explicit claim release still rejects without mutation |
+| Identical registration replay before/after explicit blocked | Same operation/revision; no network execution |
 | Empty/foreign/changed raw file | Reject or explicit integrity error; existing delivery/report projections become stale |
 | Unknown valid family | Persist; canonical Coverage label absent |
 | Bad type/unknown observation field | Reject before committed metadata |
@@ -1073,6 +1103,8 @@ through `tests/legacy_fixtures.py`, not a production writer restored for tests.
 
 - Good: native tools publish raw files; explicit attempt/registration binds them;
   a later assessment cites the observation steps; delivery policy remains separate.
+- Good: only the baseline control survives a variant failure; register partial,
+  then explicitly block the Action without attaching control evidence to its Finding.
 - Good: source-reading work names a target-owned source artifact, then explicitly
   completes with its published review or action-linked handoff receipt, without HTTP.
 - Good: primary report replay preserves bodies and revision while rebuilding a
@@ -1090,6 +1122,8 @@ through `tests/legacy_fixtures.py`, not a production writer restored for tests.
   or preserving legacy forever so tests need no explicit Store fixture.
 - Bad: wrap the old cross-file sync in a try/except and call it transactional, or
   initialize a second live backend before all consumers can use it.
+- Bad: relabel control as subject or remove the pending-attempt guard to release
+  a claim after a failed registration.
 
 ## 6. Tests Required
 
@@ -1098,6 +1132,14 @@ claims/registration, distinct attempts, unknown recovery, strict input/target/fi
 binding, partial evidence, judgment separation/CAS, read-only snapshot paging,
 conditional facts without new actions, damaged files, append-only artifact event
 authorization, backup and dependency direction.
+`test_bound_execution_observation_admission` covers the outcome/endpoint/family
+matrix, mixed-family acceptance, split-match rejection, rollback and replay.
+`test_partial_recovery_requires_all_attempts_registered` covers sibling pending
+attempts and claimant/token/version rejection before explicit idempotent blocking.
+Runner `test_partial_variant_subject_registration_recovers_claim` combines
+different URLs, a variant-bound Action and zero/one published responses using a
+real Store: original control identity/raw, no Finding evidence leak, saved-summary
+retry without more requests/attempts/revisions, and partial/unknown completion refusal.
 Report regressions must cover assessment supersession, delivery/report `stale` projection,
 report-artifact tampering, and rejection of registration against an old delivery.
 Work regressions cover target/URL/artifact/entity subjects, no fabricated attempt,
@@ -1167,6 +1209,11 @@ review retention, repeated observations, current closure and zero cache writes.
 both scanner-only and subsequently observed endpoints with scanner metadata intact.
 
 ## 7. Wrong vs Correct
+
+Wrong: require a subject endpoint for every partial registration, fabricate it,
+or treat registration as proof that the declared request plan was executed.
+Correct: validate actual rows and the outcome-specific Action relation; preserve
+the declared-association limit and use explicit claim recovery separately.
 
 Wrong: recursively create lock parents then open/chmod by path, assuming mode
 0700 protects ancestors or a prior resolve check prevents replacement.

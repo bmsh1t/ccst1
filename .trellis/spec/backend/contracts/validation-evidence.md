@@ -120,9 +120,12 @@ AuthSession origin/scope rules; raw headers override only on the initial URL.
   schema-10 upgrade, all-family dimension isolation, native subject/control,
   publication manifests and changed-byte suppression. No live target is used.
 
-- Normal operation requires one initialized, healthy target Store. Target,
-  store generation and claim are checked before execution/publication and again
-  at registration under the target switch lock. Preview/legacy/damage reject.
+- Normal operation requires one initialized, healthy target Store. Target and
+  store generation are checked before execution/publication and at registration
+  under the target switch lock. First attempt creation checks current claim/operator;
+  original-command retries retain the existing attempt relation, including after
+  explicit claim release. State transitions check claimant/token/version separately.
+  Registration does not impose a new current-claim check. Preview/legacy/damage reject.
 - A real execution has its own attempt ID. A registration retry reuses the
   attempt and immutable raw material; the request lane never resends a started
   attempt. Operation is a Store registration receipt, not an HTTP request ID.
@@ -151,6 +154,16 @@ AuthSession origin/scope rules; raw headers override only on the initial URL.
   Complete evidence is required for machine review admission. A transport
   failure with no published observations is unknown; earlier complete steps
   survive a partial run without authorizing completion.
+- When a different-URL variant subject fails after baseline publication, retain
+  only the real baseline control and its original URL/method/actor/identity/raw;
+  do not attach it to the subject Finding. A bound partial needs a matching Action
+  family, not the missing subject endpoint; complete/nonempty unknown still need
+  one endpoint/family match. The exact admission matrix and caller-declared
+  association limit live in `transactional-target-state.md`; registration does not
+  prove request-plan membership. Saved-summary sync returns `updated` once
+  (operation/revision +1), then `deduplicated` without more requests, raw changes
+  or attempts, including after explicit blocked recovery. Pending sibling attempts
+  still prevent claim release; registration itself never releases the claim.
 - Explicit `state_changing=true` requires `redline_checked`; method names do not
   imply effect. Unknown effect remains unknown. Redirects stay within target;
   sensitive headers require destination-origin authorization.
@@ -199,6 +212,8 @@ AuthSession origin/scope rules; raw headers override only on the initial URL.
 | same attempt/material | one operation; idempotent registration |
 | changed raw after publication | partial registration; no metadata commit |
 | partial/no-response execution | partial/unknown; preserve existing steps |
+| variant subject fails after different-URL baseline | register original control as partial; no subject identity/Finding evidence fabrication |
+| saved partial/unknown summary replay after explicit blocked | deduplicated against post-blocked revision; no request replay or new attempt |
 | unknown family | save evidence; no unrelated Coverage closure |
 | assessment/delivery/report command interrupted | retain body and committed receipts; retry only missing commands |
 | report publication interrupted | no partial public body; retryable |
@@ -210,6 +225,10 @@ AuthSession origin/scope rules; raw headers override only on the initial URL.
 boundaries, real CLI restart/recovery, current evidence integrity and report
 text preservation. `tests/test_response_diff.py` covers structural diffs;
 `tests/test_current_truth.py` ensures damaged evidence cannot authorize closure.
+`test_partial_variant_subject_registration_recovers_claim` uses a real temporary
+Store and mocks only HTTP for zero/one responses; it checks original raw/identity,
+first registration, summary reload/replay, explicit claim recovery and completion
+refusal. Same-URL partial tests alone do not cover this different-subject boundary.
 
 ## Scenario: ASP.NET ViewState captured-response known-key check
 

@@ -663,6 +663,100 @@ def test_unknown_external_effect_can_be_supplemented_without_reexecution(tmp_pat
     assert store.verify_operation(unknown["entity_id"])["outcome"] == "unknown"
 
 
+@pytest.mark.parametrize(
+    ("outcome", "observed", "error"),
+    [
+        pytest.param("partial", [("/control", FAMILY)], None, id="partial-control"),
+        pytest.param("partial", [(URL, FAMILY)], None, id="partial-subject"),
+        pytest.param("partial", [(URL, "other-family"), ("/control", FAMILY)], None,
+                     id="partial-mixed-families"),
+        pytest.param("partial", [(URL, "other-family")], "family", id="partial-wrong-family"),
+        pytest.param("partial", [("https://foreign.test/control", FAMILY)], "target", id="partial-off-target"),
+        pytest.param("partial", [], "only unknown", id="partial-empty"),
+        pytest.param("complete", [(URL, FAMILY)], None, id="complete-subject"),
+        pytest.param("complete", [("/control", FAMILY)], "endpoint", id="complete-control"),
+        pytest.param("complete", [(URL, "other-family")], "family", id="complete-wrong-family"),
+        pytest.param("complete", [(URL, "other-family"), ("/control", FAMILY)], "endpoint",
+                     id="complete-split-match"),
+        pytest.param("complete", [], "only unknown", id="complete-empty"),
+        pytest.param("unknown", [], None, id="unknown-empty"),
+        pytest.param("unknown", [(URL, FAMILY)], None, id="unknown-subject"),
+        pytest.param("unknown", [("/control", FAMILY)], "endpoint", id="unknown-control"),
+        pytest.param("unknown", [(URL, "other-family")], "family", id="unknown-wrong-family"),
+        pytest.param("unknown", [(URL, "other-family"), ("/control", FAMILY)], "endpoint",
+                     id="unknown-split-match"),
+    ],
+)
+def test_bound_execution_observation_admission(tmp_path, outcome, observed, error):
+    store = make_store(tmp_path)
+    create_action(store)
+    store.transition_action(command_id="claim1", action_id="a1", expected_version=1,
+                            status="claimed", actor="operator")
+    store.start_attempt(attempt_id="try1", source="native", started_at=AT, actor="operator",
+                        action_id="a1", claim_token="claim1")
+    raw = observation(tmp_path)
+    rows = [{**raw, "endpoint": "https://target.test" + endpoint if endpoint.startswith("/") else endpoint,
+             "family": family} for endpoint, family in observed]
+    before = store.binding()
+    kwargs = dict(attempt_id="try1", outcome=outcome, observations=rows, actor="operator")
+    if error:
+        with pytest.raises(StoreError, match=error):
+            store.record_execution(**kwargs)
+        assert store.binding() == before
+        assert store.page("operations")["total"] == 0
+    else:
+        receipt = store.record_execution(**kwargs)
+        assert receipt["replayed"] is False
+        assert store.binding()["revision"] == before["revision"] + 1
+        operation = store.execution(receipt["entity_id"])
+        assert operation["outcome"] == outcome
+        assert [(row["endpoint"], row["family"]) for row in operation["observations"]] == [
+            (row["endpoint"], row["family"]) for row in rows
+        ]
+        before = store.binding()
+        assert store.record_execution(**kwargs)["replayed"] is True
+        assert store.binding() == before
+        assert store.page("operations")["total"] == 1
+    assert store.action("a1")["status"] == "claimed"
+
+
+def test_partial_recovery_requires_all_attempts_registered(tmp_path):
+    store = make_store(tmp_path)
+    create_action(store)
+    store.transition_action(command_id="claim1", action_id="a1", expected_version=1,
+                            status="claimed", actor="operator")
+    for attempt_id in ("partial", "pending"):
+        store.start_attempt(attempt_id=attempt_id, source="native", started_at=AT, actor="operator",
+                            action_id="a1", claim_token="claim1")
+    obs = {**observation(tmp_path), "endpoint": "https://target.test/control"}
+    store.record_execution(attempt_id="partial", outcome="partial", observations=[obs], actor="operator")
+    release = dict(command_id="blocked", action_id="a1", expected_version=2, status="blocked",
+                   actor="operator", claim_token="claim1", reason="Transport interrupted")
+    before = store.binding()
+    with pytest.raises(ConflictError, match="outcome unknown"):
+        store.transition_action(**release)
+    assert store.binding() == before
+    assert store.action("a1")["status"] == "claimed"
+    store.record_execution(attempt_id="pending", outcome="unknown", observations=[], actor="operator")
+    before = store.binding()
+    for changes, error in (({"actor": "other-operator"}, "operator"),
+                           ({"claim_token": "wrong-claim"}, "operator"),
+                           ({"expected_version": 1}, "version changed")):
+        with pytest.raises(ConflictError, match=error):
+            store.transition_action(**{**release, **changes})
+        assert store.binding() == before
+        assert store.action("a1")["status"] == "claimed"
+    receipt = store.transition_action(**release)
+    assert receipt["replayed"] is False
+    assert store.binding()["revision"] == before["revision"] + 1
+    assert store.action("a1")["status"] == "blocked"
+    assert store.action("a1")["claim_token"] is None
+    before = store.binding()
+    assert store.transition_action(**release)["replayed"] is True
+    assert store.binding() == before
+    assert store.page("attempts")["total"] == store.page("operations")["total"] == 2
+
+
 def test_read_only_snapshot_paging_and_conditional_experience(tmp_path):
     store = make_store(tmp_path)
     for number in range(5):

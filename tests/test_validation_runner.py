@@ -2869,6 +2869,103 @@ def test_declared_variant_subject_anchors_finding_and_action_to_tested_side(tmp_
     assert store.execution(summary["store_operation_id"])["attempt"]["action_id"] == "A-subject"
 
 
+@pytest.mark.parametrize("responses", [0, 1])
+def test_partial_variant_subject_registration_recovers_claim(tmp_path, monkeypatch, responses):
+    store = TargetStore(tmp_path, "target.test")
+    store.initialize()
+    spec = _declared_subject_spec()
+    baseline = spec["baseline_request"]
+    subject = spec["variant_request"]
+    store.create_action(command_id="action", action_id="A-subject", kind="execution",
+                        intent="Read the collection as a peer", execution_key="collection-read",
+                        actor="operator", endpoint=subject["url"], family="Authz")
+    store.transition_action(command_id="claim", action_id="A-subject", expected_version=1,
+                            status="claimed", actor="operator")
+    calls = []
+
+    def request(**kwargs):
+        calls.append(kwargs["url"])
+        if len(calls) > responses:
+            raise OSError("fixture transport interruption")
+        return _fake_response(kwargs["url"], body='{"id":24}')
+
+    monkeypatch.setattr(validation_runner, "request_once", request)
+    args = dict(repo_root=tmp_path, target="target.test", finding_id="F-subject", request_spec=spec,
+                action_id="A-subject", claim_token="claim", command_actor="operator",
+                attempt_id="partial-subject", identity_v2=_declared_subject_identity(spec))
+    summary = validation_runner.run_request_diff(**args)
+    assert summary["result"] == summary["status"] == "partial"
+    assert summary["candidate_ready"] is False
+    assert summary["url"] == subject["url"]
+    assert calls == [baseline["url"], subject["url"]][:responses + 1]
+    summary_path = tmp_path / summary["summary_path"]
+    original_summary = summary_path.read_bytes()
+    raw = {ref: (tmp_path / ref).read_bytes() for ref in summary["runs"][0]["artifacts"].values()}
+    assert bool(raw) == bool(responses)
+    assert store.page("operations")["total"] == 0
+    before = store.binding()
+    saved = json.loads(original_summary)
+    sync = validation_runner.sync_runner_artifacts(saved, repo_root=tmp_path)
+    assert sync["status"] == "updated", sync
+    assert store.binding()["revision"] == before["revision"] + 1
+    assert store.page("operations")["total"] == 1
+    operation_id = saved["store_operation_id"]
+    operation = store.execution(operation_id)
+    assert operation["outcome"] == ("partial" if responses else "unknown")
+    assert operation["attempt"]["id"] == "partial-subject"
+    assert operation["attempt"]["action_id"] == "A-subject"
+    assert operation["attempt"]["claim_token"] == "claim"
+    assert len(operation["observations"]) == responses
+    if responses:
+        observed = operation["observations"][0]
+        assert observed["endpoint"] == baseline["url"] != subject["url"]
+        assert observed["method"] == baseline["method"]
+        assert observed["family"] == "Authz"
+        for field in ("actor", "object_scope", "variant"):
+            assert observed[field] == baseline[field]
+        assert observed["detail"]["evidence_role"] == "control"
+        assert observed["identity_status"] == "none"
+        assert observed["identity_technique"] == ""
+        assert json.loads(observed["identity_v2"]) == {}
+        assert json.loads(observed["identity_dimensions"]) == {}
+        assert {item["ref"] for item in observed["artifacts"]} == set(raw)
+        assert (tmp_path / summary["runs"][0]["artifacts"]["baseline_response"]).read_text() == (
+            _fake_response(baseline["url"], body='{"id":24}')["response_text"]
+        )
+    assert store.finding("F-subject")["endpoint"] == subject["url"]
+    assert store.finding("F-subject")["evidence"] == []
+    assert store.finding("F-subject")["assessment"] is None
+    assert store.action("A-subject")["status"] == "claimed"
+    before = store.binding()
+    # Crossing a UTC second changes the start command's timestamp, not its refusal to reexecute.
+    with pytest.raises(StoreError, match="attempt already started|already used for different content"):
+        validation_runner.run_request_diff(**args)
+    with pytest.raises(StoreError, match="complete observation"):
+        store.transition_action(command_id="complete", action_id="A-subject", expected_version=2,
+                                status="completed", actor="operator", claim_token="claim",
+                                reason="Interrupted request pair", completion={"operation_id": operation_id})
+    assert store.binding() == before
+    release = dict(command_id="blocked", action_id="A-subject", expected_version=2,
+                   status="blocked", actor="operator", claim_token="claim", reason="Transport interrupted")
+    for blocked in (False, True):
+        if blocked:
+            receipt = store.transition_action(**release)
+            assert receipt["replayed"] is False
+            assert store.action("A-subject")["status"] == "blocked"
+            assert store.action("A-subject")["claim_token"] is None
+        before = store.binding()
+        saved = json.loads(original_summary)
+        assert validation_runner.sync_runner_artifacts(saved, repo_root=tmp_path)["status"] == "deduplicated"
+        assert saved["store_operation_id"] == operation_id
+        if blocked:
+            assert store.transition_action(**release)["replayed"] is True
+        assert store.binding() == before
+        assert store.page("operations")["total"] == store.page("attempts")["total"] == 1
+        assert calls == [baseline["url"], subject["url"]][:responses + 1]
+        assert {ref: (tmp_path / ref).read_bytes() for ref in raw} == raw
+        assert summary_path.read_bytes() == original_summary
+
+
 def test_declared_variant_subject_refuses_action_bound_to_baseline_side(tmp_path, monkeypatch):
     """The comparison runs against the declared subject, not the baseline: an
     action named after the safe side is no longer the action the runner binds."""

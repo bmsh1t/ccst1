@@ -1279,8 +1279,11 @@ class TargetStore:
                 raise StoreError("observation predates its execution attempt")
             if attempt["action_id"] and prepared:
                 action = conn.execute("SELECT * FROM actions WHERE id=?", (attempt["action_id"],)).fetchone()
-                if not any(row["endpoint"] == action["endpoint"] and row["family"] == action["family"] for row, _ in prepared):
-                    raise StoreError("execution observations must include the bound action's endpoint and family")
+                # ponytail: partial trusts the declared attempt association; plan membership needs a persisted plan.
+                if not any(row["family"] == action["family"] and
+                           (outcome == "partial" or row["endpoint"] == action["endpoint"]) for row, _ in prepared):
+                    required = "family" if outcome == "partial" else "endpoint and family"
+                    raise StoreError(f"execution observations must include the bound action's {required}")
             columns = {str(item[1]) for item in conn.execute("PRAGMA table_info(observations)").fetchall()}
             has_identity_v3 = {"identity_status", "identity_technique", "identity_v2"} <= columns
             if not has_identity_v3 and any(
