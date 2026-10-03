@@ -568,3 +568,39 @@ Batch 2 completed: hunt/direct live execution share runtime_exec; preserve calle
 ### Next Steps
 
 - Plan batch 3 fact-contract convergence; select one evidence-backed minimal slice before implementation.
+
+
+## Session 23: F03 partial execution registration and claim recovery
+<!-- trellis-session: v=2 fp=b992617679048039 -->
+
+**Date**: 2026-10-03
+**Task**: F03 partial execution registration and claim recovery
+**Branch**: `main`
+
+### Summary
+
+Completed the approved baseline-only partial registration fix; preserved family, identity, claim, completion and retry boundaries. Archived F03 locally; no push.
+
+### Main Changes
+
+- Adjusted only TargetStore.record_execution admission; added outcome/endpoint/family and real Runner recovery regressions; updated the two existing contracts.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b460f050572a08742f3998f4668c7b432db47b93` | fix: recover claims after partial execution registration |
+
+### Testing
+
+- [OK] Old-guard regression: expected endpoint/family failure before the fix.
+- [OK] Approved focused batch: 44 passed; after review corrected a timestamp-sensitive assertion, the two affected Runner cases passed again.
+- [OK] Final git diff --check and reviewer Ruff F821/F822/F823 passed; mypy unavailable, no dependencies installed.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- F03 complete. Select the next task separately; no F04/F05 work started.

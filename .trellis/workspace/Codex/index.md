@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 22
-- **Last Active**: 2026-09-28
+- **Total Sessions**: 23
+- **Last Active**: 2026-10-03
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~570 | Active |
+| `journal-1.md` | ~606 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 23 | 2026-10-03 | F03 partial execution registration and claim recovery | `b460f050572a08742f3998f4668c7b432db47b93` | `main` |
 | 22 | 2026-09-28 | Shared phase execution consolidation | `797eb5a`, `e2d2e58` | `fix/web2-stable-release` |
 | 21 | 2026-09-28 | 第一批减负：移除无效 runtime 查询与 PR 回归补齐 | `3f79faa`, `f81bf4a` | `fix/web2-stable-release` |
 | 20 | 2026-09-27 | Web2 stable release acceptance | `7048517` | `fix/web2-stable-release` |
