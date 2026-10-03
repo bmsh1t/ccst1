@@ -447,7 +447,14 @@ Action kind describes mechanical proof requirements, not a category or route:
   Case queue.
 - Completion is independent of recording results. `completion={operation_id}`
   for execution must identify a complete, unsuperseded operation from this claim,
-  with currently intact files. An arbitrary file cannot complete an execution.
+  with currently intact files. Immediately before inserting the completion, the
+  same write transaction rereads the latest availability/provenance event for
+  every artifact linked to that operation (including control and later steps);
+  an unavailable or revoked artifact rejects the completion while preserving the
+  claim and the independently committed event. An arbitrary file cannot complete
+  an execution. File hashing remains in the pre-transaction verification step;
+  this commit-time event guard performs metadata reads only, so unrelated Store
+  writes do not invalidate a valid proof and explicit restoration permits retry.
 - Work uses `completion={artifact}` (a nonempty target-owned published result) or
   `completion={command_id}`. Currently a receipt must be a `remember` mutation
   linked to this action, authored by its claimant and committed after the current
@@ -1131,7 +1138,9 @@ through `tests/legacy_fixtures.py`, not a production writer restored for tests.
 claims/registration, distinct attempts, unknown recovery, strict input/target/file
 binding, partial evidence, judgment separation/CAS, read-only snapshot paging,
 conditional facts without new actions, damaged files, append-only artifact event
-authorization, backup and dependency direction.
+authorization, commit-time completion authorization for subject/control artifacts,
+pre-transaction operation hashing, unrelated-write isolation, backup and dependency
+direction.
 `test_bound_execution_observation_admission` covers the outcome/endpoint/family
 matrix, mixed-family acceptance, split-match rejection, rollback and replay.
 `test_partial_recovery_requires_all_attempts_registered` covers sibling pending

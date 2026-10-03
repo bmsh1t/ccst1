@@ -999,6 +999,14 @@ class TargetStore:
                             AND NOT EXISTS (SELECT 1 FROM operations n WHERE n.supersedes=o.id)""",
                             (operation_id, action_id, claim_token)).fetchone():
                             raise ConflictError("completion requires a complete observation from this claim")
+                        for artifact in conn.execute("""SELECT DISTINCT a.id,a.ref FROM artifacts a
+                            JOIN observation_artifacts b ON b.artifact_id=a.id
+                            WHERE b.operation_id=?""", (operation_id,)):
+                            events = self._artifact_events(conn, str(artifact["id"]))
+                            if events.get("availability", {}).get("state") == "unavailable":
+                                raise StoreError(f"registered evidence is explicitly unavailable: {artifact['ref']}")
+                            if events.get("provenance", {}).get("state") == "revoked":
+                                raise StoreError(f"registered evidence provenance is revoked: {artifact['ref']}")
                     elif operation_id:
                         raise StoreError("work completion requires a produced artifact or domain command receipt")
                     if receipt_id:

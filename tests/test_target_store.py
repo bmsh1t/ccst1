@@ -2,6 +2,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 import ast
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -1840,6 +1841,148 @@ def test_execution_completion_rejects_unbound_stale_and_damaged_evidence(tmp_pat
     raw.write_bytes(before)
     store.transition_action(**finish, completion={"operation_id": current["entity_id"]})
     assert store.action("a1")["completion"]["operation_id"] == current["entity_id"]
+
+
+@pytest.mark.parametrize(
+    ("dimension", "invalid", "restored"),
+    [("availability", "unavailable", "available"), ("provenance", "revoked", "trusted")],
+)
+@pytest.mark.parametrize("step", [0, 1])
+def test_execution_completion_rechecks_artifact_authorization(tmp_path, monkeypatch, dimension, invalid, restored, step):
+    store = make_store(tmp_path)
+    create_action(store)
+    store.transition_action(command_id="claim1", action_id="a1", expected_version=1,
+                            status="claimed", actor="operator")
+    store.start_attempt(attempt_id="bound", source="native", started_at=AT, actor="operator",
+                        action_id="a1", claim_token="claim1")
+    control_path = tmp_path / ".private" / "validation" / "target.test" / "control.txt"
+    control_path.parent.mkdir(parents=True, exist_ok=True)
+    control_path.write_text("control response")
+    control = {**observation(tmp_path), "endpoint": "https://target.test/api/control",
+               "detail": {"evidence_role": "control"},
+               "artifacts": {"response": control_path.relative_to(tmp_path).as_posix()}}
+    operation = store.record_execution(attempt_id="bound", outcome="complete",
+                                       observations=[observation(tmp_path), control], actor="operator")
+    operation_id = operation["entity_id"]
+    with sqlite3.connect(store.path) as conn:
+        artifact_id = conn.execute("""SELECT a.id FROM observation_artifacts b
+            JOIN artifacts a ON a.id=b.artifact_id
+            WHERE b.operation_id=? AND b.step=? AND b.kind='response'""", (operation_id, step)).fetchone()
+        artifact_id = artifact_id[0]
+    execution_before = store.execution(operation_id)
+    other = TargetStore(tmp_path, "target.test")
+    injected = False
+    enabled = True
+    original_command = store._command
+
+    def inject(command, command_id, entity_id, actor, material, mutation):
+        nonlocal injected, enabled
+        if enabled and command == "transition_action" and command_id == "finish":
+            enabled = False
+            injected = True
+            other.record_artifact_event(command_id="invalidate", artifact_id=artifact_id,
+                                        dimension=dimension, state=invalid, reason="authorization changed",
+                                        actor="operator")
+        return original_command(command, command_id, entity_id, actor, material, mutation)
+
+    monkeypatch.setattr(store, "_command", inject)
+    finish = dict(command_id="finish", action_id="a1", expected_version=2, status="completed",
+                  actor="operator", claim_token="claim1", reason="Comparison recorded",
+                  completion={"operation_id": operation_id})
+    with pytest.raises(StoreError, match="explicitly unavailable|provenance is revoked"):
+        store.transition_action(**finish)
+    assert injected
+    assert store.execution(operation_id) == execution_before
+    assert store.action("a1")["status"] == "claimed"
+    assert store.action("a1")["version"] == 2
+    assert store.action("a1")["claim_token"] == "claim1"
+    assert store.action("a1")["completion"] is None
+    assert store.command_receipt("finish") is None
+    with sqlite3.connect(store.path) as conn:
+        assert conn.execute("SELECT count(*) FROM action_completions").fetchone()[0] == 0
+        invalidation_revision = conn.execute(
+            "SELECT revision FROM artifact_events WHERE id='invalidate'"
+        ).fetchone()[0]
+    assert store.context()["revision"] == invalidation_revision
+
+    other.record_artifact_event(command_id="restore", artifact_id=artifact_id,
+                                dimension=dimension, state=restored, reason="authorization restored",
+                                actor="operator")
+    receipt = store.transition_action(**finish)
+    assert receipt["replayed"] is False
+    assert store.action("a1")["status"] == "completed"
+    assert store.action("a1")["completion"]["operation_id"] == operation_id
+    before_replay = store.binding()
+    assert store.transition_action(**finish) == {**receipt, "replayed": True}
+    assert store.binding() == before_replay
+
+
+def test_execution_completion_verifies_operation_before_write_transaction(tmp_path, monkeypatch):
+    store = make_store(tmp_path)
+    create_action(store)
+    store.transition_action(command_id="claim1", action_id="a1", expected_version=1,
+                            status="claimed", actor="operator")
+    store.start_attempt(attempt_id="bound", source="native", started_at=AT, actor="operator",
+                        action_id="a1", claim_token="claim1")
+    operation = store.record_execution(attempt_id="bound", outcome="complete",
+                                       observations=[observation(tmp_path)], actor="operator")
+    original_connection = store._connection
+    original_artifact = store._artifact
+    writer_entered = False
+    artifact_reads = 0
+
+    @contextmanager
+    def tracked_connection(*args, **kwargs):
+        nonlocal writer_entered
+        with original_connection(*args, **kwargs) as conn:
+            if kwargs.get("write"):
+                writer_entered = True
+            yield conn
+
+    def tracked_artifact(ref):
+        nonlocal artifact_reads
+        assert not writer_entered
+        artifact_reads += 1
+        return original_artifact(ref)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(store, "_connection", tracked_connection)
+        patch.setattr(store, "_artifact", tracked_artifact)
+        store.transition_action(command_id="finish", action_id="a1", expected_version=2,
+                                status="completed", actor="operator", claim_token="claim1",
+                                reason="Comparison recorded", completion={"operation_id": operation["entity_id"]})
+    assert writer_entered and artifact_reads == 1
+    assert store.action("a1")["status"] == "completed"
+
+
+def test_execution_completion_ignores_unrelated_store_writes(tmp_path):
+    store = make_store(tmp_path)
+    create_action(store)
+    store.transition_action(command_id="claim1", action_id="a1", expected_version=1,
+                            status="claimed", actor="operator")
+    store.start_attempt(attempt_id="bound", source="native", started_at=AT, actor="operator",
+                        action_id="a1", claim_token="claim1")
+    operation = store.record_execution(attempt_id="bound", outcome="complete",
+                                       observations=[observation(tmp_path)], actor="operator")
+    other = TargetStore(tmp_path, "target.test")
+    unrelated = tmp_path / "recon" / "target.test" / "source.txt"
+    unrelated.parent.mkdir(parents=True, exist_ok=True)
+    unrelated.write_text("unrelated source")
+    other.create_action(command_id="create:other", action_id="other", kind="work",
+                        intent="Read unrelated source", execution_key="other", actor="operator",
+                        subject={"artifact": str(unrelated)})
+    artifact_id = other.action("other")["subject_artifact"]["id"]
+    other.record_artifact_event(command_id="unrelated-event", artifact_id=artifact_id,
+                                dimension="availability", state="unavailable",
+                                reason="unrelated source withdrawn", actor="operator")
+    before = store.binding()
+    finish = dict(command_id="finish", action_id="a1", expected_version=2, status="completed",
+                  actor="operator", claim_token="claim1", reason="Comparison recorded",
+                  completion={"operation_id": operation["entity_id"]})
+    receipt = store.transition_action(**finish)
+    assert receipt["revision"] == before["revision"] + 1
+    assert store.action("a1")["status"] == "completed"
+    assert other.artifact_status(artifact_id)["availability"] == "unavailable"
 
 
 def test_unsupported_schema_never_auto_upgrades_or_reinitializes(tmp_path):
