@@ -1,0 +1,2 @@
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Review full owner/data-flow scope, no duplicate authority or unjustified changes"}
+{"file":".trellis/tasks/10-03-action-completion-auth-race/research/authorization-window.md","reason":"Check commit-time event authorization, independent writers, restoration/replay and hash boundaries"}

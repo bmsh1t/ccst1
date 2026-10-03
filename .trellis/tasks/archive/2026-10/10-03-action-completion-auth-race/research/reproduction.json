@@ -1,0 +1,11 @@
+{
+  "completion_accepted": true,
+  "action_status": "completed",
+  "action_version": 3,
+  "claim_token": null,
+  "revoke_revision": 5,
+  "completion_revision": 6,
+  "store_revision": 6,
+  "artifact_authorized": false,
+  "error": null
+}
