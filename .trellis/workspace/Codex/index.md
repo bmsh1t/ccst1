@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 24
-- **Last Active**: 2026-10-03
+- **Total Sessions**: 25
+- **Last Active**: 2026-10-04
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~627 | Active |
+| `journal-1.md` | ~663 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 25 | 2026-10-04 | F05 actor coverage evidence authorization | `70871aa` | `main` |
 | 24 | 2026-10-03 | Restore Codex session and close F04 authorization race | `704009cb8f1a49b31e40824e04bc5c1904c4b19a` | `-` |
 | 23 | 2026-10-03 | F03 partial execution registration and claim recovery | `b460f050572a08742f3998f4668c7b432db47b93` | `main` |
 | 22 | 2026-09-28 | Shared phase execution consolidation | `797eb5a`, `e2d2e58` | `fix/web2-stable-release` |

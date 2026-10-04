@@ -625,3 +625,39 @@ Restored session 01a1016e-27bf-7083-8d46-2cf3a74934c9, activated F04, added comm
 ### Status
 
 [OK] **Completed**
+
+
+## Session 25: F05 actor coverage evidence authorization
+<!-- trellis-session: v=2 fp=0b15b33e2a345cb6 -->
+
+**Date**: 2026-10-04
+**Task**: F05 actor coverage evidence authorization
+**Branch**: `main`
+
+### Summary
+
+Restored the previous Codex session, completed the approved F05 plan, implemented snapshot-scoped actor authorization, and archived the task.
+
+### Main Changes
+
+- Share complete current-truth denial scope with actor coverage; honor supersession and preserve latest-result history without rereads or caches.
+- Add owner and Context Pack/Checkpoint regressions; document the executable evidence contract.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `70871aa` | fix: honor evidence authorization in actor coverage |
+
+### Testing
+
+- [OK] Focused pytest batch: 72 passed and 2 new timestamp expectations failed; corrected Z to canonical +00:00, then all 3 supersession cases passed. All 74 unique cases passed across the two runs.
+- [OK] Independent read-only review: no blocking findings. git diff --check and Trellis context validation passed. No full-suite, build, lint, or typecheck run.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- F05 complete; any subsequent audit item needs a separate scope decision.
