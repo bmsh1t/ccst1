@@ -1,0 +1,29 @@
+{
+  "before": {
+    "peer": "covered",
+    "latest_result": "tested_clean",
+    "ledger_status": "ready",
+    "invalid_count": 0,
+    "gaps": 4,
+    "entries": 1
+  },
+  "damaged": {
+    "peer": "covered",
+    "latest_result": "tested_clean",
+    "ledger_status": "partial",
+    "invalid_count": 1,
+    "gaps": 4,
+    "entries": 1
+  },
+  "restored": {
+    "peer": "covered",
+    "latest_result": "tested_clean",
+    "ledger_status": "ready",
+    "invalid_count": 0,
+    "gaps": 4,
+    "entries": 1
+  },
+  "revision_unchanged": true,
+  "history_unchanged": true,
+  "f05_reproduced": true
+}

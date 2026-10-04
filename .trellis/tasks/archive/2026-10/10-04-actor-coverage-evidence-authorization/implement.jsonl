@@ -1,0 +1,4 @@
+{"file":"docs/architecture-contract.md","reason":"Single Store authority, acquired integrity, pure projections, and stable-kernel local damage boundary"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Minimal owner-level repair, dependency direction, focused behavior tests, and no duplicate authority"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"Store faults must remain visible; no silent fallback or repair during queries"}
+{"file":".trellis/tasks/10-04-actor-coverage-evidence-authorization/research/authorization-boundary.md","reason":"Verified owner/caller anchors, succession edge cases, fixture limitations, and reproduced F05 baseline"}

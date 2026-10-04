@@ -1,0 +1,4 @@
+{"file":"docs/architecture-contract.md","reason":"Verify the repair preserves single-owner and local/global integrity semantics"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Check behavior assertions, reuse, dependency direction, and bounded validation"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"Reject incomplete authority and preserve explicit Store failures without hidden rereads"}
+{"file":".trellis/tasks/10-04-actor-coverage-evidence-authorization/research/authorization-boundary.md","reason":"Review diagnostic-cap, controls, supersession, serialization, and no-resurrection counterexamples"}
