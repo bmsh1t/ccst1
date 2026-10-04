@@ -104,6 +104,8 @@ def test_primary_store_is_the_only_source_even_beside_a_leftover_ledger(tmp_path
         "invalid_rows": [],
         "last_valid_offset": 0,
     }
+    assert truth["invalid_event_ids"] == []
+    assert json.loads(json.dumps(truth)) == truth
 
 
 def test_preview_store_is_only_available_to_explicit_migration_readers(tmp_path):
@@ -178,7 +180,8 @@ def test_legacy_ledger_does_not_replace_an_uninitialized_store(tmp_path, tail):
     assert not TargetStore(tmp_path, TARGET).path.exists()
 
 
-def test_truncated_store_read_is_damage_too():
+@pytest.mark.parametrize("damage", ["truncated", "unlocalizable", "incomplete_identity"])
+def test_truncated_store_read_is_damage_too(damage):
     class TruncatedStore:
         """The store's own truncation guard is a 20k-row read; the rule is here."""
 
@@ -189,16 +192,20 @@ def test_truncated_store_read_is_damage_too():
             assert verify is True
             return {
                 "store_id": "store-id",
-                "invalid_operations": [],
+                "invalid_operations": [] if damage == "truncated" else [{
+                    "operation_id": "unknown" if damage == "unlocalizable" else "operation",
+                    "reason": "Damaged fixture",
+                }],
                 "revision": 7,
                 "total": 5,
-                "truncated": True,
+                "truncated": damage == "truncated",
                 "records": [{
                     "event_id": "operation:0",
-                    "raw_endpoint": "/api/objects",
-                    "endpoint": "/api/objects",
+                    "raw_endpoint": "/api/accounts/42/export",
+                    "endpoint": "/api/accounts/42/export",
                     "method": "GET",
-                    "vuln_class": FAMILY,
+                    "vuln_class": "Authz",
+                    "actor": "owner", "object_scope": "own_object", "variant": "baseline",
                     "result": "tested_finding",
                     "ts": AT,
                     "evidence_ref": "",
@@ -209,11 +216,18 @@ def test_truncated_store_read_is_damage_too():
     truth = _store_truth(TruncatedStore())
 
     assert truth["source"]["status"] == "partial"
-    assert truth["source"]["truncated"] is True
+    assert truth["source"]["truncated"] is (damage == "truncated")
     assert truth["source"]["store_claim"] == "primary"
     assert truth["projection"]["closed_cells"] == []
     assert truth["projection"]["identity_v2_diagnostics"]["suppressed_legacy_closed_count"] == 0
     assert truth["projection"]["identity_v2_shadow"]["reason"] == "store_partial"
+    assert truth["invalid_event_ids"] is None
+    assert json.loads(json.dumps(truth)) == truth
+    summary = build_summary(Path("/repo"), target=TARGET, vuln_classes=["Authz"], _truth=truth)
+    rows = summary["actor_matrix"]["rows"]
+    assert len(rows) == 5
+    assert next(row for row in rows if row["actor"] == "owner")["status"] == "pending"
+    assert all(row["status"] == "missing" for row in rows if row["actor"] != "owner")
 
 
 def test_current_truth_checks_every_operation_on_one_snapshot_and_rechecks_next_read(tmp_path, monkeypatch):
@@ -322,22 +336,38 @@ def test_ledger_summary_reuses_the_seam_result_instead_of_reading_again(tmp_path
     """A caller holding the truth must not trigger a second read or projection."""
     store = TargetStore(tmp_path, TARGET)
     store.initialize()
-    _record(store, tmp_path, endpoint="https://target.test/api/owned")
+    observation = _observation(tmp_path, endpoint=f"https://{TARGET}/api/accounts/42/export")
+    observation.update(family="Authz", actor="owner", object_scope="own_object", variant="baseline")
+    store.start_attempt(attempt_id="actor", source="fixture", started_at=AT, actor="operator")
+    store.record_execution(attempt_id="actor", outcome="complete", observations=[observation], actor="operator")
     truth = current_cell_projection(tmp_path, TARGET)
+    binding = store.binding()
+    (tmp_path / observation["artifacts"]["response"]).write_bytes(b"Changed after acquisition")
 
     def forbidden(*args, **kwargs):
         raise AssertionError("build_summary re-read the ledger while holding the truth")
 
-    monkeypatch.setattr(evidence_ledger, "load_entries_diagnostic", forbidden)
-    summary = build_summary(
-        tmp_path, target=TARGET, focus_endpoints=["/api/owned"], _truth=truth
-    )
+    with monkeypatch.context() as patch:
+        patch.setattr(evidence_ledger, "load_entries_diagnostic", forbidden)
+        patch.setattr(sys.modules[current_cell_projection.__module__], "current_cell_projection", forbidden)
+        patch.setattr(TargetStore, "_connection", forbidden)
+        patch.setattr(TargetStore, "_artifact", forbidden)
+        summary = build_summary(tmp_path, target=TARGET, vuln_classes=["Authz"], _truth=truth)
+        incomplete_truth = {key: value for key, value in truth.items() if key != "invalid_event_ids"}
+        with pytest.raises(KeyError, match="invalid_event_ids"):
+            build_summary(tmp_path, target=TARGET, _truth=incomplete_truth)
 
     assert summary["closed_cells"] == truth["projection"]["closed_cells"]
     assert summary["identity_v2_diagnostics"] == truth["projection"]["identity_v2_diagnostics"]
     assert summary["evidence_source"] == truth["source"]
     assert summary["entry_count"] == len(truth["records"]) == 1
     assert summary["ledger_diagnostics"]["source_kind"] == "store"
+    assert summary["actor_matrix"]["covered_count"] == 1
+    fresh = build_summary(tmp_path, target=TARGET, vuln_classes=["Authz"])
+    assert fresh["actor_matrix"]["covered_count"] == 0
+    assert fresh["actor_matrix"]["gap_count"] == summary["actor_matrix"]["gap_count"] + 1
+    assert fresh["recent_entries"] == summary["recent_entries"]
+    assert store.binding() == binding
 
 
 def test_ledger_summary_without_a_snapshot_reads_the_one_seam(tmp_path, monkeypatch):
@@ -416,25 +446,40 @@ def test_local_damage_preserves_independent_closure_without_resurrecting_history
         ref = tmp_path / 'evidence' / TARGET / f'{attempt}.txt'
         ref.parent.mkdir(parents=True, exist_ok=True)
         ref.write_text(f'raw {attempt}')
-        url = f'https://{TARGET}/{path}'
-        key = build_closure_cell(url, 'NewBoundary', {'method': 'GET'}, technique='check').key
+        url = f'https://{TARGET}/api/accounts/{path}/export'
+        key = build_closure_cell(url, 'Authz', {'method': 'GET'}, technique='check').key
         store.start_attempt(attempt_id=attempt, source='native', started_at=AT, actor='operator')
-        store.record_execution(attempt_id=attempt, outcome='complete', actor='operator', observations=[{
-            'endpoint': url, 'method': 'GET', 'family': 'NewBoundary', 'observed_at': AT,
+        receipt = store.record_execution(attempt_id=attempt, outcome='complete', actor='operator', observations=[{
+            'endpoint': url, 'method': 'GET', 'family': 'Authz', 'observed_at': AT,
+            'actor': 'owner', 'object_scope': 'own_object', 'variant': 'baseline',
             'description': 'Recorded boundary', 'state_changing': False, 'result': 'tested_clean',
             'artifacts': {'response': ref.relative_to(tmp_path).as_posix()},
             'identity_status': 'complete', 'identity_technique': 'check',
             'identity_v2': key.to_dict(), 'identity_dimensions': key.dimension_map,
             'detail': {'evidence_role': 'subject'},
         }])
-        return ref
+        return ref, receipt['entity_id'] + ':0'
     save('old', 'same')
-    latest = save('latest', 'same')
+    damaged = [save('latest', 'same')]
     save('independent', 'other')
-    assert len(_store_truth(store)['projection']['closed_cells_v2']) == 2
-    latest.write_text('changed')
+    damaged.extend(save(f'bad-{index}', f'bad-{index}') for index in range(5))
+    before = _store_truth(store)
+    assert len(before['projection']['closed_cells_v2']) == 7
+    for raw, _ in damaged:
+        raw.write_text('changed')
+    binding = store.binding()
     truth = _store_truth(store)
     assert truth['health']['status'] == 'partial'
-    assert [c['endpoint'] for c in truth['projection']['closed_cells_v2']] == [f'https://{TARGET}/other']
-    assert truth['projection']['identity_v2_diagnostics']['suppressed_closed_count'] == 1
-    assert len(truth['records']) == 3
+    assert truth['health']['invalid_count'] == 6
+    assert len(truth['health']['invalid_rows']) == 5
+    assert truth['invalid_event_ids'] == sorted(event_id for _, event_id in damaged)
+    assert json.loads(json.dumps(truth)) == truth
+    assert [c['endpoint'] for c in truth['projection']['closed_cells_v2']] == [f'https://{TARGET}/api/accounts/other/export']
+    assert truth['projection']['identity_v2_diagnostics']['suppressed_closed_count'] == 6
+    assert truth['records'] == before['records'] and len(truth['records']) == 8
+    summary = build_summary(tmp_path, target=TARGET, vuln_classes=['Authz'], _truth=truth)
+    owners = [row for row in summary['actor_matrix']['rows'] if row['actor'] == 'owner']
+    assert len(owners) == 7
+    assert sum(row['status'] == 'pending' for row in owners) == 6
+    assert summary['actor_matrix']['covered_count'] == 1
+    assert store.binding() == binding

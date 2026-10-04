@@ -14,7 +14,8 @@ from evidence_ledger import (
     normalize_actor, normalize_object_scope, normalize_variant, normalize_ledger_vuln_class,
 )
 from tools.target_store import StoreError, TargetStore
-from tools.identity_contract import build_closure_cell
+from tools.current_truth import current_cell_projection
+from tools.identity_contract import ClosureCellKey, EndpointKey, build_closure_cell
 
 
 @pytest.fixture
@@ -217,6 +218,133 @@ def test_actor_matrix_requires_matching_method_and_actor(store):
     different = build_summary(store.root, target=store.target, focus_endpoints=[endpoint], vuln_classes=["IDOR"], method="POST")
     peer = next(row for row in different["actor_matrix"]["rows"] if row["actor"] == "peer")
     assert peer["status"] == "missing"
+
+
+def _actor_observation(store, name):
+    """An unregistered actor observation, usable for controls and registration succession."""
+    raw = store.root / "evidence" / store.key / f"{name}.txt"
+    raw.parent.mkdir(parents=True, exist_ok=True)
+    raw.write_text(f"Recorded {name} response", encoding="utf-8")
+    endpoint = f"https://{store.target}/api/accounts/42/export"
+    identity = build_closure_cell(endpoint, "Authz", {
+        "method": "GET", "actor_role": "owner", "object_scope": "own_object",
+    }, technique="fixture_check").key
+    return {
+        "endpoint": endpoint, "method": "GET", "family": "Authz",
+        "actor": "owner", "object_scope": "own_object", "variant": "baseline",
+        "observed_at": "2026-09-25T00:00:00Z", "description": "Recorded actor response",
+        "result": "tested_clean", "state_changing": False,
+        "artifacts": {"response": raw.relative_to(store.root).as_posix()},
+        "identity_status": "complete", "identity_technique": identity.technique,
+        "identity_v2": identity.to_dict(), "identity_dimensions": identity.dimension_map,
+        "detail": {"evidence_role": "subject"},
+    }, raw
+
+
+@pytest.mark.parametrize("fault", ["changed", "missing", "unavailable", "revoked", "control"])
+def test_actor_matrix_uses_current_authorization_without_reviving_history(store, fault):
+    old, _ = _actor_observation(store, "old")
+    latest, raw = _actor_observation(store, "latest")
+    latest["observed_at"] = "2026-09-25T00:00:01Z"
+    control, control_raw = _actor_observation(store, "control")
+    control.update(actor="", identity_status="none", identity_v2={}, identity_dimensions={},
+                   detail={"evidence_role": "control"})
+    for attempt, observations in (("old", [old]), ("latest", [latest, control] if fault == "control" else [latest])):
+        store.start_attempt(attempt_id=attempt, source="fixture", started_at=old["observed_at"], actor="operator")
+        receipt = store.record_execution(attempt_id=attempt, outcome="complete", observations=observations, actor="operator")
+    operation_id = receipt["entity_id"]
+    record_observation(store, attempt="independent", endpoint=f"https://{store.target}/api/other/accounts/42",
+                       family="Authz", identity_dimensions={"method": "GET"})
+    kwargs = dict(target=store.target, focus_endpoints=[latest["endpoint"]], vuln_classes=["Authz"])
+    truth = current_cell_projection(store.root, store.target)
+    before = build_summary(store.root, _truth=truth, **kwargs)
+    assert before["actor_matrix"]["covered_count"] == 2
+    if fault == "control":
+        raw = control_raw
+    original = raw.read_bytes()
+    if fault == "missing":
+        raw.unlink()
+    elif fault in {"changed", "control"}:
+        raw.write_bytes(b"Changed evidence")
+    else:
+        event = next(row for row in truth["records"] if row["event_id"] == f"{operation_id}:0")
+        store.record_artifact_event(command_id="deny", artifact_id=event["evidence_refs"][0]["id"],
+                                    dimension="provenance" if fault == "revoked" else "availability",
+                                    state=fault, reason="Fixture denial", actor="operator")
+    binding = store.binding()
+    damaged_truth = current_cell_projection(store.root, store.target)
+    damaged = build_summary(store.root, _truth=damaged_truth, **kwargs)
+    denied = {f"{operation_id}:0"} | ({f"{operation_id}:1"} if fault == "control" else set())
+    assert set(damaged_truth["invalid_event_ids"]) == denied
+    assert damaged_truth["records"] == truth["records"]
+    assert damaged["actor_matrix"]["covered_count"] == 1
+    assert damaged["actor_matrix"]["gap_count"] == before["actor_matrix"]["gap_count"] + 1
+    for prior, current in zip(before["actor_matrix"]["rows"], damaged["actor_matrix"]["rows"]):
+        if prior["evidence_ref"] == latest["artifacts"]["response"]:
+            assert current == {**prior, "status": "pending"}
+        else:
+            assert current == prior
+    assert damaged["result_counts"] == before["result_counts"]
+    assert damaged["recent_entries"] == before["recent_entries"]
+    assert damaged["entry_count"] == before["entry_count"]
+    raw.write_bytes(original)
+    restored = build_summary(store.root, **kwargs)
+    expected = damaged if fault in {"unavailable", "revoked"} else before
+    assert restored["actor_matrix"] == expected["actor_matrix"]
+    assert restored["ledger_status"] == ("partial" if expected is damaged else "ready")
+    assert store.binding() == binding
+
+
+@pytest.mark.parametrize("replacement,independent", [("empty", False), ("empty", True), ("backdated", False)])
+def test_actor_matrix_honors_registration_succession(store, replacement, independent):
+    old, old_raw = _actor_observation(store, "predecessor")
+    successor, _ = _actor_observation(store, "successor")
+    if independent:
+        other, _ = _actor_observation(store, "independent")
+        other["result"] = "signal"
+        store.start_attempt(attempt_id="independent", source="fixture", started_at=other["observed_at"], actor="operator")
+        store.record_execution(attempt_id="independent", outcome="complete", observations=[other], actor="operator")
+    store.start_attempt(attempt_id="revised", source="fixture", started_at=old["observed_at"], actor="operator")
+    old["observed_at"] = "2026-09-25T00:00:02Z"
+    receipt = store.record_execution(attempt_id="revised", outcome="complete", observations=[old], actor="operator")
+    successor.update(observed_at="2026-09-25T00:00:01Z", result="lead")
+    store.record_execution(attempt_id="revised", outcome="unknown" if replacement == "empty" else "complete",
+                           observations=[] if replacement == "empty" else [successor], actor="operator",
+                           expected_operation=receipt["entity_id"])
+    old_raw.write_bytes(b"Retired evidence is not current authority")
+    binding = store.binding()
+    truth = current_cell_projection(store.root, store.target)
+    summary = build_summary(store.root, target=store.target, vuln_classes=["Authz"], _truth=truth)
+    owner = next(row for row in summary["actor_matrix"]["rows"] if row["actor"] == "owner")
+    expected = successor if replacement == "backdated" else other if independent else None
+    assert owner["status"] == ("pending" if replacement == "backdated" else "covered" if independent else "missing")
+    assert owner["latest_result"] == (expected["result"] if expected else "")
+    assert owner["latest_ts"] == (expected["observed_at"].replace("Z", "+00:00") if expected else "")
+    assert owner["evidence_ref"] == (expected["artifacts"]["response"] if expected else "")
+    assert truth["health"]["status"] == "ready" and truth["invalid_event_ids"] == []
+    retired = next(row for row in truth["records"] if row["event_id"] == receipt["entity_id"] + ":0")
+    assert retired["superseded"] and retired["result"] == "tested_clean"
+    assert summary["entry_count"] == 1 + int(independent) + int(replacement == "backdated")
+    assert store.binding() == binding
+
+
+@pytest.mark.parametrize("result,status", [
+    ("tested_clean", "covered"), ("signal", "covered"), ("candidate", "covered"),
+    ("blocked_redline", "blocked"), ("not_applicable", "not_applicable"),
+])
+def test_actor_matrix_preserves_healthy_historical_identity_results(store, result, status):
+    observation, _ = _actor_observation(store, "historical")
+    identity = ClosureCellKey(EndpointKey(observation["endpoint"], schema_version=2), "Authz",
+                              observation["identity_dimensions"], technique="fixture_check", schema_version=2)
+    observation.update(identity_v2=identity.to_dict(), result=result)
+    store.start_attempt(attempt_id="historical", source="fixture", started_at=observation["observed_at"], actor="operator")
+    store.record_execution(attempt_id="historical", outcome="complete", observations=[observation], actor="operator")
+    truth = current_cell_projection(store.root, store.target)
+    summary = build_summary(store.root, target=store.target, vuln_classes=["Authz"], _truth=truth)
+    owner = next(row for row in summary["actor_matrix"]["rows"] if row["actor"] == "owner")
+    assert owner["status"] == status and owner["latest_result"] == result
+    assert truth["invalid_event_ids"] == []
+    assert summary["closed_cells_v2"] == []
 
 
 @pytest.mark.parametrize("endpoint,classes", [

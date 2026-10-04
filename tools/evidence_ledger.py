@@ -330,12 +330,17 @@ def _entry_requirement_key(entry: dict) -> tuple[str, str, str, str, str, str]:
     )
 
 
-def actor_matrix_status(entries: list[dict], requirements: list[dict]) -> list[dict]:
+def actor_matrix_status(
+    entries: list[dict], requirements: list[dict], *,
+    invalid_event_ids: frozenset[str] | None = frozenset(),
+) -> list[dict]:
     # 单次调用内建索引：每个 entry 只 canonicalize 一次，requirement 查 dict。
     # 语义与逐对 _entry_matches_requirement 完全一致（latest-wins：同 key 的
     # 后写条目覆盖先写），owner 写入后随调用结束失效，无持久缓存。
     indexed: dict[tuple[str, str, str, str, str, str], dict] = {}
     for entry in entries:
+        if entry.get("superseded"):
+            continue
         indexed[_entry_requirement_key(entry)] = entry
     rows: list[dict] = []
     for requirement in requirements:
@@ -350,7 +355,9 @@ def actor_matrix_status(entries: list[dict], requirements: list[dict]) -> list[d
         status = "missing"
         if latest:
             result = str(latest.get("result") or "")
-            if not observation_supports_coverage(latest):
+            # Check the selected result; filtering damaged history would revive older evidence.
+            if (invalid_event_ids is None or latest.get("event_id") in invalid_event_ids
+                    or not observation_supports_coverage(latest)):
                 status = "pending"
             elif result in COVERING_RESULTS:
                 status = "covered"
@@ -408,6 +415,8 @@ def build_summary(
         truth = current_cell_projection(repo_root, resolved_target)
     diagnostics = {**dict(truth.get("health") or {}), "entries": list(truth["records"])}
     entries = list(diagnostics.get("entries") or [])
+    invalid_event_ids = truth["invalid_event_ids"]
+    invalid_event_ids = frozenset(invalid_event_ids) if invalid_event_ids is not None else None
     endpoints = _focus_endpoint_values(focus_endpoints, entries)
     # ``None`` keeps the legacy caller default; an explicit empty list means
     # no owner-backed actor-matrix classes for this projection.
@@ -417,7 +426,9 @@ def build_summary(
     actor_rows: list[dict] = []
     for endpoint in endpoints:
         for vuln in selected_vulns[:3]:
-            actor_rows.extend(actor_matrix_status(entries, actor_requirements(endpoint, vuln, method)))
+            actor_rows.extend(actor_matrix_status(
+                entries, actor_requirements(endpoint, vuln, method), invalid_event_ids=invalid_event_ids,
+            ))
     actor_gaps = [
         row for row in actor_rows
         if row.get("status") in {"missing", "pending", "blocked"}

@@ -777,11 +777,12 @@ def test_context_pack_surfaces_actor_matrix_gaps(tmp_path, pack_store):
     _seed_recon(tmp_path, "target.com", [
         "https://api.target.com/api/accounts/42/export?account_id=42",
     ])
-    _record_primary_context_evidence(
+    raw = _record_primary_context_evidence(
         pack_store, tmp_path, "owner-baseline",
         endpoint="https://api.target.com/api/accounts/42/export", family="IDOR",
-        actor="owner", object_scope="own", variant="baseline",
+        actor="owner", object_scope="own_object", variant="baseline",
     )
+    binding = pack_store.binding()
 
     pack = build_context_pack(
         tmp_path,
@@ -802,6 +803,18 @@ def test_context_pack_surfaces_actor_matrix_gaps(tmp_path, pack_store):
     assert any("Actor gap" in item and "peer" in item for item in pack["evidence_anchors"])
     assert any("record-evidence" in item for item in pack["write_back"])
     assert "Actor matrix gaps:" in output
+    assert pack["source_summary"]["actor_matrix_covered"] > 0
+    raw.write_bytes(b"Changed actor evidence")
+    damaged = build_context_pack(tmp_path, target="target.com", focus="api-idor")
+    assert damaged["source_summary"]["evidence_ledger_entries"] == 1
+    assert damaged["source_summary"]["evidence_source_status"] == "partial"
+    assert damaged["source_summary"]["actor_matrix_covered"] == 0
+    assert damaged["source_summary"]["actor_matrix_gaps"] == (
+        pack["source_summary"]["actor_matrix_gaps"] + pack["source_summary"]["actor_matrix_covered"]
+    )
+    assert any(row["actor"] == "owner" and row["status"] == "pending" for row in damaged["actor_matrix_gaps"])
+    assert pack_store.binding() == binding
+    assert pack_store.page("actions")["total"] == 0
 
 
 def test_context_pack_without_owner_backed_classes_keeps_context_but_no_actor_matrix(tmp_path, pack_store):

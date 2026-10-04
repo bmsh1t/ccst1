@@ -79,8 +79,8 @@ def _store_truth(store: TargetStore) -> dict:
             invalid_ids.add(operation_id)
     status = "partial" if truncated or invalid_operations else "ready"
     projection = build_current_cell_projection(records)
+    invalid_event_ids: set[str] | None = set()
     if status == "partial":
-        invalid_ids = {item["operation_id"] for item in invalid_operations}
         damaged = [record for record in records
                    if str(record.get("event_id") or "").rsplit(":", 1)[0] in invalid_ids]
         # Scope damage to whole operations, including controls on which their
@@ -93,9 +93,10 @@ def _store_truth(store: TargetStore) -> dict:
         ) and invalid_ids <= {
             str(record["event_id"]).rsplit(":", 1)[0] for record in damaged
         }
+        invalid_event_ids = {record["event_id"] for record in damaged} if scoped else None
         projection = suppress_unauthorized_closures(
             projection, reason=f"store_{status}",
-            invalid_event_ids={record["event_id"] for record in damaged} if scoped else None,
+            invalid_event_ids=invalid_event_ids,
         )
     health = {
         "status": status,
@@ -117,6 +118,7 @@ def _store_truth(store: TargetStore) -> dict:
         "health": health,
         "records": records,
         "projection": projection,
+        "invalid_event_ids": sorted(invalid_event_ids) if invalid_event_ids is not None else None,
     }
 
 

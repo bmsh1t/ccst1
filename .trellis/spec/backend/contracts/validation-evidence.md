@@ -505,12 +505,78 @@ wire declarations never substitute for impact evidence.
 
 ## Local integrity failure boundary
 
+### 1. Scope / Trigger
+
+Changes to acquired evidence integrity, closure, or actor-coverage projections.
+
+### 2. Signatures
+
+`current_cell_projection(repo_root, target, *, _store=None)` returns the checked
+truth including `invalid_event_ids`. `build_summary(..., _truth=None)` consumes
+that snapshot. `actor_matrix_status(entries, requirements, *,
+invalid_event_ids=frozenset())` remains a pure reducer.
+
+### 3. Contracts
+
 `current_cell_projection` validates all artifacts on its captured Store snapshot.
 Known damaged operations invalidate their own subject/control-dependent closures
 only after latest-record reduction. Never remove damaged input first: doing so
 would resurrect old evidence. Unknown identities or truncated acquisition still
 suppress all closure authority. History and diagnostics remain readable.
-Regression: `test_local_damage_preserves_independent_closure_without_resurrecting_history`.
+
+The same acquisition returns JSON-safe `invalid_event_ids`: `[]` for no integrity
+denial, a sorted complete list for operation-local denial, or `null` for global
+denial. This scope is shared with actor coverage; `health.invalid_rows` is only a
+five-item display sample. Controls deny their whole operation. Neither the scope
+nor the captured health is an authorization cache; later reads recheck raw bytes
+and artifact events even at the same Store revision.
+
+`build_summary(..., _truth=...)` requires this scope in a supplied snapshot and
+does not infer it or reread missing fields. Actor reduction first removes
+owner-superseded registrations, selects the latest matching record, then checks
+integrity. Denied matches become `pending` while retaining their original
+result/time/reference; absent matches stay `missing`. Never remove damaged input
+before latest selection or revive an older result. Independent healthy actor
+coverage survives local damage, including failures beyond the diagnostic sample.
+
+Actor matching and result semantics remain separate from closure identity:
+healthy historical v2/incomplete identities and signal/candidate observations keep
+their existing actor meaning. No new subject-only or v3 gate is introduced.
+The two-argument records API is retained; the production summary always passes
+acquired scope.
+Context Pack and Checkpoint reuse that answer without new reads, hashes, domain
+writes, or automatic actions. History and result counts are not filtered.
+
+### 4. Validation & Error Matrix
+
+| Condition | Result |
+| --- | --- |
+| Intact evidence, empty denial scope | Existing actor result mapping |
+| Selected event denied, or global denial | `pending`; preserve result/time/reference |
+| No current matching record | `missing`; empty latest fields |
+| Supplied truth lacks `invalid_event_ids` | `KeyError`; no fallback or recheck |
+| Missing/unreadable Store | Existing explicit Store failure, not empty health |
+
+### 5. Good/Base/Bad Cases
+
+Good: control damage denies its subject while independent healthy actors remain
+covered. Base: healthy v2 evidence retains actor meaning without closing v3 cells.
+Bad: interpreting five diagnostic samples as the complete authorization scope.
+
+### 6. Tests Required
+
+`tests/test_evidence_ledger.py` covers changed/missing/unavailable/revoked material,
+controls, restoration, supersession, and historical actor states.
+`test_local_damage_preserves_independent_closure_without_resurrecting_history`
+checks six invalid operations beyond five samples and prevents old-result revival.
+Current-truth tests cover global denial, JSON roundtrip, and no-I/O snapshot reuse;
+Context Pack/Checkpoint actor tests check gaps, retained counts, and no writes/actions.
+
+### 7. Wrong vs Correct
+
+Wrong: filter damaged history, then select the latest remaining actor result.
+Correct: exclude owner-superseded registrations, select latest, then apply the
+same acquisition's complete denial scope without rewriting the historical result.
 
 ## Registration succession precedes closure interpretation
 
@@ -521,6 +587,10 @@ identity, without deleting history. Invalid v3 identity in the current
 registration is a visible integrity error; it never reactivates the predecessor.
 Artifact verification for current closure excludes superseded operations. A new
 attempt remains a separate execution; this rule does not merge similar attempts.
+Actor coverage also excludes superseded registrations before indexing, even for
+zero-observation or backdated replacements. Other unsuperseded attempts still
+participate in the existing timestamp/revision/step order; succession does not
+create an actor-key tombstone. Superseded-only requirements become `missing`.
 
 
 ## Scenario: Authored report publication without narrative templates

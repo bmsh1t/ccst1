@@ -1879,6 +1879,8 @@ def test_checkpoint_surfaces_actor_matrix_gaps_without_creating_actions(tmp_path
     endpoint = "https://api.target.com/api/accounts/42/export"
     _seed_recon(tmp_path, store.target, [endpoint + "?account_id=42"])
     _record_observation(store, endpoint=endpoint, family="IDOR", result="tested_clean")
+    raw = tmp_path / store.closure_records()["records"][0]["evidence_ref"]
+    binding = store.binding()
     checkpoint = build_checkpoint(tmp_path, target=store.target)
     output = format_checkpoint(checkpoint)
     assert checkpoint["evidence_ledger"]["entry_count"] == 1
@@ -1887,6 +1889,21 @@ def test_checkpoint_surfaces_actor_matrix_gaps_without_creating_actions(tmp_path
     assert checkpoint["next_action_queue"] == []
     assert "Evidence ledger:" in output
     assert "actor matrix gaps:" in output
+    covered = checkpoint["evidence_ledger"]["actor_matrix"]["covered_count"]
+    assert covered > 0
+    raw.write_bytes(b"Changed actor evidence")
+    damaged = build_checkpoint(tmp_path, target=store.target)
+    assert damaged["evidence_ledger"]["entry_count"] == 1
+    assert damaged["evidence_ledger"]["actor_matrix"]["covered_count"] == 0
+    assert damaged["evidence_ledger"]["actor_matrix"]["gap_count"] == (
+        checkpoint["evidence_ledger"]["actor_matrix"]["gap_count"] + covered
+    )
+    assert any(row["actor"] == "owner" and row["status"] == "pending"
+               for row in damaged["evidence_ledger"]["actor_matrix"]["gaps"])
+    assert damaged["target_write_back"]["next"] == []
+    assert damaged["next_action_queue"] == []
+    assert store.binding() == binding
+    assert store.page("actions")["total"] == 0
 
 
 def test_checkpoint_does_not_default_actor_matrix_without_owner_family(tmp_path, store):
