@@ -661,3 +661,39 @@ Restored the previous Codex session, completed the approved F05 plan, implemente
 ### Next Steps
 
 - F05 complete; any subsequent audit item needs a separate scope decision.
+
+
+## Session 26: F06 report failure propagation closeout
+<!-- trellis-session: v=2 fp=f75c7df45f265acf -->
+
+**Date**: 2026-10-06
+**Task**: F06 report failure propagation closeout
+**Branch**: `main`
+
+### Summary
+
+Restored Codex session 01a10be2-70a1-7752-8f9d-8b6df708301f, revalidated the completed F06 implementation, committed its four reviewed files, and archived the task.
+
+### Main Changes
+
+- Distinguish valid report counts from execution/protocol errors; preserve batch continuation and propagate CLI exit 2 through the actual entrypoint.
+- Preserve successful reports and no-work success; update the existing validation/evidence contract without changing shared execution or publication owners.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b63ad6a98c17c14305612ed387028d91a0de5fd9` | fix: propagate report generation failures |
+
+### Testing
+
+- [OK] python3 -m pytest -q tests/test_finding_index.py tests/test_hunt_initialization.py -k 'hunt_report or report_only or non_report': 27 passed, exit 0 on 2026-10-06.
+- [OK] Independent read-only review found no blockers; git diff --check passed. No full-suite, build, lint, typecheck, real-target or network operations.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- F06 complete; F07/F08 and subsequent tasks remain untouched. No remote push.
