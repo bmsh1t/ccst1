@@ -697,3 +697,41 @@ Restored Codex session 01a10be2-70a1-7752-8f9d-8b6df708301f, revalidated the com
 ### Next Steps
 
 - F06 complete; F07/F08 and subsequent tasks remain untouched. No remote push.
+
+
+## Session 27: F07/F08 报告附件归属与完整性收尾
+<!-- trellis-session: v=2 fp=fe01f17883f524ff -->
+
+**Date**: 2026-10-06
+**Task**: F07/F08 报告附件归属与完整性收尾
+**Branch**: `main`
+
+### Summary
+
+仅发布所选正文引用的既有截图；Store 统一校验发布副本，保留原始证据、历史事件与健康重试。
+
+### Main Changes
+
+- 发布器与 Store 复用受管引用和安全文件读取；无引用不访问截图目录，损坏副本使报告失效并拒绝新交付。
+- 独立复核发现并修正已登记重试补回文件、直接登记重放绕过正文事件两处缺口；新回归覆盖四个参数场景。
+- 用户确认后提交七文件工作批次；AC1–AC8 满足，任务归档至 .trellis/tasks/archive/2026-10/10-04-report-attachment-closure；归档提交 c03eb26，与工作提交分离。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `fd02dc84cf829d418192354f72088c19ba20ed0b` | fix: bind report attachment ownership and integrity |
+
+### Testing
+
+- [OK] 首轮：python3 -m pytest -q tests/test_finding_index.py tests/test_target_store.py tests/test_validate_target_mode.py -k 'attachment or screenshot or attach_images or report or delivery_event or finding_authorization' → 130 passed（两处复核修复前）。
+- [OK] 修复后：python3 -m pytest -q tests/test_finding_index.py tests/test_target_store.py -k 'report_attachment_registered_retry or report_attachment_direct_replay or report_attachment_retry or report_registration or explicit_report_retry_does_not_repair or report_attachment_damage_invalidates' → 13 passed，含四个新增场景。
+- [OK] 最终两项独立只读复核无阻塞；提交前 git diff --check 及暂存 diff 检查通过。收尾未重复跑 pytest；未运行全仓测试、构建、lint、typecheck、真实目标或网络验证。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- F09 安装清单结构错误边界仍待独立规划批准；本轮不启动、不推送，不处理其他历史任务或全局安装。

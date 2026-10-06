@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 26
+- **Total Sessions**: 27
 - **Last Active**: 2026-10-06
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~699 | Active |
+| `journal-1.md` | ~737 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 27 | 2026-10-06 | F07/F08 报告附件归属与完整性收尾 | `fd02dc84cf829d418192354f72088c19ba20ed0b` | `main` |
 | 26 | 2026-10-06 | F06 report failure propagation closeout | `b63ad6a98c17c14305612ed387028d91a0de5fd9` | `main` |
 | 25 | 2026-10-04 | F05 actor coverage evidence authorization | `70871aa` | `main` |
 | 24 | 2026-10-03 | Restore Codex session and close F04 authorization race | `704009cb8f1a49b31e40824e04bc5c1904c4b19a` | `-` |
