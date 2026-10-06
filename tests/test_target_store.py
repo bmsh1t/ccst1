@@ -17,6 +17,7 @@ from tools.target_store import (
     ConflictError,
     StoreError,
     TargetStore,
+    report_attachment_refs,
     runtime_store,
     target_backend,
     target_cutover_lock,
@@ -511,6 +512,194 @@ def test_report_registration_binds_current_delivery_and_artifact(tmp_path):
         delivery_id="delivery1", artifact=str(report), actor="operator",
     )["replayed"] is True
     assert receipt["entity_id"] != registered["entity_id"]
+
+
+def _report_attachment_fixture(tmp_path):
+    store = make_store(tmp_path)
+    record(store, tmp_path)
+    assessment(store)
+    store.decide_delivery(command_id="delivery1", finding_id="f1", assessment_id="assess1",
+                          destination="internal-review", status="eligible", reason="Ready",
+                          actor="operator", expected_decision=None)
+    report = tmp_path / "reports" / store.key / "report.md"
+    data = b"published screenshot"
+    image = report.parent / "poc_screenshots" / (hashlib.sha256(data).hexdigest() + ".png")
+    image.parent.mkdir(parents=True)
+    image.write_bytes(data)
+    report.write_bytes(f"# Report\r\n![PoC 1](poc_screenshots/{image.name})\r\n".encode())
+    command = dict(command_id="report1", report_id="report1", finding_id="f1",
+                   assessment_id="assess1", delivery_id="delivery1", artifact=str(report), actor="operator")
+    return store, report, image, command
+
+
+def test_report_attachment_refs_only_interpret_the_managed_tool_protocol():
+    ref = "poc_screenshots/" + hashlib.sha256(b"screenshot").hexdigest()
+    line = f"![截图]({ref}.png)".encode()
+    ignored = b"\n".join([
+        b"````python", b"```", line, b"````", b"~~~", line, b"~~~",
+        b"    " + line, b"\t" + line, b"`" + line + b"`", b"\\" + line,
+        b"example: " + line, b"<img src='" + ref.encode() + b".png'>",
+        f"![external](https://images.test/{ref}.png)".encode(), b"![custom](images/demo.png)",
+        b"poc_screenshots is a directory, not an attachment declaration.", b"\xff binary legacy body",
+    ])
+    assert report_attachment_refs(ignored) == ()
+    assert report_attachment_refs(ignored + b"\r\n" + line + b"\r\n" + line) == (ref + ".png",)
+    assert report_attachment_refs(f"![no suffix]({ref})\n".encode()) == (ref,)
+
+
+@pytest.mark.parametrize("target", [
+    "poc_screenshots/manual.png", "poc_screenshots/" + "A" * 64 + ".png",
+    "poc_screenshots/../outside.png", "/poc_screenshots/" + "a" * 64,
+    "../poc_screenshots/" + "a" * 64, "poc_screenshots\\" + "a" * 64,
+    "poc_screenshots/" + "a" * 64 + ".png?download", "poc_screenshots/" + "a" * 64 + ".png#fragment",
+    "poc_screenshots/" + "a" * 64 + "%2Epng", "poc_screenshots/",
+])
+def test_report_attachment_refs_reject_malformed_managed_paths(target):
+    with pytest.raises(StoreError, match="managed report attachment"):
+        report_attachment_refs(f"![PoC 1]({target})\n".encode())
+
+
+@pytest.mark.parametrize("damage", ["missing", "changed", "empty", "symlink", "directory-symlink", "fifo"])
+def test_report_attachment_direct_registration_rejects_invalid_files(tmp_path, damage):
+    store, report, image, command = _report_attachment_fixture(tmp_path)
+    if damage == "directory-symlink":
+        moved = image.parent.with_name("other-images")
+        image.parent.rename(moved)
+        image.parent.symlink_to(moved, target_is_directory=True)
+    elif damage in {"changed", "empty"}:
+        image.write_bytes(b"changed" if damage == "changed" else b"")
+    else:
+        image.unlink()
+        if damage == "symlink":
+            original = image.parent.parent / "original.png"
+            original.write_bytes(b"published screenshot")
+            image.symlink_to(original)
+        elif damage == "fifo":
+            os.mkfifo(image)
+    before = store.binding(), report.read_bytes()
+
+    with pytest.raises(StoreError, match="report asset"):
+        store.register_report(**command)
+
+    assert (store.binding(), report.read_bytes()) == before
+    assert store.finding("f1")["reports"] == []
+    assert store.command_receipt("report1") is None
+
+
+@pytest.mark.parametrize("body", [b"# No screenshot\r\n", b"\xff non-UTF-8 legacy report"])
+def test_report_attachment_free_direct_reports_preserve_existing_artifact_contract(tmp_path, body):
+    store, report, image, command = _report_attachment_fixture(tmp_path)
+    report.write_bytes(body)
+    image.unlink()
+    image.parent.rmdir()
+    image.parent.symlink_to(tmp_path / "absent", target_is_directory=True)
+    receipt = store.register_report(**command)
+    before = store.binding(), report.stat().st_ino
+    assert not store.finding("f1")["reports"][0]["stale"]
+    replay = store.register_report(**command)
+    assert replay["replayed"] and replay["content_sha256"] == receipt["content_sha256"]
+    assert (store.binding(), report.stat().st_ino) == before
+    assert report.read_bytes() == body
+
+
+@pytest.mark.parametrize("operation", ["register_report", "record_delivery_event"])
+@pytest.mark.parametrize("changed_file", ["body", "image", "missing-image"])
+def test_report_attachment_precommit_file_drift_is_rejected(tmp_path, monkeypatch, operation, changed_file):
+    store, report, image, command = _report_attachment_fixture(tmp_path)
+    if operation == "record_delivery_event":
+        store.register_report(**command)
+        command = dict(command_id="event", event_id="event", report_id="report1",
+                       external_ref="local-receipt", submitted_at=AT, actor="operator")
+    before = store.binding()
+    run_command = store._command
+
+    def drift(name, *args, **kwargs):
+        if name == operation:
+            if changed_file == "missing-image":
+                image.unlink()
+            else:
+                (report if changed_file == "body" else image).write_bytes(b"changed after preflight")
+        return run_command(name, *args, **kwargs)
+
+    monkeypatch.setattr(store, "_command", drift)
+    with pytest.raises(StoreError, match="before commit"):
+        getattr(store, operation)(**command)
+    assert store.binding() == before
+    assert store.command_receipt(command["command_id"]) is None
+    assert store.finding("f1")["delivery_events"] == []
+
+
+def test_report_attachment_hashes_stay_outside_write_transactions(tmp_path, monkeypatch):
+    store, _, _, command = _report_attachment_fixture(tmp_path)
+    connect, sha256 = store._connection, hashlib.sha256
+    writers, hashes = [], []
+
+    @contextmanager
+    def connection(**kwargs):
+        with connect(**kwargs) as conn:
+            writers.append(kwargs.get("write", False))
+            try:
+                yield conn
+            finally:
+                writers.pop()
+
+    def checked_hash(*args, **kwargs):
+        assert not any(writers), "file or command hashing inside a write transaction"
+        hashes.append(True)
+        return sha256(*args, **kwargs)
+
+    monkeypatch.setattr(store, "_connection", connection)
+    monkeypatch.setattr(hashlib, "sha256", checked_hash)
+    store.register_report(**command)
+    store.record_delivery_event(command_id="event", event_id="event", report_id="report1",
+                                external_ref="local-receipt", submitted_at=AT, actor="operator")
+    assert hashes and len(store.finding("f1")["delivery_events"]) == 1
+
+
+@pytest.mark.parametrize("dimension, state", [("availability", "unavailable"), ("provenance", "revoked")])
+def test_report_attachment_delivery_rechecks_body_events_before_commit(tmp_path, monkeypatch, dimension, state):
+    store, _, _, command = _report_attachment_fixture(tmp_path)
+    store.register_report(**command)
+    artifact_id = store.finding("f1")["reports"][0]["artifact_id"]
+    run_command = store._command
+
+    def revoke(name, *args, **kwargs):
+        if name == "record_delivery_event":
+            store.record_artifact_event(command_id="revoke-body", artifact_id=artifact_id,
+                                        dimension=dimension, state=state, reason="Changed after preflight",
+                                        actor="operator")
+        return run_command(name, *args, **kwargs)
+
+    monkeypatch.setattr(store, "_command", revoke)
+    with pytest.raises(StoreError, match="no longer authorized"):
+        store.record_delivery_event(command_id="event", event_id="event", report_id="report1",
+                                    external_ref="local-receipt", submitted_at=AT, actor="operator")
+    assert store.command_receipt("revoke-body") is not None
+    assert store.command_receipt("event") is None
+    assert store.finding("f1")["delivery_events"] == []
+
+
+@pytest.mark.parametrize("dimension, state, restored", [
+    ("availability", "unavailable", "available"), ("provenance", "revoked", "trusted"),
+])
+def test_report_attachment_direct_replay_rejects_revoked_body(tmp_path, dimension, state, restored):
+    store, _, _, command = _report_attachment_fixture(tmp_path)
+    receipt = store.register_report(**command)
+    artifact_id = store.finding("f1")["reports"][0]["artifact_id"]
+    store.record_artifact_event(command_id="deny-body", artifact_id=artifact_id,
+                                dimension=dimension, state=state, reason="No longer authorized", actor="operator")
+    before = store.binding()
+    with pytest.raises(StoreError, match="stale or damaged"):
+        store.register_report(**command)
+    assert store.binding() == before
+    assert store.command_receipt("report1")["content_sha256"] == receipt["content_sha256"]
+
+    store.record_artifact_event(command_id="restore-body", artifact_id=artifact_id,
+                                dimension=dimension, state=restored, reason="Authorization restored", actor="operator")
+    before = store.binding()
+    replay = store.register_report(**command)
+    assert replay["replayed"] and replay["content_sha256"] == receipt["content_sha256"]
+    assert store.binding() == before
 
 
 def test_report_registration_rejects_ineligible_or_stale_delivery(tmp_path):

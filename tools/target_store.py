@@ -369,6 +369,81 @@ class FindingNotFoundError(StoreError):
     """An admitted Store has no finding with the requested ID."""
 
 
+def report_attachment_refs(content: bytes) -> tuple[str, ...]:
+    """Read the standalone, content-addressed image links emitted by the report tool."""
+    refs = {}
+    fence = b""
+    for line in content.splitlines():
+        marker = re.match(rb" {0,3}(`{3,}|~{3,})(.*)$", line)
+        if fence:
+            if (marker and marker[1][:1] == fence[:1] and len(marker[1]) >= len(fence)
+                    and not marker[2].strip()):
+                fence = b""
+            continue
+        if marker and not (marker[1].startswith(b"`") and b"`" in marker[2]):
+            fence = marker[1]
+            continue
+        image = re.fullmatch(rb" {0,3}!\[[^\]\r\n]*\]\((.*)", line)
+        if not image:
+            continue
+        tail = image[1].rstrip()
+        target = tail[:-1] if tail.endswith(b")") else tail
+        if (target.startswith(b"//") or (re.match(rb"[A-Za-z][A-Za-z0-9+.-]*:", target)
+                and not re.match(rb"[A-Za-z]:[/\\]", target))):
+            continue
+        if not re.search(rb"(?:^|[/\\<])poc_screenshots(?:[/\\>]|$)", target):
+            continue
+        if not tail.endswith(b")") or not re.fullmatch(
+            rb"poc_screenshots/[0-9a-f]{64}(?:\.[^/\\\s().?#%<>:\x00]+)?", target,
+        ):
+            raise StoreError("invalid managed report attachment; use a content-addressed screenshot link")
+        try:
+            ref = target.decode("utf-8")
+        except UnicodeError as exc:
+            raise StoreError("managed report attachment path must be UTF-8") from exc
+        if any(char.isspace() for char in ref):
+            raise StoreError("managed report attachment path must not contain whitespace")
+        refs[ref] = None
+    return tuple(refs)
+
+
+def _report_file_version(value: os.stat_result) -> tuple[int, ...]:
+    return value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns
+
+
+def read_report_asset(path: Path, sha256: str) -> tuple[bytes, tuple[int, ...]]:
+    """Capture a nonempty regular report file without following any symlink component."""
+    path = Path(os.path.abspath(path))
+    try:
+        if path != path.resolve():
+            raise StoreError(f"report asset path must not contain symlinks: {path}")
+        parent_fd = os.open(path.anchor, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            for part in path.parts[1:-1]:
+                child_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+                os.close(parent_fd)
+                parent_fd = child_fd
+            fd = os.open(path.name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=parent_fd)
+        finally:
+            os.close(parent_fd)
+        with os.fdopen(fd, "rb") as handle:
+            before = os.fstat(handle.fileno())
+            if not stat.S_ISREG(before.st_mode) or not before.st_size:
+                raise StoreError(f"report asset must be a non-empty regular file: {path}")
+            # ponytail: one asset in memory; stream if reports gain large binary attachments.
+            data = handle.read()
+            after = os.fstat(handle.fileno())
+        version = _report_file_version(after)
+        if (path != path.resolve() or _report_file_version(before) != version
+                or _report_file_version(path.stat(follow_symlinks=False)) != version):
+            raise ConflictError(f"report asset changed while reading: {path}; retry with stable files")
+        if hashlib.sha256(data).hexdigest() != sha256:
+            raise StoreError(f"report asset digest mismatch: {path}")
+        return data, version
+    except (OSError, RuntimeError) as exc:
+        raise StoreError(f"report asset unavailable: {path}: {exc}") from exc
+
+
 _ARTIFACT_EVENT_STATES = {
     "availability": frozenset({"available", "unavailable"}),
     "provenance": frozenset({"trusted", "revoked"}),
@@ -1108,6 +1183,29 @@ class TargetStore:
             "events": events,
         }
 
+    def _report_files(self, artifact: dict) -> list[tuple[Path, tuple[int, ...]]]:
+        path = self.root / artifact["ref"]
+        content, version = read_report_asset(path, artifact["sha256"])
+        files = [(path, version)]
+        for ref in report_attachment_refs(content):
+            asset = path.parent / ref
+            _, version = read_report_asset(asset, asset.name[:64])
+            files.append((asset, version))
+        return files
+
+    def _check_report_files(self, conn, artifact: dict, files: list[tuple[Path, tuple[int, ...]]]) -> None:
+        """Recheck captured file identities and body events without hashing in the write transaction."""
+        for path, expected in files:
+            try:
+                if path != path.resolve() or _report_file_version(path.stat(follow_symlinks=False)) != expected:
+                    raise ConflictError(f"report asset changed before commit: {path}; retry with stable files")
+            except (OSError, RuntimeError) as exc:
+                raise ConflictError(f"report asset unavailable before commit: {path}") from exc
+        events = self._artifact_events(conn, artifact["id"])
+        if (events.get("availability", {}).get("state") == "unavailable"
+                or events.get("provenance", {}).get("state") == "revoked"):
+            raise StoreError(f"report artifact is no longer authorized: {artifact['ref']}")
+
     def artifact_status(self, artifact_id: str) -> dict:
         """Derive current usability from immutable bytes plus append-only events."""
         artifact_id = _identifier(artifact_id, "artifact_id")
@@ -1402,6 +1500,7 @@ class TargetStore:
         assessment_id = _identifier(assessment_id, "assessment_id")
         delivery_id = _identifier(delivery_id, "delivery_id")
         artifact_value = self._artifact(artifact)
+        report_files = self._report_files(artifact_value)
         current = self.finding(finding_id)
         current_assessment = current.get("assessment") or {}
         current_delivery = next(
@@ -1411,6 +1510,8 @@ class TargetStore:
         if (current_assessment.get("id") != assessment_id or not current_delivery
                 or current_delivery.get("stale") or current_delivery.get("status") != "eligible"):
             raise StoreError("report registration requires the current eligible delivery decision")
+        if any(item["id"] == report_id and item["stale"] for item in current["reports"]):
+            raise StoreError("registered report is stale or damaged; registration cannot repair it")
         material = (report_id, finding_id, assessment_id, delivery_id, artifact_value)
 
         def mutate(conn, revision, now):
@@ -1435,6 +1536,7 @@ class TargetStore:
                 raise ConflictError("report must bind the current assessment and delivery decision")
             if delivery["status"] != "eligible" or latest_delivery["status"] != "eligible":
                 raise StoreError("report registration requires an eligible delivery decision")
+            self._check_report_files(conn, artifact_value, report_files)
             self._insert_artifact(conn, artifact_value)
             conn.execute("""INSERT INTO reports
                 (id,finding_id,assessment_id,delivery_id,destination,artifact_id,generated_at)
@@ -1461,6 +1563,9 @@ class TargetStore:
         report = next((item for item in finding.get("reports", []) if item.get("id") == report_id), None)
         if not report or report.get("stale"):
             raise StoreError("delivery event requires a current eligible report artifact")
+        artifact_value = {"id": report["artifact_id"], "ref": report["artifact_ref"],
+                          "sha256": report["artifact_sha256"], "size": report["artifact_size"]}
+        report_files = self._report_files(artifact_value)
         material = (event_id, report_id, external_ref, submitted_at, receipt)
 
         def mutate(conn, revision, now):
@@ -1481,6 +1586,7 @@ class TargetStore:
                     or not latest_delivery or latest_delivery["id"] != current["delivery_id"]
                     or latest_delivery["status"] != "eligible"):
                 raise ConflictError("delivery event must bind the current eligible report")
+            self._check_report_files(conn, artifact_value, report_files)
             if receipt:
                 self._insert_artifact(conn, receipt)
             conn.execute("""INSERT INTO delivery_events
@@ -1968,10 +2074,16 @@ class TargetStore:
                      deliveries: list[dict], *, assessment_valid: bool) -> list[dict]:
         current_delivery = {str(item["destination"]): item for item in deliveries}
         for report in rows:
-            status = self._artifact_status(conn, {
+            artifact = {
                 "id": report["artifact_id"], "ref": report["artifact_ref"],
                 "sha256": report["artifact_sha256"], "size": report["artifact_size"],
-            })
+            }
+            status = self._artifact_status(conn, artifact)
+            if status["available"]:
+                try:
+                    self._report_files(artifact)
+                except (OSError, ValueError, StoreError):
+                    status["available"] = status["authorized"] = False
             current = current_delivery.get(str(report["destination"]))
             report["artifact_available"] = status["available"]
             report["artifact_authorized"] = status["authorized"]

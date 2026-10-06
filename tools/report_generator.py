@@ -21,11 +21,17 @@ except ImportError:  # pragma: no cover - direct tools/ execution
 try:
     from finding_index import _finding_backend_context
     from target_paths import target_storage_key
-    from target_store import ConflictError, StoreError, TargetStore, runtime_store, target_mutation_lock, target_switch_lock
+    from target_store import (
+        ConflictError, StoreError, TargetStore, read_report_asset, report_attachment_refs,
+        runtime_store, target_mutation_lock, target_switch_lock,
+    )
 except ImportError:  # pragma: no cover - package import path
     from tools.finding_index import _finding_backend_context
     from tools.target_paths import target_storage_key
-    from tools.target_store import ConflictError, StoreError, TargetStore, runtime_store, target_mutation_lock, target_switch_lock
+    from tools.target_store import (
+        ConflictError, StoreError, TargetStore, read_report_asset, report_attachment_refs,
+        runtime_store, target_mutation_lock, target_switch_lock,
+    )
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPORTS_DIR = os.path.join(BASE_DIR, "reports")
@@ -207,20 +213,16 @@ def _publish_authored_report(store, report_dir, *, finding_id, assessment_id, de
         raise StoreError("registered report is stale or damaged; publication cannot repair it")
     if registered and report_file.read_bytes() != content.encode("utf-8"):
         raise FileExistsError(f"report already exists with different bytes: {report_file}")
-    # Manual drafts use this relative asset directory; copy it without rewriting Markdown.
-    assets = Path(body_file).resolve().parent / "poc_screenshots"
-    if assets.exists() or assets.is_symlink():
-        if assets.is_symlink() or not assets.is_dir():
-            raise StoreError("draft screenshot directory must be a real directory")
-        destination = Path(report_dir) / "poc_screenshots"
-        if destination != destination.resolve():
-            raise StoreError("report screenshot directory must not be a symlink")
-        destination.mkdir(exist_ok=True)
-        for asset in sorted(assets.iterdir()):
-            if asset.is_symlink() or not asset.is_file():
-                raise StoreError("draft screenshots must be regular files")
-            _publish_bytes(destination / asset.name, asset.read_bytes())
     if not registered:
+        # Only unregistered publications may create files, including on interrupted retry.
+        for ref in report_attachment_refs(content.encode("utf-8")):
+            source = Path(body_file).resolve().parent / ref
+            data, _ = read_report_asset(source, source.name[:64])
+            destination = Path(report_dir) / ref
+            if destination.parent != destination.parent.resolve():
+                raise StoreError("report screenshot directory must not be a symlink")
+            destination.parent.mkdir(exist_ok=True)
+            _publish_bytes(destination, data)
         _publish_bytes(report_file, content.encode("utf-8"))
     return store.register_report(
         command_id=f"report:{report_id}", report_id=report_id, finding_id=finding_id,

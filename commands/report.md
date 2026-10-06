@@ -81,10 +81,20 @@ Manual filenames are opaque IDs; do not rely on the retired per-category numeric
 `--poc-images IMAGE ...` attaches content-addressed screenshots to a manual draft, never to a registered report
 (including stale reports registered directly under `drafts/`). Symlinked, hardlinked or nonregular draft files
 are refused; damaged existing Store state does not fall back to an unregistered interpretation.
-Before publication, finalize its text and evidence presentation. The publisher copies the draft's adjacent
-`poc_screenshots/` directory without changing relative links or overwriting different image bytes. Keep unrelated
-files out of that directory. Other relative attachment links must already resolve from the published report's
-directory. Screenshots used as technical proof still require the normal observation/artifact registration.
+Before publication, finalize its text and evidence presentation. Screenshots are optional: the publisher copies
+only the selected body's standalone tool-style image links, `![label](poc_screenshots/SHA256.ext)`, with the full
+64-character lowercase content digest and an optional safe extension. Repeated links share one copy. Bodies
+without these links do not access the screenshot directory; other drafts' files and unrelated broken entries
+are ignored. Markdown bytes stay unchanged, and different existing image bytes are never overwritten.
+Selected files must be nonempty regular files without symlink path components and match their filename digest.
+Missing or changed published copies make the report stale, remove it from the current index, and block new
+delivery events. Historical bodies/events remain; publication retry never repairs a damaged registered copy.
+Registered retries never republish files or require the original draft screenshots to remain present; the
+published copies are rechecked by Store. Revoked/unavailable report bodies also reject direct registration replay.
+Code examples and external images are not managed attachments. Arbitrary inline layouts, reference-style images,
+HTML and other relative links are not parsed or copied; they remain the author's responsibility. Old images
+without content-addressed names are not silently trusted or migrated. Screenshots used as technical proof still
+require the normal observation/artifact registration; delivery-copy damage does not rewrite that evidence.
 
 ## Scope of retirement
 

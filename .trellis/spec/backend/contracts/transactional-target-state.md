@@ -222,12 +222,19 @@ test counts, for acceptance.
   artifact, actor)`: hash/register a target-owned report artifact only when it
   binds an existing eligible delivery for the referenced current assessment.
   The report row, artifact relation and audit receipt commit together; report
-  generation remains separate from external submission.
+  generation remains separate from external submission. Standalone tool-managed
+  screenshot references additionally bind their published copies through the full
+  content digest in each filename; the immutable body commits those references.
+  No new table, attachment relation or command-material field is introduced.
 - `record_delivery_event(command_id, event_id, report_id, external_ref,
   submitted_at, actor, receipt_artifact="")`: append an explicit external
   submission fact for the current eligible registered report. It may reference
   a target-owned receipt artifact; generating/registering a report never calls
-  this command and never implies an external submission.
+  this command and never implies an external submission. Report/body/managed-copy
+  byte acquisition precedes the write transaction. Immediately before insertion,
+  report registration and delivery events compare captured file identities and
+  reread the body artifact's availability/provenance events on the write connection;
+  no large-file hashing or nested mutation lock is introduced.
 - `case_context()` / `case_state()`: read-only actor/session/object/hypothesis
   views with target/store revision; private references are checked before they
   can authorize a consumer. `case_state()` is a compatibility projection, not
@@ -279,6 +286,24 @@ evidence or report artifact sets `stale=true` and
 `artifact_available=false` where applicable, so consumers cannot treat an old
 report as the current deliverable. `register_report()` repeats the current
 assessment/delivery binding check and rejects stale or superseded decisions.
+For managed screenshots, report-level `artifact_available`/`artifact_authorized`
+cover the body and its declared copies, not just the Markdown file. Shared
+`report_attachment_refs(bytes)` recognizes the existing standalone inline-image
+protocol; unsafe or malformed managed declarations fail closed, while bodies
+without managed references never inspect adjacent screenshot directories.
+`_report_rows` rechecks copy bytes on every full Finding/page acquisition, including
+at the same Store revision. Missing/changed/nonregular/symlinked copies make only
+their report stale; existing delivery events retain history with
+`current_binding=false`, and new events reject. Technical assessments, destination
+decisions, original evidence and lightweight historical reported counts keep their
+separate meanings. Queries never backfill attachment metadata or repair files.
+Same-command material and immutable report identity stay unchanged; healthy replay
+is idempotent, and explicit publication retry cannot recreate a damaged registered
+copy. Registered retries never publish files, and direct registration checks the
+registered report's current health before returning an old receipt, including body
+availability/provenance denials. Arbitrary Markdown/HTML links and old images without content-addressed names
+are not silently enrolled or migrated. Captured file checks reject observed drift,
+not all possible filesystem changes after the final check.
 
 Domain command method parameters are keyword-only; initialization uses the
 explicit signatures above. Command receipts include revision,

@@ -1051,6 +1051,170 @@ def test_manual_screenshots_survive_publication_without_mutating_registered_body
     assert report.read_bytes() == raw
 
 
+@pytest.mark.parametrize("junk", [False, True])
+def test_report_attachment_publication_selects_only_current_draft(tmp_path, monkeypatch, junk):
+    store, root, _ = _primary_report_fixture(tmp_path)
+    monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
+    drafts, images = [], []
+    for name in ("a", "b"):
+        draft = Path(report_generator.create_manual_report("sqli", "https://example.com/"))
+        image = tmp_path / f"{name}.png"
+        image.write_bytes(name.encode())
+        report_generator.attach_poc_images(draft, [image])
+        drafts.append(draft)
+        images.append(image)
+    originals = [path.read_bytes() for path in (*drafts, *images)]
+    if junk:
+        assets = drafts[1].parent / "poc_screenshots"
+        (assets / "unrelated-link").symlink_to(tmp_path / "missing")
+        (assets / "unrelated-directory").mkdir()
+        os.mkfifo(assets / "unrelated-fifo")
+    # Repeated presentation of one screenshot must not duplicate its publication.
+    with drafts[1].open("ab") as handle:
+        handle.write(drafts[1].read_bytes().splitlines()[-1] + b"\n")
+    originals[1] = drafts[1].read_bytes()
+
+    total, index = report_generator.process_findings_dir(
+        root, finding_id="f1", assessment_id="assess:f1", delivery_id="delivery:f1", body_file=drafts[1],
+    )
+
+    report = Path(index[0]["file"])
+    expected = hashlib.sha256(images[1].read_bytes()).hexdigest() + ".png"
+    assert total == 1 and report.read_bytes() == originals[1]
+    assert [path.name for path in (report.parent / "poc_screenshots").iterdir()] == [expected]
+    assert [path.read_bytes() for path in (*drafts, *images)] == originals
+    assert not store.finding("f1")["reports"][0]["stale"]
+    before = store.binding(), report.stat().st_ino
+    assert report_generator.process_findings_dir(
+        root, finding_id="f1", assessment_id="assess:f1", delivery_id="delivery:f1", body_file=drafts[1],
+    ) == (total, index)
+    assert (store.binding(), report.stat().st_ino) == before
+
+
+@pytest.mark.parametrize("damage", ["missing", "changed"])
+def test_report_attachment_damage_invalidates_report_and_delivery(tmp_path, monkeypatch, damage):
+    store, root, _ = _primary_report_fixture(tmp_path)
+    monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
+    draft = Path(report_generator.create_manual_report("sqli", "https://example.com/"))
+    original = tmp_path / "image.png"
+    original.write_bytes(b"original screenshot")
+    report_generator.attach_poc_images(draft, [original])
+    _, index = report_generator.process_findings_dir(
+        root, finding_id="f1", assessment_id="assess:f1", delivery_id="delivery:f1", body_file=draft,
+    )
+    report = Path(index[0]["file"])
+    body_before = report.read_bytes(), report.stat().st_ino
+    name = hashlib.sha256(original.read_bytes()).hexdigest() + ".png"
+    published = report.parent / "poc_screenshots" / name
+    report_id = store.finding("f1")["reports"][0]["id"]
+    store.record_delivery_event(command_id="old-event", event_id="old-event", report_id=report_id,
+                                external_ref="local-receipt", submitted_at="2026-10-02T00:00:00Z",
+                                actor="operator")
+    before, revision = store.finding("f1"), store.binding()
+    if damage == "missing":
+        published.unlink()
+    else:
+        published.write_bytes(b"changed published screenshot")
+
+    finding = store.finding("f1")
+    assert finding["reports"][0]["stale"] is True
+    assert finding["reports"][0]["artifact_available"] is False
+    assert finding["reports"][0]["artifact_authorized"] is False
+    assert finding["assessment"] == before["assessment"]
+    assert finding["deliveries"] == before["deliveries"]
+    assert finding["delivery_events"][0]["external_ref"] == "local-receipt"
+    assert finding["delivery_events"][0]["current_binding"] is False
+    assert report_generator.process_findings_dir(root)[0] == 0
+    assert json.loads((report.parent / "INDEX.json").read_text())["reports"] == []
+    with pytest.raises(StoreError, match="current eligible report"):
+        store.record_delivery_event(command_id="new-event", event_id="new-event", report_id=report_id,
+                                    external_ref="new-receipt", submitted_at="2026-10-02T00:00:00Z",
+                                    actor="operator")
+    with pytest.raises(StoreError, match="stale or damaged"):
+        report_generator.process_findings_dir(
+            root, finding_id="f1", assessment_id="assess:f1", delivery_id="delivery:f1", body_file=draft,
+        )
+    assert (report.read_bytes(), report.stat().st_ino) == body_before
+    assert original.read_bytes() == b"original screenshot"
+    assert (draft.parent / "poc_screenshots" / name).read_bytes() == original.read_bytes()
+    assert store.binding() == revision
+    if damage == "missing":
+        assert not published.exists()
+    else:
+        assert published.read_bytes() == b"changed published screenshot"
+
+
+@pytest.mark.parametrize("failure", ["registration", "index"])
+def test_report_attachment_retry_preserves_published_files_and_receipts(tmp_path, monkeypatch, failure):
+    store, root, _ = _primary_report_fixture(tmp_path)
+    monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
+    draft = Path(report_generator.create_manual_report("sqli", "https://example.com/"))
+    image = tmp_path / "shot.png"
+    image.write_bytes(b"retry screenshot")
+    report_generator.attach_poc_images(draft, [image])
+    publication = dict(finding_id="f1", assessment_id="assess:f1", delivery_id="delivery:f1", body_file=draft)
+    owner = TargetStore if failure == "registration" else report_generator
+    method = "register_report" if failure == "registration" else "write_report_index"
+    original = getattr(owner, method)
+
+    def interrupted(*args, **kwargs):
+        raise OSError("interrupted attachment publication")
+
+    monkeypatch.setattr(owner, method, interrupted)
+    with pytest.raises(OSError, match="interrupted attachment publication"):
+        report_generator.process_findings_dir(root, **publication)
+    report = next(draft.parent.parent.glob("report_*.md"))
+    asset = report.parent / "poc_screenshots" / (hashlib.sha256(image.read_bytes()).hexdigest() + ".png")
+    before = [(path.read_bytes(), path.stat().st_ino) for path in (report, asset)]
+    assert len(store.finding("f1")["reports"]) == int(failure == "index")
+
+    monkeypatch.setattr(owner, method, original)
+    total, index = report_generator.process_findings_dir(root, **publication)
+    revision = store.binding()
+    assert total == 1
+    assert report_generator.process_findings_dir(root, **publication) == (total, index)
+    assert [(path.read_bytes(), path.stat().st_ino) for path in (report, asset)] == before
+    assert store.binding() == revision
+    assert len(store.finding("f1")["reports"]) == 1
+    assert store.finding("f1")["delivery_events"] == []
+
+
+@pytest.mark.parametrize("change", ["missing-source", "copy-removed-after-health-check"])
+def test_report_attachment_registered_retry_never_republishes_files(tmp_path, monkeypatch, change):
+    store, root, _ = _primary_report_fixture(tmp_path)
+    monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
+    draft = Path(report_generator.create_manual_report("sqli", "https://example.com/"))
+    image = tmp_path / "shot.png"
+    image.write_bytes(b"registered screenshot")
+    report_generator.attach_poc_images(draft, [image])
+    publication = dict(finding_id="f1", assessment_id="assess:f1", delivery_id="delivery:f1", body_file=draft)
+    total, index = report_generator.process_findings_dir(root, **publication)
+    report = Path(index[0]["file"])
+    name = hashlib.sha256(image.read_bytes()).hexdigest() + ".png"
+    published = report.parent / "poc_screenshots" / name
+    before = store.binding(), report.read_bytes(), report.stat().st_ino
+    publish = Mock(wraps=report_generator._publish_bytes)
+    monkeypatch.setattr(report_generator, "_publish_bytes", publish)
+    if change == "missing-source":
+        (draft.parent / "poc_screenshots" / name).unlink()
+        assert report_generator.process_findings_dir(root, **publication) == (total, index)
+        assert published.read_bytes() == image.read_bytes()
+    else:
+        read_body = report_generator._read_report_body
+
+        def remove_published_copy(path):
+            content = read_body(path)
+            published.unlink()
+            return content
+
+        monkeypatch.setattr(report_generator, "_read_report_body", remove_published_copy)
+        with pytest.raises(StoreError, match="report asset"):
+            report_generator.process_findings_dir(root, **publication)
+        assert not published.exists()
+    publish.assert_not_called()
+    assert (store.binding(), report.read_bytes(), report.stat().st_ino) == before
+
+
 @pytest.mark.parametrize("stale", [False, True])
 def test_attach_images_rejects_draft_registered_directly_in_store(tmp_path, monkeypatch, stale):
     store, _, _ = _primary_report_fixture(tmp_path)
@@ -1190,13 +1354,46 @@ def test_hunt_report_without_findings_does_not_start_child(tmp_path, monkeypatch
     runner.assert_not_called()
 
 
-def test_report_publication_rejects_dangling_screenshot_directory(tmp_path):
+def test_report_publication_ignores_unreferenced_dangling_screenshot_directory(tmp_path):
     store, root, _ = _primary_report_fixture(tmp_path)
     draft = tmp_path / "draft.md"
     draft.write_text("# Authored report\n")
     (tmp_path / "poc_screenshots").symlink_to(tmp_path / "missing", target_is_directory=True)
-    before = store.binding()
-    with pytest.raises(StoreError, match="real directory"):
+    total, index = report_generator.process_findings_dir(root, finding_id="f1", assessment_id="assess:f1",
+                                                        delivery_id="delivery:f1", body_file=draft)
+    assert total == 1 and Path(index[0]["file"]).read_bytes() == draft.read_bytes()
+    assert not (Path(index[0]["file"]).parent / "poc_screenshots").exists()
+    assert not store.finding("f1")["reports"][0]["stale"]
+
+
+@pytest.mark.parametrize("damage", ["missing", "changed", "empty", "symlink", "directory-symlink", "fifo"])
+def test_report_attachment_publication_rejects_invalid_selected_source(tmp_path, monkeypatch, damage):
+    store, root, _ = _primary_report_fixture(tmp_path)
+    monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
+    draft = Path(report_generator.create_manual_report("sqli", "https://example.com/"))
+    image = tmp_path / "shot.png"
+    image.write_bytes(b"source screenshot")
+    report_generator.attach_poc_images(draft, [image])
+    source = draft.parent / "poc_screenshots" / (hashlib.sha256(image.read_bytes()).hexdigest() + ".png")
+    if damage == "directory-symlink":
+        moved = source.parent.with_name("moved-screenshots")
+        source.parent.rename(moved)
+        source.parent.symlink_to(moved, target_is_directory=True)
+    elif damage in {"changed", "empty"}:
+        source.write_bytes(b"wrong" if damage == "changed" else b"")
+    else:
+        source.unlink()
+        if damage == "symlink":
+            source.symlink_to(image)
+        elif damage == "fifo":
+            os.mkfifo(source)
+    before = store.binding(), draft.read_bytes()
+
+    with pytest.raises(StoreError, match="report asset"):
         report_generator.process_findings_dir(root, finding_id="f1", assessment_id="assess:f1",
                                                delivery_id="delivery:f1", body_file=draft)
-    assert store.binding() == before and store.finding("f1")["reports"] == []
+
+    assert (store.binding(), draft.read_bytes()) == before
+    assert store.finding("f1")["reports"] == []
+    assert not list(draft.parent.parent.glob("report_*.md"))
+    assert image.read_bytes() == b"source screenshot"

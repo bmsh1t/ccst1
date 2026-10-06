@@ -608,6 +608,9 @@ The no-input call only indexes; the four-input call publishes then indexes.
 `hunt.generate_reports(domain)` returns an integer count or raises
 `ReportGenerationError`. `hunt.main() -> int` propagates through
 `raise SystemExit(main())`; report-only failure exits `2`, success exits `0`.
+`target_store.report_attachment_refs(content: bytes) -> tuple[str, ...]` owns managed
+image-link selection; `read_report_asset(path, sha256)` returns checked bytes and a
+file-version tuple. The publisher and Store share this protocol, not separate parsers.
 
 ### 3. Contracts
 All four publication inputs are explicit; no implicit latest judgment selection.
@@ -619,8 +622,13 @@ INDEX/SUMMARY include derived `pending_drafts` per unreported eligible destinati
 no new state table. Missing text does not block other valid reports. Registered stale
 bodies are omitted from the current index, retained on disk and in history.
 Manual mode records supplied inputs or a supplied draft without default impact,
-remediation or severity. Attachments go to manual drafts; known `poc_screenshots/`
-assets are copied with no-overwrite publication so relative links survive. Attachment
+remediation or severity. Attachments go to manual drafts; only standalone tool-style
+`![label](poc_screenshots/<64-lowercase-sha256><optional-safe-extension>)` references
+are copied, deterministically deduplicated, without overwriting or rewriting links.
+No managed reference means no screenshot-directory access; unrelated files are ignored.
+Code examples, external URLs and arbitrary Markdown/HTML are not managed references.
+The registered body digest commits the filenames, which commit the image bytes; no
+new schema, attachment manifest, artifact relation or historical backfill is added. Attachment
 edits reject linked/nonregular/out-of-layout drafts and consult existing Store report
 refs under its mutation lock, including stale reports registered directly in drafts.
 An absent Store permits new manual notes; a damaged existing Store never downgrades.
@@ -636,6 +644,20 @@ despite report failures, and preserves successful results; ordinary hunt does no
 - Existing different bytes, nonregular/symlinked output or invalid registered artifact:
   reject, retain old bytes; never recreate a deleted registered body on explicit retry.
 - Registration/index failure: retain complete body/committed receipts; identical retry.
+- Managed source/copy missing, empty, changed, nonregular, symlinked or declared with
+  an unsafe/non-content-addressed path: reject new publication/registration; an existing
+  report becomes unavailable/stale. Reject before copying when the registered report
+  is damaged; never restore a published copy from the still-valid source on retry.
+  A registered retry skips file publication entirely and checks existing copies in
+  Store, including damage after the initial health query. Healthy retry does not need
+  draft screenshots. Direct registration rejects stale reports before receipt replay.
+- Store report acquisition rechecks managed copies even at an unchanged revision.
+  Current INDEX/SUMMARY omit damaged reports; historical delivery events remain with
+  `current_binding=false`, and new delivery events reject. Technical evidence and
+  lightweight historical reported counts do not change because a delivery copy broke.
+- Report/asset byte capture occurs before write transactions; before insertion, compare
+  captured file identities and reread body artifact events on the write connection.
+  Drift rejects without partial metadata. This is not a filesystem/database transaction.
 - Missing draft: needs_draft in derived index; no automatic report or owner mutation.
 - Invalid/absent severity declaration: unknown, not a category-derived fallback.
 - Hunt child nonzero/timeout/start failure: `ReportGenerationError` with target,
@@ -651,6 +673,8 @@ bodies. Base: /validate's existing registered body is indexed without rewriting 
 Bad: infer administrative impact from a marker or create text because an item is eligible.
 Hunt: valid zero is success; a failed child is not zero, and a later successful batch
 target still runs without clearing earlier failures.
+Attachments: publishing draft B does not copy draft A's image or inspect its bad files;
+intact source evidence cannot make a missing published screenshot a current deliverable.
 
 ### 6. Tests Required
 `tests/test_finding_index.py` covers explicit CLI input, all-destination publication,
@@ -665,6 +689,11 @@ to assert exit `2`, batch continuation/preserved output, and zero/no-work succes
 lightweight tests preserve non-report dispatch and expected error exits. All tool,
 auth/config and network interactions are isolated; wrapping `main()` in a test-only
 `sys.exit()` does not prove the production entrypoint propagates its result.
+Attachment regressions in `tests/test_finding_index.py` and `tests/test_target_store.py`
+cover exact draft ownership, ignored directory junk, malformed links, nonblocking safe
+file reads, direct registration, same-revision damage, historical/new delivery events,
+precommit drift, no hashes inside write transactions, and no-overwrite interrupted retry.
+Existing body-byte, command-replay and direct validate tests preserve compatibility.
 
 ### 7. Wrong vs Correct
 Wrong: family=auth_bypass -> critical impact paragraph -> registered report.
@@ -672,3 +701,6 @@ Correct: evidence-backed explicit judgments -> AI-authored destination text ->
 owner-bound immutable publication; no text means an unresolved draft, not a finding.
 Wrong: `return count if count is not None else 0` hides execution/protocol failures.
 Correct: successful integer or domain error -> CLI aggregate -> actual process exit.
+Wrong: copy every adjacent screenshot and authorize delivery from Markdown health alone.
+Correct: body-declared content-addressed files -> checked published copies -> shared
+Store report health, with historical body/receipt identities unchanged.
