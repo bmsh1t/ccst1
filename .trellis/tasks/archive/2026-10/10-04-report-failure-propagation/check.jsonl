@@ -1,0 +1,5 @@
+
+{"file":".trellis/spec/backend/index.md","reason":"质量检查所需后端规范索引。"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"核对错误传播、CLI exit 2、stderr/diagnostic 和 SystemExit。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"核对 focused tests、隔离、diff 和无副作用要求。"}
+{"file":".trellis/tasks/10-04-report-failure-propagation/research/f06-callers-and-contract.md","reason":"按源码锚点复核调用链、批量继续和边界语义。"}
