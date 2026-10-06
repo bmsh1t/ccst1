@@ -1,0 +1,5 @@
+{"file":".trellis/spec/backend/index.md","reason":"后端规范入口；按报告/Store owner 选择契约与定向检查。"}
+{"file":"docs/architecture-contract.md","reason":"单一 Store、不可变外置材料、无隐式迁移及依赖方向。"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"领域错误、损坏与空结果分离、CLI 恢复诊断。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"最小 owner 修复、隔离回归、当前性与历史事实边界。"}
+{"file":".trellis/tasks/10-04-report-attachment-closure/research/f07-f08-report-attachments.md","reason":"调用链、共享目录根因、Store 接入点、幂等约束和现有测试锚点。"}

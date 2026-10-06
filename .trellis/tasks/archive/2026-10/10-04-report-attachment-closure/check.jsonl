@@ -1,0 +1,5 @@
+{"file":".trellis/spec/backend/index.md","reason":"审核后端规范和相关契约，避免全仓无关检查。"}
+{"file":"docs/architecture-contract.md","reason":"核对 Store 单 owner、依赖方向和外置文件事务保证边界。"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"核对损坏附件显式失败、历史保留与未吞掉的异常。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"核对真实输入输出、定向测试及无额外持久化/依赖。"}
+{"file":".trellis/tasks/10-04-report-attachment-closure/research/f07-f08-report-attachments.md","reason":"复核跨入口健康闭包、原样正文、历史 command digest 和测试盲点。"}
