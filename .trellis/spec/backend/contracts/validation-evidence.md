@@ -605,6 +605,9 @@ evidence integrity and publication. Category templates and `generate_report()` a
 returns the unchanged `(total_reports, report_index)` tuple. The CLI exposes those
 four inputs as `--finding-id`, `--assessment-id`, `--delivery-id`, `--body-file`.
 The no-input call only indexes; the four-input call publishes then indexes.
+`hunt.generate_reports(domain)` returns an integer count or raises
+`ReportGenerationError`. `hunt.main() -> int` propagates through
+`raise SystemExit(main())`; report-only failure exits `2`, success exits `0`.
 
 ### 3. Contracts
 All four publication inputs are explicit; no implicit latest judgment selection.
@@ -621,6 +624,10 @@ assets are copied with no-overwrite publication so relative links survive. Attac
 edits reject linked/nonregular/out-of-layout drafts and consult existing Store report
 refs under its mutation lock, including stale reports registered directly in drafts.
 An absent Store permits new manual notes; a damaged existing Store never downgrades.
+Hunt consumes only successful `Indexed N current reports` or legacy `Generated N reports`
+output, including zero. Missing findings directories remain no-work success without
+starting a child. Batch report-only sorts target directories, processes every target
+despite report failures, and preserves successful results; ordinary hunt does not report.
 
 ### 4. Validation & Error Matrix
 - Missing any of the four inputs, empty/non-UTF8 body: reject; no report metadata.
@@ -631,11 +638,19 @@ An absent Store permits new manual notes; a damaged existing Store never downgra
 - Registration/index failure: retain complete body/committed receipts; identical retry.
 - Missing draft: needs_draft in derived index; no automatic report or owner mutation.
 - Invalid/absent severity declaration: unknown, not a category-derived fallback.
+- Hunt child nonzero/timeout/start failure: `ReportGenerationError` with target,
+  `execution` category and child diagnostic, even if output contains a count.
+- Hunt child succeeds without a parseable count (including empty output): same error
+  with `protocol` category; no historical Markdown fallback. CLI emits target/retry
+  diagnostics to stderr; any failed batch target makes the final exit code `2`.
+- Missing/empty findings root or no target directories: report-only exits `0`.
 
 ### 5. Good/Base/Bad Cases
 Good: two independently eligible destinations receive explicitly submitted, distinct
 bodies. Base: /validate's existing registered body is indexed without rewriting it.
 Bad: infer administrative impact from a marker or create text because an item is eligible.
+Hunt: valid zero is success; a failed child is not zero, and a later successful batch
+target still runs without clearing earlier failures.
 
 ### 6. Tests Required
 `tests/test_finding_index.py` covers explicit CLI input, all-destination publication,
@@ -643,8 +658,17 @@ exact CRLF/Unicode bytes, pending drafts alongside valid reports, stale/foreign 
 raw tampering, no-overwrite retry and manual screenshot relocation.
 `tests/test_validate_target_mode.py` and `tests/test_validation_runner.py` preserve
 /validate's own report path. Hunt counts successful indexed reports, not stale files.
+Its helper regressions retain zero/legacy counts, execution/protocol diagnostics and
+missing-directory no-child behavior. `tests/test_hunt_initialization.py` runs an
+unmodified temporary Hunt copy via `runpy(..., run_name="__main__")` in real subprocesses
+to assert exit `2`, batch continuation/preserved output, and zero/no-work success;
+lightweight tests preserve non-report dispatch and expected error exits. All tool,
+auth/config and network interactions are isolated; wrapping `main()` in a test-only
+`sys.exit()` does not prove the production entrypoint propagates its result.
 
 ### 7. Wrong vs Correct
 Wrong: family=auth_bypass -> critical impact paragraph -> registered report.
 Correct: evidence-backed explicit judgments -> AI-authored destination text ->
 owner-bound immutable publication; no text means an unresolved draft, not a finding.
+Wrong: `return count if count is not None else 0` hides execution/protocol failures.
+Correct: successful integer or domain error -> CLI aggregate -> actual process exit.

@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import Mock
 
 import finding_index
 import pytest
@@ -1144,8 +1145,13 @@ def test_report_cli_always_displays_pending_count_and_canonical_index_paths(tmp_
     (True, "[+] Indexed 0 current reports", 0),
     (True, "[+] Indexed 2 current reports", 2),
     (True, "[+] Generated 3 reports", 3),
-    (False, "[+] Indexed 2 current reports", 0),
-    (True, "unknown result", 0),
+    (False, "[+] Indexed 2 current reports", "execution"),
+    (False, "Command timed out after 600s", "execution"),
+    (False, "No such file or directory: python", "execution"),
+    (False, "", "execution"),
+    (True, "", "protocol"),
+    (True, "unknown result", "protocol"),
+    (True, "[+] Indexed -1 current reports", "protocol"),
 ])
 def test_hunt_report_count_uses_current_index_not_stale_files(tmp_path, monkeypatch, success, output, expected):
     import hunt
@@ -1156,8 +1162,32 @@ def test_hunt_report_count_uses_current_index_not_stale_files(tmp_path, monkeypa
     (stale / "old.md").write_text("stale historical report")
     monkeypatch.setattr(hunt, "_resolve_findings_dir", lambda target: str(root))
     monkeypatch.setattr(hunt, "_resolve_reports_dir", lambda target: str(stale))
-    monkeypatch.setattr(hunt, "run_argv", lambda *a, **kw: (success, output))
-    assert hunt.generate_reports("example.com") == expected
+    runner = Mock(return_value=(success, output))
+    monkeypatch.setattr(hunt, "run_argv", runner)
+    if isinstance(expected, int):
+        assert hunt.generate_reports("example.com") == expected
+    else:
+        with pytest.raises(hunt.ReportGenerationError) as exc:
+            hunt.generate_reports("example.com")
+        assert "example.com" in str(exc.value)
+        assert expected in str(exc.value)
+        assert (output or "no child output") in str(exc.value)
+    runner.assert_called_once_with(
+        [sys.executable, os.path.join(hunt.BASE_DIR, "tools", "report_generator.py"), str(root)],
+        cwd=hunt.BASE_DIR,
+        timeout=600,
+    )
+    assert (stale / "old.md").read_text() == "stale historical report"
+
+
+def test_hunt_report_without_findings_does_not_start_child(tmp_path, monkeypatch):
+    import hunt
+    monkeypatch.setattr(hunt, "FINDINGS_DIR", str(tmp_path / "findings"))
+    runner = Mock(side_effect=AssertionError("report child started without findings"))
+    monkeypatch.setattr(hunt, "run_argv", runner)
+
+    assert hunt.generate_reports("example.com") == 0
+    runner.assert_not_called()
 
 
 def test_report_publication_rejects_dangling_screenshot_directory(tmp_path):

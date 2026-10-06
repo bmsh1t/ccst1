@@ -1058,6 +1058,10 @@ def run_post_param_discovery(domain, cookies="", deep=False):
     return bool(summary.get("counts", {}).get("post_forms") or summary.get("counts", {}).get("discoveries"))
 
 
+class ReportGenerationError(RuntimeError):
+    """The report generator failed to execute or return its current count."""
+
+
 def generate_reports(domain):
     """Rebuild report indexes; missing authored bodies remain pending."""
     findings_dir = _resolve_findings_dir(domain)
@@ -1075,8 +1079,17 @@ def generate_reports(domain):
     print(output)
 
     # Old Markdown on disk may be stale; only the successful current index counts.
-    count = _extract_generated_report_count(output) if success else None
-    return count if count is not None else 0
+    if not success:
+        raise ReportGenerationError(
+            f"Report generation for {domain} failed (execution): {output or 'no child output'}"
+        )
+    count = _extract_generated_report_count(output)
+    if count is None:
+        raise ReportGenerationError(
+            f"Report generation for {domain} failed (protocol): expected a report count; "
+            f"{output or 'no child output'}"
+        )
+    return count
 
 
 def show_status():
@@ -1412,7 +1425,7 @@ def hunt_target(
     )
 
 
-def main():
+def main() -> int:
     parser = argparse.ArgumentParser(
         description="Bug Bounty Hunt Orchestrator",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1473,12 +1486,12 @@ Examples:
     # Status check
     if args.status:
         show_status()
-        return
+        return 0
 
     # Setup wordlists
     if args.setup_wordlists:
         setup_wordlists()
-        return
+        return 0
 
     # Check tools
     installed, missing = check_tools()
@@ -1491,13 +1504,26 @@ Examples:
     # Report only
     if args.report_only:
         if args.target:
-            generate_reports(args.target)
+            targets = [args.target]
+        elif os.path.isdir(FINDINGS_DIR):
+            targets = [
+                d for d in sorted(os.listdir(FINDINGS_DIR))
+                if os.path.isdir(os.path.join(FINDINGS_DIR, d))
+            ]
         else:
-            if os.path.isdir(FINDINGS_DIR):
-                for d in os.listdir(FINDINGS_DIR):
-                    if os.path.isdir(os.path.join(FINDINGS_DIR, d)):
-                        generate_reports(d)
-        return
+            targets = []
+        exit_code = 0
+        for target in targets:
+            try:
+                generate_reports(target)
+            except ReportGenerationError as exc:
+                print(
+                    f"{exc}\nInspect the child diagnostic and retry "
+                    f"--report-only --target {shlex.quote(target)}",
+                    file=sys.stderr,
+                )
+                exit_code = 2
+        return exit_code
 
     # Hunt specific target
     if args.target:
@@ -1518,10 +1544,10 @@ Examples:
             log("warn", str(exc))
             sys.exit(2)
         print_dashboard([result])
-        return
+        return 0
 
     parser.error("--target is required for hunting; use --status, --report-only, or --setup-wordlists for target-independent actions")
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
