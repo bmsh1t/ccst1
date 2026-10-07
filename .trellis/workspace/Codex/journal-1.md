@@ -810,3 +810,40 @@ Restored Codex session 01a10be2-70a1-7752-8f9d-8b6df708301f, revalidated the com
 ### Next Steps
 
 - F11 活跃指导对齐和集中工程验收仍待推进；本轮不启动 F11、不推送，不处理其他历史任务。
+
+
+## Session 30: F11 活跃验证与复盘指导对齐收尾
+<!-- trellis-session: v=2 fp=5e4b5708e4200e32 -->
+
+**Date**: 2026-10-07
+**Task**: F11 活跃验证与复盘指导对齐收尾
+**Branch**: `main`
+
+### Summary
+
+完成三份活跃指导的 Store/CLI 对齐、真实文档命令回归和规范索引；独立提交并归档 F11。
+
+### Main Changes
+
+- validator/retrospective/retrospect 使用当前 Store 查询和 selected Finding 关系；summary 使用本次 validate 返回路径。
+- 完整条件化 negative 与显式 note 写回；保留判断方法、操作者确认和 Autopilot presentation-only 边界。
+- 现有 CLI 测试增加文档实例执行与反空跑断言；归档 .trellis/tasks/archive/2026-10/10-04-active-guidance-alignment/。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `3c83280` | fix: align active validation and retrospective guidance |
+
+### Testing
+
+- [OK] python3 -m pytest -q tests/test_target_memory_cli.py：18 passed。
+- [OK] git diff --check 与归档任务 task.py validate 通过；未运行全量测试或真实目标/安装同步。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 规划现有 10-04-stabilization-acceptance；集中工程验收与历史任务核对仍未开始，需其独立计划复核。
