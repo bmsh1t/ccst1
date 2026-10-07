@@ -35,14 +35,14 @@ knowledge/index.md
 
 ## 自动收集
 
-先解析目标。优先使用 `$ARGUMENTS`；没有参数时读取 `memory/goals/active.json`。
+先解析目标。优先使用 `$ARGUMENTS`；没有参数时读取仅负责目标选择的 `memory/goals/active.json`。
 仍然没有目标时，停止并要求用户指定目标。
 
 有目标后按缺口消费，不预拉全量状态：
 
 ```bash
-python3 tools/target_memory.py show <target>
-python3 tools/checkpoint.py --target <target> --json
+python3 tools/target_memory.py show TARGET --json
+python3 tools/checkpoint.py --target TARGET --json
 ```
 
 `checkpoint.py` 是目标层写回建议的主来源（写回契约见
@@ -51,9 +51,9 @@ surface 摘要和 retrospect 建议。先消费这两个视图；只有 checkpoi
 缺字段时，才按需补读对应 owner：
 
 ```bash
-python3 tools/autopilot_state.py --target <target> --json    # 需要 lane/route 状态时
-python3 tools/surface.py --target <target> --json            # 需要逐 endpoint 表面时
-python3 tools/coverage_matrix.py find-gaps --target <target> # 需要未处置覆盖格预览时
+python3 tools/autopilot_state.py --target TARGET --json    # 需要 lane/route 状态时
+python3 tools/surface.py --target TARGET --json            # 需要逐 endpoint 表面时
+python3 tools/coverage_matrix.py find-gaps --target TARGET # 需要未处置覆盖格预览时
 ```
 
 `find-gaps` 不做语义过滤；按需提高 `--limit` 或读取完整矩阵，不把有界预览当作全部覆盖。
@@ -67,11 +67,14 @@ Skills 或 Rules。
 
 ```bash
 python3 tools/target_store.py findings --target TARGET
-python3 tools/experience_recall.py --target TARGET
+python3 tools/target_store.py findings --target TARGET --id FINDING_ID
+python3 tools/experience_recall.py --target TARGET --json
 ```
 
-按查询返回的 ID/引用补读对应 report-local validation summary 或原始材料；
-旧目标记忆/会话文件仅供显式历史检查，不用于恢复当前事实。
+按 selected Finding 查询返回的 assessment/evidence/delivery/report 关系展开原始材料；
+validation summary 使用该次 validate 返回并保留的 `summary_path`，先核对 target/Finding。
+Store Finding 没有 summary 定位字段。缺库/缺 Finding ID 显式失败，合法空库列表可为空；
+旧 Finding/目标记忆/会话文件仅供显式历史检查，不用于恢复当前事实。
 
 `findings/last-validate.json` 仅表示最近一次运行，不得替代 selected finding 的 canonical
 artifact 绑定。
@@ -126,12 +129,10 @@ RETROSPECTIVE DECISION
 
 当前目标相关内容可以直接建议写回。只在用户明确要求自动写入时执行命令。
 
-```bash
-python3 tools/target_memory.py lead "..."
-python3 tools/target_memory.py next "..."
-python3 tools/target_memory.py dead-end "..."
-python3 tools/target_memory.py handoff "..."
-```
+exact command 使用 `rules/retrospective.md#写入目标层` 的完整示例，显式绑定 TARGET。
+negative 必须有适用条件、重开条件和同 Store 已登记的 `OPERATION_ID:STEP`（从零开始）；
+KILL 或低价值方向不自动证明 negative。缺登记证据时仅明确建议未验证 note 或保留假设。
+`next`/`handoff` 只是 advisory intent，不创建或完成 Queue Action。
 
 触发条件：
 

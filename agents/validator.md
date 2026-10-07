@@ -35,11 +35,22 @@ notes."
 
 - Candidate description, endpoint, impact claim, and reproduction evidence
 - Exact request/response or browser/OOB evidence where available
-- Structured finding linkage from `findings/<target>/findings.json` when present
+- Current Finding, assessment, evidence, delivery and report relations from the selected target Store
 - Recent validation context and disclosed-report context as advisory inputs
-- Target memory from `memory/goals/targets/<target>.json` when available,
-  especially dead ends, prior handoffs, and the current hypothesis
+- Store-backed target experience, especially conditional negatives, prior handoffs and hypotheses
 - `rules/coverage-gate.md` when validation needs additional evidence
+
+Read current owners with explicit TARGET and the selected FINDING_ID:
+
+```bash
+python3 tools/target_memory.py show TARGET --json
+python3 tools/target_store.py findings --target TARGET
+python3 tools/target_store.py findings --target TARGET --id FINDING_ID
+```
+
+`memory/goals/active.json` selects a target only. Missing Store or Finding IDs
+are errors, not empty history; retired Finding/target-memory JSON is available
+only for explicit historical inspection, never as a current-state fallback.
 
 ## Outputs
 
@@ -48,23 +59,35 @@ notes."
 - One concrete next action
 - A target-memory write-back recommendation:
   - PASS: keep evidence path and report next step
-  - KILL: write the failed premise as a dead end
-  - DOWNGRADE / CHAIN REQUIRED: write the missing proof as a next action
+  - KILL: explain the failed premise; recommend a conditional negative only when
+    supported by registered observations, not merely because it is unreportable
+  - DOWNGRADE / CHAIN REQUIRED: recommend the missing proof as advisory next intent
+
+Recommendations do not write state. Only persist on the operator's explicit
+request, using the complete examples in `rules/retrospective.md#写入目标层`.
+`next`/`handoff` do not create or complete Queue Actions. Without registered
+evidence, explicitly recommend an unverified `note` or retain the hypothesis
+and missing evidence; never fabricate an operation or silently downgrade a write.
 
 ## Artifacts Written
 
 - Indirectly, via `tools/validate.py`:
-  - report-local `<artifact-key>.validation-summary.json`
-  - report-local `<artifact-key>.submission-notes.md`
+  - report-local report body (`report_path`) and `<artifact-key>.validation-summary.json` (`summary_path`)
+  - report-local `<artifact-key>.submission-notes.md` (`submission_notes_path`, when produced)
   - `findings/last-validate.json` as a non-canonical latest pointer
-  - `findings/<target>/findings.json` status updates
-  - `state/<target>/session.json` validation progress updates
+  - Store assessment and delivery decisions; report registration when report-ready
+  - existing runtime workflow metadata updates, not legacy Finding JSON or a
+    second session-owned validation-progress record
 
 ## Resume Source
 
 - The current Candidate evidence bundle
-- `findings/<target>/findings.json` + that finding's recorded `validation_summary`
-  when present; never bind a different finding through `last-validate.json`
+- Query the selected FINDING_ID above for its current Store relations. Retain
+  this validate invocation's returned `summary_path`, `report_path` and
+  `submission_notes_path`; read its summary only after checking target/Finding
+  identity. Finding has no summary-locator field. If the returned path was not
+  retained, report that gap instead of using `last-validate.json` to bind another
+  Finding. Do not rerun validation merely to recover an artifact path.
 - Hand off PASS cases to `/report`; hand off non-PASS cases back to hunt memory / next evidence step
 
 ## Scope
@@ -83,10 +106,10 @@ missing evidence action instead of pretending it is report-ready.
 
 在 Claude CLI 下，validation 不重新发散探索；它只判断 Candidate 是否能升级。
 
-1. 先读取目标记忆，确认当前 candidate 没有重复已杀死的 dead end。
+1. 先读取 Store 目标经验，核对 negative 的适用条件、重开条件和证据；KILL 不等于技术反驳。
 2. 读取最相关的知识卡，只用于校准验证证据要求，例如 IDOR 需要双账号对象差异、SSRF 不能只有 DNS-only。
-3. 如果缺失证明，输出 CHAIN REQUIRED 或 DOWNGRADE，并把缺失证明写成 next action。
-4. 结束时明确建议 `/target dead-end ...` 或 `/target next ...` 的写回内容，避免后续 Claude CLI 重复踩同一条路。
+3. 如果缺失证明，输出 CHAIN REQUIRED 或 DOWNGRADE，并建议把缺失证明保存为 advisory next intent。
+4. 结束时按复盘规则给出完整写回建议；negative 必须引用同目标真实已登记的 `OPERATION_ID:STEP`（STEP 从零开始），并写明适用/重开条件。仅在操作者明确要求时写入。
 
 ## Decision Contract
 

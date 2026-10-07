@@ -849,6 +849,14 @@ the original three-round pickup and Pack/Checkpoint regressions remain applicabl
 `tests/test_target_memory_cli.py` exercises all daily commands in fresh processes,
 root paths containing spaces, active-pointer isolation, stable receipt IDs with
 `replayed=true`, invalid input and pointer-publication failure after commit.
+Its `test_documented_guidance_reads_current_store_without_mutation` executes
+validator/retrospective examples against current, empty and missing Stores,
+including selected-Finding relations, poisoned legacy files and unchanged
+binding/source bytes; assert the extracted command count to prevent an empty pass.
+`test_documented_memory_writes_preserve_conditions_and_reject_incomplete_negative`
+executes the documented writes, checks condition/evidence round-trips and explicit
+note recovery, and rejects each missing negative prerequisite without mutation.
+Tests substitute fixture identities/root/output only, never omitted business flags.
 `tests/test_decision_scaffold.py` checks that primary scaffold `vuln_class`
 equals the canonical Finding `family` (including open/custom families); legacy
 `type` remains readable and judgment fields stay empty.

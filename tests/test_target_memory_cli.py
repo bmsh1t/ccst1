@@ -1,6 +1,8 @@
 """Target-memory commands must work across real processes and isolated roots."""
 
 import json
+import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -292,3 +294,180 @@ def test_memory_preserves_raw_url_values_across_processes_and_projections(tmp_pa
         for value in (statements["raw-handoff"], conditions, next_intent):
             assert value in output
     assert store.binding() == before
+
+
+REPO = Path(__file__).resolve().parents[1]
+GUIDANCE_COMMANDS = [
+    (document, shlex.split(line, comments=True))
+    for document in ("agents/validator.md", "rules/retrospective.md", "commands/retrospect.md")
+    for block in re.findall(r"```bash\n(.*?)```", (REPO / document).read_text(), re.S)
+    for line in block.replace("\\\n", " ").splitlines()
+    if line.startswith(("python3 tools/target_memory.py", "python3 tools/target_store.py",
+                        "python3 tools/experience_recall.py"))
+]
+
+
+def _guidance_command(root, command, *, operation_id="", exit_code=0):
+    replacements = {"TARGET": "guidance.test", "FINDING_ID": "selected",
+                    "OPERATION_ID:0": f"{operation_id}:0"}
+    arguments = [replacements.get(token, token) for token in command[2:]]
+    if command[1] == "tools/target_memory.py":
+        return _command(root, *arguments, exit_code=exit_code)
+    result = subprocess.run(
+        [sys.executable, "-B", str(REPO / command[1]), *arguments,
+         "--repo-root", str(root),
+         *(["--json"] if command[1] == "tools/experience_recall.py" else [])],
+        cwd=root, capture_output=True, text=True, timeout=20,
+    )
+    assert result.returncode == exit_code, result.stderr
+    if exit_code:
+        assert result.stderr or json.loads(result.stdout)["error"]
+        return None
+    return json.loads(result.stdout)
+
+
+def _guidance_files(root):
+    # SQLite read bookkeeping is not a domain write; binding is checked separately.
+    return {path.relative_to(root): path.read_bytes() for path in root.rglob("*")
+            if path.is_file() and not path.name.startswith("metadata.sqlite3")}
+
+
+def _guidance_observation(store):
+    raw = store.root / "evidence" / store.target / "response.txt"
+    raw.parent.mkdir(parents=True)
+    raw.write_text("Recorded peer response", encoding="utf-8")
+    store.start_attempt(attempt_id="read", source="native", actor="operator",
+                        started_at="2026-10-07T00:00:00Z")
+    receipt = store.record_execution(
+        attempt_id="read", outcome="complete", actor="operator",
+        candidate={"id": "selected", "endpoint": f"https://{store.target}/object",
+                   "method": "GET", "family": "Authz", "title": "Current claim",
+                   "claim": "Compare recorded peer response"},
+        observations=[{
+            "endpoint": f"https://{store.target}/object", "method": "GET", "family": "Authz",
+            "observed_at": "2026-10-07T00:00:00Z", "description": "Recorded peer response",
+            "artifacts": {"response": raw.relative_to(store.root).as_posix()},
+            "state_changing": False,
+        }],
+    )
+    return receipt["entity_id"]
+
+
+@pytest.mark.parametrize("mode", ["current", "empty", "missing"])
+def test_documented_guidance_reads_current_store_without_mutation(tmp_path, mode):
+    commands = [(document, command) for document, command in GUIDANCE_COMMANDS
+                if command[1] != "tools/target_memory.py" or command[2] == "show"]
+    assert len(commands) == 11
+    store = TargetStore(tmp_path, "guidance.test")
+    if mode != "missing":
+        store.initialize()
+    if mode == "current":
+        operation_id = _guidance_observation(store)
+        store.assess(command_id="assessment", finding_id="selected", verdict="confirmed",
+                     reason="Reviewed response", boundary="Peer boundary", impact="Peer read",
+                     evidence=[{"operation_id": operation_id, "step": 0}],
+                     actor="operator", expected_assessment=None)
+        store.decide_delivery(command_id="delivery", finding_id="selected", assessment_id="assessment",
+                              destination="internal-review", status="eligible", reason="Reviewed",
+                              actor="operator", expected_decision=None)
+        report = tmp_path / "reports" / store.target / "selected.md"
+        report.parent.mkdir(parents=True)
+        report.write_text("Recorded peer comparison", encoding="utf-8")
+        store.register_report(command_id="report", report_id="report", finding_id="selected",
+                              assessment_id="assessment", delivery_id="delivery",
+                              artifact=str(report), actor="operator")
+        store.create_finding(command_id="other", finding_id="other",
+                             endpoint=f"https://{store.target}/other", method="GET", family="Authz",
+                             title="Other claim", claim="Unassessed", actor="operator")
+        store.remember(command_id="current-note", kind="note", statement="Current note",
+                       conditions="saved response", reopen_when="", next_intent="",
+                       evidence=[], actor="operator")
+    for relative in (f"memory/goals/targets/{store.target}.json",
+                     f"hunt-memory/targets/{store.target}.json",
+                     f"findings/{store.target}/findings.json", "findings/last-validate.json"):
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"finding_id":"other","statement":"LEGACY_ONLY"}\n')
+    pointer = tmp_path / "memory/goals/active.json"
+    pointer.write_text('{"schema_version":1,"target":"other.test","updated_at":"2026-10-07T00:00:00Z"}')
+    before = _guidance_files(tmp_path)
+    binding = store.binding() if mode != "missing" else None
+    for document, command in commands:
+        selected = "--id" in command
+        fails = mode == "missing" or (selected and mode == "empty")
+        result = _guidance_command(tmp_path, command, exit_code=2 if fails else 0)
+        assert "LEGACY_ONLY" not in json.dumps(result), document
+        if fails:
+            continue
+        if command[1] == "tools/target_store.py":
+            if selected:
+                assert result["id"] == "selected"
+                assert result["assessment"]["id"] == "assessment"
+                assert result["assessment"]["evidence"] == [{"operation_id": operation_id, "step": 0}]
+                assert result["evidence"] == result["assessment"]["evidence"]
+                assert result["deliveries"][0]["id"] == "delivery"
+                assert result["reports"][0]["artifact_ref"] == report.relative_to(tmp_path).as_posix()
+            else:
+                assert {item["id"] for item in result["items"]} == (
+                    {"selected", "other"} if mode == "current" else set())
+        else:
+            entries = result["recent_entries"] if command[1] == "tools/target_memory.py" else result["target_entries"]
+            assert [item["text"] for item in entries] == (["Current note"] if mode == "current" else [])
+    assert _guidance_files(tmp_path) == before
+    if mode == "missing":
+        assert not store.path.exists()
+    else:
+        assert store.binding() == binding
+
+
+def test_documented_memory_writes_preserve_conditions_and_reject_incomplete_negative(tmp_path):
+    store = TargetStore(tmp_path, "guidance.test")
+    store.initialize()
+    writes = [command for _, command in GUIDANCE_COMMANDS
+              if command[1] == "tools/target_memory.py" and command[2] != "show"]
+    assert {command[2] for command in writes} == {"lead", "next", "dead-end", "handoff", "note"}
+    # The documented no-evidence alternative must work before any execution exists.
+    note = next(command for command in writes if command[2] == "note")
+    saved = _guidance_command(tmp_path, note)
+    entry = store.experience(saved["receipt"]["entity_id"])
+    assert entry["kind"] == "note" and entry["evidence"] == []
+    restored = _command(tmp_path, "show", store.target)
+    assert restored["recent_entries"][0]["text"] == note[-1]
+    assert restored["recent_entries"][0]["evidence_refs"] == []
+    assert restored["target"]["current_handoff"] is None
+    assert store.page("operations")["total"] == 0
+    operation_id = _guidance_observation(store)
+    for command in writes:
+        if command[2] == "note":
+            continue
+        saved = _guidance_command(tmp_path, command, operation_id=operation_id)
+        entry_id = saved["receipt"]["entity_id"]
+        entry = store.experience(entry_id)
+        assert entry["kind"] == {"lead": "hypothesis", "next": "handoff",
+                                 "handoff": "handoff", "dead-end": "negative"}[command[2]]
+        assert entry["statement"] == command[-1]
+        for flag, field in (("--conditions", "conditions"), ("--reopen-when", "reopen_when"),
+                            ("--next-intent", "next_intent")):
+            if flag in command:
+                assert entry[field] == command[command.index(flag) + 1]
+        if command[2] == "next":
+            assert entry["next_intent"] == command[-1]
+        expected_refs = [{"operation_id": operation_id, "step": 0}] if "--operation-ref" in command else []
+        assert entry["evidence"] == expected_refs
+        restored = _command(tmp_path, "show", store.target)
+        recovered = next(item for item in restored["recent_entries"] if item["entry_id"] == entry_id)
+        assert recovered["text"] == entry["statement"]
+        assert recovered["evidence_refs"] == ([f"{operation_id}:0"] if expected_refs else [])
+        for field in ("conditions", "reopen_when", "next_intent"):
+            assert recovered["structured"].get(field, "") == entry[field]
+    before, files = store.binding(), _guidance_files(tmp_path)
+    negative = next(command for command in writes if command[2] == "dead-end")
+    for flag in ("--conditions", "--reopen-when", "--operation-ref"):
+        command = negative.copy()
+        index = command.index(flag)
+        del command[index:index + 2]
+        assert _guidance_command(tmp_path, command, operation_id=operation_id, exit_code=2)["error"]
+        assert store.binding() == before
+        assert _guidance_files(tmp_path) == files
+    assert store.page("actions")["total"] == 0
+    assert not (tmp_path / "memory/goals/active.json").exists()
