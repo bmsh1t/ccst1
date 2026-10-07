@@ -162,3 +162,57 @@ JSON/text 展示路径及 Store binding 不变；与 Finding focused tests 同�
 ### 7. Wrong vs Correct
 
 `except error: return {}` → 返回空数据并附明确源健康，汇总保留错误与 unknowns。
+
+## 披露查询失败与成功缓存保全
+
+### 1. Scope / Trigger
+
+`disclosure_search` 的 provider 查询、成功 cache 和 Markdown 输出；独立于 Intel/Store。
+
+### 2. Signatures
+
+`write_disclosed_patterns(target, repo_root=None, *, output_path=None, cache_ttl_hours=72,
+no_mcp=False) -> Path`；两个查询 helper 返回 `QueryResult(reports, successes, errors)`。
+provider `search_disclosed_reports(...) -> list[dict]` 不变，坏 search 结构抛 `HackerOneAPIError`。
+
+### 3. Contracts
+
+cache 只保留 `target/same/similar/coverage_status/cached_at_ts`。仅所有实际请求完整成功
+才保存，包括合法零结果；没有计划的 similar 请求不算失败。任何请求失败均不改旧 cache
+bytes/mtime/时间，program 失败后 keyword 成功仍为 partial。partial 有新报告只展示新材料，
+无新报告或全部失败可展示一份有效旧快照，不混合。no-mcp 完全跳过 cache/client/inventory。
+Markdown 分开显示 query status、material source/query time/stale 与 coverage；Generated at
+只是文档生成时间。直接调用 renderer 未传查询事实时不推断 complete 或成功零结果。
+cache/Markdown 复用 `write_text_atomic`，独立原子发布；写失败上抛且 CLI 不打印成功路径。
+
+### 4. Validation & Error Matrix
+
+- fresh 成功 cache → cached，不查询／刷新时间；完整成功空列表 → complete/no_mcp_coverage。
+- 部分请求失败 → partial；无成功请求或 client 缺失 → unavailable。诊断包含请求标识、
+  错误类型及单行原因，每条最多 500 字符；错误状态不另行持久化。
+- 缺失／错误 provider envelope、非列表 nodes 或坏条目 → 请求失败。report/team 只允许
+  缺失、null、对象，`[]/false/0/""` 不能当缺失；合法无 report 节点和可选字符串继续兼容。
+- cache 编码／JSON／结构／目标／时间错误 → 可见诊断，不当健康旧材料；上游同时失败
+  保留原字节。仅缺少 coverage_status 的历史 cache 按桶推导；已提供字段只接受 covered /
+  no_mcp_coverage，mcp_unavailable、partial 或错误类型均不算完整成功快照。
+- TTL 或 cache 时间非有限 → 拒绝；时间 0／数字字符串保持 cache 兼容，有限 TTL≤0
+  强制刷新。历史错误写成成功空结果的材料不推测恢复，不新增迁移。
+- 单文件 publication 失败 → 保留对应旧完整文件；Markdown 失败不回滚已写成功 cache，
+  不宣称跨文件事务。正常生成 unavailable 文档仍返回 CLI 0，不等同于上游查询成功。
+
+### 5. Good/Base/Bad Cases
+
+Good：上游全失败仍显示旧报告及原时间／过期说明。Base：全部成功且零报告可替换旧快照。
+Bad：把异常转成空列表，再写新时间；或把坏类型的假值当作无 report。
+
+### 6. Tests Required
+
+`tests/test_disclosed_pattern_dedup.py` 验证 total/partial 有无旧 cache、fallback 恢复、
+完整成功零结果、TTL hit/强制刷新、no-mcp、不合法 TTL/响应/cache、真实 provider→owner
+接线及 publication failure；断言旧 bytes/mtime/时间、报告归属、诊断和 CLI 不伪报成功。
+mock 查询传输而非整个 owner；保留表顺序、recall 命令及 Store binding 不变。
+
+### 7. Wrong vs Correct
+
+`except Exception: return []` → 保留成功数与有界诊断，仅 complete 允许发布成功 cache；
+`report or {}` → 在真假值判断前验证对象／null 类型。

@@ -138,14 +138,29 @@ def search_disclosed_reports(
     }}"""
 
     data = _graphql_request(query)
-    nodes = (data.get("data") or {}).get("hacktivity_items", {}).get("nodes", [])
+    for key in ("data", "hacktivity_items", "nodes"):
+        if not isinstance(data, dict) or key not in data:
+            raise HackerOneAPIError(f"search response missing object field {key}")
+        data = data[key]
+    if not isinstance(data, list):
+        raise HackerOneAPIError("search response nodes must be a list")
 
     results = []
-    for node in nodes:
-        report = node.get("report")
+    for node in data:
+        if not isinstance(node, dict):
+            raise HackerOneAPIError("search response node must be an object")
+        report, team = node.get("report"), node.get("team")
+        for name, value in (("report", report), ("team", team)):
+            if value is not None and not isinstance(value, dict):
+                raise HackerOneAPIError(f"search response {name} must be an object or null")
         if not report:
             continue
-        team = node.get("team") or {}
+        team = team or {}
+        for record, fields in ((report, ("title", "severity_rating", "disclosed_at", "url", "substate")),
+                               (team, ("handle", "name"))):
+            for key in fields:
+                if record.get(key) is not None and not isinstance(record[key], str):
+                    raise HackerOneAPIError(f"search response {key} must be a string or null")
         results.append({
             "title": report.get("title", ""),
             "severity": (report.get("severity_rating") or "unknown").upper(),

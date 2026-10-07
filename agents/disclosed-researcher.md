@@ -6,7 +6,7 @@ description: >-
   Invoked by Claude (via the Task tool) when its working_hypothesis
   next_question matches the Question -> Tool Reference row in
   commands/autopilot.md. NOT auto-spawned by any command. Reads
-  HackerOne MCP if connected; falls back to a no-op document otherwise.
+  HackerOne MCP if connected; preserves successful cached material on query failure.
 tools: Bash, Read, Write, WebFetch
 model: inherit
 ---
@@ -51,9 +51,10 @@ You are NOT spawned automatically by `/intel`, `/recon`, or
 2. Run `python3 tools/disclosure_search.py --target <target>` via Bash.
    The tool produces `evidence/<target>/disclosed_patterns.md` and
    caches its HackerOne results for 72 hours, so re-runs are cheap.
-3. Read the resulting `disclosed_patterns.md` to confirm content
-   landed. If MCP returned nothing, the document will say so — that
-   is a valid outcome.
+3. Read the resulting `disclosed_patterns.md` to confirm content landed.
+   Preserve its query status, material source, material query time and stale
+   flag. Only complete queries establish a successful zero-result outcome;
+   Generated at is the document time, not the material age.
 4. (Optional) WebFetch the URL of one or two HIGH-severity reports to
    capture the actual exploit shape. Quote ≤3 sentences per report
    into a new "## Read in full" section appended to the document. Do
@@ -76,20 +77,25 @@ You are NOT spawned automatically by `/intel`, `/recon`, or
 A single document at `evidence/<target>/disclosed_patterns.md`. Its schema is
 produced by `tools/disclosure_search.py`:
 
+- Query status, material source/query time/stale flag, MCP coverage and diagnostics
 - `## Same-target reports` table (or "no reports surfaced" line)
 - `## Similar-target reports` table (or "no reports surfaced" line)
 - Optional `## Read in full` section with ≤3-sentence quotes
 
 The document is the entire deliverable. Return a one-line summary to
 the calling agent: `disclosed_patterns.md written: <path>, same=N,
-similar=N`.
+similar=N, query=<status>, source=<source>, stale=<yes/no>`.
 
 ## Failure modes
 
-- HackerOne MCP unreachable → the tool writes a document with all
-  sections present but populated as "no reports surfaced". This is
-  expected behavior, not an error. Tell the caller "MCP unavailable;
-  document seeded with empty sections".
+- Partial or unavailable queries preserve the last complete successful cache.
+  Partial fresh reports are shown without mixing old material; if there are no
+  fresh reports, a valid old snapshot remains visible with its original time
+  and stale flag. Without one, the document explicitly has no usable material.
+  Report the query failure even when cached coverage is covered; empty sections
+  do not establish that no disclosures exist.
+- File publication failure is an error, not a written document; report it to
+  the caller without claiming a successful path.
 - crt.sh / WebFetch rate-limited (only relevant for the optional
   step 4) → skip step 4, finish step 1-3 normally.
 - Invalid target string → still produce the document with empty
