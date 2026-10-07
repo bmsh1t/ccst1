@@ -1,0 +1,4 @@
+{"file":".trellis/spec/backend/index.md","reason":"现有 Store、Validation 与测试规范入口。"}
+{"file":"docs/architecture-contract.md","reason":"Store 单一 owner、条件化经验与原生判断职责，不新增运行时机制。"}
+{"file":".trellis/tasks/archive/2026-10/10-04-active-guidance-alignment/research/owner-cli.md","reason":"实际 CLI 参数、Finding 恢复和 negative 证据边界；大规范按行定位读取。"}
+{"file":".trellis/tasks/archive/2026-10/10-04-active-guidance-alignment/research/tests-reference-chain.md","reason":"三个活跃文档边界、R17 实例提取与现有隔离测试复用。"}

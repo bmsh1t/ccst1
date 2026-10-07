@@ -1,0 +1,3 @@
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"输入输出回归、owner 完整性与文档命令一致性；验证范围遵守当前任务和 AGENTS 定向预算。"}
+{"file":".trellis/tasks/archive/2026-10/10-04-active-guidance-alignment/research/owner-cli.md","reason":"核验文档参数/返回字段，禁止虚构 summary 字段或证据要求。"}
+{"file":".trellis/tasks/archive/2026-10/10-04-active-guidance-alignment/research/tests-reference-chain.md","reason":"核验真实文档命令执行及活跃引用链，不使用新 registry 或关键词门禁。"}
