@@ -772,3 +772,41 @@ Restored Codex session 01a10be2-70a1-7752-8f9d-8b6df708301f, revalidated the com
 ### Next Steps
 
 - F09 完成；F10 披露查询失败与缓存保全仍待单独继续，未启动实现；未推送。
+
+
+## Session 29: F10：披露查询失败与缓存保全收尾
+<!-- trellis-session: v=2 fp=69959d7a21b38865 -->
+
+**Date**: 2026-10-07
+**Task**: F10：披露查询失败与缓存保全收尾
+**Branch**: `main`
+
+### Summary
+
+按批准的五文件方案提交 F10，完成任务归档；查询失败不覆盖成功缓存，partial 与材料真实时间明确分离。未推送、未启动 F11。
+
+### Main Changes
+
+- 仅完整成功查询发布 cache；任何请求失败保留旧 bytes/mtime/成功时间，partial 新报告不混入旧快照，无新报告时可读有效旧材料。
+- provider search 拒绝坏 envelope 与假值非对象；cache 只对缺失 coverage_status 兼容，renderer 不推断查询成功，非有限 TTL 在发布前拒绝。
+- 复用原子 writer，同步消费者与错误契约；工作提交 6245fb0，归档元数据绑定工作提交且 6 条上下文引用有效。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `6245fb06e59a6aeeef60b5ad138305eee58f46dc` | fix: preserve disclosure cache on query failures |
+
+### Testing
+
+- [OK] 实施阶段主线程：python3 -m pytest -q tests/test_disclosed_pattern_dedup.py — 80 passed，发生在最后一次 coverage_status 修正之前。
+- [OK] 最后修正后主线程：python3 -m pytest -q tests/test_disclosed_pattern_dedup.py -k 'bad_cache or healthy_cache or failed_refresh' — 30 passed；没有宣称完整 83 项重跑。
+- [OK] 本轮收尾：git diff --check、归档元数据、AC1–AC6 与 6 条上下文路径校验通过；未修改产品代码或重复行为测试。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- F11 活跃指导对齐和集中工程验收仍待推进；本轮不启动 F11、不推送，不处理其他历史任务。
