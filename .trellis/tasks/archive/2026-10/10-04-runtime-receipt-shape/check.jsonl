@@ -1,0 +1,3 @@
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"单 owner 最小修复、真实输入输出回归、无无关重构。"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"检查损坏与空状态分离、错误传播和无自动修复。"}
+{"file":".trellis/tasks/archive/2026-10/10-04-runtime-receipt-shape/research/f09-runtime-receipt-shape.md","reason":"核对真实 receipt 到 bootstrap 的覆盖及未调用哨兵，保护读取兼容。"}
