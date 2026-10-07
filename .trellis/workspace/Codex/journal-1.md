@@ -735,3 +735,40 @@ Restored Codex session 01a10be2-70a1-7752-8f9d-8b6df708301f, revalidated the com
 ### Next Steps
 
 - F09 安装清单结构错误边界仍待独立规划批准；本轮不启动、不推送，不处理其他历史任务或全局安装。
+
+
+## Session 28: F09：安装清单结构错误边界收尾
+<!-- trellis-session: v=2 fp=a2f7fbab8eb43690 -->
+
+**Date**: 2026-10-07
+**Task**: F09：安装清单结构错误边界收尾
+**Branch**: `main`
+
+### Summary
+
+恢复已批准的 F09，复核并提交 receipt 对象形状校验、真实 bootstrap 回归及 runtime 契约，完成任务归档；未推送、未启动 F10。
+
+### Main Changes
+
+- 在 runtime receipt reader 验证根与记录对象，沿既有 ValueError → stop_runtime_error 传播，保留缺失/空清单、宽松字段及只读行为。
+- 工作提交 538975e；任务归档到 .trellis/tasks/archive/2026-10/10-04-runtime-receipt-shape，元数据绑定工作提交，6 条上下文引用均可解析。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `538975e1b5f2fe57f5bd332bff39a7e0abcb4395` | fix: validate runtime receipt object shapes |
+
+### Testing
+
+- [OK] 本轮：python3 -m pytest -q tests/test_runtime_doctor.py tests/test_autopilot_bootstrap.py -k 'receipt or runtime_read_error or compare_runtime_reports_diff_missing_and_extra or compare_runtime_ignores_unrelated_external_skills' — 22 passed。
+- [OK] 历史执行日志已核实：相关两测试文件 89 passed，Ruff 与 py_compile 通过；本轮未重复这些检查，py_compile 不代表静态类型检查。
+- [OK] 本轮：git diff --check、归档 JSON 元数据与 6 条上下文路径检查通过。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- F09 完成；F10 披露查询失败与缓存保全仍待单独继续，未启动实现；未推送。

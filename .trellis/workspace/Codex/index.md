@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 27
-- **Last Active**: 2026-10-06
+- **Total Sessions**: 28
+- **Last Active**: 2026-10-07
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~737 | Active |
+| `journal-1.md` | ~774 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 28 | 2026-10-07 | F09：安装清单结构错误边界收尾 | `538975e1b5f2fe57f5bd332bff39a7e0abcb4395` | `main` |
 | 27 | 2026-10-06 | F07/F08 报告附件归属与完整性收尾 | `fd02dc84cf829d418192354f72088c19ba20ed0b` | `main` |
 | 26 | 2026-10-06 | F06 report failure propagation closeout | `b63ad6a98c17c14305612ed387028d91a0de5fd9` | `main` |
 | 25 | 2026-10-04 | F05 actor coverage evidence authorization | `70871aa` | `main` |
