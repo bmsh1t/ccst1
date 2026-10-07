@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 import shlex
+from unittest.mock import Mock
 
 import pytest
 
-from tools import autopilot_bootstrap
+from tools import autopilot_bootstrap, runtime_doctor
 from tools import autopilot_state as autopilot_state_module
 from tools.runtime_state import update_runtime_state
 from tools.target_store import TargetStore
@@ -295,11 +296,15 @@ def test_corrupt_runtime_state_stops_bootstrap_without_overwrite(monkeypatch, tm
     assert state_file.read_text(encoding="utf-8") == "{broken"
 
 
-def test_runtime_read_error_is_structured_before_target_state(monkeypatch, tmp_path):
+@pytest.mark.parametrize("error, reason", [
+    (OSError("runtime unreadable\nno traceback"), "runtime unreadable no traceback"),
+    (ValueError("x" * 600 + "\ninvalid receipt"), "x" * 500),
+])
+def test_runtime_read_error_is_structured_before_target_state(monkeypatch, tmp_path, error, reason):
     monkeypatch.setattr(
         autopilot_bootstrap,
         "compare_runtime",
-        lambda **_kwargs: (_ for _ in ()).throw(OSError("runtime unreadable\nno traceback")),
+        lambda **_kwargs: (_ for _ in ()).throw(error),
     )
     monkeypatch.setattr(
         autopilot_bootstrap,
@@ -312,8 +317,46 @@ def test_runtime_read_error_is_structured_before_target_state(monkeypatch, tmp_p
     )
 
     assert payload["action"] == "stop_runtime_error"
-    assert payload["error"] == {"type": "OSError", "reason": "runtime unreadable no traceback"}
+    assert payload["error"] == {"type": type(error).__name__, "reason": reason}
     assert "state" not in payload
+
+
+@pytest.mark.parametrize("receipt_data", [[], None, {"skills/retired/SKILL.md": None}])
+def test_runtime_receipt_shape_error_is_structured_without_writes(monkeypatch, tmp_path, capsys, receipt_data):
+    repo_root, runtime_root, home = (tmp_path / name for name in ("repo", "runtime", "home"))
+    for path in (repo_root, runtime_root, home):
+        path.mkdir()
+    (runtime_root / ".ccst-installed.json").write_text(json.dumps(receipt_data), encoding="utf-8")
+    (runtime_root / "preserved.md").write_text("installed content\n", encoding="utf-8")
+    monkeypatch.setattr(autopilot_bootstrap, "REPO_ROOT", repo_root)
+    monkeypatch.setenv("CCST_RUNTIME_ROOT", str(runtime_root))
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(repo_root)
+    capabilities = Mock(side_effect=AssertionError("capability probe"))
+    state = Mock(side_effect=AssertionError("target state read"))
+    sync = Mock(side_effect=AssertionError("runtime sync"))
+    monkeypatch.setattr(autopilot_bootstrap, "build_capability_profile", capabilities)
+    monkeypatch.setattr(autopilot_bootstrap, "build_autopilot_bootstrap_state", state)
+    monkeypatch.setattr(runtime_doctor, "sync_runtime", sync)
+    before = {path: (path.read_bytes(), path.stat().st_mtime_ns) if path.is_file() else None
+              for path in tmp_path.rglob("*")}
+
+    assert autopilot_bootstrap.main(["--json", "--", "example.test"]) == 0
+
+    output = capsys.readouterr()
+    assert len(output.out.splitlines()) == 1 and output.err == ""
+    payload = json.loads(output.out)
+    assert payload["action"] == "stop_runtime_error"
+    assert payload["error"]["type"] == "ValueError"
+    assert 0 < len(payload["error"]["reason"]) <= 500
+    assert "\n" not in payload["error"]["reason"] and "Traceback" not in output.out
+    assert payload["capabilities"]["checked"] is False
+    assert "state" not in payload
+    capabilities.assert_not_called()
+    state.assert_not_called()
+    sync.assert_not_called()
+    assert {path: (path.read_bytes(), path.stat().st_mtime_ns) if path.is_file() else None
+            for path in tmp_path.rglob("*")} == before
 
 
 def _capabilities(_repo_root):

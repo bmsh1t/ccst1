@@ -158,7 +158,12 @@ def _runtime_files(
                 files[relative_path] = path
         manifest = runtime_root / ".ccst-installed.json"
         if manifest.is_file():
-            for relative_path, record in json.loads(manifest.read_text()).items():
+            owned = json.loads(manifest.read_text())
+            if not isinstance(owned, dict):
+                raise ValueError("invalid runtime ownership manifest")
+            for relative_path, record in owned.items():
+                if not isinstance(record, dict):
+                    raise ValueError("invalid runtime ownership entry")
                 if record.get("kind") != "skills":
                     continue
                 path = runtime_root / relative_path

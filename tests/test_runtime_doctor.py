@@ -73,6 +73,59 @@ def _runtime_fixture_with_external_skill(root: Path) -> Path:
     return root
 
 
+@pytest.mark.parametrize("value", [None, [], "invalid", 42, False])
+@pytest.mark.parametrize("location", ["root", "record"])
+def test_compare_runtime_rejects_invalid_receipt_shapes(tmp_path, value, location):
+    repo_root = _repo_fixture(tmp_path / "repo")
+    runtime_root = _runtime_fixture(tmp_path / "runtime")
+    receipt = runtime_root / ".ccst-installed.json"
+    payload = value if location == "root" else {"skills/retired/SKILL.md": value}
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
+    before = {path: (path.read_bytes(), path.stat().st_mtime_ns) if path.is_file() else None
+              for path in tmp_path.rglob("*")}
+
+    with pytest.raises(ValueError, match="invalid runtime ownership (manifest|entry)"):
+        runtime_doctor.compare_runtime(repo_root, runtime_root)
+
+    assert {path: (path.read_bytes(), path.stat().st_mtime_ns) if path.is_file() else None
+            for path in tmp_path.rglob("*")} == before
+
+
+@pytest.mark.parametrize("receipt_data, extra", [
+    (None, 0), ({}, 0),
+    ({"skills/retired/SKILL.md": {"kind": "skills", "future_field": True},
+      "commands/ignored.md": {}, "agents/ignored.md": {"kind": ["skills"]},
+      "skills/ignored/SKILL.md": {"kind": "unknown", "sha256": None}}, 1),
+])
+def test_compare_runtime_preserves_receipt_read_compatibility(tmp_path, receipt_data, extra):
+    repo_root = _repo_fixture(tmp_path / "repo")
+    runtime_root = _runtime_fixture_with_external_skill(tmp_path / "runtime")
+    _write(runtime_root / "skills" / "retired" / "SKILL.md", "retired skill\n")
+    if receipt_data is not None:
+        (runtime_root / ".ccst-installed.json").write_text(json.dumps(receipt_data), encoding="utf-8")
+    before = {path: (path.read_bytes(), path.stat().st_mtime_ns) if path.is_file() else None
+              for path in tmp_path.rglob("*")}
+
+    payload = runtime_doctor.compare_runtime(repo_root, runtime_root, kinds=["skills"])
+
+    assert payload["kinds"][0]["counts"] == {"ok": 1, "diff": 0, "missing": 0, "extra": extra}
+    assert {path: (path.read_bytes(), path.stat().st_mtime_ns) if path.is_file() else None
+            for path in tmp_path.rglob("*")} == before
+
+
+@pytest.mark.parametrize("kind", ["commands", "agents"])
+def test_compare_runtime_does_not_read_receipt_for_other_kinds(tmp_path, kind):
+    repo_root = _repo_fixture(tmp_path / "repo")
+    runtime_root = _runtime_fixture(tmp_path / "runtime")
+    receipt = runtime_root / ".ccst-installed.json"
+    receipt.write_text("null", encoding="utf-8")
+
+    payload = runtime_doctor.compare_runtime(repo_root, runtime_root, kinds=[kind])
+
+    assert [item["kind"] for item in payload["kinds"]] == [kind]
+    assert receipt.read_text(encoding="utf-8") == "null"
+
+
 def test_compare_runtime_reports_diff_missing_and_extra(tmp_path):
     repo_root = _repo_fixture(tmp_path / "repo")
     runtime_root = _runtime_fixture(tmp_path / "runtime")

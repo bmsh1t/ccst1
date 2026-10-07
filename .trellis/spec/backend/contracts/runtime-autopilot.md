@@ -1226,25 +1226,46 @@ Installer and runtime_doctor changes share one publication/retirement path.
 ### Signatures
 `sync_runtime(repo_root, runtime_root, kinds=None, prune=False)` returns copied,
 removed and conflicts; CLI --sync returns nonzero when conflicts are preserved.
+`compare_runtime(repo_root, runtime_root, kinds=None)` reads ownership receipts
+only when comparing skills; bootstrap consumes its existing OSError/ValueError boundary.
 ### Contracts
 `.ccst-installed.json` records relative destination, kind and installed SHA256.
 An exclusive local file lock serializes sync. Files are replaced atomically;
 manifest publication follows successful writes. Only owned, unchanged obsolete
 files are pruned. No owner receipt means no automatic overwrite of different
 bytes and no deletion. Disabled commands retain their name and state.
+The read-side receipt root and every entry must be objects. Missing receipts and
+empty objects retain their current comparison semantics. Read-side entries need
+no new hash field or unknown-field policy; non-skills object records remain ignored.
+Do not lift the writer's stronger admission checks into the reader as a shape fix.
 ### Validation & Error Matrix
 Unknown/malformed ownership metadata fails visibly. Path escape/symlink or local
 modification preserves the destination and reports conflict. An interrupted retry
 may adopt exact current source bytes; it does not guess ownership of different bytes.
+On receipt reads, non-object root → ValueError("invalid runtime ownership manifest");
+non-object entry → ValueError("invalid runtime ownership entry"), not AttributeError
+or an empty fallback. Bootstrap returns `stop_runtime_error` with `error.type/reason`
+(single-line reason, at most 500 characters), before capability/target-state acquisition.
+Its JSON CLI still returns 0 after emitting the stop action; the doctor CLI error
+protocol is unchanged. Comparison never repairs receipts or invokes sync.
 ### Good/Base/Bad Cases
 Good: update unchanged managed content. Base: repeat is idempotent. Bad: deleting
 all extra Markdown under a shared commands directory.
+Read-side base: no receipt, or a commands/agents-only comparison, adds no receipt
+requirement. Bad: calling items/get on a root array or null entry and leaking a traceback.
 ### Tests Required
 Temporary runtime upgrade, whole-skill retirement, unowned/local changes,
 disabled command and installer parity; never test against real HOME.
+`tests/test_runtime_doctor.py` covers non-object roots/entries, unchanged comparison
+results and read-side compatibility. `tests/test_autopilot_bootstrap.py` exercises
+real malformed receipts through the JSON entrypoint, bounded diagnostics, unchanged
+file paths/bytes/mtime and uncalled capability/state/sync entrypoints. Keep the real
+receipt reader; a mock-only read error cannot prove the owner rejects bad shapes.
 ### Wrong vs Correct
 Wrong: repo-wide rsync --delete. Correct: owner receipt plus current hash, then
 remove only unchanged obsolete files. Legacy filename similarity is not ownership.
+Wrong: catch AttributeError at bootstrap or silently replace malformed receipts with {}.
+Correct: validate object shapes in the existing reader, then use the established ValueError boundary.
 
 Before any file publication or pruning, sync checks every selected previously
 owned source directory exists. For an installation owning the autopilot command,
