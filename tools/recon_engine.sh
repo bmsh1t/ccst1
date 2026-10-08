@@ -3639,23 +3639,21 @@ ffuf_run_target() {
         printf '%s\tfailed\t1\t0\t1\t1\t1\n' "$base_url" > "$target_summary"
         return 0
     fi
+    # Feed wordlists through stdin: ffuf interprets ':' in paths as a keyword separator.
     if run_with_timeout "$remaining" ffuf -u "${base_url}/FUZZ" \
-        -w "$control_words" \
+        -w - \
         -mc all \
         -s -json \
         -t 1 \
         -timeout 10 \
         "${BB_URL_AUTH_ARGS[@]}" \
-        > "$control_run" 2>> "$worker_log"; then
+        2>> "$worker_log" < "$control_words" > "$control_run"; then
         if ! spa_fallback_size="$(python3 "$BASE_DIR/tools/recon_adapter.py" \
             --recon-dir "$RECON_DIR" \
             --ffuf-control-size \
-            --controls "$control_run" 2>> "$worker_log")"; then
-            spa_fallback_size=0
-            control_failed=1
-            control_ok=0
-        fi
-        if ! [[ "$spa_fallback_size" =~ ^[0-9]+$ ]]; then
+            --controls "$control_run" 2>> "$worker_log")" || \
+           ! [[ "$spa_fallback_size" =~ ^[0-9]+$ ]]; then
+            printf 'random-miss controls invalid: %s\n' "$spa_fallback_size" >> "$worker_log"
             spa_fallback_size=0
             control_failed=1
             control_ok=0
@@ -3681,14 +3679,14 @@ ffuf_run_target() {
         printf '%s\n' "FFUF deadline reached before main request" >> "$worker_log"
     else
         if run_with_timeout "$remaining" ffuf -u "${base_url}/FUZZ" \
-            -w "$wordlist" \
+            -w - \
             -mc 200,301,302,403,405 \
             -ac \
             "${filter_args[@]}" \
             -t "$target_threads" \
             -timeout 10 \
             "${BB_URL_AUTH_ARGS[@]}" \
-            -s -json > "$main_run" 2>> "$worker_log"; then
+            -s -json 2>> "$worker_log" < "$wordlist" > "$main_run"; then
             main_ok=1
         else
             main_exit=$?

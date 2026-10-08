@@ -846,6 +846,7 @@ not a vulnerability judgment layer.
 - FFUF evidence views:
   - `recon/<target_key>/dirs/ffuf_results.jsonl.gz`
   - `recon/<target_key>/dirs/ffuf_summary.json`
+  - `python3 tools/recon_adapter.py --recon-dir <dir> --ffuf-control-size --controls <jsonl>`
 - AI-selected focused FFUF run:
   - `ffuf -u '<evidence-backed-template-with-FUZZ>' -w '<run-dir>/wordlist.txt' ... -s -json`
   - `recon/<target_key>/focused_fuzz/<run_id>/dirs/ffuf_results.jsonl.gz`
@@ -934,6 +935,13 @@ not a vulnerability judgment layer.
   main job. Controls and bounded heavy response signatures expose facts to AI;
   `-sf`, status/path filters, or automatic WAF/fallback verdicts must not hide
   unexecuted wordlist surface.
+- Baseline control and main wordlists use `-w -` with explicit file stdin. FFUF
+  parses colons in path arguments as keyword delimiters even when shell-quoted;
+  target keys and ancestor paths must not change request substitution.
+- Control-size requires exactly two decoded observations and no reader errors;
+  invalid controls raise `ValueError` (CLI JSON error, exit 2). Valid zero means
+  no size filter, not a control failure. Shell logs errors before clearing its
+  local filter value; the aggregate summary reader remains optional/multi-host.
 - High-frequency runtime/status readers may consume `ffuf_summary.json` only;
   parsing legacy giant root JSON is an explicit adapter operation.
 - Baseline FFUF remains the automatic, fixed, bounded breadth sensor. Focused
@@ -992,6 +1000,9 @@ not a vulnerability judgment layer.
 - FFUF succeeds with zero observations -> `dir_fuzz=ok`, `count=0`; any host,
   compression, control, or parse failure -> `partial` while preserving valid
   result lines; missing tool/live URL/wordlist -> `skipped`.
+- Main success with invalid controls -> host/phase `partial`, `succeeded=1`,
+  `failed=0`, `control_failed=1`; retain observations, do not advance completed
+  rotation. Missing/empty/bad/count-invalid controls never become successful 0.
 - Baseline returns zero observations -> continue AI evidence review; do not
   schedule focused fuzz unless independent evidence supports a template and
   bounded wordlist.
@@ -1043,6 +1054,10 @@ not a vulnerability judgment layer.
   `/rest/admin/FUZZ` wordlist under an isolated run and records the result path.
 - Base: the baseline FFUF summary is empty and no concrete sibling/template
   evidence exists; AI chooses another discovery lane without focused fuzz.
+- Good: a colon-containing worker path still sends both random misses; invalid
+  controls keep a successful main observation reviewable and the host retryable.
+- Bad: FFUF exits 0 after requesting literal `/FUZZ`, then a one-row control
+  artifact returns 0 and marks that host completed.
 - Bad: merge a generic API dictionary after baseline misses, write focused
   output into baseline `dirs/`, or promote every 200 response into coverage.
 - Good: global bearer security plus an operation-level `security: []` produces
@@ -1067,6 +1082,9 @@ not a vulnerability judgment layer.
   projection, bounded heavy signatures, controls, paging, stale summaries, and
   explicit legacy fallback. Surface/runtime tests must prove FFUF stays unranked
   and does not expand coverage.
+- `tests/test_ffuf_control_contract.py` covers control CLI errors/valid zero/size,
+  optional and multi-host summaries, real phase/selector partial and retry,
+  retained main evidence, and real loopback FFUF stdin under colon/space paths.
 - Autopilot doc tests must assert fresh flow keeps browser/source/JS truth before
   scanner quick.
 - `tests/test_focused_fuzz_docs.py` must assert baseline/focused/AI-decision
@@ -1144,6 +1162,9 @@ validated + raw exact union -> bounded fetch -> operation/security facts
 # Baseline miss is not evidence for a broad second dictionary.
 ffuf -u 'https://target/FUZZ' -w ~/wordlists/api-endpoints.txt -o /tmp/ffuf.json
 ```
+
+Wordlist transport: `-w "$WORDS"` or `-w "$WORDS:FUZZ"` misparses colons;
+use `-w - < "$WORDS"`. A zero exit alone does not prove the intended inputs ran.
 
 #### Focused FFUF Correct
 

@@ -442,11 +442,15 @@ class ReconAdapter:
         return controls
 
     def get_ffuf_control_filter_size(self, controls_path: str | Path) -> int:
-        """仅当两条 FFUF control 都是相同 200 时返回 SPA size。"""
+        """拒绝无效 controls；仅当两条 control 都是相同 200 时返回 SPA size。"""
         error_state: dict = {"count": 0, "preview": []}
         controls = self._read_ffuf_controls(controls_path, error_state)
         if error_state["count"] or len(controls) != 2:
-            return 0
+            detail = "; ".join(error_state["preview"])
+            raise ValueError(
+                f"{controls_path}: expected exactly 2 valid FFUF controls, got {len(controls)}"
+                + (f"; {detail}" if detail else "")
+            )
         first, second = controls
         first_length = int(first.get("length", 0) or 0)
         if (
