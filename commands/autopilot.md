@@ -161,8 +161,14 @@ comes only after dispatch.
 For substantive candidates, claim the exact action by id before replay (dumb queue
 interface: `--id` required, the queue never selects for you):
 ```bash
-cd -- <repo_root_shell> && python3 tools/action_queue.py claim --target <target_shell> --id <id> --metadata-json '<metadata-object>'
+cd -- <repo_root_shell> && python3 tools/action_queue.py claim --target <target_shell> --id <id> --metadata-json '<metadata-object>' --actor OPERATOR --json
 ```
+For a Runner-bound execution, use the returned JSON `id` and `claim_token` as
+`--action-id` and `--claim-token`, with the same explicit `--actor OPERATOR`.
+Consume the actual receipt; do not invent a token or rely on the different Queue/Runner
+actor defaults. Follow [the existing Runner binding protocol](../docs/evidence-runners.md#绑定已认领行动);
+claim and evidence registration do not complete the Action, and independent native
+experiments may still be registered without an Action binding.
 The metadata object is your full judgment write (no required-field gate); the Queue
 enforces only mechanical write-time invariants — activation caps, runner-field
 anti-forgery, identity/dedup, continuation lineage — and keeps

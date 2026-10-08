@@ -955,6 +955,9 @@ def format_action(action: dict) -> str:
         f"- Hint: {action.get('command_hint') or 'smallest safe evidence-producing step'}",
         f"- Stop condition: {action.get('stop_condition')}",
     ]
+    for label, field in (("Claim token", "claim_token"), ("Claimed by", "claimed_by")):
+        if action.get(field):
+            lines.append(f"- {label}: {action[field]}")
     metadata = action.get("metadata")
     if isinstance(metadata, dict) and metadata:
         summary = ", ".join(f"{key}={value}" for key, value in metadata.items())

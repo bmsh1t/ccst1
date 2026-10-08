@@ -385,15 +385,29 @@ def test_knowledge_window_exposes_catalog_and_late_damage(tmp_path, capsys):
 
 
 @pytest.mark.parametrize("limit", [5, 20])
-def test_current_handoff_survives_history_window_and_does_not_revive_old_intent(tmp_path, monkeypatch, limit):
+@pytest.mark.parametrize("has_recon", [False, True])
+def test_current_handoff_survives_history_window_and_does_not_revive_old_intent(tmp_path, monkeypatch, limit, has_recon):
     from tools import target_memory, target_store
+    from tools.autopilot_state import format_autopilot_state
 
     store = TargetStore(tmp_path, "handoff.test")
     store.initialize()
+
+    def autopilot_text(projection):
+        return format_autopilot_state({
+            "target": store.target, "has_recon": has_recon, "has_memory": True,
+            "next_action": "handoff", "tech_stack": [], "target_goal_memory": projection,
+        })
+
+    empty_binding = store.binding()
     empty = target_memory.load_goal_memory(tmp_path, store.target, experience_limit=limit)
     assert empty["target"]["current_handoff"] is None
     assert empty["target"]["next_actions"] == []
     assert empty["recent_entries"] == []
+    empty_text = autopilot_text(empty)
+    assert "Current handoff: None" in empty_text
+    assert "Current next intent: None" in empty_text
+    assert store.binding() == empty_binding
     store.create_action(command_id="create", action_id="old-action", intent="Old work",
                         execution_key="old", actor="test", kind="work", subject={"target": store.target})
     store.transition_action(command_id="cancel", action_id="old-action", expected_version=1,
@@ -408,10 +422,18 @@ def test_current_handoff_survives_history_window_and_does_not_revive_old_intent(
 
     remember("handoff-a", intent="Old intent")
     remember("handoff-b", intent="Current intent")
+    current_binding = store.binding()
     view = target_memory.load_goal_memory(tmp_path, store.target, experience_limit=limit)
     assert view["target"]["current_handoff"]["entry_id"] == "handoff-b"
     assert [e["text"] for e in view["target"]["next_actions"]] == ["Current intent"]
     assert {e["entry_id"] for e in view["target"]["session_handoffs"]} == {"handoff-a", "handoff-b"}
+    current_text = autopilot_text(view)
+    assert "Current handoff: [handoff-b] Saved handoff-b" in current_text
+    assert "Current next intent: Current intent" in current_text
+    assert "Current next intent: Old intent" not in current_text
+    assert 'next_intent="Old intent"' in current_text
+    assert store.binding() == current_binding
+    assert store.action_page()["items"] == queue_before
     from tools.context_pack import build_context_pack, format_context_pack
     from tools.resume_read import load_resume_summary
     from tools.resume import format_resume_output
@@ -445,12 +467,15 @@ def test_current_handoff_survives_history_window_and_does_not_revive_old_intent(
     for memory, output in [
         (pack["target_experiences"], format_context_pack(pack)),
         (resume["target_memory"], format_resume_output(resume, store.target)),
+        (view["target"], autopilot_text(view)),
     ]:
         assert memory["current_handoff"] == view["target"]["current_handoff"]
         assert memory["next_actions"] == []
         assert "Current handoff: [handoff-c]" in output
         assert "Current next intent: None" in output
         assert "Old intent" not in output
+    assert "Next page:" in autopilot_text(view)
+    assert "Expand:" in autopilot_text(view)
     assert store.action_page()["items"] == queue_before
     assert store.binding() == before
 

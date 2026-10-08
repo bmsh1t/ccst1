@@ -3867,6 +3867,8 @@ def _format_target_goal_memory_lines(projection: dict) -> list[str]:
     lines.extend(format_target_experiences({
         **window,
         "items": projection.get("recent_entries") or [],
+        "current_handoff": target_memory.get("current_handoff"),
+        "next_actions": target_memory.get("next_actions", []),
         "next_command": f"{command} --cursor {shlex.quote(window['next_cursor'])}" if window.get("has_more") else "",
         "expand_command": f"{command} --id EXPERIENCE_ID",
     }))

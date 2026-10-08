@@ -211,6 +211,48 @@ def test_primary_action_claim_persists_bounded_metadata(tmp_path):
     assert claimed["metadata"]["active_dimension"] == "role"
 
 
+@pytest.mark.parametrize("actor", [None, "operator"])
+def test_claim_cli_text_and_json_preserve_owner_permit(store, actor):
+    add_work(store)
+    cli = [sys.executable, str(Path(__file__).resolve().parents[1] / "tools/action_queue.py"),
+           "--repo-root", str(store.root)]
+    unclaimed = subprocess.run(cli + ["list", "--target", store.target],
+                               capture_output=True, text=True, timeout=10)
+    assert unclaimed.returncode == 0, unclaimed.stderr
+    assert "Claim token:" not in unclaimed.stdout
+    assert "Claimed by:" not in unclaimed.stdout
+
+    args = ["claim", "--target", store.target, "--id", "A1"]
+    if actor is not None:
+        args += ["--actor", actor]
+    claimed = subprocess.run(cli + args, capture_output=True, text=True, timeout=10)
+    assert claimed.returncode == 0, claimed.stderr
+    owner = store.action("A1")
+    assert owner["status"] == "claimed"
+    assert owner["claimed_by"] == (actor or "action-queue")
+    assert owner["claim_token"]
+    assert f"- Claim token: {owner['claim_token']}" in claimed.stdout
+    assert f"- Claimed by: {owner['claimed_by']}" in claimed.stdout
+
+    before = store.binding()
+    resumed = subprocess.run(cli + args + ["--json"], capture_output=True, text=True, timeout=10)
+    assert resumed.returncode == 0, resumed.stderr
+    receipt = json.loads(resumed.stdout)
+    assert receipt["claim_status"] == "resumed"
+    assert receipt["claim_token"] == owner["claim_token"]
+    assert receipt["claimed_by"] == owner["claimed_by"]
+    assert receipt["version"] == owner["version"]
+
+    rejected = subprocess.run(cli + ["claim", "--target", store.target, "--id", "A1",
+                                     "--actor", "another"],
+                              capture_output=True, text=True, timeout=10)
+    assert rejected.returncode == 2
+    assert not rejected.stdout
+    assert "claimed by another operator" in rejected.stderr
+    assert store.action("A1") == owner
+    assert store.binding() == before
+
+
 def test_concurrent_manual_actions_do_not_lose_updates(tmp_path):
     initialize_target_store(tmp_path, "target.com")
     code = """
