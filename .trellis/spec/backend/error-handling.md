@@ -55,6 +55,8 @@
   不绑定、四 gate/Q1-Q7/impact/evidence/report 任一缺失或 evidence ref 不可定位，均是写入前
   的参数/契约错误：stderr 输出恢复动作、返回 `2`，且不得创建 report、summary、ledger、queue、
   runtime 或 canonical finding mutation。
+  `report` 可为旧 path/content 或恰好 `{"mode":"deferred"}`；未知/空/null/错类型 mode、
+  及延期模式混入 path/content（含空值）均拒绝。延期只省略正文，不省略判断与证据校验。
   `decision.cvss` 是可选的外部交付字段；缺失不得制造错误或默认分值。
 - Action Queue 的普通入口必须通过 Store 准入。未初始化、legacy、preview、坏库或 fence
   冲突均 fail-fast；只有已初始化且没有行动的 Store 才表示空队列。
@@ -79,6 +81,9 @@
   是唯一 non-TTY validation signature。decision 先完整验证，再经既有
   Store assessment/delivery/report 命令写回；不得接受 stdin EOF、自然语言确认或直接 `findings.json` edit
   作为替代输入。
+  延期正文成功仍返回已有 `validation_sync.assessment/delivery` 真实 IDs；默认文本显示相同
+  IDs、summary 路径及“未写正文”。preflight 不返回未提交 ID 作为收据。report_path 用 JSON null，
+  不用 `"None"` 或假路径；summary/notes 落在真实 findings_dir，当前报告状态由 Store/INDEX 查询。
 - `python3 tools/action_queue.py ...` 遇到 queue read/write 的 `OSError`/`ValueError` 时写 stderr
   并返回 `2`；不得把损坏 queue 当作没有 action 后继续 checkpoint 或 handoff。
 - `target_case_state.py` 与 `coverage_matrix.py` 只从 Store 派生当前事实；可重建缓存缺失可重算，
@@ -121,6 +126,9 @@ except ImportError:  # 兼容 python3 tools/example.py
 - Store/fence/schema 损坏 -> owner 抛恢复错误、CLI exit `2`；事务失败 -> 元数据和 audit 全回滚。
 - Case 私有材料/已登记证据损坏 -> 当前授权失败；原始历史保留。可重建 Coverage 文件不是 owner。
 - 报告发布失败 -> 无部分正文；裁决或报告登记中断 -> 正文及已提交收据保留，原命令可幂等重试。
+- 延期正文的 assessment 成功、delivery 失败 -> exit `2`/retry、null report_path、已提交 assessment
+  保留；故障消除且 owner 未被并发推进时原 decision 只补缺失裁决。真实 CAS 冲突要查询并明确
+  形成新 decision，不能静默改前置身份。后来发布正文不改变原延期命令的状态/原因或重试身份。
 - Surface/inventory 派生：missing/stale/corrupt summary/projection -> 不消费；atomic failure/race ->
   旧字节保留或无新 manifest；cursor snapshot 变化 -> fail-fast；recon finalizer failure -> raw
   artifact 保留且可由显式 refresh 重建。

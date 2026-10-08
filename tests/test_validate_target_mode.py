@@ -598,6 +598,14 @@ def test_machine_report_replay_preserves_body_and_isolated_root(
     decision = json.loads(decision_path.read_text())
     decision["source_knowledge_refs"] = source_refs
     decision_path.write_text(json.dumps(decision))
+    original_store = TargetStore(root, "target.com")
+    operation_id = json.loads(Path(decision["evidence"]["runner_summary"]).read_text())["store_operation_id"]
+    original_evidence = [ref for ref in original_store.finding(finding_id)["evidence"]
+                         if ref["operation_id"] == operation_id]
+    original_digest = hashlib.sha256(json.dumps(
+        [original_store.binding()["store_id"], decision, original_evidence],
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode()).hexdigest()
     calibration = root / "hunt-memory" / "pattern_calibration.jsonl"
     historical = b'{"pattern_id":"historical|idor|swap","outcome":"helped"}\n'
     if existing_calibration:
@@ -608,6 +616,9 @@ def test_machine_report_replay_preserves_body_and_isolated_root(
     result = json.loads(capsys.readouterr().out)
     summary_path = Path(result["summary_path"])
     assert json.loads(summary_path.read_text())["source_knowledge_refs"] == source_refs
+    assert result["validation_sync"]["assessment"]["id"] == f"assessment:{original_digest}"
+    assert result["validation_sync"]["delivery"]["id"] == f"delivery:{original_digest}"
+    assert result["validation_sync"]["report"]["id"] == f"report:{original_digest}"
     assert (calibration.read_bytes() if calibration.exists() else None) == (
         historical if existing_calibration else None
     )
@@ -805,3 +816,201 @@ def test_candidate_admission_keeps_operation_guards(tmp_path, capsys, fault):
     capsys.readouterr()
     assert _file_snapshot(tmp_path) == before
     assert TargetStore(tmp_path, target).finding(finding_id)["assessment"] is None
+
+
+def test_deferred_report_decision_publishes_real_owner_references(tmp_path, capsys, monkeypatch):
+    import report_generator
+
+    target, finding_id, findings_dir, decision_path = _seed_machine_preflight(tmp_path)
+    monkeypatch.setattr(validate, "BASE_DIR", tmp_path / "unrelated checkout")
+    assert validate.main(["--findings-dir", str(findings_dir), "--finding-id", finding_id, "--scaffold"]) == 0
+    scaffold = json.loads(capsys.readouterr().out)
+    assert set(scaffold["report"]) == {"path", "content"}
+    decision = json.loads(decision_path.read_text())
+    original_report = tmp_path / decision["report"]["path"]
+    decision["report"] = {"mode": "deferred"}
+    decision_path.write_text(json.dumps(decision))
+    args = _decision_args(findings_dir, finding_id, decision_path)
+    store = TargetStore(tmp_path, target)
+    before, binding = _file_snapshot(tmp_path), store.binding()
+    assert validate.main([*args, "--preflight"]) == 0
+    preview = json.loads(capsys.readouterr().out)
+    assert preview["report_mode"] == "deferred" and preview["report_path"] is None
+    assert validate.main([*args[:-1], "--preflight"]) == 0
+    text = capsys.readouterr().out
+    assert "未写正文" in text and "None" not in text
+    assert "assessment:" not in text and "delivery:" not in text
+    assert _file_snapshot(tmp_path) == before and store.binding() == binding
+
+    assert validate.main(args) == 0
+    result = json.loads(capsys.readouterr().out)
+    sync = result["validation_sync"]
+    assert result["status"] == "updated" and result["report_mode"] == "deferred"
+    assert result["report_path"] is None and result["report_ready"] is False
+    assert sync["assessment"]["verdict"] == "confirmed"
+    assert sync["delivery"]["status"] == "eligible"
+    finding = store.finding(finding_id)
+    assert finding["assessment"]["id"] == sync["assessment"]["id"]
+    assert finding["deliveries"][0]["id"] == sync["delivery"]["id"]
+    assert finding["reports"] == [] and not original_report.exists()
+    summary_path = Path(result["summary_path"])
+    assert summary_path.parent == findings_dir
+    summary = json.loads(summary_path.read_text())
+    assert summary["report_draft"] == {"status": "not_written", "path": None, "placeholder_count": 0, "placeholders": []}
+    assert summary["all_gates_passed"] is False and summary["report_ready"] is False
+    assert summary["machine_decision"]["report_mode"] == "deferred"
+    notes = Path(result["submission_notes_path"])
+    assert notes.parent == findings_dir and "未写正文" in notes.read_text() and "None" not in notes.read_text()
+    binding = store.binding()
+    assert validate.main(args[:-1]) == 0
+    text = capsys.readouterr().out
+    assert all(value in text for value in ("未写正文", sync["assessment"]["id"], sync["delivery"]["id"], str(summary_path)))
+    assert store.binding() == binding and store.finding(finding_id) == finding
+
+    total, entries = report_generator.process_findings_dir(findings_dir)
+    assert total == 0 and entries == []
+    index_path = tmp_path / "reports" / target / "INDEX.json"
+    index = json.loads(index_path.read_text())
+    assert index["pending_drafts"][0]["assessment_id"] == sync["assessment"]["id"]
+    operation_id = finding["assessment"]["evidence"][0]["operation_id"]
+    body = (f"# Authored report\r\n\r\nSeverity: high\r\nOperation: {operation_id}:0\r\n"
+            f"Assessment: {sync['assessment']['id']}\r\nDelivery: {sync['delivery']['id']}\r\n").encode()
+    draft = tmp_path / "reports" / target / "drafts" / "authored.md"
+    draft.parent.mkdir()
+    draft.write_bytes(body)
+    total, entries = report_generator.process_findings_dir(
+        findings_dir, finding_id=finding_id, assessment_id=sync["assessment"]["id"],
+        delivery_id=sync["delivery"]["id"], body_file=draft,
+    )
+    assert total == 1 and entries[0]["severity"] == "high"
+    published = Path(entries[0]["file"])
+    assert published.read_bytes() == body
+    assert entries[0]["artifact_sha256"] == hashlib.sha256(body).hexdigest()
+    index_bytes, body_stat = index_path.read_bytes(), published.stat()
+    binding, finding = store.binding(), store.finding(finding_id)
+    assert validate.main(args) == 0
+    replay = json.loads(capsys.readouterr().out)
+    assert replay["validation_sync"]["status"] == "deduplicated"
+    assert replay["report_path"] is None and replay["report_ready"] is False
+    assert store.binding() == binding and store.finding(finding_id) == finding
+    assert published.read_bytes() == body and published.stat().st_mtime_ns == body_stat.st_mtime_ns
+    assert index_path.read_bytes() == index_bytes
+    first_summary = summary_path.read_bytes()
+    _, other_id, _, other_path = _seed_machine_preflight(tmp_path, finding_id="other-claim")
+    other = json.loads(other_path.read_text())
+    other["report"] = {"mode": "deferred"}
+    other_path.write_text(json.dumps(other))
+    assert validate.main(_decision_args(findings_dir, other_id, other_path)) == 0
+    other_result = json.loads(capsys.readouterr().out)
+    assert other_result["summary_path"] != str(summary_path)
+    assert summary_path.read_bytes() == first_summary
+    assert not (tmp_path / "unrelated checkout").exists()
+
+
+@pytest.mark.parametrize("fault,value", [
+    ("mode", "unknown"), ("mode", ""), ("mode", None), ("mode", []), ("mode", True),
+    ("path", "draft.md"), ("path", ""), ("path", None), ("content", "body"), ("content", ""),
+    ("content", None), ("extra", 1), ("report", {}), ("report", None),
+    ("gates", {}), ("seven_question_gate", {}), ("impact", ""), ("endpoint", "/wrong"),
+    ("method", "POST"), ("severity", "unknown"), ("severity", None), ("raw", None),
+])
+def test_deferred_report_decision_rejects_invalid_input_without_writes(tmp_path, capsys, fault, value):
+    target, finding_id, findings_dir, decision_path = _seed_machine_preflight(tmp_path)
+    decision = json.loads(decision_path.read_text())
+    decision["report"] = {"mode": "deferred"}
+    if fault in {"mode", "path", "content", "extra"}:
+        decision["report"][fault] = value
+    elif fault == "raw":
+        runner = json.loads(Path(decision["evidence"]["runner_summary"]).read_text())
+        (tmp_path / runner["artifact_bindings"][0]["ref"]).write_text("damaged raw")
+    else:
+        decision[fault] = value
+    decision_path.write_text(json.dumps(decision))
+    store = TargetStore(tmp_path, target)
+    binding, before = store.binding(), _file_snapshot(tmp_path)
+    args = _decision_args(findings_dir, finding_id, decision_path)
+    assert validate.main([*args, "--preflight"]) == 2
+    errors = json.loads(capsys.readouterr().out)["errors"]
+    assert errors
+    assert store.binding() == binding and _file_snapshot(tmp_path) == before
+    assert validate.main(args) == 2
+    stderr = capsys.readouterr().err
+    assert any(error in stderr for error in errors)
+    assert store.binding() == binding and _file_snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize("gate,status,verdict,delivery", [
+    (None, None, "confirmed", "eligible"), ("gate4", False, "confirmed", "ineligible"),
+    *[(question, status, "confirmed", "ineligible" if status == "fail" else "deferred")
+      for question in ("q5_not_known_behavior", "q7_not_never_submit")
+      for status in ("fail", "unknown", "partial", "chain_required")],
+    ("gate3", False, "inconclusive", "deferred"),
+    ("q6_impact_beyond_possible", "fail", "inconclusive", "deferred"),
+    ("q6_impact_beyond_possible", "unknown", "inconclusive", "deferred"),
+])
+def test_deferred_report_decision_keeps_judgments_separate(tmp_path, capsys, gate, status, verdict, delivery):
+    target, finding_id, findings_dir, decision_path = _seed_machine_preflight(tmp_path)
+    decision = json.loads(decision_path.read_text())
+    decision["report"] = {"mode": "deferred"}
+    decision.pop("severity")
+    if gate and gate.startswith("gate"):
+        decision["gates"][gate]["passed"] = status
+    elif gate:
+        decision["seven_question_gate"]["questions"][gate]["status"] = status
+    decision_path.write_text(json.dumps(decision))
+    assert validate.main(_decision_args(findings_dir, finding_id, decision_path)) == 0
+    result = json.loads(capsys.readouterr().out)
+    summary = json.loads(Path(result["summary_path"]).read_text())
+    finding = TargetStore(tmp_path, target).finding(finding_id)
+    assert finding["assessment"]["verdict"] == verdict
+    assert finding["deliveries"][0]["status"] == delivery
+    assert summary["severity"] == "unknown"
+    assert summary["report_path"] is None and summary["report_ready"] is False
+    assert summary["validation_evidence_passed"] is (verdict == "confirmed")
+    assert finding["reports"] == []
+    if delivery != "ineligible":
+        assert summary["delivery_judgment"]["reason"] == (
+            "validation gates passed; report publication deferred" if delivery == "eligible"
+            else "validation/destination gate incomplete"
+        )
+
+
+def test_deferred_report_decision_retries_partial_sync(tmp_path, capsys, monkeypatch):
+    target, finding_id, findings_dir, decision_path = _seed_machine_preflight(tmp_path)
+    decision = json.loads(decision_path.read_text())
+    decision["report"] = {"mode": "deferred"}
+    decision_path.write_text(json.dumps(decision))
+    store = TargetStore(tmp_path, target)
+    binding = store.binding()
+    args = _decision_args(findings_dir, finding_id, decision_path)
+    with monkeypatch.context() as failure:
+        def reject_delivery(*args, **kwargs):
+            raise StoreError("fixture delivery interrupted")
+        failure.setattr(TargetStore, "decide_delivery", reject_delivery)
+        assert validate.main(args) == 2
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "retry" and result["retry"] is True
+    assert result["report_mode"] == "deferred" and result["report_path"] is None
+    assert result["validation_sync"]["status"] == "error"
+    assert "assessment" not in result["validation_sync"] and "delivery" not in result["validation_sync"]
+    assert Path(result["summary_path"]).is_file()
+    partial = store.finding(finding_id)
+    assert partial["assessment"]["verdict"] == "confirmed"
+    assert partial["deliveries"] == [] and partial["reports"] == []
+    assert store.binding()["revision"] == binding["revision"] + 1
+    assert not (tmp_path / "state" / target / "session.json").exists()
+    changed = dict(decision, impact="Changed judgment with stale predecessors")
+    decision_path.write_text(json.dumps(changed))
+    before = _file_snapshot(tmp_path)
+    assert validate.main([*args, "--preflight"]) == 2
+    assert "assessment changed" in " ".join(json.loads(capsys.readouterr().out)["errors"])
+    assert validate.main(args) == 2
+    capsys.readouterr()
+    assert _file_snapshot(tmp_path) == before
+    decision_path.write_text(json.dumps(decision))
+    assert validate.main(args) == 0
+    recovered = json.loads(capsys.readouterr().out)
+    assert recovered["validation_sync"]["assessment"]["id"] == partial["assessment"]["id"]
+    assert recovered["validation_sync"]["delivery"]["status"] == "eligible"
+    assert store.binding()["revision"] == binding["revision"] + 2
+    assert store.finding(finding_id)["reports"] == []

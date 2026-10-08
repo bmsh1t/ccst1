@@ -179,7 +179,7 @@ AuthSession origin/scope rules; raw headers override only on the initial URL.
   without relabeling evidence or sending another request. Explicit technical
   gates determine confirmed versus inconclusive; failed/unknown technical gates
   do not mean refuted. Partial operations still reject even for negative review.
-- AI report bytes are atomically published before separate assessment,
+- In the default single-step mode, AI report bytes are atomically published before separate assessment,
   destination decision and eligible report registration. Their deterministic
   command IDs allow partial retries; a new judgment requires predecessor IDs.
   Same-decision/same-body retry preserves inode and bytes. Other Finding,
@@ -194,7 +194,7 @@ AuthSession origin/scope rules; raw headers override only on the initial URL.
   remains explicit; existing files are neither rewritten nor deleted.
 - Each index entry reads an explicit Severity declaration from that report's
   immutable, hash-checked body. Missing, invalid or conflicting declarations
-  display `unknown`, never a category/default medium. A new decision with explicit
+  display `unknown`, never a category/default medium. A single-step decision with explicit
   severity must match its report field at preflight; an omitted severity/CVSS is
   allowed. Different reports/destinations never share a guessed Finding severity.
 - Raw target ownership is shared by Action/native/Store through
@@ -229,6 +229,81 @@ text preservation. `tests/test_response_diff.py` covers structural diffs;
 Store and mocks only HTTP for zero/one responses; it checks original raw/identity,
 first registration, summary reload/replay, explicit claim recovery and completion
 refusal. Same-URL partial tests alone do not cover this different-subject boundary.
+
+## Scenario: Deferred report authorship after explicit judgments
+
+### 1. Scope / Trigger
+
+Use when authored Markdown must cite already committed assessment/delivery IDs.
+The complete decision participates in their hash; inserting its own newly generated
+IDs into the same decision's body changes those IDs. Keep the original hash owner.
+
+### 2. Signatures
+
+Use the existing `validate.py --findings-dir ROOT/findings/TARGET --finding-id ID
+--decision-json FILE [--preflight] [--json]`; replace the entire decision.report
+object with `{"mode":"deferred"}`. Publish later using the existing
+`report_generator.py ROOT/findings/TARGET --finding-id ID --assessment-id ID
+--delivery-id ID --body-file FILE`. There is no new owner or judgment CLI.
+
+### 3. Contracts
+
+- Mode is part of the original decision hash. If present, report must be exactly
+  `{"mode":"deferred"}`; missing mode retains the old path/content contract and
+  `rstrip() + "\n"` normalization. Default scaffold and schema version stay unchanged.
+- Full schema, target/Finding/endpoint/method/class, gate/Q1–Q7/impact, complete linked
+  runner witness/raw integrity and predecessor checks still run before writes.
+- Technical gates are unchanged. Explicit destination exclusions win; otherwise
+  all technical and destination gates must pass for eligible. Remaining unknown,
+  partial or chain_required decisions are deferred, never implicitly eligible.
+- No body inspection/write/registration occurs. `report_path=null`, `report_ready=false`,
+  `all_gates_passed=false`, `report_draft_status=not_written`, and
+  `machine_decision.report_mode=deferred` preserve absence separately from eligibility.
+  Missing severity is unknown; a supplied value uses the existing explicit enum.
+- Summary/notes use the actual findings_dir and existing Finding artifact-key;
+  no fake report path or guessed repo root. Successful JSON uses existing sync
+  assessment/delivery IDs; default text preserves these IDs, summary path and
+  “未写正文”. Preflight exposes no uncommitted ID as a receipt.
+- Status/reason cannot depend on later publication, so the original decision can
+  replay without new judgments or rewriting the body. Summary describes the invocation;
+  Store/INDEX own current report state. Remember's legacy partial prefill is unchanged.
+- Final publisher preserves exact UTF-8 bytes and current owner checks; it does not
+  inject or semantically verify references. The two existing report-ID schemes remain
+  distinct; no cross-entry deduplication, migration, external submission or Action completion.
+
+### 4. Validation & Error Matrix
+
+| Input/failure | Result |
+|---|---|
+| mode null/empty/wrong type/unknown or extra report key, even empty path/content | exit 2 before writes; preflight aggregates errors |
+| all technical/destination gates pass without a body | confirmed + eligible, report_ready=false; later index exposes pending draft |
+| destination fail vs unknown/partial/chain_required | ineligible vs deferred; technical assessment remains independent |
+| assessment succeeds, delivery fails | retry + exit 2, null report path; retain committed assessment and query Store for actual state |
+| unchanged decision after recoverable failure or later publication | reuse owner commands; only missing judgment may commit |
+| intervening judgment/CAS change or damaged proof | explicit rejection; no automatic predecessor replacement or evidence repair |
+
+Summary/files/Store are not one transaction. A genuine concurrent conflict requires
+querying current owners and explicitly authoring a new decision, not altering a retry.
+
+### 5. Good/Base/Bad Cases
+
+Good: commit judgments, cite returned IDs in a new draft, then publish exact bytes.
+Base: old path/content decision remains compatible. Bad: add guessed IDs into that
+same hashed body, silently discard supplied content, or call eligibility report readiness.
+
+### 6. Tests Required
+
+`tests/test_validate_target_mode.py::test_deferred_report_decision_*` covers strict
+input/no-write preflight, text/JSON receipts, native temporary Store publication with
+CRLF, before/after-publication replay, two-Finding isolation, judgment matrix and
+partial sync. `test_machine_report_replay_preserves_body_and_isolated_root` independently
+asserts the old digest formula. Existing publisher tests cover altered/damaged bodies.
+
+### 7. Wrong vs Correct
+
+Wrong: skip body creation but leave delivery eligibility dependent on its existence.
+Correct: explicitly defer authorship inside the decision; keep technical/destination
+judgments separate from document readiness, then reuse the existing publisher.
 
 ## Scenario: ASP.NET ViewState captured-response known-key check
 

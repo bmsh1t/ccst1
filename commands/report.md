@@ -26,6 +26,16 @@ and impact must have reproducible evidence; a scanner match or plausible chain i
 assumptions and missing connectors rather than embellishing the claim. `findings/last-validate.json` is only a
 latest pointer, not a binding. The publisher enforces existing judgments, not the semantic truth of prose.
 
+If these IDs do not exist yet, use `/validate` with `report` replaced by exactly
+`{"mode":"deferred"}`. Fill the existing judgments/evidence, optionally preflight,
+then apply the decision. This runs the full validation checks and commits assessment
+and delivery without a report body. All technical/destination gates must pass for
+eligible delivery; selecting deferred writing alone does not grant eligibility.
+Successful JSON exposes `validation_sync.assessment.id` and `validation_sync.delivery.id`;
+default text shows the same committed IDs and summary path. Preflight IDs are not receipts.
+Then query the Finding above, cite the actual operation/observation and judgment IDs
+in the author's Markdown, and publish below. No separate assessment/delivery CLI is needed.
+
 ## Inspect current reports and missing drafts
 
 ```bash
@@ -56,11 +66,22 @@ python3 tools/report_generator.py ROOT/findings/TARGET \
 The body must be non-empty UTF-8. Each destination gets its own explicit submission; no body is automatically
 reused for another destination. The IDs must still select the current confirmed assessment and eligible
 delivery, with intact evidence. `/validate`'s own authored-report publication remains unchanged.
+Deferred `/validate` retains `report_path=null` and `report_ready=false` even when replayed
+after this publication: its summary records that invocation, not the current report owner.
+Replaying the original deferred decision never rewrites the published body or changes
+the delivery status/reason. `/remember --from-validate` may still prefill partial from that
+summary; use Store/INDEX for current judgments and report status.
 
 Published Markdown bytes are immutable. Complete file publication precedes Store registration; interruption
 retains the file for retry with the same IDs and identical body. Different bytes under the same publication ID,
 unknown/truncated existing files, symlinked output, stale IDs or invalid evidence are refused, not overwritten.
 A new judgment requires new owner IDs. Existing reports and prior destination decisions are never rewritten.
+If deferred validation only committed its assessment, it returns retry/nonzero, not successful
+delivery IDs. Query Store and retry the unchanged decision after the failure is resolved;
+genuine concurrent predecessor changes require a newly authored decision. Publication
+failure likewise retains committed judgments and any complete published bytes for retry.
+The legacy `/validate` and explicit publisher report-ID schemes remain distinct; this
+workflow does not promise cross-entry deduplication or migrate old reports.
 
 The index retains all current registered reports, including reports registered through `/validate` or the
 explicit Store API. Severity is read only from each registered body's declaration; absent/invalid/conflicting

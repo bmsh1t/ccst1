@@ -33,21 +33,20 @@ Run full validation on the current finding before writing a report.
 
 - Validation decision and reasoning
 - 当前 finding 独占的 `<artifact-key>.validation-summary.json`
-- Store technical assessment, independent destination decision and registered report when eligible
+- Store technical assessment and independent destination decision; registered report only when a ready body is supplied
 - Current queries expose validation progress from those same facts
 
 ## Artifacts Written
 
-- 报告同目录的 `<artifact-key>.validation-summary.json`
-- 报告同目录的 `<artifact-key>.submission-notes.md`
+- `<artifact-key>.validation-summary.json` / `<artifact-key>.submission-notes.md`：单步模式在报告同目录；延期正文模式在实际 target findings 目录，仍按同一 Finding key 隔离
 - `findings/last-validate.json`（仅为最近一次运行的 convenience pointer）
-- Store assessment/delivery/report records and their command receipts
+- Store assessment/delivery receipts; deferred mode creates no report body or report record
 - `state/<target>/session.json` runtime breadcrumbs; no automatic Pattern calibration writes
 
 ## Resume Source
 
 - Finding/assessment/report linkage from the target Store
-- The report-local summary path returned by this validation invocation
+- The Finding-owned summary path returned by this validation invocation
 - PASS cases hand off to `/report`; non-PASS cases hand off back to hunt with a
   concrete next evidence step
 
@@ -111,8 +110,10 @@ report path) and leaves `impact`/`gates`/`seven_question_gate` empty for
 AI judgment. The scaffold omits CVSS; legacy `decision.cvss`, if supplied, is
 validated but not written to a new summary. A destination-specific CVSS field
 belongs in the external report when that platform requires it.
-Claude may set `severity` explicitly from the demonstrated impact; if omitted,
-the existing Finding severity is carried forward, not inferred from CVSS.
+Claude may set `severity` explicitly from the demonstrated impact (`info`, `low`,
+`medium`, `high`, `critical`). In single-step mode it must match the report's
+Severity field; omission reads that field. Deferred mode defaults to `unknown`
+when severity is omitted, never inferring it from CVSS or the Finding.
 Hand-writing the full JSON remains valid; the scaffold is an
 output-only generator, validation code is unchanged. The target, ID, endpoint and class must match
 the canonical row before any write occurs; the report path stays below that
@@ -176,8 +177,8 @@ exit `2` with `status: "preflight_invalid"` and an `errors` list. Remove
 `--preflight` to apply the unchanged validation path.
 
 The command requires an initialized Store and records the technical assessment
-and destination decision separately. When eligible, it atomically publishes the
-AI report body and registers its artifact against those exact decisions. If
+and destination decision separately. In the default single-step mode, it publishes
+the supplied AI report body before the judgments, then registers the artifact when ready. If
 registration fails, the body and committed decisions remain available for an
 idempotent retry. Report registration never submits externally or completes an
 Action. Legacy targets require explicit import; no legacy fallback is consulted.
@@ -186,6 +187,64 @@ a global pointer.
 `findings/last-validate.json` is only a latest pointer and is never canonical
 evidence. Calls without `--decision-json` fail closed without creating report,
 finding, queue or runtime state.
+
+### Judge first, then author with real owner references
+
+When the report must cite the newly committed assessment/delivery IDs, replace
+the scaffold's **entire** `report` object before applying the decision:
+
+```json
+{"report": {"mode": "deferred"}}
+```
+
+This is the only supported mode value. Extra keys (including empty `path` or
+`content`), unknown/empty/null/non-string modes are rejected before writes.
+Omitting mode retains the existing path/content single-step behavior, original
+decision hash, and `rstrip() + "\n"` report normalization. The default scaffold
+still contains path/content, not mode. Both modes retain all schema, binding,
+gate, impact, runner/raw-evidence and predecessor checks.
+
+In deferred mode, technical gates determine `confirmed` versus `inconclusive`.
+Gate 4 false or Q5/Q7 fail makes delivery `ineligible`. With no such exclusion,
+all technical and destination gates passing makes delivery `eligible`; anything
+else, including Q5/Q7 unknown/partial/chain_required, leaves it `deferred`.
+Eligibility does not mean a body exists: `report_ready` and `all_gates_passed`
+remain false, `report_path` is null and `report_draft_status` is `not_written`.
+
+```bash
+python3 tools/validate.py --findings-dir ROOT/findings/TARGET --finding-id FINDING_ID \
+  --decision-json /tmp/validate-decision.json --preflight --json
+python3 tools/validate.py --findings-dir ROOT/findings/TARGET --finding-id FINDING_ID \
+  --decision-json /tmp/validate-decision.json --json
+python3 tools/target_store.py findings --repo-root ROOT --target TARGET --id FINDING_ID
+```
+
+Successful apply returns `status=updated`, `report_mode=deferred`, the real summary
+path and committed `validation_sync.assessment.id` / `validation_sync.delivery.id`.
+Default text also shows both IDs and the summary, with `未写正文`; preflight text
+shows no uncommitted judgment IDs. Write the Markdown with these IDs and the actual
+operation/observation references, then use the existing publisher:
+
+```bash
+python3 tools/report_generator.py ROOT/findings/TARGET \
+  --finding-id FINDING_ID --assessment-id ASSESSMENT_ID --delivery-id DELIVERY_ID \
+  --body-file ROOT/reports/TARGET/drafts/report.md
+```
+
+The publisher preserves the author's exact UTF-8 bytes; it does not insert IDs or
+verify their semantic use in prose. Until publication, indexing lists `pending_drafts`.
+Same-decision replay before or after publication keeps judgment IDs/status/reason
+unchanged and never writes or registers a body. Current report state comes from
+Store/INDEX, not this invocation's summary. `/remember --from-validate` retains its
+legacy partial prefill for a summary without a ready report.
+
+If assessment commits but delivery fails, exit `2` returns `status=retry`,
+`retry=true`, `report_path=null` and the summary/sync error. Query Store for the
+committed facts; summary `store_command` is a planned binding, not a success receipt.
+Retry the unchanged decision after fixing the failure; do not regenerate its
+predecessors. If another judgment has advanced the Store, query it and explicitly
+author a new decision instead. Summary/files and database writes are not one
+transaction; committed facts remain available on partial failure.
 
 ## Browser-State Priority
 

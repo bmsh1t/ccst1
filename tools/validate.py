@@ -518,7 +518,7 @@ def validation_evidence_passed(summary: dict) -> bool:
     return four and seven
 
 
-def build_validation_summary(info: dict, *, all_pass: bool, report_path: str | Path) -> dict:
+def build_validation_summary(info: dict, *, all_pass: bool, report_path: str | Path | None) -> dict:
     """Build a compact JSON summary that /remember can import later."""
     vuln_class = (info.get("vuln_type") or "").strip().lower()
     cvss_score = info.get("cvss_score")
@@ -540,7 +540,9 @@ def build_validation_summary(info: dict, *, all_pass: bool, report_path: str | P
         })
     seven_question_gate = build_seven_question_gate(gate_info)
     evidence_passed = bool(all_pass and seven_question_gate.get("passed"))
-    report_draft = inspect_report_draft(report_path)
+    report_draft = inspect_report_draft(report_path) if report_path is not None else {
+        "status": "not_written", "path": None, "placeholder_count": 0, "placeholders": [],
+    }
     report_ready = bool(evidence_passed and report_draft.get("status") == "complete")
     delivery_judgment = None
     if (info.get("machine_decision") or {}).get("store_command"):
@@ -557,10 +559,23 @@ def build_validation_summary(info: dict, *, all_pass: bool, report_path: str | P
         for key in ("q5_not_known_behavior", "q7_not_never_submit"):
             if questions[key]["status"] == "fail":
                 exclusions.append(f"{key}: {questions[key]['basis']}")
-        delivery_judgment = {
-            "status": "ineligible" if exclusions else "eligible" if report_ready else "deferred",
-            "reason": "; ".join(exclusions) if exclusions else "report-ready" if report_ready else "validation/report gate incomplete",
-        }
+        if info["machine_decision"].get("report_mode") == "deferred":
+            eligible = evidence_passed and gate_info.get("gate4_pass") is True and all(
+                questions[key]["status"] == "pass"
+                for key in ("q5_not_known_behavior", "q7_not_never_submit")
+            )
+            delivery_judgment = {
+                "status": "ineligible" if exclusions else "eligible" if eligible else "deferred",
+                "reason": "; ".join(exclusions) if exclusions else (
+                    "validation gates passed; report publication deferred" if eligible
+                    else "validation/destination gate incomplete"
+                ),
+            }
+        else:
+            delivery_judgment = {
+                "status": "ineligible" if exclusions else "eligible" if report_ready else "deferred",
+                "reason": "; ".join(exclusions) if exclusions else "report-ready" if report_ready else "validation/report gate incomplete",
+            }
     # Linked validation belongs to the canonical Finding owner.  Ad-hoc
     # validation keeps endpoint-host compatibility because no owner index is
     # available to supply a stronger target identity.
@@ -592,7 +607,7 @@ def build_validation_summary(info: dict, *, all_pass: bool, report_path: str | P
         "report_draft_status": str(report_draft.get("status") or "not_written"),
         "seven_question_gate_decision": seven_question_gate.get("decision", "needs_review"),
         "seven_question_gate": seven_question_gate,
-        "report_path": str(report_path),
+        "report_path": str(report_path) if report_path is not None else None,
         "validated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
     if delivery_judgment is not None:
@@ -643,6 +658,8 @@ def build_validation_summary(info: dict, *, all_pass: bool, report_path: str | P
         }
         if "store_command" in machine_decision:
             summary["machine_decision"]["store_command"] = machine_decision["store_command"]
+        if "report_mode" in machine_decision:
+            summary["machine_decision"]["report_mode"] = machine_decision["report_mode"]
     # Preserve explicitly adopted knowledge sources in the validation summary.
     adopted_sources = info.get("source_knowledge_refs")
     if isinstance(adopted_sources, list) and adopted_sources:
@@ -678,7 +695,7 @@ def build_submission_notes(summary: dict) -> str:
 ## Machine-readable handoff
 
 - Validation summary: `{validation_summary_name}`
-- Report draft: `{summary.get('report_path', '')}`
+- Report draft: `{summary.get('report_path') or '未写正文'}`
 - Result: `{summary.get('result', '')}`
 - Severity: `{summary.get('severity', '')}`
 {cvss_line.rstrip()}
@@ -703,7 +720,7 @@ def build_submission_notes(summary: dict) -> str:
 """
 
 
-def _validation_artifact_key(summary: dict, report_path: str | Path) -> str:
+def _validation_artifact_key(summary: dict, report_path: str | Path | None) -> str:
     """Return a deterministic, collision-resistant per-finding artifact key."""
     raw_identity = str(summary.get("finding_id") or Path(report_path).stem or "validation").strip()
     slug = re.sub(r"[^A-Za-z0-9._-]+", "-", raw_identity).strip(".-_") or "validation"
@@ -713,10 +730,17 @@ def _validation_artifact_key(summary: dict, report_path: str | Path) -> str:
 
 def validation_artifact_paths(
     summary: dict,
-    report_path: str | Path,
+    report_path: str | Path | None,
+    *,
+    findings_dir: str | Path | None = None,
 ) -> tuple[Path, Path]:
     """Return canonical summary/notes paths owned by one finding identity."""
-    parent = Path(report_path).parent
+    if report_path is None:
+        if not findings_dir or not str(summary.get("finding_id") or "").strip():
+            raise ValueError("validation without a report requires findings_dir and finding_id")
+        parent = Path(findings_dir)
+    else:
+        parent = Path(report_path).parent
     key = _validation_artifact_key(summary, report_path)
     return (
         parent / f"{key}.validation-summary.json",
@@ -724,9 +748,11 @@ def validation_artifact_paths(
     )
 
 
-def write_submission_notes(summary: dict, report_path: str | Path) -> Path:
+def write_submission_notes(
+    summary: dict, report_path: str | Path | None, *, findings_dir: str | Path | None = None,
+) -> Path:
     """Write per-report submission notes for human final review."""
-    report_summary_path, notes_path = validation_artifact_paths(summary, report_path)
+    report_summary_path, notes_path = validation_artifact_paths(summary, report_path, findings_dir=findings_dir)
     notes_path.parent.mkdir(parents=True, exist_ok=True)
     summary["validation_summary_path"] = str(report_summary_path)
     summary["submission_notes_path"] = str(notes_path)
@@ -736,13 +762,13 @@ def write_submission_notes(summary: dict, report_path: str | Path) -> Path:
 
 def write_validation_summary(
     summary: dict,
-    report_path: str | Path,
+    report_path: str | Path | None,
     *,
     repo_root: str | Path | None = None,
+    findings_dir: str | Path | None = None,
 ) -> Path:
     """Persist per-report summary and the owning repo's last-validate pointer."""
-    report_path = Path(report_path)
-    report_summary_path, submission_notes_path = validation_artifact_paths(summary, report_path)
+    report_summary_path, submission_notes_path = validation_artifact_paths(summary, report_path, findings_dir=findings_dir)
     report_summary_path.parent.mkdir(parents=True, exist_ok=True)
     summary["validation_summary_path"] = str(report_summary_path)
     summary["submission_notes_path"] = str(submission_notes_path)
@@ -845,7 +871,7 @@ def _sync_primary_validation(summary: dict[str, Any], repo: Path) -> dict[str, A
 def _validation_sync_retry_result(
     sync: object,
     *,
-    report_path: str | Path,
+    report_path: str | Path | None,
     summary_path: str | Path,
 ) -> dict[str, Any] | None:
     """Return a retry payload when any target owner rejected write-back."""
@@ -854,7 +880,7 @@ def _validation_sync_retry_result(
             "status": "retry",
             "retry": True,
             "reason": "validation owner sync returned an invalid result",
-            "report_path": str(report_path),
+            "report_path": str(report_path) if report_path is not None else None,
             "summary_path": str(summary_path),
             "validation_sync": {},
         }
@@ -865,7 +891,7 @@ def _validation_sync_retry_result(
         "status": "retry",
         "retry": True,
         "reason": str(sync.get("reason") or "validation owner sync failed; retry without advancing lifecycle"),
-        "report_path": str(report_path),
+        "report_path": str(report_path) if report_path is not None else None,
         "summary_path": str(summary_path),
         "validation_sync": sync,
     }
@@ -1237,7 +1263,9 @@ def _parse_machine_severity(raw: Any) -> str:
     return severity
 
 
-def _machine_report_severity(decision: dict, content: str) -> str:
+def _machine_report_severity(decision: dict, content: str | None) -> str:
+    if content is None:
+        return _parse_machine_severity(decision["severity"]) if "severity" in decision else "unknown"
     try:
         from tools.report_generator import declared_report_severity
     except ImportError:  # direct tools/ execution
@@ -1277,10 +1305,14 @@ def _resolve_machine_report(
     *,
     findings_dir: Path,
     repo_root: Path,
-) -> tuple[Path, str]:
+) -> tuple[Path | None, str | None]:
     """Resolve one explicit report payload under the bound finding directory."""
     if not isinstance(raw, dict):
         raise ValueError("decision.report must be an object")
+    if "mode" in raw:
+        if raw != {"mode": "deferred"}:
+            raise ValueError('decision.report with mode must be exactly {"mode": "deferred"}; omit path/content')
+        return None, None
     report_path = Path(_required_text(raw.get("path"), "report.path")).expanduser()
     if not report_path.is_absolute():
         report_path = repo_root / report_path
@@ -1366,7 +1398,7 @@ def _write_machine_report(path: Path, content: str) -> None:
 
 def _build_machine_validation_input(
     args: argparse.Namespace,
-) -> tuple[dict[str, Any], dict[str, Any], Path, Path, str]:
+) -> tuple[dict[str, Any], dict[str, Any], Path, Path | None, str | None]:
     """Validate every decision binding before any report/finding state is written."""
     decision, decision_path = _load_machine_decision(args.decision_json)
     decision_target = canonical_target_value(_required_text(decision.get("target"), "target"))
@@ -1430,15 +1462,16 @@ def _build_machine_validation_input(
         repo_root=repo_root,
     )
     severity = _machine_report_severity(decision, report_content)
-    _assert_machine_report_path_available(
-        findings_dir,
-        finding_id=finding_id,
-        report_path=report_path,
-        report_content=report_content,
-        repo_root=repo_root,
-        target=decision_target,
-        store_command=store_command,
-    )
+    if report_path is not None:
+        _assert_machine_report_path_available(
+            findings_dir,
+            finding_id=finding_id,
+            report_path=report_path,
+            report_content=report_content,
+            repo_root=repo_root,
+            target=decision_target,
+            store_command=store_command,
+        )
 
     info = {
         "target": decision_target,
@@ -1460,6 +1493,7 @@ def _build_machine_validation_input(
             "evidence_refs": evidence_refs,
             "runner_summary": str(runner_summary_path),
             **({"store_command": store_command} if store_command is not None else {}),
+            **({"report_mode": "deferred"} if report_path is None else {}),
         },
     }
     for key in MACHINE_DECISION_GATE_KEYS:
@@ -1646,17 +1680,18 @@ def run_machine_preflight(args: argparse.Namespace) -> dict[str, Any]:
     if report_result is not None and findings_dir is not None and finding_id:
         report_path, report_content = report_result
         capture(lambda: _machine_report_severity(decision, report_content))
-        capture(
-            lambda: _assert_machine_report_path_available(
-                findings_dir,
-                finding_id=finding_id,
-                report_path=report_path,
-                report_content=report_content,
-                repo_root=repo_root or BASE_DIR,
-                target=decision_target,
-                store_command=store_command,
+        if report_path is not None:
+            capture(
+                lambda: _assert_machine_report_path_available(
+                    findings_dir,
+                    finding_id=finding_id,
+                    report_path=report_path,
+                    report_content=report_content,
+                    repo_root=repo_root or BASE_DIR,
+                    target=decision_target,
+                    store_command=store_command,
+                )
             )
-        )
 
     if errors:
         raise MachineDecisionPreflightError(errors)
@@ -1667,7 +1702,8 @@ def run_machine_preflight(args: argparse.Namespace) -> dict[str, Any]:
         "target": decision_target,
         "finding_id": finding_id,
         "findings_dir": str(findings_dir),
-        "report_path": str(report_result[0]),
+        "report_path": str(report_result[0]) if report_result[0] is not None else None,
+        **({"report_mode": "deferred"} if report_result[0] is None else {}),
     }
 
 
@@ -1675,12 +1711,14 @@ def run_machine_validation(args: argparse.Namespace) -> dict[str, Any]:
     """Apply an explicit non-TTY validation decision through existing owners only."""
     info, prefill, findings_dir, report_path, report_content = _build_machine_validation_input(args)
     repo_root = _machine_repo_root(findings_dir, explicit_findings_dir=args.findings_dir)
-    output_path = ensure_report_output_path(report_path)
-    _write_machine_report(output_path, report_content)
+    output_path = report_path
+    if output_path is not None:
+        ensure_report_output_path(output_path)
+        _write_machine_report(output_path, report_content)
 
     all_pass = all(bool(info.get(f"{key}_pass")) for key in MACHINE_DECISION_GATE_KEYS)
     summary = build_validation_summary(info, all_pass=all_pass, report_path=output_path)
-    summary_path = write_validation_summary(summary, output_path, repo_root=repo_root)
+    summary_path = write_validation_summary(summary, output_path, repo_root=repo_root, findings_dir=findings_dir)
     validation_sync = sync_validation_artifacts(summary, repo_root=repo_root)
     if validation_sync.get("status") in {"updated", "deduplicated"} and summary.get("report_ready"):
         command = info["machine_decision"]["store_command"]
@@ -1695,20 +1733,23 @@ def run_machine_validation(args: argparse.Namespace) -> dict[str, Any]:
         except (StoreError, OSError) as exc:
             validation_sync.update(status="partial", reason=f"report registration rejected: {exc}")
     summary["validation_sync"] = validation_sync
-    summary_path = write_validation_summary(summary, output_path, repo_root=repo_root)
+    summary_path = write_validation_summary(summary, output_path, repo_root=repo_root, findings_dir=findings_dir)
     retry = _validation_sync_retry_result(
         validation_sync,
         report_path=output_path,
         summary_path=summary_path,
     )
     if retry:
+        if output_path is None:
+            retry["report_mode"] = "deferred"
         raise ValidationSyncError(retry)
     update_runtime_state_after_validate(summary, str(findings_dir), repo_root=repo_root)
     return {
         "status": "updated",
         "finding_id": str(prefill.get("finding_id") or ""),
         "findings_dir": str(findings_dir),
-        "report_path": str(output_path),
+        "report_path": str(output_path) if output_path is not None else None,
+        **({"report_mode": "deferred"} if output_path is None else {}),
         "summary_path": str(summary_path),
         "submission_notes_path": str(summary.get("submission_notes_path") or ""),
         "result": str(summary.get("result") or ""),
@@ -1773,13 +1814,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             else:
                 print(
                     "machine validation preflight ok "
-                    f"finding={result['finding_id']} report={result['report_path']}"
+                    f"finding={result['finding_id']} report={result['report_path'] or '未写正文'}"
                 )
             return 0
         if args.decision_json:
             result = run_machine_validation(args)
             if args.json:
                 print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+            elif result.get("report_mode") == "deferred":
+                sync = result["validation_sync"]
+                print(
+                    "machine validation updated "
+                    f"finding={result['finding_id']} report=未写正文 result={result['result']} "
+                    f"assessment={sync['assessment']['id']} delivery={sync['delivery']['id']} "
+                    f"summary={result['summary_path']}"
+                )
             else:
                 print(
                     "machine validation updated "
