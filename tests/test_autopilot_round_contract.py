@@ -165,6 +165,18 @@ def test_round_budget_is_checkpoint_owned_not_prompt_counted():
     assert "Budget exhaustion ends target work for this invocation" in normalized
 
 
+def test_round_routes_incomplete_review_forms_through_checkpoint():
+    command = " ".join(_read("commands/autopilot-round.md").split())
+
+    assert (
+        "If the first Closure reason is `global_review_required`, `global_review_stale`, "
+        "`global_review_invalid`, or `global_review_form_insufficient`, prepare and settle "
+        "return `status=review_required`, including completed-round replay"
+    ) in command
+    assert "record the review through the existing Checkpoint owner" in command
+    assert "`review_required`: `STATUS: CONTINUE next_action=global-review`" in command
+
+
 def test_round_claims_only_ai_selected_owner_backed_substantive_work():
     command = " ".join(_read("commands/autopilot-round.md").split())
 

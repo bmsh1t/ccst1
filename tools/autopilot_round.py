@@ -157,6 +157,7 @@ def prepare_round(
         "global_review_required",
         "global_review_stale",
         "global_review_invalid",
+        "global_review_form_insufficient",
     }:
         return _result(
             "prepare",
@@ -216,6 +217,7 @@ def settle_round(
                 "global_review_required",
                 "global_review_stale",
                 "global_review_invalid",
+                "global_review_form_insufficient",
             }:
                 return _result(
                     "settle",
@@ -259,6 +261,7 @@ def settle_round(
                 "global_review_required",
                 "global_review_stale",
                 "global_review_invalid",
+                "global_review_form_insufficient",
             }
             else "settled"
         )

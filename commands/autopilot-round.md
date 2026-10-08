@@ -109,8 +109,9 @@ then explicitly closes the runtime round. Stale or unavailable Surface keeps
 the round active; refresh it explicitly before retrying. Settle does not save
 target memory, synchronize Queue or refresh Surface. Repeating settle
 after completion is read-only (`status=already_settled`) and never replays target
-work. If final Closure returns `global_review_required`, `global_review_stale`, or
-`global_review_invalid`, settle returns `status=review_required`; record the review
+work. If the first Closure reason is `global_review_required`, `global_review_stale`,
+`global_review_invalid`, or `global_review_form_insufficient`, prepare and settle
+return `status=review_required`, including completed-round replay; record the review
 through the existing Checkpoint owner, then re-read Closure before claiming finish.
 Budget exhaustion ends target work for this invocation; it does not itself
 select `STATUS: CONTINUE`.

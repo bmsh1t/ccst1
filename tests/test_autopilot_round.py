@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import multiprocessing
 import time
+from copy import deepcopy
 
 import pytest
 
@@ -156,20 +157,39 @@ def test_prepare_round_is_idempotent_and_preserves_checkpoint_budget(tmp_path):
     assert second["round_progress"]["max_lanes"] == 2
 
 
-def test_prepare_does_not_start_new_round_before_global_review(monkeypatch, tmp_path):
+@pytest.mark.parametrize("reason", [
+    "global_review_required",
+    "global_review_stale",
+    "global_review_invalid",
+    "global_review_form_insufficient",
+])
+def test_prepare_does_not_start_new_round_before_global_review(monkeypatch, tmp_path, reason):
+    store = TargetStore(tmp_path, "target.com")
+    store.initialize()
+    begin_round(tmp_path, "target.com", max_lanes=2)
+    closed = autopilot_round_module.record_round_closure(tmp_path, "target.com")
+    witness = _witness(tmp_path)
+    before = witness.read_bytes()
+    binding = store.binding()
+    progress = closed["round_progress"]
+    closure = {
+        "verdict": "handoff",
+        "can_claim_exhausted": False,
+        "reasons": [reason],
+        "next_action": "global-review",
+        "round_progress": progress,
+        "global_review": {
+            "status": "form_insufficient",
+            "review_status": "complete",
+            "missing_tokens": ["scanner:idor_candidates:remaining=12"],
+        },
+    }
+    expected_closure = deepcopy(closure)
     calls = []
     monkeypatch.setattr(
         autopilot_round_module,
         "_closure_snapshot",
-        lambda *_args: (
-            {"resolved_target": "target.com"},
-            {
-                "verdict": "handoff",
-                "reasons": ["global_review_required"],
-                "next_action": "global-review",
-                "round_progress": {"status": "completed"},
-            },
-        ),
+        lambda *_args: ({"resolved_target": "target.com"}, closure),
     )
     monkeypatch.setattr(
         autopilot_round_module,
@@ -177,10 +197,132 @@ def test_prepare_does_not_start_new_round_before_global_review(monkeypatch, tmp_
         lambda *_args, **_kwargs: calls.append(True),
     )
 
-    result = autopilot_round_module.prepare_round(tmp_path, "target.com", 2)
+    result = autopilot_round_module.prepare_round(tmp_path, "target.com", 8)
 
     assert result["status"] == "review_required"
+    assert result["closure"] == expected_closure
+    assert result["round_progress"] == expected_closure["round_progress"]
     assert calls == []
+    assert witness.read_bytes() == before
+    assert store.binding() == binding
+
+
+@pytest.mark.parametrize("completed", [False, True], ids=["active", "completed-replay"])
+@pytest.mark.parametrize("reason", [
+    "global_review_required",
+    "global_review_stale",
+    "global_review_invalid",
+    "global_review_form_insufficient",
+])
+def test_settle_preserves_global_review_and_owner_boundaries(monkeypatch, tmp_path, completed, reason):
+    target = "target.com"
+    store = TargetStore(tmp_path, target)
+    store.initialize()
+    store.create_action(
+        command_id="create-work", action_id="WORK-1", intent="Review context",
+        execution_key="context-review", actor="ai", kind="work", subject={"target": target},
+    )
+    started = begin_round(tmp_path, target, max_lanes=2)
+    lane = "sqli:/api/orders"
+    record_round_lane(tmp_path, target, lane=lane, max_lanes=2)
+    record_round_lane_result(
+        tmp_path, target, lane=lane, status="completed", decision="tested clean",
+        evidence_ref=_write_evidence(tmp_path, target), next_action="none",
+    )
+    if completed:
+        autopilot_round_module.record_round_closure(tmp_path, target)
+    witness = _witness(tmp_path, target)
+    before = witness.read_bytes()
+    binding = store.binding()
+    action = store.action("WORK-1")
+    calls = []
+    projected = []
+    read_snapshot = autopilot_round_module._closure_snapshot
+    checkpoint = autopilot_round_module.build_checkpoint
+    close_round = autopilot_round_module.record_round_closure
+
+    def current_snapshot(*args, **kwargs):
+        calls.append("snapshot")
+        state, closure = read_snapshot(*args, **kwargs)
+        if closure["round_progress"]["status"] == "completed":
+            closure.update({
+                "verdict": "handoff",
+                "can_claim_exhausted": False,
+                "reasons": [reason],
+                "next_action": "global-review",
+                "global_review": {
+                    "status": "form_insufficient",
+                    "review_status": "complete",
+                    "missing_tokens": ["scanner:idor_candidates:remaining=12"],
+                },
+            })
+        projected.append(deepcopy(closure))
+        return state, closure
+
+    def current_checkpoint(*args, **kwargs):
+        assert not completed, "completed replay must not construct a checkpoint"
+        calls.append("checkpoint")
+        return checkpoint(*args, **kwargs)
+
+    def current_close(*args, **kwargs):
+        assert not completed, "completed replay must not write round closure"
+        calls.append("close")
+        return close_round(*args, **kwargs)
+
+    def reject_begin(*args, **kwargs):
+        pytest.fail("settle must not begin a new round")
+
+    monkeypatch.setattr(autopilot_round_module, "_closure_snapshot", current_snapshot)
+    monkeypatch.setattr(autopilot_round_module, "build_checkpoint", current_checkpoint)
+    monkeypatch.setattr(autopilot_round_module, "record_round_closure", current_close)
+    monkeypatch.setattr(autopilot_round_module, "begin_round", reject_begin)
+
+    result = settle_round(tmp_path, target, refresh_coverage=False)
+
+    assert result["status"] == "review_required"
+    assert result["closure"] == projected[-1]
+    assert result["closure"]["reasons"] == [reason]
+    assert result["closure"]["verdict"] == "handoff"
+    assert result["closure"]["can_claim_exhausted"] is False
+    assert result["closure"]["global_review"]["missing_tokens"] == [
+        "scanner:idor_candidates:remaining=12",
+    ]
+    assert result["closure"]["global_review"]["review_status"] == "complete"
+    assert result["round_progress"]["status"] == "completed"
+    assert result["round_progress"]["round_id"] == started["round_progress"]["round_id"]
+    assert result["round_progress"]["max_lanes"] == 2
+    assert store.binding() == binding
+    assert store.action("WORK-1") == action
+    if completed:
+        assert calls == ["snapshot"]
+        assert witness.read_bytes() == before
+        assert "checkpoint" not in result
+    else:
+        assert calls == ["snapshot", "checkpoint", "snapshot", "close", "snapshot"]
+        assert projected[0]["round_progress"]["status"] == "active"
+        assert witness.read_bytes() != before
+        assert "global_review" not in json.loads(witness.read_text())
+
+
+@pytest.mark.parametrize("reasons", [
+    [],
+    ["owner_work_pending", "global_review_form_insufficient"],
+    ["global_review_form_insufficient_extra"],
+])
+def test_round_review_routing_uses_only_exact_first_reason(monkeypatch, tmp_path, reasons):
+    TargetStore(tmp_path, "target.com").initialize()
+    read_snapshot = autopilot_round_module._closure_snapshot
+
+    def current_snapshot(*args, **kwargs):
+        state, closure = read_snapshot(*args, **kwargs)
+        closure.update({"verdict": "handoff", "reasons": reasons})
+        return state, closure
+
+    monkeypatch.setattr(autopilot_round_module, "_closure_snapshot", current_snapshot)
+    assert prepare_round(tmp_path, "target.com", 2)["status"] == "started"
+    assert prepare_round(tmp_path, "target.com", 8)["status"] == "resumed"
+    assert settle_round(tmp_path, "target.com", refresh_coverage=False)["status"] == "settled"
+    assert settle_round(tmp_path, "target.com", refresh_coverage=False)["status"] == "already_settled"
 
 
 def test_settle_round_refuses_started_lane_without_writing(tmp_path):

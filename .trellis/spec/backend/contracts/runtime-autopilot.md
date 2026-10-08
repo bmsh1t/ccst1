@@ -19,6 +19,9 @@ mechanical safety, evidence and recovery constraints govern execution.
 - `load_closure_projection(repo_root, state, ...)` reacquires owner snapshots.
 - `build_decision_projection(state, "closure"|"loop_check")` preserves the
   canonical `owner_continuations` view and relevant residual diagnostics.
+- `prepare_round(repo_root, target, max_lanes)` and
+  `settle_round(repo_root, target, *, note="", refresh_coverage=True)` return
+  `status=review_required` for the exact first-reason cases below.
 
 ### 3. Contracts
 
@@ -75,6 +78,13 @@ mechanical safety, evidence and recovery constraints govern execution.
 - Round budgets and explicit lane completion remain mandatory. Budget exhaustion
   alone creates no new work. `recon_phase_partial` binds its recovery head to the
   actual phase, artifact and remaining count; other Recon work cannot substitute.
+- A first Closure reason of `global_review_required`, `global_review_stale`,
+  `global_review_invalid` or `global_review_form_insufficient` requires review in
+  all three coordinator paths: prepare does not begin a round; completed settle
+  stays read-only; active settle keeps the existing close order before returning
+  `review_required`. Preserve the full Closure, including `missing_tokens`,
+  `review_status` and `can_claim_exhausted`. Do not match arbitrary prefixes or
+  secondary reasons, fill missing tokens, or automatically record a review.
 
 ### 4. Validation & Error Matrix
 
@@ -88,6 +98,8 @@ mechanical safety, evidence and recovery constraints govern execution.
 | Evidence or snapshot damage | Visible integrity/recovery error, never empty success |
 | Exact subject closure with identity-free tested Coverage cell | `missing_matching_ledger_terminal` |
 | Valid global review consumes bounded residuals | Both continuation fields cleared |
+| First reason is an exact review-required case, including form_insufficient | All three coordinator paths return `review_required`; diagnostics remain intact |
+| Review-like prefix or non-first reason | Existing normal routing; no broadened review gate |
 | Snapshot races during review | Both fields expose the current recovery head |
 | Repeated identity enrichment | Same summary path; historical `intelligence.md` untouched |
 
@@ -98,8 +110,19 @@ within budget, and report unresolved context at bounded stop.
 Base: no specialist or next investigation is useful; remain in the same session.
 Bad: rename a frontier while keeping its automatic route control, or claim
 exhaustion merely because the inferred frontier was deleted.
+For review routing, a valid review missing residual tokens still needs form
+completion; it is neither an invalid technical judgment nor a reason to begin a
+new round. Ordinary settlement without a review reason retains its prior status.
 
 ### 6. Tests Required
+
+`tests/test_autopilot_round.py` covers all four exact reasons at prepare and both
+settle paths, unchanged witness/Store on completed replay, active close ordering,
+round identity/budget and full diagnostic preservation. Its exact-first-reason
+regression guards normal statuses; `test_autopilot_round_contract.py` checks the
+command consumer. Keep the real residual-token regression in
+`test_autopilot_state_tool.py` passing: filling tokens permits bounded stop, never
+an exhaustion claim. Producer diagnostics alone do not test coordinator routing.
 
 `tests/test_autopilot_bootstrap.py::test_state_preserves_surface_facts_without_choosing_ranker`
 checks full/bounded state across empty/sparse/rich evidence, exact facts/cursors,
@@ -128,6 +151,8 @@ Wrong: observed JS / missing actor / Intel lead -> mandatory route or session ta
 Correct: observations -> native reasoning; explicit owner command -> durable work
 Wrong: no generated frontier -> target exhausted
 Correct: unresolved observations -> bounded stop with residuals and no exhaustion claim
+Wrong: form_insufficient -> start new round or return ordinary settlement
+Correct: form_insufficient -> review_required, original diagnostics and owner boundaries
 ```
 
 ## Claude CLI Autopilot Argument Contract
