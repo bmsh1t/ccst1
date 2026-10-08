@@ -1,0 +1,33 @@
+{
+  "id": "stabilization-closeout",
+  "name": "stabilization-closeout",
+  "title": "稳定化收尾：修复剩余审计项并完成工程验收",
+  "description": "冻结新功能与架构重构，依次完成十月审计 F06–F11、集中验收和有依据的任务清理。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P1",
+  "creator": "Codex",
+  "assignee": "Codex",
+  "createdAt": "2026-10-04",
+  "completedAt": "2026-10-08",
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": "fde634208a981315c231132deb958bb947ed5b21",
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "10-04-report-failure-propagation",
+    "10-04-report-attachment-closure",
+    "10-04-runtime-receipt-shape",
+    "10-04-disclosure-cache-failure",
+    "10-04-active-guidance-alignment",
+    "10-04-stabilization-acceptance"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "2026-10-08 集中验收：421 项通过，无失败/错误/跳过；记录提交 fde634208a981315c231132deb958bb947ed5b21。仅本轮四任务归档，其他 32 项保留。",
+  "meta": {}
+}

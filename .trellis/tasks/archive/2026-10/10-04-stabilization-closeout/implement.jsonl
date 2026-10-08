@@ -1,0 +1,6 @@
+
+{"file":".trellis/spec/backend/index.md","reason":"父任务质量门与后端规范索引。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"共同 owner、回归、隔离和发布检查要求。"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"跨 F06/F09/F10 的失败可见性与 CLI 约定。"}
+{"file":"docs/architecture-contract.md","reason":"现有 owner、证据完整性、缓存和工程/线上能力边界。"}
+{"file":".trellis/tasks/archive/2026-10/10-04-stabilization-closeout/research/stabilization-scope.md","reason":"本批 F06-F11 的原始审计范围、证据等级和顺序摘要。"}

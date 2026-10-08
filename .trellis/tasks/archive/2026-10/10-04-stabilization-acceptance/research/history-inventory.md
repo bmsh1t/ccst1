@@ -19,7 +19,7 @@ Current test/owner verification is in `f01-f05-acceptance.md`; no test was run i
 
 ## 1. Directly related candidates requiring fresh acceptance (2)
 
-### F01 candidate: `.trellis/tasks/10-02-auth-env-roundtrip-isolation`
+### F01 candidate: `.trellis/tasks/archive/2026-10/10-02-auth-env-roundtrip-isolation`
 
 - Metadata: `task.json:4-6` describes export/reload isolation and is still `in_progress`; `:14,18` have `completedAt: null`, `commit: null`.
 - Actual work: **`46467628e69d7a6e0b9bae4a50f0f570133db39e`**, 2026-10-02; three files: `tools/auth_session.py`, new `tests/test_auth_session.py` (161 lines), `.trellis/spec/backend/quality-guidelines.md`.
@@ -28,12 +28,12 @@ Current test/owner verification is in `f01-f05-acceptance.md`; no test was run i
 - **Historical test-run result not established by this inventory.** No F01/task/commit journal hit was found in `.trellis/workspace/Codex/journal-1.md` or `index.md`. The journal jumps from the 2026-09-28 shared-phase session (`journal-1.md:538-570`) to F03 on 2026-10-03 (`:573`). Tests committed in Git are test-source evidence, not evidence that they passed.
 - `research/auth-env-boundary.md:5-11` locates export/consumer boundaries; `:17` expressly says neighboring runner tests were read, not run; `:21` references an older temporary audit reproduction but is not a fresh acceptance result. F01 numbering is inferred from the parent's audit scope/task match, not written in the task title; main should confirm against its original audit material.
 - **Main must read in full before judging archive eligibility:**
-  - `.trellis/tasks/10-02-auth-env-roundtrip-isolation/prd.md`
-  - `.trellis/tasks/10-02-auth-env-roundtrip-isolation/design.md`
-  - `.trellis/tasks/10-02-auth-env-roundtrip-isolation/implement.md`
+  - `.trellis/tasks/archive/2026-10/10-02-auth-env-roundtrip-isolation/prd.md`
+  - `.trellis/tasks/archive/2026-10/10-02-auth-env-roundtrip-isolation/design.md`
+  - `.trellis/tasks/archive/2026-10/10-02-auth-env-roundtrip-isolation/implement.md`
 - Existing runnable check location for fresh acceptance: `tests/test_auth_session.py`; use the original requirements to decide whether related runner checks are material. No run is claimed here.
 
-### F02 candidate: `.trellis/tasks/10-02-direct-phase-lock-inheritance`
+### F02 candidate: `.trellis/tasks/archive/2026-10/10-02-direct-phase-lock-inheritance`
 
 - Metadata: `task.json:4-6` explicitly identifies F02/direct child lock lifetime and is still `in_progress`; `:14,18` have `completedAt: null`, `commit: null`.
 - Actual work: **`14f02612f2b0e5dbeada93b532c7a03b91c2b8cd`**, 2026-10-02; four files: `tools/runtime_phase_exec.py`, `tests/test_runtime_phase_execution.py`, `tests/test_runtime_state.py`, `.trellis/spec/backend/contracts/runtime-autopilot.md`.
@@ -42,17 +42,17 @@ Current test/owner verification is in `f01-f05-acceptance.md`; no test was run i
 - **Historical test-run result not established by this inventory.** No F02/task/commit journal hit was found; same journal gap as F01. `research/lock-lifetime.md:3` says planning did not rerun reproduction or implementation tests.
 - Important non-duplication: `research/lock-lifetime.md:23` explicitly distinguishes `.trellis/tasks/09-27-fix-scanner-lock-identity` as **September's F06 target identity issue**, not October F02 lock lifetime. `:16` says the archived shared-phase refactor deliberately preserved the former direct/hunt FD difference, so that archive is not evidence of the later F02 fix.
 - **Main must read in full before judging archive eligibility:**
-  - `.trellis/tasks/10-02-direct-phase-lock-inheritance/prd.md`
-  - `.trellis/tasks/10-02-direct-phase-lock-inheritance/design.md`
-  - `.trellis/tasks/10-02-direct-phase-lock-inheritance/implement.md`
+  - `.trellis/tasks/archive/2026-10/10-02-direct-phase-lock-inheritance/prd.md`
+  - `.trellis/tasks/archive/2026-10/10-02-direct-phase-lock-inheritance/design.md`
+  - `.trellis/tasks/archive/2026-10/10-02-direct-phase-lock-inheritance/implement.md`
 - Existing runnable check locations for fresh acceptance: `tests/test_runtime_state.py`, `tests/test_runtime_phase_execution.py`; choose the original task's relevant subset. No run is claimed here.
 
 ## 2. Parent/current acceptance tasks (2)
 
 | Path | Recorded state | Interpretation |
 |---|---|---|
-| `.trellis/tasks/10-04-stabilization-closeout` | `planning`; commit/completion unset | Parent of five now-archived F06–F11 task directories plus the current acceptance child; retain until actual parent requirements are checked. |
-| `.trellis/tasks/10-04-stabilization-acceptance` | `planning`; commit/completion unset | Current planned acceptance/history closeout task; not previously completed. `journal-1.md:849` expressly leaves concentrated engineering acceptance and history review unstarted. |
+| `.trellis/tasks/archive/2026-10/10-04-stabilization-closeout` | `planning`; commit/completion unset | Parent of five now-archived F06–F11 task directories plus the current acceptance child; retain until actual parent requirements are checked. |
+| `.trellis/tasks/archive/2026-10/10-04-stabilization-acceptance` | `planning`; commit/completion unset | Current planned acceptance/history closeout task; not previously completed. `journal-1.md:849` expressly leaves concentrated engineering acceptance and history review unstarted. |
 
 No current-task pointer is claimed or changed by this inventory. Older unrelated parent tasks remain in section 4, not here.
 

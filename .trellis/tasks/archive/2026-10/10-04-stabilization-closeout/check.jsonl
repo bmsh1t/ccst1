@@ -1,0 +1,6 @@
+
+{"file":".trellis/spec/backend/index.md","reason":"父任务质量检查规范入口。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"核对 focused/full validation、diff 和未覆盖范围。"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"核对失败传播与 CLI 状态一致性。"}
+{"file":"docs/architecture-contract.md","reason":"核对没有越过现有 owner 或把工程证据扩大为线上能力。"}
+{"file":".trellis/tasks/archive/2026-10/10-04-stabilization-closeout/research/stabilization-scope.md","reason":"对照六项审计发现、顺序和工程/线上能力边界。"}

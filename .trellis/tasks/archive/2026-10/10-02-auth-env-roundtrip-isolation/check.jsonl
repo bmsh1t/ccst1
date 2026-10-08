@@ -1,0 +1,5 @@
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"核对来源选择兼容性、最小 owner 修改与回归质量"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"核对空值、坏旧环境和异常顺序"}
+{"file":".trellis/spec/backend/scope-context.md","reason":"核对旧 Origin 拒绝与显式绑定保留"}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"检查无凭据输出和真实数据依赖"}
+{"file":".trellis/tasks/archive/2026-10/10-02-auth-env-roundtrip-isolation/research/auth-env-boundary.md","reason":"按真实 Python/Shell 消费路径验证，排除独立 auth.env writer"}

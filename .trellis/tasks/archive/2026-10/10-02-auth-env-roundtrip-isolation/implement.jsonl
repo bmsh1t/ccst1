@@ -1,0 +1,6 @@
+{"file":".trellis/spec/backend/index.md","reason":"后端开发前检查和质量入口"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"认证来源隔离与 owner 最小修复"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"保持边界输入失败语义，不吞异常"}
+{"file":".trellis/spec/backend/scope-context.md","reason":"目标与 Origin 认证边界不可扩张"}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"认证材料不进入通用日志"}
+{"file":".trellis/tasks/archive/2026-10/10-02-auth-env-roundtrip-isolation/research/auth-env-boundary.md","reason":"实际调用者、复现和测试选择"}

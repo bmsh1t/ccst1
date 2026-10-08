@@ -1,5 +1,0 @@
-{"file":".trellis/spec/backend/quality-guidelines.md","reason":"按真实边界复用回归；禁止读取真实状态、伪造全绿或扩大到无关修复。"}
-{"file":"docs/architecture-contract.md","reason":"单 Store/证据 owner 与工程、部署、线上能力分级；本轮不改架构。"}
-{"file":".trellis/tasks/10-04-stabilization-acceptance/research/f01-f05-acceptance.md","reason":"认证、锁、partial/claim、完成授权、actor coverage 的当前测试接线和隔离约束。"}
-{"file":".trellis/tasks/10-04-stabilization-acceptance/research/f06-f11-acceptance.md","reason":"报告、receipt、cache、真实文档 CLI 及历史验收限制；实际命令以 implement.md 为准。"}
-{"file":".trellis/tasks/10-04-stabilization-acceptance/research/history-inventory.md","reason":"只核对 F01/F02 与本次父子任务；32 个未确认历史任务保留。"}

@@ -144,7 +144,7 @@ printf 'All six groups passed without skips. Evidence: %s\n' "$RUN"
 
 ## 当前状态
 
-集中验收已通过并记录；用户已确认记录提交→四任务归档→journal，当前执行该收尾批次。
+集中验收已通过；记录提交 `fde6342`，四项归档已执行，journal 待最后登记。
 
 2026-10-08 规划检查：`task.py validate` 通过（implement 5 项、check 4 项）；从本文提取的
 Bash 经 `bash -n` 通过；AST 检查确认六组静态选择非空、显式函数存在、无静态函数交集，

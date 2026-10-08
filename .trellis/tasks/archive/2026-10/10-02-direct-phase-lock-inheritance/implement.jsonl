@@ -1,0 +1,5 @@
+{"file":".trellis/spec/backend/index.md","reason":"后端开发前检查与质量入口"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"在现有 owner 根治并保持 Agent/工具边界"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"保留异常与清理失败诊断"}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"真实输出与合成测试环境边界"}
+{"file":".trellis/tasks/archive/2026-10/10-02-direct-phase-lock-inheritance/research/lock-lifetime.md","reason":"实际调用链、旧测试预期与 SIGKILL 回归陷阱"}
