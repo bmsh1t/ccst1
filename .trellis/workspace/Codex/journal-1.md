@@ -883,3 +883,37 @@ F01–F11 六组隔离验收首次通过 421 个唯一 testcase；完成验收�
 ### Next Steps
 
 - 本批收尾完成；其他 32 项历史任务保留，不自动开启新工作。全仓测试、真实部署及线上/长期模型能力未验证，未推送。
+
+
+## Session 32: A1 FFUF 控制失败传播修复收尾
+<!-- trellis-session: v=2 fp=8ae28e6f0a4a436a -->
+
+**Date**: 2026-10-08
+**Task**: A1 FFUF 控制失败传播修复收尾
+**Branch**: `main`
+
+### Summary
+
+A1 已修复并完成针对性验收；两处词表使用 stdin，无效 controls 明确 partial 且保留主观察/轮转重试。
+
+### Main Changes
+
+- 仅提交 recon_engine/recon_adapter、新 focused 回归与 Recon 契约；A1 按非 PR 任务本地归档，仅更新 A1 与父任务进度，不归档其它历史任务。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `c015057` | fix: propagate FFUF control failures and use stdin wordlists |
+
+### Testing
+
+- [OK] 22 passed in 6.33s；提交前四文件 SHA-256 与已验快照一致，未重复运行测试；独立静态核验与 diff --check 通过。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 父任务仍为 planning：收敛真实模型/靶场实验的模型、工具、动作范围、时间与费用预算；本轮未推送或启动实验。

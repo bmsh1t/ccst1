@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 31
+- **Total Sessions**: 32
 - **Last Active**: 2026-10-08
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~885 | Active |
+| `journal-1.md` | ~919 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 32 | 2026-10-08 | A1 FFUF 控制失败传播修复收尾 | `c015057` | `main` |
 | 31 | 2026-10-08 | 稳定化工程验收与四任务收尾 | `fde6342` | `main` |
 | 30 | 2026-10-07 | F11 活跃验证与复盘指导对齐收尾 | `3c83280` | `main` |
 | 29 | 2026-10-07 | F10：披露查询失败与缓存保全收尾 | `6245fb06e59a6aeeef60b5ad138305eee58f46dc` | `main` |
