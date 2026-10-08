@@ -185,6 +185,9 @@ backend change crosses a layer:
 
 ## Testing Requirements
 
+- 仅切换 HOME/pytest `--basetemp` 不隔离 `repo_root=BASE_DIR` 的默认读路径；这类集成
+  验收应在固定提交的临时源码副本执行，并用白名单环境清除旧 auth、proxy 和 pytest 插件。
+  自建 loopback 正例必须实际通过；listener 不可用导致的 skip 不是完成证据。
 - Knowledge projection changes need focused regression tests for catalog discovery,
   complete references, and preserved facts, not keyword-based card selection.
 - A security finding is not considered stable project capability unless the

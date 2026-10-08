@@ -1,0 +1,4 @@
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"质量与副作用边界；复核实际日志、skip/timeout、原始 AC 及完整 diff，不默认重跑。"}
+{"file":".trellis/tasks/10-04-stabilization-acceptance/research/f01-f05-acceptance.md","reason":"检查精确节点、源码副本/环境隔离和原始 F01/F02 需求覆盖。"}
+{"file":".trellis/tasks/10-04-stabilization-acceptance/research/f06-f11-acceptance.md","reason":"防止拿修正前历史计数冒充本轮结果、遗漏 report/receipt/cache/CLI 接线。"}
+{"file":".trellis/tasks/10-04-stabilization-acceptance/research/history-inventory.md","reason":"检查历史任务保留、完成候选与真实工作提交/新验收对应。"}
