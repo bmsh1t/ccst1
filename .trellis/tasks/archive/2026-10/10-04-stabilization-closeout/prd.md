@@ -31,4 +31,4 @@ F01–F05 已有修复提交；F05 为 `70871aa`，已经归档。旧任务的 i
 ## 集中验收结果（2026-10-08）
 
 F01–F11 六组共 421 个唯一 testcase 通过，无失败/错误/跳过；基线 `a31535d`。
-详见 `../10-04-stabilization-acceptance/acceptance.md`；记录提交 `fde6342`，四任务已归档；journal 最后登记，其他 32 项历史任务保持不变。
+详见 `../10-04-stabilization-acceptance/acceptance.md`；记录提交 `fde6342`、归档提交 `eb6218e`、Codex journal Session 31；本父任务收尾完成，其他 32 项历史任务保持不变。

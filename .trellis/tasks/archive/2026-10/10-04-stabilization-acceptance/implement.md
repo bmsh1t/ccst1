@@ -8,7 +8,7 @@
 - [x] 最终计划获用户后续明确批准（2026-10-08 回复“继续”）；已激活现有任务。
 - [x] 激活现有任务；六组首次执行通过，421 个唯一 testcase，无失败/错误/跳过。
 - [x] 写入 `acceptance.md`，主线程核对原始结果及 F01/F02 原始 AC；收尾批次获用户“继续”确认。
-- [ ] 获确认后提交记录、归档核实任务、记录 journal；不推送。
+- [x] 按确认批次提交记录、归档四任务、登记 Codex journal Session 31；不推送。
 
 ## 已批准后使用的唯一命令清单
 
@@ -144,7 +144,7 @@ printf 'All six groups passed without skips. Evidence: %s\n' "$RUN"
 
 ## 当前状态
 
-集中验收已通过；记录提交 `fde6342`，四项归档已执行，journal 待最后登记。
+本批收尾完成：421 项验收通过；记录提交 `fde6342`，归档提交 `eb6218e`，Codex journal Session 31 已登记。其他 32 项保持原样，未推送。
 
 2026-10-08 规划检查：`task.py validate` 通过（implement 5 项、check 4 项）；从本文提取的
 Bash 经 `bash -n` 通过；AST 检查确认六组静态选择非空、显式函数存在、无静态函数交集，

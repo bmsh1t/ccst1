@@ -847,3 +847,39 @@ Restored Codex session 01a10be2-70a1-7752-8f9d-8b6df708301f, revalidated the com
 ### Next Steps
 
 - 规划现有 10-04-stabilization-acceptance；集中工程验收与历史任务核对仍未开始，需其独立计划复核。
+
+
+## Session 31: 稳定化工程验收与四任务收尾
+<!-- trellis-session: v=2 fp=c28f7aea4574b2a2 -->
+
+**Date**: 2026-10-08
+**Task**: 稳定化工程验收与四任务收尾
+**Branch**: `main`
+
+### Summary
+
+F01–F11 六组隔离验收首次通过 421 个唯一 testcase；完成验收记录、F01/F02 与验收父子任务的精确归档，保留其他 32 项。
+
+### Main Changes
+
+- 验收基线 a31535d；记录位于 .trellis/tasks/archive/2026-10/10-04-stabilization-acceptance/acceptance.md，质量规范补充 BASE_DIR/白名单环境隔离说明。
+- 归档提交 eb6218e：auth-env-roundtrip-isolation、direct-phase-lock-inheritance、stabilization-acceptance、stabilization-closeout；原工作提交关联正确，context 路径有效。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `fde6342` | docs: record stabilization acceptance evidence |
+
+### Testing
+
+- [OK] bash /tmp/ccst-acceptance-command.RhPZai.sh：A 37、B 34、C 77、D 150、E 22、F 101，共 421 passed；无 failure/error/skip，无重跑；原始日志 /tmp/ccst-acceptance.TxXDML。
+- [OK] 主线程与独立 reviewer 核对实际脚本、源码 archive hash、全部 JUnit/日志和原始 AC；32 项保留任务 metadata 哈希不变；归档 context 与 diff 检查通过。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 本批收尾完成；其他 32 项历史任务保留，不自动开启新工作。全仓测试、真实部署及线上/长期模型能力未验证，未推送。

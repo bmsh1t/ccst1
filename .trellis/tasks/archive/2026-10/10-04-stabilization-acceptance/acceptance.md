@@ -83,4 +83,4 @@ stdout D/E 时间 7.07/0.62 秒与 JUnit 口径略有差别；上表统一 JUnit
 - 本轮无产品/API/schema 变更或新依赖；仅补现有质量规范的三行隔离说明，避免将 HOME/basetemp 当成 BASE_DIR 读路径隔离。
 - F04/F06 旧 archive commit 空值保留为已解释的记录差异，不重写旧归档。
 - 已批准顺序：验收记录提交 → 精确归档 F01/F02/验收任务/父任务 → journal；其他 32 项不动，不推送。
-- 独立最终质量复核 `/root/stabilization_final_check` 已通过：原始证据、F01/F02 AC、隔离表述和四任务边界无阻塞。验收记录已提交为 `fde6342`，四个任务已归档；journal 随后单独记录。
+- 独立最终质量复核 `/root/stabilization_final_check` 已通过：原始证据、F01/F02 AC、隔离表述和四任务边界无阻塞。验收记录提交 `fde6342`、四任务归档提交 `eb6218e`、Codex journal Session 31 均已完成登记。本批无剩余工作，未推送。
