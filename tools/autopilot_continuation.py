@@ -150,8 +150,11 @@ def load_continuation(
             auth_path.relative_to((repo / ".private").resolve())
         except ValueError as exc:
             raise ValueError("continuation auth ref must stay under .private") from exc
-        if not auth_path.is_file() or _sha256_file(auth_path) != auth_digest:
-            raise ValueError("continuation auth ref is missing or stale")
+        try:
+            if not auth_path.is_file() or _sha256_file(auth_path) != auth_digest:
+                raise ValueError("continuation auth ref is missing or stale")
+        except OSError as exc:
+            raise ValueError(f"continuation auth ref is not readable: {auth_path}") from exc
         auth_file = str(auth_path)
 
     invocation_id = _invocation_id(scope, selected, auth_digest)

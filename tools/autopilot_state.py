@@ -976,6 +976,7 @@ def _owner_source_markers(repo_root: str | Path, target: str) -> dict[str, tuple
         "recon": Path(repo_root) / "recon" / key / "recon_manifest.jsonl",
         "browser": Path(repo_root) / "findings" / key / "browser" / "mcp-readiness.json",
         "intel": Path(repo_root) / "recon" / key / "intel.json",
+        "scanner_summary": Path(repo_root) / "findings" / key / "summary.json",
     }
     binding = runtime_store(repo_root, resolved).binding()
     markers: dict[str, tuple[object, ...]] = {"store": (binding["store_id"], binding["revision"])}
@@ -1985,10 +1986,6 @@ def _explicit_partial_reason(state: dict) -> str:
         return "recon_budget_partial"
     if _blocking_recon_phase_gate(state)[0]:
         return "recon_phase_partial"
-    if _recon_phase_residuals(state, closure_blocking=False):
-        return "recon_phase_review_required"
-    if _scanner_lane_residuals(state):
-        return "scanner_lane_review_required"
     continuation = (state.get("recon_artifacts") or {}).get("cidr_continuation") or {}
     if continuation.get("status") == "pending":
         return "cidr_continuation_pending"
@@ -2030,6 +2027,8 @@ _CLOSURE_REASON_PRIORITY = {
     "checkpoint_stale": 15,
     "ledger_unreadable": 16,
     "ledger_partial": 16,
+    "store_unreadable": 16,
+    "store_partial": 16,
     "durable_work_pending": 20,
     "finding_work_pending": 25,
     "case_state_work_pending": 31,
@@ -2082,6 +2081,8 @@ def _closure_action_for_reason(reason: str, state: dict, current: str) -> str:
         "checkpoint_invalid": "refresh_checkpoint",
         "ledger_partial": "repair_evidence_ledger",
         "ledger_unreadable": "repair_evidence_ledger",
+        "store_partial": "repair_evidence_ledger",
+        "store_unreadable": "repair_evidence_ledger",
         "coverage_missing": "coverage-gap",
         "coverage_empty": "coverage-gap",
         "coverage_invalid": "coverage-gap",
@@ -2168,6 +2169,7 @@ def build_closure_projection(
     ledger_entries: list[dict] | None = None,
     *,
     max_lanes_reached: bool = False,
+    global_review: dict | None = None,
 ) -> dict:
     """Return the explicit, read-only closure verdict for an existing state."""
     reasons: list[str] = []
@@ -2323,6 +2325,48 @@ def build_closure_projection(
         if verdict == "finish":
             verdict = "handoff"
 
+    recon_residuals = _recon_phase_residuals(state)
+    scanner_residuals = _scanner_lane_residuals(state)
+    bounded_residuals = [*recon_residuals, *scanner_residuals]
+    review_residuals = [item for item in bounded_residuals if not item["closure_blocking"]]
+    review_view = None
+    residual_deferred = False
+    residual_reason = ""
+    if any(item["closure_blocking"] for item in scanner_residuals):
+        reasons.append("scanner_lane_review_required")
+    if global_review is None:
+        if any(not item["closure_blocking"] for item in recon_residuals):
+            residual_reason = "recon_phase_review_required"
+        elif review_residuals:
+            residual_reason = "scanner_lane_review_required"
+    else:
+        review_valid = global_review.get("status") == "valid"
+        review = global_review.get("review") or {}
+        review_view = review if review_valid else {"status": global_review.get("status") or "invalid"}
+        if review_residuals:
+            required_tokens = {item["review_token"] for item in review_residuals}
+            reviewed_tokens = set(review.get("residual_unknowns") or [])
+            residual_deferred = (
+                review_valid and review.get("status") == "complete"
+                and required_tokens.issubset(reviewed_tokens)
+            )
+            if not residual_deferred:
+                if review_valid:
+                    residual_reason = "global_review_form_insufficient"
+                    review_view = {
+                        "status": "form_insufficient",
+                        "reason": residual_reason,
+                        "review_status": str(review.get("status") or ""),
+                        "missing_tokens": sorted(required_tokens - reviewed_tokens),
+                    }
+                else:
+                    residual_reason = str(global_review.get("reason") or "global_review_invalid")
+    # The blocking-lane check above may already have appended this reason.
+    if residual_reason and residual_reason not in reasons:
+        reasons.append(residual_reason)
+    if reasons and verdict == "finish":
+        verdict = "handoff"
+
     if verdict == "handoff":
         reason = str(reasons[0] if reasons else "")
         target = str(state.get("resolved_target") or state.get("target") or "")
@@ -2368,7 +2412,7 @@ def build_closure_projection(
         target_key = target_storage_key(target)
         reason = str(reasons[0] if reasons else "")
         item_id = action or reason
-        if reason in {"ledger_partial", "ledger_unreadable"}:
+        if reason in {"ledger_partial", "ledger_unreadable", "store_partial", "store_unreadable"}:
             owner = "evidence-ledger"
             evidence_ref = f"state/{target_key}/metadata.sqlite3"
             action_text = "Inspect the target Store and repair unavailable evidence before closure"
@@ -2537,10 +2581,18 @@ def build_closure_projection(
         "actor_context": bool(actor_context_gap),
         "intel": bool(intel) and (intel.get("action") != "complete" or bool(intel.get("blocked"))),
     }
-    if verdict == "finish" and any(observation_residuals.values()):
+    if verdict == "finish" and (residual_deferred or any(observation_residuals.values())):
         verdict, action = "blocked", "stop_bounded"
-        reasons = ["bounded_observations_unresolved"]
+        reasons = ["bounded_recon_residual_deferred" if residual_deferred else "bounded_observations_unresolved"]
         actionable_frontier = []
+
+    if (
+        global_review is not None and global_review.get("status") != "valid"
+        and verdict == "finish" and round_progress.get("status") == "completed"
+        and int(round_progress.get("claimed_count", 0) or 0) > 0
+    ):
+        verdict = "handoff"
+        reasons.append(str(global_review.get("reason") or "global_review_invalid"))
 
     reasons, actionable_frontier, action = _finalize_closure_continuation(
         reasons,
@@ -2574,7 +2626,8 @@ def build_closure_projection(
         },
         "coverage_terminal_evidence": coverage_terminal_evidence,
     }
-    recon_residuals = _recon_phase_residuals(state)
+    if review_view is not None:
+        result["global_review"] = review_view
     if recon_residuals:
         result["recon_residuals"] = [
             {key: item[key] for key in (
@@ -2587,7 +2640,6 @@ def build_closure_projection(
             )}
             for item in recon_residuals
         ]
-    scanner_residuals = _scanner_lane_residuals(state)
     if scanner_residuals:
         result["scanner_residuals"] = scanner_residuals
     bounded_residuals = [
@@ -2996,6 +3048,7 @@ _CLOSURE_STATE_KEYS = (
     "repo_source_summary",
     "json_inject",
     "sql_matrix",
+    "scanner_summary",
     "intel_continuation",
     "_coverage_stale",
     "round_progress",
@@ -3009,6 +3062,20 @@ def _closure_state_snapshot(state: dict) -> dict:
         for key in _CLOSURE_STATE_KEYS
         if key in state
     }
+    scanner = snapshot.get("scanner_summary")
+    if isinstance(scanner, dict):
+        # Bind accounting and execution meaning, not display text or timestamps.
+        snapshot["scanner_summary"] = {
+            "status": scanner.get("status"),
+            "path": scanner.get("path"),
+            "lanes": {
+                name: {key: lane.get(key) for key in (
+                    "lane", "execution_kind", "status", "input_total", "selected",
+                    "remaining", "closure_blocking", "accounting_valid",
+                )} if isinstance(lane, dict) else lane
+                for name, lane in (scanner.get("lanes") or {}).items()
+            },
+        }
     intel = snapshot.get("intel_continuation")
     if isinstance(intel, dict):
         # Only top-level explanation is presentation. Retain actions, blocked
@@ -3211,17 +3278,6 @@ def load_closure_projection(
         ),
         "_stagnation_coverage": _semantic_coverage_fingerprint(matrix),
     }
-    closure = build_closure_projection(
-        closure_state,
-        matrix,
-        ledger_entries,
-        max_lanes_reached=max_lanes_reached,
-    )
-    closure["evidence_source"] = evidence_source
-    guard = witness.get("round_guard") if isinstance(witness.get("round_guard"), dict) else {}
-    fingerprint = stagnation_fingerprint(closure_state, closure)
-    if fingerprint:
-        closure["stagnation_fingerprint"] = fingerprint
     snapshot_digest, snapshot_components = _closure_snapshot_digest(
         target,
         closure_state,
@@ -3232,8 +3288,6 @@ def load_closure_projection(
         checkpoint_health,
         witness,
     )
-    closure["snapshot_digest"] = snapshot_digest
-    closure["snapshot_components"] = snapshot_components
     global_review = validate_global_review(
         repo_root,
         target,
@@ -3242,107 +3296,17 @@ def load_closure_projection(
         expected_digest=snapshot_digest,
         expected_components=snapshot_components,
     )
-    round_progress = closure_state.get("round_progress") if isinstance(closure_state.get("round_progress"), dict) else {}
-    residual_review_required = bool(
-        {"recon_phase_review_required", "scanner_lane_review_required"}
-        & set(closure.get("reasons") or [])
+    closure = build_closure_projection(
+        closure_state,
+        matrix,
+        ledger_entries,
+        max_lanes_reached=max_lanes_reached,
+        global_review=global_review,
     )
-    review_required = residual_review_required or (
-        closure.get("verdict") == "finish"
-        and round_progress.get("status") == "completed"
-        and int(round_progress.get("claimed_count", 0) or 0) > 0
-    )
-    if global_review.get("status") == "valid":
-        closure["global_review"] = global_review["review"]
-        if residual_review_required:
-            required_tokens = {
-                str(item.get("review_token") or "")
-                for item in closure.get("bounded_residuals") or []
-                if str(item.get("review_token") or "")
-                and not bool(item.get("closure_blocking"))
-            }
-            reviewed_tokens = set(global_review["review"].get("residual_unknowns") or [])
-            if (
-                global_review["review"].get("status") == "complete"
-                and required_tokens.issubset(reviewed_tokens)
-            ):
-                closure.update({
-                    "verdict": "blocked",
-                    "can_claim_exhausted": False,
-                    "reasons": ["bounded_recon_residual_deferred"],
-                    "next_action": "stop_bounded",
-                    "actionable_frontier": [],
-                })
-            else:
-                # The review itself is fine; only its FORM cannot consume the
-                # bounded residuals (wrong status, or missing token coverage).
-                # Report the distinct reason and keep the review's own status
-                # and missing tokens visible instead of rewriting it as
-                # invalid — the review author does not need to re-record the
-                # same reasoning, only the missing form.
-                missing_tokens = sorted(required_tokens - reviewed_tokens)
-                form_diagnostics = {
-                    "status": "form_insufficient",
-                    "reason": "global_review_form_insufficient",
-                    "review_status": str(global_review["review"].get("status") or ""),
-                    "missing_tokens": missing_tokens,
-                    "action_required": (
-                        "The recorded review is valid but its form cannot close the "
-                        "bounded residuals: record a complete-status review that covers "
-                        "the missing residual tokens, or resolve the residuals through "
-                        "their owners."
-                    ),
-                }
-                global_review = dict(form_diagnostics)
-                closure["global_review"] = {
-                    "status": "form_insufficient",
-                    "reason": "global_review_form_insufficient",
-                    "review_status": form_diagnostics["review_status"],
-                    "missing_tokens": missing_tokens,
-                }
-    elif review_required:
-        reason = str(global_review.get("reason") or "global_review_invalid")
-        closure.update({
-            "verdict": "handoff",
-            "can_claim_exhausted": False,
-            "reasons": [reason],
-            "next_action": "global-review",
-            "global_review": {"status": global_review.get("status") or "invalid"},
-        })
-        reasons, actionable_frontier, action = _finalize_closure_continuation(
-            [reason],
-            closure.get("actionable_frontier") or [],
-            closure_state,
-            matrix,
-            "global-review",
-        )
-        closure.update({
-            "reasons": reasons,
-            "actionable_frontier": actionable_frontier,
-            "next_action": action,
-        })
-    if residual_review_required and global_review.get("status") != "valid":
-        reason = str(global_review.get("reason") or "global_review_required")
-        closure.update({
-            "verdict": "handoff",
-            "can_claim_exhausted": False,
-            "reasons": [reason],
-            "next_action": "global-review",
-        })
-        reasons, actionable_frontier, action = _finalize_closure_continuation(
-            [reason],
-            closure.get("actionable_frontier") or [],
-            closure_state,
-            matrix,
-            "global-review",
-        )
-        closure.update({
-            "reasons": reasons,
-            "actionable_frontier": actionable_frontier,
-            "next_action": action,
-        })
-    elif global_review.get("status") != "valid":
-        closure["global_review"] = {"status": global_review.get("status") or "invalid"}
+    closure["evidence_source"] = evidence_source
+    closure["snapshot_digest"] = snapshot_digest
+    closure["snapshot_components"] = snapshot_components
+    guard = witness.get("round_guard") if isinstance(witness.get("round_guard"), dict) else {}
     source_markers_after = _owner_source_markers(repo_root, target)
     stale_sources = [
         name
@@ -3372,6 +3336,9 @@ def load_closure_projection(
             "actionable_frontier": actionable_frontier,
             "next_action": action,
         })
+    fingerprint = stagnation_fingerprint(closure_state, closure)
+    if fingerprint:
+        closure["stagnation_fingerprint"] = fingerprint
     if (
         apply_round_guard
         and not closure.get("snapshot_stale")

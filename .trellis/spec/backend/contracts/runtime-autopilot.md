@@ -15,7 +15,7 @@ mechanical safety, evidence and recovery constraints govern execution.
 - `/autopilot <target> [--paranoid|--normal|--yolo|--quick|--deep]` runs inline.
 - `build_autopilot_state(repo_root, target, memory_dir=None, *, bounded=False, ...)`
   exposes the same owner facts in full or bounded form.
-- `build_closure_projection(state, matrix, ledger_entries=None)` is read-only.
+- `build_closure_projection(state, matrix, ledger_entries=None, *, global_review=None)` is read-only.
 - `load_closure_projection(repo_root, state, ...)` reacquires owner snapshots.
 - `build_decision_projection(state, "closure"|"loop_check")` preserves the
   canonical `owner_continuations` view and relevant residual diagnostics.
@@ -66,6 +66,17 @@ mechanical safety, evidence and recovery constraints govern execution.
   actor gap and incomplete Intel without creating new actions. With no owner
   obligation, unresolved observations yield `blocked` + `stop_bounded` and
   `can_claim_exhausted=false`, not a target exhaustion claim.
+- A valid digest-matched `global_review` covering every non-blocking residual token
+  dissolves only those residuals: Closure publishes `blocked` + `stop_bounded` with
+  `bounded_recon_residual_deferred` and an empty continuation array, never an
+  exhaustion claim. Queue, Finding, unfinished-round, evidence and checkpoint
+  obligations — including `closure_blocking` scanner lanes — keep their
+  owner-backed entries. Scanner residual review tokens bind execution semantics
+  (`execution_kind`, `status`, `input_total`, `selected`, `remaining`,
+  `closure_blocking`, `accounting_valid`); semantic drift invalidates an old review,
+  display/time drift does not. Store-mode partial/unreadable evidence maps to the
+  same evidence-ledger owner, `repair_evidence_ledger` action and reason frontier
+  as the legacy `ledger_*` reasons.
 - Actor/session gaps are non-blocking context for unrelated work, not automatic
   session acquisition. Actual role-based evidence still requires the relevant
   identity boundary. Advisory review never impersonates execution evidence.
@@ -97,7 +108,7 @@ mechanical safety, evidence and recovery constraints govern execution.
 | Active runtime phase or explicit Queue work | Existing lock/owner continuation preserved |
 | Evidence or snapshot damage | Visible integrity/recovery error, never empty success |
 | Exact subject closure with identity-free tested Coverage cell | `missing_matching_ledger_terminal` |
-| Valid global review consumes bounded residuals | Both continuation fields cleared |
+| Valid global review consumes non-blocking bounded residuals | `blocked` + `stop_bounded` with `bounded_recon_residual_deferred`; blocking owner obligations keep their entries |
 | First reason is an exact review-required case, including form_insufficient | All three coordinator paths return `review_required`; diagnostics remain intact |
 | Review-like prefix or non-first reason | Existing normal routing; no broadened review gate |
 | Snapshot races during review | Both fields expose the current recovery head |

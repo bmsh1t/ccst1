@@ -50,6 +50,12 @@ _CLOSURE_REASON_OWNERS = {
     "global_review_form_insufficient": {"checkpoint"},
     "cidr_continuation_pending": {"recon"},
     "cidr_continuation_invalid": {"recon"},
+    "round_lane_evidence_invalid": {"round-progress"},
+    "round_lane_unfinished": {"round-progress"},
+    "round_closure_pending": {"round-progress"},
+    "round_lane_unclaimed": {"round-progress"},
+    "store_partial": {"evidence-ledger"},
+    "store_unreadable": {"evidence-ledger"},
 }
 
 
@@ -392,6 +398,35 @@ def _closure_reason_frontier(
             ),
             stop_condition="record complete/follow_up review with current evidence or a bounded blocker",
         )
+    if reason in {
+        "round_lane_evidence_invalid",
+        "round_lane_unfinished",
+        "round_closure_pending",
+        "round_lane_unclaimed",
+    }:
+        round_progress = state.get("round_progress") if isinstance(state.get("round_progress"), dict) else {}
+        round_ids = [
+            *list(round_progress.get("invalid_evidence_lanes") or []),
+            *list(round_progress.get("unfinished_lanes") or []),
+        ]
+        label = ", ".join(str(item) for item in round_ids[:3]) or str(
+            (round_progress.get("latest_lane") or {}).get("id")
+            or round_progress.get("round_id")
+            or "active round"
+        )
+        return _frontier_item(
+            owner="round-progress",
+            item_id=label,
+            action={
+                "round_lane_evidence_invalid": "Repair the invalid evidence for round lane {label}",
+                "round_lane_unfinished": "Resume the unfinished round lane {label}",
+                "round_closure_pending": "Complete the active round closure for {label}",
+                "round_lane_unclaimed": "Claim the next owner-selected lane for {label}",
+            }[reason].format(label=label),
+            evidence_ref=f"state/{target_key}/checkpoint_latest.json",
+            expected_information_gain="reconcile round progress with the durable lane evidence and current owner state",
+            stop_condition="record a valid lane terminal state or a bounded blocker, then recompute Closure",
+        )
     if reason in {"durable_work_pending"}:
         return _frontier_item(
             owner="action_queue",
@@ -587,6 +622,14 @@ def _closure_reason_frontier(
             f"state/{target_key}/metadata.sqlite3",
         ),
         "ledger_unreadable": (
+            "evidence-ledger", "Inspect the target Store and repair unavailable evidence before closure",
+            f"state/{target_key}/metadata.sqlite3",
+        ),
+        "store_partial": (
+            "evidence-ledger", "Inspect the target Store and repair unavailable evidence before closure",
+            f"state/{target_key}/metadata.sqlite3",
+        ),
+        "store_unreadable": (
             "evidence-ledger", "Inspect the target Store and repair unavailable evidence before closure",
             f"state/{target_key}/metadata.sqlite3",
         ),

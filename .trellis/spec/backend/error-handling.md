@@ -29,9 +29,12 @@
   执行 ranking。recon 成功后的 surface finalizer 是明确的 best-effort 派生；失败必须保留 raw
   recon、输出 warning，并让后续显式 refresh 恢复。
 - bootstrap 读取损坏的 canonical state 时返回 `stop_state_error` 和有界错误类型/原因；不得
-  输出 traceback、覆盖损坏文件或继续目标动作。已有历史 probe summary 读取失败必须保持 partial，不能伪装为空。
+  输出 traceback、覆盖损坏文件或继续目标动作。已有历史 probe summary 读取失败必须保持 partial，不能伪装为空；cursor 索引字段缺失或类型错误（非布尔整数）同样返回 partial 和 invalid_cursor，不得崩溃。
 - bootstrap 的 runtime compare 遇到 `OSError`/`ValueError` 时返回 `stop_runtime_error`；参数
   gate 仍优先，错误不得触发 target state 读取或自动 runtime sync。
+- bootstrap 应用 continuation 时，私有认证副本的实际 open/read 抛出 `OSError` 族必须在读取
+  边界转换为 `ValueError` 并保留 cause，由 bootstrap 返回结构化 `stop_invalid_context`；
+  不得输出 traceback 或泄露会话秘密，也不得继续 runtime/target-state 读取。
 - 可选 `distill/corpus/` 缺失时，case resolver 返回结构化 `unavailable`，普通
   `/kb`/知识路由继续；启用来源解析后发现 stale/invalid corpus、坏 offset/hash 或 dangling
   ref 时必须返回不可用结果，不能返回部分 payload 或伪可信摘要。

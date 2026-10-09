@@ -494,17 +494,11 @@ def test_global_review_field_is_excluded_from_snapshot_digest():
     assert first == second
 
 
-def test_closure_requires_global_review_only_when_other_owners_can_finish(tmp_path, monkeypatch, store):
-    def finish_projection(*_args, **_kwargs):
-        return {
-            "verdict": "finish",
-            "can_claim_exhausted": True,
-            "reasons": [],
-            "next_action": "handoff",
-            "actionable_frontier": [],
-        }
+def test_closure_requires_global_review_only_when_other_owners_can_finish(tmp_path, store):
+    from tools.coverage_matrix import mark_endpoint_kind
 
-    monkeypatch.setattr(autopilot_state_module, "build_closure_projection", finish_projection)
+    mark_endpoint_kind("target.com", "/container", "route_prefix", repo_root=tmp_path,
+                       reason="Only a container, with no executable child in this fixture")
     state = {"target": "target.com", "resolved_target": "target.com", "next_action": "handoff"}
     evidence_ref = "findings/target.com/poc/global-review.json"
     evidence_path = tmp_path / evidence_ref
@@ -1514,6 +1508,51 @@ def test_partial_scanner_lane_with_zero_remaining_cannot_finish():
     assert closure["reasons"][0] == "scanner_lane_review_required"
 
 
+def test_scanner_review_reason_is_not_duplicated_by_direct_projection():
+    def state(**overrides):
+        return {
+            "target": "target.com",
+            "next_action": "handoff",
+            "scanner_summary": {
+                "status": "valid",
+                "path": "findings/target.com/summary.json",
+                "lanes": {
+                    "idor_candidates": {
+                        "lane": "idor_candidates",
+                        "execution_kind": "candidate_only",
+                        "status": "candidate_only",
+                        "remaining": 12,
+                        "continuation": "validate with owner/peer replay",
+                        "closure_blocking": False,
+                    },
+                    "sqli": {
+                        "lane": "sqli",
+                        "execution_kind": "active_probe",
+                        "status": "partial",
+                        "input_total": 10,
+                        "selected": 10,
+                        "remaining": 0,
+                        "closure_blocking": True,
+                    },
+                },
+            },
+            **overrides,
+        }
+
+    residual_only = build_closure_projection(state(), _closure_matrix())
+    assert residual_only["reasons"] == ["scanner_lane_review_required"]
+    assert residual_only["next_action"] == "global-review"
+
+    masked_by_owner = build_closure_projection(
+        state(active_action_queue_count=1), _closure_matrix()
+    )
+    assert masked_by_owner["reasons"] == [
+        "durable_work_pending",
+        "scanner_lane_review_required",
+    ]
+    assert masked_by_owner["next_action"] == "resume_action_queue"
+
+
 def test_scanner_projection_rejects_inconsistent_accounting(tmp_path, store):
     summary_path = tmp_path / "findings" / "target.com" / "summary.json"
     summary_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1707,6 +1746,7 @@ def test_scanner_summary_is_not_a_root_claim_and_preserves_standalone_claims(
 
 
 def test_residual_global_review_requires_every_token_and_never_restores_exhausted(tmp_path, store):
+    _write_closure_owners(tmp_path, "target.com", status="untested", final_review=False)
     target = "target.com"
     witness_path = tmp_path / "state" / target / "checkpoint_latest.json"
     witness_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1791,6 +1831,166 @@ def test_residual_global_review_requires_every_token_and_never_restores_exhauste
     assert complete["next_action"] == "stop_bounded"
     assert complete["can_claim_exhausted"] is False
 
+
+
+def _residual_review_state(tmp_path, store):
+    from tools.coverage_matrix import mark_endpoint_kind
+
+    mark_endpoint_kind(store.target, "/container", "route_prefix", repo_root=tmp_path,
+                       reason="A reviewed container, not an executable endpoint")
+    path = tmp_path / "findings" / store.key / "summary.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "target": store.target,
+        "lane_coverage": {"tail": {
+            "lane": "tail", "execution_kind": "candidate_only", "status": "candidate_only",
+            "input_total": 3, "selected": 1, "remaining": 2,
+            "closure_blocking": False, "continuation": "review remaining inputs",
+        }},
+    }), encoding="utf-8")
+    evidence = tmp_path / "evidence" / store.key / "review.txt"
+    evidence.parent.mkdir(parents=True, exist_ok=True)
+    evidence.write_text("Reviewed bounded scanner material", encoding="utf-8")
+    return {
+        "target": store.target, "next_action": "handoff",
+        "scanner_summary": autopilot_state_module._load_scanner_summary_projection(str(tmp_path), store.target),
+    }
+
+
+def _record_residual_review(tmp_path, state, status="complete"):
+    base = load_closure_projection(str(tmp_path), state, apply_round_guard=False)
+    path = tmp_path / "state" / "target.com" / "checkpoint_latest.json"
+    witness = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    review = {
+        "status": "complete", "snapshot_digest": base["snapshot_digest"],
+        "basis": autopilot_state_module._global_review_basis(base["snapshot_components"]),
+        "evidence_refs": ["evidence/target.com/review.txt"],
+        "residual_unknowns": [item["review_token"] for item in base.get("bounded_residuals", [])
+                              if not item["closure_blocking"]],
+        "decision": "Defer only the nonblocking scanner tail", "next_action": "",
+    }
+    if status == "form_insufficient":
+        review["residual_unknowns"] = []
+    elif status == "stale":
+        review["basis"]["closure_state_fingerprint"] = "0" * 64
+    elif status == "invalid":
+        review["evidence_refs"] = []
+    if status != "missing":
+        witness["global_review"] = review
+    path.write_text(json.dumps(witness), encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize("owner,review_status", [
+    *[("queue", status) for status in ("complete", "missing", "invalid", "stale", "form_insufficient")],
+    ("finding", "complete"), ("round", "complete"), ("integrity", "complete"),
+    ("checkpoint", "complete"), ("many", "complete"),
+    ("blocking", "complete"), ("mixed", "complete"), ("none", "complete"),
+])
+def test_residual_review_preserves_owner_continuations(tmp_path, store, owner, review_status):
+    from tools.autopilot_round import prepare_round
+    from tools.checkpoint import begin_round, record_round_lane
+
+    state = _residual_review_state(tmp_path, store)
+    expected = {"queue": "action_queue", "finding": "finding", "round": "round-progress",
+                "integrity": "evidence-ledger", "checkpoint": "checkpoint", "many": "round-progress",
+                "blocking": "checkpoint", "mixed": "checkpoint"}.get(owner)
+    if owner in {"queue", "many"}:
+        _register_work(store, [{"id": "AQ-REVIEW", "action": "Review saved material"}])
+    if owner == "finding":
+        _register_findings(store, [{"id": "F-REVIEW", "url": "https://target.com/api/item", "type": "IDOR"}])
+        state["structured_findings"] = build_autopilot_state(str(tmp_path), store.target, bounded=True)["structured_findings"]
+    if owner in {"round", "many"}:
+        begin_round(tmp_path, store.target, max_lanes=2)
+        record_round_lane(tmp_path, store.target, lane="review:scanner", max_lanes=2)
+    if owner in {"integrity", "many"}:
+        _record_observation(store, "https://target.com/api/item", "IDOR")
+        (tmp_path / "evidence" / store.key / "attempt-0.txt").unlink()
+    if owner in {"checkpoint", "many"}:
+        path = tmp_path / "state" / store.key / "checkpoint_latest.json"
+        witness = json.loads(path.read_text()) if path.exists() else {}
+        witness["action_queue"] = {"synchronized": True, "next_id": "AQ-MISSING", "fingerprint": "old"}
+        path.write_text(json.dumps(witness), encoding="utf-8")
+    if owner in {"blocking", "mixed"}:
+        lane = state["scanner_summary"]["lanes"]["tail"]
+        lane["closure_blocking"] = True
+        if owner == "mixed":
+            state["scanner_summary"]["lanes"]["ordinary"] = {**lane, "lane": "ordinary", "closure_blocking": False}
+    if owner == "queue":
+        state = build_autopilot_state(str(tmp_path), store.target, bounded=True)
+    witness_path = _record_residual_review(tmp_path, state, review_status)
+    before = witness_path.read_bytes()
+    binding = store.binding()
+    result = load_closure_projection(str(tmp_path), state)
+    assert result["owner_continuations"] == result["actionable_frontier"]
+    assert result["can_claim_exhausted"] is False
+    assert witness_path.read_bytes() == before
+    assert store.binding() == binding
+    if owner == "none":
+        assert result["verdict"] == "blocked"
+        assert result["next_action"] == "stop_bounded"
+        assert result["reasons"] == ["bounded_recon_residual_deferred"]
+        assert result["owner_continuations"] == []
+    else:
+        assert result["verdict"] == "handoff"
+        assert result["owner_continuations"][0]["owner"] == expected
+        assert result["next_action"] != "stop_bounded"
+    if owner == "many":
+        assert len(result["reasons"]) == 3
+        assert result["reasons"][0] == "round_lane_unfinished"
+        assert any(item["owner"] == "action_queue" for item in result["owner_continuations"])
+    if owner == "queue":
+        assert result["reasons"][0] == "durable_work_pending"
+        assert result["next_action"] == "resume_action_queue"
+        assert result["global_review"]["status"] == review_status
+        assert load_queue(tmp_path, store.target)["actions"][0]["status"] == "queued"
+        prepared = prepare_round(tmp_path, store.target, 2)
+        assert prepared["status"] not in {"terminal", "review_required"}
+        assert prepared["closure"]["next_action"] == "resume_action_queue"
+        assert store.binding() == binding
+
+
+@pytest.mark.parametrize("field,value,stale", [
+    ("execution_kind", "active_probe", True), ("status", "partial", True),
+    ("input_total", 4, True), ("selected", 0, True),
+    ("closure_blocking", True, True), ("accounting_valid", False, True),
+    ("updated_at", "2099-01-01T00:00:00Z", False), ("reason", "display only", False),
+    ("continuation", "Different presentation of the same tail", False),
+])
+def test_residual_review_tracks_scanner_semantics(tmp_path, store, field, value, stale):
+    state = _residual_review_state(tmp_path, store)
+    witness = _record_residual_review(tmp_path, state)
+    before = witness.read_bytes()
+    original = load_closure_projection(str(tmp_path), state)
+    state["scanner_summary"]["lanes"]["tail"][field] = value
+    changed = load_closure_projection(str(tmp_path), state)
+    assert changed["scanner_residuals"][0]["review_token"] == original["scanner_residuals"][0]["review_token"]
+    assert (changed["snapshot_components"]["closure_state_fingerprint"] !=
+            original["snapshot_components"]["closure_state_fingerprint"]) is stale
+    assert changed["global_review"]["status"] == ("stale" if stale else "complete")
+    assert witness.read_bytes() == before
+
+
+def test_residual_review_uses_effective_guard_fingerprint(tmp_path, store):
+    state = _residual_review_state(tmp_path, store)
+    state["json_inject"] = {"status": "partial", "input_fingerprint": "current-input"}
+    witness = _record_residual_review(tmp_path, state)
+    result = load_closure_projection(str(tmp_path), state, apply_round_guard=False)
+    assert result["reasons"][0] == "json_evidence_partial"
+    assert result["stagnation_fingerprint"] == stagnation_fingerprint(
+        state, {key: value for key, value in result.items() if key != "stagnation_fingerprint"},
+    )
+    payload = json.loads(witness.read_text(encoding="utf-8"))
+    payload["round_guard"] = {"fingerprint": result["stagnation_fingerprint"], "consecutive": 3, "threshold": 3}
+    witness.write_text(json.dumps(payload), encoding="utf-8")
+    guarded = load_closure_projection(str(tmp_path), state)
+    assert guarded["reasons"] == ["stagnant_prerequisite"]
+    assert guarded["verdict"] == "blocked"
+    state.pop("json_inject")
+    _record_residual_review(tmp_path, state)
+    deferred = load_closure_projection(str(tmp_path), state)
+    assert deferred["reasons"] == ["bounded_recon_residual_deferred"]
+    assert "stagnation_fingerprint" not in deferred
 
 def test_closure_handoffs_only_for_partial_recon_budget():
     interrupted = build_closure_projection(
@@ -6367,3 +6567,152 @@ def test_closure_uses_store_coverage_with_disposable_cache(tmp_path, store, cach
     assert closure["coverage_terminal_evidence"]["status"] == "valid"
     assert closure["evidence_source"]["kind"] == "store"
     assert closure["next_action"] == "stop_bounded"
+
+
+def _write_probe_cursor_summary(tmp_path, lane):
+    target = "target.com"
+    source = tmp_path / "recon" / target / "urls" / "probe_endpoints.txt"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("https://target.com/search?q=1\nhttps://target.com/search?q=2\n", encoding="utf-8")
+    directory = "json_inject" if lane == "json" else f"sql_matrix/{lane}"
+    summary = tmp_path / "findings" / target / "poc" / directory / "summary.json"
+    summary.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": 2 if lane == "json" else 1,
+        "kind": "json_inject_summary" if lane == "json" else "sql_matrix_summary",
+        "target": target,
+        "lane": lane,
+        "status": "candidate_pending",
+        "input_fingerprint": "a" * 64,
+        "source_bindings": [{
+            "kind": "endpoints",
+            "path": str(source),
+            "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+        }],
+        "endpoint_count": 2,
+        "probed_endpoint_count": 1,
+        "request_count": 3,
+        "hit_count": 1,
+        "hits": [{"url": "https://target.com/search", "field": "q", "class": "sqli_error", "signal": "error"}],
+        "batch_start_endpoint_index": 0,
+        "batch_tested_endpoint_count": 1,
+        "resumed": True,
+        "cursor": {
+            "schema_version": 1,
+            "input_fingerprint": "a" * 64,
+            "endpoint_count": 2,
+            "next_endpoint_index": 0,
+            "deferred_endpoint_indices": [],
+            "remaining_endpoint_count": 2,
+            "coverage_complete": False,
+        },
+    }
+    summary.write_text(json.dumps(payload), encoding="utf-8")
+    return summary, source, payload
+
+
+def _read_probe_cursor_summary(tmp_path, lane):
+    if lane == "json":
+        return _load_json_inject_projection(str(tmp_path), "target.com")
+    return _load_sql_matrix_projection(str(tmp_path), "target.com", lane)
+
+
+@pytest.mark.parametrize("lane", ["json", "query", "form"])
+@pytest.mark.parametrize("index_fields", [
+    pytest.param({}, id="missing"),
+    pytest.param({"next_endpoint_index": None}, id="null"),
+    pytest.param({"next_endpoint_index": "0"}, id="string"),
+    pytest.param({"next_endpoint_index": False}, id="false"),
+    pytest.param({"next_endpoint_index": True}, id="true"),
+    pytest.param({"next_endpoint_index": 0.0}, id="integral-float"),
+    pytest.param({"next_endpoint_index": 0.5}, id="fractional-float"),
+    pytest.param({"next_endpoint_index": -1}, id="negative"),
+    pytest.param({"next_endpoint_index": 3}, id="past-end"),
+])
+def test_probe_cursor_invalid_index_is_partial(tmp_path, lane, index_fields):
+    summary, source, payload = _write_probe_cursor_summary(tmp_path, lane)
+    healthy = _read_probe_cursor_summary(tmp_path, lane)
+    assert healthy["status"] == "candidate_pending"
+    assert "reason" not in healthy
+    payload["cursor"].pop("next_endpoint_index")
+    payload["cursor"].update(index_fields)
+    summary.write_text(json.dumps(payload), encoding="utf-8")
+    before = {path: path.read_bytes() for path in (summary, source)}
+
+    projection = _read_probe_cursor_summary(tmp_path, lane)
+
+    assert projection["status"] == "partial"
+    assert projection["reason"] == "invalid_cursor"
+    for field in ("input_fingerprint", "endpoint_count", "probed_endpoint_count", "request_count", "hit_count", "source_paths", "resumed"):
+        assert projection[field] == healthy[field]
+    if lane != "json":
+        assert projection["candidates"] == healthy["candidates"]
+    assert all(path.read_bytes() == content for path, content in before.items())
+
+
+@pytest.mark.parametrize("lane", ["json", "query", "form"])
+@pytest.mark.parametrize("index", [0, 2, None], ids=["start", "end", "no-cursor"])
+def test_probe_cursor_valid_index_preserves_resume(tmp_path, lane, index):
+    summary, source, payload = _write_probe_cursor_summary(tmp_path, lane)
+    if index is None:
+        payload.pop("cursor")
+    else:
+        payload["cursor"].update({
+            "next_endpoint_index": index,
+            "remaining_endpoint_count": 2 - index,
+            "coverage_complete": index == 2,
+        })
+    summary.write_text(json.dumps(payload), encoding="utf-8")
+    before = {path: path.read_bytes() for path in (summary, source)}
+
+    projection = _read_probe_cursor_summary(tmp_path, lane)
+
+    assert projection["status"] == "candidate_pending"
+    assert "reason" not in projection
+    assert projection["resumed"] is True
+    assert projection["source_paths"] == [str(source)]
+    if index is None:
+        assert projection["cursor"] == {}
+    else:
+        assert projection["cursor"]["next_endpoint_index"] == index
+        assert projection["cursor"]["remaining_endpoint_count"] == 2 - index
+        assert projection["cursor"]["coverage_complete"] is (index == 2)
+    assert all(path.read_bytes() == content for path, content in before.items())
+
+
+@pytest.mark.parametrize("lane", ["json", "query"])
+def test_projection_only_cli_keeps_partial_cursor(tmp_path, store, lane):
+    import os
+    from pathlib import Path
+    import subprocess
+
+    summary, source, payload = _write_probe_cursor_summary(tmp_path, lane)
+    payload["cursor"].pop("next_endpoint_index")
+    summary.write_text(json.dumps(payload), encoding="utf-8")
+    binding = store.binding()
+    before = {path: path.read_bytes() for path in (summary, source, store.path)}
+    home = tmp_path / "home"
+    home.mkdir()
+    script = Path(autopilot_state_module.__file__).resolve()
+
+    result = subprocess.run(
+        [sys.executable, "-B", str(script), "--repo-root", str(tmp_path),
+         "--memory-dir", str(tmp_path / "hunt-memory"), "--target", store.target,
+         "--bounded", "--loop-check", "--projection-only", "--json"],
+        cwd=tmp_path,
+        env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(home),
+             "LANG": "C.UTF-8", "PYTHONDONTWRITEBYTECODE": "1"},
+        text=True, capture_output=True, timeout=20, check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    projection = json.loads(result.stdout)
+    assert projection["kind"] == "autopilot_loop_check_projection"
+    assert projection["target"] == store.target
+    assert "control" in projection and "loop_guard" in projection
+    assert "Traceback" not in result.stderr
+    partial = _read_probe_cursor_summary(tmp_path, lane)
+    assert partial["status"] == "partial"
+    assert partial["reason"] == "invalid_cursor"
+    assert store.binding() == binding
+    assert all(path.read_bytes() == content for path, content in before.items())

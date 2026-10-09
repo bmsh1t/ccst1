@@ -343,7 +343,10 @@ reviews may need one explicit re-review after the binding semantics change.
   raises the typed mismatch, with no digest or witness mutation. Transient mismatch
   -> CLI/coordinator reassemble once; a second mismatch -> propagate/CLI exit `2`.
   Ordinary Store/I/O errors do not gain retries. Two stable partial reads still
-  return the existing `store_partial` diagnostic and suppress closure.
+  return the existing `store_partial` diagnostic and suppress closure. Store-mode
+  partial/unreadable evidence resolves to the same `evidence-ledger` owner,
+  `repair_evidence_ledger` action and reason frontier as the legacy `ledger_*`
+  reasons.
 - `material_sources.sources.workflow_leads` carries Surface `status`, `reason`,
   `refresh_command`. Missing/stale/invalid projection means `total=null`,
   `remaining=null`, no usable items, and `evidence_reviewed.surface=false`.

@@ -64,7 +64,7 @@ def _probe_cursor_valid(value: object, input_fingerprint: str, endpoint_count: i
     deferred = value.get("deferred_endpoint_indices")
     if not isinstance(value.get("coverage_complete"), bool):
         return False
-    if isinstance(start_index, bool) or not 0 <= start_index <= endpoint_count:
+    if isinstance(start_index, bool) or not isinstance(start_index, int) or not 0 <= start_index <= endpoint_count:
         return False
     if not isinstance(deferred, list) or any(
         isinstance(item, bool) or not isinstance(item, int) or not 0 <= item < endpoint_count

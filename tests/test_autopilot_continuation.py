@@ -122,13 +122,14 @@ def test_continuation_rejects_non_owner_path_and_identity_tamper(tmp_path):
         load_continuation(tmp_path, created["path"], selected_target="api.target.example")
 
 
-def test_bootstrap_applies_continuation_before_runtime_or_target_state(monkeypatch, tmp_path):
+@pytest.mark.parametrize("authenticated", [False, True])
+def test_bootstrap_applies_continuation_before_runtime_or_target_state(monkeypatch, tmp_path, authenticated):
     scope, auth = _scope_and_auth(tmp_path)
     created = create_continuation(
         tmp_path,
         parent_target=str(scope),
         selected_target="api.target.example",
-        auth_file=auth,
+        auth_file=auth if authenticated else None,
     )
     monkeypatch.setattr(autopilot_bootstrap, "compare_runtime", _clean_runtime)
     monkeypatch.setattr(
@@ -150,9 +151,12 @@ def test_bootstrap_applies_continuation_before_runtime_or_target_state(monkeypat
 
     assert payload["action"] == "continue"
     assert payload["scope"]["scope_hash"] == created["continuation"]["scope_hash"]
-    assert payload["arguments"]["auth_file"] == str(
-        (tmp_path / created["continuation"]["auth_private_ref"]).resolve()
-    )
+    if authenticated:
+        assert payload["arguments"]["auth_file"] == str(
+            (tmp_path / created["continuation"]["auth_private_ref"]).resolve()
+        )
+    else:
+        assert not payload["arguments"]["auth_file"]
     assert payload["state"]["continuation"]["selected_target"] == "api.target.example"
     assert "session=secret" not in json.dumps(payload)
 
@@ -254,3 +258,73 @@ def test_batch_bootstrap_carries_auth_into_continuation_create_args(monkeypatch,
         "--auth-file",
         str(auth.resolve()),
     ]
+
+
+@pytest.mark.parametrize("error_type", [PermissionError, OSError, FileNotFoundError])
+@pytest.mark.parametrize("failure_stage", ["open", "read"])
+def test_bootstrap_blocks_unreadable_private_auth_before_runtime(
+    monkeypatch, tmp_path, capsys, error_type, failure_stage,
+):
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    scope, auth = _scope_and_auth(tmp_path)
+    created = create_continuation(
+        tmp_path,
+        parent_target=str(scope),
+        selected_target="api.target.example",
+        auth_file=auth,
+    )
+    private_auth = (tmp_path / created["continuation"]["auth_private_ref"]).resolve()
+    unchanged = {
+        path: path.read_bytes()
+        for path in (scope, auth, private_auth, Path(created["path"]))
+    }
+    injected = error_type("private auth I/O failed: session=secret")
+    original_open = Path.open
+    failures = []
+
+    def fail_read(*_args, **_kwargs):
+        failures.append("read")
+        raise injected
+
+    @contextmanager
+    def unreadable_handle(path, *args, **kwargs):
+        with original_open(path, *args, **kwargs):
+            yield SimpleNamespace(read=fail_read)
+
+    def auth_open(path, *args, **kwargs):
+        if path == private_auth:
+            assert private_auth.is_file()
+            if failure_stage == "open":
+                failures.append("open")
+                raise injected
+            return unreadable_handle(path, *args, **kwargs)
+        return original_open(path, *args, **kwargs)
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("unreadable continuation must stop before runtime or target state")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "open", auth_open)
+        patch.setattr(autopilot_bootstrap, "compare_runtime", unexpected)
+        patch.setattr(autopilot_bootstrap, "build_capability_profile", unexpected)
+        patch.setattr(autopilot_bootstrap, "build_autopilot_bootstrap_state", unexpected)
+        with pytest.raises(ValueError, match="continuation auth ref is not readable") as caught:
+            load_continuation(tmp_path, created["path"], selected_target="api.target.example")
+        assert caught.value.__cause__ is injected
+        payload = autopilot_bootstrap.build_autopilot_bootstrap(
+            ["api.target.example", f"--context-file={created['path']}"],
+            repo_root=tmp_path,
+        )
+
+    assert failures == [failure_stage, failure_stage]
+    assert payload["action"] == "stop_invalid_context"
+    assert payload["error"]["type"] == "ValueError"
+    assert "continuation auth ref is not readable" in payload["error"]["reason"]
+    assert len(payload["error"]["reason"]) <= 500
+    assert all(path.read_bytes() == before for path, before in unchanged.items())
+    output = capsys.readouterr()
+    public = json.dumps(payload) + output.out + output.err
+    assert "session=secret" not in public
+    assert "Traceback" not in public
