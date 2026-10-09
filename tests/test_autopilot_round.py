@@ -494,7 +494,7 @@ def test_settle_round_replays_each_durable_boundary(monkeypatch, tmp_path, failu
 
 
 @pytest.mark.parametrize("projection", ["stale", "missing", "malformed"])
-def test_settle_requires_explicit_surface_refresh(tmp_path, monkeypatch, projection):
+def test_settle_completes_without_surface_refresh(tmp_path, monkeypatch, projection):
     target = "target.com"
     store = TargetStore(tmp_path, target)
     store.initialize()

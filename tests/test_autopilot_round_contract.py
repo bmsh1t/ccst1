@@ -142,6 +142,9 @@ def test_round_end_uses_explicit_loop_guard_and_owner_settle():
     assert "do not issue a second ordinary `autopilot_state.py` read unless the command fails" in normalized.lower()
     assert "reads Checkpoint/current Coverage and Closure" in normalized
     assert "does not save target memory, synchronize Queue or refresh Surface" in normalized
+    # R6: stale/missing/malformed Surface never blocks settle.
+    assert "keeps the round active" not in normalized
+    assert "never blocks settle or flips a settled round back to active" in normalized
     assert "After every terminal heartbeat" in command
     assert "Consume at most `invocation_batch.max_lanes` substantive lanes" in normalized
     assert "it does not itself select `STATUS: CONTINUE`" in normalized

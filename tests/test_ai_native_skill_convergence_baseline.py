@@ -141,12 +141,15 @@ def test_runtime_protocol_invalidates_pack_recommendations_after_compaction():
 
     refreshFactIndexInMessages (desredteam) rebuilds the injected blackboard
     index after every summarization. The CLI equivalent is a protocol rule:
-    after compaction, recall judgments rebuild from on-disk owner state, never
+    after compaction, recall judgments rebuild from on-disk owner state,
+    re-checking facts and references with the current owner, never
     from recommendations preserved in the compressed summary.
     """
     protocol = (REPO_ROOT / "skills" / "runtime-protocol.md").read_text(encoding="utf-8")
     assert "会话上下文压缩（compaction/summary）后" in protocol
     assert "不从压缩摘要里复用旧推荐" in protocol
+    # Converged guidance: rebuild re-checks facts and refs with the current owner.
+    assert "按当前 owner 重新核对事实与引用" in protocol
 
 
 def test_recovery_guidance_checks_inherited_constraints_without_full_source_read():
@@ -302,3 +305,37 @@ def test_action_queue_lanes_doc_keeps_explicit_store_work_and_ai_choice():
     assert "--from-evidence" in lanes and "retired" in lanes
     assert "--id" in lanes
     assert "AI" in lanes
+
+
+def test_autopilot_agent_is_thin_delegation_contract():
+    """R5 (guidance convergence): the optional agent delegates one bounded task.
+
+    The agent must not promise the whole target loop, must read current owner
+    state instead of re-deriving from an earlier summary, must return owner
+    writes through the 「待落库」 tail instead of self-registering, and must
+    keep the method capabilities (browser lifecycle, credential preflight,
+    sender wire semantics, deep budget, scanner-negative).
+    """
+    agent = (REPO_ROOT / "agents" / "autopilot.md").read_text(encoding="utf-8")
+    # One bounded, caller-selected piece of work — not the whole main loop.
+    assert "one explicitly bounded piece of evidence work" in agent
+    assert "The caller retains lane claims, owner write-back" in agent
+    # Current facts come from the owner, not a re-derived summary.
+    assert "not re-derived from an earlier summary" in agent
+    assert "insufficient-input" in agent
+    # The 「待落库」 tail replaces self-registration of owner state.
+    assert "「待落库」 tail" in agent
+    assert "Never a self-registered Finding/Case/Experience/Queue write" in agent
+    # Retired agent-side owner writes stay gone.
+    assert "case_state.json" not in agent
+    assert "explicitly register the Candidate" not in agent
+    assert "update state to" not in agent
+    # Method capabilities survive the convergence.
+    for method in (
+        "docs/autopilot-lanes.md#browser-source-and-js",
+        "skills/credential-attack/SKILL.md",
+        "tools/sender_semantics.py",
+        "--deep",
+        "scanner-negative",
+    ):
+        assert method in agent

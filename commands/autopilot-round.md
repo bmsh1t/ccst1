@@ -105,8 +105,10 @@ cd -- <repo_root_shell> && python3 tools/autopilot_round.py settle --target <tar
 ```
 
 Settle refuses `started` lanes, reads Checkpoint/current Coverage and Closure,
-then explicitly closes the runtime round. Stale or unavailable Surface keeps
-the round active; refresh it explicitly before retrying. Settle does not save
+then explicitly closes the runtime round. Missing, malformed, or stale Surface
+never blocks settle or flips a settled round back to active; it keeps the
+Surface-backed advisory lead open until a later explicit `/surface` refresh.
+Settle does not save
 target memory, synchronize Queue or refresh Surface. Repeating settle
 after completion is read-only (`status=already_settled`) and never replays target
 work. If the first Closure reason is `global_review_required`, `global_review_stale`,

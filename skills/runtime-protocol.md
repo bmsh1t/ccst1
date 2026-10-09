@@ -12,7 +12,7 @@
 | `CLAUDE.md` | 授权、AI/工具边界、状态 owner、入口路由 | 仓库启动时常驻 |
 | 本协议 | Target -> Skill -> Knowledge -> Checks -> Write-back | Context Pack 共享必读 |
 | 全部 Skill（含 `bb-methodology`） | 决策契约、路线、证据门 | 原生 Skill 工具按需加载（description 路由） |
-| 知识卡/参考资料 | 模式、技巧、证据门和发散思路 | 默认推荐 0-2 张，按信号读取 |
+| 知识卡/参考资料 | 模式、技巧、证据门和发散思路 | 按信息缺口选择，完整目录见 Context Pack |
 | Rules / checks | Coverage、Validation 和 Reporting gate | 按动作与阶段读取 |
 | Tools / state owners | 确定性执行、原始证据、生命周期和恢复 | 调用或写回时执行 |
 
@@ -43,11 +43,12 @@ Claude Code CLI 当前主会话保留最终路线判断权。本协议、推荐 
   行动；已读正文不重复加载。
 - 同一 target/focus/实质证据可复用；目标、focus 或实质证据变化时重新判断并按需刷新。
   会话上下文压缩（compaction/summary）后，对话内既有的卡片推荐和 Pack 引用按过期处理：
-  重建判断以当前磁盘上的 owner 状态为准，不从压缩摘要里复用旧推荐。
+  重建判断以当前磁盘上的 owner 状态为准，按当前 owner 重新核对事实与引用，不从压缩摘要里复用旧推荐。
 - Autopilot 先完成 bootstrap 和 state read，再在 substantive lane 选择后执行这条判断；bootstrap
   不等于已有匹配 Pack 或知识卡已读，也不因召回而抢占 owner 选定的初始工作。
-- 默认推荐 0-2 张卡；查包返回不足时再使用已有 deferred recall、`knowledge/index.md` 或 `/kb`。
-  推荐预算不限制有理由的显式补读，不新增持久化加载状态。
+- 卡目录在 Context Pack 中全量发布，是否读取由 AI 按当前信息缺口决定：已读且仍有效的正文
+  直接复用；需要时用原生 Read 按目录引用精确展开，不把目录条目当已读，不设固定读取配额。
+  需要目录回退时用 `knowledge/index.md` 或 `/kb`（两者只是发现入口，同受本条判断）。
 - 需要经验（目标情节 + 本目标技术经验 + 已晋升知识卡）时，用一个统一读入口：
   `python3 tools/experience_recall.py --target <target> [--query <词项>]`。该视图只含
   当前目标内容 + 人工审核晋升的知识卡（跨项目现场记忆不自动带入）；query 只是
@@ -193,10 +194,10 @@ Evidence gate；细节回到现有 owner，不在本协议中复制。
 ## 3. Knowledge layer
 
 知识库只提供可复用模式、反例和发散问题，不指挥流程，也不保存当前目标状态。由
-Shared Knowledge Recall 按证据通过 Context Pack 选择 0-2 张卡；常见 focus 包括
+Shared Knowledge Recall 按当前信息缺口从 Context Pack 发布的完整目录中选择卡；常见 focus 包括
 `sqli`、`auth-hidden`、`missing-param`、`path-pattern`、`api-idor`、`ssrf`、`graphql`
 和 `upload`。具体卡片路径以 registry/Context Pack 返回为准；`knowledge/index.md`
-只在召回不足时作为目录回退。
+只在需要第二发现入口时作为目录回退。
 
 知识输出必须回到 `Evidence -> Hypothesis -> Next action -> Stop condition`；是否执行仍由
 Skill 和检查层决定。不得默认全量读取卡片、原始日志或大型响应。

@@ -291,8 +291,9 @@ reviews may need one explicit re-review after the binding semantics change.
   The lock is same-thread reentrant so existing checkpoint owner functions remain
   the only mutation paths. A concurrent lane claim waits, then is rejected after
   the round becomes completed; it cannot enter between preflight and first write.
-  Missing, malformed or stale Surface defers closure and preserves the active
-  round and evidence. Refresh Surface explicitly, then retry settle. It never
+  Missing, malformed or stale Surface does not block or defer round closure;
+  settle still completes and keeps the Surface-backed advisory lead open until
+  a later explicit refresh. Settle never
   refreshes Surface or synchronizes Queue as a side effect. Owner-marker drift
   retries snapshot acquisition once, then reports failure instead of mixing inputs.
 - Closure uses Coverage's `require_matching_truth(matrix, truth)` before witness
