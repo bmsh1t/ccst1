@@ -12,11 +12,11 @@
 | `CLAUDE.md` | 授权、AI/工具边界、状态 owner、入口路由 | 仓库启动时常驻 |
 | 本协议 | Target -> Skill -> Knowledge -> Checks -> Write-back | Context Pack 共享必读 |
 | 全部 Skill（含 `bb-methodology`） | 决策契约、路线、证据门 | 原生 Skill 工具按需加载（description 路由） |
-| 知识卡/参考资料 | 模式、技巧、证据门和发散思路 | 按信息缺口选择，完整目录见 Context Pack |
+| 知识卡/参考资料 | 模式、技巧、证据门和发散思路 | 全量目录可发现，AI 按信息缺口读取 |
 | Rules / checks | Coverage、Validation 和 Reporting gate | 按动作与阶段读取 |
 | Tools / state owners | 确定性执行、原始证据、生命周期和恢复 | 调用或写回时执行 |
 
-Claude Code CLI 当前主会话保留最终路线判断权。本协议、推荐 Skill/Card 和工具输出
+Claude Code CLI 当前主会话保留最终路线判断权。本协议、Skill/Card 和工具输出
 都不能建立第二个 controller 或 target-state owner。
 
 ## Shared Knowledge Recall
@@ -39,16 +39,16 @@ Claude Code CLI 当前主会话保留最终路线判断权。本协议、推荐 
 - 所有用户可控输入（URL 参数、body、header、cookie、路径、JSON 字段、文件名……）
   都进入覆盖视野，不因历史经验只提到某些位置而忽略其他输入；验证顺序由当前证据
   决定，未测试部分在 Coverage 里明确保留为 unknown，不用抽样冒充完整覆盖。
-- 推荐路径不等于文件已读：选中的 Skill 和当前需要的卡若正文不在上下文中，先读取再
+- 目录路径不等于文件已读：选中的 Skill 和当前需要的卡若正文不在上下文中，先读取再
   行动；已读正文不重复加载。
 - 同一 target/focus/实质证据可复用；目标、focus 或实质证据变化时重新判断并按需刷新。
-  会话上下文压缩（compaction/summary）后，对话内既有的卡片推荐和 Pack 引用按过期处理：
-  重建判断以当前磁盘上的 owner 状态为准，按当前 owner 重新核对事实与引用，不从压缩摘要里复用旧推荐。
+  会话上下文压缩（compaction/summary）后，对话内既有的选读判断和 Pack 引用按过期处理：
+  重建判断以当前磁盘上的 owner 状态为准，按当前 owner 重新核对事实与引用，不从压缩摘要里复用旧判断。
 - Autopilot 先完成 bootstrap 和 state read，再在 substantive lane 选择后执行这条判断；bootstrap
   不等于已有匹配 Pack 或知识卡已读，也不因召回而抢占 owner 选定的初始工作。
-- 卡目录在 Context Pack 中全量发布，是否读取由 AI 按当前信息缺口决定：已读且仍有效的正文
-  直接复用；需要时用原生 Read 按目录引用精确展开，不把目录条目当已读，不设固定读取配额。
-  需要目录回退时用 `knowledge/index.md` 或 `/kb`（两者只是发现入口，同受本条判断）。
+- 从完整 `card_catalog` 按信息缺口选读，也可用 `knowledge/index.md` 或 `/kb` 查找。
+  短卡读完整正文；长卡读包含前提、方法、证据门、反例和停止条件的完整判断单元，
+  再按需展开来源。不设固定选卡或补读上限，不新增持久化加载状态。
 - 需要经验（目标情节 + 本目标技术经验 + 已晋升知识卡）时，用一个统一读入口：
   `python3 tools/experience_recall.py --target <target> [--query <词项>]`。该视图只含
   当前目标内容 + 人工审核晋升的知识卡（跨项目现场记忆不自动带入）；query 只是
@@ -58,7 +58,8 @@ Claude Code CLI 当前主会话保留最终路线判断权。本协议、推荐 
 
 卡片保持独立，提供模式、反例和证据提示；Skill 保留路线和证据门，不复制卡片正文。
 
-Context Pack 的 `knowledge_cards` 是兼容推荐字段；skill 推荐壳字段
+Context Pack 全量发布 `card_catalog`；`knowledge_cards`、`deferred_knowledge_cards`、
+`knowledge_card_recall` 恒空，仅保留字段兼容，不等待推荐或 deferred 补发。skill 推荐壳字段
 （`selected_skill`/`skill_route`/`selected_skill_id`/`why_this_skill`）已删除，
 skill 可发现性由平台技能面原生持有，pack 不发布 skill 目录。它们从来不是已选择的执行
 状态，也不进入默认 `must_read` 或自动写入 Queue。Skill 的选择与加载由 AI 通过原生
@@ -66,7 +67,7 @@ Skill 工具完成（frontmatter description 是发现面）。Queue/Store 不�
 不检查 Skill 文件或预设维度、不登记自报调用审计；`active_dimension` 与 Runner 的
 `tested_dimensions` 继续分别表示实验意图与真实观察。
 
-`hypothesis_seeds`、`alternative_angles` 和 `knowledge_card_recall` 是恒空的
+`hypothesis_seeds` 和 `alternative_angles` 是恒空的
 兼容字段（静态建议已退役，2026-09-13 原生能力审计）：假设由 AI 在真实证据和
 完整卡片上自己提出，不从 seed 生成 Queue 动作。Action Queue 的
 `selected_knowledge_refs` 是 AI 的知识判断：可以引用 focus 匹配的任意卡，改选不属于
@@ -133,7 +134,7 @@ active target（目标必须已初始化）。`/pickup` 与 Context Pack 是读�
 补 `expected` 不等于补足技术证据，记忆写入不确认 Finding、不自动晋升知识。
 Autopilot 每次启动都按 `commands/autopilot.md` 执行当轮 Bootstrap，旧快照不能代替预检。
 
-### 2. Skill layer
+## 2. Skill layer
 
 主会话根据目标、阶段和证据选择路线：`bug-bounty` 负责协调，`bb-methodology` 负责
 假设与轮换，`web2-recon` 负责攻击面，`web2-vuln-classes` 负责具体类别，
@@ -194,10 +195,10 @@ Evidence gate；细节回到现有 owner，不在本协议中复制。
 ## 3. Knowledge layer
 
 知识库只提供可复用模式、反例和发散问题，不指挥流程，也不保存当前目标状态。由
-Shared Knowledge Recall 按当前信息缺口从 Context Pack 发布的完整目录中选择卡；常见 focus 包括
+Shared Knowledge Recall 从 Context Pack 的完整 `card_catalog` 按信息缺口选读；常见 focus 包括
 `sqli`、`auth-hidden`、`missing-param`、`path-pattern`、`api-idor`、`ssrf`、`graphql`
 和 `upload`。具体卡片路径以 registry/Context Pack 返回为准；`knowledge/index.md`
-只在需要第二发现入口时作为目录回退。
+与 `/kb` 是按需查找入口，不依赖推荐字段。
 
 知识输出必须回到 `Evidence -> Hypothesis -> Next action -> Stop condition`；是否执行仍由
 Skill 和检查层决定。不得默认全量读取卡片、原始日志或大型响应。

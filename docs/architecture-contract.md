@@ -76,6 +76,13 @@ preserve evidence, and expose facts. URL words, family labels, object labels, an
 hint counts must not substitute for business-value judgment. There is no new
 Planner, Controller, model loop, automatic chain generator, or session manager.
 
+Autopilot is an automatic execution mode, not a second investigation workflow.
+Manual and automatic entries share the existing `bug-bounty` coordination,
+`bb-methodology` business/hypothesis reasoning, memory protocol, Rules and owner
+APIs. Autopilot adds continuation, waits, budgets, checkpoint cadence and handoff;
+it does not own different finding, evidence or report standards. Shared execution
+contracts are read on demand and never enable automatic continuation by themselves.
+
 Skills provide methods, applicability conditions, counterexamples and evidence
 requirements, not fixed test sequences or duplicated native tool manuals.
 The native platform owns Skill discovery and loading. Queue/Store do not require

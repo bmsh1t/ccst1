@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from tools import autopilot_bootstrap
+from tools import autopilot_bootstrap, autopilot_state
 from tools.autopilot_args import parse_autopilot_args
 
 
@@ -58,158 +58,124 @@ def test_round_bootstrap_cli_forwards_round_defaults(monkeypatch, capsys):
 
 def test_round_reuses_the_bootstrap_and_canonical_controller_contract():
     command = _read("commands/autopilot-round.md")
-    normalized = " ".join(command.split())
-
-    for tool in (
-        "Bash",
-        "Agent",
-        "ToolSearch",
-        "CronList",
-        "CronDelete",
-        '"mcp__Playwright__*"',
-        '"mcp__chrome-devtools__*"',
-        '"mcp__fofamap__*"',
-    ):
+    for tool in ("Bash", "Agent", "ToolSearch", "CronList", "CronDelete",
+                 '"mcp__Playwright__*"', '"mcp__chrome-devtools__*"', '"mcp__fofamap__*"'):
         assert f"- {tool}" in command
     assert command.count("autopilot_bootstrap.py") == 1
     assert "--json --round-defaults --" in command
-    assert "Read and obey `commands/autopilot.md` as the sole controller contract" in normalized
-    assert "does not repeat its route, evidence, red-line, or completion rules" in normalized
-    assert "run_recon" not in command
-    assert "validate_finding" not in command
-    assert "`stop_invalid_scope`" in command
-    assert "`stop_invalid_context`" in command
-    assert "## Command Execution Contract" not in command
-    assert "## One Canonical Round" not in command
-    assert "## Final Closure And Status" not in command
+    assert "Read complete H2 `commands/autopilot.md#shared-automation`" in command
+    assert "excluding main Bootstrap" in command
+    assert "with this Bootstrap, excluding main Bootstrap" in command
+    assert "Never invoke `/autopilot`" in command
+    assert "run_recon" not in command and "validate_finding" not in command
 
 
 def test_terminal_precheck_is_state_only_and_precedes_target_work():
     command = _read("commands/autopilot-round.md")
-    precheck = command.split("## Prepare And Terminal Precheck", 1)[1].split(
-        "## Round Mechanics", 1
-    )[0]
-    normalized_precheck = " ".join(precheck.split())
-    closure = (
-        "python3 tools/autopilot_state.py --target <target_shell> "
-        "--bounded --closure --projection-only --json"
-    )
-    prepare = (
-        "python3 tools/autopilot_round.py prepare --target <target_shell> "
-        "--max-lanes <invocation_batch.max_lanes> --json"
-    )
-
-    assert command.index("## Prepare And Terminal Precheck") < command.index(
-        "## Round Mechanics"
-    )
-    assert closure not in precheck
-    assert prepare in precheck
-    assert f"{closure} --max-lanes-reached" not in precheck
-    assert "`finish` or `blocked` is terminal" in normalized_precheck
-    assert "For STATUS, consume only" in normalized_precheck
-    assert "These fields never override STATUS" in normalized_precheck
-    assert "stop without target work" in normalized_precheck
-    for active_path in ("tools/hunt.py", "tools/surface.py", "/validate", "/report"):
-        assert active_path not in precheck
+    precheck = command.split("## Prepare And Terminal Precheck", 1)[1].split("## Round Mechanics", 1)[0]
+    assert "autopilot_round.py prepare --target <target_shell> --max-lanes <invocation_batch.max_lanes> --json" in precheck
+    assert "autopilot_state.py" not in precheck
+    assert "`terminal`: no target work" in precheck
+    assert "Other results: Status, skipping lanes/settle" in precheck
+    assert "Other/missing/malformed: `STATUS: ERROR" in command
+    for active in ("tools/hunt.py", "tools/surface.py", "/validate", "/report"):
+        assert active not in precheck
 
 
 def test_round_command_execution_and_advisory_family_contract_is_explicit():
-    command = " ".join(_read("commands/autopilot-round.md").split())
-
-    assert "Every `Bash` invocation receives one shell command string" not in command
+    command = _read("commands/autopilot-round.md")
+    shared = _read("commands/autopilot.md").split("## Shared Automation", 1)[1].split("\n## ", 1)[0]
+    assert "Use Shared Automation's selected action" in command
+    assert "evidence-supported families/primitives/chains" in shared
+    assert "rules/tool-ai-boundary.md" in shared
     assert "Unknown AI families" not in command
-    assert "Coverage-family representatives" not in command
-    assert "read and obey `commands/autopilot.md`" not in command
-    assert "commands/autopilot.md` as the sole controller contract" in command
 
 
 def test_round_end_uses_explicit_loop_guard_and_owner_settle():
-    command = _read("commands/autopilot-round.md")
-    normalized = " ".join(command.split())
-    checkpoint = command.index("## Settle And Status")
-    settle = command.index(
-        "python3 tools/autopilot_round.py settle --target <target_shell> --json",
-        checkpoint,
-    )
-    loop_guard = (
-        "python3 tools/autopilot_state.py --target <target_shell> "
-        "--bounded --loop-check --projection-only --json"
-    )
-
-    assert checkpoint < settle
-    assert loop_guard in command
-    assert "loop-check projection includes the bounded `control` frontier" in normalized
-    assert "do not issue a second ordinary `autopilot_state.py` read unless the command fails" in normalized.lower()
-    assert "reads Checkpoint/current Coverage and Closure" in normalized
-    assert "does not save target memory, synchronize Queue or refresh Surface" in normalized
-    # R6: stale/missing/malformed Surface never blocks settle.
-    assert "keeps the round active" not in normalized
-    assert "never blocks settle or flips a settled round back to active" in normalized
-    assert "After every terminal heartbeat" in command
-    assert "Consume at most `invocation_batch.max_lanes` substantive lanes" in normalized
-    assert "it does not itself select `STATUS: CONTINUE`" in normalized
+    command = " ".join(_read("commands/autopilot-round.md").split())
+    shared = " ".join(_read("commands/autopilot.md").split())
+    assert "autopilot_state.py" not in command
+    assert shared.count("--loop-check --projection-only --json") == 1
+    assert shared.index("Round terminal heartbeat first") < shared.index("--loop-check")
+    assert "Use fresh `control`; re-read only after owner writes" in shared
+    assert command.index("After heartbeats and shared saving/cleanup") < command.index("autopilot_round.py settle")
+    assert "`settled`/`already_settled` complete only this round" in command
+    assert "no memory save, Queue sync or Surface refresh" in command
+    assert "keeps the round active" not in command
+    assert "never blocks settle or flips a settled round back to active" in command
+    assert "budget alone never requires another round" in shared
 
 
 def test_round_budget_is_checkpoint_owned_not_prompt_counted():
-    command = _read("commands/autopilot-round.md")
-    normalized = " ".join(command.split())
-
-    assert "Arguments match `/autopilot`" in normalized
-    assert "an active round keeps its checkpoint-owned `max_lanes`" in normalized
-    assert "autopilot_round.py prepare" in command
+    command = " ".join(_read("commands/autopilot-round.md").split())
+    shared = " ".join(_read("commands/autopilot.md").split())
+    assert "Active checkpoint owns `max_lanes`" in command
     assert "--record-round-lane --lane <stable_lane_id> --max-lanes <invocation_batch.max_lanes> --json" in command
     assert "--record-round-lane-result --lane <stable_lane_id> --lane-status <completed_or_blocked>" in command
     assert "--decision <decision_shell> --evidence-ref <evidence_ref_shell> --next-action <next_action_shell> --json" in command
-    assert "recover any lane whose heartbeat remains `started`" in normalized
-    assert "`already_completed`, `already_blocked`, `budget_exhausted`, and `passive_lane_rejected` do not replay target work" in normalized
-    assert "A round with any `started` lane cannot close" in normalized
-    assert "Heartbeats contain no raw responses, prompts, credentials, tokens, cookies, or authorization headers" in normalized
-    assert "When the lane budget is consumed" in normalized
-    assert "Budget exhaustion ends target work for this invocation" in normalized
+    assert "recover `started` heartbeats" in command
+    assert "never replay other refusals" in command
+    assert "Active checkpoint owns `max_lanes`" in command
+    assert "`started` lanes forbid closure" in command
+    assert "No raw responses/prompts/credentials" in command
+    assert "`max_lanes` limits only new lanes, not evidence import/owner write-back/cleanup/Checkpoint/Closure" in shared
 
 
 def test_round_routes_incomplete_review_forms_through_checkpoint():
     command = " ".join(_read("commands/autopilot-round.md").split())
+    assert "Prepare/settle/replay `review_required`: shared Global Review + fresh Closure" in command
+    assert "no new lane/round" in command
+    assert "Review still required: `STATUS: CONTINUE next_action=global-review`" in command
+    shared = _read("commands/autopilot.md").split("## Shared Automation", 1)[1]
+    assert "commands/checkpoint.md" in shared and "Re-read Closure after writes" in shared
+    checkpoint = _read("commands/checkpoint.md")
+    assert "--record-global-review" in checkpoint
+    assert "snapshot_digest" in checkpoint
 
-    assert (
-        "If the first Closure reason is `global_review_required`, `global_review_stale`, "
-        "`global_review_invalid`, or `global_review_form_insufficient`, prepare and settle "
-        "return `status=review_required`, including completed-round replay"
-    ) in command
-    assert "record the review through the existing Checkpoint owner" in command
-    assert "`review_required`: `STATUS: CONTINUE next_action=global-review`" in command
+
+def test_post_review_status_consumes_current_closure_not_stale_coordinator_fields():
+    status = " ".join(_read("commands/autopilot-round.md").split("### Status", 1)[1].split())
+    assert status.index("unknown/malformed means ERROR") < status.index("`closure.verdict=finish`")
+    assert "After review discard old coordinator status; project current" in status
+    fresh = autopilot_state.build_decision_projection({
+        "target": "demo.test",
+        "closure": {"verdict": "finish", "can_claim_exhausted": True, "round_progress": {}},
+        "structured_findings": {"reported": 2},
+    }, "closure")
+    assert "status" not in fresh and "round_progress" not in fresh
+    assert fresh["closure"]["verdict"] == "finish"
+    assert fresh["closure"]["can_claim_exhausted"] is True
+    assert fresh["structured_findings"]["reported"] == 2
 
 
 def test_round_claims_only_ai_selected_owner_backed_substantive_work():
     command = " ".join(_read("commands/autopilot-round.md").split())
-
-    assert "use the controller-selected owner/action" in command
-    assert "preserve the existing handoff and move to closure" in command
+    shared = _read("commands/autopilot.md")
+    assert "Use Shared Automation's selected action" in command
+    assert command.index("None executable: handoff/closure") < command.index("--record-round-lane")
+    assert "AI selects `owner_continuations`" in shared
     assert "select one runnable item from `state.priority_frontier`" not in command
     assert "Never replace selected work with passive" not in command
 
 
 def test_status_projection_is_owner_driven_and_distinguishes_finish_outcomes():
     command = " ".join(_read("commands/autopilot-round.md").split())
-
-    assert "`structured_findings.reported > 0`: `STATUS: DONE" in command
-    assert "`structured_findings.reported == 0`: `STATUS: EXHAUSTED" in command
+    for field in ("status", "round_progress", "closure", "structured_findings.reported"):
+        assert f"`{field}`" in command
+    assert "`closure.verdict=finish` + `can_claim_exhausted=true`: reported > 0 → `STATUS: DONE`; reported == 0 → `STATUS: EXHAUSTED" in command
+    assert "<closure.next_action>" in command and "<closure.reasons>" in command
     assert "`handoff`: `STATUS: CONTINUE next_action=" in command
     assert "`blocked`: `STATUS: BLOCKED reason=" in command
-    assert "Any other shape: `STATUS: ERROR reason=" in command
-    assert "For STATUS, consume only" in command
-    assert "These fields never override STATUS" in command
-    assert "`stop_runtime_error`" in command
+    assert "Other/missing/malformed: `STATUS: ERROR reason=" in command
+    assert "no STATUS override" in command
 
 
 def test_terminal_statuses_bound_residual_blind_spots_and_exhaustion_claims():
     command = " ".join(_read("commands/autopilot-round.md").split())
-
-    assert "emit at most five labels already evidenced by bootstrap/state" in command
-    assert "Do not create a blind-spot store or speculate beyond state" in command
+    assert "At most five Bootstrap/state-evidenced labels" in command
+    assert "no STATUS override or blind-spot store" in command
     assert "none-recorded" in command
-    assert "`EXHAUSTED` is evidence-bounded" in command
-    assert "not proof that every payload, identity, timing, business state, or vulnerability has been exhausted" in command
+    assert "Evidence-bounded, not exhaustive" in command
 
 
 def test_readme_documents_native_loop_cancellation_and_disk_resume():
@@ -226,41 +192,78 @@ def test_readme_documents_native_loop_cancellation_and_disk_resume():
 
 
 def test_round_keeps_existing_report_and_live_action_boundaries():
-    command = " ".join(_read("commands/autopilot-round.md").split())
-
-    assert "does not repeat its route, evidence, red-line, or completion rules" in command
-    assert "never auto-submit reports" not in command
-    assert "bypass its target or credential boundaries" not in command
-    assert "duplicate that controller contract here" not in command
+    command = _read("commands/autopilot-round.md")
+    shared = _read("commands/autopilot.md")
+    assert "commands/autopilot.md#shared-automation" in command
+    assert "Scope/Auth" in shared
+    assert "commands/report.md" in shared
+    assert "no placeholder reports/auto-submission" in shared
 
 
 def test_bootstrap_errors_stop_and_cancel_without_target_work():
-    command = _read("commands/autopilot-round.md")
-    gate = command.split("## Bootstrap Gate", 1)[1].split(
-        "## Prepare And Terminal Precheck", 1
-    )[0]
-    normalized = " ".join(gate.split())
-
-    for action in ("ask_target", "stop_invalid_arguments", "stop_runtime_drift"):
-        assert f"`{action}`" in gate
-    assert "perform terminal cron cleanup" in normalized
-    assert "`STATUS: ERROR reason=<bounded-summary>`" in normalized
-    assert "perform a target action first" in normalized
+    gate = " ".join(_read("commands/autopilot-round.md").split("## Bootstrap Gate", 1)[1].split("## Prepare And Terminal Precheck", 1)[0].split())
+    assert "Only fresh Bootstrap `action=continue` proceeds" in gate
+    assert "otherwise terminal cron cleanup" in gate
+    assert "`STATUS: ERROR reason=<bounded-summary>`" in gate
+    assert "stop before target work/sync" in gate
 
 
 def test_fixed_interval_loop_cleanup_is_exact_and_terminal_only():
     command = _read("commands/autopilot-round.md")
-    scheduler = command.split("## Native Loop Ownership", 1)[1]
-    normalized = " ".join(scheduler.split())
-
-    assert "Native fixed-loop prompt identity" in command
+    scheduler = " ".join(command.split("## Native Loop Ownership", 1)[1].split())
     assert "`/autopilot-round $ARGUMENTS`" in command
-    assert "fixed-interval cron job" in normalized
-    assert "For `STATUS: CONTINUE`, do not call CronList or CronDelete" in normalized
-    assert "Before DONE, EXHAUSTED, BLOCKED, or ERROR, call CronList once" in normalized
-    assert "whose `prompt` exactly equals" in normalized
-    assert "Never delete by target substring, cadence, or job position" in normalized
-    assert "load exactly CronList and CronDelete through ToolSearch once" not in normalized
-    assert "No exact match means" not in normalized
-    assert "`STATUS: ERROR reason=loop-cancel-failed`" in normalized
-    assert "Never create or modify a cron job from this wrapper" in normalized
+    assert "fixed-interval cron job" in scheduler
+    assert "`STATUS: CONTINUE`: no CronList/CronDelete" in scheduler
+    assert "Before DONE/EXHAUSTED/BLOCKED/ERROR, CronList once" in scheduler
+    assert "whose `prompt` exactly equals the expanded fixed-loop prompt identity" in scheduler
+    assert "never by substring/cadence/position" in scheduler
+    assert "`STATUS: ERROR reason=loop-cancel-failed`" in scheduler
+    assert "Never create or modify cron jobs" in scheduler
+
+
+def test_shared_h2_contains_recovery_loop_and_finish_without_bootstrap():
+    command = _read("commands/autopilot.md")
+    shared = command.split("\n## Shared Automation\n", 1)[1].split("\n## ", 1)[0]
+    assert "autopilot_bootstrap.py" not in shared
+    assert "AUTOPILOT_CRITICAL_RUNTIME_MANIFEST" not in shared
+    for heading in ("Startup And Recovery", "State Consumption Loop", "Execution Invariants", "Transition And Finish Contract"):
+        assert f"### {heading}" in shared
+    assert "read/apply complete" in shared
+    assert "skills/runtime-protocol.md#shared-memory-continuity" in shared
+    assert "resume/compaction" in shared and "--closure" in shared
+    assert "SHARED_AUTOMATION_START" not in command and "SHARED_AUTOMATION_END" not in command
+
+
+def test_round_claim_precedes_recon_without_changing_ordinary_defaults():
+    shared = _read("commands/autopilot.md").split("### State Consumption Loop", 1)[1]
+    assert shared.index("Round only: claim lane") < shared.index("`run_recon`: dispatch")
+    assert shared.index("`run_recon`: dispatch") < shared.index("#state-and-queue")
+    assert "never merely deep/bounded flags" in _read("commands/autopilot.md")
+    ordinary = parse_autopilot_args(["demo.test"])
+    assert ordinary["cadence"] == "paranoid"
+    assert ordinary["deep"] is False
+    assert ordinary["invocation_batch"]["bounded"] is False
+
+
+def test_non_action_work_does_not_require_a_fabricated_queue_claim():
+    shared = " ".join(_read("commands/autopilot.md").split("### State Consumption Loop", 1)[1].split())
+    assert "Before Action-bound execution read" in shared
+    assert "Register/resolve/kill as applicable" in shared
+    assert "Independent native evidence may register unbound" in shared
+
+
+def test_combined_entry_budget_and_pre_execution_claim_owner():
+    # 11 KiB merged floor: restored do-not-reinterpret anchors, the settle
+    # stale-Surface contract and full command descriptions sit above the
+    # 10 KiB budget of the pre-merge draft.
+    assert sum((REPO_ROOT / path).stat().st_size for path in (
+        "commands/autopilot.md", "commands/autopilot-round.md"
+    )) <= 11 * 1024
+    shared = _read("commands/autopilot.md")
+    before_result = shared.split("5. Register/resolve/kill", 1)[0]
+    assert "Before Action-bound execution read" in before_result
+    assert "docs/evidence-runners.md#绑定已认领行动" in before_result
+    assert "same explicit `--actor OPERATOR`" in before_result
+    binding = _read("docs/evidence-runners.md").split("### 绑定已认领行动", 1)[1].split("\n## ", 1)[0]
+    assert "--action-id ACTION_ID --claim-token CLAIM_TOKEN --actor OPERATOR" in binding
+    assert "登记不完成行动" in binding and "partial/unknown 不能完成" in binding

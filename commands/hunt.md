@@ -1,5 +1,5 @@
 ---
-description: Start active hunting on a target using cached recon, AI-first surface review, optional enrichment, hunt memory, and focused vulnerability testing. Usage: /hunt target.com
+description: "Start active hunting on a target using cached recon, AI-first surface review, optional enrichment, hunt memory, and focused vulnerability testing. Usage: /hunt target.com"
 ---
 
 # /hunt
@@ -8,7 +8,7 @@ Active vulnerability hunting through Claude CLI. Use the scanner as a bounded br
 
 ## 谁思考（认知归属）
 
-参数认知归属见 `rules/tool-ai-boundary.md#谁思考`。本命令的关键分工：
+参数认知归属见 `rules/tool-ai-boundary.md` 的“谁思考”一节。本命令的关键分工：
 
 | 输入 | 谁思考 |
 |---|---|
@@ -51,6 +51,11 @@ the Python helpers and shell recon / scanner toolchain where supported.
 
 Success signal: a concrete scanner/probe artifact is written and any claimed domain registration has a Store receipt. Raw scanner summaries remain advisory. If no artifact is written, inspect the command result.
 
+For cross-stage questions use `skills/bug-bounty/SKILL.md`; business-model maintenance,
+hypothesis selection and rotation use `skills/bb-methodology/SKILL.md`. Load the
+needed Skill on demand, not both for every action. These are shared methods, not
+permission to keep running automatically after the requested hunt pass.
+
 ## Default Hunt Loop
 
 Fast path: when concrete evidence is already in hand (browser-observed requests,
@@ -74,10 +79,10 @@ before touching it.
 A signal with replayable evidence becomes a candidate finding through
 the Store claim API in step 7 — without waiting for the operator to ask. Prose or a
 raw probe alone is not a finding; `/validate` in step 9 can only run against a
-finding that already exists in the target Store. This mirrors
-autopilot's promotion contract (Lead -> Signal -> Candidate -> Validated Finding
-through explicit claim/evidence registration and `/validate`), so hunting outside autopilot does not
-silently drop candidates at session end.
+finding that already exists in the target Store. `rules/coverage-gate.md` owns
+Lead -> Signal -> Candidate -> Validated Finding evidence requirements;
+`docs/evidence-runners.md` owns explicit Candidate/evidence registration. Persist
+useful candidates before the pass ends, independently of execution mode.
 
 Already-executed native/browser/multi-step evidence enters the same validation
 path through `validation_runner.py record-evidence` after Candidate persistence
@@ -125,17 +130,11 @@ python3 tools/surface.py --target target.com
 # Read exact cached JS/source paths with Claude Read/Grep when evidence warrants it.
 ```
 
-Then rerun:
-
-```bash
-python3 tools/surface.py --target target.com
-```
-
-Browser-state surfaces should use the shared browser evidence lane:
-
-1. Use chrome-devtools MCP for deep live DevTools, Network, Console, DOM, performance, and runtime inspection.
-2. Use Playwright MCP for page interaction, authenticated sessions, forms, screenshots, and multi-actor workflows.
-3. Import MCP artifacts with `python3 tools/browser_mcp_import.py --target <target> --network-json <file> --url <page-url>` so `recon/<target>/browser/`, `/surface`, `/checkpoint`, and `/autopilot` can continue on browser-observed XHR/API artifacts before converting them to curl/local probes.
+Refresh `/surface` after new artifacts arrive, not twice against unchanged inputs.
+For browser-state surfaces, read and apply
+`docs/autopilot-lanes.md#browser-source-and-js`: choose one visible backend, preserve
+and import artifacts, then close it under that shared contract. Reading a lane
+contract does not enable automatic continuation.
 
 ## High-ROI Lanes
 
@@ -177,11 +176,9 @@ ALLOW_UNSAFE_HTTP_TESTS=1 python3 tools/hunt.py --target target.com --scan-only 
 
 ## When To Stop Or Rotate
 
-Rotate when:
-
-- three focused variants return identical status/body shape;
-- no auth, object, role, parser, or sink evidence remains;
-- the current first-review surface is exhausted and `/surface` only shows follow-up hints.
+Use `skills/bb-methodology/SKILL.md#evidence-driven-rotation` to compare evidence
+delta, remaining budget, prerequisites and kill/reopen conditions. Repeated status
+or body shapes alone do not establish exhaustion or impose a fixed retry count.
 
 Then run `/checkpoint target.com` (read contract in `commands/checkpoint.md`) to
 inspect remaining work and coverage. Explicitly save useful experience/handoff

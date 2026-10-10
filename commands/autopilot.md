@@ -12,290 +12,84 @@ allowed-tools:
 {"schema_version":1,"paths":[{"kind":"commands","relative_path":"autopilot.md"},{"kind":"commands","relative_path":"autopilot-round.md"},{"kind":"skills","relative_path":"runtime-protocol.md"}],"mcp_contracts":["mcp__Playwright__*","mcp__chrome-devtools__*","mcp__fofamap__*"]}
 AUTOPILOT_CRITICAL_RUNTIME_MANIFEST -->
 Authoritative bootstrap contract (do not reinterpret): !`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_bootstrap.py" --json -- "$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"`
-Formal arguments: `<target> [--paranoid|--normal|--yolo] [--quick] [--deep [--max-lanes N]] [--auth-file PATH] [--context-file=PATH]`; `--max-lanes` is valid only with `--deep` and bounds a deep invocation batch. `<target>` may be a domain/IP/CIDR, a readable text list, or a schema-v1 JSON Scope manifest. `--context-file` accepts only an owner-generated batch continuation under repository state.
-## Runtime Preflight
-Run the embedded bootstrap before reading lane contracts, Resin configuration, Recon instructions, or target-specific documents; do not parallel-read.
-Obey its `action` first: `ask_target` asks for the exact target,
-`stop_invalid_arguments` reports `arguments.errors`; `stop_invalid_scope`/`stop_invalid_context`
-and `stop_state_error`/`stop_runtime_error` return bounded `error`; critical `stop_runtime_drift`
-reports compact critical runtime
-paths/counts, points to `/sync-check`, requests explicit confirmation before any sync, and
-stops. Advisory drift does not block. Never sync
-automatically. Only `continue` may act.
-Bootstrap order is arguments/Scope/Auth validation, read-only runtime compare, advisory
-local dependency facts, then compact target state. Treat `capabilities` schema v2 as
-facts only: flat `available`/`missing` tool names and `local_files` presence are not
-execution readiness. `session_status=unchecked` and `session_managed` names never claim
-MCP availability; a present browser importer is not a browser backend. Use MCP only
-when visible in this Claude session. Execution owners still check actual dependencies.
-Missing tools do not block Bootstrap or trigger installation; never count them as
-tested-clean or hide handoff limits.
-Schema v2 removes categorized availability, core/optional labels, fallbacks,
-recommended paths and lane readiness/classification/fingerprints; it selects no route.
-Within one invocation, do not rerun the same failed
-source/tool; preserve cached/stale evidence as partial/blocked. `tools/external_arsenal.sh
---versions` is diagnostics-only, never startup.
-Browser/source/JS evidence uses `docs/autopilot-lanes.md#browser-source-and-js` when the
-current hypothesis needs it. Read exact cached artifacts with Claude native Read/Grep or
-the visible browser backend; missing or degraded context is evidence state, not a route
-selection or readiness gate.
-Run project commands as `cd -- <repo_root_shell> && ...`; use `arguments.target_shell`,
-`arguments.hunt_auth_flags`/`--auth-file <arguments.auth_file_shell>` when present, and
-`arguments.recon_flags` only for fresh/refresh recon. Obey cadence, `quick`, `deep`, and
-`invocation_batch`; `--quick` lowers recon cost but never skips validation or
-implies completion. `arguments.seed_url` is exact first-contact seed for target.
-Before the first network lane, inspect `config.json.resin`; when enabled, inline its stable
-sticky export from `docs/resin-proxy.md` in the same shell command. If blocked, use current evidence and the request budget to decide reuse/switch and retry depth; use no fixed count.
-Rotate only on request, bypass localhost/private targets, never print the token, and never
-persist proxy setup. Apply `rules/hunting.md` target-isolation/new-target defaults;
-`/pickup` never replays another target's skips or scanner decisions. DNS expansion remains
-an advisory audit/replay lane: host count alone is not a trigger; target-specific evidence
-plus `--reason` is required.
-Asset relation candidates use the compact AI triage contract in
-`docs/autopilot-lanes.md#credentials-and-asset-expansion`: return `related`, `uncertain`, or
-`unrelated` with a bounded reason and source refs. Related only changes priority, uncertain
-stays passive, and unrelated stays out of active Context/Surface/Queue/Coverage/Closure;
-only existing `in_scope` permits active validation.
-Observed login forms route to the bounded baseline policy in
-`skills/credential-attack/SKILL.md`; this review never authorizes live `/spray`.
-`/autopilot` runs inline in the current AI session and remains the sole writer/closure
-controller and only owner of lane claims/state write-back. Specialists default to zero;
-justified delegation loads
-`docs/autopilot-lanes.md#inline-specialist-propagation` for its single delegation contract
-and bounded questions/mode/batch rules.
-Optional `recon-ranker` stays read-only and is never a lane owner. Invoke it only
-when a concrete question benefits from a second opinion; runtime does not decide
-that need from evidence-group or long-tail counts. Before a named lane,
-consume bootstrap `state.lane_contract`: it names the lane (`id`, `ref`, `reason`) and, when
-`text_available=true`, already carries that section's text inline — use it directly instead of
-re-reading the doc. Only when `text_available=false` (or when a newly observed evidence signal
-selects a different section) read that one section from `docs/autopilot-lanes.md`. Before
-substantive Queue claim/resolve, read `State And Queue`; claims are explicit
-`--id` writes with AI-owned metadata — there is no claim schema to reconstruct.
-Before active hunting, load `rules/hunting.md`. Fresh Recon is not active hunting: when
-`state.hard_gate.action=run_recon` (and when `state.next_action=run_recon` for older readers), execute the
-selected lane directly and refresh after completion; the default context pack does not load
-this rule. Tool discovery stays in `docs/tool-index.md`; host/JS volume alone is not a trigger
-and partial/unavailable output remains open. Concrete JS gaps may select
-`tools/deep_js_packer.py`; target naming evidence may select `tools/dns_expand.py`; neither
-helper is a baseline lane.
+Arguments: `<target> [--paranoid|--normal|--yolo] [--quick] [--deep [--max-lanes N]] [--auth-file PATH] [--context-file=PATH]`.
+Defaults: paranoid, normal depth, unbounded lanes.
 
-Invoke setup helpers on demand: self-owned test-account email verification uses
-`/root/tool/aitool/zocom/mail_receiver.py` (environment-provided helper, not part of this repo — if absent, use any self-owned mailbox and keep the raw evidence); Cloudflare clearance uses `tools/cf_solver.py`.
-Persist results through private AuthSession/Case State; failures remain `blocked`/`partial` and
-never become clean.
+## Shared Automation
+Round hooks only for `/autopilot-round`,
+never merely deep/bounded flags.
 
-## State Consumption Loop
-```text
-fresh: TARGET -> RECON -> BUSINESS/CROWN JEWELS -> AI-selected evidence review -> HYPOTHESIS -> MINIMAL PROOF -> CHAIN -> VALIDATE -> RECORD/CHECKPOINT
-existing: LOAD -> REVIEW EVIDENCE -> AI-selected enrichment/hunt -> VALIDATE CANDIDATES -> REPORT/CHECKPOINT
-```
-Every invocation is state-first. Bootstrap `state` and advisory `capabilities` are the only
-initial inputs. Branch only after that state read. Missing/stale/invalid is work, not no
-surface, and state tools are not a pre-flight checklist. Hypothesis generation is AI-owned:
-derive any family, primitive, or chain, including RCE and families outside the canonical
-Coverage taxonomy, from evidence and unknowns. `knowledge_cards` are
-context, never conclusions; Case State/Queue `vuln_class` is a compatibility string. Only an
-owner-backed Matrix terminal state or complete evidence-backed identity candidate closes
-canonical Coverage; unknown/incomplete work stays open.
-After bootstrap and the bounded state read, apply the shared recall gate in
-`skills/runtime-protocol.md#shared-knowledge-recall` (the authoritative definition — reuse,
-refresh, and exemption semantics all live there). Recall follows the information gap:
-current target/scope/owner facts must be read or restored (never guessed from generic
-knowledge), but generic judgment needs no card lookup to proceed, and no Queue item
-requires a forced pre-claim Pack call — the card catalog is published for AI-side pull.
-Recovery follows `skills/runtime-protocol.md#shared-memory-continuity`: separate recorded
-observations from inherited judgments. Before using an inherited tool/admission restriction
-or next-operation constraint in an action or new handoff, check only that operation's current
-command contract (e.g. `commands/validate.md`), not the whole source tree; otherwise label it
-inherited/unverified, not a current fact. Compare recorded timestamps with their source,
-timezone and precision for historical order; missing/incomparable times leave order unknown.
-Historical order does not establish present reachability, nor does unknown present
-reachability erase a known historical order.
-Keep each iteration explicit:
-`inspect candidate/context -> AI choose and activate one hypothesis -> claim -> execute one
-bounded action -> read Runner observation -> AI resolve one continuation or kill -> refresh
-bounded state`. Obey a non-empty `state.hard_gate` exactly. Otherwise choose one runnable
-item from `owner-backed continuation view`; array order is not priority. Compare business impact,
-evidence strength, crown-jewel/chain fit, expected information gain, request cost, and
-starvation of `closure_blocking` work. A weaker historical Queue/Case/Resume item must not
-automatically preempt a stronger Surface/Finding/Intel candidate. Machine ordering (weights,
-relevance scores, route-kind labels) is advisory input, not a decision: the current session
-owns selection, and may deviate from the suggested order at any time with an evidence-backed
-reason; route-kind labels are GET observations and never close a cell or block a chosen test.
-Selection changes order only:
-never bypasses the selected item's evidence/owner contract, relabel deferred work as tested-clean,
-or remove it from Closure. Consume structured `next_action` and the durable Action Queue as
-compatibility projections/owner contracts. With one owner continuation execute it; with none use
-`state.fallback_action` and bounded `next_step`. Never treat a single negative request as
-permission to move on:
+### Startup And Recovery
+Only fresh Bootstrap `action=continue` acts; otherwise request target/report Bootstrap error. Critical drift: confirm
+`/sync-check`; no auto-sync/install.
+Use `cd -- <repo_root_shell> &&`, `arguments.target_shell`, optional
+`--auth-file <arguments.auth_file_shell>` and exact `arguments.seed_url`.
+At start, target change or resume/compaction, read/apply complete
+`skills/runtime-protocol.md#shared-memory-continuity`. Check inherited judgments against current commands,
+not all source; label unchecked judgments inherited/unverified.
+On demand: `skills/runtime-protocol.md#shared-knowledge-recall`, `skills/bug-bounty/SKILL.md`,
+`skills/bb-methodology/SKILL.md`. Do not loop `/hunt`.
+Apply `rules/hunting.md` before hunting; before network: `config.json.resin` via `docs/resin-proxy.md`
+in the same shell. Never output secrets/persist proxy setup.
+Presence is not readiness. Only session-visible MCP; missing/failed stays partial/blocked.
+No failed source/tool retries this invocation.
+Claims/writes/closure stay with this session; default zero specialists. Delegate per
+`docs/autopilot-lanes.md#inline-specialist-propagation`; `recon-ranker` optional/read-only.
+Reuse `state.lane_contract` at `text_available=true`; otherwise/new selection read that section in
+`docs/autopilot-lanes.md`. Tools: `docs/tool-index.md`.
+
+### State Consumption Loop
+1. Consume Bootstrap `state`, then refreshed `control`; obey `state.hard_gate`. Missing/stale/partial
+   is not clean. `wait_recon`/`wait_scan`: poll live lock and refresh, never duplicate-launch.
+2. AI selects `owner_continuations`; order is advisory. Read selected evidence/owner contracts before
+   execution; retain deferred work. If empty use `state.fallback_action`/`next_step`.
+3. Round only: claim lane per Round Mechanics before any action (Recon too).
+4. Execute once. `run_recon`: dispatch with `arguments.recon_flags` before preparation/refresh/hunting rules.
+   Otherwise use selected lane. Before Action-bound execution read
+   `docs/autopilot-lanes.md#state-and-queue` and `docs/evidence-runners.md#绑定已认领行动`;
+   Claim/bind per those protocols, with the same explicit `--actor OPERATOR`.
+   Failed claim: inspect once; never guess/retry.
+5. Register/resolve/kill as applicable; require actual receipts. Missing outcomes remain recoverable;
+   never replay unknown effects. Independent native evidence may register unbound.
+6. Round terminal heartbeat first; then exactly one post-lane refresh:
 ```bash
-cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded
+cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded --loop-check --projection-only --json
 ```
-Before selecting another substantive lane, run a compact phase gate in the same AI turn:
-what exact target-owned evidence did this lane add, which high-value surface remains unknown
-or was ruled out, and why the next action has better information gain than rotate or stop. The
-phase gate runs in-turn; write it into the existing `decision`/`next_action` heartbeat only
-when rotating lanes, hitting a blocker, or stalling — a clean same-lane continuation needs no
-heartbeat write. Do not create another state, queue, or checklist owner. Without an
-evidence-backed answer, resolve a bounded dead-end/blocker or handoff instead of silently
-widening work.
+Use fresh `control`; re-read only after owner writes. Failed reads stop stale work; recover.
+`loop_guard.repetition_facts` is advisory, never overrides hard gates/claims. Decide continue/rotate/stop in-turn;
+write decision/next_action only on rotation/blocker/stall, unlike mandatory Round heartbeats.
+Review bounded owner/Surface/observation deltas on new evidence/assets, phase change,
+blocker/rotation or batch end. For waits/later writes use `--bounded` alone.
 
-Run a mid-run review when new assets or cross-source evidence arrive, a phase changes, a
-blocker/rotation occurs, or a bounded batch ends. This mid-run review is delta-based, not a
-fixed sequence: inspect the bounded `surface`, `observation_inventory`,
-`recon_artifacts.asset_relations`, `structured_findings.chain_context`, and all bounded owner
-projections (Coverage, Ledger, Finding, Queue, Case State, Runtime/Auth). AI may return one
-`related`, `uncertain`, or `unrelated` relation decision with a bounded reason and source refs,
-then re-rank or add a hypothesis through existing `decision`/`next_action` fields. This is
-incremental review, not a new owner or checklist; external context never directly blocks
-Closure, and only unresolved target-owned work can block closure.
+### Execution Invariants
+Per `rules/tool-ai-boundary.md`/`rules/coverage-gate.md`, evidence-supported families/primitives/chains
+remain eligible. Scanner-negative/incomplete/memory proves no Coverage. Scope/Auth, request caps,
+partial cursors hold. Quick only lowers Recon cost; deep is value-first.
+Validation/publication: `commands/validate.md`/`commands/report.md`;
+no placeholder reports/auto-submission.
 
-When starting a target, entering a high-value feature, or rotating after a stalled lane,
-recall `Developer-View Pre-Hunt Recall` in `skills/bb-methodology/SKILL.md` as a soft reasoning prompt. Record target-specific answers in existing fields; never make it a second gate, fixed vulnerability order, or Queue action list.
-
-When the selected action is `run_recon`, immediately run the selected Recon command from the
-lane contract with `arguments.recon_flags`, then refresh bounded state. This is mechanical
-dispatch: the next tool call starts Recon; preparation belongs there and polling/refreshing
-comes only after dispatch.
-For substantive candidates, claim the exact action by id before replay (dumb queue
-interface: `--id` required, the queue never selects for you):
+### Transition And Finish Contract
+Follow `arguments.checkpoint_trigger`; all modes save evidence. Do not delay confirmed A for B/C.
+`max_lanes` limits only new lanes, not evidence import/owner write-back/cleanup/Checkpoint/Closure;
+budget alone never requires another round. Resolve hypotheses; drain used `oast_listen`; preserve leads/gaps.
+Import/close browser artifacts/session; failed close stays partial/blocked, no replacement.
+Save memory/current handoff via Shared Memory Continuity before pause/handoff/finish. Register unresolved
+Actions before read-only Checkpoint.
+Before exhaustion: Coverage `rebuild` then `find-gaps` per `rules/coverage-gate.md`, then read-only Closure:
 ```bash
-cd -- <repo_root_shell> && python3 tools/action_queue.py claim --target <target_shell> --id <id> --metadata-json '<metadata-object>' --actor OPERATOR --json
-```
-For a Runner-bound execution, use the returned JSON `id` and `claim_token` as
-`--action-id` and `--claim-token`, with the same explicit `--actor OPERATOR`.
-Consume the actual receipt; do not invent a token or rely on the different Queue/Runner
-actor defaults. Follow [the existing Runner binding protocol](../docs/evidence-runners.md#绑定已认领行动);
-claim and evidence registration do not complete the Action, and independent native
-experiments may still be registered without an Action binding.
-The metadata object is your full judgment write (no required-field gate); the Queue
-enforces only mechanical write-time invariants — activation caps, runner-field
-anti-forgery, identity/dedup, continuation lineage — and keeps
-sensitive values out of state/logs. On claim failure inspect stderr/stored state once;
-never guess or retry. Runner observation leaves the action `running`; resolve it with one
-primary continuation or supported kill. Independent follow-ups need separately claimed
-actions within the batch budget; missing outcome/decision remains recoverable and blocks
-closure. In deep mode, a concrete API/browser-XHR surface needs an evidence-linked depth pack
-from target-observed request shapes; one passive observation is not API completion. Negative
-results record the next evidence-linked dimension/question in Queue; partial cursors or
-unused dimensions remain resumable, not tested-clean.
-
-This CLI is a compatibility adapter over
-`TargetStore.actions`: claim uses the Store version/CAS contract and resolve
-completion must include `operation_id=`, `artifact=`, or `command_id=` proof.
-Descriptive metadata and target-owned evidence references are supplied explicitly.
-`--from-evidence` is retired; no `action_queue.json` is created. Repeating a claim
-resumes the same permit, and a terminal resolve replays only the original command content.
-
-Deep lanes keep normal caps unless `--deep`; parameter discovery, candidate extraction, and
-zero-day fuzzing may project a larger bounded budget from URL/parameter breadth, response
-variance, and high-value evidence. Each projection has a hard maximum and
-`partial_on_exhaustion=true`, never bypasses Scope/Auth or runner/request caps, and leaves an
-incomplete cursor resumable.
-
-Named action mechanics, replay, recon continuation, list selection, and owner write-back live
-in the selected lane section. Claim durable Queue work before replay; prose or a raw endpoint
-is never evidence. Raw root claims remain review material. Register a Candidate explicitly
-through `TargetStore.create_finding`, and add any follow-up through the Action Queue owner
-before using its canonical ID. `/checkpoint` only reads existing domain state; its separate
-explicit witness commands are defined in `commands/checkpoint.md`.
-Memory responsibility is mode-independent: apply
-`skills/runtime-protocol.md#shared-memory-continuity`; cadence controls batching,
-not whether important progress is retained.
-## Execution Invariants
-Expert Hunter Autopilot is AI-first: the current AI session judges priority, impact, chain
-fit, promotion, reopen, and finish; deterministic owners preserve schema, evidence, replay,
-and durable state. Follow `skills/runtime-protocol.md`, `rules/tool-ai-boundary.md`, and
-`rules/hunting.md#broad-scanner-input-and-completion-contract`.
-Use `rules/hunting.md` value-first priorities; scanner quick is an advisory breadth sensor,
-and scanner-negative is not completion. Business Model Read: after fresh Recon starts, read the bounded recon/evidence facts
-(technology inventory, observed endpoints, parameters) and maintain
-`evidence/<target>/business_model.md` directly — AI writes and edits the business-judgment
-sections (observed purpose, actors' roles, crown jewels, trust boundaries, sensitive
-workflows) from current evidence. When new recon facts arrive, edit the same note; do not
-regenerate or overwrite it. Existing notes are the source of truth for the target's
-business context. Promote Lead -> Signal -> Candidate -> Validated Finding only with practical, replayable raw
-request/response or a locatable evidence ref. Canonical claims go through `TargetStore.create_finding`; `/validate` records separate
-technical and destination judgments and registers eligible report artifacts; partial/blocked is unresolved, not tested-clean, and
-placeholder reports are not report-ready. Apply the four-layer routing in `skills/runtime-protocol.md`;
-memory/cards are decision inputs, never first-contact
-controllers or closure evidence.
-## Transition And Finish Contract
-Apply `arguments.checkpoint_trigger`: paranoid after each substantive state change,
-normal after a coherent lane batch, yolo only on blocker/handoff/finish. Every cadence
-writes evidence state. Claude chooses whether a sibling, chain, response delta or
-additional sample warrants investigation under the remaining budget; confirmed A
-does not wait for optional B/C. Repetition is a reassessment hint, not a fixed
-rotation threshold. Refresh rotating form/session tokens from the legitimate
-baseline when replay requires them.
-
-After every substantive lane, request the explicit read-only loop guard with
-`cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded --loop-check --projection-only --json`.
-This projection also returns bounded `control` (`hard_gate`, `owner_continuations`,
-`next_action`, and `fallback_action`); use it as the post-lane state refresh and do not
-run a second ordinary state read unless a later owner write requires a fresh snapshot.
-Consume `loop_guard.repetition_facts` as facts, not verdicts: when it reports
-repeated same-family/same-class terminal outcomes, weigh the information gain of
-another check on that family against the current hypothesis — continuing is right
-when a distinct dimension (actor, variant, object) is still untested; rotating is
-right when the family is exhausted for now. The guard never overrides
-`state.hard_gate`, an already-claimed lane, or any selected item's evidence/owner
-constraints; select from the returned `owner-backed continuation view`.
-
-`--deep` is a value-first comprehensive depth flag, not a checklist or favorite bug class.
-With `invocation_batch.bounded`, execute at most `max_lanes` named substantive lanes; after lane N do not execute a newly discovered queue item. Evidence import, owner write-back, cleanup, checkpoint, and closure are not new lanes and must still complete; Newly discovered work becomes next-invocation work. Finish on evidence state, not a tool checklist:
-resolve/block/dead-end/promote the `working_hypothesis`, drain used `oast_listen`, record
-high-value scanner leads/matrix gaps, persist/import browser artifacts and close its native session. Failed close is `partial`/`blocked` and forbids a replacement here.
-
-Before any target-exhaustion claim, run ordered coverage review and read-only verdict;
-an absent/empty matrix never proves coverage:
-```bash
-cd -- <repo_root_shell> && python3 tools/coverage_matrix.py rebuild --target <target_shell>
-cd -- <repo_root_shell> && python3 tools/coverage_matrix.py find-gaps --target <target_shell> --limit 50
 cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded --closure --projection-only --json
 ```
-`find-gaps --limit 50` previews unresolved endpoint x class cells without semantic filtering.
-View only; `total`/`truncated` describe the window, and the complete matrix remains the closure owner
-input. Expand the limit or inspect the matrix as needed; a truncated window never proves completion.
-Read `closure.verdict`, `closure.can_claim_exhausted`, `closure.reasons`, and advisory
-`closure.rotation_hint`. Only `verdict=finish` with `can_claim_exhausted=true` permits a
-`finish/complete/exhausted` claim; `handoff` preserves durable work. `blocked`
-with `next_action=stop_bounded` ends this invocation without an exhaustion claim;
-`observation_residuals` preserves untested coverage, hypotheses, actor gaps and
-unresolved Intel. These observations do not create mandatory next actions.
-
-Before target-wide `finish`, run Global Review over bounded summaries, then inspect referenced
-evidence on demand. Review Surface and Observation long-tail; Coverage/Ledger/Finding; Case
-State and business-chain; pending Queue, unfinished reports, and Runtime state; recon asset
-relations and `chain_context`; Browser/JS/Source/Intel artifacts; Scope Review, external
-dependencies, and blocked items; residual unknowns, including unconfirmed high-value candidates.
-Do not load all raw files at once. AI may re-rank or add hypotheses, but only unresolved
-target-owned work can block closure; external/uncertain/unrelated relation context remains
-passive. Record the review through the Checkpoint owner `--record-global-review`
-(authoritative CLI shape and stale/invalid semantics live in `commands/checkpoint.md`):
-it binds `closure.snapshot_digest`, current target-owned `evidence_refs`, the decision,
-and `complete`/`follow_up` to a Queue action. Valid `follow_up` keeps Queue active.
-
-Reaching `max_lanes` ends target work for this invocation; Closure recomputes from
-owners and the budget alone never requires another round. Pending report is closure asset;
-it does not stop. Active substantive Queue work, pending validation/report, or explicit owner-backed residuals mean `handoff/partial`, never
-`finish/complete/exhausted`. Missing owner/peer actor/session context ->
-`closure.actor_context_gap`, a non-blocking lane-local coverage gap; it does not stop
-anonymous/unrelated lanes or permit affected access-control cells to be `tested_clean`.
-Explicitly register unresolved work in the Store Action Queue before taking a read-only Checkpoint. Passing
-`check_autopilot_run.py` proves state-chain integrity, not target exhaustion.
-In the final handoff/finish response, use the classification criteria (not the write
-commands) in `knowledge/promotion-rules.md` and `rules/retrospective.md` to emit exactly
-one presentation-only section per bounded invocation:
-```text
-Memory recommendations
-- promote: transferable lesson, or none + reason
-- target-only: current-target fact or handoff, or none
-- reject: noisy, unverified, sensitive, duplicated, or overfit material, or none
-```
-Promotion requires a locatable target-owned evidence ref, destination layer, reusable value,
-one next action, and one stop/validation condition. Recommendations never write state or
-alter routing, budgets, Queue/finding lifecycle, closure, or next action. End with target,
-mode, strongest evidence, findings/candidates, blockers/dead ends, this section, and the
-next best action.
+Empty/missing matrices or truncated windows prove nothing. Global Review covers bounded Surface/Observation
+long-tail, Coverage/Ledger/Finding, Case/business chains, Queue/pending reports/Runtime, asset relations/
+`chain_context`, Browser/JS/Source/Intel, Scope/external dependencies/blockers/residual candidates.
+Expand evidence as needed; external relations passive. Record via `commands/checkpoint.md`
+`--record-global-review` with current snapshot/evidence; `follow_up` needs active Queue work.
+Re-read Closure after writes. Exhaustion requires current
+`closure.verdict=finish` + `can_claim_exhausted=true`. Pending owners need handoff; bounded stop is not exhausted. Actor gaps are cell-local;
+observation residuals create no mandatory actions.
+End: target/mode, evidence, findings/candidates, blockers/dead ends, next action, plus
+exactly one presentation-only `Memory recommendations` section in this final response
+only (promote / target-only / reject, classified via the criteria — not write commands —
+in `knowledge/promotion-rules.md`/`rules/retrospective.md`; `none` + reason per empty
+bucket; advisory, never writes state or alters routing/budgets/Queue/lifecycle/closure).
+Promotion stays review-gated: `knowledge/promotion-rules.md`/`rules/retrospective.md`.

@@ -840,7 +840,7 @@ def build_autopilot_bootstrap(
             "reason": " ".join(str(exc).split())[:500],
         }
         return payload
-    except ValueError as exc:
+    except (OSError, ValueError) as exc:
         payload["action"] = "stop_invalid_context"
         payload["error"] = {
             "type": type(exc).__name__,

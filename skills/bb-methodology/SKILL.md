@@ -1,6 +1,6 @@
 ---
 name: bb-methodology
-description: Use when hunting or analysis is underway (a lane active, or the session just started) and the open question is which concrete endpoint or hypothesis to test next, when to rotate or stop, or when to reopen a lane. Selects the next hypothesis, applies boundary-first reasoning, and decides when to continue, rotate, stop, or reopen a lane. Stage-to-stage routing and cross-stage handoff belong to bug-bounty.
+description: Use when hunting or analysis is underway (a lane active, or the session just started) and the open question is how to understand or update the target business model, which concrete endpoint or hypothesis to test next, when to rotate or stop, or when to reopen a lane. Selects the next hypothesis, applies boundary-first reasoning, and decides when to continue, rotate, stop, or reopen a lane. Stage-to-stage routing and cross-stage handoff belong to bug-bounty.
 ---
 
 # Bug Bounty Methodology
@@ -71,6 +71,20 @@ Keep the checklist soft: record target-specific answers in existing `goal`, `kno
 `expected_learning`, `evidence_refs`, `next_action`, and `kill_condition`;
 do not create a fixed vulnerability list or queue action.
 
+### Business Model Read
+
+After fresh Recon starts, read bounded recon/evidence facts (technology inventory,
+observed endpoints and parameters) and maintain `evidence/<target>/business_model.md`
+directly with native Read/Write/Edit. AI writes and edits the business-judgment
+sections: observed purpose, actors' roles, crown jewels, trust boundaries and
+sensitive workflows. Separate observations from judgments and retain their source
+references. When new facts arrive, edit the same note incrementally; do not
+regenerate or overwrite it or discard existing judgments and sources. Existing
+notes are the source of truth for the target's business context, not a substitute
+for current owner facts or evidence. This maintenance applies to manual and
+automatic investigation alike; a delegated review returns proposed updates for
+the parent to save within its write boundary.
+
 ## Hypothesis Selection
 
 Build candidate next actions from the current state rather than following a
@@ -83,7 +97,10 @@ just another candidate.
 Rank alternatives by expected information gain, plausible impact, evidence
 quality, target ownership, reversibility, and cost, then choose one concrete
 next evidence action. Do not prioritize a favorite bug class, a static phase
-sequence, or a scanner-negative result as a completion signal.
+sequence, or a scanner-negative result as a completion signal. Machine ordering
+(weights, relevance scores, route-kind labels) is advisory input, not a decision;
+AI may deviate with an evidence-backed reason. Route-kind labels are GET
+observations: they never close a cell or block a chosen test.
 
 ## Reasoning Lenses
 
@@ -127,6 +144,12 @@ produce its expected learning and make its kill condition decidable; otherwise
 narrow or rewrite the action. Do not put an unobserved downstream consumer in a
 kill condition: include one bounded consumer check, or stop at the primitive and
 leave impact open.
+
+When comprehensive API/browser-XHR depth is requested, build an evidence-linked
+depth pack from target-observed request shapes; one passive observation is not API
+completion. Negative results retain the next evidence-linked dimension/question
+through the existing Queue owner. Partial cursors and untested dimensions remain
+resumable, not tested-clean.
 
 ## Evidence-Driven Rotation
 

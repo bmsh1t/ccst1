@@ -1442,7 +1442,9 @@ class TestQuestionToToolDiscoverability:
 
     def test_autopilot_md_has_find_gaps_row(self):
         md = (REPO_ROOT / "commands" / "autopilot.md").read_text(encoding="utf-8")
-        assert "coverage_matrix.py find-gaps" in md
+        assert "rules/coverage-gate.md" in md
+        owner = (REPO_ROOT / "rules/coverage-gate.md").read_text(encoding="utf-8")
+        assert "tools/coverage_matrix.py find-gaps" in owner
 
     def test_check_coverage_command_runs_matrix_before_manual_summary(self):
         md = (REPO_ROOT / "commands" / "check-coverage.md").read_text(encoding="utf-8")
@@ -1640,8 +1642,10 @@ class TestF3InvariantActivation:
 
     def test_f3_references_active_cli(self):
         md = (REPO_ROOT / "commands" / "autopilot.md").read_text(encoding="utf-8")
-        # F3 body must reference the find-gaps subcommand explicitly
-        assert "tools/coverage_matrix.py find-gaps" in md
+        assert "Coverage `rebuild` then `find-gaps` per `rules/coverage-gate.md`" in md
+        owner = (REPO_ROOT / "rules/coverage-gate.md").read_text(encoding="utf-8")
+        assert owner.index("tools/coverage_matrix.py rebuild") < owner.index("tools/coverage_matrix.py find-gaps")
+        assert md.index("Coverage `rebuild`") < md.index("--closure --projection-only")
 
 
 class TestExtendedVulnClasses:

@@ -1,18 +1,20 @@
 ---
-description: On-demand lane contracts for the inline Autopilot controller.
+description: Shared on-demand execution contracts with automatic-mode delegation boundaries.
 ---
 
 # Autopilot Lane Contracts
 
-`commands/autopilot.md` is the controller. The bootstrap `state.lane_contract`
-already inlines the selected section's text when `text_available=true` — use
-that inline text directly. Only when it is not inlined (or when a newly
-observed evidence signal selects a different section) read that one section
-from this file, named by the bootstrap `state.lane_contract.ref`. Do not load
-this whole file into every invocation. Also read `State And Queue` before any
-substantive Queue claim/resolve. Every lane remains subject to the
-controller's Scope/Auth, evidence, checkpoint, Action Queue, loop-guard, and
-finish contracts.
+The execution sections below serve manual `/hunt` and automatic work. Read only
+the section needed by the current question and `State And Queue` before substantive
+Queue claim/resolve. Scope/Auth, evidence and owner contracts apply in either mode;
+reading this file does not authorize automatic continuation or delegation. Automatic
+batch/round transitions apply only when invoked through their controller.
+
+In automatic mode, `commands/autopilot.md` is the sole controller. Bootstrap
+`state.lane_contract` already inlines the selected section when `text_available=true`;
+use that text directly. If absent or a new signal selects another section, read only
+that section from `state.lane_contract.ref`. Do not load this whole file every round.
+Automatic checkpoint, budget, loop-guard and finish contracts stay with the controller.
 
 Add a dedicated lane only when shared runners cannot express the required input,
 observation, or evidence semantics and the execution is stable, repeatable, and
@@ -21,7 +23,8 @@ actions. Ordinary Card changes do not require a new lane.
 
 ## Inline Specialist Propagation
 
-The supported Claude inline delegation path receives mode and budget from the
+This section applies only to automatic mode. The supported Claude inline delegation
+path receives mode and budget from the
 same bootstrap object as the controller. Every specialist handoff includes the
 literal values `arguments.deep` and `invocation_batch.bounded`,
 `invocation_batch.max_lanes`, and `invocation_batch.handoff`; specialists do not
@@ -123,7 +126,7 @@ Checkpoint, Pickup and preflight never initialize, import, or recreate old owner
   request is skipped and recorded in `manual_review/unsafe_skipped.txt`; the
   resulting review item is not a clean result. HTTP method names alone do not
   classify every probe as state-changing.
-- For a readable text list or schema-v1 JSON Scope manifest, run batch recon only for `run_batch_recon`; never scan the list/manifest file itself. Stop on `invalid_batch_target` or `batch_failed`. For one completed `in_scope` asset, run `python3 tools/autopilot_continuation.py create --parent-target <scope_ref> --selected-target <domain> [--auth-file <auth_file_shell>]`, then invoke `/autopilot <domain> --context-file=<returned-path>`; bootstrap validates the parent `scope_ref/scope_hash` before target I/O. Unlisted discovery remains context/review, and `out_of_scope` always wins.
+- Automatic mode only: for a readable text list or schema-v1 JSON Scope manifest, run batch recon only for `run_batch_recon`; never scan the list/manifest file itself. Stop on `invalid_batch_target` or `batch_failed`. For one completed `in_scope` asset, run `python3 tools/autopilot_continuation.py create --parent-target <scope_ref> --selected-target <domain> [--auth-file <auth_file_shell>]`, then invoke `/autopilot <domain> --context-file=<returned-path>`; bootstrap validates the parent `scope_ref/scope_hash` before target I/O. Unlisted discovery remains context/review, and `out_of_scope` always wins.
 
 ## Recon And Surface
 
@@ -179,7 +182,7 @@ Checkpoint, Pickup and preflight never initialize, import, or recreate old owner
 ## Access Limit
 
 - A path/proxy/framework/sibling/normalization signal may trigger an AI-selected exact request for any 401/403/404/405/415 access boundary; WAF is context, not a prerequisite. Execute through browser/curl/raw sender, and use `validation_runner.py request-diff` only when its one-dimension contract fits. Preserve raw evidence; AI submits technical and delivery judgments through `/validate`. A status change alone is not proof.
-- Invoke setup helpers on demand: `/root/tool/aitool/zocom/mail_receiver.py` (environment-provided helper, not part of this repo) for self-owned test-account email verification, or `tools/cf_solver.py` for Cloudflare clearance. Persist results through private AuthSession/Case State and keep failures `blocked`/`partial`.
+- Invoke setup helpers on demand: `/root/tool/aitool/zocom/mail_receiver.py` (environment-provided helper, not part of this repo — if absent, use any self-owned mailbox and keep the raw evidence) for self-owned test-account email verification, or `tools/cf_solver.py` for Cloudflare clearance. Persist results through private AuthSession/Case State and keep failures `blocked`/`partial`.
 
 ## Workflow Timing And Case State
 

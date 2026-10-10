@@ -13,10 +13,18 @@ methods owned by narrower Skills, Rules, Cards, or deterministic tools.
 - Target/session memory and write-back: `skills/runtime-protocol.md`.
 - Hunting semantics and value-first coverage: `rules/hunting.md`.
 - Coverage/completion: `rules/coverage-gate.md`.
-- Hypothesis selection and rotation: `skills/bb-methodology/SKILL.md`.
+- Business-model maintenance, hypothesis selection and rotation: `skills/bb-methodology/SKILL.md`.
 - Finding validity: `skills/triage-validation/SKILL.md` and `/validate`.
 - Report presentation: `skills/report-writing/SKILL.md`; reporting checks and
   scoring calibration: `rules/reporting.md`.
+
+Shared execution contracts are in `docs/autopilot-lanes.md`: read only the matching
+section, including `State And Queue` before claim/resolve. Its Browser Source And JS
+section owns single-backend selection, artifact import and session close. These
+methods serve manual and automatic work. Automatic continuation follows
+`commands/autopilot.md`; reading shared methods does not enable it. The lane
+document's specialist propagation is automatic-only.
+Load this coordinator for cross-stage questions, not as a mandatory per-lane step.
 
 ## Cross-Stage Loop
 

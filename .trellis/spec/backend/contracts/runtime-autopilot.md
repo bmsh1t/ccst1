@@ -506,6 +506,82 @@ explicit /validate memory token -> legacy recovery; canonical report -> report c
 targets.txt -> batch recon -> select completed domain -> domain state preflight
 ```
 
+## Scenario: Thin Shared Automation Entry Contracts
+
+### 1. Scope / Trigger
+
+Use this contract whenever `commands/autopilot.md`, `commands/autopilot-round.md`
+or `agents/autopilot.md` is edited. The B2 controlled merge (2026-10-10) replaced
+the monolithic controller prompt with thin loop contracts; regressions here break
+release wiring, entry budgets and delegation boundaries, not just prose.
+
+### 2. Signatures
+
+- `commands/autopilot.md`: frontmatter, critical manifest comment, the
+  `Authoritative bootstrap contract (do not reinterpret): !`python3 ...`` line,
+  then one `## Shared Automation` H2 with Startup And Recovery / State
+  Consumption Loop / Execution Invariants / Transition And Finish Contract.
+- `commands/autopilot-round.md`: `Authoritative round bootstrap (do not
+  reinterpret)` and `Native fixed-loop prompt identity (do not reinterpret)`
+  lines, then round-only mechanics (Bootstrap Gate / Prepare And Terminal
+  Precheck / Round Mechanics / Settle And Status / Native Loop Ownership) that
+  read `commands/autopilot.md#shared-automation` instead of duplicating it.
+
+### 3. Contracts
+
+- Combined size of the two command files is bounded by the merged floor of
+  11 KiB (restored anchor prefixes, settle stale-Surface contract and full
+  descriptions exceed the pre-merge draft's 10 KiB budget).
+- Methodology stays out of entry prompts: business/hypothesis reasoning in
+  `skills/bb-methodology/SKILL.md`, cross-stage coordination in
+  `skills/bug-bounty/SKILL.md`, both referenced on demand.
+- `agents/autopilot.md` is a routing-table delegation contract: evidence
+  question -> method owner rows, read-only Store queries, parent-owned writes;
+  no second Core Loop or finish checklist.
+- Preserved semantics: anchor prefixes feed the release-wiring body compare;
+  B1 DNS caller-refresh handoff; missing/malformed/stale Surface never blocks
+  settle or flips a settled round back to active; compaction judgments re-check
+  facts and references against the current on-disk owner; the finish contract
+  keeps the exactly-once presentation-only `Memory recommendations` section
+  required per the "Advisory Memory Recommendation at Bounded Finish" scenario
+  (the B2 live round caught the merged optional downgrade eliding it).
+
+### 4. Validation & Error Matrix
+
+- Anchor prefix line missing or rewritten -> `test_claude_release_wiring`
+  StopIteration at the bootstrap JSON extraction.
+- Combined entry size over 11 KiB -> `test_combined_entry_budget_and_pre_execution_claim_owner` fails.
+- Finish contract downgrades the memory-recommendation section to optional ->
+  `test_memory_recommendation_section_is_required_once_and_presentation_only`
+  fails; a live bounded round omits the section at finish.
+- Round file duplicating Shared Automation instead of referencing the H2 -> round-contract ordering/uniqueness assertions fail.
+
+### 5. Good/Base/Bad Cases
+
+- Good: add a lane rule to `docs/autopilot-lanes.md` and reference it from the routing table; entries stay under budget.
+- Base: renaming a Shared Automation sub-section updates both commands' contract tests in the same change.
+- Bad: pasting methodology steps into `commands/autopilot.md`, or deleting the `(do not reinterpret)` prefixes to save bytes.
+
+### 6. Tests Required
+
+- `tests/test_autopilot_round_contract.py::test_combined_entry_budget_and_pre_execution_claim_owner`
+  asserts the 11 KiB combined budget and pre-execution claim ownership.
+- `tests/test_claude_release_wiring.py::test_installed_autopilot_loads_in_real_claude`
+  asserts the anchor prefix line and installed-body equality.
+- `tests/test_ai_native_skill_convergence_baseline.py` resolves the three-mode
+  reference, checks DNS handoff wording and the compaction re-check clause, and
+  pins the required-once memory-recommendation finish section
+  (`test_memory_recommendation_section_is_required_once_and_presentation_only`).
+
+### 7. Wrong vs Correct
+
+Wrong: compress the bootstrap line to `Bootstrap: !`...`` and inline hunt
+methodology into the command so it stays self-contained.
+
+Correct: keep the full anchor prefixes, point at
+`skills/bb-methodology/SKILL.md` on demand, and let the routing table reference
+lane/method owners.
+
 ## Claude Runtime Packaging and Drift Preflight
 
 ### 1. Scope / Trigger
