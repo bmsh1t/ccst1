@@ -381,6 +381,16 @@ def test_investigation_methods_are_reachable_in_every_execution_mode(entry):
     assert "business_model.md" not in text
 
 
+def test_controller_prompt_sizes_stay_within_spec_guards():
+    """recon-surface.md: controller prompts are not embedded playbooks; guard
+    UTF-8 sizes at 20 KiB (commands/autopilot.md) and 32 KiB
+    (agents/autopilot.md). B3 minimal closure: the merged 11 KiB combined
+    budget is the stricter day-to-day guard for the two entry command files;
+    this pins the standing per-file spec values so they cannot drift open."""
+    assert (REPO_ROOT / "commands/autopilot.md").stat().st_size <= 20 * 1024
+    assert (REPO_ROOT / "agents/autopilot.md").stat().st_size <= 32 * 1024
+
+
 def test_manual_hunt_reuses_shared_rotation_and_browser_contracts():
     hunt = (REPO_ROOT / "commands/hunt.md").read_text(encoding="utf-8")
     coordinator = (REPO_ROOT / "skills/bug-bounty/SKILL.md").read_text(encoding="utf-8")
