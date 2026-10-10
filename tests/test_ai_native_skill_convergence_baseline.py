@@ -339,3 +339,33 @@ def test_autopilot_agent_is_thin_delegation_contract():
         "scanner-negative",
     ):
         assert method in agent
+
+
+def test_autopilot_agent_mode_reference_resolves():
+    agent = (REPO_ROOT / "agents" / "autopilot.md").read_text(encoding="utf-8")
+    protocol = (REPO_ROOT / "skills" / "runtime-protocol.md").read_text(encoding="utf-8")
+    reference = "skills/runtime-protocol.md#21-三模式决策discovery--exploitation--validation-modes"
+    heading = "### 2.1 三模式决策：Discovery / Exploitation / Validation modes"
+
+    assert reference in agent
+    assert "#2-1-三模式决策" not in agent
+    assert heading in protocol
+    modes = protocol.split(heading, 1)[1].split("\n### ", 1)[0]
+    for mode in ("Discovery", "Exploitation", "Validation"):
+        assert f"**{mode} mode**" in modes
+    assert "AI selection / override" in modes
+
+
+def test_dns_expansion_returns_surface_refresh_to_caller():
+    lanes = (REPO_ROOT / "docs" / "autopilot-lanes.md").read_text(encoding="utf-8")
+    section = lanes.split("## Credentials And Asset Expansion\n", 1)[1].split("\n## ", 1)[0]
+    prefix = "- DNS expansion handoff:"
+    assert prefix in section
+    handoff = next(line for line in section.splitlines() if line.startswith(prefix))
+
+    assert "`new_resolved_hosts` or `new_all_hosts` is positive" in handoff
+    assert "counts and evidence refs" in handoff
+    assert "「待落库」" in handoff
+    assert "The caller refreshes `/surface`" in handoff
+    assert "the specialist never refreshes parent state" in handoff
+    assert "With no added hosts, do not request a refresh" in handoff

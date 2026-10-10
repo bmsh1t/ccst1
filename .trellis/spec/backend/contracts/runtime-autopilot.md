@@ -30,6 +30,12 @@ mechanical safety, evidence and recovery constraints govern execution.
 - Specialists default to zero; optional bounded independent questions stay within
   selected lanes and request/evidence budgets. No nested controller, full scan,
   final closure writer or extension of `max_lanes` is delegated.
+- Compressed guidance must reference real sections that retain the displaced
+  constraints, not merely existing files. When DNS expansion returns positive
+  `new_resolved_hosts` or `new_all_hosts`, the specialist hands off those counts,
+  evidence refs and a Surface-refresh request through the existing pending-write
+  tail; only the caller refreshes Surface. No added hosts means no DNS-driven
+  refresh request. A stale projection is not an automatic refresh.
 - State does not infer a need for `recon-ranker` from evidence-group counts or
   long-tail size. The existing read-only agent remains explicitly callable through
   native discovery and `/autopilot` guidance. Do not replace retired thresholds
@@ -143,6 +149,11 @@ cached-evidence guard, owner continuation and closure-advice digest tests remain
 against current/empty/missing/stale fixtures, including exact URL and Finding
 pagination, current handoff and unchanged Store binding/raw files. Agent smoke
 tests retain frontmatter/tool compatibility; no model behavior is inferred.
+
+`tests/test_ai_native_skill_convergence_baseline.py` keeps the thin-agent owner
+contract, resolves the three-mode reference to its actual section, and checks
+positive/empty DNS-count handoff wording within the DNS clause, including
+caller-only Surface refresh. These are static guidance checks, not model A/B.
 
 Run `python3 .trellis/tasks/09-29-native-first-boundary-optimization/research/check_native_first.py`
 for observation/owner separation, lock preservation, malformed matrix input,
