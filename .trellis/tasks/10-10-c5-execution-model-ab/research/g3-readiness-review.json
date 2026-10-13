@@ -1,0 +1,63 @@
+{
+  "date": "2026-10-13",
+  "task": "c5-execution-model-ab",
+  "gate": "G3",
+  "status": "not_started",
+  "readiness": "not_ready_for_execution",
+  "product_changes": false,
+  "test_facility_changes": false,
+  "protocol": {
+    "version": "capability-evaluation/2",
+    "status": "registered",
+    "focused_protocol_checks": "24 passed",
+    "baseline_protocol_checks": "68 passed",
+    "execution_started": false
+  },
+  "available": [
+    "stratified sign-flip exact primary analysis",
+    "lineage-level exclusion rules",
+    "descriptive Wilson intervals",
+    "zero-regression default gate",
+    "fixed schedule and no replacement stop rule",
+    "G2 owner continuity review b65b47f"
+  ],
+  "blockers": [
+    {
+      "id": "catalog",
+      "status": "missing",
+      "detail": "eight-family dev/heldout cases, independent lineages, truth artifacts and mutants are not complete"
+    },
+    {
+      "id": "arm_manifests",
+      "status": "missing",
+      "detail": "A/B/C/D/E/F/K and B ablations are not frozen as one study"
+    },
+    {
+      "id": "preregistration_receipt",
+      "status": "missing",
+      "detail": "no independent pre-first-slot registration receipt"
+    },
+    {
+      "id": "model_approval",
+      "status": "not_granted",
+      "detail": "F2 and release manifest prohibit model/dependency download or live model execution"
+    },
+    {
+      "id": "content_admission",
+      "status": "deferred",
+      "detail": "C2 candidates remain draft/postponed; no implicit promotion in G3"
+    }
+  ],
+  "decision": {
+    "release_decision": "not_ready",
+    "default_selection": "not_selected",
+    "new_product_gap": false,
+    "next_entry": "separately approved new study registration and complete case/arm manifests",
+    "do_not_start": [
+      "C0 A-F/K live execution",
+      "C2 blind-answer or promotion runs",
+      "C7 semantic model execution",
+      "real target migration or release cutover"
+    ]
+  }
+}
