@@ -1,0 +1,147 @@
+{
+  "date": "2026-10-13",
+  "task": "c5-execution-model-ab",
+  "gate": "G2",
+  "review": "owner-continuity",
+  "status": "partial",
+  "scope": [
+    "schema, migration receipt and archive fence recovery",
+    "post-commit new-write recovery",
+    "missing index and encoder failure semantics",
+    "user-modified runtime ownership",
+    "Context Pack, Resume, Autopilot, Target Memory and Experience Recall owner convergence"
+  ],
+  "product_changes": false,
+  "new_tests": false,
+  "evidence_reused": [
+    "research/e2-evidence-acceptance.md",
+    "research/e2-evidence-acceptance.json",
+    "research/migration-rehearsal.md",
+    "research/rollback-rehearsal.md",
+    "research/g2-engineering-batch.md",
+    "research/g2-engineering-verification.json",
+    "research/current-engineering-handoff.md",
+    "research/finite-closeout.md"
+  ],
+  "owner_map": {
+    "target_state": "TargetStore",
+    "current_truth": "current_truth + TargetStore",
+    "target_memory": "TargetStore read projection",
+    "context_pack": "read-only projection bound to one Store revision",
+    "resume": "read-only projection with final Store binding check",
+    "experience_recall": "TargetStore/source snapshot reader",
+    "recall_context": "exact owner-reference reader; unavailable references retained",
+    "derived_index": "recall_index generation owner",
+    "runtime_files": "runtime_doctor ownership receipt",
+    "migration": "target_migration + migration_receipts"
+  },
+  "covered": [
+    {
+      "id": "G2-OC-01",
+      "status": "covered_bounded",
+      "evidence": [
+        "tools/target_migration.py:1472-1500",
+        "tools/migration_receipts.py:155-222",
+        "research/e2-evidence-acceptance.json"
+      ],
+      "boundary": "synthetic recovery only"
+    },
+    {
+      "id": "G2-OC-02",
+      "status": "covered_source_inspection",
+      "evidence": [
+        "tools/target_memory.py:151-212",
+        "tools/context_pack.py:843-935",
+        "tools/resume_read.py:148-262"
+      ],
+      "boundary": "no new cross-entry replay"
+    },
+    {
+      "id": "G2-OC-03",
+      "status": "covered_source_inspection",
+      "evidence": [
+        "tools/autopilot_state.py:1207-1363",
+        "tools/autopilot_state.py:1484-1563"
+      ],
+      "boundary": "does not close G3 capability acceptance"
+    },
+    {
+      "id": "G2-OC-04",
+      "status": "covered_bounded",
+      "evidence": [
+        "tools/experience_recall.py:130-177",
+        "tools/experience_recall.py:252-270",
+        "tools/recall_context.py:42-53",
+        "tools/recall_context.py:141-200",
+        "tools/target_store.py:1245-1253"
+      ],
+      "boundary": "no real cross-entry recovery run"
+    },
+    {
+      "id": "G2-OC-05",
+      "status": "covered_bounded",
+      "evidence": [
+        "tools/current_truth.py:63-132",
+        "tools/context_pack.py:338-392",
+        "tools/recall_index.py:375-422"
+      ],
+      "boundary": "real semantic provider not run"
+    },
+    {
+      "id": "G2-OC-06",
+      "status": "covered_bounded",
+      "evidence": [
+        "tools/recall_index.py:205-219",
+        "tools/recall_index.py:375-422",
+        "research/rollback-rehearsal.md"
+      ],
+      "boundary": "no model download or execution"
+    },
+    {
+      "id": "G2-OC-07",
+      "status": "covered_bounded",
+      "evidence": [
+        "tools/runtime_doctor.py:326-430",
+        "research/current-engineering-handoff.md"
+      ],
+      "boundary": "temporary install only"
+    },
+    {
+      "id": "G2-OC-08",
+      "status": "covered_bounded",
+      "evidence": [
+        "research/migration-rehearsal.md",
+        "research/rollback-rehearsal.md"
+      ],
+      "boundary": "synthetic post-commit writer only"
+    }
+  ],
+  "uncovered": [
+    {
+      "id": "D1",
+      "status": "not_applicable_for_current_checkout",
+      "reason": "no per-target Store selected for delivery"
+    },
+    {
+      "id": "F2",
+      "status": "descoped_not_accepted",
+      "reason": "real local encoder/reranker run was not approved"
+    },
+    {
+      "id": "G5/G6/G8",
+      "status": "not_run",
+      "reason": "no global install, real target migration or real writer recovery"
+    }
+  ],
+  "decision": {
+    "new_product_gap": false,
+    "g2_complete": false,
+    "release_decision": "not_ready",
+    "next_blocker": "G3 capability/default review plus separately approved D1/G5/G6/G7",
+    "do_not_start": [
+      "C2 knowledge distillation",
+      "blind-answer or promotion runs",
+      "C0 model experiments"
+    ]
+  }
+}
