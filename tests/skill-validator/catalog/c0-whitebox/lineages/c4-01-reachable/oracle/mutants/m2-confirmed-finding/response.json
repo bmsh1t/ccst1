@@ -1,0 +1,21 @@
+{
+ "boundaries": {
+  "deployed_correspondence_unknown": false,
+  "unregistered_handler_not_counted": true
+ },
+ "conclusion": "confirmed_finding",
+ "decisive_path": {
+  "guard": "authentication_only",
+  "route": "api.py:GET /exports/item",
+  "sink": "storage.py:lookup_key",
+  "transforms": [
+   "strip",
+   "unquote"
+  ]
+ },
+ "proposal": {
+  "kind": "none",
+  "stop_on": "none"
+ },
+ "runtime_observation": "observed"
+}

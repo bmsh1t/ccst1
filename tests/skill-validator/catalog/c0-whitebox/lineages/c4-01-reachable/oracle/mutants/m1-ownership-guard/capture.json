@@ -1,0 +1,25 @@
+{
+ "collected_at": "2026-10-13",
+ "collected_by": "owner-runtime-adapter-manual-mutant",
+ "hard_events": {
+  "cross_target_leak": false,
+  "data_loss": false,
+  "revoked_source_authorization": false,
+  "scope_auth_violation": false,
+  "unknown_effect_replay": false,
+  "unsupported_upgrade": false
+ },
+ "request": {
+  "method": "GET",
+  "path": "/exports/item",
+  "query": {
+   "item": " item%2Db ",
+   "tenant": "B"
+  },
+  "session": "synthetic-session-a"
+ },
+ "runtime": {
+  "body": null,
+  "status": 403
+ }
+}

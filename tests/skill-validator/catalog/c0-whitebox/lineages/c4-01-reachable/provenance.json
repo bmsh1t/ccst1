@@ -1,0 +1,24 @@
+{
+ "author": "main thread, 2026-10-13",
+ "ground_truth": {
+  "basis": "isolated execution of the runtime dispatch (system python, fresh tmp cwd)",
+  "mutant_capture": {
+   "path": "lineages/c4-01-reachable/oracle/mutants/m1-ownership-guard/capture.json",
+   "sha256": "956c2fbe65182645ca2513ba4be39350790d5b9f8e6809a5ae0d6a8af821669b"
+  },
+  "true_capture": {
+   "path": "lineages/c4-01-reachable/oracle/ground-truth.json",
+   "sha256": "20ca6a0058383f47540236681194734012ec72b7931ae40d0619774dd4d86849"
+  },
+  "work_dir": "/tmp/c0-wb01-oracle-tIpjMtok"
+ },
+ "lineage": "c4-01-reachable",
+ "materials_relation": "candidate materials are byte-identical to C4 repo/ and runtime/ trees; deployed correspondence unknown is a teaching point",
+ "origin": {
+  "case_dir": "cases/c4-01-reachable",
+  "oracle": "oracle/c4-01-reachable.json",
+  "study": ".trellis/tasks/10-10-clown-absorption-skill-restructure/research/whitebox-behavior-01"
+ },
+ "prior_results": "C4 behavior study: this case accepted in run 1 (byte binding/status attribution); prior results preserved, not re-run",
+ "split_assignment": "dev — case drove C4 method fixes, thus development-tainted by definition"
+}

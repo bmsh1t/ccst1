@@ -1,0 +1,15 @@
+{
+ "actor": {
+  "session": "synthetic-session-a",
+  "tenant": "A"
+ },
+ "note": "runtime/deployment correspondence unknown; source bytes are the only evidence",
+ "request_shape": {
+  "method": "GET",
+  "path": "/exports/item",
+  "query": {
+   "item": "<attacker-controlled>",
+   "tenant": "B"
+  }
+ }
+}

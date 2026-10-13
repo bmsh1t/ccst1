@@ -828,3 +828,16 @@ capabilities:
       - evidence-gates
       - web-api-boundary
     note: Existing Web2 evidence contract migration, not newly validated method knowledge.
+  - id: evidence-driven-hunting
+    kind: card
+    file: knowledge/cards/evidence-driven-hunting.md
+    review_receipt: knowledge/reviews/evidence-driven-hunting/a1bbd0e7ba92fadc77087bfe9b9de580601e3d06212ba55e8c935ce978d69d0d-a02d3b00ef4768b6397d20a5974f4b2c05118041c182937b9184db9dd2211830.json
+    layer: case-router
+    load: on-demand
+    purpose: validate
+    triggers:
+      - login-shell
+      - empty-list
+      - sibling
+      - discovery-depth
+      - object-graph

@@ -917,3 +917,41 @@ A1 已修复并完成针对性验收；两处词表使用 stdin，无效 control
 ### Next Steps
 
 - 父任务仍为 planning：收敛真实模型/靶场实验的模型、工具、动作范围、时间与费用预算；本轮未推送或启动实验。
+
+
+## Session 33: Autopilot R1-R3 功能修复实施（选项 A）
+<!-- trellis-session: v=2 fp=5ba1c71ed3d64882 -->
+
+**Date**: 2026-10-09
+**Task**: Autopilot R1-R3 功能修复实施（选项 A）
+**Branch**: `main`
+
+### Summary
+
+R1-R3 功能修复按选项 A 实施完成并通过定向验收；未提交未推送。
+
+### Main Changes
+
+- 三份草案补丁按序应用（r1→r23→optionA）+ r2 测试片段追加，6 文件 +530/-140；产品文件与复演副本逐字节一致。
+- 选项 A 补齐 store_*/round_lane_* 到既有 reason→owner/action/frontier 映射族（state 3 处 + gate 3 处），只加映射不改判定。
+- 规范同步 runtime-autopilot/lifecycle-state/error-handling 及三个带 hash 节选刷新；task.py validate rc=0。
+
+### Git Commits
+
+(No commits - planning session)
+
+### Testing
+
+- [OK] 19 节点定向批次（临时静态副本 env -i）：127 passed in 17.62s，rc=0。
+- [OK] 定向超集一（state_tool/checkpoint/gate/round/guard/surface）：537 passed，rc=0。
+- [OK] 定向超集二（current_truth/bootstrap/args/run_contract/replay/ux）：150 passed，rc=0。
+- [OK] 原 17 文件 SHA256 0 mismatch；HEAD a4f283a 不变；新增 except 仅 R3 一处。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 用户确认后进入指导子任务（R4-R6）；源码提交需单独确认，不 push。
+- 未做全量套件/真实模型/在线 MCP 验证。

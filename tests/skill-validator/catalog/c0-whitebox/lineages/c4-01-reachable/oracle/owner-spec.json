@@ -1,0 +1,21 @@
+{
+ "artifact_shape": {
+  "hard_events": "six domain flags",
+  "request": "echo",
+  "runtime": "dispatch result"
+ },
+ "command": [
+  "/usr/bin/python3",
+  "-B",
+  "-c",
+  "import json; from api import dispatch; request=json.loads(\"{\\\"method\\\": \\\"GET\\\", \\\"path\\\": \\\"/exports/item\\\", \\\"session\\\": \\\"synthetic-session-a\\\", \\\"query\\\": {\\\"item\\\": \\\" item%2Db \\\", \\\"tenant\\\": \\\"B\\\"}}\"); print(json.dumps(dispatch(request), sort_keys=True))"
+ ],
+ "cwd_files": [
+  "api.py",
+  "authorization.py",
+  "services.py",
+  "storage.py"
+ ],
+ "isolation": "fresh tmp cwd, no network, system python only",
+ "kind": "python_dispatch_runtime"
+}

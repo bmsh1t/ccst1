@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-VERSION = "capability-evaluation/1"
+VERSION = "capability-evaluation/2"
 FAMILIES = ("investigation", "absorption", "whitebox", "recovery", "correction",
             "semantic", "relation", "execution_delivery")
 ARMS = ("A", "B", "C", "D", "E", "F", "K", "B_no_content",
@@ -259,8 +259,8 @@ def validate_protocol(protocol: dict[str, Any], catalog: list[dict[str, Any]], r
              "heldout requires one locked A/candidate comparison; development registration has no heldout slots")
     uncertainty = protocol["uncertainty"]
     _object(uncertainty, "method alpha independent_lineages_evidence", "uncertainty")
-    _require(uncertainty["method"] == "paired_hoeffding_bonferroni", "unsupported uncertainty method")
-    _require(type(uncertainty["alpha"]) in (float, int) and uncertainty["alpha"] == 0.05, "95% familywise intervals required")
+    _require(uncertainty["method"] == "stratified_sign_flip_permutation", "unsupported uncertainty method")
+    _require(type(uncertainty["alpha"]) in (float, int) and uncertainty["alpha"] == 0.05, "one-sided 5% primary test required")
     if uncertainty["independent_lineages_evidence"] is not None:
         verify_ref(uncertainty["independent_lineages_evidence"], root)
     _list(protocol["exclusion_rules"], "exclusion rules", nonempty=False)
@@ -489,6 +489,108 @@ def _incident_pair(left: dict[str, Any], right: dict[str, Any], protocol: dict[s
     return registered and any(_load_ref(ref, root) == expected for ref in incident["evidence"])
 
 
+def _wilson_interval(successes: int, admitted: int) -> list[float] | None:
+    """Descriptive two-sided 95% interval; never a gate input."""
+    if admitted <= 0:
+        return None
+    z = 1.959963984540054
+    rate = successes / admitted
+    denom = 1 + z * z / admitted
+    center = (rate + z * z / (2 * admitted)) / denom
+    half = z * math.sqrt(rate * (1 - rate) / admitted + z * z / (4 * admitted * admitted)) / denom
+    return [max(0.0, center - half), min(1.0, center + half)]
+
+
+def _flip_sum_distribution(deltas: list[int]) -> dict[int, int]:
+    """Exact family-sum distribution over independent per-lineage sign flips."""
+    histogram = {0: 1}
+    for delta in deltas:
+        flipped = defaultdict(int)
+        for total, count in histogram.items():
+            flipped[total + delta] += count
+            flipped[total - delta] += count
+        histogram = dict(flipped)
+    return histogram
+
+
+def _convolve_histograms(left: dict[int, int], right: dict[int, int]) -> dict[int, int]:
+    merged = defaultdict(int)
+    for left_sum, left_count in left.items():
+        for right_sum, right_count in right.items():
+            merged[left_sum + right_sum] += left_count * right_count
+    return dict(merged)
+
+
+def _primary_analysis(protocol: dict[str, Any], catalog: list[dict[str, Any]],
+                      by_slot: dict[tuple[str, str, int], dict[str, Any]],
+                      root: str | Path) -> dict[str, Any] | None:
+    """Exact stratified sign-flip permutation test on the preregistered heldout comparison."""
+    candidate = protocol["default_candidate"]
+    if candidate is None:
+        return None
+    families, family_deltas = [], {}
+    S_obs = 0
+    for family in FAMILIES:
+        selected = [c for c in catalog if c["split"] == "heldout" and c["family"] == family]
+        lineages, excluded_lineages, missing_pairs, excluded_pairs = {}, [], [], []
+        for case in selected:
+            case_deltas, case_missing, case_excluded = [], [], []
+            for rep in range(1, protocol["repeats"] + 1):
+                left = by_slot.get((case["case_id"], "A", rep))
+                right = by_slot.get((case["case_id"], candidate, rep))
+                if left is None or right is None or any(e["original"]["admission"] != "admitted" for e in (left, right)):
+                    case_missing.append({"case_id": case["case_id"], "rep": rep})
+                    continue
+                if _incident_pair(left["original"], right["original"], protocol, root):
+                    case_excluded.append({"case_id": case["case_id"], "rep": rep,
+                                          "incident": left["original"]["incident"]})
+                    continue
+                case_deltas.append(int(right["judgment"]["success"]) - int(left["judgment"]["success"]))
+            if case_missing or case_excluded:
+                # One compromised rep-pair drops the whole lineage so every retained
+                # delta stays a complete integer count over symmetric repeats.
+                excluded_lineages.append({"lineage": case["lineage"], "case_id": case["case_id"],
+                                          "missing_pairs": case_missing, "excluded_pairs": case_excluded})
+                missing_pairs.extend(case_missing)
+                excluded_pairs.extend(case_excluded)
+                continue
+            lineages[case["lineage"]] = sum(case_deltas)
+        family_deltas[family] = list(lineages.values())
+        S_obs += sum(lineages.values())
+        families.append({"family": family, "lineages_included": len(lineages),
+                         "lineage_deltas": lineages, "excluded_lineages": excluded_lineages,
+                         "missing_pairs": missing_pairs, "excluded_pairs": excluded_pairs})
+    included = [delta for deltas in family_deltas.values() for delta in deltas]
+    primary: dict[str, Any] = {"comparison": {"baseline": "A", "treatment": candidate, "split": "heldout"},
+                               "method": "stratified_sign_flip_permutation_exact", "alpha": 0.05,
+                               "sided": "one_sided_candidate_greater",
+                               "independence_evidence": protocol["uncertainty"]["independent_lineages_evidence"] is not None,
+                               "families": families, "S_obs": S_obs, "N": len(included),
+                               "total_patterns": 2 ** len(included)}
+    if not included or not primary["independence_evidence"]:
+        primary.update({"p_exact": None, "p_value": None, "critical_S": None,
+                        "conclusion": "inconclusive", "insufficient_units": not included})
+        return primary
+    distribution = {0: 1}
+    for family in FAMILIES:
+        distribution = _convolve_histograms(distribution, _flip_sum_distribution(family_deltas[family]))
+    at_or_above = sum(count for total, count in distribution.items() if total >= S_obs)
+    # Alpha decisions stay in exact integers: p <= 0.05 iff 20 * numerator <= denominator.
+    critical_S = None
+    tail_count = 0
+    for threshold in sorted(distribution, reverse=True):
+        tail_count += distribution[threshold]
+        if 20 * tail_count > primary["total_patterns"]:
+            break
+        critical_S = threshold
+    primary.update({"p_exact": [at_or_above, primary["total_patterns"]],
+                    "p_value": at_or_above / primary["total_patterns"],
+                    "critical_S": critical_S, "insufficient_units": False,
+                    "conclusion": "candidate_better" if S_obs > 0 and 20 * at_or_above <= primary["total_patterns"]
+                    else "inconclusive"})
+    return primary
+
+
 def aggregate(protocol: dict[str, Any], catalog: list[dict[str, Any]], rows: list[dict[str, Any]], root: str | Path,
               *, registration: dict[str, Any] | None = None) -> dict[str, Any]:
     """Unsealed inputs are diagnostic only; default eligibility needs a verified seal."""
@@ -527,14 +629,13 @@ def aggregate(protocol: dict[str, Any], catalog: list[dict[str, Any]], rows: lis
                      "statuses": dict(Counter(e["original"]["status"] for e in entries)),
                      "observations": dict(Counter(o["kind"] for e in entries for o in e["original"]["observations"]))}
     comparisons = []
-    # Simultaneous two-sided intervals cover both improvement and regression decisions.
-    correction = len(protocol["comparisons"]) * len(FAMILIES)
+    # Every comparison is descriptive in v2; only the preregistered primary is inferential.
     for comparison in protocol["comparisons"]:
         for family in FAMILIES:
             selected = [c for c in catalog if c["split"] == comparison["split"] and c["family"] == family]
-            clusters, excluded, missing, hard = defaultdict(list), [], [], False
+            missing, excluded, hard = [], [], False
+            counts = {comparison["baseline"]: [0, 0], comparison["treatment"]: [0, 0]}
             for case in selected:
-                deltas = []
                 for rep in range(1, protocol["repeats"] + 1):
                     left = by_slot.get((case["case_id"], comparison["baseline"], rep))
                     right = by_slot.get((case["case_id"], comparison["treatment"], rep))
@@ -546,30 +647,28 @@ def aggregate(protocol: dict[str, Any], catalog: list[dict[str, Any]], rows: lis
                         excluded.append({"case_id": case["case_id"], "rep": rep,
                                          "incident": left["original"]["incident"]})
                         continue
-                    deltas.append(int(right["judgment"]["success"]) - int(left["judgment"]["success"]))
-                if deltas:
-                    clusters[case["lineage"]].append(sum(deltas) / len(deltas))
-            values = [sum(v) / len(v) for v in clusters.values()]
-            estimate = sum(values) / len(values) if values else None
-            bound = None
-            independent = protocol["uncertainty"]["independent_lineages_evidence"] is not None
-            if values and independent and not missing:
-                radius = math.sqrt(2 * math.log(2 * correction / 0.05) / len(values))
-                bound = [max(-1.0, estimate - radius), min(1.0, estimate + radius)]
-            conclusion = "inconclusive"
-            if hard or (estimate is not None and estimate < 0):
-                conclusion = "observed_regression"
-            elif bound and coverage["complete"] and not excluded and bound[0] > 0:
-                conclusion = "improvement_nonregression"
-            comparisons.append({**comparison, "family": family, "independent_scenarios": len(values),
-                                "scenario_deltas": dict(zip(clusters, values)), "delta": estimate,
-                                "interval95_familywise": bound, "missing_pairs": missing,
-                                "excluded_pairs": excluded, "hard_violation": hard, "conclusion": conclusion})
-    default_rows = [c for c in comparisons if c["baseline"] == "A" and
-                    c["treatment"] == protocol["default_candidate"] and c["split"] == "heldout"]
-    admitted_default = (len(default_rows) == len(FAMILIES) and
-                        all(c["conclusion"] == "improvement_nonregression" for c in default_rows) and
-                        all(not c["missing_pairs"] and not c["excluded_pairs"] for c in default_rows))
+                    for entry in (left, right):
+                        counts[entry["original"]["arm"]][0] += int(entry["judgment"]["success"])
+                        counts[entry["original"]["arm"]][1] += 1
+
+            def side(arm: str) -> dict[str, Any]:
+                successes, admitted = counts[arm]
+                return {"successes": successes, "admitted": admitted,
+                        "rate": successes / admitted if admitted else None,
+                        "wilson95": _wilson_interval(successes, admitted)}
+
+            baseline, treatment = side(comparison["baseline"]), side(comparison["treatment"])
+            delta = None if baseline["rate"] is None or treatment["rate"] is None else treatment["rate"] - baseline["rate"]
+            comparisons.append({**comparison, "family": family, "inferential": False,
+                                "baseline": baseline, "treatment": treatment, "delta": delta,
+                                "missing_pairs": missing, "excluded_pairs": excluded,
+                                "hard_violation": hard, "conclusion": "descriptive_not_inferential"})
+    primary = _primary_analysis(protocol, catalog, by_slot, root)
+    primary_units_intact = primary is not None and all(
+        not f["missing_pairs"] and not f["excluded_pairs"] and not f["excluded_lineages"]
+        for f in primary["families"])
+    admitted_default = (primary is not None and primary["conclusion"] == "candidate_better"
+                        and primary_units_intact and coverage["complete"])
     candidate_hard = any(e["original"]["arm"] == protocol["default_candidate"] and
                          e["judgment"]["hard_violations"] for e in attempts)
     candidate_protection_missing = any(
@@ -577,10 +676,13 @@ def aggregate(protocol: dict[str, Any], catalog: list[dict[str, Any]], rows: lis
             check["role"] == "owner" and check["pointer"].startswith("/hard_events/")
             for check in e["judgment"]["missing_evidence"]) for e in attempts)
     any_hard = any(e["judgment"]["hard_violations"] for e in attempts)
+    functional = "failed" if any_hard else (
+        "candidate_better" if primary is not None and primary["conclusion"] == "candidate_better"
+        else "inconclusive")
     return {"version": VERSION, "study_id": protocol["study_id"], "coverage": coverage,
-            "arms": arms, "comparisons": comparisons, "attempts": attempts,
+            "arms": arms, "primary": primary, "comparisons": comparisons, "attempts": attempts,
             "registration_sha256": registration["sha256"] if registration is not None else None,
-            "status": {"engineering": "protocol_validated", "functional": "failed" if any_hard else "inconclusive",
+            "status": {"engineering": "protocol_validated", "functional": functional,
                        "registration": "verified_local_seal" if registration is not None else "unbound_diagnostic",
                        "default": "eligible_pending_independent_review" if registration is not None and admitted_default and not candidate_hard and not candidate_protection_missing else "retain_previous",
                        "release": "not_assessed"}}

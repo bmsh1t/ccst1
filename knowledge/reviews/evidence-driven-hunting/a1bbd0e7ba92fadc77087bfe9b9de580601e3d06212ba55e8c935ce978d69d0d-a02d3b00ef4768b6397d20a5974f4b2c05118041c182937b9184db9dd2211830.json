@@ -1,0 +1,45 @@
+{
+  "candidate_sha256": "a1bbd0e7ba92fadc77087bfe9b9de580601e3d06212ba55e8c935ce978d69d0d",
+  "card_id": "evidence-driven-hunting",
+  "file": "knowledge/cards/evidence-driven-hunting.md",
+  "published_sha256": "a1bbd0e7ba92fadc77087bfe9b9de580601e3d06212ba55e8c935ce978d69d0d",
+  "replaced_refs": {},
+  "review": {
+    "blind_answer": {
+      "allowed_material": {
+        "file": "evidence-driven-hunting.blind-question.md",
+        "sha256": "bce66f105c1339ae474bb508d8ac89be5729d6a686cb3e608f7365e369f27bc9"
+      },
+      "configuration": "CLI 2.1.295, effort=high, max-turns=1, 0.50 USD/slot cap, 5 fresh sessions per arm, no tools/MCP/skills/plugins",
+      "criteria": "frozen B1-B9 (criteria.json sha 3fe3841879845a17a655a4e2c260d9e29b1496da3504245bc5d087a151e18346)",
+      "increment": "Blind 0/5 complete vs with-candidate 5/5 complete on the same synthetic compound scenario; candidate supply was the sole difference.",
+      "model": "claude-opus-4-8[1m] (CLI-reported)",
+      "question": {
+        "file": "evidence-driven-hunting.blind-question.md",
+        "sha256": "bce66f105c1339ae474bb508d8ac89be5729d6a686cb3e608f7365e369f27bc9"
+      },
+      "response": {
+        "file": "evidence-driven-hunting.blind-answer.md",
+        "sha256": "cb0a97253f5decb2c188d7d6e4cf5aa208d65749b5641540f864f18e6394f3a6"
+      },
+      "verdict": "incremental"
+    },
+    "candidate_sha256": "a1bbd0e7ba92fadc77087bfe9b9de580601e3d06212ba55e8c935ce978d69d0d",
+    "card_id": "evidence-driven-hunting",
+    "decision": "accept",
+    "intake_kind": "new-method",
+    "rationale": "Paired whole-chain comparison on one synthetic compound scenario: blind arm (C2-CLI-ADMISSION-01) delivered 2/5 with 0/5 complete (3 timeouts; both delivered answers failed B3/B4/B9-class evidence/boundary criteria); with-candidate arm (C2-CLI-ADMISSION-02) delivered 5/5 with all B1-B9 met and no hard violation, identical frozen scenario/criteria/system-prompt/CLI configuration. The only prompt difference was the provided candidate content. This is a traceable whole-unit difference for this case; candidate content was independently rewritten (not a copied W card), audited by three static reviewers, and licensed for derivative use (clown upstream Claude-BugHunter: code MIT, content CC BY 4.0, attribution retained). Card was then brought to v2 CARD contract (触发信号/验证或证据/常见误判与停止条件/下一步或晋升 sections, frontmatter deep_refs list); review rebinding covers these structure-only, method-preserving edits.",
+    "reviewed_at": "2026-10-13T00:00:00+00:00",
+    "reviewer": "Codex (main thread; human-style criterion-by-criterion review of both arms)",
+    "schema_version": 1,
+    "three_questions": {
+      "inferable_from_evidence": "Individual facts support individual inferences, but the blind arm failed to organize them into a complete chain meeting all criteria; the gaps match exactly the connections the candidate supplies.",
+      "model_seen": "Training membership unknown; blind arm 0/5 complete shows the current model/configuration does not stably satisfy this whole-chain scenario without the candidate.",
+      "real_cost_delta": "With-candidate 5/5 complete in 3.1–5.1s per slot vs blind 0/5 complete including 3×90s timeouts; measured cost 0.472425 USD for 5 slots of the with-candidate arm."
+    },
+    "transferability": "Method keys on business entry/consumer/ownership facts, not source paths, field values, or host names; scenario-to-target transfer requires separate judgment and is not claimed by this study."
+  },
+  "review_ref": "knowledge/candidates/evidence-driven-hunting.review.json",
+  "review_sha256": "a02d3b00ef4768b6397d20a5974f4b2c05118041c182937b9184db9dd2211830",
+  "schema_version": 1
+}

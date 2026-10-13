@@ -2,6 +2,7 @@
 import copy
 import hashlib
 import importlib.util
+import itertools
 import json
 import subprocess
 import sys
@@ -44,7 +45,7 @@ def protocol(root, catalog, repeats=6):
             "arms": {arm: {key: binding for key in e.BINDINGS} for arm in e.ARMS}, "repeats": repeats,
             "comparisons": [{"baseline": a, "treatment": b, "split": "dev"} for a, b in pairs] +
                            [{"baseline": "A", "treatment": "B", "split": "heldout"}],
-            "uncertainty": {"method": "paired_hoeffding_bonferroni", "alpha": 0.05,
+            "uncertainty": {"method": "stratified_sign_flip_permutation", "alpha": 0.05,
                             "independent_lineages_evidence": binding},
             "exclusion_rules": [{"code": "lab_outage", "reason": "independent fixture service interruption",
                                  "independent_authority": "lab-monitor"}],
@@ -101,19 +102,99 @@ def test_eight_success_four_timeouts_remain_twelve(tmp_path):
     assert summary["status"]["default"] == "retain_previous"
 
 
-def test_exact_ties_uncertain_repeats_not_independent(tmp_path):
+def _fail_owner(root, name):
+    return ref(root, f"fail-owners/{name}.json",
+               {"current_intent": "old", "hard_events": {event: False for event in e.HARD_EVENTS}})
+
+
+def test_primary_exact_permutation_matches_brute_force(tmp_path):
+    deltas = {("recovery", "held-r1"): 2, ("recovery", "held-r2"): -1,
+              ("semantic", "held-s1"): 1, ("semantic", "held-s2"): 1}
+    catalog = [case(tmp_path, name, family, "heldout") for family, name in deltas]
+    p = protocol(tmp_path, catalog, repeats=5)
+    rows = []
+    for c in catalog:
+        d = deltas[(c["family"], c["case_id"])]
+        for rep in range(1, 6):
+            for arm in ("A", "B"):
+                r = row(tmp_path, c, arm, rep)
+                if (arm == "A" and d > rep - 1) or (arm == "B" and -d > rep - 1):
+                    r["artifacts"]["owner"] = _fail_owner(tmp_path, f"{c['case_id']}-{arm}-{rep}")
+                rows.append(r)
+    primary = e.aggregate(p, catalog, rows, tmp_path)["primary"]
+    assert (primary["S_obs"], primary["N"]) == (3, 4)
+    brute = sum(1 for signs in itertools.product((1, -1), repeat=4)
+                if sum(s * d for s, d in zip(signs, deltas.values())) >= 3)
+    assert primary["p_exact"] == [brute, 16]
+    assert primary["p_value"] == brute / 16
+    assert primary["conclusion"] == "inconclusive"  # p = 0.25
+
+
+def test_primary_lineage_level_exclusion(tmp_path):
+    clean = case(tmp_path, "held-clean", "recovery", "heldout")
+    outage = case(tmp_path, "held-outage", "recovery", "heldout")
+    partial = case(tmp_path, "held-partial", "recovery", "heldout")
+    catalog = [clean, outage, partial]
+    p = protocol(tmp_path, catalog, repeats=5)
+    rows = []
+    for rep in range(1, 6):
+        a = row(tmp_path, clean, "A", rep)
+        a["artifacts"]["owner"] = _fail_owner(tmp_path, f"clean-A-{rep}")
+        rows += [a, row(tmp_path, clean, "B", rep)]
+        if rep != 2:
+            rows += [row(tmp_path, partial, arm, rep) for arm in ("A", "B")]
+        left = row(tmp_path, outage, "A", rep, "tool_failure")
+        right = row(tmp_path, outage, "B", rep, "tool_failure")
+        if rep == 3:
+            incident = {"id": "outage-two", "code": "lab_outage", "authority": "lab-monitor",
+                        "evidence": [ref(tmp_path, "outage.json", {"incident_id": "outage-two", "code": "lab_outage",
+                          "authority": "lab-monitor", "study_id": p["study_id"], "case_id": outage["case_id"],
+                          "rep": 3, "arms": ["A", "B"]})]}
+            left["incident"] = right["incident"] = incident
+        rows += [left, right]
+    summary = e.aggregate(p, catalog, rows, tmp_path)
+    family = next(f for f in summary["primary"]["families"] if f["family"] == "recovery")
+    assert family["lineages_included"] == 1
+    by_lineage = {x["lineage"]: x for x in family["excluded_lineages"]}
+    assert by_lineage["held-partial"]["missing_pairs"] == [{"case_id": "held-partial", "rep": 2}]
+    assert len(by_lineage["held-outage"]["excluded_pairs"]) == 1
+    primary = summary["primary"]
+    assert (primary["N"], primary["S_obs"], primary["p_exact"]) == (1, 5, [1, 2])
+    assert primary["conclusion"] == "inconclusive"  # p = 0.5
+    p["uncertainty"]["independent_lineages_evidence"] = None
+    degraded = e.aggregate(p, catalog, rows, tmp_path)
+    assert degraded["primary"]["p_value"] is None
+    assert degraded["status"]["default"] == "retain_previous"
+
+
+def test_descriptive_wilson_intervals(tmp_path):
+    c = case(tmp_path, "dev-w")
+    p = protocol(tmp_path, [c], repeats=5)
+    rows = []
+    for rep in range(1, 6):
+        rows.append(row(tmp_path, c, "B", rep))
+        a = row(tmp_path, c, "A", rep)
+        if rep > 3:  # baseline fails two of five
+            a["artifacts"]["owner"] = _fail_owner(tmp_path, f"w-A-{rep}")
+        rows.append(a)
+    result = e.aggregate(p, [c], rows, tmp_path)["comparisons"][3]
+    assert result["inferential"] is False
+    assert result["conclusion"] == "descriptive_not_inferential"
+    assert (result["baseline"]["successes"], result["baseline"]["admitted"]) == (3, 5)
+    assert result["baseline"]["rate"] == 0.6
+    assert result["baseline"]["wilson95"] == pytest.approx([0.230724281276, 0.882379225767], abs=1e-9)
+    assert (result["treatment"]["successes"], result["treatment"]["admitted"]) == (5, 5)
+    assert result["treatment"]["rate"] == 1.0
+    assert result["treatment"]["wilson95"] == pytest.approx([0.565517535217, 1.0], abs=1e-9)
+    assert result["delta"] == pytest.approx(0.4)
+
+
+def test_v1_uncertainty_method_rejected(tmp_path):
     c = case(tmp_path)
     p = protocol(tmp_path, [c])
-    rows = [row(tmp_path, c, arm, rep) for arm in ("A", "B") for rep in range(1, 7)]
-    result = e.aggregate(p, [c], rows, tmp_path)["comparisons"][3]
-    assert result["family"] == "recovery"
-    assert result["delta"] == 0
-    assert result["independent_scenarios"] == 1
-    assert result["interval95_familywise"] == [-1.0, 1.0]
-    assert result["conclusion"] == "inconclusive"
-    p["uncertainty"]["independent_lineages_evidence"] = None
-    result = e.aggregate(p, [c], rows, tmp_path)["comparisons"][3]
-    assert result["interval95_familywise"] is None
+    p["uncertainty"]["method"] = "paired_hoeffding_bonferroni"
+    with pytest.raises(ValueError, match="unsupported uncertainty method"):
+        e.validate_protocol(p, [c], tmp_path)
 
 
 def test_preflight_unknown_and_pair_symmetric_exclusion(tmp_path):
@@ -311,6 +392,10 @@ def test_public_aggregate_binds_registration_and_unsealed_cannot_qualify(tmp_pat
     bound = e.aggregate(p, catalog, rows, tmp_path, registration=seal)
     assert bound["status"]["default"] == "eligible_pending_independent_review"
     assert bound["registration_sha256"] == seal["sha256"]
+    assert bound["primary"]["N"] == 160
+    assert bound["primary"]["S_obs"] == 800
+    assert bound["primary"]["p_exact"] == [1, 2 ** 160]
+    assert bound["primary"]["conclusion"] == "candidate_better"
     with pytest.raises(ValueError, match="seal mismatch"):
         e.aggregate(p, catalog, [], tmp_path, registration={**seal, "sha256": "0" * 64})
     changed = copy.deepcopy(p)
