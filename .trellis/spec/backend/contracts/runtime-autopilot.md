@@ -92,6 +92,14 @@ mechanical safety, evidence and recovery constraints govern execution.
   Controlled structural N/A is separate; marker text alone is insufficient.
 - Checkpoint cadence remains paranoid/normal/yolo. Repetition, siblings and
   response deltas inform AI choices, not fixed testing/rotation sequences.
+  Cadence controls read-only snapshots, not cognitive consolidation. Shared
+  `skills/runtime-protocol.md#cognitive-write-timing` separates immediate evidence,
+  Candidate/Action registration and terminal heartbeats from event/boundary memory
+  writes. Same-session Skill reads and tool executions add no result form; real
+  delegation still returns evidence, unknowns and proposed owner actions through
+  the investigation core's handoff contract. Manual hunt has no mandatory scanner
+  or duplicate ordered loop; rotation alone requires no full checkpoint/coverage
+  review. Completion gates and unresolved recovery work remain mandatory.
 - Round budgets and explicit lane completion remain mandatory. Budget exhaustion
   alone creates no new work. `recon_phase_partial` binds its recovery head to the
   actual phase, artifact and remaining count; other Recon work cannot substitute.
@@ -154,6 +162,11 @@ tests retain frontmatter/tool compatibility; no model behavior is inferred.
 contract, resolves the three-mode reference to its actual section, and checks
 positive/empty DNS-count handoff wording within the DNS clause, including
 caller-only Surface refresh. These are static guidance checks, not model A/B.
+Its event-timing and output-contract regressions preserve immediate receipts,
+Candidate registration, Round heartbeat and final Closure while rejecting a
+per-execution result form, mandatory manual scanner or rotation checkpoint.
+References in hunt/autopilot/core/hunting must resolve to the single shared
+`Cognitive Write Timing` section; no efficiency gain is inferred from this check.
 
 Run `python3 .trellis/tasks/09-29-native-first-boundary-optimization/research/check_native_first.py`
 for observation/owner separation, lock preservation, malformed matrix input,

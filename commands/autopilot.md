@@ -68,7 +68,9 @@ Validation/publication: `commands/validate.md`/`commands/report.md`;
 no placeholder reports/auto-submission.
 
 ### Transition And Finish Contract
-Follow `arguments.checkpoint_trigger`; all modes save evidence. Do not delay confirmed A for B/C.
+Follow `arguments.checkpoint_trigger` for read-only snapshots, not cognitive write cadence;
+use `skills/runtime-protocol.md#cognitive-write-timing`. All modes save evidence immediately.
+Do not delay confirmed A for B/C.
 `max_lanes` limits only new lanes, not evidence import/owner write-back/cleanup/Checkpoint/Closure;
 budget alone never requires another round. Resolve hypotheses; drain used `oast_listen`; preserve leads/gaps.
 Import/close browser artifacts/session; failed close stays partial/blocked, no replacement.

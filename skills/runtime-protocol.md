@@ -1,7 +1,7 @@
 # Skills 四层运行协议
 
-本协议定义共享的 Target -> Skill -> Knowledge -> Checks -> Write-back 路由，不负责
-替 Claude Code CLI 主会话选择具体测试类别。
+本协议定义 Target、Skill、Knowledge、Checks 与 Write-back 的共享责任，不要求每次
+行动依次经过各层，也不替 Claude Code CLI 主会话选择具体测试类别。
 
 本协议只定义共享路由，不重复加载或改写平台常驻契约。
 
@@ -10,7 +10,7 @@
 | 层 | 唯一职责 | 加载边界 |
 |---|---|---|
 | `CLAUDE.md` | 授权、AI/工具边界、状态 owner、入口路由 | 仓库启动时常驻 |
-| 本协议 | Target -> Skill -> Knowledge -> Checks -> Write-back | Context Pack 共享必读 |
+| 本协议 | 事实恢复、按需读取、执行与写回边界 | Context Pack 共享必读 |
 | 全部 Skill（调查核心 `src-hunting` 与专项） | 决策契约、路线、证据门 | 原生 Skill 工具按需加载（description 路由） |
 | 知识卡/参考资料 | 模式、技巧、证据门和发散思路 | 全量目录可发现，AI 按信息缺口读取 |
 | Rules / checks | Coverage、Validation 和 Reporting gate | 按动作与阶段读取 |
@@ -86,8 +86,10 @@ Skill 工具完成（frontmatter description 是发现面）。Queue/Store 不�
 
 ```text
 Target context -> evidence-backed route -> smallest bounded action
-              -> owner write-back -> next question / stop / reopen
+              -> raw evidence / owner receipt -> next question / stop / reopen
 ```
+
+认知整理和交接遵循下方 Cognitive Write Timing，不是每个动作的尾置步骤。
 
 ## Shared Memory Continuity
 
@@ -106,18 +108,29 @@ Target context -> evidence-backed route -> smallest bounded action
 和精度；缺失或不可比较才保留顺序未知。记录中的先后关系不证明当前可达性，当前
 可达性未知也不抹去可判定的历史顺序。
 
-记忆分层契约见 `docs/architecture-contract.md#memory-contract`：L1 观察、
-L2 工作集、L3 目标经验、L4 跨目标知识都落在既有 owner 上。运行时遵守
-三条层间流转：工作集只保留当前决策所需（其余留指针按引用展开）；只在
-重要节点（假设证伪、稳定结论、阶段切换、会话暂停/handoff）做 L3/L4 巩固
-写回——普通观察登记为 Store operation/observation 即止，不强制走提炼管线；召回以当前问题为驱动，
-当前事实优先直读，相关经验按问题检索且必须带适用条件。
+记忆分层契约见 `docs/architecture-contract.md#memory-contract`：观察、工作集、目标经验和
+跨目标知识是责任分层，不是每轮要执行的四道命令。工作集留在当前上下文，其余材料保留
+可展开引用；当前事实优先直读，相关经验按问题检索并保留适用条件。
 
-回写区分认知状态：观察、假设、已验证结论各有 owner（Store observation / Experience 假设
-字段 / validation+finding），不把猜测写成事实，也不把一次失败固化成永久
-禁区（dead-end 带适用条件和重开条件）。关键证据即时保存；通用经验经复盘
-和人工审核晋升（/distill → promote）。暂停、切换目标或主动压缩上下文前，将尚未保存的
-重要进展及下一步写入现有 owner/handoff；不逐条聊天入库，不新增后台记忆提取流程。
+### Cognitive Write Timing
+
+状态连续性与学习复利都保留，只改变认知写回时机：
+
+| 触发 | 应做的工作 | 不追加的仪式 |
+|---|---|---|
+| 请求/工具返回、执行完成或中断 | 即时保存原始证据、operation/observation 与真实回执；按 owner 合同登记 Candidate、resolve/kill、回收未知效果及终态心跳 | 不为普通观察逐条 note、classify/fusion、重写业务模型或手填结果表 |
+| 稳定结论、新反证、适用条件改变、路径明确证伪或转向/阻塞 | 保存会影响后续判断的认知增量、证据引用、适用/重开条件；没有新增判断时复用已有记录 | 不因工具次数、lane/round 计数、模式切换或 checkpoint cadence 触发整理 |
+| 暂停、切换目标、主动压缩上下文或结束 | 保存尚未落盘的重要判断和明确的下一意图；需要续接时写现有结构化 handoff；结束覆盖判断仍由 Coverage/Closure owner 持有 | 不把已存回执、旧摘要、无变化的判断重复写成新经验 |
+
+这不是延迟执行落账：Candidate 已达到登记条件就保存，确认 A 不等待 B/C；Action
+终态和 Round 心跳仍按原合同完成。读 Skill、自然转向和只读 Checkpoint 不产生额外记忆
+写入要求。Checkpoint cadence 只控制只读状态快照，不是认知整理、蒸馏或晋升的频率。
+若尚未保存的判断即将丢失，先走现有 handoff；明确只读/预览时仍不写回。
+
+观察、假设、已验证结论各有 owner（Store observation / Experience 假设字段 /
+validation+finding），不把猜测写成事实；dead-end 保留适用条件和重开条件。可复用经验
+在事件或结束边界进入 `/distill` 草稿，通用知识仍经人工审核晋升，不新增后台提取、
+自动共享或逐条聊天入库。
 
 纠错通过 `target_memory.py link` / `retract-link` 绑定精确经验版本与条件，保留历史；
 来源通过 `sources`、`version` 和 `entity` 展开。被反驳/替代/坏来源不是“从未发生”，
@@ -165,13 +178,14 @@ Evidence-driven depth does not mean evidence-only testing。证据驱动用于�
   `/validate` 或报告前 gate。
 
 模式切换不需要显式 review 仪式：三种模式是思考框架，AI 在 Evidence / Next question /
-Stop condition 不再匹配当前模式时直接切换；checkpoint 的 round lane 心跳
-（`decision`/`next_action` 字段）已携带该次切换的落地理由，不新增 transition
-字段或第二套状态机。
+Stop condition 不再匹配当前模式时直接切换。已有受管理执行的 Round 心跳继续携带
+`decision`/`next_action`；纯思考/读 Skill 不制造心跳，不因切换新建 checkpoint、
+transition 字段或第二套状态机。
 
 AI selection / override 是能力上限保护：当前 Skill 可以跳过建议路线、组合知识卡、创建
-新的 action 类型，或局部重排模式顺序；选择必须说明 decision reason、下一步验证动作和
-停止条件。执行事实由 Store attempt/operation 与原始材料引用证明；Skill 的选择和加载走
+新的 action 类型，或局部重排模式顺序；选择在当前上下文中保留理由、下一步验证动作和
+停止条件。真实 claim/委派仍按其 owner 合同填写 decision reason，不为每次选读另存表格。
+执行事实由 Store attempt/operation 与原始材料引用证明；Skill 的选择和加载走
 平台原生能力，Action 不要求路由字段或预设维度清单。
 
 ### 2.2 Web 深水区启发式路由
@@ -183,9 +197,9 @@ AI selection / override 是能力上限保护：当前 Skill 可以跳过建议�
 boundary -> baseline -> hidden surface -> bug family -> primitive -> connector -> impact
 ```
 
-每个链式假设都记录 `Evidence / Primitive / Connector / Impact hypothesis / Next action /
-Stop condition`。框架名称、HTTP 200、元数据或 parser error 单独只能形成 Signal，不能越过
-Evidence gate；细节回到现有 owner，不在本协议中复制。
+链式推理保留证据、Primitive、Connector、影响假设、下一动作和停止条件；只有在
+Cognitive Write Timing 的事件/边界才将需要续接的判断保存到现有 owner，不逐链填表。
+框架名称、HTTP 200、元数据或 parser error 单独只能形成 Signal，不能越过 Evidence gate。
 
 ### 2.3 层级归属标准
 
@@ -236,33 +250,17 @@ new shell/tool invocation.
 
 ## 输出契约
 
-本节用于真实执行结果/跨代理交接，不用于同会话加载或纯阅读。委派输入输出与接受责任见
-`skills/src-hunting/SKILL.md#real-delegation-and-execution-handoff`。专家自报不确认 Finding、
-不完成 Action；只有现有领域 owner 接受的事实生效。
+同会话读 Skill 或执行工具不追加结果表：使用实际工具输出、原始证据引用与 owner 回执，
+不要重新抄写 Target、Phase、Action、Coverage 或保存记录。没有发生的执行不造回执，
+缺失的回执保持待回收/未决，不能以一句总结代替。
 
-5 必填字段由 AI 手打（判断性内容：证据、候选、终态、残余未知、下一步）；
-其余 7 个字段从对应 owner 的已保存事实或只读投影引用，
-AI 无需手打——需要时可引用 owner 已有字段而不是重抄：
+只有真实跨代理交接才按
+`skills/src-hunting/SKILL.md#real-delegation-and-execution-handoff` 返回问题答案、证据增量、
+支持/反对解释、未知/适用条件及建议 owner 动作；引用已保存事实，不填与问题无关的空栏。
+专家自报不确认 Finding、不完成 Action；只有现有领域 owner 接受的事实生效。
 
-```text
-SKILL RESULT
-- Evidence:            (必填)
-- Candidates:          (必填)
-- Dead ends:           (必填)
-- Still unknown:       (必填)
-- Next actions:        (必填)
-- Target:              (owner: pack/state 自动记录)
-- Phase:               (owner: runtime 当前阶段投影)
-- Hypotheses:          (owner: Store 显式保存的假设及 Action 关联)
-- Actions taken:       (owner: Store Action/operation)
-- Coverage update:     (owner: coverage_matrix 自动记录)
-- Leads / Signals:     (owner: Store 观察；主张显式登记)
-- Write-back:          (owner: 各 owner 写回即记录)
-```
-
-必填字段的最低标准：Evidence 引用可定位的原始请求/响应或 evidence ref；
-Candidates 不得把 Lead 包装成 Candidate；Dead ends 与 Still unknown 不得用
-"没有发现问题"替代覆盖摘要；Next actions 是可执行的下一步。
+调用结束的覆盖、候选、阻塞和下一步摘要由该入口的结束合同负责；不把“没有发现问题”
+当覆盖结论，不用中途重复输出最终摘要来满足执行或恢复契约。
 
 ## 禁止事项
 

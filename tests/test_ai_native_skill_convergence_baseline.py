@@ -232,36 +232,44 @@ def test_runtime_protocol_dropped_the_transition_review_ritual():
     assert "AI selection / override 是能力上限保护" in protocol
 
 
-def test_runtime_protocol_output_contract_is_five_required_fields():
-    """A7 (batch 7): 13-field template slims to 5 AI-required fields.
-
-    The other 8 field definitions stay (owner-side consumers), but they are
-    marked as owner-recorded so the AI output obligation drops. The four
-    禁止事项 lines must remain unchanged.
-    """
+def test_runtime_protocol_reuses_receipts_without_per_execution_result_forms():
+    """Same-session execution consumes receipts; real delegation keeps its contract."""
     protocol = (REPO_ROOT / "skills" / "runtime-protocol.md").read_text(encoding="utf-8")
-    assert "## 输出契约" in protocol
-    assert "本节用于真实执行结果/跨代理交接，不用于同会话加载或纯阅读" in protocol
-    assert "专家自报不确认 Finding" in protocol and "不完成 Action" in protocol
-    # 5 required fields, marked 必填.
-    for field in ("Evidence", "Candidates", "Dead ends", "Still unknown", "Next actions"):
-        assert f"- {field}:" in protocol
-        assert f"- {field}:" in protocol.split("## 输出契约")[1].split("## 禁止事项")[0]
-    # 必填 marks exist exactly for the 5 fields.
-    contract_body = protocol.split("## 输出契约")[1].split("## 禁止事项")[0]
-    assert contract_body.count("(必填)") == 5
-    # The 8 owner-recorded fields are marked, not deleted.
-    for field in (
-        "Target", "Phase", "Hypotheses", "Actions taken",
-        "Coverage update", "Leads / Signals", "Write-back",
+    body = protocol.split("## 输出契约", 1)[1].split("## 禁止事项", 1)[0]
+    for boundary in (
+        "同会话读 Skill 或执行工具不追加结果表", "原始证据引用与 owner 回执",
+        "缺失的回执保持待回收/未决", "只有真实跨代理交接",
+        "skills/src-hunting/SKILL.md#real-delegation-and-execution-handoff",
+        "支持/反对解释", "未知/适用条件", "专家自报不确认 Finding、不完成 Action",
+        "入口的结束合同",
     ):
-        assert f"- {field}:" in contract_body
-        assert "owner:" in contract_body.split(f"- {field}:")[1].splitlines()[0]
-    # 禁止事项 intact (security residual).
+        assert boundary in body
+    assert "SKILL RESULT" not in body
+    assert "(必填)" not in body
     assert "不得跳过目标层直接进入大范围测试" in protocol
     assert "不得默认全量读取知识库" in protocol
     assert "不得把 Lead 包装成 Candidate" in protocol
     assert "不得把推荐字段、单个 seed 或工具输出当成已执行状态" in protocol
+
+
+def test_cognitive_write_timing_keeps_event_saves_and_immediate_execution_owners():
+    protocol = (REPO_ROOT / "skills/runtime-protocol.md").read_text(encoding="utf-8")
+    timing = protocol.split("### Cognitive Write Timing", 1)[1].split("### 1. Target layer", 1)[0]
+    for boundary in (
+        "即时保存原始证据", "operation/observation", "真实回执", "终态心跳",
+        "稳定结论、新反证、适用条件改变", "转向/阻塞", "暂停、切换目标、主动压缩上下文或结束",
+        "不因工具次数、lane/round 计数", "只控制只读状态快照", "不把已存回执",
+        "Candidate 已达到登记条件就保存", "人工审核晋升", "明确只读/预览时仍不写回",
+    ):
+        assert boundary in timing
+    reference = "skills/runtime-protocol.md#cognitive-write-timing"
+    for entry in ("skills/src-hunting/SKILL.md", "commands/hunt.md", "commands/autopilot.md", "rules/hunting.md"):
+        assert reference in (REPO_ROOT / entry).read_text(encoding="utf-8")
+    command = " ".join((REPO_ROOT / "commands/autopilot.md").read_text(encoding="utf-8").split())
+    assert "`arguments.checkpoint_trigger` for read-only snapshots, not cognitive write cadence" in command
+    for boundary in ("require actual receipts", "Round terminal heartbeat first", "exactly one post-lane refresh",
+                     "Coverage `rebuild` then `find-gaps`", "can_claim_exhausted=true"):
+        assert boundary in command
 
 
 def test_autopilot_heartbeat_is_conditional():
@@ -395,6 +403,15 @@ def test_manual_hunt_reuses_shared_rotation_and_browser_contracts():
     assert "rules/coverage-gate.md" in hunt and "docs/evidence-runners.md" in hunt
     assert "three focused variants" not in hunt
     assert "skills/src-hunting/SKILL.md" in hunt
+    assert "## Default Hunt Loop" not in hunt
+    assert "the only required step" not in hunt
+    assert "1. LOAD" not in hunt
+    assert "scanner is not a prerequisite" in hunt
+    assert "target_store.py init --store --target TARGET" in hunt
+    assert "Legacy, damaged or fenced state is a recovery condition" in hunt
+    assert "operator to ask or for a summary boundary" in hunt
+    assert "A rotation alone does not require `/checkpoint`" in hunt
+    assert "At the end of the hunt pass" in hunt
     assert "## Evidence-Driven Rotation" in coordinator
     assert hunt.count("python3 tools/surface.py --target target.com") == 1
     assert "docs/autopilot-lanes.md#browser-source-and-js" in hunt

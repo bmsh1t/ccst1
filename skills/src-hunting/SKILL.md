@@ -21,10 +21,11 @@ attention, not an automatic priority or permission to bypass its owner.
 
 Build the business model from observed features, actors, objects, tenants,
 workflows, crown jewels and trust boundaries. Maintain
-`evidence/<target>/business_model.md` with native Read/Write/Edit as evidence
-arrives: keep source references, distinguish observation from judgment and edit
+`evidence/<target>/business_model.md` with native Read/Write/Edit when evidence
+changes the actor/object/workflow model: keep source references, distinguish observation from judgment and edit
 incrementally rather than regenerating prior conclusions. It is an advisory
 business-context note, not another Action/Finding or target-memory authority.
+Ordinary observations keep their raw evidence; they do not each require a note edit.
 
 Work from the information gap rather than a Recon → Hunt → Validate checklist:
 
@@ -67,8 +68,9 @@ with the prior result. Continue while evidence changes an explanation, reduces
 uncertainty or makes a connector testable. Rotate after homogeneous no-information
 results, a repeated progress fingerprint, an owner budget boundary or unavailable
 prerequisite; a higher-value structural signal can justify an immediate pivot.
-Stop this path when its actual kill condition is met. Record the evidence delta
-(including no delta), remaining prerequisite and condition that would reopen it.
+Stop this path when its actual kill condition is met. On a path decision or handoff,
+save the evidence delta (including no delta), remaining prerequisite and condition
+that would reopen it; comparisons within the same live path stay in working context.
 Elapsed time or scanner-negative output cannot prove exhaustion or coverage.
 
 A failed attempt applies to its recorded conditions, not all future targets.
@@ -141,7 +143,8 @@ pivots; the main session decides them.
 
 Raw observations and receipts go to existing evidence/Store owners. Save important
 conditional experience and unresolved intent at stable conclusions and handoffs,
-not each thought or every observation. At pause, target switch, compaction or exit,
+not each thought or every observation; the shared timing owner is
+`skills/runtime-protocol.md#cognitive-write-timing`. At pause, target switch, compaction or exit,
 preserve explicit structured `next_intent`, conditions and observation references
 through the existing handoff owner; natural-language explanation does not replace
 those recovery bindings. Budget exhaustion stops new work, not evidence recovery,

@@ -18,12 +18,14 @@ Active vulnerability hunting through Claude CLI. Use the scanner as a bounded br
 | claim 四件套（hypothesis_id/expected_learning/kill_condition/decision_reason） | **AI 判断**（永不模板化） |
 | target、ledger 落账、锁、witness | **机械** |
 
-## Run This (the only required step)
+## Start From Current Evidence
 
 Replace `target.com` with the supplied target.
 
-Before running active probes, apply `skills/runtime-protocol.md#shared-knowledge-recall`.
-When no matching Pack is available, build one:
+Before touching the target, recover its current owner facts and Scope/Auth through
+`skills/runtime-protocol.md#shared-memory-continuity`. Apply shared knowledge recall
+when an information gap needs it; reuse still-current facts and already-read methods.
+When the current target context is missing, read it through:
 
 ```bash
 python3 tools/context_pack.py --target target.com
@@ -31,6 +33,16 @@ python3 tools/context_pack.py --target target.com
 
 For this hunting entrypoint, also read `rules/hunting.md`. It is the canonical
 hunting semantics and is loaded on demand rather than by every context pack.
+
+For a genuinely new target, explicitly initialize it through
+`python3 tools/target_store.py init --store --target TARGET` before owner writes;
+`tools/hunt.py` also owns initialization when starting a selected recon/scanner pass.
+Legacy, damaged or fenced state is a recovery condition, not permission to initialize
+over it. Context Pack and ordinary queries never initialize a missing Store.
+
+Run recon/scanning only when the current information gap calls for that breadth;
+an existing request, source path or evidence-backed lead can go straight to the
+selected bounded investigation. The scanner is not a prerequisite for `/hunt`:
 
 ```bash
 python3 tools/hunt.py --target target.com --scan-only      # recon exists → scan cached surface
@@ -55,29 +67,19 @@ For business-model maintenance, hypothesis selection, rotation and cross-stage
 questions use `skills/src-hunting/SKILL.md` on demand, not for every action. These are shared methods, not
 permission to keep running automatically after the requested hunt pass.
 
-## Default Hunt Loop
+## Shared Investigation, Not Another Loop
 
-Fast path: when concrete evidence is already in hand (browser-observed requests,
-cached recon artifacts, an explicit lead, or the selected Skill/card contents
-already read in this conversation), go straight to step 5 ATTACK. The target and
-scope confirmation in step 1 LOAD is not skippable — confirm target identity
-before touching it.
-
-```text
-1. LOAD      Reuse or refresh context-pack, then read /surface output, target memory, cached recon, findings, and guard hints
-2. ROUTE     Select the main Skill using skills/runtime-protocol.md
-3. REVIEW    Build an evidence-backed surface view; Claude chooses the highest-value workflow: account, admin, API, export, upload, webhook, GraphQL, invite, report/download
-4. KNOWLEDGE Read the selected Skill/cards through the shared recall rule; reuse contents already in context
-5. ATTACK    Reduce one hypothesis to exact requests: auth, role, object, method, version, body diff
-6. CHAIN     Check siblings, roles, versions, and side effects when a signal appears
-7. RECORD    Preserve leads/signals/candidates with exact next evidence actions in target memory
-8. COVERAGE  Apply rules/coverage-gate.md before finishing or rotating
-9. VALIDATE Use `/validate` only when a Candidate is ready for report-quality proof
-```
+`skills/src-hunting/SKILL.md` owns the question, competing explanations, smallest
+discriminating experiment, evidence interpretation and rotation. This entry adds
+no ordered LOAD/ROUTE/REVIEW/RECORD pipeline or per-action Skill result form.
+Do not rescan, reread the catalog or run a full coverage review merely to move
+between hypotheses. Current Scope/Auth, execution admission and owner receipts
+remain mandatory when applicable.
 
 A signal with replayable evidence becomes a candidate finding through
-the Store claim API in step 7 — without waiting for the operator to ask. Prose or a
-raw probe alone is not a finding; `/validate` in step 9 can only run against a
+the Store claim API as soon as its evidence gate is met — without waiting for the
+operator to ask or for a summary boundary. Prose or a raw probe alone is not a
+finding; `/validate` can only run against a
 finding that already exists in the target Store. `rules/coverage-gate.md` owns
 Lead -> Signal -> Candidate -> Validated Finding evidence requirements;
 `docs/evidence-runners.md` owns explicit Candidate/evidence registration. Persist
@@ -94,9 +96,11 @@ Do not become a passive scanner wrapper. Start with the most concrete evidence a
 
 ## Four-Layer Write-Back
 
-Apply `skills/runtime-protocol.md#shared-memory-continuity`, as in ordinary
-conversation and autopilot. Claude saves important progress without waiting for
-a user reminder; bind each write to the current target:
+Apply `skills/runtime-protocol.md#shared-memory-continuity` and its
+`skills/runtime-protocol.md#cognitive-write-timing`, as in ordinary conversation
+and autopilot. These are alternatives for a real event or handoff, not a four-command
+tail after every action. Claude saves important progress without waiting for a
+user reminder; bind each needed write to the current target:
 
 ```bash
 python3 tools/target_memory.py lead "..." --target TARGET
@@ -179,6 +183,9 @@ Use `skills/src-hunting/SKILL.md#evidence-driven-rotation` to compare evidence
 delta, remaining budget, prerequisites and kill/reopen conditions. Repeated status
 or body shapes alone do not establish exhaustion or impose a fixed retry count.
 
-Then run `/checkpoint target.com` (read contract in `commands/checkpoint.md`) to
-inspect remaining work and coverage. Explicitly save useful experience/handoff
-through target memory; AI chooses the next evidence-backed lane.
+At a path decision, save only the changed conclusion, blocker or reopening
+condition through its existing owner, then follow the next evidence-backed question.
+A rotation alone does not require `/checkpoint`, a new handoff or a full coverage
+summary. At the end of the hunt pass, use the read-only Checkpoint above and apply
+`rules/coverage-gate.md`; a bounded stop leaves residual work explicit and is not
+an exhaustion claim.

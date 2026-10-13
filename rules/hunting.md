@@ -33,8 +33,10 @@ Core discipline:
   high-signal surface already present.
 - Route from current evidence, never an old preference, favorite bug class,
   checklist, or bounty heuristic.
-- Every failed path leaves a dead-end condition, blocked note, refined
-  hypothesis, coverage update, or concrete next evidence action.
+- A path-level failure preserves its conditions, blocker, refined hypothesis or
+  concrete next evidence action. One failed request is not a path-level conclusion;
+  raw evidence is saved immediately, cognitive write-back follows
+  `skills/runtime-protocol.md#cognitive-write-timing`.
 - Prefer one reproducible, high-impact issue over many information-level
   observations. Keep an information-level item only as a chain seed or lead.
 - When a standard method fails, change an evidence-linked dimension: role,
@@ -163,8 +165,9 @@ transitions, previews, calculations, and test-owned reversible flows.
 
 After each bounded action compare the current progress fingerprint
 (`hypothesis + surface + actor/state + observation kind + evidence reference`)
-with the previous one and record the evidence delta, owner budget, and any
-prerequisite. Continue when the evidence changes or uncertainty falls; rotate
+with the previous one in working context; preserve the raw evidence and owner receipts.
+Persist the changed judgment, remaining budget and prerequisites at a path decision
+or handoff, not as a per-action summary or duplicate note. Continue when the evidence changes or uncertainty falls; rotate
 when the fingerprint repeats, the kill condition is met, the owner budget is
 exhausted, or a prerequisite is unavailable. Prefer fresh context to brute
 force, while allowing a high-information lane to continue beyond a clock

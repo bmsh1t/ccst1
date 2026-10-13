@@ -78,7 +78,7 @@ Planner, Controller, model loop, automatic chain generator, or session manager.
 
 Autopilot is an automatic execution mode, not a second investigation workflow.
 Manual and automatic entries share `src-hunting` as the single investigation
-core, problem-scoped specialists, the memory protocol, Rules and owner APIs. Autopilot adds continuation, waits, budgets, checkpoint cadence and handoff;
+core, problem-scoped specialists, the memory protocol, Rules and owner APIs. Autopilot adds continuation, waits, budgets, read-only checkpoint cadence and handoff;
 it does not own different finding, evidence or report standards. Shared execution
 contracts are read on demand and never enable automatic continuation by themselves.
 
@@ -230,6 +230,17 @@ knowledge remains reviewed Markdown/registry content.
 | Cross-target knowledge | Existing sanitized, reviewed Markdown cards and registry; not automatic sharing of private field memory |
 
 These are information responsibilities, not four stores or new services.
+Mechanical evidence/receipt registration and terminal owner work remain immediate.
+Cognitive consolidation is event- or boundary-triggered: stable conclusions,
+counterevidence, changed conditions, path decisions, or pause/target switch/compaction/exit.
+Ordinary observations, Skill reads, mode changes and checkpoint cadence do not
+require another note, business-model rewrite or result form. The shared timing
+contract is `skills/runtime-protocol.md#cognitive-write-timing`; live comparisons
+stay in working context, recovery intent remains explicitly bound in the handoff,
+and cross-target promotion remains reviewed. Manual hunt reuses the investigation
+core instead of imposing a scanner or a second ordered loop. Coverage/Closure at
+finish and actual claim/receipt/heartbeat obligations are unchanged.
+
 Normal memory commands, Python APIs, default text and JSON must use one domain
 meaning. `target_memory.py` remains a thin interface; `show` must read the same
 Store that accepted the write. `set TARGET` selects an initialized target only;
