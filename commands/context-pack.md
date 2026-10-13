@@ -55,7 +55,9 @@ python3 tools/context_pack.py --target <target>
    - raw JS/source paths surfaced as `must_read` references
 6. 从 Store observation 和当前材料完整性检查生成只读证据摘要。
 7. 从 `knowledge/capabilities.yaml` 发布知识卡目录；Skill 发现使用 Claude Code 原生目录。
-8. 输出证据锚点、已记录的 Actor Matrix 缺口、未知项、矛盾点和 owner 写回入口。
+8. 从登记的 6k 快照发布只读 `hot_methods` 指针，校验 source id 和逐文件 hash；只把
+   `ready` 且与 focus 匹配的入口交给 AI 读取，缺失或漂移只作为健康诊断。
+9. 输出证据锚点、已记录的 Actor Matrix 缺口、未知项、矛盾点和 owner 写回入口。
 
 `knowledge_cards`、`deferred_knowledge_cards`、
 `knowledge_card_recall`、`hypothesis_seeds`、`alternative_angles` 是空兼容字段，
@@ -71,7 +73,8 @@ python3 tools/context_pack.py --target TARGET --json
 
 文本与 JSON 均提供知识卡目录、目标事实和证据锚点。短卡按需全文读；长卡读取完整的
 相关机制，包括前提、证据门、反例与停止条件，再按需展开来源。`knowledge/index.md`
-仍是可直接读取的目录，不是额外必过步骤。
+仍是可直接读取的目录，不是额外必过步骤。`hot_methods` 是带 hash 的文件指针，不是
+自动路线或执行命令；读取前仍需按当前证据判断信息缺口。
 
 ## Skill / Focus 路由
 

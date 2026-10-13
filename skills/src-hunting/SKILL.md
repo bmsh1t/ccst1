@@ -88,6 +88,13 @@ There is no mandatory summary-card gateway, fixed six-domain table or full-index
 opening ritual. Already available material need not be reread; no matching card
 does not prevent native reasoning or a bounded discovery experiment.
 
+When Context Pack exposes `hot_methods`, treat them as read-only pointers into the
+pinned clown snapshot. Read only the selected entry whose status is `ready` and whose
+focus matches the current information gap. `missing`, `changed` and
+`invalid_manifest` entries are diagnostics, not usable method text; they never create
+an Action, Finding, route, permission or network request. A healthy pointer does not
+replace current-target evidence, Scope/Auth checks or the existing evidence gate.
+
 `knowledge/playbooks/web2-evidence-contracts.md` owns the migrated Web/API method
 and evidence contracts: focused route notes, chain examples, evidence/write-back
 and stop conditions. Read the relevant complete unit, including prerequisites,

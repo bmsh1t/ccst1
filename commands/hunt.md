@@ -31,6 +31,11 @@ When the current target context is missing, read it through:
 python3 tools/context_pack.py --target target.com
 ```
 
+Context Pack 中的 `hot_methods` 是 6k 本地快照的只读指针。按当前信息缺口读取
+`ready` 项；`missing`、`changed` 或 `invalid_manifest` 只表示源健康问题，不能作为
+方法正文、执行路线或权限依据。热方法读取不会创建 Action/Finding，也不会替代当前
+目标的 Scope/Auth、TargetStore 事实和证据门。
+
 For this hunting entrypoint, also read `rules/hunting.md`. It is the canonical
 hunting semantics and is loaded on demand rather than by every context pack.
 

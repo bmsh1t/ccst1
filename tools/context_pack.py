@@ -38,6 +38,7 @@ try:
     from tools.target_memory import load_active_file, load_goal_memory, format_current_handoff, format_experience_provenance
     from tools.current_truth import current_cell_projection
     from tools.target_store import TargetStore, runtime_store
+    from tools.hot_method import build_hot_method_projection
 except ImportError:  # pragma: no cover - direct tools/ execution
     from memory.target_profile import default_memory_dir
     from coverage_matrix import high_value_gaps_from_matrix, read_matrix, require_matching_truth  # type: ignore
@@ -57,6 +58,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from target_memory import load_active_file, load_goal_memory, format_current_handoff, format_experience_provenance  # type: ignore
     from current_truth import current_cell_projection  # type: ignore
     from target_store import TargetStore, runtime_store  # type: ignore
+    from hot_method import build_hot_method_projection  # type: ignore
 
 
 # S1 native skill loading (ai-capability-roadmap batch 3): every skill loads
@@ -867,6 +869,7 @@ def _build_context_pack(
     repo = Path(repo_root)
     resolved_target = canonical_target_value(target)
     target_key = target_storage_key(resolved_target)
+    hot_methods = build_hot_method_projection(repo, focus=focus)
     store = runtime_store(repo, resolved_target)
     store_binding = store.binding()
     # Private assembly accepts only inputs captured by this call's owner reader.
@@ -978,6 +981,7 @@ def _build_context_pack(
             "next_actions": goal_memory["target"]["next_actions"],
         },
         "focus": focus,
+        "hot_methods": hot_methods,
         "tech_stack": tech_stack,
         "must_read": must_read,
         "knowledge_cards": cards,
@@ -1050,6 +1054,10 @@ def _build_context_pack(
             "store_id": store_binding["store_id"],
             "store_revision": store_binding["revision"],
             "snapshot_status": "bound",
+            "hot_methods_status": hot_methods.get("status", "invalid_manifest"),
+            "hot_methods_total": int((hot_methods.get("summary") or {}).get("total", 0) or 0),
+            "hot_methods_ready": int((hot_methods.get("summary") or {}).get("ready", 0) or 0),
+            "hot_methods_selected": int((hot_methods.get("summary") or {}).get("usable_selected", 0) or 0),
         },
     }
     return pack
@@ -1124,6 +1132,18 @@ def format_context_pack(pack: dict) -> str:
         *format_target_experiences(pack.get("target_experiences") or {}),
         "- Must read:",
         *_format_list(pack["must_read"]),
+        "- Hot methods (read-only pointers; source health={status}):".format(
+            status=(pack.get("hot_methods") or {}).get("status", "unavailable"),
+        ),
+        *_format_list([
+            "{path} [{role}] sha256={sha} reason={reason}".format(
+                path=item.get("path", ""),
+                role=item.get("role", ""),
+                sha=item.get("sha256", ""),
+                reason=item.get("selection_reason") or "selected",
+            )
+            for item in (pack.get("hot_methods") or {}).get("hot_methods", [])
+        ]),
         "- Knowledge card catalog: select by information gap.",
         *(catalog_lines or ["  - None"]),
         "- Historical patterns (advisory; require current-target evidence):",

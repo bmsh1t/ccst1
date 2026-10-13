@@ -80,6 +80,12 @@ Skill 工具完成（frontmatter description 是发现面）。Queue/Store 不�
 默认 refs 的卡不需要理由；唯一的机械校验是引用的卡文件必须真实存在（防笔误与伪造），
 不校验与 item 默认 refs 的子集关系。
 
+Context Pack 还可发布 `hot_methods` 只读指针：它们来自仓库登记的本地 clown 快照，
+带 `source_id`、相对路径、期望/实际 hash 和 `ready`、`missing`、`changed` 或
+`invalid_manifest` 状态。只有 `ready` 指针可供 AI 按信息缺口读取；指针不复制正文、
+不写 Store、不生成 Action/Finding、不授予权限，也不把漂移源当成共享知识。源不可用时，
+本仓 card catalog、目标事实、证据和经验仍是有效的恢复路径。
+
 ## 决策闭环
 
 以下是可回退的判断环，不是固定执行顺序：
