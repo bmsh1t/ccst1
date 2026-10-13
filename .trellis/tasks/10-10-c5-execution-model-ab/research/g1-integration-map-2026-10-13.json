@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-13",
+  "scope": "C5 G1 child-to-parent acceptance mapping for the current ccst3 checkout",
+  "release_decision": "not_ready",
+  "knowledge_absorption": "deferred",
+  "model_execution": "not_started",
+  "children": {
+    "C0": "partial",
+    "C1": "engineering_accepted_behavior_deferred",
+    "C2": "engineering_partial_content_deferred",
+    "C3": "engineering_accepted_behavior_deferred",
+    "C4": "partial_not_accepted",
+    "C6": "partial",
+    "C7": "engineering_partial_semantic_not_accepted",
+    "C8": "engineering_partial_capability_not_accepted"
+  },
+  "parent_ac": {
+    "AC1": "partial",
+    "AC2": "not_ready",
+    "AC3": "partial",
+    "AC4": "partial",
+    "AC5": "not_ready",
+    "AC6": "partial",
+    "AC7": "partial",
+    "AC8": "accepted_bounded_only",
+    "AC9": "not_started",
+    "AC10": "partial"
+  },
+  "closeout": {
+    "E1": "passed",
+    "E2": "accepted_bounded_engineering",
+    "F1": "partial_not_accepted",
+    "F2": "descoped_not_accepted",
+    "D1": "not_applicable_for_current_checkout",
+    "H1": "committed"
+  },
+  "next_gate": "G2",
+  "next_gate_scope": [
+    "recovery and error-source integration review",
+    "cross-entry owner and partial-state consistency",
+    "no model execution",
+    "no C2 blind-answer or promotion restart"
+  ],
+  "evidence": [
+    "research/finite-closeout.md",
+    "research/e2-evidence-acceptance.md",
+    "research/f1-closeout.md",
+    "research/f2-descope-record.md",
+    "research/committed-head-assembly.json"
+  ]
+}
