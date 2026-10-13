@@ -1,0 +1,100 @@
+{
+  "schema_version": 1,
+  "task": "c5-execution-model-ab",
+  "date": "2026-10-13",
+  "status": "not_ready",
+  "release_decision": "not_ready",
+  "source": {
+    "branch": "refactor/10-11-capability-architecture",
+    "head": "d45a8c121115f708675a2f6e108929bd5fbab8c3",
+    "working_tree": "33_preserved_paths_9_knowledge_19_frozen_evaluation_5_inherited_records_not_in_committed_head_assembly"
+  },
+  "default_selection": {
+    "status": "not_selected",
+    "baseline": "existing_default",
+    "candidate": null,
+    "reason": "C0 A-F/K and final held-out non-regression evidence are not available"
+  },
+  "gates": {
+    "G1": "partial_not_accepted",
+    "G2": "E1_passed_E2_bounded_engineering_accepted_committed_HEAD_assembly_passed",
+    "G3": "not_started_readiness_reviewed",
+    "G4": "synthetic_partial",
+    "G5": "E2_synthetic_engineering_accepted_df83560_fresh_install_passed_no_global_install",
+    "G6": "E2_synthetic_recovery_accepted_no_real_data_run",
+    "G7": "not_ready",
+    "G8": "not_authorized",
+    "G9": "engineering_checkpoints_committed_c970a5b_8a35fd3_df83560_no_release"
+  },
+  "child_acceptance": {
+    "C0": "v2_protocol_engineering_only_experiments_and_catalog_expansion_frozen",
+    "C1": "shared_investigation_entry_converged_capability_unaccepted",
+    "C2": "one_of_four_promoted_three_draft_two_source_refined",
+    "C3": "event_boundary_writeback_engineering_checked_capability_unaccepted",
+    "C4": "native_discovery_read_passed_historic_2_of_5_new_composite_0_of_1_causal_gap",
+    "C6": "consumer_provenance_chain_engineering_accepted_full_capability_and_real_migration_unaccepted",
+    "C7": "real_encoder_reranker_unrun",
+    "C8": "consumer_relation_correction_chain_engineering_accepted_full_capability_unaccepted"
+  },
+  "evidence": [
+    "research/integration-matrix.md",
+    "research/g2-engineering-verification.json",
+    "research/g2-failure-audit.md",
+    "research/migration-rehearsal.md",
+    "research/rollback-rehearsal.md",
+    "research/receipt-intake.md",
+    "research/g2-contract-closeout.json",
+    "research/e2-evidence-acceptance.json",
+    "research/f1-closeout-verification.json",
+    "research/engineering-checkpoint-scope.json",
+    "research/d1-delivery-scope.json",
+    "research/f2-descope-record.md",
+    "research/entry-engineering-checkpoint.json",
+    "research/committed-head-assembly.json",
+    "research/g2-owner-continuity-review.json",
+    "research/g3-readiness-review.json",
+    "../10-11-c6-memory-provenance/research/consumer-provenance-checkpoint.json",
+    "../10-11-c6-memory-provenance/research/consumer-provenance-verification.json"
+  ],
+  "must_remain_blocked": [
+    "real_encoder_or_reranker_and_A-F-K_comparison",
+    "real_target_migration_and_new-write_recovery",
+    "global_runtime_installation_or_cutover",
+    "default_selection_without_zero-regression_evidence",
+    "commit_or_archive_without_user_approval"
+  ],
+  "approvals": {
+    "real_data": "not_granted",
+    "global_install": "not_granted",
+    "commit": "granted_and_executed_separately_for_c970a5b_8a35fd3_df83560_future_commits_need_fresh_approval"
+  },
+  "not_run": [
+    "model_download_or_local_encoder_execution",
+    "real_target_migration",
+    "global_runtime_installation",
+    "full_repository_test_suite"
+  ],
+  "engineering_closeout": {
+    "plan": "research/finite-closeout.md",
+    "E1": "passed",
+    "result": "research/g2-contract-closeout.json",
+    "E2": "accepted_bounded_engineering",
+    "E2_result": "research/e2-evidence-acceptance.json",
+    "F1": "partial_not_accepted_native_loaded_causal_gap_retained",
+    "F1_result": "research/f1-closeout-verification.json",
+    "F2": "descoped_not_accepted_e_arm_cancelled_2026-10-13",
+    "F2_result": "research/f2-descope-record.md",
+    "D1": "not_applicable_current_checkout_no_target_root_selected",
+    "D1_result": "research/d1-delivery-scope.json",
+    "H1": "committed_c970a5b_2026-10-13",
+    "H1_scope": "research/engineering-checkpoint-scope.json",
+    "post_checkpoint": {
+      "status": "approved_wiring_and_minimal_committed_HEAD_assembly_complete_not_full_project_acceptance",
+      "consumer_commit": "8a35fd3f663c159933d55369fdf1cbd2c8f82d01",
+      "entry_commit": "df835606df26874d69f225f8986e14dd4ccaca83",
+      "assembly": "research/committed-head-assembly.json",
+      "assembly_replaces_historical_E2_upgrade_or_recovery_evidence": false,
+      "next_phase": "G3 readiness reviewed; separately approve a complete capability study before execution or content promotion"
+    }
+  }
+}
