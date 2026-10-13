@@ -31,10 +31,10 @@ except ImportError:  # pragma: no cover - direct tools/ execution
 from memory.target_profile import default_memory_dir
 try:
     from tools.context_pack import format_source_queries
-    from tools.target_memory import load_goal_memory, format_current_handoff
+    from tools.target_memory import load_goal_memory, format_current_handoff, format_experience_provenance
 except ImportError:  # pragma: no cover - direct tools/ execution
     from context_pack import format_source_queries
-    from target_memory import load_goal_memory, format_current_handoff
+    from target_memory import load_goal_memory, format_current_handoff, format_experience_provenance
 
 
 def format_minutes(total_minutes: int | float) -> str:
@@ -245,6 +245,7 @@ def format_resume_output(summary: dict | None, target: str) -> str:
                 if item.get("evidence_refs"):
                     lines.append(f"    evidence: {', '.join(item['evidence_refs'])}")
                 lines.append(f"    recorded_by: {item.get('recorded_by', '')}")
+                lines.extend(format_experience_provenance(item, indent="    "))
             if window.get("has_more"):
                 lines.append(f"  More: {window['remaining']}; {window['next_command']}")
             if entries:

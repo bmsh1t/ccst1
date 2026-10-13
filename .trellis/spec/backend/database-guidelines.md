@@ -866,3 +866,36 @@ attachments 不随 Case 版本改变，反向影响复用 `experience_observatio
 无变化与单项修改均可复用未受影响历史正文/关系分组；仍独立读取 current、核验相关原件，
 共享知识仍全量 owner audit。不把投影命中率或 `experience_rows_read=0` 当成零数据库/文件 I/O。
 完整 DTO、失败矩阵与实链证据见 transactional-target-state 的 Incremental target source acquisition。
+
+## 日常记忆命令的来源接线
+
+### 1. Scope / Trigger
+`target_memory` 的日常写入与 Context Pack / Resume / Autopilot 的经验文本展示。
+
+### 2. Signatures
+note/lead/next/dead-end/pattern/handoff/fact 共用 `--sources-json`、`--links-json`、
+`--claims-json` 和 `--expected-revision`，传给 `TargetStore.remember`。
+`format_experience_provenance(entry, *, indent="  ")` 展示原 owner DTO，不解析出新状态。
+
+### 3. Contracts
+CLI 只解析 JSON；Store 持有来源、跨目标、关系与 CAS 校验。省略参数保持轻量写入，
+fact 仍为 advisory note。当前 handoff 不受历史分页/索引健康影响，空 next_intent 不补旧值。
+历史条目与当前交接均保留 claims/review_state/applicability/source_health/sources/
+correction_refs/dependency_refs；状态须紧随所属正文，不能用别处的提示代替。
+Context Pack 与 Resume 复用 formatter；Autopilot 继续复用 Context Pack 的经验展示。
+
+### 4. Validation & Error Matrix
+坏 JSON/错型/跨目标/有 links 无 CAS/陈旧 revision → JSON error、exit 2、无 Store 写入。
+精确重试 → 原 receipt + replayed，不重复写。来源更正 → 旧代关系失效、当前经验 needs_review
+仍可读取；只有显式 relation-build 才重建，失效主张不复活为路径。
+
+### 5. Good / Base / Bad
+Good：保存带来源的交接，重启后看见出处与更正状态。Base：无 provenance 参数仍可保存笔记。
+Bad：只展示被更正的历史正文而隐藏 superseded，或把 advisory claims 当技术事实。
+
+### 6. Tests Required
+`tests/test_target_memory_cli.py` 的 provenance 两组：真实 CLI→Store→query→两跳关系→更正
+失效，以及 owner→Context Pack/Resume 文本；非法输入、精确重试和只读不改 binding。
+
+### 7. Wrong → Correct
+只给 note 接 provenance / 历史 JSON 有状态但文本丢失 → 共用参数/传递与展示，保留 owner 判定。

@@ -471,3 +471,146 @@ def test_documented_memory_writes_preserve_conditions_and_reject_incomplete_nega
         assert _guidance_files(tmp_path) == files
     assert store.page("actions")["total"] == 0
     assert not (tmp_path / "memory/goals/active.json").exists()
+
+
+def test_handoff_and_fact_provenance_reaches_current_recall_and_relations(tmp_path):
+    store = TargetStore(tmp_path, "memory-cli.test")
+    store.initialize()
+    # Keep the challenged premise inside Resume's five-row history preview.
+    for name in ("node-a", "node-b", "node-c", "basis"):
+        _command(tmp_path, "note", name, "--target", store.target,
+                 "--command-id", name, "--conditions", "same session")
+    version = store.experience_version("basis")
+    source = {key: version[key] for key in
+              ("target", "store_id", "experience_id", "version", "content_sha256")}
+    source["purpose"] = "basis"
+    nodes = [store.experience_entity("experience", f"node-{name}") for name in "abc"]
+    link = {"target_id": "basis", "relation": "depends_on", "conditions": "same session",
+            "rationale": "Explicit dependency on saved observation context"}
+    for command, extra, index in (("handoff", ["--next-intent", ""], 0),
+                                  ("fact", ["--key", "connection"], 1)):
+        claim = {"subject": nodes[index], "object": nodes[index + 1], "predicate": "enables",
+                 "conditions": "same session", "timing": "unknown", "source_refs": [{"source": 0}]}
+        args = [command, "Unverified connection", *extra, "--target", store.target,
+                "--command-id", command, "--conditions", "same session",
+                "--sources-json", json.dumps([source]), "--links-json", json.dumps([link]),
+                "--claims-json", json.dumps([claim]),
+                "--expected-revision", str(store.binding()["revision"])]
+        saved = _command(tmp_path, *args)
+        before = store.binding()
+        assert _command(tmp_path, *args)["receipt"] == {**saved["receipt"], "replayed": True}
+        assert store.binding() == before
+        row = TargetStore(tmp_path, store.target).experience(command)
+        assert row["sources"][0]["source_experience_id"] == "basis"
+        assert row["sources"][0]["content_sha256"] == version["content_sha256"]
+        assert row["dependency_refs"][0]["target_id"] == "basis"
+        assert row["claims"][0]["subject"]["record_id"] == nodes[index]["record_id"]
+        assert row["claims"][0]["advisory"] is True
+
+    # The latest handoff stays independent of the one-row history window.
+    projection = target_memory.load_goal_memory(tmp_path, store.target, experience_limit=1)
+    assert [row["entry_id"] for row in projection["recent_entries"]] == ["fact"]
+    current = projection["target"]["current_handoff"]
+    assert current["entry_id"] == "handoff"
+    assert projection["target"]["next_actions"] == []
+    rendered = "\n".join(target_memory.format_current_handoff(projection["target"]))
+    assert "sources: " + json.dumps(current["sources"], ensure_ascii=False) in rendered
+    assert "Current next intent: None" in rendered
+
+    def recall(command, *args, exit_code=0):
+        result = subprocess.run(
+            [sys.executable, "-B", str(Path(target_memory.__file__).with_name("experience_recall.py")),
+             command, "--repo-root", str(tmp_path), "--target", store.target, *args],
+            capture_output=True, text=True, timeout=20,
+        )
+        assert result.returncode == exit_code, result.stdout + result.stderr
+        return json.loads(result.stdout)
+
+    before = store.binding()
+    current_query = recall("query", "--no-knowledge", "--limit", "1")
+    assert current_query["current"]["memory"]["current_handoff"]["id"] == "handoff"
+    assert current_query["current"]["memory"]["current_handoff"]["sources"][0]["source_experience_id"] == "basis"
+    assert current_query["current"]["memory"]["current_handoff"]["next_intent"] == ""
+    assert store.binding() == before
+    build = recall("relation-build")
+    assert build["health"]["status"] == "ready"
+    relation_args = ["--seeds", json.dumps([nodes[0]]), "--min-hops", "2", "--max-depth", "2",
+                     "--predicate", "enables"]
+    graph = recall("relation-query", *relation_args)
+    path = next(path for path in graph["paths"]
+                if [node["record_id"] for node in path["nodes"]] == ["node-a", "node-b", "node-c"])
+    assert [edge["source"]["source_ref"] for edge in path["edges"]] == ["experience:handoff", "experience:fact"]
+    assert all(edge["source"]["source_refs"] for edge in path["edges"])
+    assert path["epistemic"] == "hypothesis" and path["executable"] is False
+    assert graph["current"]["memory"]["current_handoff"]["id"] == "handoff"
+    assert store.binding() == before
+
+    correction = {"target_id": "basis", "relation": "supersedes", "conditions": "same session",
+                  "rationale": "Explicit correction; the former premise is unsupported"}
+    _command(tmp_path, "fact", "Corrected premise", "--key", "correction", "--target", store.target,
+             "--command-id", "correction", "--conditions", "same session",
+             "--links-json", json.dumps([correction]), "--expected-revision", str(before["revision"]))
+    corrected = _command(tmp_path, "show", store.target)["target"]["current_handoff"]
+    assert corrected["entry_id"] == "handoff" and corrected["review_state"] == "needs_review"
+    assert store.experience("basis")["statement"] == "basis"
+    after_correction = store.binding()
+    from tools.context_pack import format_target_experiences
+    from tools.resume import format_resume_output, load_resume_summary
+
+    view = target_memory.load_goal_memory(tmp_path, store.target)
+    experiences = {**view["source"]["experience_window"],
+                   "current_handoff": view["target"]["current_handoff"],
+                   "next_actions": view["target"]["next_actions"], "items": view["recent_entries"]}
+    pack_lines = format_target_experiences(experiences)
+    resumed = load_resume_summary(tmp_path / "hunt-memory", store.target, repo_root=tmp_path)
+    resume_lines = format_resume_output(resumed, store.target).splitlines()
+    for lines, marker in ((pack_lines, "[basis/note]"), (resume_lines, "[basis] (note)")):
+        index = next(i for i, line in enumerate(lines) if marker in line)
+        following = next((i for i in range(index + 1, len(lines))
+                          if lines[i].lstrip().startswith("- [")), len(lines))
+        entry_text = "\n".join(lines[index:following])
+        basis = next(entry for entry in view["recent_entries"] if entry["entry_id"] == "basis")
+        assert 'review_state: "superseded"' in entry_text
+        for field in ("source_health", "correction_refs", "dependency_refs"):
+            assert field + ": " + json.dumps(basis[field], ensure_ascii=False) in entry_text
+    assert format_target_experiences({}) == []
+    assert store.binding() == after_correction
+    stale = recall("relation-query", *relation_args)
+    assert stale["paths"] == [] and stale["health"]["relations"]["status"] == "stale"
+    assert stale["current"]["memory"]["current_handoff"]["review_state"] == "needs_review"
+    assert store.binding() == after_correction
+    rebuilt = recall("relation-build", exit_code=2)
+    assert rebuilt["health"]["status"] == "partial"
+    fresh = recall("relation-query", *relation_args)
+    assert fresh["paths"] == []
+    assert any(item["source_ref"] == "experience:handoff" for item in fresh["rejected_sources"])
+    assert store.binding() == after_correction
+
+
+@pytest.mark.parametrize("command,extra", [
+    ("handoff", ["--next-intent", ""]), ("fact", ["--key", "binding"]),
+    ("note", []), ("next", []),
+])
+def test_memory_provenance_options_reject_invalid_input_without_writes(tmp_path, command, extra):
+    store = TargetStore(tmp_path, "memory-cli.test")
+    store.initialize()
+    _command(tmp_path, "note", "Existing premise", "--target", store.target, "--command-id", "basis")
+    before = store.binding()
+    version = store.experience_version("basis")
+    source = {key: version[key] for key in
+              ("target", "store_id", "experience_id", "version", "content_sha256")}
+    source.update(purpose="basis", target="other.test")
+    invalid = [
+        ["--sources-json", "["], ["--sources-json", "{}"],
+        ["--claims-json", "{}"], ["--links-json", "{}"],
+        ["--sources-json", json.dumps([source])],
+        ["--links-json", json.dumps([{"target_id": "basis", "relation": "depends_on",
+                                     "conditions": "same session", "rationale": "Needs explicit CAS"}])],
+        ["--expected-revision", str(before["revision"] - 1)],
+    ]
+    for options in invalid:
+        result = _command(tmp_path, command, "Rejected provenance", *extra, "--target", store.target,
+                          "--command-id", "rejected", *options, exit_code=2)
+        assert result["error"]
+        assert store.binding() == before
+    assert store.experience_page()["total"] == 1

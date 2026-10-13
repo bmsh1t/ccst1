@@ -35,7 +35,7 @@ try:
     from tools.surface_index import surface_safe_preview
     from tools.surface_projection import load_surface_projection
     from tools.target_paths import compact_url, canonical_target_value, target_storage_key
-    from tools.target_memory import load_active_file, load_goal_memory, format_current_handoff
+    from tools.target_memory import load_active_file, load_goal_memory, format_current_handoff, format_experience_provenance
     from tools.current_truth import current_cell_projection
     from tools.target_store import TargetStore, runtime_store
 except ImportError:  # pragma: no cover - direct tools/ execution
@@ -54,7 +54,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from surface_index import surface_safe_preview  # type: ignore
     from surface_projection import load_surface_projection  # type: ignore
     from target_paths import compact_url, canonical_target_value, target_storage_key  # type: ignore
-    from target_memory import load_active_file, load_goal_memory, format_current_handoff  # type: ignore
+    from target_memory import load_active_file, load_goal_memory, format_current_handoff, format_experience_provenance  # type: ignore
     from current_truth import current_cell_projection  # type: ignore
     from target_store import TargetStore, runtime_store  # type: ignore
 
@@ -1068,8 +1068,10 @@ def format_target_experiences(experiences: dict) -> list[str]:
         experience_lines = [
             *format_current_handoff(experiences),
             "- Target experiences (bounded history; historical intents are not pending actions):",
-            *_format_list([
-                "[{id}/{kind}] {text} | conditions={conditions} | reopen_when={reopen} | "
+        ]
+        for item in experiences.get("items", []):
+            experience_lines.append(
+                "  - [{id}/{kind}] {text} | conditions={conditions} | reopen_when={reopen} | "
                 "next_intent={next_intent} | evidence={evidence}".format(
                     id=item.get("entry_id", ""),
                     kind=item.get("kind", ""),
@@ -1079,11 +1081,14 @@ def format_target_experiences(experiences: dict) -> list[str]:
                     next_intent=json.dumps((item.get("structured") or {}).get("next_intent") or "none", ensure_ascii=False),
                     evidence=", ".join(item.get("evidence_refs") or []) or "none",
                 )
-                for item in experiences.get("items", [])
-            ]),
+            )
+            experience_lines.extend(format_experience_provenance(item, indent="    "))
+        if not experiences.get("items"):
+            experience_lines.extend(_format_list([]))
+        experience_lines.append(
             f"  Showing {len(experiences.get('items', []))} of {experiences.get('total', 0)}; "
             f"{experiences.get('remaining', 0)} more.",
-        ]
+        )
         if experiences.get("recall_command"):
             experience_lines.append(f"  Recall by question: {experiences['recall_command']}")
         if experiences.get("next_command"):

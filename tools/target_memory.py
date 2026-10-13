@@ -397,16 +397,30 @@ def append_entry(args: argparse.Namespace, field: str, label: str) -> str | dict
         kind=kind, statement=statement, conditions=conditions,
         reopen_when=reopen_when, next_intent=next_intent,
         evidence=evidence, actor=getattr(args, "actor", "operator"),
-        sources=json.loads(getattr(args, "sources_json", "[]")),
-        links=json.loads(getattr(args, "links_json", "[]")),
-        claims=json.loads(getattr(args, "claims_json", "[]")),
-        expected_revision=getattr(args, "expected_revision", None),
+        **_provenance_arguments(args),
     )
     if getattr(args, "update_index", None):
         return _indexed_save(args, target, receipt)
     if getattr(args, "json", False):
         return {"target": target, "receipt": receipt}
     return f"{label} saved for {target} [{receipt['entity_id']}]: {statement}"
+
+
+def _provenance_arguments(args: argparse.Namespace) -> dict:
+    """Decode CLI payloads; the Store retains provenance validation and CAS."""
+    return {
+        "sources": json.loads(getattr(args, "sources_json", "[]")),
+        "links": json.loads(getattr(args, "links_json", "[]")),
+        "claims": json.loads(getattr(args, "claims_json", "[]")),
+        "expected_revision": getattr(args, "expected_revision", None),
+    }
+
+
+def _add_provenance_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--claims-json", default="[]", help="explicit advisory claims with exact entity and source bindings")
+    parser.add_argument("--sources-json", default="[]", help="explicit version-bound source objects")
+    parser.add_argument("--links-json", default="[]", help="explicit correction/dependency objects")
+    parser.add_argument("--expected-revision", type=int, default=None)
 
 
 FACT_KEY_RE = None  # compiled lazily to keep import-time cost unchanged
@@ -445,6 +459,7 @@ def upsert_fact(args: argparse.Namespace) -> str | dict:
         kind="note", statement=f"{key}: {text}", conditions=getattr(args, "conditions", None) or "unknown",
         reopen_when="", next_intent="", evidence=_operation_refs(getattr(args, "operation_ref", []) or []),
         actor=getattr(args, "actor", "operator"),
+        **_provenance_arguments(args),
     )
     if getattr(args, "update_index", None):
         return _indexed_save(args, target, receipt)
@@ -483,6 +498,7 @@ def write_handoff(args: argparse.Namespace) -> str | dict:
         reopen_when="", next_intent=getattr(args, "next_intent", None) or "",
         evidence=_operation_refs(getattr(args, "operation_ref", []) or []),
         actor=getattr(args, "actor", "operator"),
+        **_provenance_arguments(args),
     )
     if getattr(args, "update_index", None):
         return _indexed_save(args, target, receipt)
@@ -520,6 +536,15 @@ def format_summary(title: str, active: dict, target_memory: dict,
     return "\n".join(lines)
 
 
+def format_experience_provenance(entry: dict, *, indent: str = "  ") -> list[str]:
+    """Preserve owner-provided provenance and review state in text consumers."""
+    return [
+        f"{indent}{key}: {json.dumps(entry.get(key), ensure_ascii=False)}"
+        for key in ("claims", "review_state", "applicability", "source_health", "sources",
+                    "correction_refs", "dependency_refs")
+    ]
+
+
 def format_current_handoff(memory: dict) -> list[str]:
     """Render the shared current handoff without treating history as pending work."""
     lines = []
@@ -529,8 +554,7 @@ def format_current_handoff(memory: dict) -> list[str]:
         lines.append(f"  conditions: {(current.get('structured') or {}).get('conditions', 'unknown')}")
         lines.append(f"  evidence: {', '.join(current['evidence_refs']) or 'None'}")
         lines.append(f"  recorded_by: {current['recorded_by']}")
-        for key in ("claims", "review_state", "applicability", "source_health", "correction_refs", "dependency_refs"):
-            lines.append(f"  {key}: {json.dumps(current.get(key), ensure_ascii=False)}")
+        lines.extend(format_experience_provenance(current))
     else:
         lines.append("Current handoff: None")
     intents = memory.get("next_actions", [])
@@ -569,8 +593,7 @@ def show(args: argparse.Namespace) -> str | dict:
             if entry.get("evidence_refs"):
                 lines.append(f"  evidence: {', '.join(entry['evidence_refs'])}")
             lines.append(f"  recorded_by: {entry['recorded_by']}")
-            for key in ("claims", "review_state", "applicability", "source_health", "sources", "correction_refs", "dependency_refs"):
-                lines.append(f"  {key}: {json.dumps(entry.get(key), ensure_ascii=False)}")
+            lines.extend(format_experience_provenance(entry))
     window = projection["source"]["experience_window"]
     if window["has_more"]:
         lines.append(f"More target experiences: {window['remaining']}")
@@ -673,10 +696,7 @@ def build_parser() -> argparse.ArgumentParser:
         item_parser.add_argument("--operation-ref", action="append", default=[], help=OPERATION_REF_HELP)
         item_parser.add_argument("--command-id", default=None)
         item_parser.add_argument("--actor", default="operator")
-        item_parser.add_argument("--claims-json", default="[]", help="explicit advisory claims with exact entity and source bindings")
-        item_parser.add_argument("--sources-json", default="[]", help="explicit version-bound source objects")
-        item_parser.add_argument("--links-json", default="[]", help="explicit correction/dependency objects")
-        item_parser.add_argument("--expected-revision", type=int, default=None)
+        _add_provenance_options(item_parser)
         if name in {"lead", "next"}:
             item_parser.add_argument(
                 "--structured-json",
@@ -706,6 +726,7 @@ def build_parser() -> argparse.ArgumentParser:
     handoff_parser.add_argument("--operation-ref", action="append", default=[], help=OPERATION_REF_HELP)
     handoff_parser.add_argument("--command-id", default=None)
     handoff_parser.add_argument("--actor", default="operator")
+    _add_provenance_options(handoff_parser)
     handoff_parser.set_defaults(func=write_handoff)
 
     fact_parser = subparsers.add_parser(
@@ -718,6 +739,7 @@ def build_parser() -> argparse.ArgumentParser:
     fact_parser.add_argument("--operation-ref", action="append", default=[], help=OPERATION_REF_HELP)
     fact_parser.add_argument("--command-id", default=None)
     fact_parser.add_argument("--actor", default="operator")
+    _add_provenance_options(fact_parser)
     fact_parser.add_argument(
         "--evidence-ref",
         action="append",
