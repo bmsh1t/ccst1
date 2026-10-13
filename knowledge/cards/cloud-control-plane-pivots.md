@@ -2,7 +2,7 @@
 id: cloud-control-plane-pivots
 type: workflow-card
 related_skills:
-  - bug-bounty
+  - src-hunting
   - triage-validation
 trigger_tags:
   - cloud-control-plane
@@ -76,7 +76,7 @@ deep_refs: []
 
 ## 关联 Skills
 
-- `bug-bounty`
+- `src-hunting`
 - `triage-validation`
 
 ## 晋升到 Skill / Queue 的条件

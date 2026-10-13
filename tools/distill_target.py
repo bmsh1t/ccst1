@@ -60,7 +60,7 @@ def _load_source_evidence(repo: Path, target: str) -> dict:
     commands = {
         "findings": ["python3", "tools/target_store.py", "findings", "--repo-root", str(repo.resolve()),
                      "--limit", "10", "--target", target],
-        "experiences": ["python3", "tools/experience_recall.py", "--repo-root", str(repo.resolve()),
+        "experiences": ["python3", "tools/experience_recall.py", "history", "--repo-root", str(repo.resolve()),
                         "--json", "--limit", "10", "--target", target],
     }
     for name, command in commands.items():

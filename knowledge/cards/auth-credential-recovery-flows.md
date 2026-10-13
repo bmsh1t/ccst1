@@ -2,7 +2,7 @@
 id: auth-credential-recovery-flows
 type: technique-card
 related_skills:
-  - web2-vuln-classes
+  - src-hunting
   - triage-validation
 trigger_tags:
   - password-reset
@@ -33,7 +33,7 @@ deep_refs:
 
 ## 能力定位
 
-本卡给 `web2-vuln-classes` 补充认证恢复、凭证状态机和受控凭证测试思路。它提供技巧和补漏点，不替代 red-line、coverage gate，也不把认证测试自动扩大成无边界爆破。
+本卡给 `src-hunting` 补充认证恢复、凭证状态机和受控凭证测试思路。它提供技巧和补漏点，不替代 red-line、coverage gate，也不把认证测试自动扩大成无边界爆破。
 
 ## 触发信号
 
@@ -94,7 +94,7 @@ deep_refs:
 
 ## 关联 Skills
 
-- `web2-vuln-classes`
+- `src-hunting`
 - `triage-validation`
 
 ## 晋升到 Skill / Queue 的条件

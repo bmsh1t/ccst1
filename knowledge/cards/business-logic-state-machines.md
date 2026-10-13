@@ -2,8 +2,7 @@
 id: business-logic-state-machines
 type: technique-card
 related_skills:
-  - web2-vuln-classes
-  - bb-methodology
+  - src-hunting
   - triage-validation
 trigger_tags:
   - business-logic
@@ -50,7 +49,7 @@ source_refs:
 
 ## 能力定位
 
-本卡给 `web2-vuln-classes` 补充业务流程建模和状态机验证思路。它是供料层：帮助 AI 想到非注入、非传统 CVE 的高价值测试路径，不替代当前 Skill 的 red-line、coverage 和验证门。
+本卡给 `src-hunting` 补充业务流程建模和状态机验证思路。它是供料层：帮助 AI 想到非注入、非传统 CVE 的高价值测试路径，不替代当前 Skill 的 red-line、coverage 和验证门。
 
 ## 触发信号
 
@@ -103,8 +102,7 @@ source_refs:
 
 ## 关联 Skills
 
-- `web2-vuln-classes`
-- `bb-methodology`
+- `src-hunting`
 - `triage-validation`
 
 ## 晋升到 Skill / Queue 的条件

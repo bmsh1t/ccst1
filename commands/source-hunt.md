@@ -68,3 +68,31 @@ these bounds require deliberate follow-up from the source/version context, not a
 
 Local paths do not trigger remote GitHub requests. Existing clone-size approval and secret scanning remain.
 No remote `sisakulint` call replaces local inspection, and no missing optional tool becomes a clean result.
+
+
+## Selected source evidence for whitebox questions
+
+```bash
+python3 tools/source_hunt.py --target TARGET --repo-path PATH --source-file src/routes.py --source-file src/service.py
+```
+
+`--source-file` selects repository-relative UTF-8 files explicitly (repeatable;
+32 distinct files, 1 MiB each). The existing source/secret/CI scan still runs;
+this is not an execution mode or a general parser. For already saved originals,
+read them directly instead of recollecting. Local input performs no remote acquisition.
+
+`repo_source_meta.json/source_capture` binds each original path to its exact
+SHA256, byte count and private `repo_source_files/<sha256>.txt` snapshot. Read
+that snapshot with native Read/Grep and cite its original path and line range.
+The hash binds dirty/current bytes independently of Git HEAD; no Git means
+revision unknown. Empty files are valid empty originals, not a clean audit.
+
+Missing, non-UTF-8, oversized and unsafe/symlink paths are per-file unavailable;
+deferred names are explicit. Any omission makes capture and the command partial
+(exit 2), retaining successful originals. Existing changed snapshots fail rather
+than overwrite evidence. A complete capture only covers selected files; it says
+nothing about unrequested files, deployment correspondence or exploitability.
+
+Use `skills/whitebox-audit/SKILL.md` for entry/guard/sink analysis and conditional
+source-to-runtime handoff. Source suggestions never run code, create an Action,
+confirm a Finding or bypass `triage-validation` and the assessment owner.

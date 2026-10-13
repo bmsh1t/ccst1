@@ -3,7 +3,7 @@ id: cicd-trust-boundaries
 type: workflow-card
 related_skills:
   - cicd-security
-  - bug-bounty
+  - src-hunting
 trigger_tags:
   - ci-cd
   - github-actions
@@ -90,7 +90,7 @@ deep_refs: []
 ## 关联 Skills
 
 - `cicd-security`
-- `bug-bounty`
+- `src-hunting`
 
 ## 晋升到 Skill / Queue 的条件
 

@@ -222,6 +222,7 @@ def load_resume_summary(
         "target_memory": {
             "source_kind": memory_source.get("kind", "legacy"),
             "active_goal": target_memory.get("active_goal", ""),
+            "current_hypothesis": target_memory["current_hypothesis"],
             "recent_entries": memory_view.get("recent_entries") or [],
             "current_handoff": target_memory["current_handoff"],
             "next_actions": target_memory["next_actions"],

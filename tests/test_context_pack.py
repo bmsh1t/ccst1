@@ -567,7 +567,7 @@ def test_native_pilot_recommendation_surface_fully_retired(tmp_path, pack_store)
         assert key not in pack
     assert "native_skills" not in pack
     assert "skill_catalog" not in pack
-    assert "Skill recommendation retired (S1 native loading)" in output
+    assert output.count("Claude selects and loads Skills through the native Skill tool.") == 1
 
 
 def test_retired_context_sections_are_json_only(tmp_path, pack_store):
@@ -646,6 +646,42 @@ def test_context_pack_exposes_registry_metadata_for_selected_cards(tmp_path, pac
     assert "Knowledge card catalog:" in format_context_pack(pack)
 
 
+def test_context_catalog_groups_all_metadata_without_changing_json(tmp_path, pack_store):
+    pack = build_context_pack(tmp_path, target="target.com")
+    before = json.dumps(pack, ensure_ascii=False, sort_keys=True)
+    groups = {}
+    for item in pack["card_catalog"]:
+        groups.setdefault((item["layer"], item["load"]), []).append(item)
+
+    output = format_context_pack(pack)
+    catalog = output.split("- Knowledge card catalog:", 1)[1].split("- Historical patterns", 1)[0]
+
+    assert groups
+    for (layer, load), items in groups.items():
+        heading = f"  Layer={layer}; load={load}:"
+        assert catalog.count(heading) == 1
+        rows = catalog.split(heading + "\n", 1)[1].split("\n  Layer=", 1)[0]
+        assert rows.splitlines() == [
+            f"    {item['file']} — {item['purpose']}" for item in items
+        ]
+    assert format_context_pack(pack) == output
+    assert json.dumps(pack, ensure_ascii=False, sort_keys=True) == before
+
+
+@pytest.mark.parametrize("missing_catalog", [False, True])
+def test_empty_context_catalog_remains_explicit(tmp_path, pack_store, missing_catalog):
+    pack = build_context_pack(tmp_path, target="target.com")
+    if missing_catalog:
+        del pack["card_catalog"]
+    else:
+        pack["card_catalog"] = []
+
+    output = format_context_pack(pack)
+
+    assert "- Knowledge card catalog: select by information gap.\n  - None\n" in output
+    assert "  Layer=" not in output
+
+
 def test_target_registry_remap_reaches_context_pack_checkpoint_and_witness(tmp_path, pack_store):
     registry_source = Path(__file__).resolve().parents[1] / "knowledge" / "capabilities.yaml"
     registry = yaml.safe_load(registry_source.read_text(encoding="utf-8"))
@@ -681,7 +717,7 @@ def test_target_registry_remap_reaches_context_pack_checkpoint_and_witness(tmp_p
     assert custom_card in catalog_pack_files
     assert original_card not in pack["knowledge_cards"] + pack["deferred_knowledge_cards"]
     assert custom_card not in pack["must_read"]
-    assert "rules/playbook-router.md" in pack["required_checks"]
+    assert pack["required_checks"] == ["rules/coverage-gate.md"]
 
 
 def test_observability_ids_route_to_idor_without_becoming_idor_evidence(tmp_path, pack_store):
@@ -698,7 +734,7 @@ def test_observability_ids_route_to_idor_without_becoming_idor_evidence(tmp_path
     assert "knowledge/cards/information-disclosure-source-config.md" in all_cards
     # Cards beyond the selection budget stay visible as signals, never hidden.
     assert "path-pattern-management-exposure" in recall_ids
-    assert "rules/playbook-router.md" in pack["required_checks"]
+    assert pack["required_checks"] == ["rules/coverage-gate.md"]
 
 
 def test_opa_cedar_routes_to_existing_authz_cards_and_pdp_pep_gate(tmp_path, pack_store):
@@ -711,7 +747,7 @@ def test_opa_cedar_routes_to_existing_authz_cards_and_pdp_pep_gate(tmp_path, pac
     assert "skill_route" not in pack and "selected_skill" not in pack
     assert "auth-access" in {item.get("id") for item in pack.get("card_catalog", [])}
     assert "api-idor" in {item.get("id") for item in pack.get("card_catalog", [])}
-    assert "rules/playbook-router.md" in pack["required_checks"]
+    assert pack["required_checks"] == ["rules/coverage-gate.md"]
 
 
 def test_broad_signed_trace_and_policy_words_do_not_trigger_api_authz_refinements(tmp_path, pack_store):
@@ -1341,7 +1377,7 @@ def test_explicit_dom_navigation_focus_routes_to_browser_boundary_card(tmp_path,
 
     assert "skill_route" not in pack and "selected_skill" not in pack
     assert "browser-client-boundaries" in {item.get("id") for item in pack.get("card_catalog", [])}  # exact-list retired: state cards may join
-    assert "rules/playbook-router.md" in pack["required_checks"]
+    assert pack["required_checks"] == ["rules/coverage-gate.md"]
 
 
 def test_explicit_proxy_cache_focus_without_recon_routes_to_proxy_card(tmp_path, pack_store):
@@ -1392,8 +1428,7 @@ def test_explicit_xss_focus_without_recon_routes_to_xss_card(tmp_path, pack_stor
 
     assert "skill_route" not in pack and "selected_skill" not in pack
     assert "xss-client-injection" in {item.get("id") for item in pack.get("card_catalog", [])}  # exact-list retired: state cards may join
-    # required_checks is now a fixed skill-based set; per-focus exclusion
-    # assertions are retired with the word-list check router.
+    # Required checks follow coverage and candidate owners independently of focus.
 
 
 def test_explicit_csp_focus_without_recon_routes_to_xss_and_browser_cards(tmp_path, pack_store):
@@ -1402,7 +1437,7 @@ def test_explicit_csp_focus_without_recon_routes_to_xss_and_browser_cards(tmp_pa
     assert "skill_route" not in pack and "selected_skill" not in pack
     assert "xss-client-injection" in {item.get("id") for item in pack.get("card_catalog", [])}
     assert "browser-client-boundaries" in {item.get("id") for item in pack.get("card_catalog", [])}
-    assert "rules/playbook-router.md" in pack["required_checks"]
+    assert pack["required_checks"] == ["rules/coverage-gate.md"]
 
 
 def test_explicit_api_testing_focus_without_recon_routes_to_api_workflow(tmp_path, pack_store):
@@ -1457,7 +1492,7 @@ def test_agent_lifecycle_signals_route_to_web_llm_card(tmp_path, pack_store):
         pack = build_context_pack(tmp_path, target="target.com", focus=f"API testing {signal}")
         assert "skill_route" not in pack and "selected_skill" not in pack, signal
         assert "web-llm-tool-chains" in {item.get("id") for item in pack.get("card_catalog", [])}, signal
-        assert "rules/playbook-router.md" in pack["required_checks"], signal
+        assert pack["required_checks"] == ["rules/coverage-gate.md"], signal
 
 
 def test_target_memory_agent_signal_routes_without_explicit_focus(tmp_path, pack_store):

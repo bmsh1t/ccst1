@@ -1,8 +1,8 @@
 ---
 name: validator
 description: >-
-  Finding validator. Runs the 7-Question Gate and 4-gate checklist on a report
-  candidate. Rejects weak/theoretical candidates before report writing.
+  Finding validator. Runs the 7-Question Gate on a report candidate.
+  Rejects weak/theoretical candidates before report writing.
   Prevents N/A submissions. Use before writing any report — describe the
   candidate and this agent decides PASS, KILL, DOWNGRADE, or CHAIN REQUIRED with
   explanation. Prefer a Sonnet-class model when available; otherwise inherit the
@@ -114,11 +114,11 @@ missing evidence action instead of pretending it is report-ready.
 ## Decision Contract
 
 Read `skills/triage-validation/SKILL.md` before deciding. It is the sole owner
-of Q1-Q7, Q7b, never-submit/chain precedence, and the four pre-submission
-gates; do not maintain a second checklist here. Apply it to target-bound,
-protocol-appropriate reproducible evidence and output exactly one:
+of Q1-Q7, Q7b and never-submit/chain precedence; do not maintain a second
+checklist here. Apply it to target-bound, protocol-appropriate reproducible
+evidence and output exactly one:
 
-- **PASS** — all required questions and gates pass; hand off to report writing.
+- **PASS** — all required evidence and destination checks pass; hand off to report writing.
 - **KILL [Q#]** — the named question fails; do not report the candidate.
 - **DOWNGRADE** — the evidence proves a lower impact; state the required change.
 - **CHAIN REQUIRED** — a concrete connector remains to be built and proved.
@@ -127,7 +127,7 @@ protocol-appropriate reproducible evidence and output exactly one:
 
 If the `burp` MCP server is available:
 
-1. At Gate 0, call `burp.get_proxy_history` filtered by the finding's endpoint
+1. For Q1's reproduction record, call `burp.get_proxy_history` filtered by the finding's endpoint
 2. Pull the exact request/response from proxy history — no need to ask the researcher to paste it
 3. Replay the request through Burp to confirm it's still reproducible right now
 4. If the finding involves OOB (SSRF, blind injection), check Collaborator for callbacks

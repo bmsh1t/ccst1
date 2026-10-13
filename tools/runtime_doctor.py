@@ -350,7 +350,8 @@ def sync_runtime(
             raise ValueError("invalid runtime ownership manifest")
         for rel, record in owned.items():
             path = Path(rel)
-            if (path.is_absolute() or ".." in path.parts or not isinstance(record, dict)
+            if (path.is_absolute() or rel != path.as_posix() or ".." in path.parts
+                    or not isinstance(record, dict)
                     or record.get("kind") not in KIND_ORDER
                     or not path.is_relative_to(RUNTIME_SUBDIRS[record["kind"]])
                     or not isinstance(record.get("sha256"), str)):

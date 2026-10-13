@@ -2,9 +2,8 @@
 id: path-allowlist-normalization
 type: technique-card
 related_skills:
-  - web2-vuln-classes
+  - src-hunting
   - web2-recon
-  - security-arsenal
 trigger_tags:
   - allowlist
   - normalization
@@ -101,10 +100,8 @@ source_refs:
 
 ## 关联 Skills
 
-- web2-vuln-classes
+- src-hunting
 - web2-recon
-- security-arsenal
-
 ## 停止条件
 
 - 路径经统一规范化后精确锚定且代理后端一致

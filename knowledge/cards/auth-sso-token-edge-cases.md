@@ -2,8 +2,7 @@
 id: auth-sso-token-edge-cases
 type: technique-card
 related_skills:
-  - web2-vuln-classes
-  - bb-methodology
+  - src-hunting
   - triage-validation
 trigger_tags:
   - jwt
@@ -156,11 +155,8 @@ source_refs:
 
 ## 关联 Skills
 
-- `web2-vuln-classes`
-- `bb-methodology`
+- `src-hunting`
 - `triage-validation`
-- `security-arsenal`
-
 ## 晋升到 Skill / Queue 的条件
 
 - 只有 token/SSO 线索时，作为知识启发，由当前 auth lane 收集 baseline。

@@ -2,9 +2,7 @@
 id: auth-hidden-switches
 type: technique-card
 related_skills:
-  - web2-vuln-classes
-  - bb-methodology
-  - bug-bounty
+  - src-hunting
   - triage-validation
 trigger_tags:
   - hidden-auth-param
@@ -110,9 +108,7 @@ deep_refs: []
 
 ## 关联 Skills
 
-- `web2-vuln-classes`
-- `bb-methodology`
-- `bug-bounty`
+- `src-hunting`
 - `triage-validation`
 
 ## 停止条件

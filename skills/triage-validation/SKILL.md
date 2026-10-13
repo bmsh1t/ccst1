@@ -83,8 +83,10 @@ gates the tier: below the bar, downgrade to whatever IS demonstrated:
 - **Low** — bar: real but small blast radius or complex preconditions
   (non-sensitive info disclosure, clickjacking with PoC on a sensitive action).
 
-A tier claim must be able to answer "what did the attacker actually get/do,
-shown in evidence?" — "possibly could" answers never meet a bar.
+A tier claim must name a real victim and answer "what did the attacker actually
+get/do, shown in evidence?" — "possibly could" answers never meet a bar.
+Public/non-sensitive data alone does not prove a confidentiality violation;
+payment policy cannot decide technical impact.
 
 **If the impact is still vague or only theoretical → DO NOT REPORT.**
 
@@ -115,9 +117,9 @@ Confirm:
 
 ### Q5: Is this already known or accepted behavior?
 
-Search:
+Search and record results for this endpoint and bug class:
 1. For an external bounty submission, check the program's disclosed reports and
-   target-repository security issues for the endpoint and bug class.
+   target-repository security issues.
 2. For every delivery mode, check the target's changelog, API docs, and design
    docs for documented behavior.
 3. For local/lab work, record external-program checks as not applicable rather
@@ -173,28 +175,6 @@ IDOR/BOLA must cross a real identity boundary, priv-esc must work from the
 lower-privileged identity, and auth bypass must survive without a valid session.
 Use `session_id` / audit artifacts for the identities needed by the claim;
 anonymous, cross-role and stale-session checks are not mandatory for unrelated claims.
-
----
-
-## 4 PRE-SUBMISSION GATES
-
-Evaluate the applicable gates independently. Gates reuse the
-Q answers rather than re-checking them — each gate below only adds what the
-questions do not already cover:
-
-- **Gate 0 — Reality Check**: Q1's reproduction record is the source of truth.
-  No additional check beyond Q1; a failed Q1 is a failed Gate 0.
-- **Gate 1 — Impact Validation**: the Q2 answer names a real victim and a
-  concrete "attacker can now DO X". Public/non-sensitive data alone does not
-  prove a confidentiality violation; payment policy cannot decide technical impact.
-- **Gate 2 — Deduplication**: the Q5 search record must exist for this
-  endpoint and bug class (external: disclosed reports + target-repo issues;
-  all modes: changelog/API/design docs; local/lab: record external checks as
-  not applicable). Gate 2 is Q5's audit trail, not a second search.
-- **Gate 3 — Report Quality**: title/delivery structure follow
-  `skills/report-writing/SKILL.md`; steps are the replayable artifact;
-  severity matches the demonstrated impact or any recorded external severity; the wording never contains
-  "could potentially" / "may allow".
 
 ---
 
@@ -325,15 +305,21 @@ If later replay disproves a report-ready or validated Candidate:
 1. Preserve the original signal, request, response, and evidence references; do not overwrite or delete them.
 2. Attach the disproving evidence and the exact control/test difference, including identities, sessions, and relevant state.
 3. Record the false-positive cause and decision date in the validation evidence.
-4. Use the canonical finding owner to set `validation_status=rejected`; retain the prior validation summary, digest, and owner provenance.
+4. Request an explicit evidence-bound technical reassessment through the Store owner; retain prior assessments, validation summaries, digests and provenance.
 5. Reopen only when new evidence directly addresses the recorded cause, and link the old and new evidence.
 
 Retraction is an auditable correction, not silent removal of an inconvenient result.
-The source-rejection cite-check (a rejected Candidate backed by source code must
-record an exact `source_guard` file/line/quote) is the machine contract of
-`tools/finding_index.py`'s rejection gate; see `commands/validate.md`.
+Source-backed counterevidence cites the actual file, 1-based line and exact code,
+and explains why the guard blocks the claimed source-to-sink path; a nearby guard
+or an unverified citation is not a refutation. This is an evidence-review duty,
+not an automatic source-code rejection gate.
+
+Ordinary `/validate` maps failed/unknown technical evidence to `inconclusive`, not
+`refuted`; it has no explicit refutation input. Preserve contrary evidence for owner
+reassessment rather than editing lifecycle JSON. A destination exclusion is never
+by itself a technical retraction.
 
 ---
 
-Report-writing anti-patterns and title guidance are owned by `skills/report-writing/SKILL.md`;
+Report quality and presentation follow [report-writing](../report-writing/SKILL.md);
 this Skill stops at the validation verdict and write-back decision.

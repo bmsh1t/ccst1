@@ -66,9 +66,12 @@ def test_install_script_copies_shared_skill_markdown_files(tmp_path):
 
     assert installed_protocol.read_text(encoding="utf-8") == expected
 
-    installed_bug_bounty = home / ".claude" / "skills" / "bug-bounty" / "SKILL.md"
-    modular_bug_bounty = REPO_ROOT / "skills" / "bug-bounty" / "SKILL.md"
-    assert installed_bug_bounty.read_bytes() == modular_bug_bounty.read_bytes()
+    for name in ("src-hunting", "whitebox-audit"):
+        installed_skill = home / ".claude" / "skills" / name / "SKILL.md"
+        source_skill = REPO_ROOT / "skills" / name / "SKILL.md"
+        assert installed_skill.read_bytes() == source_skill.read_bytes()
+    for name in ("bug-bounty", "bb-methodology", "web2-vuln-classes", "security-arsenal"):
+        assert not (home / ".claude" / "skills" / name).exists()
     assert not (REPO_ROOT / "SKILL.md").exists()
 
 
@@ -89,8 +92,8 @@ def test_install_script_recursively_copies_managed_skill_resources(tmp_path):
 
     assert result.returncode == 0, result.stderr + result.stdout
 
-    repo_skill = REPO_ROOT / "skills" / "security-arsenal"
-    runtime_skill = home / ".claude" / "skills" / "security-arsenal"
+    repo_skill = REPO_ROOT / "skills" / "src-hunting"
+    runtime_skill = home / ".claude" / "skills" / "src-hunting"
     expected_files = {
         path.relative_to(repo_skill)
         for path in repo_skill.rglob("*")
@@ -108,7 +111,6 @@ def test_install_script_recursively_copies_managed_skill_resources(tmp_path):
             repo_skill / relative_path
         ).read_bytes()
     assert Path("SKILL.md") in installed_files
-    assert not any(path.parts[0] == "references" for path in installed_files)
 
 
 def test_install_script_produces_runtime_doctor_clean_tree(tmp_path):
@@ -226,15 +228,16 @@ def test_install_upgrade_and_repeat_preserve_user_state(tmp_path):
     binding = store.binding()
     source_command = checkout / "commands/sync-check.md"
     source_command.write_text(source_command.read_text() + "\nUpdated command\n")
-    source_resource = checkout / "skills/security-arsenal/release.txt"
+    source_resource = checkout / "skills/src-hunting/references/release.txt"
+    source_resource.parent.mkdir(parents=True)
     source_resource.write_text("new resource\n")
-    stale = runtime / "skills/security-arsenal/retired.txt"
+    stale = runtime / "skills/src-hunting/retired.txt"
     stale.write_text("old managed resource\n")
     for _ in range(2):
         install()
         assert not (runtime / "commands/sync-check.md").exists()
         assert disabled.read_bytes() == source_command.read_bytes()
-        assert (runtime / "skills/security-arsenal/release.txt").read_bytes() == source_resource.read_bytes()
+        assert (runtime / "skills/src-hunting/references/release.txt").read_bytes() == source_resource.read_bytes()
         assert all(path.read_bytes() == body for path, body in preserved.items())
         assert store.binding() == binding
         assert store.experience_page()["items"][0]["statement"] == "Preserve upgrade context"

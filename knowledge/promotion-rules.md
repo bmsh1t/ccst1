@@ -87,7 +87,7 @@ Store 登记交给稳定执行层。AI 的优势必须保留在：
 
 ## 晋升格式
 
-晋升时优先写成知识卡，而不是长文。
+晋升按完整判断单元组织；短摘要不能替代动作/状态依赖、成功证据、反例、停止与重开正文。
 
 每条经验至少包含：
 
@@ -125,20 +125,57 @@ Promote to Skill / Queue when: 什么时候交给 Skill 或 action queue
 - 是否和 `rules/` 冲突
 - 是否能帮助 Skills 层做更好的分支选择
 
-### 跨目标 advisory 召回
+### 跨目标召回边界
 
-Candidate 通过人工 `reviewed` 后，可以附加少量 `recall_signals`，例如机制词、框架名或可
-观察的证据形态。信号不是晋升证明，也不是自动执行规则；它只让其他目标的 Context Pack
-在当前证据直接命中时显示一条 advisory。信号可选，旧 Candidate 不需迁移。
+只经显式内容审核、晋升和唯一 registry 登记的正文进入共享召回。未审草稿、候选索引、
+他目标私有材料不能因为有 recall 标签或建立了索引就晋升。必要旧证据门迁移不算新增知识，
+不因某个模型会答而删除；旧卡仍按证据、来源和适用条件复核。
 
-Context Pack 固定只读 `reviewed` Candidate，排除来源包含当前目标的 Candidate，最多显示一条
-且不占正式 Card 预算；不暴露来源目标、Candidate 路径或 evidence refs，并标记需要当前目标
-证据。它不会直接生成 Action、Finding 或 Closure。
+## 审核回执
 
-跨目标经验的进入路径是 `/distill`（直线）：草稿卡写入 `knowledge/candidates/`，
-人工内容审核通过后运行 `python3 tools/knowledge_promote.py --id <slug>` 完成
-promote（mv + registry 登记 + strict audit + Pack 目录可发现，失败原子回滚）、
-`rm` 即 reject——git 即生命周期。裸 `mv` 不登记 registry，未登记的卡 Pack
-不可见。
-`maturity` 是 frontmatter 展示字段，人眼与 `git log` 审计；`tested`/`proven`
-的声明必须在草稿里带可复跑 evidence refs，否则保守标 `draft`。
+`knowledge/candidates/SLUG.review.json` 与草稿同目录，`knowledge_promote.py --id SLUG`
+在任何 digest/正文/registry 写入前校验。字段：
+
+- `schema_version: 1`、`card_id`、`candidate_sha256`（完整草稿字节 SHA-256）、`decision: accept`。
+- 非空 `reviewer`、`reviewed_at`、`rationale`、`transferability`，注明人工判断与真实差分。
+- `intake_kind`：`new-method`、`existing-contract-migration`、`existing-knowledge-review`。
+- 后两者必须有 `existing_source`；只适用于有可核对旧正文的维护，不能拿新组合冒充迁移。
+- 新增必须有 `three_questions` 对象：`model_seen`、`inferable_from_evidence`、`real_cost_delta`
+  的整单元判断原文；`blind_answer` 对象包含 `verdict: incremental`、`model`、`configuration`、
+  `criteria`、`increment`，以及 `question`、`allowed_material`、`response` 三个 `{file, sha256}`。
+  文件相对 candidates，必须实际存在、哈希匹配且不是待评卡。原答/必要现场材料事先脱敏，
+  不在审核目录复制私有响应。机器只能校验绑定，盲态、预登记、内容真值及许可仍由审核人负责。
+- 无模型调用批准记未运行，保留草稿；不能制作虚构回执。答不稳不是 `incremental` 结论。
+- 晋升正文 `maturity` 必须经证据复核为 `tested/proven`，不能仅因 audit 通过改 maturity。
+- 保留回执及原答；registry 仍为唯一发布真源。内容改变会使旧哈希失效；失败不变成可召回知识。
+
+可选域索引只能按需指向唯一完整正文；case-router 固定 `load: on-demand`。
+索引创建不改变审核状态。方法撤回/替换后同步 registry 与内容绑定，使派生索引失效。
+
+
+晋升以同一份候选字节快照完成审核绑定、解析和引用迁移；成功回执同时返回
+`published_sha256` 与 `replaced_refs`，区分已审草稿和机械转写后的发布正文。
+候选原文保留到 strict audit 和最终目录校验完成才删除。任一失败撤销本次登记、正文及
+本次新建 digest；既有不同内容的 digest 拒绝覆盖。晋升进程在知识目录锁内串行执行。
+回滚只清理仍与本次发布字节相同的文件；并发修改保留并报告 `recovery conflict`，
+需要按诊断核对当前文件后再重试，不能用旧快照强行覆盖。此约束不承诺多文件崩溃事务。
+
+### 发布字节审核与既有知识复审
+
+晋升在 registry 的 `review_receipt` 绑定不可覆盖的
+`knowledge/reviews/ID/PUBLISHED_SHA256-REVIEW_SHA256.json`。回执保留草稿/发布 hash、
+机械引用转写映射、审核原文和原审核文件绑定。召回只通过 `knowledge_review.read_published_review`
+读取：正文、审核原件/盲答依据变化或退役均使其不再可用；索引 source binding 也随之失效。
+新增回执进入同次发布补偿范围；不会在 audit 失败后留下已审共享候选。
+
+旧登记卡不能自动补审。对当前正文逐项复核后，将其完整字节 hash 作为 `candidate_sha256`，
+用 `intake_kind: existing-knowledge-review` 保存新的审核文件，再显式执行：
+
+```bash
+python3 tools/knowledge_promote.py --id ID --review-existing \
+  --review-file knowledge/candidates/ID.review.json --json
+```
+
+该操作不改正文/成熟度、不激活退役条目，也不免除内容真值与来源检查。同一正文再次复审应
+使用新审核文件名，registry 切换到新回执，旧回执保留；原审核文件必须保留。
+缺回执显示 `review-unverified`，不能以 registry、maturity 或文件目录替代审核。

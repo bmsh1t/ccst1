@@ -85,16 +85,17 @@ active-target pointer. These queries read existing state:
 ```bash
 python3 tools/target_memory.py show TARGET --json
 python3 tools/target_store.py findings --target TARGET --limit 8
-python3 tools/experience_recall.py --target TARGET --limit 8 --json
+python3 tools/experience_recall.py query --target TARGET --limit 8 --json
 python3 tools/surface_index.py status --target TARGET
 python3 tools/surface_index.py page --target TARGET --limit 50
 ```
 
 For a separate data root, add `--repo-root` to the query; for `surface_index.py`
 it goes before `status` or `page`. Page Findings, experience and Surface using
-that pager's own `--cursor` with the same target/filters. Start memory-history
-paging with `experience_recall.py`, not paging flags on `show`. Findings and
-experience also support single-record `--id` expansion. Surface supports
+that pager's own `--cursor` with the same target/filters. Ranked recall expands
+`--source-ref experience:ID` or `knowledge:ID`. Store memory-history windows use
+`experience_recall.py history --cursor CURSOR` or `--id EXPERIENCE_ID`, never
+query cursors or paging flags on `show`. Findings use their own `--id` expansion. Surface supports
 `--shape-id`, `--source`, `--target-owned` or
 `--off-target`; off-target rows are context, not permission to contact them.
 

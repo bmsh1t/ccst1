@@ -21,7 +21,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -245,7 +247,17 @@ def _is_publishable_digest(payload: Any, target: str) -> bool:
     return set(payload) <= allowed
 
 
-def write_digest(repo_root: Path, target: str, ref: str) -> tuple[Path, bool]:
+def publish_new_text(path: Path, content: str) -> None:
+    """Publish complete UTF-8 bytes without replacing an existing artifact."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=f".{path.name}.", dir=path.parent) as temporary:
+        staged = Path(temporary) / "content"
+        _atomic_write_text(staged, content)
+        os.link(staged, path)
+
+
+def write_digest(repo_root: Path, target: str, ref: str, *,
+                 created_digests: dict[str, bytes] | None = None) -> tuple[Path, bool]:
     """写一条 digest；已存在且内容一致则幂等复用。返回 (path, created)。
 
     digest 身份守卫（2026-09-14 审计 + 三轮收敛）：ref 本身已是一份通过
@@ -283,19 +295,28 @@ def write_digest(repo_root: Path, target: str, ref: str) -> tuple[Path, bool]:
         pass
     payload = build_digest(repo_root, target, ref)
     text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-    if digest_path.is_file() and digest_path.read_text(encoding="utf-8") == text:
-        return digest_path, False
-    _atomic_write_text(digest_path, text)
+    if digest_path.exists():
+        if digest_path.read_bytes() == text.encode("utf-8"):
+            return digest_path, False
+        raise SystemExit(f"digest: conflicting existing artifact: {digest_path}")
+    publish_new_text(digest_path, text)
+    if created_digests is not None:
+        created_digests[digest_path.relative_to(repo_root).as_posix()] = text.encode("utf-8")
     return digest_path, True
 
 
-def migrate_card_refs(repo_root: Path, card_id: str) -> dict[str, Any]:
+def migrate_card_refs(repo_root: Path, card_id: str, *,
+                      candidate_bytes: bytes | None = None,
+                      publish_card: bool = True,
+                      created_digests: dict[str, bytes] | None = None) -> dict[str, Any]:
     """把一张候选/正式卡的 target-evidence refs 迁移到 digest 引用。
 
     机械变换（与 registry 登记同类，非判断替代）：
     - frontmatter refs: raw 路径 -> digest 仓库相对路径；
     - 正文"原始证据"列表行同步替换，避免 frontmatter/body 分裂；
     - 每条 raw 生成 digest，返回新建文件清单供回滚。
+    - candidate_bytes 绑定审核快照；publish_card=False 只返回转写正文。
+    - created_digests 在每次创建时更新，后续引用失败时调用者仍能回滚。
     """
     for cards_dir in (repo_root / "knowledge" / "candidates", repo_root / "knowledge" / "cards"):
         card = cards_dir / f"{card_id}.md"
@@ -304,7 +325,9 @@ def migrate_card_refs(repo_root: Path, card_id: str) -> dict[str, Any]:
     else:
         raise SystemExit(f"digest: card not found: {card_id}")
 
-    text = card.read_text(encoding="utf-8")
+    # Promotion supplies the exact reviewed snapshot and retains its candidate.
+    snapshot = card.read_bytes() if candidate_bytes is None else candidate_bytes
+    text = snapshot.decode("utf-8")
     lines = text.splitlines(keepends=True)
     # frontmatter
     if not lines or lines[0].strip() != "---":
@@ -346,7 +369,7 @@ def migrate_card_refs(repo_root: Path, card_id: str) -> dict[str, Any]:
         group_refs = [part.strip() for part in refs_blob.split(";") if part.strip()]
         new_paths: list[str] = []
         for raw_ref in group_refs:
-            digest_path, was_created = write_digest(repo_root, target, raw_ref)
+            digest_path, was_created = write_digest(repo_root, target, raw_ref, created_digests=created_digests)
             rel = digest_path.relative_to(repo_root).as_posix()
             new_paths.append(rel)
             if was_created:
@@ -369,7 +392,8 @@ def migrate_card_refs(repo_root: Path, card_id: str) -> dict[str, Any]:
                 )
 
     if not replaced:
-        return {"changed": False, "created": [], "card": str(card)}
+        return {"changed": False, "created": [], "card": str(card),
+                **({"content": text} if not publish_card else {})}
 
     # 正文"原始证据"行同步替换（同一引用的人读版）
     for index, line in enumerate(lines):
@@ -377,8 +401,12 @@ def migrate_card_refs(repo_root: Path, card_id: str) -> dict[str, Any]:
         if stripped in replaced:
             lines[index] = line.replace(stripped, replaced[stripped])
     new_text = "".join(lines)
-    _atomic_write_text(card, new_text)
-    return {"changed": True, "created": created, "card": str(card), "replaced": replaced}
+    if publish_card:
+        if card.read_bytes() != snapshot:
+            raise SystemExit(f"digest: card changed during migration: {card}")
+        _atomic_write_text(card, new_text)
+    return {"changed": True, "created": created, "card": str(card),
+            "replaced": replaced, **({"content": new_text} if not publish_card else {})}
 
 
 def _entry_ref_values(lines: list[str], refs_index: int, entry_end: int) -> list[str]:

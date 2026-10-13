@@ -2,7 +2,7 @@
 id: xxe-xml-parser
 type: technique-card
 related_skills:
-  - web2-vuln-classes
+  - src-hunting
   - triage-validation
 trigger_tags:
   - xxe
@@ -31,7 +31,7 @@ deep_refs: []
 
 ## 能力定位
 
-本卡给 `web2-vuln-classes` 提供 XML parser 攻击面的联想、技巧家族和补漏项。
+本卡给 `src-hunting` 提供 XML parser 攻击面的联想、技巧家族和补漏项。
 它不替代 Skill 的流程判断，也不自动进入敏感文件读取或内网探测。
 
 ## 触发信号
@@ -87,9 +87,8 @@ deep_refs: []
 
 ## 关联 Skills
 
-- `web2-vuln-classes`
+- `src-hunting`
 - `triage-validation`
-- `bb-methodology`
 
 ## 晋升到 Skill / Queue 的条件
 

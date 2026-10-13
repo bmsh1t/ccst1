@@ -2377,26 +2377,10 @@ def build_closure_projection(
             "round_closure_pending",
             "round_lane_unclaimed",
         }:
-            round_ids = [
-                *list(round_progress.get("invalid_evidence_lanes") or []),
-                *list(round_progress.get("unfinished_lanes") or []),
+            actionable_frontier = [
+                _closure_reason_frontier(reason, state, matrix, action),
+                *actionable_frontier,
             ]
-            label = ", ".join(str(item) for item in round_ids[:3]) or str(
-                (round_progress.get("latest_lane") or {}).get("id") or round_progress.get("round_id") or "active round"
-            )
-            actionable_frontier = [_frontier_item(
-                owner="round-progress",
-                item_id=label,
-                action={
-                    "round_lane_evidence_invalid": "Repair the invalid evidence for round lane {label}",
-                    "round_lane_unfinished": "Resume the unfinished round lane {label}",
-                    "round_closure_pending": "Complete the active round closure for {label}",
-                    "round_lane_unclaimed": "Claim the next owner-selected lane for {label}",
-                }[reason].format(label=label),
-                evidence_ref=checkpoint_ref,
-                expected_information_gain="reconcile round progress with the durable lane evidence and current owner state",
-                stop_condition="record a valid lane terminal state or a bounded blocker, then recompute Closure",
-            ), *actionable_frontier]
         elif reason in {"checkpoint_stale", "checkpoint_invalid"}:
             actionable_frontier = [_frontier_item(
                 owner="checkpoint",
@@ -3830,14 +3814,11 @@ def _format_target_goal_memory_lines(projection: dict) -> list[str]:
         if target_memory.get(field):
             lines.append(f"- {label}: {target_memory[field]}")
     window = (projection.get("source") or {}).get("experience_window") or {}
-    command = window.get("recall_command", "")
     lines.extend(format_target_experiences({
         **window,
         "items": projection.get("recent_entries") or [],
         "current_handoff": target_memory.get("current_handoff"),
         "next_actions": target_memory.get("next_actions", []),
-        "next_command": f"{command} --cursor {shlex.quote(window['next_cursor'])}" if window.get("has_more") else "",
-        "expand_command": f"{command} --id EXPERIENCE_ID",
     }))
     return lines
 

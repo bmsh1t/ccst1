@@ -69,7 +69,7 @@ identity, and cloud signals without re-enumerating everything.
 | `tools/takeover_scanner.sh` | subdomains/all.txt populated | dnsReaper + subjack subdomain takeover scan |
 | `tools/secrets_hunter.sh` | After JS/source collection | trufflehog/noseyparker/gitleaks — verified secret discovery |
 | `tools/cicd_scanner.sh` | GitHub org name detected | sisakulint remote scan of `.github/workflows/*.yml` |
-| `tools/source_hunt.py` | Public repo URL known | `/source-hunt` backend — git history secrets + CI risks |
+| `tools/source_hunt.py` | Public/local source and a concrete question | Exposure candidates + selected `--source-file` byte-bound originals |
 | `tools/repo_source.py` | Need to clone target's public repo | Size-bounded GitHub repo acquisition |
 | `tools/repo_ci_scan.py` | Cloned repo present | YAML-based CI workflow danger pattern check |
 | `tools/repo_secret_scan.py` | Cloned repo present | Filesystem high-signal secret regex sweep |
@@ -132,12 +132,24 @@ identity, and cloud signals without re-enumerating everything.
 | `tools/action_queue.py` | Actionable evidence exists or checkpoint has next actions | Persistent action queue: ingest, choose next, resolve, summarize |
 | `tools/target_case_state.py` | Multi-actor/object validation context | Actor/session/object/hypothesis registry and private auth refs; context memory only — no backlog, no route score |
 | `tools/coverage_matrix.py` | Reviewing unresolved cells and endpoint kinds | Primary mark commands append Store reviews; `reviews [--history] [--id ID]` expands them; rebuilt cells still require execution evidence |
-| `tools/target_store.py upgrade-schema --target TARGET --repo-root ROOT --backup ABSOLUTE_BACKUP` | Enabling Coverage reviews on an existing v8/v9 Store | Explicit verified-backup upgrade to v10; ordinary reads/init do not upgrade |
+| `tools/target_store.py upgrade-schema --target TARGET --repo-root ROOT --backup ABSOLUTE_BACKUP` | Enabling current Store capabilities on an older schema | Explicit verified-backup upgrade to current schema v17; ordinary reads/init do not upgrade |
 | `tools/target_migration.py --backfill-coverage-source SOURCE --repo-root ROOT --target TARGET` | Recovering historical Coverage annotations after cutover | Manifest-bound historical import with source pointers; preserves newer reviews and grants no closure |
 | `tools/resume.py` | Continuing previous target work | `/pickup` backend — summarize prior session+untested endpoints |
+| `tools/experience_recall.py query --target TARGET --query QUESTION` | 按问题读取经验/已审方法 | current 独立于 ranked recalled；health/pagination 明示缺失与余量 |
+| `tools/experience_recall.py history --target TARGET` | 原始 Store 历史翻页 | --cursor 使用 Store 游标，--id 展开单条；不得混用 query 游标 |
+| `tools/experience_recall.py index-build / index-status / index-prune` | 显式管理派生文本索引 | 目标 capture 按 Store audit/外部字节变化局部重采；`--shared` 不打开目标库、知识仍全量审核；`--full-rebuild` 重建；模型不隐式下载 |
+| `tools/experience_recall.py context --target TARGET --id ID --version VERSION` | 展开精确历史更正/反证/依赖 | 独立 `--context-limit` / `--context-max-bytes` 和返回游标；完整原文用返回的 expand_command，不回填最新版本 |
+| `tools/experience_recall.py relation-query --target TARGET --seeds @entities.json` | 精确实体多跳读取 | v4 包含 Case 显式关联、Action→operation→artifact 与实际 attempt/step 来源；路径仍为假设，旧格式需 --full-rebuild |
+| `tools/experience_recall.py relation-build / relation-query / relation-status / relation-prune --shared` | 已审方法共享图 | 不打开目标 Store；query 的 seeds 为 knowledge-pattern 的 method_id/content_sha256/anchor；build 支持 --full-rebuild |
+| `tools/target_memory.py knowledge-source --target TARGET --id ID --json` | 为经验绑定已审知识依据 | 返回完整正文与审核回执 hash；加 purpose=origin/basis 后传入保存的 --sources-json |
+| `tools/target_memory.py history-source --target TARGET --id ID [--full] --json` | 绑定或展开本目标已导入历史原件 | 默认返回精确来源绑定，仅可加 purpose=origin；--full 返回原记录/选择器/归档元数据与可用性，历史仍 unverified |
+| `tools/target_memory.py link --target TARGET --id NEW --to OLD --relation refutes --conditions CONDITIONS --reason REASON --command-id ID --expected-revision REVISION` | 显式条件化纠错 | 绑定两端精确版本；不同条件保留 conditional 连接，不整体作废旧条件下的经验；撤回不复活被挑战结论 |
+| `tools/target_memory.py note ... --update-index text` | 显式保存后更新本目标索引 | 也可选 relations/all；--index-encoder 仅 text/all；失败保留保存回执，按返回命令只重建索引 |
+| `tools/knowledge_promote.py --id ID --review-existing --review-file knowledge/candidates/ID.review.json` | 既有知识显式复审 | 绑定当前正文与审核原件；保留历史回执、不改成熟度或自动激活 |
+| `tools/knowledge_promote.py --id ID --update-index all` | 晋升后显式更新共享文本/关系 | 先完成发布并解锁；更新失败返回 partial/退出 2，不撤销发布，不应重复晋升 |
 | `tools/remember.py` | Recording target experience | `/remember` backend — primary writes Store experience plus journal; legacy PatternDB awaits retirement |
 | `tools/target_migration.py --backfill-memory-source SOURCE --repo-root ROOT --target TARGET` | Old target memory is missing from an already active Store | Explicit, cutover-manifest-bound Experience backfill; inspect receipt mapping and quarantine before use; no re-promotion |
-| `tools/target_migration.py --backfill-pattern-source SOURCE --repo-root ROOT --target TARGET` | Historical PatternDB rows for an active target need recall | Explicit, byte-pinned import of target-owned rows as unverified Store notes; receipt maps source file and line, including rotated logs; no cross-target recall or automatic knowledge promotion |
+| `tools/target_migration.py --backfill-pattern-source SOURCE --repo-root ROOT --target TARGET` | Historical PatternDB rows for an active target need recall | Explicit, byte-pinned import plus permanent original archive; receipt maps target-owned file/line, including rotated logs. Exact-source retry may add a missing archive without new Store writes; no cross-target recall or promotion |
 | `tools/validate.py` | Pre-report validation gate | 7-Question Gate + 4 gates — runs `/validate` |
 | `tools/report_generator.py` | Publishing authored reports | `/report` backend — explicit body + current assessment/delivery binding; current index and pending drafts; unassessed manual notes |
 | `tools/request_guard.py` | Logging request telemetry | Advisory audit/replay record + breaker telemetry |
@@ -147,6 +159,12 @@ identity, and cloud signals without re-enumerating everything.
 | `tools/runtime_exec.py` | Subprocess execution | Shared shell-command runner with timeout/quoting |
 | `tools/runtime_state.py` | Probing on-disk pipeline artifacts | Read autopilot/runtime state files |
 | `tools/reset_target.sh` | Want clean re-run for one target | Wipe `recon/`/`findings/`/state for a single target |
+
+召回的 `acquisition` 报告目标来源的 `mode`、`full_acquisition_reason`、
+`experience_rows_read`、`owner_groups_read`、`reused_experiences` 和 `external_probes`，
+与投影 `update.reused_sources/updated_sources` 分开。历史重采为 0 不等于没有 current 分页、
+依赖元数据或原件字节读取。query/status 只读；旧 capture 缺失显式全采，坏代不会被查询修复。
+构建期间来源变化（包括变坏后恢复原字节）拒绝发布并保留旧 CURRENT。
 
 ---
 
@@ -171,7 +189,7 @@ identity, and cloud signals without re-enumerating everything.
 | Blind SSRF / RCE / XXE candidate | `oast_listen.py start` |
 | Standard scans plateaued | AI-selected focused fuzz on remaining unexplored surface |
 | Unicode / filter representation needs review | AI selects the exact representation and preserves raw evidence |
-| Public repo URL in target footer | `source_hunt.py` |
+| Public/local source, uncertain reachability or guard | `skills/whitebox-audit/SKILL.md`; `source_hunt.py --source-file PATH`, native Read/Grep |
 | Brand keyword for buckets | `cloud_recon.sh` |
 | Batch recon manifest exists | read `recon/<list-stem>/batch_manifest.jsonl`, then run `/surface` or `/hunt` on completed domains |
 | Identity/cloud intel from recon has hits | review `exposure/identity_intel/summary.md` and `exposure/cloud/cloud_enum.txt`, then pivot to `/intel` or `/cloud-recon` |
@@ -217,3 +235,19 @@ When deprecating a tool: keep the row but prefix label with `(deprecated)`.
 - `rules/hunting.md` — canonical hunt semantics + lane routing
 - `rules/tool-ai-boundary.md` — AI judges, tools preserve evidence
 - `commands/autopilot.md` — autonomous loop execution contract
+
+## Execution Contract Lookup
+
+Read only the owner needed for a selected action, not this entire table as a checklist.
+
+| Question | Owner |
+|---|---|
+| Which hypothesis to continue, rotate or stop? | `skills/src-hunting/SKILL.md` |
+| Context and method selection? | `skills/runtime-protocol.md#shared-knowledge-recall` |
+| Dependent session/process/socket continuity? | `skills/runtime-protocol.md#stateful-continuity` |
+| Raw evidence versus AI judgment? | `rules/tool-ai-boundary.md` |
+| Candidate validity and report readiness? | `skills/triage-validation/SKILL.md`, `commands/validate.md` |
+| Side effects and stop controls? | `rules/red-lines.md` |
+| Who accepts a write? | `skills/runtime-protocol.md#5-execution-and-write-back` |
+| Claim/resolve, browser capture/import and session close? | Matching sections of `docs/autopilot-lanes.md` |
+| Existing executor for the chosen action? | Categories and symptom lookup in this index |

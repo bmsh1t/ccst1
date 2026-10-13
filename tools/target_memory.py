@@ -30,47 +30,42 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from target_paths import canonical_target_value, target_storage_key
     from target_store import StoreError, runtime_store  # type: ignore
 
-SCHEMA_VERSION = 1
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from tools.recall_update import (add_index_options, format_saved_result,
+                                 update_saved_result, validate_index_options)
+
+
+try:
+    from tools.target_memory_schema import (
+        SCHEMA_VERSION,
+        TARGET_MEMORY_LIST_FIELDS as TARGET_MEMORY_LIST_FIELDS,
+        TARGET_MEMORY_STRING_FIELDS as TARGET_MEMORY_STRING_FIELDS,
+        TARGET_MEMORY_SKILL_FIELDS as TARGET_MEMORY_SKILL_FIELDS,
+        POLLUTED_TEXT_MARKERS as POLLUTED_TEXT_MARKERS,
+        text_is_polluted as text_is_polluted,
+        normalize_target_memory,
+    )
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from target_memory_schema import (
+        SCHEMA_VERSION,
+        TARGET_MEMORY_LIST_FIELDS as TARGET_MEMORY_LIST_FIELDS,
+        TARGET_MEMORY_STRING_FIELDS as TARGET_MEMORY_STRING_FIELDS,
+        TARGET_MEMORY_SKILL_FIELDS as TARGET_MEMORY_SKILL_FIELDS,
+        POLLUTED_TEXT_MARKERS as POLLUTED_TEXT_MARKERS,
+        text_is_polluted as text_is_polluted,
+        normalize_target_memory,
+    )
+
 BASE_DIR = Path(__file__).resolve().parents[1]
 GOALS_DIR = BASE_DIR / "memory" / "goals"
 ACTIVE_PATH = GOALS_DIR / "active.json"
 TARGETS_DIR = GOALS_DIR / "targets"
 SESSIONS_DIR = GOALS_DIR / "sessions"
-TARGET_MEMORY_LIST_FIELDS = (
-    "scope_notes",
-    "active_leads",
-    "dead_ends",
-    "next_actions",
-    "useful_patterns",
-    "session_handoffs",
-)
-TARGET_MEMORY_STRING_FIELDS = (
-    "mode",
-    "phase",
-    "active_goal",
-    "current_hypothesis",
-)
-TARGET_MEMORY_SKILL_FIELDS = ("selected_skills", "knowledge_focus")
 OPERATION_REF_HELP = (
     "OPERATION_ID:STEP from an existing execution receipt; STEP is a zero-based "
     "observation index (e.g. OPERATION_ID:0), not a file path; repeatable"
 )
-
-# text 字段的污染特征：曾有两处写入方把结构化 proposal 整体 str() 后存进 text
-# （checkpoint 的 _dedupe 与 surface 的回灌链，2026-09-15 治理）。特征锚定
-# 结构外壳本身（schema_version 键的字面量），不做语义猜测。
-POLLUTED_TEXT_MARKERS = ("{'schema_version'", '{"schema_version"')
-
-
-def text_is_polluted(text: object) -> bool:
-    """True 当 text 含已序列化结构外壳（嵌套污染的存量形态）。
-
-    读入口据此返回空（不把残缺文本伪装成正常记忆透传给下游）；
-    写入口据此拒绝写入。两者都 import 本函数——单一判据 owner。
-    """
-    raw = str(text or "")
-    return any(marker in raw for marker in POLLUTED_TEXT_MARKERS)
-
 
 def now_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -105,64 +100,6 @@ def display_path(path: Path, repo_root: Path | None = None) -> str:
 
 def load_active(repo_root: Path | None = None) -> dict:
     return load_active_file(Path(repo_root) / "memory/goals/active.json" if repo_root is not None else ACTIVE_PATH)
-
-
-def normalize_target_memory(
-    payload: dict,
-    *,
-    expected_target: str | None = None,
-    path: Path | None = None,
-) -> dict:
-    """Validate and lazily normalize one target-memory object.
-
-    Missing optional fields are filled in memory only; reads never rewrite the
-    source file. This keeps legacy v1 files readable without hiding malformed
-    containers or cross-target data.
-    """
-    location = f" {path}" if path is not None else ""
-    if not isinstance(payload, dict):
-        raise ValueError(f"invalid target memory{location}: expected an object")
-    version = payload.get("schema_version", SCHEMA_VERSION)
-    if isinstance(version, bool) or not isinstance(version, int) or version != SCHEMA_VERSION:
-        raise ValueError(f"invalid target memory{location}: unsupported schema_version")
-    raw_target = payload.get("target")
-    if not isinstance(raw_target, str) or not raw_target.strip():
-        raise ValueError(f"invalid target memory{location}: target is required")
-    target = canonical_target_value(raw_target)
-    if expected_target is not None:
-        resolved_expected = canonical_target_value(expected_target)
-        if target != resolved_expected:
-            raise ValueError(
-                f"invalid target memory{location}: target {target!r} does not match {resolved_expected!r}"
-            )
-
-    normalized = dict(payload)
-    normalized["schema_version"] = SCHEMA_VERSION
-    normalized["target"] = target
-    facts = normalized.get("facts")
-    if facts is None:
-        facts = {}
-    if not isinstance(facts, dict) or any(
-        not isinstance(value, dict) for value in facts.values()
-    ):
-        raise ValueError(f"invalid target memory{location}: facts must be a keyed map of objects")
-    normalized["facts"] = facts
-    for field in TARGET_MEMORY_LIST_FIELDS:
-        value = normalized.get(field, [])
-        if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
-            raise ValueError(f"invalid target memory{location}: {field} must be a list of objects")
-        normalized[field] = value
-    for field in TARGET_MEMORY_STRING_FIELDS:
-        value = normalized.get(field, "")
-        if not isinstance(value, str):
-            raise ValueError(f"invalid target memory{location}: {field} must be a string")
-        normalized[field] = value
-    for field in TARGET_MEMORY_SKILL_FIELDS:
-        value = normalized.get(field, [])
-        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
-            raise ValueError(f"invalid target memory{location}: {field} must be a list of strings")
-        normalized[field] = value
-    return normalized
 
 
 def load_target_memory_file(path: Path, *, expected_target: str | None = None) -> dict:
@@ -213,6 +150,7 @@ def _experience_entry(row: dict) -> dict:
             if isinstance(item, dict)
         ],
         "structured": structured or None,
+        **{key: row.get(key) for key in ("claims", "sources", "source_health", "review_state", "applicability", "correction_refs", "dependency_refs")},
     }
 
 
@@ -282,6 +220,9 @@ def load_goal_memory(repo_root: str | Path, target: str, *, experience_limit: in
         **fields,
         "facts": {},
     }
+    history_args = ["python3", "tools/experience_recall.py", "history", "--repo-root", str(repo.resolve()),
+                    "--target", resolved_target, "--limit", str(experience_limit)]
+    recall_args = [*history_args[:2], "query", *history_args[3:]]
     return {
         "active": selected,
         "raw_active": active,
@@ -294,10 +235,11 @@ def load_goal_memory(repo_root: str | Path, target: str, *, experience_limit: in
             "revision": context.get("revision", 0),
             "experience_window": {
                 **{key: page[key] for key in ("total", "remaining", "has_more", "next_cursor")},
-                "recall_command": shlex.join([
-                    "python3", "tools/experience_recall.py", "--repo-root", str(repo.resolve()),
-                    "--target", resolved_target, "--limit", str(experience_limit),
-                ]),
+                "cursor_owner": "TargetStore.experience_page",
+                "recall_command": shlex.join(recall_args),
+                "history_command": shlex.join(history_args),
+                "next_command": shlex.join([*history_args, "--cursor", page["next_cursor"]]) if page["has_more"] else "",
+                "expand_command": shlex.join([*history_args, "--id", "EXPERIENCE_ID"]),
             },
         },
         "active_path": str(active_path),
@@ -343,6 +285,13 @@ class TargetSelectionError(StoreError):
         self.receipt = receipt
 
 
+def _indexed_save(args: argparse.Namespace, target: str, receipt: dict, **details) -> dict:
+    return update_saved_result(
+        {"target": target, "receipt": receipt, **details}, args.repo_root or BASE_DIR,
+        target=target, update_index=args.update_index, encoder_path=args.index_encoder,
+    )
+
+
 def set_active(args: argparse.Namespace) -> str | dict:
     repo_root = getattr(args, "repo_root", None)
     canonical_target = canonical_target_value(args.target)
@@ -367,6 +316,8 @@ def set_active(args: argparse.Namespace) -> str | dict:
         if receipt is not None:
             raise TargetSelectionError(canonical_target, receipt, exc) from exc
         raise
+    if getattr(args, "update_index", None):
+        return _indexed_save(args, canonical_target, receipt, selection_status="selected")
     if getattr(args, "json", False):
         return {"target": canonical_target, "receipt": receipt, "selection_status": "selected"}
     projection = load_goal_memory(repo_root or BASE_DIR, canonical_target)
@@ -446,7 +397,13 @@ def append_entry(args: argparse.Namespace, field: str, label: str) -> str | dict
         kind=kind, statement=statement, conditions=conditions,
         reopen_when=reopen_when, next_intent=next_intent,
         evidence=evidence, actor=getattr(args, "actor", "operator"),
+        sources=json.loads(getattr(args, "sources_json", "[]")),
+        links=json.loads(getattr(args, "links_json", "[]")),
+        claims=json.loads(getattr(args, "claims_json", "[]")),
+        expected_revision=getattr(args, "expected_revision", None),
     )
+    if getattr(args, "update_index", None):
+        return _indexed_save(args, target, receipt)
     if getattr(args, "json", False):
         return {"target": target, "receipt": receipt}
     return f"{label} saved for {target} [{receipt['entity_id']}]: {statement}"
@@ -489,6 +446,8 @@ def upsert_fact(args: argparse.Namespace) -> str | dict:
         reopen_when="", next_intent="", evidence=_operation_refs(getattr(args, "operation_ref", []) or []),
         actor=getattr(args, "actor", "operator"),
     )
+    if getattr(args, "update_index", None):
+        return _indexed_save(args, target, receipt)
     if getattr(args, "json", False):
         return {"target": target, "receipt": receipt}
     return f"FACT recorded as note for {target} [{receipt['entity_id']}]: {key}: {text}"
@@ -525,6 +484,8 @@ def write_handoff(args: argparse.Namespace) -> str | dict:
         evidence=_operation_refs(getattr(args, "operation_ref", []) or []),
         actor=getattr(args, "actor", "operator"),
     )
+    if getattr(args, "update_index", None):
+        return _indexed_save(args, target, receipt)
     if getattr(args, "json", False):
         return {"target": target, "receipt": receipt}
     return f"Handoff saved for {target} [{receipt['entity_id']}]"
@@ -568,6 +529,8 @@ def format_current_handoff(memory: dict) -> list[str]:
         lines.append(f"  conditions: {(current.get('structured') or {}).get('conditions', 'unknown')}")
         lines.append(f"  evidence: {', '.join(current['evidence_refs']) or 'None'}")
         lines.append(f"  recorded_by: {current['recorded_by']}")
+        for key in ("claims", "review_state", "applicability", "source_health", "correction_refs", "dependency_refs"):
+            lines.append(f"  {key}: {json.dumps(current.get(key), ensure_ascii=False)}")
     else:
         lines.append("Current handoff: None")
     intents = memory.get("next_actions", [])
@@ -606,13 +569,43 @@ def show(args: argparse.Namespace) -> str | dict:
             if entry.get("evidence_refs"):
                 lines.append(f"  evidence: {', '.join(entry['evidence_refs'])}")
             lines.append(f"  recorded_by: {entry['recorded_by']}")
+            for key in ("claims", "review_state", "applicability", "source_health", "sources", "correction_refs", "dependency_refs"):
+                lines.append(f"  {key}: {json.dumps(entry.get(key), ensure_ascii=False)}")
     window = projection["source"]["experience_window"]
     if window["has_more"]:
         lines.append(f"More target experiences: {window['remaining']}")
         lines.append(f"Next cursor: {window['next_cursor']}")
-        lines.append(f"Next page: {window['recall_command']} --cursor {shlex.quote(window['next_cursor'])}")
-    lines.append(f"Expand: {window['recall_command']} --id EXPERIENCE_ID")
+        lines.append(f"Next page: {window['next_command']}")
+    lines.append(f"Expand: {window['expand_command']}")
+    lines.append(f"Recall by question: {window['recall_command']}")
     return "\n".join(lines)
+
+
+def provenance_command(args: argparse.Namespace) -> str | dict:
+    root = args.repo_root or BASE_DIR
+    store = runtime_store(root, resolve_target(args.target, root))
+    if args.command == "knowledge-source":
+        result = store.knowledge_source(args.id)
+    elif args.command == "history-source":
+        result = store.history_source(args.id, full=args.full)
+    elif args.command == "entity":
+        result = store.experience_entity(args.owner, args.id)
+    elif args.command == "version":
+        result = store.experience_version(args.id, args.version)
+    elif args.command == "sources":
+        result = store.experience_sources(args.id)
+    elif args.command == "link":
+        result = store.link_experience(
+            command_id=args.command_id, experience_id=args.id, target_id=args.to,
+            relation=args.relation, conditions=args.conditions, rationale=args.reason,
+            expected_revision=args.expected_revision, actor=args.actor)
+    else:
+        result = store.retract_experience_link(
+            command_id=args.command_id, link_id=args.id, reason=args.reason,
+            expected_revision=args.expected_revision, actor=args.actor)
+    if getattr(args, "update_index", None):
+        return _indexed_save(args, store.target, result)
+    return result if args.json else json.dumps(result, ensure_ascii=False, indent=2)
 
 
 class MemoryArgumentParser(argparse.ArgumentParser):
@@ -637,6 +630,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--repo-root", type=Path, default=None, help="repository data root")
     parser.add_argument("--json", action="store_true", help="emit structured results and errors")
+    add_index_options(parser)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     show_parser = subparsers.add_parser("show", help="show active target memory")
@@ -679,6 +673,10 @@ def build_parser() -> argparse.ArgumentParser:
         item_parser.add_argument("--operation-ref", action="append", default=[], help=OPERATION_REF_HELP)
         item_parser.add_argument("--command-id", default=None)
         item_parser.add_argument("--actor", default="operator")
+        item_parser.add_argument("--claims-json", default="[]", help="explicit advisory claims with exact entity and source bindings")
+        item_parser.add_argument("--sources-json", default="[]", help="explicit version-bound source objects")
+        item_parser.add_argument("--links-json", default="[]", help="explicit correction/dependency objects")
+        item_parser.add_argument("--expected-revision", type=int, default=None)
         if name in {"lead", "next"}:
             item_parser.add_argument(
                 "--structured-json",
@@ -728,7 +726,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     fact_parser.set_defaults(func=upsert_fact)
 
+    for name in ("entity", "knowledge-source", "history-source", "version", "sources", "link", "retract-link"):
+        item = subparsers.add_parser(name, help=f"{name}: explicit experience provenance")
+        item.add_argument("--target", required=True)
+        item.add_argument("--id", required=True, **({"action": "append"} if name == "sources" else {}))
+        if name == "entity":
+            item.add_argument("--owner", required=True, choices=("actor", "object", "session", "action", "operation", "artifact", "experience", "assessment"))
+        if name == "history-source":
+            item.add_argument("--full", action="store_true", help="expand the exact original record and historical metadata")
+        if name == "version":
+            item.add_argument("--version", type=int, default=None)
+        if name in {"link", "retract-link"}:
+            item.add_argument("--command-id", required=True)
+            item.add_argument("--expected-revision", type=int, required=True)
+            item.add_argument("--reason", required=True)
+            item.add_argument("--actor", default="operator")
+        if name == "link":
+            item.add_argument("--to", required=True)
+            item.add_argument("--relation", required=True, choices=("supersedes", "refutes", "depends_on"))
+            item.add_argument("--conditions", required=True,
+                              help="explicit correction scope; differing declarations retain a conditional connection")
+        item.set_defaults(func=provenance_command)
+
     for subparser in subparsers.choices.values():
+        add_index_options(subparser, default=argparse.SUPPRESS)
         subparser.add_argument("--repo-root", type=Path, default=argparse.SUPPRESS,
                                help="repository data root")
         subparser.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
@@ -743,11 +764,26 @@ def main(argv: list[str] | None = None) -> int:
     try:
         args = parser.parse_args(argv)
         json_output = args.json
+        validate_index_options(args.update_index, args.index_encoder)
+        if args.update_index:
+            if args.command not in {"set", "note", "lead", "next", "dead-end", "pattern",
+                                    "handoff", "fact", "link", "retract-link"}:
+                raise ValueError("--update-index requires an explicit memory write command")
+            if args.command == "set" and args.goal is None:
+                raise ValueError("--update-index on set requires --goal; target selection is not a save")
         result = args.func(args)
+        if args.update_index:
+            print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else format_saved_result(result))
+            return 2 if result["partial"] else 0
         print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else result)
     except (OSError, ValueError, SystemExit) as exc:
         if isinstance(exc, SystemExit) and not isinstance(exc.code, str):
             raise  # argparse --help keeps its normal exit behavior.
+        if isinstance(exc, TargetSelectionError) and args.update_index:
+            result = _indexed_save(args, exc.target, exc.receipt, selection_status="failed", error=str(exc))
+            result["partial"] = True
+            print(json.dumps(result, ensure_ascii=False, indent=2) if json_output else format_saved_result(result))
+            return 2
         if json_output:
             error = {"error": str(exc)}
             if isinstance(exc, TargetSelectionError):

@@ -2,8 +2,7 @@
 id: render-pipeline-ssrf
 type: technique-card
 related_skills:
-  - web2-vuln-classes
-  - security-arsenal
+  - src-hunting
   - triage-validation
 trigger_tags:
   - render-pipeline
@@ -77,8 +76,7 @@ source_refs:
 
 ## 关联 Skills
 
-- web2-vuln-classes
-- security-arsenal
+- src-hunting
 - triage-validation
 
 ## 停止条件

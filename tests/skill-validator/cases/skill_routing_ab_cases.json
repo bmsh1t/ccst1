@@ -1,95 +1,99 @@
 {
   "meta": {
-    "purpose": "Routing A/B: given a natural-language session moment, does the model pick the intended skill from the 12 descriptions alone (no body)? Wrong-skill routing wastes context or skips the right contract.",
-    "ground_truth_source": "skills/*/SKILL.md frontmatter descriptions after the 2026-09-14 disambiguation (bug-bounty/bb-methodology mutual boundary, signing lane added to web2-vuln-classes, preflight HOW-leak removed from credential-attack)",
+    "purpose": "Offline current-entry smoke cases: Skill description boundaries and direct knowledge/owner references. These assertions do not prove model routing behavior.",
+    "ground_truth_source": "Current native skills/*/SKILL.md descriptions and complete method/owner references after the capability-architecture cutover. The prior 2026-09-14 cases are preserved in the parent task research/entry-consumer-routing-legacy.json.",
     "skills": [
-      "bb-methodology",
-      "bug-bounty",
       "cicd-security",
       "credential-attack",
       "meme-coin-audit",
       "mobile-pentest",
       "report-writing",
-      "security-arsenal",
+      "src-hunting",
       "triage-validation",
       "web2-recon",
-      "web2-vuln-classes",
-      "web3-audit"
+      "web3-audit",
+      "whitebox-audit"
     ],
-    "scoring": "expected skill exact match = 1pt; every distractor listed must NOT be picked (its presence tests a known confusion pair); per case max 1pt, distractor hit is a hard fail for that case"
+    "scoring": "Offline checks only: current Skill/reference must exist; listed Skill distractors must not have greater lexical trigger overlap than the expected Skill. Reference-only cases are readability checks and receive no lexical or model score."
   },
   "cases": [
     {
-      "moment": "Recon finished an hour ago; three endpoints have odd responses and I don't know which one to dig into first.",
-      "expected": "bb-methodology",
-      "distractors": ["bug-bounty"],
-      "why": "Active hunting lane, hypothesis-priority question — not cross-stage coordination."
+      "moment": "Recon finished an hour ago; three endpoints have odd responses. Compare competing hypotheses and choose the next investigation experiment.",
+      "expected": "src-hunting",
+      "distractors": ["web2-recon", "whitebox-audit"],
+      "why": "Global hypothesis comparison belongs to the shared investigation core."
     },
     {
-      "moment": "The hunt is validated and written; now decide whether to run reporting or a new recon pass on the next asset.",
-      "expected": "bug-bounty",
-      "distractors": ["bb-methodology"],
-      "why": "Stage-to-stage transition (validate -> report/recon), the coordinator's exact trigger."
+      "moment": "The hunt is validated and written; weigh competing hypotheses and decide whether another cross-domain investigation is justified.",
+      "expected": "src-hunting",
+      "distractors": ["report-writing", "triage-validation"],
+      "why": "Global continuation and conditional stopping share the core; no separate coordinator."
     },
     {
       "moment": "A GraphQL endpoint appeared in the crawl output; introspection is on and I want the lane's evidence gates.",
-      "expected": "web2-vuln-classes",
+      "expected_reference": "knowledge/cards/graphql.md",
       "distractors": ["triage-validation", "web2-recon"],
       "why": "Evidence names a bug-class lane; validation is premature, recon already produced this evidence."
     },
     {
       "moment": "I have a candidate: SSRF with an internal service response. Before any report claim I need the seven questions.",
       "expected": "triage-validation",
-      "distractors": ["report-writing", "web2-vuln-classes"],
+      "distractors": ["report-writing", "src-hunting"],
       "why": "Candidate-quality validation gate; report-writing requires validation passed first."
     },
     {
       "moment": "Validation passed with CVSS 8.1; draft the HackerOne submission from the finding and evidence ledger.",
       "expected": "report-writing",
-      "distractors": ["triage-validation", "bug-bounty"],
+      "distractors": ["triage-validation", "src-hunting"],
       "why": "Post-validation delivery rendering is report-writing's only trigger."
     },
     {
       "moment": "Every request to the API returns 403 because of a sign/hmac header the browser computes; I need to replay them.",
-      "expected": "web2-vuln-classes",
-      "distractors": ["mobile-pentest", "security-arsenal"],
-      "why": "Client signing lane (2026-09-14 addition); web target, not a mobile artifact; arsenal is reference-only."
+      "expected_reference": "knowledge/cards/js-runtime-signature-reconstruction.md",
+      "distractors": ["mobile-pentest", "web2-recon"],
+      "why": "Read the complete client-signing method directly; missing source edges can become a bounded whitebox question."
     },
     {
       "moment": "New target, nothing known yet: find subdomains, live hosts, and the URL surface.",
       "expected": "web2-recon",
-      "distractors": ["bug-bounty", "bb-methodology"],
-      "why": "Attack-surface discovery is web2-recon's entry; the coordinator and methodology trigger only when a stage-choice or hypothesis question exists."
+      "distractors": ["src-hunting", "whitebox-audit"],
+      "why": "Attack-surface discovery is a local Recon question."
     },
     {
       "moment": "The target's public GitHub org has Actions workflows that reference secrets in run blocks.",
       "expected": "cicd-security",
-      "distractors": ["web2-vuln-classes", "security-arsenal"],
+      "distractors": ["whitebox-audit", "web2-recon"],
       "why": "Explicit CI/CD asset in scope — the direct-only trigger."
     },
     {
       "moment": "The APK in scope talks to an API the web app never exposes; compare auth behavior between the two clients.",
       "expected": "mobile-pentest",
-      "distractors": ["web2-vuln-classes", "web2-recon"],
+      "distractors": ["whitebox-audit", "web2-recon"],
       "why": "Mobile artifact in scope with client-boundary question; hands off to web2 lanes after the differential is captured."
     },
     {
       "moment": "The login form accepts a known employee email; plan a bounded credential review with a lockout plan.",
       "expected": "credential-attack",
-      "distractors": ["bb-methodology", "security-arsenal"],
+      "distractors": ["src-hunting", "web2-recon"],
       "why": "Real login form + bounded review warrant — preparation-only lane."
     },
     {
       "moment": "I don't know which owner accepts a validation-runner result or how dependent steps keep the session.",
-      "expected": "security-arsenal",
-      "distractors": ["web2-vuln-classes", "bug-bounty"],
-      "why": "Shared project contract lookup — its reference-only trigger."
+      "expected_reference": "docs/tool-index.md",
+      "distractors": ["src-hunting", "whitebox-audit"],
+      "why": "Shared execution-owner lookup goes directly to its index, without a reference-only Skill."
     },
     {
       "moment": "A Solidity vault upgrade split the accounting across two implementations; review the invariant before recommending.",
       "expected": "web3-audit",
-      "distractors": ["web2-vuln-classes", "meme-coin-audit"],
+      "distractors": ["whitebox-audit", "meme-coin-audit"],
       "why": "Smart-contract target in scope with an invariant question."
+    },
+    {
+      "moment": "Saved JavaScript and dependency source show a possible sink. Trace reachable inputs and authorization guards, preserving deployment uncertainty.",
+      "expected": "whitebox-audit",
+      "distractors": ["src-hunting", "web2-recon"],
+      "why": "A bounded source reachability question delegates to whitebox while global priorities stay with the core."
     }
   ]
 }

@@ -74,6 +74,6 @@ source_refs: []
 
 ## 推荐动作
 
-- 将稳定请求交给 `web2-vuln-classes` 或 `triage-validation` 做单变量 replay 与影响证明。
+- 将稳定请求交给 `src-hunting` 或 `triage-validation` 做单变量 replay 与影响证明。
 - 若差异属于验签字节与消费字节不一致，再加载 `knowledge/cards/signature-scope-mismatch.md`。
 - 将跨目标有效的定位或补环境技巧写为带证据链接的 knowledge candidate，不保存目标 token、密钥或响应正文。

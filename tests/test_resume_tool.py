@@ -152,7 +152,7 @@ def test_primary_resume_memory_window_is_complete_and_root_bound(tmp_path, entry
             seen.extend(ids)
             assert page["target_page"]["remaining"] == entry_count - len(seen)
             cursor = page["target_page"]["next_cursor"]
-            next_command = f"{window['recall_command']} --cursor {shlex.quote(cursor)}" if cursor else ""
+            next_command = f"{window['history_command']} --cursor {shlex.quote(cursor)}" if cursor else ""
     else:
         assert "  More: " not in output
         assert "  Expand: " not in output

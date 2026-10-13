@@ -2,7 +2,7 @@
 id: rest-numeric-id-cross-actor
 type: technique-card
 related_skills:
-  - web2-vuln-classes
+  - src-hunting
 trigger_tags:
   - rest-numeric-id-cross-actor
 risk: low

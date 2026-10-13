@@ -2,7 +2,7 @@
 id: redirect-header-leak
 type: technique-card
 related_skills:
-  - web2-vuln-classes
+  - src-hunting
   - web2-recon
   - triage-validation
 trigger_tags:
@@ -76,7 +76,7 @@ source_refs:
 
 ## 关联 Skills
 
-- web2-vuln-classes
+- src-hunting
 - web2-recon
 - triage-validation
 

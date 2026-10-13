@@ -20,7 +20,6 @@ and does not repeat the assembly rule.
 
 - Hunt or Autopilot: `rules/hunting.md`.
 - Tool orchestration or AI priority decisions: `rules/tool-ai-boundary.md`.
-- Evidence-shaped Web signal: `rules/playbook-router.md`.
 - Web intelligence or advisory research: `rules/web-intel.md`.
 - Candidate validation or report preparation: `rules/reporting.md`.
 - Session review or reusable-knowledge promotion: `rules/retrospective.md`.
@@ -40,10 +39,11 @@ contract, but must not redefine it.
 | `red-lines.md` | `CLAUDE.md` loads it; `rules/red-lines.md` owns the semantics |
 | `coverage-gate.md` | `tools/coverage_matrix.py` |
 | `hunting.md` | `rules/hunting.md` |
-| `playbook-router.md` | `tools/context_pack.py` |
 | `reporting.md` | `rules/reporting.md`; report rendering: `skills/report-writing/SKILL.md` |
 | `retrospective.md` | `commands/retrospect.md` |
 | `tool-ai-boundary.md` | `rules/tool-ai-boundary.md` |
 | `web-intel.md` | `tools/web_intel_artifact.py` |
 
 When a contract changes, update its owner and this index in the same change.
+
+Web 方法与信号索引迁至 `knowledge/playbooks/web2-evidence-contracts.md`，按信息缺口读取；不再作为 Context Pack 的公共必读检查。

@@ -6,7 +6,7 @@ related_cards:
   - knowledge/cards/upload-to-execution.md
   - knowledge/cards/ssrf-internal-impact.md
 related_skills:
-  - web2-vuln-classes
+  - src-hunting
   - triage-validation
 trigger_tags:
   - rce

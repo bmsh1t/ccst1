@@ -2,7 +2,7 @@
 id: controlled-rce-impact
 type: workflow-card
 related_skills:
-  - web2-vuln-classes
+  - src-hunting
   - triage-validation
 trigger_tags:
   - rce
@@ -37,7 +37,7 @@ deep_refs:
 ## 能力定位
 
 本卡用于把 RCE / shell / post-exploit 技巧转译为授权渗透里的
-Controlled Exploitation / Impact Proof。它给 `web2-vuln-classes` 和
+Controlled Exploitation / Impact Proof。它给 `src-hunting` 和
 `triage-validation` 补充高风险利用后的最小证明模型，不替代红线和验证 gate。
 
 ## 触发信号
@@ -99,9 +99,8 @@ Controlled Exploitation / Impact Proof。它给 `web2-vuln-classes` 和
 
 ## 关联 Skills
 
-- `web2-vuln-classes`
+- `src-hunting`
 - `triage-validation`
-- `bb-methodology`
 
 ## 晋升到 Skill / Queue 的条件
 

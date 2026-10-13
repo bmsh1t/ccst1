@@ -5,12 +5,18 @@ description: Use only when a CI/CD or supply-chain target is explicitly in scope
 
 # CI/CD Security Decision Skill
 
-This is a commander, not a scanner manual. Choose the next branch from the
+This answers a scoped CI/CD question, not the whole target agenda. Choose the next branch from the
 observed repository, trigger, permission, runner, artifact, and deployment
 context. Keep concrete probe shapes and tool syntax in the model or on-demand
 knowledge references.
 
 ## Direct Execution Contract
+
+For real delegation, use the input/output and acceptance boundary in
+`skills/src-hunting/SKILL.md#real-delegation-and-execution-handoff`. Return
+contrary evidence and unknowns as well as results; propose global pivots to the
+main session. Same-session reading requires no handoff form. Expert self-report
+does not resolve Action or confirm Finding.
 
 - Entry: Use only when a public repository, workflow, package, artifact, or
   deployment path is explicitly in scope. Require the repository/workflow
@@ -39,14 +45,16 @@ knowledge references.
 - A candidate has a concrete server, cloud, release, or package impact -> hand
   the evidence to validation; otherwise keep it as a lead or informational note.
 
-## ROI Priorities
+## Local Attention Clues
+
+These are alternatives within the current question, not a required ordering or
+a reason to exhaust every branch. Global priorities belong to the main session.
 
 1. Privileged triggers that accept contributor-controlled input.
 2. Self-hosted runners, shared caches, artifacts, and release/deploy jobs.
 3. OIDC or secret paths whose trust policy is broader than the workflow scope.
 4. Package, image, or action resolution with a proven private-to-public edge.
-5. Low-impact lint, pinning, or disclosure signals only after the high-value
-   trust edges are exhausted.
+5. Lint, pinning or disclosure signals when they answer the current trust question.
 
 ## Phase Checkpoints
 

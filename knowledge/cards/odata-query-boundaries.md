@@ -3,9 +3,8 @@ id: odata-query-boundaries
 type: technique-card
 related_skills:
   - web2-recon
-  - web2-vuln-classes
+  - src-hunting
   - triage-validation
-  - security-arsenal
 trigger_tags:
   - odata
   - odata-filter
@@ -87,10 +86,8 @@ API、IDOR 或 SQLi 的 lifecycle。
 ## 关联 Skills
 
 - `web2-recon`
-- `web2-vuln-classes`
+- `src-hunting`
 - `triage-validation`
-- `security-arsenal`
-
 ## 晋升到 Skill / Queue 的条件
 
 - 只有 metadata/operator 信号时保持 API discovery Signal。

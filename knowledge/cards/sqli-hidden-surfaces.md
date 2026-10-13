@@ -2,9 +2,8 @@
 id: sqli-hidden-surfaces
 type: technique-card
 related_skills:
-  - web2-vuln-classes
+  - src-hunting
   - web2-recon
-  - bb-methodology
   - triage-validation
 trigger_tags:
   - sqli
@@ -122,14 +121,13 @@ source_refs:
 
 - 只有类别推测：保持知识建议，不创建 Action。
 - 有明确 endpoint、method、input、source evidence、query context 和 next question：可写入 Action Queue。
-- 有稳定 baseline-vs-perturbation 差异：交给 `web2-vuln-classes` 深入验证。
+- 有稳定 baseline-vs-perturbation 差异：交给 `src-hunting` 深入验证。
 - 需要 parser、二阶、认证态、browser 或 source 证据：转对应深层路径，不在本卡扩大枚举。
 
 ## 关联 Skills
 
-- `web2-vuln-classes`
+- `src-hunting`
 - `web2-recon`
-- `bb-methodology`
 - `triage-validation`
 
 ## 可晋升经验

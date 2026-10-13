@@ -2,9 +2,8 @@
 id: coverage-prompts
 type: checklist-card
 related_skills:
-  - bb-methodology
+  - src-hunting
   - web2-recon
-  - web2-vuln-classes
 trigger_tags:
   - coverage
   - missed-lane

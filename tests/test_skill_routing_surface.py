@@ -1,15 +1,8 @@
-"""Routing-surface contract tests: description triggers stay distinct.
+"""Current native Skill and method-reference routing surface.
 
-Two layers (from the 2026-09-14 routing-surface plan, P1):
-
-1. Routing A/B cases — each session moment must name the expected skill,
-   and no listed distractor may be a better textual match on the trigger
-   phrase. This is a lexical smoke layer: it catches trigger-word
-   collisions (the same headline phrase inviting two skills), not full
-   semantic routing, which is what the live A/B runner measures.
-2. Mutual-disambiguation check — for the known confusion pairs, each
-   description must name the other side's territory (an explicit boundary
-   clause), so the pair cannot both claim the same moment.
+Descriptions receive a lexical smoke check, not a model capability score.
+Direct knowledge/owner lookups retain readable references without another Skill.
+The investigation/source pair must preserve its reciprocal responsibility boundary.
 """
 
 from __future__ import annotations
@@ -50,14 +43,19 @@ def _trigger_tokens(skill_id: str) -> set[str]:
     }
 
 
-def test_routing_cases_reference_real_skills():
+def test_routing_cases_reference_real_skills_and_method_owners():
     data = json.loads(CASES_PATH.read_text(encoding="utf-8"))
-    on_disk = {p.name for p in SKILLS_DIR.iterdir() if p.is_dir()}
+    on_disk = {p.name for p in SKILLS_DIR.iterdir() if (p / "SKILL.md").is_file()}
+    assert set(data["meta"]["skills"]) == on_disk
     for case in data["cases"]:
-        assert case["expected"] in on_disk, case["moment"]
+        assert ("expected" in case) != ("expected_reference" in case), case["moment"]
+        if "expected" in case:
+            assert case["expected"] in on_disk, case["moment"]
+            assert case["expected"] not in case["distractors"], case["moment"]
+        else:
+            assert (REPO_ROOT / case["expected_reference"]).is_file(), case["moment"]
         for distractor in case["distractors"]:
             assert distractor in on_disk, case["moment"]
-        assert case["expected"] not in case["distractors"], case["moment"]
 
 
 def test_routing_case_distractors_do_not_outmatch_expected():
@@ -66,10 +64,9 @@ def test_routing_case_distractors_do_not_outmatch_expected():
     'the distractor would win this moment'."""
     data = json.loads(CASES_PATH.read_text(encoding="utf-8"))
     for case in data["cases"]:
+        if "expected_reference" in case:
+            continue
         moment = case["moment"].lower()
-        expected_hits = _description(case["expected"]).lower().count(
-            case["moment"].split()[0].lower()
-        )
         # Lexical overlap: each listed distractor must not name the case's
         # core trigger words more strongly than the expected skill does.
         core = {_stem(tok) for tok in re.findall(r"[a-z][a-z0-9-]+", moment)
@@ -82,31 +79,28 @@ def test_routing_case_distractors_do_not_outmatch_expected():
                 f"{dist_score}) lexically outmatches {case['expected']} "
                 f"(score {exp_score}) on the case's core words"
             )
-        assert expected_hits >= 0  # reading only; keeps intent explicit
 
 
-# Known confusion pairs: (skill A, skill B, A's clause about B, B's clause about A)
+# The investigation core and source specialist link to each other's owner.
 MUTUAL_PAIRS = [
     (
-        "bug-bounty",
-        "bb-methodology",
-        "bb-methodology",
-        "bug-bounty",
+        "src-hunting",
+        "whitebox-audit",
     ),
 ]
 
 
 def test_confusion_pairs_name_each_others_territory():
-    """After the 2026-09-14 disambiguation, the coordinator/methodology pair
-    must each carry an explicit boundary clause pointing at the other, so a
-    stall-and-stage moment cannot be claimed by both."""
-    for a, b, a_points_to, b_points_to in MUTUAL_PAIRS:
-        assert a_points_to in _description(a), (
-            f"{a} description must name {a_points_to} as the boundary owner"
-        )
-        assert b_points_to in _description(b), (
-            f"{b} description must name {b_points_to} as the boundary owner"
-        )
+    """A source question delegates locally; global hypotheses stay with the core."""
+    for core_id, source_id in MUTUAL_PAIRS:
+        core = (SKILLS_DIR / core_id / "SKILL.md").read_text(encoding="utf-8")
+        source = (SKILLS_DIR / source_id / "SKILL.md").read_text(encoding="utf-8")
+        assert f"skills/{source_id}/SKILL.md" in core
+        assert f"skills/{core_id}/SKILL.md" in source
+        assert "competing hypotheses" in _description(core_id)
+        assert "reachable inputs" in _description(source_id)
+        assert "global reprioritization returns here" in core
+        assert "retains the global" in source
 
 
 def test_direct_only_skills_carry_scope_gates():

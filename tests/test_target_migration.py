@@ -771,8 +771,10 @@ def test_fence_written_before_activation_blocks_preview_fallback(tmp_path):
     store._create_fence(result["receipt"]["store_id"], result["receipt"]["source_manifest_sha256"])
     with pytest.raises(StoreError, match="backend cutover incomplete"):
         target_backend(published, target)
-    with pytest.raises(StoreError, match="backend cutover incomplete"):
-        promote_target(published, target)
+    # Ordinary reads remain fenced; explicit promotion can resume because no
+    # original is removed before a complete archive receipt is published.
+    assert promote_target(published, target)["status"] == "primary"
+    assert target_backend(published, target) == "primary"
 
 
 def test_complete_disposition_ledger_clears_quarantine_and_completes_staged_receipt(tmp_path):

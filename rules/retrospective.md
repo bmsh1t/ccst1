@@ -54,7 +54,7 @@ python3 tools/coverage_matrix.py find-gaps --target TARGET
 ```bash
 python3 tools/target_store.py findings --target TARGET
 python3 tools/target_store.py findings --target TARGET --id FINDING_ID
-python3 tools/experience_recall.py --target TARGET --json
+python3 tools/experience_recall.py query --target TARGET --json
 ```
 
 `memory/goals/active.json` 仅用于选择目标。缺库/缺 Finding ID 必须显式失败，合法空库

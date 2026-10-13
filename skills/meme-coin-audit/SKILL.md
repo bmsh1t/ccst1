@@ -11,6 +11,12 @@ simulation boundary; concrete command and probe knowledge remains on demand.
 
 ## Direct Execution Contract
 
+For real delegation, use the input/output and acceptance boundary in
+`skills/src-hunting/SKILL.md#real-delegation-and-execution-handoff`. Return
+contrary evidence and unknowns as well as results; propose global pivots to the
+main session. Same-session reading requires no handoff form. Expert self-report
+does not resolve Action or confirm Finding.
+
 - Entry: Invoke only for an explicitly scoped token or program. Require chain
   and network, mint/contract identity, source or bytecode revision when
   available, and a read-only, simulation, or transaction boundary.
@@ -37,7 +43,10 @@ simulation boundary; concrete command and probe knowledge remains on demand.
   repeatable bounded simulation -> hand the canonical state delta to validation;
   otherwise keep the result as a lead or informational risk.
 
-## ROI Priorities
+## Local Attention Clues
+
+These are alternatives within the current question, not a required ordering or
+a reason to exhaust every branch. Global priorities belong to the main session.
 
 1. Retained mint/freeze/admin authority and upgrade or migration paths.
 2. Transfer restrictions, fee changes, hidden supply, and holder-specific rules.

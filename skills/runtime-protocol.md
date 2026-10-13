@@ -11,7 +11,7 @@
 |---|---|---|
 | `CLAUDE.md` | 授权、AI/工具边界、状态 owner、入口路由 | 仓库启动时常驻 |
 | 本协议 | Target -> Skill -> Knowledge -> Checks -> Write-back | Context Pack 共享必读 |
-| 全部 Skill（含 `bb-methodology`） | 决策契约、路线、证据门 | 原生 Skill 工具按需加载（description 路由） |
+| 全部 Skill（调查核心 `src-hunting` 与专项） | 决策契约、路线、证据门 | 原生 Skill 工具按需加载（description 路由） |
 | 知识卡/参考资料 | 模式、技巧、证据门和发散思路 | 全量目录可发现，AI 按信息缺口读取 |
 | Rules / checks | Coverage、Validation 和 Reporting gate | 按动作与阶段读取 |
 | Tools / state owners | 确定性执行、原始证据、生命周期和恢复 | 调用或写回时执行 |
@@ -49,12 +49,18 @@ Claude Code CLI 当前主会话保留最终路线判断权。本协议、Skill/C
 - 从完整 `card_catalog` 按信息缺口选读，也可用 `knowledge/index.md` 或 `/kb` 查找。
   短卡读完整正文；长卡读包含前提、方法、证据门、反例和停止条件的完整判断单元，
   再按需展开来源。不设固定选卡或补读上限，不新增持久化加载状态。
-- 需要经验（目标情节 + 本目标技术经验 + 已晋升知识卡）时，用一个统一读入口：
-  `python3 tools/experience_recall.py --target <target> [--query <词项>]`。该视图只含
-  当前目标内容 + 人工审核晋升的知识卡（跨项目现场记忆不自动带入）；query 只是
-  词项粗筛，相关性判断由 Claude 读视图完成。Store 经验可用 `--limit`/`--cursor`
-  分页、`--id EXPERIENCE_ID` 展开，默认文本保留适用/重开条件；primary 目标
-  不再从旧 PatternDB 混入当前经验。向量索引暂缓（显式缓期决策）。
+- 按问题召回使用 `python3 tools/experience_recall.py query --target TARGET --query '当前问题'`。
+  `current` 独立恢复当前目标/Scope、意图、交接、活动工作和裁决，不参与历史排序；`recalled`
+  只含本目标经验与绑定当前发布字节审核回执的共享知识。登记目录仅是发现面，不是审核证明。
+  `health` 区分知识、词法索引、本地语义/重排与当前事实的可用性；partial/unavailable 不等于无经验。
+- 查询结果按自身 `pagination.next_cursor` 翻页，`--source-ref experience:ID` 或 `knowledge:ID`
+  展开完整来源。原始历史页使用 `history --target TARGET --cursor CURSOR` / `--id EXPERIENCE_ID`；
+  它使用 Store 游标，不能与 query 的来源/排序绑定游标互换。优先使用 owner 返回的完整命令。
+- 索引只由显式 `index-build` / `relation-build` 建设；查询和 checkpoint 不构建、迁移或下载。
+  模型必须是明确提供且已批准使用的本地目录（`--encoder-path` / `--reranker-path`）；未提供时
+  明示 unavailable，不用哈希向量假冒语义。`relation-query --seeds @entities.json` 只接受精确实体，
+  每条路径带来源/反证和条件缺口，始终是待验证假设，不授权执行、不写 Action/Finding。
+  真实模型收益、默认组合与发布尚未验收，不能把入口存在当作通过。
 
 卡片保持独立，提供模式、反例和证据提示；Skill 保留路线和证据门，不复制卡片正文。
 
@@ -105,13 +111,17 @@ L2 工作集、L3 目标经验、L4 跨目标知识都落在既有 owner 上。�
 三条层间流转：工作集只保留当前决策所需（其余留指针按引用展开）；只在
 重要节点（假设证伪、稳定结论、阶段切换、会话暂停/handoff）做 L3/L4 巩固
 写回——普通观察登记为 Store operation/observation 即止，不强制走提炼管线；召回以当前问题为驱动，
-先目标经验后跨目标知识，经验必须带适用条件。
+当前事实优先直读，相关经验按问题检索且必须带适用条件。
 
 回写区分认知状态：观察、假设、已验证结论各有 owner（Store observation / Experience 假设
 字段 / validation+finding），不把猜测写成事实，也不把一次失败固化成永久
 禁区（dead-end 带适用条件和重开条件）。关键证据即时保存；通用经验经复盘
 和人工审核晋升（/distill → promote）。暂停、切换目标或主动压缩上下文前，将尚未保存的
 重要进展及下一步写入现有 owner/handoff；不逐条聊天入库，不新增后台记忆提取流程。
+
+纠错通过 `target_memory.py link` / `retract-link` 绑定精确经验版本与条件，保留历史；
+来源通过 `sources`、`version` 和 `entity` 展开。被反驳/替代/坏来源不是“从未发生”，
+不同条件的阴性不互相覆盖；关系不会自动确认 Finding、完成 Action 或改变报告资格。
 
 ### 1. Target layer
 
@@ -136,8 +146,8 @@ Autopilot 每次启动都按 `commands/autopilot.md` 执行当轮 Bootstrap，�
 
 ## 2. Skill layer
 
-主会话根据目标、阶段和证据选择路线：`bug-bounty` 负责协调，`bb-methodology` 负责
-假设与轮换，`web2-recon` 负责攻击面，`web2-vuln-classes` 负责具体类别，
+主会话根据目标和证据选择路线：`src-hunting` 唯一负责全局问题、竞争解释、实验和转向；
+`web2-recon` 回答暴露面问题，Web/API 方法证据门在 `knowledge/playbooks/web2-evidence-contracts.md`，
 `credential-attack` 负责有 preflight 的凭据验证，`triage-validation` 负责 Candidate
 证明。Skill 提供决策契约，不把知识库或工具清单变成固定流程。
 
@@ -166,7 +176,7 @@ AI selection / override 是能力上限保护：当前 Skill 可以跳过建议�
 
 ### 2.2 Web 深水区启发式路由
 
-只有在目标证据命中复杂边界时，才读取 `rules/playbook-router.md` 或具体 reference。通用
+只有在目标证据命中复杂边界时，才读取 `knowledge/playbooks/web2-evidence-contracts.md` 或具体 reference。通用
 决策形状为：
 
 ```text
@@ -225,6 +235,10 @@ memory tokens, cookies, nonces, connection state, or oracle rounds survive a
 new shell/tool invocation.
 
 ## 输出契约
+
+本节用于真实执行结果/跨代理交接，不用于同会话加载或纯阅读。委派输入输出与接受责任见
+`skills/src-hunting/SKILL.md#real-delegation-and-execution-handoff`。专家自报不确认 Finding、
+不完成 Action；只有现有领域 owner 接受的事实生效。
 
 5 必填字段由 AI 手打（判断性内容：证据、候选、终态、残余未知、下一步）；
 其余 7 个字段从对应 owner 的已保存事实或只读投影引用，

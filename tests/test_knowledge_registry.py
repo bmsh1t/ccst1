@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import yaml
 
 from knowledge_registry import (
     KnowledgeRegistryError,
@@ -53,6 +54,40 @@ def test_registry_exposes_card_paths_and_metadata(tmp_path: Path) -> None:
     assert load_card_metadata_by_file(tmp_path)["knowledge/cards/api-idor.md"][
         "purpose"
     ] == "validate"
+
+
+@pytest.mark.parametrize("use_c_loader", [False, True])
+def test_safe_registry_loaders_preserve_full_data(tmp_path, monkeypatch, use_c_loader):
+    if use_c_loader and not hasattr(yaml, "CSafeLoader"):
+        pytest.skip("PyYAML C extension is not installed")
+    if not use_c_loader:
+        monkeypatch.delattr(yaml, "CSafeLoader", raising=False)
+    text = _valid_registry() + 'notes: {original: &text "保留参数 apple%27", alias: *text}\n'
+    _write_registry(tmp_path, text)
+
+    assert load_registry(tmp_path).data == yaml.safe_load(text)
+    repo = Path(__file__).resolve().parents[1]
+    assert load_registry(repo).data == yaml.safe_load(
+        (repo / "knowledge/capabilities.yaml").read_text(encoding="utf-8")
+    )
+
+
+@pytest.mark.parametrize("use_c_loader", [False, True])
+@pytest.mark.parametrize("text, message", [
+    ("capabilities: [", "YAML 无效"),
+    ("- not\n- a mapping\n", "根节点必须是映射"),
+    ("", "根节点必须是映射"),
+    (_valid_registry() + "unsafe: !!python/name:builtins.str ''\n", "YAML 无效"),
+])
+def test_safe_registry_loaders_reject_invalid_input(tmp_path, monkeypatch, use_c_loader, text, message):
+    if use_c_loader and not hasattr(yaml, "CSafeLoader"):
+        pytest.skip("PyYAML C extension is not installed")
+    if not use_c_loader:
+        monkeypatch.delattr(yaml, "CSafeLoader", raising=False)
+    _write_registry(tmp_path, text)
+
+    with pytest.raises(KnowledgeRegistryError, match=message):
+        load_registry(tmp_path)
 
 
 def test_context_pack_card_paths_are_derived_from_registry() -> None:

@@ -272,7 +272,7 @@ def test_validation_summary_without_cvss_keeps_recorded_severity(tmp_path):
     assert "CVSS:" not in validate.build_submission_notes(summary)
 
 
-def test_generated_skeleton_separates_validation_evidence_from_report_readiness(tmp_path):
+def test_incomplete_draft_separates_validation_evidence_from_report_readiness(tmp_path):
     report_path = tmp_path / "findings" / "target-program-sqli" / "hackerone-report.md"
     info = {
         "target": "target-program",
@@ -283,7 +283,10 @@ def test_generated_skeleton_separates_validation_evidence_from_report_readiness(
         "cvss_vector": "CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:H/VI:H/VA:L/SC:N/SI:N/SA:N",
     }
     report_path.parent.mkdir(parents=True)
-    report_path.write_text(validate.generate_report_skeleton(info), encoding="utf-8")
+    report_path.write_text(
+        "# SQLI evidence draft\n\n## Proof of Concept\n\n[PASTE ACTUAL RESPONSE]\n",
+        encoding="utf-8",
+    )
 
     summary = validate.build_validation_summary(info, all_pass=True, report_path=report_path)
 

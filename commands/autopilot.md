@@ -27,8 +27,7 @@ Use `cd -- <repo_root_shell> &&`, `arguments.target_shell`, optional
 At start, target change or resume/compaction, read/apply complete
 `skills/runtime-protocol.md#shared-memory-continuity`. Check inherited judgments against current commands,
 not all source; label unchecked judgments inherited/unverified.
-On demand: `skills/runtime-protocol.md#shared-knowledge-recall`, `skills/bug-bounty/SKILL.md`,
-`skills/bb-methodology/SKILL.md`. Do not loop `/hunt`.
+On demand: `skills/runtime-protocol.md#shared-knowledge-recall`, `skills/src-hunting/SKILL.md`. Do not loop `/hunt`.
 Apply `rules/hunting.md` before hunting; before network: `config.json.resin` via `docs/resin-proxy.md`
 in the same shell. Never output secrets/persist proxy setup.
 Presence is not readiness. Only session-visible MCP; missing/failed stays partial/blocked.

@@ -150,7 +150,7 @@ def test_web2_live_ab_artifacts_and_answers_are_locked():
 
 def test_web2_vuln_classes_keeps_live_ab_decision_anchors():
     material = _text(
-        "skills/web2-vuln-classes/SKILL.md",
+        "knowledge/playbooks/web2-evidence-contracts.md",
         "knowledge/cards/missing-parameter-discovery.md",
         "knowledge/cards/sqli-hidden-surfaces.md",
         "knowledge/cards/ssrf-internal-impact.md",

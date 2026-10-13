@@ -3,7 +3,7 @@ id: dns-email-trust-boundaries
 type: technique-card
 related_skills:
   - web2-recon
-  - bug-bounty
+  - src-hunting
   - triage-validation
 trigger_tags:
   - dns
@@ -80,7 +80,7 @@ deep_refs: []
 ## 关联 Skills
 
 - `web2-recon`
-- `bug-bounty`
+- `src-hunting`
 - `triage-validation`
 
 ## 晋升到 Skill / Queue 的条件

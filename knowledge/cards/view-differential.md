@@ -2,9 +2,7 @@
 id: view-differential
 type: technique-card
 related_skills:
-  - web2-vuln-classes
-  - bb-methodology
-  - security-arsenal
+  - src-hunting
 trigger_tags:
   - view-differential
   - validation-view
@@ -104,10 +102,7 @@ source_refs:
 
 ## 关联 Skills
 
-- web2-vuln-classes
-- bb-methodology
-- security-arsenal
-
+- src-hunting
 ## 停止条件
 
 - 校验与消费共用同一规范化结果

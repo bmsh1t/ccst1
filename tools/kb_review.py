@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """出库治理事实清单：每张卡的 pull 遥测 + registry 元信息（只读，零判断）。
 
-/kb review 的机械端：AI 拿这份清单做三问试金石判定，人裁决后由
+/kb review 的机械端：AI 拿这份清单做证据与适用条件复核（新增三问不是旧卡删除门），人裁决后由
 tools/knowledge_retire.py 落 retire。本工具不写任何状态。
 
 用法：
@@ -33,7 +33,7 @@ def build_review(repo_root: Path | str, *, limit: int = 0) -> list[dict]:
     Facts only: card id, registry layer/load/purpose/status, card-file
     maturity (frontmatter), recorded pull count and last recorded pull.
     Optional telemetry has incomplete coverage; zero does not mean unused.
-    The three-question verdict is AI judgment and never lives here.
+    Evidence and applicability judgments belong to the reviewer, never this tool.
     """
     registry = load_registry(repo_root)
     stats = pull_stats(repo_root)

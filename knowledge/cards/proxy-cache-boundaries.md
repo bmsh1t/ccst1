@@ -2,7 +2,7 @@
 id: proxy-cache-boundaries
 type: technique-card
 related_skills:
-  - web2-vuln-classes
+  - src-hunting
   - triage-validation
 trigger_tags:
   - host-header
@@ -86,7 +86,7 @@ source_refs:
 
 ## 能力定位
 
-本卡给 `web2-vuln-classes` 补充代理、缓存和传输边界的思路，不替代专门工具和红线检查。
+本卡给 `src-hunting` 补充代理、缓存和传输边界的思路，不替代专门工具和红线检查。
 
 ## 触发信号
 
@@ -250,7 +250,7 @@ source_refs:
 
 ## 关联 Skills
 
-- `web2-vuln-classes`
+- `src-hunting`
 - `triage-validation`
 
 ## 晋升到 Skill / Queue 的条件

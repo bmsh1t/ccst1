@@ -2,7 +2,7 @@
 id: nosql-query-injection
 type: technique-card
 related_skills:
-  - web2-vuln-classes
+  - src-hunting
   - triage-validation
 trigger_tags:
   - nosql
@@ -26,7 +26,7 @@ deep_refs: []
 
 ## 能力定位
 
-本卡给 `web2-vuln-classes` 补充 NoSQL 查询语义、parser/type confusion 和 operator injection 思路。
+本卡给 `src-hunting` 补充 NoSQL 查询语义、parser/type confusion 和 operator injection 思路。
 
 ## 触发信号
 
@@ -70,7 +70,7 @@ deep_refs: []
 
 ## 关联 Skills
 
-- `web2-vuln-classes`
+- `src-hunting`
 - `triage-validation`
 
 ## 晋升到 Skill / Queue 的条件

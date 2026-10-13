@@ -2,7 +2,7 @@
 id: server-side-template-injection
 type: technique-card
 related_skills:
-  - web2-vuln-classes
+  - src-hunting
   - triage-validation
 trigger_tags:
   - ssti
@@ -36,7 +36,7 @@ deep_refs:
 
 ## 能力定位
 
-本卡给 `web2-vuln-classes` 提供 SSTI 输入面、指纹和升级路径。它负责发散和补漏，
+本卡给 `src-hunting` 提供 SSTI 输入面、指纹和升级路径。它负责发散和补漏，
 受控执行证明仍交给 `controlled-rce-impact` 和检查层。
 
 ## 触发信号
@@ -89,9 +89,8 @@ deep_refs:
 
 ## 关联 Skills
 
-- `web2-vuln-classes`
+- `src-hunting`
 - `triage-validation`
-- `bb-methodology`
 
 ## 晋升到 Skill / Queue 的条件
 

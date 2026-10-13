@@ -2,7 +2,7 @@
 id: websocket-realtime-api
 type: technique-card
 related_skills:
-  - web2-vuln-classes
+  - src-hunting
   - triage-validation
 trigger_tags:
   - websocket
@@ -29,7 +29,7 @@ deep_refs: []
 
 ## 能力定位
 
-本卡给 `web2-vuln-classes` 补充 WebSocket/订阅类 API 的权限、消息 schema 和跨站边界。
+本卡给 `src-hunting` 补充 WebSocket/订阅类 API 的权限、消息 schema 和跨站边界。
 
 ## 触发信号
 
@@ -83,7 +83,7 @@ deep_refs: []
 
 ## 关联 Skills
 
-- `web2-vuln-classes`
+- `src-hunting`
 - `triage-validation`
 
 ## 晋升到 Skill / Queue 的条件

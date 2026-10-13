@@ -1,5 +1,5 @@
 ---
-description: Quick 7-Question Gate triage on a report candidate before writing a report. Rejects N/A submissions before they happen. Faster than /validate — for quick go/no-go decisions. Usage: /triage
+description: "Quick 7-Question Gate triage on a report candidate before writing a report. Rejects N/A submissions before they happen. Faster than /validate — for quick go/no-go decisions. Usage: /triage"
 ---
 
 # /triage
@@ -27,7 +27,7 @@ Describe the finding in one sentence. Example:
 ## Validation Contract
 
 Read `skills/triage-validation/SKILL.md` before deciding. It is the sole owner
-of the Q1-Q7, Q7b identity-boundary, never-submit/chain, and four-gate rules;
+of the Q1-Q7, Q7b identity-boundary and never-submit/chain rules;
 this command is only their fast, protocol-neutral entrypoint. Use any
 target-bound reproducible evidence artifact, not an HTTP-only shortcut. For
 authenticated candidates, record the Q7b identity boundary and use the

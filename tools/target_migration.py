@@ -32,7 +32,6 @@ the importer would otherwise drop without a trace.
 from __future__ import annotations
 
 import argparse
-import fcntl
 import hashlib
 import json
 import os
@@ -40,7 +39,6 @@ import re
 import shutil
 import sqlite3
 import sys
-import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -62,7 +60,10 @@ try:
     from tools.evidence_ledger import load_entries_diagnostic
     from tools.finding_index import load_legacy_finding_index, verify_finalized_finding_owner_provenance
     from tools.target_paths import canonical_target_value, target_storage_key
-    from tools.target_memory import normalize_target_memory, text_is_polluted
+    from tools.target_memory_schema import normalize_target_memory, text_is_polluted
+    from tools.migration_receipts import (LEGACY_METADATA_PATHS, directory_handle, read_file,
+        read_active_receipt, read_migration_receipt, read_legacy_archive, read_bound_file,
+        pattern_archive_relative, receipt_lock)
     from tools.target_store import StoreError, TargetStore, target_cutover_lock
 except ImportError:  # pragma: no cover
     from artifact_io import write_json_atomic
@@ -74,7 +75,10 @@ except ImportError:  # pragma: no cover
         verify_finalized_finding_owner_provenance,
     )
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
-    from target_memory import normalize_target_memory, text_is_polluted  # type: ignore
+    from target_memory_schema import normalize_target_memory, text_is_polluted  # type: ignore
+    from migration_receipts import (LEGACY_METADATA_PATHS, directory_handle, read_file,
+        read_active_receipt, read_migration_receipt, read_legacy_archive, read_bound_file,
+        pattern_archive_relative, receipt_lock)
     from target_store import StoreError, TargetStore, target_cutover_lock  # type: ignore
 
 
@@ -182,15 +186,7 @@ _SECRET_FILE_PATTERN = re.compile(
 # These are the legacy domain owners that are replaced by TargetStore at
 # cutover.  Raw evidence, reports, private material, runtime/session state and
 # lock files stay live; only these files are archived and later restorable.
-_LEGACY_METADATA_PATHS = (
-    ("state/{key}/action_queue.json", "state/action_queue.json"),
-    ("state/{key}/case_state.json", "state/case_state.json"),
-    ("state/{key}/unsafe_skipped_reviews.json", "state/unsafe_skipped_reviews.json"),
-    ("findings/{key}/findings.json", "findings/findings.json"),
-    ("findings/{key}/mutation-events.jsonl", "findings/mutation-events.jsonl"),
-    ("memory/evidence/{key}/ledger.jsonl", "memory/evidence/ledger.jsonl"),
-    ("memory/goals/targets/{key}.json", "memory/goals/targets.json"),
-)
+_LEGACY_METADATA_PATHS = LEGACY_METADATA_PATHS
 
 _CASE_CONTEXT_PRIVATE_ROOT = ".private/case-state/{key}"
 
@@ -912,11 +908,7 @@ def _import_target_memory(report: dict[str, Any], store: TargetStore, root: Path
     if source is None:
         raise StoreError(f"target-memory source is absent from migration manifest: {relative}")
     path = root / relative
-    if path.is_symlink() or not path.is_file():
-        raise StoreError(f"target-memory source is not a regular file: {path}")
-    raw = path.read_bytes()
-    if hashlib.sha256(raw).hexdigest() != source["sha256"] or len(raw) != source["size"]:
-        raise StoreError(f"target-memory source differs from migration manifest: {relative}")
+    raw = read_bound_file(root, relative, size=source["size"], sha256=source["sha256"])
     try:
         memory = normalize_target_memory(json.loads(raw), expected_target=canonical, path=path)
     except (ValueError, UnicodeError) as exc:
@@ -1407,23 +1399,74 @@ def _store_metadata_unchecked(store: TargetStore) -> dict[str, Any]:
     return {"target": row[0], "store_id": row[1], "backend": row[2], "revision": row[3]}
 
 
-def _verify_manifest_at_root(root: Path, manifest: dict[str, Any]) -> None:
-    """Ensure the published copy still matches the source before freezing it."""
-    for item in manifest.get("files", []):
-        relative = str(item.get("path") or "")
-        if not relative or Path(relative).is_absolute() or ".." in Path(relative).parts:
-            raise StoreError("migration manifest contains an unsafe relative path")
+def _verify_manifest_at_root(
+    root: Path, manifest: dict[str, Any], *, archive: dict[str, Any] | None = None,
+) -> None:
+    """Check all imported bytes, allowing only bound archives for removed owners."""
+    archived = {item["path"]: item["archive_path"] for item in archive["files"]} if archive else {}
+    for item in manifest["files"]:
+        relative = item["path"]
         path = root / relative
+        if not path.exists() and not path.is_symlink():
+            relative = archived.get(relative, relative)
         try:
-            payload = path.read_bytes()
-        except OSError as exc:
-            raise StoreError(f"migration input disappeared before promotion: {relative}") from exc
-        if len(payload) != int(item.get("size", -1)) or hashlib.sha256(payload).hexdigest() != item.get("sha256"):
-            raise StoreError(f"migration input changed before promotion: {relative}")
+            read_bound_file(root, relative, size=item["size"], sha256=item["sha256"])
+        except FileNotFoundError as exc:
+            raise StoreError(f"migration input disappeared before promotion: {item['path']}") from exc
+        except (OSError, ValueError) as exc:
+            raise StoreError(f"migration input changed before promotion: {item['path']}") from exc
 
 
 def _archive_receipt_path(root: Path, key: str) -> Path:
     return root / "state" / key / "legacy-archive.json"
+
+
+def _cutover_receipt(root: Path, canonical: str, store_id: str | None, digest: str = "") -> dict[str, Any]:
+    path = root / "state" / target_storage_key(canonical) / "migration-receipt.json"
+    try:
+        receipt, _, actual_digest = read_migration_receipt(path, target=canonical, store_id=store_id)
+    except (OSError, ValueError) as exc:
+        raise StoreError(f"completed migration receipt is required before cutover: {exc}") from exc
+    if digest and digest != actual_digest:
+        raise StoreError("source manifest digest does not match migration receipt")
+    return receipt
+
+
+def _publish_archived_file(root: Path, relative: str, raw: bytes, binding: dict[str, Any]) -> None:
+    """Publish one verified immutable original; incomplete temporaries are not inputs."""
+    destination = root / relative
+    parent = root
+    for part in destination.parent.relative_to(root).parts:
+        with directory_handle(parent) as fd:
+            try:
+                os.mkdir(part, mode=0o700, dir_fd=fd)
+                os.fsync(fd)
+            except FileExistsError:
+                pass
+        parent /= part
+        with directory_handle(parent):
+            pass
+    if destination.exists() or destination.is_symlink():
+        read_bound_file(root, relative, size=binding["size"], sha256=binding["sha256"])
+        return
+    with directory_handle(destination.parent) as fd:
+        temporary = ".archive-" + os.urandom(16).hex()
+        temporary_fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                               0o600, dir_fd=fd)
+        try:
+            with os.fdopen(temporary_fd, "wb") as handle:
+                handle.write(raw)
+                handle.flush()
+                os.fsync(handle.fileno())
+            read_bound_file(destination.parent, temporary, size=binding["size"], sha256=binding["sha256"])
+            try:
+                os.link(temporary, destination.name, src_dir_fd=fd, dst_dir_fd=fd, follow_symlinks=False)
+            except FileExistsError:
+                read_bound_file(root, relative, size=binding["size"], sha256=binding["sha256"])
+            os.fsync(fd)
+        finally:
+            os.unlink(temporary, dir_fd=fd)
+            os.fsync(fd)
 
 
 def _freeze_legacy_metadata(
@@ -1435,75 +1478,62 @@ def _freeze_legacy_metadata(
 ) -> dict[str, Any]:
     """Archive migrated legacy owners while the cutover lock is held.
 
-    The archive is a recovery input, not a second live owner.  Copy-and-verify
-    is used instead of unlink-first so an interrupted freeze leaves the source
-    bytes available for explicit recovery.
+    No source is removed before a complete, durable archive receipt exists.
+    A retry checks all archive bytes and remaining inputs before resuming unlinks.
     """
     key = target_storage_key(canonical)
     receipt_path = _archive_receipt_path(root, key)
-    if receipt_path.is_file():
-        try:
-            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
-            raise StoreError(f"legacy archive receipt is unreadable: {receipt_path}") from exc
-        if (
-            receipt.get("target") != canonical
-            or receipt.get("store_id") != store_id
-            or receipt.get("source_manifest_sha256") != source_manifest_sha256
-        ):
-            raise StoreError("legacy archive receipt does not match the migration identity")
-        return receipt
-
-    archive_dir = root / "state" / key / "legacy-archive" / source_manifest_sha256
-    archive_dir.mkdir(parents=True, mode=0o700, exist_ok=False)
-    files: list[dict[str, Any]] = []
+    migration = _cutover_receipt(root, canonical, store_id, source_manifest_sha256)
+    manifest = migration["source_manifest"]
+    bindings = {item["path"]: item for item in manifest["files"]}
     try:
         for template, archive_relative in _LEGACY_METADATA_PATHS:
             relative = template.format(key=key)
             source = root / relative
-            if not source.exists():
-                continue
-            if source.is_symlink() or not source.is_file():
-                raise StoreError(f"legacy metadata must be a regular file: {relative}")
-            payload = source.read_bytes()
-            destination = archive_dir / archive_relative
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_bytes(payload)
-            os.chmod(destination, 0o600)
-            if hashlib.sha256(destination.read_bytes()).hexdigest() != hashlib.sha256(payload).hexdigest():
-                raise StoreError(f"legacy archive verification failed: {relative}")
-            files.append({
-                "path": relative,
-                "archive_path": destination.relative_to(root).as_posix(),
-                "size": len(payload),
-                "sha256": hashlib.sha256(payload).hexdigest(),
-            })
-        receipt = {
-            "schema_version": 1,
-            "kind": "legacy_metadata_archive",
-            "target": canonical,
-            "store_id": store_id,
-            "source_manifest_sha256": source_manifest_sha256,
-            "activation_status": "pending",
-            "files": files,
-        }
-        receipt_path.write_text(json.dumps(receipt, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
-        os.chmod(receipt_path, 0o600)
-        with receipt_path.open("rb") as handle:
-            os.fsync(handle.fileno())
-        for item in files:
-            original = root / item["path"]
-            original.unlink()
-            fd = os.open(original.parent, os.O_RDONLY | os.O_DIRECTORY)
-            try:
+            if relative not in bindings and (source.exists() or source.is_symlink()):
+                raise StoreError(f"unbound legacy metadata appeared before promotion: {relative}")
+        if receipt_path.exists() or receipt_path.is_symlink():
+            receipt = read_legacy_archive(root, migration, target=canonical, store_id=store_id, allow_pending=True)
+            if receipt["activation_status"] != "pending":
+                raise StoreError("preview store requires a pending legacy archive")
+        else:
+            # A pre-receipt interruption removed no originals.  Only this exact
+            # imported manifest may resume building the immutable archive.
+            _verify_manifest_at_root(root, manifest)
+            files = []
+            for template, archive_relative in _LEGACY_METADATA_PATHS:
+                relative = template.format(key=key)
+                if relative not in bindings:
+                    continue
+                binding = bindings[relative]
+                payload = read_bound_file(root, relative, size=binding["size"], sha256=binding["sha256"])
+                destination = f"state/{key}/legacy-archive/{source_manifest_sha256}/{archive_relative}"
+                _publish_archived_file(root, destination, payload, binding)
+                files.append({**binding, "archive_path": destination})
+            receipt = {
+                "schema_version": 1,
+                "kind": "legacy_metadata_archive",
+                "target": canonical,
+                "store_id": store_id,
+                "source_manifest_sha256": source_manifest_sha256,
+                "activation_status": "pending",
+                "files": files,
+            }
+            write_json_atomic(receipt_path, receipt, ensure_ascii=True)
+            with directory_handle(receipt_path.parent) as fd:
                 os.fsync(fd)
-            finally:
-                os.close(fd)
-        return receipt
-    except BaseException:
-        # The archive and any remaining source files are intentionally kept for
-        # restore_legacy_metadata()/diagnosis; never delete evidence on failure.
-        raise
+        _verify_archive_material(root, receipt)
+        _verify_manifest_at_root(root, manifest, archive=receipt)
+        for item in receipt["files"]:
+            original = root / item["path"]
+            if not original.exists():
+                continue
+            with directory_handle(original.parent) as fd:
+                original.unlink()
+                os.fsync(fd)
+    except ValueError as exc:
+        raise StoreError(f"legacy archive verification failed: {exc}") from exc
+    return receipt
 
 
 def _mark_archive_active(root: Path, key: str) -> None:
@@ -1514,13 +1544,13 @@ def _mark_archive_active(root: Path, key: str) -> None:
 
 
 def _verify_archive_material(root: Path, receipt: dict[str, Any]) -> None:
-    for item in receipt.get("files", []):
-        archived = root / str(item.get("archive_path") or "")
-        if archived.is_symlink() or not archived.is_file():
-            raise StoreError(f"legacy archive material is missing: {archived}")
-        payload = archived.read_bytes()
-        if len(payload) != int(item.get("size", -1)) or hashlib.sha256(payload).hexdigest() != item.get("sha256"):
-            raise StoreError(f"legacy archive material failed verification: {archived}")
+    for item in receipt["files"]:
+        try:
+            read_bound_file(root, item["archive_path"], size=item["size"], sha256=item["sha256"])
+        except FileNotFoundError as exc:
+            raise StoreError(f"legacy archive material is missing: {item['archive_path']}") from exc
+        except (OSError, ValueError) as exc:
+            raise StoreError(f"legacy archive material failed verification: {item['archive_path']}") from exc
 
 
 def _mark_migration_active(root: Path, key: str, archive_path: Path) -> None:
@@ -1539,11 +1569,12 @@ def restore_legacy_metadata(
     *,
     source_manifest_sha256: str = "",
 ) -> dict[str, Any]:
-    """Restore archived legacy owners before primary activation.
+    """Restore legacy owners before primary activation.
 
     A healthy primary DB, or an unreadable DB whose activation state cannot be
     proven to be pre-primary, is fail-closed.  Removing the fence alone is
-    never a rollback operation.
+    never a rollback operation.  Before archive receipt publication, every
+    original must still match the completed import's manifest.
     """
     root = Path(repo_root).resolve()
     canonical = canonical_target_value(target)
@@ -1551,50 +1582,69 @@ def restore_legacy_metadata(
     with target_cutover_lock(root, canonical):
         store = TargetStore(root, canonical, allow_preview=True)
         fence = store._read_fence()
-        if fence is None:
-            raise StoreError("legacy metadata is not fenced; refusing implicit restore")
-        archive_path = _archive_receipt_path(root, key)
-        try:
-            receipt = json.loads(archive_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
-            raise StoreError("legacy archive receipt is required for explicit restore") from exc
-        if store.path.exists():
+        meta = None
+        if store.path.exists() or store.path.is_symlink():
             meta = _store_metadata_unchecked(store)
             if meta["backend"] != "preview":
                 raise StoreError("primary activation already committed; restore through Store backup/export")
-        digest = str(source_manifest_sha256 or receipt.get("source_manifest_sha256") or "")
-        if (
-            receipt.get("target") != canonical
-            or receipt.get("store_id") != fence.get("store_id")
-            or receipt.get("source_manifest_sha256") != digest
-            or receipt.get("activation_status") != "pending"
-        ):
+        store_id = meta["store_id"] if meta else fence["store_id"] if fence else None
+        migration = _cutover_receipt(root, canonical, store_id, source_manifest_sha256)
+        prepared = migration.get("legacy_restore_status") == "prepared"
+        if not prepared and meta is None:
+            raise StoreError("missing store cannot prove pre-primary activation; restore the current Store")
+        if not prepared and fence is None:
+            raise StoreError("legacy metadata is not fenced; refusing implicit restore")
+        if (fence is not None
+                and (migration["store_id"] != fence["store_id"]
+                     or migration["source_manifest_sha256"] != fence["source_manifest_sha256"])):
+            raise StoreError("legacy restore identity does not match the fence")
+        if migration["backend"] != "preview" or migration.get("activation_status") is not None:
             raise StoreError("legacy restore identity or activation state does not match")
-        if not store.path.exists() and not digest:
-            raise StoreError("source manifest digest is required for restore")
+        archive_path = _archive_receipt_path(root, key)
+        receipt = None
+        if archive_path.exists() or archive_path.is_symlink():
+            try:
+                receipt = read_legacy_archive(root, migration, target=canonical,
+                                              store_id=migration["store_id"], allow_pending=True)
+            except (OSError, ValueError) as exc:
+                raise StoreError(f"legacy archive receipt is invalid for explicit restore: {exc}") from exc
+            if receipt["activation_status"] != "pending":
+                raise StoreError("legacy restore requires a pending archive")
+        _verify_manifest_at_root(root, migration["source_manifest"], archive=receipt)
+        files = receipt["files"] if receipt else []
+        try:
+            for item in files:
+                original = root / item["path"]
+                if original.exists():
+                    continue
+                payload = read_bound_file(root, item["archive_path"], size=item["size"], sha256=item["sha256"])
+                _publish_archived_file(root, item["path"], payload, item)
+        except (OSError, ValueError) as exc:
+            raise StoreError(f"legacy restore material failed verification: {exc}") from exc
+        _verify_manifest_at_root(root, migration["source_manifest"])
 
-        for item in receipt.get("files", []):
-            original = root / str(item.get("path") or "")
-            archived = root / str(item.get("archive_path") or "")
-            if original.exists() or original.is_symlink():
-                if original.is_symlink() or not original.is_file() or hashlib.sha256(original.read_bytes()).hexdigest() != item.get("sha256"):
-                    raise StoreError(f"legacy restore would overwrite changed metadata: {original}")
-                continue
-            if archived.is_symlink() or not archived.is_file():
-                raise StoreError(f"legacy archive material is missing: {archived}")
-            payload = archived.read_bytes()
-            if len(payload) != int(item.get("size", -1)) or hashlib.sha256(payload).hexdigest() != item.get("sha256"):
-                raise StoreError(f"legacy archive material failed verification: {archived}")
-            original.parent.mkdir(parents=True, exist_ok=True)
-            original.write_bytes(payload)
-            os.chmod(original, 0o600)
-
-        for suffix in ("metadata.sqlite3", "metadata.sqlite3-wal", "metadata.sqlite3-shm", "migration-receipt.json"):
+        migration_path = root / "state" / key / "migration-receipt.json"
+        if not prepared:
+            # Only a readable preview DB authorizes this durable cleanup phase.
+            # Once prepared, a crash may remove the DB or fence without losing
+            # the proof needed to resume this same restore, never a promotion.
+            migration["legacy_restore_status"] = "prepared"
+            write_json_atomic(migration_path, migration, ensure_ascii=True)
+            with directory_handle(migration_path.parent) as fd:
+                os.fsync(fd)
+        for suffix in ("metadata.sqlite3", "metadata.sqlite3-wal", "metadata.sqlite3-shm"):
             (root / "state" / key / suffix).unlink(missing_ok=True)
         store.fence_path.unlink(missing_ok=True)
-        archive_path.unlink(missing_ok=True)
-        shutil.rmtree(root / "state" / key / "legacy-archive", ignore_errors=True)
-        return {"status": "legacy", "target": canonical, "restored": len(receipt.get("files", []))}
+        if receipt is not None:
+            archive_dir = root / "state" / key / "legacy-archive" / migration["source_manifest_sha256"]
+            if archive_dir.exists() or archive_dir.is_symlink():
+                shutil.rmtree(archive_dir)
+            archive_path.unlink()
+        # Keep the prepared receipt until every other cleanup step is complete.
+        migration_path.unlink()
+        with directory_handle(migration_path.parent) as fd:
+            os.fsync(fd)
+        return {"status": "legacy", "target": canonical, "restored": len(files)}
 
 
 def promote_target(repo_root: str | Path, target: str, *, source_manifest_sha256: str = "") -> dict[str, Any]:
@@ -1605,21 +1655,16 @@ def promote_target(repo_root: str | Path, target: str, *, source_manifest_sha256
     with target_cutover_lock(root, canonical):
         store = TargetStore(root, canonical, allow_preview=True)
         meta = _store_metadata_unchecked(store)
-        receipt_path = root / "state" / key / "migration-receipt.json"
-        try:
-            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
-            raise StoreError("completed migration receipt is required before promotion") from exc
-        digest = str(source_manifest_sha256 or receipt.get("source_manifest_sha256") or "")
-        if digest != receipt.get("source_manifest_sha256") or not re.fullmatch(r"[0-9a-f]{64}", digest):
-            raise StoreError("source manifest digest does not match migration receipt")
-        manifest = receipt.get("source_manifest")
+        receipt = _cutover_receipt(root, canonical, meta["store_id"], source_manifest_sha256)
+        if receipt.get("legacy_restore_status") == "prepared":
+            raise StoreError("legacy restore already prepared; retry --restore-legacy, not --promote")
+        digest = receipt["source_manifest_sha256"]
+        manifest = receipt["source_manifest"]
         fence = store._read_fence()
         archive_path = _archive_receipt_path(root, key)
-        # Once the fence exists, the legacy files may already have been
-        # archived and removed. The archive receipt, rather than the original
-        # manifest paths, is the recovery input for an interrupted cutover.
-        if meta["backend"] == "preview" and fence is None and isinstance(manifest, dict):
+        # Once a complete archive receipt exists, removed owners may be read
+        # from it. A fence alone never proves that any input was archived.
+        if meta["backend"] == "preview" and fence is None:
             _verify_manifest_at_root(root, manifest)
         if meta["backend"] == "primary":
             # Recovery for a crash after the SQLite role commit but before the
@@ -1634,16 +1679,15 @@ def promote_target(repo_root: str | Path, target: str, *, source_manifest_sha256
             # its bytes here would make a cleaned-up archive look like damage and
             # would leave a finished target with no idempotent re-entry.
             if receipt.get("activation_status") == "active":
+                if receipt["backend"] != "primary":
+                    raise StoreError("active migration receipt does not name the primary backend")
                 return {"status": "primary", "target": canonical, "store_id": meta["store_id"],
                         "source_manifest_sha256": digest, "recovered": True}
             try:
-                archive_state = json.loads(archive_path.read_text(encoding="utf-8"))
+                archive_state = read_legacy_archive(root, receipt, target=canonical,
+                                                    store_id=meta["store_id"], allow_pending=True)
             except (OSError, ValueError) as exc:
-                raise StoreError("backend cutover incomplete; legacy archive receipt is required") from exc
-            if archive_state.get("store_id") != meta["store_id"] or archive_state.get("source_manifest_sha256") != digest:
-                raise StoreError("legacy archive receipt does not match the primary store")
-            if archive_state.get("activation_status") not in {"pending", "active"}:
-                raise StoreError("legacy archive activation state is invalid")
+                raise StoreError(f"backend cutover incomplete; valid legacy archive receipt is required: {exc}") from exc
             _verify_archive_material(root, archive_state)
             if archive_state.get("activation_status") == "pending":
                 _mark_archive_active(root, key)
@@ -1654,17 +1698,14 @@ def promote_target(repo_root: str | Path, target: str, *, source_manifest_sha256
             raise StoreError("only a preview store can be promoted")
         if read_scope_source(root, canonical)["sha256"] != receipt.get("scope_sha256"):
             raise StoreError("preview Scope changed; rebuild the isolated migration")
+        if receipt["backend"] != "preview" or receipt.get("activation_status") is not None:
+            raise StoreError("preview store requires an inactive migration receipt")
         if fence is not None:
-            try:
-                archive_state = json.loads(archive_path.read_text(encoding="utf-8"))
-            except (OSError, ValueError) as exc:
-                raise StoreError("backend cutover incomplete; restore legacy metadata before retrying promotion") from exc
             if (
                 fence.get("store_id") != meta["store_id"]
                 or fence.get("source_manifest_sha256") != digest
-                or archive_state.get("activation_status") != "pending"
             ):
-                raise StoreError("backend cutover incomplete; restore legacy metadata before retrying promotion")
+                raise StoreError("backend cutover incomplete; fence does not match the imported store")
         else:
             store._create_fence(meta["store_id"], digest)
         _freeze_legacy_metadata(
@@ -2619,18 +2660,8 @@ def backfill_target_memory(source_root: str | Path, repo_root: str | Path, targe
 
 @contextmanager
 def _backfill_receipt_lock(root: Path, canonical: str):
-    receipt_path = root / "state" / target_storage_key(canonical) / "migration-receipt.json"
-    lock_path = receipt_path.with_suffix(".lock")
-    try:
-        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
-    except OSError as exc:
-        raise StoreError(f"memory backfill lock is unavailable: {lock_path}") from exc
-    with os.fdopen(fd, "r+") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        try:
-            yield receipt_path
-        finally:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+    with receipt_lock(root, canonical, exclusive=True) as path:
+        yield path
 
 
 def _backfill_target_memory_locked(source_root: Path, root: Path, canonical: str,
@@ -2680,51 +2711,84 @@ def _load_active_backfill_receipt(store: TargetStore, receipt_path: Path,
                                   canonical: str) -> tuple[dict, dict, str]:
     if store.backend() != "primary":
         raise StoreError("historical backfill requires an active primary target Store")
-    if receipt_path.is_symlink():
-        raise StoreError(f"migration receipt must not be a symlink: {receipt_path}")
     try:
-        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        return read_active_receipt(receipt_path, target=canonical,
+                                   store_id=store.binding()["store_id"])
     except (OSError, ValueError) as exc:
-        raise StoreError(f"migration receipt is unavailable: {receipt_path}") from exc
-    if not isinstance(receipt, dict):
-        raise StoreError(f"migration receipt is not an object: {receipt_path}")
-    manifest = receipt.get("source_manifest")
-    if (receipt.get("target") != canonical or receipt.get("store_id") != store.binding()["store_id"]
-            or receipt.get("activation_status") != "active" or not isinstance(manifest, dict)
-            or manifest.get("target") != canonical or not isinstance(manifest.get("files"), list)):
-        raise StoreError("historical backfill requires the matching active migration receipt")
-    files_digest = hashlib.sha256(json.dumps(manifest["files"], ensure_ascii=True, sort_keys=True,
-                                           separators=(",", ":")).encode("utf-8")).hexdigest()
-    if files_digest != manifest.get("sha256") or files_digest != receipt.get("source_manifest_sha256"):
-        raise StoreError("historical backfill source manifest does not match migration receipt")
-    return receipt, manifest, files_digest
+        raise StoreError(f"historical backfill receipt is invalid: {exc}") from exc
 
 
 def _publish_backfill_receipt(receipt_path: Path, receipt: dict) -> None:
-    temporary: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=receipt_path.parent,
-                                         prefix=".memory-backfill-", suffix=".tmp", delete=False) as handle:
-            temporary = Path(handle.name)
-            os.chmod(temporary, 0o600)
-            json.dump(receipt, handle, ensure_ascii=True, indent=2)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        temporary.replace(receipt_path)
-        directory_fd = os.open(receipt_path.parent, os.O_RDONLY)
+    with directory_handle(receipt_path.parent) as fd:
+        read_file(receipt_path)
+        temporary = ".memory-backfill-" + os.urandom(16).hex()
+        temporary_fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                               0o600, dir_fd=fd)
         try:
-            os.fsync(directory_fd)
+            with os.fdopen(temporary_fd, "w", encoding="utf-8") as handle:
+                json.dump(receipt, handle, ensure_ascii=True, indent=2)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, receipt_path.name, src_dir_fd=fd, dst_dir_fd=fd)
+            os.fsync(fd)
         finally:
-            os.close(directory_fd)
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+            try:
+                os.unlink(temporary, dir_fd=fd)
+            except FileNotFoundError:
+                pass
+
+
+def _archive_patterns(root: Path, canonical: str, files: list, snapshots: list) -> str:
+    """Publish immutable originals before the receipt; retain partial copies for retry."""
+    relative = pattern_archive_relative(canonical, files)
+    with target_cutover_lock(root, canonical):
+        for source_relative, raw in snapshots:
+            binding = next(item for item in files if item["path"] == source_relative)
+            _publish_archived_file(root, f"{relative}/{source_relative}", raw, binding)
+    return relative
+
+
+def _verify_pattern_map(store: TargetStore, canonical: str, mapping: Any, snapshots: list) -> None:
+    if not isinstance(mapping, list):
+        raise StoreError("existing PatternDB backfill has an invalid experience map")
+    sources = dict(snapshots)
+    selectors, ids = set(), set()
+    for item in mapping:
+        if not isinstance(item, dict):
+            raise StoreError("existing PatternDB backfill has an invalid experience map")
+        relative, line_number = item.get("source_path"), item.get("line")
+        experience_id = item.get("experience_id")
+        if (not isinstance(relative, str) or relative not in sources
+                or type(line_number) is not int or line_number < 1
+                or not isinstance(experience_id, str) or not experience_id
+                or (relative, line_number) in selectors or experience_id in ids):
+            raise StoreError("existing PatternDB backfill has an ambiguous or invalid selector")
+        selectors.add((relative, line_number))
+        ids.add(experience_id)
+        lines = sources[relative].split(b"\n")
+        if line_number > len(lines):
+            raise StoreError("existing PatternDB selector is outside its source")
+        raw = lines[line_number - 1]
+        if hashlib.sha256(raw).hexdigest() != item.get("source_line_sha256"):
+            raise StoreError("existing PatternDB selected row hash does not match")
+        try:
+            row = json.loads(raw)
+            validate_pattern_entry(row)
+        except (ValueError, TypeError, SchemaError) as exc:
+            raise StoreError("existing PatternDB selected row is invalid") from exc
+        if (row.get("target") != canonical or row.get("ts") != item.get("source_ts")
+                or row.get("outcome", "unknown") != item.get("outcome")):
+            raise StoreError("existing PatternDB selected row identity does not match")
+        # Only identity is required here. Expanding health can follow history
+        # origins and acquire the receipt SH lock while this caller holds EX.
+        store.experience_entity("experience", experience_id)
 
 
 def backfill_target_patterns(source_root: str | Path, repo_root: str | Path, target: str) -> dict[str, Any]:
     """Import target-owned rows from a pinned historical PatternDB snapshot."""
-    source_root, root = Path(source_root).resolve(), Path(repo_root).resolve()
+    with directory_handle(source_root), directory_handle(repo_root):
+        source_root, root = Path(source_root).absolute(), Path(repo_root).absolute()
     if source_root == root or source_root in root.parents or root in source_root.parents:
         raise StoreError("pattern backfill source and active target must be separate roots")
     canonical = canonical_target_value(target)
@@ -2735,13 +2799,9 @@ def backfill_target_patterns(source_root: str | Path, repo_root: str | Path, tar
         paths = [base.with_suffix(base.suffix + f".{index}") for index in (3, 2, 1)] + [base]
         snapshots = []
         for path in paths:
-            if path.is_symlink():
-                raise StoreError(f"PatternDB source must not be a symlink: {path}")
-            if not path.exists():
+            if not path.exists() and not path.is_symlink():
                 continue
-            if not path.is_file():
-                raise StoreError(f"PatternDB source is not a regular file: {path}")
-            raw = path.read_bytes()
+            raw = read_file(path)
             snapshots.append((path.relative_to(source_root).as_posix(), raw))
         if not snapshots:
             raise StoreError(f"PatternDB source is unavailable: {base}")
@@ -2751,20 +2811,24 @@ def backfill_target_patterns(source_root: str | Path, repo_root: str | Path, tar
         if existing is not None:
             if (not isinstance(existing, dict) or existing.get("source_files") != files
                     or existing.get("source_manifest_sha256") != manifest_digest
-                    or existing.get("status") not in {"pending", "complete", "partial"}):
+                    or existing.get("status") not in ("pending", "complete", "partial")):
                 raise StoreError("existing PatternDB backfill does not match the pinned source")
+            archive_relative = pattern_archive_relative(canonical, existing.get("source_files"))
+            if existing.get("archive_root", archive_relative) != archive_relative:
+                raise StoreError("existing PatternDB archive locator does not match its source")
             if existing["status"] != "pending":
-                mapping = existing.get("experience_map")
-                if not isinstance(mapping, list):
-                    raise StoreError("existing PatternDB backfill has an invalid experience map")
-                for item in mapping:
-                    if not isinstance(item, dict) or not isinstance(item.get("experience_id"), str):
-                        raise StoreError("existing PatternDB backfill has an invalid experience map")
-                    store.experience(item["experience_id"])
+                _verify_pattern_map(store, canonical, existing.get("experience_map"), snapshots)
+                archive_relative = _archive_patterns(root, canonical, files, snapshots)
+                if "archive_root" not in existing:
+                    existing["archive_root"] = archive_relative
+                    _publish_backfill_receipt(receipt_path, receipt)
                 return {"target": canonical, "store_id": receipt["store_id"], **existing}
+            existing["archive_root"] = _archive_patterns(root, canonical, files, snapshots)
+            _publish_backfill_receipt(receipt_path, receipt)
         else:
+            archive_relative = _archive_patterns(root, canonical, files, snapshots)
             existing = {"status": "pending", "source_manifest_sha256": manifest_digest,
-                        "source_files": files}
+                        "source_files": files, "archive_root": archive_relative}
             receipt["pattern_backfill"] = existing
             _publish_backfill_receipt(receipt_path, receipt)
 

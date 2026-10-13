@@ -540,7 +540,6 @@ def _required_checks(blob: str, has_candidate: bool) -> list[str]:
     checks = ["rules/coverage-gate.md"]
     if has_candidate:
         checks.append("rules/reporting.md")
-    checks.append("rules/playbook-router.md")
     return _dedupe(checks)
 
 
@@ -964,7 +963,6 @@ def _build_context_pack(
     ])
     must_read = [item for item in must_read if _must_read_candidate(item)]
     experience_window = (goal_memory.get("source") or {}).get("experience_window") or {}
-    recall_command = experience_window["recall_command"]
 
     pack = {
         "target": resolved_target,
@@ -978,11 +976,6 @@ def _build_context_pack(
             "items": goal_memory.get("recent_entries") or [],
             "current_handoff": goal_memory["target"]["current_handoff"],
             "next_actions": goal_memory["target"]["next_actions"],
-            "next_command": (
-                f"{recall_command} --cursor {shlex.quote(experience_window['next_cursor'])}"
-                if experience_window.get("has_more") else ""
-            ),
-            "expand_command": f"{recall_command} --id EXPERIENCE_ID",
         },
         "focus": focus,
         "tech_stack": tech_stack,
@@ -1091,6 +1084,8 @@ def format_target_experiences(experiences: dict) -> list[str]:
             f"  Showing {len(experiences.get('items', []))} of {experiences.get('total', 0)}; "
             f"{experiences.get('remaining', 0)} more.",
         ]
+        if experiences.get("recall_command"):
+            experience_lines.append(f"  Recall by question: {experiences['recall_command']}")
         if experiences.get("next_command"):
             experience_lines.append(f"  Next page: {experiences['next_command']}")
         if experiences.get("items"):
@@ -1099,6 +1094,16 @@ def format_target_experiences(experiences: dict) -> list[str]:
 
 
 def format_context_pack(pack: dict) -> str:
+    catalog_groups = {}
+    for item in pack.get("card_catalog", []):
+        group = (item.get("layer", ""), item.get("load", ""))
+        catalog_groups.setdefault(group, []).append(item)
+    catalog_lines = []
+    for (layer, load), items in catalog_groups.items():
+        catalog_lines.append(f"  Layer={layer}; load={load}:")
+        catalog_lines.extend(
+            f"    {item.get('file', '')} — {item.get('purpose', '')}" for item in items
+        )
     lines = [
         "CONTEXT PACK",
         f"- Target: {pack['target']}",
@@ -1112,20 +1117,10 @@ def format_context_pack(pack: dict) -> str:
             for item in pack.get("facts", [])
         ] if pack.get("facts") else ["-"]),
         *format_target_experiences(pack.get("target_experiences") or {}),
-        "- Skill recommendation retired (S1 native loading): select and load skills on demand via the Claude Code Skill tool (the platform's skill listing is the routing surface).",
         "- Must read:",
         *_format_list(pack["must_read"]),
-        "- Card selection retired (2026-09-13 native audit): the catalog below is the discovery surface; AI selects cards by information gap.",
-        "- Knowledge card catalog:",
-        *_format_list([
-            "{file} — layer={layer}, load={load}, purpose={purpose}".format(
-                file=item.get("file", ""),
-                layer=item.get("layer", ""),
-                load=item.get("load", ""),
-                purpose=item.get("purpose", ""),
-            )
-            for item in pack.get("card_catalog", [])
-        ]),
+        "- Knowledge card catalog: select by information gap.",
+        *(catalog_lines or ["  - None"]),
         "- Historical patterns (advisory; require current-target evidence):",
         *_format_list(pack.get("historical_patterns", [])),
         "- Required checks:",

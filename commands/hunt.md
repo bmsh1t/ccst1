@@ -51,9 +51,8 @@ the Python helpers and shell recon / scanner toolchain where supported.
 
 Success signal: a concrete scanner/probe artifact is written and any claimed domain registration has a Store receipt. Raw scanner summaries remain advisory. If no artifact is written, inspect the command result.
 
-For cross-stage questions use `skills/bug-bounty/SKILL.md`; business-model maintenance,
-hypothesis selection and rotation use `skills/bb-methodology/SKILL.md`. Load the
-needed Skill on demand, not both for every action. These are shared methods, not
+For business-model maintenance, hypothesis selection, rotation and cross-stage
+questions use `skills/src-hunting/SKILL.md` on demand, not for every action. These are shared methods, not
 permission to keep running automatically after the requested hunt pass.
 
 ## Default Hunt Loop
@@ -176,7 +175,7 @@ ALLOW_UNSAFE_HTTP_TESTS=1 python3 tools/hunt.py --target target.com --scan-only 
 
 ## When To Stop Or Rotate
 
-Use `skills/bb-methodology/SKILL.md#evidence-driven-rotation` to compare evidence
+Use `skills/src-hunting/SKILL.md#evidence-driven-rotation` to compare evidence
 delta, remaining budget, prerequisites and kill/reopen conditions. Repeated status
 or body shapes alone do not establish exhaustion or impose a fixed retry count.
 

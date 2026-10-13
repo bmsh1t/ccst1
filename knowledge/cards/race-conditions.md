@@ -2,8 +2,7 @@
 id: race-conditions
 type: technique-card
 related_skills:
-  - bb-methodology
-  - web2-vuln-classes
+  - src-hunting
   - triage-validation
 trigger_tags:
   - race
@@ -60,8 +59,7 @@ deep_refs: []
 
 ## 关联 Skills
 
-- `bb-methodology`
-- `web2-vuln-classes`
+- `src-hunting`
 - `triage-validation`
 
 ## 停止条件

@@ -2,7 +2,7 @@
 id: api-testing-workflow
 type: workflow-card
 related_skills:
-  - web2-vuln-classes
+  - src-hunting
   - web2-recon
   - triage-validation
 trigger_tags:
@@ -34,7 +34,7 @@ deep_refs:
 
 ## 能力定位
 
-本卡给 `web2-vuln-classes` 提供 API 类目标的组织方式和补漏 checklist。它负责让 AI 想到更多 API 入口和边界，不接管 `/surface`、`/autopilot` 或具体漏洞 Skill 的执行流程。
+本卡给 `src-hunting` 提供 API 类目标的组织方式和补漏 checklist。它负责让 AI 想到更多 API 入口和边界，不接管 `/surface`、`/autopilot` 或具体漏洞 Skill 的执行流程。
 
 ## 触发信号
 
@@ -89,7 +89,7 @@ deep_refs:
 ## 关联 Skills
 
 - `web2-recon`
-- `web2-vuln-classes`
+- `src-hunting`
 - `triage-validation`
 
 ## 晋升到 Skill / Queue 的条件

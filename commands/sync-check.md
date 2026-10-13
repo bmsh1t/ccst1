@@ -51,11 +51,14 @@ and reports:
 ## Sync Notes
 
 - `--sync` copies the current repo files into the Claude runtime directories.
-- `--prune` also removes runtime-only extras for the selected kinds. Use this
-  when you renamed or removed a repo-managed command/agent and want Claude CLI
-  to stop seeing the stale runtime file immediately.
+- `--prune` removes only unchanged, receipt-owned retired files for the selected
+  kinds. Unowned files are preserved; locally modified owned files are preserved
+  and reported as conflicts. A successful sync does not prove every unowned
+  legacy entry has been retired.
 - Runtime command files named `.disabled.<name>.md` are treated as an
   intentional disabled state for the matching repo command. `/sync-check`
   preserves that disabled state instead of re-enabling the command by mistake.
 - Skills live in Claude's shared global `~/.claude/skills` directory, so
   unrelated external skills are ignored instead of being reported as drift.
+- Use `--fail-on-drift` for a full installed-inventory check; critical-only
+  checks do not cover every Skill or entry file.

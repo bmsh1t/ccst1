@@ -2,9 +2,8 @@
 id: cli-argument-injection
 type: technique-card
 related_skills:
-  - web2-vuln-classes
+  - src-hunting
   - cicd-security
-  - security-arsenal
 trigger_tags:
   - cli-wrapper
   - flag-injection
@@ -75,10 +74,8 @@ source_refs:
 
 ## 关联 Skills
 
-- web2-vuln-classes
+- src-hunting
 - cicd-security
-- security-arsenal
-
 ## 停止条件
 
 - 参数经 -- 终止或数组式传参且值不落在选项位

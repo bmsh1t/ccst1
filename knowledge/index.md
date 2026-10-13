@@ -56,7 +56,7 @@ frontmatter 属于 `warning`，允许渐进迁移。需要把迁移债务也纳�
 
 | 文件 | 作用 | 何时读取 |
 |---|---|---|
-| `rules/playbook-router.md` | 证据形态到本地深度参考和项目工具的路由 | 已有 JWT、SSRF、OAuth、GraphQL、AI/RAG、上传解析等明确 Web 证据时 |
+| `knowledge/playbooks/web2-evidence-contracts.md` | 证据形态到本地深度参考和项目工具的路由 | 已有 JWT、SSRF、OAuth、GraphQL、AI/RAG、上传解析等明确 Web 证据时 |
 ## 核心决策知识卡（参考层）
 
 这些卡片是当前 Skill 的有限参考：可提供 route、证据门、停止条件和覆盖提醒，但不拥有路线或目标状态。
@@ -64,48 +64,48 @@ Context Pack 不再语义选卡；本表只描述用途，active/retired 状态�
 
 | 知识卡 | 作用 | 推荐关联 Skill |
 |---|---|---|
-| `knowledge/cards/auth-access.md` | 认证、会话、角色、组织边界的发散问题 | `bb-methodology`, `web2-vuln-classes`, `triage-validation` |
-| `knowledge/cards/auth-hidden-switches.md` | 登录隐藏分支选择器、认证状态机切换和低风险 ATO 验证思路 | `web2-vuln-classes`, `bb-methodology`, `triage-validation` |
-| `knowledge/cards/auth-credential-recovery-flows.md` | 密码重置、账号恢复、用户名枚举、MFA/OTP、remember-me 和受控凭证测试 | `web2-vuln-classes`, `triage-validation` |
-| `knowledge/cards/auth-sso-token-edge-cases.md` | JWT/JWE/JWKS、OAuth/OIDC、SAML/SSO、token/account binding 边界异常 | `web2-vuln-classes`, `bb-methodology`, `triage-validation` |
-| `knowledge/cards/odata-query-boundaries.md` | OData entity/field/navigation/batch 的查询授权与 parser 边界 | `web2-recon`, `web2-vuln-classes`, `triage-validation` |
-| `knowledge/cards/business-logic-state-machines.md` | 业务逻辑、状态机、客户端信任、流程重排和异常输入验证思路 | `bb-methodology`, `web2-vuln-classes`, `triage-validation` |
-| `knowledge/cards/api-idor.md` | API 对象级越权和多租户访问控制 | `web2-vuln-classes`, `bb-methodology`, `triage-validation` |
-| `knowledge/cards/missing-parameter-discovery.md` | `parameter is null` / 缺参响应驱动的隐藏参数发现与低风险验证 | `web2-recon`, `web2-vuln-classes`, `triage-validation` |
-| `knowledge/cards/path-pattern-management-exposure.md` | 目标目录命名规律、管理/监控面暴露和只读访问记录驱动的二次发现 | `web2-recon`, `web2-vuln-classes`, `triage-validation` |
-| `knowledge/cards/ssrf-url-fetch.md` | URL fetch、webhook、导入转换类 SSRF 思路 | `web2-vuln-classes`, `security-arsenal`, `triage-validation` |
-| `knowledge/cards/ssrf-internal-impact.md` | SSRF 内部服务、metadata、控制面影响证明 | `web2-vuln-classes`, `triage-validation` |
-| `knowledge/cards/graphql.md` | GraphQL、subscription、global ID 的权限边界 | `web2-recon`, `web2-vuln-classes`, `triage-validation` |
-| `knowledge/cards/sqli-hidden-surfaces.md` | 请求元数据、路由片段、跨接口参数和二阶链路等 SQLi 非显式输入面 | `web2-recon`, `web2-vuln-classes`, `triage-validation` |
-| `knowledge/cards/nosql-query-injection.md` | NoSQL 查询 operator、JSON/parser 和类型混淆注入 | `web2-vuln-classes`, `triage-validation` |
-| `knowledge/cards/ldap-xpath-query-boundaries.md` | LDAP filter/DN、XPath context、AD/普通 LDAP 和受控 oracle 边界 | `web2-recon`, `web2-vuln-classes`, `triage-validation` |
-| `knowledge/cards/xxe-xml-parser.md` | XML parser、XXE、XInclude、SOAP/SAML/SVG/Office 二阶解析面 | `web2-vuln-classes`, `triage-validation` |
-| `knowledge/cards/path-traversal-file-read.md` | 路径遍历、LFI、文件选择器和 file-read 链路 | `web2-vuln-classes`, `triage-validation` |
-| `knowledge/cards/upload-parser.md` | 上传、导入、转换、解析器链路 | `web2-recon`, `web2-vuln-classes`, `triage-validation` |
-| `knowledge/cards/upload-to-execution.md` | 上传后执行、webshell primitive 和受控影响证明 | `web2-vuln-classes`, `triage-validation` |
-| `knowledge/cards/server-side-template-injection.md` | SSTI 输入面、模板引擎指纹和受控升级路径 | `web2-vuln-classes`, `triage-validation` |
-| `knowledge/cards/insecure-deserialization.md` | 反序列化、signed object、ViewState/remember-me 和 sink 验证 | `web2-vuln-classes`, `triage-validation` |
-| `knowledge/cards/xss-client-injection.md` | Reflected/Stored/DOM XSS 的输入面、输出上下文和最小浏览器执行证据 | `web2-vuln-classes`, `triage-validation` |
-| `knowledge/cards/browser-client-boundaries.md` | CORS、CSRF、Clickjacking、DOM/postMessage 的浏览器边界验证 | `web2-vuln-classes`, `triage-validation` |
-| `knowledge/cards/proxy-cache-boundaries.md` | Host header、代理信任、Request smuggling、Cache poisoning/deception | `web2-vuln-classes`, `triage-validation` |
-| `knowledge/cards/cdn-response-differential.md` | CDN/DNS 差分、catch-all 与状态语义判别 | `web2-recon`, `web2-vuln-classes` |
-| `knowledge/cards/websocket-realtime-api.md` | WebSocket、CSWSH、订阅/发布和消息级权限 | `web2-vuln-classes`, `triage-validation` |
-| `knowledge/cards/information-disclosure-source-config.md` | Debug、source map、备份、配置和源码泄露的影响链 | `web2-vuln-classes`, `triage-validation` |
+| `knowledge/cards/auth-access.md` | 认证、会话、角色、组织边界的发散问题 | `src-hunting`, `src-hunting`, `triage-validation` |
+| `knowledge/cards/auth-hidden-switches.md` | 登录隐藏分支选择器、认证状态机切换和低风险 ATO 验证思路 | `src-hunting`, `src-hunting`, `triage-validation` |
+| `knowledge/cards/auth-credential-recovery-flows.md` | 密码重置、账号恢复、用户名枚举、MFA/OTP、remember-me 和受控凭证测试 | `src-hunting`, `triage-validation` |
+| `knowledge/cards/auth-sso-token-edge-cases.md` | JWT/JWE/JWKS、OAuth/OIDC、SAML/SSO、token/account binding 边界异常 | `src-hunting`, `src-hunting`, `triage-validation` |
+| `knowledge/cards/odata-query-boundaries.md` | OData entity/field/navigation/batch 的查询授权与 parser 边界 | `web2-recon`, `src-hunting`, `triage-validation` |
+| `knowledge/cards/business-logic-state-machines.md` | 业务逻辑、状态机、客户端信任、流程重排和异常输入验证思路 | `src-hunting`, `src-hunting`, `triage-validation` |
+| `knowledge/cards/api-idor.md` | API 对象级越权和多租户访问控制 | `src-hunting`, `src-hunting`, `triage-validation` |
+| `knowledge/cards/missing-parameter-discovery.md` | `parameter is null` / 缺参响应驱动的隐藏参数发现与低风险验证 | `web2-recon`, `src-hunting`, `triage-validation` |
+| `knowledge/cards/path-pattern-management-exposure.md` | 目标目录命名规律、管理/监控面暴露和只读访问记录驱动的二次发现 | `web2-recon`, `src-hunting`, `triage-validation` |
+| `knowledge/cards/ssrf-url-fetch.md` | URL fetch、webhook、导入转换类 SSRF 思路 | `src-hunting`, `docs/tool-index.md#execution-contract-lookup`, `triage-validation` |
+| `knowledge/cards/ssrf-internal-impact.md` | SSRF 内部服务、metadata、控制面影响证明 | `src-hunting`, `triage-validation` |
+| `knowledge/cards/graphql.md` | GraphQL、subscription、global ID 的权限边界 | `web2-recon`, `src-hunting`, `triage-validation` |
+| `knowledge/cards/sqli-hidden-surfaces.md` | 请求元数据、路由片段、跨接口参数和二阶链路等 SQLi 非显式输入面 | `web2-recon`, `src-hunting`, `triage-validation` |
+| `knowledge/cards/nosql-query-injection.md` | NoSQL 查询 operator、JSON/parser 和类型混淆注入 | `src-hunting`, `triage-validation` |
+| `knowledge/cards/ldap-xpath-query-boundaries.md` | LDAP filter/DN、XPath context、AD/普通 LDAP 和受控 oracle 边界 | `web2-recon`, `src-hunting`, `triage-validation` |
+| `knowledge/cards/xxe-xml-parser.md` | XML parser、XXE、XInclude、SOAP/SAML/SVG/Office 二阶解析面 | `src-hunting`, `triage-validation` |
+| `knowledge/cards/path-traversal-file-read.md` | 路径遍历、LFI、文件选择器和 file-read 链路 | `src-hunting`, `triage-validation` |
+| `knowledge/cards/upload-parser.md` | 上传、导入、转换、解析器链路 | `web2-recon`, `src-hunting`, `triage-validation` |
+| `knowledge/cards/upload-to-execution.md` | 上传后执行、webshell primitive 和受控影响证明 | `src-hunting`, `triage-validation` |
+| `knowledge/cards/server-side-template-injection.md` | SSTI 输入面、模板引擎指纹和受控升级路径 | `src-hunting`, `triage-validation` |
+| `knowledge/cards/insecure-deserialization.md` | 反序列化、signed object、ViewState/remember-me 和 sink 验证 | `src-hunting`, `triage-validation` |
+| `knowledge/cards/xss-client-injection.md` | Reflected/Stored/DOM XSS 的输入面、输出上下文和最小浏览器执行证据 | `src-hunting`, `triage-validation` |
+| `knowledge/cards/browser-client-boundaries.md` | CORS、CSRF、Clickjacking、DOM/postMessage 的浏览器边界验证 | `src-hunting`, `triage-validation` |
+| `knowledge/cards/proxy-cache-boundaries.md` | Host header、代理信任、Request smuggling、Cache poisoning/deception | `src-hunting`, `triage-validation` |
+| `knowledge/cards/cdn-response-differential.md` | CDN/DNS 差分、catch-all 与状态语义判别 | `web2-recon`, `src-hunting` |
+| `knowledge/cards/websocket-realtime-api.md` | WebSocket、CSWSH、订阅/发布和消息级权限 | `src-hunting`, `triage-validation` |
+| `knowledge/cards/information-disclosure-source-config.md` | Debug、source map、备份、配置和源码泄露的影响链 | `src-hunting`, `triage-validation` |
 | `knowledge/cards/public-package-artifact-intelligence.md` | 公开包仓库、容器和历史发布物的归属、provenance 与只读静态审查 | `web2-recon`, `cicd-security` |
-| `knowledge/cards/wordpress-surface-intelligence.md` | WordPress 插件/主题 inventory、版本适用性与 REST/AJAX/XML-RPC 权限边界 | `web2-recon`, `web2-vuln-classes`, `triage-validation` |
+| `knowledge/cards/wordpress-surface-intelligence.md` | WordPress 插件/主题 inventory、版本适用性与 REST/AJAX/XML-RPC 权限边界 | `web2-recon`, `src-hunting`, `triage-validation` |
 | `knowledge/cards/js-runtime-signature-reconstruction.md` | 从请求 initiator 和运行时样本重建动态 JS 签名链，并以 first divergence 驱动最小环境补丁 | `web2-recon` |
 | `knowledge/cards/custom-protocol-state-recovery.md` | 从 PCAP/log/source 恢复自定义协议 framing、消息字典和可验证状态转换 | `web2-recon` |
-| `knowledge/cards/cicd-trust-boundaries.md` | CI/CD workflow、OIDC、runner 和公开制品的信任边界 | `cicd-security`, `web2-vuln-classes` |
-| `knowledge/cards/cloud-control-plane-pivots.md` | 云 metadata、IAM/RBAC、service account 与部署制品链路 | `web2-recon`, `web2-vuln-classes` |
-| `knowledge/cards/dns-email-trust-boundaries.md` | DNS、邮件认证和 dangling record 的归属与验证边界 | `web2-recon`, `web2-vuln-classes` |
-| `knowledge/cards/payment-callback-idempotency.md` | 支付 callback、签名、幂等和 replay window 边界 | `web2-vuln-classes`, `triage-validation` |
-| `knowledge/cards/web-llm-tool-chains.md` | Web LLM、prompt injection、RAG 和工具调用边界 | `web2-vuln-classes`, `triage-validation` |
-| `knowledge/cards/controlled-rce-impact.md` | RCE / 命令执行 / shell primitive 的受控影响证明 | `web2-vuln-classes`, `triage-validation` |
-| `knowledge/cards/node-prototype-pollution.md` | Node/Express 对象污染、template/VM sink 和 RCE 链建模 | `web2-vuln-classes`, `bb-methodology`, `triage-validation` |
-| `knowledge/cards/grpc-api-boundaries.md` | gRPC/gRPC-Web transport、method、metadata 与对象授权边界 | `web2-recon`, `web2-vuln-classes`, `triage-validation` |
-| `knowledge/cards/k8s-control-plane-boundaries.md` | Kubernetes API、kubelet、RBAC、service-account 与 subresource 边界 | `web2-recon`, `web2-vuln-classes`, `triage-validation` |
-| `knowledge/cards/race-conditions.md` | 并发状态差异和 race 风险的低风险建模 | `bb-methodology`, `web2-vuln-classes`, `triage-validation` |
-| `knowledge/cards/coverage-prompts.md` | 覆盖基线漏测提醒 | `bb-methodology`, `web2-recon`, `web2-vuln-classes` |
+| `knowledge/cards/cicd-trust-boundaries.md` | CI/CD workflow、OIDC、runner 和公开制品的信任边界 | `cicd-security`, `src-hunting` |
+| `knowledge/cards/cloud-control-plane-pivots.md` | 云 metadata、IAM/RBAC、service account 与部署制品链路 | `web2-recon`, `src-hunting` |
+| `knowledge/cards/dns-email-trust-boundaries.md` | DNS、邮件认证和 dangling record 的归属与验证边界 | `web2-recon`, `src-hunting` |
+| `knowledge/cards/payment-callback-idempotency.md` | 支付 callback、签名、幂等和 replay window 边界 | `src-hunting`, `triage-validation` |
+| `knowledge/cards/web-llm-tool-chains.md` | Web LLM、prompt injection、RAG 和工具调用边界 | `src-hunting`, `triage-validation` |
+| `knowledge/cards/controlled-rce-impact.md` | RCE / 命令执行 / shell primitive 的受控影响证明 | `src-hunting`, `triage-validation` |
+| `knowledge/cards/node-prototype-pollution.md` | Node/Express 对象污染、template/VM sink 和 RCE 链建模 | `src-hunting`, `src-hunting`, `triage-validation` |
+| `knowledge/cards/grpc-api-boundaries.md` | gRPC/gRPC-Web transport、method、metadata 与对象授权边界 | `web2-recon`, `src-hunting`, `triage-validation` |
+| `knowledge/cards/k8s-control-plane-boundaries.md` | Kubernetes API、kubelet、RBAC、service-account 与 subresource 边界 | `web2-recon`, `src-hunting`, `triage-validation` |
+| `knowledge/cards/race-conditions.md` | 并发状态差异和 race 风险的低风险建模 | `src-hunting`, `src-hunting`, `triage-validation` |
+| `knowledge/cards/coverage-prompts.md` | 覆盖基线漏测提醒 | `src-hunting`, `web2-recon`, `src-hunting` |
 
 ## 按需 Router 知识卡
 
@@ -119,20 +119,20 @@ case-router 不是默认方法论正文，而是低优先级、按信号加载�
 
 | 知识卡 | 作用 | 推荐关联 Skill |
 |---|---|---|
-| `knowledge/cards/cloud-cognito-identity-pool.md` | Cognito Identity Pool 公开标识、匿名 STS 身份与实际 IAM action 的逐跳证据门 | `web2-vuln-classes`, `triage-validation`, `security-arsenal` |
-| `knowledge/cards/signature-scope-mismatch.md` | 验签字节与消费字节不一致、密钥未绑定身份（XSW/JWT/JWKS） | `web2-vuln-classes`, `triage-validation` |
-| `knowledge/cards/view-differential.md` | 校验视图 vs 执行视图的规范化/编码/截断差 | `web2-vuln-classes`, `security-arsenal` |
-| `knowledge/cards/path-allowlist-normalization.md` | 路径/白名单归一化绕过、弱字符串匹配安全判定 | `web2-vuln-classes`, `security-arsenal` |
-| `knowledge/cards/connection-string-injection.md` | 连接串/驱动/协议处理器参数注入致文件读与 RCE | `web2-vuln-classes`, `security-arsenal` |
-| `knowledge/cards/import-migration-trust.md` | 导入/恢复/迁移类功能坍塌信任边界 | `web2-vuln-classes`, `bb-methodology` |
-| `knowledge/cards/stale-derived-authz.md` | 授权/凭证派生态未随源变更失效 | `bb-methodology`, `web2-vuln-classes` |
-| `knowledge/cards/connection-reuse-key.md` | 连接/缓存复用键遗漏安全维度致降级 | `web2-vuln-classes`, `web2-recon` |
-| `knowledge/cards/redirect-header-leak.md` | 跨源重定向敏感头剥离不完整致凭据外泄 | `web2-vuln-classes`, `web2-recon` |
-| `knowledge/cards/xs-leak-oracle.md` | XS-Leak / 可观测差异侧信道 oracle | `web2-vuln-classes`, `triage-validation` |
-| `knowledge/cards/cli-argument-injection.md` | CLI 包装器参数/flag 注入与终端转义注入 | `web2-vuln-classes`, `cicd-security` |
-| `knowledge/cards/type-confusion-controlflow.md` | 参数类型/形状混淆翻转框架控制流、保留键击穿 | `web2-vuln-classes`, `triage-validation` |
-| `knowledge/cards/second-order-sink.md` | 二阶/延迟 sink 注入（异步模板/SSTI/反序列化） | `web2-vuln-classes`, `bb-methodology` |
-| `knowledge/cards/render-pipeline-ssrf.md` | 渲染/转换/导出管线作为 SSRF/RCE 攻击面 | `web2-vuln-classes`, `security-arsenal` |
+| `knowledge/cards/cloud-cognito-identity-pool.md` | Cognito Identity Pool 公开标识、匿名 STS 身份与实际 IAM action 的逐跳证据门 | `src-hunting`, `triage-validation`, `docs/tool-index.md#execution-contract-lookup` |
+| `knowledge/cards/signature-scope-mismatch.md` | 验签字节与消费字节不一致、密钥未绑定身份（XSW/JWT/JWKS） | `src-hunting`, `triage-validation` |
+| `knowledge/cards/view-differential.md` | 校验视图 vs 执行视图的规范化/编码/截断差 | `src-hunting`, `docs/tool-index.md#execution-contract-lookup` |
+| `knowledge/cards/path-allowlist-normalization.md` | 路径/白名单归一化绕过、弱字符串匹配安全判定 | `src-hunting`, `docs/tool-index.md#execution-contract-lookup` |
+| `knowledge/cards/connection-string-injection.md` | 连接串/驱动/协议处理器参数注入致文件读与 RCE | `src-hunting`, `docs/tool-index.md#execution-contract-lookup` |
+| `knowledge/cards/import-migration-trust.md` | 导入/恢复/迁移类功能坍塌信任边界 | `src-hunting`, `src-hunting` |
+| `knowledge/cards/stale-derived-authz.md` | 授权/凭证派生态未随源变更失效 | `src-hunting`, `src-hunting` |
+| `knowledge/cards/connection-reuse-key.md` | 连接/缓存复用键遗漏安全维度致降级 | `src-hunting`, `web2-recon` |
+| `knowledge/cards/redirect-header-leak.md` | 跨源重定向敏感头剥离不完整致凭据外泄 | `src-hunting`, `web2-recon` |
+| `knowledge/cards/xs-leak-oracle.md` | XS-Leak / 可观测差异侧信道 oracle | `src-hunting`, `triage-validation` |
+| `knowledge/cards/cli-argument-injection.md` | CLI 包装器参数/flag 注入与终端转义注入 | `src-hunting`, `cicd-security` |
+| `knowledge/cards/type-confusion-controlflow.md` | 参数类型/形状混淆翻转框架控制流、保留键击穿 | `src-hunting`, `triage-validation` |
+| `knowledge/cards/second-order-sink.md` | 二阶/延迟 sink 注入（异步模板/SSTI/反序列化） | `src-hunting`, `src-hunting` |
+| `knowledge/cards/render-pipeline-ssrf.md` | 渲染/转换/导出管线作为 SSRF/RCE 攻击面 | `src-hunting`, `docs/tool-index.md#execution-contract-lookup` |
 
 ## 已折叠吸收 / 归档的蒸馏笔记
 
@@ -180,13 +180,13 @@ case-router 不是默认方法论正文，而是低优先级、按信号加载�
 
 ## 加载策略
 
-1. 先读取 `memory/goals/active.json`，确认当前目标、阶段和假设。
-2. 根据阶段选择 Skill。
-3. 根据证据从本索引选 1-2 张知识卡：核心卡优先，蒸馏卡只在明确 trigger signal 命中时作为 router / recall 补充。
+1. 按本轮明确目标读取 `target_memory.py show TARGET`；active 指针不代替 owner 的目标、意图和交接。
+2. 调查核心按当前问题组合专项能力，不按固定阶段自动路由。
+3. 按信息缺口读取完整方法；不固定卡数，不因关键词未命中而排除其他方法。登记是发现，不是审核证明。
 4. 如果蒸馏卡 frontmatter 有 `source_refs`，只有在需要真实案例链路或报告写作先例时才查询本地案例库。
    查询入口是显式的 `/kb cases`（`tools/case_corpus.py`）；默认只取一个摘要，缺少本地
    `distill/corpus/` 时返回 `unavailable`，不阻断普通路由。
-5. 如果证据命中 `rules/playbook-router.md`，优先按 router 读取更深参考。
+5. 如果证据命中 `knowledge/playbooks/web2-evidence-contracts.md`，优先按 router 读取更深参考。
 6. 知识卡产出的新思路、技巧或补漏项必须交还给当前 Skill 决策，并回到
    目标层或 action queue 记录为 lead / next action / dead end / queued action。
 

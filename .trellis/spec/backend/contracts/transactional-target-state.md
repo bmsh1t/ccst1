@@ -121,14 +121,140 @@ Store notes; completed receipts map Experience IDs to file/line/digest. These
 offline contracts do not establish online learning gains or complete M8 costs. The
 distillation view now renders Finding claim/family/endpoint, technical verdict,
 destination decision and bounded conditional experience without blank aliases.
-Fresh stores
-use schema v11 with advisory `note`, `active_goal`, structured Coverage reviews
-and persisted observation identity claims;
-existing v8 stores retain their old domain APIs but require explicit
-`upgrade-memory --backup ABSOLUTE_PATH` before using those new memory APIs.
-The plan adds no context table, keyed-note replacement chain or per-entry
-provenance table by default. Use the task's M1-M8 consumer gate, not Store unit-
-test counts, for acceptance.
+Fresh stores use schema v17: advisory `note`, `active_goal`, Coverage reviews,
+observation identities, exact `experience_versions`, `experience_sources`,
+`experience_links` and append-only `experience_link_events`, plus accepted advisory
+claims/source refs. Version-bound supersedes/refutes/depends_on never rewrite old
+experience or technical judgments; withdrawals do not revive obsolete conclusions.
+Origin is not basis. Source revocation/damage propagates through basis/dependencies.
+Text correction scope uses exact retained declarations, not semantic equivalence;
+different conditions retain a scoped connection, not global invalidation. Claim condition bindings and explicit
+validity windows use the v15 tables described below; reviewed knowledge uses v16
+external source attachments. v17 adds exact historical origins, never historical
+basis or claim support, using the same external-source owner tables.
+Existing stores require explicit backup-bound upgrade; v12/v13/v14/v15/v16 development
+stores retain explicit upgrade paths.
+Use consumer-level save/restart/recall/recovery evidence, not test counts, for acceptance.
+
+### v15 claim applicability and independent recall context (2026-10-12)
+
+1. **Scope / Trigger.** Experience claims, text index lifecycle, relation constraints and
+   exact historical counterevidence. No changes to technical judgment or execution ownership.
+2. **Signatures.** `remember(claims=[...])` accepts optional `condition_bindings` and
+   `validity`. `experience_claim_conditions(claim_id,role,owner,record_id,version,content_sha256)`
+   and `experience_claim_validity(claim_id,valid_from,valid_until)` are append-only claim
+   attachments. Fresh creation and explicit upgrade share DDL. `experience_contract`
+   owns pure declarations; Store owns existence, byte health, transaction and history.
+   `build_text_index(..., shared=False, include_knowledge=True, full_rebuild=False)`;
+   `query_recall(..., context_limit=20, context_max_bytes=64000)`;
+   `recall_context.context_page(root,target,roots=[{experience_id,version}],cursor=...)`.
+3. **Contracts.** A condition role is a comparison key, not an inferred actor. It binds
+   one exact same-Store entity; 1..32 bindings when supplied, null/omitted means unknown.
+   Both timezone-aware validity endpoints are required, normalized to UTC, with a
+   half-open interval and `from < until`. No timestamp infers a validity window.
+   Free text remains visible and unverified even when identities agree. C8 rejects
+   conflicting bound identities and disjoint windows; all paths remain hypotheses.
+   Material/basis/condition changes share existing health propagation and invalidate projections.
+
+   Text build separates `state/<key>/recall-index/text` from `.cache/knowledge-recall/text`.
+   `--shared` needs no target and opens no Store; it accepts only reviewed knowledge.
+   Target build also updates shared knowledge unless `--no-knowledge`. Identical
+   source/model/chunking/ranking data reuses FTS rows/vectors and the published generation;
+   `--full-rebuild` deliberately creates fresh generations. Current goal/Scope/revision
+   are query snapshot bindings, not reasons to re-encode unchanged experience. Target
+   acquisition now follows the incremental contract below; shared knowledge still
+   performs a full owner audit. Projection reuse and source-read counts are separate.
+
+   `counterevidence` is a direct, exact-version correction/dependency/basis bundle,
+   independent of top-k. Same identity has one item with all references; it never
+   establishes independent support. `context --id ID --version VERSION` or its separate
+   returned cursor continues it. `expand_command` reads the exact full version;
+   `context_command` expands another hop. Root status/health stays outside the item-body
+   budget, like current facts. Oversized bodies become explicit omitted-content refs;
+   remaining, unavailable or omitted items set `context_incomplete`. Total refers to
+   this direct bundle only, not a transitive proof. External-byte and historical-peer
+   health is checked again before composite query return, not only Store revision.
+4. **Validation & Error Matrix.** Foreign/unknown entity, empty or malformed binding,
+   invalid interval → reject before commit; exact accepted retry remains idempotent.
+   Existing v14 memory access → explicit upgrade hint, no auto migration. Old claims
+   gain null declarations on read, never inferred values. Missing/stale text index →
+   fresh lexical originals plus explicit partition health; current facts survive.
+   Unavailable knowledge → preserve previous shared generation, build reports partial
+   or unavailable and CLI exits 2. An explicitly requested missing encoder also
+   preserves both previous generations and exits 2; no encoder request permits FTS-only
+   construction with semantic unavailable. Corrupt existing generation → no incremental reuse;
+   explicit `--full-rebuild` required. Independent partition publication is not a
+   cross-partition transaction. Query/status never build or download. Stale context
+   cursor → reject/restart; unavailable exact history → retain a diagnostic, not latest.
+5. **Good / Base / Bad.** Good: current intent changes without re-encoding history;
+   conflicting actor or time windows reject a two-hop join. Base: absent structured
+   declarations keep legacy claims advisory/unknown. Bad: use observation time as
+   validity, inject a private target into shared cache, or replace old rebuttal with latest.
+6. **Required checks.** Synthetic Store→CLI→generation→query; cross-target/shared
+   isolation, unchanged build, changed source, partial publication, exact historical
+   expansion, cursor byte-health invalidation, two-hop condition/time conflicts, and
+   explicit v14 backup/upgrade/retry. Existing older-schema fixtures must remove v15
+   attachment tables before presenting an actual v11/v12/v13 layout. No real data or
+   model invocation is implied by these engineering checks.
+7. **Wrong → Correct.** `counterevidence = ranked[:k]` → source-bound independent page;
+   `conditions = label` → exact owner identity plus preserved unverified text;
+   `revision changed → re-encode everything` → compare source/model/chunking bindings.
+
+### v16 reviewed sources, shared patterns and post-save updates (2026-10-12)
+
+1. **Scope / Trigger.** Accepting reviewed knowledge as experience origin/basis,
+   shared method relation projection and explicitly requested post-commit indexing.
+   These do not confirm findings, change delivery or authorize execution.
+2. **Signatures.** `TargetStore.knowledge_source(id)` returns
+   `{owner: "knowledge", record_id, version, content_sha256}`; `remember.sources`
+   adds `purpose=origin|basis`. `experience_external_sources` and
+   `experience_claim_external_sources` bind external versions with explicit foreign
+   keys. The public CLI is `target_memory.py knowledge-source --target TARGET --id ID`.
+   `build_relations(root,target=None,shared=False,full_rebuild=False)` and
+   `relation-build/query/status/prune --shared` address only the shared namespace.
+   Save/publish CLIs accept `--update-index text|relations|all` and optionally
+   `--index-encoder PATH` for text/all; `recall_update` owns their post-save composition.
+3. **Contracts.** Knowledge `version` is the publication receipt SHA256, not an
+   invented integer revision; `content_sha256` binds whole Markdown. The existing
+   publication review remains admission authority. Its optional byte-reader callback
+   captures registry/body/receipt/review/blind inputs; publication shared locks plus
+   stat checks fence Store acceptance without hashing inside the write transaction.
+   Exact retry uses the original command receipt even after later source withdrawal.
+
+   Only reviewed Markdown frontmatter may declare `method_relations`. Each item has
+   unique `id`, `subject`, `predicate`, `object`, `conditions`, `rationale`; predicates
+   are requires/enables/alternative_to/refutes. Local endpoints are `{anchor}`;
+   external objects add exact `method_id/content_sha256`. Empty anchor means the
+   entire method. Both endpoints must be active, reviewed and resolvable. Shared
+   nodes are `{owner: "knowledge-pattern", method_id, content_sha256, anchor}`;
+   they never alias Store entities. Relation v4 retains reusable source shards and
+   explicit rejected sources. Shared knowledge capture remains a full owner audit.
+
+   Post-save target updates touch only target indexes; publication updates touch only
+   shared indexes, after owner locks/transactions exit. Returned `save_status=saved`,
+   `index_update` and `partial` preserve the original receipt in both text and JSON.
+4. **Validation & Error Matrix.** Unreviewed/changed/retired knowledge → reject new
+   basis, diagnose existing bindings; origin never becomes claim support. Changed
+   capture → reject before commit. v15 → explicit verified backup upgrade, no query
+   migration. Malformed relation/unknown anchor/wrong peer hash → rejected relation,
+   not an accepted edge. Missing shared Store is irrelevant: shared commands never
+   open one. Corrupt or old graph → explicit full rebuild, not silent reuse. Invalid
+   update options → no owner mutation; unavailable encoder/update failure → exit 2,
+   committed receipt retained and index-only recovery. Actual unavailable execution
+   sources remain visible partial results, not proof of complete graph coverage.
+5. **Good / Base / Bad.** Good: a reviewed method supports an advisory claim and its
+   later review withdrawal invalidates that basis. Base: no update option preserves
+   the existing save behavior. Bad: treat origin as support, import target identity
+   into shared nodes, or rerun publication to repair an index.
+6. **Required checks.** Real synthetic publication → shared two-hop/no Store;
+   knowledge-source → accepted claim → target query/current/counterevidence;
+   origin/basis distinction, review/blind withdrawal, v15 backup/upgrade/retry,
+   shared incremental/full equivalence, malformed anchors/hash, bad encoder after
+   successful save and text/JSON receipts. The architecture guard permits only the
+   lower-level knowledge reader from Store and keeps the new pattern contract pure.
+7. **Wrong → Correct.** `version = current Store revision` for knowledge → exact
+   publication receipt hash; `index failure → undo save` → retained receipt and
+   independent partial; registry relationship metadata → reviewed-body declarations.
 
 ## 2. Signatures
 
@@ -316,7 +442,7 @@ audit would leave mutation-owned claim tokens and receipt references inconsisten
 Database path: `state/<target_storage_key>/metadata.sqlite3`; database mode 0600,
 target directory 0700; symlinked database paths rejected. Initialization must not
 silently repair an existing non-private target directory. New stores use SQLite
-schema v11; v8/v9 retain their existing operations, with an explicit upgrade
+schema v15; v8/v9 retain their existing operations, with an explicit upgrade
 required before Coverage review queries/writes. Schema v10 remains readable,
 but persisting complete observation identity requires `upgrade-schema` with a
 verified private backup. Reads never upgrade a Store. The recorded target has already cut over. Do
@@ -662,11 +788,15 @@ exist since v9 and are consumed by the current command/query adapters:
   extends the existing experience paging logic; no separate query framework.
   `experience(id)` remains full expansion, including existing evidence and
   domain links even when a row leaves the default working set.
-- `build_recall_view(repo_root, *, target, query="", kinds=None, limit=20,
-  cursor=None)` uses this page. The cursor is for target experience only;
+- `build_recall_view(repo_root, *, target, query="", kinds=None, limit=5,
+  cursor=None, experience_id=None)` uses this page. The cursor is for target experience only;
   other sources have independently labeled windows/expansion, not a synthetic
   cursor across unrelated stores. Historical PatternDB input is explicitly
   imported into this target experience source; it is not a second current writer.
+- `history_view(repo_root, *, target, limit=20, cursor=None, experience_id=None)`
+  expands the same owner without ranking. Both readers reject simultaneous cursor
+  and ID presence before acquiring current facts or opening the Store, including
+  an explicitly supplied empty cursor. ID expansion cannot silently ignore a cursor.
 - Existing `target_memory.py` subcommands are thin domain adapters with
   explicit target/root and JSON output support. The recall CLI exposes
   `--limit`, `--cursor` and `--id` expansion in addition to target/query/kind.
@@ -799,6 +929,7 @@ exist since v9 and are consumed by the current command/query adapters:
 | Text rendering receives Store conditions/reopen_when/next_intent | Show those fields, not only old next/stop_condition aliases |
 | Source optional registry fails | Explicit unavailable result, not successful zero cards or unregistered fallback |
 | Cursor changes target/store/revision/kinds/query/order/filter | Conflict; restart query, never silently skip rows |
+| Recall/history receives both `--cursor` (including empty string) and `--id` | `ValueError`/exit 2 before current-fact/Store I/O; no state writes |
 | Imported Experience is opened after its source moves to archive | Experience ID resolves through the durable manifest to the original stable ID/location; no archive-wide scan |
 | Store schema upgrade is interrupted or validation fails | Old Store remains usable or admission fails closed with verified-backup recovery; ordinary query/init never upgrades. Existing real targets require separate data-change authorization |
 | Correction records a newer interpretation | Append a distinct Experience; preserve and expose both entries |
@@ -836,6 +967,9 @@ delete only rebuildable fixture projections before restart. Test schema upgrade
 failure/recovery and loss of fenced DB. Measure query/connection counts, output
 size and recovery time without dropping integrity checks or accessible history.
 Knowledge review/registry gates keep their existing focused regressions.
+`tests/test_experience_recall.py` covers valid paging and ID expansion, plus both
+readers rejecting invalid/empty cursor with an existing ID before current-fact reads;
+all saved bytes and the Store binding remain unchanged.
 `test_primary_checkpoint_cli_preserves_goal_and_conditional_memory` runs fresh
 Checkpoint processes for text/JSON with corrupt legacy memory. It checks the
 saved goal, conditional negative evidence, exact IDs returned by continuation
@@ -1016,8 +1150,10 @@ material file, or a runtime lock inside a target-owned root.
   all naming the same store and manifest. `promote_target` re-entered on such a
   target returns the idempotent `recovered` result without reading archive
   bytes, so cleaning up historical archive material after a cutover is not
-  treated as damage. The archive stays the recovery input for an *interrupted*
-  activation, where it is still required and verified byte for byte.
+  treated as damage. After archive receipt publication, an interrupted activation
+  requires its exact verified archive. Before that publication, all original
+  manifest bytes must still be present; a matching fence alone does not prove
+  archival. See the explicit cutover recovery contract below.
 
 **Validation & Error Matrix**:
 
@@ -1127,7 +1263,7 @@ through `tests/legacy_fixtures.py`, not a production writer restored for tests.
 | Partial evidence / unknown effect | Not confirmation or automatic completion |
 | Known duplicate at destination | Can be technically confirmed, delivery ineligible |
 | Stale cursor or judgment predecessor | Conflict; caller reloads |
-| Backup destination exists | Refuse overwrite; SQLite backup reads committed WAL |
+| Backup destination exists / contains `..` | Refuse overwrite / reject ambiguous path before I/O; SQLite backup reads committed WAL |
 | Explicit Finding target/output belongs to another owner or traverses symlinks | Reject before writing either owner's files |
 | Cutover occurs after optimistic legacy admission | Recheck under shared switch lock; no stale legacy write |
 | Preview runner/report input | Reject before request or generated artifact |
@@ -1442,3 +1578,466 @@ adding `pull_coverage=incomplete`; zero means no readable recorded events, not
 unused or low-quality knowledge. Do not reconstruct complete usage from Action
 metadata or create another automatic telemetry owner. `tests/test_kb_outbound.py`
 checks no-write reads, historic/malformed-log compatibility and unchanged ordering.
+
+## Exact correction scope and owner relation sources (2026-10-12)
+
+### 1. Scope / Trigger
+
+Experience correction admission/health, target relation generation and exact
+counterevidence. This slice introduced no schema change (v16 at delivery);
+current Store schema is v17 and relation projection remains v4.
+
+### 2. Signatures
+
+`link_experience(... relation, conditions, rationale, expected_revision)` and
+`remember(links=[...])` retain their inputs. `experience_version`, page and current
+views add the same derived `applicability`; correction refs add
+`applicability={conditions,source_conditions,target_conditions,comparison,effect}`.
+`acquire_snapshot(...,include_owner_relations=False)` opts target relations into
+owner acquisition. `TargetStore.execution(id)` includes original artifact IDs.
+
+### 3. Contracts
+
+- Correction scope must be explicit. The edge scope and both retained endpoint
+  declarations must be exactly identical and known for `effect=whole_record` /
+  `comparison=identical_declarations`; otherwise effect is `conditional` and
+  comparison is `not_established`. This is authored scope, not semantic or actor
+  equivalence. Empty/unknown endpoint declarations do not become wildcards.
+- Only an incoming whole-record correction changes overall review_state and its
+  existing dependency closure. Conditional connections remain visible but do not
+  globally invalidate the older method. Withdrawal retains its original scope
+  and challenge; depends_on, cycle rejection, CAS and exact retries are unchanged.
+- Scope is derived from exact version snapshots, never mutable heads or a new
+  persisted validity flag. Corrupt/missing correction snapshots fail explicitly.
+- Case actor→session/object requires its actual owner FK. Action→operation uses
+  the actual attempt; operation→artifact uses its observation binding. Artifact
+  IDs come from Store, never a consumer hash. Edge provenance retains attempt ID
+  and step. Experience evidence/dependency uses precise versions. Owner-recorded
+  associations do not establish authorization, impact, time overlap or execution
+  viability; paths remain hypotheses with unknown constraints.
+- Target relation acquisition alone expands executions into owner documents; text
+  dependencies may verify referenced operations, but do not enumerate their catalog.
+  External source health and bindings participate in source
+  hashes and final publication/return checks. Shared methods remain target-free.
+- Counterevidence roots include returned Experience nodes and rejected owner
+  documents via exact entity DTOs, not parsed source_ref IDs or latest-version
+  lookups. Roots are deduplicated. Omitted item bodies retain referenced_by scope,
+  endpoint versions and withdrawal; only rationale is removed from the compact
+  correction ref. If the reference cannot fit, request a larger context budget.
+
+### 4. Validation & Error Matrix
+
+| Input | Result |
+|---|---|
+| Different endpoint/scope declarations | Conditional connection; old-scope advice and its dependencies not globally invalidated |
+| Correction scope empty/unknown | Reject, no mutation |
+| Withdraw whole-record correction | Old conclusion stays challenged; never revive |
+| Withdraw conditional correction | Conditional history retained; never broaden its effect |
+| External evidence changes without revision | Stale generation; rebuilt graph rejects damaged source with partial diagnostics |
+| Legitimate empty owner collection | Ready empty projection; no constant implementation gap |
+| Missing seed after partial rebuild | unresolved_seeds plus current and exact available counterevidence |
+| Old graph format | Explicit relation-build --full-rebuild required |
+| Real challenged basis during --update-index all | Save receipt retained, partial/exit 2 and index-only recovery; repeated rebuild cannot heal the source |
+
+### 5. Good / Base / Bad Cases
+
+Good: B-condition refutation coexists with A-condition advice, while its scope is
+visible in current/history/counterevidence. Base: identical declarations retain the
+previous supersession behavior. Bad: same display name joins Case records, or an
+owner:experience path returns a misleading complete-empty counterevidence page.
+
+### 6. Required Checks
+
+Synthetic owner APIs and CLI: conditional/whole-record corrections, withdrawal,
+Case retained versions, unknown declarations, cycles/CAS/replay, current empty
+intent, text/JSON and budgeted context. Actual two-hop/reverse attempt/step chains,
+false textual joins, raw-byte changes, shared isolation and incremental/full
+projection equivalence. Target source acquisition now follows the incremental
+contract below. The original owner-provenance/scoped-corrections verification and
+the subsequent incremental-acquisition verification retain their separate scopes;
+no model, real migration or broad release acceptance is implied.
+
+### 7. Wrong vs Correct
+
+Wrong: remove condition admission checks but leave global health invalidation.
+Correct: derive scope once in Store and propagate only whole-record challenges.
+Wrong: discover counterevidence roots solely by the old source_ref prefix.
+Correct: use exact returned/owner Experience DTOs, including rejected sources.
+
+## v17 historical origins (2026-10-12)
+
+### 1. Scope / Trigger
+
+Exact imported-history origin bindings and expansion, permanent PatternDB original
+archives, and explicit v16→v17 upgrade. No implicit import or source promotion.
+
+### 2. Signatures
+
+```python
+store.history_source(imported_experience_id, full=False)
+store.remember(..., sources=[{**binding, "purpose": "origin"}])
+```
+
+```bash
+python3 tools/target_memory.py history-source --target TARGET --id ID --json
+python3 tools/target_memory.py history-source --target TARGET --id ID --full --json
+python3 tools/target_migration.py --backfill-pattern-source SOURCE --repo-root ROOT --target TARGET
+python3 tools/target_store.py upgrade-schema --repo-root ROOT --target TARGET --backup ABSOLUTE_BACKUP
+```
+
+`experience_external_sources` accepts knowledge/history; history is origin-only at
+both DDL and owner admission. Claim external sources remain knowledge-only. Fresh
+creation and explicit upgrade share DDL; prior knowledge rows/claims/FKs survive.
+
+### 3. Contracts
+
+- Binding is `{owner:"history",record_id,version,content_sha256}`. `record_id` is
+  an already imported same-Store Experience ID. Version SHA256 binds target/store,
+  original manifest, file identity, exact mapping and selector, not the mutable
+  whole receipt or a movable source/archive root. Memory content hashes the original
+  selected JSON value; PatternDB hashes exact line bytes excluding the newline.
+- Full available output retains the binding at top level, `source={target,store_id,
+  source_manifest_sha256,path,sha256,size}`, `source_kind`, `selector`, `record`,
+  `availability="available"` and `verification="unverified"`. PatternDB also returns
+  `raw_record`. Unavailable full output returns owner/record_id, null source/kind/
+  selector/record and an explicit reason; it invents no digest or verified status.
+- `migration_receipts` validates active target/store identity, manifest digest,
+  canonical unique paths, file types, selectors and original size/hash. Reject
+  symlink components. `target_memory_schema` is the single legacy normalizer;
+  migration does not import memory CLI. Imported notes are not original-byte copies.
+- Memory expands only the bound legacy archive. PatternDB files are immutable under
+  `state/<target-key>/pattern-archive/<source-files-digest>/`, with 0700 directories
+  and 0600 files; archive precedes pending receipt/import. Existing receipt
+  `source_files`/`experience_map` remain authoritative; `archive_root` is a locator,
+  not a second mapping. Exact-source retry can archive old complete/partial receipts
+  without calling remember or changing Store revision. No automatic origin edges.
+- Receipt SH uses flock on an existing state directory, not a query-created lock
+  file. Write acceptance captures bytes before the Store write transaction, then
+  checks file identities under receipt SH. WAL read snapshots may precede receipt
+  SH. An EX backfill retry uses identity-only `experience_entity`, never health
+  expansion that reenters SH. `history_source` verifies target/store_id/revision
+  after capture; mixed Store snapshots fail. No hashes inside a write transaction.
+- Origin damage is diagnostic and does not globally refute its experience. Exact
+  command replay preserves the committed receipt even after later source damage.
+  Current facts and historical correction scope retain their existing owners.
+
+### 4. Validation & Error Matrix
+
+| Input | Result |
+|---|---|
+| Valid original mapped to this Store | Exact binding or full unverified record, no writes |
+| History purpose=basis or history claim source | Reject before mutation |
+| Missing/ambiguous map, wrong target/selector/digest, symlink, bad original | Binding lookup fails; full expansion diagnoses unavailable, no live fallback |
+| Old PatternDB receipt without archive | Explicit same-source backfill recovery instruction |
+| Changed source files on retry | Reject; preserve archive, mapping and Store history |
+| Unrelated receipt append / supplemental archive locator | Existing source version unchanged |
+| Receipt/backfill status has malformed type | Explicit CLI error (exit 2), no TypeError traceback |
+| Store replaced or revision changed during source capture | ConflictError; reload and retry |
+| v16 history attachment | Explicit backup-bound upgrade required, no query migration |
+| Later origin damage / exact save replay | Visible diagnostic / original replay receipt, no duplicate fact |
+
+### 5. Good / Base / Bad Cases
+
+Good: explicitly archive the pinned original, expand its selected line, then save
+an advisory note with that origin. Base: a non-imported note does not fabricate a
+history source. Bad: expand another target's row from a shared PatternDB file or
+use the imported note's normalized defaults as the original content hash.
+
+### 6. Tests Required
+
+Narrow synthetic real-CLI chain: explicit import/archive → history-source → origin
+save → retained version/history/counterevidence/current. Assert old archive repair
+has no Store revision change, origin is never claim support, malformed/unavailable
+inputs are explicit, source identity survives unrelated receipt writes, v16 upgrade
+preserves knowledge/FKs and retries, and tools dependencies remain acyclic. WAL
+reader/EX-backfill and reader/upgrade contention must finish without a self-deadlock.
+Current evidence: parent task `research/history-source-verification.json`. Its
+limits retain non-WAL and older-upgrade dynamic coverage gaps; no model, real-data
+migration or release acceptance is implied. No new project test framework needed.
+
+### 7. Wrong vs Correct
+
+Wrong: bind the entire mutable migration receipt and later invalidate every origin.
+Correct: bind the exact manifest/file/map/selector; receipt status remains an admission check.
+Wrong: call `experience()` under EX just to check an imported record exists.
+Correct: use public identity-only `experience_entity("experience", id)`; health may reacquire SH.
+Wrong: interpret available historical bytes as verified supporting evidence.
+Correct: history remains an unverified origin, with exact raw expansion and separate health.
+
+## Incremental target source acquisition (2026-10-12)
+
+### 1. Scope / Trigger
+
+Target text/relation source acquisition and generation reuse. Store stays v17;
+no new fact table, lifecycle, event queue, model or implicit mutation. Shared
+knowledge acquisition remains a full registry/review/body audit.
+
+### 2. Signatures
+
+```python
+store.recall_delta(since_binding, include_owner_relations=False)
+# binding, experience_ids, owner_keys, full_acquisition_reason
+store.recall_rows(ids, expected_binding=binding)
+# binding, items, dependencies, probes, fences
+store.recall_probe(refs, expected_binding=binding)
+# binding, items, fences
+acquire_snapshot(root, target, previous_capture=None, full_acquisition_reason=None,
+                 include_knowledge=True, include_owner_relations=False)
+validate_capture(capture, target=target, include_owner_relations=False)
+same_snapshot(left, right)
+```
+
+Existing index-build/query/status and relation commands use these public boundaries.
+No environment setting or index-update side effect is added to ordinary saves.
+
+### 3. Contracts
+
+- Recall binding is `{target,store_id,backend,revision,schema_version}`; ordinary
+  `binding()` remains unchanged. Row/probe calls require an exact typed binding.
+  `recall_rows` accepts at most 1000 unique IDs, rejects absent IDs and returns the
+  existing page DTO/order, not `experience()` with extra Case content.
+- Delta consumes `(since,current]` from the existing append-only audit, checking
+  the consumed watermark and contiguous new revisions. Cold/full acquisition uses
+  full SQLite integrity/FK and audit checks; the incremental path does not rescan
+  accepted audit history. Unknown commands, gaps, replacement, rollback or schema
+  changes have explicit full reasons. This is not a forensic scan of untouched rows.
+- Store computes reverse influence, including origin/basis, exact retained versions,
+  corrections/withdrawals, claim endpoints/conditions, artifacts/assessments, Action
+  and Case changes. Observation attachments are immutable across Case versions, so
+  reverse evidence lookup uses their relational links, not all retained JSON bodies.
+  Missing touched canonical rows or corrupt retained evidence fail explicitly.
+- REF is `{owner,record_id}`. Probe owners are artifact/assessment/operation/session/
+  object/knowledge/history and case/context. Operation probes check every step's
+  artifacts, not just an experience's selected step. Case probes read real entities
+  and their private health, not the entire hypothesis-history catalog. Knowledge
+  and history reuse their existing receipt/byte owners; consumers interpret no health.
+- Semantic probes are `{ref,fingerprint}` from current owner health and real bytes.
+  `fences` has the same shape but hashes ephemeral file identities/stamps, including
+  nested material dependencies. It is not a replacement for hashing. Within an
+  acquisition and before publish/query/status return, both kinds must remain equal;
+  `same_snapshot` is the shared pure comparison, excluding time and read statistics.
+  Restored identical bytes may have the original semantic fingerprint but a different
+  per-call fence. Private bodies never enter either public result or the capture.
+- Capture v1 has exactly `schema_version`, `binding`, `include_owner_relations`,
+  `documents`, `experience_dependencies`, `owner_groups`, `probes`. It contains only
+  complete public target projections, with empty owner groups retained. Changed
+  dependencies invalidate only their consumers; current is always acquired separately.
+  Target snapshots/partitions carry ephemeral `source_fences` outside capture.
+- The unique immutable-generation publisher writes `capture.json` and its manifest
+  `capture_digest`. Required Store fields, types, relation mode and nonnegative
+  integer `source_revision` must match exactly. Target partitions supply the watermark
+  outside their semantic binding; full snapshots may supply binding.revision. Shared
+  generations reject target captures. Query/status never repair a generation.
+- Publisher idempotence includes capture digest. A watermark-only advance can publish
+  a new capture while reusing projection payload. Document text serializes record keys
+  canonically; `token-windows-canonical-parent-v2` prevents stale vector reuse after
+  this text-format change. Old JSON key insertion order is not a content change.
+- `acquisition` reports mode/full reason, experience_rows_read, owner_groups_read,
+  reused_experiences, external_probes and knowledge_acquisition separately from index
+  update counters. Zero historical row reconstruction still permits current-page,
+  metadata and fresh byte reads; it is not zero total I/O or a speedup claim.
+
+### 4. Validation & Error Matrix
+
+| Input | Result |
+|---|---|
+| No capture / old generation without capture | Explicit full-acquisition reason; no query-time index write |
+| Corrupt digest, malformed REF, wrong Store/schema/mode or missing/Boolean watermark | Capture/generation unavailable; query may use full fresh lexical sources, never trust the bad payload |
+| No owner changes or byte/health changes | Reuse historical documents/groups; acquire current and probe bytes again |
+| External file damaged/missing, then restored between calls | Localized invalidation/recovery with owner diagnostics, independent of Store revision |
+| Source changes or changes-and-restores during one call | Conflict/Store error; do not return mixed health or publish CURRENT |
+| Missing canonical dependency / malformed retained observation | Explicit Store error, not a dropped row or successful empty view |
+| Unknown audit command / watermark gap / Store replacement or rollback | Full acquisition with a specific reason; no implicit Store migration |
+| Interrupted generation write | Preserve previous CURRENT; remove only the unpublished derived generation |
+| Shared query/build | No target Store/capture; retain full reviewed-knowledge audit |
+
+### 5. Good / Base / Bad Cases
+
+Good: a new note reassembles that note and its owner group, not unrelated executions;
+an unselected observation's damaged raw file invalidates dependent groups. Base:
+a legacy generation acquires full sources, and explicit build adds a bound capture.
+Bad: record zero Python row expansions while running quick_check on every request,
+or cache prior health because revision/mtime did not change.
+
+### 6. Tests Required
+
+Isolated real Store/CLI chain with SQL trace and public-read counters: cold/no-op/single
+mutation; correction/retained/origin/withdrawal closure; artifact, Action, assessment,
+Case and external knowledge/history changes; full/incremental DTO/health equivalence.
+Inject owner-health ABA and assert acquisition, publisher and text/relation final
+return fences reject it. Assert restored bytes retain semantic equality, private
+content/fences never persist in capture, current and counterevidence remain separate,
+typed watermarks/corrupt or old captures are explicit, and interrupted publication
+preserves CURRENT. Current engineering evidence is the parent task's
+`research/incremental-acquisition-verification.json`; no model, real migration or
+release acceptance is implied. Use existing guards, not a new project test framework.
+
+### 7. Wrong vs Correct
+
+Wrong: persist mtime inside the semantic source fingerprint to catch ABA.
+Correct: hash real bytes/health for meaning, compare separate per-call identity fences.
+Wrong: treat reused FTS/vector rows as proof of incremental source acquisition.
+Correct: measure actual row/group reads and SQL, excluding independent current reads.
+Wrong: compare only Store revision at the final query boundary.
+Correct: compare the closed binding, capture and fresh external-source fences together.
+
+
+## Explicit cutover archive and restore recovery (2026-10-12)
+
+### 1. Scope / Trigger
+
+Explicit legacy import promotion and pre-primary restore; Store remains v17.
+Ordinary reads still reject a fenced preview. No implicit migration, new fact
+owner, automatic replay or knowledge admission is introduced.
+
+### 2. Signatures
+
+Existing `promote_target(...)`, `restore_legacy_metadata(...)`, `--promote` and
+`--restore-legacy` remain. `migration_receipts.read_migration_receipt(path,
+ target=..., store_id=...)` validates a completed import without active-history
+admission. `read_legacy_archive(..., allow_pending=False)` remains active-only
+by default; only explicit cutover opts into pending archive validation.
+
+### 3. Contracts
+
+- Bind target, Store, typed manifest, canonical unique paths, exact file set,
+  size and digest in the shared receipt owner. The archive file set must equal
+  the legacy-owner subset of the import manifest, not merely be a valid subset.
+- Publish each immutable archive file with the existing descriptor-bound,
+  no-overwrite, byte-verified primitive also used by PatternDB. Publish and
+  directory-sync the complete archive receipt before unlinking any original.
+- Without an archive receipt, resume only if all original manifest bytes match.
+  Reuse verified partial archive files; never overwrite conflicting material.
+  With a pending receipt, verify every archive byte and every remaining input
+  before any further unlink or role commit; finish all remaining owner unlinks.
+- First restore requires a readable preview DB, matching fence/import identity,
+  and verified/restored original bytes. It then atomically publishes and syncs
+  `legacy_restore_status="prepared"` in the existing migration receipt before
+  deleting any database file. No new receipt file or database is introduced.
+- A prepared restore may resume cleanup when its DB or fence is already absent;
+  `store_id=None` is admitted by the receipt reader only for this prepared phase.
+  Any existing DB must still prove preview. Prepared permits restore only, never
+  promotion or active-history reads. Delete the prepared receipt last.
+- Missing DB without prepared restore is ambiguous, even with a pending archive:
+  reject before restoring originals or deleting WAL/SHM/fence. Primary always
+  rejects legacy restore; post-commit recovery only finishes activation markers.
+  Completed activation still re-enters without requiring cleaned-up archives.
+- Pre-receipt restore preserves unreceipted partial archives for diagnosis.
+  Completed archive restoration cleans only its manifest-bound archive directory;
+  restored originals remain exact. No filesystem/power-loss transaction is claimed.
+
+### 4. Validation & Error Matrix
+
+| Input / interruption | Required result |
+|---|---|
+| Archive file or receipt publication fails | Originals and preview preserved; exact explicit resume or restore |
+| Source bytes drift before receipt | Reject promotion and restore without cleanup |
+| Pending archive missing a mapped item / bad locator / damaged bytes / symlink | Reject before role commit or further owner unlink |
+| Original unlink interrupted | Verify all inputs, then finish remaining unlinks on promote |
+| Prepared restore interrupted at DB, fence or receipt unlink | Same restore resumes to legacy; promotion remains blocked |
+| Primary marker failure, new write, then missing DB | Refuse legacy restoration; preserve WAL/SHM and recovery metadata |
+| Active completed cutover, archive cleaned up | Idempotent primary result; no fact mutation |
+
+### 5. Good / Base / Bad Cases
+
+Good: pending freeze resumes after checking the exact original mapping and bytes.
+Base: a completed primary returns its existing identity without archive reads.
+Bad: interpret pending receipt or missing DB as proof that primary never ran.
+
+### 6. Tests Required
+
+Use isolated synthetic roots and real CLI subprocesses. Assert source/Store
+identity, logical rows and history-origin expansion; inject file/receipt/unlink
+and post-commit failures; retain real WAL/SHM around a new primary write. Check
+malformed metadata, drift, symlink components, prepared-cleanup continuation,
+unchanged PatternDB archive bytes/permissions/retry, and no active-history
+admission while prepared. Parent `research/cutover-recovery-verification.json`
+records this engineering check; it is not schema-upgrade or release acceptance.
+
+### 7. Wrong vs Correct
+
+Wrong: return an existing pending receipt and immediately commit primary.
+Correct: validate the complete binding and archive bytes, then finish freezing.
+Wrong: absent DB plus pending archive authorizes deleting recovery sidecars.
+Correct: only a durable restore prepared from a readable preview authorizes
+cleanup continuation; otherwise preserve the current Store recovery inputs.
+
+
+## SQLite backup publication and schema recovery (2026-10-12)
+
+### 1. Scope / Trigger
+
+`TargetStore` metadata snapshots and explicit schema upgrades. This does not
+copy external evidence, migrate real targets automatically or change schema v17.
+
+### 2. Signatures
+
+`TargetStore.backup(destination: str | Path) -> Path` returns the supplied path
+after successful publication. Ordinary canonical relative paths remain valid.
+`upgrade_schema(backup_path)` and `upgrade_memory_schema(backup_path)` retain
+their existing absolute, private-directory, outside-target backup requirements.
+
+### 3. Contracts
+
+- Reject any `..` component with `StoreError` before filesystem access. Do not
+  silently resolve it: lexical normalization and symlink traversal can identify
+  different parents. Pin directory components without following symlinks.
+- SQLite writes only `snapshot.sqlite3` in a private temporary directory beside
+  the destination, never the final pathname after releasing an `O_EXCL` guard.
+  Close SQLite and fsync the snapshot descriptor before publication.
+- Publish the closed 0600 snapshot by a no-overwrite hard link through the
+  pinned parent descriptor, then fsync that directory. Temporary files are
+  cleaned on failure; competing destination files and symlinks are untouched.
+- A failure after publication retains the complete backup. Do not unlink it
+  based on its pathname or claim that directory-sync failure proves durability.
+  Existing destinations still reject retries; use a new backup path as required.
+- Backups include committed WAL data even while another reader retains an older
+  snapshot. Upgrades verify the backup identity/integrity before transactional
+  DDL, preserve original facts, and CAS the source identity/revision/schema.
+- Failed upgrade DDL/audit rolls back schema, facts, revision and audit while
+  retaining the backup. An already-current upgrade creates no additional backup
+  or audit event. Ordinary readers never perform schema upgrades.
+
+### 4. Validation & Error Matrix
+
+| Input / failure | Result |
+|---|---|
+| Existing or concurrently created final file/symlink | `FileExistsError`; competitor bytes/link unchanged |
+| Symlink parent / `..` component | Directory error / `StoreError`; no backup published |
+| SQLite snapshot failure | `StoreError` preserving cause; no final backup |
+| `KeyboardInterrupt` during snapshot | Propagate interruption; clean temporary snapshot, retain competitor |
+| Hard-link publication failure | Propagate error; no final backup; same unused path can be retried |
+| Directory fsync fails after publication | Propagate error; retain complete backup; no durability claim |
+| Upgrade audit fails after DDL | Roll back all transactional changes; retain verified backup |
+| Retry after failed upgrade using its existing backup path | Refuse overwrite; new backup path required |
+| Supported old schema / already current | Explicit upgrade preserving facts / unchanged identity and revision |
+
+### 5. Good / Base / Bad Cases
+
+Good: an old reader sees one Action while the backup contains both committed
+Actions. Base: a new canonical path receives one complete 0600 snapshot. Bad:
+`A/link -> B/child` with `A/link/../copy.sqlite3` must not publish in `A` while
+returning a pathname that points into `B`.
+
+### 6. Tests Required
+
+Use isolated synthetic source/target roots. Cover file/symlink races, exact error
+and interruption propagation, symlink-plus-`..`, WAL, failed publication retry
+and post-publication sync failure. Build physical v8–v16 schemas rather than
+relabeling the current schema or calling current APIs on an old layout. Close
+every SQLite connection and checkpoint before replacing fixture database files.
+Assert old rows, raw evidence, current empty handoff, current premise, Action and
+assessment/delivery links survive; verify history-origin admission and rejection
+of history as basis/claim support. Audit failures cover v8 table reconstruction,
+v12 relationship rebinding and v16 external-source reconstruction. Retain the
+existing `test_store_missing_corrupt_wrong_target_permissions_backup_and_legacy_refusal`.
+
+### 7. Wrong vs Correct
+
+Wrong: create and close a final-path descriptor, then let SQLite reopen the name.
+Correct: build a private snapshot and publish closed bytes without overwriting.
+Wrong: normalize only the directory handle while other operations use raw `..`.
+Correct: reject ambiguous components once at the backup owner boundary.
+Wrong: use `with sqlite3.connect(...)` as proof a fixture connection is closed.
+Correct: explicitly close connections as well as committing/rolling back their
+transactions before replacing a database pathname.

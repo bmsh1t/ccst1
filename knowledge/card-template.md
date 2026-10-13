@@ -14,7 +14,7 @@ payload 家族、WAF/解析绕过、补充 checklist、最小验证、误判/死
 id: short-card-id
 type: technique-card
 related_skills:
-  - web2-vuln-classes
+  - src-hunting
 trigger_tags:
   - example-tag
 risk: low
@@ -154,3 +154,10 @@ python3 tools/knowledge_audit.py
 必须修复所有 `error`。没有 frontmatter 的旧 card 会暂时产生 `warning`，可按能力演进
 逐张迁移；`--strict` 用于迁移阶段把 warning 也作为失败条件。不要为了通过审计添加
 固定字数、代码块或与当前路由无关的工具映射。
+
+## 完整方法与准入记录
+
+正文明确可观察前提、未知条件、动作顺序和状态依赖、成功证据、反例/失败解释、停止与重开、
+来源及相邻方法。组合方法整条评审，摘要/可选域索引不复制正文。新增内容三问/整条盲答与
+必要旧合同迁移分开记账；未运行不填通过，未审核不登记。晋升还需同目录的字节绑定审核回执，
+字段和原答材料规则见 `knowledge/promotion-rules.md#审核回执`。旧知识不因模型会答自动删除。

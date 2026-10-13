@@ -300,3 +300,33 @@ def test_recursive_yaml_values_are_not_stringified_as_ci_signals(tmp_path):
     manifest = json.loads((output / "repo_workflows.json").read_text())
     assert manifest["status"] == "partial"
     assert "uses/run must be strings" in manifest["workflows"][0]["error"]
+
+
+def test_selected_source_capture_binds_bytes_and_preserves_partial(tmp_path):
+    repo = tmp_path / "source"
+    repo.mkdir()
+    output = tmp_path / "output"
+    output.mkdir()
+    original = b"def route(actor, key):\r\n    return db.get(key)\r\n"
+    path = repo / "route.py"
+    path.write_bytes(original)
+    result = source_hunt.capture_source_files(str(repo), ["route.py", "missing.py", "../outside.py"], output)
+    assert result["status"] == "partial"
+    assert [r["status"] for r in result["files"]] == ["ok", "unavailable", "unavailable"]
+    row = result["files"][0]
+    artifact = output / row["artifact"]
+    assert artifact.read_bytes() == original
+    assert row["sha256"] == hashlib.sha256(original).hexdigest()
+    assert artifact.stat().st_mode & 0o777 == 0o600
+    path.write_bytes(b"# changed after capture\n")
+    changed = source_hunt.capture_source_files(str(repo), ["route.py"], output)
+    assert changed["files"][0]["sha256"] != row["sha256"]
+    assert artifact.read_bytes() == original
+    (repo / "linked.py").symlink_to(path)
+    (repo / "binary.py").write_bytes(b"\xff")
+    failures = source_hunt.capture_source_files(str(repo), ["linked.py", "binary.py"], output)
+    assert all(r["status"] == "unavailable" for r in failures["files"])
+    artifact.write_bytes(b"tampered")
+    path.write_bytes(original)
+    with pytest.raises(ValueError, match="content identity"):
+        source_hunt.capture_source_files(str(repo), ["route.py"], output)

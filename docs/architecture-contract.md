@@ -77,9 +77,8 @@ hint counts must not substitute for business-value judgment. There is no new
 Planner, Controller, model loop, automatic chain generator, or session manager.
 
 Autopilot is an automatic execution mode, not a second investigation workflow.
-Manual and automatic entries share the existing `bug-bounty` coordination,
-`bb-methodology` business/hypothesis reasoning, memory protocol, Rules and owner
-APIs. Autopilot adds continuation, waits, budgets, checkpoint cadence and handoff;
+Manual and automatic entries share `src-hunting` as the single investigation
+core, problem-scoped specialists, the memory protocol, Rules and owner APIs. Autopilot adds continuation, waits, budgets, checkpoint cadence and handoff;
 it does not own different finding, evidence or report standards. Shared execution
 contracts are read on demand and never enable automatic continuation by themselves.
 
@@ -241,18 +240,59 @@ explicit current-value owner in the existing Store row; scope notes do not
 change authorization, runtime phase stays with its runtime owner, and the
 active-target pointer contains target selection metadata only.
 
-The Store singleton already has `active_goal`, and Experience supports advisory
-`note` entries. Import
-manifests and command receipts retain historical
-source identity; per-entry provenance columns or tables require a demonstrated
-consumer need. No keyed-note replacement chain is planned: corrections append
-a new Experience and preserve the earlier entry. A note or historical claim
-needs provenance, not a fabricated execution. New negative/primitive experience
-retains observation requirements; negative experience carries conditions and
-reopening criteria. Ordinary calls never implicitly upgrade an active Store.
+The Store singleton owns `active_goal`; Experience supports advisory notes and
+condition-bound negatives/primitives. Schema v17 retains exact historical experience
+versions, source bindings, explicit supersedes/refutes/depends_on links and
+append-only link withdrawals. Sources distinguish origin from basis; origin is
+not supporting evidence. Material health and dependency invalidation propagate
+without rewriting historical judgments or reviving a superseded conclusion.
+Accepted relational claims retain exact endpoints and sources, remain advisory,
+and cannot mutate Action/Finding/delivery. No execution is fabricated for notes.
+Negative/primitive evidence requirements remain. Ordinary calls never upgrade a
+Store; the explicit upgrade retains v12/v13/v14/v15/v16 development paths. Claims may additionally
+bind named condition roles to exact same-Store entities and declare a timezone-aware
+half-open validity interval. Missing declarations stay unknown; text is never proof
+of compatibility. Entity changes propagate through the existing basis-health path.
+Reviewed knowledge is an external source owned by the existing registry/publication
+review. Its version is the publication receipt SHA256, separate from integer Store
+versions; content binds the complete published Markdown. Knowledge and claim-source
+attachments remain in the same Store. The shared publication lock and captured file
+identities fence acceptance; hashing stays outside the write transaction. Revoked,
+retired or changed basis propagates loss of support, while origin remains diagnostic.
+Historical originals have an origin-only reader: `history_source(imported_id)`
+binds the same Store's active migration manifest, exact import mapping and selected
+original bytes. `full=True` expands the retained original and its metadata; byte
+availability never promotes an unverified statement to evidence. Legacy memory
+uses its bound archive, and explicit PatternDB backfill publishes immutable original
+files under the target's `pattern-archive` before importing. Older completed receipts
+can add the archive only by an explicit exact-source retry, without new Store writes.
+Missing or damaged originals remain diagnostic; readers neither fall back to live
+legacy files nor reconstruct original evidence from imported notes. History cannot
+be basis or claim support. Receipt locks and file-identity fences protect acceptance;
+the public read also rechecks target/store/revision after capture.
+Corrections compare their explicit
+scope with the declarations in both exact retained endpoint versions. Only three
+identical known declarations affect the whole record; different or unknown endpoint
+conditions retain a conditional connection without globally invalidating old advice
+or its dependencies. This is not semantic or structured-identity equivalence.
+Withdrawal retains the original challenge scope. Version/page/current views expose
+the same derived applicability; no additional lifecycle state is persisted.
 
-Recall uses bounded domain queries and batch reference reads, not full-history
-loading followed by per-entry expansion and slicing. Default text and JSON
+Current facts are read independently of historical ranking. `experience_recall.py
+query` returns current/recalled/health/pagination; `history` expands the original
+Store history cursor, which is not interchangeable with a query ranking cursor.
+Target source acquisition loads the generation's disposable capture before asking
+Store for an audit delta and its dependency closure. Only affected experience bodies
+and relation owner groups are reassembled. Every referenced external source still
+gets fresh owner byte verification; current facts remain independently acquired.
+Semantic byte/health fingerprints survive restoration of identical originals, while
+separate, ephemeral file-identity fences reject change-and-restore races during a
+single acquisition, build or query. Fences are never persisted as semantic cache keys.
+Text generations separate target history from the shared reviewed knowledge namespace;
+unchanged source/model/chunking bindings reuse FTS rows and vectors. Shared knowledge
+acquisition still performs a full owner audit, not incremental parsing. Target capture
+reuse does not eliminate current-page reads, dependency metadata reads or byte probes.
+Bounded output is not a claim of bounded source-read cost. Default text and JSON
 preserve statement, conditions, reopening criteria, next intent and evidence/
 source references. Pages identify ordering, filters, exact remainder or explicit
 unknown, source health and usable query/ID expansion; a binary DB pathname alone
@@ -277,6 +317,69 @@ legacy target profile, is history/projection rather than another final runtime
 writer. Journal/audit history stays available on demand without becoming default
 model context. No automatic long-term compaction or knowledge promotion is added.
 
+Knowledge discovery is not review admission. `knowledge_promote` binds registry
+`review_receipt` to immutable publication/review hashes and the explicit review
+artifacts; `knowledge_review` is the shared reader. New and legacy recall adapters
+use that same owner. Existing knowledge requires explicit byte-bound re-review;
+no registration, maturity label or index build silently grants review. Publication
+uses a knowledge-directory lock and compensating rollback, not a multi-file crash
+transaction. Native manual reading keeps unreviewed status visible.
+
+Text and relation generations are rebuildable projections. Query never builds,
+downloads, upgrades or changes owners. Real local encoder/reranker adapters require
+explicit model directories and bound manifests; unavailable models are reported,
+not substituted with hash vectors. Relation paths preserve edge sources, weakest
+knowledge state and condition gaps; no path authorizes execution. Current indexes
+separate target text and relations from their `.cache/knowledge-recall/` namespaces.
+Reviewed frontmatter `method_relations` supplies shared pattern edges: both endpoints
+bind active reviewed methods, exact content hashes and real heading anchors. Local
+endpoints inherit their method hash, avoiding self-hash cycles. Audit and recall use
+one pure declaration parser. Shared relation commands open no target Store; patterns
+never become another target's facts. Per-source graph shards are reused or explicitly
+rebuilt; target owner acquisition uses audit/dependency invalidation, while shared
+method acquisition still audits the full source catalog. A build reports each partition
+independently; an unavailable source does not replace a previous generation with
+an empty one. Query remains read-only and uses fresh lexical originals on missing
+or stale indexes, with explicit health. `--full-rebuild` repairs derived generations
+without rolling back any owner. Claims use one pure `experience_contract` for
+identity, predicates and condition/time declarations; relations do not redefine it.
+Text and relation query results attach an independent `counterevidence` page of
+exact retained corrections, dependencies and sources. Its cursor is not a ranking
+or Store-history cursor. Oversized items retain exact expansion commands, correction
+scope and withdrawal references, and mark context incomplete; repeated exact sources
+are not independent support. Historical
+peers and external bytes are rechecked, not replaced by the newest experience.
+Model capability gains, default combination and release cutover remain unaccepted.
+
+Target relation v4 also projects explicit Case actor/session/object associations and
+Action-to-operation-to-artifact provenance. Nodes use Store identities; actual attempt
+IDs and observation steps remain attached to edges. Display labels and actor/object
+prose are not foreign keys. Experience paths and rejected owner sources contribute
+exact-version counterevidence roots. Only target relation acquisition expands execution
+owners into relation documents; ordinary text/current and shared queries do not.
+Text dependencies may still verify referenced operations and their raw artifacts.
+Captured external health is
+part of the generation binding and is rechecked before publication/return, even without
+a Store revision change. Legitimate empty collections are complete; damaged sources
+remain partial, and canonical Store corruption fails explicitly. These associations
+are not evidence of authorization, impact or simultaneous applicability. Old graph
+formats require an explicit full rebuild. New target generations contain a digest-bound
+`capture.json` with public documents, dependency descriptors, semantic probes and the
+exact Store/schema/audit watermark, never current facts or private raw bodies. Old
+generations without capture explicitly use full acquisition; corrupt captures are
+unavailable, not silently trusted. Query/status never repair them. Watermark-only
+advances publish a new capture without re-encoding unchanged projection sources.
+
+Target-memory saves and knowledge publication/re-review can explicitly request
+`--update-index text|relations|all` after the durable owner returns and releases its
+transaction/publication lock. Target saves update only target projections; knowledge
+publication updates only shared projections. No option means no index/model call.
+Invalid options fail before mutation. Failed updates retain the committed receipt,
+report `partial` in text/JSON and exit 2 with index-only recovery commands; they never
+roll back the save or suggest repeating a non-idempotent publication. A relation
+update with genuinely unavailable or challenged sources can remain partial after
+rebuilding; repair or review the owner source rather than repeatedly saving the fact.
+
 The task's M1-M8 gate covers save, restart, recall, expansion, recovery, historical
 mapping, distillation and cost. Store unit tests, archived bytes or a migration
 receipt cannot replace this consumer-level acceptance.
@@ -299,6 +402,12 @@ Shared contracts and readers have explicit lower-level owners:
 | Owner | Shared responsibility |
 |---|---|
 | `contracts` | Wire-fact vocabulary, decision schema and bounded public observation validation; standard library only |
+| `experience_contract` | Pure exact entity, claim-predicate, condition-binding and explicit validity declarations; existence/health remain Store-owned |
+| `experience_knowledge` | Read-only registry/review source capture and file-identity fencing; no index or target lifecycle writes |
+| `experience_history` | Exact same-Store import-map resolution, original expansion and history-origin health; no import, repair or live-file fallback |
+| `migration_receipts` | Strict receipt/manifest/archive readers, byte bindings and existing-state-directory receipt locks; no Store or CLI imports |
+| `target_memory_schema` | Single legacy-memory normalizer and pollution vocabulary shared by import and memory CLI |
+| `knowledge_relations` | Pure reviewed-method declaration, endpoint and heading-anchor contracts; no I/O or acceptance writer |
 | `target_paths` | Target identity, resource locks and target-owned nonempty evidence references; no domain imports |
 | `scope_context` | `url_belongs_to_target`, `target_list_entries` and Scope classification/publication; depends on target paths only |
 | `browser_evidence` | Browser artifact references and readiness inspection; Runtime never imports the browser publisher |

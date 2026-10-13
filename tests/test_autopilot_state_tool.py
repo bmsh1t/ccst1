@@ -2453,6 +2453,66 @@ def test_closure_projection_exposes_identity_follow_up_and_shadow_diff():
     assert closure["identity_v2"]["shadow"] == shadow
 
 
+@pytest.mark.parametrize(
+    "progress,reason,action,label",
+    [
+        (
+            {"status": "completed", "invalid_evidence_lanes": ["bad-a", "bad-b"],
+             "unfinished_lanes": ["pending-a", "pending-b"]},
+            "round_lane_evidence_invalid", "repair_round_lane_evidence", "bad-a, bad-b, pending-a",
+        ),
+        (
+            {"status": "active", "unfinished_lanes": ["lane-a"]},
+            "round_lane_unfinished", "resume_round_lane", "lane-a",
+        ),
+        (
+            {"status": "active", "claimed_count": 1, "latest_lane": {"id": "latest"},
+             "round_id": "round-a"},
+            "round_closure_pending", "complete_round_closure", "latest",
+        ),
+        (
+            {"status": "active", "round_id": "round-a"},
+            "round_lane_unclaimed", "resume_round_lane", "round-a",
+        ),
+        (
+            {"status": "active"},
+            "round_lane_unclaimed", "resume_round_lane", "active round",
+        ),
+    ],
+)
+@pytest.mark.parametrize("with_owner_work", [False, True])
+def test_closure_uses_shared_round_frontier(
+    monkeypatch, progress, reason, action, label, with_owner_work,
+):
+    state = {"target": "target.com", "next_action": "handoff"}
+    if with_owner_work:
+        state["action_queue_next"] = {"id": "queue-a", "action": "resume existing evidence"}
+        state["structured_findings"] = {"next_validation": {"id": "finding-a"}}
+    matrix = _closure_matrix()
+    owner_frontier = build_closure_projection(state, matrix)["owner_continuations"]
+    state["round_progress"] = progress
+    original = autopilot_state_module._closure_reason_frontier
+
+    def shared_frontier(*args, **kwargs):
+        item = original(*args, **kwargs)
+        if item and item["owner"] == "round-progress":
+            item["stop_condition"] = "shared round owner stop condition"
+        return item
+
+    monkeypatch.setattr(autopilot_state_module, "_closure_reason_frontier", shared_frontier)
+    expected = shared_frontier(reason, state, matrix, action)
+    closure = build_closure_projection(state, matrix)
+
+    assert closure["verdict"] == "handoff"
+    assert closure["can_claim_exhausted"] is False
+    assert closure["reasons"] == [reason, *(["durable_work_pending"] if with_owner_work else [])]
+    assert closure["next_action"] == action
+    assert closure["round_progress"] == progress
+    assert closure["owner_continuations"] == [expected, *owner_frontier]
+    assert closure["actionable_frontier"] == closure["owner_continuations"]
+    assert closure["owner_continuations"][0]["id"] == label
+
+
 def test_closure_resumes_started_lane_and_requires_round_closure(tmp_path, store):
     target = "target.com"
     _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)

@@ -38,7 +38,7 @@ and lowest reversible cost. Branches are alternatives, not a mandatory order.
 | No inventory or a materially stale inventory | Run the appropriate `/recon` profile and preserve raw output | `/recon TARGET [--quick|--deep]` |
 | Inventory exists but the valuable surface is unclear | Refresh the bounded Surface view and ask one feature-level question | `/surface`, `tools/surface.py` |
 | Browser, JS, source, schema, or history names a missing host/path/parameter | Choose one evidence-linked expansion, not a generic dictionary | `tools/dns_expand.py --reason <evidence>`, focused FFUF, native Read/Grep |
-| Authenticated API exposes object or role state | Compare the same object/action across owned actors before broad probes | `web2-vuln-classes`, actor-pair evidence |
+| Authenticated API exposes object or role state | Compare the same object/action across owned actors before broad probes | `knowledge/playbooks/web2-evidence-contracts.md`, actor-pair evidence |
 | Upload, URL fetch, GraphQL, realtime, import/export, or payment evidence appears | Preserve the request shape and route to the matching card/validation lane | `/surface`, selected Knowledge card, `/validate` |
 | Exposure, component, source, or CI/CD artifact appears | Record provenance and test applicability before any active follow-up; a concrete framework/version fingerprint may justify current `/intel` research, chosen by Claude | `/intel`, source or CI/CD tool |
 | Bot-manager or anti-bot challenge blocks content (challenge page instead of real content, or transport-dependent resets) | Do not deepen URL collection against a challenge wall; compare the same path across available transports and choose one that returns real content before any further recon phase | browser lane |
@@ -59,21 +59,13 @@ not scope or completion.
 Origin IP/range, ASN, SAN/CNAME, or edge/direct response differences are
 Host/SNI comparison candidates.
 
-## ROI and Feature Choice
+## Local Question Selection
 
-Rank candidate surfaces by observed business value and information gain, not by
-stack name or a favorite bug class. Prefer a concrete feature boundary such as:
-
-1. authentication, session, tenant, and actor/object transitions;
-2. payments, billing, credits, refunds, orders, and other integrity state;
-3. data export, search, upload/import, URL fetch, webhooks, and background jobs;
-4. admin, configuration, debug, source, and management surfaces;
-5. ordinary pages and long-tail paths after the higher-value questions have a
-   bounded next action.
-
-The order is advisory. A fresh high-value Candidate, new identity, or new
-behavioral signal can preempt it. Technology detection narrows a hypothesis but
-does not select a finding or load a complete framework playbook.
+Within the question supplied by the main session, choose the collection method
+that best distinguishes the competing explanations with reversible cost. Return
+new business/actor/workflow evidence, unexpected high-value signals and proposed
+pivots to `skills/src-hunting/SKILL.md`; Recon does not rank the whole target or
+own global stopping. Technology narrows a local hypothesis, not a finding.
 
 ## Action and Evidence Contract
 
@@ -180,34 +172,20 @@ Examples of route signals are intentionally compact:
 - payload, bypass, sink, or grep detail -> load the selected deep reference
   only when the current evidence calls for it; avoid broad payload spraying.
 
-## Stop, Reopen, and Handoff
+## Local Stop and Handoff
 
-After every bounded action, compare the current progress fingerprint:
+Stop collection when the delegated question is answered, its evidence-bound kill
+condition is met, prerequisites fail or the execution owner budget ends. Return
+what changed, contrary evidence, raw references, missing conditions and a useful
+next discriminating check using the real-handoff contract in
+`skills/src-hunting/SKILL.md#real-delegation-and-execution-handoff`.
+Pure same-session reading does not need a filled result form.
 
-```text
-hypothesis + surface + actor/state + observation kind + evidence reference
-```
-
-- **continue** when evidence changes, uncertainty falls, or a bounded connector
-  becomes testable;
-- **rotate** after homogeneous no-information results, a repeated fingerprint,
-  an owner budget or prerequisite boundary, or a higher-value route;
-- **stop** when the lane kill condition is met, preserving the evidence and a
-  concrete reopen condition;
-- **handoff** when another Skill, card, tool, or validation owner must answer the
-  next question.
-
-Elapsed time alone never closes Recon, claims coverage, or justifies rotation.
-Per-action tool budgets remain valid only when the owning tool enforces them.
-不设置全局轮数上限; after each result choose again from current
-evidence. Low-signal or skipped phases stay visible as `unknown`, `blocked`,
-`lead`, or `dead-end` with their reason and reopen condition.
-
-Write leads and dead ends through the existing target-memory owner, for example
-`tools/target_memory.py lead` and `tools/target_memory.py dead-end`, and let
-`rules/coverage-gate.md`, Evidence Ledger, Checkpoint, and reporting rules own
-completion and validation. Recon never declares a target clean merely because a
-bounded lane ended normally.
+Low-signal and untested material remain unknown/blocked with reasons. Proposed
+new target priorities and global continue/rotate decisions return to the main
+session; Recon does not declare a target clean after bounded collection. Save
+accepted leads/dead ends through the existing target-memory owner; Coverage,
+Action closure and validation retain their existing owners.
 
 ## Local / Lab / Supplied Target Shortcut
 

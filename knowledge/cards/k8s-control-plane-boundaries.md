@@ -3,9 +3,8 @@ id: k8s-control-plane-boundaries
 type: technique-card
 related_skills:
   - web2-recon
-  - web2-vuln-classes
+  - src-hunting
   - triage-validation
-  - security-arsenal
 trigger_tags:
   - kubernetes
   - kubelet
@@ -90,10 +89,8 @@ kubectl auth can-i get pods/log --namespace NAMESPACE --token TOKEN --server API
 ## 关联 Skills
 
 - `web2-recon`
-- `web2-vuln-classes`
+- `src-hunting`
 - `triage-validation`
-- `security-arsenal`
-
 ## 晋升到 Skill / Queue 的条件
 
 - 只有组件/端口/token 格式时保留为 recon/identity lead。

@@ -2,7 +2,7 @@
 id: dead-ends
 type: dead-end-card
 related_skills:
-  - bb-methodology
+  - src-hunting
   - triage-validation
 trigger_tags:
   - dead-end
@@ -56,7 +56,7 @@ deep_refs: []
 
 ## 关联 Skills
 
-- `bb-methodology`
+- `src-hunting`
 - `triage-validation`
 
 ## 停止条件

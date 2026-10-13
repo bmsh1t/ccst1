@@ -63,8 +63,9 @@ python3 tools/validation_runner.py record-evidence --target TARGET \
 - URL、方法、类别从指定 Finding 读取；`runs` 必须含其精确 endpoint/method 对应的
   执行步骤。多步实验仍选一个 Finding 锚点，其余输入/状态读回/OOB 记录留在同一材料中。
 - 每步 `artifacts.request/response` 指向已有、非空、同目标的原始文件；可附加
-  `screenshot`、`callback`、`trace` 等引用。登记只保留引用和 SHA-256，不复制原始材料。精确请求 URL 另存私有身份材料；
-  公开 summary 只含去查询值的形状，不能用它替代精确 endpoint 绑定。
+  `screenshot`、`callback`、`trace` 等引用。登记只保留引用和 SHA-256，不复制原始材料。
+  内部 summary 保留精确 URL（参数值、重复参数、编码）；私有身份材料绑定其表示。
+  旧去值摘要保持旧表示兼容，不伪造原值，不能代替精确 endpoint 绑定。
   若 probe JSON 已同时包含 request/response，两项可引用同一个原文件；使用采集返回的
   真实路径，不照抄示例路径或另拆文件。
 - `actor` 使用 共享观察角色词汇（如 anonymous/owner/peer/low_role/admin/cross_tenant）；
@@ -103,11 +104,8 @@ summary 交给 `sync_runner_artifacts(summary, repo_root=...)` 重试登记。
 `request-diff` 不允许用同一 attempt 再次发送请求；真实重跑必须分配新 attempt。
 登记不完成行动，显式 resolve 使用返回的 `store_operation_id`；partial/unknown 不能完成。
 
-Store 验证的 scaffold、preflight、apply 共用 Finding owner。apply 先原子发布 AI 正文，
-再分别提交技术裁决、目的地资格和可交付报告登记；失败保留正文，原决策可幂等重试。
-`python3 tools/report_generator.py ROOT/findings/TARGET` 复用已登记正文并重建索引；
-缺少正文的可交付 Finding 列入 `pending_drafts`，不自动套模板。用 `--body-file` 及明确的
-`--finding-id` / `--assessment-id` / `--delivery-id` 发布新正文；不代表外部提交，也不自动完成 Action。
+Store 验证的默认正文/延期正文模式、回执与重试见 [validate](../commands/validate.md)；
+正文发布和缺稿索引见 [report](../commands/report.md)。两者都不代表外部提交或自动完成 Action。
 
 ## 常用 runner
 

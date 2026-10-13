@@ -961,29 +961,6 @@ def run_js_analysis(domain):
     return bool(endpoints or secrets)
 
 
-def run_secret_hunt(domain):
-    """Persist secret-like findings from JS analysis into findings artifacts."""
-    recon_dir = _resolve_recon_dir(domain)
-    findings_dir = _resolve_findings_dir(domain, create=True)
-    exposure_dir = os.path.join(findings_dir, "exposure")
-    os.makedirs(exposure_dir, exist_ok=True)
-
-    js_secrets_path = os.path.join(recon_dir, "js", "potential_secrets.txt")
-    if not os.path.isfile(js_secrets_path):
-        run_js_analysis(domain)
-
-    secrets = _read_text_lines(js_secrets_path, limit=200)
-    output_path = os.path.join(exposure_dir, "js_secrets.txt")
-    secrets = _write_text_lines(output_path, secrets)
-
-    # Carry forward exposed config files from recon if present.
-    config_file_hits = _read_text_lines(os.path.join(recon_dir, "exposure", "config_files.txt"), limit=100)
-    if config_file_hits:
-        _write_text_lines(os.path.join(exposure_dir, "config_files.txt"), config_file_hits)
-
-    return bool(secrets or config_file_hits)
-
-
 def run_repo_source_hunt(domain, repo_url="", repo_path="", allow_large_repo=False):
     """Run standalone repo source scanning and persist findings under findings/<domain>/exposure."""
     if not repo_url and not repo_path:
@@ -1004,58 +981,6 @@ def run_repo_source_hunt(domain, repo_url="", repo_path="", allow_large_repo=Fal
         log("warn", "Repository exceeds source-hunt threshold. Re-run with --allow-large-repo after approval.")
         return False
     return result.get("status") == "ok"
-
-
-def run_param_discovery(domain, deep=False):
-    """Thin compatibility wrapper around the canonical parameter owner."""
-    from pathlib import Path
-
-    from param_discovery import discover_parameters
-
-    summary = discover_parameters(
-        repo_root=Path(RECON_DIR).parent,
-        target=domain,
-        methods=("GET",),
-        session=_active_auth_session(),
-        tool_exists=lambda name: _command_exists(name),
-        deep=bool(deep),
-    )
-    return bool(summary.get("counts", {}).get("discoveries") or summary.get("counts", {}).get("runs"))
-
-
-def run_post_param_discovery(domain, cookies="", deep=False):
-    """Thin compatibility wrapper around the canonical POST owner."""
-    from pathlib import Path
-
-    from param_discovery import discover_parameters
-
-    active = _active_auth_session()
-    session = AuthSession(active.headers_list(), target=domain, allowed_origins=active.allowed_origins())
-    if cookies:
-        session.add_cookie(cookies)
-
-    def fetch_html(url):
-        status, body, _ = _fetch_url(
-            url,
-            headers=session.headers_for_url(url),
-            timeout=10,
-            target=domain,
-            use_guard=True,
-            is_recon=True,
-        )
-        return status, body
-
-    summary = discover_parameters(
-        repo_root=Path(RECON_DIR).parent,
-        target=domain,
-        urls=_collect_live_urls(domain, limit=64 if deep else 10),
-        methods=("POST",),
-        session=session,
-        fetch_html=fetch_html,
-        tool_exists=lambda name: _command_exists(name),
-        deep=bool(deep),
-    )
-    return bool(summary.get("counts", {}).get("post_forms") or summary.get("counts", {}).get("discoveries"))
 
 
 class ReportGenerationError(RuntimeError):
@@ -1172,58 +1097,6 @@ def print_dashboard(results):
         print("  3. Add PoC screenshots where applicable")
         print("  4. Submit via HackerOne program pages")
         print(f"\n{'='*60}\n")
-
-
-
-def read_browser_surface(domain):
-    """Read browser-observed recon surface for a target."""
-    browser_dir = os.path.join(_resolve_recon_dir(domain), "browser")
-    if not os.path.isdir(browser_dir):
-        return (
-            f"No browser surface artifacts found for {domain}. Import MCP artifacts with "
-            "tools/browser_mcp_import.py after Chrome DevTools or Playwright MCP capture."
-        )
-
-    summary_path = os.path.join(browser_dir, "summary.json")
-    counts = {}
-    if os.path.isfile(summary_path):
-        try:
-            with open(summary_path, encoding="utf-8") as handle:
-                payload = json.load(handle)
-            counts = payload.get("counts", {}) if isinstance(payload, dict) else {}
-        except (OSError, json.JSONDecodeError):
-            counts = {}
-
-    xhr = _read_text_lines(os.path.join(browser_dir, "xhr_endpoints.txt"), limit=10)
-    api = _read_text_lines(os.path.join(browser_dir, "api_endpoints.txt"), limit=10)
-    params = _read_text_lines(os.path.join(browser_dir, "browser_params.txt"), limit=10)
-    lines = [
-        f"BROWSER SURFACE: {domain}",
-        f"- XHR endpoints: {counts.get('xhr_endpoints', len(xhr))}",
-        f"- API endpoints: {counts.get('api_endpoints', len(api))}",
-        f"- Params: {counts.get('browser_params', len(params))}",
-    ]
-    if xhr:
-        lines.append("XHR sample:\n" + "\n".join(f"- {item}" for item in xhr[:5]))
-    if api:
-        lines.append("API sample:\n" + "\n".join(f"- {item}" for item in api[:5]))
-    if params:
-        lines.append("Param sample:\n" + "\n".join(f"- {item}" for item in params[:5]))
-    return "\n".join(lines)
-
-
-def _load_classic_autopilot_state(target: str) -> dict:
-    """Load runtime autopilot state for the non-agent hunt path."""
-    try:
-        from tools.autopilot_state import build_autopilot_state
-    except ImportError:  # pragma: no cover - top-level tools/ execution
-        from autopilot_state import build_autopilot_state
-
-    try:
-        return build_autopilot_state(BASE_DIR, target, memory_dir=str(HUNT_MEMORY_DIR))
-    except Exception as exc:
-        log("warn", f"Could not load autopilot state for classic enrichment: {exc}")
-        return {}
 
 
 def _hunt_target_impl(

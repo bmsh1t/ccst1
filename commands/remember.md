@@ -57,5 +57,59 @@ filename or import the repository-global last-validation pointer into another
 target. Prefill provides fields, not operation evidence.
 
 Recover saved experience with `python3 tools/target_memory.py show TARGET` or
-`python3 tools/experience_recall.py --target TARGET --json`; use the returned
-cursor or experience ID to expand beyond the summary window.
+`python3 tools/experience_recall.py query --target TARGET --json`; use the returned
+query cursor or `--source-ref experience:ID` to expand. Store history cursors use
+`experience_recall.py history`, not `query`.
+
+For structured advisory claims, use `target_memory.py note --claims-json` with
+the existing `subject/predicate/object/conditions/timing/source_refs` fields.
+Optional `condition_bindings` maps explicit role names to exact entity bindings
+from `target_memory.py entity`; optional `validity` requires both timezone-aware
+ISO8601 `from` and `until` (`from < until`). Omitted values remain unknown. Plain
+text conditions are preserved, and claims never confirm Findings or authorize actions.
+
+Query results include a separate `counterevidence` page. Follow its `next_command`
+for more corrections/dependencies, or each item's `expand_command` for the exact
+retained version. Do not feed its cursor to `query` or `history`. Use
+`--context-limit` and `--context-max-bytes` independently of retrieval `--limit`.
+
+Use `target_memory.py link` (or the save's `--links-json`) to attach explicit
+`supersedes`, `refutes` or `depends_on` relationships. Corrections require a stated
+`--conditions` scope and CAS `--expected-revision`. Only a scope identical to both
+retained endpoint declarations changes the whole record's review state. Differing
+conditions retain `applicability.effect=conditional`, not a global replacement;
+unknown endpoint conditions are not wildcards. `retract-link` preserves the original
+challenge scope and history. Version, history and current views expose applicability;
+budgeted counterevidence still retains correction scope and withdrawal references.
+
+To cite a reviewed method, obtain its exact binding with
+`target_memory.py knowledge-source --target TARGET --id ID --json`. Add
+`purpose: "basis"` or `purpose: "origin"` to that object and include it in the
+save's `--sources-json` array. The publication receipt hash is its external
+version; do not substitute a Store revision. Only basis may support a claim.
+Later review withdrawal or content change remains visible without rewriting history.
+
+For an imported historical record, use
+`target_memory.py history-source --target TARGET --id ID --json`. Its four-field
+binding accepts only `purpose: "origin"` in `--sources-json`; history cannot support
+a claim. Add `--full` to read the original selected record, source metadata and
+availability. Available bytes are still `verification: "unverified"`. Missing or
+changed originals have explicit diagnostics, never a fallback to an imported note
+or live legacy file. A PatternDB receipt without an archive requires explicit
+`target_migration.py --backfill-pattern-source SOURCE --repo-root ROOT --target TARGET`
+with the same pinned source bytes; do not rerun an execution or create replacement
+notes to repair history. Counterevidence provides the same exact expansion command.
+
+Target-memory save commands may explicitly request `--update-index text`,
+`relations` or `all`; knowledge promotion uses the same option for shared indexes.
+No option means no index update. `--index-encoder PATH` requires text/all and a
+locally available model. An index failure returns exit 2 with the committed save
+receipt and independent recovery commands: rebuild the index, not the saved fact.
+
+Target text/relation updates reuse a generation-bound source capture and reacquire
+only affected experience/owner groups. `acquisition` reports these reads separately
+from reused index sources. Current facts and referenced external bytes are always
+rechecked; shared knowledge still receives a full review audit. Missing legacy
+captures explicitly select full acquisition. Query/status never create or repair
+an index; use `experience_recall.py index-build --target TARGET --full-rebuild`
+(or `relation-build`) when a derived generation is corrupt.

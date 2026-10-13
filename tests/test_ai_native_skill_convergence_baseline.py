@@ -61,9 +61,9 @@ def test_web2_vuln_pattern_map_keeps_java_deserialization_and_webhook_routes():
     43d22fb deleted the skill-side card route table expecting context_pack to
     rebuild recall; the rebuild never happened and the deserialization chain
     went dark silently. These anchors make removing the routing rows loud:
-    decision text belongs in the skill (A/B-testable), not in hidden regexes.
+    decision text belongs in a readable method unit, not in hidden regexes.
     """
-    skill = (REPO_ROOT / "skills" / "web2-vuln-classes" / "SKILL.md").read_text(encoding="utf-8")
+    skill = (REPO_ROOT / "knowledge/playbooks/web2-evidence-contracts.md").read_text(encoding="utf-8")
 
     # Pattern Map rows: shape signals (not confirmed-vuln words) must have a route.
     assert "JSON body with `@type`" in skill
@@ -82,9 +82,8 @@ def test_web2_vuln_pattern_map_keeps_java_deserialization_and_webhook_routes():
     # Webhook lane covers the SSRF / signature / concurrency triple.
     assert "Webhook / Callback Lane" in skill
 
-    router = (REPO_ROOT / "rules" / "playbook-router.md").read_text(encoding="utf-8")
-    assert "测试自有且可回滚资源可在红线控制内验证" in router
-    assert "订单生命周期 mutation 只记录不执行" not in router
+    assert "测试自有且可回滚资源可在红线控制内验证" in skill
+    assert "订单生命周期 mutation 只记录不执行" not in skill
 
 
 def test_race_card_does_not_treat_serial_negative_as_parallel_proof():
@@ -94,16 +93,11 @@ def test_race_card_does_not_treat_serial_negative_as_parallel_proof():
 
 
 def test_phase0_and_intel_route_keep_selection_reason_and_urgency():
-    """Anchor the two desredteam-derived prose weights.
-
-    - Phase 0 requires a one-line selection reason (advisory, not a gate):
-      why this hypothesis over alternatives.
-    - The recon /intel route marks a concrete version fingerprint as an
-      immediate trigger, not a deferred enrichment step.
-    """
-    methodology = (REPO_ROOT / "skills" / "bb-methodology" / "SKILL.md").read_text(encoding="utf-8")
-    assert "why this hypothesis over the alternatives" in methodology
-    assert "not a favorite class" in methodology
+    """Preserve hypothesis comparison and evidence-selected component research."""
+    methodology = " ".join((REPO_ROOT / "skills/src-hunting/SKILL.md").read_text(encoding="utf-8").split())
+    assert "State the concrete question and competing explanations" in methodology
+    assert "without assuming the desired impact" in methodology
+    assert "Compare expected learning, plausible impact, current evidence" in methodology
 
     recon = (REPO_ROOT / "skills" / "web2-recon" / "SKILL.md").read_text(encoding="utf-8")
     assert "current `/intel` research, chosen by Claude" in recon
@@ -208,13 +202,13 @@ def test_autopilot_contract_keeps_selection_authority_with_ai():
     evidence-backed reason.
     """
     command = (REPO_ROOT / "commands/autopilot.md").read_text(encoding="utf-8")
-    skill = (REPO_ROOT / "skills/bb-methodology/SKILL.md").read_text(encoding="utf-8")
-    assert "skills/bb-methodology/SKILL.md" in command
+    skill = " ".join((REPO_ROOT / "skills/src-hunting/SKILL.md").read_text(encoding="utf-8").split())
+    assert "skills/src-hunting/SKILL.md" in command
     assert "order is advisory" in command
     assert "Read selected evidence/owner contracts before" in command
-    assert "Machine ordering" in skill and "(weights," in skill
-    assert "route-kind labels) is advisory input, not a decision" in skill
-    assert "never close a cell or block a chosen test" in skill
+    assert "Machine scores and route labels are advisory" in skill
+    assert "native main session owns the global investigation" in skill
+    assert "Scanner-negative/incomplete/memory proves no Coverage" in command
 
 
 def test_runtime_protocol_dropped_the_transition_review_ritual():
@@ -247,6 +241,8 @@ def test_runtime_protocol_output_contract_is_five_required_fields():
     """
     protocol = (REPO_ROOT / "skills" / "runtime-protocol.md").read_text(encoding="utf-8")
     assert "## 输出契约" in protocol
+    assert "本节用于真实执行结果/跨代理交接，不用于同会话加载或纯阅读" in protocol
+    assert "专家自报不确认 Finding" in protocol and "不完成 Action" in protocol
     # 5 required fields, marked 必填.
     for field in ("Evidence", "Candidates", "Dead ends", "Still unknown", "Next actions"):
         assert f"- {field}:" in protocol
@@ -290,19 +286,17 @@ def test_autopilot_business_model_read_is_native():
     through a deterministic stub generator. AI writes and edits the note directly
     from bounded evidence; the generator (five blank AI sections, 30-day mtime
     freshness, refresh losing AI judgment) was a re-implementation of native work."""
-    skill = (REPO_ROOT / "skills/bb-methodology/SKILL.md").read_text(encoding="utf-8")
+    skill = " ".join((REPO_ROOT / "skills/src-hunting/SKILL.md").read_text(encoding="utf-8").split())
     assert "tools/business_model_stub.py" not in skill
-    assert "maintain `evidence/<target>/business_model.md`" in skill
-    assert "AI writes and edits" in skill
-    assert "do not\nregenerate or overwrite" in skill
-    assert "discard existing judgments and sources" in skill
-    assert "Separate observations from judgments" in skill
-    for dimension in ("observed purpose", "actors' roles", "crown jewels", "trust boundaries", "sensitive workflows"):
-        assert dimension in " ".join(skill.split())
-    assert "After fresh Recon starts" in skill
+    assert "Maintain `evidence/<target>/business_model.md` with native Read/Write/Edit" in skill
+    assert "keep source references, distinguish observation from judgment" in skill
+    assert "edit incrementally rather than regenerating prior conclusions" in skill
+    assert "not another Action/Finding or target-memory authority" in skill
+    for dimension in ("observed features", "actors", "objects", "tenants", "workflows", "crown jewels", "trust boundaries"):
+        assert dimension in skill
     assert "depth pack from target-observed request shapes" in skill
     assert "one passive observation is not API" in skill
-    assert "Partial cursors and untested dimensions remain" in skill
+    assert "Partial cursors and untested dimensions stay visible and resumable" in skill
 
 
 def test_action_queue_lanes_doc_keeps_explicit_store_work_and_ai_choice():
@@ -375,8 +369,10 @@ def test_dns_expansion_returns_surface_refresh_to_caller():
 @pytest.mark.parametrize("entry", ["commands/autopilot.md", "commands/hunt.md", "agents/autopilot.md"])
 def test_investigation_methods_are_reachable_in_every_execution_mode(entry):
     text = (REPO_ROOT / entry).read_text(encoding="utf-8")
-    for owner in ("skills/bug-bounty/SKILL.md", "skills/bb-methodology/SKILL.md"):
-        assert owner in text
+    core = (REPO_ROOT / "skills/src-hunting/SKILL.md").read_text(encoding="utf-8")
+    assert "skills/src-hunting/SKILL.md" in text
+    assert "knowledge/playbooks/web2-evidence-contracts.md" in core
+    assert "including prerequisites" in core and "counterexamples and reopening limits" in core
     assert "on demand" in text.lower()
     assert "business_model.md" not in text
 
@@ -393,12 +389,13 @@ def test_controller_prompt_sizes_stay_within_spec_guards():
 
 def test_manual_hunt_reuses_shared_rotation_and_browser_contracts():
     hunt = (REPO_ROOT / "commands/hunt.md").read_text(encoding="utf-8")
-    coordinator = (REPO_ROOT / "skills/bug-bounty/SKILL.md").read_text(encoding="utf-8")
+    coordinator = (REPO_ROOT / "skills/src-hunting/SKILL.md").read_text(encoding="utf-8")
     lanes = (REPO_ROOT / "docs/autopilot-lanes.md").read_text(encoding="utf-8")
     assert "autopilot's promotion contract" not in hunt
     assert "rules/coverage-gate.md" in hunt and "docs/evidence-runners.md" in hunt
     assert "three focused variants" not in hunt
-    assert "skills/bb-methodology/SKILL.md#evidence-driven-rotation" in hunt
+    assert "skills/src-hunting/SKILL.md" in hunt
+    assert "## Evidence-Driven Rotation" in coordinator
     assert hunt.count("python3 tools/surface.py --target target.com") == 1
     assert "docs/autopilot-lanes.md#browser-source-and-js" in hunt
     assert "docs/autopilot-lanes.md" in coordinator

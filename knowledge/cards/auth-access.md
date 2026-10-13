@@ -2,10 +2,8 @@
 id: auth-access
 type: technique-card
 related_skills:
-  - bb-methodology
-  - web2-vuln-classes
+  - src-hunting
   - triage-validation
-  - security-arsenal
 trigger_tags:
   - authz
   - role
@@ -134,11 +132,8 @@ source_refs:
 
 ## 关联 Skills
 
-- `bb-methodology`
-- `web2-vuln-classes`
+- `src-hunting`
 - `triage-validation`
-- `security-arsenal`
-
 ## 停止条件
 
 - 没有可复现请求或身份差异

@@ -232,6 +232,8 @@ def format_resume_output(summary: dict | None, target: str) -> str:
             lines.append(f"  Showing: {len(entries)}; remaining: {window.get('remaining', 0)}")
             if memory.get("active_goal"):
                 lines.append(f"  Goal: {memory['active_goal']}")
+            if memory.get("current_hypothesis"):
+                lines.append(f"  Current Case premise: {memory['current_hypothesis']}")
             lines.extend(format_current_handoff(memory))
             lines.append("  Recent experience (bounded history; historical intents are not pending actions):")
             for item in entries:
@@ -244,10 +246,10 @@ def format_resume_output(summary: dict | None, target: str) -> str:
                     lines.append(f"    evidence: {', '.join(item['evidence_refs'])}")
                 lines.append(f"    recorded_by: {item.get('recorded_by', '')}")
             if window.get("has_more"):
-                lines.append(f"  More: {window['remaining']}; {window['recall_command']} "
-                             f"--cursor {shlex.quote(window['next_cursor'])}")
+                lines.append(f"  More: {window['remaining']}; {window['next_command']}")
             if entries:
-                lines.append(f"  Expand: {window['recall_command']} --id {shlex.quote(entries[0]['entry_id'])}")
+                lines.append(f"  Expand: {window['history_command']} --id {shlex.quote(entries[0]['entry_id'])}")
+            lines.append(f"  Recall by question: {window['recall_command']}")
 
     if summary["finding_titles"]:
         lines.append("")
@@ -432,15 +434,17 @@ def _scene_summary(summary: dict) -> str:
         if isinstance(item, dict) and isinstance(item.get("structured"), dict)
     ]
     for lead in structured_leads[-2:]:
-        s = lead["structured"]
-        parts.append(
-            "假设：{h}（证据 {e}）；下一步 {n}；停止条件 {s}".format(
-                h=s.get("hypothesis") or "?",
-                e=s.get("evidence_ref") or "?",
-                n=s.get("next") or "?",
-                s=s.get("stop_condition") or "?",
-            )
-        )
+        details = []
+        if lead.get("text"):
+            details.append(f"假设：{lead['text']}")
+        if lead.get("evidence_refs"):
+            details.append(f"证据：{', '.join(lead['evidence_refs'])}")
+        for key, label in (("conditions", "适用条件"), ("reopen_when", "重开条件"),
+                           ("next_intent", "后续意图")):
+            if lead["structured"].get(key):
+                details.append(f"{label}：{lead['structured'][key]}")
+        if details:
+            parts.append("；".join(details))
     if not parts:
         plain = leads
         if plain:

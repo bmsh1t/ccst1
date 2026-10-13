@@ -321,7 +321,7 @@ def render_disclosed_patterns_md(
     lines.append("")
     lines.append("```bash")
     lines.append(shlex.join([
-        "python3", "tools/experience_recall.py", "--repo-root", str(Path(repo_root).resolve()),
+        "python3", "tools/experience_recall.py", "query", "--repo-root", str(Path(repo_root).resolve()),
         "--target", target,
     ]))
     lines.append("```")

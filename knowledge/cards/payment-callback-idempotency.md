@@ -2,7 +2,7 @@
 id: payment-callback-idempotency
 type: technique-card
 related_skills:
-  - web2-vuln-classes
+  - src-hunting
   - triage-validation
 trigger_tags:
   - payment-callback
@@ -77,7 +77,7 @@ deep_refs: []
 
 ## 关联 Skills
 
-- `web2-vuln-classes`
+- `src-hunting`
 - `triage-validation`
 
 ## 晋升到 Skill / Queue 的条件

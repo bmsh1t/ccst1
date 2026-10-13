@@ -129,10 +129,10 @@ Correct: use route identity for coverage and exact Queue endpoint identity for S
   target lock，不能把它宣称为并发事务或执行授权状态。
 - `findings.json` 的新增/更新必须调用 `upsert_finding(s)` 或
   `update_finding_status()`；coverage、runner、validator、report 不得直接覆盖整个文件。
-- 源码支持的 finding 进入 `validation_status=rejected` 前，owner 必须校验本次传入的
-  `validation_summary`：`result` 为 `rejected`，且 `source_guard` 的源码文件、1-based 行号和
-  单行精确 quote 指向真实可执行 guard。缺失、注释、转述或不匹配引用必须在任何 owner
-  写入前失败；该 cite-check 不替代 source-to-sink 控制流解释。
+- 源码反证由 AI 记录文件、1-based 行号、精确原文和 source-to-sink 控制流解释，保留
+  历史证据并交由 Store 技术裁决 owner 复核；没有独立的 `finding_index` 源码拒绝门禁。
+  普通 `/validate` 技术证据未通过或未知时写 `inconclusive`，不写 `refuted` 或旧 JSON
+  `validation_status`。目的地不接收不等于技术反驳，参见 `contracts/validation-evidence.md`。
 - 每次 canonical finding owner mutation 都必须在行上写入 `owner_provenance`，并向
   `mutation-events.jsonl` 追加同一 snapshot 的 `event_id`、target、finding ID、endpoint、
   漏洞类、lifecycle status、受限 evidence summary 和 fingerprint。`validated`、`rejected`、
@@ -821,3 +821,48 @@ GlobalRateLimiter(state_path=Path(repo_root) / "hunt-memory/audit/parallel_lock.
   非法/终态迁移、replacement/archive 一致性和 active registry 全量集合等价。迁移行为测试使用
   synthetic corpus 与临时治理日志，不读取本机 `distill/corpus/`；另保留一个只读的当前仓库
   lifecycle audit 回归，断言每张 active 正式卡都有 adopted event。
+
+## 2026-10-11 经验来源与知识审核接线
+
+TargetStore 当前新库为 v17，经验历史/来源/纠错与 advisory claims 共用该 owner；具体表和
+显式升级见 transactional-target-state。知识审核仍在 knowledge owner，不移入目标 Store。
+registry 的 review_receipt 选择不可覆盖的发布/审核 hash 回执；knowledge_review 统一校验
+正文、审核原件及盲答依据。晋升写持有知识目录独占锁，召回读取共享锁，避免暴露 audit 前
+中间态；失败按本次字节补偿，不承诺多文件崩溃事务。旧回执保留，查询从不自动补审。
+
+知识外部来源以完整发布正文 hash 和 publication receipt hash 绑定，不复用 Store 整数版本。
+experience_knowledge 捕获 registry/正文/review/盲答字节，写事务内只复验文件身份；basis 与
+origin 分开，坏 basis 传播但 origin 不反驳结论。显式写后 index 更新在 owner 提交/解锁后，
+失败保留真实 receipt 并独立报 partial；目标与共享更新分区不混写。完整合同见
+transactional-target-state 的 v16 来源/共享关系/写后更新节。
+
+条件化纠错仍使用 v16 的原边/保留版本，不增加有效性真源。只有明确边条件与两端保留声明
+完全相同才全局挑战旧记录；其他明确条件连接保留但不整体污染依赖。撤回保留原挑战范围。
+目标关系 v4 只投影 Case/执行/经验原 owner 的真实外键、attempt/step 和 artifact ID；共享/文本
+不因该能力读取执行集合。外部原件健康进入代绑定，完整语义及失败矩阵见 transactional-target-state
+的 Exact correction scope and owner relation sources 节。
+
+历史来源由 experience_history 只读解析同 Store 的 active receipt / manifest / import map，
+原始 memory 使用既有 legacy archive，PatternDB 使用显式补导创建的 target pattern-archive。
+migration_receipts 是共用严格 reader/receipt 锁 owner；target_memory_schema 单源规范化，
+迁移不再反向导入 CLI。history_source 默认返回精确绑定，full 返回原记录及可用性；history
+只允许 origin，绝不作为 basis/claim support。原件丢失/篡改不回退 live 文件或重建原文。
+v16→v17 仅显式 backup-bound upgrade；旧 complete/partial PatternDB 回执补归档不改变
+Store revision。写接受先 receipt SH 后写事务，WAL 只读快照可先于 SH；持 EX 的重试不得
+经健康展开重入 SH。详见 transactional-target-state 的 v17 historical origins 七段合同。
+
+## 2026-10-12 目标召回来源增量采集
+
+Store v17 不加表或生命周期：`recall_delta` 按原 audit 水位计算来源影响，`recall_rows`
+复用 page DTO 装配，`recall_probe` 复用原件/知识/历史 owner 的真实字节核验。cold/full 才做
+全库完整性和完整 audit 检查；增量检查已消费水位及新增区间，不重扫历史正文。Observation
+attachments 不随 Case 版本改变，反向影响复用 `experience_observations`，不遍历全部版本 JSON。
+
+目标不可变代内的 `capture.json` 只存公开派生 documents、依赖、语义 probes 和精确 Store
+水位，manifest 绑定 digest；不包含 current、共享知识或私有原文。与内容指纹分离的临时
+`source_fences` 检查单次采集/使用期间的文件身份，不能落入 capture 或语义 digest；相同原件
+恢复后可保持语义指纹相同，但本次变坏再恢复仍拒绝混合来源。query/status 不修复派生代。
+
+无变化与单项修改均可复用未受影响历史正文/关系分组；仍独立读取 current、核验相关原件，
+共享知识仍全量 owner audit。不把投影命中率或 `experience_rows_read=0` 当成零数据库/文件 I/O。
+完整 DTO、失败矩阵与实链证据见 transactional-target-state 的 Incremental target source acquisition。

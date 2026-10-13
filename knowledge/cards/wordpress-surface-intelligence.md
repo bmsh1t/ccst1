@@ -3,7 +3,7 @@ id: wordpress-surface-intelligence
 type: technique-card
 related_skills:
   - web2-recon
-  - web2-vuln-classes
+  - src-hunting
   - triage-validation
 trigger_tags:
   - wordpress
@@ -82,7 +82,7 @@ wpscan --url "<target-url>" --format json --output "recon/<target-key>/intel/wps
 ## 关联 Skills
 
 - `web2-recon`
-- `web2-vuln-classes`
+- `src-hunting`
 - `triage-validation`
 
 ## 晋升到 Skill / Queue 的条件

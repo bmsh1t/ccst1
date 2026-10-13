@@ -2,7 +2,7 @@
 id: browser-client-boundaries
 type: technique-card
 related_skills:
-  - web2-vuln-classes
+  - src-hunting
   - triage-validation
 trigger_tags:
   - cors
@@ -63,7 +63,7 @@ source_refs:
 
 ## 能力定位
 
-本卡给 `web2-vuln-classes` 补充浏览器执行模型和客户端边界验证，不替代具体漏洞 Skill。
+本卡给 `src-hunting` 补充浏览器执行模型和客户端边界验证，不替代具体漏洞 Skill。
 
 ## 触发信号
 
@@ -186,7 +186,7 @@ source_refs:
 
 ## 关联 Skills
 
-- `web2-vuln-classes`
+- `src-hunting`
 - `triage-validation`
 
 ## 晋升到 Skill / Queue 的条件

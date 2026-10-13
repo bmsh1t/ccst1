@@ -2,7 +2,7 @@
 id: rest-basket
 type: technique-card
 related_skills:
-  - web2-vuln-classes
+  - src-hunting
 trigger_tags:
   - rest-basket
 risk: low

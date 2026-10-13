@@ -2,7 +2,7 @@
 id: ssrf-internal-impact
 type: technique-card
 related_skills:
-  - web2-vuln-classes
+  - src-hunting
   - triage-validation
 trigger_tags:
   - ssrf
@@ -85,9 +85,8 @@ deep_refs:
 
 ## 关联 Skills
 
-- `web2-vuln-classes`
+- `src-hunting`
 - `triage-validation`
-- `bb-methodology`
 
 ## 晋升到 Skill / Queue 的条件
 

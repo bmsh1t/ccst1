@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-"""Deterministic A/B evaluator for the web2-vuln-classes Skill.
+"""Current-source offline signal diagnostic using historical Web2 scoring.
 
-This script measures loaded-context value, not live model behavior:
+This script measures material availability, not live model behavior:
 
-- baseline arm: context_pack project cards, checks, and seeds
-- enhanced arm: baseline plus skills/web2-vuln-classes/SKILL.md
+- baseline: context_pack required-check references
+- enhanced: baseline plus expected card bodies and the current Web2 method
 
-The output shows which evidence-gate / stop-condition / chain-connector
-signals already live in compact cards/references and which still depend on the
-large default Skill. That gives a safe "measure before slimming" baseline.
+Historical cases, score rules and maxima are retained. This diagnostic does
+not rerun or replace the recorded Skill experiments.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 import shutil
@@ -39,7 +39,7 @@ from tools.target_store import TargetStore
 
 
 DEFAULT_CASES = BASE_DIR / "tests" / "skill-validator" / "cases" / "web2_vuln_classes_ab_cases.json"
-WEB2_SKILL = BASE_DIR / "skills" / "web2-vuln-classes" / "SKILL.md"
+WEB2_METHOD = "knowledge/playbooks/web2-evidence-contracts.md"
 
 
 @dataclass(frozen=True)
@@ -48,18 +48,12 @@ class Material:
     paths: list[str]
 
 
-def _read_text(path: Path) -> str:
-    try:
-        return path.read_text(encoding="utf-8")
-    except OSError:
-        return ""
-
-
-def _load_cases(path: Path) -> dict:
-    payload = json.loads(path.read_text(encoding="utf-8"))
+def _load_cases(path: Path) -> tuple[dict, str]:
+    content = path.read_bytes()
+    payload = json.loads(content)
     if not isinstance(payload, dict) or not isinstance(payload.get("cases"), list):
         raise ValueError(f"invalid cases file: {path}")
-    return payload
+    return payload, hashlib.sha256(content).hexdigest()
 
 
 def _repo_path(repo_root: Path, value: str) -> Path:
@@ -101,14 +95,13 @@ def _score_signals(material: Material, checks: list[dict]) -> tuple[int, list[st
     return score, passed, missing
 
 
-def _line_count(path: Path) -> int:
-    return len(_read_text(path).splitlines())
-
-
 def evaluate_cases(repo_root: Path = BASE_DIR, cases_path: Path = DEFAULT_CASES) -> dict:
-    payload = _load_cases(cases_path)
+    payload, cases_sha256 = _load_cases(cases_path)
     cases = payload["cases"]
-    web2_text = _read_text(repo_root / "skills" / "web2-vuln-classes" / "SKILL.md").lower()
+    method_bytes = (repo_root / WEB2_METHOD).read_bytes()
+    method_text = method_bytes.decode("utf-8")
+    if not method_text.strip():
+        raise ValueError(f"empty Web2 method: {WEB2_METHOD}")
     rows: list[dict] = []
 
     with TemporaryDirectory(prefix="ccst-skill-eval-") as directory:
@@ -119,20 +112,17 @@ def evaluate_cases(repo_root: Path = BASE_DIR, cases_path: Path = DEFAULT_CASES)
             focus = str(case["focus"])
             pack = build_context_pack(fixture, target="eval.test", focus=focus)
             baseline = _build_baseline_material(repo_root, pack)
-            # Enhanced arm: baseline + the card bodies the AI would pull for this
-            # case (expected_cards from the catalog) + the web2 skill. This
-            # measures whether the card corpus carries the knowledge the retired
-            # seeds used to duplicate.
+            # The diagnostic loads the case's named cards and current method;
+            # catalog visibility does not establish actual model selection.
             enhanced_parts = [baseline.text]
             enhanced_paths = [*baseline.paths]
             for rel in case.get("expected_cards", []) or []:
                 rel = str(rel)
                 path = _repo_path(repo_root, rel)
-                if path.is_file():
-                    enhanced_parts.append(f"\n--- {rel} ---\n{_read_text(path)}")
-                    enhanced_paths.append(rel)
-            enhanced_parts.append("\n--- skills/web2-vuln-classes/SKILL.md ---\n" + web2_text)
-            enhanced_paths.append("skills/web2-vuln-classes/SKILL.md")
+                enhanced_parts.append(f"\n--- {rel} ---\n{path.read_text(encoding='utf-8')}")
+                enhanced_paths.append(rel)
+            enhanced_parts.append(f"\n--- {WEB2_METHOD} ---\n{method_text}")
+            enhanced_paths.append(WEB2_METHOD)
             enhanced = Material(
                 text="\n".join(enhanced_parts).lower(),
                 paths=enhanced_paths,
@@ -184,11 +174,14 @@ def evaluate_cases(repo_root: Path = BASE_DIR, cases_path: Path = DEFAULT_CASES)
                 "enhanced_signal_missing": enhanced_missing,
                 "skill_only_signal_checks": skill_only,
                 "baseline_paths": baseline.paths,
+                "enhanced_paths": enhanced.paths,
             })
 
     summary = {
         "case_count": len(rows),
-        "web2_skill_lines": _line_count(repo_root / "skills" / "web2-vuln-classes" / "SKILL.md"),
+        "method_path": WEB2_METHOD,
+        "method_lines": len(method_text.splitlines()),
+        "method_sha256": hashlib.sha256(method_bytes).hexdigest(),
         "baseline_total": sum(row["baseline_score"] for row in rows),
         "enhanced_total": sum(row["enhanced_score"] for row in rows),
         "max_total": sum(row["max_score"] for row in rows),
@@ -210,6 +203,11 @@ def evaluate_cases(repo_root: Path = BASE_DIR, cases_path: Path = DEFAULT_CASES)
     }
     return {
         "meta": payload.get("meta", {}),
+        "diagnostic": {
+            "kind": "current-source-offline-signals",
+            "cases_sha256": cases_sha256,
+            "historical_fields": "meta/expected_skill retain historical labels; skill_only_signal_checks means enhanced-only signals.",
+        },
         "summary": summary,
         "rows": rows,
     }
@@ -218,21 +216,24 @@ def evaluate_cases(repo_root: Path = BASE_DIR, cases_path: Path = DEFAULT_CASES)
 def format_markdown(result: dict) -> str:
     summary = result["summary"]
     lines = [
-        "# Web2 Vuln Classes A/B Evaluation",
+        "# Web2 Current-source Offline Signal Diagnostic",
         "",
         "## Scope",
         "",
-        "Deterministic local A/B for `skills/web2-vuln-classes/SKILL.md`.",
+        f"Current-source offline signal diagnostic for `{summary['method_path']}`.",
         "This measures loaded-context signal availability, not live model accuracy.",
+        "Historical cases and scoring rules are retained; this does not rerun the historical Skill A/B.",
+        "The legacy skill_only_signal_checks field means enhanced-only signals.",
         "",
         "## Summary",
         "",
         f"- Cases: {summary['case_count']}",
-        f"- web2-vuln-classes lines: {summary['web2_skill_lines']}",
+        f"- Method lines: {summary['method_lines']}",
+        f"- Method SHA-256: {summary['method_sha256']}",
         f"- Baseline score: {summary['baseline_total']}/{summary['max_total']}",
         f"- Enhanced score: {summary['enhanced_total']}/{summary['max_total']}",
         f"- Delta: +{summary['delta_total']}",
-        f"- Cases with Skill-only signal: {', '.join(summary['cases_with_delta']) or 'none'}",
+        f"- Cases with enhanced-only signal: {', '.join(summary['cases_with_delta']) or 'none'}",
         f"- Cases still missing enhanced signals: {', '.join(summary['cases_missing_even_enhanced']) or 'none'}",
         f"- Route/card gap cases: {', '.join(summary['route_gap_cases']) or 'none'}",
         "",
@@ -248,7 +249,7 @@ def format_markdown(result: dict) -> str:
         "",
         "## Per-case results",
         "",
-        "| Case | Lane | Baseline | Enhanced | Delta | Skill-only checks | Route/card gap | Enhanced missing |",
+        "| Case | Lane | Baseline | Enhanced | Delta | Enhanced-only checks | Route/card gap | Enhanced missing |",
         "|---|---|---:|---:|---:|---|---|---|",
     ])
     for row in result["rows"]:
@@ -275,17 +276,17 @@ def format_markdown(result: dict) -> str:
         "",
         "## Interpretation",
         "",
-        "- If baseline and enhanced both pass a signal, that signal already lives in compact cards/references.",
-        "- If only enhanced passes, the compact Skill still carries a decision-layer signal that has not been duplicated into references.",
-        "- If enhanced misses a signal or a route/card gap appears, fix cards/seeds/routes before claiming the slim is safe.",
-        "- A future live LLM A/B can reuse the same case file; this report is the deterministic post-slim regression baseline.",
+        "- Baseline scores required-check references only; enhanced also loads the named cards and current method.",
+        "- Enhanced-only signals identify material available in that combined context, without attributing it to one document.",
+        "- A missing enhanced signal or catalog gap is an engineering regression to investigate.",
+        "- Catalog visibility and lexical scores do not prove model discovery, selection, or reasoning quality.",
         "",
     ])
     return "\n".join(lines)
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Evaluate web2-vuln-classes loaded-context A/B.")
+    parser = argparse.ArgumentParser(description="Diagnose current Web2 material with historical offline signal scoring.")
     parser.add_argument("--repo-root", default=str(BASE_DIR))
     parser.add_argument("--cases", default=str(DEFAULT_CASES))
     parser.add_argument("--json", action="store_true")

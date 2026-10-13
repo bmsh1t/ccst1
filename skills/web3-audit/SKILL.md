@@ -11,6 +11,12 @@ invariants rather than following a fixed bug checklist.
 
 ## Direct Execution Contract
 
+For real delegation, use the input/output and acceptance boundary in
+`skills/src-hunting/SKILL.md#real-delegation-and-execution-handoff`. Return
+contrary evidence and unknowns as well as results; propose global pivots to the
+main session. Same-session reading requires no handoff form. Expert self-report
+does not resolve Action or confirm Finding.
+
 - Entry: Invoke only for an explicitly scoped contract or program. Require
   chain/network, deployment identity, source or bytecode revision, and the
   permitted read-only, fork, simulation, or transaction boundary.
@@ -41,15 +47,17 @@ invariants rather than following a fixed bug checklist.
   a reproducible boundary -> hand it to validation; otherwise keep the signal
   as an invariant gap or informational note.
 
-## ROI Priorities
+## Local Attention Clues
+
+These are alternatives within the current question, not a required ordering or
+a reason to exhaust every branch. Global priorities belong to the main session.
 
 1. Upgrade/initialization and admin paths controlling high-value deployments.
 2. Accounting and authorization invariants on deposits, withdrawals, claims,
    settlements, and token transfers.
 3. Oracle, bridge, callback, and signature-domain edges that can change value.
 4. Cross-function and sibling-path inconsistencies with a clear state delta.
-5. Low-value style, centralization, or static lint findings only after impact
-   branches are exhausted.
+5. Style, centralization or static lint evidence when it changes the current invariant question.
 
 ## Phase Checkpoints
 

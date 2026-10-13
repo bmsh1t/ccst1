@@ -137,6 +137,74 @@ def test_parameter_discovery_preserves_auth_scope_and_filters_saved_scope(tmp_pa
     assert session.headers_for_url("https://narrow.audit.test/form") == {}
 
 
+@pytest.mark.parametrize("field,value", [
+    ("total", True), ("total", 2.5), ("total", "2"),
+    ("next_index", False), ("next_index", 0.5), ("next_index", "0"),
+    ("method_complete", 0), ("method_complete", 1),
+    ("method_complete", "false"), ("method_complete", None),
+    ("complete", 0), ("complete", 1), ("complete", "false"), ("complete", None),
+])
+def test_parameter_discovery_rejects_coerced_resume_cursor_without_writes(tmp_path, field, value):
+    from tools.param_discovery import discover_parameters
+
+    target = "audit.test"
+    store = TargetStore(tmp_path, target)
+    store.initialize()
+    saved_scope(tmp_path, target, [])
+    inputs = dict(repo_root=tmp_path, target=target, session=AuthSession(target=target),
+                  urls=["https://audit.test/a", "https://audit.test/b"], methods=["GET"])
+    summary = discover_parameters(**inputs, tool_exists=lambda _: False)
+    assert summary["status"] == "blocked"
+    assert summary["cursor"]["methods"]["GET"]["next_index"] == 0
+    cursor = summary["cursor"]
+    if field == "method_complete":
+        cursor["methods"]["GET"]["complete"] = value
+    elif field == "complete":
+        cursor["complete"] = value
+    else:
+        cursor["methods"]["GET"][field] = value
+    summary_path = tmp_path / summary["artifacts"]["summary"]
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+    binding = store.binding()
+    before = {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+
+    def unexpected_execution(*args, **kwargs):
+        raise AssertionError("invalid cursor reached a tool or request")
+
+    with pytest.raises(ValueError, match="--resume (cursor|completion marker)"):
+        discover_parameters(**inputs, resume=True, tool_exists=unexpected_execution,
+                            fetch_html=unexpected_execution)
+    assert {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
+    assert store.binding() == binding
+
+
+@pytest.mark.parametrize("urls", [[], ["https://audit.test/a", "https://audit.test/b"]])
+def test_parameter_discovery_producer_cursor_round_trip(tmp_path, urls):
+    from tools.param_discovery import discover_parameters
+
+    target = "audit.test"
+    store = TargetStore(tmp_path, target)
+    store.initialize()
+    saved_scope(tmp_path, target, [])
+    inputs = dict(repo_root=tmp_path, target=target, session=AuthSession(target=target),
+                  urls=urls, methods=["GET"], tool_exists=lambda _: False)
+    first = discover_parameters(**inputs)
+    original = (tmp_path / first["artifacts"]["summary"]).read_bytes()
+    binding = store.binding()
+    before = {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    resumed = discover_parameters(**inputs, resume=True)
+    if urls:
+        assert resumed["status"] == "blocked"
+        assert resumed["batch_id"] == first["batch_id"] + 1
+        assert resumed["cursor"]["methods"] == first["cursor"]["methods"]
+        assert (tmp_path / resumed["artifacts"]["previous_summary"]).read_bytes() == original
+    else:
+        assert resumed == first
+        assert resumed["cursor"]["complete"] is True
+        assert {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
+        assert store.binding() == binding
+
+
 def test_scanner_active_input_filter_reads_saved_scope_without_changing_discovery(tmp_path):
     repo = Path(__file__).resolve().parents[1]
     target = "audit.test"

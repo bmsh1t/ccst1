@@ -253,7 +253,7 @@ the final route decision; prompts and tools do not create another controller.
 |:---|:---|
 | **`CLAUDE.md`** | Always-loaded project contract for authorization, AI/tool boundaries, state owners, and entry routing |
 | **Runtime protocol** | Shared Target -> Skill -> Knowledge -> Checks -> Write-back contract |
-| **Decision Skill** | `bb-methodology`, loaded for session start, target switch, stalled progress, or hypothesis rotation |
+| **Decision Skill** | `src-hunting`, loaded for session start, target switch, stalled progress, or hypothesis rotation |
 | **Execution Skills** | Evidence-selected contracts for recon, vulnerability families, validation, reporting, credentials, mobile, CI/CD, Web3, and token work |
 | **Knowledge** | Bounded on-demand cards and references; never the current target-state owner |
 | **Tools and state** | Deterministic replay, diff, raw evidence, Coverage, Ledger, Queue, Checkpoint, and recovery |
@@ -422,7 +422,7 @@ documents the preferred model class for each role.
   of truth for optional external-tool install hints and `_have <tool>` checks.
 - **Recon pipeline.** `recon_engine.sh` can add an optional nuclei phase when
   the tool is present.
-- **AI-first technique policy.** General technique knowledge stays in the model; `skills/runtime-protocol.md` owns shared loading and execution contracts, while `skills/security-arsenal/SKILL.md` remains an on-demand reference entry. See `skills/README.md` for role boundaries.
+- **AI-first technique policy.** General technique knowledge stays in the model; `skills/runtime-protocol.md` owns shared loading and execution contracts, while `docs/tool-index.md#execution-contract-lookup` provides the owner lookup. See `skills/README.md` for role boundaries.
 
 <details>
 <summary><b>Autonomous Hunt Loop</b> — <code>/autopilot</code></summary>

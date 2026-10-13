@@ -5,7 +5,7 @@ related_cards:
   - knowledge/cards/controlled-rce-impact.md
   - knowledge/cards/upload-to-execution.md
 related_skills:
-  - web2-vuln-classes
+  - src-hunting
   - triage-validation
 trigger_tags:
   - webshell

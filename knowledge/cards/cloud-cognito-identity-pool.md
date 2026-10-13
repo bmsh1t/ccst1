@@ -2,9 +2,8 @@
 id: cloud-cognito-identity-pool
 type: technique-card
 related_skills:
-  - web2-vuln-classes
+  - src-hunting
   - triage-validation
-  - security-arsenal
 trigger_tags:
   - cognito
   - identity-pool
@@ -99,10 +98,8 @@ aws sts get-caller-identity --region REGION
 
 ## 关联 Skills
 
-- `web2-vuln-classes`
+- `src-hunting`
 - `triage-validation`
-- `security-arsenal`
-
 ## 晋升到 Skill / Queue 的条件
 
 - 只有 `GetId` 或公开配置时保留为 target lead。

@@ -501,122 +501,89 @@ Correct: component-leading numeric branch sentence + exact observed branch/versi
     regression that asserts enhanced signal coverage, no route/card gaps, and a
     bounded line-count ceiling. Move payload/bypass/tool bulk into on-demand
     references; do not delete decision signals just to reduce line count.
-- `context_pack.py` currently returns only the first six deduplicated
-  `hypothesis_seeds`; when enhancing one vulnerability lane, merge related
-  trigger/evidence/stop-condition guidance into compact high-signal seeds instead
-  of appending many near-duplicate sentences.
+- Context Pack publishes the complete Card catalog and evidence-bound references;
+  `hypothesis_seeds` and `alternative_angles` remain empty legacy fields. Claude
+  selects methods and competing hypotheses by the current information gap; the
+  projection does not hide semantic route selection in keyword rules or seeds.
 
-## Scenario: Skill 与知识统一只读治理
+## Scenario: 原生 Skill 发现与知识只读审核
 
 ### 1. Scope / Trigger
 
-修改 `skills/*/SKILL.md`、Context Pack 主路由、知识 registry、正式卡 lifecycle、候选
-lifecycle 或全卡价值矩阵时，必须用统一治理入口证明这些既有 owner 没有漂移。该入口只做
-组合和有界投影，不创建新的状态 owner。
+修改 Skill description、Context Pack 引用或知识 registry 时，分别核对其当前 owner。
+平台原生发现负责 Skill 加载；知识 registry / 审核负责方法可读性与正式知识准入。
+已退役的 skill_catalog / capability_governance 不再提供运行命令、route mode 或第二个注册表。
 
 ### 2. Signatures
 
 ```bash
-python3 tools/capability_governance.py [--repo-root PATH] [--strict] [--json] \
-  [--source-mode off|if-present|required] [--corpus-dir PATH] [--matrix-path PATH]
+python3 tools/knowledge_audit.py --repo-root PATH --strict --json \
+  --source-mode if-present
 ```
 
-```python
-audit_governance(
-    repo_root,
-    *,
-    strict=False,
-    source_mode="if-present",
-    corpus_dir=None,
-    matrix_path=None,
-) -> {
-    "ok": bool,
-    "sections": {
-        "knowledge": dict,
-        "lifecycle": dict,
-        "candidates": dict,
-        "value_review": dict,
-        "skills": dict,
-    },
-    "advisories": {"trigger_collisions": list, "trigger_collision_error": str},
-}
-```
+`--source-mode` 接受 `off`、`if-present`、`required`；需要独立案例目录时显式传
+`--corpus-dir PATH`。
 
-本节描述已归档的 capability governance 输出。运行时 Skill 注册表已退役，
-当前发现/加载由平台原生能力和各 Skill 的 frontmatter description 持有。
+Skill 发现来自 `skills/*/SKILL.md` 的 frontmatter description。当前全局调查核心为
+`src-hunting`，源码专项为 `whitebox-audit`；完整 Web/API 方法在
+`knowledge/playbooks/web2-evidence-contracts.md`，执行 owner 查找在
+`docs/tool-index.md#execution-contract-lookup`。方法/索引不再各有一个包装 Skill。
 
 ### 3. Contracts
 
-- 命令只调用 `audit_repository()`、`audit_lifecycle()`、`audit_candidates()`、
-  `audit_matrix()` 和 Skill catalog 检查；不得增加 `--fix`、`--apply`、自动晋升、maturity
-  修改或持久化报告。
-- JSON 固定暴露五个 section；为保持有界，统一入口不得输出 lifecycle 的全量 `states`，
-  但必须保留 counts、errors、advisories 和 owner path。
-- 任一 section `ok=false` 时顶层 `ok=false`、进程退出 `1`。`--strict` 还将 knowledge
-  warning 变成失败；trigger collision 始终只是 advisory，不能因 `--strict` 阻断。
-- `source_mode=if-present` 且本地 case corpus 缺失时，knowledge/candidates section 保留
-  `skipped: source-resolution` 并继续成功；stale/invalid、dangling ref 或 `required` 缺失仍失败。
-- route mode 固定为：`primary`、`direct-only`、`reference-only`、`report-only`。只有
-  `primary` 可进入 Context Pack 主路由；reference/report/direct-only 不得被通用 focus 隐式选择。
-- primary 为 `bb-methodology`、`bug-bounty`、`credential-attack`、`triage-validation`、
-  `web2-recon`、`web2-vuln-classes`。显式选择只认 focus 的首个规范化 Skill ID；随后出现的
-  `candidate`/`validation` 不得吞掉它。Skill ID 只是在混合 focus 列表中后置出现时，继续走
-  原有隐式路由顺序，避免把漏洞类别信号误当成 route override。
-- registry trigger 以 trim + casefold + 内部空白收敛后投影碰撞，输出排序后的 trigger 和完整
-  capability IDs；碰撞不改变 registry、Context Pack 预算或运行时选择。
-- Claude Code CLI 的项目级常驻契约是 `CLAUDE.md`；`runtime-protocol.md` 是共享路由/写回
-  契约，`bb-methodology` 是开始/换目标/停滞/选路时的按需决策 Skill，专项 Skill 是按证据
-  选择的执行契约，知识卡只提供候选模式/证据门/停止条件，工具和现有状态 owner 负责确定性
-  执行、生命周期与恢复。Claude 当前主会话保留最终路线判断权。
-- Claude Code CLI 自动加载项目 `CLAUDE.md`；Context Pack 的 `must_read` 包含
-  `runtime-protocol`、目标状态、Ledger 和证据专用引用，不包含推荐的 primary Skill/Card。
-  `selected_skill`/`skill_route`/`selected_skill_id`/`why_this_skill` 已从 Context Pack
-  输出中退役（平台 Skill 工具是发现面），不再作为兼容推荐字段；Queue/Store 同样不校验
-  或生成 Skill 路由。Card 选择字段保持空。根
-  `SKILL.md` 只用于旧单文件直装，不由正式 `install.sh` 安装，也不进入 Context Pack。
+- `CLAUDE.md` 是项目常驻契约；`skills/runtime-protocol.md` 持有共享读取、连续性和写回。
+  主会话选择全局问题、竞争解释、实验及停止；专项只持有局部问题，不复制全局循环。
+- Context Pack 的 `must_read` 保留目标事实和必要证据契约，不推荐或自动加载 Skill/Card。
+  `selected_skill`、`skill_route`、`selected_skill_id`、`why_this_skill` 已退役；focus 中
+  出现 Skill ID 不创建 override。Queue/Store 不校验 Skill 文件、路由或预设维度。
+- Card 选择字段保持空，完整 `card_catalog` 供按信息缺口读取。没有匹配卡仍可原生推理；
+  目录可发现不等于正文已读，已读正文无需重复加载。同会话纯阅读不要求真实委派结果表。
+- 专项显式范围条件和报告职责由各自 description/正文持有；这是使用边界，不是 runtime
+  route mode 注册表。历史路由样例保留为历史，不能直接作为当前入口可用性证明。
+- `knowledge_audit` 是只读审核，不修复 registry、不晋升候选、不写生命周期或审核回执。
+  errors 返回 exit 1；`--strict` 下 warnings 同样返回 1。报告保留来源缺失/坏引用诊断；
+  optional corpus 缺失不能伪装成来源已经解析。
+- 正式发布与复审由现有 knowledge promotion/review owner 处理。共享召回只接纳当前有效、
+  字节/审核依据一致的已审方法；静态格式通过不替代真实盲答、来源许可或模型能力验收。
+- 安装器安装当前模块化 Skill，Doctor 统一发现资源和 receipt-owned 退休文件。未拥有或
+  用户修改的旧文件保留；完整安装/退休范围以 runtime 契约与真实安装回执为准。
 
 ### 4. Validation & Error Matrix
 
 | 条件 | 结果 |
 |---|---|
-| structure/lifecycle/candidate/value-review 任一 owner 报错 | 对应 section `ok=false`，exit `1` |
-| Skill 缺失、额外、重复 path、非法 mode 或 primary 无 dimensions | skills `ok=false`，exit `1` |
-| knowledge 只有 warning，不带 `--strict` | 成功并保留 warning |
-| knowledge 只有 warning，带 `--strict` | knowledge `ok=false`，exit `1` |
-| `if-present` corpus 缺失 | 两个 owner 显式 `skipped`，整体可成功 |
-| `rce`/`jwks` 等 trigger 命中多 capability | 排序 advisory，整体仍可成功 |
-| focus=`credential-attack candidate validation` | 选择 `credential-attack` |
-| 混合漏洞 focus 中后置出现 `credential-attack` | 保留既有漏洞类别路由 |
-| Context Pack 默认构建 | `CLAUDE.md` 不重复列入；推荐的 primary Skill/Card 不进入 `must_read` |
-| staged `install.sh` | 安装模块化 `skills/bug-bounty/SKILL.md`，不以根 `SKILL.md` 覆盖 |
+| 当前 Skill 或方法引用指向已删除文件 | 当前入口回归失败；不恢复旧包装层 |
+| knowledge errors，或 strict 下 warnings | 报告诊断，exit 1 |
+| optional corpus 缺失 | 明确未解析来源，不能冒充 required 来源通过 |
+| focus 含 Skill ID 或漏洞名 | 不产生机器 Skill/Card 选择，AI 按事实与信息缺口判断 |
+| Context Pack 默认构建 | 原生 Skill 发现与完整 Card catalog；语义选择字段不写推荐 |
+| staged install | 当前 src-hunting / whitebox-audit 和托管资源字节匹配，退休遵守所有权 |
+| 普通同会话阅读 | 无委派表；真实执行/跨代理仍需回执与 owner 接受 |
 
 ### 5. Good / Base / Bad Cases
 
-- Good：一次 strict 命令显示 `57/57` value review、12 个 Skill、6 个 primary 和 trigger collision。
-- Base：本地 case corpus 未安装，输出 skipped，但其它治理 owner 继续检查。
-- Bad：为方便汇总复制 registry/lifecycle parser，输出全量 lifecycle states，或让 collision 自动改路由。
-- Bad：把 focus 任意位置出现的 Skill ID 都视作显式 override，破坏既有混合 focus fixture。
+- Good：全局调查读 src-hunting，入口/guard/sink 问题读 whitebox-audit，具体方法直接读完整知识单元。
+- Base：源码或来源缺失时保留明确 unknown/partial 与展开位置，不把格式审核当能力证明。
+- Bad：复活统一 Skill 注册表、根据 focus 写机器路线，或把历史十二 Skill 样例当当前安装清单。
 
 ### 6. Tests Required
 
-- `tests/test_capability_governance.py`：五个 section 分别失败都 exit `1`；strict warning、optional
-  corpus skipped、只读文件快照、12/12 catalog、6 primary 和 collision advisory 均有断言。
-- `tests/test_context_pack.py`：六个 primary 首词显式可达且优先于 validation；既有 skill/route
-  fixtures必须全量通过，证明混合 focus、隐式顺序和完整 card catalog 未回归。
-- Context Pack tests must assert semantic Card selection fields stay empty while
-  the full catalog remains discoverable. `tests/test_context_pack_docs.py` checks
-  shared entry references without locking complete prose sentences. Live
-  discovery, AI-chosen reads, and continuation reuse are reported separately.
-- `tests/test_knowledge_value_review.py`：checked-out matrix 必须 `cards == registry_cards == 57`。
+- `tests/test_skill_routing_surface.py`：当前 Skill / 方法引用存在，词项 smoke 和调查/源码责任边界；
+  不能把这些离线断言当模型路由能力。
+- `tests/test_ai_native_skill_convergence_baseline.py`：原方法路由、假设比较、业务模型来源、
+  AI 选择、手工/自动共享入口及真实委派边界均仍可读取；固定 oracle 材料不随入口迁移改写。
+- `tests/test_context_pack.py`：无 Skill 推荐字段，Card 选择字段空，完整目录和当前事实可发现。
+- `tests/test_knowledge_audit.py`：沿用 registry / 引用 / 来源诊断 owner；不新增平行治理状态。
+- 安装/退役行为复用 runtime 定向证据；live discovery、模型阅读/复用和能力验收另行记录。
 
 ### 7. Wrong vs Correct
 
 ```text
-Wrong: duplicate parsers + auto-fix/apply + collision changes runtime route
-Correct: existing audit owners -> bounded read-only sections -> hard failures + advisory collisions
+Wrong: focus -> hidden route registry -> selected Skill -> mandatory per-read result form
+Correct: current facts + native descriptions -> question-bound Skill/method -> real handoff only when delegated
 
-Wrong: any occurrence of `credential-attack` -> explicit Skill override
-Correct: first normalized focus token is a primary Skill -> explicit override; otherwise preserve old routing
+Wrong: static catalog or clean Doctor -> all capability and retirement gates passed
+Correct: readable references + ownership evidence; model capability and release remain separate gates
 ```
 
 ## Context Pack 历史兼容与观察投影
@@ -1473,6 +1440,9 @@ python3 tools/param_discovery.py --target TARGET --method GET|POST|BOTH
   `next_index`、`remaining`、`complete`。cursor 是 summary 的派生续跑事实，不是新状态 owner。
 - `--resume` 必须复用相同 target、source、method、认证 `session_id` 和输入摘要；
   成功后从 `next_index` 取下一批。输入变化或已完成 cursor 不得重新发起请求。
+- `total`、`next_index` 必须是 JSON 整数（不接受布尔、浮点或数字字符串）；method 和
+  cursor 根的 `complete` 必须是 JSON 布尔，且与位置/全部 method 的完成状态一致。
+  类型错误在工具探测、请求、summary/archive/raw 和 Queue 写入前拒绝，不推测修复位置。
 - 新批次的 summary 先把旧 `summary.json` 归档为 `summary.batch-*.json`，raw tool
   输出使用 batch/全局序号命名，不覆盖旧文件。参数列表/POST form 投影只追加合并，原始
   失败与旧 summary 保留。
@@ -1485,6 +1455,7 @@ python3 tools/param_discovery.py --target TARGET --method GET|POST|BOTH
 | Condition | Result |
 |---|---|
 | `--resume` 无 summary、summary 损坏、target/source/method/auth/input digest 不匹配 | `ValueError`/exit 2，旧 artifact 零写入 |
+| cursor 位置非整数，或任一级 `complete` 非布尔/与位置不一致 | `ValueError`/exit 2，不调用工具/请求；旧 summary、raw、Queue 和 Store binding 不变 |
 | `max_urls` 非整数或 `<=0` | `ValueError`/exit 2，旧 artifact 零写入 |
 | 输入超过本批预算 | 写 cursor，状态 `partial`，Action Queue hint 带 `--resume` |
 | 工具失败或 timeout | 保留失败 run，cursor 停在失败前，状态非完成 |
@@ -1496,12 +1467,14 @@ python3 tools/param_discovery.py --target TARGET --method GET|POST|BOTH
   raw 输出均可回放。
 - Base：输入只有 5 个 URL 时一次完成；显式 `--max-urls 8` 可在一次调用覆盖 8 个。
 - Bad：每次从序号 1 重跑并覆盖 `x8_GET_1.txt`，失败 URL 被 cursor 跳过，或把 5 个
-  URL 的预算误用于默认 PUT/PATCH/DELETE。
+  URL 的预算误用于默认 PUT/PATCH/DELETE；把 `next_index=0.5` 转为 `0` 或把
+  `complete=0` 当作合法 `false`。
 
 ### 6. Tests Required
 
-- `tests/test_param_discovery.py`：默认/显式预算、GET/POST batch cursor、summary/archive
-  保留、重复 resume no-op、输入/auth 变化零写入、损坏 summary、失败重试和非正预算。
+- `tests/test_practical_audit_fixes.py`：严格 cursor 类型在执行前拒绝且全文件字节与 Store
+  binding 不变；生产者 cursor 往返、空输入 complete no-op、blocked 重试不跳过位置且保留旧 summary。
+  参数发现回归还须覆盖默认/显式预算、GET/POST batch、输入/auth 变化、损坏 summary 和非正预算。
 - `tests/test_action_queue.py`：partial cursor 的 queue action 保留 `--resume` hint，
   metadata merge 仍幂等且拒绝敏感字段。
 - `git diff --check`、`python3 -m compileall -q tools/param_discovery.py`。
@@ -1544,6 +1517,10 @@ build_context_pack(...)["card_catalog"]
 - 复用已有卡片与 Skill，不因框架名新增固定 `hunt-*` Skill、Lane 或知识状态 owner。
 - 卡片保存适用条件、机制、必要证据、反例和停止条件；注册表保存登记与加载角色。
   框架机制与跨组件视图差异继续在现有卡片中维护，不复制成 Python 规则或强制提示词。
+- Context 文本目录按 `layer/load` 分组，每项保留完整 `file/purpose`；空目录明确显示 None。
+  渲染不修改 Pack JSON、目录集合、事实或分页。不得借减少重复文本恢复自动选卡。
+- `knowledge_registry.load_registry()` 优先 `CSafeLoader`，缺扩展回退 `SafeLoader`；
+  坏 YAML、非映射根和 Python 标签仍拒绝，不引入跨调用缓存或修改 frontmatter 解析。
 - Claude 可直接运用已有知识。存在信息缺口时，短卡一次读完；长卡读取包含前提、方法、
   证据门、反例和停止条件的完整机制单元，再按需展开附录与来源。
 - 预算限制本轮新增上下文，不限制可访问的知识。没有两张卡的硬上限，也不强制先摘要再正文；
@@ -1562,7 +1539,8 @@ build_context_pack(...)["card_catalog"]
 
 ### 5. Tests Required
 
-- `tests/test_context_pack.py`：目录投影、空兼容字段、目标事实与引用、JSON/文本一致性。
+- `tests/test_context_pack.py`：全目录分组/空目录、空兼容字段、目标事实与引用、渲染不改 JSON。
+- `tests/test_knowledge_registry.py`：两种安全 loader 结果一致，坏/空/非映射 YAML 与 Python 标签拒绝。
 - `tests/test_knowledge_governance.py`：registry 身份、引用和卡片结构；不测试词法自动选路。
 - 卡片或 registry 有实质修改时运行 `python3 tools/knowledge_audit.py --strict`。
 
@@ -1663,16 +1641,20 @@ Scope Review Action Queue -> explicit target-set proof -> active work
 
 ---
 
-## Knowledge recall discovery window
+## Knowledge recall discovery and review admission
 
-`experience_recall` keeps a bounded card-reference window, not a relevance verdict.
-The knowledge source health reports registered and matched counts, exact remaining
-valid matches, ordering, filter type and an absolute `catalog_ref` to the existing
-registry. Native reading of that catalog exposes all registered card paths,
-including entries outside the window or keyword filter. No second registry or
-search service is introduced. Inspect every registered card before reporting
-health; missing or malformed cards after the display limit must remain visible.
-An empty keyword match is not evidence that relevant knowledge does not exist.
+Context Pack publishes the registry catalog for discovery, not an approval claim.
+Question recall uses `experience_recall.py query`; chronological Store expansion
+uses `history` and a different cursor. Current owner facts are never ranked away.
+Both legacy display and current query share `recall_sources.acquire_knowledge` and
+`knowledge_review.read_published_review`: active tested/proven maturity alone is
+insufficient without a current publication-byte receipt. Registry method ID/file
+uniqueness is checked before active/retired filtering; ambiguity rejects admission.
+Malformed optional knowledge reports partial/unavailable without hiding current
+facts. Frontmatter dates serialize as ISO strings; unsupported types are errors.
+Review withdrawal, body changes and retired status invalidate indexed source
+bindings. Native reading remains available with the actual unreviewed status.
+
 
 ## Neutral Recon inventory
 

@@ -2,7 +2,7 @@
 id: xss-client-injection
 type: technique-card
 related_skills:
-  - web2-vuln-classes
+  - src-hunting
   - triage-validation
 trigger_tags:
   - xss
@@ -82,7 +82,7 @@ source_refs:
 
 ## 能力定位
 
-本卡给 `web2-vuln-classes` 补充 XSS 输入面发现、上下文识别、payload 家族和最小验证思路。它只提供知识和联想，不决定测试顺序，也不替代浏览器边界类检查。
+本卡给 `src-hunting` 补充 XSS 输入面发现、上下文识别、payload 家族和最小验证思路。它只提供知识和联想，不决定测试顺序，也不替代浏览器边界类检查。
 
 ## 触发信号
 
@@ -138,7 +138,7 @@ source_refs:
 
 ## 关联 Skills
 
-- `web2-vuln-classes`
+- `src-hunting`
 - `triage-validation`
 
 ## 晋升到 Skill / Queue 的条件

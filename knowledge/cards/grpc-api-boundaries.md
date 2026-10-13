@@ -3,9 +3,8 @@ id: grpc-api-boundaries
 type: technique-card
 related_skills:
   - web2-recon
-  - web2-vuln-classes
+  - src-hunting
   - triage-validation
-  - security-arsenal
 trigger_tags:
   - grpc
   - grpc-web
@@ -91,14 +90,12 @@ grpcurl -H 'authorization: Bearer TOKEN' HOST:PORT package.Service/Method
 ## 关联 Skills
 
 - `web2-recon`
-- `web2-vuln-classes`
+- `src-hunting`
 - `triage-validation`
-- `security-arsenal`
-
 ## 晋升到 Skill / Queue 的条件
 
 - 只有 transport/reflection/schema 信号时回到 recon/API surface。
-- 已有可调用 method 和身份/对象字段时，交给 `web2-vuln-classes` 的 API/access-control lane。
+- 已有可调用 method 和身份/对象字段时，交给 `src-hunting` 的 API/access-control lane。
 - 非预期数据或状态影响可复现后，进入 `triage-validation`。
 
 ## 可晋升经验

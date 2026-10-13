@@ -160,17 +160,16 @@ def _resume_method_cursor(
             raise ValueError(f"--resume cursor for {method} is invalid")
         if saved.get("input_url_digest") != current["input_url_digest"] or saved.get("accepted_url_digest") != current["accepted_url_digest"]:
             raise ValueError(f"--resume input URL digest changed for {method}")
-        try:
-            total = int(saved["total"])
-            next_index = int(saved["next_index"])
-        except (KeyError, TypeError, ValueError) as exc:
-            raise ValueError(f"--resume cursor for {method} is invalid") from exc
+        total = saved.get("total")
+        next_index = saved.get("next_index")
+        if type(total) is not int or type(next_index) is not int:
+            raise ValueError(f"--resume cursor for {method} is invalid")
         if total != len(current["accepted"]) or not 0 <= next_index <= total:
             raise ValueError(f"--resume cursor for {method} does not match the input list")
-        if bool(saved.get("complete")) != (next_index >= total):
+        if type(saved.get("complete")) is not bool or saved["complete"] != (next_index >= total):
             raise ValueError(f"--resume completion marker for {method} is invalid")
         result[method] = {"next_index": next_index, "total": total, "complete": next_index >= total}
-    if bool(cursor.get("complete")) != all(row["complete"] for row in result.values()):
+    if type(cursor.get("complete")) is not bool or cursor["complete"] != all(row["complete"] for row in result.values()):
         raise ValueError("--resume completion marker is invalid")
     return result
 

@@ -818,3 +818,13 @@ capabilities:
       - idor
       - cross-actor
       - bola
+  - id: web2-evidence-contracts
+    kind: playbook
+    file: knowledge/playbooks/web2-evidence-contracts.md
+    layer: playbook
+    load: gated
+    purpose: validate
+    triggers:
+      - evidence-gates
+      - web-api-boundary
+    note: Existing Web2 evidence contract migration, not newly validated method knowledge.

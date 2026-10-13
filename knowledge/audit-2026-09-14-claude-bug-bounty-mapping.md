@@ -48,7 +48,7 @@ PoC 最低标准、CVSS 匹配、never-submit、IDOR 双账号、标题公式—
 ## 三、skills 层：12 同名 + 3 ccst 没有
 
 12 个同名 skill 全部改造为契约形态（教学手册 → Entry/Evidence/Stop 契约 + 决策树，
-probe shapes/tool syntax 归模型）。行数：bug-bounty 1,645→108、web2-vuln-classes
+probe shapes/tool syntax 归模型）。行数：src-hunting 1,645→108、src-hunting
 1,838→189、web2-recon 626→224、report-writing 501→145、triage-validation 309→342
 （反向增厚：NEVER SUBMIT 68 行是 AB 评测 T05 证明的校准砝码，保留）。
 
@@ -57,16 +57,16 @@ probe shapes/tool syntax 归模型）。行数：bug-bounty 1,645→108、web2-v
 | 原 skill | 去向 | 判定 |
 |---|---|---|
 | graphql-audit（523 行） | knowledge/cards/graphql.md（88 行触发卡） | 已覆盖 |
-| argus（142 行路由表） | vuln_scanner 自动管线 + web2-vuln-classes Pattern Map | 已覆盖 |
+| argus（142 行路由表） | vuln_scanner 自动管线 + src-hunting Pattern Map | 已覆盖 |
 | client-reverse（292 行） | Pattern Map 签名信号行（86104f1，2026-09-14 补） | 唯一路由缺口，已补一行 |
 
-## 四、原 bug-bounty 百科 163 段的块级去向
+## 四、原 src-hunting 百科 163 段的块级去向
 
 | 原版块 | 去向 | 判定 |
 |---|---|---|
 | 工具命令手册（ffuf/Semgrep/Go binaries，~40%） | 模型知识① + tools/recon_engine.sh 内建 | 不搬 |
-| 漏洞类 checklist（IDOR/SSRF/Race/OAuth/SSTI/ATO 等，~30%） | web2-vuln-classes 决策树 + 57 张活跃卡 | 不搬（逐类盲答全过） |
-| TOP 1% MINDSET（Pre-Hunt 4 步 + Mindset Rules 7 条） | **bb-methodology Developer-View Pre-Hunt Recall 整段保留**（斜体保留原条目名溯源），second-order→second-order-sink 卡、diffs→view-differential 卡、trust boundary 链路升级 4 层→7 层、读披露报告→disclosed-researcher agent、follow money→rules/hunting.md | **整段在位且部分更强** |
+| 漏洞类 checklist（IDOR/SSRF/Race/OAuth/SSTI/ATO 等，~30%） | src-hunting 决策树 + 57 张活跃卡 | 不搬（逐类盲答全过） |
+| TOP 1% MINDSET（Pre-Hunt 4 步 + Mindset Rules 7 条） | **src-hunting Developer-View Pre-Hunt Recall 整段保留**（斜体保留原条目名溯源），second-order→second-order-sink 卡、diffs→view-differential 卡、trust boundary 链路升级 4 层→7 层、读披露报告→disclosed-researcher agent、follow money→rules/hunting.md | **整段在位且部分更强** |
 | 7Q Gate / 4 Gates / Never Submit | triage-validation skill（唯一 owner） | 保留（校准缺口，③+AB 证据） |
 | H1/Bugcrowd/Intigriti/Immunefi 模板 | report-writing + rules/reporting.md | 已有 |
 | Quick Wins / Tech Fingerprinting 表 | scanner 自动查 + intel 命令 + ① | 不搬 |
@@ -105,7 +105,7 @@ probe shapes/tool syntax 归模型）。行数：bug-bounty 1,645→108、web2-v
 | 项 | 落点 | 状态 |
 |---|---|---|
 | OOB marker 归因（唯一幸存工程借鉴） | oast_listen.py markers 子命令 | f3554af 已落地 |
-| client-reverse 签名路由缺口 | web2-vuln-classes Pattern Map 一行 | 86104f1 已落地 |
+| client-reverse 签名路由缺口 | src-hunting Pattern Map 一行 | 86104f1 已落地 |
 | escalation 话术 | backlog | 实战触发再议 |
 | 其余全部（163 段 + 20 条 rule + 12 skill + 10 agent） | 已有更强形态 / 判①归模型 / 不适用 | 无动作 |
 

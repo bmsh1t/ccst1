@@ -4,7 +4,7 @@ type: payload-pack
 related_cards:
   - knowledge/cards/controlled-rce-impact.md
 related_skills:
-  - web2-vuln-classes
+  - src-hunting
 trigger_tags:
   - command-injection
   - rce

@@ -39,11 +39,11 @@ knowledge/
 
 同时把现有资料纳入知识库层：
 
-- `rules/playbook-router.md`：证据到参考资料和工具的路由器
+- `knowledge/playbooks/web2-evidence-contracts.md`：证据到参考资料和工具的路由器
 
 ## 使用原则
 
-1. 默认只读 `knowledge/index.md`。
+1. 按当前问题直接读取完整方法或可选索引；没有固定全表开场，允许直接深读和跨域组合。
 2. 只有当前目标、skill、证据或假设命中时，才加载具体知识卡。
 3. 知识卡提供思路分支、项目边界、证据门、补充 checklist、最小验证和误判/死路；
    不自动触发高风险动作，也不接管
@@ -91,3 +91,9 @@ knowledge/
 ```
 
 现有 active 卡已完成 v2 frontmatter 和 `Quick Recall` 迁移；新增经验也必须按这个结构沉淀。
+
+## 方法承接
+
+`knowledge/playbooks/web2-evidence-contracts.md` 完整承接既有 Web/API 证据门与反例，
+按需直接读对应段；不把摘要命中视为验证。新方法候选保留在 `knowledge/candidates/`，
+只有完整单元审核和晋升后才由 registry 公开，详见 `promotion-rules.md`。

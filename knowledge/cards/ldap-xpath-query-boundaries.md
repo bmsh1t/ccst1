@@ -3,9 +3,8 @@ id: ldap-xpath-query-boundaries
 type: technique-card
 related_skills:
   - web2-recon
-  - web2-vuln-classes
+  - src-hunting
   - triage-validation
-  - security-arsenal
 trigger_tags:
   - ldap-injection
   - ldap-filter
@@ -85,10 +84,8 @@ source_refs: []
 ## 关联 Skills
 
 - `web2-recon`
-- `web2-vuln-classes`
+- `src-hunting`
 - `triage-validation`
-- `security-arsenal`
-
 ## 晋升到 Skill / Queue 的条件
 
 - 只有目录/错误指纹时保持 Signal，并继续确认 query context。

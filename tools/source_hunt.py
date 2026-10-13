@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
+import stat
+import tempfile
 from pathlib import Path
 
 from repo_ci_scan import scan_repo_ci
@@ -34,6 +38,57 @@ def _exposure_dir(target: str, repo_root: str | Path | None = None) -> Path:
 
 def _write_json(path: Path, payload) -> None:
     _write_text_atomic(path, json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
+
+
+def capture_source_files(repo_path: str, paths: list[str], exposure_dir: Path) -> dict:
+    """Capture only explicitly selected UTF-8 files, not a repository audit."""
+    root = Path(repo_path).resolve()
+    rows = []
+    selected = list(dict.fromkeys(paths))
+    for name in selected[:32]:
+        row = {"file_path": name, "status": "unavailable"}
+        try:
+            relative = Path(name)
+            path = root / relative
+            if not name or relative.is_absolute() or ".." in relative.parts or path.resolve() != path:
+                raise ValueError("source path must be repository-relative without symlinks")
+            if not stat.S_ISREG(path.stat().st_mode):
+                raise ValueError("source path is not a regular file")
+            with path.open("rb") as handle:
+                data = handle.read(1024 * 1024 + 1)
+            if len(data) > 1024 * 1024:
+                raise ValueError("source exceeds 1 MiB; choose a smaller existing material")
+            content = data.decode("utf-8")
+        except (OSError, ValueError) as exc:
+            row["reason"] = str(exc)
+            rows.append(row)
+            continue
+        digest = hashlib.sha256(data).hexdigest()
+        directory = exposure_dir / "repo_source_files"
+        if directory.resolve() != directory:
+            raise ValueError("source artifact directory must not traverse symlinks")
+        directory.mkdir(parents=True, exist_ok=True)
+        artifact = directory / f"{digest}.txt"
+        if artifact.is_symlink() or (artifact.exists() and artifact.read_bytes() != data):
+            raise ValueError("existing source snapshot differs from its content identity")
+        with tempfile.NamedTemporaryFile(dir=directory, delete=False) as handle:
+            temporary = Path(handle.name)
+        try:
+            _write_text_atomic(temporary, content)
+            try:
+                os.link(temporary, artifact)
+            except FileExistsError:
+                if artifact.is_symlink() or artifact.read_bytes() != data:
+                    raise ValueError("source snapshot changed during publication")
+        finally:
+            temporary.unlink(missing_ok=True)
+        row.update(status="ok", sha256=digest, size_bytes=len(data),
+                   artifact=artifact.relative_to(exposure_dir).as_posix())
+        rows.append(row)
+    return {"status": "partial" if len(selected) > 32 or any(r["status"] != "ok" for r in rows)
+            else "complete" if selected else "not_requested",
+            "files": rows, "deferred_paths": selected[32:],
+            "scope": "explicit files only; deployment correspondence unknown"}
 
 
 def render_repo_summary(
@@ -83,9 +138,13 @@ def _write_result_bundle(
     *,
     repo_root: str | Path | None = None,
     workflow_scan: dict | None = None,
+    source_capture: dict | None = None,
 ) -> Path:
     exposure_dir = _exposure_dir(target, repo_root)
-    _write_json(exposure_dir / "repo_source_meta.json", meta.to_dict())
+    payload = meta.to_dict()
+    if source_capture is not None:
+        payload["source_capture"] = source_capture
+    _write_json(exposure_dir / "repo_source_meta.json", payload)
     _write_json(exposure_dir / "repo_secrets.json", [finding.to_dict() for finding in secret_findings])
     _write_json(exposure_dir / "repo_ci_findings.json", [finding.to_dict() for finding in ci_findings])
     _write_text_atomic(
@@ -103,6 +162,7 @@ def run_source_hunt(
     allow_large_repo: bool = False,
     interactive: bool = False,
     repo_root: str | Path | None = None,
+    source_files: list[str] | None = None,
 ) -> dict:
     try:
         source_meta, resolved_repo_path, temp_dir = acquire_repo_source(
@@ -127,9 +187,10 @@ def run_source_hunt(
     try:
         secret_findings = scan_repo_secrets(resolved_repo_path)
         exposure_dir = _exposure_dir(target, repo_root)
+        source_capture = capture_source_files(resolved_repo_path, source_files or [], exposure_dir)
         ci_findings = scan_repo_ci(resolved_repo_path, artifact_dir=exposure_dir, repo_commit=source_meta.repo_commit)
         workflow_scan = json.loads((exposure_dir / "repo_workflows.json").read_text(encoding="utf-8"))
-        if workflow_scan["status"] != "complete":
+        if workflow_scan["status"] != "complete" or source_capture["status"] == "partial":
             source_meta.status = "partial"
         exposure_dir = _write_result_bundle(
             target,
@@ -138,6 +199,7 @@ def run_source_hunt(
             ci_findings,
             repo_root=repo_root,
             workflow_scan=workflow_scan,
+            source_capture=source_capture,
         )
         return {
             "status": source_meta.status,
@@ -146,6 +208,7 @@ def run_source_hunt(
             "secret_count": len(secret_findings),
             "ci_count": len(ci_findings),
             "workflow_status": workflow_scan["status"],
+            "source_capture": source_capture,
         }
     finally:
         if temp_dir is not None:
@@ -157,6 +220,8 @@ def main(argv=None) -> int:
     parser.add_argument("--target", required=True, help="Target/program name used under findings/<target>/")
     parser.add_argument("--repo-url", default="", help="GitHub public repo URL or owner/repo reference")
     parser.add_argument("--repo-path", default="", help="Local repository path already available on disk")
+    parser.add_argument("--source-file", action="append", default=[],
+                        help="Capture one repository-relative UTF-8 file (repeatable; 32 files, 1 MiB each)")
     parser.add_argument("--repo-root", default="", help="Repository root for findings output")
     parser.add_argument(
         "--allow-large-repo",
@@ -173,11 +238,15 @@ def main(argv=None) -> int:
             allow_large_repo=args.allow_large_repo,
             interactive=True,
             repo_root=args.repo_root or None,
+            source_files=args.source_file,
         )
     except (OSError, ValueError, RuntimeError) as exc:
         parser.error(str(exc))
     summary_path = Path(result["exposure_dir"]) / "repo_summary.md"
     print(summary_path.read_text(encoding="utf-8"))
+    if result.get("source_capture"):
+        print("Selected source capture: " + result["source_capture"]["status"]
+              + "; details: repo_source_meta.json/source_capture")
     return 0 if result["status"] == "ok" else 2
 
 

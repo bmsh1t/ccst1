@@ -220,6 +220,29 @@ class KnowledgeRegistry:
     def by_kind(self, kind: str) -> tuple[dict[str, Any], ...]:
         return tuple(item for item in self.capabilities if item.get("kind") == kind)
 
+    def method_entries(self) -> tuple[dict[str, Any], ...]:
+        """Validate all knowledge identities before filtering status or admitting bytes."""
+        result = []
+        ids: set[str] = set()
+        files: set[str] = set()
+        for entry in self.capabilities:
+            kind = entry.get("kind")
+            if not isinstance(kind, str):
+                raise KnowledgeRegistryError(f"{self.path}: capability kind must be a string")
+            if kind not in {"card", "playbook", "payload-pack"}:
+                continue
+            identity, file = entry.get("id"), entry.get("file")
+            if not isinstance(identity, str) or not identity or not isinstance(file, str) or not file:
+                raise KnowledgeRegistryError(f"{self.path}: knowledge method requires string id/file")
+            if identity in ids or file in files:
+                raise KnowledgeRegistryError(f"{self.path}: ambiguous knowledge identity: {identity} / {file}")
+            if entry.get("status", "active") not in ("active", "retired"):
+                raise KnowledgeRegistryError(f"{self.path}: invalid knowledge status: {identity}")
+            ids.add(identity)
+            files.add(file)
+            result.append(entry)
+        return tuple(result)
+
     def card_paths(self, *, include_retired: bool = False) -> dict[str, str]:
         """返回 card ID -> repo-relative file，重复或缺失身份时 fail-fast。
 
@@ -284,7 +307,10 @@ def load_registry(
     """读取完整 YAML；语法或根结构错误立即向调用方报告。"""
     path = resolve_registry_path(repo_root, fallback_root=fallback_root)
     try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        raw = yaml.load(
+            path.read_text(encoding="utf-8"),
+            Loader=getattr(yaml, "CSafeLoader", yaml.SafeLoader),
+        )
     except OSError as exc:
         raise KnowledgeRegistryError(f"无法读取知识能力注册表 {path}: {exc}") from exc
     except yaml.YAMLError as exc:

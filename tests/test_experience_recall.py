@@ -5,16 +5,68 @@ Store 经验 + 已审核知识、目标隔离、查询与完整分页；旧文�
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
 import pytest
 
-from tools.experience_recall import build_recall_view, main
+from tools.experience_recall import build_recall_view, history_view, main
+from tools.knowledge_promote import review_existing
+from tools.knowledge_registry import load_registry
 from tools.target_store import TargetStore, StoreError
 
 
-def _seed(repo: Path, *, target: str = "t.example", other: str = "other.example", current: bool = True) -> None:
+def _write_card(repo: Path, card_id: str) -> None:
+    skill = repo / "skills" / "src-hunting" / "SKILL.md"
+    skill.parent.mkdir(parents=True, exist_ok=True)
+    skill.write_text("---\nname: src-hunting\n---\nSynthetic investigation fixture.\n")
+    card = repo / "knowledge" / "cards" / f"{card_id}.md"
+    card.parent.mkdir(parents=True, exist_ok=True)
+    card.write_text(f"""---
+id: {card_id}
+type: technique-card
+related_skills: [src-hunting]
+trigger_tags: [basket, idor]
+risk: low
+maturity: tested
+load_priority: low
+deep_refs: []
+---
+# Synthetic basket method
+## Quick Recall
+Compare the owner and peer response bodies.
+## 触发信号
+Two actors have distinct test-owned objects.
+## 思路分支 / 最小验证
+Change only the requesting actor.
+## 证据
+Compare the private object marker, not only the status code.
+## 常见误判 / 死路
+A successful status alone does not establish access.
+## 下一步或晋升
+Preserve the response evidence and unresolved conditions.
+""")
+
+
+def _review_card(repo: Path, card_id: str) -> None:
+    card = repo / "knowledge" / "cards" / f"{card_id}.md"
+    review = repo / "knowledge" / "candidates" / f"{card_id}.review.json"
+    review.parent.mkdir(parents=True, exist_ok=True)
+    review.write_text(json.dumps({
+        "schema_version": 1, "card_id": card_id, "decision": "accept",
+        "candidate_sha256": hashlib.sha256(card.read_bytes()).hexdigest(),
+        "reviewer": "synthetic-test-reviewer", "reviewed_at": "2026-10-13T00:00:00Z",
+        "rationale": "Retain the synthetic response-evidence contract",
+        "transferability": "Synthetic owner/peer comparison",
+        "intake_kind": "existing-knowledge-review", "existing_source": "synthetic test fixture",
+    }))
+    result = review_existing(repo, card_id=card_id, review_ref=review.relative_to(repo).as_posix())
+    assert result["reviewed"] == card_id
+
+
+def _seed(repo: Path, *, target: str = "t.example", other: str = "other.example", current: bool = True,
+          reviewed: bool = True) -> None:
     if current:
         store = TargetStore(repo, target)
         store.initialize()
@@ -88,13 +140,8 @@ def _seed(repo: Path, *, target: str = "t.example", other: str = "other.example"
                       "outcome": "false-positive"}) + "\n",
         encoding="utf-8",
     )
-    # 知识卡（审计 F5：准入走 registry，不再 glob 目录）
-    cards = repo / "knowledge" / "cards"
-    cards.mkdir(parents=True, exist_ok=True)
-    (cards / "basket-idor.md").write_text(
-        "---\nid: basket-idor\nmaturity: tested\ntrigger_tags:\n  - basket\n  - idor\n---\nbody",
-        encoding="utf-8",
-    )
+    # Knowledge admission requires registration and a current published-byte review.
+    _write_card(repo, "basket-idor")
     (repo / "knowledge" / "capabilities.yaml").write_text(
         "schema_version: 1\n"
         "contracts:\n"
@@ -107,6 +154,8 @@ def _seed(repo: Path, *, target: str = "t.example", other: str = "other.example"
         "    triggers:\n      - basket\n      - idor\n",
         encoding="utf-8",
     )
+    if reviewed:
+        _review_card(repo, "basket-idor")
 
 
 def test_view_combines_store_experiences_and_registered_knowledge(tmp_path):
@@ -193,12 +242,35 @@ def test_primary_recall_pages_without_losing_conditions_or_history(tmp_path, cap
     }
     expanded = build_recall_view(tmp_path, target="t.example", kinds=["lead"], experience_id="lead-0")
     assert expanded["target_entries"][0]["conditions"] == "same tenant"
+    history = history_view(tmp_path, target="t.example", experience_id="lead-0")
+    assert history["experiences"]["items"][0]["conditions"] == "same tenant"
     assert main(["--repo-root", str(tmp_path), "--target", "t.example", "--kind", "lead"]) == 0
     output = capsys.readouterr().out
     assert "conditions: same tenant" in output
     assert "reopen_when: When actor changes" in output
     assert "next_intent: Compare peer response" in output
     assert "More target experiences: 2" in output
+
+
+@pytest.mark.parametrize("reader", [build_recall_view, history_view], ids=["recall", "history"])
+@pytest.mark.parametrize("cursor", ["INVALID", ""])
+def test_recall_rejects_cursor_with_id_before_current_reads(tmp_path, monkeypatch, reader, cursor):
+    store = TargetStore(tmp_path, "t.example")
+    store.initialize()
+    store.remember(command_id="lead-0", kind="hypothesis", statement="Owner boundary",
+                   conditions="same tenant", reopen_when="actor changes", next_intent="compare peer",
+                   evidence=[], actor="test")
+    binding = store.binding()
+    before = {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+
+    def unexpected_current_read(*args, **kwargs):
+        raise AssertionError("invalid option pair reached the current-fact owner")
+
+    monkeypatch.setattr("tools.recall_sources.acquire_current", unexpected_current_read)
+    with pytest.raises(ValueError, match="--cursor or --id, not both"):
+        reader(tmp_path, target="t.example", cursor=cursor, experience_id="lead-0")
+    assert {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
+    assert store.binding() == binding
 
 
 def test_isolation_excludes_other_targets_private_episodes(tmp_path):
@@ -275,8 +347,12 @@ def test_cli_json_roundtrip(tmp_path, capsys):
     rc = main(["--repo-root", str(tmp_path), "--target", "t.example", "--json"])
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
     assert payload["target"] == "t.example"
+    direct = build_recall_view(tmp_path, target="t.example")
+    assert payload["current"]["binding"] == direct["current"]["binding"]
+    assert payload["target_entries"] == direct["target_entries"]
+    assert payload["target_page"] == direct["target_page"]
 
 
 def test_cli_human_readable_contains_sources(tmp_path, capsys):
@@ -292,7 +368,7 @@ def test_cli_human_readable_contains_sources(tmp_path, capsys):
 
 
 def test_knowledge_cards_require_registry_registration(tmp_path):
-    """审计 F5：目录里未登记的卡不得进入召回（准入 = registry，不是目录位置）。"""
+    """Registration and a published review are both necessary for admission."""
     _seed(tmp_path)
     cards = tmp_path / "knowledge" / "cards"
     # 未登记 sentinel：与登记卡同目录、frontmatter 齐全，但不在 registry。
@@ -306,6 +382,23 @@ def test_knowledge_cards_require_registry_registration(tmp_path):
     assert not any("unregistered-sentinel" in r for r in refs), (
         "unregistered card leaked into recall as reviewed knowledge"
     )
+
+
+@pytest.mark.parametrize("damage", ["missing_review", "withdrawn_review", "changed_body"])
+def test_knowledge_admission_rejects_missing_or_invalidated_review(tmp_path, damage):
+    _seed(tmp_path, reviewed=damage != "missing_review")
+    if damage == "withdrawn_review":
+        (tmp_path / "knowledge/candidates/basket-idor.review.json").unlink()
+    elif damage == "changed_body":
+        card = tmp_path / "knowledge/cards/basket-idor.md"
+        card.write_text(card.read_text() + "\nChanged after review.\n")
+    store = TargetStore(tmp_path, "t.example")
+    before = store.binding()
+    view = build_recall_view(tmp_path, target=store.target)
+    assert view["knowledge_cards"] == []
+    assert view["source_health"]["knowledge"]["status"] != "ready"
+    assert view["counts"]["target_entries"] == 5
+    assert store.binding() == before
 
 
 def test_knowledge_cards_empty_registry_returns_no_cards(tmp_path):
@@ -355,30 +448,33 @@ def test_truncation_marker_boundary_is_exact(tmp_path: Path) -> None:
 def test_knowledge_window_exposes_catalog_and_late_damage(tmp_path, capsys):
     _seed(tmp_path)
     registry = tmp_path / 'knowledge' / 'capabilities.yaml'
-    with registry.open('a') as out:
-        for index in range(12):
-            card_id = f'zz-card-{index:02}'
+    for index in range(12):
+        card_id = f'zz-card-{index:02}'
+        with registry.open('a') as out:
             out.write(f'  - id: {card_id}\n    kind: card\n'
                       f'    file: knowledge/cards/{card_id}.md\n'
                       '    layer: case-router\n    load: on-demand\n    purpose: validate\n'
                       '    triggers: [basket]\n')
-            if index < 11:
-                (tmp_path / 'knowledge' / 'cards' / f'{card_id}.md').write_text(
-                    f'---\nid: {card_id}\ntrigger_tags: [basket]\n---\nbody')
+        if index < 11:
+            _write_card(tmp_path, card_id)
+            _review_card(tmp_path, card_id)
     before = registry.read_bytes()
     view = build_recall_view(tmp_path, target='t.example', kinds=['knowledge_card'])
     health = view['source_health']['knowledge']
     assert len(view['knowledge_cards']) == 10
-    assert health['registered_count'] == 13
+    assert len(load_registry(tmp_path).method_entries()) == 13
+    assert health['count'] == 12
     assert health['matched_count'] == 12 and health['remaining'] == 2
     assert health['status'] == 'partial' and health['invalid_count'] == 1
+    assert health['errors'][0]['ref'] == 'knowledge/cards/zz-card-11.md'
     assert view['counts']['truncated_windows'] == 1
     assert Path(health['catalog_ref']).read_bytes() == before
     assert 'zz-card-10' in Path(health['catalog_ref']).read_text()
     miss = build_recall_view(tmp_path, target='t.example', query='支付回调')
     assert miss['knowledge_cards'] == []
     assert miss['source_health']['knowledge']['filter'] == 'keyword_only'
-    assert miss['source_health']['knowledge']['registered_count'] == 13
+    assert miss['source_health']['knowledge']['count'] == 12
+    assert len(load_registry(tmp_path).method_entries()) == 13
     assert main(['--repo-root', str(tmp_path), '--target', 't.example', '--query', '支付回调']) == 0
     assert str(registry) in capsys.readouterr().out
     assert registry.read_bytes() == before

@@ -2,7 +2,7 @@
 id: path-traversal-file-read
 type: technique-card
 related_skills:
-  - web2-vuln-classes
+  - src-hunting
   - triage-validation
 trigger_tags:
   - path-traversal
@@ -27,7 +27,7 @@ deep_refs: []
 
 ## 能力定位
 
-本卡给 `web2-vuln-classes` 补充文件选择器识别、路径解析差异和 file-read 链路思路。
+本卡给 `src-hunting` 补充文件选择器识别、路径解析差异和 file-read 链路思路。
 它提供技巧和 checklist，不替代红线、覆盖 gate 或 `triage-validation`。
 
 ## 触发信号
@@ -77,9 +77,8 @@ deep_refs: []
 
 ## 关联 Skills
 
-- `web2-vuln-classes`
+- `src-hunting`
 - `triage-validation`
-- `bb-methodology`
 
 ## 晋升到 Skill / Queue 的条件
 

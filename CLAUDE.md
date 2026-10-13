@@ -118,7 +118,7 @@ LOAD -> REVIEW EVIDENCE -> ENRICH -> TEST -> CHAIN -> RECORD
 - `skills/runtime-protocol.md`：Target -> Skill -> Knowledge -> Checks -> Write-back；
   `rules/context-loading.md`：最小上下文装配。
 - `commands/hunt.md`、`commands/autopilot.md`、`docs/autopilot-lanes.md`：执行和 lane 契约。
-- `knowledge/index.md`、`knowledge/capabilities.yaml`、`rules/playbook-router.md`：知识治理和路由。
+- `knowledge/index.md`、`knowledge/capabilities.yaml`、`knowledge/playbooks/web2-evidence-contracts.md`：知识治理和路由。
 - `docs/architecture-contract.md`：五平面、状态 owner、projection、memory 和变更准入的唯一架构契约。
 - `docs/tool-index.md`：工具 CLI；`docs/resin-proxy.md`：代理配置；
   `templates/phased-surface-validation-plan.md`：分阶段验证模板。

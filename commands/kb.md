@@ -32,19 +32,20 @@ description: 使用知识库层为当前 Skill 补充思路、案例和停止条
 
 ### `/kb index`
 
-读取 `knowledge/index.md`，只输出可用知识卡、外部参考和加载建议。
+读取 `knowledge/index.md`，输出登记目录与加载建议；目录发现不代表内容已审。
+自动共享召回只纳入当前正文审核绑定有效的方法；未审正文原生读取时保持未审/待核实标签。
 
 ### `/kb suggest`
 
-基于当前目标记忆和当前任务，选择 1-2 张最相关知识卡。
+基于当前目标事实和信息缺口选读完整方法，不设固定卡数或全表开场。
 
 建议读取顺序：
 
-1. `memory/goals/active.json`
+1. 当前明确目标的 `target_memory.py show TARGET`（选择指针不代替目标 owner）
 2. `knowledge/index.md`
 3. 当前 Skill
 4. 命中的知识卡
-5. 必要时读取 `rules/playbook-router.md`
+5. 必要时读取 `knowledge/playbooks/web2-evidence-contracts.md`
 
 ### `/kb card <name>`
 

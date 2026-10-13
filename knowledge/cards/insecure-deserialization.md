@@ -2,7 +2,7 @@
 id: insecure-deserialization
 type: technique-card
 related_skills:
-  - web2-vuln-classes
+  - src-hunting
   - triage-validation
 trigger_tags:
   - deserialization
@@ -34,7 +34,7 @@ deep_refs:
 
 ## 能力定位
 
-本卡给 `web2-vuln-classes` 提供 serialized object 的识别、完整性判断和利用分支。
+本卡给 `src-hunting` 提供 serialized object 的识别、完整性判断和利用分支。
 它不默认武器化 gadget chain，RCE 影响证明交给 `controlled-rce-impact`。
 
 ## 触发信号
@@ -98,9 +98,8 @@ deep_refs:
 
 ## 关联 Skills
 
-- `web2-vuln-classes`
+- `src-hunting`
 - `triage-validation`
-- `bb-methodology`
 
 ## 晋升到 Skill / Queue 的条件
 

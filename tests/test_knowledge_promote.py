@@ -9,6 +9,7 @@ registry 目录不含未登记卡（Pack 不可见），audit 的 document-unreg
 from __future__ import annotations
 
 import json
+import hashlib
 import sys
 from pathlib import Path
 
@@ -39,7 +40,7 @@ related_skills:
 trigger_tags:
   - {card_id}
 risk: low
-maturity: draft
+maturity: tested
 load_priority: low
 deep_refs: []
 source_refs:
@@ -88,6 +89,19 @@ updated: 2026-09-12
         encoding="utf-8",
     )
 
+    _review_candidate(repo, card_id)
+
+
+def _review_candidate(repo: Path, card_id: str = "t-cross-actor") -> None:
+    candidate = repo / "knowledge" / "candidates" / f"{card_id}.md"
+    candidate.with_suffix(".review.json").write_text(json.dumps({
+        "schema_version": 1, "card_id": card_id, "decision": "accept",
+        "candidate_sha256": hashlib.sha256(candidate.read_bytes()).hexdigest(),
+        "reviewer": "synthetic-test-reviewer", "reviewed_at": "2026-10-11T00:00:00Z",
+        "rationale": "Preserve the synthetic evidence contract", "transferability": "Synthetic owner/peer comparison",
+        "intake_kind": "existing-contract-migration", "existing_source": "synthetic test fixture",
+    }))
+
 
 def test_promote_moves_registers_and_passes_audit(tmp_path):
     _seed_candidate(tmp_path)
@@ -95,6 +109,11 @@ def test_promote_moves_registers_and_passes_audit(tmp_path):
     assert result["promoted"] == "t-cross-actor"
     assert result["audit"] == "strict-pass"
     assert result["catalog_discoverable"] is True
+    published = (tmp_path / "knowledge/cards/t-cross-actor.md").read_bytes()
+    assert result["published_sha256"] == hashlib.sha256(published).hexdigest()
+    assert result["replaced_refs"] == {
+        "evidence/t.example/probe/p1.json": "knowledge/distill-digests/t.example/p1.json",
+    }
     # 文件移动
     assert not (tmp_path / "knowledge" / "candidates" / "t-cross-actor.md").exists()
     assert (tmp_path / "knowledge" / "cards" / "t-cross-actor.md").is_file()
@@ -132,6 +151,7 @@ def test_store_experience_distills_before_review_and_card_reuses_after_promotion
     candidate.write_text(candidate.read_text().replace(
         "cond text", store.experience("experience-1")["conditions"]
     ))
+    _review_candidate(tmp_path)
     TargetStore(tmp_path, "other.example").initialize()
     assert build_recall_view(tmp_path, target="other.example")["knowledge_cards"] == []
     assert build_recall_view(tmp_path, target="other.example")["target_entries"] == []
@@ -347,16 +367,16 @@ def test_promote_fails_cleanly_on_partial_card_write(tmp_path, monkeypatch):
     import knowledge_promote
 
     _seed_candidate(tmp_path)
-    original_write = Path.write_bytes
+    from tools import distill_digest
+    original_write = distill_digest._atomic_write_text
 
-    def fail_write(self, data):
-        if self.name == "t-cross-actor.md" and self.parent.name == "cards":
-            # 模拟写一半崩溃：先写 17 字节再抛异常
-            original_write(self, b"x" * 17)
+    def fail_write(path, content):
+        if path.parent.parent.name == "cards":
+            path.write_text(content[:17], encoding="utf-8")
             raise OSError("injected partial card write")
-        return original_write(self, data)
+        return original_write(path, content)
 
-    monkeypatch.setattr(Path, "write_bytes", fail_write)
+    monkeypatch.setattr(distill_digest, "_atomic_write_text", fail_write)
     try:
         promote(tmp_path, card_id="t-cross-actor")
     except SystemExit as exc:
@@ -371,3 +391,138 @@ def test_promote_fails_cleanly_on_partial_card_write(tmp_path, monkeypatch):
     assert "id: t-cross-actor" not in (tmp_path / "knowledge" / "capabilities.yaml").read_text(encoding="utf-8")
     result = promote(tmp_path, card_id="t-cross-actor")
     assert result["promoted"] == "t-cross-actor"
+
+
+def test_promote_review_gate_rejects_unreviewed_changed_and_unrun_without_writes(tmp_path):
+    import pytest
+    _seed_candidate(tmp_path)
+    candidate = tmp_path / "knowledge/candidates/t-cross-actor.md"
+    review_path = candidate.with_suffix(".review.json")
+    review = json.loads(review_path.read_text())
+    before = (tmp_path / "knowledge/capabilities.yaml").read_bytes()
+    review_path.unlink()
+    with pytest.raises(SystemExit, match="review unavailable"):
+        promote(tmp_path, card_id="t-cross-actor")
+    review["candidate_sha256"] = "0" * 64
+    review_path.write_text(json.dumps(review))
+    with pytest.raises(SystemExit, match="current candidate bytes"):
+        promote(tmp_path, card_id="t-cross-actor")
+    review["candidate_sha256"] = hashlib.sha256(candidate.read_bytes()).hexdigest()
+    review["intake_kind"] = "new-method"
+    review["three_questions"] = {key: "synthetic judgment" for key in
+                               ("model_seen", "inferable_from_evidence", "real_cost_delta")}
+    review["blind_answer"] = {"verdict": "not-run"}
+    review_path.write_text(json.dumps(review))
+    with pytest.raises(SystemExit, match="completed whole-unit blind answer"):
+        promote(tmp_path, card_id="t-cross-actor")
+    assert candidate.is_file()
+    assert not (tmp_path / "knowledge/cards/t-cross-actor.md").exists()
+    assert (tmp_path / "knowledge/capabilities.yaml").read_bytes() == before
+
+
+def test_review_snapshot_change_is_preserved_without_publication(tmp_path, monkeypatch):
+    import pytest
+    import knowledge_promote
+
+    _seed_candidate(tmp_path)
+    candidate = tmp_path / "knowledge/candidates/t-cross-actor.md"
+    original = knowledge_promote._check_review
+    edited = candidate.read_bytes() + b"\nConcurrent edit\n"
+
+    def check_then_edit(src, card_id, candidate_bytes):
+        result = original(src, card_id, candidate_bytes)
+        src.write_bytes(edited)
+        return result
+
+    monkeypatch.setattr(knowledge_promote, "_check_review", check_then_edit)
+    with pytest.raises(SystemExit, match="candidate changed after review"):
+        promote(tmp_path, card_id="t-cross-actor")
+    assert candidate.read_bytes() == edited
+    assert not (tmp_path / "knowledge/cards/t-cross-actor.md").exists()
+    assert not list((tmp_path / "knowledge/distill-digests").rglob("*.json"))
+
+
+def test_partial_digest_migration_is_rolled_back(tmp_path):
+    import pytest
+
+    _seed_candidate(tmp_path)
+    candidate = tmp_path / "knowledge/candidates/t-cross-actor.md"
+    candidate.write_text(candidate.read_text().replace(
+        '      - "evidence/t.example/probe/p1.json"',
+        '      - "evidence/t.example/probe/p1.json"\n      - "evidence/t.example/probe/missing.json"',
+    ))
+    _review_candidate(tmp_path)
+    before = candidate.read_bytes()
+    registry = tmp_path / "knowledge/capabilities.yaml"
+    registry_before = registry.read_bytes()
+    with pytest.raises(SystemExit, match="raw evidence not found"):
+        promote(tmp_path, card_id="t-cross-actor")
+    assert candidate.read_bytes() == before
+    assert registry.read_bytes() == registry_before
+    assert not (tmp_path / "knowledge/cards/t-cross-actor.md").exists()
+    assert not list((tmp_path / "knowledge/distill-digests").rglob("*.json"))
+
+
+def test_final_catalog_failure_rolls_back_all_publication(tmp_path, monkeypatch):
+    import pytest
+    import knowledge_promote
+
+    _seed_candidate(tmp_path)
+    candidate = tmp_path / "knowledge/candidates/t-cross-actor.md"
+    before = candidate.read_bytes()
+    registry = tmp_path / "knowledge/capabilities.yaml"
+    registry_before = registry.read_bytes()
+    original = knowledge_promote.load_registry
+    calls = 0
+
+    def fail_final(root):
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            raise RuntimeError("injected final catalog failure")
+        return original(root)
+
+    monkeypatch.setattr(knowledge_promote, "load_registry", fail_final)
+    with pytest.raises(SystemExit, match="catalog validation failed"):
+        promote(tmp_path, card_id="t-cross-actor")
+    assert candidate.read_bytes() == before
+    assert registry.read_bytes() == registry_before
+    assert not (tmp_path / "knowledge/cards/t-cross-actor.md").exists()
+    assert not list((tmp_path / "knowledge/distill-digests").rglob("*.json"))
+
+
+def test_audit_failure_preserves_concurrent_candidate_and_digest(tmp_path, monkeypatch):
+    import pytest
+    import knowledge_promote
+    from types import SimpleNamespace
+
+    _seed_candidate(tmp_path)
+    candidate = tmp_path / "knowledge/candidates/t-cross-actor.md"
+    edited = candidate.read_bytes() + b"\nConcurrent edit\n"
+    digest = tmp_path / "knowledge/distill-digests/t.example/p1.json"
+
+    def fail_audit(*args, **kwargs):
+        candidate.write_bytes(edited)
+        digest.write_text("concurrent digest", encoding="utf-8")
+        return SimpleNamespace(returncode=1, stdout="failed", stderr="")
+
+    monkeypatch.setattr(knowledge_promote.subprocess, "run", fail_audit)
+    with pytest.raises(SystemExit, match="recovery conflict; artifact changed"):
+        promote(tmp_path, card_id="t-cross-actor")
+    assert candidate.read_bytes() == edited
+    assert digest.read_text() == "concurrent digest"
+    assert not (tmp_path / "knowledge/cards/t-cross-actor.md").exists()
+    assert "id: t-cross-actor" not in (tmp_path / "knowledge/capabilities.yaml").read_text()
+
+
+def test_promote_does_not_replace_preexisting_digest(tmp_path):
+    import pytest
+
+    _seed_candidate(tmp_path)
+    digest = tmp_path / "knowledge/distill-digests/t.example/p1.json"
+    digest.parent.mkdir(parents=True)
+    digest.write_text("preexisting unrelated bytes", encoding="utf-8")
+    with pytest.raises(SystemExit, match="conflicting existing artifact"):
+        promote(tmp_path, card_id="t-cross-actor")
+    assert digest.read_text() == "preexisting unrelated bytes"
+    assert not (tmp_path / "knowledge/cards/t-cross-actor.md").exists()

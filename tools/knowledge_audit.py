@@ -1023,6 +1023,36 @@ def _audit_document(
     _audit_markdown_links(report, repo_root, path, parsed.body)
 
 
+def _audit_method_relations(report, repo_root, registry):
+    from tools.knowledge_relations import method_descriptor, parse_method_relations
+    from tools.knowledge_review import knowledge_path, read_published_review, sha256
+
+    methods, declarations = {}, []
+    try:
+        entries = registry.method_entries()
+    except KnowledgeRegistryError as exc:
+        _add(report, "error", "method-relations-registry", REGISTRY_PATH, str(exc))
+        return
+    for entry in entries:
+        try:
+            raw = knowledge_path(repo_root, entry["file"]).read_bytes()
+            parsed = parse_knowledge_document(raw.decode("utf-8"))
+            if parsed.frontmatter_error:
+                raise ValueError(parsed.frontmatter_error)
+            metadata = parsed.metadata or {}
+            review = read_published_review(repo_root, entry, raw)
+            methods[entry["id"]] = method_descriptor(entry, metadata, parsed.body, sha256(raw), review)
+            if entry.get("status", "active") == "active" and "method_relations" in metadata:
+                declarations.append((entry, metadata))
+        except (OSError, UnicodeError, ValueError) as exc:
+            methods[entry["id"]] = {"status": "unavailable", "reason": str(exc)}
+    for entry, metadata in declarations:
+        try:
+            parse_method_relations(metadata, method_id=entry["id"], methods=methods)
+        except ValueError as exc:
+            _add(report, "error", "method-relations-invalid", entry["file"], str(exc))
+
+
 def audit_repository(
     repo_root: Path | str = BASE_DIR,
     *,
@@ -1104,6 +1134,7 @@ def audit_repository(
             corpus_dir=resolved_corpus_dir,
             corpus_status=source_state,
         )
+    _audit_method_relations(report, repo, registry)
     return report
 
 

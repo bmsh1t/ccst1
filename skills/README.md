@@ -6,18 +6,18 @@ Skills 是按需加载的执行契约。Claude Code CLI 主会话根据当前目
 
 | 角色 | Skill | 只负责 |
 |---|---|---|
-| 跨阶段协调 | `bug-bounty` | 阶段选择与交接，不复制专项方法或知识卡映射 |
-| 假设策略 | `bb-methodology` | 下一假设、继续、转向、停止与重开条件 |
+| 调查核心 | `src-hunting` | 唯一全局业务模型、竞争解释、实验选择、继续/转向/停止与交接 |
 | 暴露面发现 | `web2-recon` | 选择产生新证据的发现动作 |
-| Web/API 边界判断 | `web2-vuln-classes` | 当前类别的判断分支和证据要求 |
+| Web/API 方法知识 | `knowledge/playbooks/web2-evidence-contracts.md` | 完整方法、证据门和反例；按问题直接读，不是第二个 Skill |
+| 源码专项 | `whitebox-audit` | 按问题分析入口/guard/sink，绑定实际源码字节与部署条件，不持有全局循环 |
 | 凭据验证准备 | `credential-attack` | 来源、模式与准备判断，执行交给现有命令 |
 | 显式专项工作 | `cicd-security`、`mobile-pentest`、`web3-audit`、`meme-coin-audit` | 明确领域目标下的判断与交接 |
 | 验证裁决 | `triage-validation` | 证据是否成立、缺什么、降级或撤回 |
 | 报告表达 | `report-writing` | 已验证结果的格式、措辞和交付 |
-| 共享契约入口 | `security-arsenal` | 按需指向公共执行契约，不作为主路线 |
+| 共享契约索引 | `docs/tool-index.md` | 指向执行 owner，不持有全局调查循环 |
 
 这些是职责关系，不是每轮必须依次执行的流水线。简单任务直接使用对应 Skill，
-只有跨阶段工作或假设选择不清晰时才加载协调或策略 Skill。
+全局问题由调查核心负责，专项仍能独立推理局部问题；同会话阅读不用填写交接表。
 
 ## 原生发现与加载
 
@@ -26,7 +26,7 @@ Skills 是按需加载的执行契约。Claude Code CLI 主会话根据当前目
 实验的 `active_dimension` 与 Runner 实测 `tested_dimensions` 仍由各自 owner 保存。
 
 专项 Skill 的显式范围条件、共享参考和报告职责由各自 description/正文持有；安装仍保留全部
-现有 Skill 目录。这些使用条件不构成第二套路由模式表或每轮必走顺序。
+当前 Skill 目录。这些使用条件不构成第二套路由模式表或每轮必走顺序。
 
 ## 公共边界
 
@@ -37,7 +37,7 @@ Skills 是按需加载的执行契约。Claude Code CLI 主会话根据当前目
 
 ## 修改落点
 
-- 改假设策略：修改 `bb-methodology`；改阶段交接：修改 `bug-bounty`。
+- 改全局调查策略/交接：修改 `src-hunting`；Recon/专项不复制全局循环。
 - 改领域判断：修改对应专项 Skill；改经验或反例：修改已有知识卡。
 - 改召回目录或引用投影：修改 `tools/context_pack.py`，卡片路径继续来自知识 registry；Context Pack 提供有界目录和引用，卡片选择由 AI 按当前信息缺口完成。
 - 改验证裁决：修改 `triage-validation` 及相关执行 owner；改报告格式：只修改 `report-writing`。

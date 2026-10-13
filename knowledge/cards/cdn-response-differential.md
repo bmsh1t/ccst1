@@ -3,8 +3,7 @@ id: cdn-response-differential
 type: technique-card
 related_skills:
   - web2-recon
-  - web2-vuln-classes
-  - bb-methodology
+  - src-hunting
 trigger_tags:
   - cdn
   - dns-differential

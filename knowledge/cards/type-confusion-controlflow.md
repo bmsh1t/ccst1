@@ -2,9 +2,8 @@
 id: type-confusion-controlflow
 type: technique-card
 related_skills:
-  - web2-vuln-classes
+  - src-hunting
   - triage-validation
-  - security-arsenal
 trigger_tags:
   - type-confusion
   - json-shape
@@ -85,10 +84,8 @@ source_refs:
 
 ## 关联 Skills
 
-- web2-vuln-classes
+- src-hunting
 - triage-validation
-- security-arsenal
-
 ## 停止条件
 
 - 参数经严格类型与形状校验

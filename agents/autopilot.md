@@ -77,9 +77,8 @@ save; it does not create another memory store or auto-log a session summary.
 Business impact and workflow evidence guide the question; scanner output is an
 advisory lead, not a clean verdict. `rules/hunting.md` owns value-first posture and
 broad-scanner boundaries. Three modes, AI override and evidence-driven depth live
-in `skills/runtime-protocol.md#21-三模式决策discovery--exploitation--validation-modes`. Business-model maintenance, hypothesis selection
-and rotation live in `skills/bb-methodology/SKILL.md`; cross-stage coordination lives
-in `skills/bug-bounty/SKILL.md`, both on demand. Return business-model updates for
+in `skills/runtime-protocol.md#21-三模式决策discovery--exploitation--validation-modes`. Business-model maintenance, hypothesis selection, rotation and cross-stage
+coordination have one owner: `skills/src-hunting/SKILL.md`, read on demand. Return business-model updates for
 the parent to save. The shared coordinator owns validation/report handoff;
 automatic continuation and budgets stay in `commands/autopilot.md`.
 Do not turn these into a second Core Loop or finish

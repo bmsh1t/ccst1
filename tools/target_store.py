@@ -19,10 +19,14 @@ import uuid
 from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any, Mapping
 from urllib.parse import urlsplit
 
 try:
+    from tools import experience_knowledge, experience_history
+    from tools.migration_receipts import directory_handle
+    from tools.experience_contract import ENTITY_FIELDS, CLAIM_PREDICATES, entity_binding, condition_bindings, validity_window
     from tools.evidence_identity import (
         CANONICAL_VULN_CLASSES, LEDGER_RESULTS, canonical_endpoint_identity, coverage_family, extract_endpoint_path, normalize_family,
     )
@@ -31,6 +35,10 @@ try:
     from tools.target_paths import legacy_target_profile_path, target_raw_artifact_path
     from tools.scope_context import SCHEMA_VERSION as SCOPE_SCHEMA_VERSION, read_scope_source, write_scope_source_locked
 except ImportError:  # pragma: no cover - direct tools/ execution
+    import experience_knowledge
+    import experience_history
+    from migration_receipts import directory_handle
+    from experience_contract import ENTITY_FIELDS, CLAIM_PREDICATES, entity_binding, condition_bindings, validity_window
     from evidence_identity import (  # type: ignore
         CANONICAL_VULN_CLASSES, LEDGER_RESULTS, canonical_endpoint_identity, coverage_family, extract_endpoint_path, normalize_family,
     )
@@ -40,14 +48,146 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from scope_context import SCHEMA_VERSION as SCOPE_SCHEMA_VERSION, read_scope_source, write_scope_source_locked
 
 
-SCHEMA_VERSION = 11
-COMPATIBLE_SCHEMA_VERSIONS = {8, 9, 10, SCHEMA_VERSION}
+SCHEMA_VERSION = 17
+COMPATIBLE_SCHEMA_VERSIONS = {8, 9, 10, 11, 12, 13, 14, 15, 16, SCHEMA_VERSION}
 COVERAGE_REVIEW_STATUSES = ("tested_clean", "tested_finding", "untested", "n_a")
 ENDPOINT_KIND_VALUES = (
     "untriaged", "api_endpoint", "page_route", "static_asset", "public_metadata",
     "route_prefix", "realtime_endpoint", "external_chain_context", "unknown",
 )
 FINAL_ENDPOINT_KIND_SOURCES = frozenset({"ai_triage", "manual", "operator"})
+_EXPERIENCE_PROVENANCE_SCHEMA = """
+CREATE TABLE experience_versions (
+    experience_id TEXT NOT NULL REFERENCES experiences(id),
+    version INTEGER NOT NULL,
+    content_sha256 TEXT NOT NULL,
+    snapshot_json TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    PRIMARY KEY (experience_id, version)
+);
+CREATE TABLE experience_sources (
+    experience_id TEXT NOT NULL REFERENCES experiences(id),
+    experience_version INTEGER NOT NULL,
+    source_experience_id TEXT NOT NULL,
+    source_version INTEGER NOT NULL,
+    purpose TEXT NOT NULL CHECK (purpose IN ('origin','basis')),
+    content_sha256 TEXT NOT NULL,
+    PRIMARY KEY (experience_id, experience_version, source_experience_id, source_version, purpose),
+    FOREIGN KEY (experience_id, experience_version) REFERENCES experience_versions(experience_id, version),
+    FOREIGN KEY (source_experience_id, source_version)
+        REFERENCES experience_versions(experience_id, version)
+);
+CREATE TABLE experience_links (
+    id TEXT PRIMARY KEY NOT NULL,
+    experience_id TEXT NOT NULL REFERENCES experiences(id),
+    target_id TEXT NOT NULL REFERENCES experiences(id),
+    experience_version INTEGER NOT NULL,
+    target_version INTEGER NOT NULL,
+    relation TEXT NOT NULL CHECK (relation IN ('supersedes','refutes','depends_on')),
+    conditions TEXT NOT NULL,
+    rationale TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    CHECK (experience_id != target_id),
+    FOREIGN KEY (experience_id, experience_version) REFERENCES experience_versions(experience_id, version),
+    FOREIGN KEY (target_id, target_version) REFERENCES experience_versions(experience_id, version)
+);
+CREATE INDEX experience_links_target ON experience_links(target_id, relation);
+CREATE TABLE experience_link_events (
+    id TEXT PRIMARY KEY NOT NULL,
+    link_id TEXT NOT NULL UNIQUE REFERENCES experience_links(id),
+    reason TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    recorded_at TEXT NOT NULL
+);
+"""
+_EXPERIENCE_MATERIAL_SCHEMA = """
+CREATE TABLE experience_material_sources (
+    experience_id TEXT NOT NULL,
+    experience_version INTEGER NOT NULL,
+    owner TEXT NOT NULL CHECK(owner IN ('artifact','assessment')),
+    record_id TEXT NOT NULL,
+    source_version INTEGER NOT NULL,
+    content_sha256 TEXT NOT NULL,
+    purpose TEXT NOT NULL CHECK(purpose IN ('origin','basis')),
+    artifact_id TEXT REFERENCES artifacts(id),
+    assessment_id TEXT REFERENCES assessments(id),
+    PRIMARY KEY(experience_id,experience_version,owner,record_id,purpose),
+    FOREIGN KEY(experience_id,experience_version) REFERENCES experience_versions(experience_id,version),
+    CHECK((owner='artifact' AND artifact_id IS NOT NULL AND artifact_id=record_id AND assessment_id IS NULL)
+       OR (owner='assessment' AND assessment_id IS NOT NULL AND assessment_id=record_id AND artifact_id IS NULL))
+);
+CREATE TABLE experience_claims (
+    id TEXT PRIMARY KEY NOT NULL,
+    experience_id TEXT NOT NULL,
+    experience_version INTEGER NOT NULL,
+    predicate TEXT NOT NULL CHECK(predicate IN ('observed_access','uses','produces','requires','enables')),
+    conditions TEXT NOT NULL,
+    timing TEXT NOT NULL,
+    FOREIGN KEY(experience_id,experience_version) REFERENCES experience_versions(experience_id,version)
+);
+CREATE TABLE experience_claim_endpoints (
+    claim_id TEXT NOT NULL REFERENCES experience_claims(id),
+    side TEXT NOT NULL CHECK(side IN ('subject','object')),
+    owner TEXT NOT NULL CHECK(owner IN ('actor','object','session','action','operation','artifact','experience','assessment')),
+    record_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    content_sha256 TEXT NOT NULL,
+    PRIMARY KEY(claim_id,side)
+);
+CREATE TABLE experience_claim_sources (
+    claim_id TEXT NOT NULL REFERENCES experience_claims(id),
+    source_owner TEXT CHECK(source_owner IN ('experience','artifact','assessment')),
+    source_record_id TEXT,
+    source_version INTEGER,
+    source_purpose TEXT CHECK(source_purpose IN ('origin','basis')),
+    operation_id TEXT,
+    step INTEGER,
+    CHECK((source_owner IS NOT NULL AND source_record_id IS NOT NULL AND source_version IS NOT NULL AND source_purpose IS NOT NULL AND operation_id IS NULL AND step IS NULL)
+       OR (source_owner IS NULL AND source_record_id IS NULL AND source_version IS NULL AND source_purpose IS NULL AND operation_id IS NOT NULL AND step IS NOT NULL)),
+    FOREIGN KEY(operation_id,step) REFERENCES observations(operation_id,step)
+);
+"""
+_EXPERIENCE_CONDITION_SCHEMA = """
+CREATE TABLE experience_claim_conditions (
+    claim_id TEXT NOT NULL REFERENCES experience_claims(id),
+    role TEXT NOT NULL,
+    owner TEXT NOT NULL CHECK(owner IN ('actor','object','session','action','operation','artifact','experience','assessment')),
+    record_id TEXT NOT NULL,
+    version INTEGER NOT NULL CHECK(version >= 0),
+    content_sha256 TEXT NOT NULL CHECK(length(content_sha256) = 64),
+    PRIMARY KEY(claim_id,role)
+);
+CREATE TABLE experience_claim_validity (
+    claim_id TEXT PRIMARY KEY NOT NULL REFERENCES experience_claims(id),
+    valid_from TEXT NOT NULL,
+    valid_until TEXT NOT NULL
+);
+"""
+_EXPERIENCE_EXTERNAL_SCHEMA = """
+CREATE TABLE experience_external_sources (
+    experience_id TEXT NOT NULL,
+    experience_version INTEGER NOT NULL,
+    owner TEXT NOT NULL CHECK(owner IN ('knowledge','history')),
+    record_id TEXT NOT NULL,
+    source_version TEXT NOT NULL CHECK(length(source_version)=64),
+    content_sha256 TEXT NOT NULL CHECK(length(content_sha256)=64),
+    purpose TEXT NOT NULL CHECK(purpose IN ('origin','basis')) CHECK(owner!='history' OR purpose='origin'),
+    PRIMARY KEY(experience_id,experience_version,owner,record_id,source_version,purpose),
+    FOREIGN KEY(experience_id,experience_version) REFERENCES experience_versions(experience_id,version)
+);
+CREATE TABLE experience_claim_external_sources (
+    claim_id TEXT NOT NULL REFERENCES experience_claims(id),
+    experience_id TEXT NOT NULL,
+    experience_version INTEGER NOT NULL,
+    source_owner TEXT NOT NULL CHECK(source_owner='knowledge'),
+    source_record_id TEXT NOT NULL,
+    source_version TEXT NOT NULL,
+    source_purpose TEXT NOT NULL CHECK(source_purpose='basis'),
+    FOREIGN KEY(experience_id,experience_version,source_owner,source_record_id,source_version,source_purpose)
+        REFERENCES experience_external_sources(experience_id,experience_version,owner,record_id,source_version,purpose)
+);
+"""
 _COVERAGE_REVIEW_SCHEMA = """
 CREATE TABLE coverage_reviews (
     id TEXT PRIMARY KEY NOT NULL,
@@ -354,7 +494,7 @@ CREATE TABLE action_completions (
     command_id TEXT REFERENCES audit(command_id),
     CHECK ((operation_id IS NOT NULL) + (artifact_id IS NOT NULL) + (command_id IS NOT NULL) = 1)
 );
-""" + _COVERAGE_REVIEW_SCHEMA
+""" + _COVERAGE_REVIEW_SCHEMA + _EXPERIENCE_PROVENANCE_SCHEMA + _EXPERIENCE_MATERIAL_SCHEMA + _EXPERIENCE_CONDITION_SCHEMA + _EXPERIENCE_EXTERNAL_SCHEMA
 
 
 class StoreError(ValueError):
@@ -731,6 +871,416 @@ class TargetStore:
                 "revision": int(row["revision"]),
             }
 
+    @staticmethod
+    def _recall_binding(conn, expected=None):
+        row = conn.execute("SELECT target,store_id,backend,revision,schema_version FROM store WHERE singleton=1").fetchone()
+        binding = dict(row)
+        if type(binding["revision"]) is not int or binding["revision"] < 0:
+            raise StoreError("corrupt Store revision")
+        if expected is not None and (not isinstance(expected, dict) or expected != binding
+                or type(expected.get("revision")) is not int or type(expected.get("schema_version")) is not int):
+            raise ConflictError("recall Store binding changed; reacquire sources")
+        return binding
+
+    def recall_delta(self, since_binding, *, include_owner_relations=False):
+        """Compute owner changes and their reverse dependency closure from canonical audit."""
+        if type(include_owner_relations) is not bool:
+            raise StoreError("include_owner_relations must be boolean")
+        with self._connection() as conn:
+            self._require_provenance_schema(conn)
+            binding = self._recall_binding(conn)
+            reason = None
+            if since_binding is None:
+                reason = "missing_binding"
+            elif (not isinstance(since_binding, dict) or set(since_binding) != set(binding)
+                  or type(since_binding.get("revision")) is not int or since_binding["revision"] < 0
+                  or type(since_binding.get("schema_version")) is not int):
+                reason = "incompatible_binding"
+            elif any(since_binding[key] != binding[key] for key in ("target", "store_id", "backend")):
+                reason = "store_replaced"
+            elif since_binding["schema_version"] != binding["schema_version"]:
+                reason = "schema_changed"
+            elif since_binding["revision"] > binding["revision"]:
+                reason = "revision_rollback"
+            commands = []
+            if reason is None:
+                since = since_binding["revision"]
+                latest = conn.execute("SELECT revision FROM audit ORDER BY revision DESC LIMIT 1").fetchone()
+                if ((latest[0] if latest else 0) != binding["revision"]
+                        or since and not conn.execute("SELECT 1 FROM audit WHERE revision=?", (since,)).fetchone()):
+                    reason = "audit_gap"
+                else:
+                    commands = list(conn.execute("SELECT * FROM audit WHERE revision>? ORDER BY revision", (since,)))
+                    if (len(commands) != binding["revision"] - since
+                            or any(row["revision"] != since + index + 1 for index, row in enumerate(commands))):
+                        reason = "audit_gap"
+            known = {"remember", "remember_hypothesis", "link_experience", "retract_experience_link",
+                     "record_artifact_event", "assess", "create_action", "transition_action", "record_execution",
+                     "upsert_case_actor", "upsert_case_session", "upsert_case_object", "upgrade_schema",
+                     "create_finding", "start_attempt", "decide_delivery", "register_report",
+                     "record_delivery_event", "record_coverage_review", "set_active_goal"}
+            if any(row["command"] not in known for row in commands):
+                reason = "unknown_audit_command"
+            if any(row["command"] == "upgrade_schema" for row in commands):
+                reason = "schema_upgrade"
+            if reason:
+                # Full acquisition audits the whole Store. The incremental path
+                # consumes only new audit rows, not the already accepted history.
+                if conn.execute("PRAGMA quick_check").fetchone()[0] != "ok" or conn.execute("PRAGMA foreign_key_check").fetchone():
+                    raise StoreError("canonical Store integrity failure; inspect and recover the Store")
+                audit_size, audit_max = conn.execute("SELECT count(*),coalesce(max(revision),0) FROM audit").fetchone()
+                if audit_size != binding["revision"] or audit_max != binding["revision"]:
+                    reason = "audit_gap"
+                ids = [row[0] for row in conn.execute("SELECT id FROM experiences ORDER BY created_at DESC,id DESC")]
+                owners = ([{"owner": "case", "record_id": "context"}]
+                          + [{"owner": "operation", "record_id": row[0]} for row in conn.execute("SELECT id FROM operations ORDER BY id")]
+                          + [{"owner": "experience", "record_id": key} for key in ids]) if include_owner_relations else []
+                return {"binding": binding, "experience_ids": ids, "owner_keys": owners, "full_acquisition_reason": reason}
+            pending, changed = [], set()
+            case_changed = False
+            for row in commands:
+                command, key = row["command"], row["entity_id"]
+                entities = {"remember": ("experiences", "id"), "remember_hypothesis": ("experiences", "id"),
+                            "create_action": ("actions", "id"), "transition_action": ("actions", "id"),
+                            "record_execution": ("operations", "id"), "create_finding": ("findings", "id"),
+                            "start_attempt": ("attempts", "id"), "decide_delivery": ("delivery_decisions", "id"),
+                            "register_report": ("reports", "id"), "record_delivery_event": ("delivery_events", "id"),
+                            "record_coverage_review": ("coverage_reviews", "id"), "upsert_case_actor": ("case_actors", "id"),
+                            "upsert_case_session": ("case_sessions", "id"), "upsert_case_object": ("case_objects", "ref")}
+                if command in entities:
+                    table, column = entities[command]
+                    if not conn.execute(f"SELECT 1 FROM {table} WHERE {column}=?", (key,)).fetchone():
+                        raise StoreError(f"audit references a missing {command} entity")
+                if command in ("remember", "remember_hypothesis"):
+                    pending.append(("experience", key))
+                    case_changed |= command == "remember_hypothesis"
+                    for link in conn.execute("SELECT experience_id,target_id FROM experience_links WHERE revision=?", (row["revision"],)):
+                        pending.extend(("experience", item) for item in link)
+                elif command in ("link_experience", "retract_experience_link"):
+                    clause, value = ("revision", row["revision"]) if command == "link_experience" else ("id", key)
+                    links = list(conn.execute(f"SELECT experience_id,target_id FROM experience_links WHERE {clause}=?", (value,)))
+                    if not links:
+                        raise StoreError("audit references a missing experience link")
+                    for link in links:
+                        pending.extend(("experience", item) for item in link)
+                elif command == "record_artifact_event":
+                    event = conn.execute("SELECT artifact_id FROM artifact_events WHERE id=?", (key,)).fetchone()
+                    if event is None:
+                        raise StoreError("audit references a missing artifact event")
+                    pending.append(("artifact", event[0]))
+                elif command == "assess":
+                    assessment = conn.execute("SELECT finding_id FROM assessments WHERE id=?", (key,)).fetchone()
+                    if assessment is None:
+                        raise StoreError("audit references a missing assessment")
+                    pending.extend(("assessment", item[0]) for item in conn.execute("SELECT id FROM assessments WHERE finding_id=?", (assessment[0],)))
+                elif command in ("create_action", "transition_action"):
+                    pending.append(("action", key))
+                elif command == "record_execution":
+                    pending.append(("operation", key))
+                elif command.startswith("upsert_case_"):
+                    pending.append((command.removeprefix("upsert_case_"), key))
+                    case_changed = True
+            while pending:
+                owner, key = pending.pop()
+                if (owner, key) in changed:
+                    continue
+                changed.add((owner, key))
+                # All versions participate: a changed head also invalidates retained origins.
+                for table in ("experience_claim_endpoints", "experience_claim_conditions"):
+                    pending.extend(("experience", row[0]) for row in conn.execute(f"""SELECT c.experience_id FROM {table} e
+                        JOIN experience_claims c ON c.id=e.claim_id WHERE e.owner=? AND e.record_id=?""", (owner, key)))
+                if owner == "experience":
+                    pending.extend(("experience", row[0]) for row in conn.execute("SELECT experience_id FROM experience_sources WHERE source_experience_id=?", (key,)))
+                    for link in conn.execute("SELECT experience_id,target_id FROM experience_links WHERE experience_id=? OR target_id=?", (key, key)):
+                        pending.extend(("experience", item) for item in link)
+                if owner in ("artifact", "assessment"):
+                    pending.extend(("experience", row[0]) for row in conn.execute("SELECT experience_id FROM experience_material_sources WHERE owner=? AND record_id=?", (owner, key)))
+                if owner == "artifact":
+                    pending.extend(("operation", row[0]) for row in conn.execute("SELECT DISTINCT operation_id FROM observation_artifacts WHERE artifact_id=?", (key,)))
+                    pending.extend(("assessment", row[0]) for row in conn.execute("""SELECT DISTINCT a.assessment_id FROM assessment_observations a
+                        JOIN observation_artifacts b ON b.operation_id=a.operation_id AND b.step=a.step WHERE b.artifact_id=?""", (key,)))
+                elif owner == "operation":
+                    # Observation attachments are immutable across retained Case
+                    # versions; their relational links cover historical evidence.
+                    pending.extend(("experience", row[0]) for row in conn.execute("SELECT experience_id FROM experience_observations WHERE operation_id=?", (key,)))
+                    pending.extend(("assessment", row[0]) for row in conn.execute("SELECT assessment_id FROM assessment_observations WHERE operation_id=?", (key,)))
+                    pending.extend(("artifact", row[0]) for row in conn.execute("SELECT artifact_id FROM observation_artifacts WHERE operation_id=?", (key,)))
+                elif owner == "action":
+                    pending.extend(("operation", row[0]) for row in conn.execute("SELECT o.id FROM operations o JOIN attempts a ON a.id=o.attempt_id WHERE a.action_id=?", (key,)))
+                    pending.extend(("experience", row[0]) for row in conn.execute("SELECT id FROM experiences WHERE action_id=?", (key,)))
+                elif owner == "actor":
+                    pending.extend(("session", row[0]) for row in conn.execute("SELECT id FROM case_sessions WHERE actor_id=?", (key,)))
+                    pending.extend(("object", row[0]) for row in conn.execute("SELECT ref FROM case_objects WHERE owner_actor=?", (key,)))
+                    pending.extend(("experience", row[0]) for row in conn.execute("SELECT experience_id FROM experience_case_actors WHERE actor_id=?", (key,)))
+                elif owner == "object":
+                    pending.extend(("experience", row[0]) for row in conn.execute("SELECT experience_id FROM experience_case_objects WHERE object_ref=?", (key,)))
+            ids = [key for owner, key in changed if owner == "experience"]
+            if ids:
+                rows = list(conn.execute(f"SELECT id FROM experiences WHERE id IN ({','.join('?' for _ in ids)}) ORDER BY created_at DESC,id DESC", ids))
+                if len(rows) != len(ids):
+                    raise StoreError("recall delta references a missing experience")
+                ids = [row[0] for row in rows]
+            owners = []
+            if include_owner_relations:
+                if case_changed:
+                    owners.append({"owner": "case", "record_id": "context"})
+                owners.extend({"owner": owner, "record_id": key} for owner, key in sorted(changed) if owner in ("operation", "experience"))
+            return {"binding": binding, "experience_ids": ids, "owner_keys": owners, "full_acquisition_reason": None}
+
+    def _recall_dependencies(self, conn, experience_id):
+        """Retain unavailable locators and traverse exact versions, including origins."""
+        version = conn.execute("SELECT max(version) FROM experience_versions WHERE experience_id=?", (experience_id,)).fetchone()[0]
+        pending, seen, refs = [(experience_id, version)], set(), set()
+
+        def external(owner, record_id):
+            if owner in ("artifact", "assessment", "operation", "session", "object", "knowledge", "history"):
+                refs.add((owner, record_id))
+            if owner == "artifact":
+                refs.update(("operation", row[0]) for row in conn.execute("SELECT operation_id FROM observation_artifacts WHERE artifact_id=?", (record_id,)))
+            elif owner == "assessment":
+                refs.update(("operation", row[0]) for row in conn.execute("SELECT operation_id FROM assessment_observations WHERE assessment_id=?", (record_id,)))
+
+        while pending:
+            key = pending.pop()
+            if key in seen:
+                continue
+            seen.add(key)
+            row = conn.execute("SELECT * FROM experience_versions WHERE experience_id=? AND version=?", key).fetchone()
+            if row is None:
+                raise StoreError("recall dependency retained version is missing")
+            try:
+                snapshot = json.loads(row["snapshot_json"])
+                if not isinstance(snapshot, dict) or _digest(snapshot) != row["content_sha256"]:
+                    raise ValueError("retained content mismatch")
+                if not isinstance(snapshot.get("evidence"), list):
+                    raise ValueError("retained evidence malformed")
+            except (TypeError, ValueError) as exc:
+                raise StoreError("recall dependency retained version is corrupt") from exc
+            for source in conn.execute("SELECT * FROM experience_sources WHERE experience_id=? AND experience_version=?", key):
+                retained = conn.execute("SELECT content_sha256 FROM experience_versions WHERE experience_id=? AND version=?", (source["source_experience_id"], source["source_version"])).fetchone()
+                if retained is None or retained[0] != source["content_sha256"]:
+                    raise StoreError("recall source retained binding is corrupt")
+                pending.append((source["source_experience_id"], source["source_version"]))
+            pending.extend(tuple(row) for row in conn.execute("SELECT target_id,target_version FROM experience_links WHERE experience_id=? AND experience_version=? AND relation='depends_on'", key))
+            tables = ["experience_material_sources"]
+            if conn.execute("SELECT schema_version FROM store").fetchone()[0] >= 16:
+                tables.append("experience_external_sources")
+            for table in tables:
+                for source in conn.execute(f"SELECT owner,record_id FROM {table} WHERE experience_id=? AND experience_version=?", key):
+                    external(*source)
+            for table in ("experience_claim_endpoints", "experience_claim_conditions"):
+                for endpoint in conn.execute(f"SELECT e.owner,e.record_id,e.version FROM {table} e JOIN experience_claims c ON c.id=e.claim_id WHERE c.experience_id=? AND c.experience_version=?", key):
+                    if endpoint["owner"] == "experience":
+                        pending.append((endpoint["record_id"], endpoint["version"]))
+                    else:
+                        external(endpoint["owner"], endpoint["record_id"])
+            for ref in snapshot["evidence"]:
+                if (not isinstance(ref, dict) or not isinstance(ref.get("operation_id"), str)
+                        or type(ref.get("step")) is not int or ref["step"] < 0
+                        or _identifier(ref["operation_id"], "operation_id") != ref["operation_id"]
+                        or not conn.execute("SELECT 1 FROM observations WHERE operation_id=? AND step=?",
+                                            (ref["operation_id"], ref["step"])).fetchone()):
+                    raise StoreError("retained observation binding is corrupt")
+                external("operation", ref["operation_id"])
+                for artifact in conn.execute("SELECT artifact_id FROM observation_artifacts WHERE operation_id=? AND step=?", (ref["operation_id"], ref["step"])):
+                    external("artifact", artifact[0])
+        return [{"owner": owner, "record_id": key} for owner, key in sorted(refs)]
+
+    @staticmethod
+    def _recall_refs(refs):
+        if not isinstance(refs, list):
+            raise StoreError("recall refs must be a list of owner/record_id objects")
+        result = set()
+        allowed = {"artifact", "assessment", "operation", "session", "object", "knowledge", "history", "case"}
+        for ref in refs:
+            if not isinstance(ref, dict) or set(ref) != {"owner", "record_id"} or not isinstance(ref["owner"], str) or ref["owner"] not in allowed:
+                raise StoreError("unsupported recall probe reference")
+            key = _identifier(ref["record_id"], "record_id")
+            if key != ref["record_id"]:
+                raise StoreError("recall probe requires a canonical record_id")
+            if ref["owner"] == "case" and key != "context":
+                raise StoreError("case probe requires context")
+            result.add((ref["owner"], key))
+        return sorted(result)
+
+    @staticmethod
+    def _recall_file_fence(path):
+        """Ephemeral identity only; semantic probes always validate actual bytes."""
+        try:
+            if path.resolve() != path:
+                return {"unavailable": "symlink"}
+            info = path.stat(follow_symlinks=False)
+            return {"version": _report_file_version(info), "mode": info.st_mode}
+        except (OSError, RuntimeError) as exc:
+            return {"unavailable": type(exc).__name__}
+
+    def _recall_private_probe(self, row, owner):
+        ref = row["private_ref"]
+        if not ref:
+            return {"status": "available", "sha256": None}, None
+        self._private_ref(ref)
+        path = self.root / ref
+        before = self._recall_file_fence(path)
+        material = {"unavailable": before.get("unavailable", "non_regular_file")}
+        status = "unavailable"
+        try:
+            if "version" in before and stat.S_ISREG(before["mode"]):
+                descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                with os.fdopen(descriptor, "rb") as handle:
+                    opened = os.fstat(handle.fileno())
+                    if (_report_file_version(opened), opened.st_mode) != (before["version"], before["mode"]):
+                        raise ConflictError("private source changed before recall read")
+                    sha256 = hashlib.sha256()
+                    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                        sha256.update(chunk)
+                    if _report_file_version(os.fstat(handle.fileno())) != before["version"]:
+                        raise ConflictError("private source changed during recall read")
+                material = {"sha256": sha256.hexdigest()}
+                try:
+                    if owner == "session":
+                        self._check_private_material(ref, "private_ref", ("session_id", row["id"]), (("actor", row["actor_id"]), ("kind", row["kind"])))
+                    else:
+                        self._check_private_material(ref, "private_ref", ("object_ref", row["ref"]), (("owner_actor", row["owner_actor"] or ""),))
+                    status = "available"
+                except (OSError, StoreError):
+                    status = "unavailable"
+        except OSError as exc:
+            material = {"unavailable": type(exc).__name__}
+        if before != self._recall_file_fence(path):
+            raise ConflictError("private source changed during recall probe")
+        return {"status": status, **material}, before
+
+    def _recall_probe_items(self, conn, refs, captured=None):
+        cache, fences = {}, {}
+
+        def artifact_fence(ref):
+            try:
+                path = target_raw_artifact_path(self.root, self.target, ref)
+            except (OSError, ValueError) as exc:
+                return {"unavailable": type(exc).__name__}
+            return self._recall_file_fence(path)
+
+        def probe(owner, key):
+            if (owner, key) in cache:
+                return cache[(owner, key)]
+            fence = None
+            if owner in ("knowledge", "history"):
+                capture = (self._capture_history_source(conn, key) if owner == "history"
+                           else experience_knowledge.capture_source(self.root, key))
+                try:
+                    (experience_history if owner == "history" else experience_knowledge).check_capture(capture)
+                except (OSError, ValueError) as exc:
+                    raise ConflictError("external source changed during recall probe") from exc
+                if captured is not None:
+                    captured[owner][key] = capture
+                hashes = (capture.get("byte_digests", {}) if owner == "history" else
+                          {path: hashlib.sha256(raw).hexdigest() for path, (_, raw) in capture["files"].items()})
+                value = {"status": capture["status"], "binding": capture.get("binding"), "reason": capture.get("reason"),
+                         "bytes": sorted((str(path.relative_to(self.root)), digest) for path, digest in hashes.items())}
+                stamps = (capture["files"] if owner == "history" else
+                          {path: stamp for path, (stamp, _) in capture["files"].items()})
+                fence = {"files": sorted((str(path), stamp) for path, stamp in stamps.items()),
+                         "directories": sorted((str(path), stamp) for path, stamp in capture.get("directories", {}).items())}
+            elif owner == "case":
+                value = {table: [dict(row) for row in conn.execute(f"SELECT * FROM {table} ORDER BY 1")]
+                         for table in ("case_actors", "case_sessions", "case_objects")}
+                private = ([("session", row["id"]) for row in value["case_sessions"]]
+                           + [("object", row["ref"]) for row in value["case_objects"]])
+                value["private"] = [probe(*ref) for ref in private]
+                fence = [fences[ref] for ref in private]
+            else:
+                tables = {"artifact": ("artifacts", "id"), "assessment": ("assessments", "id"),
+                          "operation": ("operations", "id"), "session": ("case_sessions", "id"), "object": ("case_objects", "ref")}
+                table, column = tables[owner]
+                row = conn.execute(f"SELECT * FROM {table} WHERE {column}=?", (key,)).fetchone()
+                if row is None:
+                    raise StoreError(f"canonical recall source is missing: {owner}:{key}")
+                value = {"record": dict(row)}
+                if owner == "artifact":
+                    actual = {}
+                    fence = artifact_fence(row["ref"])
+                    status = self._artifact_status(conn, dict(row), byte_capture=actual)
+                    if fence != artifact_fence(row["ref"]):
+                        raise ConflictError("artifact changed during recall probe")
+                    value.update(health=status, bytes=actual)
+                    if captured is not None:
+                        captured["artifacts"][key] = (dict(row), status, [])
+                elif owner == "assessment":
+                    if not conn.execute("SELECT 1 FROM findings WHERE id=?", (row["finding_id"],)).fetchone():
+                        raise StoreError("canonical assessment finding is missing")
+                    value["current"] = conn.execute("SELECT max(revision) FROM assessments WHERE finding_id=?", (row["finding_id"],)).fetchone()[0]
+                    artifacts = [item[0] for item in conn.execute("""SELECT DISTINCT b.artifact_id FROM assessment_observations a
+                        JOIN observation_artifacts b ON b.operation_id=a.operation_id AND b.step=a.step WHERE a.assessment_id=? ORDER BY b.artifact_id""", (key,))]
+                    value["artifacts"] = [probe("artifact", item) for item in artifacts]
+                    fence = [fences[("artifact", item)] for item in artifacts]
+                elif owner == "operation":
+                    attempt = conn.execute("SELECT * FROM attempts WHERE id=?", (row["attempt_id"],)).fetchone()
+                    if attempt is None:
+                        raise StoreError("canonical operation attempt is missing")
+                    if attempt["action_id"] and not conn.execute("SELECT 1 FROM actions WHERE id=?", (attempt["action_id"],)).fetchone():
+                        raise StoreError("canonical operation action is missing")
+                    value["attempt"] = dict(attempt)
+                    value["observations"] = [dict(item) for item in conn.execute("SELECT * FROM observations WHERE operation_id=? ORDER BY step", (key,))]
+                    for item in value["observations"]:
+                        try:
+                            if not isinstance(json.loads(item["detail_json"] or "{}"), dict):
+                                raise ValueError("not an object")
+                        except (TypeError, ValueError) as exc:
+                            raise StoreError("canonical observation detail is corrupt") from exc
+                    artifacts = [item[0] for item in conn.execute("SELECT DISTINCT artifact_id FROM observation_artifacts WHERE operation_id=? ORDER BY artifact_id", (key,))]
+                    value["artifacts"] = [probe("artifact", item) for item in artifacts]
+                    fence = [fences[("artifact", item)] for item in artifacts]
+                elif owner in ("session", "object"):
+                    if row["actor_id" if owner == "session" else "owner_actor"] and not conn.execute(
+                            "SELECT 1 FROM case_actors WHERE id=?", (row["actor_id" if owner == "session" else "owner_actor"],)).fetchone():
+                        raise StoreError("canonical Case actor is missing")
+                    value["private"], fence = self._recall_private_probe(row, owner)
+            cache[(owner, key)] = _digest(value)
+            fences[(owner, key)] = _digest(fence)
+            return cache[(owner, key)]
+        items = [{"ref": {"owner": owner, "record_id": key}, "fingerprint": probe(owner, key)} for owner, key in refs]
+        return items, [{"ref": {"owner": owner, "record_id": key}, "fingerprint": fences[(owner, key)]}
+                       for owner, key in refs]
+
+    def recall_probe(self, refs, *, expected_binding):
+        """Fresh owner byte verification; refs never contain paths or prior health."""
+        refs = self._recall_refs(refs)
+        with self._connection() as conn:
+            if expected_binding is None:
+                raise ConflictError("recall requires an exact Store binding")
+            binding = self._recall_binding(conn, expected_binding)
+            items, fences = self._recall_probe_items(conn, refs)
+            return {"binding": binding, "items": items, "fences": fences}
+
+    def recall_rows(self, ids, *, expected_binding):
+        """Read page-equivalent bodies, complete dependency locators and stable byte probes."""
+        if not isinstance(ids, list):
+            raise StoreError("recall ids must be a list")
+        ids = list(dict.fromkeys(_identifier(item, "experience_id") for item in ids))
+        if len(ids) > 1000:
+            raise StoreError("recall ids must contain at most 1000 unique IDs")
+        with self._connection() as conn:
+            self._require_provenance_schema(conn)
+            if expected_binding is None:
+                raise ConflictError("recall requires an exact Store binding")
+            binding = self._recall_binding(conn, expected_binding)
+            rows = [dict(row) for row in conn.execute(f"SELECT * FROM experiences WHERE id IN ({','.join('?' for _ in ids)}) ORDER BY created_at DESC,id DESC", ids)] if ids else []
+            if len(rows) != len(ids):
+                raise StoreError("one or more recall experience IDs are missing")
+            dependencies = {row["id"]: self._recall_dependencies(conn, row["id"]) for row in rows}
+            for row in rows:
+                retained = conn.execute("SELECT snapshot_json FROM experience_versions WHERE experience_id=? ORDER BY version DESC LIMIT 1", (row["id"],)).fetchone()
+                snapshot = json.loads(retained[0])
+                if any(snapshot.get(key) != value for key, value in row.items()):
+                    raise StoreError("canonical experience head differs from its retained version")
+            refs = self._recall_refs([ref for values in dependencies.values() for ref in values])
+            captured = {"artifacts": {}, "knowledge": {}, "history": {}}
+            probes, fences = self._recall_probe_items(conn, refs, captured)
+            self._assemble_experience_rows(conn, rows, captured)
+            if (probes, fences) != self._recall_probe_items(conn, refs):
+                raise ConflictError("recall source bytes changed while assembling rows; retry")
+            return {"binding": binding, "items": rows, "dependencies": dependencies, "probes": probes, "fences": fences}
+
     def command_receipt(self, command_id: str) -> dict | None:
         """Read a committed command receipt without replaying its mutation."""
         command_id = _identifier(command_id, "command_id")
@@ -769,13 +1319,19 @@ class TargetStore:
                 if conn is not None:
                     conn.close()  # Any uncommitted transaction is rolled back, including KeyboardInterrupt.
 
-    def _command(self, command: str, command_id: str, entity_id: str, actor: str, material: Any, mutation) -> dict:
+    def _command(self, command: str, command_id: str, entity_id: str, actor: str, material: Any, mutation, *, source_capture=None) -> dict:
         # Mutations also persist these identities; normalizing only the audit
         # would leave claim tokens and receipt references pointing at other IDs.
         if command_id != _identifier(command_id, "command_id") or actor != _text(actor, "actor"):
             raise StoreError("command_id and actor must not have surrounding whitespace")
         digest = _digest(material)
-        with self._connection(write=True) as conn:
+        knowledge_guard = (experience_knowledge.publication_lock(self.root)
+                           if source_capture and any(item["status"] == "available"
+                               for item in source_capture["knowledge"].values()) else nullcontext())
+        history_guard = (experience_history.receipt_lock(self.root, self.target)
+                         if source_capture and any(item["status"] == "available"
+                             for item in source_capture["history"].values()) else nullcontext())
+        with knowledge_guard, history_guard, self._connection(write=True) as conn:
             existing = conn.execute("SELECT * FROM audit WHERE command_id=?", (command_id,)).fetchone()
             if existing:
                 if (existing["command"], existing["entity_id"], existing["actor"], existing["content_sha256"]) != (
@@ -1163,12 +1719,21 @@ class TargetStore:
             WHERE e.artifact_id=?""", (artifact_id, artifact_id))
         return {str(row["dimension"]): dict(row) for row in rows}
 
-    def _artifact_status(self, conn, artifact: dict) -> dict:
+    def _artifact_status(self, conn, artifact: dict, *, byte_capture=None) -> dict:
         events = self._artifact_events(conn, str(artifact["id"]))
         try:
-            bytes_valid = self._artifact(artifact["ref"]) == artifact
-        except (OSError, ValueError, StoreError):
+            actual = self._artifact(artifact["ref"])
+            bytes_valid = actual == artifact
+            if byte_capture is not None:
+                byte_capture.update(actual)
+        except ConflictError:
+            if byte_capture is not None:
+                raise
             bytes_valid = False
+        except (OSError, ValueError, StoreError) as exc:
+            bytes_valid = False
+            if byte_capture is not None:
+                byte_capture.update(unavailable=type(exc).__name__)
         availability = events.get("availability", {}).get("state", "unrecorded")
         provenance = events.get("provenance", {}).get("state", "active")
         available = bytes_valid and availability != "unavailable"
@@ -1721,7 +2286,10 @@ class TargetStore:
 
     def remember(self, *, command_id: str, kind: str, statement: str, conditions: str, reopen_when: str,
                  next_intent: str, evidence: list[dict], actor: str,
-                 action_id: str | None = None, finding_id: str | None = None) -> dict:
+                 action_id: str | None = None, finding_id: str | None = None,
+                 sources: list[dict] | None = None, links: list[dict] | None = None,
+                 claims: list[dict] | None = None,
+                 expected_revision: int | None = None) -> dict:
         if not isinstance(kind, str) or kind not in {"primitive", "negative", "hypothesis", "handoff", "note"}:
             raise StoreError("invalid experience kind")
         statement, conditions = _text(statement, "statement"), _text(conditions, "conditions")
@@ -1734,17 +2302,728 @@ class TargetStore:
             action_id = _identifier(action_id, "action_id")
         if finding_id is not None:
             finding_id = _identifier(finding_id, "finding_id")
+        sources, links = sources if sources is not None else [], links if links is not None else []
+        claims = claims if claims is not None else []
+        if not isinstance(claims, list) or len(claims) > 100:
+            raise StoreError("claims must be a list of at most 100 explicit declarations")
+        if not isinstance(sources, list) or not isinstance(links, list):
+            raise StoreError("sources and links must be lists")
+        if (links or expected_revision is not None) and (type(expected_revision) is not int or expected_revision < 0):
+            raise StoreError("explicit links require a non-negative expected_revision")
         material = (kind, statement, conditions, reopen_when, next_intent, refs, action_id, finding_id)
+        if sources or links or claims or expected_revision is not None:
+            material += (sources, links, expected_revision)
+        if claims:
+            material += (claims,)
+
+        captured = self._capture_experience_basis(command_id, sources, links, claims, refs)
 
         def mutate(conn, revision, now):
+            self._require_provenance_schema(conn)
+            self._check_experience_capture(conn, captured, revision)
+            if expected_revision is not None and revision != expected_revision + 1:
+                raise ConflictError("experience revision changed; reload before accepting")
             if kind == "note":
                 self._require_memory_schema(conn)
             conn.execute("INSERT INTO experiences VALUES (?,?,?,?,?,?,?,?,?,?)",
                          (command_id, kind, statement, conditions, reopen_when, next_intent, action_id, finding_id, actor, now))
             conn.executemany("INSERT INTO experience_observations VALUES (?,?,?)",
                              [(command_id, operation, step) for operation, step in refs])
+            self._snapshot_experience(conn, command_id, revision, now)
+            for source in sources:
+                self._accept_experience_source(conn, command_id, source, revision, captured)
+            for index, claim in enumerate(claims):
+                self._accept_experience_claim(conn, command_id, revision, index, claim, sources, refs, captured)
+            for index, link in enumerate(links):
+                self._insert_experience_link(conn, f"{command_id}:link:{index}", command_id, link, revision, captured)
 
-        return self._command("remember", command_id, command_id, actor, material, mutate)
+        return self._command("remember", command_id, command_id, actor, material, mutate, source_capture=captured)
+
+    @staticmethod
+    def _require_provenance_schema(conn) -> None:
+        if conn.execute("SELECT schema_version FROM store").fetchone()[0] < 15:
+            raise StoreError("experience provenance requires explicit upgrade-schema --backup PATH")
+
+    @staticmethod
+    def _snapshot_experience(conn, experience_id, version, now, *, only_if_missing=False):
+        if only_if_missing and conn.execute(
+                "SELECT 1 FROM experience_versions WHERE experience_id=?", (experience_id,)).fetchone():
+            return
+        row = conn.execute("SELECT * FROM experiences WHERE id=?", (experience_id,)).fetchone()
+        if not row:
+            raise StoreError(f"experience missing: {experience_id}")
+        snapshot = dict(row)
+        for table, key in (("experience_case_context", "case_context"),
+                           ("experience_case_actors", "actors"), ("experience_case_objects", "objects"),
+                           ("experience_observations", "evidence")):
+            snapshot[key] = [dict(item) for item in conn.execute(
+                f"SELECT * FROM {table} WHERE experience_id=? ORDER BY 1,2", (experience_id,))]
+        conn.execute("INSERT INTO experience_versions VALUES (?,?,?,?,?)",
+                     (experience_id, version, _digest(snapshot), json.dumps(snapshot, sort_keys=True), now))
+
+    def experience_version(self, experience_id: str, version: int | None = None) -> dict:
+        """Expand an actual retained version, never reconstruct lost pre-upgrade history."""
+        experience_id = _identifier(experience_id, "experience_id")
+        if version is not None and (type(version) is not int or version < 0):
+            raise StoreError("version must be a non-negative integer")
+        with self._connection() as conn:
+            self._require_provenance_schema(conn)
+            clause, params = ("", (experience_id,)) if version is None else (" AND version=?", (experience_id, version))
+            row = conn.execute("SELECT * FROM experience_versions WHERE experience_id=?" + clause
+                               + " ORDER BY version DESC LIMIT 1", params).fetchone()
+            if not row:
+                raise StoreError(f"retained experience version missing: {experience_id}:{version}")
+            result = dict(row)
+            result["snapshot"] = json.loads(result.pop("snapshot_json"))
+            if _digest(result["snapshot"]) != result["content_sha256"]:
+                raise StoreError("retained experience version content mismatch")
+            node = self._experience_health(conn, [(experience_id, result["version"])])[(experience_id, result["version"])]
+            result.update(claims=self._experience_claim_rows(conn, experience_id, result["version"]), sources=node["sources"], source_health=node["health"], review_state=node["review_state"],
+                          applicability=node["applicability"],
+                          correction_refs=[link for link in node["links"] if link["relation"] != "depends_on"],
+                          dependency_refs=[link for link in node["links"] if link["relation"] == "depends_on"])
+            meta = dict(conn.execute("SELECT * FROM store").fetchone())
+            return {**result, "target": meta["target"], "store_id": meta["store_id"]}
+
+    def knowledge_source(self, knowledge_id: str) -> dict:
+        """Return the current reviewed publication binding, without a target or purpose."""
+        knowledge_id = _identifier(knowledge_id, "knowledge_id")
+        capture = experience_knowledge.capture_source(self.root, knowledge_id)
+        if capture["status"] != "available":
+            raise StoreError(f"knowledge source {knowledge_id}: {capture['status']}: {capture.get('reason', '')}")
+        return dict(capture["binding"])
+
+    def history_source(self, imported_experience_id: str, *, full: bool = False) -> dict:
+        """Read a same-Store imported origin without importing or repairing anything."""
+        experience_id = _identifier(imported_experience_id, "imported_experience_id")
+        with self._connection() as conn:
+            if not conn.execute("SELECT 1 FROM experiences WHERE id=?", (experience_id,)).fetchone():
+                raise StoreError(f"imported experience missing: {experience_id}")
+            meta = dict(conn.execute("SELECT * FROM store").fetchone())
+        capture = experience_history.capture_source(self.root, self.target, meta["store_id"], experience_id)
+        current = self.binding()
+        if any(current[key] != meta[key] for key in ("target", "store_id", "revision")):
+            raise ConflictError("history source Store changed during capture; reload and retry")
+        if capture["status"] != "available":
+            if full:
+                return {"owner": "history", "record_id": experience_id, "source": None,
+                        "source_kind": None, "selector": None, "record": None,
+                        "availability": "unavailable", "verification": "unverified",
+                        "reason": capture.get("reason", "historical original unavailable")}
+            raise StoreError(f"history source {experience_id}: unavailable: {capture.get('reason', '')}")
+        return dict(capture["detail"] if full else capture["binding"])
+
+    @staticmethod
+    def _require_external_source_schema(conn, owner="knowledge"):
+        if conn.execute("SELECT schema_version FROM store").fetchone()[0] < (17 if owner == "history" else 16):
+            raise StoreError(f"{owner} experience sources require explicit upgrade-schema --backup PATH")
+
+    def _accept_experience_source(self, conn, experience_id, source, version, captured):
+        if isinstance(source, dict) and source.get("owner") in ("knowledge", "history"):
+            owner = source["owner"]
+            resolver = experience_history if owner == "history" else experience_knowledge
+            self._require_external_source_schema(conn, owner)
+            try:
+                resolver.validate_source(source)
+            except ValueError as exc:
+                raise StoreError(str(exc)) from exc
+            acquisition = captured[owner][source["record_id"]]
+            if resolver.source_health(source, acquisition)["status"] != "available":
+                raise ConflictError(f"{owner} source is unavailable or changed; reload its binding")
+            conn.execute("INSERT INTO experience_external_sources VALUES (?,?,?,?,?,?,?)", (
+                experience_id, version, source["owner"], source["record_id"], source["version"],
+                source["content_sha256"], source["purpose"]))
+            return
+        if isinstance(source, dict) and "owner" in source:
+            required = {"target", "store_id", "owner", "record_id", "version", "content_sha256", "purpose"}
+            if set(source) != required or source.get("owner") not in ("artifact", "assessment"):
+                raise StoreError("material source requires an exact artifact/assessment binding and purpose")
+            if not isinstance(source["purpose"], str) or source["purpose"] not in {"origin", "basis"}:
+                raise StoreError("source purpose must be origin or basis")
+            if type(source["version"]) is not int or source["version"] < 0:
+                raise StoreError("source version must be a non-negative integer")
+            actual = self._experience_entity(conn, source["owner"], source["record_id"])
+            if {k: source[k] for k in required - {"purpose"}} != actual:
+                raise ConflictError("material source identity/version/content changed")
+            health = captured["materials"][(source["owner"], source["record_id"])]
+            if source["purpose"] == "basis" and health != "available":
+                raise StoreError("basis material is unavailable, revoked or changed")
+            conn.execute("INSERT INTO experience_material_sources VALUES (?,?,?,?,?,?,?,?,?)", (
+                experience_id, version, source["owner"], source["record_id"], source["version"],
+                source["content_sha256"], source["purpose"],
+                source["record_id"] if source["owner"] == "artifact" else None,
+                source["record_id"] if source["owner"] == "assessment" else None))
+            return
+        required = {"target", "store_id", "experience_id", "version", "content_sha256", "purpose"}
+        if not isinstance(source, dict) or set(source) != required:
+            raise StoreError("source requires target/store_id/experience_id/version/content_sha256/purpose")
+        meta = conn.execute("SELECT target,store_id FROM store").fetchone()
+        if (source["target"], source["store_id"]) != tuple(meta):
+            raise StoreError("experience source belongs to another target or Store")
+        if (not isinstance(source["purpose"], str) or source["purpose"] not in {"origin", "basis"}
+                or type(source["version"]) is not int or source["version"] < 0):
+            raise StoreError("invalid source purpose/version")
+        row = conn.execute("SELECT * FROM experience_versions WHERE experience_id=? AND version=?",
+                           (source["experience_id"], source["version"])).fetchone()
+        if not row or row["content_sha256"] != source["content_sha256"]:
+            raise ConflictError("source version missing or changed")
+        try:
+            valid = _digest(json.loads(row["snapshot_json"])) == row["content_sha256"]
+        except (TypeError, ValueError):
+            valid = False
+        if not valid:
+            raise StoreError("source version is corrupt")
+        if source["experience_id"] == experience_id:
+            raise StoreError("self source is not allowed")
+        if source["purpose"] == "basis":
+            self._require_healthy_basis(captured, source["experience_id"], source["version"])
+        conn.execute("INSERT INTO experience_sources VALUES (?,?,?,?,?,?)", (
+            experience_id, version, source["experience_id"], source["version"], source["purpose"], source["content_sha256"]))
+
+    def _experience_entity(self, conn, owner, record_id):
+        tables = {"actor": ("case_actors", "id"), "object": ("case_objects", "ref"),
+                  "session": ("case_sessions", "id"), "action": ("actions", "id"),
+                  "operation": ("operations", "id"), "artifact": ("artifacts", "id"),
+                  "assessment": ("assessments", "id"), "experience": ("experiences", "id")}
+        if not isinstance(owner, str) or owner not in tables:
+            raise StoreError("unsupported experience entity owner")
+        record_id = _identifier(record_id, "record_id")
+        table, column = tables[owner]
+        row = conn.execute(f"SELECT * FROM {table} WHERE {column}=?", (record_id,)).fetchone()
+        if row is None:
+            raise StoreError(f"experience entity missing: {owner}:{record_id}")
+        meta = dict(conn.execute("SELECT * FROM store").fetchone())
+        data = dict(row)
+        version = data.get("revision", data.get("version", 0))
+        digest = _digest(data)
+        if owner == "experience":
+            retained = conn.execute("SELECT * FROM experience_versions WHERE experience_id=? ORDER BY version DESC LIMIT 1", (record_id,)).fetchone()
+            if retained is None:
+                raise StoreError("experience entity has no retained version")
+            version, digest = retained["version"], retained["content_sha256"]
+        return {"target": meta["target"], "store_id": meta["store_id"], "owner": owner,
+                "record_id": record_id, "version": version, "content_sha256": digest}
+
+    def experience_entity(self, owner: str, record_id: str) -> dict:
+        """Acquire an exact same-Store identity; labels never resolve entities."""
+        with self._connection() as conn:
+            self._require_provenance_schema(conn)
+            return self._experience_entity(conn, owner, record_id)
+
+    def _material_source_health(self, conn, owner, record_id, artifacts):
+        if owner == "artifact":
+            rows = conn.execute("SELECT * FROM artifacts WHERE id=?", (record_id,)).fetchall()
+        elif owner == "assessment":
+            row = conn.execute("SELECT finding_id,revision FROM assessments WHERE id=?", (record_id,)).fetchone()
+            if row is None:
+                return "unavailable"
+            current = conn.execute("SELECT max(revision) FROM assessments WHERE finding_id=?", (row["finding_id"],)).fetchone()[0]
+            if current != row["revision"]:
+                return "version_changed"
+            rows = conn.execute("""SELECT DISTINCT a.* FROM assessment_observations e
+                JOIN observation_artifacts o ON o.operation_id=e.operation_id AND o.step=e.step
+                JOIN artifacts a ON a.id=o.artifact_id WHERE e.assessment_id=?""", (record_id,)).fetchall()
+        else:
+            raise StoreError("material source owner must be artifact or assessment")
+        if not rows:
+            return "unavailable"
+        for row in rows:
+            artifact = dict(row)
+            if artifact["id"] not in artifacts:
+                path = self.root / artifact["ref"]
+                try:
+                    stamp = _report_file_version(path.stat(follow_symlinks=False))
+                except OSError:
+                    stamp = None
+                status = self._artifact_status(conn, artifact)
+                if status["authorized"] and (stamp is None or stamp != _report_file_version(path.stat(follow_symlinks=False))):
+                    raise ConflictError("material changed while capturing source")
+                artifacts[artifact["id"]] = (artifact, status, [(path, stamp)])
+            status = artifacts[artifact["id"]][1]
+            if not status["authorized"]:
+                return "revoked" if status["provenance"] == "revoked" else "unavailable"
+        return "available"
+
+    def _accept_experience_claim(self, conn, experience_id, version, index, claim, sources, evidence, captured):
+        """Accept advisory subject-to-object assertions, never technical judgments.
+
+        observed_access: subject accessed object; uses: subject uses object;
+        produces: subject produces object; requires: subject requires object;
+        enables: subject enables object. Conditions and timing are explicit text,
+        not inferred equivalence or permission to execute the described action.
+        """
+        required = {"subject", "predicate", "object", "conditions", "timing", "source_refs"}
+        if not isinstance(claim, dict) or not required <= set(claim) or set(claim) - required - {"condition_bindings", "validity"}:
+            raise StoreError("claim requires subject/predicate/object/conditions/timing/source_refs")
+        if not isinstance(claim["predicate"], str) or claim["predicate"] not in CLAIM_PREDICATES:
+            raise StoreError("unsupported claim predicate")
+        bound_conditions, validity = self._claim_context(claim)
+        conditions, timing = _text(claim["conditions"], "claim conditions"), _text(claim["timing"], "claim timing")
+        refs = claim["source_refs"]
+        if not isinstance(refs, list) or not refs or len(refs) > 100:
+            raise StoreError("claim source_refs must contain 1..100 explicit source or observation indices")
+        endpoints = []
+        declarations = [(side, claim[side]) for side in ("subject", "object")]
+        declarations.extend((f"condition:{role}", value) for role, value in (bound_conditions or {}).items())
+        for side, endpoint in declarations:
+            if not isinstance(endpoint, dict) or set(endpoint) != set(ENTITY_FIELDS):
+                raise StoreError("claim endpoint requires an exact same-Store entity binding")
+            if type(endpoint["version"]) is not int or endpoint["version"] < 0:
+                raise StoreError("claim endpoint version must be a non-negative integer")
+            if endpoint != self._experience_entity(conn, endpoint["owner"], endpoint["record_id"]):
+                raise ConflictError("claim endpoint belongs to another Store or changed")
+            if endpoint["owner"] == "experience":
+                self._require_healthy_basis(captured, endpoint["record_id"], endpoint["version"])
+            elif endpoint["owner"] in ("artifact", "assessment") and captured["materials"].get((endpoint["owner"], endpoint["record_id"])) != "available":
+                raise StoreError("claim endpoint material is unavailable, revoked or changed")
+            endpoints.append((side, endpoint))
+        claim_id = f"{experience_id}:claim:{index}"
+        conn.execute("INSERT INTO experience_claims VALUES (?,?,?,?,?,?)", (claim_id, experience_id, version, claim["predicate"], conditions, timing))
+        for side, endpoint in endpoints:
+            table = "experience_claim_conditions" if side.startswith("condition:") else "experience_claim_endpoints"
+            role = side.removeprefix("condition:")
+            conn.execute(f"INSERT INTO {table} VALUES (?,?,?,?,?,?)", (claim_id, role, endpoint["owner"], endpoint["record_id"], endpoint["version"], endpoint["content_sha256"]))
+        if validity is not None:
+            conn.execute("INSERT INTO experience_claim_validity VALUES (?,?,?)", (claim_id, validity["from"], validity["until"]))
+        for ref in refs:
+            if not isinstance(ref, dict) or len(ref) != 1:
+                raise StoreError("claim reference requires source or observation index")
+            key, value = next(iter(ref.items()))
+            if key not in ("source", "observation") or type(value) is not int or value < 0:
+                raise StoreError("invalid claim source reference")
+            values = sources if key == "source" else evidence
+            if value >= len(values):
+                raise StoreError("claim source reference is outside accepted evidence")
+            if key == "source":
+                # Bind the canonical source identity instead of a transient list position.
+                source = sources[value]
+                if source["purpose"] != "basis":
+                    raise StoreError("claim source must be a basis, not an origin")
+                if source.get("owner") == "knowledge":
+                    conn.execute("INSERT INTO experience_claim_external_sources VALUES (?,?,?,?,?,?,?)", (
+                        claim_id, experience_id, version, source["owner"], source["record_id"], source["version"], source["purpose"]))
+                else:
+                    conn.execute("INSERT INTO experience_claim_sources VALUES (?,?,?,?,?,NULL,NULL)",
+                                 (claim_id, source.get("owner", "experience"), source.get("record_id", source.get("experience_id")), source["version"], source["purpose"]))
+            else:
+                conn.execute("INSERT INTO experience_claim_sources VALUES (?,NULL,NULL,NULL,NULL,?,?)", (claim_id, *evidence[value]))
+
+    @staticmethod
+    def _claim_context(claim):
+        try:
+            bindings = condition_bindings(claim.get("condition_bindings"))
+            if bindings is not None and any(set(value) != set(ENTITY_FIELDS)
+                                            for value in claim["condition_bindings"].values()):
+                raise ValueError("condition bindings require exact entity fields")
+            return bindings, validity_window(claim.get("validity"))
+        except ValueError as exc:
+            raise StoreError(str(exc)) from exc
+
+    def _claim_entity_view(self, conn, endpoint, meta, captured=None):
+        binding = entity_binding({**meta, **{key: endpoint[key] for key in ENTITY_FIELDS if key not in meta}})
+        current = self._experience_entity(conn, endpoint["owner"], endpoint["record_id"])
+        health = "available" if binding == current else "version_changed"
+        if health == "available" and endpoint["owner"] in ("artifact", "assessment"):
+            health = self._material_source_health(conn, endpoint["owner"], endpoint["record_id"],
+                                                  captured["artifacts"] if captured is not None else {})
+        elif health == "available" and endpoint["owner"] == "experience":
+            key = (endpoint["record_id"], endpoint["version"])
+            if self._experience_health(conn, [key], **(captured or {}))[key]["unhealthy"]:
+                health = "needs_review"
+        return {**binding, "health": health}
+
+    def _experience_claim_rows(self, conn, experience_id, version, captured=None):
+        rows = []
+        meta = dict(conn.execute("SELECT target,store_id FROM store").fetchone())
+        for row in conn.execute("SELECT * FROM experience_claims WHERE experience_id=? AND experience_version=? ORDER BY id", (experience_id, version)):
+            claim = dict(row)
+            claim["advisory"] = True
+            claim["source_refs"] = [dict(ref) for ref in conn.execute("SELECT * FROM experience_claim_sources WHERE claim_id=?", (claim["id"],))]
+            if conn.execute("SELECT schema_version FROM store").fetchone()[0] >= 16:
+                claim["source_refs"].extend(dict(ref) for ref in conn.execute(
+                    "SELECT * FROM experience_claim_external_sources WHERE claim_id=?", (claim["id"],)))
+            for endpoint in conn.execute("SELECT * FROM experience_claim_endpoints WHERE claim_id=?", (claim["id"],)):
+                claim[endpoint["side"]] = self._claim_entity_view(conn, endpoint, meta, captured)
+            bindings = {row["role"]: self._claim_entity_view(conn, row, meta, captured) for row in conn.execute(
+                "SELECT * FROM experience_claim_conditions WHERE claim_id=? ORDER BY role", (claim["id"],))}
+            claim["condition_bindings"] = bindings or None
+            validity = conn.execute("SELECT valid_from,valid_until FROM experience_claim_validity WHERE claim_id=?", (claim["id"],)).fetchone()
+            claim["validity"] = validity_window({"from": validity[0], "until": validity[1]}) if validity else None
+            rows.append(claim)
+        return rows
+
+    @staticmethod
+    def _correction_applicability(conn, link):
+        """Compare retained declarations, not semantic equivalence or mutable heads."""
+        conditions = link["conditions"]
+        if conditions.lower() == "unknown":
+            raise StoreError("correction requires explicit conditions; unknown is not a scope")
+        declared = {}
+        for side, key in (("source_conditions", (link["experience_id"], link["experience_version"])),
+                          ("target_conditions", (link["target_id"], link["target_version"]))):
+            row = conn.execute("SELECT snapshot_json,content_sha256 FROM experience_versions WHERE experience_id=? AND version=?", key).fetchone()
+            if row is None:
+                raise StoreError("correction endpoint retained version is missing")
+            try:
+                snapshot = json.loads(row["snapshot_json"])
+                if (not isinstance(snapshot, dict) or _digest(snapshot) != row["content_sha256"]
+                        or not isinstance(snapshot.get("conditions"), str)):
+                    raise ValueError("invalid retained conditions")
+            except (TypeError, ValueError) as exc:
+                raise StoreError("correction endpoint retained version is corrupt") from exc
+            declared[side] = snapshot["conditions"]
+        identical = all(value == conditions for value in declared.values())
+        return {"conditions": conditions, **declared,
+                "comparison": "identical_declarations" if identical else "not_established",
+                "effect": "whole_record" if identical else "conditional"}
+
+    def _insert_experience_link(self, conn, link_id, experience_id, link, revision, captured):
+        if not isinstance(link, dict) or set(link) != {"target_id", "relation", "conditions", "rationale"}:
+            raise StoreError("link requires target_id/relation/conditions/rationale")
+        target_id = _identifier(link["target_id"], "target_id")
+        relation = link["relation"]
+        conditions, rationale = _text(link["conditions"], "conditions"), _text(link["rationale"], "rationale")
+        if not isinstance(relation, str) or relation not in {"supersedes", "refutes", "depends_on"} or target_id == experience_id:
+            raise StoreError("invalid experience relation or self relation")
+        versions = dict(conn.execute("SELECT experience_id,max(version) FROM experience_versions WHERE experience_id IN (?,?) GROUP BY experience_id", (experience_id, target_id)))
+        if len(versions) != 2:
+            raise StoreError("both relation endpoints must exist in this Store")
+        if relation != "depends_on":
+            self._correction_applicability(conn, {"conditions": conditions, "experience_id": experience_id,
+                "experience_version": versions[experience_id], "target_id": target_id, "target_version": versions[target_id]})
+        if relation in {"supersedes", "depends_on"} and conn.execute("""WITH RECURSIVE edges(a,b) AS (
+                SELECT experience_id,target_id FROM experience_links WHERE relation IN ('supersedes','depends_on')
+                UNION SELECT experience_id,source_experience_id FROM experience_sources WHERE purpose='basis'),
+                reach(id) AS (SELECT ? UNION SELECT e.b FROM edges e JOIN reach r ON e.a=r.id)
+                SELECT 1 FROM reach WHERE id=?""",
+                (target_id, experience_id)).fetchone():
+            raise StoreError("experience relation would create a cycle")
+        if relation == "depends_on":
+            self._require_healthy_basis(captured, target_id, versions[target_id])
+        conn.execute("INSERT INTO experience_links VALUES (?,?,?,?,?,?,?,?,?)",
+                     (link_id, experience_id, target_id, versions[experience_id], versions[target_id],
+                      relation, conditions, rationale, revision))
+
+    def link_experience(self, *, command_id: str, experience_id: str, target_id: str,
+                        relation: str, conditions: str, rationale: str, expected_revision: int, actor: str) -> dict:
+        experience_id = _identifier(experience_id, "experience_id")
+        if type(expected_revision) is not int or expected_revision < 0:
+            raise StoreError("expected_revision must be a non-negative integer")
+        link = dict(target_id=target_id, relation=relation, conditions=conditions, rationale=rationale)
+        captured = self._capture_experience_basis(command_id, [], [link])
+        def mutate(conn, revision, now):
+            self._require_provenance_schema(conn)
+            if revision != expected_revision + 1:
+                raise ConflictError("experience revision changed; reload before linking")
+            self._check_experience_capture(conn, captured, revision)
+            self._insert_experience_link(conn, command_id, experience_id, link, revision, captured)
+        return self._command("link_experience", command_id, experience_id, actor,
+                             (experience_id, link, expected_revision), mutate, source_capture=captured)
+
+    def retract_experience_link(self, *, command_id: str, link_id: str, reason: str,
+                                expected_revision: int, actor: str) -> dict:
+        link_id, reason = _identifier(link_id, "link_id"), _text(reason, "reason")
+        if type(expected_revision) is not int or expected_revision < 0:
+            raise StoreError("expected_revision must be a non-negative integer")
+        def mutate(conn, revision, now):
+            self._require_provenance_schema(conn)
+            if revision != expected_revision + 1:
+                raise ConflictError("experience revision changed; reload before retracting")
+            conn.execute("INSERT INTO experience_link_events VALUES (?,?,?,?,?,?)",
+                         (command_id, link_id, reason, actor, revision, now))
+        return self._command("retract_experience_link", command_id, link_id, actor,
+                             (link_id, reason, expected_revision), mutate)
+
+    def experience_sources(self, experience_ids: list[str]) -> dict:
+        """Batch source bindings and explicit corrections in one read snapshot."""
+        if not isinstance(experience_ids, list) or not experience_ids or len(experience_ids) > 1000:
+            raise StoreError("experience_ids must contain 1..1000 IDs")
+        ids = list(dict.fromkeys(_identifier(item, "experience_id") for item in experience_ids))
+        with self._connection() as conn:
+            self._require_provenance_schema(conn)
+            rows = [dict(row) for row in conn.execute(
+                f"SELECT * FROM experiences WHERE id IN ({','.join('?' for _ in ids)})", ids)]
+            if len(rows) != len(ids):
+                raise StoreError("one or more experience IDs are missing from this Store")
+            self._experience_provenance(conn, rows)
+            meta = dict(conn.execute("SELECT * FROM store").fetchone())
+            return {"target": self.target, "store_id": meta["store_id"], "revision": meta["revision"], "items": rows}
+
+    def _capture_experience_basis(self, command_id, sources, links, claims=(), evidence=()):
+        """Hash evidence before the write transaction; bind the ensuing owner snapshot."""
+        with self._connection() as conn:
+            self._require_provenance_schema(conn)
+            if conn.execute("SELECT 1 FROM audit WHERE command_id=?", (command_id,)).fetchone():
+                return None  # _command checks exact replay content before mutation.
+            roots = []
+            for source in sources:
+                if isinstance(source, dict) and "owner" not in source and source.get("purpose") == "basis":
+                    roots.append((_identifier(source.get("experience_id"), "experience_id"), source.get("version")))
+            for link in links:
+                if isinstance(link, dict) and link.get("relation") == "depends_on":
+                    key = _identifier(link.get("target_id"), "target_id")
+                    version = conn.execute("SELECT max(version) FROM experience_versions WHERE experience_id=?", (key,)).fetchone()[0]
+                    roots.append((key, version))
+            endpoints = []
+            claim_observations = list(evidence)
+            for claim in claims:
+                if not isinstance(claim, dict):
+                    raise StoreError("claim must be an object")
+                bound_conditions, _ = self._claim_context(claim)
+                for endpoint in [claim.get("subject"), claim.get("object"), *(bound_conditions or {}).values()]:
+                    if not isinstance(endpoint, dict):
+                        raise StoreError("claim endpoint requires an exact entity binding")
+                    actual = self._experience_entity(conn, endpoint.get("owner"), endpoint.get("record_id"))
+                    if endpoint != actual:
+                        raise ConflictError("claim endpoint belongs to another Store or changed")
+                    endpoints.append(endpoint)
+                    if endpoint["owner"] == "experience":
+                        roots.append((endpoint["record_id"], endpoint["version"]))
+                refs = claim.get("source_refs")
+                if not isinstance(refs, list):
+                    raise StoreError("claim source_refs must be a list")
+                for ref in refs:
+                    if isinstance(ref, dict) and "observation" in ref:
+                        index = ref["observation"]
+                        if type(index) is not int or not 0 <= index < len(evidence):
+                            raise StoreError("claim observation reference is outside accepted evidence")
+                        # All accepted observations are basis; refs only select claim support.
+            for _, version in roots:
+                if type(version) is not int or version < 0:
+                    raise StoreError("basis requires an existing non-negative version")
+            artifacts = {}
+            knowledge, history = {}, {}
+            health = self._experience_health(conn, roots, artifacts, knowledge, history)
+            for source in sources:
+                if isinstance(source, dict) and source.get("owner") in ("knowledge", "history"):
+                    owner = source["owner"]
+                    resolver = experience_history if owner == "history" else experience_knowledge
+                    cache = history if owner == "history" else knowledge
+                    self._require_external_source_schema(conn, owner)
+                    try:
+                        resolver.validate_source(source)
+                    except ValueError as exc:
+                        raise StoreError(str(exc)) from exc
+                    record_id = source["record_id"]
+                    if record_id not in cache:
+                        cache[record_id] = (self._capture_history_source(conn, record_id) if owner == "history"
+                                            else experience_knowledge.capture_source(self.root, record_id))
+                    diagnostic = resolver.source_health(source, cache[record_id])
+                    if diagnostic["status"] != "available":
+                        raise StoreError(f"{owner} source {record_id}: {diagnostic['status']}: {diagnostic.get('reason', '')}")
+            materials = {}
+            for source in [*sources, *endpoints]:
+                if isinstance(source, dict) and source.get("owner") in ("artifact", "assessment"):
+                    owner, record_id = source.get("owner"), source.get("record_id")
+                    self._experience_entity(conn, owner, record_id)
+                    materials[(owner, record_id)] = self._material_source_health(conn, owner, record_id, artifacts)
+            for operation, step in claim_observations:
+                bound = conn.execute("SELECT artifact_id FROM observation_artifacts WHERE operation_id=? AND step=?", (operation, step)).fetchall()
+                if not bound or any(self._material_source_health(conn, "artifact", row[0], artifacts) != "available" for row in bound):
+                    raise StoreError("observation basis is unavailable or revoked")
+            return {"revision": conn.execute("SELECT revision FROM store").fetchone()[0],
+                    "health": health, "artifacts": artifacts, "materials": materials, "knowledge": knowledge, "history": history}
+
+    def _capture_history_source(self, conn, record_id):
+        if not conn.execute("SELECT 1 FROM experiences WHERE id=?", (record_id,)).fetchone():
+            return {"status": "unavailable", "availability": "unavailable", "verification": "unverified",
+                    "files": {}, "directories": {}, "reason": "imported experience is missing from this Store"}
+        store_id = conn.execute("SELECT store_id FROM store").fetchone()[0]
+        return experience_history.capture_source(self.root, self.target, store_id, record_id)
+
+    def _check_experience_capture(self, conn, captured, revision):
+        if captured is None or revision != captured["revision"] + 1:
+            raise ConflictError("experience sources changed before acceptance; reload and retry")
+        for owner, resolver in (("knowledge", experience_knowledge), ("history", experience_history)):
+            for acquisition in captured[owner].values():
+                if acquisition["status"] == "available":
+                    try:
+                        resolver.check_capture(acquisition)
+                    except (OSError, ValueError) as exc:
+                        raise ConflictError(f"{owner} source changed before acceptance: {exc}") from exc
+        for artifact, status, files in captured["artifacts"].values():
+            if status["authorized"]:
+                self._check_report_files(conn, artifact, files)
+
+    @staticmethod
+    def _require_healthy_basis(captured, experience_id, version):
+        node = captured["health"].get((experience_id, version))
+        if not node or node["unhealthy"]:
+            raise StoreError(f"basis is unavailable, changed or challenged: {experience_id}:{version}")
+
+    def _experience_health(self, conn, roots, artifacts=None, knowledge=None, history=None):
+        """Resolve only the exact reachable versions; retain every broken edge and source."""
+        artifacts = {} if artifacts is None else artifacts
+        knowledge = {} if knowledge is None else knowledge
+        history = {} if history is None else history
+        external_sources = conn.execute("SELECT schema_version FROM store").fetchone()[0] >= 16
+        nodes, pending, correction_scopes = {}, list(roots), {}
+        while pending:
+            key = pending.pop()
+            if key in nodes:
+                continue
+            experience_id, version = key
+            node = nodes[key] = {"health": [], "edges": [], "sources": [], "links": [], "review_state": "advisory"}
+            current = conn.execute("SELECT max(version) FROM experience_versions WHERE experience_id=?", (experience_id,)).fetchone()[0]
+            retained = conn.execute("SELECT * FROM experience_versions WHERE experience_id=? AND version=?", key).fetchone()
+            snapshot, state = None, "available"
+            if retained is None:
+                state = "unavailable"
+            else:
+                try:
+                    snapshot = json.loads(retained["snapshot_json"])
+                    if not isinstance(snapshot, dict) or _digest(snapshot) != retained["content_sha256"]:
+                        state = "corrupt"
+                except (TypeError, ValueError):
+                    state = "corrupt"
+                if state == "available" and current != version:
+                    state = "version_changed"
+            node["health"].append({"experience_id": experience_id, "version": version, "purpose": "basis", "status": state})
+            links = [dict(row) for row in conn.execute("""SELECT l.*, e.id AS retraction_id,
+                    e.reason AS retraction_reason FROM experience_links l
+                    LEFT JOIN experience_link_events e ON e.link_id=l.id
+                    WHERE (l.experience_id=? AND l.experience_version=?) OR (l.target_id=? AND l.target_version=?)
+                    ORDER BY l.revision,l.id""", (*key, *key))]
+            node["links"] = links
+            node["applicability"] = {"conditions": snapshot.get("conditions") if isinstance(snapshot, dict) else None,
+                                     "comparison": "not_evaluated", "corrections": []}
+            for link in links:
+                if link["relation"] != "depends_on":
+                    if link["id"] not in correction_scopes:
+                        correction_scopes[link["id"]] = self._correction_applicability(conn, link)
+                    link["applicability"] = correction_scopes[link["id"]]
+                    incoming = (link["target_id"], link["target_version"]) == key
+                    node["applicability"]["corrections"].append({"link_id": link["id"], "relation": link["relation"],
+                        "direction": "incoming" if incoming else "outgoing", "withdrawn": bool(link["retraction_id"]),
+                        **link["applicability"]})
+                    if incoming and link["applicability"]["effect"] == "whole_record":
+                        if link["relation"] == "supersedes":
+                            node["review_state"] = "superseded"
+                        elif node["review_state"] != "superseded":
+                            node["review_state"] = "disputed"
+                if (link["experience_id"], link["experience_version"]) == key and link["relation"] == "depends_on":
+                    dependency = (link["target_id"], link["target_version"])
+                    node["edges"].append(dependency)
+                    pending.append(dependency)
+                    if link["retraction_id"]:
+                        node["health"].append({"link_id": link["id"], "purpose": "basis", "status": "withdrawn_dependency"})
+            for row in conn.execute("SELECT * FROM experience_sources WHERE experience_id=? AND experience_version=?", key):
+                source = dict(row)
+                dependency = (source["source_experience_id"], source["source_version"])
+                node["sources"].append(source)
+                pending.append(dependency)
+                if source["purpose"] == "basis":
+                    node["edges"].append(dependency)
+                actual = conn.execute("SELECT content_sha256 FROM experience_versions WHERE experience_id=? AND version=?", dependency).fetchone()
+                if actual is None or actual[0] != source["content_sha256"]:
+                    node["health"].append({"experience_id": dependency[0], "version": dependency[1],
+                                           "purpose": source["purpose"], "status": "corrupt"})
+            for row in conn.execute("SELECT * FROM experience_material_sources WHERE experience_id=? AND experience_version=? ORDER BY owner,record_id,purpose", key):
+                source = dict(row)
+                actual = self._experience_entity(conn, source["owner"], source["record_id"])
+                source["health"] = ("version_changed" if actual["version"] != source["source_version"] or actual["content_sha256"] != source["content_sha256"]
+                                    else self._material_source_health(conn, source["owner"], source["record_id"], artifacts))
+                node["sources"].append(source)
+                node["health"].append({"owner": source["owner"], "record_id": source["record_id"], "purpose": source["purpose"], "status": source["health"]})
+            if external_sources:
+                for row in conn.execute("SELECT * FROM experience_external_sources WHERE experience_id=? AND experience_version=? ORDER BY owner,record_id,source_version,purpose", key):
+                    source = dict(row)
+                    binding = {"owner": source["owner"], "record_id": source["record_id"],
+                               "version": source["source_version"], "content_sha256": source["content_sha256"]}
+                    record_id = source["record_id"]
+                    cache = history if source["owner"] == "history" else knowledge
+                    resolver = experience_history if source["owner"] == "history" else experience_knowledge
+                    if record_id not in cache:
+                        cache[record_id] = (self._capture_history_source(conn, record_id) if source["owner"] == "history"
+                                            else experience_knowledge.capture_source(self.root, record_id))
+                    diagnostic = resolver.source_health(binding, cache[record_id])
+                    source.update(health=diagnostic["status"], **{k: v for k, v in diagnostic.items() if k != "status"})
+                    node["sources"].append(source)
+                    node["health"].append({**binding, "purpose": source["purpose"], **diagnostic})
+            for endpoint in conn.execute("""SELECT e.* FROM experience_claim_endpoints e
+                    JOIN experience_claims c ON c.id=e.claim_id
+                    WHERE c.experience_id=? AND c.experience_version=?
+                    UNION ALL
+                    SELECT e.claim_id,'condition:'||e.role,e.owner,e.record_id,e.version,e.content_sha256
+                    FROM experience_claim_conditions e JOIN experience_claims c ON c.id=e.claim_id
+                    WHERE c.experience_id=? AND c.experience_version=?""", (*key, *key)):
+                actual = self._experience_entity(conn, endpoint["owner"], endpoint["record_id"])
+                endpoint_state = "available"
+                if actual["version"] != endpoint["version"] or actual["content_sha256"] != endpoint["content_sha256"]:
+                    endpoint_state = "version_changed"
+                elif endpoint["owner"] in ("artifact", "assessment"):
+                    endpoint_state = self._material_source_health(conn, endpoint["owner"], endpoint["record_id"], artifacts)
+                if endpoint["owner"] == "experience":
+                    dependency = (endpoint["record_id"], endpoint["version"])
+                    node["edges"].append(dependency)
+                    pending.append(dependency)
+                node["health"].append({"claim_id": endpoint["claim_id"], "side": endpoint["side"],
+                                       "purpose": "basis", "status": endpoint_state})
+            # Evidence is bound by the retained version, never by the mutable Case head.
+            if isinstance(snapshot, dict) and state != "corrupt":
+                for ref in snapshot.get("evidence", []):
+                    bound = list(conn.execute("""SELECT a.* FROM observation_artifacts b JOIN artifacts a ON a.id=b.artifact_id
+                        WHERE b.operation_id=? AND b.step=?""", (ref["operation_id"], ref["step"])))
+                    if not bound:
+                        node["health"].append({**ref, "purpose": "basis", "status": "unavailable"})
+                    for row in bound:
+                        artifact = dict(row)
+                        if artifact["id"] not in artifacts:
+                            path = self.root / artifact["ref"]
+                            try:
+                                stamp = _report_file_version(path.stat(follow_symlinks=False))
+                            except OSError:
+                                stamp = None
+                            status = self._artifact_status(conn, artifact)
+                            if status["authorized"] and (stamp is None or stamp != _report_file_version(path.stat(follow_symlinks=False))):
+                                raise ConflictError("experience artifact changed while checking sources")
+                            artifacts[artifact["id"]] = (artifact, status, [(path, stamp)])
+                        status = artifacts[artifact["id"]][1]
+                        node["health"].append({"artifact_id": artifact["id"], "purpose": "basis",
+                            "status": "available" if status["authorized"] else
+                            ("revoked" if status["provenance"] == "revoked" else "unavailable")})
+            node["unhealthy"] = node["review_state"] != "advisory" or any(
+                item["purpose"] == "basis" and item["status"] != "available" for item in node["health"])
+        # Monotone closure: withdrawal never removes a bad dependency or revives advice.
+        changed = True
+        while changed:
+            changed = False
+            for node in nodes.values():
+                if not node["unhealthy"] and any(nodes[key]["unhealthy"] for key in node["edges"]):
+                    node["unhealthy"] = True
+                    changed = True
+        for node in nodes.values():
+            for source in node["sources"]:
+                if "owner" in source:
+                    continue
+                dependency = nodes[(source["source_experience_id"], source["source_version"])]
+                source["health"] = (dependency["health"][0]["status"] if dependency["health"][0]["status"] != "available"
+                                    else "challenged" if dependency["review_state"] in {"superseded", "disputed"}
+                                    else "needs_review" if dependency["unhealthy"] else "available")
+                node["health"].append({"experience_id": source["source_experience_id"], "version": source["source_version"],
+                                       "purpose": source["purpose"], "status": source["health"]})
+            for key in node["edges"]:
+                if nodes[key]["unhealthy"]:
+                    node["health"].append({"experience_id": key[0], "version": key[1],
+                                           "purpose": "basis", "status": "needs_review"})
+            if node["unhealthy"] and node["review_state"] == "advisory":
+                node["review_state"] = "needs_review"
+        return nodes
+
+    def _experience_provenance(self, conn, rows, captured=None):
+        self._require_provenance_schema(conn)
+        if not rows:
+            return
+        ids = [row["id"] for row in rows]
+        versions = dict(conn.execute(f"SELECT experience_id,max(version) FROM experience_versions WHERE experience_id IN ({','.join('?' for _ in ids)}) GROUP BY experience_id", ids))
+        health = self._experience_health(conn, [(key, versions.get(key)) for key in ids], **(captured or {}))
+        for row in rows:
+            node = health[(row["id"], versions.get(row["id"]))]
+            row.update(claims=self._experience_claim_rows(conn, row["id"], versions.get(row["id"]), captured), version=versions.get(row["id"]), sources=node["sources"], source_health=node["health"],
+                       correction_refs=[link for link in node["links"] if link["relation"] != "depends_on"],
+                       dependency_refs=[link for link in node["links"] if link["relation"] == "depends_on"],
+                       review_state=node["review_state"],
+                       applicability=node["applicability"])
 
     @staticmethod
     def _require_memory_schema(conn) -> None:
@@ -1925,6 +3204,7 @@ class TargetStore:
         material = (hypothesis_id, vuln_class, endpoint, object_ref, tuple(actor_ids), why_now, status, metadata_json)
 
         def mutate(conn, revision, now):
+            self._require_provenance_schema(conn)
             for actor_id in actor_ids:
                 if not conn.execute("SELECT 1 FROM case_actors WHERE id=?", (actor_id,)).fetchone():
                     raise StoreError(f"actor does not exist: {actor_id}")
@@ -1936,6 +3216,7 @@ class TargetStore:
                 if any(existing[key] != value for key, value in zip(
                         ("id", "kind", "statement", "conditions", "reopen_when", "next_intent", "action_id", "finding_id", "recorded_by"), values[:-1])):
                     raise ConflictError("hypothesis id is already bound to different content")
+                self._snapshot_experience(conn, hypothesis_id, revision - 1, now, only_if_missing=True)
                 conn.execute("DELETE FROM experience_case_context WHERE experience_id=?", (hypothesis_id,))
                 conn.execute("DELETE FROM experience_case_actors WHERE experience_id=?", (hypothesis_id,))
                 conn.execute("DELETE FROM experience_case_objects WHERE experience_id=?", (hypothesis_id,))
@@ -1948,6 +3229,7 @@ class TargetStore:
                              [(hypothesis_id, item) for item in actor_ids])
             if object_ref:
                 conn.execute("INSERT INTO experience_case_objects VALUES (?,?)", (hypothesis_id, object_ref))
+            self._snapshot_experience(conn, hypothesis_id, revision, now)
 
         return self._command("remember_hypothesis", command_id, hypothesis_id, actor, material, mutate)
 
@@ -2348,6 +3630,19 @@ class TargetStore:
         rows = [dict(row) for row in conn.execute(
             f"SELECT * FROM experiences WHERE {where} ORDER BY created_at DESC,id DESC LIMIT ?",
             (*params, limit))]
+        self._assemble_experience_rows(conn, rows)
+        has_more = remaining > len(rows)
+        next_cursor = None
+        if has_more:
+            last = rows[-1]
+            next_cursor = base64.urlsafe_b64encode(json.dumps(
+                {**binding, "after": [last["created_at"], last["id"]]}, sort_keys=True).encode()).decode()
+        return {**binding, "items": rows, "total": total,
+                "remaining": remaining - len(rows), "has_more": has_more,
+                "next_cursor": next_cursor}
+
+    def _assemble_experience_rows(self, conn, rows, captured=None):
+        """The single body/provenance assembly shared by paging and recall batches."""
         if rows:
             ids = [row["id"] for row in rows]
             refs = conn.execute(
@@ -2358,15 +3653,7 @@ class TargetStore:
                 by_id[ref["experience_id"]].append({"operation_id": ref["operation_id"], "step": ref["step"]})
             for row in rows:
                 row["evidence"] = by_id[row["id"]]
-        has_more = remaining > len(rows)
-        next_cursor = None
-        if has_more:
-            last = rows[-1]
-            next_cursor = base64.urlsafe_b64encode(json.dumps(
-                {**binding, "after": [last["created_at"], last["id"]]}, sort_keys=True).encode()).decode()
-        return {**binding, "items": rows, "total": total,
-                "remaining": remaining - len(rows), "has_more": has_more,
-                "next_cursor": next_cursor}
+        self._experience_provenance(conn, rows, captured)
 
     def _require_limit(self, limit: int, maximum: int = 1000) -> None:
         if type(limit) is not int or not 1 <= limit <= maximum:
@@ -2382,6 +3669,7 @@ class TargetStore:
         rows = [dict(row) for row in conn.execute(
             f"SELECT * FROM experiences WHERE kind IN ({placeholders}) AND id>? ORDER BY id LIMIT ?",
             (*kinds, after, limit))]
+        self._experience_provenance(conn, rows)
         return self._slice(conn, binding, total=total, remaining=remaining, rows=rows, limit=limit)
 
     def context(self, *, limit: int = 20) -> dict:
@@ -2588,7 +3876,7 @@ class TargetStore:
                     item["detail"] = json.loads(item.pop("detail_json") or "{}")
                 except (TypeError, ValueError) as exc:
                     raise StoreError(f"observation detail is unreadable: {operation_id}:{item['step']}") from exc
-                item["artifacts"] = [dict(binding) for binding in conn.execute("""SELECT b.kind,a.ref,a.sha256,a.size
+                item["artifacts"] = [dict(binding) for binding in conn.execute("""SELECT b.kind,a.id AS id,a.ref,a.sha256,a.size
                     FROM observation_artifacts b JOIN artifacts a ON a.id=b.artifact_id
                     WHERE b.operation_id=? AND b.step=? ORDER BY b.kind""", (operation_id, item["step"]))]
             attempt = dict(conn.execute("SELECT * FROM attempts WHERE id=?", (row["attempt_id"],)).fetchone())
@@ -2728,7 +4016,9 @@ class TargetStore:
                     case["metadata"] = json.loads(case.pop("metadata_json"))
                 except (TypeError, ValueError):
                     case["metadata"] = {}
-            return {**dict(row), "evidence": refs, "case": case}
+            result = {**dict(row), "evidence": refs, "case": case}
+            self._experience_provenance(conn, [result])
+            return result
 
     def action(self, action_id: str) -> dict:
         """Expand a work subject and its recorded completion proof on one snapshot."""
@@ -2778,20 +4068,33 @@ class TargetStore:
     def backup(self, destination: str | Path) -> Path:
         """Use SQLite's snapshot API; copying just the main WAL database is unsafe."""
         path = Path(destination)
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        os.close(fd)
+        # Symlink traversal and lexical '..' normalization can name different parents.
+        if ".." in path.parts:
+            raise StoreError(f"invalid target store backup path: {path}; use a path without '..'")
         try:
-            with self._connection() as source:
-                target = sqlite3.connect(path)
-                try:
-                    source.backup(target)
-                finally:
-                    target.close()
-        except BaseException as exc:
-            path.unlink(missing_ok=True)
-            if isinstance(exc, sqlite3.DatabaseError):
-                raise StoreError(f"target store backup failed at {path}: {exc}") from exc
-            raise
+            with directory_handle(path.parent) as parent:
+                if os.path.lexists(path):
+                    raise FileExistsError(f"target store backup already exists: {path}")
+                # SQLite opens filenames, not the descriptor reserved by O_EXCL.
+                # Keep its writable database private and publish only a closed,
+                # durable snapshot; a competing destination is never overwritten.
+                with TemporaryDirectory(prefix=".ccst-backup-", dir=path.parent) as staging:
+                    snapshot = Path(staging) / "snapshot.sqlite3"
+                    fd = os.open(snapshot, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+                    try:
+                        with self._connection() as source:
+                            target = sqlite3.connect(snapshot)
+                            try:
+                                source.backup(target)
+                            finally:
+                                target.close()
+                        os.fsync(fd)
+                        os.link(snapshot, path.name, dst_dir_fd=parent, follow_symlinks=False)
+                        os.fsync(parent)
+                    finally:
+                        os.close(fd)
+        except sqlite3.DatabaseError as exc:
+            raise StoreError(f"target store backup failed at {path}: {exc}") from exc
         return path
 
     def upgrade_memory_schema(self, backup_path: str | Path) -> dict:
@@ -2816,8 +4119,8 @@ class TargetStore:
             if before["schema_version"] >= version:
                 return {"status": "already_current", "target": self.target,
                         "store_id": before["store_id"], "revision": before["revision"], "backup": None}
-            if before["schema_version"] not in {8, 9, 10}:
-                raise StoreError("Store schema upgrade requires schema v8, v9 or v10")
+            if before["schema_version"] not in {8, 9, 10, 11, 12, 13, 14, 15, 16}:
+                raise StoreError("Store schema upgrade requires schema v8, v9, v10, v11, v12, v13, v14, v15 or v16")
 
             backup = self.backup(backup_path)
             try:
@@ -2864,6 +4167,57 @@ class TargetStore:
                     conn.execute("ALTER TABLE observations ADD COLUMN identity_status TEXT NOT NULL DEFAULT 'none' CHECK (identity_status IN ('complete','none','incomplete','conflict'))")
                     conn.execute("ALTER TABLE observations ADD COLUMN identity_technique TEXT NOT NULL DEFAULT '' CHECK (length(identity_technique) <= 256)")
                     conn.execute("ALTER TABLE observations ADD COLUMN identity_v2 TEXT NOT NULL DEFAULT '{}' CHECK (length(identity_v2) <= 8192)")
+                if before["schema_version"] < 12 and version >= 12:
+                    for statement in _EXPERIENCE_PROVENANCE_SCHEMA.split(";"):
+                        if statement.strip():
+                            conn.execute(statement)
+                    for row in conn.execute("SELECT id FROM experiences").fetchall():
+                        self._snapshot_experience(conn, row[0], before["revision"], _now())
+                if before["schema_version"] == 12 and version >= 13:
+                    sources = [dict(row) for row in conn.execute("SELECT * FROM experience_sources")]
+                    links = [dict(row) for row in conn.execute("SELECT * FROM experience_links")]
+                    events = [tuple(row) for row in conn.execute("SELECT * FROM experience_link_events")]
+                    for table in ("experience_link_events", "experience_links", "experience_sources"):
+                        conn.execute(f"DROP TABLE {table}")
+                    for statement in _EXPERIENCE_PROVENANCE_SCHEMA.split(";"):
+                        if statement.strip() and "CREATE TABLE experience_versions" not in statement:
+                            conn.execute(statement)
+                    for source in sources:
+                        retained = conn.execute("SELECT min(version) FROM experience_versions WHERE experience_id=?", (source["experience_id"],)).fetchone()[0]
+                        conn.execute("INSERT INTO experience_sources VALUES (?,?,?,?,?,?)", (
+                            source["experience_id"], retained, source["source_experience_id"], source["source_version"],
+                            source["purpose"], source["content_sha256"]))
+                    for link in links:
+                        versions = [conn.execute("SELECT max(version) FROM experience_versions WHERE experience_id=? AND version<=?",
+                                    (link[key], link["revision"])).fetchone()[0] for key in ("experience_id", "target_id")]
+                        if None in versions:
+                            raise StoreError("link history is not retained; cannot bind its historical endpoints")
+                        conn.execute("INSERT INTO experience_links VALUES (?,?,?,?,?,?,?,?,?)", (
+                            link["id"], link["experience_id"], link["target_id"], *versions,
+                            link["relation"], link["conditions"], link["rationale"], link["revision"]))
+                    conn.executemany("INSERT INTO experience_link_events VALUES (?,?,?,?,?,?)", events)
+                if before["schema_version"] < 14 and version >= 14:
+                    for statement in _EXPERIENCE_MATERIAL_SCHEMA.split(";"):
+                        if statement.strip():
+                            conn.execute(statement)
+                if before["schema_version"] < 15 and version >= 15:
+                    for statement in _EXPERIENCE_CONDITION_SCHEMA.split(";"):
+                        if statement.strip():
+                            conn.execute(statement)
+                if before["schema_version"] < 16 and version >= 16:
+                    for statement in _EXPERIENCE_EXTERNAL_SCHEMA.split(";"):
+                        if statement.strip():
+                            conn.execute(statement)
+                if before["schema_version"] == 16 and version >= 17:
+                    for table in ("experience_claim_external_sources", "experience_external_sources"):
+                        conn.execute(f"ALTER TABLE {table} RENAME TO {table}_v16")
+                    for statement in _EXPERIENCE_EXTERNAL_SCHEMA.split(";"):
+                        if statement.strip():
+                            conn.execute(statement)
+                    for table in ("experience_external_sources", "experience_claim_external_sources"):
+                        conn.execute(f"INSERT INTO {table} SELECT * FROM {table}_v16")
+                    for table in ("experience_claim_external_sources", "experience_external_sources"):
+                        conn.execute(f"DROP TABLE {table}_v16")
                 revision = before["revision"] + 1
                 conn.execute("UPDATE store SET schema_version=?,revision=? WHERE singleton=1",
                              (version, revision))
@@ -2937,7 +4291,7 @@ def _main() -> int:
     upgrade.add_argument("--target", required=True)
     upgrade.add_argument("--backup", required=True, help="new absolute backup path outside target state")
     upgrade.add_argument("--repo-root", default="", help="repository root (defaults to this checkout)")
-    upgrade_all = subparsers.add_parser("upgrade-schema", help="explicit v8/v9/v10-to-v11 Store schema upgrade")
+    upgrade_all = subparsers.add_parser("upgrade-schema", help="explicit supported-schema upgrade with backup")
     upgrade_all.add_argument("--target", required=True)
     upgrade_all.add_argument("--backup", required=True, help="new absolute backup path outside target state")
     upgrade_all.add_argument("--repo-root", default="", help="repository root (defaults to this checkout)")

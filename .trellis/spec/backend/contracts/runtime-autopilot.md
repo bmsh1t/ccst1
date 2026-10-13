@@ -532,9 +532,9 @@ release wiring, entry budgets and delegation boundaries, not just prose.
 - Combined size of the two command files is bounded by the merged floor of
   11 KiB (restored anchor prefixes, settle stale-Surface contract and full
   descriptions exceed the pre-merge draft's 10 KiB budget).
-- Methodology stays out of entry prompts: business/hypothesis reasoning in
-  `skills/bb-methodology/SKILL.md`, cross-stage coordination in
-  `skills/bug-bounty/SKILL.md`, both referenced on demand.
+- Methodology stays out of entry prompts: `skills/src-hunting/SKILL.md` is the
+  single investigation core; problem-scoped specialists and complete methods
+  are referenced on demand, without a second global investigation loop.
 - `agents/autopilot.md` is a routing-table delegation contract: evidence
   question -> method owner rows, read-only Store queries, parent-owned writes;
   no second Core Loop or finish checklist.
@@ -579,7 +579,7 @@ Wrong: compress the bootstrap line to `Bootstrap: !`...`` and inline hunt
 methodology into the command so it stays self-contained.
 
 Correct: keep the full anchor prefixes, point at
-`skills/bb-methodology/SKILL.md` on demand, and let the routing table reference
+`skills/src-hunting/SKILL.md` on demand, and let the routing table reference
 lane/method owners.
 
 ## Claude Runtime Packaging and Drift Preflight
@@ -609,21 +609,21 @@ are executable prompt resources, not optional repository documentation.
   `skills/<name>/` directory, recursively, plus shared top-level `skills/*.md`.
 - Flat `commands/*.md` and `agents/*.md` are runtime sources except explicit local
   development artifacts ending in `.patch.md` (case-insensitive within that
-  existing `*.md` source set). Both installer loops and Doctor apply this rule;
-  shell matching must not add a dependency or raise the required Bash version.
-  A repo-side patch stays in place
-  and is never copied; a patch previously copied into runtime is an `EXTRA` that
-  explicit prune may remove.
-- Runtime discovery recursively scans only Skill root names owned by the repo.
-  Completely external roots such as `~/.claude/skills/playwright-cli/` are not
-  drift and must never be pruned by this project.
-- Managed-root nested extras are drift. `--sync --prune` may remove them because
-  the root belongs to this repo. `install.sh` mirrors each current Skill root
-  with `rsync --delete` when available; its `cp` fallback is additive and requires
-  reviewed cleanup for stale nested files. A whole removed Skill stays installed
-  until explicitly retired. Keep user customizations outside repo-owned roots.
-- `install.sh` copies each complete Skill directory, preserving relative paths
-  such as `security-arsenal/references/bypass-patterns.md`.
+  existing `*.md` source set). Doctor owns this discovery rule; `install.sh`
+  delegates to Doctor rather than maintaining separate shell copy loops.
+  A repo-side patch stays in place and is never copied; a patch previously
+  copied into runtime is an `EXTRA`. Explicit prune removes it only when its
+  receipt and unchanged bytes establish ownership.
+- Runtime discovery recursively scans current repo-owned Skill roots and also
+  includes receipt-owned files under retired roots. Unowned external roots such
+  as `~/.claude/skills/playwright-cli/` are not drift and must never be pruned.
+- Managed-root nested extras are drift, but a directory name is not file
+  ownership. `--sync --prune` removes only unchanged receipt-owned retired files.
+  Unknown or locally modified files remain; modified owned files report conflicts.
+- `install.sh` delegates to `runtime_doctor --sync --prune` for one ownership-bound
+  publication path. It copies current Skill resources recursively and retires
+  unchanged owned files, including files under a removed Skill root. Empty
+  directories and unowned legacy Skill files are not automatically deleted.
 - Compare, sync, and prune must use the same repo/runtime file discovery contract.
 - `commands/autopilot.md` owns the versioned JSON critical manifest. It lists
   runtime-relative command/agent/skill paths plus declared MCP contracts,
@@ -647,13 +647,16 @@ are executable prompt resources, not optional repository documentation.
   `--fail-on-critical-drift` and strict `--fail-on-drift`.
 - Advisory-only drift -> zero with `--fail-on-critical-drift`, non-zero with
   strict `--fail-on-drift`.
-- Managed nested runtime-only file -> `EXTRA`; only explicit `--prune` removes it.
+- Managed nested runtime-only file -> `EXTRA`; explicit `--prune` removes it only
+  when its ownership receipt and unchanged bytes authorize retirement.
 - Repo command/agent ends in `.patch.md`, `.PATCH.md`, or `.PaTcH.md` -> ignored
   during install and Doctor source discovery; same filename already in runtime
-  -> `EXTRA`. Only explicit prune removes it, without touching the repo copy.
+  -> `EXTRA`. Explicit prune removes only an unchanged owned copy, without
+  touching the repo copy.
 - Ordinary names such as `local.md` or `local.patch-notes.md` -> copied unchanged;
   patch exclusion must not become a substring filter or enable disabled commands.
-- External Skill root exists -> ignored during compare and preserved during prune.
+- Unowned external Skill root exists -> ignored during compare and preserved
+  during prune; receipt-owned files under retired roots remain visible as drift.
 - Repo-root marker missing -> `/autopilot` stops and asks the operator to launch
   Claude from this repository.
 - Critical runtime drift -> `/autopilot` stops, shows `/sync-check`, and requests explicit
@@ -675,21 +678,26 @@ are executable prompt resources, not optional repository documentation.
 
 ### 6. Tests Required
 
-- Staged HOME install compares the entire `security-arsenal` relative file set and
-  bytes against the repo.
+- Staged HOME install compares each current Skill's complete relative file set
+  and bytes against the repo; retired owned files follow receipt-based cleanup.
 - Staged install output must be clean under `compare_runtime()` for all kinds.
 - Runtime fixtures cover nested missing, diff, managed extra, sync, and prune.
 - Runtime fixtures cover critical diff, missing-critical, advisory-only drift,
   missing/invalid manifest, manifest hash, HackerOne exclusion, and both gates.
 - Runtime fixtures prove external Skill nested resources survive compare/prune.
-- Upgrade/repeat fixtures exercise both `rsync` and additive `cp`, with command
-  and agent patches in lower/upper/mixed case plus ordinary/near-match filenames.
+- Upgrade/repeat fixtures exercise the shared ownership-based installer, with
+  command and agent patches in lower/upper/mixed case plus ordinary/near-match filenames.
   Every install retains source bytes, excludes patches, and preserves disabled
   commands, external Skills, private settings/material, and Store binding.
 - Doctor fixtures cover both kinds and all three patch spellings: repo sources
-  cause no `MISSING`; an old runtime copy is reported/pruned as `EXTRA`, and the
-  repo file remains byte-identical. Missing `rsync` is reported as a test skip,
-  not silently claimed as covered.
+  cause no `MISSING`; an old runtime copy is reported as `EXTRA`, only unchanged
+  owned copies are pruned, and the repo file remains byte-identical.
+- A synthetic predecessor must exercise actual retired Skill names and reuse of
+  `src-hunting` for the investigation entry, then compare every current installed
+  file and receipt against source bytes. Full `--fail-on-drift` is required;
+  critical-only checks do not cover every current Skill. A clean comparison may
+  coexist with an ignored unowned legacy Skill, so retirement evidence must
+  identify such preserved entries explicitly rather than claiming full removal.
 - The existing PR `core-contracts` job must run `tests/test_install_script.py` and
   `tests/test_runtime_doctor.py`, enforced by `tests/test_ci_contract.py`; do not
   defer these regressions solely to the main-branch full suite.
@@ -711,7 +719,7 @@ Correct:
 
 ```text
 skills/<managed-root>/**/* -> ~/.claude/skills/<managed-root>/**/*
-doctor -> recurse repo-owned roots; ignore unrelated external roots
+doctor -> recurse current repo roots + receipt-owned retired files; ignore unowned external roots
 commands/*.md - case-insensitive *.patch.md -> ~/.claude/commands/*.md
 agents/*.md - case-insensitive *.patch.md -> ~/.claude/agents/claude-bug-bounty/*.md
 full drift -> --fail-on-drift; Autopilot-only drift -> --fail-on-critical-drift
@@ -1455,3 +1463,14 @@ shared guidance. It does not prove model obedience; live acceptance remains sepa
 Wrong: old handoff says blocked -> new handoff asserts blocked without checking.
 Correct: inspect relevant current contract -> retain or revise current judgment,
 leaving old memory untouched and unchecked claims explicitly unverified.
+
+## C3 memory entry integration (2026-10-11, engineering only)
+
+`target_memory.load_goal_memory` produces separate question-recall and Store-history
+commands. Context Pack, Resume and Autopilot render those commands without building
+indexes or reinterpreting cursors. `query` keeps current owner facts independent of
+historical ranking; `history` preserves Store paging and exact ID expansion. An
+index/model failure does not authorize old permissions or replace fresh Bootstrap.
+The former mandatory playbook router is now complete on-demand method content in
+`knowledge/playbooks/web2-evidence-contracts.md`; Coverage/report gates remain.
+Runtime installation and model/default capability acceptance are still pending.

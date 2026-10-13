@@ -2,8 +2,7 @@
 id: node-prototype-pollution
 type: technique-card
 related_skills:
-  - web2-vuln-classes
-  - bb-methodology
+  - src-hunting
   - triage-validation
 trigger_tags:
   - node
@@ -64,7 +63,7 @@ source_refs:
 
 ## 能力定位
 
-本卡给 `web2-vuln-classes` 补充 Node/Express/JS 对象污染与 gadget 链思路。它用于
+本卡给 `src-hunting` 补充 Node/Express/JS 对象污染与 gadget 链思路。它用于
 从源代码、前端 bundle、错误栈、package metadata 和 JSON/API 行为中识别可验证的
 prototype pollution / VM sink 方向，不替代 RCE 受控影响证明。
 
@@ -135,11 +134,8 @@ prototype pollution / VM sink 方向，不替代 RCE 受控影响证明。
 
 ## 关联 Skills
 
-- `web2-vuln-classes`
-- `bb-methodology`
+- `src-hunting`
 - `triage-validation`
-- `security-arsenal`
-
 ## 晋升到 Skill / Queue 的条件
 
 - 只有 Node/依赖线索时，保持为 Lead，先做 source/package/sink 证据补强。

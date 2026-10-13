@@ -4,7 +4,7 @@ type: payload-pack
 related_cards:
   - knowledge/cards/sqli-hidden-surfaces.md
 related_skills:
-  - web2-vuln-classes
+  - src-hunting
 trigger_tags:
   - sqli
   - low-risk-probe

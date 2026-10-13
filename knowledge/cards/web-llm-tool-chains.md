@@ -2,7 +2,7 @@
 id: web-llm-tool-chains
 type: technique-card
 related_skills:
-  - web2-vuln-classes
+  - src-hunting
   - triage-validation
 trigger_tags:
   - web-llm
@@ -41,7 +41,7 @@ source_refs:
 
 ## 能力定位
 
-本卡给 `web2-vuln-classes` 补充 LLM/RAG/agent 工具链的攻击面建模和最小验证。
+本卡给 `src-hunting` 补充 LLM/RAG/agent 工具链的攻击面建模和最小验证。
 
 ## 触发信号
 
@@ -108,7 +108,7 @@ rug pull 或 OpenAPI schema 变化误路由到本卡。
 
 ## 关联 Skills
 
-- `web2-vuln-classes`
+- `src-hunting`
 - `triage-validation`
 
 ## 晋升到 Skill / Queue 的条件

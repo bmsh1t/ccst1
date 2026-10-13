@@ -3,8 +3,7 @@ id: upload-parser
 type: technique-card
 related_skills:
   - web2-recon
-  - web2-vuln-classes
-  - security-arsenal
+  - src-hunting
   - triage-validation
 trigger_tags:
   - upload
@@ -78,13 +77,12 @@ source_refs:
 - 先确认上传后处理链：存储、扫描、转换、预览、下载、分享。
 - 用最小无害样本验证解析路径，不上传炸弹、超大文件或资源耗尽样本。
 - 对下载/预览权限做 role diff。
-- 对 URL fetch、XXE、SSRF、路径穿越等二阶方向，只在证据命中时按 `rules/playbook-router.md` 路由。
+- 对 URL fetch、XXE、SSRF、路径穿越等二阶方向，只在证据命中时按 `knowledge/playbooks/web2-evidence-contracts.md` 路由。
 
 ## 关联 Skills
 
 - `web2-recon`
-- `web2-vuln-classes`
-- `security-arsenal`
+- `src-hunting`
 - `triage-validation`
 
 ## 停止条件

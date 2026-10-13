@@ -2,9 +2,8 @@
 id: xs-leak-oracle
 type: technique-card
 related_skills:
-  - web2-vuln-classes
+  - src-hunting
   - triage-validation
-  - security-arsenal
 trigger_tags:
   - xs-leak
   - oracle
@@ -76,10 +75,8 @@ source_refs:
 
 ## 关联 Skills
 
-- web2-vuln-classes
+- src-hunting
 - triage-validation
-- security-arsenal
-
 ## 停止条件
 
 - 各状态下可观测量无稳定差异

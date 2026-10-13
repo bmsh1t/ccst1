@@ -91,6 +91,32 @@ def test_compare_runtime_rejects_invalid_receipt_shapes(tmp_path, value, locatio
             for path in tmp_path.rglob("*")} == before
 
 
+@pytest.mark.parametrize("receipt_key", [
+    "commands/./test.md", "commands//test.md", "./commands/test.md", "commands/test.md/",
+])
+def test_sync_runtime_rejects_noncanonical_receipt_paths_before_mutation(tmp_path, receipt_key):
+    repo_root = _repo_fixture(tmp_path / "repo")
+    runtime_root = _runtime_fixture(tmp_path / "runtime")
+    _write(repo_root / "commands" / "test.md", "active command\n")
+    _write(runtime_root / "commands" / "test.md", "active command\n")
+    _record_installed_files(runtime_root)
+    receipt = runtime_root / ".ccst-installed.json"
+    owned = json.loads(receipt.read_text(encoding="utf-8"))
+    owned[receipt_key] = owned.pop("commands/test.md")
+    receipt.write_text(json.dumps(owned), encoding="utf-8")
+    _write(runtime_root / ".ccst-install.lock", "")
+    assert not (runtime_root / "commands" / "sync-check.md").exists()
+    assert (runtime_root / "commands" / "doctor.md").is_file()
+    before = {path: (path.read_bytes(), path.stat().st_mtime_ns) if path.is_file() else None
+              for path in tmp_path.rglob("*")}
+
+    with pytest.raises(ValueError, match="^invalid runtime ownership entry$"):
+        runtime_doctor.sync_runtime(repo_root, runtime_root, kinds=["commands"], prune=True)
+
+    assert {path: (path.read_bytes(), path.stat().st_mtime_ns) if path.is_file() else None
+            for path in tmp_path.rglob("*")} == before
+
+
 @pytest.mark.parametrize("receipt_data, extra", [
     (None, 0), ({}, 0),
     ({"skills/retired/SKILL.md": {"kind": "skills", "future_field": True},
