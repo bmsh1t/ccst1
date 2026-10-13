@@ -6,7 +6,7 @@
   "release_decision": "not_ready",
   "source": {
     "branch": "refactor/10-11-capability-architecture",
-    "head": "d45a8c121115f708675a2f6e108929bd5fbab8c3",
+    "head": "589dfdf56b2704e0a68a51943b51be7608bda93e",
     "working_tree": "33_preserved_paths_9_knowledge_19_frozen_evaluation_5_inherited_records_not_in_committed_head_assembly"
   },
   "default_selection": {
