@@ -471,6 +471,34 @@ def _extract_forms(snapshot_path: Path | None) -> dict:
     }
 
 
+def _merge_forms(previous: object, current: dict) -> dict:
+    """Keep previously extracted forms when an incremental capture has no DOM."""
+    previous_items = previous.get("forms") if isinstance(previous, dict) else []
+    current_items = current.get("forms") if isinstance(current, dict) else []
+    if not isinstance(previous_items, list):
+        previous_items = []
+    if not isinstance(current_items, list):
+        current_items = []
+
+    merged: list[dict] = []
+    seen: set[str] = set()
+    for item in [*previous_items, *current_items]:
+        if not isinstance(item, dict):
+            continue
+        key = json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(item)
+    if not merged:
+        return current
+    return {
+        "status": "extracted",
+        "forms": merged,
+        "note": "Merged forms from browser captures; later captures may omit DOM snapshots.",
+    }
+
+
 def write_browser_surface(
     *,
     recon_root: str | Path,
@@ -531,6 +559,7 @@ def write_browser_surface(
             )
             unique_shapes[key] = shape
         request_shapes = list(unique_shapes.values())
+        forms = _merge_forms(_load_json(Path(artifacts["forms"])), forms)
     _write_lines(Path(artifacts["xhr_endpoints"]), xhr_urls)
     _write_lines(Path(artifacts["api_endpoints"]), api_urls)
     _write_lines(Path(artifacts["browser_params"]), params)

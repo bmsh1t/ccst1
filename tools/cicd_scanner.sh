@@ -19,6 +19,7 @@ log_warn() { echo -e "${YELLOW}[!]${NC} $1"; }
 log_info() { echo -e "${CYAN}[*]${NC} $1"; }
 
 usage() {
+    local exit_code="${1:-0}"
     cat <<EOF
 Usage: $(basename "$0") <target> [options]
 
@@ -40,7 +41,7 @@ Examples:
   $(basename "$0") "org:kubernetes" --recursive --depth 5
   $(basename "$0") https://github.com/actions/runner --output-dir /tmp/scan
 EOF
-    exit 0
+    exit "$exit_code"
 }
 
 # Defaults
@@ -52,7 +53,7 @@ OUTPUT_DIR=""
 
 # Parse target
 TARGET="${1:-}"
-[ -z "$TARGET" ] && { log_err "No target specified"; usage; }
+[ -z "$TARGET" ] && { log_err "No target specified"; usage 2; }
 [ "$TARGET" = "-h" ] || [ "$TARGET" = "--help" ] && usage
 shift
 
@@ -65,14 +66,14 @@ while [ $# -gt 0 ]; do
         -p|--parallel) PARALLEL="$2"; shift 2 ;;
         -o|--output-dir) OUTPUT_DIR="$2"; shift 2 ;;
         -h|--help) usage ;;
-        *) log_err "Unknown option: $1"; usage ;;
+        *) log_err "Unknown option: $1"; usage 2 ;;
     esac
 done
 
 # Numeric options must be non-negative integers; they are passed verbatim to
 # the scanner argv, so reject anything else before invocation.
 validate_uint() {
-    [[ "$2" =~ ^[0-9]+$ ]] || { log_err "Invalid $1: '$2' (must be a non-negative integer)"; usage; }
+    [[ "$2" =~ ^[0-9]+$ ]] || { log_err "Invalid $1: '$2' (must be a non-negative integer)"; usage 2; }
 }
 validate_uint "depth (-d)" "$DEPTH"
 validate_uint "limit (-l)" "$LIMIT"

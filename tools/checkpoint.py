@@ -1541,8 +1541,12 @@ def build_parser() -> argparse.ArgumentParser:
     round_operation.add_argument("--round-begin", action="store_true")
     round_operation.add_argument("--record-round-lane", action="store_true")
     round_operation.add_argument("--record-round-lane-result", action="store_true")
-    round_operation.add_argument("--round-id", default="", help="round_id the lane was claimed under (required for --record-round-lane-result)")
     round_operation.add_argument("--record-global-review", action="store_true")
+    parser.add_argument(
+        "--round-id",
+        default="",
+        help="round_id the lane was claimed under (required for --record-round-lane-result)",
+    )
     parser.add_argument("--lane", default="")
     parser.add_argument("--max-lanes", type=int, default=0)
     parser.add_argument("--lane-status", default="")

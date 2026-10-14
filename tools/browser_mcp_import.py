@@ -400,6 +400,7 @@ def import_mcp_browser_evidence(
     capture_dir.mkdir(parents=True, exist_ok=False)
     private_dir = private_artifact_dir(root.parent, "browser", target_key, run_id)
 
+    surface_touched = False
     try:
         artifacts: dict[str, str] = {}
         network_payload = _load_network_payload(network_path or har_path)
@@ -463,6 +464,10 @@ def import_mcp_browser_evidence(
                 private_artifacts[name] = meta
                 artifacts[f"{name}_private"] = str(meta["path"])
 
+        # Once the shared Recon projection is touched, retain this capture on
+        # later publish failure so the projection never points at a deleted
+        # directory. A retry with run_identity can replace the partial capture.
+        surface_touched = True
         browser_surface = write_browser_surface(
             recon_root=recon_root,
             target_key=target_key,
@@ -545,10 +550,12 @@ def import_mcp_browser_evidence(
         _write_json(pointer_path, pointer)
         return summary
     except BaseException:
-        # Roll back only this run's identity-holding directories; a concurrent
-        # import's published captures must survive this import's failure.
-        shutil.rmtree(capture_dir, ignore_errors=True)
-        shutil.rmtree(private_dir, ignore_errors=True)
+        # Before the shared projection is touched, remove this run's partial
+        # directories. Afterward keep them: deleting them would leave Recon
+        # pointing at missing evidence, and a stable retry can replace them.
+        if not surface_touched:
+            shutil.rmtree(capture_dir, ignore_errors=True)
+            shutil.rmtree(private_dir, ignore_errors=True)
         raise
 
 
