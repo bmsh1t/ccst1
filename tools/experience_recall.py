@@ -108,6 +108,22 @@ def _collect_knowledge_cards(repo_root: Path, query_tokens: set[str]) -> tuple[l
     }
 
 
+def _store_sources_stale(before: list[dict], after: list[dict]) -> bool:
+    """Whether re-collected entries changed their source-bound projections.
+
+    The store binding only covers DB rows; the files backing an experience's
+    sources can change bytes without a revision bump, leaving captured
+    source_health/review_state snapshots stale.
+    """
+    fields = ("sources", "source_health", "review_state", "claims")
+    if len(before) != len(after):
+        return True
+    return any(
+        any(entry.get(field) != fresh.get(field) for field in fields)
+        for entry, fresh in zip(before, after)
+    )
+
+
 def build_recall_view(
     repo_root: Path,
     *,
@@ -144,6 +160,12 @@ def build_recall_view(
 
     if runtime_store(repo_root, canonical).binding() != current["binding"]:
         raise StoreError("recall current revision changed; retry query")
+    recheck_entries, _ = _collect_target_entries(
+        repo_root, canonical, selected_kinds, query=query,
+        limit=limit, cursor=cursor, experience_id=experience_id,
+    )
+    if _store_sources_stale(target_entries, recheck_entries):
+        raise StoreError("experience source health changed during assembly; retry query")
     return {
         "schema_version": 2,
         "current": current,

@@ -889,18 +889,25 @@ def _endpoint_path_query(value: Any) -> str:
 
 
 def _machine_endpoints_match(decision_endpoint: str, finding_endpoint: str) -> bool:
-    """Match exact URLs or a target-bound URL against its canonical path form."""
+    """Match exact URLs or a target-bound URL against its canonical path form.
+
+    Scheme and query values are endpoint identity: an https finding is never
+    the same endpoint as an http one, and a trailing slash inside a query
+    value is never a path-normalization candidate. Only an exact string or a
+    scheme+netloc+path+query match counts.
+    """
     left = str(decision_endpoint or "").strip()
     right = str(finding_endpoint or "").strip()
     if not left or not right:
         return False
-    if left.rstrip("/") == right.rstrip("/"):
+    if left == right:
         return True
     left_url = urlparse(left)
     right_url = urlparse(right)
     if (left_url.scheme or left_url.netloc) and (right_url.scheme or right_url.netloc):
         return (
-            left_url.netloc.lower() == right_url.netloc.lower()
+            left_url.scheme.lower() == right_url.scheme.lower()
+            and left_url.netloc.lower() == right_url.netloc.lower()
             and _endpoint_path_query(left) == _endpoint_path_query(right)
         )
     return _endpoint_path_query(left) == _endpoint_path_query(right)

@@ -131,11 +131,20 @@ def _safe_id(value: str, default: str) -> str:
     return cleaned[:120] or default
 
 
-def _default_finding_id(lane: str, url: str) -> str:
+def _default_finding_id(lane: str, url: str, method: str = "", family: str = "") -> str:
+    """Derive the default Finding ID from the full finding identity.
+
+    The cleaned path stays as the readable stem, but a short digest over
+    method+url+family keeps distinct endpoints (e.g. /a/b vs /a_b, or the
+    same path under a different method/class) from colliding into one ID
+    while identical identities still derive the same idempotent ID.
+    """
     parsed = urllib.parse.urlparse(url)
     path = parsed.path or "root"
     suffix = _safe_id(path.replace("/", "_"), "endpoint")
-    return f"{lane}-{suffix}"
+    identity = f"{str(method or '').upper()}|{str(url or '')}|{str(family or '')}"
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:8]
+    return f"{lane}-{suffix}-{digest}"
 
 
 def _bundle_dir(repo_root: Path, target: str, finding_id: str) -> Path:
@@ -987,8 +996,9 @@ def run_request_diff(
         if not all(scope.allows_active(request["url"]) for request in (baseline, variant)):
             raise RequestPreflightError("request pair contains a URL excluded by saved Scope")
         subject = spec[f"{spec['subject_side']}_request"]
-        finding_id = finding_id or _default_finding_id(lane, subject["url"])
         family = _classifier_vuln_class(spec["classifier"], spec.get("vuln_class", "")) or "runner-observation"
+        finding_id = finding_id or _default_finding_id(
+            lane, subject["url"], method=subject["method"], family=family)
         observations = {
             side: {**{key: spec[f"{side}_request"][key] for key in ("actor", "object_scope", "variant")},
                    "evidence_role": "subject" if side == spec["subject_side"] else "control"}

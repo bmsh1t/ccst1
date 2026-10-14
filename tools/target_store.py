@@ -1649,6 +1649,17 @@ class TargetStore:
                                 or receipt["revision"] <= claim_revision):
                             raise ConflictError("completion receipt must record work for this action and current claim")
                     if result_artifact:
+                        # Same evidence-authority check as the execution branch:
+                        # a revoked or explicitly unavailable work output must
+                        # not complete a claimed action even though its file
+                        # still exists on disk.
+                        artifact_events = self._artifact_events(conn, str(result_artifact["id"]))
+                        if artifact_events.get("availability", {}).get("state") == "unavailable":
+                            raise StoreError(
+                                f"work completion artifact is explicitly unavailable: {result_artifact['ref']}")
+                        if artifact_events.get("provenance", {}).get("state") == "revoked":
+                            raise StoreError(
+                                f"work completion artifact provenance is revoked: {result_artifact['ref']}")
                         self._insert_artifact(conn, result_artifact)
                     conn.execute("INSERT INTO action_completions VALUES (?,?,?,?,?,?)",
                                  (action_id, claim_token, expected_version, operation_id,
@@ -3995,6 +4006,20 @@ class TargetStore:
             "identity_v2": identity_v2 if isinstance(identity_v2, dict) else {},
             "identity_dimensions": dimensions if isinstance(dimensions, dict) else {},
         }
+
+    def experience_exists(self, experience_id: str) -> bool:
+        """Identity-only existence check; never expands sources or takes receipt locks.
+
+        Callers that hold the migration receipt's exclusive directory lock must
+        use this instead of ``experience()``: expanding an experience with
+        history-origin sources acquires the shared receipt lock on another FD
+        and self-deadlocks the exclusive holder.
+        """
+        experience_id = _identifier(experience_id, "experience_id")
+        with self._connection() as conn:
+            return conn.execute(
+                "SELECT 1 FROM experiences WHERE id=?", (experience_id,)
+            ).fetchone() is not None
 
     def experience(self, experience_id: str) -> dict:
         """Expand conditional experience; references remain facts, never queued work."""

@@ -368,14 +368,35 @@ def import_mcp_browser_evidence(
     auth_required: bool = False,
     auth_state: str = "",
     capture_error: str = "",
+    run_identity: str = "",
 ) -> dict[str, Any]:
-    """Create an evidence capture from MCP-exported browser artifacts."""
+    """Create an evidence capture from MCP-exported browser artifacts.
+
+    ``run_identity`` makes the capture directory stable across retries: when a
+    capture with the same identity was already published (its summary.json is
+    intact), it is confirmed by returning that summary instead of publishing a
+    duplicate; a leftover partial directory of the same identity is replaced
+    (it belongs to this identity alone). Without an identity, every call
+    publishes a fresh timestamped capture as before.
+    """
     target_key = target_storage_key(target)
     safe_label = _safe_label(label, "mcp")
     safe_source = _safe_label(source, "mcp")
     root = Path(evidence_root)
-    run_id = f"{_timestamp_slug()}-{safe_label}"
+    run_id = _safe_label(run_identity, "") if run_identity else f"{_timestamp_slug()}-{safe_label}"
     capture_dir = root / target_key / "browser" / run_id
+    if run_identity and capture_dir.exists():
+        prior_summary = capture_dir / "summary.json"
+        if prior_summary.is_file():
+            try:
+                return json.loads(prior_summary.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                pass
+        # Interrupted leftover of this same identity: safe to replace because
+        # the directory belongs to this identity alone, never to another run.
+        shutil.rmtree(capture_dir, ignore_errors=True)
+        shutil.rmtree(
+            private_artifact_dir(root.parent, "browser", target_key, run_id), ignore_errors=True)
     capture_dir.mkdir(parents=True, exist_ok=False)
     private_dir = private_artifact_dir(root.parent, "browser", target_key, run_id)
 
@@ -608,6 +629,23 @@ def _load_focused_manifest(path: str | Path) -> dict[str, Any]:
     return payload
 
 
+def _manifest_capture_identity(manifest_path: str | Path, url: str) -> str:
+    """Stable capture identity for one manifest item, surviving retries.
+
+    Derived from the manifest bytes plus the item URL: the same lane evidence
+    retried after an interrupted terminal commit re-derives the same identity
+    and confirms the existing capture instead of publishing a duplicate.
+    """
+    digest = hashlib.sha256()
+    try:
+        digest.update(Path(manifest_path).read_bytes())
+    except OSError:
+        digest.update(str(manifest_path).encode("utf-8", "replace"))
+    digest.update(b"|")
+    digest.update(str(url or "").encode("utf-8", "replace"))
+    return f"mcp-{digest.hexdigest()[:24]}"
+
+
 def import_focused_mcp_manifest(
     *,
     target: str,
@@ -691,6 +729,7 @@ def import_focused_mcp_manifest(
             summary = import_mcp_browser_evidence(
                 target=target,
                 url=url,
+                run_identity=_manifest_capture_identity(manifest_path, url),
                 network_path=paths["network"],
                 snapshot_path=paths["snapshot"],
                 console_path=paths["console"],

@@ -372,8 +372,14 @@ def record_round_lane_result(
     decision: str,
     evidence_ref: str,
     next_action: str,
+    expected_round_id: str,
 ) -> dict:
-    """Atomically finish one claimed lane with bounded recovery context."""
+    """Atomically finish one claimed lane with bounded recovery context.
+
+    The caller must present the round_id it claimed the lane under: a delayed
+    replay of a previous round's result parameters must never complete a
+    same-named lane claimed by the current round.
+    """
     lane_id = _round_lane_text(" ".join(str(lane or "").split()), "id", max_length=200)
     terminal_status = _round_lane_text(status, "status", max_length=20)
     if terminal_status not in {"completed", "blocked"}:
@@ -381,12 +387,20 @@ def record_round_lane_result(
     terminal_decision = _round_lane_text(decision, "decision", max_length=500)
     terminal_evidence = _round_lane_text(evidence_ref, "evidence_ref", max_length=500)
     terminal_next = _round_lane_text(next_action, "next_action", max_length=1000)
+    expected_round = _round_lane_text(expected_round_id, "round_id", max_length=64)
     path = _checkpoint_witness_path(repo_root, target)
     with checkpoint_witness_lock(repo_root, target):
         payload = _load_checkpoint_witness(path)
         progress = _round_progress(payload)
         if progress.get("status") != "active":
             raise ValueError("round lane result requires an active round")
+        current_round = str(progress.get("round_id") or "")
+        if not current_round or expected_round != current_round:
+            raise ValueError(
+                "round lane result targets a different round: "
+                f"expected {expected_round or '<empty>'}, active {current_round or '<none>'}; "
+                "re-claim the lane in the active round instead of replaying an old receipt"
+            )
         lanes = progress["lanes"]
         lane_record = next((item for item in lanes if item.get("id") == lane_id), None)
         if lane_record is None:
@@ -1527,6 +1541,7 @@ def build_parser() -> argparse.ArgumentParser:
     round_operation.add_argument("--round-begin", action="store_true")
     round_operation.add_argument("--record-round-lane", action="store_true")
     round_operation.add_argument("--record-round-lane-result", action="store_true")
+    round_operation.add_argument("--round-id", default="", help="round_id the lane was claimed under (required for --record-round-lane-result)")
     round_operation.add_argument("--record-global-review", action="store_true")
     parser.add_argument("--lane", default="")
     parser.add_argument("--max-lanes", type=int, default=0)
@@ -1583,6 +1598,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.round_begin or args.record_round_lane or args.record_round_lane_result:
         try:
             if args.record_round_lane_result:
+                if not str(args.round_id or "").strip():
+                    raise ValueError("--round-id is required with --record-round-lane-result (from the begin/claim response)")
                 result = record_round_lane_result(
                     repo,
                     resolved_target,
@@ -1591,6 +1608,7 @@ def main(argv: list[str] | None = None) -> int:
                     decision=args.decision,
                     evidence_ref=args.evidence_ref or "",
                     next_action=args.next_action,
+                    expected_round_id=str(args.round_id or "").strip(),
                 )
             else:
                 if args.max_lanes < 1:

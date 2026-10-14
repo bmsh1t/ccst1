@@ -934,6 +934,15 @@ def _build_context_pack(
         raise ValueError(
             "primary context inputs changed during assembly; rebuild from one store revision"
         )
+    # The store binding only covers DB rows: the files backing an experience's
+    # sources can change bytes without a revision bump, leaving the assembled
+    # experience window (recent entries, handoff, source health) stale.
+    goal_memory_recheck = _load_goal_memory(repo, resolved_target)
+    for field in ("recent_entries", "target"):
+        if goal_memory_recheck.get(field) != goal_memory.get(field):
+            raise ValueError(
+                "experience basis changed during assembly; rebuild from one store revision"
+            )
 
     # Must-read lists only paths that exist: goal memory is legitimately
     # absent after a reset/fresh start, and a contract that points at missing
@@ -1136,8 +1145,16 @@ def format_context_pack(pack: dict) -> str:
             status=(pack.get("hot_methods") or {}).get("status", "unavailable"),
         ),
         *_format_list([
-            "{path} [{role}] sha256={sha} reason={reason}".format(
-                path=item.get("path", ""),
+            "{full_path} [{role}] sha256={sha} reason={reason}".format(
+                # The reader must be able to open the method body from the
+                # project cwd: print the resolved source root plus the
+                # manifest-relative path, not the relative path alone.
+                full_path=(
+                    str((pack.get("hot_methods") or {}).get("root") or "").rstrip("/")
+                    + "/" + str(item.get("path") or "").lstrip("/")
+                    if (pack.get("hot_methods") or {}).get("root")
+                    else str(item.get("path") or "")
+                ),
                 role=item.get("role", ""),
                 sha=item.get("sha256", ""),
                 reason=item.get("selection_reason") or "selected",

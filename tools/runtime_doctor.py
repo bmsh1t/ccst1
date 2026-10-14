@@ -5,6 +5,7 @@ import filecmp
 import fcntl
 import hashlib
 import json
+import shlex
 import os
 import shutil
 from pathlib import Path
@@ -484,9 +485,17 @@ def format_report(payload: dict) -> str:
     else:
         sync_args = "--sync --prune" if has_runtime_extras else "--sync"
         kind_arg = ",".join(result["kind"] for result in payload["kinds"])
+        # Carry the exact roots that were checked: a copied hint without them
+        # would modify the default checkout and ~/.claude instead of the
+        # isolated installation the operator just inspected.
+        root_args = " ".join(
+            f"{flag} {shlex.quote(str(payload[key]))}"
+            for flag, key in (("--repo-root", "repo_root"), ("--runtime-root", "runtime_root"))
+            if payload.get(key)
+        )
         lines.append(
-            f"Hint: run `python3 tools/runtime_doctor.py {sync_args} --kind {kind_arg}` "
-            "to refresh Claude CLI runtime files."
+            f"Hint: run `python3 tools/runtime_doctor.py {sync_args} {root_args} --kind {kind_arg}` "
+            "to refresh the inspected Claude CLI runtime files."
         )
     return "\n".join(lines)
 

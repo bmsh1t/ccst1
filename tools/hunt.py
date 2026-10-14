@@ -1189,6 +1189,8 @@ def _hunt_target_impl(
             last_executed_workflow="run_recon",
             ctf_mode=ctf_mode,
         )
+        # The requested phase was recon: its real outcome is the run outcome.
+        result["success"] = bool(result["recon"])
         return result
 
     recon_available = result["recon"] or os.path.isdir(_resolve_recon_dir(canonical_target))
@@ -1417,7 +1419,9 @@ Examples:
             log("warn", str(exc))
             sys.exit(2)
         print_dashboard([result])
-        return 0
+        # A failed requested phase must be visible to callers through the
+        # exit status; preserved materials and errors stay in the dashboard.
+        return 0 if result.get("success") else 1
 
     parser.error("--target is required for hunting; use --status, --report-only, or --setup-wordlists for target-independent actions")
 

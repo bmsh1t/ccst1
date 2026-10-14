@@ -43,20 +43,34 @@ Add to your `~/.zshrc` or `~/.bashrc` for persistence.
 
 ### Step 4: Add to Claude Code Settings
 
-Copy the MCP server config into your Claude Code settings:
+Merge the `burp` entry into your Claude Code settings — never overwrite the
+whole settings file, which also holds your permissions, hooks and environment
+configuration:
 
 ```bash
 # Edit your Claude Code settings
 claude config edit
 ```
 
-Add the `burp` entry from `config.json` in this directory to your `mcpServers` section.
+Add the `burp` entry from `config.json` in this directory to your `mcpServers`
+section. If `mcpServers` does not exist yet, create it and paste the entry
+under it; keep every other settings key untouched.
 
-Alternatively, copy the full config:
+To merge the entry non-interactively instead (creates a backup first):
 
 ```bash
-# If you don't have other MCP servers configured:
-cp config.json ~/.claude/settings.json
+python3 - <<'EOF'
+import json, shutil
+from pathlib import Path
+
+settings = Path.home() / ".claude" / "settings.json"
+entry = json.loads(Path("config.json").read_text(encoding="utf-8"))["mcpServers"]["burp"]
+data = json.loads(settings.read_text(encoding="utf-8")) if settings.exists() else {}
+shutil.copy2(settings, settings.with_suffix(".json.bak")) if settings.exists() else None
+data.setdefault("mcpServers", {})["burp"] = entry
+settings.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+print("merged burp entry into", settings)
+EOF
 ```
 
 ### Step 5: Verify Connection

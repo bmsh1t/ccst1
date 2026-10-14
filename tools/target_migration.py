@@ -2685,7 +2685,12 @@ def _backfill_target_memory_locked(source_root: Path, root: Path, canonical: str
         for item in existing["experience_map"]:
             if not isinstance(item, dict) or not isinstance(item.get("experience_id"), str):
                 raise StoreError("existing memory backfill has an invalid experience map")
-            store.experience(item["experience_id"])
+            # Identity-only check: expanding an imported experience here would
+            # acquire the receipt's shared lock on another FD while this branch
+            # already holds the exclusive lock, self-deadlocking the retry.
+            if not store.experience_exists(item["experience_id"]):
+                raise StoreError(
+                    f"existing memory backfill maps a missing experience: {item['experience_id']}")
         quarantined = existing.get("quarantined") or []
         if not isinstance(quarantined, list):
             raise StoreError("existing memory backfill has an invalid quarantine list")

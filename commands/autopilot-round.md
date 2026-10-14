@@ -41,7 +41,7 @@ cd -- <repo_root_shell> && python3 tools/checkpoint.py --target <target_shell> -
 Only `allowed=true` proceeds; recover `already_claimed`; never replay other refusals.
 Terminal heartbeat after registration/resolve:
 ```bash
-cd -- <repo_root_shell> && python3 tools/checkpoint.py --target <target_shell> --record-round-lane-result --lane <stable_lane_id> --lane-status <completed_or_blocked> --decision <decision_shell> --evidence-ref <evidence_ref_shell> --next-action <next_action_shell> --json
+cd -- <repo_root_shell> && python3 tools/checkpoint.py --target <target_shell> --record-round-lane-result --round-id <round_id_shell> --lane <stable_lane_id> --lane-status <completed_or_blocked> --decision <decision_shell> --evidence-ref <evidence_ref_shell> --next-action <next_action_shell> --json
 ```
 Completed needs nonempty target-owned evidence; blocked permits `none`. No raw responses/prompts/credentials.
 `started` lanes forbid closure. Claim/result errors: ERROR; preserve recovery, stop new work.
