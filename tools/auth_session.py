@@ -106,12 +106,62 @@ class AuthSession:
             or "://" in requested_scope
             or requested_scope.startswith("//")
         ):
-            # 同一 canonical target 的显式 URL 是更窄的认证 scope；后续内部
-            # host-only bind 不能把它重新放宽到另一个 scheme。
-            self._scope_target = requested_scope
+            # 同一 canonical target 的显式 URL 只在不放宽既有认证边界时收紧绑定：
+            # HTTPS 绑定的凭据不得因同主机 HTTP URL 被允许发送到 HTTP，
+            # 协议相对（//host）也不能替代已明确 scheme 的绑定。
+            if not self._explicit_binding_widens(requested_scope):
+                self._scope_target = requested_scope
         if requested:
             self._target = requested
         return self
+
+    def _explicit_binding_widens(self, new_scope: str) -> bool:
+        """判断用 new_scope 替换当前 scope 是否放宽凭据可发送范围。
+
+        放宽 = 降级到更弱传输 scheme（https -> http）、更换端口，或用无 scheme
+        的绑定替换已明确 scheme 的绑定。当前绑定无 URL scheme（host-only）时，
+        显式 URL 属于收窄，不是放宽。
+        """
+
+        def parts(value: str) -> tuple[str, str, str] | None:
+            text = (value or "").strip()
+            if not text:
+                return None
+            try:
+                parsed = urlparse(text)
+            except ValueError:
+                return None
+            scheme = (parsed.scheme or "").lower()
+            host = (parsed.hostname or "").lower()
+            if not host:
+                return None
+            if not scheme:
+                return ("", host, "")
+            default = "443" if scheme == "https" else "80"
+            try:
+                port = parsed.port
+            except ValueError:
+                return None
+            return (scheme, host, str(port) if port else default)
+
+        current = parts(self._scope_target or "")
+        new = parts(new_scope)
+        if current is None or new is None:
+            return False
+        if current == new:
+            return False
+        current_scheme, current_host, current_port = current
+        new_scheme, new_host, new_port = new
+        if new_host != current_host:
+            # canonical target 相同时不应出现；出现即按放宽处理（fail-closed）。
+            return True
+        if not current_scheme or not new_scheme:
+            # 无 scheme 的新绑定不能替代已明确 scheme 的绑定。
+            return bool(current_scheme)
+        if new_scheme == current_scheme:
+            return new_port != current_port
+        # scheme 变化：https -> http 是放宽；http -> https 是升级，允许。
+        return current_scheme == "https" and new_scheme == "http"
 
     def target(self) -> str:
         return self._target

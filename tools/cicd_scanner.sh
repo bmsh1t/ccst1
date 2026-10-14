@@ -69,6 +69,15 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+# Numeric options must be non-negative integers; they are passed verbatim to
+# the scanner argv, so reject anything else before invocation.
+validate_uint() {
+    [[ "$2" =~ ^[0-9]+$ ]] || { log_err "Invalid $1: '$2' (must be a non-negative integer)"; usage; }
+}
+validate_uint "depth (-d)" "$DEPTH"
+validate_uint "limit (-l)" "$LIMIT"
+validate_uint "parallel (-p)" "$PARALLEL"
+
 # Normalize GitHub URLs to owner/repo
 TARGET=$(echo "$TARGET" | sed -E 's|^https?://github\.com/||' | sed 's|/$||' | sed 's|\.git$||')
 
@@ -98,15 +107,37 @@ echo "  Time:   $(date)"
 echo "============================================="
 echo ""
 
-# Build sisakulint command
-CMD="sisakulint -remote \"$TARGET\" -D $DEPTH -l $LIMIT -p $PARALLEL"
-[ -n "$RECURSIVE" ] && CMD="$CMD -r"
+# Build sisakulint argv — never eval user-supplied text; the target string
+# and options are passed as single argv elements.
+SISA_ARGS=(-remote "$TARGET" -D "$DEPTH" -l "$LIMIT" -p "$PARALLEL")
+[ -n "$RECURSIVE" ] && SISA_ARGS+=(-r)
 
-log_info "Running: $CMD"
+log_info "Running: sisakulint ${SISA_ARGS[*]}"
 echo ""
 
-# Run sisakulint and capture output (don't fail on non-zero exit — findings cause exit 1)
-eval "$CMD" 2>&1 | tee "$SCAN_RESULTS" || true
+# sisakulint exit semantics: 0 = clean scan, 1 = findings present, anything
+# else = execution failure (auth/transport/internal). Failures must not be
+# reported as a finding-free successful scan.
+set +e
+sisakulint "${SISA_ARGS[@]}" 2>&1 | tee "$SCAN_RESULTS"
+SISA_EXIT=${PIPESTATUS[0]}
+set -e
+
+if [ "$SISA_EXIT" -ne 0 ] && [ "$SISA_EXIT" -ne 1 ]; then
+    {
+        echo "============================================="
+        echo "  CI/CD Scan Summary"
+        echo "  Target: $TARGET"
+        echo "  Date:   $(date)"
+        echo "============================================="
+        echo ""
+        echo "Status: FAILED — sisakulint exited $SISA_EXIT (execution failure, not a clean scan)"
+        echo "Preserved output: $SCAN_RESULTS"
+    } > "$SUMMARY"
+    cat "$SUMMARY"
+    log_err "sisakulint execution failed (exit $SISA_EXIT); results are NOT a clean scan"
+    exit "$SISA_EXIT"
+fi
 
 echo ""
 
@@ -133,6 +164,9 @@ TOTAL="${TOTAL##*:}"  # strip filename prefix if grep adds one
         echo "--- Affected Files ---"
         grep -oP '[^/]+/\.github/workflows/[^:]+' "$SCAN_RESULTS" 2>/dev/null | \
             sed 's|^[^/]*/||' | sort -u || true
+    elif [ "$SISA_EXIT" -eq 1 ]; then
+        echo "sisakulint signalled findings (exit 1) but the summary parser matched"
+        echo "none of its output lines; see full results before treating this as clean."
     else
         echo "No findings detected."
     fi

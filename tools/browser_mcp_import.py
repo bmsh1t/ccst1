@@ -11,9 +11,7 @@ browser_surface 索引。
 from __future__ import annotations
 
 import argparse
-import functools
 import hashlib
-import inspect
 import json
 import os
 import re
@@ -349,48 +347,7 @@ def _network_capture_failed(payload: Any) -> bool:
     }
 
 
-def _rollback_failed_capture(func):
-    """Remove only this import's capture directories when publishing fails."""
-    signature = inspect.signature(func)
 
-    @functools.wraps(func)
-    def wrapped(*args, **kwargs):
-        bound = signature.bind(*args, **kwargs)
-        bound.apply_defaults()
-        target_key = target_storage_key(str(bound.arguments["target"]))
-        evidence_root = Path(bound.arguments["evidence_root"])
-        public_parent = evidence_root / target_key / "browser"
-        private_parent = evidence_root.parent / ".private" / "browser" / target_key
-        before_public = set(public_parent.iterdir()) if public_parent.is_dir() else None
-        before_private = set(private_parent.iterdir()) if private_parent.is_dir() else None
-
-        def rollback(parent: Path, before: set[Path] | None) -> None:
-            def remove(path: Path) -> None:
-                if path.is_dir() and not path.is_symlink():
-                    shutil.rmtree(path, ignore_errors=True)
-                else:
-                    path.unlink(missing_ok=True)
-
-            if not parent.exists():
-                return
-            if before is None:
-                remove(parent)
-                return
-            for child in list(parent.iterdir()):
-                if child not in before:
-                    remove(child)
-
-        try:
-            return func(*args, **kwargs)
-        except BaseException:
-            rollback(public_parent, before_public)
-            rollback(private_parent, before_private)
-            raise
-
-    return wrapped
-
-
-@_rollback_failed_capture
 def import_mcp_browser_evidence(
     *,
     target: str,
@@ -422,149 +379,156 @@ def import_mcp_browser_evidence(
     capture_dir.mkdir(parents=True, exist_ok=False)
     private_dir = private_artifact_dir(root.parent, "browser", target_key, run_id)
 
-    artifacts: dict[str, str] = {}
-    network_payload = _load_network_payload(network_path or har_path)
-    requests = normalize_mcp_network(network_payload)
-    if (
-        (not requests or _network_capture_failed(network_payload))
-        and har_path
-        and str(har_path) != str(network_path)
-    ):
-        har_payload = _load_network_payload(har_path)
-        har_requests = normalize_mcp_network(har_payload)
-        if har_requests and not _network_capture_failed(har_payload):
-            network_payload, requests = har_payload, har_requests
-    artifacts["network_private_json"] = str(
-        write_private_json(private_dir / "network.raw.json", network_payload)
-    )
-    requests_file = capture_dir / "requests.json"
-    _write_json(requests_file, public_request_payload({"requests": requests}, source=safe_source))
-    artifacts["requests_json"] = str(requests_file)
-    network_fingerprint = hashlib.sha256(requests_file.read_bytes()).hexdigest()
-
-    copied_snapshot = ""
-    if snapshot_path and Path(snapshot_path).is_file():
-        snapshot_file = _check_import_input(snapshot_path)
-        raw_snapshot = snapshot_file.read_text(encoding="utf-8", errors="replace") if snapshot_file else ""
-        artifacts["snapshot_private_txt"] = str(
-            write_private_text(private_dir / "snapshot.txt", raw_snapshot)
-        )
-        public_snapshot = capture_dir / "snapshot.txt"
-        public_snapshot.write_text(snapshot_shape(raw_snapshot), encoding="utf-8")
-        copied_snapshot = str(public_snapshot)
-        artifacts["snapshot_txt"] = copied_snapshot
-
-    console_payload, raw_console = _load_console_payload(console_path)
-    console_items = _console_items(console_payload)
-    if console_path and Path(console_path).is_file():
-        artifacts["console_private"] = str(
-            write_private_text(private_dir / "console.raw.txt", raw_console)
-        )
-        console_file = capture_dir / "console.json"
-        _write_json(console_file, console_shape(console_items))
-        artifacts["console_json"] = str(console_file)
-
-    copied_screenshot = ""
-    if screenshot_path and Path(screenshot_path).is_file():
-        screenshot_file = _check_import_input(screenshot_path)
-        if screenshot_file is not None:
-            copied_screenshot = str(copy_private_file(screenshot_file, private_dir / "screenshot.png"))
-        artifacts["screenshot_png"] = copied_screenshot
-
-    private_artifacts = {}
-    for name, source_path, filename in (
-        ("cookies", cookies_path, "cookies.json"),
-        ("local_storage", local_storage_path, "local-storage.json"),
-        ("session_storage", session_storage_path, "session-storage.json"),
-        ("browser_state", state_path, "state.json"),
-        ("network_har", har_path, "network.har"),
-    ):
-        meta = _archive_private_artifact(source_path, private_dir / filename)
-        if meta:
-            private_artifacts[name] = meta
-            artifacts[f"{name}_private"] = str(meta["path"])
-
-    browser_surface = write_browser_surface(
-        recon_root=recon_root,
-        target_key=target_key,
-        requests_path=requests_file,
-        snapshot_path=artifacts.get("snapshot_private_txt", ""),
-        capture_dir=str(capture_dir),
-        merge_existing=True,
-    )
-    summary_path = capture_dir / "summary.json"
-    pointer_path = root / target_key / "browser" / "last-capture.json"
-    browser_counts = browser_surface.get("counts") if isinstance(browser_surface, dict) else {}
-    source_failed = _network_capture_failed(network_payload)
-    has_core_network = bool(requests) and not source_failed
-    has_any_artifact = bool(
-        requests or copied_snapshot or console_items or copied_screenshot or private_artifacts
-    )
-    archived_browser_state = bool(private_artifacts.get("browser_state"))
-    requested_auth_state = _safe_label(auth_state, "missing") if auth_state else ""
-    auth_state_value = (
-        "present"
-        if archived_browser_state
-        else "missing"
-        if requested_auth_state in {"", "present"}
-        else requested_auth_state
-    )
-    safe_capture_error = " ".join(str(capture_error or "").split())[:400]
-    capture_success = has_any_artifact and not source_failed
-    capture_status = (
-        "error"
-        if source_failed
-        else "partial"
-        if safe_capture_error and has_any_artifact
-        else "ok"
-        if has_core_network and (not auth_required or auth_state_value == "present")
-        else "partial"
-        if has_any_artifact
-        else "error"
-    )
-    summary = {
-        "schema_version": 1,
-        "target": target,
-        "target_key": target_key,
-        "url": public_url_shape(url),
-        "session": "",
-        "label": safe_label,
-        "capture_backend": safe_source,
-        "captured_at": _now_utc(),
-        "evidence_dir": str(capture_dir),
-        "summary_path": str(summary_path),
-        "pointer_path": str(pointer_path),
-        "success": capture_success,
-        "status": capture_status,
-        "error": safe_capture_error,
-        "network_fingerprint": network_fingerprint,
-        "auth_required": bool(auth_required),
-        "auth_state": auth_state_value,
-        "counts": {
-            "requests": len(requests),
-            "console": len(console_items),
-            "browser_xhr_endpoints": int(browser_counts.get("xhr_endpoints", 0) or 0),
-            "browser_api_endpoints": int(browser_counts.get("api_endpoints", 0) or 0),
-            "browser_params": int(browser_counts.get("browser_params", 0) or 0),
-            "realtime_messages": int(browser_counts.get("realtime_messages", 0) or 0),
-        },
-        "artifacts": artifacts,
-        "private_artifacts": private_artifacts,
-        "browser_surface": browser_surface,
-    }
-    _write_json(summary_path, summary)
-    # page→JS builder discovers captures by summary.json, so refresh only after publishing it.
     try:
-        build_page_js_map(evidence_root=root, recon_root=recon_root, target_key=target_key)
-    except (OSError, json.JSONDecodeError):  # pragma: no cover - 防御损坏的历史 capture
-        pass
+        artifacts: dict[str, str] = {}
+        network_payload = _load_network_payload(network_path or har_path)
+        requests = normalize_mcp_network(network_payload)
+        if (
+            (not requests or _network_capture_failed(network_payload))
+            and har_path
+            and str(har_path) != str(network_path)
+        ):
+            har_payload = _load_network_payload(har_path)
+            har_requests = normalize_mcp_network(har_payload)
+            if har_requests and not _network_capture_failed(har_payload):
+                network_payload, requests = har_payload, har_requests
+        artifacts["network_private_json"] = str(
+            write_private_json(private_dir / "network.raw.json", network_payload)
+        )
+        requests_file = capture_dir / "requests.json"
+        _write_json(requests_file, public_request_payload({"requests": requests}, source=safe_source))
+        artifacts["requests_json"] = str(requests_file)
+        network_fingerprint = hashlib.sha256(requests_file.read_bytes()).hexdigest()
 
-    pointer = compact_browser_evidence(summary)
-    pointer.update(
-        {"target": target, "target_key": target_key, "label": safe_label, "capture_backend": safe_source}
-    )
-    _write_json(pointer_path, pointer)
-    return summary
+        copied_snapshot = ""
+        if snapshot_path and Path(snapshot_path).is_file():
+            snapshot_file = _check_import_input(snapshot_path)
+            raw_snapshot = snapshot_file.read_text(encoding="utf-8", errors="replace") if snapshot_file else ""
+            artifacts["snapshot_private_txt"] = str(
+                write_private_text(private_dir / "snapshot.txt", raw_snapshot)
+            )
+            public_snapshot = capture_dir / "snapshot.txt"
+            public_snapshot.write_text(snapshot_shape(raw_snapshot), encoding="utf-8")
+            copied_snapshot = str(public_snapshot)
+            artifacts["snapshot_txt"] = copied_snapshot
+
+        console_payload, raw_console = _load_console_payload(console_path)
+        console_items = _console_items(console_payload)
+        if console_path and Path(console_path).is_file():
+            artifacts["console_private"] = str(
+                write_private_text(private_dir / "console.raw.txt", raw_console)
+            )
+            console_file = capture_dir / "console.json"
+            _write_json(console_file, console_shape(console_items))
+            artifacts["console_json"] = str(console_file)
+
+        copied_screenshot = ""
+        if screenshot_path and Path(screenshot_path).is_file():
+            screenshot_file = _check_import_input(screenshot_path)
+            if screenshot_file is not None:
+                copied_screenshot = str(copy_private_file(screenshot_file, private_dir / "screenshot.png"))
+            artifacts["screenshot_png"] = copied_screenshot
+
+        private_artifacts = {}
+        for name, source_path, filename in (
+            ("cookies", cookies_path, "cookies.json"),
+            ("local_storage", local_storage_path, "local-storage.json"),
+            ("session_storage", session_storage_path, "session-storage.json"),
+            ("browser_state", state_path, "state.json"),
+            ("network_har", har_path, "network.har"),
+        ):
+            meta = _archive_private_artifact(source_path, private_dir / filename)
+            if meta:
+                private_artifacts[name] = meta
+                artifacts[f"{name}_private"] = str(meta["path"])
+
+        browser_surface = write_browser_surface(
+            recon_root=recon_root,
+            target_key=target_key,
+            requests_path=requests_file,
+            snapshot_path=artifacts.get("snapshot_private_txt", ""),
+            capture_dir=str(capture_dir),
+            merge_existing=True,
+        )
+        summary_path = capture_dir / "summary.json"
+        pointer_path = root / target_key / "browser" / "last-capture.json"
+        browser_counts = browser_surface.get("counts") if isinstance(browser_surface, dict) else {}
+        source_failed = _network_capture_failed(network_payload)
+        has_core_network = bool(requests) and not source_failed
+        has_any_artifact = bool(
+            requests or copied_snapshot or console_items or copied_screenshot or private_artifacts
+        )
+        archived_browser_state = bool(private_artifacts.get("browser_state"))
+        requested_auth_state = _safe_label(auth_state, "missing") if auth_state else ""
+        auth_state_value = (
+            "present"
+            if archived_browser_state
+            else "missing"
+            if requested_auth_state in {"", "present"}
+            else requested_auth_state
+        )
+        safe_capture_error = " ".join(str(capture_error or "").split())[:400]
+        capture_success = has_any_artifact and not source_failed
+        capture_status = (
+            "error"
+            if source_failed
+            else "partial"
+            if safe_capture_error and has_any_artifact
+            else "ok"
+            if has_core_network and (not auth_required or auth_state_value == "present")
+            else "partial"
+            if has_any_artifact
+            else "error"
+        )
+        summary = {
+            "schema_version": 1,
+            "target": target,
+            "target_key": target_key,
+            "url": public_url_shape(url),
+            "session": "",
+            "label": safe_label,
+            "capture_backend": safe_source,
+            "captured_at": _now_utc(),
+            "evidence_dir": str(capture_dir),
+            "summary_path": str(summary_path),
+            "pointer_path": str(pointer_path),
+            "success": capture_success,
+            "status": capture_status,
+            "error": safe_capture_error,
+            "network_fingerprint": network_fingerprint,
+            "auth_required": bool(auth_required),
+            "auth_state": auth_state_value,
+            "counts": {
+                "requests": len(requests),
+                "console": len(console_items),
+                "browser_xhr_endpoints": int(browser_counts.get("xhr_endpoints", 0) or 0),
+                "browser_api_endpoints": int(browser_counts.get("api_endpoints", 0) or 0),
+                "browser_params": int(browser_counts.get("browser_params", 0) or 0),
+                "realtime_messages": int(browser_counts.get("realtime_messages", 0) or 0),
+            },
+            "artifacts": artifacts,
+            "private_artifacts": private_artifacts,
+            "browser_surface": browser_surface,
+        }
+        _write_json(summary_path, summary)
+        # page→JS builder discovers captures by summary.json, so refresh only after publishing it.
+        try:
+            build_page_js_map(evidence_root=root, recon_root=recon_root, target_key=target_key)
+        except (OSError, json.JSONDecodeError):  # pragma: no cover - 防御损坏的历史 capture
+            pass
+
+        pointer = compact_browser_evidence(summary)
+        pointer.update(
+            {"target": target, "target_key": target_key, "label": safe_label, "capture_backend": safe_source}
+        )
+        _write_json(pointer_path, pointer)
+        return summary
+    except BaseException:
+        # Roll back only this run's identity-holding directories; a concurrent
+        # import's published captures must survive this import's failure.
+        shutil.rmtree(capture_dir, ignore_errors=True)
+        shutil.rmtree(private_dir, ignore_errors=True)
+        raise
 
 
 def _read_lines(path: Path) -> set[str]:

@@ -673,9 +673,12 @@ def record_global_review(
                     "global review cannot be recorded: "
                     + json.dumps(diagnostics, ensure_ascii=False, separators=(",", ":"))
                 )
-            payload = _load_checkpoint_witness(path)
-            if not payload:
-                raise ValueError(f"checkpoint witness missing or invalid: {path}")
+            # Plain Autopilot targets may reach their first Global Review with
+            # no round ever started and no witness file: the read-only
+            # checkpoint does not create one. The explicit review owner creates
+            # the legal minimal witness here, under the same lock, instead of
+            # breaking the closure chain; no round progress is fabricated.
+            payload = _load_checkpoint_witness(path) or _new_checkpoint_witness(resolved_target)
             # The persisted review keeps the whole-snapshot digest for audit
             # and the claim basis for scoping later validations: unrelated
             # owner writes (ledger telemetry, witness details) will no longer
