@@ -9,6 +9,10 @@ Run the production recon pipeline. Do not re-implement the methodology inline.
 The supplied target, IP, CIDR, or primary-domain batch list is already the active
 target context. Start directly with **Run This**.
 
+A brand/group name or otherwise ambiguous scope is not a target yet: read
+`rules/campaign.md` first and run the campaign layer (seed queue -> live-surface
+list) before invoking this pipeline per discovered surface.
+
 ## Run This (the only required step)
 
 Replace `target.com` / `targets.txt` with the supplied argument.

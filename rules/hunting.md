@@ -15,6 +15,26 @@ Owner boundaries:
 
 ---
 
+## 测试行为红线（不可违反）
+
+来源：clown `skills/src-hunter/SKILL.md`「安全红线」节（CC BY 4.0），
+与 `rules/red-lines.md`（目标副作用）互补：本节管测试行为本身，
+red-lines 管对目标系统的破坏性副作用。两者冲突时从严。
+
+1. **越权验证最小伤害**：默认读/列表差分证明跨用户·跨租户。写越权仍要测，
+   顺序是先添加（看能否挂到他人名下）→ 再删除自己刚添加的那条；不动他人
+   已存在的订单/地址/密码/角色。无创建口只能动现成对象时，只改自己能改回
+   的测试字段，打一次，过了立刻改回，改不回就停在回包。扣钱、清库存不做；
+   禁止批量、禁止真资损。操作详文：热库 `知识库/idor-test.md`「写越权怎么打」。
+   「只读红线」不得理解为「写 IDOR 不用测」。
+2. **禁止登出/注销/吊销**：用户提供的登录态（Cookie/Token）在测试全程严禁
+   调用 logout/signout/revoke 及等价会话销毁动作；不测「退出后会话还有效」。
+   保持用户会话始终有效。改绑/改密探过立刻改回，不把用户号改死。
+3. 类别策略（CORS 等）不设仓库级禁令，按当前 Scope/授权范围与证据判定；
+   用户明示偏好时随当次指令。
+
+---
+
 ## High-Intensity Hunting Posture
 
 High intensity means deeper reasoning, better coverage, and stronger evidence

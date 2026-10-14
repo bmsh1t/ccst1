@@ -114,7 +114,8 @@ LOAD -> REVIEW EVIDENCE -> ENRICH -> TEST -> CHAIN -> RECORD
 ## Canonical References
 
 - `rules/red-lines.md`：动作副作用；`rules/hunting.md`：目标隔离、深度和路由纪律；
-  `rules/coverage-gate.md`：完成判断。
+  `rules/coverage-gate.md`：完成判断；`rules/campaign.md`：模糊目标（集团名/品牌）的
+  资产战役纪律，目标已定时不适用。
 - `skills/runtime-protocol.md`：Target -> Skill -> Knowledge -> Checks -> Write-back；
   `rules/context-loading.md`：最小上下文装配。
 - `commands/hunt.md`、`commands/autopilot.md`、`docs/autopilot-lanes.md`：执行和 lane 契约。
