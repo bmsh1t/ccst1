@@ -4301,7 +4301,19 @@ def _main() -> int:
     selection.add_argument("--cursor", default=None)
     findings.add_argument("--limit", type=int, default=10)
     case = subparsers.add_parser("case", help="read full Case context without raw private material")
-    for query in (findings, case):
+    create_finding = subparsers.add_parser(
+        "create-finding",
+        help="persist an unassessed Candidate claim; no execution evidence or verdict is invented")
+    create_finding.add_argument("--finding-id", required=True)
+    create_finding.add_argument("--endpoint", required=True)
+    create_finding.add_argument("--method", required=True)
+    create_finding.add_argument("--family", required=True)
+    create_finding.add_argument("--title", required=True)
+    create_finding.add_argument("--claim", required=True)
+    create_finding.add_argument("--actor", default="operator")
+    create_finding.add_argument("--command-id", default="",
+                                help="idempotency key; defaults to create-finding:<finding-id>")
+    for query in (findings, case, create_finding):
         query.add_argument("--target", required=True)
         query.add_argument("--repo-root", default="", help="repository data root")
     args = parser.parse_args()
@@ -4318,6 +4330,11 @@ def _main() -> int:
             store = runtime_store(repo_root, args.target)
             if args.command == "case":
                 result = store.case_state()
+            elif args.command == "create-finding":
+                result = store.create_finding(
+                    command_id=args.command_id or f"create-finding:{args.finding_id}",
+                    finding_id=args.finding_id, endpoint=args.endpoint, method=args.method,
+                    family=args.family, title=args.title, claim=args.claim, actor=args.actor)
             else:
                 result = (store.finding(args.id) if args.id is not None else
                           store.finding_page(limit=args.limit, cursor=args.cursor))

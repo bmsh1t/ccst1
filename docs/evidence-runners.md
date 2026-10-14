@@ -57,6 +57,34 @@ python3 tools/validation_runner.py record-evidence --target TARGET \
   --state-changing --redline-checked --json
 ```
 
+多步实验的完整字段示例（baseline/对照步骤与锚点步骤同材料；`subject_step` 是
+**顶层零基 run 索引**，指向与 Finding 的 endpoint/method 精确对应的执行步骤；
+`variant` 只接受：baseline / browser_observed / id_swap / method_diff /
+origin_diff / replay / role_diff / tenant_diff / token_missing / unauth_denied /
+version_diff）：
+
+```json
+{
+  "schema_version": 1, "source": "curl", "generated_at": "2026-10-14T01:16:30+00:00",
+  "attempt_id": "unique-attempt-id", "result": "tested_finding",
+  "observed_difference": "...", "subject_step": 1,
+  "runs": [
+    {"url": "http://TARGET/api/Users", "method": "POST", "actor": "anonymous", "variant": "baseline",
+     "artifacts": {"request": "evidence/TARGET/x.request.txt", "response": "evidence/TARGET/x.json"}},
+    {"url": "http://TARGET/api/Users", "method": "POST", "actor": "anonymous", "variant": "role_diff",
+     "artifacts": {"request": "evidence/TARGET/y.request.txt", "response": "evidence/TARGET/y.json"}},
+    {"url": "http://TARGET/rest/user/login", "method": "POST", "actor": "owner", "variant": "replay",
+     "artifacts": {"request": "evidence/TARGET/z.request.txt", "response": "evidence/TARGET/z.json"}}
+  ]
+}
+```
+
+登记成功后，后续 `handoff --operation-ref` 使用的完整 operation ID 在输出顶层
+`store_operation_id`（同 `sync.store.operation_id`）；Candidate 未持久化时先
+`python3 tools/target_store.py create-finding --target TARGET --finding-id ID
+--endpoint URL --method METHOD --family FAMILY --title T --claim C`（幂等键默认
+`create-finding:<finding-id>`，同键不同内容会被拒绝）。
+
 - `generated_at` 写原实验时间，必须含时区；`source` 写实际采集工具。
 - Store 目标必须提供真实 `attempt_id`（材料字段或 `--attempt-id`）。小数秒会完整保留；
   同一次登记重试沿用 ID，真实重新执行使用新 ID。
