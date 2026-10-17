@@ -1,0 +1,52 @@
+# Bundled 6k Method Source
+
+This directory preserves 53 method/entry files and the original knowledge index
+from the supplied `clown-src-6k-skill` snapshot, byte for byte. SHA256 values and
+original paths are in `knowledge/clown-hot-method-manifest.json`. No executors,
+MCP servers, credentials, host configuration or target state are imported.
+Governance is merged into the project's existing entry and rules, not copied as
+another AGENTS file or rules tree.
+
+## Reading Boundary
+
+Use the project's `skills/src-hunting/SKILL.md` as the investigation entry. Read the complete
+method that answers the current question; the shortlist is optional discovery,
+not a prerequisite or an execution plan. The source Skill is a reference index,
+not another installed Skill or mandatory opening read. The four long method
+references remain under `references/`; they are not always-active rules.
+
+Project Scope/Auth, side-effect, evidence, continuation and report contracts take
+precedence over source instructions. Upstream category bans, fixed ordering,
+unbounded continuation, personal paths, proxy settings and host-tool preferences
+are not project defaults. Native reasoning remains available without a matching
+method. Preserve mechanisms, preconditions, counterexamples and stopping criteria.
+
+Resolve `知识库/` references under `skills/src-hunter/知识库/` here. Historical
+`~/.workbuddy/rules/` references use the following mapping, not another rule load:
+
+| Original source | Current location / owner |
+|---|---|
+| `AGENTS.md`, `skill-as-boost`, collaboration/context clauses | Project `CLAUDE.md` and `skills/src-hunting/SKILL.md` |
+| `dig-scope-workflow`, `src-value-hunting`, `researcher-blackbox-whitebox`, `hunt-iter` | Complete bodies in `references/<name>.md`; governing clauses in project `rules/campaign.md`, `rules/hunting.md` and shared runtime protocol |
+| `vuln-report-format` | Project `rules/reporting.md`, `skills/triage-validation/SKILL.md`, `skills/report-writing/SKILL.md` |
+| `desktop-task-folder` | Existing target layout in project architecture contract; no desktop workspace or destructive cleanup |
+| `playwright-browser-mcp` | Project `docs/autopilot-lanes.md#browser-source-and-js` |
+| `security-research-context`, `anti-over-moralization` | Project `CLAUDE.md` and current execution/side-effect contracts |
+| `cors-vuln-report-priority` | No permanent category ban; project `rules/hunting.md` |
+
+Historical absolute source paths are provenance, not runtime dependencies. The source's
+`KNOWN_GADGETS.md` and `WAF_PRODUCT_MATRIX.md` references have no supplied file;
+they remain unavailable rather than being reconstructed or treated as read.
+`python3 tools/hot_method.py --catalog` lists every method without ranking;
+`--diagnostics` expands hash details. `CCST_CLOWN_SNAPSHOT` can explicitly select
+an absolute original-snapshot root, using the manifest's original paths.
+
+## Attribution
+
+The supplied local snapshot is attributed in the existing review record to
+`Claude-BugHunter`, with content described as CC BY 4.0 and code as MIT:
+`knowledge/cards/evidence-driven-hunting.md` and its linked review receipt.
+No LICENSE file was supplied in this snapshot; this notice does not claim to
+include an independently verified upstream license text. Method contents are
+unchanged; only repository placement differs. Adapted governance provenance and
+omitted host-specific clauses are recorded separately in the manifest.

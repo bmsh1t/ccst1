@@ -31,10 +31,11 @@ When the current target context is missing, read it through:
 python3 tools/context_pack.py --target target.com
 ```
 
-Context Pack 中的 `hot_methods` 是 6k 本地快照的只读指针。按当前信息缺口读取
-`ready` 项；`missing`、`changed` 或 `invalid_manifest` 只表示源健康问题，不能作为
-方法正文、执行路线或权限依据。热方法读取不会创建 Action/Finding，也不会替代当前
-目标的 Scope/Auth、TargetStore 事实和证据门。
+Context Pack 中的 `hot_methods` 给出完整未排名目录、guide/index、来源健康及 manifest
+版本，focus 不过滤方法。按信息缺口执行 owner 返回的 `read_command`，取得同版本校验后的
+完整相关正文，目录不是已读证明；版本冲突重新取目录。来源故障/缺损或 pending 不当技术阴性，
+不丢 Store 事实；外部 `origin_only` 只供溯源。共同读取和 A 维护边界见
+`skills/runtime-protocol.md#shared-knowledge-recall`；不直接改正文/hash，不产生第二调查循环。
 
 For this hunting entrypoint, also read `rules/hunting.md`. It is the canonical
 hunting semantics and is loaded on demand rather than by every context pack.
@@ -94,6 +95,13 @@ Already-executed native/browser/multi-step evidence enters the same validation
 path through `validation_runner.py record-evidence` after Candidate persistence
 (contract: `docs/evidence-runners.md#native-evidence-registration`). Do not rerun
 the experiment just to make it fit request-diff.
+
+Without a Finding, retain the same real execution through the separate
+`validation_runner.py record-observation` entry
+(`docs/evidence-runners.md#native-observation-registration`). It registers ordered
+observations with no verdict, not a placeholder Candidate. Use its actual operation/
+step references for conditional experience and handoff; retry registration without
+replaying actions, and supplement the same attempt with the original predecessor.
 
 Do not become a passive scanner wrapper. Start with the most concrete evidence available.
 `/hunt` does not generate report drafts by default; use `/report` or

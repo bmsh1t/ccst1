@@ -55,8 +55,9 @@ python3 tools/context_pack.py --target <target>
    - raw JS/source paths surfaced as `must_read` references
 6. 从 Store observation 和当前材料完整性检查生成只读证据摘要。
 7. 从 `knowledge/capabilities.yaml` 发布知识卡目录；Skill 发现使用 Claude Code 原生目录。
-8. 从登记的 6k 快照发布只读 `hot_methods` 指针，校验 source id 和逐文件 hash；只把
-   `ready` 且与 focus 匹配的入口交给 AI 读取，缺失或漂移只作为健康诊断。
+8. 从方法 owner 取得 `hot_methods`：guide/index、完整未排名目录、manifest 版本、声明/实际 hash、
+   来源健康和真实 `read_command`；focus 不过滤，目录不冒称正文已读。缺失、漂移、pending、
+   invalid_manifest、origin_only 和 source_incomplete 分别保留诊断，不替代 Store 事实或技术裁决。
 9. 输出证据锚点、已记录的 Actor Matrix 缺口、未知项、矛盾点和 owner 写回入口。
 
 `knowledge_cards`、`deferred_knowledge_cards`、
@@ -73,8 +74,10 @@ python3 tools/context_pack.py --target TARGET --json
 
 文本与 JSON 均提供知识卡目录、目标事实和证据锚点。短卡按需全文读；长卡读取完整的
 相关机制，包括前提、证据门、反例与停止条件，再按需展开来源。`knowledge/index.md`
-仍是可直接读取的目录，不是额外必过步骤。`hot_methods` 是带 hash 的文件指针，不是
-自动路线或执行命令；读取前仍需按当前证据判断信息缺口。
+仍是可直接读取的目录，不是额外必过步骤。`hot_methods` 的 `read_command` 是版本绑定的只读
+正文命令，不是调查路线或网络动作。按信息缺口展开完整方法；版本冲突刷新目录，不先验 hash
+再读可变路径。`context_pack.py` 不接受 `--known-catalog`；卡召回的同名标记不隐藏方法目录。
+在正确 checkout 运行或显式传 `--repo-root`，不从安装副本猜仓库。维护权限见共享协议的 A 边界。
 
 ## Skill / Focus 路由
 

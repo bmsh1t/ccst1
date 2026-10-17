@@ -88,21 +88,42 @@ There is no mandatory summary-card gateway, fixed six-domain table or full-index
 opening ritual. Already available material need not be reread; no matching card
 does not prevent native reasoning or a bounded discovery experiment.
 
-When Context Pack exposes `hot_methods`, treat them as read-only pointers into the
-pinned clown snapshot. Read only the selected entry whose status is `ready` and whose
-focus matches the current information gap. `missing`, `changed` and
-`invalid_manifest` entries are diagnostics, not usable method text; they never create
-an Action, Finding, route, permission or network request. A healthy pointer does not
-replace current-target evidence, Scope/Auth checks or the existing evidence gate.
+Context Pack's `hot_methods` exposes the complete, unranked 6k method catalog,
+guide/index, source health and manifest version. `focus` describes the question;
+it never filters methods. Start from the guide/shortlist when useful, then expand
+each relevant pointer into the complete method, including conditions and false
+positives. The shortlist is neither the whole target checklist nor an access limit.
+Use the owner's emitted `read_command` (`--read ... --expected-manifest ... --json`)
+to receive hash-verified bodies captured together with their context; a healthy
+catalog is not proof that those bodies have been read. On a version conflict,
+refresh the catalog instead of opening a previously checked mutable path.
+`pending_update`, `missing`, `changed`, `invalid_manifest` and `origin_only` are
+distinct diagnostics, never usable active methods, technical negatives or reasons
+to lose Store facts. `source_incomplete` remains visible even when archived bytes
+match. Explicit `--origin` expands provenance, not another active method version.
+Run from the intended CCST checkout or pass its explicit `--repo-root`; an installed
+Skill alone does not locate a checkout. Do not guess another repo or `/root/out`.
 
 `knowledge/playbooks/web2-evidence-contracts.md` owns the migrated Web/API method
 and evidence contracts: focused route notes, chain examples, evidence/write-back
 and stop conditions. Read the relevant complete unit, including prerequisites,
 state/order dependencies, success evidence, counterexamples and reopening limits.
-Do not execute from an isolated route-table row. The sole method registry remains
-`knowledge/capabilities.yaml`; Context Pack exposes its catalog, not a decision.
+Do not execute from an isolated route-table row. `knowledge/capabilities.yaml`
+owns the existing card catalog; `knowledge/clown-hot-method-manifest.json` owns
+the 6k active bodies and provenance. Neither catalog selects the investigation.
 Shared recall and compaction currentness follow
 `skills/runtime-protocol.md#shared-knowledge-recall`.
+
+### Method Maintenance (A)
+
+Read the current `knowledge/methods/clown/references/hunt-iter.md` and its complete
+admission reference through the same method reader. The main session independently
+checks the actual source, admission threshold and three questions before adding a
+portable difference to the unique method/necessary index. Specialists only propose;
+use `hot_method.py --apply` with the actual version and truthful main-session review
+identity, never a direct body/hash edit. Private originals stay with evidence/report
+owners. This is not shared-card publication or permission to edit governance,
+native Skill orchestration or Rules; those retain their existing review boundary.
 
 ## Specialist Boundaries and Routing Exceptions
 

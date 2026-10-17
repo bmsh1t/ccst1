@@ -23,6 +23,7 @@
 | [质量规范](./quality-guidelines.md) | 所有 backend 改动都读取：通用质量、AI/工具边界和专题索引 | 已完成 |
 | [Runtime 与 Autopilot](./contracts/runtime-autopilot.md) | 修改 Claude CLI、启动、打包、长任务或子进程执行时读取 | 已完成 |
 | [Recon 与 Surface](./contracts/recon-surface.md) | 修改 Recon、scanner 语料、coverage、Surface 或知识路由时读取 | 已完成 |
+| [方法与原生观察](./contracts/hot-method-native-observation.md) | 方法 v2 发布/恢复、完整目录、无裁决观察登记 | 已完成 |
 | [Browser 与 JavaScript](./contracts/browser-js.md) | 修改会话内 Playwright/Chrome DevTools MCP 证据、增量发现或 JS 分析时读取 | 已完成 |
 | [Validation 与 Evidence](./contracts/validation-evidence.md) | 修改主动验证、证据门禁或 validation runner 时读取 | 已完成 |
 | [Lifecycle 与 State](./contracts/lifecycle-state.md) | 修改身份、checkpoint、case、observation 或 Action Queue 时读取 | 已完成 |

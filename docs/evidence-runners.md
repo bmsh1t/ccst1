@@ -10,9 +10,122 @@
 - 不要为了清队列而运行 runner；只在它能减少漂移、补足证据或复现复杂步骤时使用。
 - MCP/browser/source/JS 观察帮助 Claude 选择真实实验；已有完整执行材料可直接登记，不为接入状态而重复请求。
 
+## Native Observation Registration
+
+已执行但尚无 Finding（也可无 Action）的原生观察使用独立的 `record-observation`。
+它只登记留存材料，绝不执行命令、发请求或追认原执行许可。不要创建占位 Finding 来保存
+中性观察；已有 Finding 的证据/cleanup 仍用下一节 `record-evidence`，原合同不变。
+
+### 原生原件 envelope
+
+`--evidence-json` 是新的显式 envelope，不是旧 Finding schema-v1 的另一种 result：
+
+```json
+{
+  "schema_version": 1,
+  "kind": "native-observation",
+  "source": "saved-native-export",
+  "started_at": "2026-10-16T10:00:00+00:00",
+  "outcome": "complete",
+  "runs": [
+    {
+      "url": "https://TARGET/api/observed",
+      "method": "GET",
+      "family": "observed-workflow",
+      "observed_at": "2026-10-16T10:00:01+00:00",
+      "description": "Original read-back of the observed workflow state",
+      "actor": "unknown",
+      "state_changing": null,
+      "artifacts": {
+        "request": ".private/validation/TARGET/observed.request.txt",
+        "response": ".private/validation/TARGET/observed.response.txt"
+      }
+    }
+  ]
+}
+```
+
+```bash
+python3 tools/validation_runner.py record-observation --repo-root ROOT --target TARGET \
+  --attempt-id ORIGINAL_ATTEMPT --evidence-json /tmp/observations.json --actor RECORDER --json
+```
+
+- 顶层只接受 `schema_version/kind/source/started_at/outcome/runs` 和可选
+  `target/attempt_id/family`；重复声明的目标、attempt 必须与命令一致。
+- runs 保留原顺序、重复 URL、每步精确 method/family/真实含时区 `observed_at`、非空描述。
+  每步可选 `actor/object_scope/variant/error/body_truncated/state_changing/redline_checked`；
+  原件引用必须是同目标已有非空普通文件。不得放 Finding、结论、closure identity 或 cleanup。
+- `source/started_at` 来自原执行记录，不能用登记时间代替。每步不得早于执行开始。
+  `--actor` 是本次**登记命令执行者**，不是 HTTP actor；未知 HTTP actor 保留 unknown。
+  未绑定 Action 且无专属 family 时用 `runner-observation`，不推断漏洞类别或 Coverage。
+- `outcome=complete` 要求完整原件；缺响应、读取错误或截断用 `partial`。零 runs 仅允许
+  真实效果 `unknown`，不伪造 endpoint 或 `:0`。未知副作用保持 null；只有真实已审核的
+  state-changing 步骤才能声明 `state_changing=true, redline_checked=true`，不按 POST 推断。
+- summary 为 `kind=native-observation, lane=native_observation, result=""`；空结果是无裁决，
+  不写 candidate/Finding，不解决 Action，也不产生技术阴性、报告资格或 Coverage 完成。
+  真实 `store_operation_id` / `observation_refs` 可由既有经验及 handoff owner 引用。
+
+### 浏览器已捕获原件
+
+```bash
+python3 tools/validation_runner.py record-observation --repo-root ROOT --target TARGET \
+  --attempt-id ORIGINAL_ATTEMPT --browser-capture-ref CAPTURE_SUMMARY \
+  --execution-json /tmp/original-execution.json --actor RECORDER --json
+```
+
+浏览器模式必须提供独立的原执行 metadata（不能同时传 evidence-json）：
+
+```json
+{
+  "schema_version": 1,
+  "source": "saved-browser-export",
+  "started_at": "2026-10-16T10:00:00Z",
+  "family": "observed-workflow",
+  "steps": [
+    {"source_index": 0, "actor": "owner", "state_changing": false,
+     "description": "Original captured read-back"}
+  ]
+}
+```
+
+可选 target/attempt_id 必须匹配命令；family、actor、object_scope、variant、description、
+state_changing、redline_checked 可在顶层声明默认事实，或在 `steps` 用原件的零基
+`source_index` 明确覆盖。method/URL/时间只能来自原件，不由 metadata 补造。
+
+importer 保存一次实际选中 export 的原始 bytes，并在 capture summary 的
+`network_source={path,sha256,bytes,format}` 绑定基线；包括 HAR fallback，之后输入变化
+不会改变已捕获原件。读取 fresh 核对同一 bytes，保留顺序、request ID、源 pointer、
+空/缺 body、base64 编码及截断；私有步骤 envelope 是有来源的原件切片，不是假造线上报文。
+捕获级错误或步骤缺项保持 partial。外域/Scope 外请求留在原 capture 并诊断，不登记到
+本目标；只有 surface 或缺精确 method/URL/真实时间的材料不伪造实验步骤。
+text 仅能用于发现，坏 UTF-8/JSON/base64 不静默替换。旧 HAR 可复用既有原件 hash/长度；
+旧 JSON 无捕获基线时明确 `unverifiable_capture`，不能给当前重序列化文件补 hash 冒充历史。
+应使用留存的实际导出建立新 capture 身份，不为补登记而重新操作浏览器。
+
+### 不可变登记、重试与补证
+
+原件及 `evidence/TARGET/native-observations/<attempt-key>/<material-id>/summary.json`
+create-only；登记收据单独保存在相邻 `registrations/`。同名不同字节冲突，不追加 sync 后
+覆写 summary。此为文件发布与 Store 登记两个边界，不承诺跨文件/数据库事务。
+
+成功输出真实 operation/step；partial/unknown 或登记失败退出 1，输入错误退出 2。
+失败保留已发布原件与 `registration_retry_command`：运行返回的命令只登记既有 summary，
+不读取新执行输入、不重放请求。修复原件/Store 故障后精确重试；不能直接改已发布 summary。
+
+同次执行的新材料必须发送**完整有序快照**，保持原 attempt/source/started_at，传
+`--expected-operation ORIGINAL_OPERATION`；不要只传新增 step，也不要把补证重试的前驱
+改成刚返回的新 operation。旧 operation/summary/原件保留。浏览器补证另建 capture 身份，
+原 capture 不原地覆盖，仍是同一次 execution attempt。
+
+首次可选 `--action-id ID --claim-token TOKEN`，由 Store 检查当时 claimant/登记 actor；
+无前驱的精确 start 重试走历史收据，claim 已释放或改派不能强制重新认领。带原前驱的补证
+复用旧关联，不 start/reclaim；可换登记 actor，但可选 action/token 必须仍匹配原关联。
+Store 保留集合级 family/精确 endpoint 检查，不要求每一步都匹配同一个 Action。
+登记与经验判断仍分离：note 可记录建议，negative 需满足既有条件/证据合同。
+
 ## Native Evidence Registration
 
-已通过浏览器、probe、curl、raw sender 等执行的实验，先按 `/hunt` 契约保存
+已有 Finding 的浏览器、probe、curl、raw sender 等实验，先按 `/hunt` 契约保存
 canonical Candidate，再登记已存在的原始材料。该入口不执行命令、不发请求、不造 diff；
 多步、不同方法、多字段身份上下文、multipart/binary 都不必改写为请求对。
 

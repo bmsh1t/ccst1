@@ -7,6 +7,11 @@ import json
 from pathlib import Path
 
 try:
+    from tools.contracts import runner_summary_lane
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from contracts import runner_summary_lane
+
+try:
     from finding_index import verify_finalized_finding_owner_provenance
     from target_paths import canonical_target_value, target_storage_key
     from tools.target_store import ConflictError, FindingNotFoundError, runtime_store
@@ -46,7 +51,10 @@ def _runner_summary_is_candidate(payload: dict) -> bool:
     这里不判断“可报告”，只判断这份 runner 证据是否值得 AI 复核。
     `/validate` 的 7-Question Gate / 4-gate 才能决定 report-ready。
     """
-    if not isinstance(payload, dict) or not payload.get("lane"):
+    if not isinstance(payload, dict):
+        return False
+    lane = runner_summary_lane(payload)
+    if not lane or lane == "native_observation":
         return False
     result = str(payload.get("result") or "").strip().lower()
     return bool(

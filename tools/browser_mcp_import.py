@@ -27,9 +27,9 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 try:
-    from tools.artifact_io import write_json_atomic as _write_json
+    from tools.artifact_io import write_json_atomic as _write_json, publish_bytes_create_only
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from artifact_io import write_json_atomic as _write_json
+    from artifact_io import write_json_atomic as _write_json, publish_bytes_create_only
 
 
 try:
@@ -129,21 +129,24 @@ def _check_import_input(path: str | Path | None) -> Path | None:
     return candidate
 
 
-def _load_network_payload(path: str | Path | None) -> Any:
-    """Load MCP network output, accepting both JSON and raw text listings."""
-    if not path:
-        return []
+def _capture_network_payload(path: str | Path | None) -> tuple[Any, bytes | None, str]:
+    """Capture once: discovery and the original-byte baseline share these bytes."""
     candidate = _check_import_input(path)
     if candidate is None:
-        return []
+        return [], None, "text"
+    raw = candidate.read_bytes()
+    if len(raw) > _browser_import_max_bytes():
+        raise ValueError("browser network input grew beyond the import byte budget")
+    text = raw.decode("utf-8")
     try:
-        text = candidate.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return []
-    try:
-        return json.loads(text)
+        payload = json.loads(text)
     except json.JSONDecodeError:
-        return {"raw": text}
+        return {"raw": text}, raw, "text"
+    return payload, raw, "har" if isinstance(payload, dict) and isinstance(payload.get("log"), dict) else "json"
+
+
+def _load_network_payload(path: str | Path | None) -> Any:
+    return _capture_network_payload(path)[0]
 
 
 def _json_items(payload: Any, *, _allow_data_envelope: bool = True) -> list[Any]:
@@ -403,17 +406,28 @@ def import_mcp_browser_evidence(
     surface_touched = False
     try:
         artifacts: dict[str, str] = {}
-        network_payload = _load_network_payload(network_path or har_path)
+        selected_path = network_path or har_path
+        network_payload, network_bytes, network_format = _capture_network_payload(selected_path)
+        captured_inputs = {str(selected_path): (network_payload, network_bytes, network_format)}
         requests = normalize_mcp_network(network_payload)
         if (
             (not requests or _network_capture_failed(network_payload))
             and har_path
-            and str(har_path) != str(network_path)
+            and str(har_path) != str(selected_path)
         ):
-            har_payload = _load_network_payload(har_path)
+            har_payload, har_bytes, har_format = _capture_network_payload(har_path)
+            captured_inputs[str(har_path)] = (har_payload, har_bytes, har_format)
             har_requests = normalize_mcp_network(har_payload)
             if har_requests and not _network_capture_failed(har_payload):
                 network_payload, requests = har_payload, har_requests
+                network_bytes, network_format = har_bytes, har_format
+        network_source = {}
+        if network_bytes is not None:
+            original_path = private_dir / "network.source"
+            publish_bytes_create_only(original_path, network_bytes)
+            network_source = {**_private_file_meta(original_path), "format": network_format}
+            if network_source["sha256"] != hashlib.sha256(network_bytes).hexdigest() or network_source["bytes"] != len(network_bytes):
+                raise ValueError("archived network source does not match captured bytes")
         artifacts["network_private_json"] = str(
             write_private_json(private_dir / "network.raw.json", network_payload)
         )
@@ -459,7 +473,19 @@ def import_mcp_browser_evidence(
             ("browser_state", state_path, "state.json"),
             ("network_har", har_path, "network.har"),
         ):
-            meta = _archive_private_artifact(source_path, private_dir / filename)
+            if name == "network_har":
+                # A selected/fallback HAR must not be reread after capture.
+                captured = captured_inputs.get(str(source_path))
+                if captured is None:
+                    captured = _capture_network_payload(source_path)
+                raw = captured[1]
+                meta = {}
+                if raw is not None:
+                    saved = private_dir / filename
+                    publish_bytes_create_only(saved, raw)
+                    meta = _private_file_meta(saved)
+            else:
+                meta = _archive_private_artifact(source_path, private_dir / filename)
             if meta:
                 private_artifacts[name] = meta
                 artifacts[f"{name}_private"] = str(meta["path"])
@@ -522,6 +548,7 @@ def import_mcp_browser_evidence(
             "status": capture_status,
             "error": safe_capture_error,
             "network_fingerprint": network_fingerprint,
+            "network_source": network_source,
             "auth_required": bool(auth_required),
             "auth_state": auth_state_value,
             "counts": {

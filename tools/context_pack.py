@@ -869,7 +869,7 @@ def _build_context_pack(
     repo = Path(repo_root)
     resolved_target = canonical_target_value(target)
     target_key = target_storage_key(resolved_target)
-    hot_methods = build_hot_method_projection(repo, focus=focus)
+    hot_methods = build_hot_method_projection(repo, focus=focus, include_catalog=True)
     store = runtime_store(repo, resolved_target)
     store_binding = store.binding()
     # Private assembly accepts only inputs captured by this call's owner reader.
@@ -1067,6 +1067,7 @@ def _build_context_pack(
             "hot_methods_total": int((hot_methods.get("summary") or {}).get("total", 0) or 0),
             "hot_methods_ready": int((hot_methods.get("summary") or {}).get("ready", 0) or 0),
             "hot_methods_selected": int((hot_methods.get("summary") or {}).get("usable_selected", 0) or 0),
+            "hot_methods_bodies_read": hot_methods.get("bodies_read", False),
         },
     }
     return pack
@@ -1115,6 +1116,41 @@ def format_target_experiences(experiences: dict) -> list[str]:
     return experience_lines
 
 
+def _format_hot_methods(methods: dict) -> list[str]:
+    """Render the owner's complete discovery snapshot, never reopen method files."""
+    discovery = methods.get("discovery") or {}
+    lines = [
+        f"- Hot methods (unranked catalog; source health={methods.get('status', 'unavailable')}):",
+        f"  Source: {methods.get('source_id', '')}; manifest: {methods.get('manifest_path', '')}",
+        f"  Version: {methods.get('manifest_sha256', 'unknown')}; revision: {methods.get('revision_ref') or 'unversioned'}",
+        "  Bodies read: false — catalog presence is not a captured body read.",
+    ]
+    for key in ("guide", "index"):
+        lines.append(f"  {key}: {discovery.get(key, 'unavailable')} [{discovery.get(key + '_status', 'unknown')}]")
+        if discovery.get(key + "_read_command"):
+            lines.append(f"    Read: {discovery[key + '_read_command']}")
+    if discovery.get("catalog_command"):
+        lines.append(f"  Refresh catalog: {discovery['catalog_command']}")
+    for key in ("error", "revision_error", "pending"):
+        if methods.get(key):
+            lines.append(f"  {key}: {json.dumps(methods[key], ensure_ascii=False)}")
+    origins = methods.get("origins", [])
+    if origins:
+        lines.append(f"  Origin bytes: {sum(item['status'] == 'ready' for item in origins)}/{len(origins)} ready; provenance is not review admission.")
+        for item in origins:
+            if item["status"] != "ready" or item.get("source_incomplete"):
+                lines.append(f"    {item['id']}: {item['status']}; source_incomplete={item.get('source_incomplete', False)}; "
+                             f"{json.dumps(item.get('defects') or item.get('error') or '', ensure_ascii=False)}")
+    for item in methods.get("source_issues", []):
+        lines.append(f"  {item['path']}: {item['status']} — {item['error']}")
+    for item in methods.get("hot_methods", []):
+        lines.append(f"  - {item['path']} [{item['role']}; {item['status']}; usable={item['usable']}] "
+                     f"sha256={item['sha256']}; actual_sha256={item.get('actual_sha256') or 'unavailable'}; "
+                     f"scope={item.get('maintenance_scope', 'unversioned')}; origins={','.join(item.get('origin_refs', []))}")
+        lines.append(f"    Read: {item['read_command']}")
+    return lines
+
+
 def format_context_pack(pack: dict) -> str:
     catalog_groups = {}
     for item in pack.get("card_catalog", []):
@@ -1141,26 +1177,7 @@ def format_context_pack(pack: dict) -> str:
         *format_target_experiences(pack.get("target_experiences") or {}),
         "- Must read:",
         *_format_list(pack["must_read"]),
-        "- Hot methods (read-only pointers; source health={status}):".format(
-            status=(pack.get("hot_methods") or {}).get("status", "unavailable"),
-        ),
-        *_format_list([
-            "{full_path} [{role}] sha256={sha} reason={reason}".format(
-                # The reader must be able to open the method body from the
-                # project cwd: print the resolved source root plus the
-                # manifest-relative path, not the relative path alone.
-                full_path=(
-                    str((pack.get("hot_methods") or {}).get("root") or "").rstrip("/")
-                    + "/" + str(item.get("path") or "").lstrip("/")
-                    if (pack.get("hot_methods") or {}).get("root")
-                    else str(item.get("path") or "")
-                ),
-                role=item.get("role", ""),
-                sha=item.get("sha256", ""),
-                reason=item.get("selection_reason") or "selected",
-            )
-            for item in (pack.get("hot_methods") or {}).get("hot_methods", [])
-        ]),
+        *_format_hot_methods(pack.get("hot_methods") or {}),
         "- Knowledge card catalog: select by information gap.",
         *(catalog_lines or ["  - None"]),
         "- Historical patterns (advisory; require current-target evidence):",

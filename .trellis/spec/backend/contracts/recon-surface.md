@@ -1655,96 +1655,11 @@ facts. Frontmatter dates serialize as ISO strings; unsupported types are errors.
 Review withdrawal, body changes and retired status invalidate indexed source
 bindings. Native reading remains available with the actual unreviewed status.
 
-## Read-only hot-method snapshot projection
+## Hot-method catalog and captured reads
 
-### 1. Scope / Trigger
-
-Use when `tools/hot_method.py`, the Context Pack `hot_methods` field, or the pinned
-local clown method snapshot changes. This projection supplies discoverable method
-file pointers; it is not a knowledge registry, target-state owner, execution route,
-or evidence source.
-
-### 2. Signatures
-
-```python
-build_hot_method_projection(
-    repo_root=BASE_DIR, *, focus="", max_methods=6, environ=None
-) -> dict
-```
-
-```text
-python3 tools/hot_method.py [--repo-root ROOT] [--focus TEXT]
-  [--max-methods N] [--json]
-```
-
-`build_context_pack(...)` exposes the same projection at
-`pack["hot_methods"]` and only adds health counters to `source_summary`.
-
-### 3. Contracts
-
-- `knowledge/clown-hot-method-manifest.json` is the only source allowlist. Each
-  entry contains `path`, `role`, and SHA-256; `path` must be relative, unique, and
-  remain below the resolved snapshot root. `CCST_CLOWN_SNAPSHOT` may override the
-  manifest default root and must be absolute.
-- A file is usable only when it is a regular file and its current SHA-256 equals
-  the manifest digest. The projection returns `source_id`, relative path, expected
-  and actual digest, role, selection, and status (`ready`, `missing`, `changed`, or
-  `invalid_manifest`). It does not copy method bodies.
-- `entry` and `shortlist` pointers are selected deterministically; `method` entries
-  are selected only when their path matches focus tokens and the method budget is
-  positive. Only selected usable entries appear in `hot_methods`.
-- Context Pack assembly reads this projection without writing Store, Action, Finding,
-  credentials, network requests, or permissions. Current TargetStore facts,
-  Scope/Auth and evidence gates remain authoritative. Cold registry cards remain
-  usable if the hot snapshot is absent or stale.
-
-### 4. Validation & Error Matrix
-
-| Condition | Result |
-|---|---|
-| Missing/unreadable manifest, unsupported schema, invalid path/hash/role, duplicate path | `invalid_manifest`, no usable pointers |
-| Snapshot file missing | `missing`; file is excluded from `hot_methods` |
-| Snapshot file hash differs | `changed`; file is excluded from `hot_methods` |
-| Symlink resolves outside snapshot root | Entry is diagnosed as invalid; no source escape |
-| All entries match | `ready`; selected entries expose expected/current hashes |
-| `focus` has no method path hit | Entry/shortlist pointers remain available; no arbitrary method is selected |
-| Pack source becomes unavailable during assembly | Current facts/cards/evidence remain readable; no hot pointer is treated as method text |
-
-### 5. Good / Base / Bad Cases
-
-- Good: a pinned file with the expected digest is surfaced as a read-only pointer,
-  and the caller opens the full source only after choosing an information gap.
-- Base: an absent snapshot reports health diagnostics while Context Pack still
-  returns TargetStore facts and the card catalog.
-- Bad: scanning arbitrary files under the source root, accepting a changed digest,
-  or turning a pointer into an automatic Action, Finding, route, or network request.
-
-### 6. Tests Required
-
-- The focused hot-method check must assert ready/missing/changed/invalid-manifest
-  states, relative-path and symlink containment, deterministic focus selection, and
-  exact source/actual digest reporting.
-- The Context Pack check must assert that adding the projection leaves Store binding
-  and revision unchanged, preserves cold-card recovery when the source is unavailable,
-  and renders only selected usable pointers.
-- Knowledge audit remains the validation for candidate/card structure; it must not
-  treat unregistered `knowledge/candidates/` drafts as active registry entries.
-
-### 7. Wrong vs Correct
-
-#### Wrong
-
-```text
-read every file under the reference root -> infer a route -> write Action/Finding
-```
-
-#### Correct
-
-```text
-manifest allowlist + hash check -> read-only pointer projection -> AI selects by gap
--> existing Scope/Auth, execution, evidence, and Store owners handle any next step
-```
-
+当前合同见 [方法版本与无裁决原生观察](./hot-method-native-observation.md)。
+旧 focus/max-methods 选择与仅返回指针的合同已退役；目录完整未排名，正文使用版本绑定的 captured read。
+Context Pack 保留 `hot_methods` 输出键，方法故障不阻断独立 Store/冷卡事实恢复。
 
 ## Neutral Recon inventory
 

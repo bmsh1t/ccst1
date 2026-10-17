@@ -116,7 +116,12 @@ RETROSPECTIVE DECISION
 - 需要下次继续验证
 - 是当前目标的 dead end
 
-目标层只在操作者明确要求持久化时执行，默认输出 exact command 建议。
+目标层写回时机唯一由
+[`skills/runtime-protocol.md#cognitive-write-timing`](../skills/runtime-protocol.md#cognitive-write-timing)
+规定：有影响后续判断的稳定结论、反证、条件变化、路径决定，或暂停/换目标/compaction
+需要续接时，保存必要增量及真实引用，不等用户另说“记住”。本规则只帮助分流内容，
+不新增逐观察复盘或固定写回频率；执行事实和真实回执仍即时交给原 owner。
+明确只读/预览时只展示建议，不写目标层或 campaign 工作文件。
 TARGET 必须是已初始化目标；以下内容按实际观察替换，不把示例结论当作事实：
 
 ```bash
@@ -141,7 +146,7 @@ python3 tools/target_memory.py handoff --target TARGET \
 此处的 `OPERATION_ID:0` 必须替换为实际登记返回的 operation ID 和对应步骤。
 artifact 路径、Finding ID、虚构执行都不是替代品。negative 必须有非空且明确的适用条件、
 重开条件和 operation 引用，仅在这些条件下成立；KILL 只是不报告 candidate，不证明 negative。
-没有登记证据时保留假设/缺失证据，或在明确要求保存时使用未验证 note：
+没有登记证据时保留假设/缺失证据；需要按上述时机保存时使用明确未验证的 note：
 
 ```bash
 python3 tools/target_memory.py note --target TARGET \
@@ -228,7 +233,7 @@ Lead、Signal、未验证假设、目标专属线索不进入 `/remember`。
 
 | 动作 | 默认行为 |
 |---|---|
-| 写目标层 lead / next / dead-end / handoff / note | 默认建议；操作者明确要求后才执行 |
+| 写目标层 lead / next / dead-end / handoff / note | 按唯一 cognitive-write-timing 保存必要增量；只读/预览不写 |
 | 修改知识卡 | 只建议 patch，需人工确认 |
 | 修改 Skill | 只建议 patch，需人工确认 |
 | 修改 Rules | 只建议 patch，需人工确认 |

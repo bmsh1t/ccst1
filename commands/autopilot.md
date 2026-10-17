@@ -9,7 +9,7 @@ allowed-tools:
 ---
 # /autopilot
 <!-- AUTOPILOT_CRITICAL_RUNTIME_MANIFEST
-{"schema_version":1,"paths":[{"kind":"commands","relative_path":"autopilot.md"},{"kind":"commands","relative_path":"autopilot-round.md"},{"kind":"skills","relative_path":"runtime-protocol.md"}],"mcp_contracts":["mcp__Playwright__*","mcp__chrome-devtools__*","mcp__fofamap__*"]}
+{"schema_version":1,"paths":[{"kind":"commands","relative_path":"autopilot.md"},{"kind":"commands","relative_path":"autopilot-round.md"},{"kind":"skills","relative_path":"runtime-protocol.md"},{"kind":"skills","relative_path":"src-hunting/SKILL.md"}],"mcp_contracts":["mcp__Playwright__*","mcp__chrome-devtools__*","mcp__fofamap__*"]}
 AUTOPILOT_CRITICAL_RUNTIME_MANIFEST -->
 Authoritative bootstrap contract (do not reinterpret): !`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_bootstrap.py" --json -- "$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"`
 Arguments: `<target> [--paranoid|--normal|--yolo] [--quick] [--deep [--max-lanes N]] [--auth-file PATH] [--context-file=PATH]`.
@@ -49,7 +49,8 @@ Reuse `state.lane_contract` at `text_available=true`; otherwise/new selection re
    Claim/bind per those protocols, with the same explicit `--actor OPERATOR`.
    Failed claim: inspect once; never guess/retry.
 5. Register/resolve/kill as applicable; require actual receipts. Missing outcomes remain recoverable;
-   never replay unknown effects. Independent native evidence may register unbound.
+   never replay unknown effects. No Finding: use `record-observation` per
+   `docs/evidence-runners.md#native-observation-registration`; existing Candidate: `record-evidence`.
 6. Round terminal heartbeat first; then exactly one post-lane refresh:
 ```bash
 cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded --loop-check --projection-only --json

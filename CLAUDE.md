@@ -5,8 +5,8 @@
 
 无效参数、凭据缺失、报告提交和 red-lines 判定的实际破坏性副作用仍按各自 owner 处理。
 当 `config.json` 的 `ctf_mode` 为 `true` 时，直接把 supplied target 和仓库配置作为本轮靶场记录。
-New target default runs every scanner check (no built-in XSS skip) unless the current
-turn requests narrower coverage。
+选用 scanner 时默认不内置漏洞类别排除（包括 XSS），除非当前回合要求更窄覆盖；
+scanner 不是调查前置，主会话按证据选择是否使用。
 当前回合明确点名某个动作时，该请求本身就是该动作的 opt-in。
 
 ## Operator Contract
@@ -96,14 +96,13 @@ Command discovery comes from `commands/`, not a hand-maintained list here.
 
 ## Runtime Boundaries
 
-```text
-LOAD -> REVIEW EVIDENCE -> ENRICH -> TEST -> CHAIN -> RECORD
-     -> VALIDATE CANDIDATES -> REPORT / CHECKPOINT
-```
+调查由当前证据与问题驱动，不强制经过固定有序管线；方法加载、证据登记与记忆写回
+遵循 `skills/runtime-protocol.md` 的各自时机和 owner 合同。
 
-- Claude CLI `/autopilot` runs inline in the current Claude session，并且是唯一 target-state
-  controller，不隐式创建第二套 target-state session；Specialist 委派遵循 `commands/autopilot.md`，
-  结果回收、Checkpoint、owner 写回和 Closure 由当前 session 负责。
+- 当前主会话是唯一调查控制器；手动与 `/autopilot` 共用 `src-hunting` core。Autopilot
+  在当前会话增加自动执行/继续、等待、预算与回收义务，不创建第二套 target-state session；
+  Specialist 委派遵循 `commands/autopilot.md`，结果回收、Checkpoint、owner 写回和 Closure
+  仍由当前 session 负责。
 - Runtime drift 通过 `/sync-check` 查看；advisory 不阻塞，critical drift 才阻塞，且不得自动同步。
 
 ## Egress Proxy (Resin)
@@ -116,7 +115,7 @@ LOAD -> REVIEW EVIDENCE -> ENRICH -> TEST -> CHAIN -> RECORD
 - `rules/red-lines.md`：动作副作用；`rules/hunting.md`：目标隔离、深度和路由纪律；
   `rules/coverage-gate.md`：完成判断；`rules/campaign.md`：模糊目标（集团名/品牌）的
   资产战役纪律，目标已定时不适用。
-- `skills/runtime-protocol.md`：Target -> Skill -> Knowledge -> Checks -> Write-back；
+- `skills/runtime-protocol.md`：共享执行、方法展开、记忆连续性与按事件/边界写回；
   `rules/context-loading.md`：最小上下文装配。
 - `commands/hunt.md`、`commands/autopilot.md`、`docs/autopilot-lanes.md`：执行和 lane 契约。
 - `knowledge/index.md`、`knowledge/capabilities.yaml`、`knowledge/playbooks/web2-evidence-contracts.md`：知识治理和路由。

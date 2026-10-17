@@ -71,6 +71,23 @@ def runner_operation_id(material: dict[str, Any]) -> str:
     return f"runner:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()[:24]}"
 
 
+def runner_summary_lane(payload: dict[str, Any]) -> str:
+    """Distinguish new no-verdict observations without reinterpreting old lanes."""
+    kind, lane = payload.get("kind"), payload.get("lane")
+    if kind == "native-observation" or lane == "native_observation":
+        if (kind, lane) != ("native-observation", "native_observation"):
+            raise ValueError("native-observation kind/native_observation lane must be paired")
+        if (type(payload.get("schema_version")) is not int or payload["schema_version"] != 1
+                or payload.get("result") != "" or payload.get("candidate_ready")
+                or any(key in payload for key in ("finding_id", "identity_v2", "cleanup_confirmation"))):
+            raise ValueError("native observation summary must have schema=1 and no verdict/Finding/closure")
+    elif kind is not None:
+        raise ValueError(f"unknown runner summary kind: {kind!r}")
+    if lane is not None and (not isinstance(lane, str) or not lane.strip()):
+        raise ValueError("runner summary lane must be non-empty text")
+    return lane or ""
+
+
 # Wire-fact vocabulary: the complete set of mechanically checkable facts the
 # AI may declare in ``expected``. The runner knows these predicates over raw
 # replay observations; it does NOT know vulnerability classes. Any category

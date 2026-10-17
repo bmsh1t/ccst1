@@ -16,6 +16,7 @@ import argparse
 import hashlib
 import json
 import re
+import shlex
 import sys
 import time
 import urllib.error
@@ -32,9 +33,10 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 try:
-    from tools.artifact_io import write_json_atomic as _write_json
+    from tools.artifact_io import write_json_atomic as _write_json, publish_bytes_create_only
+    from tools.browser_evidence import read_target_artifact, read_browser_observation_capture
     from tools.auth_session import AuthSession, add_cli_args, session_from_args
-    from tools.contracts import WIRE_FACT_NAMES, WIRE_NEEDLE_FACT_NAMES, artifact_digest_material, runner_operation_id, validate_observed_difference
+    from tools.contracts import WIRE_FACT_NAMES, WIRE_NEEDLE_FACT_NAMES, artifact_digest_material, runner_operation_id, validate_observed_difference, runner_summary_lane
     from tools.evidence_identity import normalize_actor, normalize_object_scope, normalize_variant
     from tools.response_diff import diff_responses, snapshot_response
     from tools.request_diff import RequestPairError, request_pair_digest, validate_request_pair
@@ -47,9 +49,10 @@ try:
     from tools.scope_source import load_scope_context
     from tools.target_store import FindingNotFoundError, StoreError, TargetStore, runtime_store, target_switch_lock, validate_cleanup_confirmation
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from artifact_io import write_json_atomic as _write_json
+    from artifact_io import write_json_atomic as _write_json, publish_bytes_create_only
+    from browser_evidence import read_target_artifact, read_browser_observation_capture
     from auth_session import AuthSession, add_cli_args, session_from_args  # type: ignore
-    from contracts import WIRE_FACT_NAMES, WIRE_NEEDLE_FACT_NAMES, artifact_digest_material, runner_operation_id, validate_observed_difference  # type: ignore
+    from contracts import WIRE_FACT_NAMES, WIRE_NEEDLE_FACT_NAMES, artifact_digest_material, runner_operation_id, validate_observed_difference, runner_summary_lane  # type: ignore
     from evidence_identity import normalize_actor, normalize_object_scope, normalize_variant  # type: ignore
     from response_diff import diff_responses, snapshot_response  # type: ignore
     from request_diff import RequestPairError, request_pair_digest, validate_request_pair  # type: ignore
@@ -370,7 +373,8 @@ def _ensure_primary_finding(store: TargetStore, *, finding_id: str, endpoint: st
 def _store_observation(run: dict[str, Any], *, repo_root: Path, side: str | None, method: str,
                        family: str, observed_at: str, result: str,
                        incomplete: bool,
-                       state_changing: bool | None, redline_checked: bool) -> dict[str, Any]:
+                       state_changing: bool | None, redline_checked: bool,
+                       observation_lane: bool = False) -> dict[str, Any]:
     if side is None:
         endpoint = str(run.get("url") or "")
         artifacts = dict(run.get("artifacts") or {})
@@ -419,22 +423,23 @@ def _store_observation(run: dict[str, Any], *, repo_root: Path, side: str | None
     return {
         "endpoint": endpoint,
         "method": observed_method,
-        "family": family,
-        "observed_at": observed_at,
-        "description": str((run.get("diff") or {}).get("summary") or f"{side} runner observation"),
+        "family": run["family"] if observation_lane else family,
+        "observed_at": run["observed_at"] if observation_lane else observed_at,
+        "description": run["description"] if observation_lane else str((run.get("diff") or {}).get("summary") or f"{side} runner observation"),
         "artifacts": artifacts,
         "actor": str(observation.get("actor") or ("unknown" if side is None else "anonymous")),
         "object_scope": str(observation.get("object_scope") or ("unknown" if side is None else "none")),
         "variant": variant,
         "error": str(run["error"].get("type") or "") if isinstance(run.get("error"), dict) else str(run.get("error") or ""),
         "truncated": bool(snapshot.get("truncated") or snapshot.get("body_truncated")),
-        "state_changing": state_changing,
-        "redline_checked": redline_checked,
+        "state_changing": run.get("state_changing") if observation_lane else state_changing,
+        "redline_checked": run.get("redline_checked", False) if observation_lane else redline_checked,
         "result": result,
         "detail": {
             "evidence_role": str(observation.get("evidence_role") or "unknown"),
             **({"cleanup_confirmation": observation["cleanup_confirmation"]}
                if "cleanup_confirmation" in observation else {}),
+            **({key: run[key] for key in ("provenance", "missing") if key in run} if observation_lane else {}),
         },
         "identity_status": identity_status,
         "identity_technique": identity_technique,
@@ -450,7 +455,9 @@ def _record_primary_execution(store: TargetStore, *, attempt_id: str, actor: str
                               candidate: dict[str, str] | None,
                               state_changing: bool | None, redline_checked: bool,
                               observed_at: str | None = None,
-                              finding_id: str | None = None) -> dict[str, Any]:
+                              finding_id: str | None = None,
+                              expected_operation: str | None = None,
+                              observation_outcome: str | None = None) -> dict[str, Any]:
     observations = []
     timestamp = observed_at or started_at
     for run in runs:
@@ -461,9 +468,10 @@ def _record_primary_execution(store: TargetStore, *, attempt_id: str, actor: str
         for side in sides:
             observations.append(_store_observation(
                 run, repo_root=store.root, side=side, method=(methods or {}).get(side, method), family=family, observed_at=timestamp,
-                result=result if result != "partial" else "", incomplete=result == "partial",
+                result=result if result != "partial" else "", incomplete=result == "partial" or observation_outcome in {"partial", "unknown"},
                 state_changing=state_changing,
                 redline_checked=redline_checked,
+                observation_lane=observation_outcome is not None,
             ))
     # A transport failure can happen before any response/request artifact is
     # published. Preserve the attempt as an unknown operation instead of
@@ -471,6 +479,8 @@ def _record_primary_execution(store: TargetStore, *, attempt_id: str, actor: str
     outcome = "unknown" if result == "partial" and not observations else (
         "partial" if result == "partial" else "complete"
     )
+    if observation_outcome is not None:
+        outcome = observation_outcome
     if result == "partial" and candidate and not any(
         (item["endpoint"], item["method"], item["family"]) ==
         (candidate["endpoint"], candidate["method"], candidate["family"])
@@ -479,20 +489,21 @@ def _record_primary_execution(store: TargetStore, *, attempt_id: str, actor: str
         candidate = None
     return store.record_execution(
         attempt_id=attempt_id, outcome=outcome, observations=observations,
-        candidate=candidate, actor=actor, finding_id=finding_id,
+        candidate=candidate, actor=actor, finding_id=finding_id, expected_operation=expected_operation,
     )
 
 
 def _sync_primary_store(summary: dict[str, Any], *, repo_root: Path, store: TargetStore) -> dict[str, Any]:
+    observation_lane = runner_summary_lane(summary) == "native_observation"
     attempt_id = str(summary.get("attempt_id") or "").strip()
     if not attempt_id:
         return {"status": "skipped", "reason": "no primary attempt"}
     result = str(summary.get("result") or "")
-    if result not in {"tested_finding", "tested_clean", "candidate", "dead_end", "partial"}:
+    if not observation_lane and result not in {"tested_finding", "tested_clean", "candidate", "dead_end", "partial"}:
         return {"status": "skipped", "reason": "non-execution result"}
     receipt = _record_primary_execution(
         store, attempt_id=attempt_id, actor=summary.get("command_actor", "validation-runner"),
-        started_at=str(summary.get("generated_at") or now_utc()), result=result,
+        started_at=str(summary.get("started_at") or summary.get("generated_at") or now_utc()), result=result,
         runs=list(summary.get("runs") or []),
         method=str(summary.get("method") or "GET").upper(),
         methods={
@@ -501,15 +512,29 @@ def _sync_primary_store(summary: dict[str, Any], *, repo_root: Path, store: Targ
             if isinstance((summary.get("request_pair") or {}).get(side), dict)
         },
         family=str(summary.get("vuln_class") or "runner-observation"),
-        native=str(summary.get("lane") or "") == "native_evidence",
+        native=observation_lane or str(summary.get("lane") or "") == "native_evidence",
         candidate=(_store_candidate(store, str(summary.get("finding_id") or "").strip())
-                   if not summary.get("cleanup_only") and any(run.get("artifacts") for run in (summary.get("runs") or []) if isinstance(run, dict))
+                   if not observation_lane and not summary.get("cleanup_only") and any(run.get("artifacts") for run in (summary.get("runs") or []) if isinstance(run, dict))
                    else None),
         finding_id=summary["finding_id"] if summary.get("cleanup_only") else None,
         state_changing=summary.get("state_changing"),
         redline_checked=bool(summary.get("redline_checked")),
         observed_at=str(summary.get("generated_at") or now_utc()),
+        expected_operation=summary.get("expected_operation") if observation_lane else None,
+        observation_outcome=summary.get("outcome") if observation_lane else None,
     )
+    if observation_lane:
+        operation_id = receipt["entity_id"]
+        execution = store.execution(operation_id)
+        registration_path = (_summary_path(summary, repo_root).parent / "registrations"
+                             / f"{operation_id.split(':')[-1]}.json")
+        registration = {"schema_version": 1, "summary_sha256": hashlib.sha256(_native_json(summary)).hexdigest(),
+                        "receipt": {key: value for key, value in receipt.items() if key != "replayed"}}
+        publish_bytes_create_only(registration_path, _native_json(registration))
+        return {"status": "deduplicated" if receipt.get("replayed") else "updated",
+                "operation_id": operation_id, "receipt": receipt,
+                "observation_refs": [f"{operation_id}:{row['step']}" for row in execution["observations"]],
+                "registration_receipt": _rel(registration_path, repo_root)}
     summary["store_operation_id"] = str(receipt.get("entity_id") or "")
     return {"status": "deduplicated" if receipt.get("replayed") else "updated",
             "operation_id": summary["store_operation_id"]}
@@ -517,6 +542,10 @@ def _sync_primary_store(summary: dict[str, Any], *, repo_root: Path, store: Targ
 
 def sync_runner_artifacts(summary: dict[str, Any], *, repo_root: Path) -> dict[str, Any]:
     """Register saved evidence atomically without replaying network actions."""
+    observation_lane = runner_summary_lane(summary) == "native_observation"
+    if observation_lane:
+        summary = {key: value for key, value in summary.items() if key not in {
+            "sync", "store_operation_id", "observation_refs", "registration_receipt"}}
     with _runner_admission(
         repo_root, str(summary.get("target") or ""), expected=summary.get("backend_binding"),
     ) as (store, _):
@@ -525,6 +554,14 @@ def sync_runner_artifacts(summary: dict[str, Any], *, repo_root: Path) -> dict[s
         if not summary.get("backend_binding"):
             raise StoreError("primary registration requires the execution backend binding")
         try:
+            if observation_lane:
+                raw, _ = read_target_artifact(repo_root, summary["target"], summary["summary_path"])
+                if raw != _native_json(summary):
+                    raise StoreError("immutable native observation summary changed")
+                if summary.get("browser_capture"):
+                    current = read_browser_observation_capture(repo_root, summary["target"], summary["browser_capture"]["capture_summary"])
+                    if current["network_source"] != summary["browser_capture"]["network_source"]:
+                        raise StoreError("browser capture baseline changed")
             if _artifact_bindings(summary, repo_root) != summary.get("artifact_bindings"):
                 raise StoreError("runner artifacts changed after publication; registration refused")
             receipt = _sync_primary_store(summary, repo_root=repo_root, store=store)
@@ -1430,6 +1467,207 @@ def record_native_evidence(
         return _finalize_runner_summary(summary, summary_path, repo_root, backend_binding=backend_binding)
 
 
+def _native_json(value: Any) -> bytes:
+    return (json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n").encode("utf-8")
+
+
+def _native_text(value: Any, field: str) -> str:
+    if not isinstance(value, str) or not value.strip() or "\x00" in value:
+        raise ValueError(f"native observation {field} must be nonempty text without NUL")
+    return value.strip()
+
+
+def _native_timestamp(value: Any, field: str) -> str:
+    stamp = datetime.fromisoformat(_native_text(value, field).replace("Z", "+00:00"))
+    if stamp.tzinfo is None:
+        raise ValueError(f"native observation {field} requires a timezone")
+    return stamp.astimezone(timezone.utc).isoformat()
+
+
+def _native_browser_envelope(repo_root: Path, target: str, capture_ref: str, execution: dict) -> tuple[dict, dict]:
+    allowed = {"schema_version", "target", "attempt_id", "source", "started_at", "family", "actor",
+               "object_scope", "variant", "state_changing", "redline_checked", "description", "steps"}
+    if not isinstance(execution, dict) or execution.keys() - allowed:
+        raise ValueError("browser execution metadata has unknown fields")
+    if "schema_version" in execution and (type(execution["schema_version"]) is not int or execution["schema_version"] != 1):
+        raise ValueError("browser execution metadata requires schema_version=1")
+    capture = read_browser_observation_capture(repo_root, target, capture_ref)
+    scope = load_scope_context(repo_root, target)
+    steps = execution.get("steps", [])
+    if not isinstance(steps, list):
+        raise ValueError("browser execution steps must be a list")
+    by_index = {}
+    for step in steps:
+        if (not isinstance(step, dict) or type(step.get("source_index")) is not int or step["source_index"] < 0
+                or step.keys() - {"source_index", "family", "actor", "object_scope", "variant",
+                                 "state_changing", "redline_checked", "description"}
+                or step["source_index"] in by_index):
+            raise ValueError("browser execution steps require unique original source_index and known facts")
+        by_index[step["source_index"]] = step
+    runs, diagnostics = [], list(capture["diagnostics"])
+    for raw in capture["runs"]:
+        if not url_belongs_to_target(raw["url"], target) or not scope.allows_active(raw["url"]):
+            diagnostics.append({"source_index": raw["source_index"], "error": "out_of_scope; retained in original capture"})
+            continue
+        facts = {key: execution[key] for key in ("family", "actor", "object_scope", "variant",
+                 "state_changing", "redline_checked", "description") if key in execution}
+        facts.update({key: value for key, value in by_index.pop(raw["source_index"], {}).items() if key != "source_index"})
+        runs.append({**raw, **facts})
+    if by_index:
+        raise ValueError("browser execution facts refer to missing or excluded source steps")
+    if not runs:
+        raise ValueError(f"browser capture has no admissible exact timed steps: {diagnostics}")
+    incomplete = diagnostics or any(run["missing"] or run["error"] or run["body_truncated"] for run in runs)
+    envelope = {key: execution[key] for key in ("target", "attempt_id", "source", "started_at", "family") if key in execution}
+    envelope.update(schema_version=1, kind="native-observation", outcome="partial" if incomplete else "complete", runs=runs)
+    return envelope, {key: value for key, value in capture.items() if key != "runs"} | {"diagnostics": diagnostics}
+
+
+def record_native_observation(
+    *, repo_root: Path, target: str, attempt_id: str,
+    evidence: dict[str, Any] | None = None, browser_capture_ref: str | None = None,
+    execution: dict[str, Any] | None = None, expected_operation: str | None = None,
+    action_id: str | None = None, claim_token: str | None = None,
+    command_actor: str = "validation-runner",
+) -> dict[str, Any]:
+    """Publish one no-verdict execution snapshot. Sync only registers; it never executes."""
+    repo_root = repo_root.resolve()
+    target = canonical_target_value(target)
+    with _runner_admission(repo_root, target) as (store, binding):
+        if not isinstance(attempt_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}", attempt_id):
+            raise ValueError("record-observation requires a bounded explicit attempt_id")
+        command_actor = _native_text(command_actor, "command actor")
+        if (action_id is None) != (claim_token is None):
+            raise ValueError("action_id and claim_token must be supplied together")
+        capture = None
+        if browser_capture_ref is not None:
+            if evidence is not None or execution is None:
+                raise ValueError("browser mode requires execution metadata, never another evidence envelope")
+            evidence, capture = _native_browser_envelope(repo_root, target, browser_capture_ref, execution)
+        elif execution is not None:
+            raise ValueError("execution-json is only for browser capture mode")
+        allowed = {"schema_version", "kind", "target", "attempt_id", "source", "started_at", "family", "outcome", "runs"}
+        if (not isinstance(evidence, dict) or evidence.keys() - allowed
+                or type(evidence.get("schema_version")) is not int or evidence["schema_version"] != 1
+                or evidence.get("kind") != "native-observation"):
+            raise ValueError("record-observation requires schema=1, kind=native-observation and no Finding/closure/verdict fields")
+        for key, value in (("target", target), ("attempt_id", attempt_id)):
+            if key in evidence and evidence[key] != value:
+                raise ValueError(f"native observation {key} conflicts with command")
+        source = _native_text(evidence.get("source"), "source")
+        started_at = _native_timestamp(evidence.get("started_at"), "started_at")
+        outcome = evidence.get("outcome")
+        raw_runs = evidence.get("runs")
+        if outcome not in {"complete", "partial", "unknown"} or not isinstance(raw_runs, list):
+            raise ValueError("native observation requires outcome complete/partial/unknown and ordered runs")
+        if not raw_runs and outcome != "unknown":
+            raise ValueError("only a genuinely unknown execution may have zero runs")
+        if expected_operation is not None:
+            predecessor = store.execution(expected_operation)
+            attempt = predecessor["attempt"]
+            if (attempt["id"], attempt["source"], attempt["started_at"]) != (attempt_id, source, started_at):
+                raise ValueError("predecessor attempt/source/started_at mismatch")
+            if action_id is not None and (action_id, claim_token) != (attempt["action_id"], attempt["claim_token"]):
+                raise ValueError("supplement cannot replace the original Action/claim association")
+            action_id, claim_token = attempt["action_id"], attempt["claim_token"]
+        scope = load_scope_context(repo_root, target)
+        pending_bytes: dict[Path, bytes] = {}
+        runs = []
+        artifact_dir = repo_root / ".private" / "validation" / target_storage_key(target) / "native-observations" / "artifacts"
+        run_fields = {"url", "method", "family", "observed_at", "description", "artifacts", "actor", "object_scope",
+                      "variant", "error", "body_truncated", "state_changing", "redline_checked"}
+        browser_fields = {"source_index", "provenance", "missing", "private_request", "private_response"} if capture else set()
+        for index, raw in enumerate(raw_runs):
+            if not isinstance(raw, dict) or raw.keys() - run_fields - browser_fields:
+                raise ValueError(f"native observation run {index} has unknown fields")
+            url = exact_endpoint_identity(_native_text(raw.get("url"), f"runs[{index}].url"))
+            method = _native_text(raw.get("method"), f"runs[{index}].method").upper()
+            if (any(char.isspace() for char in url) or not url_belongs_to_target(url, target)
+                    or not scope.allows_active(url) or not re.fullmatch(r"[A-Z][A-Z0-9_-]*", method)):
+                raise ValueError(f"native observation run {index} requires an exact target/Scope-owned HTTP URL and method")
+            family = raw.get("family", evidence.get("family", None if action_id else "runner-observation"))
+            family = normalize_family(_native_text(family, f"runs[{index}].family"))
+            observed_at = _native_timestamp(raw.get("observed_at"), f"runs[{index}].observed_at")
+            if datetime.fromisoformat(observed_at) < datetime.fromisoformat(started_at):
+                raise ValueError("native observation predates its execution attempt")
+            state = raw.get("state_changing")
+            checked, truncated = raw.get("redline_checked", False), raw.get("body_truncated", False)
+            if (state is not None and type(state) is not bool or type(checked) is not bool or type(truncated) is not bool):
+                raise ValueError("native execution facts must be boolean (state_changing may be null)")
+            _validate_request_facts(state, checked)
+            error = raw.get("error", "")
+            if not isinstance(error, str):
+                raise ValueError("native observation error must be text")
+            artifacts = raw.get("artifacts")
+            if not isinstance(artifacts, dict):
+                raise ValueError("native observation requires raw artifact references")
+            refs, hashes = {}, {}
+            for kind, value in artifacts.items():
+                if not isinstance(kind, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}", kind):
+                    raise ValueError("invalid artifact kind")
+                content, ref = read_target_artifact(repo_root, target, _native_text(value, "artifact ref"))
+                refs[kind], hashes[kind] = ref, hashlib.sha256(content).hexdigest()
+            if capture:
+                for side in ("request", "response"):
+                    if "private_" + side in raw:
+                        content = _native_json(raw["private_" + side])
+                        path = artifact_dir / (hashlib.sha256(content).hexdigest() + ".json")
+                        pending_bytes[path] = content
+                        refs[side], hashes[side] = _rel(path, repo_root), hashlib.sha256(content).hexdigest()
+            if "request" not in refs or outcome == "complete" and ("response" not in refs or error or truncated or raw.get("missing")):
+                raise ValueError("missing/truncated/error raw material requires partial/unknown, never complete")
+            identity = _native_json({"url_representation": "exact", "requested_url": url})
+            path = artifact_dir / (hashlib.sha256(identity).hexdigest() + ".json")
+            pending_bytes[path] = identity
+            refs["identity"], hashes["identity"] = _rel(path, repo_root), hashlib.sha256(identity).hexdigest()
+            run = {"url": url, "method": method, "family": family, "observed_at": observed_at,
+                   "description": _native_text(raw.get("description"), f"runs[{index}].description"),
+                   "artifacts": refs, "artifact_sha256": hashes, "error": error, "body_truncated": truncated,
+                   "state_changing": state, "redline_checked": checked,
+                   "actor": normalize_actor(_native_text(raw.get("actor", "unknown"), "HTTP actor")),
+                   "object_scope": normalize_object_scope(_native_text(raw.get("object_scope", "unknown"), "object scope")),
+                   "variant": normalize_variant(_native_text(raw.get("variant", "replay"), "variant"))}
+            if capture:
+                run.update(provenance=raw["provenance"], missing=raw["missing"])
+            runs.append(run)
+        summary = {"schema_version": 1, "kind": "native-observation", "lane": "native_observation",
+                   "target": target, "attempt_id": attempt_id, "source": source, "started_at": started_at,
+                   "outcome": outcome, "result": "", "runs": runs, "command_actor": command_actor,
+                   "expected_operation": expected_operation, "action_id": action_id, "claim_token": claim_token,
+                   "backend_binding": binding}
+        if capture:
+            summary["browser_capture"] = capture
+        summary["artifact_bindings"] = sorted(
+            [{"kind": kind, "ref": ref, "sha256": run["artifact_sha256"][kind]} for run in runs
+             for kind, ref in run["artifacts"].items()], key=lambda item: (item["kind"], item["ref"]))
+        # _artifact_bindings deduplicates the same material used by several steps.
+        summary["artifact_bindings"] = list({(item["kind"], item["ref"]): item for item in summary["artifact_bindings"]}.values())
+        material_id = hashlib.sha256(_native_json(summary)).hexdigest()
+        attempt_key = hashlib.sha256(attempt_id.encode()).hexdigest()
+        summary_path = repo_root / "evidence" / target_storage_key(target) / "native-observations" / attempt_key / material_id / "summary.json"
+        summary["summary_path"] = _rel(summary_path, repo_root)
+        command = ["python3", str(repo_root / "tools/validation_runner.py"), "record-observation", "--repo-root", str(repo_root),
+                   "--target", target, "--attempt-id", attempt_id, "--summary-json", str(summary_path), "--actor", command_actor, "--json"]
+        if expected_operation:
+            command += ["--expected-operation", expected_operation]
+        summary["registration_retry_command"] = shlex.join(command)
+        pending_bytes[summary_path] = _native_json(summary)
+        # Reject known byte conflicts before mutating the attempt owner.
+        for path, content in pending_bytes.items():
+            if path.is_symlink() or any(parent.is_symlink() for parent in path.parents):
+                raise ValueError(f"linked immutable native material: {path}")
+            if path.exists() and read_target_artifact(repo_root, target, _rel(path, repo_root))[0] != content:
+                raise ValueError(f"immutable native material conflict: {path}")
+        if expected_operation is None:
+            store.start_attempt(attempt_id=attempt_id, source=source, started_at=started_at, actor=command_actor,
+                                action_id=action_id, claim_token=claim_token)
+        if runs:
+            private_artifact_dir(repo_root, "validation", target_storage_key(target), "native-observations/artifacts")
+        for path, content in pending_bytes.items():
+            publish_bytes_create_only(path, content)
+        return summary
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run deterministic validation evidence lanes")
     sub = parser.add_subparsers(dest="lane", required=True)
@@ -1481,6 +1719,21 @@ def build_parser() -> argparse.ArgumentParser:
     add_request_facts(record)
     record.add_argument("--json", action="store_true")
 
+    observation = sub.add_parser("record-observation", help="Register a no-verdict native observation without a Finding or network execution")
+    observation.add_argument("--target", required=True)
+    observation.add_argument("--repo-root", default=str(BASE_DIR))
+    observation.add_argument("--attempt-id", required=True)
+    observation.add_argument("--actor", default="validation-runner", help="Registration operator, not the observed HTTP actor")
+    inputs = observation.add_mutually_exclusive_group(required=True)
+    inputs.add_argument("--evidence-json", help="schema=1 kind=native-observation envelope")
+    inputs.add_argument("--browser-capture-ref", help="Target-owned capture summary with an original-byte baseline")
+    inputs.add_argument("--summary-json", help="Retry registration of an already published immutable summary only")
+    observation.add_argument("--execution-json", help="Original execution source/started_at and declared browser step facts")
+    observation.add_argument("--expected-operation", help="Original predecessor for a full-snapshot supplement/retry")
+    observation.add_argument("--action-id")
+    observation.add_argument("--claim-token")
+    observation.add_argument("--json", action="store_true")
+
     return parser
 
 
@@ -1488,7 +1741,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     identity_v2: dict[str, Any] | None = None
-    if args.identity_v2_json:
+    if getattr(args, "identity_v2_json", ""):
         try:
             payload = json.loads(args.identity_v2_json)
             try:
@@ -1501,7 +1754,37 @@ def main(argv: list[str] | None = None) -> int:
     repo_root = Path(args.repo_root)
     try:
         with _runner_admission(repo_root, args.target) as (store, _):
-            if args.lane == "request-diff":
+            if args.lane == "record-observation":
+                if args.summary_json:
+                    if args.execution_json:
+                        raise ValueError("summary registration retry cannot supply new execution metadata")
+                    raw, _ = read_target_artifact(repo_root, args.target, args.summary_json)
+                    summary = json.loads(raw.decode("utf-8"))
+                    if runner_summary_lane(summary) != "native_observation":
+                        raise ValueError("summary-json requires an immutable native observation summary")
+                    for key, expected in (("target", canonical_target_value(args.target)), ("attempt_id", args.attempt_id),
+                                          ("command_actor", args.actor), ("expected_operation", args.expected_operation)):
+                        if summary.get(key) != expected:
+                            raise ValueError(f"saved-summary retry must retain original {key}")
+                    if (args.action_id is None) != (args.claim_token is None):
+                        raise ValueError("action-id/claim-token must be supplied together")
+                    if args.action_id is not None and (args.action_id, args.claim_token) != (summary.get("action_id"), summary.get("claim_token")):
+                        raise ValueError("saved-summary retry cannot change original claim association")
+                else:
+                    evidence = json.loads(Path(args.evidence_json).read_text(encoding="utf-8")) if args.evidence_json else None
+                    execution = json.loads(Path(args.execution_json).read_text(encoding="utf-8")) if args.execution_json else None
+                    summary = record_native_observation(repo_root=repo_root, target=args.target, attempt_id=args.attempt_id,
+                        evidence=evidence, browser_capture_ref=args.browser_capture_ref, execution=execution,
+                        expected_operation=args.expected_operation, action_id=args.action_id, claim_token=args.claim_token,
+                        command_actor=args.actor)
+                sync = sync_runner_artifacts(summary, repo_root=repo_root)
+                saved = sync.get("store") or {}
+                output = {**summary, "sync": sync, "store_operation_id": saved.get("operation_id"),
+                          "observation_refs": saved.get("observation_refs", []),
+                          "registration_receipt": saved.get("registration_receipt")}
+                print(json.dumps(output, ensure_ascii=False, indent=2))
+                return 1 if sync["status"] == "partial" or summary["outcome"] != "complete" else 0
+            elif args.lane == "request-diff":
                 auth_session = session_from_args(args).bind_target(args.target)
                 try:
                     request_spec = json.loads(Path(args.request_spec).read_text(encoding="utf-8"))
@@ -1556,7 +1839,7 @@ def main(argv: list[str] | None = None) -> int:
             # --json is accepted for CLI symmetry; the default output is already the
             # machine-readable summary JSON (no human-only trailing block exists).
             return 1 if summary.get("result") == "partial" or (summary.get("sync") or {}).get("status") == "partial" else 0
-    except StoreError as exc:
+    except (OSError, ValueError, StoreError) as exc:
         print(f"validation-runner: {exc}", file=sys.stderr)
         return 2
 
