@@ -96,9 +96,9 @@ partial/unknown、原件变化与零网络重放；既有 Finding/cleanup 路径
 相关已有回归：`tests/test_validation_runner.py`、`tests/test_browser_analysis_fidelity.py`、
 `tests/test_target_store.py::test_unknown_external_effect_can_be_supplemented_without_reexecution`。
 本次完整临时验收矩阵与回执见
-[实施记录](../../../tasks/10-14-6k-full-integration/research/implementation-progress-2026-10-16.md)、
-[A6](../../../tasks/10-14-6k-full-integration/research/a6-acceptance-2026-10-17.md) 和
-[B6](../../../tasks/10-14-6k-full-integration/research/b6-cutover-2026-10-17.md)；不新增项目测试设施。
+[实施记录](../../../tasks/archive/2026-10/10-14-6k-full-integration/research/implementation-progress-2026-10-16.md)、
+[A6](../../../tasks/archive/2026-10/10-14-6k-full-integration/research/a6-acceptance-2026-10-17.md) 和
+[B6](../../../tasks/archive/2026-10/10-14-6k-full-integration/research/b6-cutover-2026-10-17.md)；不新增项目测试设施。
 
 ## 7. Wrong vs Correct
 

@@ -1,0 +1,13 @@
+{
+  "directory": "/root/.local/state/ccst-recovery/6k-full-integration/20261017T024100Z-a6-XQES5z",
+  "archive": "/root/.local/state/ccst-recovery/6k-full-integration/20261017T024100Z-a6-XQES5z/a6-supplement.tar.gz",
+  "sha256": "d489a35338cced506354736cb9d16c12a65921ff8047ba0182a6cc9dd864a359",
+  "manifest": "/root/.local/state/ccst-recovery/6k-full-integration/20261017T024100Z-a6-XQES5z/manifest.json",
+  "members": 198,
+  "verification": "/root/.local/state/ccst-recovery/6k-full-integration/20261017T024100Z-a6-XQES5z/verification.json",
+  "status": "passed",
+  "manifest_sha256": "ec6c54fc608d8e6ee88d2f6149a2ec35b0bdd4c3d976c7d26ad4ffd9cc7e0c46",
+  "verified_at": "2026-10-17T02:41:29.553198+00:00",
+  "C_published": false,
+  "base_candidate_unchanged": true
+}

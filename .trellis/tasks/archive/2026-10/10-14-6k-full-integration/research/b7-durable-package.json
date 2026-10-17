@@ -1,0 +1,88 @@
+{
+  "status": "passed",
+  "archive": "/root/.local/state/ccst-recovery/6k-full-integration/20261017T040325Z-b7-C/b7-delivery.tar.gz",
+  "sha256": "ff28e5605740998851d59e514eb55c2442379aeea41d6568cf3e11c7f1700fc6",
+  "bytes": 6766237,
+  "regular_members": 939,
+  "inventory": "/root/.local/state/ccst-recovery/6k-full-integration/20261017T040325Z-b7-C/b7-delivery-inventory.json",
+  "inventory_sha256": "23f62a9f0596b8d01cba479dede023b97e092e92de9cbb514f234fca34caac2c",
+  "readback": "/tmp/ccst-6k-accept-XQES5z/b7/delivery-readback",
+  "readback_verified": [
+    "bytes",
+    "sha256",
+    "mode",
+    "uid",
+    "gid"
+  ],
+  "prerequisite_tree": "a216a4bf15a03d8956e8a446e4bfcb0299dadb86",
+  "integration_tree": "d59dfb26e48f8942d65e08d25410bb4f56dd5ba0",
+  "publication": {
+    "at": "20261017T040325Z",
+    "C": "/root/tool/ccst(rename-_Ya66f2)/ccst3/ccst",
+    "durable": "/root/.local/state/ccst-recovery/6k-full-integration/20261017T040325Z-b7-C",
+    "path": "tools/hot_method.py",
+    "before": {
+      "sha256": "f69fc8d9b7bd988a7fd7c8d519a59acc54f239eff618af36b3207f927e37fe80",
+      "mode": 33188,
+      "uid": 0,
+      "gid": 0,
+      "dev": 2049,
+      "ino": 846036
+    },
+    "after_sha256": "8240360cd86d236152f9c647abf6abc6df0df6bb583e1fe904302ce0107b2c4e",
+    "authorization": "User approved B7 portable-read and prerequisite closure; no runtime deployment, method/log mutation or Git commit in this operation.",
+    "status": "published",
+    "protected_unchanged": 677,
+    "after_identity": {
+      "dev": 2049,
+      "ino": 846530
+    }
+  },
+  "validation": {
+    "delivery": {
+      "completed_assertions": 37,
+      "final_log_line": "{\"status\": \"passed\", \"cases\": 37}",
+      "python_exit_status": "not_captured",
+      "wrapper_error": "zsh read-only variable: status; after Python completion marker. No product failure. Corrected later command wrapper to bash and rc."
+    },
+    "cleanup": {
+      "passed": 8,
+      "exit": 0
+    },
+    "existing_regressions": {
+      "passed": 6,
+      "exit": 0
+    },
+    "fixture_failures": [
+      "incorrect expected witness-error substring; corrected without product change",
+      "record_native_evidence returns unsynced summary; added real sync_runner_artifacts before consuming operation receipt"
+    ]
+  },
+  "final_checks": {
+    "status": "passed",
+    "protected_product_paths": 677,
+    "preview_files_unchanged": 674,
+    "head_and_index_unchanged": true,
+    "reader_diff_check": "passed (no whitespace diagnostics)",
+    "renderer": [
+      {
+        "role": "implement",
+        "bytes": 130800,
+        "headroom": 272,
+        "complete_files": 9
+      },
+      {
+        "role": "check",
+        "bytes": 130792,
+        "headroom": 280,
+        "complete_files": 9
+      }
+    ]
+  },
+  "limitations": [
+    "Not a transplant of local inode/recovery identity",
+    "Excludes synthetic runtime/target fixtures and local b6-inputs payloads",
+    "C HEAD/index unchanged; commits and task archival still await confirmation",
+    "Receipt is adjacent to the archive, not a self-referential archive member"
+  ]
+}

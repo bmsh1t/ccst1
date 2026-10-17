@@ -1,0 +1,1232 @@
+{
+  "status": "confirmed_work_commits_complete_task_archived",
+  "head": "99a653b14ece0f925a625c8645a690aaa8a7a218",
+  "source_task": ".trellis/tasks/archive/2026-10/10-14-6k-full-integration",
+  "archive_task": ".trellis/tasks/archive/2026-10/10-14-6k-full-integration",
+  "commits": [
+    {
+      "message": "fix: bind cleanup verification to report publication",
+      "tree": "a216a4bf15a03d8956e8a446e4bfcb0299dadb86",
+      "files": [
+        {
+          "path": ".trellis/spec/backend/contracts/validation-evidence.md",
+          "mode": "100644",
+          "blob": "a5826541418642c8388ccb644d2b654f801743b1",
+          "sha256": "f64af248ddb31b26ce1417fb9f8e77cff0934223084f34df17ff776350dd4bc6"
+        },
+        {
+          "path": "docs/tool-index.md",
+          "mode": "100644",
+          "blob": "805f9d9210e4b1b7b1361b8bed5f8ff1f34f31b5",
+          "sha256": "06d72c29906f9a8b5f103b2ff9adc20799c85f02d9d46e7e8f42fee0805d6954"
+        },
+        {
+          "path": "tools/report_generator.py",
+          "mode": "100644",
+          "blob": "d2688be5ad2ac7a1c7397fa07811e27fe8c05f7a",
+          "sha256": "aba3d8107255dd4d1b3fea8a52d3c6d1d1ec449073b8d1041770a580206c5403"
+        },
+        {
+          "path": "tools/target_store.py",
+          "mode": "100644",
+          "blob": "9bae48f06dff498ac12c71303f26f78d16d9e9d0",
+          "sha256": "3ca2ad6c77b02758c24b47f7c046afab82341548b8e02ab23ae0ebb05f6ce63d"
+        },
+        {
+          "path": "tools/validate.py",
+          "mode": "100644",
+          "blob": "549d4a9285e113bdd5901355900bccd92ec392cf",
+          "sha256": "cd31d925bcc25267167986bc76859b8711aa5e3c007710e7c49e16ad70cec2b7"
+        },
+        {
+          "path": "tools/validation_runner.py",
+          "mode": "100644",
+          "blob": "7c8fba39a6f56ebd575c6673d03eb31799b9b6cc",
+          "sha256": "c1f4462b57664ce426cfa532653f97eccc3a3960df23395915fa7eda1e575ba2"
+        }
+      ]
+    },
+    {
+      "message": "feat: integrate versioned 6k methods and native observations",
+      "tree": "d59dfb26e48f8942d65e08d25410bb4f56dd5ba0",
+      "files": [
+        {
+          "path": ".trellis/spec/backend/contracts/hot-method-native-observation.md",
+          "mode": "100644",
+          "blob": "22874034a8a972bdeb5804a75899af2a9e83d651",
+          "sha256": "a0943b516a2fc06b57aef60da09a8832cb3541b3549b3aec32f15696bb8d4ee4"
+        },
+        {
+          "path": ".trellis/spec/backend/contracts/recon-surface.md",
+          "mode": "100644",
+          "blob": "7886ceb3be8498a88e1c2bd3d9119dde93e2c7ee",
+          "sha256": "7457d191bfa50dc95c7206d780f3d5d9bac88f4baeaa88e29f4a9c5441d24fda"
+        },
+        {
+          "path": ".trellis/spec/backend/index.md",
+          "mode": "100644",
+          "blob": "cffcf5a9dc14a1edb5d768a2656e50fc94beb573",
+          "sha256": "eebb4c480e6d3c7304b9d40c05249165d25d4161314e64df276d75e9827c52e3"
+        },
+        {
+          "path": "CLAUDE.md",
+          "mode": "100644",
+          "blob": "3900c54aed04eab13da3983021acced89015eeba",
+          "sha256": "2e4527dfbaed3bb00a4bbdb272de771c20b1360873f729709ea32afa1788677e"
+        },
+        {
+          "path": "commands/autopilot.md",
+          "mode": "100644",
+          "blob": "d69ceeddb596f01ad82fa741b2cd37b7435b312e",
+          "sha256": "b38cdbe5093a5385097b24f1d29fe07ff7d86dd0fef5de455d516dd550b1e57b"
+        },
+        {
+          "path": "commands/context-pack.md",
+          "mode": "100644",
+          "blob": "e73f1754e0929056e761a5b5781c1b364f89c608",
+          "sha256": "f7b7df1bb5b5abe9f9e1179f2622ff5dfdffd925f8a36f3661323618a46b1dd6"
+        },
+        {
+          "path": "commands/hunt.md",
+          "mode": "100644",
+          "blob": "424c67ac2bd1e4db49921f01f24caf81ad1dae3e",
+          "sha256": "6b4dc9f773ffc0d2ec393570ec9af1f0a5413c5a9f9b98e444ad0b0f82aefbb3"
+        },
+        {
+          "path": "docs/evidence-runners.md",
+          "mode": "100644",
+          "blob": "37afe3958b16556669d0c14156ae07d9edb16efd",
+          "sha256": "b177c19f95846614bb15205d7b099506e503da8341687ad1f9f24e111645e485"
+        },
+        {
+          "path": "docs/tool-index.md",
+          "mode": "100644",
+          "blob": "7aaf68aa06033b947ae5f5bce52a8fdea0809b44",
+          "sha256": "3c75f02b93f553f7b45acb57330e8a39d5003b48321a207bb0d82435e862a619"
+        },
+        {
+          "path": "knowledge/clown-hot-method-manifest.json",
+          "mode": "100644",
+          "blob": "e571b721f66d7c75b249265504b489ecc660eeb2",
+          "sha256": "2cdd38b1b507c2fbf4aefb06b9d71c514cd417172cb3ff556287cb16b6415b06"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/05406fe56ee547525daa770676179e2b711a28c1c6a4820e30ec40f57e1fc605",
+          "mode": "100644",
+          "blob": "545f6e7dcf354f748a8aee94de3feb20ba9fdad5",
+          "sha256": "05406fe56ee547525daa770676179e2b711a28c1c6a4820e30ec40f57e1fc605"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/065b40171213d250f9343a7dd34d402d064e98d322ab1529325b0691164708c3",
+          "mode": "100644",
+          "blob": "c9f8b5d27201a31aa4b68e0ed2365f966ed67696",
+          "sha256": "065b40171213d250f9343a7dd34d402d064e98d322ab1529325b0691164708c3"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/08ae1f121fe085ab7e3bc9c4534a03c39cc5a44f20e2bb2266cd9d3dde17840e",
+          "mode": "100644",
+          "blob": "11456600ce543740f55f1bb38514db7bd947a5bc",
+          "sha256": "08ae1f121fe085ab7e3bc9c4534a03c39cc5a44f20e2bb2266cd9d3dde17840e"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/08de61c8fe54723e9d2e1ccfc31b1d298c7a517ce1732c84dc21e42e76c4ce59",
+          "mode": "100644",
+          "blob": "4b9da5f6f28102e4ff2bfdf49acc46ce88c9d2b1",
+          "sha256": "08de61c8fe54723e9d2e1ccfc31b1d298c7a517ce1732c84dc21e42e76c4ce59"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/0a80802df4ae4699dc494f16278bd617347f99d194132f647543aa5ef582fd79",
+          "mode": "100644",
+          "blob": "98fe902c6956a049f7e2648db56b0d0f56c58d29",
+          "sha256": "0a80802df4ae4699dc494f16278bd617347f99d194132f647543aa5ef582fd79"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/0a8e87c99af2f7d225665ff0caed7e0e0dc1f011134fee252a5982bbae6fa902",
+          "mode": "100644",
+          "blob": "0d67957e969aaabe8bf903bc8c55d1c5297aaece",
+          "sha256": "0a8e87c99af2f7d225665ff0caed7e0e0dc1f011134fee252a5982bbae6fa902"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/0e4add99d45d28a52d97adad152f9738ea7eeccfbf0558340ff95aaeab698d7b",
+          "mode": "100644",
+          "blob": "b35acfda575c325afabe01f29cbdb77cb399062f",
+          "sha256": "0e4add99d45d28a52d97adad152f9738ea7eeccfbf0558340ff95aaeab698d7b"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/10035d1fc3aa3aa8d3ebc996237770f368101769b46c0d42eb0286be8c284c60",
+          "mode": "100644",
+          "blob": "ceb1391709154012658e4368ad7f34bed3752d99",
+          "sha256": "10035d1fc3aa3aa8d3ebc996237770f368101769b46c0d42eb0286be8c284c60"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/10b4c4eed53ed720d9ae369fd36e8cdb525de7092bf84eae66cc96da4af0e53a",
+          "mode": "100644",
+          "blob": "afd568e46682b97c59ae3722211524982f47c5a0",
+          "sha256": "10b4c4eed53ed720d9ae369fd36e8cdb525de7092bf84eae66cc96da4af0e53a"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/1f358b0a61003d802d83045bec42ee10332414dd2e7842bff6923d2a9b7787e1",
+          "mode": "100644",
+          "blob": "e2b5ed64a4a1ec1567c74fa620f36749a1d50051",
+          "sha256": "1f358b0a61003d802d83045bec42ee10332414dd2e7842bff6923d2a9b7787e1"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/21f245c9d9ea46ee011f0ab4423a7767d6da787b051d50f521a2cb40cbd86fbc",
+          "mode": "100644",
+          "blob": "62b263f3f7ddc099320efd5a2bcdc4d56b791e7d",
+          "sha256": "21f245c9d9ea46ee011f0ab4423a7767d6da787b051d50f521a2cb40cbd86fbc"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/2c8e033265c051e7c2638cc580c4a332b423eb77f5b996824b6406738cc47f9c",
+          "mode": "100644",
+          "blob": "aed25a07369c39056941894579140222ea9fc6c7",
+          "sha256": "2c8e033265c051e7c2638cc580c4a332b423eb77f5b996824b6406738cc47f9c"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/2cdd38b1b507c2fbf4aefb06b9d71c514cd417172cb3ff556287cb16b6415b06",
+          "mode": "100644",
+          "blob": "e571b721f66d7c75b249265504b489ecc660eeb2",
+          "sha256": "2cdd38b1b507c2fbf4aefb06b9d71c514cd417172cb3ff556287cb16b6415b06"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/2f30e8e8148aa56dd4c0b1ed86f9f4af5fe13f282cf755a6c6ec3d96d4be2ca4",
+          "mode": "100644",
+          "blob": "99ae4a24a4d8007df3c5376e2a8f004489ae5ef3",
+          "sha256": "2f30e8e8148aa56dd4c0b1ed86f9f4af5fe13f282cf755a6c6ec3d96d4be2ca4"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/2fa0ed1bb7e985d0617b407ec2ad151de032dcdcb137874588314f6ed4c92caa",
+          "mode": "100644",
+          "blob": "f592ea3b35655a541c6f96cfccc32c23cea657ce",
+          "sha256": "2fa0ed1bb7e985d0617b407ec2ad151de032dcdcb137874588314f6ed4c92caa"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/33e8e31d761ccc6b4cba7e306a39bbae9c2522b6b7964de3bdb47340aa82d301",
+          "mode": "100644",
+          "blob": "8250165e1682c247413c1f76d341c9568b032899",
+          "sha256": "33e8e31d761ccc6b4cba7e306a39bbae9c2522b6b7964de3bdb47340aa82d301"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/370dd6c3e77de3b229bda26723e367329a76cf4edc06230ac96aa37822e36db0",
+          "mode": "100644",
+          "blob": "70f289133add28217d68930f9e9f64069807ae7c",
+          "sha256": "370dd6c3e77de3b229bda26723e367329a76cf4edc06230ac96aa37822e36db0"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/381b96d0aff5b71cb45d54f2267be974ab9d85c88e356c542ae4147af011d5c7",
+          "mode": "100644",
+          "blob": "ba832564d6d9ae66d99696b4e91e80d5b6fec3c4",
+          "sha256": "381b96d0aff5b71cb45d54f2267be974ab9d85c88e356c542ae4147af011d5c7"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/392fb2fa3da3ceb20f441c1fce9bab43c1192733e20592e894e2a344f0adbfed",
+          "mode": "100644",
+          "blob": "fce401a0fc4caff8308e1429cd0e343e3bf35611",
+          "sha256": "392fb2fa3da3ceb20f441c1fce9bab43c1192733e20592e894e2a344f0adbfed"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/3e67d60ea8624e5688c77ba8b1ae47eaf3515f9d262829fb34682fae1c986f76",
+          "mode": "100644",
+          "blob": "8eb28398b3ac0c28ea55999611bc26eec9a4d158",
+          "sha256": "3e67d60ea8624e5688c77ba8b1ae47eaf3515f9d262829fb34682fae1c986f76"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/4332b12f1baf732bd8ad72b71f316c4c3c5ec43b5e2c42d371e2d1f81044e84f",
+          "mode": "100644",
+          "blob": "1ebaf6ee3a9a2fea0245eaf86fde1e1d97c0f991",
+          "sha256": "4332b12f1baf732bd8ad72b71f316c4c3c5ec43b5e2c42d371e2d1f81044e84f"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/4ff4ed9016fc6691378d461a2dd8ae0d430822a2e222479de3e4fdbc92807761",
+          "mode": "100644",
+          "blob": "4bd736a25f84cceaa7eaccb13ffed82f0ef927f8",
+          "sha256": "4ff4ed9016fc6691378d461a2dd8ae0d430822a2e222479de3e4fdbc92807761"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/526455cbbdf505bba5b976f3bb5df99eabdc5f7551b453621a051ea6bc77cc3a",
+          "mode": "100644",
+          "blob": "91a0a7131cf5af00987bc1640f8a8afcb5fb87f1",
+          "sha256": "526455cbbdf505bba5b976f3bb5df99eabdc5f7551b453621a051ea6bc77cc3a"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/54e2c0ebf4ba81c82533467f48209e92bbb0b2d9edfcec1d6966433cfe47fc81",
+          "mode": "100644",
+          "blob": "4c093861d22d6210f4eb3a88eebb202c5e7f5d44",
+          "sha256": "54e2c0ebf4ba81c82533467f48209e92bbb0b2d9edfcec1d6966433cfe47fc81"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/556d36d9edec4ef0071e177bc45d2107560dda0526c314056f1f2294815b9374",
+          "mode": "100644",
+          "blob": "fa9b357cc5bf2717b6e15cfffe35b257c9e3b4c6",
+          "sha256": "556d36d9edec4ef0071e177bc45d2107560dda0526c314056f1f2294815b9374"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/56f51b9aa7c754c76c5535fb7efc0a081b3fe99c965a974285f46fee6d016ac3",
+          "mode": "100644",
+          "blob": "38aba13518af71dcef87d58d4b49718560e1f29c",
+          "sha256": "56f51b9aa7c754c76c5535fb7efc0a081b3fe99c965a974285f46fee6d016ac3"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/57dff989bc482a1f8690dd10f95668817569748f2f777a24eb777fb73d468b45",
+          "mode": "100644",
+          "blob": "d78be0edad96ecc4546e6ccc96e1545db432329e",
+          "sha256": "57dff989bc482a1f8690dd10f95668817569748f2f777a24eb777fb73d468b45"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/5841817a47530b59abee73319782c3cefbfa66a6374ad2e73d58ccadac8ff87e",
+          "mode": "100644",
+          "blob": "a1750f29284ed4629a2eec5c675a14e55735ebb5",
+          "sha256": "5841817a47530b59abee73319782c3cefbfa66a6374ad2e73d58ccadac8ff87e"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/585b3bcfae74a90ea8ac54bb005d19830ca27a217f7f65a92abbef6129c1b163",
+          "mode": "100644",
+          "blob": "c2ccf6f23b975936e233829bbf9ee74bb2920374",
+          "sha256": "585b3bcfae74a90ea8ac54bb005d19830ca27a217f7f65a92abbef6129c1b163"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/589ebdc0b1504d02ab453b465913248dc1a19a47e544d91315e8be2aa343cf61",
+          "mode": "100644",
+          "blob": "761779b112f96b3241f37dd4a84e02603bac454d",
+          "sha256": "589ebdc0b1504d02ab453b465913248dc1a19a47e544d91315e8be2aa343cf61"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/5ef3f8edf6c29f52f31f774e8c6b7f6e64e0483227596fdf8d3ffb246b3684f7",
+          "mode": "100644",
+          "blob": "1a612fbf54341cdc761e43b7c4f69d4800fbb90d",
+          "sha256": "5ef3f8edf6c29f52f31f774e8c6b7f6e64e0483227596fdf8d3ffb246b3684f7"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/5f462d0af83186fc0e8931cf73c79c8593e18bb0534728dcc96e3b6491b93978",
+          "mode": "100644",
+          "blob": "8b20e69dc5abeef9abcee0bc9a5b07f6f3d735b6",
+          "sha256": "5f462d0af83186fc0e8931cf73c79c8593e18bb0534728dcc96e3b6491b93978"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/5f4ecec512bcabac72ec0f5301b9794998e982ccb7007ccb2ebeeb584332a621",
+          "mode": "100644",
+          "blob": "364c740def89a37a4f5165179b77523d4631aae4",
+          "sha256": "5f4ecec512bcabac72ec0f5301b9794998e982ccb7007ccb2ebeeb584332a621"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/5f96f225fe066b7b768b6e221177bc6f445a47fb9cc018ebb4b1281ad4058cb7",
+          "mode": "100644",
+          "blob": "76ec8d206716f510e8984f9641c95a9a10f0ffd1",
+          "sha256": "5f96f225fe066b7b768b6e221177bc6f445a47fb9cc018ebb4b1281ad4058cb7"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/614ed0f3146dd7911d70df781a2e68aea81210091dcae68bcc27e36da0a15086",
+          "mode": "100644",
+          "blob": "0753e58ddda71a0dc0e858f602453db2e8e7e67b",
+          "sha256": "614ed0f3146dd7911d70df781a2e68aea81210091dcae68bcc27e36da0a15086"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/63c2fc45e98b209825f61a15116df62ed2734be73a051e23519889ea279f44d1",
+          "mode": "100644",
+          "blob": "9c90d9514e8375ec6107b895fa4e96ee5d0fae14",
+          "sha256": "63c2fc45e98b209825f61a15116df62ed2734be73a051e23519889ea279f44d1"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/693ecdea4f4ab7fe4e12a808d4cb3d516a0bea356ff4301595f6043024d6809c",
+          "mode": "100644",
+          "blob": "bdc69d65f09bc52eeb01f736bbcac14f98f55343",
+          "sha256": "693ecdea4f4ab7fe4e12a808d4cb3d516a0bea356ff4301595f6043024d6809c"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/6da34fdeaba068f2036d23587f263578f8db1c514169454a727d65b07df2ec1f",
+          "mode": "100644",
+          "blob": "ea94681da570516971d38b0e7f5d74e3541c2f37",
+          "sha256": "6da34fdeaba068f2036d23587f263578f8db1c514169454a727d65b07df2ec1f"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/6f528cc3f2ceaf4a88b88e03a61d0da88a117ee18f5ca9d88ff35609458dee78",
+          "mode": "100644",
+          "blob": "a10014fbf62d56a13e851c69363b8b541a449595",
+          "sha256": "6f528cc3f2ceaf4a88b88e03a61d0da88a117ee18f5ca9d88ff35609458dee78"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/715e7e3090c4395894c3e60b5b46059859bcd8be1e5b8216b9deff9731414792",
+          "mode": "100644",
+          "blob": "9a95a8b8cfadd811fb0cc3523d003978f530f2d4",
+          "sha256": "715e7e3090c4395894c3e60b5b46059859bcd8be1e5b8216b9deff9731414792"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/7369e711ae4f435d482ff34a510789b931a0fe5f4cb94516bd543fb4c4fd1fa8",
+          "mode": "100644",
+          "blob": "feaf520d7cffa0379e77d7799b2b3c8bfe20b848",
+          "sha256": "7369e711ae4f435d482ff34a510789b931a0fe5f4cb94516bd543fb4c4fd1fa8"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/7e7c7c8e1d3e256944065beb5df9da1fe6141ca97278ed98d996585b05890b48",
+          "mode": "100644",
+          "blob": "4bb0bd33d4f4edd296cc70a26756506c785e2104",
+          "sha256": "7e7c7c8e1d3e256944065beb5df9da1fe6141ca97278ed98d996585b05890b48"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/864302d8f30cc036e344ec22b88e2ed3c811d84be938abb9687eb51cebe171c0",
+          "mode": "100644",
+          "blob": "a49ddd63725eb3d286cb81e9fa73058e0dfce083",
+          "sha256": "864302d8f30cc036e344ec22b88e2ed3c811d84be938abb9687eb51cebe171c0"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/8643db8ee91f6456774ce1d80dfb5043559a6945824eeddbff65c79bf4198015",
+          "mode": "100644",
+          "blob": "2688da76090db92a346e8ff5fd0789e35de3ff51",
+          "sha256": "8643db8ee91f6456774ce1d80dfb5043559a6945824eeddbff65c79bf4198015"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/87d724c710ac21920755af7e59caee87cefc416bf59daedf3b7f2aeb954b18fa",
+          "mode": "100644",
+          "blob": "e7d6cf2076c49163b95d43e87358a0312729cdb4",
+          "sha256": "87d724c710ac21920755af7e59caee87cefc416bf59daedf3b7f2aeb954b18fa"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/8e5356c6f605930e2b82f32d3b559dbf2067182528083dd74cf9a815f1c4d137",
+          "mode": "100644",
+          "blob": "ac45b2449bcfff14fb8b073980b5773a76fcfb3c",
+          "sha256": "8e5356c6f605930e2b82f32d3b559dbf2067182528083dd74cf9a815f1c4d137"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/93685252dceac6f050e61dc86ee09f28c55dcc4355ca9e6cae5288c3b848f6db",
+          "mode": "100644",
+          "blob": "fe1dbdf5c6a0d78ef04e0cc0222027012bbfd4fe",
+          "sha256": "93685252dceac6f050e61dc86ee09f28c55dcc4355ca9e6cae5288c3b848f6db"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/937764587e4958655867b020f7dd20f10e53a95346aeabf91815a6268f470e62",
+          "mode": "100644",
+          "blob": "fe3d2117fdd242836fb5615d9a10ac3c338a3e86",
+          "sha256": "937764587e4958655867b020f7dd20f10e53a95346aeabf91815a6268f470e62"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/a1e1430f2274c2ef94d510f4474028c0ed079133887506907252d4aba6404992",
+          "mode": "100644",
+          "blob": "de24af836f40d402fd300d9f681476d2ac668f64",
+          "sha256": "a1e1430f2274c2ef94d510f4474028c0ed079133887506907252d4aba6404992"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/a977b49b43058e2215cbb25f9d30357cc1f64258578069332094f793b7c2b9c1",
+          "mode": "100644",
+          "blob": "7a0ecbf6dd68f117224a78c61faba730b3988e05",
+          "sha256": "a977b49b43058e2215cbb25f9d30357cc1f64258578069332094f793b7c2b9c1"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/ab88a72ca2b0083f66827d97136b7c9e4819ce71541a3a9a3defffc4bd6ce5d9",
+          "mode": "100644",
+          "blob": "b74f638204450607be17f8304692ac5300ae81bd",
+          "sha256": "ab88a72ca2b0083f66827d97136b7c9e4819ce71541a3a9a3defffc4bd6ce5d9"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/abd8dc078283410715adc584c7cfb8ee892c0b9671275e7f150ef865a3ff0e9a",
+          "mode": "100644",
+          "blob": "1c8c09d28aac74e0f7f3e6fd08983a45945b2ca3",
+          "sha256": "abd8dc078283410715adc584c7cfb8ee892c0b9671275e7f150ef865a3ff0e9a"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/ad3f5ddf1c3cb1db42cdd882ead11ad69f8a2cb00903307fad76c63dedd1696a",
+          "mode": "100644",
+          "blob": "230c6c3d242ce74c6f2fa6abe6334d756e4dbf42",
+          "sha256": "ad3f5ddf1c3cb1db42cdd882ead11ad69f8a2cb00903307fad76c63dedd1696a"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/afa2333e598a7dfad73d7a60632e1c91fb28fd406b34dedf754988f3ac345e4a",
+          "mode": "100644",
+          "blob": "7489a86a9858f6e8ad51ec49bc6c5bc0c6e04170",
+          "sha256": "afa2333e598a7dfad73d7a60632e1c91fb28fd406b34dedf754988f3ac345e4a"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/b46e346d46abc404b6eafd1fdeb790f6b6f207db6ef547f2945e7bd30c96a9bc",
+          "mode": "100644",
+          "blob": "db5c42ebb2d2a1d86e34150129dedc784f1ff093",
+          "sha256": "b46e346d46abc404b6eafd1fdeb790f6b6f207db6ef547f2945e7bd30c96a9bc"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/b50a8bd552aab69356b977e521669d601a90ce110aafa688852adfb1020f942a",
+          "mode": "100644",
+          "blob": "a27b8eab1e4a3559a29de06368f208b81366d299",
+          "sha256": "b50a8bd552aab69356b977e521669d601a90ce110aafa688852adfb1020f942a"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/bdccd809062891ef0e76cdc817228c57caf57fce2cc1346ed70a2dfb9838c495",
+          "mode": "100644",
+          "blob": "95246a5db14b0cfba2a8015c6d4e9e23fc33e9ca",
+          "sha256": "bdccd809062891ef0e76cdc817228c57caf57fce2cc1346ed70a2dfb9838c495"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/be71b140925559267a97920c72d39b0d50d6ace92958bdcaa812483d6d65b19a",
+          "mode": "100644",
+          "blob": "e284901ffd24962d01412bc19d60eeaeebd25567",
+          "sha256": "be71b140925559267a97920c72d39b0d50d6ace92958bdcaa812483d6d65b19a"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/c10e7843485936cbbc79a56f50417d06ef00689996862b853a64259c796ee4fe",
+          "mode": "100644",
+          "blob": "54434028b896fc4f9926de3bde61d2615eec6d7f",
+          "sha256": "c10e7843485936cbbc79a56f50417d06ef00689996862b853a64259c796ee4fe"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/c14d7355ca236c88fabd75f87d710e11e49df39a65bae553b6dc8cb061ebe108",
+          "mode": "100644",
+          "blob": "8636527ef90ffcf6b412c36623e733de9dcd739b",
+          "sha256": "c14d7355ca236c88fabd75f87d710e11e49df39a65bae553b6dc8cb061ebe108"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/c7232c52be9f6bb8b4b3dd82dc22374ded359a981dd0ead7924e201ff57d427f",
+          "mode": "100644",
+          "blob": "cc7d2651cb561af1769a5719c3897992b681cbeb",
+          "sha256": "c7232c52be9f6bb8b4b3dd82dc22374ded359a981dd0ead7924e201ff57d427f"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/c9069c28adb52a013896dc6fc230d29ab28225e9366530412d575ff95fef3ff9",
+          "mode": "100644",
+          "blob": "f7124f4e8d86a982610be5321a3c839daa3bc660",
+          "sha256": "c9069c28adb52a013896dc6fc230d29ab28225e9366530412d575ff95fef3ff9"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/ce127d6643dbf9b28b35bf2d7fc63bc504c6f842b715c0efb2ba534cf3ce70f3",
+          "mode": "100644",
+          "blob": "1047a502fa2d8ff6f089f8eb74f013aa0c9ec49e",
+          "sha256": "ce127d6643dbf9b28b35bf2d7fc63bc504c6f842b715c0efb2ba534cf3ce70f3"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/cfed96a51996ab703ba2416053bdd6869c7a8636993adf7ad77d4c871597b8d2",
+          "mode": "100644",
+          "blob": "038dcdb26b5ab0beed2b81eff56d43cf395306cb",
+          "sha256": "cfed96a51996ab703ba2416053bdd6869c7a8636993adf7ad77d4c871597b8d2"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/d03535cd56c1be7987ab0d87e343823ca969180139ba7308a57629dacd5642cb",
+          "mode": "100644",
+          "blob": "ec0dfb608791de9546fff765595bdbcfea3ac63b",
+          "sha256": "d03535cd56c1be7987ab0d87e343823ca969180139ba7308a57629dacd5642cb"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/def239ee0e9dea35bb0fe9bfdebf53370551db1a99e9d967a1e5320b5ba0f4d7",
+          "mode": "100644",
+          "blob": "c2a6bdbf6ff111a49354ed72ed9375dff0e0af19",
+          "sha256": "def239ee0e9dea35bb0fe9bfdebf53370551db1a99e9d967a1e5320b5ba0f4d7"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/dfc6312095e87c4f5b56ebdca9d5b4c0e7a6472ff918b8f25bf9648a8b1c0c25",
+          "mode": "100644",
+          "blob": "a966ec08bcf81d6120c520129ac88c53585af27b",
+          "sha256": "dfc6312095e87c4f5b56ebdca9d5b4c0e7a6472ff918b8f25bf9648a8b1c0c25"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/e23c9ea2dd17a0c64f2cb88807b0a8c2396927d0e6e15a7c0f9bdabbad9426b2",
+          "mode": "100644",
+          "blob": "f7487b3b29efcbd90cfa77fe0f3231cab21a6e0e",
+          "sha256": "e23c9ea2dd17a0c64f2cb88807b0a8c2396927d0e6e15a7c0f9bdabbad9426b2"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/e7511011be068ff5b3873039824b428cb16a5b21b8d2ee9c4a0d3c1cd43d2a12",
+          "mode": "100644",
+          "blob": "4c60600801f845e2362697ea805296d95f1fe50a",
+          "sha256": "e7511011be068ff5b3873039824b428cb16a5b21b8d2ee9c4a0d3c1cd43d2a12"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/e7cf7792056112f9d11bc48efa298d12485d43290132a46a022c06b919cd5e41",
+          "mode": "100644",
+          "blob": "1a6fe41a7829fa4264eb8148d90161a879c24cb0",
+          "sha256": "e7cf7792056112f9d11bc48efa298d12485d43290132a46a022c06b919cd5e41"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/f111ecb126c1103b105105e109bafb2ae43093e369be62c0e48f21a9bb5547cb",
+          "mode": "100644",
+          "blob": "80154c531a5ce86ce219d33c66d248decc72bdf4",
+          "sha256": "f111ecb126c1103b105105e109bafb2ae43093e369be62c0e48f21a9bb5547cb"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/faff14b02609833ffd995af0c93b2402b377571282f13a7ce87408ea3d4250b4",
+          "mode": "100644",
+          "blob": "c002fa2dc3acf0a0319a1155bf8c483930dbba60",
+          "sha256": "faff14b02609833ffd995af0c93b2402b377571282f13a7ce87408ea3d4250b4"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/fc10433f5f57d33762ad97cabdc7cbf597e6638e8712d47334cd68a0479e0cd8",
+          "mode": "100644",
+          "blob": "8e63300f90815fbe494ae3633609826d2f5e4413",
+          "sha256": "fc10433f5f57d33762ad97cabdc7cbf597e6638e8712d47334cd68a0479e0cd8"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/blobs/fe9c1a60233cf5e87465411af7f32c876df029e3f11a30d1205b36556172c5dd",
+          "mode": "100644",
+          "blob": "4c2f46f216f52c5a66b9e0544bcf23343d201166",
+          "sha256": "fe9c1a60233cf5e87465411af7f32c876df029e3f11a30d1205b36556172c5dd"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/decisions/c-6k-a6-20261017T025559Z.json",
+          "mode": "100644",
+          "blob": "607a3d90f8f958b5f39ab42e317381f227a31afb",
+          "sha256": "01e92074f6bbcbc608010c92273e8521b1eff088dcf05a2f494bd4c98308949d"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/decisions/c-6k-bootstrap-20261017T025559Z.json",
+          "mode": "100644",
+          "blob": "fd54581b0dcf883ce71268282885a25832bbb801",
+          "sha256": "d03a2c874b7365fc117c8e91c5e635bf2600802d62f1474417db2a23a2c8f6a9"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/receipts/c-6k-a6-20261017T025559Z.json",
+          "mode": "100644",
+          "blob": "2f98eb8f3643971378072de5ef81611f4d00f6e6",
+          "sha256": "2b823822a56ede15dd130e45153a3cc5427de859d591f7850bae57adcfe4723b"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/receipts/c-6k-bootstrap-20261017T025559Z.json",
+          "mode": "100644",
+          "blob": "82c1dabd7f13d5bd4dbcff85b9d4459fddce9223",
+          "sha256": "89095acbe4707811b362665b2287daea8403d38ec6b9613fa521a551b923c702"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/transactions/c-6k-a6-20261017T025559Z.json",
+          "mode": "100644",
+          "blob": "febff1bc998b36bd39e3f9320f1c23aef2adaec7",
+          "sha256": "ccb497abe96b034488b1990189f3369edf974173c79f7ea5a532230d57dfe6e8"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/transactions/c-6k-bootstrap-20261017T025559Z.json",
+          "mode": "100644",
+          "blob": "82af0d4a663a92d3ef26a97f1b17968041d0a262",
+          "sha256": "00a5779650391fea72172fdca4122d873f765a5af05da24ccc0fe13eb8cdf457"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/witnesses/c-6k-a6-20261017T025559Z/0-after",
+          "mode": "100644",
+          "blob": "1ebaf6ee3a9a2fea0245eaf86fde1e1d97c0f991",
+          "sha256": "4332b12f1baf732bd8ad72b71f316c4c3c5ec43b5e2c42d371e2d1f81044e84f"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/witnesses/c-6k-a6-20261017T025559Z/0-before",
+          "mode": "100644",
+          "blob": "a49ddd63725eb3d286cb81e9fa73058e0dfce083",
+          "sha256": "864302d8f30cc036e344ec22b88e2ed3c811d84be938abb9687eb51cebe171c0"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/witnesses/c-6k-a6-20261017T025559Z/1-after",
+          "mode": "100644",
+          "blob": "e571b721f66d7c75b249265504b489ecc660eeb2",
+          "sha256": "2cdd38b1b507c2fbf4aefb06b9d71c514cd417172cb3ff556287cb16b6415b06"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/witnesses/c-6k-a6-20261017T025559Z/1-before",
+          "mode": "100644",
+          "blob": "ba832564d6d9ae66d99696b4e91e80d5b6fec3c4",
+          "sha256": "381b96d0aff5b71cb45d54f2267be974ab9d85c88e356c542ae4147af011d5c7"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/witnesses/c-6k-bootstrap-20261017T025559Z/0-after",
+          "mode": "100644",
+          "blob": "1a6fe41a7829fa4264eb8148d90161a879c24cb0",
+          "sha256": "e7cf7792056112f9d11bc48efa298d12485d43290132a46a022c06b919cd5e41"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/witnesses/c-6k-bootstrap-20261017T025559Z/0-before",
+          "mode": "100644",
+          "blob": "a966ec08bcf81d6120c520129ac88c53585af27b",
+          "sha256": "dfc6312095e87c4f5b56ebdca9d5b4c0e7a6472ff918b8f25bf9648a8b1c0c25"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/witnesses/c-6k-bootstrap-20261017T025559Z/1-after",
+          "mode": "100644",
+          "blob": "1a612fbf54341cdc761e43b7c4f69d4800fbb90d",
+          "sha256": "5ef3f8edf6c29f52f31f774e8c6b7f6e64e0483227596fdf8d3ffb246b3684f7"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/witnesses/c-6k-bootstrap-20261017T025559Z/1-before",
+          "mode": "100644",
+          "blob": "70f289133add28217d68930f9e9f64069807ae7c",
+          "sha256": "370dd6c3e77de3b229bda26723e367329a76cf4edc06230ac96aa37822e36db0"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/witnesses/c-6k-bootstrap-20261017T025559Z/2-after",
+          "mode": "100644",
+          "blob": "fce401a0fc4caff8308e1429cd0e343e3bf35611",
+          "sha256": "392fb2fa3da3ceb20f441c1fce9bab43c1192733e20592e894e2a344f0adbfed"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/witnesses/c-6k-bootstrap-20261017T025559Z/2-before",
+          "mode": "100644",
+          "blob": "11456600ce543740f55f1bb38514db7bd947a5bc",
+          "sha256": "08ae1f121fe085ab7e3bc9c4534a03c39cc5a44f20e2bb2266cd9d3dde17840e"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/witnesses/c-6k-bootstrap-20261017T025559Z/3-after",
+          "mode": "100644",
+          "blob": "9c90d9514e8375ec6107b895fa4e96ee5d0fae14",
+          "sha256": "63c2fc45e98b209825f61a15116df62ed2734be73a051e23519889ea279f44d1"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/witnesses/c-6k-bootstrap-20261017T025559Z/3-before",
+          "mode": "100644",
+          "blob": "0753e58ddda71a0dc0e858f602453db2e8e7e67b",
+          "sha256": "614ed0f3146dd7911d70df781a2e68aea81210091dcae68bcc27e36da0a15086"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/witnesses/c-6k-bootstrap-20261017T025559Z/4-after",
+          "mode": "100644",
+          "blob": "c2ccf6f23b975936e233829bbf9ee74bb2920374",
+          "sha256": "585b3bcfae74a90ea8ac54bb005d19830ca27a217f7f65a92abbef6129c1b163"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/witnesses/c-6k-bootstrap-20261017T025559Z/5-after",
+          "mode": "100644",
+          "blob": "7a0ecbf6dd68f117224a78c61faba730b3988e05",
+          "sha256": "a977b49b43058e2215cbb25f9d30357cc1f64258578069332094f793b7c2b9c1"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/witnesses/c-6k-bootstrap-20261017T025559Z/5-before",
+          "mode": "100644",
+          "blob": "b35acfda575c325afabe01f29cbdb77cb399062f",
+          "sha256": "0e4add99d45d28a52d97adad152f9738ea7eeccfbf0558340ff95aaeab698d7b"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/witnesses/c-6k-bootstrap-20261017T025559Z/6-after",
+          "mode": "100644",
+          "blob": "ceb1391709154012658e4368ad7f34bed3752d99",
+          "sha256": "10035d1fc3aa3aa8d3ebc996237770f368101769b46c0d42eb0286be8c284c60"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/witnesses/c-6k-bootstrap-20261017T025559Z/6-before",
+          "mode": "100644",
+          "blob": "a10014fbf62d56a13e851c69363b8b541a449595",
+          "sha256": "6f528cc3f2ceaf4a88b88e03a61d0da88a117ee18f5ca9d88ff35609458dee78"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/witnesses/c-6k-bootstrap-20261017T025559Z/7-after",
+          "mode": "100644",
+          "blob": "ba832564d6d9ae66d99696b4e91e80d5b6fec3c4",
+          "sha256": "381b96d0aff5b71cb45d54f2267be974ab9d85c88e356c542ae4147af011d5c7"
+        },
+        {
+          "path": "knowledge/methods/clown/.history/witnesses/c-6k-bootstrap-20261017T025559Z/7-before",
+          "mode": "100644",
+          "blob": "e2b5ed64a4a1ec1567c74fa620f36749a1d50051",
+          "sha256": "1f358b0a61003d802d83045bec42ee10332414dd2e7842bff6923d2a9b7787e1"
+        },
+        {
+          "path": "knowledge/methods/clown/README.md",
+          "mode": "100644",
+          "blob": "ceb1391709154012658e4368ad7f34bed3752d99",
+          "sha256": "10035d1fc3aa3aa8d3ebc996237770f368101769b46c0d42eb0286be8c284c60"
+        },
+        {
+          "path": "knowledge/methods/clown/references/dig-scope-workflow.md",
+          "mode": "100644",
+          "blob": "b74f638204450607be17f8304692ac5300ae81bd",
+          "sha256": "ab88a72ca2b0083f66827d97136b7c9e4819ce71541a3a9a3defffc4bd6ce5d9"
+        },
+        {
+          "path": "knowledge/methods/clown/references/hunt-iter.md",
+          "mode": "100644",
+          "blob": "9c90d9514e8375ec6107b895fa4e96ee5d0fae14",
+          "sha256": "63c2fc45e98b209825f61a15116df62ed2734be73a051e23519889ea279f44d1"
+        },
+        {
+          "path": "knowledge/methods/clown/references/researcher-blackbox-whitebox.md",
+          "mode": "100644",
+          "blob": "fce401a0fc4caff8308e1429cd0e343e3bf35611",
+          "sha256": "392fb2fa3da3ceb20f441c1fce9bab43c1192733e20592e894e2a344f0adbfed"
+        },
+        {
+          "path": "knowledge/methods/clown/references/src-value-hunting.md",
+          "mode": "100644",
+          "blob": "a1750f29284ed4629a2eec5c675a14e55735ebb5",
+          "sha256": "5841817a47530b59abee73319782c3cefbfa66a6374ad2e73d58ccadac8ff87e"
+        },
+        {
+          "path": "knowledge/methods/clown/references/vuln-report-format.md",
+          "mode": "100644",
+          "blob": "c2ccf6f23b975936e233829bbf9ee74bb2920374",
+          "sha256": "585b3bcfae74a90ea8ac54bb005d19830ca27a217f7f65a92abbef6129c1b163"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/SKILL.md",
+          "mode": "100644",
+          "blob": "1a6fe41a7829fa4264eb8148d90161a879c24cb0",
+          "sha256": "e7cf7792056112f9d11bc48efa298d12485d43290132a46a022c06b919cd5e41"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/401-403-bypass.md",
+          "mode": "100644",
+          "blob": "99ae4a24a4d8007df3c5376e2a8f004489ae5ef3",
+          "sha256": "2f30e8e8148aa56dd4c0b1ed86f9f4af5fe13f282cf755a6c6ec3d96d4be2ca4"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/README.md",
+          "mode": "100644",
+          "blob": "7a0ecbf6dd68f117224a78c61faba730b3988e05",
+          "sha256": "a977b49b43058e2215cbb25f9d30357cc1f64258578069332094f793b7c2b9c1"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/agent-tool-exec-test.md",
+          "mode": "100644",
+          "blob": "230c6c3d242ce74c6f2fa6abe6334d756e4dbf42",
+          "sha256": "ad3f5ddf1c3cb1db42cdd882ead11ad69f8a2cb00903307fad76c63dedd1696a"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/api-gateway-test.md",
+          "mode": "100644",
+          "blob": "38aba13518af71dcef87d58d4b49718560e1f29c",
+          "sha256": "56f51b9aa7c754c76c5535fb7efc0a081b3fe99c965a974285f46fee6d016ac3"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/authbypass-test.md",
+          "mode": "100644",
+          "blob": "c002fa2dc3acf0a0319a1155bf8c483930dbba60",
+          "sha256": "faff14b02609833ffd995af0c93b2402b377571282f13a7ce87408ea3d4250b4"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/cache-poisoning-test.md",
+          "mode": "100644",
+          "blob": "4bb0bd33d4f4edd296cc70a26756506c785e2104",
+          "sha256": "7e7c7c8e1d3e256944065beb5df9da1fe6141ca97278ed98d996585b05890b48"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/clickjacking-test.md",
+          "mode": "100644",
+          "blob": "fa9b357cc5bf2717b6e15cfffe35b257c9e3b4c6",
+          "sha256": "556d36d9edec4ef0071e177bc45d2107560dda0526c314056f1f2294815b9374"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/cloud-ide-codex-rce-chain.md",
+          "mode": "100644",
+          "blob": "4c2f46f216f52c5a66b9e0544bcf23343d201166",
+          "sha256": "fe9c1a60233cf5e87465411af7f32c876df029e3f11a30d1205b36556172c5dd"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/cors-test.md",
+          "mode": "100644",
+          "blob": "e284901ffd24962d01412bc19d60eeaeebd25567",
+          "sha256": "be71b140925559267a97920c72d39b0d50d6ace92958bdcaa812483d6d65b19a"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/crlf-injection-test.md",
+          "mode": "100644",
+          "blob": "7489a86a9858f6e8ad51ec49bc6c5bc0c6e04170",
+          "sha256": "afa2333e598a7dfad73d7a60632e1c91fb28fd406b34dedf754988f3ac345e4a"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/csp-bypass-test.md",
+          "mode": "100644",
+          "blob": "8b20e69dc5abeef9abcee0bc9a5b07f6f3d735b6",
+          "sha256": "5f462d0af83186fc0e8931cf73c79c8593e18bb0534728dcc96e3b6491b93978"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/csrf-test.md",
+          "mode": "100644",
+          "blob": "bdc69d65f09bc52eeb01f736bbcac14f98f55343",
+          "sha256": "693ecdea4f4ab7fe4e12a808d4cb3d516a0bea356ff4301595f6043024d6809c"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/csv-formula-injection-test.md",
+          "mode": "100644",
+          "blob": "feaf520d7cffa0379e77d7799b2b3c8bfe20b848",
+          "sha256": "7369e711ae4f435d482ff34a510789b931a0fe5f4cb94516bd543fb4c4fd1fa8"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/dangling-markup-test.md",
+          "mode": "100644",
+          "blob": "2688da76090db92a346e8ff5fd0789e35de3ff51",
+          "sha256": "8643db8ee91f6456774ce1d80dfb5043559a6945824eeddbff65c79bf4198015"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/dependency-confusion-test.md",
+          "mode": "100644",
+          "blob": "d78be0edad96ecc4546e6ccc96e1545db432329e",
+          "sha256": "57dff989bc482a1f8690dd10f95668817569748f2f777a24eb777fb73d468b45"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/deserialization-test.md",
+          "mode": "100644",
+          "blob": "1ebaf6ee3a9a2fea0245eaf86fde1e1d97c0f991",
+          "sha256": "4332b12f1baf732bd8ad72b71f316c4c3c5ec43b5e2c42d371e2d1f81044e84f"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/dns-rebinding-test.md",
+          "mode": "100644",
+          "blob": "761779b112f96b3241f37dd4a84e02603bac454d",
+          "sha256": "589ebdc0b1504d02ab453b465913248dc1a19a47e544d91315e8be2aa343cf61"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/el-injection-test.md",
+          "mode": "100644",
+          "blob": "9a95a8b8cfadd811fb0cc3523d003978f530f2d4",
+          "sha256": "715e7e3090c4395894c3e60b5b46059859bcd8be1e5b8216b9deff9731414792"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/email-header-injection-test.md",
+          "mode": "100644",
+          "blob": "8eb28398b3ac0c28ea55999611bc26eec9a4d158",
+          "sha256": "3e67d60ea8624e5688c77ba8b1ae47eaf3515f9d262829fb34682fae1c986f76"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/file-upload-test.md",
+          "mode": "100644",
+          "blob": "cc7d2651cb561af1769a5719c3897992b681cbeb",
+          "sha256": "c7232c52be9f6bb8b4b3dd82dc22374ded359a981dd0ead7924e201ff57d427f"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/ghost-bits-cast-test.md",
+          "mode": "100644",
+          "blob": "ea94681da570516971d38b0e7f5d74e3541c2f37",
+          "sha256": "6da34fdeaba068f2036d23587f263578f8db1c514169454a727d65b07df2ec1f"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/graphql-test.md",
+          "mode": "100644",
+          "blob": "4c60600801f845e2362697ea805296d95f1fe50a",
+          "sha256": "e7511011be068ff5b3873039824b428cb16a5b21b8d2ee9c4a0d3c1cd43d2a12"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/hpp-test.md",
+          "mode": "100644",
+          "blob": "1047a502fa2d8ff6f089f8eb74f013aa0c9ec49e",
+          "sha256": "ce127d6643dbf9b28b35bf2d7fc63bc504c6f842b715c0efb2ba534cf3ce70f3"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/http-host-header-test.md",
+          "mode": "100644",
+          "blob": "91a0a7131cf5af00987bc1640f8a8afcb5fb87f1",
+          "sha256": "526455cbbdf505bba5b976f3bb5df99eabdc5f7551b453621a051ea6bc77cc3a"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/http-smuggling-test.md",
+          "mode": "100644",
+          "blob": "8250165e1682c247413c1f76d341c9568b032899",
+          "sha256": "33e8e31d761ccc6b4cba7e306a39bbae9c2522b6b7964de3bdb47340aa82d301"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/http2-attacks-test.md",
+          "mode": "100644",
+          "blob": "f592ea3b35655a541c6f96cfccc32c23cea657ce",
+          "sha256": "2fa0ed1bb7e985d0617b407ec2ad151de032dcdcb137874588314f6ed4c92caa"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/idor-test.md",
+          "mode": "100644",
+          "blob": "62b263f3f7ddc099320efd5a2bcdc4d56b791e7d",
+          "sha256": "21f245c9d9ea46ee011f0ab4423a7767d6da787b051d50f521a2cb40cbd86fbc"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/info-leak-test.md",
+          "mode": "100644",
+          "blob": "4b9da5f6f28102e4ff2bfdf49acc46ce88c9d2b1",
+          "sha256": "08de61c8fe54723e9d2e1ccfc31b1d298c7a517ce1732c84dc21e42e76c4ce59"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/injection-test.md",
+          "mode": "100644",
+          "blob": "aed25a07369c39056941894579140222ea9fc6c7",
+          "sha256": "2c8e033265c051e7c2638cc580c4a332b423eb77f5b996824b6406738cc47f9c"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/insecure-scm-test.md",
+          "mode": "100644",
+          "blob": "80154c531a5ce86ce219d33c66d248decc72bdf4",
+          "sha256": "f111ecb126c1103b105105e109bafb2ae43093e369be62c0e48f21a9bb5547cb"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/jndi-injection-test.md",
+          "mode": "100644",
+          "blob": "ac45b2449bcfff14fb8b073980b5773a76fcfb3c",
+          "sha256": "8e5356c6f605930e2b82f32d3b559dbf2067182528083dd74cf9a815f1c4d137"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/js-reverse-guide.md",
+          "mode": "100644",
+          "blob": "fe1dbdf5c6a0d78ef04e0cc0222027012bbfd4fe",
+          "sha256": "93685252dceac6f050e61dc86ee09f28c55dcc4355ca9e6cae5288c3b848f6db"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/llm-security-test.md",
+          "mode": "100644",
+          "blob": "de24af836f40d402fd300d9f681476d2ac668f64",
+          "sha256": "a1e1430f2274c2ef94d510f4474028c0ed079133887506907252d4aba6404992"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/logic-test.md",
+          "mode": "100644",
+          "blob": "4c093861d22d6210f4eb3a88eebb202c5e7f5d44",
+          "sha256": "54e2c0ebf4ba81c82533467f48209e92bbb0b2d9edfcec1d6966433cfe47fc81"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/oauth-jwt-test.md",
+          "mode": "100644",
+          "blob": "e7d6cf2076c49163b95d43e87358a0312729cdb4",
+          "sha256": "87d724c710ac21920755af7e59caee87cefc416bf59daedf3b7f2aeb954b18fa"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/open-redirect-test.md",
+          "mode": "100644",
+          "blob": "54434028b896fc4f9926de3bde61d2615eec6d7f",
+          "sha256": "c10e7843485936cbbc79a56f50417d06ef00689996862b853a64259c796ee4fe"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/path-traversal-lfi-test.md",
+          "mode": "100644",
+          "blob": "8636527ef90ffcf6b412c36623e733de9dcd739b",
+          "sha256": "c14d7355ca236c88fabd75f87d710e11e49df39a65bae553b6dc8cb061ebe108"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/prototype-pollution-test.md",
+          "mode": "100644",
+          "blob": "038dcdb26b5ab0beed2b81eff56d43cf395306cb",
+          "sha256": "cfed96a51996ab703ba2416053bdd6869c7a8636993adf7ad77d4c871597b8d2"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/race-condition-test.md",
+          "mode": "100644",
+          "blob": "1c8c09d28aac74e0f7f3e6fd08983a45945b2ca3",
+          "sha256": "abd8dc078283410715adc584c7cfb8ee892c0b9671275e7f150ef865a3ff0e9a"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/recon-methodology.md",
+          "mode": "100644",
+          "blob": "a27b8eab1e4a3559a29de06368f208b81366d299",
+          "sha256": "b50a8bd552aab69356b977e521669d601a90ce110aafa688852adfb1020f942a"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/ssrf-test.md",
+          "mode": "100644",
+          "blob": "c9f8b5d27201a31aa4b68e0ed2365f966ed67696",
+          "sha256": "065b40171213d250f9343a7dd34d402d064e98d322ab1529325b0691164708c3"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/subdomain-takeover-test.md",
+          "mode": "100644",
+          "blob": "afd568e46682b97c59ae3722211524982f47c5a0",
+          "sha256": "10b4c4eed53ed720d9ae369fd36e8cdb525de7092bf84eae66cc96da4af0e53a"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/type-juggling-test.md",
+          "mode": "100644",
+          "blob": "fe3d2117fdd242836fb5615d9a10ac3c338a3e86",
+          "sha256": "937764587e4958655867b020f7dd20f10e53a95346aeabf91815a6268f470e62"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/waf-bypass.md",
+          "mode": "100644",
+          "blob": "0d67957e969aaabe8bf903bc8c55d1c5297aaece",
+          "sha256": "0a8e87c99af2f7d225665ff0caed7e0e0dc1f011134fee252a5982bbae6fa902"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/websocket-test.md",
+          "mode": "100644",
+          "blob": "95246a5db14b0cfba2a8015c6d4e9e23fc33e9ca",
+          "sha256": "bdccd809062891ef0e76cdc817228c57caf57fce2cc1346ed70a2dfb9838c495"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/xslt-injection-test.md",
+          "mode": "100644",
+          "blob": "4bd736a25f84cceaa7eaccb13ffed82f0ef927f8",
+          "sha256": "4ff4ed9016fc6691378d461a2dd8ae0d430822a2e222479de3e4fdbc92807761"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/xss-test.md",
+          "mode": "100644",
+          "blob": "364c740def89a37a4f5165179b77523d4631aae4",
+          "sha256": "5f4ecec512bcabac72ec0f5301b9794998e982ccb7007ccb2ebeeb584332a621"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/xxe-test.md",
+          "mode": "100644",
+          "blob": "98fe902c6956a049f7e2648db56b0d0f56c58d29",
+          "sha256": "0a80802df4ae4699dc494f16278bd617347f99d194132f647543aa5ef582fd79"
+        },
+        {
+          "path": "knowledge/methods/clown/skills/src-hunter/知识库/打穿短表.md",
+          "mode": "100644",
+          "blob": "1a612fbf54341cdc761e43b7c4f69d4800fbb90d",
+          "sha256": "5ef3f8edf6c29f52f31f774e8c6b7f6e64e0483227596fdf8d3ffb246b3684f7"
+        },
+        {
+          "path": "rules/campaign.md",
+          "mode": "100644",
+          "blob": "cced141d15b2e7f87390d42c0abe1ca59cf584ad",
+          "sha256": "184f65248df2073542bf4e2adf46d02958afa06544b7e53ad57fe11a3b6de6e6"
+        },
+        {
+          "path": "rules/retrospective.md",
+          "mode": "100644",
+          "blob": "4948f98a7847f3533b5385b8915d05369acd2274",
+          "sha256": "f77297d67d969f1cf160c54f99dd0d9e0fa5c3695e859f9ccafc2a0396636c84"
+        },
+        {
+          "path": "skills/mobile-pentest/SKILL.md",
+          "mode": "100644",
+          "blob": "cb1e0f33bcc6a6db9c8df72e0511518e28f7c5fa",
+          "sha256": "fbc12d398f6f153b65db9de9b264d2682e42f8a2f5a315c8af7057235a7793bf"
+        },
+        {
+          "path": "skills/runtime-protocol.md",
+          "mode": "100644",
+          "blob": "a65a7dec37ceaf733cf7523fa2b023fa8ebb6813",
+          "sha256": "d7c9d6bf90b6af2c40d418c1e93c76b698c16a076184a3b6f670107e70c403ae"
+        },
+        {
+          "path": "skills/src-hunting/SKILL.md",
+          "mode": "100644",
+          "blob": "d295226a899784a73e2e5ec109fd302cef511c76",
+          "sha256": "ec69f9ef18f51d1d4a1b2f395f28fde86dfa8583cb346d76f33f4ad732312691"
+        },
+        {
+          "path": "tools/artifact_io.py",
+          "mode": "100644",
+          "blob": "db409b7ab140f919b2840f4515efb478cfd0a1fc",
+          "sha256": "f11cb76c9e7acc11832fbd0ccfbb93735f491c0cf9cfdaf4f0419f0b176db325"
+        },
+        {
+          "path": "tools/browser_evidence.py",
+          "mode": "100644",
+          "blob": "9c7ea7fff24b17d72462f6dae6d419bf6d38ce9f",
+          "sha256": "efc29fc8bc090eb25dd4062287a90c004b47077b28c8bb537665c094bc81816d"
+        },
+        {
+          "path": "tools/browser_mcp_import.py",
+          "mode": "100644",
+          "blob": "b36b0d383d97d69ddd9ada79290f334eec905251",
+          "sha256": "def37fe499796e599d6d5d5e7f4c93794028ba9924c3f77e3e5596d0a8c36e45"
+        },
+        {
+          "path": "tools/context_pack.py",
+          "mode": "100644",
+          "blob": "34ba77f7023dbb91e19f9aeb97cad2c76d4b929e",
+          "sha256": "33acae3ad5eada9de2dc5503993b80af088d921aa38a8019a66e03db4b93c088"
+        },
+        {
+          "path": "tools/contracts.py",
+          "mode": "100644",
+          "blob": "21251d0dfbd7fafb7c47add21ab5646221ce4428",
+          "sha256": "80e86be9da6779c3398cdd17237d3383e2c57fbaaf8267cd1502dc6f690c17d3"
+        },
+        {
+          "path": "tools/hot_method.py",
+          "mode": "100644",
+          "blob": "c04ac2dd343dd3e8d58da377d6c3e41527ff9e69",
+          "sha256": "8240360cd86d236152f9c647abf6abc6df0df6bb583e1fe904302ce0107b2c4e"
+        },
+        {
+          "path": "tools/structured_findings.py",
+          "mode": "100644",
+          "blob": "1ca874b549d7f3e195c6086c03fa683a553f2c17",
+          "sha256": "1bf84b298f9dc21ba4122a3c5dc29460f27312759e8cbf77d021d8dff5fe5275"
+        },
+        {
+          "path": "tools/validation_runner.py",
+          "mode": "100644",
+          "blob": "6c8029ce5c09cb4fc03c5d42f51e52b1b22ae6c0",
+          "sha256": "1b2c527d59498368c3c49693136bd170d2fe75de637f0fe7fbdae1bc5e34b36f"
+        }
+      ]
+    },
+    {
+      "message": "chore(task): archive 6k full integration",
+      "task_files": [
+        "check.jsonl",
+        "design.md",
+        "implement.jsonl",
+        "implement.md",
+        "prd.md",
+        "research/a6-acceptance-2026-10-17.md",
+        "research/a6-durable-package.json",
+        "research/b6-cutover-2026-10-17.md",
+        "research/b6-durable-package.json",
+        "research/b7-commit-boundary.json",
+        "research/b7-durable-package.json",
+        "research/b7-git-acceptance-2026-10-17.md",
+        "research/capability-disposition-matrix.md",
+        "research/closeout-2026-10-17.md",
+        "research/commit-boundary-review-2026-10-17.md",
+        "research/context-reading-map.md",
+        "research/final-commit-plan-2026-10-17.md",
+        "research/final-plan-review-2026-10-15.md",
+        "research/git-delivery-plan-2026-10-17.md",
+        "research/implementation-progress-2026-10-16.md",
+        "research/implementation-risk-review-2026-10-15.md",
+        "research/plan-recheck-2026-10-15.md",
+        "research/planning-closeout-2026-10-15.md",
+        "research/risk-review-closeout-2026-10-16.md",
+        "research/source-disposition-matrix.json",
+        "research/source-disposition-matrix.md",
+        "research/v23-delta-inventory.json",
+        "research/v23-delta-matrix.md",
+        "task.json"
+      ],
+      "spec_link_fix": ".trellis/spec/backend/contracts/hot-method-native-observation.md",
+      "local_only_payloads": "b6-inputs/** (moved locally, not staged)"
+    },
+    {
+      "message": "chore: record 6k integration journal",
+      "files": [
+        ".trellis/workspace/Codex/journal-1.md",
+        ".trellis/workspace/Codex/index.md"
+      ]
+    }
+  ],
+  "partial_staging": {
+    "prerequisite": [
+      "tools/validation_runner.py",
+      "docs/tool-index.md"
+    ],
+    "integration": [
+      "CLAUDE.md",
+      "tools/context_pack.py",
+      "docs/tool-index.md"
+    ]
+  },
+  "excluded_paths": [
+    ".trellis/spec/backend/contracts/runtime-autopilot.md",
+    "knowledge/capabilities.yaml",
+    "knowledge/index.md",
+    "rules/context-loading.md",
+    "rules/hunting.md",
+    "tools/autopilot_bootstrap.py",
+    "tools/capability_profile.py",
+    "guihua.md",
+    "knowledge/cards/hypothesis-reframe.md",
+    "knowledge/cards/surface-unknown-probes.md",
+    "tools/operational_metrics.py",
+    "tools/surface_advisory.py"
+  ],
+  "preserved_partial_remainders": [
+    "CLAUDE.md",
+    "tools/context_pack.py",
+    "docs/tool-index.md"
+  ],
+  "rules": [
+    "no amend",
+    "no push",
+    "no git commit -- paths",
+    "archive --no-commit --skip-branch-validation",
+    "add_session --no-commit",
+    "only force-add the listed ignored task/spec files",
+    "do not stage any other archive, journal, runtime or user WIP"
+  ],
+  "approval": {
+    "user_response": "确认",
+    "followup": "继续",
+    "scope": "original four-batch plan"
+  },
+  "completed_work_commits": [
+    {
+      "batch": 1,
+      "commit": "a4a22e2d0b81d2c232be3518bdba89e652b19635",
+      "parent": "99a653b14ece0f925a625c8645a690aaa8a7a218",
+      "tree": "a216a4bf15a03d8956e8a446e4bfcb0299dadb86",
+      "message": "fix: bind cleanup verification to report publication",
+      "changed_paths": 6,
+      "worktree_preserved": true
+    },
+    {
+      "batch": 2,
+      "commit": "ba183ca88e1bf311e59f3b41348c318f96047e3f",
+      "parent": "a4a22e2d0b81d2c232be3518bdba89e652b19635",
+      "tree": "d59dfb26e48f8942d65e08d25410bb4f56dd5ba0",
+      "message": "feat: integrate versioned 6k methods and native observations",
+      "changed_paths": 178,
+      "worktree_preserved": true
+    }
+  ],
+  "original_source_task": ".trellis/tasks/10-14-6k-full-integration"
+}

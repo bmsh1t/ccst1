@@ -1,0 +1,6 @@
+{"file":".trellis/spec/backend/index.md","reason":"相关层规范入口；区分当前 owner 合同与历史例子"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"实现前的质量、AI/工具边界与专题规范入口"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"损坏、冲突、中断及 CLI 非成功必须可见"}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"私有来源、令牌与原始响应不得进入共享方法或公共输出"}
+{"file":".trellis/tasks/archive/2026-10/10-14-6k-full-integration/research/context-reading-map.md","reason":"各批次必须补读的 canonical 原文路径；防止截断正文及挤出规划工件"}
+{"file":".trellis/tasks/archive/2026-10/10-14-6k-full-integration/research/capability-disposition-matrix.md","reason":"三方能力的唯一最终处置与已有 owner 复用边界"}

@@ -1,0 +1,6 @@
+{"file":".trellis/spec/backend/index.md","reason":"专题规范及当前 owner 的发现入口"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"检查隐藏 fallback、双真源、越界 refactor 与真实行为证据"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"错误、partial、冲突和失败重试不可伪装成功"}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"私有来源/令牌不能泄漏到共享方法、公共日志或验收输出"}
+{"file":".trellis/tasks/archive/2026-10/10-14-6k-full-integration/research/context-reading-map.md","reason":"按受改批次完整读取原规范与来源台账；不以加载图或注入片段代替审阅"}
+{"file":".trellis/tasks/archive/2026-10/10-14-6k-full-integration/research/capability-disposition-matrix.md","reason":"独立核对所有保留能力/延期边界，防止第二控制器或数据库"}

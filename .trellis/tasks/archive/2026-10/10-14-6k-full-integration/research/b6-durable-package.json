@@ -1,0 +1,38 @@
+{
+  "status": "passed",
+  "at": "2026-10-17T03:21:11.499480+00:00",
+  "archive": "/root/.local/state/ccst-recovery/6k-full-integration/20261017T032110Z-b6-final-C/b6-final.tar.gz",
+  "sha256": "dd04b743467d8d180ba4433979c1b62c156d98482756b6beca1f60c31ac93785",
+  "bytes": 1887566,
+  "file_members": 383,
+  "source_files": 382,
+  "readback": "every regular member bytes/hash/mode/uid/gid restored and verified in a fresh private directory",
+  "head_index_unchanged": true,
+  "C_manifest_sha256": "2cdd38b1b507c2fbf4aefb06b9d71c514cd417172cb3ff556287cb16b6415b06",
+  "C_bootstrap_id": "c-6k-bootstrap-20261017T025559Z",
+  "C_a6_id": "c-6k-a6-20261017T025559Z",
+  "context": {
+    "implement": {
+      "wrapper_bytes": 130773,
+      "manifest_entries": 6,
+      "full_planning_artifacts": 3,
+      "no_truncation": true
+    },
+    "check": {
+      "wrapper_bytes": 130765,
+      "manifest_entries": 6,
+      "full_planning_artifacts": 3,
+      "no_truncation": true
+    }
+  },
+  "requires": [
+    "20261015T160219Z-XQES5z/recovery.tar.gz",
+    "20261017T021639Z-candidate-XQES5z/candidate.tar.gz",
+    "20261017T024100Z-a6-XQES5z/a6-supplement.tar.gz"
+  ],
+  "limitations": [
+    "Not a deployable checkout or portable inode recovery journal.",
+    "Archive does not contain its own external SHA256 result receipt.",
+    "No personal runtime, real target state, model or network operation included."
+  ]
+}

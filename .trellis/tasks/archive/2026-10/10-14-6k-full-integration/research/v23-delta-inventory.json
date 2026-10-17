@@ -1,0 +1,620 @@
+{
+  "roots": {
+    "A": "/root/out/clown-src-6k-skill",
+    "B": "/root/out/clown-src-skill-二开优化版2.3"
+  },
+  "A_vs_B_knowledge_files": {
+    "A_markdown_files": 49,
+    "B_markdown_files": 48,
+    "same_name_identical": [
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/401-403-bypass.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/401-403-bypass.md",
+        "sha256_a": "2f30e8e8148aa56dd4c0b1ed86f9f4af5fe13f282cf755a6c6ec3d96d4be2ca4",
+        "sha256_b": "2f30e8e8148aa56dd4c0b1ed86f9f4af5fe13f282cf755a6c6ec3d96d4be2ca4",
+        "disposition": "byte-identical; do not duplicate/import",
+        "finding": "content identity only; not evidence that either method is effective"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/agent-tool-exec-test.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/agent-tool-exec-test.md",
+        "sha256_a": "ad3f5ddf1c3cb1db42cdd882ead11ad69f8a2cb00903307fad76c63dedd1696a",
+        "sha256_b": "ad3f5ddf1c3cb1db42cdd882ead11ad69f8a2cb00903307fad76c63dedd1696a",
+        "disposition": "byte-identical; do not duplicate/import",
+        "finding": "content identity only; not evidence that either method is effective"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/api-gateway-test.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/api-gateway-test.md",
+        "sha256_a": "56f51b9aa7c754c76c5535fb7efc0a081b3fe99c965a974285f46fee6d016ac3",
+        "sha256_b": "56f51b9aa7c754c76c5535fb7efc0a081b3fe99c965a974285f46fee6d016ac3",
+        "disposition": "byte-identical; do not duplicate/import",
+        "finding": "content identity only; not evidence that either method is effective"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/clickjacking-test.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/clickjacking-test.md",
+        "sha256_a": "556d36d9edec4ef0071e177bc45d2107560dda0526c314056f1f2294815b9374",
+        "sha256_b": "556d36d9edec4ef0071e177bc45d2107560dda0526c314056f1f2294815b9374",
+        "disposition": "byte-identical; do not duplicate/import",
+        "finding": "content identity only; not evidence that either method is effective"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/cloud-ide-codex-rce-chain.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/cloud-ide-codex-rce-chain.md",
+        "sha256_a": "fe9c1a60233cf5e87465411af7f32c876df029e3f11a30d1205b36556172c5dd",
+        "sha256_b": "fe9c1a60233cf5e87465411af7f32c876df029e3f11a30d1205b36556172c5dd",
+        "disposition": "byte-identical; do not duplicate/import",
+        "finding": "content identity only; not evidence that either method is effective"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/crlf-injection-test.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/crlf-injection-test.md",
+        "sha256_a": "afa2333e598a7dfad73d7a60632e1c91fb28fd406b34dedf754988f3ac345e4a",
+        "sha256_b": "afa2333e598a7dfad73d7a60632e1c91fb28fd406b34dedf754988f3ac345e4a",
+        "disposition": "byte-identical; do not duplicate/import",
+        "finding": "content identity only; not evidence that either method is effective"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/csp-bypass-test.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/csp-bypass-test.md",
+        "sha256_a": "5f462d0af83186fc0e8931cf73c79c8593e18bb0534728dcc96e3b6491b93978",
+        "sha256_b": "5f462d0af83186fc0e8931cf73c79c8593e18bb0534728dcc96e3b6491b93978",
+        "disposition": "byte-identical; do not duplicate/import",
+        "finding": "content identity only; not evidence that either method is effective"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/csrf-test.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/csrf-test.md",
+        "sha256_a": "693ecdea4f4ab7fe4e12a808d4cb3d516a0bea356ff4301595f6043024d6809c",
+        "sha256_b": "693ecdea4f4ab7fe4e12a808d4cb3d516a0bea356ff4301595f6043024d6809c",
+        "disposition": "byte-identical; do not duplicate/import",
+        "finding": "content identity only; not evidence that either method is effective"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/csv-formula-injection-test.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/csv-formula-injection-test.md",
+        "sha256_a": "7369e711ae4f435d482ff34a510789b931a0fe5f4cb94516bd543fb4c4fd1fa8",
+        "sha256_b": "7369e711ae4f435d482ff34a510789b931a0fe5f4cb94516bd543fb4c4fd1fa8",
+        "disposition": "byte-identical; do not duplicate/import",
+        "finding": "content identity only; not evidence that either method is effective"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/dangling-markup-test.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/dangling-markup-test.md",
+        "sha256_a": "8643db8ee91f6456774ce1d80dfb5043559a6945824eeddbff65c79bf4198015",
+        "sha256_b": "8643db8ee91f6456774ce1d80dfb5043559a6945824eeddbff65c79bf4198015",
+        "disposition": "byte-identical; do not duplicate/import",
+        "finding": "content identity only; not evidence that either method is effective"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/dependency-confusion-test.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/dependency-confusion-test.md",
+        "sha256_a": "57dff989bc482a1f8690dd10f95668817569748f2f777a24eb777fb73d468b45",
+        "sha256_b": "57dff989bc482a1f8690dd10f95668817569748f2f777a24eb777fb73d468b45",
+        "disposition": "byte-identical; do not duplicate/import",
+        "finding": "content identity only; not evidence that either method is effective"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/deserialization-test.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/deserialization-test.md",
+        "sha256_a": "864302d8f30cc036e344ec22b88e2ed3c811d84be938abb9687eb51cebe171c0",
+        "sha256_b": "864302d8f30cc036e344ec22b88e2ed3c811d84be938abb9687eb51cebe171c0",
+        "disposition": "byte-identical; do not duplicate/import",
+        "finding": "content identity only; not evidence that either method is effective"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/dns-rebinding-test.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/dns-rebinding-test.md",
+        "sha256_a": "589ebdc0b1504d02ab453b465913248dc1a19a47e544d91315e8be2aa343cf61",
+        "sha256_b": "589ebdc0b1504d02ab453b465913248dc1a19a47e544d91315e8be2aa343cf61",
+        "disposition": "byte-identical; do not duplicate/import",
+        "finding": "content identity only; not evidence that either method is effective"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/el-injection-test.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/el-injection-test.md",
+        "sha256_a": "715e7e3090c4395894c3e60b5b46059859bcd8be1e5b8216b9deff9731414792",
+        "sha256_b": "715e7e3090c4395894c3e60b5b46059859bcd8be1e5b8216b9deff9731414792",
+        "disposition": "byte-identical; do not duplicate/import",
+        "finding": "content identity only; not evidence that either method is effective"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/email-header-injection-test.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/email-header-injection-test.md",
+        "sha256_a": "3e67d60ea8624e5688c77ba8b1ae47eaf3515f9d262829fb34682fae1c986f76",
+        "sha256_b": "3e67d60ea8624e5688c77ba8b1ae47eaf3515f9d262829fb34682fae1c986f76",
+        "disposition": "byte-identical; do not duplicate/import",
+        "finding": "content identity only; not evidence that either method is effective"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/ghost-bits-cast-test.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/ghost-bits-cast-test.md",
+        "sha256_a": "6da34fdeaba068f2036d23587f263578f8db1c514169454a727d65b07df2ec1f",
+        "sha256_b": "6da34fdeaba068f2036d23587f263578f8db1c514169454a727d65b07df2ec1f",
+        "disposition": "byte-identical; do not duplicate/import",
+        "finding": "content identity only; not evidence that either method is effective"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/hpp-test.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/hpp-test.md",
+        "sha256_a": "ce127d6643dbf9b28b35bf2d7fc63bc504c6f842b715c0efb2ba534cf3ce70f3",
+        "sha256_b": "ce127d6643dbf9b28b35bf2d7fc63bc504c6f842b715c0efb2ba534cf3ce70f3",
+        "disposition": "byte-identical; do not duplicate/import",
+        "finding": "content identity only; not evidence that either method is effective"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/http-host-header-test.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/http-host-header-test.md",
+        "sha256_a": "526455cbbdf505bba5b976f3bb5df99eabdc5f7551b453621a051ea6bc77cc3a",
+        "sha256_b": "526455cbbdf505bba5b976f3bb5df99eabdc5f7551b453621a051ea6bc77cc3a",
+        "disposition": "byte-identical; do not duplicate/import",
+        "finding": "content identity only; not evidence that either method is effective"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/http2-attacks-test.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/http2-attacks-test.md",
+        "sha256_a": "2fa0ed1bb7e985d0617b407ec2ad151de032dcdcb137874588314f6ed4c92caa",
+        "sha256_b": "2fa0ed1bb7e985d0617b407ec2ad151de032dcdcb137874588314f6ed4c92caa",
+        "disposition": "byte-identical; do not duplicate/import",
+        "finding": "content identity only; not evidence that either method is effective"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/injection-test.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/injection-test.md",
+        "sha256_a": "2c8e033265c051e7c2638cc580c4a332b423eb77f5b996824b6406738cc47f9c",
+        "sha256_b": "2c8e033265c051e7c2638cc580c4a332b423eb77f5b996824b6406738cc47f9c",
+        "disposition": "byte-identical; do not duplicate/import",
+        "finding": "content identity only; not evidence that either method is effective"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/insecure-scm-test.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/insecure-scm-test.md",
+        "sha256_a": "f111ecb126c1103b105105e109bafb2ae43093e369be62c0e48f21a9bb5547cb",
+        "sha256_b": "f111ecb126c1103b105105e109bafb2ae43093e369be62c0e48f21a9bb5547cb",
+        "disposition": "byte-identical; do not duplicate/import",
+        "finding": "content identity only; not evidence that either method is effective"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/jndi-injection-test.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/jndi-injection-test.md",
+        "sha256_a": "8e5356c6f605930e2b82f32d3b559dbf2067182528083dd74cf9a815f1c4d137",
+        "sha256_b": "8e5356c6f605930e2b82f32d3b559dbf2067182528083dd74cf9a815f1c4d137",
+        "disposition": "byte-identical; do not duplicate/import",
+        "finding": "content identity only; not evidence that either method is effective"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/js-reverse-guide.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/js-reverse-guide.md",
+        "sha256_a": "93685252dceac6f050e61dc86ee09f28c55dcc4355ca9e6cae5288c3b848f6db",
+        "sha256_b": "93685252dceac6f050e61dc86ee09f28c55dcc4355ca9e6cae5288c3b848f6db",
+        "disposition": "byte-identical; do not duplicate/import",
+        "finding": "content identity only; not evidence that either method is effective"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/llm-security-test.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/llm-security-test.md",
+        "sha256_a": "a1e1430f2274c2ef94d510f4474028c0ed079133887506907252d4aba6404992",
+        "sha256_b": "a1e1430f2274c2ef94d510f4474028c0ed079133887506907252d4aba6404992",
+        "disposition": "byte-identical; do not duplicate/import",
+        "finding": "content identity only; not evidence that either method is effective"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/open-redirect-test.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/open-redirect-test.md",
+        "sha256_a": "c10e7843485936cbbc79a56f50417d06ef00689996862b853a64259c796ee4fe",
+        "sha256_b": "c10e7843485936cbbc79a56f50417d06ef00689996862b853a64259c796ee4fe",
+        "disposition": "byte-identical; do not duplicate/import",
+        "finding": "content identity only; not evidence that either method is effective"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/prototype-pollution-test.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/prototype-pollution-test.md",
+        "sha256_a": "cfed96a51996ab703ba2416053bdd6869c7a8636993adf7ad77d4c871597b8d2",
+        "sha256_b": "cfed96a51996ab703ba2416053bdd6869c7a8636993adf7ad77d4c871597b8d2",
+        "disposition": "byte-identical; do not duplicate/import",
+        "finding": "content identity only; not evidence that either method is effective"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/recon-methodology.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/recon-methodology.md",
+        "sha256_a": "b50a8bd552aab69356b977e521669d601a90ce110aafa688852adfb1020f942a",
+        "sha256_b": "b50a8bd552aab69356b977e521669d601a90ce110aafa688852adfb1020f942a",
+        "disposition": "byte-identical; do not duplicate/import",
+        "finding": "content identity only; not evidence that either method is effective"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/subdomain-takeover-test.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/subdomain-takeover-test.md",
+        "sha256_a": "10b4c4eed53ed720d9ae369fd36e8cdb525de7092bf84eae66cc96da4af0e53a",
+        "sha256_b": "10b4c4eed53ed720d9ae369fd36e8cdb525de7092bf84eae66cc96da4af0e53a",
+        "disposition": "byte-identical; do not duplicate/import",
+        "finding": "content identity only; not evidence that either method is effective"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/type-juggling-test.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/type-juggling-test.md",
+        "sha256_a": "937764587e4958655867b020f7dd20f10e53a95346aeabf91815a6268f470e62",
+        "sha256_b": "937764587e4958655867b020f7dd20f10e53a95346aeabf91815a6268f470e62",
+        "disposition": "byte-identical; do not duplicate/import",
+        "finding": "content identity only; not evidence that either method is effective"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/waf-bypass.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/waf-bypass.md",
+        "sha256_a": "0a8e87c99af2f7d225665ff0caed7e0e0dc1f011134fee252a5982bbae6fa902",
+        "sha256_b": "0a8e87c99af2f7d225665ff0caed7e0e0dc1f011134fee252a5982bbae6fa902",
+        "disposition": "byte-identical; do not duplicate/import",
+        "finding": "content identity only; not evidence that either method is effective"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/xslt-injection-test.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/xslt-injection-test.md",
+        "sha256_a": "4ff4ed9016fc6691378d461a2dd8ae0d430822a2e222479de3e4fdbc92807761",
+        "sha256_b": "4ff4ed9016fc6691378d461a2dd8ae0d430822a2e222479de3e4fdbc92807761",
+        "disposition": "byte-identical; do not duplicate/import",
+        "finding": "content identity only; not evidence that either method is effective"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/xxe-test.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/xxe-test.md",
+        "sha256_a": "0a80802df4ae4699dc494f16278bd617347f99d194132f647543aa5ef582fd79",
+        "sha256_b": "0a80802df4ae4699dc494f16278bd617347f99d194132f647543aa5ef582fd79",
+        "disposition": "byte-identical; do not duplicate/import",
+        "finding": "content identity only; not evidence that either method is effective"
+      }
+    ],
+    "same_name_changed": [
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/README.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/README.md",
+        "sha256_a": "0e4add99d45d28a52d97adad152f9738ea7eeccfbf0558340ff95aaeab698d7b",
+        "sha256_b": "01a687708bd888b8f3727d629dfe784de89beb07da2fff88d05df274c93f34f3",
+        "finding": "机械替换：路径与名称标签；索引名称改写未作语义校验",
+        "anchor": "A/B行1,3,7,13,15,21,32–70",
+        "disposition": "keep A as complete preserved baseline; do not import B rewrite; repair only consumer links required by C"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/authbypass-test.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/authbypass-test.md",
+        "sha256_a": "faff14b02609833ffd995af0c93b2402b377571282f13a7ce87408ea3d4250b4",
+        "sha256_b": "33b259a388203a43bea10a73bf814ff1134fc4f6ed8ccf012c9e8d6ea53a44c3",
+        "finding": "机械替换但损坏词汇，出现“音media”“群records”",
+        "anchor": "A/B行1,193,195",
+        "disposition": "keep A as complete preserved baseline; do not import B rewrite; repair only consumer links required by C"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/cache-poisoning-test.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/cache-poisoning-test.md",
+        "sha256_a": "7e7c7c8e1d3e256944065beb5df9da1fe6141ca97278ed98d996585b05890b48",
+        "sha256_b": "c04ade847aa0e7a02ee2033a6b7fc3411cc8a0d3898e47eac66748647f9895e6",
+        "finding": "规则路径和知识库名称机械替换",
+        "anchor": "A/B行3,5",
+        "disposition": "keep A as complete preserved baseline; do not import B rewrite; repair only consumer links required by C"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/cors-test.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/cors-test.md",
+        "sha256_a": "be71b140925559267a97920c72d39b0d50d6ace92958bdcaa812483d6d65b19a",
+        "sha256_b": "4fe5f32b964638e022e5ca1d48b8cc3edd2c545ddcd9585b4e53f425faef913a",
+        "finding": "标题机械替换；SRC禁用声明仍在",
+        "anchor": "A/B行1",
+        "disposition": "keep A as complete preserved baseline; do not import B rewrite; repair only consumer links required by C"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/file-upload-test.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/file-upload-test.md",
+        "sha256_a": "c7232c52be9f6bb8b4b3dd82dc22374ded359a981dd0ead7924e201ff57d427f",
+        "sha256_b": "58c1d1ac707fee2085e2d55157c90a61a3c7daa09f8e45a6c252711fd81a7228",
+        "finding": "规则路径替换，无步骤差异",
+        "anchor": "A/B行1",
+        "disposition": "keep A as complete preserved baseline; do not import B rewrite; repair only consumer links required by C"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/graphql-test.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/graphql-test.md",
+        "sha256_a": "e7511011be068ff5b3873039824b428cb16a5b21b8d2ee9c4a0d3c1cd43d2a12",
+        "sha256_b": "60d5113cb3a63b2b51fc4de784e7b519eda3fe03f854741efac4e00440b96109",
+        "finding": "规则链接、章节名称与文件名标签替换",
+        "anchor": "A/B行3,5,474,476",
+        "disposition": "keep A as complete preserved baseline; do not import B rewrite; repair only consumer links required by C"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/http-smuggling-test.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/http-smuggling-test.md",
+        "sha256_a": "33e8e31d761ccc6b4cba7e306a39bbae9c2522b6b7964de3bdb47340aa82d301",
+        "sha256_b": "ba07f1b2cad10a909c46d5fb551b74e13bb1782cc8dc9688dd67c1a004f7e4ec",
+        "finding": "知识库名称替换，无步骤差异",
+        "anchor": "A/B行5",
+        "disposition": "keep A as complete preserved baseline; do not import B rewrite; repair only consumer links required by C"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/idor-test.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/idor-test.md",
+        "sha256_a": "21f245c9d9ea46ee011f0ab4423a7767d6da787b051d50f521a2cb40cbd86fbc",
+        "sha256_b": "75f6c0492e07f22ab72e9ba6de80250ed90411ec558bdde2d76858073142dedd",
+        "finding": "词汇替换把资料、内部知识库等识别用语改坏；反例仍在",
+        "anchor": "A/B行158,266,337–345,427,431,526,530,536,552",
+        "disposition": "keep A as complete preserved baseline; do not import B rewrite; repair only consumer links required by C"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/info-leak-test.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/info-leak-test.md",
+        "sha256_a": "08de61c8fe54723e9d2e1ccfc31b1d298c7a517ce1732c84dc21e42e76c4ce59",
+        "sha256_b": "859129f73053d76911d65f6400f7362abf43552bffd8da0892c933d098fdee69",
+        "finding": "规则路径替换，无步骤差异",
+        "anchor": "A/B行1",
+        "disposition": "keep A as complete preserved baseline; do not import B rewrite; repair only consumer links required by C"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/logic-test.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/logic-test.md",
+        "sha256_a": "54e2c0ebf4ba81c82533467f48209e92bbb0b2d9edfcec1d6966433cfe47fc81",
+        "sha256_b": "a08dfc0b13084d274487aa3ac5cbafb46539f1244486807d9cfb057f3072b84a",
+        "finding": "规则路径和知识库名称替换",
+        "anchor": "A/B行1,6",
+        "disposition": "keep A as complete preserved baseline; do not import B rewrite; repair only consumer links required by C"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/oauth-jwt-test.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/oauth-jwt-test.md",
+        "sha256_a": "87d724c710ac21920755af7e59caee87cefc416bf59daedf3b7f2aeb954b18fa",
+        "sha256_b": "249790abbdfbf3420c48d9e66dfc22f6dbc520446d7c7cadb55d72ae1a902dfe",
+        "finding": "两个不同补充来源标签合并成同一个文件标签",
+        "anchor": "A/B行462,464,753,755",
+        "disposition": "keep A as complete preserved baseline; do not import B rewrite; repair only consumer links required by C"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/race-condition-test.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/race-condition-test.md",
+        "sha256_a": "abd8dc078283410715adc584c7cfb8ee892c0b9671275e7f150ef865a3ff0e9a",
+        "sha256_b": "0d4a38a55e496ce2b525ee05757b4b4528fd7e38479680f494d632ae79bfea80",
+        "finding": "末尾关联标签和知识库名替换",
+        "anchor": "A/B行5,1069",
+        "disposition": "keep A as complete preserved baseline; do not import B rewrite; repair only consumer links required by C"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/ssrf-test.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/ssrf-test.md",
+        "sha256_a": "065b40171213d250f9343a7dd34d402d064e98d322ab1529325b0691164708c3",
+        "sha256_b": "c35160ac004fb7bd8168806b590b1d4cd57ced03c3d253e6093d7f2815c6eb22",
+        "finding": "知识库名称替换，无步骤差异",
+        "anchor": "A/B行3",
+        "disposition": "keep A as complete preserved baseline; do not import B rewrite; repair only consumer links required by C"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/websocket-test.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/websocket-test.md",
+        "sha256_a": "bdccd809062891ef0e76cdc817228c57caf57fce2cc1346ed70a2dfb9838c495",
+        "sha256_b": "41d1b5441cb17ecd6ebddd15f57e2b02dfa8054346149e2c9be95223edf91691",
+        "finding": "路由链接 api-sec 改 api-security，未验证目标存在",
+        "anchor": "A/B行5,639",
+        "disposition": "keep A as complete preserved baseline; do not import B rewrite; repair only consumer links required by C"
+      },
+      {
+        "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/xss-test.md",
+        "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/xss-test.md",
+        "sha256_a": "5f4ecec512bcabac72ec0f5301b9794998e982ccb7007ccb2ebeeb584332a621",
+        "sha256_b": "6ba177007a592cbd100ab522debdd71f0b1c28478081cd9ae64843f972840a8d",
+        "finding": "词汇机械替换造成“个人records”",
+        "anchor": "A/B行4,25",
+        "disposition": "keep A as complete preserved baseline; do not import B rewrite; repair only consumer links required by C"
+      }
+    ],
+    "A_only": [
+      "path-traversal-lfi-test.md",
+      "打穿短表.md"
+    ],
+    "B_only": [
+      "shortlist.md"
+    ],
+    "shortlist_rename": {
+      "path_a": "/root/out/clown-src-6k-skill/skills/src-hunter/知识库/打穿短表.md",
+      "path_b": "/root/out/clown-src-skill-二开优化版2.3/skills/skill/knowledge-base/shortlist.md",
+      "sha256_a": "370dd6c3e77de3b229bda26723e367329a76cf4edc06230ac96aa37822e36db0",
+      "sha256_b": "1de3f63957aecb5c61a6bb8246138791d0715d14e68b5806e7b7b2a0965d4f51",
+      "finding": "94 lines each; difference is three mechanical replacements; no row additions/removals; preserve A names and fix paths at C adaptation boundary"
+    },
+    "added_kill_chain_rows": [
+      {
+        "path": "/root/out/clown-src-skill-二开优化版2.3/skills/specialized/src-hunt-lane/references/kill-chains/shortlist.md",
+        "line": 95,
+        "title": "老高校 IIS/WCF 教务身份票据与业务接口场景",
+        "finding": "substantive added shortlist scenario; no linked manual located; efficacy/source claim not checked",
+        "disposition": "defer; do not include in A-complete cutover"
+      },
+      {
+        "path": "/root/out/clown-src-skill-二开优化版2.3/skills/specialized/src-hunt-lane/references/kill-chains/shortlist.md",
+        "line": 96,
+        "title": "RuoYi 配置读取场景",
+        "finding": "substantive added scenario; see ruoyi manual; efficacy/source claim not checked",
+        "disposition": "defer; later A-gate review"
+      },
+      {
+        "path": "/root/out/clown-src-skill-二开优化版2.3/skills/specialized/src-hunt-lane/references/kill-chains/shortlist.md",
+        "line": 97,
+        "title": "WAF/MSSQL blind-injection scenario",
+        "finding": "substantive added scenario; see waf manual; efficacy/source claim not checked",
+        "disposition": "defer; later A-gate review"
+      },
+      {
+        "path": "/root/out/clown-src-skill-二开优化版2.3/skills/specialized/src-hunt-lane/references/kill-chains/shortlist.md",
+        "line": 98,
+        "title": "ASP.NET ashx/DTcms combo",
+        "finding": "substantive added scenario; see ashx manual; efficacy/source claim not checked",
+        "disposition": "defer; later A-gate review"
+      }
+    ],
+    "new_manuals": [
+      {
+        "path": "/root/out/clown-src-skill-二开优化版2.3/skills/specialized/src-hunt-lane/references/kill-chains/ruoyi-getconfig-unauth.md",
+        "sha256": "e7eb006e9c8f4185cc6e6727803cdc6c0098b38e8c03e65c3664db206c94eff3",
+        "lines": 54,
+        "finding": "B-lane-only method candidate; body/effect unvalidated",
+        "disposition": "defer; source provenance and method gate required"
+      },
+      {
+        "path": "/root/out/clown-src-skill-二开优化版2.3/skills/specialized/src-hunt-lane/references/kill-chains/waf-bypass-mssql-blind.md",
+        "sha256": "41c7cc214ede1fbc593de6084ccaf1f41def08c8381572f3802abf8fdd455a83",
+        "lines": 45,
+        "finding": "B-lane-only method candidate; body/effect unvalidated",
+        "disposition": "defer; source provenance and method gate required"
+      },
+      {
+        "path": "/root/out/clown-src-skill-二开优化版2.3/skills/specialized/src-hunt-lane/references/kill-chains/ashx-unauth-combo.md",
+        "sha256": "649b9c135efb0d36ddb1dcf86c4f87e22cbd6c5d1da546983a8d904a789b76f2",
+        "lines": 39,
+        "finding": "B-lane-only method candidate; body/effect unvalidated",
+        "disposition": "defer; source provenance and method gate required"
+      }
+    ]
+  },
+  "B_experts": [
+    {
+      "path": "/root/out/clown-src-skill-二开优化版2.3/references/experts/agent-security/SKILL.md",
+      "sha256": "20b08817f033bd6e5d1d3797ddf8737b3608d1bad9bbf20fc7fa3dcc4c15110c",
+      "finding": "frontmatter/organization declaration only; novel method body and effective native discovery not audited",
+      "disposition": "do not create parallel specialist Skill; use as deferred research input, compare against C existing owner and A before any admission"
+    },
+    {
+      "path": "/root/out/clown-src-skill-二开优化版2.3/references/experts/ai-identity-security/SKILL.md",
+      "sha256": "a1545cae5ef1081cda14f1d3f87fc5900e49978ef77703de921a5eaed8b80da3",
+      "finding": "frontmatter/organization declaration only; novel method body and effective native discovery not audited",
+      "disposition": "do not create parallel specialist Skill; use as deferred research input, compare against C existing owner and A before any admission"
+    },
+    {
+      "path": "/root/out/clown-src-skill-二开优化版2.3/references/experts/api-auth-and-jwt-abuse/SKILL.md",
+      "sha256": "d402eb39acc181fc61346802808429098ad8fa82ea4f33cc4f165fc72a81efe6",
+      "finding": "frontmatter/organization declaration only; novel method body and effective native discovery not audited",
+      "disposition": "do not create parallel specialist Skill; use as deferred research input, compare against C existing owner and A before any admission"
+    },
+    {
+      "path": "/root/out/clown-src-skill-二开优化版2.3/references/experts/api-authorization-and-bola/SKILL.md",
+      "sha256": "7f8e9e50a72b794bd4c4034239a5f773c902fd3143674f31081f1ab27d070813",
+      "finding": "frontmatter/organization declaration only; novel method body and effective native discovery not audited",
+      "disposition": "do not create parallel specialist Skill; use as deferred research input, compare against C existing owner and A before any admission"
+    },
+    {
+      "path": "/root/out/clown-src-skill-二开优化版2.3/references/experts/api-recon-and-docs/SKILL.md",
+      "sha256": "5eed8fedb905dd960dbdc6f301da7f8bcc784a9ddd702ca9ccc8061baefef8c2",
+      "finding": "frontmatter/organization declaration only; novel method body and effective native discovery not audited",
+      "disposition": "do not create parallel specialist Skill; use as deferred research input, compare against C existing owner and A before any admission"
+    },
+    {
+      "path": "/root/out/clown-src-skill-二开优化版2.3/references/experts/deserialization-insecure/SKILL.md",
+      "sha256": "0fb8a2338a6724369f89abc746cf004482f4e9dfa39c69d21f51a9ccb5b8c493",
+      "finding": "frontmatter/organization declaration only; novel method body and effective native discovery not audited",
+      "disposition": "do not create parallel specialist Skill; use as deferred research input, compare against C existing owner and A before any admission"
+    },
+    {
+      "path": "/root/out/clown-src-skill-二开优化版2.3/references/experts/file-upload-methodology/SKILL.md",
+      "sha256": "4b146472c966c31584b7501487c4ff669734a77da25935d67fcc8446eaaf5aa4",
+      "finding": "frontmatter/organization declaration only; novel method body and effective native discovery not audited",
+      "disposition": "do not create parallel specialist Skill; use as deferred research input, compare against C existing owner and A before any admission"
+    },
+    {
+      "path": "/root/out/clown-src-skill-二开优化版2.3/references/experts/graphql-methodology/SKILL.md",
+      "sha256": "16066c7577ca5af961913c9c494a36a3a98fcef3d1f6339b9fffbb42616d7937",
+      "finding": "frontmatter/organization declaration only; novel method body and effective native discovery not audited",
+      "disposition": "do not create parallel specialist Skill; use as deferred research input, compare against C existing owner and A before any admission"
+    },
+    {
+      "path": "/root/out/clown-src-skill-二开优化版2.3/references/experts/idor-broken-object-authorization/SKILL.md",
+      "sha256": "b525bcfcf7802bf9e37923760b6f9fb037f2e9edae7e2ed56080e25adfbec67e",
+      "finding": "frontmatter/organization declaration only; novel method body and effective native discovery not audited",
+      "disposition": "do not create parallel specialist Skill; use as deferred research input, compare against C existing owner and A before any admission"
+    },
+    {
+      "path": "/root/out/clown-src-skill-二开优化版2.3/references/experts/mcp-security/SKILL.md",
+      "sha256": "aa588eefef13767903cddb118b6f820b1e2a04cea02892b3eb7347b47e9d271e",
+      "finding": "frontmatter/organization declaration only; novel method body and effective native discovery not audited",
+      "disposition": "do not create parallel specialist Skill; use as deferred research input, compare against C existing owner and A before any admission"
+    },
+    {
+      "path": "/root/out/clown-src-skill-二开优化版2.3/references/experts/oauth-sso-attack/SKILL.md",
+      "sha256": "473db79e9e01b727e6f1155f7fe31eb06c68e8ff4b56fa59f066027f1476ce30",
+      "finding": "frontmatter/organization declaration only; novel method body and effective native discovery not audited",
+      "disposition": "do not create parallel specialist Skill; use as deferred research input, compare against C existing owner and A before any admission"
+    },
+    {
+      "path": "/root/out/clown-src-skill-二开优化版2.3/references/experts/prompt-injection/SKILL.md",
+      "sha256": "2e0e3c7a16f590752171e8988379c51cb0ded54c74d0e3b68a2fce2910faf09b",
+      "finding": "frontmatter/organization declaration only; novel method body and effective native discovery not audited",
+      "disposition": "do not create parallel specialist Skill; use as deferred research input, compare against C existing owner and A before any admission"
+    },
+    {
+      "path": "/root/out/clown-src-skill-二开优化版2.3/references/experts/race-condition/SKILL.md",
+      "sha256": "bd72165df6877110d86ba5085279e0db92cad0f7d0e3edcf152776ebe560da8f",
+      "finding": "frontmatter/organization declaration only; novel method body and effective native discovery not audited",
+      "disposition": "do not create parallel specialist Skill; use as deferred research input, compare against C existing owner and A before any admission"
+    },
+    {
+      "path": "/root/out/clown-src-skill-二开优化版2.3/references/experts/recon-and-methodology/SKILL.md",
+      "sha256": "75db7c083941a6e74dfd41df0a49a0ec9a6c73eaea7c593c533dd7cebf2ecbc3",
+      "finding": "frontmatter/organization declaration only; novel method body and effective native discovery not audited",
+      "disposition": "do not create parallel specialist Skill; use as deferred research input, compare against C existing owner and A before any admission"
+    },
+    {
+      "path": "/root/out/clown-src-skill-二开优化版2.3/references/experts/request-smuggling/SKILL.md",
+      "sha256": "32527448e0f3b887ba546ea862a1cae02b8ae864493391e4f5651b2a886569a7",
+      "finding": "frontmatter/organization declaration only; novel method body and effective native discovery not audited",
+      "disposition": "do not create parallel specialist Skill; use as deferred research input, compare against C existing owner and A before any admission"
+    },
+    {
+      "path": "/root/out/clown-src-skill-二开优化版2.3/references/experts/security-testing-methodology/SKILL.md",
+      "sha256": "3cb3a3f195fab1246c28fe748bb53c0095b050a18968943711ca4b93745e7467",
+      "finding": "frontmatter/organization declaration only; novel method body and effective native discovery not audited",
+      "disposition": "do not create parallel specialist Skill; use as deferred research input, compare against C existing owner and A before any admission"
+    },
+    {
+      "path": "/root/out/clown-src-skill-二开优化版2.3/references/experts/ssrf-methodology/SKILL.md",
+      "sha256": "fae7bbbe98f9ac4152e5cd718e69b41929dc293d06ca4f09573f2622b0c14261",
+      "finding": "frontmatter/organization declaration only; novel method body and effective native discovery not audited",
+      "disposition": "do not create parallel specialist Skill; use as deferred research input, compare against C existing owner and A before any admission"
+    },
+    {
+      "path": "/root/out/clown-src-skill-二开优化版2.3/references/experts/websocket-security/SKILL.md",
+      "sha256": "5c9975d91e2393cd315c17ef72bb013f8fd3a7abf6abc382a69f7fbde2449fe0",
+      "finding": "frontmatter/organization declaration only; novel method body and effective native discovery not audited",
+      "disposition": "do not create parallel specialist Skill; use as deferred research input, compare against C existing owner and A before any admission"
+    },
+    {
+      "path": "/root/out/clown-src-skill-二开优化版2.3/references/experts/xss-methodology/SKILL.md",
+      "sha256": "c9e9d3c9d256237a2a4c3a21b050b4fe86a0ef076f6bf49195134c001eed60f9",
+      "finding": "frontmatter/organization declaration only; novel method body and effective native discovery not audited",
+      "disposition": "do not create parallel specialist Skill; use as deferred research input, compare against C existing owner and A before any admission"
+    }
+  ],
+  "B_adapter_and_lane_findings": {
+    "adapter_validator": {
+      "path": "/root/out/clown-src-skill-二开优化版2.3/scripts/validate_adapters.py",
+      "sha256": "a4ecb503269c01e6b3695e43485fe38c718ce9abc642aa8d0ff304895939cbeb",
+      "finding": "checks field shapes/constants/examples, not working producer-consumer host handoff",
+      "disposition": "borrow envelope vocabulary only; C owner must prove real consumer"
+    },
+    "handoff_schema": {
+      "path": "/root/out/clown-src-skill-二开优化版2.3/references/v23/handoff-schema.json",
+      "sha256": "74064d6f4821e2124c8aac9263d4f353f67ac876269d73dde46b26bab4b1abce",
+      "finding": "additionalProperties=false schema omits source_refs/confidence used in adapter sample",
+      "disposition": "do not import as runtime contract; reconcile against real C fields if later needed"
+    },
+    "adapter_sample": {
+      "path": "/root/out/clown-src-skill-二开优化版2.3/tests/adapter-cases.json",
+      "sha256": "75f6f0e218a811dfc1695bbbc19448806fdeb8ddcc4feaa0eed695ccf4cf8115",
+      "finding": "sample claims required source_refs/confidence absent from schema",
+      "disposition": "diagnostic evidence only"
+    },
+    "lane_readme": {
+      "path": "/root/out/clown-src-skill-二开优化版2.3/skills/specialized/src-hunt-lane/references/kill-chains/README.md",
+      "sha256": "fa4efea231993475fa8f4cb067fc45247ace1182ad0f06124f496803422ba9ef",
+      "finding": "two kill-chain links contain control characters; shortlist says ../SKILL.md though correct path is ../../SKILL.md",
+      "disposition": "do not copy malformed index"
+    },
+    "shortlist": {
+      "path": "/root/out/clown-src-skill-二开优化版2.3/skills/specialized/src-hunt-lane/references/kill-chains/shortlist.md",
+      "sha256": "ac77785a8533d1153d66c83dd63cad8f690da5ed1c05169fd9e854d15a7c9ddd",
+      "finding": "A has 94 text lines / 87 scenario rows; B lane has 98 text lines / 91 scenario rows. Lane lines 3-4 additionally redirect maintenance to ../SKILL.md section 5 + ../anti-idle-gates.md and entry to ../site-entry-playbook.md; lines 95-98 add four scenarios",
+      "disposition": "preserve A baseline; do not import B governance/routing redirection; defer 4 added scenarios"
+    }
+  }
+}
