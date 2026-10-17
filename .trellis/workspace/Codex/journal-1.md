@@ -955,3 +955,45 @@ R1-R3 功能修复按选项 A 实施完成并通过定向验收；未提交未�
 
 - 用户确认后进入指导子任务（R4-R6）；源码提交需单独确认，不 push。
 - 未做全量套件/真实模型/在线 MCP 验证。
+
+
+## Session 34: 6k完整集成与自包含Git交付收尾
+<!-- trellis-session: v=2 fp=34ed9aa67f1c585c -->
+
+**Date**: 2026-10-17
+**Task**: 6k完整集成与自包含Git交付收尾
+**Branch**: `refactor/10-11-capability-architecture`
+
+### Summary
+
+A1–A10完成；6k方法、原生观察和兼容reader已交付，必要cleanup前置单列。任务已归档，无关WIP保留，未push或部署个人runtime。
+
+### Main Changes
+
+- 62 origins、56活动方法、99历史文件保留；方法写入/恢复仍绑定真实checkout身份，新checkout仅验证终态内容读取。
+- 无Finding原生观察与浏览器原件登记复用原Store/证据owner；cleanup前置6路径和6k集成178路径按已确认精确blob分批提交。
+- 原任务归档到 .trellis/tasks/archive/2026-10/10-14-6k-full-integration；29项任务工件与3条spec链接修正单独提交，74份本地payload未入Git。
+- 保留CLAUDE/context_pack/tool-index剩余hunk及advisory/metrics/degraded等WIP；A6公开来源为作者自报，未独立复现或核实截图。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `a4a22e2d0b81d2c232be3518bdba89e652b19635` | fix: bind cleanup verification to report publication |
+| `ba183ca88e1bf311e59f3b41348c318f96047e3f` | feat: integrate versioned 6k methods and native observations |
+
+### Testing
+
+- [OK] B7方法矩阵37项断言和完成标记通过；该批Python退出码未捕获（外层zsh变量采集错误），不冒称exit=0。
+- [OK] cleanup专项8项通过、exit=0；相关既有回归6 passed in 5.31s、exit=0；未重跑全套。
+- [OK] C只读挂载catalog/read全56正文与62 origins通过；前两批Git树与验收候选一致，无关产品bytes/身份保留。
+- [OK] 归档72条相对链接与12条JSONL路径通过；实际renderer完整包含9正文，implement/check为130722/130714 bytes，无截断。
+- [OK] B7持久包939普通成员逐一bytes/hash/mode/uid/gid回读通过；不把复制见证当可移植恢复身份。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 本任务工程交付完成；如需个人runtime部署或在线能力实验，须另行确认范围与授权。
