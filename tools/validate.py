@@ -408,6 +408,14 @@ def validation_evidence_passed(summary: dict) -> bool:
     return four and seven
 
 
+def _cleanup_gate_passed(info: dict) -> bool:
+    """State-changing reports require the Store's evidence-linked confirmation."""
+    if not bool(info.get("cleanup_required")):
+        return True
+    confirmation = info.get("cleanup_confirmation")
+    return isinstance(confirmation, dict) and confirmation.get("status") == "verified"
+
+
 def build_validation_summary(info: dict, *, all_pass: bool, report_path: str | Path | None) -> dict:
     """Build a compact JSON summary that /remember can import later."""
     vuln_class = (info.get("vuln_type") or "").strip().lower()
@@ -433,7 +441,13 @@ def build_validation_summary(info: dict, *, all_pass: bool, report_path: str | P
     report_draft = inspect_report_draft(report_path) if report_path is not None else {
         "status": "not_written", "path": None, "placeholder_count": 0, "placeholders": [],
     }
-    report_ready = bool(evidence_passed and report_draft.get("status") == "complete")
+    cleanup_required = bool(info.get("cleanup_required"))
+    cleanup_passed = _cleanup_gate_passed(info)
+    report_ready = bool(
+        evidence_passed
+        and report_draft.get("status") == "complete"
+        and cleanup_passed
+    )
     delivery_judgment = None
     if (info.get("machine_decision") or {}).get("store_command"):
         # Novelty and destination policy do not decide whether a boundary was violated.
@@ -493,6 +507,9 @@ def build_validation_summary(info: dict, *, all_pass: bool, report_path: str | P
         "seven_question_gate_passed": bool(seven_question_gate.get("passed")),
         "validation_evidence_passed": evidence_passed,
         "report_ready": report_ready,
+        "cleanup_required": cleanup_required,
+        "cleanup_gate_passed": cleanup_passed,
+        "cleanup_confirmation": info.get("cleanup_confirmation") if cleanup_required else None,
         "report_draft": report_draft,
         "report_draft_status": str(report_draft.get("status") or "not_written"),
         "seven_question_gate_decision": seven_question_gate.get("decision", "needs_review"),
@@ -600,6 +617,7 @@ def build_submission_notes(summary: dict) -> str:
 - [ ] Four validation gates: `{four_gates}`
 - [ ] Combined report-readiness gates: `{gates}`
 - [ ] Report draft completion: `{draft_status}`
+- [ ] Cleanup confirmation: `{summary.get('cleanup_gate_passed', True) and ('VERIFIED' if summary.get('cleanup_required') else 'NOT REQUIRED') or 'NEEDS REVIEW'}`
 
 ## Submission checklist
 
@@ -1359,6 +1377,9 @@ def _build_machine_validation_input(
         repo_root=repo_root,
     )
     severity = _machine_report_severity(decision, report_content)
+    cleanup_confirmation = runtime_store(repo_root, decision_target).report_cleanup(
+        finding_id, require_verified=report_path is not None,
+    )
     if report_path is not None:
         _assert_machine_report_path_available(
             findings_dir,
@@ -1380,6 +1401,8 @@ def _build_machine_validation_input(
         "finding_id": finding_id,
         "finding_source_file": prefill.get("source_file", ""),
         "finding_summary": prefill.get("summary", ""),
+        "cleanup_required": cleanup_confirmation["required"],
+        "cleanup_confirmation": cleanup_confirmation,
         "seven_question_gate": seven_questions,
         # Keep only explicitly declared sources; absence does not imply attribution.
         "source_knowledge_refs": _parse_source_knowledge_refs(decision.get("source_knowledge_refs")),
@@ -1577,6 +1600,10 @@ def run_machine_preflight(args: argparse.Namespace) -> dict[str, Any]:
     if report_result is not None and findings_dir is not None and finding_id:
         report_path, report_content = report_result
         capture(lambda: _machine_report_severity(decision, report_content))
+        if prefill and repo_root is not None and decision_target is not None:
+            capture(lambda: runtime_store(repo_root, decision_target).report_cleanup(
+                finding_id, require_verified=report_path is not None,
+            ))
         if report_path is not None:
             capture(
                 lambda: _assert_machine_report_path_available(

@@ -645,6 +645,20 @@ def _references(value: Any) -> list[tuple[str, int]]:
     return sorted(result)
 
 
+def validate_cleanup_confirmation(value: Any) -> dict:
+    """Validate an authored restoration claim; Store owns its evidence bindings."""
+    fields = {"status", "mutation_refs", "restored_state", "verification_basis"}
+    if not isinstance(value, dict) or set(value) != fields or value["status"] != "verified":
+        raise StoreError("cleanup_confirmation requires status=verified, mutation_refs, restored_state and verification_basis")
+    refs = _references(value["mutation_refs"])
+    return {
+        "status": "verified",
+        "mutation_refs": [{"operation_id": operation, "step": step} for operation, step in refs],
+        "restored_state": _text(value["restored_state"], "cleanup restored_state"),
+        "verification_basis": _text(value["verification_basis"], "cleanup verification_basis"),
+    }
+
+
 @contextmanager
 def target_switch_lock(repo_root: str | Path, target: str, *, exclusive: bool = False):
     """Coordinate ordinary target mutations with an explicit cutover."""
@@ -1841,6 +1855,11 @@ class TargetStore:
         if fields["state_changing"] is not None and type(fields["state_changing"]) is not bool:
             raise StoreError("state_changing must be boolean or null")
         fields["result"] = self._observation_result(raw.get("result", ""))
+        cleanup = json.loads(fields["detail_json"]).get("cleanup_confirmation")
+        if cleanup is not None:
+            validate_cleanup_confirmation(cleanup)
+            if outcome != "complete" or fields["state_changing"] is not False:
+                raise StoreError("cleanup confirmation requires a complete, explicitly read-only verification observation")
         status = str(raw.get("identity_status") or "none").strip().lower()
         if status not in {"complete", "none", "incomplete", "conflict"}:
             raise StoreError("identity_status must be complete, none, incomplete or conflict")
@@ -1932,7 +1951,8 @@ class TargetStore:
         return encoded
 
     def record_execution(self, *, attempt_id: str, outcome: str, observations: list[dict], actor: str,
-                         candidate: dict | None = None, expected_operation: str | None = None) -> dict:
+                         candidate: dict | None = None, expected_operation: str | None = None,
+                         finding_id: str | None = None) -> dict:
         """Register published files atomically; never execute or assess a vulnerability."""
         attempt_id = _identifier(attempt_id, "attempt_id")
         if not isinstance(outcome, str) or outcome not in {"complete", "partial", "unknown"}:
@@ -1941,6 +1961,10 @@ class TargetStore:
             raise StoreError("observations must be a list; only unknown outcome may have no observations")
         prepared = [self._observation(row, outcome) for row in observations]
         claim = None
+        if finding_id is not None:
+            finding_id = _identifier(finding_id, "finding_id")
+            if candidate is not None:
+                raise StoreError("use candidate or existing finding_id, not both")
         if candidate is not None:
             claim = self._candidate(candidate)
             if not any(all(row[k] == claim[k] for k in ("endpoint", "method", "family")) for row, _ in prepared):
@@ -1948,9 +1972,13 @@ class TargetStore:
         if expected_operation is not None:
             expected_operation = _identifier(expected_operation, "expected_operation")
         material = (attempt_id, outcome, prepared, claim, expected_operation)
+        if finding_id is not None:
+            material += (finding_id,)
         operation_id = "operation:" + _digest(material)
 
         def mutate(conn, revision, now):
+            if finding_id is not None and not conn.execute("SELECT 1 FROM findings WHERE id=?", (finding_id,)).fetchone():
+                raise FindingNotFoundError(f"finding missing: {finding_id}")
             attempt = conn.execute("SELECT * FROM attempts WHERE id=?", (attempt_id,)).fetchone()
             if not attempt:
                 raise StoreError("attempt missing; retain raw files and explicitly register the execution attempt")
@@ -2002,8 +2030,10 @@ class TargetStore:
                                  (operation_id, step, binding["kind"], binding["id"]))
             if claim:
                 self._ensure_finding(conn, claim, now)
+            linked_finding = claim["id"] if claim else finding_id
+            if linked_finding:
                 conn.executemany("INSERT INTO finding_observations VALUES (?,?,?)",
-                                 [(claim["id"], operation_id, step) for step in range(len(prepared))])
+                                 [(linked_finding, operation_id, step) for step in range(len(prepared))])
 
         return self._command("record_execution", f"record:{_digest(material)}", operation_id, actor, material, mutate)
 
@@ -2067,6 +2097,83 @@ class TargetStore:
 
         return self._command("decide_delivery", command_id, command_id, actor, material, mutate)
 
+    def report_cleanup(self, finding_id: str, *, require_verified: bool = True,
+                       _capture: list | None = None) -> dict:
+        """Read restoration confirmations from this finding's registered observations.
+
+        A confirmation is an authored claim backed by raw verification evidence,
+        not proof inferred from a verb, local file deletion or an unbound receipt.
+        """
+        finding_id = _identifier(finding_id, "finding_id")
+        with self._connection() as conn:
+            return self._report_cleanup(conn, finding_id, require_verified=require_verified, capture=_capture)
+
+    def _report_cleanup(self, conn, finding_id: str, *, require_verified: bool = True,
+                        capture: list | None = None) -> dict:
+        if not conn.execute("SELECT 1 FROM findings WHERE id=?", (finding_id,)).fetchone():
+            raise FindingNotFoundError(f"finding missing: {finding_id}")
+        meta = conn.execute("SELECT store_id,revision FROM store").fetchone()
+        rows = [dict(row) for row in conn.execute("""SELECT b.*,o.outcome FROM finding_observations f
+            JOIN observations b ON b.operation_id=f.operation_id AND b.step=f.step
+            JOIN operations o ON o.id=b.operation_id WHERE f.finding_id=?
+            ORDER BY o.revision DESC,b.step DESC""", (finding_id,))]
+        mutations = {(row["operation_id"], row["step"]): row for row in rows if row["state_changing"] == 1}
+        covered, confirmations, invalid = set(), [], []
+        for row in rows if mutations else []:
+            if set(mutations) <= covered:
+                break
+            candidate_files = []
+            try:
+                confirmation = json.loads(row["detail_json"]).get("cleanup_confirmation")
+                if confirmation is None:
+                    continue
+                confirmation = validate_cleanup_confirmation(confirmation)
+                if (row["outcome"] != "complete" or row["error"] or row["truncated"]
+                        or row["state_changing"] != 0):
+                    raise StoreError("cleanup verification must be complete and explicitly read-only")
+                refs = _references(confirmation["mutation_refs"])
+                if any(ref not in mutations for ref in refs):
+                    raise StoreError("cleanup mutation_refs must identify this finding's state-changing observations")
+                if set(refs) <= covered:
+                    continue
+                if any(datetime.fromisoformat(row["observed_at"].replace("Z", "+00:00"))
+                       < datetime.fromisoformat(mutations[ref]["observed_at"].replace("Z", "+00:00"))
+                       or (row["operation_id"] == ref[0] and row["step"] <= ref[1]) for ref in refs):
+                    raise StoreError("cleanup verification must follow the referenced mutation")
+                artifacts = [dict(value) for value in conn.execute("""SELECT a.* FROM observation_artifacts b
+                    JOIN artifacts a ON a.id=b.artifact_id WHERE b.operation_id=? AND b.step=?""",
+                    (row["operation_id"], row["step"]))]
+                if not artifacts:
+                    raise StoreError("cleanup verification requires registered raw evidence")
+                for artifact in artifacts:
+                    path = self.root / artifact["ref"]
+                    before = _report_file_version(path.stat(follow_symlinks=False))
+                    self._require_valid_artifact(conn, artifact)
+                    if before != _report_file_version(path.stat(follow_symlinks=False)):
+                        raise ConflictError("cleanup evidence changed during acquisition")
+                    candidate_files.append((artifact, [(path, before)]))
+            except ConflictError:
+                raise
+            except (OSError, ValueError, StoreError) as exc:
+                invalid.append({"operation_id": row["operation_id"], "step": row["step"], "reason": str(exc)[:240]})
+                continue
+            if capture is not None:
+                capture.extend(candidate_files)
+            covered.update(refs)
+            confirmations.append({"operation_id": row["operation_id"], "step": row["step"]})
+        pending = sorted(set(mutations) - covered)
+        result = {
+            "required": bool(mutations),
+            "status": "pending" if pending else "verified" if mutations else "not_required",
+            "store_id": meta["store_id"], "revision": meta["revision"],
+            "verification_refs": confirmations,
+            "invalid_verification_refs": invalid[:5],
+            "pending_mutation_refs": [{"operation_id": operation, "step": step} for operation, step in pending],
+        }
+        if pending and require_verified:
+            raise StoreError("report publication requires evidence-linked cleanup verification for every state-changing observation")
+        return result
+
     def register_report(self, *, command_id: str, report_id: str, finding_id: str,
                         assessment_id: str, delivery_id: str, artifact: str,
                         actor: str) -> dict:
@@ -2075,6 +2182,8 @@ class TargetStore:
         finding_id = _identifier(finding_id, "finding_id")
         assessment_id = _identifier(assessment_id, "assessment_id")
         delivery_id = _identifier(delivery_id, "delivery_id")
+        cleanup_files: list = []
+        cleanup = self.report_cleanup(finding_id, _capture=cleanup_files)
         artifact_value = self._artifact(artifact)
         report_files = self._report_files(artifact_value)
         current = self.finding(finding_id)
@@ -2091,6 +2200,10 @@ class TargetStore:
         material = (report_id, finding_id, assessment_id, delivery_id, artifact_value)
 
         def mutate(conn, revision, now):
+            if revision - 1 != cleanup["revision"] or conn.execute("SELECT store_id FROM store").fetchone()[0] != cleanup["store_id"]:
+                raise ConflictError("cleanup evidence binding changed; retry report registration")
+            for evidence_artifact, files in cleanup_files:
+                self._check_report_files(conn, evidence_artifact, files)
             finding = conn.execute("SELECT 1 FROM findings WHERE id=?", (finding_id,)).fetchone()
             assessment = conn.execute("SELECT * FROM assessments WHERE id=? AND finding_id=?",
                                       (assessment_id, finding_id)).fetchone()
@@ -3366,6 +3479,12 @@ class TargetStore:
     def _report_rows(self, conn, rows: list[dict], assessment: dict | None,
                      deliveries: list[dict], *, assessment_valid: bool) -> list[dict]:
         current_delivery = {str(item["destination"]): item for item in deliveries}
+        cleanup_valid = True
+        if rows:
+            try:
+                self._report_cleanup(conn, rows[0]["finding_id"])
+            except (OSError, ValueError, StoreError):
+                cleanup_valid = False
         for report in rows:
             artifact = {
                 "id": report["artifact_id"], "ref": report["artifact_ref"],
@@ -3382,6 +3501,7 @@ class TargetStore:
             report["artifact_authorized"] = status["authorized"]
             report["stale"] = not (
                 assessment_valid
+                and cleanup_valid
                 and assessment
                 and report["assessment_id"] == assessment["id"]
                 and current

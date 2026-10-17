@@ -256,6 +256,40 @@ object with `{"mode":"deferred"}`. Publish later using the existing
 - Technical gates are unchanged. Explicit destination exclusions win; otherwise
   all technical and destination gates must pass for eligible. Remaining unknown,
   partial or chain_required decisions are deferred, never implicitly eligible.
+- A report backed by a state-changing observation additionally requires
+  `TargetStore.report_cleanup()` to find complete, explicitly read-only verification
+  observations linked to the same Finding. Their optional `detail.cleanup_confirmation`
+  names exact `mutation_refs`, `status=verified`, `restored_state` and
+  `verification_basis`; registered raw artifacts must remain healthy and the
+  verification timestamp must not precede the mutation. This is an authored
+  restoration claim, not an inferred semantic proof or local archive cleanup.
+  The check runs in machine preflight, immediate publication, deferred publication
+  and direct Store registration. Registration rechecks snapshot/file identities;
+  damaged cleanup evidence also makes a registered report stale without rewriting
+  its technical assessment. Request-time `redline_checked` remains independent.
+  Ordinary observations need no cleanup fields; deferred technical/destination
+  judgments may be saved with cleanup pending, but publication cannot bypass it.
+- Use existing `validation_runner.py record-evidence --target TARGET --finding-id ID
+  --attempt-id CLEANUP_ATTEMPT --evidence-json FILE --no-state-changing --json` to
+  register an already executed final read-back. The schema-v1 evidence has
+  `result=candidate`, one `runs[]` entry with actual method/URL/actor/object_scope
+  and raw request/response artifacts, and a top-level `cleanup_confirmation`:
+
+  ```json
+  {
+    "status": "verified",
+    "mutation_refs": [{"operation_id": "OPERATION_ID", "step": 0}],
+    "restored_state": "Test-owned object is back to its recorded baseline state",
+    "verification_basis": "The attached final read-back response matches that baseline"
+  }
+  ```
+
+  Existing source/generated_at/observed_difference fields remain required. This
+  explicit cleanup-only form may use a different method/endpoint from the Finding;
+  it registers control evidence with no closure identity or new Finding claim.
+  `record_execution(..., finding_id=ID)` owns the same-Store relation without a new
+  table, lifecycle or schema upgrade. Decision-local status/receipt strings do not
+  authorize publication.
 - No body inspection/write/registration occurs. `report_path=null`, `report_ready=false`,
   `all_gates_passed=false`, `report_draft_status=not_written`, and
   `machine_decision.report_mode=deferred` preserve absence separately from eligibility.

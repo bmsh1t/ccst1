@@ -204,6 +204,7 @@ def _publish_authored_report(store, report_dir, *, finding_id, assessment_id, de
     # Query projections already check integrity; recheck the bound execution at publication.
     for operation_id in {ref["operation_id"] for ref in assessment["evidence"]}:
         store.verify_operation(operation_id)
+    store.report_cleanup(finding_id)
     content = _read_report_body(body_file)
     binding = json.dumps([store.target, finding_id, assessment_id, delivery_id])
     report_id = "report_" + hashlib.sha256(binding.encode("utf-8")).hexdigest()

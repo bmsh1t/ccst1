@@ -82,6 +82,7 @@ identity, and cloud signals without re-enumerating everything.
 |---|---|---|
 | `tools/vuln_scanner.sh` | Recon done, want bounded breadth context | Bounded Nuclei/passive candidates with residual accounting; never report-ready proof |
 | `tools/validation_runner.py` (`request-diff`) | Exact AI baseline/variant pair | Shared replay/diff across query, form, JSON, text, header/cookie, and path inputs |
+| `tools/validation_runner.py` (`record-evidence`) | Already-executed raw observations or final cleanup read-back | Registers evidence only; cleanup-only input binds exact mutation refs and never confirms a new finding |
 | `tools/sender_semantics.py` | Byte-exact/proxy/cache/smuggling work needs sender choice | `--list` / `--require ...`; sender capability matrix + raw HTTP/1 sender for low-level request semantics |
 | `tools/aspnet_viewstate_knownkey.py` ⚠️ manual-only | Captured page contains `__VIEWSTATE` | Offline machineKey check; `--reveal-key` only for controlled validation |
 | `tools/telerik_knownkey.py` ⚠️ manual-only | Captured Telerik `SerializedParameters` | Offline vendored Badsecrets default-key check; no HTTP or state write |

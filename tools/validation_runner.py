@@ -45,7 +45,7 @@ try:
     from tools.target_paths import canonical_target_value, target_storage_key, target_owned_nonempty_evidence_ref
     from tools.scope_context import url_belongs_to_target
     from tools.scope_source import load_scope_context
-    from tools.target_store import FindingNotFoundError, StoreError, TargetStore, runtime_store, target_switch_lock
+    from tools.target_store import FindingNotFoundError, StoreError, TargetStore, runtime_store, target_switch_lock, validate_cleanup_confirmation
 except ImportError:  # pragma: no cover - direct tools/ execution
     from artifact_io import write_json_atomic as _write_json
     from auth_session import AuthSession, add_cli_args, session_from_args  # type: ignore
@@ -60,7 +60,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from target_paths import canonical_target_value, target_storage_key, target_owned_nonempty_evidence_ref  # type: ignore
     from scope_context import url_belongs_to_target  # type: ignore
     from scope_source import load_scope_context  # type: ignore
-    from target_store import FindingNotFoundError, StoreError, TargetStore, runtime_store, target_switch_lock  # type: ignore
+    from target_store import FindingNotFoundError, StoreError, TargetStore, runtime_store, target_switch_lock, validate_cleanup_confirmation  # type: ignore
 
 
 SCHEMA_VERSION = 1
@@ -431,7 +431,11 @@ def _store_observation(run: dict[str, Any], *, repo_root: Path, side: str | None
         "state_changing": state_changing,
         "redline_checked": redline_checked,
         "result": result,
-        "detail": {"evidence_role": str(observation.get("evidence_role") or "unknown")},
+        "detail": {
+            "evidence_role": str(observation.get("evidence_role") or "unknown"),
+            **({"cleanup_confirmation": observation["cleanup_confirmation"]}
+               if "cleanup_confirmation" in observation else {}),
+        },
         "identity_status": identity_status,
         "identity_technique": identity_technique,
         "identity_v2": identity_v2 or {},
@@ -445,7 +449,8 @@ def _record_primary_execution(store: TargetStore, *, attempt_id: str, actor: str
                               family: str, native: bool,
                               candidate: dict[str, str] | None,
                               state_changing: bool | None, redline_checked: bool,
-                              observed_at: str | None = None) -> dict[str, Any]:
+                              observed_at: str | None = None,
+                              finding_id: str | None = None) -> dict[str, Any]:
     observations = []
     timestamp = observed_at or started_at
     for run in runs:
@@ -474,7 +479,7 @@ def _record_primary_execution(store: TargetStore, *, attempt_id: str, actor: str
         candidate = None
     return store.record_execution(
         attempt_id=attempt_id, outcome=outcome, observations=observations,
-        candidate=candidate, actor=actor,
+        candidate=candidate, actor=actor, finding_id=finding_id,
     )
 
 
@@ -498,8 +503,9 @@ def _sync_primary_store(summary: dict[str, Any], *, repo_root: Path, store: Targ
         family=str(summary.get("vuln_class") or "runner-observation"),
         native=str(summary.get("lane") or "") == "native_evidence",
         candidate=(_store_candidate(store, str(summary.get("finding_id") or "").strip())
-                   if any(run.get("artifacts") for run in (summary.get("runs") or []) if isinstance(run, dict))
+                   if not summary.get("cleanup_only") and any(run.get("artifacts") for run in (summary.get("runs") or []) if isinstance(run, dict))
                    else None),
+        finding_id=summary["finding_id"] if summary.get("cleanup_only") else None,
         state_changing=summary.get("state_changing"),
         redline_checked=bool(summary.get("redline_checked")),
         observed_at=str(summary.get("generated_at") or now_utc()),
@@ -1268,9 +1274,16 @@ def record_native_evidence(
         if captured_at.tzinfo is None:
             raise ValueError("native evidence generated_at must be an ISO-8601 timestamp with a timezone")
         effective_state = _validate_request_facts(state_changing, redline_checked)
+        cleanup = None
+        if "cleanup_confirmation" in evidence:
+            cleanup = validate_cleanup_confirmation(evidence["cleanup_confirmation"])
+            if effective_state is not False or result != "candidate" or identity_v2 is not None:
+                raise ValueError("cleanup evidence requires --no-state-changing, result=candidate and no closure identity")
         raw_runs = evidence.get("runs")
         if not isinstance(raw_runs, list) or not raw_runs:
             raise ValueError("native evidence runs must contain the recorded execution steps")
+        if cleanup is not None and len(raw_runs) != 1:
+            raise ValueError("cleanup evidence must contain one final read-back verification run")
         runs = []
         anchors = []
         subject_step = evidence.get("subject_step")
@@ -1308,6 +1321,8 @@ def record_native_evidence(
             runs.append(run)
             if run_method == method and url == run_url:
                 anchors.append(index)
+        if cleanup is not None:
+            anchors = [0]  # Verification may use a different endpoint/method from the mutation.
         if not anchors:
             raise ValueError("native evidence must include the canonical finding's exact endpoint and method")
         if subject_step is None:
@@ -1325,12 +1340,25 @@ def record_native_evidence(
                 if dimension in dimensions and dimensions[dimension] != fact:
                     raise ValueError(f"native evidence identity_v2.{dimension} conflicts with the anchor")
         for run in runs:
-            subject = run is anchor
+            subject = run is anchor and cleanup is None
             run.update(evidence_role="subject" if subject else "control",
                        identity_status=identity_status if subject else "none",
                        identity_technique=identity_technique if subject else "",
                        identity_v2=identity_v2 if subject else {},
                        identity_dimensions=identity_v2["dimensions"] if subject and identity_v2 else {})
+        if cleanup is not None:
+            anchor["cleanup_confirmation"] = cleanup
+            # Reject incomplete/foreign mutation references before publishing a witness.
+            linked = {(ref["operation_id"], ref["step"]) for ref in finding["evidence"]}
+            for ref in cleanup["mutation_refs"]:
+                if (ref["operation_id"], ref["step"]) not in linked:
+                    raise ValueError("cleanup mutation reference is not linked to this finding")
+                operation = store.execution(ref["operation_id"])
+                mutation = next((row for row in operation["observations"] if row["step"] == ref["step"]), None)
+                if not mutation or mutation["state_changing"] != 1:
+                    raise ValueError("cleanup mutation reference must identify a state-changing observation")
+                if captured_at < datetime.fromisoformat(mutation["observed_at"].replace("Z", "+00:00")):
+                    raise ValueError("cleanup read-back must not predate its mutation")
         command_context = _runner_command_context(
             store, action_id=action_id, claim_token=claim_token, command_actor=command_actor,
             endpoint=url, family=vuln_class,
@@ -1362,6 +1390,7 @@ def record_native_evidence(
             "identity_technique": identity_technique,
             "runs": runs,
             "subject_step": subject_step,
+            **({"cleanup_only": True} if cleanup is not None else {}),
             "attempt_id": attempt_id or "",
             **command_context,
         }
