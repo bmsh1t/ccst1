@@ -9,6 +9,11 @@ import re
 from typing import Any
 
 try:
+    from tools.skill_reference_contract import resolve_skill_reference
+except ImportError:  # direct tools/ execution
+    from skill_reference_contract import resolve_skill_reference
+
+try:
     import yaml
 except ImportError as exc:  # pragma: no cover - 由 requirements.txt 保证
     raise RuntimeError(

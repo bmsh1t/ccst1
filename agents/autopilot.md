@@ -78,7 +78,7 @@ Business impact and workflow evidence guide the question; scanner output is an
 advisory lead, not a clean verdict. `rules/hunting.md` owns value-first posture and
 broad-scanner boundaries. Three modes, AI override and evidence-driven depth live
 in `skills/runtime-protocol.md#21-三模式决策discovery--exploitation--validation-modes`. Business-model maintenance, hypothesis selection, rotation and cross-stage
-coordination have one owner: `skills/src-hunting/SKILL.md`, read on demand. Return business-model updates for
+coordination have one owner: `skills/src-hunter/SKILL.md`, read on demand. Return business-model updates for
 the parent to save. The shared coordinator owns validation/report handoff;
 automatic continuation and budgets stay in `commands/autopilot.md`.
 Do not turn these into a second Core Loop or finish
@@ -91,13 +91,13 @@ Load only the matching method section when it is not already supplied:
 |---|---|
 | Actors/sessions/objects/private markers/hypotheses, workflow or timing comparison | `docs/autopilot-lanes.md#workflow-timing-and-case-state` and `docs/autopilot-lanes.md#state-and-queue`; Case is context, not a backlog, route score or global gate |
 | Browser/API/auth state, exact source/JS routes, chunk/source-map gaps | `docs/autopilot-lanes.md#browser-source-and-js`; `tools/deep_js_packer.py` only for concrete gaps, never JS count alone |
-| Focused fuzz from a concrete template, target-derived seeds/transforms and random-miss groups | `skills/web2-recon/SKILL.md#focused-discovery-boundary`; isolated raw/summary run directory, route existence remains a Signal |
+| Focused fuzz from a concrete template, target-derived seeds/transforms and random-miss groups | `skills/src-hunter/modules/web2-recon.md#focused-discovery-boundary`; isolated raw/summary run directory, route existence remains a Signal |
 | DNS/asset naming, certificate/JS/source gap | `docs/autopilot-lanes.md#credentials-and-asset-expansion` (including its conditional caller Surface-refresh handoff when DNS expansion adds hosts; never refresh parent state yourself) and `docs/tool-index.md`; host count alone is not a trigger |
 | Software/version/advisory applicability | `commands/intel.md` and `docs/autopilot-lanes.md#software-and-intel`; keep affected ranges, provider failure/staleness and route reachability separate; versionless representative pages retain their cursors |
 | WordPress or Exchange/OWA/EWS/Autodiscover | `knowledge/cards/wordpress-surface-intelligence.md` or the existing EBurst entry in `docs/autopilot-lanes.md#software-and-intel` |
 | SQL/JSON/WAF or access-boundary comparison | `docs/autopilot-lanes.md#sql-json-and-waf` and `docs/autopilot-lanes.md#access-limit`; status changes, WAF blocks, `429` and transport errors are not findings |
 | Byte-exact proxy/cache/desync | `docs/autopilot-lanes.md#wire-and-live-action-boundaries`; `tools/sender_semantics.py --require` gates sender capabilities, browser/urllib cannot prove wire absence |
-| Login/protocol/credential evidence | `skills/credential-attack/SKILL.md` and `commands/spray.md`; reviewed finite shortlist, dry-run/preflight, rate/lockout and stop-on-hit; no direct candidate-pool replay or inferred password grant |
+| Login/protocol/credential evidence | `skills/src-hunter/modules/credential-attack.md` and `commands/spray.md`; reviewed finite shortlist, dry-run/preflight, rate/lockout and stop-on-hit; no direct candidate-pool replay or inferred password grant |
 | Self-owned test-account email or Cloudflare clearance | Existing setup-helper entries in `docs/autopilot-lanes.md#access-limit` |
 | Candidate registration, replay/claim binding, technical judgment or report preparation | `docs/evidence-runners.md`, `commands/validate.md`, `commands/report.md`; return proposed evidence/spec/body for parent-owned registration, CAS and assessment |
 

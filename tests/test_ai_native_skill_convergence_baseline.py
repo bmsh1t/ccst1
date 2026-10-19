@@ -94,12 +94,12 @@ def test_race_card_does_not_treat_serial_negative_as_parallel_proof():
 
 def test_phase0_and_intel_route_keep_selection_reason_and_urgency():
     """Preserve hypothesis comparison and evidence-selected component research."""
-    methodology = " ".join((REPO_ROOT / "skills/src-hunting/SKILL.md").read_text(encoding="utf-8").split())
-    assert "State the concrete question and competing explanations" in methodology
-    assert "without assuming the desired impact" in methodology
-    assert "Compare expected learning, plausible impact, current evidence" in methodology
+    methodology = " ".join((REPO_ROOT / "skills/src-hunter/SKILL.md").read_text(encoding="utf-8").split())
+    assert "围绕当前缺口提出竞争解释" in methodology
+    assert "区分观察与推断" in methodology
+    assert "比较可能影响、预期学习、现有证据、可逆性和成本" in methodology
 
-    recon = (REPO_ROOT / "skills" / "web2-recon" / "SKILL.md").read_text(encoding="utf-8")
+    recon = (REPO_ROOT / "skills/src-hunter/modules/web2-recon.md").read_text(encoding="utf-8")
     assert "current `/intel` research, chosen by Claude" in recon
     assert "immediate next step, not a deferred one" not in recon
 
@@ -167,9 +167,9 @@ def test_recovery_guidance_checks_inherited_constraints_without_full_source_read
     recovery = command.split("### Startup And Recovery", 1)[1].split("### State Consumption Loop", 1)[0]
     assert "current commands" in recovery
     assert "not all source" in recovery
-    assert "label unchecked judgments inherited/unverified" in recovery
+    assert "unchecked = inherited/unverified" in recovery
     assert "read/apply complete" in recovery
-    assert "resume/compaction" in recovery and "start, target change" in recovery
+    assert "start/target change/resume/compaction" in recovery
     assert "注明来源、时区" in protocol and "和精度" in protocol
     assert "先后关系不证明当前可达性" in protocol
 
@@ -202,12 +202,12 @@ def test_autopilot_contract_keeps_selection_authority_with_ai():
     evidence-backed reason.
     """
     command = (REPO_ROOT / "commands/autopilot.md").read_text(encoding="utf-8")
-    skill = " ".join((REPO_ROOT / "skills/src-hunting/SKILL.md").read_text(encoding="utf-8").split())
-    assert "skills/src-hunting/SKILL.md" in command
+    skill = " ".join((REPO_ROOT / "skills/src-hunter/SKILL.md").read_text(encoding="utf-8").split())
+    assert "skills/src-hunter/SKILL.md" in command
     assert "order is advisory" in command
     assert "Read selected evidence/owner contracts before" in command
-    assert "Machine scores and route labels are advisory" in skill
-    assert "native main session owns the global investigation" in skill
+    assert "Queue 候选不是路线指令" in skill
+    assert "当前主会话是唯一调查控制器" in skill
     assert "Scanner-negative/incomplete/memory proves no Coverage" in command
 
 
@@ -239,7 +239,7 @@ def test_runtime_protocol_reuses_receipts_without_per_execution_result_forms():
     for boundary in (
         "同会话读 Skill 或执行工具不追加结果表", "原始证据引用与 owner 回执",
         "缺失的回执保持待回收/未决", "只有真实跨代理交接",
-        "skills/src-hunting/SKILL.md#real-delegation-and-execution-handoff",
+        "skills/src-hunter/SKILL.md#real-delegation-and-execution-handoff",
         "支持/反对解释", "未知/适用条件", "专家自报不确认 Finding、不完成 Action",
         "入口的结束合同",
     ):
@@ -263,10 +263,10 @@ def test_cognitive_write_timing_keeps_event_saves_and_immediate_execution_owners
     ):
         assert boundary in timing
     reference = "skills/runtime-protocol.md#cognitive-write-timing"
-    for entry in ("skills/src-hunting/SKILL.md", "commands/hunt.md", "commands/autopilot.md", "rules/hunting.md"):
+    for entry in ("skills/src-hunter/SKILL.md", "commands/hunt.md", "commands/autopilot.md", "rules/hunting.md"):
         assert reference in (REPO_ROOT / entry).read_text(encoding="utf-8")
     command = " ".join((REPO_ROOT / "commands/autopilot.md").read_text(encoding="utf-8").split())
-    assert "`arguments.checkpoint_trigger` for read-only snapshots, not cognitive write cadence" in command
+    assert "Read-only snapshots: `arguments.checkpoint_trigger`; cognitive writes:" in command
     for boundary in ("require actual receipts", "Round terminal heartbeat first", "exactly one post-lane refresh",
                      "Coverage `rebuild` then `find-gaps`", "can_claim_exhausted=true"):
         assert boundary in command
@@ -274,11 +274,11 @@ def test_cognitive_write_timing_keeps_event_saves_and_immediate_execution_owners
 
 def test_autopilot_heartbeat_is_conditional():
     command = " ".join((REPO_ROOT / "commands/autopilot.md").read_text().split())
-    assert "write decision/next_action only on rotation/blocker/stall" in command
-    assert "unlike mandatory Round heartbeats" in command
+    assert "write decision/next_action on rotation/blocker/stall only" in command
+    assert "Round heartbeats remain mandatory" in command
     assert "Decide continue/rotate/stop in-turn" in command
     assert "--loop-check --projection-only --json" in command
-    assert "`loop_guard.repetition_facts` is advisory, never overrides hard gates/claims" in command
+    assert "`loop_guard.repetition_facts` is advisory, not above gates/claims" in command
     assert "Coverage `rebuild` then `find-gaps`" in command
     assert "Global Review covers bounded" in command
 
@@ -294,17 +294,14 @@ def test_autopilot_business_model_read_is_native():
     through a deterministic stub generator. AI writes and edits the note directly
     from bounded evidence; the generator (five blank AI sections, 30-day mtime
     freshness, refresh losing AI judgment) was a re-implementation of native work."""
-    skill = " ".join((REPO_ROOT / "skills/src-hunting/SKILL.md").read_text(encoding="utf-8").split())
+    skill = " ".join((REPO_ROOT / "skills/src-hunter/SKILL.md").read_text(encoding="utf-8").split())
     assert "tools/business_model_stub.py" not in skill
-    assert "Maintain `evidence/<target>/business_model.md` with native Read/Write/Edit" in skill
-    assert "keep source references, distinguish observation from judgment" in skill
-    assert "edit incrementally rather than regenerating prior conclusions" in skill
-    assert "not another Action/Finding or target-memory authority" in skill
-    for dimension in ("observed features", "actors", "objects", "tenants", "workflows", "crown jewels", "trust boundaries"):
-        assert dimension in skill
-    assert "depth pack from target-observed request shapes" in skill
-    assert "one passive observation is not API" in skill
-    assert "Partial cursors and untested dimensions stay visible and resumable" in skill
+    assert "增量维护 `evidence/<target>/business_model.md`" in skill
+    assert "区分观察与推断" in skill and "保留来源" in skill
+    assert "不是另一个 Action/Finding/记忆真源" in skill
+    assert "不逐观察重写" in skill
+    assert "未测和低优先保持 unresolved" in skill
+    assert "原始语料与 partial/cursor 不丢失" in skill
 
 
 def test_action_queue_lanes_doc_keeps_explicit_store_work_and_ai_choice():
@@ -377,10 +374,10 @@ def test_dns_expansion_returns_surface_refresh_to_caller():
 @pytest.mark.parametrize("entry", ["commands/autopilot.md", "commands/hunt.md", "agents/autopilot.md"])
 def test_investigation_methods_are_reachable_in_every_execution_mode(entry):
     text = (REPO_ROOT / entry).read_text(encoding="utf-8")
-    core = (REPO_ROOT / "skills/src-hunting/SKILL.md").read_text(encoding="utf-8")
-    assert "skills/src-hunting/SKILL.md" in text
+    core = (REPO_ROOT / "skills/src-hunter/SKILL.md").read_text(encoding="utf-8")
+    assert "skills/src-hunter/SKILL.md" in text
     assert "knowledge/playbooks/web2-evidence-contracts.md" in core
-    assert "including prerequisites" in core and "counterexamples and reopening limits" in core
+    assert "包含前提、顺序、成功证据、反例和停止/重开条件" in core
     assert "on demand" in text.lower()
     assert "business_model.md" not in text
 
@@ -397,12 +394,12 @@ def test_controller_prompt_sizes_stay_within_spec_guards():
 
 def test_manual_hunt_reuses_shared_rotation_and_browser_contracts():
     hunt = (REPO_ROOT / "commands/hunt.md").read_text(encoding="utf-8")
-    coordinator = (REPO_ROOT / "skills/src-hunting/SKILL.md").read_text(encoding="utf-8")
+    coordinator = (REPO_ROOT / "skills/src-hunter/SKILL.md").read_text(encoding="utf-8")
     lanes = (REPO_ROOT / "docs/autopilot-lanes.md").read_text(encoding="utf-8")
     assert "autopilot's promotion contract" not in hunt
     assert "rules/coverage-gate.md" in hunt and "docs/evidence-runners.md" in hunt
     assert "three focused variants" not in hunt
-    assert "skills/src-hunting/SKILL.md" in hunt
+    assert "skills/src-hunter/SKILL.md" in hunt
     assert "## Default Hunt Loop" not in hunt
     assert "the only required step" not in hunt
     assert "1. LOAD" not in hunt
@@ -415,7 +412,7 @@ def test_manual_hunt_reuses_shared_rotation_and_browser_contracts():
     assert "## Evidence-Driven Rotation" in coordinator
     assert hunt.count("python3 tools/surface.py --target target.com") == 1
     assert "docs/autopilot-lanes.md#browser-source-and-js" in hunt
-    assert "docs/autopilot-lanes.md" in coordinator
+    assert "docs/tool-index.md#execution-contract-lookup" in coordinator
     assert "does not authorize automatic continuation or delegation" in lanes
     assert "This section applies only to automatic mode" in lanes
     browser = lanes.split("## Browser Source And JS", 1)[1].split("## Software And Intel", 1)[0]
@@ -425,12 +422,12 @@ def test_manual_hunt_reuses_shared_rotation_and_browser_contracts():
 
 def test_automatic_mode_keeps_receipts_and_bounded_post_lane_refresh():
     command = " ".join((REPO_ROOT / "commands/autopilot.md").read_text().split())
-    for boundary in ("### State Consumption Loop", "Consume Bootstrap `state`, then refreshed `control`",
+    for boundary in ("### State Consumption Loop", "Consume Bootstrap `state`, then fresh `control`",
                      "Do not loop `/hunt`", "docs/evidence-runners.md#绑定已认领行动",
                      "same explicit `--actor OPERATOR`", "require actual receipts",
                      "Failed claim: inspect once; never guess/retry", "exactly one post-lane refresh",
                      "re-read only after owner writes", "never replay unknown effects",
-                     "`max_lanes` limits only new lanes, not evidence import/owner write-back/cleanup/Checkpoint/Closure"):
+                     "`max_lanes` limits new lanes, not evidence import/owner write-back/cleanup/Checkpoint/Closure"):
         assert boundary in command
 
 

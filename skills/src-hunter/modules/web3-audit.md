@@ -1,9 +1,9 @@
----
-name: web3-audit
-description: Use only when a Solidity, Rust, wallet, or smart-contract target is explicitly in scope. Treats source, bytecode, chain state, and value movement as separate evidence planes and chooses the invariant, authority, oracle, signature, or upgrade branch from the contract's actual interfaces; execution detail stays on demand, and static patterns or TVL are leads, never findings.
----
+# Web3 Audit Decision Module
 
-# Web3 Audit Decision Skill
+内部完整方法，按当前问题读取；不是独立原生 Skill，不自动启动执行或委派。
+返回 [src-hunter 调查主干](../SKILL.md)；恢复/写回仍归 `skills/runtime-protocol.md`。
+
+适用：Use only when a Solidity, Rust, wallet, or smart-contract target is explicitly in scope. Treats source, bytecode, chain state, and value movement as separate evidence planes and chooses the invariant, authority, oracle, signature, or upgrade branch from the contract's actual interfaces; execution detail stays on demand, and static patterns or TVL are leads, never findings.
 
 Treat source, bytecode, chain state, and value movement as separate evidence
 planes. Choose the next branch from the contract's actual interfaces and
@@ -12,7 +12,7 @@ invariants rather than following a fixed bug checklist.
 ## Direct Execution Contract
 
 For real delegation, use the input/output and acceptance boundary in
-`skills/src-hunting/SKILL.md#real-delegation-and-execution-handoff`. Return
+`skills/src-hunter/SKILL.md#real-delegation-and-execution-handoff`. Return
 contrary evidence and unknowns as well as results; propose global pivots to the
 main session. Same-session reading requires no handoff form. Expert self-report
 does not resolve Action or confirm Finding.

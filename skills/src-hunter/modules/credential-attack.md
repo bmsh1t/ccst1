@@ -1,9 +1,9 @@
----
-name: credential-attack
-description: Use when a real login form or credential path (including admin/back-office) is observed and a bounded credential review is warranted. Prepares and queues the review — it never authorizes a live spray by itself; deterministic tools own requests, pacing, redaction, evidence, and resume.
----
-
 # Credential Attack Pipeline
+
+内部完整方法，按当前问题读取；不是独立原生 Skill，不自动启动执行或委派。
+返回 [src-hunter 调查主干](../SKILL.md)；恢复/写回仍归 `skills/runtime-protocol.md`。
+
+适用：Use when a real login form or credential path (including admin/back-office) is observed and a bounded credential review is warranted. Prepares and queues the review — it never authorizes a live spray by itself; deterministic tools own requests, pacing, redaction, evidence, and resume.
 
 ## AI/工具边界
 
@@ -18,7 +18,7 @@ AI /autopilot
 Review，默认评估少量 default/common weak-password candidates；这只是准备/排队动作，不是
 live Spray。用户已提供稳定测试账号且未明确要求验证弱口令/默认凭据风险时，可跳过大规模弱口令
 字典测试；高价值后台、已识别产品指纹、明显默认凭据场景或匿名态已出现弱口令信号时，仍可在
-预算内保留少量默认凭据检查和高价值组合验证。候选值由 AI 基于目标证据有限选择，Skill 不维护
+预算内保留少量默认凭据检查和高价值组合验证。候选值由 AI 基于目标证据有限选择，本模块不维护
 静态密码列表。
 live 前仍需要：具体 endpoint、reviewed users、AI shortlist、可判定信号、锁定/限速计划、
 dry-run preflight 和停止条件。
@@ -35,7 +35,7 @@ Baseline Review 不是固定流水线；除默认/常见候选的少量评估外
 
 保留 `confirmed` 与 `inferred` 的来源差异，不能把 permutations 当真实账号。HIBP 等外部
 enrichment 只改变候选优先级，不建立账号存在性或 finding。候选文件、digest、权限和
-去重约束由 `commands/spray.md` 及其工具契约拥有；本 Skill 不复制命令、参数或 provider
+去重约束由 `commands/spray.md` 及其工具契约拥有；本模块 不复制命令、参数或 provider
 阈值。
 
 模型输出 shortlist 时记录每个候选的来源、选择理由、风险和预期学习，并让现有入口执行
@@ -51,7 +51,7 @@ enrichment 只改变候选优先级，不建立账号存在性或 finding。候�
 | okta | Okta identity 协议证据 | errorCode/status/sessionToken 分类 |
 
 普通 OIDC authorization-code 登录不等于 ROPC。具体 provider/module、隔离目录和成功信号
-由 `commands/spray.md` 的执行契约决定；本 Skill 只根据已观察到的协议选择模式。
+由 `commands/spray.md` 的执行契约决定；本模块 只根据已观察到的协议选择模式。
 
 ## Dry-run 与 live
 
@@ -70,7 +70,7 @@ live 前必须完成 dry-run preflight 和停止条件；`--i-understand` 不能
 
 ## 选择和停止
 
-本 Skill 不规定用户/密码排列或探测顺序。现有执行契约负责账号轮次、间隔、guard、
+本模块 不规定用户/密码排列或探测顺序。现有执行契约负责账号轮次、间隔、guard、
 ambiguous、network error 和恢复语义；默认首个 valid 停止，首个 rate-limit/guard/ambiguous
 停止。模型只根据目标证据决定是否继续、切换模式或结束 lane，并记录预期学习和 kill
 condition，不输出伪精确锁定概率。
@@ -78,7 +78,7 @@ condition，不输出伪精确锁定概率。
 ## 证据与恢复
 
 证据格式、私有目录、digest、attempt 去重、原子 summary、resume 和中断状态均由
-`commands/spray.md` 及现有工具拥有。本 Skill 只要求把 valid/ambiguous/guarded 结果和
+`commands/spray.md` 及现有工具拥有。本模块 只要求把 valid/ambiguous/guarded 结果和
 artifact ref 写回既有 owner，不能把“无命中”解释成 clean/no findings。
 
 ## 结果 handoff

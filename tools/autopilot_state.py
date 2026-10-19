@@ -192,9 +192,9 @@ except ImportError:  # pragma: no cover - direct tools/ execution
 
 # frontier/gate 拆分（批次 7）：re-export 保持外部 import 零破坏。
 try:
-    from tools.autopilot_gate import _actionable_coverage_gaps, _blocking_recon_phase_gate, _build_actionable_frontier, _build_owner_continuations, _candidate_items_for_next_action, _closure_frontier_matches, _closure_reason_frontier, _describe_next_step, _format_owner_continuations_lines, _frontier_item, _hard_gate_projection, _recon_phase_residuals, _scanner_lane_residuals, describe_next_step
+    from tools.autopilot_gate import RECON_COLLECTION_REASONS, _actionable_coverage_gaps, _blocking_recon_phase_gate, _build_actionable_frontier, _build_owner_continuations, _candidate_items_for_next_action, _closure_frontier_matches, _closure_reason_frontier, _describe_next_step, _format_owner_continuations_lines, _frontier_item, _hard_gate_projection, _recon_phase_residuals, _scanner_lane_residuals, describe_next_step
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from autopilot_gate import _actionable_coverage_gaps, _blocking_recon_phase_gate, _build_actionable_frontier, _build_owner_continuations, _candidate_items_for_next_action, _closure_frontier_matches, _closure_reason_frontier, _describe_next_step, _format_owner_continuations_lines, _frontier_item, _hard_gate_projection, _recon_phase_residuals, _scanner_lane_residuals, describe_next_step
+    from autopilot_gate import RECON_COLLECTION_REASONS, _actionable_coverage_gaps, _blocking_recon_phase_gate, _build_actionable_frontier, _build_owner_continuations, _candidate_items_for_next_action, _closure_frontier_matches, _closure_reason_frontier, _describe_next_step, _format_owner_continuations_lines, _frontier_item, _hard_gate_projection, _recon_phase_residuals, _scanner_lane_residuals, describe_next_step
 
 PLACEHOLDER_OBJECT_SEGMENTS = {"nan", "undefined", "null", "none", "object", "[object object]"}
 DECISION_PROJECTION_SCHEMA_VERSION = 1
@@ -633,13 +633,6 @@ def _pick_next_action(
         return "review_validation_candidate"
     if action_queue_next:
         return "resume_action_queue"
-    if (cidr_continuation or {}).get("status") == "pending":
-        return "run_recon"
-    if not has_recon:
-        if recon_completed_no_live_hosts:
-            return "recon_no_live_hosts"
-        return "run_recon"
-
     if structured_findings.get("draft_completion_pending"):
         return "complete_report_draft"
     if structured_findings.get("validated_pending_report"):
@@ -1737,7 +1730,6 @@ def _build_autopilot_state(
 _TERMINAL_CLOSURE_ACTIONS = {
     "invalid_batch_target",
     "batch_failed",
-    "recon_no_live_hosts",
 }
 
 
@@ -1981,16 +1973,6 @@ def _explicit_partial_reason(state: dict) -> str:
     """Keep a stale handoff state from hiding durable work owned elsewhere."""
     if state.get("recon_in_progress") or state.get("scan_in_progress"):
         return "runtime_phase_active"
-    run_budget = (state.get("recon_artifacts") or {}).get("run_budget") or {}
-    if run_budget.get("partial"):
-        return "recon_budget_partial"
-    if _blocking_recon_phase_gate(state)[0]:
-        return "recon_phase_partial"
-    continuation = (state.get("recon_artifacts") or {}).get("cidr_continuation") or {}
-    if continuation.get("status") == "pending":
-        return "cidr_continuation_pending"
-    if continuation.get("status") == "invalid":
-        return "cidr_continuation_invalid"
     if state.get("active_action_queue_count"):
         return "durable_work_pending"
     if state.get("action_queue_next") or state.get("validation_runner_next"):
@@ -2008,6 +1990,16 @@ def _explicit_partial_reason(state: dict) -> str:
         )
     ):
         return "finding_work_pending"
+    run_budget = (state.get("recon_artifacts") or {}).get("run_budget") or {}
+    if run_budget.get("partial"):
+        return "recon_budget_partial"
+    if _blocking_recon_phase_gate(state)[0]:
+        return "recon_phase_partial"
+    continuation = (state.get("recon_artifacts") or {}).get("cidr_continuation") or {}
+    if continuation.get("status") == "pending":
+        return "cidr_continuation_pending"
+    if continuation.get("status") == "invalid":
+        return "cidr_continuation_invalid"
     return ""
 
 
@@ -2017,7 +2009,6 @@ _CLOSURE_REASON_PRIORITY = {
     "state_snapshot_stale": -1,
     "invalid_batch_target": 0,
     "batch_failed": 0,
-    "recon_no_live_hosts": 0,
     "round_lane_evidence_invalid": 5,
     "round_lane_unfinished": 5,
     "round_closure_pending": 5,
@@ -2072,6 +2063,10 @@ def _closure_primary_reason(reasons: list[str]) -> str:
 
 def _closure_action_for_reason(reason: str, state: dict, current: str) -> str:
     """Map the selected owner continuation to an existing CLI action."""
+    if reason in RECON_COLLECTION_REASONS:
+        return "handoff"
+    if reason == "durable_work_pending" and state.get("validation_runner_next") and not state.get("action_queue_next"):
+        return "review_validation_candidate"
     exact = {
         "state_snapshot_stale": "refresh_state",
         "durable_work_pending": "resume_action_queue",
@@ -2095,12 +2090,8 @@ def _closure_action_for_reason(reason: str, state: dict, current: str) -> str:
         "identity_v2_candidate_pending": "repair_evidence_ledger",
         "identity_v2_incomplete": "repair_evidence_ledger",
         "coverage_ledger_evidence_missing": "repair_evidence_ledger",
-        "recon_budget_partial": "run_recon",
-        "recon_phase_partial": "run_recon",
         "recon_phase_review_required": "global-review",
         "scanner_lane_review_required": "global-review",
-        "cidr_continuation_pending": "run_recon",
-        "cidr_continuation_invalid": "run_recon",
         "runtime_phase_active": "wait_scan" if state.get("scan_in_progress") else "wait_recon",
         "global_review_required": "global-review",
         "global_review_stale": "global-review",
@@ -2115,6 +2106,10 @@ def _closure_action_for_reason(reason: str, state: dict, current: str) -> str:
             return "revalidate_finding_owner"
         if findings.get("next_validation"):
             return "validate_finding"
+        if findings.get("draft_completion_pending"):
+            return "complete_report_draft"
+        if findings.get("validated_pending_report"):
+            return "report_finding"
         return "collect_candidate_evidence"
     if reason in {"round_lane_evidence_invalid", "round_lane_unfinished", "round_closure_pending", "round_lane_unclaimed"}:
         return current
@@ -2140,12 +2135,10 @@ def _finalize_closure_continuation(
         "state_snapshot_stale",
         "checkpoint_stale",
         "checkpoint_invalid",
-        "recon_phase_partial",
+        "recon_phase_partial",  # Keep this phase's exact optional continuation, not another Recon head.
         "recon_phase_review_required",
         "scanner_lane_review_required",
         "global_review_form_insufficient",
-        "cidr_continuation_pending",
-        "cidr_continuation_invalid",
     }
     if fallback and (force_fallback or not matching_exists):
         frontier = [fallback, *frontier]
@@ -2174,6 +2167,8 @@ def build_closure_projection(
     """Return the explicit, read-only closure verdict for an existing state."""
     reasons: list[str] = []
     action = str(state.get("next_action") or "handoff")
+    if action == "recon_no_live_hosts":
+        action = "handoff"  # Old diagnostic is not a target-wide terminal state.
     ledger_health = state.get("_ledger_health") if isinstance(state.get("_ledger_health"), dict) else {}
     checkpoint_health = state.get("_checkpoint_health") if isinstance(state.get("_checkpoint_health"), dict) else {}
     ledger_projection = state.get("_ledger_projection") if isinstance(state.get("_ledger_projection"), dict) else {}
@@ -2391,7 +2386,7 @@ def build_closure_projection(
                 stop_condition="publish a valid witness or record the checkpoint read/queue mismatch",
             ), *actionable_frontier]
 
-    if verdict == "handoff" and not actionable_frontier:
+    if verdict == "handoff" and not actionable_frontier and reasons[0] not in RECON_COLLECTION_REASONS:
         target = str(state.get("resolved_target") or state.get("target") or "")
         target_key = target_storage_key(target)
         reason = str(reasons[0] if reasons else "")
@@ -2414,16 +2409,6 @@ def build_closure_projection(
             action_text = "Refresh or repair the target checkpoint witness before continuing"
             expected_gain = "restore a trusted checkpoint binding for round and queue recovery"
             stop_condition = "publish a valid witness or record the checkpoint read/queue mismatch"
-        elif reason == "recon_budget_partial":
-            owner = "recon"
-            recon = state.get("recon_artifacts") if isinstance(state.get("recon_artifacts"), dict) else {}
-            evidence_ref = str(
-                recon.get("recon_dir")
-                or f"recon/{target_key}/recon_manifest.jsonl"
-            )
-            action_text = "Resume the bounded Recon budget from its existing target-owned artifacts"
-            expected_gain = "cover the remaining bounded Recon inputs without discarding prior pages"
-            stop_condition = "record the completed or blocked Recon budget outcome, then recompute Closure"
         elif reason == "runtime_phase_active":
             owner = "runtime"
             phase = "scan" if state.get("scan_in_progress") else "recon"

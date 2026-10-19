@@ -848,13 +848,13 @@ def test_ai_action_outside_initial_frontier_uses_queue_owner_and_resumes(tmp_pat
     assert store.page("attempts")["total"] == 0
 
 
-def test_pending_cidr_continuation_routes_back_to_recon():
+def test_pending_cidr_continuation_does_not_select_recon():
     assert _pick_next_action(
         True,
         {"p1": [], "p2": []},
         None,
         cidr_continuation={"status": "pending", "next_offset": 4096},
-    ) == "run_recon"
+    ) == "handoff"
 
 
 def test_priority_frontier_exposes_queue_and_surface_without_cross_owner_score():
@@ -938,6 +938,65 @@ def _closure_matrix(*, status: str = "tested_clean") -> dict:
         }],
         "summary": {"total_cells": 1},
     }
+
+
+@pytest.mark.parametrize("collection", ["missing", "zero_live", "pending", "invalid", "phase_partial"])
+@pytest.mark.parametrize("owner_kind", ["none", "queue", "report"])
+def test_native_investigation_control_projection(tmp_path, store, monkeypatch, collection, owner_kind):
+    """Same owner facts survive full/bounded, closure, loop and compact projections."""
+    from tools.autopilot_bootstrap import compact_autopilot_state
+    from tools.autopilot_gate import _build_owner_continuations
+
+    acquire = autopilot_state_module._load_autopilot_control_facts
+    def facts(*args, **kwargs):
+        result = acquire(*args, **kwargs)
+        result["has_recon"] = False
+        result["recon_completed_no_live_hosts"] = collection == "zero_live"
+        recon = dict(result.get("recon_artifacts") or {})
+        if collection in {"pending", "invalid"}:
+            recon["cidr_continuation"] = {"status": collection, "next_offset": 4096,
+                "remaining_hosts": 17, "path": "recon/target.com/live/cidr_continuation.json"}
+        if collection == "phase_partial":
+            recon["phase_gates"] = {"latest": {"dir_fuzz": {"status": "partial",
+                "artifact": "recon/target.com/dirs/ffuf_summary.json", "bounded": {
+                    "input_total": 20, "selected": 3, "remaining": 17,
+                    "closure_blocking": True, "continuation": "review preserved FFUF batch"}}}}
+        result["recon_artifacts"] = recon
+        if owner_kind == "queue":
+            result["action_queue_next"] = {"id": "action-one", "action": "review saved evidence"}
+        elif owner_kind == "report":
+            result["structured_findings"] = {"validated_pending_report": 1,
+                "next_report": {"id": "finding-one", "action": "report validated finding"}}
+        return result
+    monkeypatch.setattr(autopilot_state_module, "_load_autopilot_control_facts", facts)
+    expected = {"none": "handoff", "queue": "resume_action_queue", "report": "report_finding"}[owner_kind]
+    for bounded in (False, True):
+        state = build_autopilot_state(str(tmp_path), "target.com", bounded=bounded)
+        assert state["next_action"] == expected
+        assert state["hard_gate"] == {}
+        expanded = _build_owner_continuations(state)
+        closure = build_closure_projection(state, _closure_matrix())
+        loop = build_decision_projection(state, "loop_check")["control"]
+        compact = compact_autopilot_state(state)
+        assert compact["next_action"] == loop["next_action"] == expected
+        if owner_kind == "none" and collection in {"missing", "zero_live"}:
+            # Existing observation/Intel residuals may justify a bounded stop;
+            # absent Recon must not manufacture an executable collection lane.
+            assert closure["next_action"] in {"handoff", "stop_bounded"}
+        else:
+            assert closure["next_action"] == expected
+        assert closure["can_claim_exhausted"] is False
+        if collection == "phase_partial":
+            residual = closure["recon_residuals"][0]
+            assert residual["remaining"] == 17 and residual["closure_blocking"] is True
+            assert residual["review_token"] == "recon:dir_fuzz:remaining=17"
+        if collection in {"pending", "invalid"}:
+            assert state["recon_artifacts"]["cidr_continuation"]["next_offset"] == 4096
+            assert compact["recon"]["cidr_continuation"]["remaining_hosts"] == 17
+            for items in (state["owner_continuations"], expanded, closure["owner_continuations"],
+                          loop["owner_continuations"], compact["owner_continuations"]):
+                cidr = next(x for x in items if str(x.get("id", "")).startswith("cidr:"))
+                assert cidr["runnable"] is (collection == "pending")
 
 
 def _publish_surface_projection(repo_root, target: str, memory_dir=None) -> None:
@@ -1336,7 +1395,7 @@ def test_blocking_recon_residual_binds_exact_phase_continuation():
     assert closure["verdict"] == "handoff"
     assert closure["can_claim_exhausted"] is False
     assert closure["reasons"][0] == "recon_phase_partial"
-    assert closure["next_action"] == "run_recon"
+    assert closure["next_action"] == "handoff"
     item = closure["actionable_frontier"][0]
     assert item["owner"] == "recon"
     assert item["id"] == "url_collection"
@@ -2308,11 +2367,12 @@ def test_invalid_cidr_continuation_has_recon_frontier(tmp_path, store):
 
     assert closure["verdict"] == "handoff"
     assert closure["reasons"][0] == "cidr_continuation_invalid"
-    assert closure["next_action"] == "run_recon"
+    assert closure["next_action"] == "handoff"
     assert closure["actionable_frontier"][0]["owner"] == "recon"
     assert closure["actionable_frontier"][0]["evidence_ref"].endswith(
         "cidr_continuation.json"
     )
+    assert closure["actionable_frontier"][0]["runnable"] is False
 
 
 def test_pending_cidr_continuation_has_recon_frontier_and_cannot_finish():
@@ -2335,11 +2395,12 @@ def test_pending_cidr_continuation_has_recon_frontier_and_cannot_finish():
 
     assert closure["verdict"] == "handoff"
     assert closure["reasons"][0] == "cidr_continuation_pending"
-    assert closure["next_action"] == "run_recon"
+    assert closure["next_action"] == "handoff"
     assert closure["actionable_frontier"][0]["owner"] == "recon"
     assert closure["actionable_frontier"][0]["evidence_ref"].endswith(
         "cidr_continuation.json"
     )
+    assert closure["actionable_frontier"][0]["runnable"] is True
 
 
 def test_checkpoint_cursor_missing_from_queue_is_stale_not_advanced(tmp_path, store):
@@ -4811,7 +4872,7 @@ class TestAutopilotState:
         assert recommended[0]["url"] == "https://app.target.com/rest/languages"
         assert recommended[0]["review_reason"] == "browser-observed API/workflow"
 
-    def test_requires_recon_when_missing(self, tmp_path, store):
+    def test_missing_recon_returns_native_handoff(self, tmp_path, store):
         memory_dir = tmp_path / "hunt-memory"
         (memory_dir / "targets").mkdir(parents=True, exist_ok=True)
         write_legacy_profile(memory_dir, make_target_profile("target.com", hunt_sessions=1))
@@ -4819,7 +4880,8 @@ class TestAutopilotState:
         state = build_autopilot_state(str(tmp_path), "target.com", memory_dir=str(memory_dir))
         assert state["has_recon"] is False
         assert state["has_memory"] is False
-        assert state["next_action"] == "run_recon"
+        assert state["next_action"] == "handoff"
+        assert state["hard_gate"] == {}
 
 
 
@@ -5139,7 +5201,7 @@ class TestAutopilotState:
         assert state["action_queue_next"]["id"] == "AQ-0001"
         assert state["next_action"] == "resume_action_queue"
 
-    def test_completed_recon_without_live_hosts_is_terminal(self, tmp_path, store):
+    def test_completed_recon_without_live_hosts_is_not_terminal(self, tmp_path, store):
         recon_dir = tmp_path / "recon" / "target.com"
         (recon_dir / "live").mkdir(parents=True, exist_ok=True)
         (recon_dir / "live" / "httpx_full.txt").write_text("", encoding="utf-8")
@@ -5164,8 +5226,8 @@ class TestAutopilotState:
 
         assert state["has_recon"] is False
         assert state["recon_completed_no_live_hosts"] is True
-        assert state["next_action"] == "recon_no_live_hosts"
-        assert "do not rerun recon automatically" in output
+        assert state["next_action"] == "handoff"
+        assert "src-hunter" in output
         assert "completed with no live host inventory" in state["recon_blocker"]
         inventory = state["observation_inventory"]
         assert inventory["available"] is False

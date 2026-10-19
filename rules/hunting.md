@@ -5,13 +5,14 @@ These are the canonical hunting semantics. Load this rule for `/hunt`,
 
 Owner boundaries:
 
-- `CLAUDE.md` owns target context, CTF interpretation, and tool/MCP routing.
+- `CLAUDE.md` owns operator intent, CTF interpretation, and loading boundaries;
+  this rule owns fixed-target/asset-cluster semantics.
 - `rules/red-lines.md` owns concrete side-effect decisions.
 - `rules/coverage-gate.md` owns lifecycle names, coverage states, and completion claims.
 - `rules/tool-ai-boundary.md` owns the AI/tool split and scanner-output interpretation.
 - `skills/runtime-protocol.md` owns mode transitions and Skill/knowledge routing.
 - `commands/autopilot.md` owns inline control and bounded specialist use.
-- `skills/triage-validation/SKILL.md` owns candidate proof; `rules/reporting.md` owns reports.
+- `skills/src-hunter/modules/triage-validation.md` owns candidate proof; `rules/reporting.md` owns reports.
 
 ---
 
@@ -49,8 +50,9 @@ Core discipline:
   recon, parameters, paths, and workflows.
 - Define the current target boundary, map the surface, rank it, run focused
   validation, and write back what changed.
-- Map broadly before deep-diving, but do not use more recon to avoid a
-  high-signal surface already present.
+- Choose breadth or depth from the current information gap; missing inventory
+  never requires Recon before an existing request/source question. Do not use
+  more recon to avoid a high-signal surface already present.
 - Route from current evidence, never an old preference, favorite bug class,
   checklist, or bounty heuristic.
 - A path-level failure preserves its conditions, blocker, refined hypothesis or
@@ -101,6 +103,17 @@ Do not let another target's history select or suppress this target's lanes.
 
 Localhost, private IP, CIDR, list, and named targets remain valid inputs. Any
 CTF interpretation comes from `CLAUDE.md`, not this rule.
+
+### 锁面与资产簇
+
+固定站、文档或资产清单即锁面，禁止偷换成全集团测绘。范围内多 host、业务流子域、
+同 host 多 path 都保留在视野内，不把单点结果推广为整个资产簇覆盖。
+用户标注的重要资产组优先，清单顺序不是固定执行顺序；未测面按实际条件留存，
+不要求无预算穷尽全部 host/path。
+
+同皮壳按差异选代表，比较 `jump` / `service=` / `moduleId` 是否指向不同业务面；
+相同登录皮肤不证明相同后端或授权边界。避免无信息的同构重复，也不能据此记为已测。
+集团发现或已有目标后的种子续接按 `rules/campaign.md`，历史文件存在不自动切换模式。
 
 ### Temporary preferences do not cross targets
 

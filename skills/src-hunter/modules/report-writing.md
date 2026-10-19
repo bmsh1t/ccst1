@@ -1,11 +1,11 @@
----
-name: report-writing
-description: Draft reports from a current confirmed Store assessment, intact evidence, and an independent eligible destination decision. Preserves evidence traceability and canonical lifecycle; CVSS is optional destination metadata.
----
-
 # REPORT WRITING
 
-This is a `report-only` Skill. Use it after validation has selected a canonical
+内部完整方法，按当前问题读取；不是独立原生 Skill，不自动启动执行或委派。
+返回 [src-hunter 调查主干](../SKILL.md)；恢复/写回仍归 `skills/runtime-protocol.md`。
+
+适用：Draft reports from a current confirmed Store assessment, intact evidence, and an independent eligible destination decision. Preserves evidence traceability and canonical lifecycle; CVSS is optional destination metadata.
+
+This is a `report-only` module. Use it after validation has selected a canonical
 finding. Author the report from the existing finding, Evidence Ledger, validation summary, and
 target record; do not create a second finding/report lifecycle or replace
 structured validation with model judgement.

@@ -5,7 +5,7 @@ description: Author and publish an evidence-backed report for a current confirme
 # /report
 
 AI authors the report; the tool checks owner bindings, publishes exact bytes and indexes current reports.
-Load `skills/report-writing/SKILL.md` for evidence standards, destination format and writing guidance.
+Load `skills/src-hunter/modules/report-writing.md` for evidence standards, destination format and writing guidance.
 There is no category-based narrative, default impact, remediation or severity generator.
 
 ## Current evidence and delivery

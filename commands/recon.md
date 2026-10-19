@@ -6,6 +6,11 @@ description: Run the local recon pipeline on a target — domain/IP/CIDR or prim
 
 Run the production recon pipeline. Do not re-implement the methodology inline.
 
+Invoking `/recon` explicitly selects the existing complete profile pipeline.
+Ordinary `src-hunter` investigation does not invoke it merely because inventory is
+missing, has zero live hosts, or retains collection pages. `--recon-only` skips
+scanner; it is not a per-phase switch. No `--phase` or `--ffuf-rotation-only` exists.
+
 The supplied target, IP, CIDR, or primary-domain batch list is already the active
 target context. Start directly with **Run This**.
 
@@ -46,7 +51,7 @@ BBHUNT_ENABLE_AMASS=1 bash tools/recon_engine.sh target.com
 正则提取、secret grep 和递归 JS 链接分析留给 Claude 按需选择，不自动创建 Queue 工作。裸
 `recon_engine.sh TARGET` 保持原 full 行为；Source Map 源文件恢复和动态 chunk 重建继续由
 Claude 后续按证据选择的原生阅读或显式恢复工具处理。Shuji 只消费有效的 v3 Source Map；
-通用 AST/去混淆不是 Recon 的固定自动步骤，需要时由 `web2-recon` DeepDive
+通用 AST/去混淆不是 Recon 的固定自动步骤，需要时由 `src-hunter` 的 `web2-recon` 内部模块
 在真实 JS/runtime 证据触发后使用当前可用的本地工具或 AI 分析。
 
 For large primary-domain lists, keep the Claude session short and resumable:
@@ -390,6 +395,6 @@ recon/<list-stem>/
 
 ## References
 
-- Full recon playbook: `skills/web2-recon/SKILL.md`
+- Full recon playbook: `skills/src-hunter/modules/web2-recon.md`
 - Direct engine: `tools/recon_engine.sh`
 - Orchestrator entrypoint: `tools/hunt.py --recon-only`

@@ -6,7 +6,7 @@ description: Select an evidence-backed token review path for EVM or Solana targe
 
 Review a token or program by selecting the most informative trust, authority,
 accounting, liquidity, or transfer question from the supplied code and chain
-context. `skills/meme-coin-audit/SKILL.md` owns the direct-only decision
+context. `skills/src-hunter/modules/meme-coin-audit.md` owns the direct-only decision
 contract; this command owns entry and optional scanner handoff.
 
 ## Usage

@@ -1,9 +1,9 @@
----
-name: meme-coin-audit
-description: Use only when a token, liquidity pool, or Solana program is explicitly in scope. Separates token identity, authority state, market/liquidity state, and holder impact to choose the next branch within the allowed simulation boundary; command and probe knowledge remains on demand, and a centralization note alone stops before promotion.
----
+# Token and Meme-Coin Decision Module
 
-# Token and Meme-Coin Decision Skill
+内部完整方法，按当前问题读取；不是独立原生 Skill，不自动启动执行或委派。
+返回 [src-hunter 调查主干](../SKILL.md)；恢复/写回仍归 `skills/runtime-protocol.md`。
+
+适用：Use only when a token, liquidity pool, or Solana program is explicitly in scope. Separates token identity, authority state, market/liquidity state, and holder impact to choose the next branch within the allowed simulation boundary; command and probe knowledge remains on demand, and a centralization note alone stops before promotion.
 
 Separate token identity, authority state, market/liquidity state, and holder
 impact. Select the next branch from observed chain data and the allowed
@@ -12,7 +12,7 @@ simulation boundary; concrete command and probe knowledge remains on demand.
 ## Direct Execution Contract
 
 For real delegation, use the input/output and acceptance boundary in
-`skills/src-hunting/SKILL.md#real-delegation-and-execution-handoff`. Return
+`skills/src-hunter/SKILL.md#real-delegation-and-execution-handoff`. Return
 contrary evidence and unknowns as well as results; propose global pivots to the
 main session. Same-session reading requires no handoff form. Expert self-report
 does not resolve Action or confirm Finding.

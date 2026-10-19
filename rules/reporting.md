@@ -1,21 +1,21 @@
 # Reporting Rules
 
 This file owns cross-cutting reporting checks and scoring calibration.
-`skills/triage-validation/SKILL.md` owns validation verdicts;
-`skills/report-writing/SKILL.md` owns presentation, delivery modes, titles,
+`skills/src-hunter/modules/triage-validation.md` owns validation verdicts;
+`skills/src-hunter/modules/report-writing.md` owns presentation, delivery modes, titles,
 word budgets, and follow-up wording. Do not maintain another format here.
 
 ---
 
 ## 1. Claim Presentation
 
-Apply the Writing Rules in `skills/report-writing/SKILL.md`. Unproven impact
+Apply the Writing Rules in `skills/src-hunter/modules/report-writing.md`. Unproven impact
 stays an evidence gap, not a stronger claim created during report drafting.
 
 ## 2. RUN 7-QUESTION GATE BEFORE WRITING
 
-Apply Q1-Q7 and the four gates in `skills/triage-validation/SKILL.md` before
-reporting. That Skill owns REPORT, CHAIN_REQUIRED, DOWNGRADE, and DO_NOT_REPORT
+Apply Q1-Q7 and the four gates in `skills/src-hunter/modules/triage-validation.md` before
+reporting. That module owns REPORT, CHAIN_REQUIRED, DOWNGRADE, and DO_NOT_REPORT
 precedence; this file does not redefine the verdict.
 
 ## 3. ALWAYS INCLUDE PROOF OF CONCEPT
@@ -90,7 +90,7 @@ impact to select metrics; do not infer severity from a bug-class name or scanner
 ## 5. SEPARATE EVIDENCE GAPS FROM DESTINATION EXCLUSIONS
 
 Use the evidence pitfalls and Q7 destination checks in
-`skills/triage-validation/SKILL.md`. A policy rejection cannot refute technical
+`skills/src-hunter/modules/triage-validation.md`. A policy rejection cannot refute technical
 evidence; an unsupported impact cannot become valid because a destination pays.
 
 ## 6. VERIFY DATA ISN'T EXPECTED PUBLIC
@@ -119,7 +119,7 @@ private object. Use an equivalent artifact when the boundary is not HTTP.
 
 ## 8. Delivery
 
-Use `skills/report-writing/SKILL.md` for platform structure, title wording,
+Use `skills/src-hunter/modules/report-writing.md` for platform structure, title wording,
 length, independent submissions, and clarification responses. Delivery choices
 do not change the validation result or evidence requirements; optional recorded
 CVSS remains read-only metadata.

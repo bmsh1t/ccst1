@@ -1,99 +1,84 @@
 {
   "meta": {
-    "purpose": "Offline current-entry smoke cases: Skill description boundaries and direct knowledge/owner references. These assertions do not prove model routing behavior.",
-    "ground_truth_source": "Current native skills/*/SKILL.md descriptions and complete method/owner references after the capability-architecture cutover. The prior 2026-09-14 cases are preserved in the parent task research/entry-consumer-routing-legacy.json.",
+    "purpose": "Current single native entry, complete internal modules, and direct knowledge references; this does not prove model routing behavior.",
+    "ground_truth_source": "skills/src-hunter/SKILL.md and its nine complete internal modules. Historical A/B materials remain unchanged.",
     "skills": [
-      "cicd-security",
-      "credential-attack",
-      "meme-coin-audit",
-      "mobile-pentest",
-      "report-writing",
-      "src-hunting",
-      "triage-validation",
-      "web2-recon",
-      "web3-audit",
-      "whitebox-audit"
-    ],
-    "scoring": "Offline checks only: current Skill/reference must exist; listed Skill distractors must not have greater lexical trigger overlap than the expected Skill. Reference-only cases are readability checks and receive no lexical or model score."
+      "src-hunter"
+    ]
   },
   "cases": [
     {
       "moment": "Recon finished an hour ago; three endpoints have odd responses. Compare competing hypotheses and choose the next investigation experiment.",
-      "expected": "src-hunting",
-      "distractors": ["web2-recon", "whitebox-audit"],
+      "expected": "src-hunter",
       "why": "Global hypothesis comparison belongs to the shared investigation core."
     },
     {
       "moment": "The hunt is validated and written; weigh competing hypotheses and decide whether another cross-domain investigation is justified.",
-      "expected": "src-hunting",
-      "distractors": ["report-writing", "triage-validation"],
+      "expected": "src-hunter",
       "why": "Global continuation and conditional stopping share the core; no separate coordinator."
     },
     {
       "moment": "A GraphQL endpoint appeared in the crawl output; introspection is on and I want the lane's evidence gates.",
       "expected_reference": "knowledge/cards/graphql.md",
-      "distractors": ["triage-validation", "web2-recon"],
       "why": "Evidence names a bug-class lane; validation is premature, recon already produced this evidence."
     },
     {
       "moment": "I have a candidate: SSRF with an internal service response. Before any report claim I need the seven questions.",
-      "expected": "triage-validation",
-      "distractors": ["report-writing", "src-hunting"],
-      "why": "Candidate-quality validation gate; report-writing requires validation passed first."
+      "expected": "src-hunter",
+      "why": "Candidate-quality validation gate; report-writing requires validation passed first.",
+      "expected_module": "triage-validation"
     },
     {
       "moment": "Validation passed with CVSS 8.1; draft the HackerOne submission from the finding and evidence ledger.",
-      "expected": "report-writing",
-      "distractors": ["triage-validation", "src-hunting"],
-      "why": "Post-validation delivery rendering is report-writing's only trigger."
+      "expected": "src-hunter",
+      "why": "Post-validation delivery rendering is report-writing's only trigger.",
+      "expected_module": "report-writing"
     },
     {
       "moment": "Every request to the API returns 403 because of a sign/hmac header the browser computes; I need to replay them.",
       "expected_reference": "knowledge/cards/js-runtime-signature-reconstruction.md",
-      "distractors": ["mobile-pentest", "web2-recon"],
       "why": "Read the complete client-signing method directly; missing source edges can become a bounded whitebox question."
     },
     {
       "moment": "New target, nothing known yet: find subdomains, live hosts, and the URL surface.",
-      "expected": "web2-recon",
-      "distractors": ["src-hunting", "whitebox-audit"],
-      "why": "Attack-surface discovery is a local Recon question."
+      "expected": "src-hunter",
+      "why": "Attack-surface discovery is a local Recon question.",
+      "expected_module": "web2-recon"
     },
     {
       "moment": "The target's public GitHub org has Actions workflows that reference secrets in run blocks.",
-      "expected": "cicd-security",
-      "distractors": ["whitebox-audit", "web2-recon"],
-      "why": "Explicit CI/CD asset in scope — the direct-only trigger."
+      "expected": "src-hunter",
+      "why": "Explicit CI/CD asset in scope — the direct-only trigger.",
+      "expected_module": "cicd-security"
     },
     {
       "moment": "The APK in scope talks to an API the web app never exposes; compare auth behavior between the two clients.",
-      "expected": "mobile-pentest",
-      "distractors": ["whitebox-audit", "web2-recon"],
-      "why": "Mobile artifact in scope with client-boundary question; hands off to web2 lanes after the differential is captured."
+      "expected": "src-hunter",
+      "why": "Mobile artifact in scope with client-boundary question; hands off to web2 lanes after the differential is captured.",
+      "expected_module": "mobile-pentest"
     },
     {
       "moment": "The login form accepts a known employee email; plan a bounded credential review with a lockout plan.",
-      "expected": "credential-attack",
-      "distractors": ["src-hunting", "web2-recon"],
-      "why": "Real login form + bounded review warrant — preparation-only lane."
+      "expected": "src-hunter",
+      "why": "Real login form + bounded review warrant — preparation-only lane.",
+      "expected_module": "credential-attack"
     },
     {
       "moment": "I don't know which owner accepts a validation-runner result or how dependent steps keep the session.",
       "expected_reference": "docs/tool-index.md",
-      "distractors": ["src-hunting", "whitebox-audit"],
       "why": "Shared execution-owner lookup goes directly to its index, without a reference-only Skill."
     },
     {
       "moment": "A Solidity vault upgrade split the accounting across two implementations; review the invariant before recommending.",
-      "expected": "web3-audit",
-      "distractors": ["whitebox-audit", "meme-coin-audit"],
-      "why": "Smart-contract target in scope with an invariant question."
+      "expected": "src-hunter",
+      "why": "Smart-contract target in scope with an invariant question.",
+      "expected_module": "web3-audit"
     },
     {
       "moment": "Saved JavaScript and dependency source show a possible sink. Trace reachable inputs and authorization guards, preserving deployment uncertainty.",
-      "expected": "whitebox-audit",
-      "distractors": ["src-hunting", "web2-recon"],
-      "why": "A bounded source reachability question delegates to whitebox while global priorities stay with the core."
+      "expected": "src-hunter",
+      "why": "A bounded source reachability question delegates to whitebox while global priorities stay with the core.",
+      "expected_module": "whitebox-audit"
     }
   ]
 }

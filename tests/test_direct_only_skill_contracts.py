@@ -1,4 +1,4 @@
-"""Direct-only Skills expose a bounded manual execution contract."""
+"""Internal direct-only methods preserve their bounded execution contract."""
 
 from __future__ import annotations
 
@@ -20,8 +20,8 @@ DIRECT_ONLY = {
 def test_direct_only_skills_have_domain_contracts_and_stay_manual(tmp_path):
     TargetStore(tmp_path, "target.com").initialize()
     for skill_id in DIRECT_ONLY:
-        text = (REPO_ROOT / "skills" / skill_id / "SKILL.md").read_text(encoding="utf-8")
-        assert "explicitly in scope" in text.split("\n", 3)[2].lower()
+        text = (REPO_ROOT / "skills/src-hunter/modules" / f"{skill_id}.md").read_text(encoding="utf-8")
+        assert "explicitly in scope" in text.lower()
         assert "## Direct Execution Contract" in text[:2500]
         for label in ("Entry", "Evidence", "Stop"):
             match = re.search(rf"^- {label}:\s*(.+)$", text, re.MULTILINE)

@@ -77,8 +77,8 @@ hint counts must not substitute for business-value judgment. There is no new
 Planner, Controller, model loop, automatic chain generator, or session manager.
 
 Autopilot is an automatic execution mode, not a second investigation workflow.
-Manual and automatic entries share `src-hunting` as the single investigation
-core, problem-scoped specialists, the memory protocol, Rules and owner APIs. Autopilot adds continuation, waits, budgets, read-only checkpoint cadence and handoff;
+Manual and automatic entries share `skills/src-hunter/SKILL.md` as the only native
+Skill, its complete problem-scoped internal modules, the memory protocol, Rules and owner APIs. Autopilot adds continuation, waits, budgets, read-only checkpoint cadence and handoff;
 it does not own different finding, evidence or report standards. Shared execution
 contracts are read on demand and never enable automatic continuation by themselves.
 
@@ -93,6 +93,42 @@ wrappers or local cognitive extractors. Live `/intel` retains its independent
 advisory/version/provider/freshness contract. Observation residuals can prevent
 an exhaustion claim without creating a mandatory next action; the current
 session can end within budget while keeping those residuals visible.
+
+### 6k-original Entry, CCST Engineering Base
+
+The native core is organized from original 6k S01: business/code intent, scoped
+material acquisition, feature-matched complete methods, proof/output and whitebox
+reasoning. CLAUDE adapts S55's valid global principles. CCST's competing explanations,
+minimal experiments, conditional counterevidence and real owner contracts remain.
+Nine complete `skills/src-hunter/modules/*.md` resources retain recon, whitebox,
+credential, triage, reporting, CI/CD, mobile, Web3 and token capabilities without
+separate frontmatter registrations, old-name wrappers or symlinks. Explicit slash
+commands and optional real agents are not additional native Skill entries.
+
+`knowledge/methods/clown/` remains the only writable, versioned complete method
+root: 49 knowledge files and five full references retain the original organization.
+Its source-reference SKILL is not installed or a second active controller. The
+original 62 source identities/defects and published history stay immutable; S52's
+missing Phase 0 is not reconstructed. `hot_method.py --read` captures verified full
+bodies/context under the original lock. Catalogs and source availability are not
+reading, review or capability proofs.
+
+Explicit `--migrate-entry` publishes only the allowlisted v2 navigation/consumer
+changes through the existing CAS/blob/witness/decision/receipt owner. Ordinary A
+cannot modify entry/governance files. Accepted rollback is another approved reverse
+transaction, not a historical receipt edit or checkout identity rebind.
+
+Historical knowledge `related_skills` and reviewed bytes keep their review identity.
+`skill_reference_contract` supplies exact current reading navigation, shared by
+registry/audit and installer identity checks; unknown/missing references fail. It
+neither registers old Skills nor changes ranking, target basis or Store schemas.
+
+Missing Recon, zero live hosts and collection residuals do not choose an investigation
+route or hide Queue/Finding/Runner work. Valid collection continuations are optional;
+invalid cursors remain non-runnable. Real locks, Scope/Auth/parent scope, claims,
+unknown-effect recovery and cleanup still bind execution. Partial/remainder facts
+and review references survive full/bounded/loop/compact views and forbid false
+exhaustion. Low priority and budget stops are not technical refutations.
 
 ## Domain Facts and Ownership
 
@@ -420,6 +456,7 @@ Shared contracts and readers have explicit lower-level owners:
 | `migration_receipts` | Strict receipt/manifest/archive readers, byte bindings and existing-state-directory receipt locks; no Store or CLI imports |
 | `target_memory_schema` | Single legacy-memory normalizer and pollution vocabulary shared by import and memory CLI |
 | `knowledge_relations` | Pure reviewed-method declaration, endpoint and heading-anchor contracts; no I/O or acceptance writer |
+| `skill_reference_contract` | Finite retired identity vocabulary and exact current reading paths; no ranking, registration or target state |
 | `target_paths` | Target identity, resource locks and target-owned nonempty evidence references; no domain imports |
 | `scope_context` | `url_belongs_to_target`, `target_list_entries` and Scope classification/publication; depends on target paths only |
 | `browser_evidence` | Browser artifact references and readiness inspection; Runtime never imports the browser publisher |
@@ -511,10 +548,29 @@ budgets remain. The protected Checkpoint caller retains a no-I/O retired seed
 adapter, not an object detector. Knowledge/Skill method content is outside this
 refactor; its loading/storage boundaries change, not its substance.
 
-Installation and synchronization share runtime_doctor and a hash-based ownership
-receipt. Only unchanged owned retired files can be removed. Unknown legacy files,
-local modifications and unsafe paths are preserved with diagnostics. Disabled
-commands stay disabled. No repo-wide deletion runs over shared user directories.
+Installation and synchronization share `runtime_doctor.sync_runtime()` and the
+hash-based ownership receipt. Whole-batch preflight precedes payload/receipt writes;
+only unchanged owned retired files can be removed. The selected Skill discovery tree
+is inspected for known retired or duplicate identities, including renamed paths;
+unowned/modified entries and unsafe or uninspectable paths reject the batch.
+Unrelated external Skills and disabled commands are preserved, never tree-deleted.
+
+An entry cutover requires all kinds plus prune and a fixed checkout/method/native
+candidate. `.ccst-entry-migration.json` binds root, direction, executor/source/method/
+native fingerprints, exact file operations, before/after receipts and expected entries
+before payload. Non-entry resources precede old-entry retirement; the new entry is last.
+The record's receipt phase fixes the verified after-state before receipt publication,
+including when receipt bytes are unchanged. Interrupted payloads resume only at exact
+recorded before/after hashes with the same version. Receipt-phase recovery verifies
+and completes the receipt/cleanup only. Third states, unplanned entries and changed
+sources are refused; read-only compare reports pending as critical drift, never repairs.
+Reverse sync uses a separately approved prior asset set and the migration-aware tools.
+
+Root CLAUDE/rules/tools/knowledge stay in the selected checkout; they are not installed
+into the global Skill package. A checked disk root is not all discovery roots or a
+host cache, and does not prove natural method use or gains. Personal installation,
+host refresh and live G4 remain separately authorized. No cross-file atomicity,
+power-loss recovery or zero-downtime guarantee is implied.
 
 ### Execution guarantee boundaries
 

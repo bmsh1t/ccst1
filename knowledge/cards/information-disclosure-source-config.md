@@ -155,4 +155,4 @@ def read_owned_record(actor, record_id, db):
 - 进入验证门需 file:line、字节绑定、完整相关数据流、前提与反例。源码建议不自动执行、
   开 Action、确认 Finding 或提交报告；相邻影响方法按当前问题读
   `knowledge/playbooks/web2-evidence-contracts.md`，跨会话结果按
-  `skills/whitebox-audit/SKILL.md` 返回调查核心。
+  `skills/src-hunter/modules/whitebox-audit.md` 返回调查核心。

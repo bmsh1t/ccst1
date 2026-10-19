@@ -17,13 +17,13 @@ description: |
 
 # SRC 漏洞挖掘 + 白盒 0day 审计技能（完整来源参考）
 
-> **CCST 适配（非上游原文）**：唯一调查入口是仓库根 `skills/src-hunting/SKILL.md`。
+> **CCST 适配（非上游原文）**：唯一调查入口是仓库根 `skills/src-hunter/SKILL.md`。
 > 本文保留完整来源方法关系，不运行第二个控制器；下文所有强制触发、默认授权、类别禁令、
 > 固定工具、无限继续及桌面路径均按方法根 `README.md` 的宿主/职责映射解释，不覆盖当前规则。
 > `知识库/` 指本文件旁的完整正文；历史 rules 指方法根 `references/`。短表可选，指针必须展开。
 > 当前 Scope/Auth、执行/cleanup、预算和人工停止照常有效；调查进度不改技术裁决。
 > 维护只按 `references/hunt-iter.md` 的 A 合同；正式报告仍用当前 assessment/delivery/report owners。
-> 白盒来源 Phase 0 缺损，先用根 `skills/whitebox-audit/SKILL.md`，不要声称已恢复缺失原文。
+> 白盒来源 Phase 0 缺损，先用根 `skills/src-hunter/modules/whitebox-audit.md`，不要声称已恢复缺失原文。
 
 ## 保留的来源正文
 

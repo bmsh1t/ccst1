@@ -60,6 +60,11 @@ python3 tools/knowledge_pull_log.py record --card api-idor --target <target_shel
 不使用包装命令读卡——不为计数绕开原生 Read。`tools/kb_card.py` 仅保留给
 脚本化管道（需要在一次调用里读+记且无交互的场景）。
 
+历史 `related_skills` 标签不是可调用的旧原生 Skill。需要定位旧标签/精确旧路径时，用
+`python3 tools/skill_reference_contract.py 'triage-validation' --json` 取得当前 `read_path`，
+再原生 Read 完整模块；唯一原生入口为 `skills/src-hunter/SKILL.md`。该命令只解析导航，
+不读卡包装、不记录查阅、不改审核身份/排名/Store；未知标签或缺文件必须显式处理。
+
 输出时必须包含：
 
 ```text

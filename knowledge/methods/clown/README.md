@@ -14,7 +14,7 @@ No executors, MCP servers, credentials, host configuration or target state are i
 
 ## One Investigation Entry
 
-Use repository `skills/src-hunting/SKILL.md`: manual work, `/hunt` and Autopilot
+Use repository `skills/src-hunter/SKILL.md`: manual work, `/hunt` and Autopilot
 share that core. `skills/src-hunter/SKILL.md` **inside this directory** preserves
 the full source relationships as reference; it is not an installed Skill, a
 mandatory opening read, or another controller. Specialists answer local questions.
@@ -42,8 +42,8 @@ Budget/user stops preserve unfinished work; seed progress is not technical refut
 | Source / historical name | Current reference or existing repository owner |
 |---|---|
 | `dig-scope-workflow`, `src-value-hunting`, `researcher-blackbox-whitebox`, `hunt-iter` | Complete references in `references/<name>.md`; `rules/campaign.md`, `rules/hunting.md` and the shared runtime protocol retain their governing responsibilities |
-| `vuln-report-format` | Complete `references/vuln-report-format.md` for the **method admission** comparison; current `rules/reporting.md`, `skills/triage-validation/SKILL.md` and `skills/report-writing/SKILL.md` still own CCST assessment/delivery/reporting |
-| AGENTS, collaboration/context, `skill-as-boost` | Existing `CLAUDE.md` and native `skills/src-hunting/SKILL.md`; no second AGENTS or Trellis override |
+| `vuln-report-format` | Complete `references/vuln-report-format.md` for the **method admission** comparison; current `rules/reporting.md`, `skills/src-hunter/modules/triage-validation.md` and `skills/src-hunter/modules/report-writing.md` still own CCST assessment/delivery/reporting |
+| AGENTS, collaboration/context, `skill-as-boost` | Existing `CLAUDE.md` and native `skills/src-hunter/SKILL.md`; no second AGENTS or Trellis override |
 | `desktop-task-folder` | Existing target-owned evidence/report layout; no desktop cleanup or browser-profile deletion |
 | `playwright-browser-mcp` | `docs/autopilot-lanes.md#browser-source-and-js`; use the explicitly selected, actually available backend |
 | `security-research-context`, `anti-over-moralization` | Current target/authorization and execution contracts; no blanket permission |
@@ -54,7 +54,7 @@ Budget/user stops preserve unfinished work; seed progress is not technical refut
 S52 (`researcher-blackbox-whitebox`) remains **source_incomplete**: its first 43
 lines are a misplaced browser rule, followed by a broken table; Phase 0 is missing.
 The adapted reference separates those bytes and points to the existing
-`skills/whitebox-audit/SKILL.md`. CCST guidance is labelled as such; neither a matching
+`skills/src-hunter/modules/whitebox-audit.md`. CCST guidance is labelled as such; neither a matching
 hash nor usable later chapters restores the lost source. The source's one-line
 reduced modules are retained as supplied, not represented as recovered long manuals.
 The four extra 2.3 shortlist scenarios and three manuals remain deferred candidates,

@@ -22,13 +22,19 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     )
     from target_paths import compact_url, target_storage_key  # type: ignore
 
+RECON_COLLECTION_REASONS = frozenset({
+    "recon_budget_partial", "recon_phase_partial",
+    "cidr_continuation_pending", "cidr_continuation_invalid",
+})
+
 _CLOSURE_REASON_OWNERS = {
     "state_snapshot_stale": {"controller"},
-    "durable_work_pending": {"action_queue"},
+    "durable_work_pending": {"action_queue", "validation-runner"},
     "finding_work_pending": {"finding", "finding-claim", "target-memory"},
     "case_state_work_pending": {"case_state"},
     "actor_context_required": {"case_state"},
     "recon_phase_partial": {"recon"},
+    "recon_budget_partial": {"recon"},
     "recon_phase_review_required": {"checkpoint"},
     "scanner_lane_review_required": {"checkpoint"},
     "coverage_missing": {"coverage"},
@@ -217,16 +223,6 @@ def _hard_gate_projection(state: dict) -> dict:
             "action": action,
             "reason": "batch scope must resolve to one concrete target before hunting",
         }
-    if action == "run_recon" and not state.get("has_recon"):
-        return {
-            "action": "run_recon",
-            "reason": "no target-owned recon inventory exists yet",
-        }
-    if action == "recon_no_live_hosts":
-        return {
-            "action": action,
-            "reason": "completed recon has no live host inventory",
-        }
     return {}
 
 
@@ -319,14 +315,16 @@ def _build_actionable_frontier(
     continuation = (state.get("recon_artifacts") or {}).get("cidr_continuation") if isinstance((state.get("recon_artifacts") or {}).get("cidr_continuation"), dict) else {}
     if continuation.get("status") in {"pending", "invalid"}:
         status = str(continuation.get("status"))
-        frontier.append(_frontier_item(
+        item = _frontier_item(
             owner="recon",
             item_id=f"cidr:{continuation.get('next_offset', status)}",
-            action=("Repair the invalid CIDR continuation before resuming Recon" if status == "invalid" else f"continue bounded CIDR recon from offset {continuation.get('next_offset', 0)}"),
+            action=("Repair the invalid CIDR continuation before resuming Recon" if status == "invalid" else f"optional bounded CIDR recon from offset {continuation.get('next_offset', 0)}"),
             evidence_ref=str(continuation.get("path") or f"recon/{target_storage_key(target)}/live/cidr_continuation.json"),
             expected_information_gain=("repair the invalid CIDR cursor" if status == "invalid" else "cover the remaining target-owned CIDR hosts"),
             stop_condition="advance or complete the durable cursor, or record its explicit blocker",
-        ))
+        )
+        item["runnable"] = status == "pending"
+        frontier.append(item)
 
     deduped: list[dict] = []
     seen: set[tuple[str, str]] = set()
@@ -347,9 +345,9 @@ def _execution_frontier_item(item: dict, *, impact_hint: str = "") -> dict:
         "lane": _FRONTIER_LANES.get(owner, "controller"),
         "impact_hint": " ".join(str(impact_hint or "").split())[:300],
         "evidence_status": "owner-backed",
-        "closure_blocking": True,
+        "closure_blocking": bool(projected.get("closure_blocking", True)),
         "continuity": False,
-        "runnable": True,
+        "runnable": bool(projected.get("runnable", True)),
     })
     return projected
 
@@ -471,13 +469,13 @@ def _closure_reason_frontier(
             if isinstance(gate.get("evidence_refs"), list)
             else []
         )
-        return _frontier_item(
+        item = _frontier_item(
             owner="recon",
             item_id=phase,
             action=(
-                f"Resume bounded Recon phase {phase}: {continuation}"
+                f"Optional bounded Recon phase {phase}: {continuation}"
                 if continuation
-                else f"Resume bounded Recon phase {phase} from its preserved input"
+                else f"Inspect the preserved input for Recon phase {phase}; no executable continuation is bound"
             ),
             evidence_ref=str(
                 gate.get("artifact")
@@ -492,6 +490,8 @@ def _closure_reason_frontier(
                 "then recompute Closure"
             ),
         )
+        item["runnable"] = bool(continuation)
+        return item
     if reason == "recon_phase_review_required":
         residuals = _recon_phase_residuals(state, closure_blocking=False)
         if not residuals:
@@ -547,16 +547,9 @@ def _closure_reason_frontier(
     }:
         owner = "runtime" if reason == "runtime_phase_active" else "recon"
         action = "wait_scan" if state.get("scan_in_progress") else "wait_recon"
-        if reason in {
-            "recon_budget_partial",
-            "cidr_continuation_pending",
-            "cidr_continuation_invalid",
-        }:
-            action = "run_recon"
         continuation = (state.get("recon_artifacts") or {}).get("cidr_continuation") or {}
         if reason == "cidr_continuation_invalid":
-            action = "run_recon"
-            expected_information_gain = "repair the invalid CIDR cursor and resume target-owned Recon coverage"
+            expected_information_gain = "repair the invalid CIDR cursor without replaying from zero"
             stop_condition = "publish a valid cursor or record the bounded Recon blocker"
         elif reason == "cidr_continuation_pending":
             expected_information_gain = (
@@ -566,14 +559,17 @@ def _closure_reason_frontier(
         else:
             expected_information_gain = "obtain the owner-written phase result before selecting more work"
             stop_condition = "refresh after the matching phase completes or record its bounded blocker"
-        return _frontier_item(
+        action_text = describe_next_step({**state, "next_action": action})
+        if reason == "cidr_continuation_invalid":
+            action_text = "Repair the invalid CIDR continuation before selecting collection"
+        elif reason == "cidr_continuation_pending":
+            action_text = f"Optional bounded CIDR recon from offset {continuation.get('next_offset')}"
+        elif reason == "recon_budget_partial":
+            action_text = "Review the preserved Recon budget and select a supported continuation; do not repeat the whole pipeline"
+        item = _frontier_item(
             owner=owner,
             item_id=action,
-            action=(
-                "Repair the invalid CIDR continuation before resuming Recon"
-                if reason == "cidr_continuation_invalid"
-                else describe_next_step({**state, "next_action": action})
-            ),
+            action=action_text,
             evidence_ref=(
                 str(
                     continuation.get("path")
@@ -587,6 +583,8 @@ def _closure_reason_frontier(
             expected_information_gain=expected_information_gain,
             stop_condition=stop_condition,
         )
+        item["runnable"] = reason != "cidr_continuation_invalid"
+        return item
     if reason == "finding_work_pending":
         return _frontier_item(
             owner="finding",
@@ -785,15 +783,14 @@ def _describe_next_step(state: dict) -> str:
 
     if action == "run_recon":
         continuation = recon_artifacts.get("cidr_continuation") or {}
+        if continuation.get("status") == "invalid":
+            return "CIDR continuation is invalid; repair its owner cursor before collection, never restart from zero."
         if continuation.get("status") == "pending":
             return (
-                f"continue CIDR recon {target} from offset {continuation.get('next_offset')}; "
+                f"if selected, continue CIDR recon {target} from offset {continuation.get('next_offset')}; "
                 "preserve prior CIDR pages."
             )
-        missing = recon_artifacts.get("missing") or []
-        if recon_artifacts.get("available") and missing:
-            return f"rerun /recon {target}; cached recon is incomplete ({', '.join(missing[:2])})."
-        return f"run /recon {target} first."
+        return f"if explicitly selected, run /recon {target} with its existing complete profile; inventory is not a prerequisite for investigation."
     if action == "wait_recon":
         return (
             f"wait/poll the existing /recon {target} run; do not launch another recon. "
@@ -883,8 +880,8 @@ def _describe_next_step(state: dict) -> str:
     if action == "recon_no_live_hosts":
         return (
             "recon completed with no live hosts; review cached infra/exposure/offline evidence "
-            "and record the blocker. Explicit refresh, stale artifacts, or contradictory fresh "
-            "evidence is required; do not rerun recon automatically."
+            "or another available evidence plane. A current explicit request or contradictory fresh "
+            "evidence is required to rerun; zero inventory does not terminate the target."
         )
     if action == "run_intel":
         continuation = state.get("intel_continuation") or {}
@@ -974,8 +971,8 @@ def _describe_next_step(state: dict) -> str:
     if action == "refresh_recon":
         return f"refresh recon before going deeper on {target}."
     if action == "handoff":
-        return "no strong executable next action from cached state; use checkpoint or fresh evidence before continuing."
-    return "follow the highest-confidence target shown below."
+        return "return to src-hunter: choose evidence and a complete method for the current question, explicitly select collection if useful, or stop this invocation within budget; no Recon or checkpoint prerequisite."
+    return "review current owner facts and choose the next evidence question in src-hunter."
 
 def _actionable_coverage_gaps(matrix: dict) -> list[dict]:
     return _coverage_gaps_with_observed_evidence(_coverage_gaps(matrix), matrix)

@@ -23,6 +23,7 @@ try:
         load_registry,
         parse_knowledge_document,
         parse_source_refs,
+        resolve_skill_reference,
     )
     from tools.target_paths import target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
@@ -32,6 +33,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         load_registry,
         parse_knowledge_document,
         parse_source_refs,
+        resolve_skill_reference,
     )
     from target_paths import target_storage_key  # type: ignore
 
@@ -811,14 +813,15 @@ def _audit_frontmatter(
             )
 
     for skill in related_skills:
-        skill_path = f"skills/{skill}/SKILL.md"
-        if not (repo_root / skill_path).is_file():
+        try:
+            resolve_skill_reference(skill, repo_root)
+        except (OSError, ValueError) as exc:
             _add(
                 report,
                 "error",
                 "related-skill-missing",
                 path,
-                f"related_skills 指向不存在的 Skill: {skill_path}",
+                f"related_skills 无法解析到当前阅读文件: {exc}",
             )
     for reference in references:
         if kind != "card" and not reference.startswith("knowledge/cards/"):

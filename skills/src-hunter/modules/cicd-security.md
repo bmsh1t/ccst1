@@ -1,9 +1,9 @@
----
-name: cicd-security
-description: Use only when a CI/CD or supply-chain target is explicitly in scope — a repository, workflow, package, artifact, or deployment path. Selects the next evidence-producing branch from observed trigger, permission, runner, and artifact context (entry/evidence/stop contract included); probe shapes and tool syntax stay with the model and on-demand knowledge, and a scanner output is a lead, never a finding.
----
+# CI/CD Security Decision Module
 
-# CI/CD Security Decision Skill
+内部完整方法，按当前问题读取；不是独立原生 Skill，不自动启动执行或委派。
+返回 [src-hunter 调查主干](../SKILL.md)；恢复/写回仍归 `skills/runtime-protocol.md`。
+
+适用：Use only when a CI/CD or supply-chain target is explicitly in scope — a repository, workflow, package, artifact, or deployment path. Selects the next evidence-producing branch from observed trigger, permission, runner, and artifact context (entry/evidence/stop contract included); probe shapes and tool syntax stay with the model and on-demand knowledge, and a scanner output is a lead, never a finding.
 
 This answers a scoped CI/CD question, not the whole target agenda. Choose the next branch from the
 observed repository, trigger, permission, runner, artifact, and deployment
@@ -13,7 +13,7 @@ knowledge references.
 ## Direct Execution Contract
 
 For real delegation, use the input/output and acceptance boundary in
-`skills/src-hunting/SKILL.md#real-delegation-and-execution-handoff`. Return
+`skills/src-hunter/SKILL.md#real-delegation-and-execution-handoff`. Return
 contrary evidence and unknowns as well as results; propose global pivots to the
 main session. Same-session reading requires no handoff form. Expert self-report
 does not resolve Action or confirm Finding.

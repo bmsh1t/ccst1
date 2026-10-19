@@ -95,13 +95,20 @@ cp .env.example .env
 # request guard records advisory audit/replay metadata.
 ```
 
+The installer publishes one native `src-hunter` plus nine complete internal
+modules. A single-entry upgrade preflights all kinds and preserves/rejects local
+conflicts before payload changes. Interrupted migrations require the same fixed
+checkout/executor and its `.ccst-entry-migration.json`; see `/sync-check`.
+CLAUDE/rules/tools/knowledge still come from this checkout. Disk parity does not
+prove host-cache refresh or practical capability gains.
+
 **Step 2 — Hunt**
 
 ```bash
 claude                          # Start Claude Code from this repo root
 
 /recon target.com               # Discover attack surface
-/surface target.com             # Rank cached recon + memory before active testing
+/surface target.com             # Inspect cached recon + memory when relevant
 /hunt target.com                # Test for vulnerabilities
 # Read cached JS bundles with Claude native Read/Grep when present
 /source-hunt target.com --repo-path /path/to/repo
@@ -110,7 +117,7 @@ claude                          # Start Claude Code from this repo root
 /sync-check                     # Check repo/runtime drift after pulls or weird CLI behavior
 ```
 
-> **AI-first hunt loop:** load target context, rank surface, enrich app-like targets with Chrome DevTools MCP / Playwright MCP artifacts / browser XHR / raw source and JS artifacts, attack exact business workflows, preserve leads/signals, then validate only report-ready candidates.
+> **AI-first investigation:** recover current facts, then choose evidence and complete methods for the current question. Recon, browser, API and source are alternatives, not prerequisites for one another. Preserve useful leads and validate evidence-backed candidates.
 
 **Step 3 — Go Autonomous**
 
@@ -252,20 +259,23 @@ the final route decision; prompts and tools do not create another controller.
 | Layer | Responsibility |
 |:---|:---|
 | **`CLAUDE.md`** | Always-loaded project contract for authorization, AI/tool boundaries, state owners, and entry routing |
-| **Runtime protocol** | Shared Target -> Skill -> Knowledge -> Checks -> Write-back contract |
-| **Decision Skill** | `src-hunting`, loaded for session start, target switch, stalled progress, or hypothesis rotation |
-| **Execution Skills** | Evidence-selected contracts for recon, vulnerability families, validation, reporting, credentials, mobile, CI/CD, Web3, and token work |
-| **Knowledge** | Bounded on-demand cards and references; never the current target-state owner |
+| **Runtime protocol** | Shared recovery, complete method reading, execution receipts and event-triggered write-back |
+| **Single native Skill** | `src-hunter`: 6k-original investigation structure with CCST reasoning and engineering contracts |
+| **Nine internal modules** | Complete on-demand recon, whitebox, validation, reporting, credential, mobile, CI/CD, Web3 and token methods under `skills/src-hunter/modules/`; not separate Skill registrations |
+| **Knowledge** | One versioned complete method root at `knowledge/methods/clown/`, plus on-demand reviewed cards; never the current target-state owner |
 | **Tools and state** | Deterministic replay, diff, raw evidence, Coverage, Ledger, Queue, Checkpoint, and recovery |
 | **Optional Agents** | Bounded specialist execution that returns evidence to the current Claude session; never a second target-state controller |
 
-The default manual lane is the Core 4: **`/recon` -> `/hunt` -> `/validate` -> `/report`**. Power commands such as `/autopilot`, `/surface`, `/pickup`, `/intel`, `/source-hunt`, `/chain`, `/web3-audit`, `/token-scan`, and `/memory-gc` extend that lane when you need autonomy, source intelligence, chaining, Web3/token review, or memory maintenance.
+The Core 4 — **`/recon`, `/hunt`, `/validate`, `/report`** — are explicit tools, not
+a mandatory sequence. Start from the current question and available evidence;
+source/API investigation does not require full Recon. `/autopilot` reuses the same
+core with continuation/budget duties; specialist commands retain their explicit scope.
 
 ```
 YOU -> Claude Code CLI main session
     -> CLAUDE.md + runtime protocol
-    -> bounded Context Pack (target evidence + one Skill / 0-2 Card recommendations)
-    -> Claude explicitly selects and loads the applicable route
+    -> bounded Context Pack (current owner facts + complete unranked method catalog)
+    -> src-hunter selects relevant complete methods/modules and evidence
     -> tool / MCP / optional specialist execution
     -> raw evidence -> Ledger / Queue / Checkpoint / Coverage -> recovery
 ```

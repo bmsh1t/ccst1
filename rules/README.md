@@ -39,7 +39,7 @@ contract, but must not redefine it.
 | `red-lines.md` | `CLAUDE.md` loads it; `rules/red-lines.md` owns the semantics |
 | `coverage-gate.md` | `tools/coverage_matrix.py` |
 | `hunting.md` | `rules/hunting.md` |
-| `reporting.md` | `rules/reporting.md`; report rendering: `skills/report-writing/SKILL.md` |
+| `reporting.md` | `rules/reporting.md`; report rendering: `skills/src-hunter/modules/report-writing.md` |
 | `retrospective.md` | `commands/retrospect.md` |
 | `tool-ai-boundary.md` | `rules/tool-ai-boundary.md` |
 | `web-intel.md` | `tools/web_intel_artifact.py` |

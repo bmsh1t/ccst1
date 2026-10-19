@@ -7,8 +7,18 @@ import hashlib
 import json
 import shlex
 import os
+import re
 import shutil
+import stat
+import tempfile
 from pathlib import Path
+
+try:
+    from tools.artifact_io import write_text_atomic
+    from tools.skill_reference_contract import CORE_SKILL_NAME, CORE_SKILL_PATH, KNOWN_ENTRY_NAMES
+except ImportError:  # direct script execution; keep the installer standard-library-only
+    from artifact_io import write_text_atomic
+    from skill_reference_contract import CORE_SKILL_NAME, CORE_SKILL_PATH, KNOWN_ENTRY_NAMES
 
 KIND_ORDER = ("commands", "agents", "skills")
 RUNTIME_SUBDIRS = {
@@ -24,6 +34,7 @@ DISABLED_COMMAND_PREFIX = ".disabled."
 NON_RUNTIME_MARKDOWN_SUFFIXES = (".patch.md",)
 AUTOPILOT_MANIFEST_START = "<!-- AUTOPILOT_CRITICAL_RUNTIME_MANIFEST"
 AUTOPILOT_MANIFEST_END = "AUTOPILOT_CRITICAL_RUNTIME_MANIFEST -->"
+ENTRY_MIGRATION_RECORD = ".ccst-entry-migration.json"
 
 
 def _repo_root(path: str | Path | None = None) -> Path:
@@ -306,7 +317,42 @@ def compare_runtime(
             "status": f"manifest_{manifest['status']}",
             "relative_path": "autopilot.md",
         })
-    unobserved_drift = len(synthetic_missing) + int(manifest["status"] != "valid")
+    entry_issues = []
+    migration_record = resolved_runtime / ENTRY_MIGRATION_RECORD
+    migration_pending = _file_hash(migration_record, resolved_runtime) is not None
+    if migration_pending:
+        entry_issues.append({"kind": "runtime", "status": "entry_migration_pending",
+                             "relative_path": ENTRY_MIGRATION_RECORD})
+    if "skills" in selected:
+        source_entries = _skill_entries(resolved_repo)
+        runtime_entries = _skill_entries(resolved_runtime)
+        forward = any(CORE_SKILL_NAME in entry["known_identities"] for entry in source_entries)
+        if forward or any(CORE_SKILL_NAME in entry["known_identities"] for entry in runtime_entries):
+            expected = {entry["path"]: entry["identity"] for entry in source_entries if entry["known_identities"]}
+            if forward and [(e["path"], e["identity"]) for e in source_entries] != [(CORE_SKILL_PATH, CORE_SKILL_NAME)]:
+                entry_issues.append({"kind": "skills", "status": "source_entry_set_invalid",
+                                     "relative_path": CORE_SKILL_PATH.removeprefix("skills/")})
+            receipt = resolved_runtime / ".ccst-installed.json"
+            owned = json.loads(receipt.read_text()) if receipt.is_file() else {}
+            # compare_kind already applied the read-side object-shape contract.
+            for entry in runtime_entries:
+                if not entry["known_identities"]:
+                    continue
+                owner = owned.get(entry["path"], {})
+                if (expected.get(entry["path"]) != entry["identity"] or owner.get("kind") != "skills"
+                        or owner.get("sha256") != entry["sha256"]):
+                    entry_issues.append({"kind": "skills", "status": "entry_conflict",
+                        "relative_path": entry["path"].removeprefix("skills/"),
+                        "root": str(resolved_runtime), "identity": entry["identity"],
+                        "ownership": "receipt" if owner else "unowned",
+                        "current_sha256": entry["sha256"], "receipt_sha256": owner.get("sha256"),
+                        "action": "inspect before sync", "reason": "retired, duplicate, modified or unowned native entry"})
+            present = {entry["path"] for entry in runtime_entries}
+            for path in sorted(set(expected) - present):
+                entry_issues.append({"kind": "skills", "status": "entry_missing",
+                                     "relative_path": path.removeprefix("skills/")})
+    critical_drift.extend(entry_issues)
+    unobserved_drift = len(synthetic_missing) + int(manifest["status"] != "valid") + len(entry_issues)
     full_drift = drift + unobserved_drift
     return {
         "repo_root": str(resolved_repo),
@@ -321,7 +367,319 @@ def compare_runtime(
         "critical_drift_count": len(critical_drift) + len(missing_critical),
         "advisory_drift_count": len(advisory_drift),
         "critical_clean": not critical_drift and not missing_critical,
+        "entry_migration": {"status": "pending" if migration_pending else "required" if entry_issues else "none",
+                            "record": str(migration_record) if migration_pending else None,
+                            "issues": entry_issues},
     }
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _json_text(value: object) -> str:
+    return json.dumps(value, sort_keys=True, indent=2) + "\n"
+
+
+def _safe_path(path: Path, root: Path) -> bool:
+    return (path.is_relative_to(root) and path.resolve().is_relative_to(root)
+            and not path.is_symlink()
+            and all(not parent.is_symlink() and (not parent.exists() or parent.is_dir()) for parent in path.parents
+                    if parent != root and parent.is_relative_to(root)))
+
+
+def _file_hash(path: Path, root: Path) -> str | None:
+    if not _safe_path(path, root):
+        raise ValueError(f"unsafe runtime/source path: {path}")
+    if not path.exists():
+        return None
+    if not stat.S_ISREG(path.stat().st_mode):
+        raise ValueError(f"not a regular runtime/source file: {path}")
+    return _sha256(path.read_bytes())
+
+
+def _owned_receipt(raw: str | None) -> dict:
+    owned = json.loads(raw) if raw is not None else {}
+    if not isinstance(owned, dict):
+        raise ValueError("invalid runtime ownership manifest")
+    for rel, record in owned.items():
+        path = Path(rel)
+        if (path.is_absolute() or rel != path.as_posix() or ".." in path.parts
+                or not isinstance(record, dict) or record.get("kind") not in KIND_ORDER
+                or not path.is_relative_to(RUNTIME_SUBDIRS[record["kind"]])
+                or not isinstance(record.get("sha256"), str)):
+            raise ValueError("invalid runtime ownership entry")
+    return owned
+
+
+def _skill_identity(body: str, path: Path) -> str:
+    """Read the name scalar without a YAML dependency; ambiguous YAML fails closed."""
+    lines = body.lstrip("\ufeff").splitlines()
+    if not lines or lines[0].strip() != "---":
+        for line in lines:
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            if line.strip() == "---":
+                raise ValueError(f"cannot inspect Skill frontmatter after a preamble: {path}")
+            break
+        return path.parent.name
+    try:
+        end = next(i for i in range(1, len(lines)) if lines[i].strip() == "---")
+    except StopIteration as exc:
+        raise ValueError(f"cannot inspect unterminated Skill frontmatter: {path}") from exc
+
+    def scalar(value):
+        value = re.sub(r"\s+#.*$", "", value).strip()
+        if value.startswith('"'):
+            decoded = json.loads(value)
+        elif value.startswith("'") and value.endswith("'"):
+            decoded = value[1:-1].replace("''", "'")
+        elif value and value[0] not in "|>&*!{[?%" and not value.startswith("'"):
+            decoded = value
+        else:
+            raise ValueError(f"cannot reliably inspect Skill name syntax: {path}")
+        if not isinstance(decoded, str) or not decoded:
+            raise ValueError(f"cannot reliably inspect Skill name: {path}")
+        return decoded
+
+    names = []
+    for line in lines[1:end]:
+        if not line or line[0].isspace() or line.startswith("#"):
+            continue
+        key, separator, value = line.partition(":")
+        if not separator:
+            raise ValueError(f"cannot reliably inspect Skill frontmatter: {path}")
+        key = scalar(key)
+        if key == "<<":
+            raise ValueError(f"cannot inspect merged Skill identity: {path}")
+        if key == "name":
+            names.append(scalar(value))
+    if len(names) != 1:
+        raise ValueError(f"Skill frontmatter must have one inspectable name: {path}")
+    return names[0]
+
+
+def _skill_entries(root: Path) -> list[dict]:
+    """Inspect identity, not just today's managed directories; never follow links."""
+    base = root / "skills"
+    if not _safe_path(base, root):
+        raise ValueError(f"cannot inspect linked Skill tree: {base}")
+    if not base.exists():
+        return []
+    if not base.is_dir():
+        raise ValueError(f"Skill tree is not a directory: {base}")
+    entries = []
+
+    def onerror(error):
+        raise error
+
+    for current, dirs, files in os.walk(base, followlinks=False, onerror=onerror):
+        for name in dirs:
+            if (Path(current) / name).is_symlink():
+                raise ValueError(f"cannot completely inspect linked Skill directory: {Path(current) / name}")
+        if "SKILL.md" not in files:
+            continue
+        path = Path(current) / "SKILL.md"
+        digest = _file_hash(path, root)
+        raw = path.read_bytes()
+        if _sha256(raw) != digest:
+            raise ValueError(f"Skill changed during discovery: {path}")
+        body = raw.decode("utf-8").replace("\r\n", "\n")
+        identity = _skill_identity(body, path)
+        known = sorted({identity, path.parent.name} & KNOWN_ENTRY_NAMES)
+        entries.append({"path": path.relative_to(root).as_posix(), "identity": identity,
+                        "known_identities": known, "sha256": digest})
+    return sorted(entries, key=lambda item: item["path"])
+
+
+def _capture_runtime_sources(repo: Path, selected: list[str]) -> dict:
+    sources = {}
+    for kind in selected:
+        for relative, path in _repo_files(repo, kind).items():
+            digest = _file_hash(path, repo)
+            if digest is None:
+                raise ValueError(f"runtime source disappeared: {path}")
+            sources[f"{kind}/{relative}"] = {
+                "kind": kind, "relative": relative, "sha256": digest,
+                "mode": stat.S_IMODE(path.stat().st_mode),
+            }
+    return sources
+
+
+def _release_binding(repo: Path, sources: dict) -> dict:
+    # Bind the executable checkout, not tests, journals or target data. The method
+    # manifest binds its own complete bodies/history through the existing reader.
+    checkout = {}
+    paths = [repo / "CLAUDE.md"]
+    for directory, patterns in (("rules", ("*.md",)), ("docs", ("*.md",)),
+                                ("tools", ("*.py", "*.sh")), ("memory", ("*.py",)),
+                                ("knowledge", ("*.md", "*.json", "*.yaml", "*.yml"))):
+        for pattern in patterns:
+            paths.extend(path for path in (repo / directory).rglob(pattern) if ".history" not in path.parts)
+    for path in sorted(set(paths)):
+        digest = _file_hash(path, repo)
+        if digest is not None:
+            checkout[path.relative_to(repo).as_posix()] = {"sha256": digest, "mode": stat.S_IMODE(path.stat().st_mode)}
+    executor_root = Path(__file__).resolve().parent
+    executor = {name: _sha256((executor_root / name).read_bytes()) for name in
+                ("runtime_doctor.py", "artifact_io.py", "skill_reference_contract.py")}
+    return {
+        "source_sha256": _sha256(_json_text(checkout).encode()),
+        "source_scope": ["CLAUDE.md", "rules/**/*.md", "docs/**/*.md", "tools/**/*.py", "tools/**/*.sh",
+                         "memory/**/*.py", "knowledge/**/*.{md,json,yaml,yml} excluding .history"],
+        "executor_sha256": _sha256(_json_text(executor).encode()),
+        "method_manifest_sha256": _file_hash(repo / "knowledge/clown-hot-method-manifest.json", repo),
+        "native_sha256": _sha256(_json_text(sources).encode()),
+    }
+
+
+def _command_alternative(key: str) -> str:
+    path = Path(key)
+    name = (path.name[len(DISABLED_COMMAND_PREFIX):] if path.name.startswith(DISABLED_COMMAND_PREFIX)
+            else DISABLED_COMMAND_PREFIX + path.name)
+    return path.with_name(name).as_posix()
+
+
+def _prepare_sync_plan(runtime: Path, owned: dict, sources: dict, selected: list[str],
+                       prune: bool, *, entry_cutover: bool) -> tuple[list[dict], dict, list[dict]]:
+    locations = {key: key for key in owned}
+    for key, record in owned.items():
+        if record["kind"] == "commands" and "commands" in selected:
+            alternative = _command_alternative(key)
+            if (not (runtime / key).exists() and alternative not in owned
+                    and _safe_path(runtime / alternative, runtime) and (runtime / alternative).is_file()):
+                locations[key] = alternative
+    previous = {location: key for key, location in locations.items()}
+    after = {locations[key]: record for key, record in owned.items()}
+    operations, conflicts, desired = [], [], set()
+
+    def add(key, kind, source, owner_key):
+        expected = sources[source]["sha256"] if source else None
+        prior = owned.get(owner_key) if owner_key else None
+        reason = ""
+        current = None
+        try:
+            current = _file_hash(runtime / key, runtime)
+            if current is not None:
+                if prior and current != prior["sha256"] and (entry_cutover or current != expected):
+                    reason = "locally modified receipt-owned file"
+                elif not prior and (current != expected or
+                                    (entry_cutover and Path(key).name == "SKILL.md")):
+                    reason = "unowned entry/file; exact bytes alone do not establish entry ownership"
+        except (OSError, ValueError) as exc:
+            reason = str(exc)
+        operation = {"path": key, "kind": kind, "action": "write" if source else "remove",
+                     "source": source, "ownership_key": owner_key,
+                     "before_sha256": current, "after_sha256": expected}
+        operations.append(operation)
+        if reason:
+            conflicts.append({"root": str(runtime), "path": key, "identity": Path(key).parent.name,
+                              "ownership": "receipt" if prior else "unowned", "current_sha256": current,
+                              "receipt_sha256": prior["sha256"] if prior else None,
+                              "action": operation["action"], "reason": reason})
+
+    for source, info in sorted(sources.items()):
+        key = (RUNTIME_SUBDIRS[info["kind"]] / info["relative"]).as_posix()
+        if info["kind"] == "commands" and not (runtime / key).exists():
+            disabled = _command_alternative(key)
+            if (runtime / disabled).exists() or (runtime / disabled).is_symlink():
+                key = disabled
+        desired.add(key)
+        add(key, info["kind"], source, previous.get(key))
+        after[key] = {"kind": info["kind"], "sha256": info["sha256"]}
+    if prune:
+        for original, key in locations.items():
+            if owned[original]["kind"] in selected and key not in desired:
+                add(key, owned[original]["kind"], None, original)
+                after.pop(key, None)
+    # Non-entry resources first; retire only owned entries; publish entries last.
+    operations.sort(key=lambda op: (0 if Path(op["path"]).name != "SKILL.md"
+                                    else 1 if op["action"] == "remove" else 2, op["path"]))
+    return operations, after, conflicts
+
+
+def _validate_entry_record(record: dict, header: dict, sources: dict) -> None:
+    required = {*header, "phase", "before_receipt", "before_receipt_sha256", "after_receipt",
+                "after_receipt_sha256", "operations"}
+    if not isinstance(record, dict) or set(record) != required or any(record.get(k) != v for k, v in header.items()):
+        raise ValueError("entry migration record does not match this fixed source/root/executor/mode")
+    if record["phase"] not in {"payload", "receipt"}:
+        raise ValueError("invalid entry migration publication phase")
+    before_raw, after_raw = record["before_receipt"], record["after_receipt"]
+    if ((before_raw is not None and not isinstance(before_raw, str)) or not isinstance(after_raw, str)
+            or record["before_receipt_sha256"] != (_sha256(before_raw.encode()) if before_raw is not None else None)
+            or record["after_receipt_sha256"] != _sha256(after_raw.encode())
+            or not isinstance(record["operations"], list)):
+        raise ValueError("invalid entry migration receipt binding")
+    owned = _owned_receipt(before_raw)
+    seen_paths, seen_sources, seen_owners = set(), set(), set()
+    expected_after = {}
+    for op in record["operations"]:
+        if not isinstance(op, dict) or set(op) != {"path", "kind", "action", "source", "ownership_key", "before_sha256", "after_sha256"}:
+            raise ValueError("invalid entry migration operation")
+        key, kind, source, owner_key = op["path"], op["kind"], op["source"], op["ownership_key"]
+        if (not isinstance(key, str) or key != Path(key).as_posix() or ".." in Path(key).parts
+                or kind not in KIND_ORDER or not Path(key).is_relative_to(RUNTIME_SUBDIRS[kind]) or key in seen_paths):
+            raise ValueError("invalid entry migration operation path")
+        seen_paths.add(key)
+        prior = owned.get(owner_key) if isinstance(owner_key, str) else None
+        if owner_key is not None:
+            if (not prior or owner_key in seen_owners or prior["kind"] != kind
+                    or key not in {owner_key, _command_alternative(owner_key) if kind == "commands" else owner_key}
+                    or op["before_sha256"] not in (None, prior["sha256"])):
+                raise ValueError("invalid entry migration ownership binding")
+            seen_owners.add(owner_key)
+        if source is not None:
+            if not isinstance(source, str) or source not in sources or source in seen_sources:
+                raise ValueError("invalid entry migration source binding")
+            info = sources[source]
+            canonical = (RUNTIME_SUBDIRS[info["kind"]] / info["relative"]).as_posix()
+            if (kind != info["kind"] or op["action"] != "write" or op["after_sha256"] != info["sha256"]
+                    or key not in {canonical, _command_alternative(canonical) if kind == "commands" else canonical}
+                    or (not prior and op["before_sha256"] not in (None, info["sha256"]))
+                    or (not prior and Path(key).name == "SKILL.md" and op["before_sha256"] is not None)):
+                raise ValueError("invalid entry migration desired file")
+            seen_sources.add(source)
+            expected_after[key] = {"kind": kind, "sha256": info["sha256"]}
+        elif op["action"] != "remove" or not prior or op["after_sha256"] is not None:
+            raise ValueError("invalid entry migration retirement")
+    if seen_sources != set(sources) or seen_owners != set(owned) or after_raw != _json_text(expected_after):
+        raise ValueError("incomplete entry migration operation/receipt set")
+
+
+def _check_known_entries(runtime: Path, operations: list[dict]) -> list[dict]:
+    planned = {op["path"]: op for op in operations}
+    conflicts = []
+    for entry in _skill_entries(runtime):
+        if not entry["known_identities"]:
+            continue
+        op = planned.get(entry["path"])
+        if op and entry["sha256"] in {op["before_sha256"], op["after_sha256"]}:
+            continue
+        conflicts.append({"root": str(runtime), **entry, "ownership": "unowned/unplanned",
+                          "current_sha256": entry["sha256"], "receipt_sha256": None,
+                          "action": "preserve", "reason": "unplanned retired or duplicate native entry"})
+    return conflicts
+
+
+def _verify_sync_state(runtime: Path, operations: list[dict], *, complete: bool) -> None:
+    for op in operations:
+        allowed = {op["after_sha256"]} if complete else {op["before_sha256"], op["after_sha256"]}
+        if _file_hash(runtime / op["path"], runtime) not in allowed:
+            raise ValueError(f"runtime file outside recorded {'after' if complete else 'before/after'} state: {op['path']}")
+
+
+def _publish_runtime_source(source: Path, destination: Path, expected: str) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(dir=destination.parent, prefix=".ccst-")
+    os.close(fd)
+    try:
+        shutil.copy2(source, temporary)
+        if _sha256(Path(temporary).read_bytes()) != expected:
+            raise ValueError(f"runtime source changed during publication: {source}")
+        os.replace(temporary, destination)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
 
 
 def sync_runtime(
@@ -330,125 +688,139 @@ def sync_runtime(
     kinds: list[str] | None = None,
     *,
     prune: bool = False,
-) -> dict[str, list[str]]:
-    try:
-        from tools.artifact_io import write_text_atomic
-    except ImportError:  # direct script execution
-        from artifact_io import write_text_atomic
-
-    resolved_repo = _repo_root(repo_root)
-    resolved_runtime = _runtime_root(runtime_root)
-    resolved_runtime.mkdir(parents=True, exist_ok=True)
-    manifest = resolved_runtime / ".ccst-installed.json"
-    lock_path = resolved_runtime / ".ccst-install.lock"
-    if manifest.is_symlink() or lock_path.is_symlink():
-        raise ValueError("runtime ownership metadata must not be a symlink")
-    copied, removed, conflicts = [], [], []
+) -> dict:
+    """Preflight the whole batch; entry cutovers resume only a bound same-version plan."""
+    repo, runtime = _repo_root(repo_root), _runtime_root(runtime_root)
+    runtime.mkdir(parents=True, exist_ok=True)
+    manifest, lock_path, journal = (runtime / name for name in
+                                   (".ccst-installed.json", ".ccst-install.lock", ENTRY_MIGRATION_RECORD))
+    for path in (manifest, lock_path, journal):
+        if not _safe_path(path, runtime):
+            raise ValueError("runtime ownership metadata must not be a symlink")
+    selected = [kind for kind in KIND_ORDER if kind in (kinds or KIND_ORDER)]
+    result = {"copied": [], "removed": [], "conflicts": [], "conflict_details": [], "status": "rejected"}
     with lock_path.open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        owned = json.loads(manifest.read_text()) if manifest.exists() else {}
-        if not isinstance(owned, dict):
-            raise ValueError("invalid runtime ownership manifest")
-        for rel, record in owned.items():
-            path = Path(rel)
-            if (path.is_absolute() or rel != path.as_posix() or ".." in path.parts
-                    or not isinstance(record, dict)
-                    or record.get("kind") not in KIND_ORDER
-                    or not path.is_relative_to(RUNTIME_SUBDIRS[record["kind"]])
-                    or not isinstance(record.get("sha256"), str)):
-                raise ValueError("invalid runtime ownership entry")
-
-        selected = [kind for kind in kinds or list(KIND_ORDER) if kind in KIND_ORDER]
-        # A missing source tree is not an intentionally empty release. Check all
-        # selected owners before publishing or deleting even the first file.
+        raw = manifest.read_text() if manifest.exists() else None
+        owned = _owned_receipt(raw)
         for kind in selected:
-            if any(record["kind"] == kind for record in owned.values()) and not (resolved_repo / kind).is_dir():
+            if any(record["kind"] == kind for record in owned.values()) and not (repo / kind).is_dir():
                 raise ValueError(f"runtime source directory missing: {kind}")
-        critical = load_critical_runtime_manifest(resolved_repo)
-        owns_autopilot = any(key in owned for key in
-                            ("commands/autopilot.md", "commands/.disabled.autopilot.md"))
+        critical = load_critical_runtime_manifest(repo)
+        owns_autopilot = any(key in owned for key in ("commands/autopilot.md", "commands/.disabled.autopilot.md"))
         if owns_autopilot and critical["status"] != "valid":
             raise ValueError("runtime source critical manifest is missing or invalid")
         if critical["status"] == "valid":
             for entry in critical["paths"]:
-                source = resolved_repo / entry["kind"] / entry["relative_path"]
-                base = resolved_repo / entry["kind"]
-                if (source.is_symlink() or not source.resolve().is_relative_to(base.resolve())
-                        or not source.is_file()):
-                    raise ValueError(f"required runtime source missing or unsafe: {source}")
-                source.read_bytes()  # All required sources must be readable before mutation.
-
-        def digest(path):
-            return hashlib.sha256(path.read_bytes()).hexdigest()
-
-        def safe(path):
-            return (not path.is_symlink()
-                    and path.resolve().is_relative_to(resolved_runtime)
-                    and all(not parent.is_symlink() for parent in path.parents
-                            if parent != resolved_runtime and parent.is_relative_to(resolved_runtime)))
-
-        source_files = {kind: _repo_files(resolved_repo, kind) for kind in selected}
-        for key, record in list(owned.items()):
-            if record["kind"] != "commands" or "commands" not in selected:
-                continue
-            current = resolved_runtime / key
-            alternative_name = (current.name[len(DISABLED_COMMAND_PREFIX):]
-                                if current.name.startswith(DISABLED_COMMAND_PREFIX)
-                                else DISABLED_COMMAND_PREFIX + current.name)
-            alternative = current.with_name(alternative_name)
-            if not current.exists() and safe(alternative) and alternative.is_file():
-                alternative_key = alternative.relative_to(resolved_runtime).as_posix()
-                if alternative_key not in owned:
-                    owned[alternative_key] = record
-                    del owned[key]
-
-        for kind in selected:
-            sources = source_files[kind]
-            desired = set()
-            for rel, src in sources.items():
-                dst = resolved_runtime / RUNTIME_SUBDIRS[kind] / rel
-                original_key = dst.relative_to(resolved_runtime).as_posix()
-                disabled = dst.with_name(DISABLED_COMMAND_PREFIX + dst.name)
-                if kind == "commands" and not dst.exists() and disabled.is_file():
-                    dst = disabled
-                key = dst.relative_to(resolved_runtime).as_posix()
-                desired.add(key)
-                previous = owned.get(key) or owned.get(original_key)
-                expected = digest(src)
-                if (not safe(dst) or (dst.exists() and (not dst.is_file()
-                        or (digest(dst) != expected
-                            and (not previous or digest(dst) != previous["sha256"]))))):
-                    conflicts.append(str(dst))
-                    continue
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                # Atomic publication, with the manifest retaining the prior hash
-                # until publication succeeds. Interrupted retries adopt exact bytes.
-                if not dst.exists() or digest(dst) != expected:
-                    import tempfile
-                    fd, temporary = tempfile.mkstemp(dir=dst.parent, prefix=".ccst-")
-                    os.close(fd)
-                    try:
-                        shutil.copy2(src, temporary)
-                        os.replace(temporary, dst)
-                    finally:
-                        Path(temporary).unlink(missing_ok=True)
-                owned[key] = {"kind": kind, "sha256": expected}
-                if key != original_key:
-                    owned.pop(original_key, None)
-                copied.append(str(dst))
-            if prune:
-                for key, record in list(owned.items()):
-                    if record["kind"] != kind or key in desired:
-                        continue
-                    dst = resolved_runtime / key
-                    if not safe(dst) or (dst.exists() and (not dst.is_file() or digest(dst) != record["sha256"])):
-                        conflicts.append(str(dst))
-                        continue
-                    dst.unlink(missing_ok=True)
-                    owned.pop(key)
-                    removed.append(str(dst))
-        write_text_atomic(manifest, json.dumps(owned, sort_keys=True, indent=2) + "\n")
-    return {"copied": copied, "removed": removed, "conflicts": conflicts}
+                path = repo / entry["kind"] / entry["relative_path"]
+                if _file_hash(path, repo) is None:
+                    raise ValueError(f"required runtime source missing or unsafe: {path}")
+        source_entries = _skill_entries(repo)
+        runtime_entries = _skill_entries(runtime)
+        forward = any(CORE_SKILL_NAME in entry["known_identities"] for entry in source_entries)
+        if forward and [(e["path"], e["identity"]) for e in source_entries] != [(CORE_SKILL_PATH, CORE_SKILL_NAME)]:
+            raise ValueError("source candidate must contain only skills/src-hunter/SKILL.md; mixed entry release refused")
+        expected_entries = [{"path": e["path"], "identity": e["identity"]} for e in source_entries if e["known_identities"]]
+        current_entries = [{"path": e["path"], "identity": e["identity"]} for e in runtime_entries if e["known_identities"]]
+        has_core = any(CORE_SKILL_NAME in e["known_identities"] for e in runtime_entries) or CORE_SKILL_PATH in owned
+        cutover = journal.exists() or (forward and (current_entries != expected_entries or CORE_SKILL_PATH not in owned)) or (not forward and has_core)
+        if cutover and (selected != list(KIND_ORDER) or not prune):
+            raise ValueError("entry migration requires --kind commands,agents,skills --sync --prune")
+        sources = _capture_runtime_sources(repo, selected)
+        if "skills" in selected and any(sources.get(e["path"], {}).get("sha256") != e["sha256"] for e in source_entries):
+            raise ValueError("native source entries changed during preflight")
+        binding = _release_binding(repo, sources) if cutover else None
+        if cutover and (not expected_entries or binding["method_manifest_sha256"] is None):
+            raise ValueError("entry migration requires a fixed method manifest and native entry set")
+        header = {"schema_version": 1, "profile": "src-hunter-single-entry",
+                  "direction": "forward" if forward else "reverse", "repo_root": str(repo),
+                  "runtime_root": str(runtime), "kinds": selected, "prune": prune,
+                  "source": binding, "expected_entries": expected_entries}
+        if journal.exists():
+            record = json.loads(journal.read_text())
+            _validate_entry_record(record, header, sources)
+            raw_hash = _sha256(raw.encode()) if raw is not None else None
+            if raw_hash not in {record["before_receipt_sha256"], record["after_receipt_sha256"]}:
+                raise ValueError("runtime receipt is outside the recorded before/after state")
+            operations = record["operations"]
+            after_raw = record["after_receipt"]
+            conflicts = _check_known_entries(runtime, operations)
+            receipt_phase = (record["phase"] == "receipt" or
+                             (raw_hash == record["after_receipt_sha256"]
+                              and raw_hash != record["before_receipt_sha256"]))
+            _verify_sync_state(runtime, operations, complete=receipt_phase)
+        else:
+            operations, after, conflicts = _prepare_sync_plan(runtime, owned, sources, selected, prune,
+                                                             entry_cutover=cutover or forward)
+            after_raw = _json_text(after)
+            if "skills" in selected and (forward or cutover):
+                conflicts.extend(_check_known_entries(runtime, operations))
+            record = {**header, "phase": "payload", "before_receipt": raw,
+                      "before_receipt_sha256": _sha256(raw.encode()) if raw is not None else None,
+                      "after_receipt": after_raw, "after_receipt_sha256": _sha256(after_raw.encode()),
+                      "operations": operations}
+            receipt_phase = False
+        if conflicts:
+            result["conflict_details"] = conflicts
+            result["conflicts"] = sorted({str(runtime / item["path"]) for item in conflicts})
+            return result
+        if cutover:
+            _validate_entry_record(record, header, sources)
+        # Recheck source/receipt after preflight and before publishing the record.
+        def check_source():
+            if (_capture_runtime_sources(repo, selected) != sources
+                    or (cutover and _release_binding(repo, sources) != binding)):
+                raise ValueError("source candidate changed; keep the recorded version for recovery")
+        check_source()
+        if (manifest.read_text() if manifest.exists() else None) != raw:
+            raise ValueError("runtime receipt changed during preflight")
+        if cutover and not journal.exists():
+            write_text_atomic(journal, _json_text(record))
+        def verify_entries():
+            if cutover or forward:
+                actual = [{"path": e["path"], "identity": e["identity"]}
+                          for e in _skill_entries(runtime) if e["known_identities"]]
+                if actual != expected_entries:
+                    raise ValueError("runtime native entry set differs from the fixed candidate")
+        try:
+            if not receipt_phase:
+                for op in operations:
+                    destination = runtime / op["path"]
+                    current = _file_hash(destination, runtime)
+                    if current not in {op["before_sha256"], op["after_sha256"]}:
+                        raise ValueError(f"runtime changed after preflight: {destination}")
+                    if op["action"] == "remove":
+                        destination.unlink(missing_ok=True)
+                        result["removed"].append(str(destination))
+                    else:
+                        if current != op["after_sha256"]:
+                            _publish_runtime_source(repo / op["source"], destination, op["after_sha256"])
+                        result["copied"].append(str(destination))
+            _verify_sync_state(runtime, operations, complete=True)
+            verify_entries()
+            check_source()
+            if (manifest.read_text() if manifest.exists() else None) != raw:
+                raise ValueError("runtime receipt changed before publication")
+            # Persist a fixed after-state decision before receipt publication.
+            # This also distinguishes commit when before/after receipt bytes match.
+            if cutover and record["phase"] != "receipt":
+                record["phase"] = "receipt"
+                write_text_atomic(journal, _json_text(record))
+            if raw != after_raw:
+                write_text_atomic(manifest, after_raw)
+            if manifest.read_text() != after_raw:
+                raise ValueError("runtime receipt publication verification failed")
+            _verify_sync_state(runtime, operations, complete=True)
+            verify_entries()
+            if cutover:
+                journal.unlink()
+        except (OSError, ValueError) as exc:
+            result.update(status="partial", error=str(exc), recovery_record=str(journal) if cutover else None)
+            return result
+        result.update(status="complete", entry_migration="complete" if cutover else "not_required")
+        if cutover:
+            result.update(release=binding, native_entries=expected_entries, direction=header["direction"])
+    return result
 
 
 def format_report(payload: dict) -> str:
@@ -483,8 +855,9 @@ def format_report(payload: dict) -> str:
     if payload["clean"]:
         lines.append("Status: runtime is in sync.")
     else:
-        sync_args = "--sync --prune" if has_runtime_extras else "--sync"
-        kind_arg = ",".join(result["kind"] for result in payload["kinds"])
+        entry_migration = payload.get("entry_migration", {}).get("status") in {"pending", "required"}
+        sync_args = "--sync --prune" if has_runtime_extras or entry_migration else "--sync"
+        kind_arg = ",".join(KIND_ORDER if entry_migration else [result["kind"] for result in payload["kinds"]])
         # Carry the exact roots that were checked: a copied hint without them
         # would modify the default checkout and ~/.claude instead of the
         # isolated installation the operator just inspected.
@@ -497,6 +870,8 @@ def format_report(payload: dict) -> str:
             f"Hint: run `python3 tools/runtime_doctor.py {sync_args} {root_args} --kind {kind_arg}` "
             "to refresh the inspected Claude CLI runtime files."
         )
+        if entry_migration:
+            lines.append("Entry migration is not ready. Preserve conflicts; pending recovery requires the same fixed source and executor.")
     return "\n".join(lines)
 
 
@@ -532,12 +907,21 @@ def main() -> int:
     kinds = _parse_kinds(args.kind)
     changes = {"conflicts": []}
     if args.sync:
-        changes = sync_runtime(args.repo_root, args.runtime_root, kinds=kinds, prune=args.prune)
+        try:
+            changes = sync_runtime(args.repo_root, args.runtime_root, kinds=kinds, prune=args.prune)
+        except (OSError, ValueError) as exc:
+            pending = _runtime_root(args.runtime_root) / ENTRY_MIGRATION_RECORD
+            error = {"status": "partial" if pending.exists() else "rejected", "error": str(exc),
+                     "recovery_record": str(pending) if pending.exists() else None}
+            print(json.dumps(error) if args.json else f"Runtime sync {error['status']}: {exc}")
+            return 1
         if not args.json:
             print(
                 f"Synced {len(changes['copied'])} file(s). "
                 f"Removed {len(changes['removed'])} stale runtime file(s)."
             )
+            if changes["status"] == "partial":
+                print(f"Runtime sync partial: {changes['error']}; recovery record: {changes['recovery_record']}")
 
     payload = compare_runtime(args.repo_root, args.runtime_root, kinds=kinds)
     if args.sync:
@@ -549,6 +933,8 @@ def main() -> int:
     if changes["conflicts"]:
         if not args.json:
             print("Preserved conflicting files: " + ", ".join(changes["conflicts"]))
+        return 1
+    if changes.get("status") == "partial":
         return 1
     if args.fail_on_drift and not payload["clean"]:
         return 1

@@ -203,7 +203,7 @@ question/stop material through the recorded card, section and family.
 | Blind SSRF / RCE / XXE candidate | `oast_listen.py start` |
 | Standard scans plateaued | AI-selected focused fuzz on remaining unexplored surface |
 | Unicode / filter representation needs review | AI selects the exact representation and preserves raw evidence |
-| Public/local source, uncertain reachability or guard | `skills/whitebox-audit/SKILL.md`; `source_hunt.py --source-file PATH`, native Read/Grep |
+| Public/local source, uncertain reachability or guard | `skills/src-hunter/modules/whitebox-audit.md`; `source_hunt.py --source-file PATH`, native Read/Grep |
 | Brand keyword for buckets | `cloud_recon.sh` |
 | Batch recon manifest exists | read `recon/<list-stem>/batch_manifest.jsonl`, then run `/surface` or `/hunt` on completed domains |
 | Identity/cloud intel from recon has hits | review `exposure/identity_intel/summary.md` and `exposure/cloud/cloud_enum.txt`, then pivot to `/intel` or `/cloud-recon` |
@@ -256,11 +256,11 @@ Read only the owner needed for a selected action, not this entire table as a che
 
 | Question | Owner |
 |---|---|
-| Which hypothesis to continue, rotate or stop? | `skills/src-hunting/SKILL.md` |
+| Which hypothesis to continue, rotate or stop? | `skills/src-hunter/SKILL.md` |
 | Context and method selection? | `skills/runtime-protocol.md#shared-knowledge-recall` |
 | Dependent session/process/socket continuity? | `skills/runtime-protocol.md#stateful-continuity` |
 | Raw evidence versus AI judgment? | `rules/tool-ai-boundary.md` |
-| Candidate validity and report readiness? | `skills/triage-validation/SKILL.md`, `commands/validate.md` |
+| Candidate validity and report readiness? | `skills/src-hunter/modules/triage-validation.md`, `commands/validate.md` |
 | Side effects and stop controls? | `rules/red-lines.md` |
 | Who accepts a write? | `skills/runtime-protocol.md#5-execution-and-write-back` |
 | Claim/resolve, browser capture/import and session close? | Matching sections of `docs/autopilot-lanes.md` |

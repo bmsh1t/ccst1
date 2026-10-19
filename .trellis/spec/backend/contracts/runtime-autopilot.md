@@ -575,7 +575,7 @@ release wiring, entry budgets and delegation boundaries, not just prose.
 - Combined size of the two command files is bounded by the merged floor of
   11 KiB (restored anchor prefixes, settle stale-Surface contract and full
   descriptions exceed the pre-merge draft's 10 KiB budget).
-- Methodology stays out of entry prompts: `skills/src-hunting/SKILL.md` is the
+- Methodology stays out of entry prompts: `skills/src-hunter/SKILL.md` is the
   single investigation core; problem-scoped specialists and complete methods
   are referenced on demand, without a second global investigation loop.
 - `agents/autopilot.md` is a routing-table delegation contract: evidence
@@ -622,7 +622,7 @@ Wrong: compress the bootstrap line to `Bootstrap: !`...`` and inline hunt
 methodology into the command so it stays self-contained.
 
 Correct: keep the full anchor prefixes, point at
-`skills/src-hunting/SKILL.md` on demand, and let the routing table reference
+`skills/src-hunter/SKILL.md` on demand, and let the routing table reference
 lane/method owners.
 
 ## Claude Runtime Packaging and Drift Preflight
@@ -657,16 +657,20 @@ are executable prompt resources, not optional repository documentation.
   A repo-side patch stays in place and is never copied; a patch previously
   copied into runtime is an `EXTRA`. Explicit prune removes it only when its
   receipt and unchanged bytes establish ownership.
-- Runtime discovery recursively scans current repo-owned Skill roots and also
-  includes receipt-owned files under retired roots. Unowned external roots such
-  as `~/.claude/skills/playwright-cli/` are not drift and must never be pruned.
+- Runtime inventory recursively scans current repo-owned Skill roots and includes
+  receipt-owned retired files. Single-entry checks also inspect the complete selected
+  Skill tree for the finite known identities in `skill_reference_contract`; identity
+  may differ from the directory name. Quoted keys/names are inspected; aliases,
+  merges, ambiguous preambles or uninspectable frontmatter reject the check.
+  Unrelated external Skills are not drift/prune.
 - Managed-root nested extras are drift, but a directory name is not file
   ownership. `--sync --prune` removes only unchanged receipt-owned retired files.
   Unknown or locally modified files remain; modified owned files report conflicts.
 - `install.sh` delegates to `runtime_doctor --sync --prune` for one ownership-bound
   publication path. It copies current Skill resources recursively and retires
   unchanged owned files, including files under a removed Skill root. Empty
-  directories and unowned legacy Skill files are not automatically deleted.
+  directories are not deleted. Unowned known legacy/duplicate entries reject a
+  single-entry cutover, rather than silently coexisting with a clean result.
 - Compare, sync, and prune must use the same repo/runtime file discovery contract.
 - `commands/autopilot.md` owns the versioned JSON critical manifest. It lists
   runtime-relative command/agent/skill paths plus declared MCP contracts,
@@ -675,6 +679,9 @@ are executable prompt resources, not optional repository documentation.
   adds `critical_drift`, `missing_critical`, `advisory_drift`, their counts,
   `critical_manifest`, and `critical_clean`. Missing/invalid manifest state is
   both full drift and critical drift.
+- A pending `.ccst-entry-migration.json` is critical drift even when all installed
+  payload bytes already match. Compare never completes it. Detailed publication,
+  same-version recovery and ownership contracts are in Ownership-bound runtime installation below.
 - `/autopilot` dynamic bootstrap locates the Git worktree and runs a read-only
   doctor compare before ctf mode, state inspection, recon, surface, or scan.
   Only `critical_clean=false` returns `stop_runtime_drift`; advisory drift is
@@ -698,8 +705,9 @@ are executable prompt resources, not optional repository documentation.
   touching the repo copy.
 - Ordinary names such as `local.md` or `local.patch-notes.md` -> copied unchanged;
   patch exclusion must not become a substring filter or enable disabled commands.
-- Unowned external Skill root exists -> ignored during compare and preserved
-  during prune; receipt-owned files under retired roots remain visible as drift.
+- Unrelated external Skill root -> ignored as drift and preserved; known retired or
+  duplicate identities at any inspected path -> visible conflict. Symlinked trees,
+  unreadable files or ambiguous identity syntax prevent a complete entry inspection.
 - Repo-root marker missing -> `/autopilot` stops and asks the operator to launch
   Claude from this repository.
 - Critical runtime drift -> `/autopilot` stops, shows `/sync-check`, and requests explicit
@@ -713,8 +721,8 @@ are executable prompt resources, not optional repository documentation.
 - Base: an unrelated command drifts; Runtime Doctor reports it as advisory and
   strict mode fails, while Autopilot startup continues.
 - Bad: installer copies only `*/SKILL.md`, leaving progressive-loading links broken.
-- Bad: doctor recursively scans every global Skill and reports/prunes unrelated
-  user-installed capabilities.
+- Bad: using a known-identity inspection to report/prune unrelated user capabilities,
+  or ignoring a retired identity merely because its directory was renamed.
 - Bad: a local design note such as `agents/autopilot-fix.patch.md` blocks every
   `/autopilot` invocation or is installed as an executable Agent.
 - Bad: `/autopilot` detects drift and silently runs `--sync` against `~/.claude`.
@@ -735,12 +743,11 @@ are executable prompt resources, not optional repository documentation.
 - Doctor fixtures cover both kinds and all three patch spellings: repo sources
   cause no `MISSING`; an old runtime copy is reported as `EXTRA`, only unchanged
   owned copies are pruned, and the repo file remains byte-identical.
-- A synthetic predecessor must exercise actual retired Skill names and reuse of
-  `src-hunting` for the investigation entry, then compare every current installed
+- A synthetic predecessor must exercise retired Skill identities and migration to
+  the sole `src-hunter` entry, then compare every current installed
   file and receipt against source bytes. Full `--fail-on-drift` is required;
-  critical-only checks do not cover every current Skill. A clean comparison may
-  coexist with an ignored unowned legacy Skill, so retirement evidence must
-  identify such preserved entries explicitly rather than claiming full removal.
+  critical-only checks do not cover every current module. Known unowned old entries
+  cannot coexist with a clean single-entry result; unrelated external Skills can.
 - The existing PR `core-contracts` job must run `tests/test_install_script.py` and
   `tests/test_runtime_doctor.py`, enforced by `tests/test_ci_contract.py`; do not
   defer these regressions solely to the main-branch full suite.
@@ -1399,23 +1406,49 @@ bounded invocation ends -> show one advisory review -> preserve all runtime stat
 Installer and runtime_doctor changes share one publication/retirement path.
 ### Signatures
 `sync_runtime(repo_root, runtime_root, kinds=None, prune=False)` returns copied,
-removed and conflicts; CLI --sync returns nonzero when conflicts are preserved.
+removed, conflicts, conflict_details and status (`complete|rejected|partial`);
+CLI --sync returns nonzero on rejection/partial. Successful entry migration also
+returns direction, native_entries and release fingerprints.
 `compare_runtime(repo_root, runtime_root, kinds=None)` reads ownership receipts
 only when comparing skills; bootstrap consumes its existing OSError/ValueError boundary.
 ### Contracts
 `.ccst-installed.json` records relative destination, kind and installed SHA256.
-An exclusive local file lock serializes sync. Files are replaced atomically;
-manifest publication follows successful writes. Only owned, unchanged obsolete
-files are pruned. No owner receipt means no automatic overwrite of different
-bytes and no deletion. Disabled commands retain their name and state.
+An exclusive local file lock serializes sync. Whole-batch source/path/ownership/hash
+preflight precedes any payload/receipt publication; parent files, symlinks and local
+conflicts reject the batch. Root/lock creation is not a zero-filesystem-write promise.
+Only owned, unchanged obsolete files are pruned. No receipt means no deletion or
+overwrite of different bytes; native entries cannot be adopted on matching bytes
+alone. Disabled commands retain their name and state.
+
+An actual single-entry switch requires all kinds and prune. Its versioned
+`.ccst-entry-migration.json` binds direction, resolved roots, full native inventory,
+source-scope/executor/method/native fingerprints, before/after receipts/hashes,
+every operation's path/source/owner/before/after hashes and expected entry identities.
+Ordinary later partial-kind sync remains available; it does not claim a cutover.
+Source scope covers CLAUDE, rules, runtime docs, Python/Shell tools, Python memory
+and active knowledge (excluding historical archives); tests and target data are not
+release authority. The method manifest and reader bind method publication separately.
+
+After preflight, record phase `payload` before publishing non-entry resources,
+retiring unchanged old entries, then publishing new entries last. Verify all bytes
+and entries; persist phase `receipt` before writing the after receipt. This phase
+fixes the after-state even when before/after receipt bytes are identical. Recheck
+receipt/payload/entries before clearing the record. Only identical fixed-version
+recovery may adopt recorded desired exact-after files; no record, source changes,
+unplanned entries or third states are refused. Receipt-phase recovery may only
+verify the after-state, complete its receipt and clean the record, not replay payload.
+Reverse synchronization requires approved prior assets and the migration-aware
+executor. These are process-interruption guarantees, not cross-file atomicity,
+power-loss recovery, zero downtime, all-roots inspection or host-cache acceptance.
 The read-side receipt root and every entry must be objects. Missing receipts and
 empty objects retain their current comparison semantics. Read-side entries need
 no new hash field or unknown-field policy; non-skills object records remain ignored.
 Do not lift the writer's stronger admission checks into the reader as a shape fix.
 ### Validation & Error Matrix
 Unknown/malformed ownership metadata fails visibly. Path escape/symlink or local
-modification preserves the destination and reports conflict. An interrupted retry
-may adopt exact current source bytes; it does not guess ownership of different bytes.
+modification preserves the destination and reports whole-batch conflict. An entry
+retry adopts exact-after bytes only when its fixed operation record authorizes them.
+Pending records always prevent `critical_clean`; compare never mutates or recovers.
 On receipt reads, non-object root → ValueError("invalid runtime ownership manifest");
 non-object entry → ValueError("invalid runtime ownership entry"), not AttributeError
 or an empty fallback. Bootstrap returns `stop_runtime_error` with `error.type/reason`
@@ -1428,8 +1461,10 @@ all extra Markdown under a shared commands directory.
 Read-side base: no receipt, or a commands/agents-only comparison, adds no receipt
 requirement. Bad: calling items/get on a root array or null entry and leaking a traceback.
 ### Tests Required
-Temporary runtime upgrade, whole-skill retirement, unowned/local changes,
-disabled command and installer parity; never test against real HOME.
+Temporary runtime upgrade, whole-batch conflict preservation, known unowned/renamed
+entry refusal, parent-path conflicts, entry-before-receipt and receipt-phase
+interruption, same-version recovery and third-state/source-drift rejection;
+disabled command/external Skill preservation and installer parity. Never use real HOME.
 `tests/test_runtime_doctor.py` covers non-object roots/entries, unchanged comparison
 results and read-side compatibility. `tests/test_autopilot_bootstrap.py` exercises
 real malformed receipts through the JSON entrypoint, bounded diagnostics, unchanged

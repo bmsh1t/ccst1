@@ -103,9 +103,9 @@ Do not add a parallel coverage state or schema for these residual lanes.
 安全的证据生成动作。
 
 Evidence-driven depth does not mean evidence-only testing. 没有强证据时，
-应该通过 Discovery mode actively generate new evidence；只有证据路径确实
-不可达、红线阻塞、材料缺失或投入价值过低时，才允许转为 `blocked` /
-`dead-end` / `n/a`。
+可通过 Discovery mode actively generate new evidence，但不要求为结束本轮而继续采集。
+证据路径不可达、红线或材料缺失按事实记 `blocked`；`dead-end` 必须有条件化反证，
+`n/a` 必须确实不适用。投入价值低、预算结束或暂停仍保留原认知状态和未测面，不能当阴性。
 
 ## 交付前检查
 
@@ -127,10 +127,10 @@ COVERAGE SUMMARY
 
 任何具体证据如果只被写成“需要查看/需要查询/需要人工测试/后续继续”，不算覆盖完成。
 
-必须把这类线索推进到以下状态之一：
+不得仅以泛泛 TODO 声称覆盖；按实际证据保留以下状态和可恢复的下一意图：
 
 - `tested`：完成了低风险验证，并写明证据
-- `dead-end`：证据已证伪、版本不受影响、路径不可达或继续投入低价值
+- `dead-end`：证据在记录条件下已证伪、版本不受影响或路径确实不可达；低价值不属于此状态
 - `blocked`：写明缺什么材料、为什么当前不能安全继续
 - `lead` / `signal` / `candidate`：保留为明确下一步，而不是泛泛 TODO
 
@@ -140,8 +140,9 @@ COVERAGE SUMMARY
 高价值可行动线索。
 
 如果 `tools/action_queue.py summary --target <target>` 显示仍有 active action，
-不能声称完成；必须继续执行下一条安全 action，或把它解析为 `blocked` /
-`dead-end` 并写明证据。
+不能声称全面完成。主会话可在预算内继续，或保留 active/pending 与明确 handoff 结束本轮，
+不为停工伪造 resolve、blocked 或 dead-end。已发执行的回执、未知效果恢复、cleanup、
+claim 及终态心跳仍按原 owner 完成；预算不能取消这些义务。
 
 ## 矩阵检查
 

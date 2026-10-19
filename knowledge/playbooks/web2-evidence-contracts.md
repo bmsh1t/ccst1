@@ -146,7 +146,7 @@ finding. 时间型信号用交错 baseline/variant 采样验证趋势（中位�
 
 Start with an owned/test account baseline across the visible flow and any observed
 provider, channel, or role selector. Do not silently fall into password brute force.
-If credential testing is selected, route to `skills/credential-attack/` or a
+If credential testing is selected, read `skills/src-hunter/modules/credential-attack.md` or use a
 controlled `/spray` run with lockout, rate limits, and stop conditions.
 
 ### GraphQL Lane
@@ -234,8 +234,8 @@ rules/
 当作运行时 playbook。
 
 弱口令测试不是红线，也不走本 Web playbook router 的通用验证输入路径。观察到登录框时，
-转 `skills/credential-attack/SKILL.md` 做 baseline review；稳定测试账号、默认/常见候选和
-是否进入 `/spray` 的场景策略、执行节奏、审计和停止条件均由该 Skill 与命令契约负责。
+读 `skills/src-hunter/modules/credential-attack.md` 做 baseline review；稳定测试账号、默认/常见候选和
+是否进入 `/spray` 的场景策略、执行节奏、审计和停止条件均由该模块与命令契约负责。
 
 ## Signal → Reference → Tool
 

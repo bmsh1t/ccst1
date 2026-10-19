@@ -113,7 +113,7 @@ missing evidence action instead of pretending it is report-ready.
 
 ## Decision Contract
 
-Read `skills/triage-validation/SKILL.md` before deciding. It is the sole owner
+Read `skills/src-hunter/modules/triage-validation.md` before deciding. It is the sole owner
 of Q1-Q7, Q7b and never-submit/chain precedence; do not maintain a second
 checklist here. Apply it to target-bound, protocol-appropriate reproducible
 evidence and output exactly one:

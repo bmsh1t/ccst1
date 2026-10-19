@@ -52,10 +52,14 @@ selected bounded investigation. The scanner is not a prerequisite for `/hunt`:
 
 ```bash
 python3 tools/hunt.py --target target.com --scan-only      # recon exists → scan cached surface
-python3 tools/hunt.py --target target.com                  # recon if needed, then scan
+python3 tools/hunt.py --target target.com                  # explicitly select Recon + scanner pipeline
 python3 tools/hunt.py --target target.com --quick          # lower-cost path
 python3 tools/hunt.py --target target.com --scan-only --scanner-full  # expanded bounded scanner/candidate coverage; no fixed payload lanes
 ```
+
+The default Hunt CLI runs Recon and scanner; `--recon-only` skips the scanner,
+not individual Recon stages. These are explicit pipeline choices, not the default
+route for an evidence-led conversation or a missing-inventory state.
 
 Auth-aware examples:
 
@@ -70,12 +74,12 @@ the Python helpers and shell recon / scanner toolchain where supported.
 Success signal: a concrete scanner/probe artifact is written and any claimed domain registration has a Store receipt. Raw scanner summaries remain advisory. If no artifact is written, inspect the command result.
 
 For business-model maintenance, hypothesis selection, rotation and cross-stage
-questions use `skills/src-hunting/SKILL.md` on demand, not for every action. These are shared methods, not
+questions use `skills/src-hunter/SKILL.md` on demand, not for every action. These are shared methods, not
 permission to keep running automatically after the requested hunt pass.
 
 ## Shared Investigation, Not Another Loop
 
-`skills/src-hunting/SKILL.md` owns the question, competing explanations, smallest
+`skills/src-hunter/SKILL.md` owns the question, competing explanations, smallest
 discriminating experiment, evidence interpretation and rotation. This entry adds
 no ordered LOAD/ROUTE/REVIEW/RECORD pipeline or per-action Skill result form.
 Do not rescan, reread the catalog or run a full coverage review merely to move
@@ -192,7 +196,7 @@ ALLOW_UNSAFE_HTTP_TESTS=1 python3 tools/hunt.py --target target.com --scan-only 
 
 ## When To Stop Or Rotate
 
-Use `skills/src-hunting/SKILL.md#evidence-driven-rotation` to compare evidence
+Use `skills/src-hunter/SKILL.md#evidence-driven-rotation` to compare evidence
 delta, remaining budget, prerequisites and kill/reopen conditions. Repeated status
 or body shapes alone do not establish exhaustion or impose a fixed retry count.
 

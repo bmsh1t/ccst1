@@ -14,6 +14,7 @@ hot_method.py --repo-root ROOT --catalog --diagnostics --json
 hot_method.py --repo-root ROOT --read RELATIVE --expected-manifest HASH --json
 hot_method.py --repo-root ROOT --origin SOURCE_ID --json
 hot_method.py --repo-root ROOT --apply INPUT --expected-manifest HASH [--bootstrap] --json
+hot_method.py --repo-root ROOT --migrate-entry ENVELOPE_JSON --expected-manifest HASH --json
 hot_method.py --repo-root ROOT --recover ID --mode complete|restore --json
 ```
 
@@ -22,6 +23,8 @@ include_catalog=False, diagnostics=False)`；`read_methods(repo_root, paths, *,
 expected_manifest, environ=None)`；`apply_update(repo_root, update, *,
 expected_manifest=None, bootstrap=False, environ=None)`；`recover_update(repo_root,
 transaction_id, *, mode="complete", environ=None)`。
+受限治理入口 `migrate_entry(repo_root, update, *, entry_migration,
+expected_manifest=None, environ=None)` 不扩大普通 `apply_update` 权限。
 
 `validation_runner.py record-observation` 调用 `record_native_observation(*, repo_root,
 target, attempt_id, evidence=None, browser_capture_ref=None, execution=None,
@@ -42,6 +45,17 @@ expected_operation=None, action_id=None, claim_token=None, command_actor="valida
   普通 A 仅改 method/index；bootstrap 仅用于已批准的首次 v1→v2 工程接入。
   来源仅支持 `origin|private`；reviewer 是声明，不是认证。保留
   `private_source_unavailable`、`recorded_declaration_not_authenticated` 和来源缺损。
+- v2→v2 单入口迁移只接显式 envelope `{entry_migration, update}`。marker 的 schema=1、
+  profile=`src-hunter-single-entry`、direction=`forward|reverse` 和 approval 内容路径/hash
+  绑定真实批准材料；普通 A/首次 bootstrap 不借此获得治理写权。只允许 README、来源
+  SKILL、知识库 README、researcher reference 四文件的精确可逆导航变更与 S01/S56/S61
+  当前 consumers/disposition；62 原始身份/defects、其余 metadata 与历史冻结。
+  批准绑定 before/after manifest、四文件 hashes 和当前 core/九模块真实 bytes；仍保留
+  有效 source、完整 admission 和 truthful main_session review，S52 缺损不授权。
+- UPDATE 与事务 schema 保持 1；仅新 request 外层增加 entry_migration。历史 request
+  解码区分传输 content_path 与持久 content_ref，原摘要和旧记录不回写。迁移复用同一
+  publisher/recover；先备当前 consumers，再发布方法，最后退休旧原生入口。accepted
+  回退走新批准反向事务，不直接改 manifest/receipt 或增加 adopt/rebind。
 - 文件 owner 持独占锁：独立 create-only blobs、before/after inode 见证、新路径 slot →
   transaction → pending → 正文 → manifest → decision → receipt → 清 pending，各阶段 fsync。
   blob 不能硬链接成活动文件；见证不是不可变字节备份。目录/文件身份、mode、uid/gid 与
@@ -78,6 +92,7 @@ expected_operation=None, action_id=None, claim_token=None, command_actor="valida
 | pending unlink 后目录 fsync 失败 | 非零、cleanup durability unconfirmed；pending 可能已无，显式同向 recover |
 | 历史成功但另一事务 pending | 返回历史结果和当前 pending，不能说当前可读 |
 | 方法 changed/missing/来源缺损 | 保留诊断，不变技术阴性，不阻断独立 Store/冷卡事实恢复 |
+| 普通 A 携治理差异；迁移越界正文/metadata/原件；批准 hash 或 consumer 不符 | 准入拒绝，无发布；不降级到 bootstrap/force |
 | 观察坏 kind/lane、时间、原件或关联 | 显式错误，不落入 Finding 或静默 skipped |
 | 观察 partial/unknown 或登记失败 | CLI 退出 1；输入错误退出 2；保留原件及准确登记重试入口 |
 | 旧 JSON 无捕获基线 | `unverifiable_capture`；保留发现材料，不追认原件或自动重放 |

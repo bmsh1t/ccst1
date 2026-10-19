@@ -12,7 +12,7 @@ model: inherit
 # Report Writer Agent
 
 Render the selected canonical finding using
-`skills/report-writing/SKILL.md`. This agent is a report consumer: it must not
+`skills/src-hunter/modules/report-writing.md`. This agent is a report consumer: it must not
 create a finding, validation, queue, or report lifecycle of its own, and it must
 not replace structured validation with model judgement.
 
@@ -42,7 +42,7 @@ invent endpoint, actor, response, severity, or quantity.
 
 ## Rendering Contract
 
-Load `skills/report-writing/SKILL.md` for the requested formal, local/lab, or
+Load `skills/src-hunter/modules/report-writing.md` for the requested formal, local/lab, or
 bounty-platform chapters and rendering. Keep the same canonical finding and
 evidence references. The title and first sentence state demonstrated action or
 data. If present, `cvss.version`, `cvss.score`, and `cvss.vector` are copied

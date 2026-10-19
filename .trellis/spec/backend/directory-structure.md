@@ -12,7 +12,7 @@ Claude 侧编排，Python/Shell 工具负责确定性执行、证据保存和状
 |---|---|---|
 | `commands/` | Claude slash-command 契约和人工流程入口 | `commands/autopilot.md`、`commands/kb.md` |
 | `agents/` | 可选 Claude specialist 的职责边界 | `agents/autopilot.md`、`agents/validator.md` |
-| `skills/` | 领域执行方法和按需参考资料 | `skills/web2-recon/SKILL.md`、`skills/cicd-security/SKILL.md` |
+| `skills/` | 领域执行方法和按需参考资料 | `skills/src-hunter/modules/web2-recon.md`、`skills/src-hunter/modules/cicd-security.md` |
 | `rules/` | 全局约束、状态模型和工具/AI 边界 | `rules/hunting.md`、`rules/tool-ai-boundary.md` |
 | `knowledge/` | 小型知识卡、payload pack、playbook、capability registry 和正式卡治理产物 | `knowledge/capabilities.yaml`、`knowledge/cards/api-idor.md`、`knowledge/governance/events.jsonl` |
 | `tools/` | 可独立调用、可测试的确定性 CLI 与共享模块 | `tools/autopilot_state.py`、`tools/evidence_ledger.py` |

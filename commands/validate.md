@@ -7,7 +7,7 @@ description: "Record an evidence-bound AI validation decision, separating techni
 Review a selected Candidate before `/report`. AI judges evidence and impact; the tool checks
 schema, owner bindings and integrity, then records the explicit decision. It does not run tests.
 
-Load [triage-validation](../skills/triage-validation/SKILL.md) for Q1–Q7, Q7b, impact,
+Load [triage-validation](../skills/src-hunter/modules/triage-validation.md) for Q1–Q7, Q7b, impact,
 chain and retraction rules. Registration, replay, Browser/Case context and Action claim
 binding are documented in [Evidence Runners](../docs/evidence-runners.md).
 
@@ -58,7 +58,7 @@ Failed/unknown technical evidence produces `inconclusive`, not `refuted`.
 
 Choose the report-writing mode:
 - **Default single-step:** provide `report.path` and fill `report.content` with the authored
-  body, following [report-writing](../skills/report-writing/SKILL.md). Omit `mode`.
+  body, following [report-writing](../skills/src-hunter/modules/report-writing.md). Omit `mode`.
 - **Judge before writing:** replace the **entire** `report` object, keeping all other
   decision fields, with the following fragment:
 

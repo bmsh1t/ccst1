@@ -236,9 +236,10 @@ def test_shared_h2_contains_recovery_loop_and_finish_without_bootstrap():
 
 def test_round_claim_precedes_recon_without_changing_ordinary_defaults():
     shared = _read("commands/autopilot.md").split("### State Consumption Loop", 1)[1]
-    assert shared.index("Round only: claim lane") < shared.index("`run_recon`: dispatch")
-    assert shared.index("`run_recon`: dispatch") < shared.index("#state-and-queue")
-    assert "never merely deep/bounded flags" in _read("commands/autopilot.md")
+    selected_recon = "4. Execute once. Selected `run_recon`"
+    assert shared.index("3. Round: claim") < shared.index(selected_recon)
+    assert shared.index(selected_recon) < shared.index("#state-and-queue")
+    assert "Round hooks only for `/autopilot-round`" in _read("commands/autopilot.md")
     ordinary = parse_autopilot_args(["demo.test"])
     assert ordinary["cadence"] == "paranoid"
     assert ordinary["deep"] is False

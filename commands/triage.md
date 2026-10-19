@@ -26,7 +26,7 @@ Describe the finding in one sentence. Example:
 
 ## Validation Contract
 
-Read `skills/triage-validation/SKILL.md` before deciding. It is the sole owner
+Read `skills/src-hunter/modules/triage-validation.md` before deciding. It is the sole owner
 of the Q1-Q7, Q7b identity-boundary and never-submit/chain rules;
 this command is only their fast, protocol-neutral entrypoint. Use any
 target-bound reproducible evidence artifact, not an HTTP-only shortcut. For

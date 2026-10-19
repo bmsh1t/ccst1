@@ -14,7 +14,7 @@ context.
 /web3-audit CONTRACT_OR_REPO
 ```
 
-`skills/web3-audit/SKILL.md` owns the direct-only decision contract. This command
+`skills/src-hunter/modules/web3-audit.md` owns the direct-only decision contract. This command
 owns entry and artifact handoff; it does not duplicate its phase gates or create
 a second audit state.
 

@@ -50,7 +50,7 @@ connector or stop at A when no connector is testable.
 3. Use the existing command, MCP, browser, or raw replay path that fits the
    target; choose inputs from current evidence and knowledge on demand.
 4. Preserve raw artifacts, target identity, actor context, and evidence hashes.
-5. Send the result through `skills/triage-validation/SKILL.md` before `/report`.
+5. Send the result through `skills/src-hunter/modules/triage-validation.md` before `/report`.
 
 Do not create or update a second finding, queue, ledger, or report state. Write
 the next action and evidence references through their existing owners.

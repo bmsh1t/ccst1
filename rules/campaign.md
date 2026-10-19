@@ -2,19 +2,16 @@
 
 > 来源：clown `AGENTS.md`「最短执行备忘」锁面/自由跳战役段（CC BY 4.0，
 > 来源与 hash 见 `knowledge/clown-hot-method-manifest.json`，按本仓 owner 形态改写。
-> 适用条件：用户只给集团名/品牌/模糊目标时本文件生效；目标已定为具体
-> URL/域名/IP 时直接进 `rules/hunting.md` 目标模型，本文件不适用。
+> 适用条件：集团/品牌发现、种子回灌、跨目标切换或续接；即使已选定具体
+> URL/域名/IP，当前仍有集团意图时也恢复本文件的 seeds 与相应目标 owner。
+> 仅调查固定目标时读 `rules/hunting.md`，不因磁盘有旧 campaign 文件自动切模式。
 > 冲突时以 `rules/red-lines.md` 与 `rules/hunting.md` 为准。
 
 ## 形态判定（锁面 vs 自由跳）
 
-- **锁面**：用户给了固定站/文档/资产清单——目标已定，跳过战役层，但守簇完整性：
-  禁止把给定范围偷变成全集团测绘；范围内资产簇的多 host、业务流子域、
-  同 host 多 path 都要挖，不挖单点就收。
+- **锁面**：固定站/文档/资产清单的资产簇、重要组和同皮差异统一见
+  `rules/hunting.md#current-target-context`；本层不另定义。
 - **自由跳**：用户只给集团名/品牌——先跑本战役层产出活面清单，再逐面进站。
-- 用户标了「重要资产」先打那一组；清单顺序不是执行顺序。
-- 同皮壳按差异选代表，比对 `jump` / `service=` / `moduleId` 是否指向另一业务面；
-  共享皮壳不等于共享后端或覆盖证明，不重复无信息的同构矩阵。
 
 ## 两阶段归属（先发现，后确立）
 
@@ -28,7 +25,8 @@
 **目标确立后**：选定一个活面 → `python3 tools/target_store.py init --store --target
 <该面域名>` 显式初始化 → 从此该面的队列/lead/证据/经验全部写它的 Store；
 发现该面的种子来源在首个 lead 的文本里标注（哪条种子、哪次测绘捞到的）。
-已初始化目标的续挖按 hunting.md 现有 owner 走，不回发现阶段。
+已初始化目标的续挖按 hunting.md 现有 owner 走；若当前仍是集团续接，同时恢复 seeds，
+不重新初始化、不把跨目标工作材料当该目标事实。
 
 ## 保存、切换与续接
 
@@ -79,7 +77,7 @@
 
 ## 边界
 
-- 本层只补充尚无具体目标时的发现纪律，不启动第二调度器。进站后的调查归
-  `skills/src-hunting/SKILL.md` 和 `rules/hunting.md`；直接按问题读完整方法，
+- 本层补充集团发现与跨目标续接纪律，不启动第二调度器。进站后的调查归
+  `skills/src-hunter/SKILL.md` 和 `rules/hunting.md`；直接按问题读完整方法，
   `knowledge/methods/clown/references/dig-scope-workflow.md` 是按需资料，无强制热库读序。
 - 授权范围判定始终归 `rules/red-lines.md`：种子命中的范围外资产=登记不进站。

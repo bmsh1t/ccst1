@@ -37,7 +37,7 @@ frontmatter 属于 `warning`，允许渐进迁移。需要把迁移债务也纳�
 | 能力类型 | 落位 |
 |---|---|
 | 项目经验 / 边界思路 | `knowledge/cards/` |
-| 判断标准 | `skills/triage-validation/SKILL.md` 与 `rules/` |
+| 判断标准 | `skills/src-hunter/modules/triage-validation.md` 与 `rules/` |
 | 路线选择 | Claude 与当前 Skill |
 | 下一步意图 | Claude 经 Target Memory / Action Queue owner 写回 |
 | 稳定执行 | `tools/validation_runner.py` |

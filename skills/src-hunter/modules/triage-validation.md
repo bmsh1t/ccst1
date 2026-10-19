@@ -1,9 +1,9 @@
----
-name: triage-validation
-description: Validate candidate evidence and demonstrated impact, keeping technical conclusions separate from destination policy. Resolve missing chain evidence without blocking independently confirmed findings; report presentation belongs to report-writing.
----
-
 # TRIAGE & VALIDATION
+
+内部完整方法，按当前问题读取；不是独立原生 Skill，不自动启动执行或委派。
+返回 [src-hunter 调查主干](../SKILL.md)；恢复/写回仍归 `skills/runtime-protocol.md`。
+
+适用：Validate candidate evidence and demonstrated impact, keeping technical conclusions separate from destination policy. Resolve missing chain evidence without blocking independently confirmed findings; report presentation belongs to report-writing.
 
 Missing technical evidence stops the unsupported claim or severity. Destination
 exclusions stop delivery to that destination only, not technical confirmation.
@@ -16,9 +16,9 @@ rule and an explicit decision. Elapsed time alone never makes a Candidate report
 preserve the current evidence and next action when a bounded review is
 interrupted.
 
-## SCOPE OF THIS SKILL
+## SCOPE OF THIS MODULE
 
-Use this skill when a possible issue is being promoted toward a report:
+Use this module when a possible issue is being promoted toward a report:
 
 ```text
 Lead -> Signal -> Candidate -> Validated Finding -> Report
@@ -274,7 +274,7 @@ delay saving/reporting an independently confirmed primitive or sibling.
 ## Scoring Reference
 
 CVSS is optional external delivery metadata. When present, reports preserve it
-unchanged; this Skill decides whether demonstrated impact and evidence are ready
+unchanged; this module decides whether demonstrated impact and evidence are ready
 for reporting and does not require or calculate a score.
 
 ---
@@ -321,5 +321,5 @@ by itself a technical retraction.
 
 ---
 
-Report quality and presentation follow [report-writing](../report-writing/SKILL.md);
-this Skill stops at the validation verdict and write-back decision.
+Report quality and presentation follow [report-writing](report-writing.md);
+this module stops at the validation verdict and write-back decision.

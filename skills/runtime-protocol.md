@@ -1,6 +1,6 @@
 # Shared Runtime Protocol
 
-本协议只定义事实恢复、知识读取和写回；调查方法归 `src-hunting`，执行义务归对应命令。
+本协议只定义事实恢复、知识读取和写回；调查方法归 `src-hunter`，执行义务归对应命令。
 不要求每个动作依次经过 Target/Skill/Knowledge/Checks，也不重复常驻契约。
 
 ## Shared Knowledge Recall
@@ -36,7 +36,11 @@
   关系路径是待验证假设，不能写 Action/Finding 或授权执行。
 
 Autopilot 先完成当轮 Bootstrap，再为选定工作补充方法；查知识不抢占真实锁和待回收执行。
-Skill 通过平台原生 description 发现。Queue/Store 不持有 Skill 注册表或知识推荐状态。
+唯一 src-hunter 通过平台原生 description 发现，九专项是其内部按需模块。
+历史 related_skills 标签不是可直接调用的原生 Skill；需要定位时经
+`python3 tools/skill_reference_contract.py REFERENCE --repo-root ROOT --json` 精确解析当前阅读路径，
+再原生 Read 正文。该导航不改卡字节/审核版本，不选择路线或登记查阅。
+Queue/Store 不持有 Skill 注册表或知识推荐状态。
 
 ## Shared Memory Continuity
 
@@ -78,7 +82,7 @@ Candidate 和确认 A 的持久化不等 B/C；预算停止新工作，不停止
 
 ## 2. Skill layer
 
-`skills/src-hunting/SKILL.md` 是唯一全局调查核心；专项只回答当前问题，不接管目标。
+`skills/src-hunter/SKILL.md` 是唯一全局调查核心；专项只回答当前问题，不接管目标。
 知识提供完整方法；工具保存执行事实；规则处理完成和交付。无固定六域前置表、调用表或路由审计。
 
 ### 2.1 三模式决策：Discovery / Exploitation / Validation modes
@@ -94,7 +98,7 @@ Discovery 主动补证据；Exploitation 检查已有信号及连接；Validatio
 
 ### 2.3 层级归属标准
 
-全局调查判断在核心 Skill；专项判断在专项 Skill；技巧/反例/案例在方法资料；
+全局调查判断在唯一核心 Skill；专项判断在完整内部模块；技巧/反例/案例在方法资料；
 稳定执行在工具；证据、完成和报告门在既有规则。完整正文只有一处，其他入口引用。
 
 ## 3. Knowledge layer
@@ -111,7 +115,7 @@ Not applicable、Dead ends、Still unknown 和 Next actions；无发现不是覆
 
 调用命令前读匹配执行合同：`docs/tool-index.md#execution-contract-lookup`。
 通过既有 owner 登记证据、Action、Finding、技术裁决和交付；Checkpoint 不写这些状态。
-普通同会话读取不填交接表；真实委派按 `src-hunting` 的 handoff 合同交付，主会话接受。
+普通同会话读取不填交接表；真实委派按 `src-hunter` 的 handoff 合同交付，主会话接受。
 
 尚无 Finding 的原生观察走 `validation_runner.py record-observation`，按
 `docs/evidence-runners.md#native-observation-registration` 保存原件、有序步骤和真实 operation 引用；

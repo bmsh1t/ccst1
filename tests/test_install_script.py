@@ -66,7 +66,7 @@ def test_install_script_copies_shared_skill_markdown_files(tmp_path):
 
     assert installed_protocol.read_text(encoding="utf-8") == expected
 
-    for name in ("src-hunting", "whitebox-audit"):
+    for name in ("src-hunter",):
         installed_skill = home / ".claude" / "skills" / name / "SKILL.md"
         source_skill = REPO_ROOT / "skills" / name / "SKILL.md"
         assert installed_skill.read_bytes() == source_skill.read_bytes()
@@ -92,8 +92,8 @@ def test_install_script_recursively_copies_managed_skill_resources(tmp_path):
 
     assert result.returncode == 0, result.stderr + result.stdout
 
-    repo_skill = REPO_ROOT / "skills" / "src-hunting"
-    runtime_skill = home / ".claude" / "skills" / "src-hunting"
+    repo_skill = REPO_ROOT / "skills" / "src-hunter"
+    runtime_skill = home / ".claude" / "skills" / "src-hunter"
     expected_files = {
         path.relative_to(repo_skill)
         for path in repo_skill.rglob("*")
@@ -174,8 +174,10 @@ def test_install_upgrade_and_repeat_preserve_user_state(tmp_path):
         shutil.copytree(REPO_ROOT / name, checkout / name)
     shutil.copy2(REPO_ROOT / "install.sh", checkout / "install.sh")
     (checkout / "tools").mkdir()
-    for name in ("runtime_doctor.py", "artifact_io.py"):
+    for name in ("runtime_doctor.py", "artifact_io.py", "skill_reference_contract.py"):
         shutil.copy2(REPO_ROOT / "tools" / name, checkout / "tools" / name)
+    (checkout / "knowledge").mkdir()
+    shutil.copy2(REPO_ROOT / "knowledge/clown-hot-method-manifest.json", checkout / "knowledge/clown-hot-method-manifest.json")
     markdown_inputs = []
     for kind in ("commands", "agents"):
         for name, excluded in (
@@ -228,16 +230,16 @@ def test_install_upgrade_and_repeat_preserve_user_state(tmp_path):
     binding = store.binding()
     source_command = checkout / "commands/sync-check.md"
     source_command.write_text(source_command.read_text() + "\nUpdated command\n")
-    source_resource = checkout / "skills/src-hunting/references/release.txt"
+    source_resource = checkout / "skills/src-hunter/references/release.txt"
     source_resource.parent.mkdir(parents=True)
     source_resource.write_text("new resource\n")
-    stale = runtime / "skills/src-hunting/retired.txt"
+    stale = runtime / "skills/src-hunter/retired.txt"
     stale.write_text("old managed resource\n")
     for _ in range(2):
         install()
         assert not (runtime / "commands/sync-check.md").exists()
         assert disabled.read_bytes() == source_command.read_bytes()
-        assert (runtime / "skills/src-hunting/references/release.txt").read_bytes() == source_resource.read_bytes()
+        assert (runtime / "skills/src-hunter/references/release.txt").read_bytes() == source_resource.read_bytes()
         assert all(path.read_bytes() == body for path, body in preserved.items())
         assert store.binding() == binding
         assert store.experience_page()["items"][0]["statement"] == "Preserve upgrade context"

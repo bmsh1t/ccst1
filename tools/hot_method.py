@@ -15,6 +15,11 @@ import shlex
 from pathlib import Path
 from typing import Any
 
+try:
+    from tools.skill_reference_contract import CORE_SKILL_PATH, LEGACY_SKILL_READ_PATHS
+except ImportError:  # direct tools/ execution
+    from skill_reference_contract import CORE_SKILL_PATH, LEGACY_SKILL_READ_PATHS
+
 BASE_DIR = Path(__file__).resolve().parents[1]
 MANIFEST_RELATIVE = Path("knowledge/clown-hot-method-manifest.json")
 MANIFEST_SCHEMA = "ccst-hot-method/1"
@@ -24,6 +29,15 @@ HISTORY = METHOD_ROOT + "/.history"
 SCOPES = {"method", "index", "governance_reference", "entry_reference"}
 VALID_ROLES = frozenset({"entry", "shortlist", "method"})
 SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+ENTRY_MIGRATION_PROFILE = "src-hunter-single-entry"
+ENTRY_MIGRATION_FILES = (
+    "README.md", "skills/src-hunter/SKILL.md", "skills/src-hunter/知识库/README.md",
+    "references/researcher-blackbox-whitebox.md",
+)
+_S01_DISPOSITIONS = (
+    "keep full source reference under methods; root skills/src-hunting remains sole native entry; repair only host/path instructions",
+    "S01 is the source of root skills/src-hunter/SKILL.md; keep full source reference under methods; nine specialist methods are internal modules",
+)
 
 
 class HotMethodError(ValueError):
@@ -673,6 +687,10 @@ def _load_transaction(files: _MethodFiles, identity: str, *, local_identity: boo
             or not isinstance(transaction.get("files"), list) or not transaction["files"]
             or not isinstance(transaction.get("directories"), dict)):
         raise HotMethodError("invalid transaction binding")
+    _recorded_request(transaction["request"])
+    if (transaction["request"]["update"]["transaction_id"] != identity
+            or transaction["request"]["update"]["expected_manifest"] != transaction["before_manifest"]):
+        raise HotMethodError("transaction request identity/before manifest conflict")
     for field in ("before_manifest", "after_manifest"):
         _hash(transaction.get(field))
     for path, value in transaction["directories"].items():
@@ -757,7 +775,9 @@ def _validate_revision(repo: Path, manifest: dict, raw: bytes, *, local_identity
     return receipt
 
 
-def _request(update: object, expected_manifest: str | None, bootstrap: bool) -> dict:
+def _validate_update(update: object, expected_manifest: str | None, *, locator: str) -> None:
+    """Transport paths and persisted opaque refs have distinct validation rules."""
+    validate_locator = _relative if locator == "content_path" else _hash
     if not isinstance(update, dict) or update.get("schema_version") != 1:
         raise HotMethodError("UPDATE_JSON schema_version=1 required")
     if set(update) - {"schema_version", "transaction_id", "expected_manifest", "manifest", "files", "origin_materials", "review"}:
@@ -778,7 +798,7 @@ def _request(update: object, expected_manifest: str | None, bootstrap: bool) -> 
     for item in files:
         if not isinstance(item, dict):
             raise HotMethodError("update file must be an object")
-        if set(item) - {"path", "before_sha256", "after_sha256", "content_path", "mode", "uid", "gid"}:
+        if set(item) - {"path", "before_sha256", "after_sha256", locator, "mode", "uid", "gid"}:
             raise HotMethodError("unknown update file field")
         path = _relative(item.get("path"))
         if path in seen or path.startswith(".history/") or any(x.startswith(".hot-") for x in Path(path).parts):
@@ -787,7 +807,7 @@ def _request(update: object, expected_manifest: str | None, bootstrap: bool) -> 
         _hash(item.get("after_sha256"))
         if item.get("before_sha256") is not None:
             _hash(item["before_sha256"])
-        _relative(item.get("content_path"))
+        validate_locator(item.get(locator))
     review = update.get("review")
     if not isinstance(review, dict):
         raise HotMethodError("review declaration required")
@@ -819,28 +839,160 @@ def _request(update: object, expected_manifest: str | None, bootstrap: bool) -> 
     for source in review["sources"]:
         if not isinstance(source, dict) or source.get("kind") not in {"origin", "private"}:
             raise HotMethodError("invalid source kind")
-        expected = {"kind", "id", "sha256"} | ({"content_path"} if source["kind"] == "private" else set())
+        expected = {"kind", "id", "sha256"} | ({locator} if source["kind"] == "private" else set())
         if set(source) != expected:
             raise HotMethodError("invalid source fields")
         _text(source.get("id"), "source.id")
         _hash(source.get("sha256"))
         if source["kind"] == "private":
-            _relative(source.get("content_path"))
-    public = json.loads(_json_bytes(update))
-    materials = public.get("origin_materials", [])
+            validate_locator(source.get(locator))
+    materials = update.get("origin_materials", [])
     if not isinstance(materials, list):
         raise HotMethodError("origin_materials must be a list")
     for item in materials:
-        if not isinstance(item, dict) or set(item) != {"id", "content_path"}:
+        if not isinstance(item, dict) or set(item) != {"id", locator}:
             raise HotMethodError("invalid origin material fields")
         _text(item["id"], "origin material ID")
-        _relative(item["content_path"])
+        validate_locator(item[locator])
+
+
+def _migration_marker(value: object, *, locator: str) -> None:
+    if (not isinstance(value, dict)
+            or set(value) != {"schema_version", "profile", "direction", "approval"}
+            or type(value["schema_version"]) is not int or value["schema_version"] != 1
+            or value["profile"] != ENTRY_MIGRATION_PROFILE
+            or value["direction"] not in {"forward", "reverse"}):
+        raise HotMethodError("unsupported entry migration profile/version/direction")
+    approval = value["approval"]
+    if not isinstance(approval, dict) or set(approval) != {"sha256", locator}:
+        raise HotMethodError("entry migration requires byte-bound approval material")
+    _hash(approval["sha256"])
+    (_relative if locator == "content_path" else _hash)(approval[locator])
+
+
+def _recorded_request(request: object) -> None:
+    if (not isinstance(request, dict)
+            or set(request) not in ({"bootstrap", "update"}, {"bootstrap", "update", "entry_migration"})
+            or type(request["bootstrap"]) is not bool):
+        raise HotMethodError("invalid recorded request envelope")
+    _validate_update(request["update"], None, locator="content_ref")
+    if "entry_migration" in request:
+        if request["bootstrap"]:
+            raise HotMethodError("entry migration cannot bootstrap")
+        _migration_marker(request["entry_migration"], locator="content_ref")
+
+
+def _request(update: object, expected_manifest: str | None, bootstrap: bool,
+             *, entry_migration: dict | None = None) -> dict:
+    _validate_update(update, expected_manifest, locator="content_path")
+    public = json.loads(_json_bytes(update))
+    materials = public.get("origin_materials", [])
     # Transport locators can contain target-private identities. Persist only opaque
     # bindings; recovery needs immutable blobs, never the original input pathname.
     for item in [*public["files"], *materials, *public["review"]["sources"]]:
         if "content_path" in item:
             item["content_ref"] = _digest(item.pop("content_path").encode("utf-8"))
-    return {"bootstrap": bool(bootstrap), "update": public}
+    request = {"bootstrap": bool(bootstrap), "update": public}
+    if entry_migration is not None:
+        if bootstrap:
+            raise HotMethodError("entry migration cannot bootstrap")
+        _migration_marker(entry_migration, locator="content_path")
+        marker = json.loads(_json_bytes(entry_migration))
+        marker["approval"]["content_ref"] = _digest(marker["approval"].pop("content_path").encode("utf-8"))
+        request["entry_migration"] = marker
+    return request
+
+
+def _entry_navigation_body(raw: bytes, direction: str) -> bytes:
+    """Only these contextual navigation tokens may change, never method prose."""
+    replacements = [
+        (f"{prefix}`skills/src-hunting/SKILL.md`", f"{prefix}`{CORE_SKILL_PATH}`")
+        for prefix in ("repository ", "native ", "仓库根 ")
+    ] + [
+        (f"skills/{name}/SKILL.md", path)
+        for name, path in LEGACY_SKILL_READ_PATHS.items() if name != "src-hunting"
+    ]
+    body = raw.decode("utf-8")
+    for old, new in replacements:
+        if direction == "reverse":
+            old, new = new, old
+        body = body.replace(old, new)
+    if body.encode("utf-8") == raw:
+        raise HotMethodError("entry migration requires an actual navigation change")
+    return body.encode("utf-8")
+
+
+def _entry_origins(origins: list[dict], direction: str) -> list[dict]:
+    """Change only three current consumer/disposition records; freeze originals."""
+    result = json.loads(_json_bytes(origins))
+    if len(result) != 62 or not {"S01", "S56", "S61"} <= {o["id"] for o in result}:
+        raise HotMethodError("entry migration requires the complete 62-origin source set")
+    paths = {f"skills/{name}/SKILL.md": path for name, path in LEGACY_SKILL_READ_PATHS.items()}
+    if direction == "reverse":
+        paths = {new: old for old, new in paths.items()}
+    for origin in result:
+        if origin["id"] == "S01":
+            old, new = _S01_DISPOSITIONS if direction == "forward" else _S01_DISPOSITIONS[::-1]
+            source = METHOD_ROOT + "/skills/src-hunter/SKILL.md"
+            expected = [source] if direction == "forward" else [source, CORE_SKILL_PATH]
+            if origin["disposition"] != old or origin["consumers"] != expected:
+                raise HotMethodError("S01 entry disposition/consumer is outside the migration profile")
+            origin["disposition"] = new
+            origin["consumers"] = [source, CORE_SKILL_PATH] if direction == "forward" else [source]
+        elif origin["id"] in {"S56", "S61"}:
+            origin["consumers"] = [paths.get(path, path) for path in origin["consumers"]]
+            for old, new in paths.items():
+                origin["disposition"] = origin["disposition"].replace(old, new)
+            old, new = ("src-hunting", "src-hunter") if direction == "forward" else ("src-hunter", "src-hunting")
+            if origin["id"] == "S56":
+                origin["disposition"] = origin["disposition"].replace(old, new)
+    return result
+
+
+def _check_entry_migration(files: _MethodFiles, before_raw: bytes, update: dict, marker: dict) -> None:
+    before = json.loads(before_raw)
+    if before["schema"] != MANIFEST_V2 or update.get("origin_materials"):
+        raise HotMethodError("entry migration requires v2 without new origin materials")
+    changed = {item["path"]: item for item in update["files"]}
+    if set(changed) != set(ENTRY_MIGRATION_FILES):
+        raise HotMethodError("entry migration permits exactly the four navigation files")
+    candidate = json.loads(before_raw)
+    candidate["revision_ref"] = f".history/receipts/{update['transaction_id']}.json"
+    candidate["origins"] = _entry_origins(before["origins"], marker["direction"])
+    found = set()
+    for entry in candidate["entries"] + candidate["context_files"]:
+        if entry["path"] in changed:
+            found.add(entry["path"])
+            entry["sha256"] = changed[entry["path"]]["after_sha256"]
+    if found != set(changed) or candidate != update["manifest"]:
+        raise HotMethodError("entry migration cannot change origin identity, defects or other manifest fields")
+    inputs = _MethodFiles(files.repo)
+    for path, item in changed.items():
+        old, _ = files.read(METHOD_ROOT + "/" + path)
+        new, _ = inputs.read(item["content_path"])
+        if new != _entry_navigation_body(old, marker["direction"]):
+            raise HotMethodError(f"entry migration cannot rewrite method/governance prose: {path}")
+    approval_raw, _ = inputs.read(marker["approval"]["content_path"])
+    if _digest(approval_raw) != marker["approval"]["sha256"]:
+        raise HotMethodError("entry migration approval material changed")
+    approval = json.loads(approval_raw)
+    expected_paths = (set(LEGACY_SKILL_READ_PATHS.values()) if marker["direction"] == "forward"
+                      else {f"skills/{name}/SKILL.md" for name in LEGACY_SKILL_READ_PATHS})
+    native = {path: _digest(_read_absolute(files.repo / path)[0]) for path in sorted(expected_paths)}
+    expected = {
+        "schema_version": 1, "profile": ENTRY_MIGRATION_PROFILE, "direction": marker["direction"],
+        "expected_manifest": _digest(before_raw), "after_manifest": _digest(_json_bytes(candidate)),
+        "files": [{k: item[k] for k in ("path", "before_sha256", "after_sha256")} for item in update["files"]],
+        "native_assets": native,
+    }
+    if not isinstance(approval, dict) or set(approval) != {*expected, "authorization"}:
+        raise HotMethodError("invalid entry migration approval binding")
+    _text(approval["authorization"], "approval authorization declaration")
+    if any(approval[key] != value for key, value in expected.items()):
+        raise HotMethodError("entry migration approval does not bind this candidate/version")
+    for origin in candidate["origins"]:
+        for consumer in origin["consumers"]:
+            _read_absolute(files.repo / consumer.split("#", 1)[0])
 
 
 def _verify_witness(files: _MethodFiles, item: dict, side: str, *, local_identity: bool = True) -> None:
@@ -977,7 +1129,8 @@ def _outcome(repo: Path, transaction: dict, receipt: dict, *, cleanup: str = "no
                                              "--recover", transaction["transaction_id"], "--mode", receipt["mode"], "--json"])}
 
 
-def _prepare(files: _MethodFiles, request: dict, before: dict, before_raw: bytes, update: dict) -> dict:
+def _prepare(files: _MethodFiles, request: dict, before: dict, before_raw: bytes, update: dict,
+             *, entry_migration: dict | None = None) -> dict:
     identity = update["transaction_id"]
     # Input transport directories are transient and may reveal private sources.
     # Only publication/recovery paths belong in the persisted directory bindings.
@@ -994,6 +1147,8 @@ def _prepare(files: _MethodFiles, request: dict, before: dict, before_raw: bytes
     new_entries = {x["path"]: x for x in after["entries"] + after["context_files"]}
     if before["schema"] == MANIFEST_V2:
         _validate_revision(files.repo, before, before_raw)
+    if entry_migration is not None:
+        _check_entry_migration(files, before_raw, update, entry_migration)
     for entry in old_entries.values():
         body, _ = files.read(METHOD_ROOT + "/" + entry["path"])
         if _digest(body) != entry["sha256"]:
@@ -1003,7 +1158,7 @@ def _prepare(files: _MethodFiles, request: dict, before: dict, before_raw: bytes
     changed = {item["path"]: item for item in update["files"]}
     if set(changed) - set(new_entries):
         raise HotMethodError("updated file missing from new manifest")
-    if not request["bootstrap"]:
+    if not request["bootstrap"] and entry_migration is None:
         old_payload = json.loads(before_raw)
         candidate = update["manifest"]
         for key in set(old_payload) | set(candidate):
@@ -1015,7 +1170,7 @@ def _prepare(files: _MethodFiles, request: dict, before: dict, before_raw: bytes
                 raise HotMethodError("ordinary maintenance cannot change existing entry metadata")
     for path, entry in new_entries.items():
         if path in changed:
-            if not request["bootstrap"] and (entry["maintenance_scope"] not in {"method", "index"} or path.startswith("references/") or path.endswith("SKILL.md")):
+            if not request["bootstrap"] and entry_migration is None and (entry["maintenance_scope"] not in {"method", "index"} or path.startswith("references/") or path.endswith("SKILL.md")):
                 raise HotMethodError(f"governance/entry maintenance denied: {path}")
             if changed[path]["after_sha256"] != entry["sha256"]:
                 raise HotMethodError("after manifest/body hash mismatch")
@@ -1128,8 +1283,21 @@ def _prepare(files: _MethodFiles, request: dict, before: dict, before_raw: bytes
 
 def apply_update(repo_root: Path | str, update: dict, *, expected_manifest: str | None = None,
                  bootstrap: bool = False, environ: dict[str, str] | None = None) -> dict:
-    repo = _repo(repo_root)
+    """Ordinary A (or initial bootstrap); cannot carry entry migration authority."""
     request = _request(update, expected_manifest, bootstrap)
+    return _apply_request(repo_root, update, request, environ=environ)
+
+
+def migrate_entry(repo_root: Path | str, update: dict, *, entry_migration: dict,
+                  expected_manifest: str | None = None, environ: dict[str, str] | None = None) -> dict:
+    """Explicit bounded governance migration using the existing publication owner."""
+    request = _request(update, expected_manifest, False, entry_migration=entry_migration)
+    return _apply_request(repo_root, update, request, entry_migration=entry_migration, environ=environ)
+
+
+def _apply_request(repo_root: Path | str, update: dict, request: dict,
+                   *, entry_migration: dict | None = None, environ: dict[str, str] | None = None) -> dict:
+    repo = _repo(repo_root)
     environment = os.environ if environ is None else environ
     if "CCST_CLOWN_SNAPSHOT" in environment:
         raise HotMethodError("origin_only: external source mutation forbidden")
@@ -1150,7 +1318,7 @@ def apply_update(repo_root: Path | str, update: dict, *, expected_manifest: str 
         if _digest(before_raw) != request["update"]["expected_manifest"]:
             raise HotMethodError("manifest CAS conflict")
         if transaction is None:
-            transaction = _prepare(files, request, before, before_raw, update)
+            transaction = _prepare(files, request, before, before_raw, update, entry_migration=entry_migration)
         else:
             files = _MethodFiles(repo, transaction["directories"])
             if any(_position(files, item) != "before" for item in transaction["files"]):
@@ -1224,6 +1392,7 @@ def build_parser() -> argparse.ArgumentParser:
     operation.add_argument("--read", action="append")
     operation.add_argument("--origin")
     operation.add_argument("--apply")
+    operation.add_argument("--migrate-entry", help="explicit versioned entry_migration + update envelope")
     operation.add_argument("--recover")
     parser.add_argument("--expected-manifest")
     parser.add_argument("--bootstrap", action="store_true")
@@ -1246,13 +1415,22 @@ def main(argv: list[str] | None = None) -> int:
             result = read_methods(args.repo_root, args.read, expected_manifest=args.expected_manifest)
         elif args.origin:
             result = read_origin(args.repo_root, args.origin)
-        elif args.apply:
+        elif args.apply or args.migrate_entry:
             if not args.expected_manifest:
-                raise HotMethodError("--apply requires --expected-manifest")
-            payload = json.loads(_read_absolute(Path(args.apply).absolute())[0])
-            if isinstance(payload, dict):
-                identity = payload.get("transaction_id")
-            result = apply_update(args.repo_root, payload, expected_manifest=args.expected_manifest, bootstrap=args.bootstrap)
+                raise HotMethodError("publication requires --expected-manifest")
+            payload = json.loads(_read_absolute(Path(args.apply or args.migrate_entry).absolute())[0])
+            if args.migrate_entry:
+                if not isinstance(payload, dict) or set(payload) != {"entry_migration", "update"}:
+                    raise HotMethodError("entry migration requires explicit entry_migration + update")
+                update = payload["update"]
+                if isinstance(update, dict):
+                    identity = update.get("transaction_id")
+                result = migrate_entry(args.repo_root, update, entry_migration=payload["entry_migration"],
+                                       expected_manifest=args.expected_manifest)
+            else:
+                if isinstance(payload, dict):
+                    identity = payload.get("transaction_id")
+                result = apply_update(args.repo_root, payload, expected_manifest=args.expected_manifest, bootstrap=args.bootstrap)
         elif args.recover:
             if not args.mode:
                 raise HotMethodError("--recover requires explicit --mode")

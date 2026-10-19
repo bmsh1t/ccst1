@@ -93,6 +93,6 @@ deferred names are explicit. Any omission makes capture and the command partial
 than overwrite evidence. A complete capture only covers selected files; it says
 nothing about unrequested files, deployment correspondence or exploitability.
 
-Use `skills/whitebox-audit/SKILL.md` for entry/guard/sink analysis and conditional
+Use `skills/src-hunter/modules/whitebox-audit.md` for entry/guard/sink analysis and conditional
 source-to-runtime handoff. Source suggestions never run code, create an Action,
 confirm a Finding or bypass `triage-validation` and the assessment owner.

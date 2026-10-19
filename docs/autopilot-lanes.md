@@ -150,9 +150,21 @@ Checkpoint, Pickup and preflight never initialize, import, or recreate old owner
   dropping context or calling a shell/browser instead is not an equivalent constrained path.
   The Hunt commands below apply without a parent continuation; they do not override this gate.
 
-- `run_recon`: execute directly from this lane. When
-  `state.recon.cidr_continuation.status=pending`, continue once with
-  `BBHUNT_CIDR_OFFSET=<next_offset> python3 tools/hunt.py --target <target_shell> [--auth-file <auth_file_shell>] --recon-only`; otherwise omit the offset. Append `arguments.recon_flags` exactly. Never restart a pending CIDR at zero or discard prior pages. If `state.dir_fuzz_rotation.pending=true`, rerun the same bounded Recon so its FFUF target ledger advances to the next live services; `live/urls.txt` remains the complete source.
+- `run_recon` is an explicitly selected collection action, not a missing-inventory
+  prerequisite. Before choosing its parameters, read full state with
+  `python3 tools/autopilot_state.py --target <target_shell> --json` and its current
+  Recon owner references. Compact does not contain every cursor/phase detail;
+  standalone `--projection-only` is not a full-state query. This query does not
+  write domain facts, but existing Resume logging may create its parent directory.
+  For a valid pending CIDR cursor, continue once with
+  `BBHUNT_CIDR_OFFSET=<next_offset> python3 tools/hunt.py --target <target_shell> [--auth-file <auth_file_shell>] --recon-only`.
+  Append `arguments.recon_flags` exactly. Invalid cursors are not executable;
+  never restart at zero or discard prior pages. FFUF pending/partial retains its
+  remaining work and exact owner continuation, but does not require a full Recon
+  rerun. The current CLI offers complete profiles, not `--phase` or
+  `--ffuf-rotation-only`; choose that cost explicitly or investigate other evidence.
+  `live/urls.txt` remains the complete source. Zero live hosts alone neither ends
+  investigation nor authorizes another pipeline run.
 - Before a breadth helper, inspect `tools/surface.py`, `tools/context_pack.py`, and `tools/observation_inventory.py summary` when a usable cache exists. A later breadth pass is `python3 tools/hunt.py --target <target_shell> [--auth-file <auth_file_shell>] --scan-only --quick`.
 - General Nuclei breadth is origin-deduplicated and capped at 50/100/200 targets for quick/standard/full (`BB_NUCLEI_MAX_TARGETS` overrides); `summary.json` records available and selected origin counts. Long-tail paths, components, and CVEs require a reviewed evidence-backed list.
 - `prepare_surface_context`: run one explicit `python3 tools/surface.py --target <target_shell> --refresh`, verify its bounded projection, load context, then refresh state.
@@ -212,8 +224,8 @@ Checkpoint, Pickup and preflight never initialize, import, or recreate old owner
 
 ## Credentials And Asset Expansion
 
-- A real login form (including admin/back-office) routes to the bounded baseline policy in `skills/credential-attack/SKILL.md`; that Skill owns default/common weak-password checks and the stable-account exception. The baseline is preparation-only; default/common weak-password checks and password spray are not mandatory last lanes. Credential Lane may be selected for live work only when login value, observed protocol/signals, lockout/rate controls, dry-run/preflight, audit, and stop-on-hit gates exist.
-- Focused fuzz (`skills/web2-recon/SKILL.md`) and DNS expansion are optional AI-selected discovery actions. DNS expansion requires a concrete naming/certificate/JS/source gap and calls `python3 tools/dns_expand.py --target <target_shell> --reason "<evidence>"`; host count alone is not a trigger. Generation/resolution/scope/merge stay tool-owned.
+- A real login form (including admin/back-office) routes to the bounded baseline policy in `skills/src-hunter/modules/credential-attack.md`; that module owns default/common weak-password checks and the stable-account exception. The baseline is preparation-only; default/common weak-password checks and password spray are not mandatory last lanes. Credential Lane may be selected for live work only when login value, observed protocol/signals, lockout/rate controls, dry-run/preflight, audit, and stop-on-hit gates exist.
+- Focused fuzz (`skills/src-hunter/modules/web2-recon.md`) and DNS expansion are optional AI-selected discovery actions. DNS expansion requires a concrete naming/certificate/JS/source gap and calls `python3 tools/dns_expand.py --target <target_shell> --reason "<evidence>"`; host count alone is not a trigger. Generation/resolution/scope/merge stay tool-owned.
 - DNS expansion handoff: when `new_resolved_hosts` or `new_all_hosts` is positive, return the added counts and evidence refs in the existing 「待落库」 tail with a caller Surface-refresh request. The caller refreshes `/surface`; the specialist never refreshes parent state. With no added hosts, do not request a refresh.
 - Generic asset-relationship expansion is optional and evidence-triggered: use organization/brand, certificate, ASN/origin, registrant, supplier, public-source, or existing relationship evidence, or explicit intent; skip simple labs, localhost, and isolated IP/CIDR without organization evidence. Quick requires explicit intent; normal performs one pass with depth 1; deep may recurse to depth 3; full may recurse to depth 4.
 - Follow only majority/control relationships, dedupe `entity_ref` (or source/entity), and stop after two empty domain levels or budget exhaustion. Use structured public sources; Chrome DevTools MCP is public/no-credential only and writes locatable `source_ref` facts. Normalize to `recon/<target-key>/exposure/asset_relation_observations.jsonl`, run `python3 tools/recon_candidates.py --target <target_shell>`, and refresh `/surface`/`/checkpoint`.

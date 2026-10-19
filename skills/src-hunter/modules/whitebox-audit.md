@@ -1,14 +1,14 @@
----
-name: whitebox-audit
-description: Answer source, JavaScript and dependency questions about reachable inputs, trust boundaries, authorization guards and sinks, with exact source bytes and explicit deployment uncertainty.
----
-
 # Whitebox Audit — Question-Bound Source Investigation
 
-Answer the delegated question; `skills/src-hunting/SKILL.md` retains the global
+内部完整方法，按当前问题读取；不是独立原生 Skill，不自动启动执行或委派。
+返回 [src-hunter 调查主干](../SKILL.md)；恢复/写回仍归 `skills/runtime-protocol.md`。
+
+适用：Answer source, JavaScript and dependency questions about reachable inputs, trust boundaries, authorization guards and sinks, with exact source bytes and explicit deployment uncertainty.
+
+Answer the delegated question; `skills/src-hunter/SKILL.md` retains the global
 hypotheses, priorities and stop decision. Blackbox evidence can select a source
 path and source evidence can propose a runtime comparison. Neither direction is
-mandatory, and this Skill does not start a repository-wide audit or a controller.
+mandatory, and this module does not start a repository-wide audit or a controller.
 
 ## Inputs and Method
 
@@ -84,4 +84,9 @@ runtime verification or automatically promote it to a Finding.
 `rules/red-lines.md` and current Scope/Auth still govern proposed experiments.
 `skills/runtime-protocol.md` owns continuity/write-back; `triage-validation` owns
 proof readiness and `report-writing` owns expression of accepted results. This
-Skill cannot close Action/Coverage, confirm a Finding or submit a report.
+module cannot close Action/Coverage, confirm a Finding or submit a report.
+
+The versioned `references/researcher-blackbox-whitebox.md` remains available
+through the complete method reader. Its S52 source lacks Phase 0; keep that
+source defect explicit. This module supplies CCST source reasoning, not a
+reconstruction or proof of the missing upstream phase.

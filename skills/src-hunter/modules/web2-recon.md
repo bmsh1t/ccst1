@@ -1,9 +1,9 @@
----
-name: web2-recon
-description: Use when a target needs attack-surface discovery, surface review, or a bounded recon follow-up — it decides the next evidence-producing recon action from current target state (which lane, what artifact, what it answers). A decision layer, not a scanner recipe; the /recon command owns command execution and artifacts, and deterministic tools own collection, scope filtering, and resumable cursors.
----
+# Web2 Recon Decision Module
 
-# Web2 Recon Decision Skill
+内部完整方法，按当前问题读取；不是独立原生 Skill，不自动启动执行或委派。
+返回 [src-hunter 调查主干](../SKILL.md)；恢复/写回仍归 `skills/runtime-protocol.md`。
+
+适用：Use when a target needs attack-surface discovery, surface review, or a bounded recon follow-up — it decides the next evidence-producing recon action from current target state (which lane, what artifact, what it answers). A decision layer, not a scanner recipe; the /recon command owns command execution and artifacts, and deterministic tools own collection, scope filtering, and resumable cursors.
 
 Choose the next evidence-producing recon action from the current target state.
 This is a decision layer, not a fixed scanner recipe. `/recon` remains the
@@ -35,7 +35,7 @@ and lowest reversible cost. Branches are alternatives, not a mandatory order.
 | Observed state | Preferred decision | Handoff |
 |---|---|---|
 | No active target or scope context | Establish the target record and stop before network work | `commands/target.md` / runtime protocol |
-| No inventory or a materially stale inventory | Run the appropriate `/recon` profile and preserve raw output | `/recon TARGET [--quick|--deep]` |
+| No inventory or a materially stale inventory | Compare available request/source/browser evidence and the current information gap; choose bounded collection only if useful | Native evidence or explicitly selected `/recon TARGET [--quick|--deep]` |
 | Inventory exists but the valuable surface is unclear | Refresh the bounded Surface view and ask one feature-level question | `/surface`, `tools/surface.py` |
 | Browser, JS, source, schema, or history names a missing host/path/parameter | Choose one evidence-linked expansion, not a generic dictionary | `tools/dns_expand.py --reason <evidence>`, focused FFUF, native Read/Grep |
 | Authenticated API exposes object or role state | Compare the same object/action across owned actors before broad probes | `knowledge/playbooks/web2-evidence-contracts.md`, actor-pair evidence |
@@ -54,6 +54,16 @@ localhost, lab, private-scope, and supplied target-set runs, keep the supplied
 target record and the same artifact contract; bounty ROI only affects attention,
 not scope or completion.
 
+### Login / Missing JavaScript
+
+A login page is not the end of the target. Look for the actual business API,
+same-host gateway, permitted redirect destination or already available source
+and request evidence. If JavaScript is absent or unavailable, choose another
+evidence plane rather than waiting or repeating same-skin login probes. A real
+login form may warrant [credential review](credential-attack.md), not automatic
+live guessing. Once a test session is available, compare objects, actors and
+workflow state. Preserve unknowns and Scope boundaries when a prerequisite is missing.
+
 ### Origin/Host Clues
 
 Origin IP/range, ASN, SAN/CNAME, or edge/direct response differences are
@@ -64,7 +74,7 @@ Host/SNI comparison candidates.
 Within the question supplied by the main session, choose the collection method
 that best distinguishes the competing explanations with reversible cost. Return
 new business/actor/workflow evidence, unexpected high-value signals and proposed
-pivots to `skills/src-hunting/SKILL.md`; Recon does not rank the whole target or
+pivots to `skills/src-hunter/SKILL.md`; Recon does not rank the whole target or
 own global stopping. Technology narrows a local hypothesis, not a finding.
 
 ## Action and Evidence Contract
@@ -85,13 +95,15 @@ replace raw evidence or promote a Lead.
 
 Use native Read/Grep and the existing `/recon`, `/surface`, `tools/recon_engine.sh`, and
 `tools/recon_adapter.py` entrypoints. Do not copy their flags or parser rules
-into this Skill. Detailed FFUF operation and artifact handling live in the
+into this module. Detailed FFUF operation and artifact handling live in the
 focused discovery section of `commands/recon.md`.
 
 ## Profile and Artifact Compatibility
 
-- `/recon` and fresh `/autopilot` use normal Recon by default; `--quick` lowers
-  cost and `--deep` enables the deeper JS path.
+- Explicit `/recon` selects the existing full profile; `--quick` lowers cost and
+  `--deep` enables the deeper JS path. Fresh `/autopilot` does not select Recon
+  merely because inventory is absent. Pending collection is optional, not a
+  reason to rerun the whole pipeline; invalid cursors require owner repair.
 - Raw hosts, URLs, JS, parameters, and exposure observations remain lossless.
   Filtered/ordered views are projections and never shrink the authoritative raw
   corpus.
@@ -136,7 +148,7 @@ shows a missing/null/type/schema validation signal, load
 `knowledge/cards/missing-parameter-discovery.md`.
 
 Recon records the baseline and a target-derived vocabulary, then hands a small
-Lead/next action to the vulnerability Skill. It does not treat an error as a
+Lead/next action to the vulnerability method. It does not treat an error as a
 finding, bulk-enumerate real users, export sensitive data, or turn the vocabulary
 into a fixed dictionary.
 
@@ -178,7 +190,7 @@ Stop collection when the delegated question is answered, its evidence-bound kill
 condition is met, prerequisites fail or the execution owner budget ends. Return
 what changed, contrary evidence, raw references, missing conditions and a useful
 next discriminating check using the real-handoff contract in
-`skills/src-hunting/SKILL.md#real-delegation-and-execution-handoff`.
+`skills/src-hunter/SKILL.md#real-delegation-and-execution-handoff`.
 Pure same-session reading does not need a filled result form.
 
 Low-signal and untested material remain unknown/blocked with reasons. Proposed

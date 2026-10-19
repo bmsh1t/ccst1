@@ -1,32 +1,37 @@
-# Skills 层
+# 单一原生 Skill 与完整内部模块
 
-Skills 是按需加载的执行契约。Claude Code CLI 主会话根据当前目标、证据和信息缺口保留路线选择权，Skill 提供可组合的输入、观察、检查和写回协议。文档中的维度和分支是动态决策树的可选视角，不是固定流程、顺序或穷举清单；模型可以跳过、组合或提出新的判断维度。
+`src-hunter/SKILL.md` 是本项目唯一宿主可发现的原生入口，以 6k 原版 S01 的业务/代码意图、
+范围与取材、按特征选法、证明/输出和白盒组织为主体，融入 CCST 的竞争解释、条件反证与
+工程能力。主会话选择问题、实验和转向；模块提供完整方法，不是固定顺序或穷举清单。
 
 ## 职责分层
 
-| 角色 | Skill | 只负责 |
+| 角色 | 当前阅读位置 | 只负责 |
 |---|---|---|
-| 调查核心 | `src-hunting` | 唯一全局业务模型、竞争解释、实验选择、继续/转向/停止与交接 |
-| 暴露面发现 | `web2-recon` | 选择产生新证据的发现动作 |
+| 调查核心 | [src-hunter](src-hunter/SKILL.md) | 全局业务模型、竞争解释、实验选择、继续/转向/停止与交接 |
+| 暴露面发现 | [web2-recon](src-hunter/modules/web2-recon.md) | 选择产生新证据的发现动作 |
 | Web/API 方法知识 | `knowledge/playbooks/web2-evidence-contracts.md` | 完整方法、证据门和反例；按问题直接读，不是第二个 Skill |
-| 源码专项 | `whitebox-audit` | 按问题分析入口/guard/sink，绑定实际源码字节与部署条件，不持有全局循环 |
-| 凭据验证准备 | `credential-attack` | 来源、模式与准备判断，执行交给现有命令 |
-| 显式专项工作 | `cicd-security`、`mobile-pentest`、`web3-audit`、`meme-coin-audit` | 明确领域目标下的判断与交接 |
-| 验证裁决 | `triage-validation` | 证据是否成立、缺什么、降级或撤回 |
-| 报告表达 | `report-writing` | 已验证结果的格式、措辞和交付 |
+| 源码专项 | [whitebox-audit](src-hunter/modules/whitebox-audit.md) | 入口/guard/sink、实际源码字节与部署条件 |
+| 凭据验证准备 | [credential-attack](src-hunter/modules/credential-attack.md) | 来源、模式与准备判断；review 不等 live |
+| 显式专项工作 | [CI/CD](src-hunter/modules/cicd-security.md)、[mobile](src-hunter/modules/mobile-pentest.md)、[Web3](src-hunter/modules/web3-audit.md)、[token](src-hunter/modules/meme-coin-audit.md) | 明确领域目标下的判断与交接 |
+| 验证裁决 | [triage-validation](src-hunter/modules/triage-validation.md) | 证据是否成立、缺什么、降级或撤回 |
+| 报告表达 | [report-writing](src-hunter/modules/report-writing.md) | 已验证结果的格式、措辞和交付 |
 | 共享契约索引 | `docs/tool-index.md` | 指向执行 owner，不持有全局调查循环 |
 
-这些是职责关系，不是每轮必须依次执行的流水线。简单任务直接使用对应 Skill，
-全局问题由调查核心负责，专项仍能独立推理局部问题；同会话阅读不用填写交接表。
+九专项是完整内部 Markdown，不含原生 frontmatter，也不叫 `SKILL.md`。简单问题直接读对应
+模块，仍由同一调查核心统筹；同会话无需角色切换或填写交接表，真实委派才传递原件与回执。
 
 ## 原生发现与加载
 
-平台从每个 `SKILL.md` 的 frontmatter description 发现 Skill，Claude 按当前证据和信息缺口加载。
+平台仅从 `src-hunter/SKILL.md` 的 frontmatter 发现本项目入口，模块由核心中的相对链接按需加载。
 `tools/skill_catalog.py` 运行注册表已退役；Queue/Store 不验证 Skill 文件、路由或预设维度。
 实验的 `active_dimension` 与 Runner 实测 `tested_dimensions` 仍由各自 owner 保存。
 
-专项 Skill 的显式范围条件、共享参考和报告职责由各自 description/正文持有；安装仍保留全部
-当前 Skill 目录。这些使用条件不构成第二套路由模式表或每轮必走顺序。
+安装递归复制该包和共享 Markdown；不注册旧名 wrapper、软链或来源参考 Skill。
+完整 6k 方法唯一活动根仍为 `knowledge/methods/clown/`，经版本化完整 reader 展开；安装目录
+不是方法根，CLAUDE/rules/tools/knowledge 来自指定 checkout，不提供独立自包含安装包。
+历史 `related_skills` 原字节与审核回执保留，由 `tools/skill_reference_contract.py` 精确解析到
+当前 core/模块；导航兼容不恢复旧入口，不重新背书模块内容，也不参与自动路线选择。
 
 ## 公共边界
 
@@ -37,8 +42,8 @@ Skills 是按需加载的执行契约。Claude Code CLI 主会话根据当前目
 
 ## 修改落点
 
-- 改全局调查策略/交接：修改 `src-hunting`；Recon/专项不复制全局循环。
-- 改领域判断：修改对应专项 Skill；改经验或反例：修改已有知识卡。
+- 改全局调查策略/交接：修改 `src-hunter/SKILL.md`；Recon/专项不复制全局循环。
+- 改领域判断：修改对应内部模块；改经验或反例：修改已有知识卡并遵守审核绑定。
 - 改召回目录或引用投影：修改 `tools/context_pack.py`，卡片路径继续来自知识 registry；Context Pack 提供有界目录和引用，卡片选择由 AI 按当前信息缺口完成。
-- 改验证裁决：修改 `triage-validation` 及相关执行 owner；改报告格式：只修改 `report-writing`。
+- 改验证裁决：修改 triage-validation 模块及相关执行 owner；改报告格式：修改 report-writing 模块。
 - 改公共契约：修改对应协议或 Rules，消费者保留触发入口，不复制正文。

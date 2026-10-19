@@ -1,6 +1,6 @@
 # 知识库索引
 
-实战方法论 / 测试清单 / 场景矩阵。由仓库根 `skills/src-hunting/SKILL.md` 统一使用；旁边的来源 Skill 仅作参考。
+实战方法论 / 测试清单 / 场景矩阵。由仓库根 `skills/src-hunter/SKILL.md` 统一使用；旁边的来源 Skill 仅作参考。
 
 CCST 适配索引；原始索引由 manifest 的 S54 保存。完整宿主/权限映射见方法根 `README.md`。目录可见不等于正文已读；按同一 manifest 版本用 `hot_method.py --read` 捕获完整相关正文。
 

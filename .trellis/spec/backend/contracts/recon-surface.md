@@ -524,8 +524,8 @@ python3 tools/knowledge_audit.py --repo-root PATH --strict --json \
 `--source-mode` 接受 `off`、`if-present`、`required`；需要独立案例目录时显式传
 `--corpus-dir PATH`。
 
-Skill 发现来自 `skills/*/SKILL.md` 的 frontmatter description。当前全局调查核心为
-`src-hunting`，源码专项为 `whitebox-audit`；完整 Web/API 方法在
+本项目唯一原生发现入口为 `skills/src-hunter/SKILL.md` 的 frontmatter description。
+九专项为 `skills/src-hunter/modules/*.md` 完整内部文档，无独立注册；完整 Web/API 方法在
 `knowledge/playbooks/web2-evidence-contracts.md`，执行 owner 查找在
 `docs/tool-index.md#execution-contract-lookup`。方法/索引不再各有一个包装 Skill。
 
@@ -538,13 +538,17 @@ Skill 发现来自 `skills/*/SKILL.md` 的 frontmatter description。当前全�
   出现 Skill ID 不创建 override。Queue/Store 不校验 Skill 文件、路由或预设维度。
 - Card 选择字段保持空，完整 `card_catalog` 供按信息缺口读取。没有匹配卡仍可原生推理；
   目录可发现不等于正文已读，已读正文无需重复加载。同会话纯阅读不要求真实委派结果表。
-- 专项显式范围条件和报告职责由各自 description/正文持有；这是使用边界，不是 runtime
+- 专项显式范围条件和报告职责由内部模块正文持有；这是使用边界，不是 runtime
   route mode 注册表。历史路由样例保留为历史，不能直接作为当前入口可用性证明。
 - `knowledge_audit` 是只读审核，不修复 registry、不晋升候选、不写生命周期或审核回执。
   errors 返回 exit 1；`--strict` 下 warnings 同样返回 1。报告保留来源缺失/坏引用诊断；
   optional corpus 缺失不能伪装成来源已经解析。
 - 正式发布与复审由现有 knowledge promotion/review owner 处理。共享召回只接纳当前有效、
   字节/审核依据一致的已审方法；静态格式通过不替代真实盲答、来源许可或模型能力验收。
+- 历史 `related_skills` 与已审正文/receipt 不改字节。registry/audit 共用
+  `resolve_skill_reference(reference, repo_root)`；需要旧路径导航时可显式调用
+  `python3 tools/skill_reference_contract.py REFERENCE --repo-root PATH --json`，得到
+  reference/entry/read_path/historical_label。未知或缺目的文件报错，不参与排名、Store 或自动选路。
 - 安装器安装当前模块化 Skill，Doctor 统一发现资源和 receipt-owned 退休文件。未拥有或
   用户修改的旧文件保留；完整安装/退休范围以 runtime 契约与真实安装回执为准。
 
@@ -557,12 +561,12 @@ Skill 发现来自 `skills/*/SKILL.md` 的 frontmatter description。当前全�
 | optional corpus 缺失 | 明确未解析来源，不能冒充 required 来源通过 |
 | focus 含 Skill ID 或漏洞名 | 不产生机器 Skill/Card 选择，AI 按事实与信息缺口判断 |
 | Context Pack 默认构建 | 原生 Skill 发现与完整 Card catalog；语义选择字段不写推荐 |
-| staged install | 当前 src-hunting / whitebox-audit 和托管资源字节匹配，退休遵守所有权 |
+| staged install | 唯一 src-hunter 与九完整模块字节匹配，冲突整批拒绝，退休遵守所有权 |
 | 普通同会话阅读 | 无委派表；真实执行/跨代理仍需回执与 owner 接受 |
 
 ### 5. Good / Base / Bad Cases
 
-- Good：全局调查读 src-hunting，入口/guard/sink 问题读 whitebox-audit，具体方法直接读完整知识单元。
+- Good：全局调查读 src-hunter，入口/guard/sink 问题读其 whitebox-audit 模块，具体方法读完整知识单元。
 - Base：源码或来源缺失时保留明确 unknown/partial 与展开位置，不把格式审核当能力证明。
 - Bad：复活统一 Skill 注册表、根据 focus 写机器路线，或把历史十二 Skill 样例当当前安装清单。
 
