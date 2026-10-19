@@ -15,6 +15,7 @@ try:
     from tools.autopilot_state import build_autopilot_bootstrap_state, describe_next_step
     from tools.capability_profile import (
         build_capability_profile,
+        load_capability_degraded_marker,
         unknown_capability_profile,
     )
     from tools.runtime_config import is_ctf_mode_enabled
@@ -25,7 +26,11 @@ except ModuleNotFoundError:  # 兼容 `python3 tools/autopilot_bootstrap.py` 直
     from autopilot_args import parse_autopilot_args
     from autopilot_continuation import load_continuation
     from autopilot_state import build_autopilot_bootstrap_state, describe_next_step
-    from capability_profile import build_capability_profile, unknown_capability_profile
+    from capability_profile import (  # type: ignore
+        build_capability_profile,
+        load_capability_degraded_marker,
+        unknown_capability_profile,
+    )
     from runtime_config import is_ctf_mode_enabled
     from runtime_doctor import KIND_ORDER, compare_runtime
     from scope_context import ScopeContext, ScopeContextError
@@ -817,7 +822,10 @@ def build_autopilot_bootstrap(
             if continuation_auth:
                 arguments["auth_file"] = continuation_auth
                 arguments["auth_file_shell"] = shlex.quote(continuation_auth)
-                arguments["hunt_auth_flags"] = ["--auth-file", continuation_auth]
+            arguments["hunt_auth_flags"] = (
+                (["--auth-file", continuation_auth] if continuation_auth else [])
+                + ["--context-file", str(arguments["context_file"])]
+            )
             public_continuation = continuation["continuation"]
             payload["continuation"] = {
                 key: public_continuation[key]
@@ -827,6 +835,7 @@ def build_autopilot_bootstrap(
                     "parent_target",
                     "scope_ref",
                     "scope_hash",
+                    "scope_sha256",
                     "auth_private_ref",
                 )
                 if public_continuation.get(key) not in (None, "")
@@ -872,6 +881,9 @@ def build_autopilot_bootstrap(
     except Exception:
         # 本地依赖事实仅供参考；检查异常不能阻断 target state。
         payload["capabilities"] = unknown_capability_profile("profile-error")
+    # The marker is an explicit, runtime-global operator note.  Reading it is
+    # advisory and does not turn missing tools into target evidence or a stop.
+    payload["capabilities"]["degraded_marker"] = load_capability_degraded_marker(runtime_root)
 
     try:
         state = build_autopilot_bootstrap_state(

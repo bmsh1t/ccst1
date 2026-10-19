@@ -407,7 +407,8 @@ def parse_autopilot_args(
         "seed_url_shell": seed_url_shell,
         "auth_file": auth_file,
         "auth_file_shell": auth_file_shell,
-        "hunt_auth_flags": ["--auth-file", auth_file] if auth_file else [],
+        "hunt_auth_flags": (["--auth-file", auth_file] if auth_file else [])
+                           + (["--context-file", context_file] if context_file else []),
         "context_file": context_file,
         "context_file_shell": context_file_shell,
         "cadence": cadence,

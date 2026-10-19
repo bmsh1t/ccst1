@@ -47,6 +47,7 @@ from memory.hunt_journal import HuntJournal
 from memory.schemas import make_journal_entry
 from memory.target_profile import default_memory_dir
 from tools.auth_session import AuthSession, add_cli_args, session_from_args
+from tools.autopilot_continuation import resolve_context_file, reject_unsupported_continuation
 from tools.credential_store import CredentialStore
 from tools.eburst_lane import resolve_eburst
 from tools.runtime_config import is_ctf_mode_enabled, load_runtime_config
@@ -1276,11 +1277,14 @@ def hunt_target(
     scanner_full=False,
     scanner_skip="",
     ctf_mode=False,
+    context_file=None,
 ):
     """Run one target pipeline while preventing duplicate long phases."""
     target_info = classify_target(domain)
     canonical_target = target_info["target"]
     auth_session = _active_auth_session()
+    context_file = resolve_context_file(context_file, auth_session.context_file)
+    reject_unsupported_continuation(BASE_DIR, domain, context_file, executor="Hunt scanner pipeline")
     if not auth_session.is_empty():
         auth_session.bind_target(domain)
     if target_info["kind"] != "list":
@@ -1338,8 +1342,13 @@ Examples:
             "unchanged"
         ),
     )
-    add_cli_args(parser, include_cookie=False)
+    add_cli_args(parser, include_cookie=False, include_context=True)
     args = parser.parse_args()
+    try:
+        reject_unsupported_continuation(BASE_DIR, args.target or "", args.context_file,
+                                        executor="Hunt scanner pipeline")
+    except (OSError, ValueError) as exc:
+        parser.error(str(exc))
     global _AUTH_SESSION
     _AUTH_SESSION = session_from_args(args).bind_target(args.target or "")
     _AUTH_SESSION.export_to_env(os.environ)
@@ -1414,6 +1423,7 @@ Examples:
                 scanner_full=args.scanner_full,
                 scanner_skip=args.scanner_skip,
                 ctf_mode=ctf_mode,
+                context_file=args.context_file,
             )
         except (RuntimePhaseBusy, StoreError, ValueError) as exc:
             log("warn", str(exc))

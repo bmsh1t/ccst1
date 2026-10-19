@@ -32,6 +32,7 @@ try:
         load_validation_runner_candidate_pool,
     )
     from tools.surface import _load_surface_context, rank_surface
+    from tools.surface_advisory import build_surface_advisory
     from tools.surface_index import surface_safe_preview
     from tools.surface_projection import load_surface_projection
     from tools.target_paths import compact_url, canonical_target_value, target_storage_key
@@ -39,6 +40,7 @@ try:
     from tools.current_truth import current_cell_projection
     from tools.target_store import TargetStore, runtime_store
     from tools.hot_method import build_hot_method_projection
+    from tools.operational_metrics import derive_operational_metrics
 except ImportError:  # pragma: no cover - direct tools/ execution
     from memory.target_profile import default_memory_dir
     from coverage_matrix import high_value_gaps_from_matrix, read_matrix, require_matching_truth  # type: ignore
@@ -52,6 +54,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         load_validation_runner_candidate_pool,
     )
     from surface import _load_surface_context, rank_surface  # type: ignore
+    from surface_advisory import build_surface_advisory  # type: ignore
     from surface_index import surface_safe_preview  # type: ignore
     from surface_projection import load_surface_projection  # type: ignore
     from target_paths import compact_url, canonical_target_value, target_storage_key  # type: ignore
@@ -59,6 +62,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from current_truth import current_cell_projection  # type: ignore
     from target_store import TargetStore, runtime_store  # type: ignore
     from hot_method import build_hot_method_projection  # type: ignore
+    from operational_metrics import derive_operational_metrics  # type: ignore
 
 
 # S1 native skill loading (ai-capability-roadmap batch 3): every skill loads
@@ -877,6 +881,22 @@ def _build_context_pack(
     gaps, matrix = coverage_state or _safe_find_gaps(resolved_target, target_key, repo)
     ranked = (surface_state if surface_state is not None
               else _surface_state(repo, resolved_target, memory_dir, coverage_state=matrix))
+    # This is a bounded, read-only projection.  It consumes the existing
+    # Surface review window and never probes, routes, or creates owner work.
+    surface_advisory = build_surface_advisory(
+        ranked.get("review_pool") if isinstance(ranked, dict) else [],
+        target=resolved_target,
+        repo_root=repo,
+    )
+    # Keep the upstream bound distinct from this projection's 16-item bound.
+    surface_advisory["source_window"] = ranked.get("review_window") or {}
+    expand_args = ["python3", str(Path(__file__).resolve()), "--repo-root",
+                   str(repo.resolve()), "--target", resolved_target, "--json"]
+    if focus:
+        expand_args += ["--focus", focus]
+    if memory_dir:
+        expand_args += ["--memory-dir", memory_dir]
+    surface_advisory["expand_command"] = shlex.join(expand_args)
     finding_summary = _load_findings(repo, target_key, target=resolved_target)
     findings = finding_summary["items"]
     runner_candidates = (
@@ -929,6 +949,7 @@ def _build_context_pack(
         vuln_classes=_owner_backed_vuln_classes(ledger_truth["records"]),
         _truth=ledger_truth,
     )
+    operational_metrics = derive_operational_metrics(ledger_truth)
     current_binding = store.binding()
     if current_binding != store_binding:
         raise ValueError(
@@ -1018,6 +1039,8 @@ def _build_context_pack(
                 ]),
             },
         },
+        "surface_advisory": surface_advisory,
+        "operational_metrics": operational_metrics,
         "validation_runner_candidates": runner_candidates,
         # 静态假设/发散建议已退役（原生能力审计 2026-09-13）：
         # if 某张卡 in cards: append 固定思路 是卡片正文的复读层，
@@ -1152,6 +1175,11 @@ def _format_hot_methods(methods: dict) -> list[str]:
 
 
 def format_context_pack(pack: dict) -> str:
+    advisory = pack.get("surface_advisory") or {}
+    advisory_items = advisory.get("items") or []
+    surface_continuation = ((pack.get("source_queries") or {}).get("surface") or {}).get("continuation") or {}
+    surface_expansion = ("Surface index query above" if surface_continuation.get("available")
+                         and surface_continuation.get("command") else "full URL expansion unavailable")
     catalog_groups = {}
     for item in pack.get("card_catalog", []):
         group = (item.get("layer", ""), item.get("load", ""))
@@ -1187,6 +1215,34 @@ def format_context_pack(pack: dict) -> str:
         "- Evidence anchors:",
         *_format_list(pack["evidence_anchors"]),
         *format_source_queries(pack.get("source_queries") or {}),
+        "- Surface advisory (read-only; AI chooses route, no Queue write):",
+        "  status={status} {reason}".format(
+            status=(pack.get("surface_advisory") or {}).get("status", "unavailable"),
+            reason=(pack.get("surface_advisory") or {}).get("reason", ""),
+        ).rstrip(),
+        (f"  Showing {min(len(advisory_items), 8)} of {len(advisory_items)} JSON items; "
+         f"more candidates beyond JSON limit={advisory.get('has_more_candidates', False)}; "
+         f"source window={json.dumps(advisory.get('source_window') or {}, ensure_ascii=False)}"),
+        *([f"  Full JSON preview: {advisory['expand_command']}; "
+           f"remaining URLs: {surface_expansion}; full questions: source card/family."]
+          if advisory.get("expand_command") else []),
+        *_format_list([
+            "{url} [{family}] unknowns={unknowns} next={action}; stop={stop}; source={source}".format(
+                url=item.get("url", ""),
+                family=item.get("surface_family", "unknown"),
+                unknowns=(lambda text: text[:240] + "…" if len(text) > 240 else text)(
+                    " | ".join(item.get("unknown_questions") or [])),
+                action=(item.get("smallest_safe_probe") or {}).get("action", "review"),
+                stop=" | ".join(item.get("stop_conditions") or []),
+                source="{path} ({section}.{family})".format(**item.get("knowledge_source", {
+                    "path": "", "section": "", "family": ""})),
+            )
+            for item in advisory_items[:8]
+        ]),
+        "- Store-derived operational metrics (local, non-synthetic):",
+        *_format_list([
+            json.dumps(pack.get("operational_metrics") or {}, ensure_ascii=False, sort_keys=True)
+        ]),
         "- Validation runner candidate evidence (advisory; not report-ready):",
         *_format_list(format_validation_runner_candidate_lines(
             pack.get("validation_runner_candidates", []),

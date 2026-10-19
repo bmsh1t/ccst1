@@ -26,7 +26,8 @@ from urllib.parse import urlsplit
 try:
     from tools import experience_knowledge, experience_history
     from tools.migration_receipts import directory_handle
-    from tools.experience_contract import ENTITY_FIELDS, CLAIM_PREDICATES, entity_binding, condition_bindings, validity_window
+    from tools.coverage_authoring import coverage_review_drafts
+    from tools.experience_contract import ENTITY_FIELDS, CLAIM_PREDICATES, entity_binding, condition_bindings, validity_window, normalize_experience_text
     from tools.evidence_identity import (
         CANONICAL_VULN_CLASSES, LEDGER_RESULTS, canonical_endpoint_identity, coverage_family, extract_endpoint_path, normalize_family,
     )
@@ -38,7 +39,8 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     import experience_knowledge
     import experience_history
     from migration_receipts import directory_handle
-    from experience_contract import ENTITY_FIELDS, CLAIM_PREDICATES, entity_binding, condition_bindings, validity_window
+    from coverage_authoring import coverage_review_drafts
+    from experience_contract import ENTITY_FIELDS, CLAIM_PREDICATES, entity_binding, condition_bindings, validity_window, normalize_experience_text
     from evidence_identity import (  # type: ignore
         CANONICAL_VULN_CLASSES, LEDGER_RESULTS, canonical_endpoint_identity, coverage_family, extract_endpoint_path, normalize_family,
     )
@@ -822,6 +824,20 @@ class TargetStore:
         ]
         if not allow_legacy and any(path.exists() or path.is_symlink() for path in legacy):
             raise StoreError("legacy target state exists; migrate an isolated copy before cutover")
+        coverage_path = self.root / "evidence" / self.key / "coverage_matrix.json"
+        if not allow_legacy and (coverage_path.exists() or coverage_path.is_symlink()):
+            if coverage_path.resolve() != coverage_path or not coverage_path.is_file():
+                raise StoreError(f"coverage source must be a regular non-symlink file: {coverage_path}")
+            try:
+                coverage = coverage_review_drafts(json.loads(coverage_path.read_bytes()), self.target)
+                for endpoint in coverage["endpoints"]:
+                    self.coverage_endpoint(endpoint["endpoint"])
+                if coverage["quarantined"]:
+                    raise ValueError(coverage["quarantined"][0]["reason"])
+            except (OSError, ValueError, TypeError) as exc:
+                raise StoreError(f"cannot safely classify Coverage source {coverage_path}: {exc}") from exc
+            if not coverage["projection"] and any(endpoint["drafts"] for endpoint in coverage["endpoints"]):
+                raise StoreError("legacy Coverage author data exists; migrate an isolated copy before cutover")
         if self.path.exists():
             raise FileExistsError(f"target store already exists: {self.path}")
         if self.fence_path.exists() or self.fence_path.is_symlink():
@@ -1333,11 +1349,14 @@ class TargetStore:
                 if conn is not None:
                     conn.close()  # Any uncommitted transaction is rolled back, including KeyboardInterrupt.
 
-    def _command(self, command: str, command_id: str, entity_id: str, actor: str, material: Any, mutation, *, source_capture=None) -> dict:
+    def _command(self, command: str, command_id: str, entity_id: str, actor: str, material: Any, mutation, *, source_capture=None,
+                 expected_store_id: str | None = None) -> dict:
         # Mutations also persist these identities; normalizing only the audit
         # would leave claim tokens and receipt references pointing at other IDs.
         if command_id != _identifier(command_id, "command_id") or actor != _text(actor, "actor"):
             raise StoreError("command_id and actor must not have surrounding whitespace")
+        if expected_store_id is not None:
+            expected_store_id = _identifier(expected_store_id, "expected_store_id")
         digest = _digest(material)
         knowledge_guard = (experience_knowledge.publication_lock(self.root)
                            if source_capture and any(item["status"] == "available"
@@ -1346,6 +1365,9 @@ class TargetStore:
                          if source_capture and any(item["status"] == "available"
                              for item in source_capture["history"].values()) else nullcontext())
         with knowledge_guard, history_guard, self._connection(write=True) as conn:
+            store = conn.execute("SELECT store_id,revision FROM store WHERE singleton=1").fetchone()
+            if expected_store_id is not None and store["store_id"] != expected_store_id:
+                raise ConflictError("Store identity changed; the original command cannot authorize this Store")
             existing = conn.execute("SELECT * FROM audit WHERE command_id=?", (command_id,)).fetchone()
             if existing:
                 if (existing["command"], existing["entity_id"], existing["actor"], existing["content_sha256"]) != (
@@ -1353,7 +1375,7 @@ class TargetStore:
                 ):
                     raise ConflictError(f"command_id {command_id} was already used for different content")
                 return {**dict(existing), "replayed": True}
-            revision = conn.execute("SELECT revision FROM store").fetchone()[0] + 1
+            revision = store["revision"] + 1
             now = _now()
             mutation(conn, revision, now)
             conn.execute("UPDATE store SET revision=? WHERE singleton=1", (revision,))
@@ -1543,7 +1565,8 @@ class TargetStore:
     def transition_action(self, *, command_id: str, action_id: str, expected_version: int,
                           status: str, actor: str, reason: str = "", claim_token: str | None = None,
                           completion: dict | None = None,
-                          metadata: Mapping[str, Any] | None = None) -> dict:
+                          metadata: Mapping[str, Any] | None = None,
+                          expected_store_id: str | None = None) -> dict:
         action_id = _identifier(action_id, "action_id")
         if type(expected_version) is not int or expected_version < 1:
             raise StoreError("expected_version must be a positive integer")
@@ -1683,7 +1706,8 @@ class TargetStore:
                 version=version+1,updated_at=? WHERE id=?""",
                          (merged_metadata_json, status, token, actor if token else None, reason, now, action_id))
 
-        return self._command("transition_action", command_id, action_id, actor, fields, mutate)
+        return self._command("transition_action", command_id, action_id, actor, fields, mutate,
+                             expected_store_id=expected_store_id)
 
     def start_attempt(self, *, attempt_id: str, source: str, started_at: str, actor: str,
                       action_id: str | None = None, claim_token: str | None = None) -> dict:
@@ -2416,9 +2440,11 @@ class TargetStore:
                  expected_revision: int | None = None) -> dict:
         if not isinstance(kind, str) or kind not in {"primitive", "negative", "hypothesis", "handoff", "note"}:
             raise StoreError("invalid experience kind")
-        statement, conditions = _text(statement, "statement"), _text(conditions, "conditions")
-        reopen_when = _text(reopen_when, "reopen_when", empty=kind != "negative")
-        next_intent = _text(next_intent, "next_intent", empty=True)
+        try:
+            statement, conditions, reopen_when, next_intent = normalize_experience_text(
+                kind, statement, conditions, reopen_when, next_intent)
+        except ValueError as exc:
+            raise StoreError(str(exc)) from exc
         refs = _references(evidence) if evidence else []
         if not isinstance(evidence, list) or (kind in {"negative", "primitive"} and not refs):
             raise StoreError("negative/primitive experience must cite observations")
@@ -4188,7 +4214,8 @@ class TargetStore:
             if completion and completion["artifact_id"]:
                 result["completion"]["artifact"] = dict(conn.execute("SELECT * FROM artifacts WHERE id=?",
                                                                       (completion["artifact_id"],)).fetchone())
-            result["revision"] = conn.execute("SELECT revision FROM store").fetchone()[0]
+            result.update(dict(conn.execute(
+                "SELECT target,store_id,revision FROM store WHERE singleton=1").fetchone()))
             return result
 
     def finding(self, finding_id: str) -> dict:

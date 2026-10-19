@@ -8,29 +8,8 @@
 
 from __future__ import annotations
 
-# A matrix is a projection owned by Coverage; only structural N/A cells are
-# self-authenticating.  Every observed terminal result must come from the
-# Evidence Ledger so a hand-edited matrix cannot close a lane by itself.
-STRUCTURAL_NA_MARKERS = {
-    "static_asset": "static asset;",
-    "public_metadata": "standard/public metadata;",
-    "route_prefix": "route prefix/container;",
-    "minified_js_property_chain": "minified JS property-chain artifact;",
-}
-
-
-def is_structural_na(cell: dict) -> bool:
-    """Only the controlled Coverage writer grants identity-free N/A."""
-    marker = STRUCTURAL_NA_MARKERS.get(str(cell.get("structural_code") or ""))
-    return bool(
-        marker and cell.get("status") == "n_a"
-        and cell.get("structural_source") == "coverage:endpoint_kind"
-        and cell.get("structural_marker") == marker
-        and str(cell.get("reason") or "").startswith(marker)
-    )
-
-
 try:
+    from tools.coverage_authoring import STRUCTURAL_NA_MARKERS, is_structural_na
     from tools.evidence_identity import (
         CANONICAL_VULN_CLASSES, CLOSED_LEDGER_RESULTS, CLOSED_MATRIX_STATUSES,
         CLOSURE_ONLY_FAMILIES, CLOSURE_FAMILIES,
@@ -38,6 +17,7 @@ try:
         extract_endpoint_path, canonical_endpoint_identity, canonical_endpoint_path, exact_endpoint_identity,
     )
 except ImportError:  # pragma: no cover - direct tools/ execution
+    from coverage_authoring import STRUCTURAL_NA_MARKERS, is_structural_na
     from evidence_identity import (
         CANONICAL_VULN_CLASSES, CLOSED_LEDGER_RESULTS, CLOSED_MATRIX_STATUSES,
         CLOSURE_ONLY_FAMILIES, CLOSURE_FAMILIES,

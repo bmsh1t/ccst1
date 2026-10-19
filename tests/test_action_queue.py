@@ -816,3 +816,71 @@ def test_queue_cli_reports_store_fault_without_legacy_fallback(tmp_path, capsys,
     output = capsys.readouterr()
     assert not output.out and "Traceback" not in output.err
     assert path.read_bytes() == original
+
+
+def _audit_lc1_reclaim(store, claim):
+    """A new claim is reached through real owner transitions, not fabricated CAS."""
+    actor = claim["claimed_by"]
+    store.transition_action(command_id=f"audit:release:{claim['version']}", action_id=claim["id"],
+                            expected_version=claim["version"], status="blocked", actor=actor,
+                            reason="Released synthetic work", claim_token=claim["claim_token"])
+    store.transition_action(command_id=f"audit:ready:{claim['version']}", action_id=claim["id"],
+                            expected_version=claim["version"] + 1, status="ready", actor=actor,
+                            reason="Explicitly resume synthetic work")
+    return claim_next_action(store.root, store.target, action_id=claim["id"], actor=actor)
+
+
+def test_audit_lc1_missing_identity_never_adopts_current_claim(store):
+    add_work(store)
+    first = claim_next_action(store.root, store.target, action_id="A1", actor="operator")
+    latest = _audit_lc1_reclaim(store, first)
+    before = store.binding(), store.action("A1")
+    with pytest.raises(StoreError, match="identity"):
+        resolve_action(store.root, target=store.target, action_id="A1", status="blocked",
+                       result="Late first-claim result", actor="operator")
+    assert (store.binding(), store.action("A1")) == before
+    assert store.action("A1")["claim_token"] == latest["claim_token"] != first["claim_token"]
+
+
+def test_audit_lc1_original_cli_receipt_replays_without_modifying_new_claim(store, capsys):
+    add_work(store)
+    prefix = ["--repo-root", str(store.root)]
+    assert main(prefix + ["claim", "--target", store.target, "--id", "A1", "--json"]) == 0
+    claim = json.loads(capsys.readouterr().out)
+    args = prefix + ["resolve", "--target", claim["target"], "--id", claim["id"],
+                     "--store-id", claim["store_id"], "--expected-version", str(claim["version"]),
+                     "--claim-token", claim["claim_token"], "--actor", claim["claimed_by"],
+                     "--status", "blocked", "--result", "Original outcome", "--json"]
+    assert main(args) == 0
+    receipt = json.loads(capsys.readouterr().out)["receipt"]
+    store.transition_action(command_id="audit:ready", action_id="A1", expected_version=claim["version"] + 1,
+                            status="ready", actor=claim["claimed_by"], reason="Resume explicitly",
+                            expected_store_id=claim["store_id"])
+    latest = claim_next_action(store.root, store.target, action_id="A1")
+    before = store.binding(), store.action("A1")
+    assert main(args) == 0
+    replay = json.loads(capsys.readouterr().out)
+    assert replay["replayed"] and replay["receipt"] == {**receipt, "replayed": True}
+    assert replay["resolved_from"]["claim_token"] == claim["claim_token"] != latest["claim_token"]
+    assert main(args + ["--notes", "Uncommitted late outcome"]) == 2
+    assert "version changed" in capsys.readouterr().err
+    assert (store.binding(), store.action("A1")) == before
+
+
+def test_audit_lc1_claim_return_keeps_committed_identity(store, monkeypatch):
+    add_work(store)
+    original_transition = TargetStore.transition_action
+    captured = {}
+
+    def interleaved(self, **kwargs):
+        receipt = original_transition(self, **kwargs)
+        if kwargs["status"] == "claimed" and not captured:
+            captured.update(self.action("A1"))
+            _audit_lc1_reclaim(self, captured)
+        return receipt
+
+    monkeypatch.setattr(TargetStore, "transition_action", interleaved)
+    returned = claim_next_action(store.root, store.target, action_id="A1")
+    for field in ("target", "store_id", "version", "claim_token", "claimed_by"):
+        assert returned[field] == captured[field]
+    assert returned["claim_token"] != store.action("A1")["claim_token"]

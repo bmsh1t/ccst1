@@ -47,6 +47,7 @@ try:
     from tools.target_paths import canonical_target_value, target_storage_key, target_owned_nonempty_evidence_ref
     from tools.scope_context import url_belongs_to_target
     from tools.scope_source import load_scope_context
+    from tools.autopilot_continuation import load_execution_scope, resolve_context_file
     from tools.target_store import FindingNotFoundError, StoreError, TargetStore, runtime_store, target_switch_lock, validate_cleanup_confirmation
 except ImportError:  # pragma: no cover - direct tools/ execution
     from artifact_io import write_json_atomic as _write_json, publish_bytes_create_only
@@ -63,6 +64,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from target_paths import canonical_target_value, target_storage_key, target_owned_nonempty_evidence_ref  # type: ignore
     from scope_context import url_belongs_to_target  # type: ignore
     from scope_source import load_scope_context  # type: ignore
+    from autopilot_continuation import load_execution_scope, resolve_context_file
     from target_store import FindingNotFoundError, StoreError, TargetStore, runtime_store, target_switch_lock, validate_cleanup_confirmation  # type: ignore
 
 
@@ -628,10 +630,12 @@ class _TargetRedirectHandler(urllib.request.HTTPRedirectHandler):
         session: AuthSession | None = None,
         sensitive_header_names: set[str] | None = None,
         repo_root: Path = BASE_DIR,
+        context_file: str | Path | None = None,
     ) -> None:
         self.target = target
         self.repo_root = repo_root
         self.session = session
+        self.context_file = resolve_context_file(context_file, session.context_file if session else None)
         self.sensitive_header_names = {
             str(name).lower() for name in (sensitive_header_names or set())
         }
@@ -640,7 +644,7 @@ class _TargetRedirectHandler(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
         if not url_belongs_to_target(newurl, self.target):
             raise ValueError(f"validation redirect left target scope: {public_url_shape(newurl)}")
-        if not load_scope_context(self.repo_root, self.target).allows_active(newurl):
+        if not load_execution_scope(self.repo_root, self.target, self.context_file).allows_active(newurl):
             raise ValueError(f"validation redirect outside target scope (excluded by saved Scope): {public_url_shape(newurl)}")
         redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
         if redirected is not None and _request_origin(req.full_url) != _request_origin(newurl):
@@ -680,11 +684,13 @@ def request_once(
     max_body_bytes: int = MAX_RESPONSE_BYTES,
     session: AuthSession | None = None,
     repo_root: Path = BASE_DIR,
+    context_file: str | Path | None = None,
 ) -> dict[str, Any]:
     """Replay one HTTP request and return raw evidence fields."""
     if not url_belongs_to_target(url, target):
         raise ValueError(f"validation URL is outside target scope: {public_url_shape(url)}")
-    scope = load_scope_context(repo_root, target)
+    context_file = resolve_context_file(context_file, session.context_file if session else None)
+    scope = load_execution_scope(repo_root, target, context_file)
     if not scope.allows_active(url):
         raise RequestPreflightError(f"validation URL excluded by saved Scope: {public_url_shape(url)}")
     if max_body_bytes < 1:
@@ -700,6 +706,7 @@ def request_once(
         repo_root=repo_root,
         session=session,
         sensitive_header_names={name.lower() for name in headers},
+        context_file=context_file,
     )
     started = time.monotonic()
     try:
@@ -1007,8 +1014,11 @@ def run_request_diff(
     action_id: str | None = None,
     claim_token: str | None = None,
     command_actor: str = "validation-runner",
+    context_file: str | Path | None = None,
 ) -> dict[str, Any]:
     """Replay an AI-selected exact pair and persist shared diff evidence."""
+    context_file = resolve_context_file(context_file, session.context_file if session else None)
+    scope = load_execution_scope(repo_root, target, context_file)
     with _runner_admission(repo_root, target) as (store, backend_binding):
         try:
             spec = validate_request_pair(request_spec)
@@ -1035,7 +1045,6 @@ def run_request_diff(
         effective_state = _validate_request_facts(state_changing, redline_checked)
         if not url_belongs_to_target(baseline["url"], target) or not url_belongs_to_target(variant["url"], target):
             raise RequestPreflightError("request pair contains an off-target URL")
-        scope = load_scope_context(repo_root, target)
         if not all(scope.allows_active(request["url"]) for request in (baseline, variant)):
             raise RequestPreflightError("request pair contains a URL excluded by saved Scope")
         subject = spec[f"{spec['subject_side']}_request"]
@@ -1123,6 +1132,7 @@ def run_request_diff(
                     repo_root=repo_root,
                     target=target, url=baseline["url"], method=baseline["method"],
                     headers=base_headers, body=baseline["body"], timeout=timeout, session=session,
+                    context_file=context_file,
                 )
                 artifacts = _write_raw_http(private_bundle, f"{prefix}baseline.", base, repo_root)
                 run["artifacts"].update({f"baseline_{key}": value for key, value in artifacts.items()})
@@ -1132,6 +1142,7 @@ def run_request_diff(
                     repo_root=repo_root,
                     target=target, url=variant["url"], method=variant["method"],
                     headers=variant_headers, body=variant["body"], timeout=timeout, session=session,
+                    context_file=context_file,
                 )
                 artifacts = _write_raw_http(private_bundle, f"{prefix}variant.", variant_response, repo_root)
                 run["artifacts"].update({f"variant_{key}": value for key, value in artifacts.items()})
@@ -1698,7 +1709,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Replay an AI-supplied exact baseline/variant request pair",
     )
     add_common(request_diff)
-    add_cli_args(request_diff)
+    add_cli_args(request_diff, include_context=True)
     request_diff.add_argument("--request-spec", required=True, help="JSON file containing schema-v1 baseline/variant requests")
     request_diff.add_argument("--header", action="append", default=[], help="Header overlay applied to both requests")
     request_diff.add_argument("--timeout", type=int, default=10)
@@ -1807,6 +1818,7 @@ def main(argv: list[str] | None = None) -> int:
                         identity_v2=identity_v2,
                         headers=parse_headers(args.header),
                         session=auth_session,
+                        context_file=args.context_file,
                         attempt_id=args.attempt_id or None,
                         action_id=args.action_id, claim_token=args.claim_token, command_actor=args.actor,
                     )

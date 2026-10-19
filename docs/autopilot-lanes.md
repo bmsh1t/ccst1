@@ -89,6 +89,13 @@ Checkpoint, Pickup and preflight never initialize, import, or recreate old owner
 - Action Queue is a thin Store adapter. List is read-only; completion is an
   explicit resolve with a claim-bound operation, registered artifact, or domain
   command receipt. Runner registration and report generation never complete it.
+  Retain the original claim JSON and pass its `store_id`, `version`, `claim_token`
+  and `claimed_by` as resolve's `--store-id`, `--expected-version`, `--claim-token`
+  and `--actor`. Never reload a newer claim to fill an old command's identity.
+  An identical committed replay returns its original receipt only while the same
+  Store, inputs and completion proof still pass existing validation; unavailable
+  or changed proof may reject. A stale uncommitted command fails without resolving
+  a newer claim. See [the queue example](evidence-runners.md#checkpoint--action-queue).
   Non-HTTP review work uses a concrete subject without invented endpoint/family.
 - Already-claimed work remains visible for recovery. Pending actions have a
   bounded stable-ID page, exact remaining count and expansion command. Coverage,
@@ -129,6 +136,19 @@ Checkpoint, Pickup and preflight never initialize, import, or recreate old owner
 - Automatic mode only: for a readable text list or schema-v1 JSON Scope manifest, run batch recon only for `run_batch_recon`; never scan the list/manifest file itself. Stop on `invalid_batch_target` or `batch_failed`. For one completed `in_scope` asset, run `python3 tools/autopilot_continuation.py create --parent-target <scope_ref> --selected-target <domain> [--auth-file <auth_file_shell>]`, then invoke `/autopilot <domain> --context-file=<returned-path>`; bootstrap validates the parent `scope_ref/scope_hash` before target I/O. Unlisted discovery remains context/review, and `out_of_scope` always wins.
 
 ## Recon And Surface
+
+- Batch continuations use schema v2 and bind `scope_sha256` (complete source bytes)
+  separately from the unchanged classification `scope_hash`. Recreate old/stale
+  artifacts with `autopilot_continuation.py create`; do not edit them in place.
+  Forward the complete `arguments.hunt_auth_flags` argv, including `--context-file`,
+  not just its auth file. `validation_runner.py request-diff --target TARGET
+  --request-spec SPEC --context-file CONTEXT` enforces child AND parent Scope at
+  preflight, send and every redirect. Bound auth never inherits ambient credentials.
+  Hunt/recon/scanner and arjun/x8 subprocess chains cannot enforce the parent on
+  their internal requests/redirects and therefore reject that context before
+  execution. Report the unsupported boundary or choose the supported HTTP executor;
+  dropping context or calling a shell/browser instead is not an equivalent constrained path.
+  The Hunt commands below apply without a parent continuation; they do not override this gate.
 
 - `run_recon`: execute directly from this lane. When
   `state.recon.cidr_continuation.status=pending`, continue once with

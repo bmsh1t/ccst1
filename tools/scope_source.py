@@ -62,7 +62,8 @@ def load_scope_context(repo_root: str | Path, target: str) -> ScopeContext:
     if classify_target(target)["kind"] == "list":
         return ScopeContext.from_file(target)
     source = load_scope_source(repo_root, target)
-    return ScopeContext.from_manifest(source["manifest"], source_ref=source["path"])
+    return ScopeContext.from_manifest(source["manifest"], source_ref=source["path"],
+                                      source_sha256=source["sha256"])
 
 
 def publish_scope_source(repo_root: str | Path, target: str, payload: dict,

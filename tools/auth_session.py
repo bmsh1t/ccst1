@@ -27,10 +27,12 @@ try:
     from tools.target_paths import canonical_target_value
     from tools.scope_context import url_belongs_to_target
     from tools.scope_context import ScopeContext
+    from tools.autopilot_continuation import ExecutionScope, load_continuation, load_execution_scope, resolve_context_file
 except ImportError:  # 兼容 python3 tools/auth_session.py
     from target_paths import canonical_target_value
     from scope_context import url_belongs_to_target
     from scope_context import ScopeContext
+    from autopilot_continuation import ExecutionScope, load_continuation, load_execution_scope, resolve_context_file
 
 _HEADER_RE = re.compile(r"^([A-Za-z0-9!#$%&'*+\-.^_`|~]+)\s*:\s*(.+)$")
 
@@ -73,12 +75,15 @@ class AuthSession:
         *,
         target: str = "",
         allowed_origins: list[str] | None = None,
-        scope_context: ScopeContext | None = None,
+        scope_context: ScopeContext | ExecutionScope | None = None,
+        context_file: str | Path | None = None,
     ):
         self._headers: list[str] = []
         self._scope_target = str(target or "").strip()
         self._target = canonical_target_value(self._scope_target)
         self._scope_context = scope_context
+        # Explicit invocation identity, not an ambient authentication default.
+        self.context_file = resolve_context_file(context_file)
         self._allowed_origins: list[str] = []
         for origin in allowed_origins or []:
             normalized = _normalize_origin(origin)
@@ -87,7 +92,7 @@ class AuthSession:
         for header in headers or []:
             self.add_header(header)
 
-    def bind_scope(self, context: ScopeContext | None) -> "AuthSession":
+    def bind_scope(self, context: ScopeContext | ExecutionScope | None) -> "AuthSession":
         """Attach the parent ScopeContext without changing the asset binding."""
         self._scope_context = context
         return self
@@ -480,9 +485,12 @@ class AuthSession:
         return self.describe()
 
 
-def add_cli_args(parser, *, include_cookie: bool = True) -> None:
+def add_cli_args(parser, *, include_cookie: bool = True, include_context: bool = False) -> None:
     """Attach auth flags to an argparse parser."""
     group = parser.add_argument_group("auth (optional — enables auth-aware hunting)")
+    if include_context:
+        group.add_argument("--context-file", default=None, metavar="PATH",
+                           help="Owner-generated continuation; retains parent Scope and bound auth.")
     group.add_argument(
         "--auth-header",
         action="append",
@@ -527,6 +535,20 @@ def session_from_args(args, env: dict[str, str] | None = None) -> AuthSession:
     """Build an AuthSession from an argparse namespace."""
     env = env if env is not None else os.environ
     target = str(getattr(args, "target", "") or "").strip()
+    root = getattr(args, "repo_root", None) or Path(__file__).resolve().parents[1]
+    context_file = getattr(args, "context_file", None)
+    if context_file is not None:
+        loaded = load_continuation(root, resolve_context_file(context_file), selected_target=target)
+        explicit_file = getattr(args, "auth_file", None)
+        if (any(getattr(args, key, None) for key in
+                ("auth_header", "cookie", "bearer", "api_key", "auth_from_env"))
+                or (explicit_file and (not loaded["auth_file"]
+                    or Path(explicit_file).expanduser().resolve() != Path(loaded["auth_file"])))):
+            raise ValueError("explicit auth source conflicts with the bound continuation")
+        # Anonymous continuations remain anonymous even in a credentialed shell.
+        session = AuthSession.from_sources(env={}, file=loaded["auth_file"] or None, target=target)
+        session.context_file = loaded["path"]
+        return session.bind_scope(load_execution_scope(root, target, session.context_file))
     explicit_source = bool(
         getattr(args, "auth_file", None)
         or getattr(args, "auth_header", [])
@@ -561,6 +583,5 @@ def session_from_args(args, env: dict[str, str] | None = None) -> AuthSession:
             from tools.scope_source import load_scope_context
         except ImportError:  # direct tools/ execution
             from scope_source import load_scope_context
-        root = getattr(args, "repo_root", None) or Path(__file__).resolve().parents[1]
         session.bind_scope(load_scope_context(root, target))
     return session

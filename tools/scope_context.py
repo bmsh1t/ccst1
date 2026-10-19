@@ -294,6 +294,7 @@ class ScopeContext:
         out_of_scope: Iterable[str] | None = None,
         *,
         source_ref: str = "",
+        source_sha256: str = "",
         notes: str = "",
         excluded_classes: Iterable[str] | None = None,
         schema_version: int = SCHEMA_VERSION,
@@ -320,6 +321,8 @@ class ScopeContext:
             for value in _dedupe(excluded_classes or (), field="excluded_classes")
         )
         self.source_ref = str(source_ref or "")
+        # Full source identity is deliberately separate from classification.
+        self.source_sha256 = source_sha256
         self.notes = str(notes or "")[:500]
         self.fingerprint = self._compute_fingerprint()
 
@@ -341,7 +344,8 @@ class ScopeContext:
     ) -> "ScopeContext":
         resolved = Path(path).expanduser().resolve()
         try:
-            text = resolved.read_text(encoding="utf-8")
+            raw = resolved.read_bytes()
+            text = raw.decode("utf-8")
         except OSError as exc:
             raise ScopeContextError(f"scope file is not readable: {resolved}") from exc
         if not text.strip():
@@ -377,6 +381,7 @@ class ScopeContext:
                 in_scope=in_scope,
                 out_of_scope=out_of_scope,
                 source_ref=str(resolved),
+                source_sha256=hashlib.sha256(raw).hexdigest(),
                 notes=str(payload.get("notes") or ""),
                 excluded_classes=excluded_classes,
                 schema_version=version,
@@ -395,10 +400,12 @@ class ScopeContext:
             root_target=str(resolved),
             in_scope=entries,
             source_ref=str(resolved),
+            source_sha256=hashlib.sha256(raw).hexdigest(),
         )
 
     @classmethod
-    def from_manifest(cls, payload: dict[str, Any], *, source_ref: str = "") -> "ScopeContext":
+    def from_manifest(cls, payload: dict[str, Any], *, source_ref: str = "",
+                      source_sha256: str = "") -> "ScopeContext":
         if not isinstance(payload, dict):
             raise ScopeContextError("scope manifest must be a JSON object")
         version = payload.get("schema_version")
@@ -422,6 +429,7 @@ class ScopeContext:
             in_scope=in_scope,
             out_of_scope=out_of_scope,
             source_ref=source_ref,
+            source_sha256=source_sha256,
             notes=str(payload.get("notes") or ""),
             excluded_classes=excluded_classes,
             schema_version=version,

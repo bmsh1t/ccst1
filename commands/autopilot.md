@@ -24,6 +24,9 @@ Only fresh Bootstrap `action=continue` acts; otherwise request target/report Boo
 `/sync-check`; no auto-sync/install.
 Use `cd -- <repo_root_shell> &&`, `arguments.target_shell`, optional
 `--auth-file <arguments.auth_file_shell>` and exact `arguments.seed_url`.
+When present, retain `--context-file <arguments.context_file_shell>` on executable
+calls (included in `arguments.hunt_auth_flags`). Never drop it after an unsupported-executor error;
+use the continuation-aware HTTP boundary described in `docs/autopilot-lanes.md#recon-and-surface`.
 At start, target change or resume/compaction, read/apply complete
 `skills/runtime-protocol.md#shared-memory-continuity`. Check inherited judgments against current commands,
 not all source; label unchecked judgments inherited/unverified.

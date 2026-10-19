@@ -160,11 +160,11 @@ def _primary_action_projection(store: TargetStore, *, statuses: tuple[str, ...] 
         "backend": "primary",
         "store_id": page.get("store_id", ""),
         "revision": page.get("revision", 0),
-        "actions": _project_actions(rows),
+        "actions": _project_actions(rows, binding=page),
     }
 
 
-def _project_actions(rows: list[dict]) -> list[dict]:
+def _project_actions(rows: list[dict], *, binding: dict) -> list[dict]:
     status_map = {
         "ready": "queued",
         "claimed": "running",
@@ -192,6 +192,11 @@ def _project_actions(rows: list[dict]) -> list[dict]:
             metadata["claim_token"] = row["claim_token"]
         actions.append({
             "id": row.get("id", ""),
+            "target": binding["target"],
+            "store_id": binding["store_id"],
+            "version": row["version"],
+            "claim_token": row.get("claim_token"),
+            "claimed_by": row.get("claimed_by"),
             "kind": str(row.get("kind") or "work"),
             "type": context.get("type") or str(row.get("kind") or "work"),
             "status": status_map.get(str(row.get("status") or ""), "blocked"),
@@ -215,10 +220,10 @@ def load_queue_summary(repo_root: Path | str, target: str, *, limit: int = 5) ->
     return {
         "schema_version": SCHEMA_VERSION, "target": canonical_target_value(store.target),
         "backend": "primary", "store_id": snapshot["store_id"], "revision": snapshot["revision"],
-        "actions": _project_actions(snapshot["items"]),
+        "actions": _project_actions(snapshot["items"], binding=snapshot),
         "total": snapshot["counts"]["total"], "pending_total": snapshot["counts"]["pending"],
         "active_families": snapshot["active_families"],
-        **{key: _project_actions([snapshot[key]])[0] if snapshot[key] else {}
+        **{key: _project_actions([snapshot[key]], binding=snapshot)[0] if snapshot[key] else {}
            for key in ("next_action", "running_action")},
     }
 
@@ -367,6 +372,7 @@ def _primary_claim(
                 command_id=current["claim_token"], action_id=action_id,
                 expected_version=int(current["version"]) - 1,
                 status="claimed", actor=actor, metadata=metadata,
+                expected_store_id=current["store_id"],
             )
         return {**current, "claim_status": "resumed", "previous_status": "claimed"}
     if status != "ready":
@@ -375,8 +381,14 @@ def _primary_claim(
     receipt = store.transition_action(
         command_id=command_id, action_id=action_id, expected_version=int(current["version"]),
         status="claimed", actor=actor, metadata=metadata,
+        expected_store_id=current["store_id"],
     )
-    return {**store.action(action_id), "receipt": receipt,
+    # The owner verified this exact predecessor and assigned command_id as token.
+    # A latest-row read here could hand this caller a later operator's claim.
+    return {**current, "status": "claimed", "version": current["version"] + 1,
+            "claim_token": command_id, "claimed_by": actor, "reason": "",
+            "metadata": {**current["metadata"], **(metadata or {})},
+            "revision": receipt["revision"], "updated_at": receipt["recorded_at"], "receipt": receipt,
             "claim_status": "resumed" if receipt["replayed"] else "claimed", "previous_status": "ready"}
 
 
@@ -389,10 +401,19 @@ def _primary_resolve(
     result: str,
     notes: str,
     metadata: dict | None,
-    actor: str,
+    actor: str | None,
+    expected_store_id: str | None,
+    expected_version: int | None,
+    claim_token: str | None,
 ) -> dict:
-    store = runtime_store(repo_root, target)
-    current = store.action(action_id)
+    if (not isinstance(expected_store_id, str) or not expected_store_id.strip()
+            or type(expected_version) is not int or expected_version < 1
+            or not isinstance(actor, str) or not actor.strip()):
+        raise StoreError(
+            "resolve requires original identity: --store-id, --expected-version, --actor, "
+            "and --claim-token for claimed work; retain the claim --json receipt "
+            "(or an explicit unclaimed list snapshot), never reload a newer claim"
+        )
     requested = _normalize_status(status)
     mapped = {
         "queued": "ready", "running": "claimed", "blocked": "blocked",
@@ -406,32 +427,24 @@ def _primary_resolve(
     if mapped == "claimed":
         raise StoreError("primary action re-claim is explicit: use claim, not resolve running")
     completion = _primary_completion(result) if mapped == "completed" else None
-    def command_id_for(version: int) -> str:
-        return "action:resolve:" + hashlib.sha256(
-            json.dumps(
-                {"action_id": action_id, "version": version, "status": mapped,
-                 "result": result, "notes": notes, "completion": completion,
-                 "metadata": metadata, "actor": actor},
-                ensure_ascii=True, sort_keys=True, separators=(",", ":"),
-            ).encode("utf-8")
-        ).hexdigest()[:24]
-
-    if current["status"] == mapped:
-        receipt = store.command_receipt(command_id_for(int(current["version"]) - 1))
-        if receipt:
-            return {**current, "receipt": {**receipt, "replayed": True}, "replayed": True}
-    if current["status"] in {"completed", "cancelled"}:
-        raise StoreError(f"action {action_id} is terminal; only the original resolve command can be replayed")
-    claim_token = current.get("claim_token")
-    if current["status"] == "claimed" and current.get("claimed_by") != actor:
-        raise StoreError(f"action {action_id} is claimed by another operator")
-    command_id = command_id_for(int(current["version"]))
+    reason = _compact_text(notes or result or "", 1000)
+    identity = {"target": canonical_target_value(target), "store_id": expected_store_id,
+                "action_id": action_id, "version": expected_version,
+                "claim_token": claim_token, "actor": actor}
+    command_id = "action:resolve:v2:" + hashlib.sha256(json.dumps(
+        {**identity, "status": mapped, "reason": reason, "completion": completion, "metadata": metadata},
+        ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()[:24]
+    store = runtime_store(repo_root, target)
     receipt = store.transition_action(
-        command_id=command_id, action_id=action_id, expected_version=int(current["version"]),
-        status=mapped, actor=actor, reason=_compact_text(notes or result or "", 1000),
+        command_id=command_id, action_id=action_id, expected_version=expected_version,
+        expected_store_id=expected_store_id, status=mapped, actor=actor, reason=reason,
         claim_token=claim_token, completion=completion, metadata=metadata,
     )
-    return {**store.action(action_id), "receipt": receipt}
+    # This is the original command outcome, not a view of a possibly newer claim.
+    return {"id": action_id, "target": identity["target"], "store_id": expected_store_id,
+            "version": expected_version + 1, "status": mapped, "resolved_from": identity,
+            "receipt": receipt, "replayed": receipt["replayed"]}
 
 
 @contextmanager
@@ -906,12 +919,16 @@ def resolve_action(
     result: str = "",
     notes: str = "",
     metadata: dict | None = None,
-    actor: str = "action-queue",
+    actor: str | None = None,
+    expected_store_id: str | None = None,
+    expected_version: int | None = None,
+    claim_token: str | None = None,
 ) -> dict:
     metadata = _validate_action_metadata(metadata)
     return _primary_resolve(
         repo_root, target, action_id=action_id, status=status,
         result=result, notes=notes, metadata=metadata, actor=actor,
+        expected_store_id=expected_store_id, expected_version=expected_version, claim_token=claim_token,
     )
 
 
@@ -955,7 +972,8 @@ def format_action(action: dict) -> str:
         f"- Hint: {action.get('command_hint') or 'smallest safe evidence-producing step'}",
         f"- Stop condition: {action.get('stop_condition')}",
     ]
-    for label, field in (("Claim token", "claim_token"), ("Claimed by", "claimed_by")):
+    for label, field in (("Target", "target"), ("Store ID", "store_id"), ("Version", "version"),
+                         ("Claim token", "claim_token"), ("Claimed by", "claimed_by")):
         if action.get(field):
             lines.append(f"- {label}: {action[field]}")
     metadata = action.get("metadata")
@@ -1068,7 +1086,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="JSON object merged into the existing Action Queue metadata.",
     )
     resolve.add_argument("--notes", default="")
-    resolve.add_argument("--actor", default="action-queue", help="Command actor for primary-store actions.")
+    resolve.add_argument("--actor", required=True, help="Original claim actor, or explicit unclaimed-snapshot operator.")
+    resolve.add_argument("--store-id", required=True, help="Store ID from the original claim/list snapshot.")
+    resolve.add_argument("--expected-version", required=True, type=int, help="Action version from that same snapshot.")
+    resolve.add_argument("--claim-token", default=None, help="Original token; required for claimed work, absent for unclaimed work.")
     resolve.add_argument("--json", action="store_true")
 
     summary = sub.add_parser("summary", help="Print queue summary.")
@@ -1139,9 +1160,17 @@ def main(argv: list[str] | None = None) -> int:
                 notes=args.notes,
                 metadata=metadata,
                 actor=args.actor,
+                expected_store_id=args.store_id,
+                expected_version=args.expected_version,
+                claim_token=args.claim_token,
             )
             _print(
-                result if args.json else format_summary(load_queue(repo, args.target), repo_root=repo, target=args.target),
+                result if args.json else (
+                    f"Action {result['id']}: {result['status']} (replayed={result['replayed']})\n"
+                    f"- Store ID: {result['store_id']}\n"
+                    f"- Original version: {result['resolved_from']['version']}\n"
+                    f"- Receipt: {result['receipt']['command_id']}"
+                ),
                 as_json=args.json,
             )
             return 0

@@ -196,5 +196,10 @@ Three homogeneous no-information results are a reassessment hint, not a forced
 rotation or completion rule. Claude chooses whether another sample reduces
 uncertainty, another lane is useful, or the invocation should end within budget.
 
+When repeated fingerprints or homogeneous observations leave competing explanations
+unchanged, optionally recall `knowledge/cards/hypothesis-reframe.md` for questions
+that challenge the current model. It provides thinking material, not an automatic
+route, new work item or replacement for the evidence-based stop decision.
+
 Validation, reporting, and specialist procedures remain with their owners
 listed at the top of this rule.

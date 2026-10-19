@@ -38,7 +38,8 @@ python3 tools/target_memory.py show TARGET --json
 python3 tools/checkpoint.py --target TARGET --json
 ```
 
-先参考 checkpoint 的 `target_write_back`、`coverage`、`decision` 和 `retrospect`，
+Checkpoint 是只读快照，`target_write_back.lead/next/dead_end` 为空，handoff 仅展示，
+不是待执行 writer 或落盘真源。先参考其 `coverage`、`decision` 和 `retrospect`，
 再决定是否晋升知识库、Skills 或 Rules。只有视图缺字段时才展开对应 owner：
 
 ```bash

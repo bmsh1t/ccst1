@@ -841,3 +841,22 @@ capabilities:
       - sibling
       - discovery-depth
       - object-graph
+  - id: surface-unknown-probes
+    kind: card
+    file: knowledge/cards/surface-unknown-probes.md
+    layer: case-router
+    load: on-demand
+    purpose: validate
+    triggers:
+      - surface-review
+      - discovery-unknowns
+  - id: hypothesis-reframe
+    kind: card
+    file: knowledge/cards/hypothesis-reframe.md
+    layer: case-router
+    load: on-demand
+    purpose: validate
+    triggers:
+      - stagnation
+      - homogeneous-evidence
+      - reframe

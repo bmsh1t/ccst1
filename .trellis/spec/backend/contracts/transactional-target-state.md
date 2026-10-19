@@ -174,6 +174,11 @@ Use consumer-level save/restart/recall/recovery evidence, not test counts, for a
    remaining, unavailable or omitted items set `context_incomplete`. Total refers to
    this direct bundle only, not a transitive proof. External-byte and historical-peer
    health is checked again before composite query return, not only Store revision.
+   Expansion script paths come from the loaded code directory, while `--repo-root`
+   remains the target data root. Do not synthesize `TARGET_ROOT/tools/...`: split-root
+   callers need real exact-version, history-source and continuation commands without
+   copying executables into target state. Validate by executing returned commands,
+   including omitted-body expansion, and checking Store/source bytes remain unchanged.
 4. **Validation & Error Matrix.** Foreign/unknown entity, empty or malformed binding,
    invalid interval → reject before commit; exact accepted retry remains idempotent.
    Existing v14 memory access → explicit upgrade hint, no auto migration. Old claims
@@ -735,6 +740,54 @@ reports, including the empty set. The index includes `source_binding` and `as_of
 publication checks the binding under the target mutation lock after registration.
 Preview reports reject before output creation. Artifact/index publication failure
 remains retryable and never creates an external delivery event or closes an action.
+
+### Legacy import recovery guards (2026-10-19)
+
+#### 1. Scope / Trigger
+Staged legacy import, fresh initialization beside Coverage material, and target-memory backfill.
+These guards retain the existing Store/receipt owners; they do not upgrade schemas or migrate live data.
+
+#### 2. Signatures
+`import_target_staged(source_root, destination_root, target)` uses `target_backend()` before
+creating the destination. `TargetStore.initialize()` and import share the pure
+`coverage_authoring.coverage_review_drafts(payload, target)` classifier.
+`backfill_target_memory(source_root, repo_root, target)` retains the active migration receipt.
+Store/import share `experience_contract.normalize_experience_text(kind, statement, conditions,
+reopen_when, next_intent)` for text admission.
+
+#### 3. Contracts
+- Only a legacy source may enter staged import. Missing DB plus fence/receipt or damaged identity
+  is explicit recovery, not an empty source; rejection must not create source locks or a destination.
+- Authored Coverage reviews block fresh init. Default cells, controlled structural N/A and valid
+  Store projections are distinct from author input; malformed/unknown material is not empty.
+  Explicit import retains review/source identity. Store never imports the migration/view layer.
+- Classify memory rows before writing: invalid whitespace/NUL/type/oversized conditions have exact
+  quarantine selectors; valid rows before and after them continue, with overall partial status.
+  Keep historical kind selection before stripping text (`" unknown "` may already be negative).
+- The command ID remains bound to manifest/path/field/position. A committed row without a published
+  `memory_backfill` map is replayed with the same normalized content, then its mapping is published.
+  No duplicate row, new ID, lost source binding, broad Store-error quarantine or external-action replay occurs.
+
+#### 4. Validation & Error Matrix
+| Input / interruption | Required result |
+|---|---|
+| Primary source, fenced-missing DB, damaged fence/receipt | Reject before destination creation; source unchanged |
+| Only authored Coverage review | Fresh init refuses; explicit import preserves the review |
+| Valid / bad conditions / valid | Both valid rows mapped; precise quarantine; partial |
+| First row committed or all rows committed, mapping not published | Retry fills the map once, preserves old IDs/content and source bytes |
+
+#### 5. Good / Base / Bad Cases
+Good: recover the old half-commit and its historical origin; Base: identical completed backfill
+returns the saved map; Bad: treat the Base case as proof of recovery before receipt publication.
+
+#### 6. Tests Required
+Use synthetic isolated roots, unchanged source hashes and actual Store/receipt queries. Seed the
+old first command and interrupt receipt publication; compare row count, revision, IDs, selectors,
+map and readable historical source after retry. Include a bound negative with `" unknown "`.
+
+#### 7. Wrong vs Correct
+Wrong: normalize conditions before historical kind selection, or infer legacy from DB absence.
+Correct: preserve the old command material; use the existing backend/fence owner and exact receipt.
 
 ### Memory Consumer Contract
 

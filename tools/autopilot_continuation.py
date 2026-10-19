@@ -28,7 +28,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from target_paths import canonical_target_value, target_storage_key
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def _sha256_file(path: Path) -> str:
@@ -49,7 +49,8 @@ def _repo_relative(repo_root: Path, path: Path) -> str:
 
 def _invocation_id(scope: ScopeContext, selected_target: str, auth_digest: str) -> str:
     identity = "\n".join(
-        (scope.source_ref or scope.root_target, scope.scope_hash, selected_target, auth_digest)
+        (scope.source_ref or scope.root_target, scope.scope_hash, scope.source_sha256,
+         selected_target, auth_digest)
     )
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
 
@@ -91,6 +92,7 @@ def create_continuation(
         "parent_target": canonical_target_value(parent_target),
         "scope_ref": scope.source_ref or scope.root_target,
         "scope_hash": scope.scope_hash,
+        "scope_sha256": scope.source_sha256,
         "auth_private_ref": auth_private_ref,
         "auth_sha256": auth_digest,
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -120,7 +122,7 @@ def load_continuation(
     except json.JSONDecodeError as exc:
         raise ValueError(f"invalid continuation JSON {path}: {exc.msg}") from exc
     if not isinstance(payload, dict) or payload.get("schema_version") != SCHEMA_VERSION:
-        raise ValueError(f"unsupported continuation schema: {path}")
+        raise ValueError(f"unsupported continuation schema: {path}; recreate the continuation")
 
     selected = canonical_target_value(selected_target)
     if str(payload.get("selected_target") or "") != selected:
@@ -136,6 +138,8 @@ def load_continuation(
         raise ValueError("continuation parent target does not match Scope owner")
     if scope.scope_hash != str(payload.get("scope_hash") or ""):
         raise ValueError("continuation Scope hash is stale")
+    if not scope.source_sha256 or scope.source_sha256 != payload.get("scope_sha256"):
+        raise ValueError("continuation Scope source is missing or stale; recreate the continuation")
     if not scope.allows_active(selected):
         raise ScopeContextError(f"selected target is no longer in parent Scope: {selected}")
 
@@ -169,6 +173,53 @@ def load_continuation(
         "scope_context": scope,
         "auth_file": auth_file,
     }
+
+
+def resolve_context_file(context_file: str | Path | None,
+                         bound_context_file: str | Path | None = None) -> str | None:
+    """Retain an explicitly bound invocation; never discover one from the environment."""
+    paths = []
+    for value in (context_file, bound_context_file):
+        if value is not None:
+            if not str(value).strip():
+                raise ValueError("continuation context file must not be empty")
+            paths.append(str(Path(value).expanduser().resolve()))
+    if len(set(paths)) > 1:
+        raise ValueError("context file conflicts with the session's bound continuation")
+    return paths[0] if paths else None
+
+
+class ExecutionScope:
+    """Invocation-local intersection; no new persisted Scope or owner."""
+
+    def __init__(self, child: ScopeContext, parent: ScopeContext | None = None):
+        self.child = child
+        self.parent = parent
+
+    def allows_active(self, url: str) -> bool:
+        return self.child.allows_active(url) and (
+            self.parent is None or self.parent.allows_active(url)
+        )
+
+
+def load_execution_scope(repo_root: str | Path, target: str,
+                         context_file: str | Path | None = None) -> ExecutionScope:
+    """Revalidate the parent artifact and acquire the current child for each send."""
+    path = resolve_context_file(context_file)
+    parent = load_continuation(repo_root, path, selected_target=target)["scope_context"] if path else None
+    return ExecutionScope(load_scope_context(repo_root, target), parent)
+
+
+def reject_unsupported_continuation(repo_root: str | Path, target: str,
+                                    context_file: str | Path | None, *, executor: str) -> None:
+    """An executor without a per-request parent gate cannot accept a continuation."""
+    path = resolve_context_file(context_file)
+    if path is not None:
+        load_continuation(repo_root, path, selected_target=target)
+        raise ValueError(
+            f"{executor} cannot enforce parent Scope on its subprocess requests/redirects; "
+            "use a continuation-aware request executor; do not drop --context-file"
+        )
 
 
 def main() -> int:

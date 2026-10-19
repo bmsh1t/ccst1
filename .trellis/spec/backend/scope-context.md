@@ -108,3 +108,30 @@ request admission or a guarantee that every executor enforces the rate.
   for origins authorized by that child AuthSession.
 - Include `scope_ref` and `scope_hash` in resumable batch/rotation projections;
   a changed hash cannot reuse completion proof for the new asset set.
+
+## Invocation-local parent execution (continuation v2)
+
+`ScopeContext.source_sha256` preserves the complete input byte identity supplied
+by the source reader, including batch files; `scope_hash` remains classification-only.
+Continuation v2 binds both digests in its invocation identity. Changed source bytes,
+missing context/private auth, wrong targets and v1 artifacts fail explicitly; create
+a new artifact, never rewrite old identity or infer a TTL from `created_at`.
+
+`autopilot_continuation.load_execution_scope` composes current child and validated
+parent without publishing child Scope or new state. Runner pair preflight, initial
+send and every redirect use this owner. Explicit `context_file` must agree with an
+AuthSession's bound invocation reference; omitting a duplicate argument must not
+drop that reference. This is explicit session data, not an ambient global default.
+CLI auth comes only from the continuation's private source; anonymous contexts do
+not revive shell credentials. Request admission never replaces narrower caller Auth.
+
+Form reads gate both native transport and injected fetches before invocation and
+filter returned actions. Public Hunt/scanner and parameter-discovery subprocess
+entries reject a supplied/bound continuation before side effects because they cannot
+guarantee parent restrictions for tool-internal requests/redirects. Child-only calls
+retain their previous semantics. No universal shell/browser sandbox, new scheduler,
+or extra rate enforcement is implied by these URL checks or the full-source digest.
+
+`tests/test_autopilot_continuation.py` covers real Bootstrap argv → Runner CLI,
+loopback transport/redirect counters and credential boundaries, stale full-source
+digests, missing/conflicting context, narrower auth and unsupported-executor refusal.

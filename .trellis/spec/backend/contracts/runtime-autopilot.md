@@ -203,6 +203,9 @@ wiring changes.
 - Inline command: `/autopilot <target> [--paranoid|--normal|--yolo] [--quick] [--deep] [--max-lanes N] [--auth-file PATH] [--context-file=PATH]`
 - Parser: `parse_autopilot_args(argv, cwd=None) -> dict`
 - Capability profile: `build_capability_profile(repo_root=None, *, which=shutil.which) -> dict`
+- Capability degraded marker: `load_capability_degraded_marker(runtime_root=None)` /
+  `write_capability_degraded_marker(runtime_root=None, *, reason, missing, source, profile)` /
+  `clear_capability_degraded_marker(runtime_root=None)`
 - Bootstrap: `build_autopilot_bootstrap(argv, cwd=None, repo_root=None, runtime_root=None) -> dict`
 - Direct cadence helper: `cadence_from_namespace(namespace) -> str`
 
@@ -230,6 +233,33 @@ wiring changes.
   `local_files`, fixed `session_managed`, and `session_status=unchecked`.
   It no longer publishes category readiness, lanes, recommendations or fingerprints;
   v1 external consumers must explicitly adapt. No historical snapshots are rewritten.
+- Bootstrap may additionally expose an explicit runtime-global `degraded_marker`.
+  The marker is written only through the capability-profile writer/CLI, is
+  atomic and lock-serialized, and remains advisory: it is not target evidence,
+  Queue work, or an automatic stop condition. CLI `show`, `record-degraded` and
+  `clear` use explicit runtime root, `CCST_RUNTIME_ROOT`, then `~/.claude`.
+  Recovery is explicit, never inferred from PATH presence. Invalid UTF-8/schema,
+  oversized files, symlinks and special files remain visible as invalid rather
+  than hanging bootstrap; CLI invalid/error exit is 2. Startup never writes.
+- `surface_advisory` is a bounded read-only projection over the existing Surface
+  review window. It may expose missing questions and a smallest-safe-probe
+  description, but must not send requests, refresh stale projections, select a
+  Skill, create owner continuations, or claim a Finding. Questions and local-read
+  suggestions come from registry card `surface-unknown-probes`, with card/family
+  provenance; missing material is unavailable, not a second hardcoded question set.
+  Browser request-shape methods and inferred MIME remain explicitly unverified
+  hints, not observed HTTP method/header facts. Shape labels never establish side effects. Any live probe
+  still requires an explicit AI decision and the existing execution owner.
+  JSON keeps at most 16 items and exposes `has_more_candidates`; Pack preserves
+  the upstream `source_window` separately. Text shows at most 8 with a JSON
+  expansion command, marks shortened questions, and identifies card/section/family.
+  Remaining URLs use the existing Surface index, not an unbounded advice queue.
+- `operational_metrics` derives only from the Pack's already verified `ledger_truth`
+  snapshot, before binding recheck. It preserves source revision/health/truncation,
+  excludes superseded rows, reports field/reference coverage and recorded unchecked
+  mutations, and returns null rates for empty denominators. Unknown evidence roles
+  are not complete. Safety outcomes, semantic replay and stopping compliance remain
+  null with an explanation; an artifact ref does not prove any of them.
 - Checks use PATH/file presence and the existing EBurst owner resolver only; never
   run version probes, subprocesses, networks, installers or browsers. Presence is
   not execution success; HTTPX tool identity remains Recon's responsibility.

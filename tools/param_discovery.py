@@ -39,6 +39,7 @@ try:
     from tools.scope_context import url_belongs_to_target
     from tools.validation_runner import request_once
     from tools.scope_source import load_scope_context
+    from tools.autopilot_continuation import load_execution_scope, resolve_context_file, reject_unsupported_continuation
 except ImportError:  # pragma: no cover - direct tools/ execution
     from action_queue import add_material_review  # type: ignore
     from auth_session import AuthSession, add_cli_args, session_from_args  # type: ignore
@@ -49,6 +50,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from scope_context import url_belongs_to_target  # type: ignore
     from validation_runner import request_once  # type: ignore
     from scope_source import load_scope_context  # type: ignore
+    from autopilot_continuation import load_execution_scope, resolve_context_file, reject_unsupported_continuation
 
 
 def _url_digest(values: Iterable[str]) -> str:
@@ -308,7 +310,12 @@ def _fetch_forms(
     session: AuthSession,
     timeout: int,
     fetch_html: Callable[[str], tuple[int | None, str]] | None,
+    context_file: str | Path | None = None,
 ) -> tuple[list[dict[str, Any]], str | None]:
+    context_file = resolve_context_file(context_file, session.context_file)
+    scope = load_execution_scope(repo_root, target, context_file)
+    if not url_belongs_to_target(url, target) or not scope.allows_active(url):
+        raise ValueError("form URL excluded by target or saved Scope")
     try:
         if fetch_html is None:
             response = request_once(
@@ -319,6 +326,7 @@ def _fetch_forms(
                 headers=session.headers_for_url(url),
                 timeout=min(timeout, 30),
                 max_body_bytes=2 * 1024 * 1024,
+                context_file=context_file,
             )
             status, body = int(response["status"]), str(response.get("body") or "")
         else:
@@ -327,6 +335,7 @@ def _fetch_forms(
             return [], f"form fetch returned status {status}"
         forms = _extract_post_forms(url, body)
         return [form for form in forms if url_belongs_to_target(str(form["action"]), target)
+                and scope.allows_active(str(form["action"]))
                 and session.allows_url(str(form["action"]))], None
     except Exception as exc:
         return [], f"form fetch failed: {type(exc).__name__}: {exc}"
@@ -477,8 +486,11 @@ def discover_parameters(
     tool_exists: Callable[[str], bool] | None = None,
     resume: bool = False,
     deep: bool = False,
+    context_file: str | Path | None = None,
 ) -> dict[str, Any]:
     repo = Path(repo_root).resolve()
+    context_file = resolve_context_file(context_file, session.context_file if session else None)
+    reject_unsupported_continuation(repo, target, context_file, executor="arjun/x8 discovery")
     resolved_target = canonical_target_value(target)
     active_session = (session or AuthSession()).bind_target(target)
     scope = load_scope_context(repo, target)
@@ -771,7 +783,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--resume", action="store_true", help="Continue the existing target-owned summary cursor.")
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
     parser.add_argument("--repo-root", default=str(BASE_DIR))
-    add_cli_args(parser)
+    add_cli_args(parser, include_context=True)
     args = parser.parse_args(argv)
     urls = list(args.url)
     if args.legacy_url:
@@ -781,6 +793,7 @@ def main(argv: list[str] | None = None) -> int:
     target = args.target or (urls[0] if len(urls) == 1 and "://" in urls[0] else "")
     if not target:
         parser.error("--target is required for a URL list or --from-recon")
+    args.target = target
     source = None if args.from_recon or not urls else urls
     methods = ("GET", "POST") if args.method == "BOTH" else (args.method,)
     try:
@@ -794,6 +807,7 @@ def main(argv: list[str] | None = None) -> int:
             timeout=args.timeout,
             resume=args.resume,
             deep=args.deep,
+            context_file=args.context_file,
         )
     except (OSError, ValueError) as exc:
         print(f"param discovery error: {exc}", file=sys.stderr)

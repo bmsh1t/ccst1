@@ -9,6 +9,19 @@ ENTITY_OWNERS = frozenset({"actor", "object", "session", "action", "operation", 
 CLAIM_PREDICATES = frozenset({"observed_access", "uses", "produces", "requires", "enables"})
 
 
+def normalize_experience_text(kind, statement, conditions, reopen_when, next_intent):
+    """The exact text admission used by both the Experience owner and import."""
+    values = []
+    for field, value, empty in (
+        ("statement", statement, False), ("conditions", conditions, False),
+        ("reopen_when", reopen_when, kind != "negative"), ("next_intent", next_intent, True),
+    ):
+        if not isinstance(value, str) or (not empty and not value.strip()) or "\x00" in value:
+            raise ValueError(f"{field} must be {'a' if empty else 'a non-empty'} string without NUL")
+        values.append(value.strip())
+    return tuple(values)
+
+
 def entity_binding(value, *, binding=None):
     """Validate a declared identity, not its existence or current health."""
     if not isinstance(value, dict) or any(key not in value for key in ENTITY_FIELDS):

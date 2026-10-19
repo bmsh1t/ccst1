@@ -64,6 +64,8 @@ Context Pack 不再语义选卡；本表只描述用途，active/retired 状态�
 
 | 知识卡 | 作用 | 推荐关联 Skill |
 |---|---|---|
+| `knowledge/cards/surface-unknown-probes.md` | 发现面事实缺口、最小本地观察和停止条件的 advisory 材料 | `src-hunting` |
+| `knowledge/cards/hypothesis-reframe.md` | 停滞、同质证据和故事过拟合时的竞争解释问题集 | `src-hunting`, `web2-recon` |
 | `knowledge/cards/auth-access.md` | 认证、会话、角色、组织边界的发散问题 | `src-hunting`, `src-hunting`, `triage-validation` |
 | `knowledge/cards/auth-hidden-switches.md` | 登录隐藏分支选择器、认证状态机切换和低风险 ATO 验证思路 | `src-hunting`, `src-hunting`, `triage-validation` |
 | `knowledge/cards/auth-credential-recovery-flows.md` | 密码重置、账号恢复、用户名枚举、MFA/OTP、remember-me 和受控凭证测试 | `src-hunting`, `triage-validation` |

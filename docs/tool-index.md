@@ -62,6 +62,16 @@ identity, and cloud signals without re-enumerating everything.
 
 ## 2. Discovery (expand surface)
 
+Context Pack includes `surface_advisory` over its existing bounded review window:
+observed shape, unknown questions, existing-material inspection and stop conditions.
+Question material comes from the registered `surface-unknown-probes` card. This is
+not a live probe, Skill selector or Queue writer. `operational_metrics` reuses the
+same verified Store snapshot; unavailable safety/replay/stop rates remain null.
+Advisory JSON is capped at 16 items and text at 8. Text exposes its JSON expansion
+command; `has_more_candidates` and the upstream `source_window` keep the two bounds
+visible. Expand remaining URLs through the existing Surface index query and full
+question/stop material through the recorded card, section and family.
+
 | Tool | When to use | One-line function |
 |---|---|---|
 | `tools/param_discovery.py` (or `.sh`) | Live URLs exist, parameters thin | Target-scoped/auth-aware hidden parameter mining (arjun + x8) |
@@ -130,6 +140,7 @@ identity, and cloud signals without re-enumerating everything.
 |---|---|---|
 | `tools/hunt.py` | Master hunt entrypoint (CLI) | Orchestrator — wraps recon, scan, zero-day, and report flows |
 | `tools/autopilot_state.py` | Reading current autopilot state | Shared control facts plus compact read-only bootstrap/full diagnostic state; compact mode never ranks large surface bodies |
+| `tools/capability_profile.py show / record-degraded / clear --runtime-root ROOT` | Persisting a confirmed tool/MCP outage across sessions, then explicitly acknowledging recovery | Runtime-global advisory marker; startup reads only and never treats it as target evidence |
 | `tools/observation_inventory.py` | Large/resumed recon corpus | Persist neutral untouched/stale observations; stat-bound summary and revision cursor; never routes a Skill |
 | `tools/action_queue.py` | Actionable evidence exists or checkpoint has next actions | Persistent action queue: ingest, choose next, resolve, summarize |
 | `tools/target_case_state.py` | Multi-actor/object validation context | Actor/session/object/hypothesis registry and private auth refs; context memory only — no backlog, no route score |

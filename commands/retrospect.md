@@ -45,9 +45,11 @@ python3 tools/target_memory.py show TARGET --json
 python3 tools/checkpoint.py --target TARGET --json
 ```
 
-`checkpoint.py` 是目标层写回建议的主来源（写回契约见
-`commands/checkpoint.md#写回契约权威定义`），其输出已携带 coverage、decision、
-surface 摘要和 retrospect 建议。先消费这两个视图；只有 checkpoint 输出确实
+`checkpoint.py` 是只读快照，不是写回 owner。写回时机唯一见
+[`skills/runtime-protocol.md#cognitive-write-timing`](../skills/runtime-protocol.md#cognitive-write-timing)。
+其输出携带 coverage、decision、surface 摘要和 retrospect 建议；
+`target_write_back.lead/next/dead_end` 保持空，handoff 仅展示当前交接，不能反推落盘。
+先消费这两个视图；只有 checkpoint 输出确实
 缺字段时，才按需补读对应 owner：
 
 ```bash
@@ -127,14 +129,15 @@ RETROSPECTIVE DECISION
 
 ### 目标层
 
-当前目标相关内容可以直接建议写回。只在用户明确要求自动写入时执行命令。
+按唯一写回时机协议保存影响后续判断的必要增量，不等用户再次说“记住”；
+无增量不重复写，明确只读/预览时不写目标层或 campaign 工作文件。
 
 exact command 使用 `rules/retrospective.md#写入目标层` 的完整示例，显式绑定 TARGET。
 negative 必须有适用条件、重开条件和同 Store 已登记的 `OPERATION_ID:STEP`（从零开始）；
 KILL 或低价值方向不自动证明 negative。缺登记证据时仅明确建议未验证 note 或保留假设。
 `next`/`handoff` 只是 advisory intent，不创建或完成 Queue Action。
 
-触发条件：
+可分流的内容（不是额外写回频率；是否写入仍遵循上述唯一协议）：
 
 - 当前目标还有 Lead / Signal
 - 有明确下一步
@@ -144,6 +147,10 @@ KILL 或低价值方向不自动证明 negative。缺登记证据时仅明确建
 ### 知识库层
 
 可复用经验先按 `knowledge/promotion-rules.md` 判断，再建议写入对应知识卡。
+跨目标共享仍走 `distill_target` 候选与 `knowledge_promote` 审核晋升。
+6k 方法正文增补另属既有方案 A：主控重新核对准入门槛、三问和来源后，
+通过 `hot_method` 维护唯一活动正文与版本；子代理只交候选，不能借复盘绕过审核，
+也不把方法维护改走 `knowledge_promote.review_existing`。
 
 如果没有合适知识卡，使用：
 
@@ -205,7 +212,7 @@ Needs human review: yes/no + reason
 
 安全默认：
 
-- 目标层写回可以自动执行，但只在用户明确要求时执行。
+- 目标层重要增量按唯一时机协议保存；无增量不重复写，明确只读/预览优先且不写。
 - 知识库、Skills、Rules 默认只输出建议，不自动改文件。
 - 任何包含凭证、cookie、token、PII、客户数据、目标专属秘密的内容都不能晋升知识库。
 

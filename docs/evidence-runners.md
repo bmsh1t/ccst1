@@ -355,8 +355,20 @@ python3 tools/evidence_ledger.py summary --target <target>
 ```bash
 python3 tools/checkpoint.py --target <target>
 python3 tools/action_queue.py list --target <target> --json
-python3 tools/action_queue.py claim --target <target> --id <action-id>
+python3 tools/action_queue.py claim --target <target> --id <action-id> --actor <operator> --json
+python3 tools/action_queue.py resolve --target <target> --id <action-id> \
+  --status blocked --notes '<reason>' \
+  --store-id <claim.store_id> --expected-version <claim.version> \
+  --claim-token <claim.claim_token> --actor <claim.claimed_by> --json
 ```
 
 Checkpoint 只展示 Store 中的未决工作和原始候选；AI 显式 add/claim/resolve。
 不会自动提案入队、覆写 Coverage 或补出下一条行动。完成必须引用本次 claim 的 operation、工作产物或领域收据。
+
+保留**本次** claim 的完整 JSON 回执：`target`、`store_id`、`id`、`version`、
+`claim_token`、`claimed_by`。上例占位符都取同一回执，不能在 resolve 前重新 claim/list
+来补齐旧命令身份。`--actor`、`--store-id`、`--expected-version` 必填；已领取工作还须
+原 `--claim-token`。未领取的管理转换使用调用者显式取得的 list 快照，不伪造 token。
+同一 Store、输入和完成证明仍通过现有校验时，已提交同身份同内容重放返回原回执；
+证明原件缺失、变化或失效仍可拒绝。尚未提交的迟到旧命令拒绝，不结算后来领取的工作。
+返回的 `resolved_from` / `receipt` 描述原命令，不是当前 Action 的新视图。

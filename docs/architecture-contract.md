@@ -413,6 +413,7 @@ Shared contracts and readers have explicit lower-level owners:
 | Owner | Shared responsibility |
 |---|---|
 | `contracts` | Wire-fact vocabulary, decision schema and bounded public observation validation; standard library only |
+| `coverage_authoring` | Pure legacy Coverage author-draft and structural N/A classification shared by init/import; no Store or migration I/O |
 | `experience_contract` | Pure exact entity, claim-predicate, condition-binding and explicit validity declarations; existence/health remain Store-owned |
 | `experience_knowledge` | Read-only registry/review source capture and file-identity fencing; no index or target lifecycle writes |
 | `experience_history` | Exact same-Store import-map resolution, original expansion and history-origin health; no import, repair or live-file fallback |

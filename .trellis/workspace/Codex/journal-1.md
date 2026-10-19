@@ -997,3 +997,68 @@ A1–A10完成；6k方法、原生观察和兼容reader已交付，必要cleanup
 ### Next Steps
 
 - 本任务工程交付完成；如需个人runtime部署或在线能力实验，须另行确认范围与授权。
+
+
+## Session 35: A 六项可靠性修复验收收尾
+<!-- trellis-session: v=2 fp=feaa0f49052ad970 -->
+
+**Date**: 2026-10-19
+**Task**: A 六项可靠性修复验收收尾
+**Branch**: `refactor/10-11-capability-architecture`
+
+### Summary
+
+恢复Claude接管成果，补齐旧半提交恢复及真实浏览器证据登记验收；同步原claim身份契约、任务进度与保护记录。未修改产品或项目测试、未提交/归档、未启动B/C。
+
+### Main Changes
+
+- 同步LC1原回执用法与恢复/导出契约；A验收及父任务P-AC2已对齐
+
+### Git Commits
+
+(No commits — implementation/verification complete; commit and archive not authorized.)
+
+### Testing
+
+- [OK] 禁网只读源码隔离：SM3/EV1四组关键行为4/4，1.334秒，exit0，网络发送0；独立只读复核及diff/保护核对通过
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 等待提交/归档A的明确授权；G2启动B另行确认，不自动推进C
+
+
+## Session 36: B收口完成与C跨进程机械验收
+<!-- trellis-session: v=2 fp=86e8445120ffd188 -->
+
+**Date**: 2026-10-19
+**Task**: B收口完成与C跨进程机械验收
+**Branch**: `refactor/10-11-capability-architecture`
+
+### Summary
+
+继续剩余任务：保全A后WIP；修正advisory有界展开与recall源码/数据根路径，对齐Retrospect及历史规划；B通过，C机械通过，U/E延期。未提交/部署/真实宿主调用。
+
+### Main Changes
+
+- tools/context_pack.py、surface_advisory.py、recall_context.py最小修补；Retrospect/历史guihua及spec同步；唯一15路径WIP裁决和任务进度写回。
+
+### Git Commits
+
+(No commits - planning session)
+
+### Testing
+
+- [OK] B隔离合成4.550s + 无索引格式/锚点0.404s；C跨进程/cleanup/62来源方法11.401s + 精确反证原件/报告幂等0.220s，全部exit0。失败fixture与原件保留；独立只读审阅完成。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- C G4：另行确认真实宿主/模型、场景调用数、费用、端点、独立runtime及安装资产；U/AC5与AC6宿主部分保持deferred，不以M冒称使用效果。
+- A/B等待另行提交/归档授权；父任务未全面完成，保留所有继承WIP。

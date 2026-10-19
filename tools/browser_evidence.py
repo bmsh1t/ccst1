@@ -344,15 +344,22 @@ def read_browser_observation_capture(repo_root: str | Path, target: str, capture
     items, prefix, actual_format = _original_network_items(payload)
     if actual_format != source['format']:
         raise ValueError('original network format does not match baseline')
-    if isinstance(payload, dict) and (payload.get('success') is False or
-            str(payload.get('status', '')).lower() in {'error', 'failed', 'failure', 'timeout', 'stale'}):
+    export_envelopes = []
+    if isinstance(payload, dict):
+        envelope = payload
+        export_envelopes.append(envelope)
+        # Only ancestors of the selected export list are envelopes. An unused
+        # /data sibling or request/response business body cannot set export state.
+        for key in prefix.split('/')[1:-1]:
+            envelope = envelope[key]
+            export_envelopes.append(envelope)
+    if any(value.get('success') is False or
+           str(value.get('status', '')).lower() in {'error', 'failed', 'failure', 'timeout', 'stale'}
+           for value in export_envelopes):
         raise ValueError('failed original network export is not verified browser evidence')
     runs, diagnostics = [], []
     if summary.get('error'):
         diagnostics.append({'error': 'capture_error', 'description': str(summary['error'])[:400]})
-    export_envelopes = [payload] if isinstance(payload, dict) else []
-    if isinstance(payload, dict) and isinstance(payload.get('data'), dict):
-        export_envelopes.append(payload['data'])
     if any(value.get('error') or value.get('truncated') is True or value.get('body_truncated') is True
            or str(value.get('status', '')).lower() == 'partial' for value in export_envelopes):
         diagnostics.append({'error': 'incomplete_network_export; retained in original capture'})

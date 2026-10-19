@@ -15,13 +15,13 @@ def _json(value):
 
 
 def _command(root, target, key):
-    return shlex.join(["python3", str(Path(root).absolute() / "tools/target_memory.py"), "version",
+    return shlex.join(["python3", str(Path(__file__).resolve().with_name("target_memory.py")), "version",
                        "--repo-root", str(Path(root).absolute()), "--target", target,
                        "--id", key[0], "--version", str(key[1]), "--json"])
 
 
 def _context_command(root, target, key):
-    return shlex.join(["python3", str(Path(root).absolute() / "tools/experience_recall.py"), "context",
+    return shlex.join(["python3", str(Path(__file__).resolve().with_name("experience_recall.py")), "context",
                        "--repo-root", str(Path(root).absolute()), "--target", target,
                        "--id", key[0], "--version", str(key[1]), "--json"])
 
@@ -95,7 +95,7 @@ def _acquire(store, roots):
                         material.update(status="unavailable", reason=str(exc))
                 source_expansion = expansion
                 if source["owner"] == "history":
-                    source_expansion = shlex.join(["python3", str(store.root / "tools/target_memory.py"),
+                    source_expansion = shlex.join(["python3", str(Path(__file__).resolve().with_name("target_memory.py")),
                         "history-source", "--repo-root", str(store.root), "--target", store.target,
                         "--id", source["record_id"], "--full", "--json"])
                 add(identity, material,
@@ -194,7 +194,7 @@ def context_page(repo_root, target, *, roots=None, cursor=None, limit=20, max_by
         "offset": offset + len(selected)}).encode()).decode() if remaining else None
     missing = any(row["status"] == "unavailable" for row in acquired["roots"] + acquired["items"])
     incomplete = bool(remaining or truncated or missing)
-    command = shlex.join(["python3", str(Path(repo_root).absolute() / "tools/experience_recall.py"), "context",
+    command = shlex.join(["python3", str(Path(__file__).resolve().with_name("experience_recall.py")), "context",
         "--repo-root", str(Path(repo_root).absolute()), "--target", store.target,
         "--context-limit", str(limit), "--context-max-bytes", str(max_bytes), "--cursor", continuation, "--json"]) if continuation else None
     return {"status": "partial" if incomplete else "complete", "context_incomplete": incomplete,

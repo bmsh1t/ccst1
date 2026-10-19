@@ -55,6 +55,8 @@ from tools.scope_source import scope_source_from_profile
 
 try:
     from tools.artifact_io import write_json_atomic
+    from tools.coverage_authoring import coverage_review_drafts
+    from tools.experience_contract import normalize_experience_text
     from tools.action_queue import load_legacy_queue
     from tools.evidence_identity import LEDGER_RESULTS, canonical_endpoint_identity
     from tools.evidence_ledger import load_entries_diagnostic
@@ -64,9 +66,11 @@ try:
     from tools.migration_receipts import (LEGACY_METADATA_PATHS, directory_handle, read_file,
         read_active_receipt, read_migration_receipt, read_legacy_archive, read_bound_file,
         pattern_archive_relative, receipt_lock)
-    from tools.target_store import StoreError, TargetStore, target_cutover_lock
+    from tools.target_store import StoreError, TargetStore, target_backend, target_cutover_lock
 except ImportError:  # pragma: no cover
     from artifact_io import write_json_atomic
+    from coverage_authoring import coverage_review_drafts
+    from experience_contract import normalize_experience_text
     from action_queue import load_legacy_queue  # type: ignore
     from evidence_identity import LEDGER_RESULTS, canonical_endpoint_identity  # type: ignore
     from evidence_ledger import load_entries_diagnostic  # type: ignore
@@ -79,7 +83,7 @@ except ImportError:  # pragma: no cover
     from migration_receipts import (LEGACY_METADATA_PATHS, directory_handle, read_file,
         read_active_receipt, read_migration_receipt, read_legacy_archive, read_bound_file,
         pattern_archive_relative, receipt_lock)
-    from target_store import StoreError, TargetStore, target_cutover_lock  # type: ignore
+    from target_store import StoreError, TargetStore, target_backend, target_cutover_lock  # type: ignore
 
 
 # Only one legacy status survives the move into the single action source:
@@ -923,12 +927,22 @@ def _import_target_memory(report: dict[str, Any], store: TargetStore, root: Path
     rows.extend(("facts", key, item) for key, item in sorted(memory["facts"].items()))
     if memory["active_goal"].strip():
         rows.append(("active_goal", "value", {"text": memory["active_goal"]}))
-    mapped = []
+    def quarantine_row(field, position, reason):
+        selector = "/" + field + "/" + str(position).replace("~", "~0").replace("/", "~1")
+        report["quarantined"].append({"owner": "target-memory", "path": relative,
+                                      "id": selector, "field": field, "position": position,
+                                      "reason": reason})
+
+    def historical_text(primary, secondary, default):
+        # Missing/empty text preserves the old fallback; false non-text values do not.
+        if primary not in (None, ""):
+            return primary
+        return secondary if secondary not in (None, "") else default
+
+    pending = []
     for field, position, item in rows:
         if len(str(position)) > 80:
-            report["quarantined"].append({"owner": "target-memory", "path": relative,
-                                          "field": field, "position": str(position)[:80],
-                                          "reason": "historical source key is oversized"})
+            quarantine_row(field, position, "historical source key is oversized")
             continue
         declared = item.get("target")
         try:
@@ -936,27 +950,21 @@ def _import_target_memory(report: dict[str, Any], store: TargetStore, root: Path
         except (TypeError, ValueError):
             wrong_target = True
         if wrong_target:
-            report["quarantined"].append({"owner": "target-memory", "path": relative,
-                                          "field": field, "position": position,
-                                          "reason": "historical entry declares another target"})
+            quarantine_row(field, position, "historical entry declares another target")
             continue
         text = item.get("text") or (item.get("summary") if field == "session_handoffs" else "")
         structured = item.get("structured") or {}
         if not isinstance(structured, dict):
             structured = {}
         if not isinstance(text, str) or not text.strip() or len(text) > 4096 or text_is_polluted(text):
-            report["quarantined"].append({"owner": "target-memory", "path": relative,
-                                          "field": field, "position": position,
-                                          "reason": "empty, oversized or polluted historical text"})
+            quarantine_row(field, position, "empty, oversized or polluted historical text")
             continue
-        conditions = item.get("conditions") or structured.get("conditions") or "unknown"
-        reopen = item.get("reopen_when") or structured.get("reopen_when") or ""
-        next_intent = item.get("next_intent") or structured.get("next") or ""
+        conditions = historical_text(item.get("conditions"), structured.get("conditions"), "unknown")
+        reopen = historical_text(item.get("reopen_when"), structured.get("reopen_when"), "")
+        next_intent = historical_text(item.get("next_intent"), structured.get("next"), "")
         if not all(isinstance(value, str) and len(value) <= 2048
                    for value in (conditions, reopen, next_intent)):
-            report["quarantined"].append({"owner": "target-memory", "path": relative,
-                                          "field": field, "position": position,
-                                          "reason": "historical condition fields are invalid or oversized"})
+            quarantine_row(field, position, "historical condition fields are invalid or oversized")
             continue
         refs = item.get("evidence_refs") or []
         evidence = []
@@ -987,17 +995,27 @@ def _import_target_memory(report: dict[str, Any], store: TargetStore, root: Path
             evidence = []
             label = f"{field}[{position}]" if field == "facts" else field
             text = f"Historical {label} (unverified): {text.strip()}"
+        # Keep kind selection above normalization: historical ' unknown ' with
+        # bound evidence was negative, and its replay must keep the old content.
+        try:
+            text, conditions, reopen, next_intent = normalize_experience_text(
+                kind, text, conditions, reopen, next_intent)
+        except ValueError as exc:
+            quarantine_row(field, position, str(exc))
+            continue
         command_id = "legacy-memory:" + _stable_id(manifest["sha256"], relative, field, position)
-        receipt = store.remember(command_id=command_id, kind=kind, statement=text,
-                                 conditions=conditions, reopen_when=reopen, next_intent=next_intent,
-                                 evidence=evidence, actor="migration")
         source_id, source_ts = item.get("entry_id"), item.get("ts")
-        mapped.append({"experience_id": receipt["entity_id"], "source_path": relative,
-                       "field": field, "position": position,
-                       "source_id": source_id[:256] if isinstance(source_id, str) else "",
-                       "source_ts": source_ts[:64] if isinstance(source_ts, str) else "", "kind": kind,
-                       "evidence_status": "bound" if evidence else "unverified",
-                       "unbound_reference_count": len(refs) if isinstance(refs, list) and not evidence else 0})
+        pending.append((dict(command_id=command_id, kind=kind, statement=text, conditions=conditions,
+                             reopen_when=reopen, next_intent=next_intent, evidence=evidence, actor="migration"),
+                        {"source_path": relative, "field": field, "position": position,
+                         "source_id": source_id[:256] if isinstance(source_id, str) else "",
+                         "source_ts": source_ts[:64] if isinstance(source_ts, str) else "", "kind": kind,
+                         "evidence_status": "bound" if evidence else "unverified",
+                         "unbound_reference_count": len(refs) if isinstance(refs, list) and not evidence else 0}))
+    mapped = []
+    for command, source_binding in pending:
+        receipt = store.remember(**command)
+        mapped.append({"experience_id": receipt["entity_id"], **source_binding})
     disposition["source_sha256"] = source["sha256"]
     disposition["source_manifest_sha256"] = manifest["sha256"]
     disposition["experience_map"] = mapped
@@ -1026,52 +1044,25 @@ def _coverage_review_source(root: Path, canonical: str, manifest: dict) -> dict:
                                        "id": pointer, "reason": reason})
 
     try:
-        payload = json.loads(raw)
-        if not isinstance(payload, dict) or not isinstance(payload.get("endpoints"), list):
-            raise ValueError("coverage matrix must contain an endpoints array")
-        if canonical_target_value(payload.get("target", "")) != canonical:
-            raise ValueError("coverage matrix declares another target")
-        if payload.get("backend") == "primary" or payload.get("store_id") or payload.get("source_snapshot"):
+        classified = coverage_review_drafts(json.loads(raw), canonical)
+        if classified["projection"]:
             raise ValueError("Store Coverage projection is not a legacy author source")
     except (ValueError, TypeError) as exc:
         quarantine("/", str(exc))
         result["status"] = "quarantined"
         return result
+    result["retained_default_cells"] = classified["retained_default_cells"]
+    for item in classified["quarantined"]:
+        quarantine(item["id"], item["reason"])
     store = TargetStore(root, canonical)
-    for index, ep in enumerate(payload["endpoints"]):
-        pointer = f"/endpoints/{index}"
-        if not isinstance(ep, dict):
-            quarantine(pointer, "endpoint row must be an object")
-            continue
+    for ep in classified["endpoints"]:
+        pointer = ep["pointer"]
         try:
             store.coverage_endpoint(ep.get("endpoint"))
         except (ValueError, TypeError) as exc:
             quarantine(pointer, str(exc))
             continue
-        drafts = []
-        if (ep.get("endpoint_kind") not in (None, "", "untriaged")
-                or ep.get("kind_source") or ep.get("kind_reason") or ep.get("kind_triaged_at")):
-            drafts.append((pointer, {
-                "kind": "endpoint_kind", "value": ep.get("endpoint_kind"),
-                "source": ep.get("kind_source", "legacy_import"), "reason": ep.get("kind_reason", ""),
-                "reviewed_at": ep.get("kind_triaged_at", ""),
-            }))
-        cells = ep.get("cells", {})
-        if not isinstance(cells, dict):
-            quarantine(pointer + "/cells", "coverage cells must be an object")
-            cells = {}
-        for family, cell in cells.items():
-            cell_pointer = pointer + "/cells/" + family.replace("~", "~0").replace("/", "~1")
-            if not isinstance(cell, dict):
-                quarantine(cell_pointer, "coverage cell must be an object")
-                continue
-            if cell.get("status") == "untested" and not cell.get("reason"):
-                result["retained_default_cells"] += 1
-                continue
-            drafts.append((cell_pointer, {"kind": "cell_status", "family": family,
-                           "value": cell.get("status"), "reason": cell.get("reason", ""),
-                           "source": "legacy_import"}))
-        for source_pointer, draft in drafts:
+        for source_pointer, draft in ep["drafts"]:
             try:
                 normalized = store.normalize_coverage_review(
                     endpoint=ep.get("endpoint"), historical=True, **draft,
@@ -1274,8 +1265,7 @@ def import_target_staged(
         raise StoreError("source and destination must be different isolated roots")
     if not source.is_dir():
         raise StoreError(f"source root is not a directory: {source}")
-    source_store = source / "state" / target_storage_key(canonical_target_value(target)) / "metadata.sqlite3"
-    if source_store.exists():
+    if target_backend(source, target) != "legacy":
         raise StoreError("source already contains a target store; export from the current owner before migration")
     if destination.exists():
         raise StoreError(f"destination already exists: {destination}")

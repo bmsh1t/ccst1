@@ -63,6 +63,10 @@ expected_operation=None, action_id=None, claim_token=None, command_actor="valida
   低层 `browser_evidence` fresh 校验路径/hash/长度，不联网、不写 Store、不反向导入 runner。
   旧 HAR 可用既有基线；旧 JSON 无基线不得补造历史 hash。缺响应保留 partial，登记失败
   只重试登记，不能重放浏览器动作。原始证据、目标私有事实不复制进共享方法正文。
+- 导出状态只检查 `_original_network_items()` 实际选中列表的包装祖先；顶层及选中
+  `/data/requests` 的 `success=false` 或 `status=error/failed/failure/timeout/stale`
+  均在发布 attempt 前拒绝。选中 `/requests` 时未选中 `/data` 的同名字段、业务响应
+  body 中的状态不能决定导出失败；`partial` 等缺损传到最终 operation.outcome，不能登记 complete。
 
 ## 4. Validation & Error Matrix
 
@@ -77,6 +81,8 @@ expected_operation=None, action_id=None, claim_token=None, command_actor="valida
 | 观察坏 kind/lane、时间、原件或关联 | 显式错误，不落入 Finding 或静默 skipped |
 | 观察 partial/unknown 或登记失败 | CLI 退出 1；输入错误退出 2；保留原件及准确登记重试入口 |
 | 旧 JSON 无捕获基线 | `unverifiable_capture`；保留发现材料，不追认原件或自动重放 |
+| 实际选中导出的顶层/嵌套包装明确失败 | 拒绝，无新 attempt/operation；原件不变 |
+| 未选中包装或业务 body 含 failed | 不误拒正常导出；无裁决观察仍不创建 Finding/闭合 Coverage |
 
 ## 5. Good / Base / Bad Cases
 
@@ -93,6 +99,8 @@ decision/receipt 后拒绝、身份/同步故障、两写者 CAS、历史重试�
 witness 缺损及硬链接 blob 反例，核对调用前后持久状态不变。
 观察适配验证真实 Store operation/step、无 Finding、claim 改派后的精确重试、原前驱补证、
 partial/unknown、原件变化与零网络重放；既有 Finding/cleanup 路径保持原合同。
+只调用 capture reader 不证明登记层：须经 `record_native_observation` + `sync_runner_artifacts`
+或公开 CLI，核对 outcome、原件、无 Finding/闭合及登记失败后同 attempt 单 operation 的重试。
 相关已有回归：`tests/test_validation_runner.py`、`tests/test_browser_analysis_fidelity.py`、
 `tests/test_target_store.py::test_unknown_external_effect_can_be_supplemented_without_reexecution`。
 本次完整临时验收矩阵与回执见
