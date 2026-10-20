@@ -22,7 +22,7 @@ Task: 09-11-ai-capability-roadmap, batch B1.
 
 - ``state_changing`` / ``redline_checked`` 默认 False，不可静默置 True；
 - ``--state-changing`` 必须伴随 ``--redline-checked``（表示已按
-  ``rules/red-lines.md`` 评估副作用），否则在发任何请求之前拒绝；
+  ``rules/ccst/red-lines.md`` 评估副作用），否则在发任何请求之前拒绝；
 - 输出末尾显式回显落账内容（``LEDGER: ...`` 行），AI 必须看见；
 - ``--no-ledger`` 是纯只读浏览的逃生口：跳过 ledger 写入并显式提示未落账。
 
@@ -491,7 +491,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--redline-checked",
         action="store_true",
-        help="asserts the effect was evaluated against rules/red-lines.md",
+        help="asserts the effect was evaluated against rules/ccst/red-lines.md",
     )
     parser.add_argument(
         "--no-ledger",

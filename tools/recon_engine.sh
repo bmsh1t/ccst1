@@ -753,6 +753,7 @@ post_compress_raw_recon_urls() {
 }
 
 FFUF_PID=""
+JS_RESPONSE_TMP=""
 
 stop_ffuf_phase() {
     local pid="${FFUF_PID:-}"
@@ -766,6 +767,7 @@ stop_ffuf_phase() {
 
 cleanup_auth_tmpfiles() {
     stop_ffuf_phase
+    [ -n "${JS_RESPONSE_TMP:-}" ] && rm -f -- "$JS_RESPONSE_TMP"
     [ -n "${WAFW00F_HEADERS_FILE:-}" ] && [ -f "$WAFW00F_HEADERS_FILE" ] && rm -f "$WAFW00F_HEADERS_FILE"
     [ -n "${HTTPX_RUN_TMP:-}" ] && [ -f "$HTTPX_RUN_TMP" ] && rm -f "$HTTPX_RUN_TMP"
     [ -n "${FFUF_RESULT_TMP:-}" ] && [ -f "$FFUF_RESULT_TMP" ] && rm -f "$FFUF_RESULT_TMP"
@@ -925,25 +927,16 @@ resolve_xnlinkfinder_path() {
 }
 
 run_legacy_linkfinder() {
-    local input_file="$1"
-    local max_js="$2"
+    local linkfinder_bin="$1"
+    local response_file="$2"
     local output_file="$3"
-    local linkfinder_bin js_url tmp_js
 
-    linkfinder_bin="$(resolve_linkfinder_path || true)"
-    [ -n "$linkfinder_bin" ] || return 3
-    head -"$max_js" "$input_file" | while IFS= read -r js_url; do
-        tmp_js="$(mktemp "${TMPDIR:-/tmp}/bbhunt-linkfinder.XXXXXX.js")"
-        bb_auth_args_for_url "$js_url"
-        if curl -s "${BB_URL_AUTH_ARGS[@]}" --max-time 15 "$js_url" -o "$tmp_js" 2>/dev/null && [ -s "$tmp_js" ]; then
-            if [ "${linkfinder_bin##*.}" = "py" ]; then
-                python3 "$linkfinder_bin" -i "$tmp_js" -o cli 2>/dev/null || true
-            else
-                "$linkfinder_bin" -i "$tmp_js" -o cli 2>/dev/null || true
-            fi
-        fi
-        rm -f "$tmp_js"
-    done >> "$output_file"
+    [ -s "$response_file" ] || return 0
+    if [ "${linkfinder_bin##*.}" = "py" ]; then
+        python3 "$linkfinder_bin" -i "$response_file" -o cli 2>/dev/null
+    else
+        "$linkfinder_bin" -i "$response_file" -o cli 2>/dev/null
+    fi >> "$output_file"
 }
 
 run_xnlinkfinder() {
@@ -3316,32 +3309,6 @@ if [ -s "$JS_FILES_FOR_ANALYSIS" ]; then
         fi
     else
         JS_ANALYSIS_STATUS="ok"
-        log_step "Extracting endpoints from JS files (top 50)..."
-
-        JS_RESPONSE_TMP="$RECON_DIR/js/.response.tmp"
-        : > "$RECON_DIR/js/endpoints_raw.txt"
-        head -50 "$JS_REQUEST_TARGETS" | while IFS= read -r js_url; do
-            [ -n "$js_url" ] || continue
-            bb_auth_args_for_url "$js_url"
-            : > "$JS_RESPONSE_TMP"
-            curl -s "${BB_URL_AUTH_ARGS[@]}" --max-time 10 "$js_url" -o "$JS_RESPONSE_TMP" 2>/dev/null || true
-            sed -nE 's/.*["'"'"']([a-zA-Z0-9_/.-]*(\/[a-zA-Z0-9_/.-]+)+)["'"'"'].*/\1/p' \
-                "$JS_RESPONSE_TMP" >> "$RECON_DIR/js/endpoints_raw.txt" 2>/dev/null || true
-            grep -Eio "([a-zA-Z0-9_-]*(api[_-]?key|apiKey|api[_-]?secret|access[_-]?token|auth[_-]?token|client[_-]?secret|password|secret[_-]?key|secretKey|token)[a-zA-Z0-9_-]*)[\"'[:space:]]*[:=][\"'[:space:]]*[\"' ]?([A-Za-z0-9_./+=:-]{8,})" \
-                "$JS_RESPONSE_TMP" >> "$RECON_DIR/js/potential_secrets.txt" 2>/dev/null || true
-        done
-        rm -f "$JS_RESPONSE_TMP"
-
-        if [ -f "$RECON_DIR/js/endpoints_raw.txt" ]; then
-            sort -u "$RECON_DIR/js/endpoints_raw.txt" > "$RECON_DIR/js/endpoints.txt"
-            log_done "JS endpoints: $(wc -l < "$RECON_DIR/js/endpoints.txt" 2>/dev/null || echo 0)"
-
-            if [ -s "$RECON_DIR/js/potential_secrets.txt" ]; then
-                sort -u "$RECON_DIR/js/potential_secrets.txt" -o "$RECON_DIR/js/potential_secrets.txt"
-                log_warn "Potential secrets found in JS: $(wc -l < "$RECON_DIR/js/potential_secrets.txt")"
-            fi
-        fi
-
         LINKFINDER_MAX_JS=$([ "$QUICK_MODE" = "--quick" ] && echo 10 || echo 25)
         XNLINKFINDER_BIN="$(resolve_xnlinkfinder_path || true)"
         XNLINKFINDER_TARGETS="$RECON_DIR/js/xnlinkfinder_targets.txt"
@@ -3430,17 +3397,59 @@ PY
             log_info "Authenticated JS keeps per-URL header isolation via legacy LinkFinder"
         fi
 
+        LINKFINDER_BIN=""
         if [ "$JS_LINK_ANALYZER" = "none" ]; then
-            log_step "Running legacy LinkFinder on top $LINKFINDER_MAX_JS JS files..."
-            if run_legacy_linkfinder \
-                "$JS_REQUEST_TARGETS" \
-                "$LINKFINDER_MAX_JS" \
-                "$RECON_DIR/js/linkfinder_raw.txt"; then
+            LINKFINDER_BIN="$(resolve_linkfinder_path || true)"
+            if [ -n "$LINKFINDER_BIN" ]; then
                 JS_LINK_ANALYZER="LinkFinder"
+                log_step "Reusing downloaded JS in legacy LinkFinder (top $LINKFINDER_MAX_JS)..."
             else
                 JS_LINK_ANALYZER="unavailable"
                 JS_ANALYSIS_STATUS="partial"
                 log_warn "xnLinkFinder/LinkFinder unavailable — skipping recursive JS endpoint extraction"
+            fi
+        fi
+
+        log_step "Extracting endpoints from JS files (top 50)..."
+
+        JS_RESPONSE_TMP="$(mktemp "${TMPDIR:-/tmp}/bbhunt-js.XXXXXX.js")" || exit 2
+        : > "$RECON_DIR/js/endpoints_raw.txt"
+        JS_RESPONSE_INDEX=0
+        while IFS= read -r js_url; do
+            JS_RESPONSE_INDEX=$((JS_RESPONSE_INDEX + 1))
+            [ -n "$js_url" ] || continue
+            bb_auth_args_for_url "$js_url"
+            : > "$JS_RESPONSE_TMP"
+            JS_DOWNLOAD_TIMEOUT=10
+            if [ -n "$LINKFINDER_BIN" ] && [ "$JS_RESPONSE_INDEX" -le "$LINKFINDER_MAX_JS" ]; then
+                JS_DOWNLOAD_TIMEOUT=15
+            fi
+            if ! curl -s "${BB_URL_AUTH_ARGS[@]}" --max-time "$JS_DOWNLOAD_TIMEOUT" "$js_url" -o "$JS_RESPONSE_TMP" 2>/dev/null; then
+                JS_ANALYSIS_STATUS="partial"
+                log_warn "JS download failed; skipping incomplete response"
+                continue
+            fi
+            sed -nE 's/.*["'"'"']([a-zA-Z0-9_/.-]*(\/[a-zA-Z0-9_/.-]+)+)["'"'"'].*/\1/p' \
+                "$JS_RESPONSE_TMP" >> "$RECON_DIR/js/endpoints_raw.txt" 2>/dev/null || true
+            grep -Eio "([a-zA-Z0-9_-]*(api[_-]?key|apiKey|api[_-]?secret|access[_-]?token|auth[_-]?token|client[_-]?secret|password|secret[_-]?key|secretKey|token)[a-zA-Z0-9_-]*)[\"'[:space:]]*[:=][\"'[:space:]]*[\"' ]?([A-Za-z0-9_./+=:-]{8,})" \
+                "$JS_RESPONSE_TMP" >> "$RECON_DIR/js/potential_secrets.txt" 2>/dev/null || true
+            if [ -n "$LINKFINDER_BIN" ] && [ "$JS_RESPONSE_INDEX" -le "$LINKFINDER_MAX_JS" ]; then
+                if ! run_legacy_linkfinder "$LINKFINDER_BIN" "$JS_RESPONSE_TMP" "$RECON_DIR/js/linkfinder_raw.txt"; then
+                    JS_ANALYSIS_STATUS="partial"
+                    log_warn "LinkFinder failed on a captured JS response"
+                fi
+            fi
+        done < <(head -50 "$JS_REQUEST_TARGETS")
+        rm -f "$JS_RESPONSE_TMP"
+        JS_RESPONSE_TMP=""
+
+        if [ -f "$RECON_DIR/js/endpoints_raw.txt" ]; then
+            sort -u "$RECON_DIR/js/endpoints_raw.txt" > "$RECON_DIR/js/endpoints.txt"
+            log_done "JS endpoints: $(wc -l < "$RECON_DIR/js/endpoints.txt" 2>/dev/null || echo 0)"
+
+            if [ -s "$RECON_DIR/js/potential_secrets.txt" ]; then
+                sort -u "$RECON_DIR/js/potential_secrets.txt" -o "$RECON_DIR/js/potential_secrets.txt"
+                log_warn "Potential secrets found in JS: $(wc -l < "$RECON_DIR/js/potential_secrets.txt")"
             fi
         fi
 

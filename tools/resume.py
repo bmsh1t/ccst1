@@ -369,12 +369,9 @@ def format_resume_output(summary: dict | None, target: str) -> str:
                              f"{candidate.get('action', '')}")
             lines.append(f"  High-value gaps: {checkpoint.get('high_value_gaps_count', 0)}")
             lines.extend(format_source_queries(checkpoint.get("source_queries") or {}))
-            lines.append(
-                "  Target write-back proposals: "
-                f"lead={checkpoint.get('lead_count', 0)}, "
-                f"next={checkpoint.get('next_count', 0)}, "
-                f"dead-end={checkpoint.get('dead_end_count', 0)}"
-            )
+            handoff = str(checkpoint.get("handoff") or "").strip()
+            if handoff:
+                lines.append(f"  Handoff: {handoff}")
         else:
             lines.append(f"  unavailable: {checkpoint.get('error', 'unknown error')}")
 

@@ -179,21 +179,35 @@ AuthSession origin/scope rules; raw headers override only on the initial URL.
   without relabeling evidence or sending another request. Explicit technical
   gates determine confirmed versus inconclusive; failed/unknown technical gates
   do not mean refuted. Partial operations still reject even for negative review.
+- Preflight and apply use the same read-only input builder, including optional
+  `source_knowledge_refs` type/existence checks. Preflight aggregates errors;
+  apply preserves its fail-fast CLI error and reacquires current inputs before
+  writing. A successful preflight is not a receipt or a reusable authorization.
 - In the default single-step mode, AI report bytes are atomically published before separate assessment,
   destination decision and eligible report registration. Their deterministic
   command IDs allow partial retries; a new judgment requires predecessor IDs.
   Same-decision/same-body retry preserves inode and bytes. Other Finding,
   stale judgment, missing registered body or changed bytes rejects.
+  The machine report writer delegates create-only byte publication to
+  `artifact_io.publish_bytes_create_only`, retaining its trailing-newline
+  normalization and domain admission; it does not change report identity.
 - `/report` indexes registered AI text; missing bodies remain `pending_drafts`.
   Publishing new text requires explicit body/Finding/current assessment/current eligible
   delivery inputs. It never generates category narratives or implies external submission
   or Queue completion.
+  The report-writer agent recovers these owners and intact evidence directly from
+  the target-bound Finding. A retained invocation summary is optional diagnostics
+  only after target/Finding identity checks; there is no Finding summary locator
+  and no requirement to rerun validation to recover one.
 - Validation refresh preserves runtime breadcrumbs and explicit
   `source_knowledge_refs` without generating pattern scores or appending to
   `hunt-memory/pattern_calibration.jsonl`. Historical calibration inspection
   remains explicit; existing files are neither rewritten nor deleted.
-- Each index entry reads an explicit Severity declaration from that report's
-  immutable, hash-checked body. Missing, invalid or conflicting declarations
+- Each index entry reads an explicit severity declaration from that report's
+  immutable, hash-checked body. English Severity fields, Chinese 漏洞等级/严重程度
+  fields and the default SRC header (title, 目标网站URL, bare level) are supported.
+  中危/高危/严重 normalize to medium/high/critical; fenced examples and narrative
+  severity words are not declarations. Missing, invalid or conflicting declarations
   display `unknown`, never a category/default medium. A single-step decision with explicit
   severity must match its report field at preflight; an omitted severity/CVSS is
   allowed. Different reports/destinations never share a guessed Finding severity.

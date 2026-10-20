@@ -1659,11 +1659,13 @@ facts. Frontmatter dates serialize as ISO strings; unsupported types are errors.
 Review withdrawal, body changes and retired status invalidate indexed source
 bindings. Native reading remains available with the actual unreviewed status.
 
-## Hot-method catalog and captured reads
+## Native method reading
 
-当前合同见 [方法版本与无裁决原生观察](./hot-method-native-observation.md)。
-旧 focus/max-methods 选择与仅返回指针的合同已退役；目录完整未排名，正文使用版本绑定的 captured read。
-Context Pack 保留 `hot_methods` 输出键，方法故障不阻断独立 Store/冷卡事实恢复。
+当前方法直接读取 `skills/src-hunter/知识库/` 与 `rules/`，接线见
+`docs/ccst-runtime-adapter.md`。Context Pack 不读取旧方法库、不输出 `hot_methods`，
+只恢复独立的 Store 事实、证据和共享卡目录。
+旧方法版本协议仅供显式历史读取/维护/恢复，见
+[方法版本与无裁决原生观察](./hot-method-native-observation.md)。
 
 ## Neutral Recon inventory
 

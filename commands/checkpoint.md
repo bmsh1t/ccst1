@@ -28,7 +28,8 @@ python3 tools/checkpoint.py --target target.com --repo-root /path/to/data --json
   覆盖缺口有总量、窗口和完整查询入口，不按类别分数代替 AI 选工作。
 - `material_sources` 展示原始 root claims、人工复核/危险动作线索和源码材料的预览、余量及
   Autopilot state 完整查询。材料不是技术裁决，也不由 Checkpoint 自动入队。
-- `target_write_back.lead/next/dead_end` 为空；`handoff` 是当前状态的展示摘要，不写回源。
+- 文本输出显示 `Handoff`，即当前状态的交接摘要，不写回源。
+  `target_write_back.lead/next/dead_end` 只保留为空的兼容 JSON 字段，不展示空建议栏。
   `runtime_witness.status=not_published` 表示普通查看没有持久副作用。
 
 AI 决定测试顺序、下一行动、全局复核结论和是否重开历史负结果。Store/证据 owner 校验

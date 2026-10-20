@@ -1246,6 +1246,7 @@ def _build_checkpoint(
         "structured_findings": _structured_findings(state),
         "validation_runner_candidates": state.get("validation_runner_candidates") or [],
         "unsafe_skipped": _unsafe_leads(state),
+        # Retain the legacy JSON shape; human-readable output shows the handoff.
         "target_write_back": {
             "lead": [],
             "next": [],
@@ -1508,14 +1509,7 @@ def format_checkpoint(checkpoint: dict) -> str:
         f"  - {queue_sync_text}",
         "- Default candidate (compat pointer):",
         f"  - {((checkpoint.get('default_candidate') or checkpoint.get('recommended_executable_action') or {}).get('action') or 'none')}",
-        "- Target write-back:",
-        "  - lead:",
-        *_fmt_nested(write_back.get("lead", [])),
-        "  - next:",
-        *_fmt_nested(write_back.get("next", [])),
-        "  - dead-end:",
-        *_fmt_nested(write_back.get("dead_end", [])),
-        f"  - handoff: {write_back.get('handoff', '') or 'none'}",
+        f"- Handoff: {write_back.get('handoff', '') or 'none'}",
         "- Commands:",
         f"- Retrospect: {checkpoint.get('retrospect', '')}",
         f"- Apply status: {checkpoint.get('apply_status', '')}",

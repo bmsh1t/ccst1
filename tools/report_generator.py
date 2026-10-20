@@ -73,10 +73,13 @@ def _report_vuln_type(finding):
 
 
 def declared_report_severity(content: str) -> dict:
-    """Read only explicit Severity fields outside fenced examples."""
+    """Read explicit severity fields or the default SRC header, outside examples."""
     values = []
     pending = False
     fence = ""
+    header = []
+    chinese = {"中危": "medium", "高危": "high", "严重": "critical"}
+    label = r"(?:Severity|漏洞等级|严重程度)"
     for line in content.splitlines():
         raw = line.strip()
         if raw.startswith(("```", "~~~")):
@@ -86,14 +89,23 @@ def declared_report_severity(content: str) -> dict:
         if fence:
             continue
         text = raw.replace("**", "").replace("`", "")
-        if re.fullmatch(r"#{1,6}\s+Severity\s*:? *", text, re.I):
+        src_header = False
+        if text and len(header) < 3:
+            header.append(text)
+            src_header = len(header) == 3 and re.fullmatch(
+                r"目标网站\s*URL\s*[:：]\s*https?://\S+", header[1], re.I
+            ) is not None
+        if re.fullmatch(rf"#{{1,6}}\s+{label}\s*[:：]? *", text, re.I):
             pending = True
             continue
-        field = re.match(r"(?:[-*]\s+)?Severity\s*:\s*(.*)$", text, re.I)
-        if field or (pending and text):
+        field = re.match(rf"(?:[-*]\s+)?{label}\s*[:：]\s*(.*)$", text, re.I)
+        if src_header and not field and not pending:
+            values.append(chinese.get(text, "invalid"))
+        elif field or (pending and text):
             value = field.group(1) if field else text
-            match = re.match(r"(critical|high|medium|low|info|unknown)(?=$|\s|[(:—–-])", value, re.I)
-            values.append(match.group(1).lower() if match else "invalid")
+            match = re.match(r"(critical|high|medium|low|info|unknown|中危|高危|严重)(?=$|\s|[(:（：—–-])", value, re.I)
+            level = match.group(1).lower() if match else "invalid"
+            values.append(chinese.get(level, level))
             pending = False
     if pending:
         values.append("invalid")

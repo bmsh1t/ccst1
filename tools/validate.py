@@ -14,14 +14,17 @@ Usage:
 import argparse
 import hashlib
 import json
-import os
 import re
 import sys
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 from urllib.parse import urlparse
+
+try:
+    from artifact_io import publish_bytes_create_only
+except ImportError:  # pragma: no cover - package import path
+    from tools.artifact_io import publish_bytes_create_only
 
 try:
     from finding_index import _finding_backend_context
@@ -1294,103 +1297,173 @@ def _assert_machine_report_path_available(
 def _write_machine_report(path: Path, content: str) -> None:
     """Publish a complete report exclusively; identical retries never rewrite it."""
     rendered = (content.rstrip() + "\n").encode("utf-8")
-    temporary = None
     try:
-        with tempfile.NamedTemporaryFile("wb", dir=path.parent, prefix=f".{path.name}.", delete=False) as handle:
-            temporary = Path(handle.name)
-            handle.write(rendered)
-            handle.flush()
-            os.fsync(handle.fileno())
-        try:
-            os.link(temporary, path)
-        except FileExistsError:
-            if path.read_bytes() != rendered:
-                raise ValueError(f"decision.report.path exists with different bytes: {path}")
-    finally:
-        if temporary is not None:
-            temporary.unlink()
+        publish_bytes_create_only(path, rendered)
+    except ValueError as exc:
+        raise ValueError(f"decision.report.path publication rejected: {exc}") from exc
 
 
 def _build_machine_validation_input(
     args: argparse.Namespace,
+    *,
+    collect_errors: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any], Path, Path | None, str | None]:
-    """Validate every decision binding before any report/finding state is written."""
-    decision, decision_path = _load_machine_decision(args.decision_json)
-    decision_target = canonical_target_value(_required_text(decision.get("target"), "target"))
-    finding_id = _required_text(decision.get("finding_id"), "finding_id")
-    if finding_id != args.finding_id:
-        raise ValueError("decision.finding_id must exactly match --finding-id")
-    findings_dir = _resolve_machine_findings_dir(args, decision_target)
-    repo_root = _machine_repo_root(findings_dir, explicit_findings_dir=args.findings_dir)
-    # Preflight reads only the existing Store and never imports legacy files.
-    prefill = load_finding_prefill(
-        str(findings_dir), finding_id, migrate_legacy=False, include_canonical=True,
-        repo_root=repo_root, target=decision_target,
+    """Prepare the same read-only input for preflight and write-time validation."""
+    errors: list[str] = []
+
+    def reject(message: str) -> None:
+        if not collect_errors:
+            raise ValueError(message)
+        errors.append(message)
+
+    def capture(callback):
+        try:
+            return callback()
+        except (KeyError, OSError, ValueError) as exc:
+            if not collect_errors:
+                raise
+            errors.append(str(exc))
+            return None
+
+    loaded = capture(lambda: _load_machine_decision(args.decision_json))
+    if loaded is None:
+        raise MachineDecisionPreflightError(errors)
+    decision, decision_path = loaded
+
+    decision_target = capture(lambda: canonical_target_value(_required_text(decision.get("target"), "target")))
+    finding_id = capture(lambda: _required_text(decision.get("finding_id"), "finding_id"))
+    if finding_id is not None and finding_id != args.finding_id:
+        reject("decision.finding_id must exactly match --finding-id")
+
+    findings_dir = capture(
+        lambda: _resolve_machine_findings_dir(args, decision_target or "")
     )
-    if not prefill:
-        raise ValueError(f"finding id not found in Store: {finding_id}")
-    indexed_target = canonical_target_value(str(prefill.get("target") or ""))
-    if indexed_target != decision_target:
-        raise ValueError("decision.target does not match the Store target")
+    repo_root = (
+        capture(lambda: _machine_repo_root(findings_dir, explicit_findings_dir=args.findings_dir))
+        if findings_dir is not None
+        else None
+    )
+    prefill = None
+    if findings_dir is not None and finding_id and repo_root is not None and decision_target is not None:
+        # Both entry points read the existing Store without importing legacy files.
+        prefill = capture(
+            lambda: load_finding_prefill(
+                str(findings_dir),
+                finding_id,
+                migrate_legacy=False,
+                include_canonical=True,
+                repo_root=repo_root,
+                target=decision_target,
+            )
+        )
+        if prefill == {}:
+            reject(f"finding id not found in Store: {finding_id}")
 
-    decision_endpoint = _required_text(decision.get("endpoint"), "endpoint")
-    if not _machine_endpoints_match(decision_endpoint, str(prefill.get("endpoint") or "")):
-        raise ValueError("decision.endpoint does not match the canonical finding endpoint")
-    decision_vuln_class = _normalize_vuln_class(_required_text(decision.get("vuln_class"), "vuln_class"))
-    indexed_vuln_class = _normalize_vuln_class(prefill.get("vuln_type"))
-    # 与 preflight 同规则：closure 词汇 owner 归一后比较（scanner 词汇
-    # auth_bypass 与 closure 词汇 Authz 是同一概念）；未知类回退裸比较。
-    decision_canonical = canonical_vuln_class(decision_vuln_class)
-    indexed_canonical = canonical_vuln_class(indexed_vuln_class)
-    if decision_canonical and indexed_canonical:
-        classes_match = decision_canonical == indexed_canonical
-    else:
-        classes_match = decision_vuln_class == indexed_vuln_class
-    if not decision_vuln_class or not classes_match:
-        raise ValueError("decision.vuln_class does not match the canonical finding class")
+    if prefill and decision_target is not None:
+        indexed_target = capture(lambda: canonical_target_value(str(prefill.get("target") or "")))
+        if indexed_target is not None and indexed_target != decision_target:
+            reject("decision.target does not match the Store target")
 
-    gate_passed, gate_notes = _parse_machine_gates(decision.get("gates"))
-    seven_questions = _parse_machine_seven_questions(decision.get("seven_question_gate"))
-    _parse_machine_cvss(decision.get("cvss"))
-    impact = _required_text(decision.get("impact"), "impact")
-    decision_method = normalize_http_method(decision.get("method") or "GET")
+    decision_endpoint = capture(lambda: _required_text(decision.get("endpoint"), "endpoint"))
+    if prefill and decision_endpoint is not None and not _machine_endpoints_match(
+        decision_endpoint, str(prefill.get("endpoint") or ""),
+    ):
+        reject("decision.endpoint does not match the canonical finding endpoint")
+
+    decision_vuln_class = capture(
+        lambda: _normalize_vuln_class(_required_text(decision.get("vuln_class"), "vuln_class"))
+    )
+    if prefill and decision_vuln_class is not None:
+        indexed_vuln_class = _normalize_vuln_class(prefill.get("vuln_type"))
+        # Scanner and closure aliases share the closure vocabulary owner.
+        decision_canonical = canonical_vuln_class(decision_vuln_class)
+        indexed_canonical = canonical_vuln_class(indexed_vuln_class)
+        if decision_canonical and indexed_canonical:
+            classes_match = decision_canonical == indexed_canonical
+        else:
+            classes_match = decision_vuln_class == indexed_vuln_class
+        if not decision_vuln_class or not classes_match:
+            reject("decision.vuln_class does not match the canonical finding class")
+
+    gates = capture(lambda: _parse_machine_gates(decision.get("gates")))
+    seven_questions = capture(lambda: _parse_machine_seven_questions(decision.get("seven_question_gate")))
+    capture(lambda: _parse_machine_cvss(decision.get("cvss")))
+    impact = capture(lambda: _required_text(decision.get("impact"), "impact"))
+    decision_method = capture(lambda: normalize_http_method(decision.get("method") or "GET"))
+
+    store_command = None
+    witness = None
     evidence = decision.get("evidence")
     if not isinstance(evidence, dict):
-        raise ValueError("decision.evidence must be an object")
-    evidence_summary = _required_text(evidence.get("summary"), "evidence.summary")
-    evidence_refs = _resolve_machine_evidence_refs(evidence.get("refs"), repo_root=repo_root)
-    runner_summary_path, operation_id = _validate_machine_runner_witness(
-        evidence,
-        evidence_refs=evidence_refs,
-        decision_target=decision_target,
-        finding_id=finding_id,
-        decision_endpoint=decision_endpoint,
-        decision_method=decision_method,
-        findings_dir=findings_dir,
-        prefill=prefill,
-        repo_root=repo_root,
-    )
-    store_command = _primary_validation_command(decision, prefill, operation_id) if operation_id else None
-    report_path, report_content = _resolve_machine_report(
-        decision.get("report"),
-        findings_dir=findings_dir,
-        repo_root=repo_root,
-    )
-    severity = _machine_report_severity(decision, report_content)
-    cleanup_confirmation = runtime_store(repo_root, decision_target).report_cleanup(
-        finding_id, require_verified=report_path is not None,
-    )
-    if report_path is not None:
-        _assert_machine_report_path_available(
-            findings_dir,
-            finding_id=finding_id,
-            report_path=report_path,
-            report_content=report_content,
-            repo_root=repo_root,
-            target=decision_target,
-            store_command=store_command,
+        reject("decision.evidence must be an object")
+    else:
+        evidence_summary = capture(lambda: _required_text(evidence.get("summary"), "evidence.summary"))
+        evidence_refs = capture(
+            lambda: _resolve_machine_evidence_refs(evidence.get("refs"), repo_root=repo_root or BASE_DIR)
         )
+        if (
+            evidence_refs is not None
+            and decision_target is not None
+            and finding_id
+            and decision_endpoint is not None
+            and decision_method is not None
+            and findings_dir is not None
+            and prefill
+        ):
+            witness = capture(
+                lambda: _validate_machine_runner_witness(
+                    evidence,
+                    evidence_refs=evidence_refs,
+                    decision_target=decision_target,
+                    finding_id=finding_id,
+                    decision_endpoint=decision_endpoint,
+                    decision_method=decision_method,
+                    findings_dir=findings_dir,
+                    prefill=prefill,
+                    repo_root=repo_root or BASE_DIR,
+                )
+            )
+            if witness is not None and witness[1]:
+                store_command = capture(lambda: _primary_validation_command(decision, prefill, witness[1]))
 
+    report_result = capture(
+        lambda: _resolve_machine_report(
+            decision.get("report"),
+            findings_dir=findings_dir or BASE_DIR,
+            repo_root=repo_root or BASE_DIR,
+        )
+    )
+    if report_result is not None:
+        report_path, report_content = report_result
+        severity = capture(lambda: _machine_report_severity(decision, report_content))
+        if prefill and repo_root is not None and decision_target is not None:
+            cleanup_confirmation = capture(
+                lambda: runtime_store(repo_root, decision_target).report_cleanup(
+                    finding_id, require_verified=report_path is not None,
+                )
+            )
+        if report_path is not None and findings_dir is not None and finding_id:
+            capture(
+                lambda: _assert_machine_report_path_available(
+                    findings_dir,
+                    finding_id=finding_id,
+                    report_path=report_path,
+                    report_content=report_content,
+                    repo_root=repo_root or BASE_DIR,
+                    target=decision_target,
+                    store_command=store_command,
+                )
+            )
+    elif "severity" in decision:
+        capture(lambda: _parse_machine_severity(decision["severity"]))
+
+    source_knowledge_refs = capture(
+        lambda: _parse_source_knowledge_refs(decision.get("source_knowledge_refs"))
+    )
+    if errors:
+        raise MachineDecisionPreflightError(errors)
+
+    gate_passed, gate_notes = gates
     info = {
         "target": decision_target,
         "vuln_type": str(prefill.get("vuln_type") or decision_vuln_class),
@@ -1405,13 +1478,13 @@ def _build_machine_validation_input(
         "cleanup_confirmation": cleanup_confirmation,
         "seven_question_gate": seven_questions,
         # Keep only explicitly declared sources; absence does not imply attribution.
-        "source_knowledge_refs": _parse_source_knowledge_refs(decision.get("source_knowledge_refs")),
+        "source_knowledge_refs": source_knowledge_refs,
         "machine_decision": {
             "schema_version": MACHINE_DECISION_SCHEMA_VERSION,
             "source": str(decision_path),
             "evidence_summary": evidence_summary,
             "evidence_refs": evidence_refs,
-            "runner_summary": str(runner_summary_path),
+            "runner_summary": str(witness[0]),
             **({"store_command": store_command} if store_command is not None else {}),
             **({"report_mode": "deferred"} if report_path is None else {}),
         },
@@ -1475,159 +1548,18 @@ def run_scaffold(args: argparse.Namespace) -> dict[str, Any]:
 
 def run_machine_preflight(args: argparse.Namespace) -> dict[str, Any]:
     """Read and validate a machine decision without creating or changing state."""
-    errors: list[str] = []
-
-    def capture(callback):
-        try:
-            return callback()
-        except (KeyError, OSError, ValueError) as exc:
-            errors.append(str(exc))
-            return None
-
-    loaded = capture(lambda: _load_machine_decision(args.decision_json))
-    if loaded is None:
-        raise MachineDecisionPreflightError(errors)
-    decision, decision_path = loaded
-
-    decision_target = capture(lambda: canonical_target_value(_required_text(decision.get("target"), "target")))
-    finding_id = capture(lambda: _required_text(decision.get("finding_id"), "finding_id"))
-    if finding_id is not None and finding_id != args.finding_id:
-        errors.append("decision.finding_id must exactly match --finding-id")
-
-    findings_dir = capture(
-        lambda: _resolve_machine_findings_dir(args, decision_target or "")
+    info, _, findings_dir, report_path, _ = _build_machine_validation_input(
+        args, collect_errors=True,
     )
-    repo_root = (
-        capture(lambda: _machine_repo_root(findings_dir, explicit_findings_dir=args.findings_dir))
-        if findings_dir is not None
-        else None
-    )
-    prefill = None
-    if findings_dir is not None and finding_id and repo_root is not None and decision_target is not None:
-        prefill = capture(
-            lambda: load_finding_prefill(
-                str(findings_dir),
-                finding_id,
-                migrate_legacy=False,
-                include_canonical=True,
-                repo_root=repo_root,
-                target=decision_target,
-            )
-        )
-        if prefill == {}:
-            errors.append(f"finding id not found in Store: {finding_id}")
-
-    if prefill:
-        if decision_target is not None:
-            indexed_target = canonical_target_value(str(prefill.get("target") or ""))
-            if indexed_target != decision_target:
-                errors.append("decision.target does not match the Store target")
-
-    decision_endpoint = capture(lambda: _required_text(decision.get("endpoint"), "endpoint"))
-    if prefill and decision_endpoint is not None and not _machine_endpoints_match(
-        decision_endpoint,
-        str(prefill.get("endpoint") or ""),
-    ):
-        errors.append("decision.endpoint does not match the canonical finding endpoint")
-
-    decision_vuln_class = capture(
-        lambda: _normalize_vuln_class(_required_text(decision.get("vuln_class"), "vuln_class"))
-    )
-    if prefill and decision_vuln_class is not None:
-        indexed_vuln_class = _normalize_vuln_class(prefill.get("vuln_type"))
-        # 经 closure 词汇 owner 归一后比较：prefill 的 type 来自 scanner 词汇
-        # （auth_bypass），runner/decision 用 closure 词汇（Authz）——同一概念的
-        # 两套拼写不应判为不匹配（lab-r5 实测撞墙根因）。未知类回退裸比较。
-        decision_canonical = canonical_vuln_class(decision_vuln_class)
-        indexed_canonical = canonical_vuln_class(indexed_vuln_class)
-        classes_match = (
-            (decision_canonical and indexed_canonical and decision_canonical == indexed_canonical)
-            if (decision_canonical and indexed_canonical)
-            else (decision_vuln_class == indexed_vuln_class)
-        )
-        if not decision_vuln_class or not classes_match:
-            errors.append("decision.vuln_class does not match the canonical finding class")
-
-    capture(lambda: _parse_machine_gates(decision.get("gates")))
-    capture(lambda: _parse_machine_seven_questions(decision.get("seven_question_gate")))
-    capture(lambda: _parse_machine_cvss(decision.get("cvss")))
-    capture(lambda: _required_text(decision.get("impact"), "impact"))
-    if "severity" in decision:
-        capture(lambda: _parse_machine_severity(decision["severity"]))
-    decision_method = capture(lambda: normalize_http_method(decision.get("method") or "GET"))
-
-    store_command = None
-    evidence = decision.get("evidence")
-    if not isinstance(evidence, dict):
-        errors.append("decision.evidence must be an object")
-    else:
-        capture(lambda: _required_text(evidence.get("summary"), "evidence.summary"))
-        evidence_refs = capture(
-            lambda: _resolve_machine_evidence_refs(evidence.get("refs"), repo_root=repo_root or BASE_DIR)
-        )
-        if (
-            evidence_refs is not None
-            and decision_target is not None
-            and finding_id
-            and decision_endpoint is not None
-            and decision_method is not None
-            and findings_dir is not None
-            and prefill
-        ):
-            witness = capture(
-                lambda: _validate_machine_runner_witness(
-                    evidence,
-                    evidence_refs=evidence_refs,
-                    decision_target=decision_target,
-                    finding_id=finding_id,
-                    decision_endpoint=decision_endpoint,
-                    decision_method=decision_method,
-                    findings_dir=findings_dir,
-                    prefill=prefill,
-                    repo_root=repo_root or BASE_DIR,
-                )
-            )
-            if witness is not None and witness[1]:
-                store_command = capture(lambda: _primary_validation_command(decision, prefill, witness[1]))
-
-    report_result = capture(
-        lambda: _resolve_machine_report(
-            decision.get("report"),
-            findings_dir=findings_dir or BASE_DIR,
-            repo_root=repo_root or BASE_DIR,
-        )
-    )
-    if report_result is not None and findings_dir is not None and finding_id:
-        report_path, report_content = report_result
-        capture(lambda: _machine_report_severity(decision, report_content))
-        if prefill and repo_root is not None and decision_target is not None:
-            capture(lambda: runtime_store(repo_root, decision_target).report_cleanup(
-                finding_id, require_verified=report_path is not None,
-            ))
-        if report_path is not None:
-            capture(
-                lambda: _assert_machine_report_path_available(
-                    findings_dir,
-                    finding_id=finding_id,
-                    report_path=report_path,
-                    report_content=report_content,
-                    repo_root=repo_root or BASE_DIR,
-                    target=decision_target,
-                    store_command=store_command,
-                )
-            )
-
-    if errors:
-        raise MachineDecisionPreflightError(errors)
     return {
         "status": "preflight_ok",
         "read_only": True,
-        "decision_path": str(decision_path),
-        "target": decision_target,
-        "finding_id": finding_id,
+        "decision_path": info["machine_decision"]["source"],
+        "target": info["target"],
+        "finding_id": info["finding_id"],
         "findings_dir": str(findings_dir),
-        "report_path": str(report_result[0]) if report_result[0] is not None else None,
-        **({"report_mode": "deferred"} if report_result[0] is None else {}),
+        "report_path": str(report_path) if report_path is not None else None,
+        **({"report_mode": "deferred"} if report_path is None else {}),
     }
 
 

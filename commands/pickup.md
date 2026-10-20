@@ -42,7 +42,7 @@ required. This command restores context, not permission to start extra testing.
 - Pending validation/report suggestions
 - Runtime-stage / recon-cache context for the next command choice
 - Checkpoint current action, recent evidence, blocker, next action, coverage
-  gaps, and target-memory write-back proposals
+  gaps, and handoff
 
 ## Artifacts Written
 
@@ -117,7 +117,7 @@ current state. It may contain:
   to target Findings or executable endpoints.
 - Checkpoint: `Decision`, `Next action`, `Current action`, `Recent
   evidence`, `Blocker`, `High-value gaps`,
-  `Target write-back proposals`, and an optional `Suggested command`.
+  `Handoff` when available, and an optional `Suggested command`.
   Checkpoint data is read-only here; target write-back remains explicit.
 - Untested Surface with the cached endpoint count/list or an empty-cache notice.
 - Memory Suggestions with available tech-stack context; use the target-memory
