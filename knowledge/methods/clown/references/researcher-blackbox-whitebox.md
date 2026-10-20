@@ -1,18 +1,3 @@
-# 白盒/黑盒来源参考（source_incomplete）
-
-## CCST 适配与缺损诊断（本项目编写）
-
-原件 S52 的前 43 行误拼了浏览器规则，随后是残表；Phase 0 及表头/前两项缺失。
-下方原字节段完整保留供核对，**不是**本项目的浏览器路由或个人代理配置；不称已恢复原文。
-可用白盒入口是仓库根 `skills/src-hunter/modules/whitebox-audit.md`：读取问题所需源码、实际版本/部署
-条件和证据，保留未知边；来源里的 Phase 1–6 可补充方法，不自动发起仓库级审计。
-本文完整性始终是 `source_incomplete`，不能以它单独授权新的方法晋升。
-当前 Scope/Auth、执行、停止/预算及报告 owner 优先；本文的 CORS 禁令、无限继续、
-GitHub/代理地址和全局配置示例均仅为历史来源，不在 C 生效。
-
-## 误拼浏览器段（来源第 1–43 行；仅供溯源）
-
-```text
 # Playwright Browser MCP — Always Prefer for Browser Work
 
 This rule applies to **every session**. The official Claude Code browser-control MCP is **Playwright MCP** (`@playwright/mcp`), configured globally as the Grok MCP server named `playwright`.
@@ -56,10 +41,6 @@ If any checkbox fails and the task needs a real browser, **stop and call the MCP
 ## Session expectation
 
 Playwright MCP is **always enabled** in `~/.grok/config.toml` as `[mcp_servers.playwright]`. Treat it as a first-class tool path, not an optional plugin the user must re-enable each time.
-```
-
-## 残表及后续来源正文（缺失部分不补造）
-
 ） | 不可信输入最密集 |
 | 3 | 历史 CVE 相邻代码（读修复 commit → 同模块） | 同类错误会重复 |
 | 4 | 新功能 / 新 API | 测试不充分 |

@@ -45,7 +45,7 @@ manual review lane.
 | `porch-pirate` Postman search | `recon/<target>/exposure/api_leaks/postman_leaks.txt` | Look for workspace/collection URLs, environment names, tokens, and non-production API hosts |
 | `postleaksNg` | `recon/<target>/exposure/api_leaks/postleaks_urls.txt`, `postleaksNg.log`, `postleaksNg/` | Extract collection/spec URLs; feed interesting files into `/secrets-hunt --filesystem recon/<target>/exposure/api_leaks/` when non-empty |
 | Osmedeus `SwaggerSpy` | `recon/<target>/exposure/api_leaks/swagger_leaks.txt` | Treat as API-spec discovery candidates; validate liveness and auth boundary before broad fuzzing |
-| Verified secret pass | `recon/<target>/exposure/api_leak_trufflehog_verified.jsonl` | Evidence for attribution/usability and follow-up validation; choose the concrete action from the observed surface and apply `rules/red-lines.md` |
+| Verified secret pass | `recon/<target>/exposure/api_leak_trufflehog_verified.jsonl` | Evidence for attribution/usability and follow-up validation; choose the concrete action from the observed surface and apply `rules/ccst/red-lines.md` |
 | `emailfinder` | `recon/<target>/exposure/identity_intel/emails.txt` | Seed tenant, reset-flow, invite, SSO, and username-format hypotheses |
 | `LeakSearch` | `recon/<target>/exposure/identity_intel/leaksearch.txt`, `summary.md` | Attribute hits to the target and derive identity/credential hypotheses for the next evidence-backed action |
 | `cloud_enum` | `recon/<target>/exposure/cloud/cloud_enum.txt`, `cloud_enum.log` | Treat as candidate cloud ownership evidence; pivot to `/cloud-recon` or minimal ownership checks |
@@ -246,8 +246,8 @@ When deprecating a tool: keep the row but prefix label with `(deprecated)`.
 
 ## Related References
 
-- `rules/hunting.md` — canonical hunt semantics + lane routing
-- `rules/tool-ai-boundary.md` — AI judges, tools preserve evidence
+- `rules/ccst/hunting.md` — canonical hunt semantics + lane routing
+- `rules/ccst/tool-ai-boundary.md` — AI judges, tools preserve evidence
 - `commands/autopilot.md` — autonomous loop execution contract
 
 ## Execution Contract Lookup
@@ -259,9 +259,9 @@ Read only the owner needed for a selected action, not this entire table as a che
 | Which hypothesis to continue, rotate or stop? | `skills/src-hunter/SKILL.md` |
 | Context and method selection? | `skills/runtime-protocol.md#shared-knowledge-recall` |
 | Dependent session/process/socket continuity? | `skills/runtime-protocol.md#stateful-continuity` |
-| Raw evidence versus AI judgment? | `rules/tool-ai-boundary.md` |
+| Raw evidence versus AI judgment? | `rules/ccst/tool-ai-boundary.md` |
 | Candidate validity and report readiness? | `skills/src-hunter/modules/triage-validation.md`, `commands/validate.md` |
-| Side effects and stop controls? | `rules/red-lines.md` |
+| Side effects and stop controls? | `rules/ccst/red-lines.md` |
 | Who accepts a write? | `skills/runtime-protocol.md#5-execution-and-write-back` |
 | Claim/resolve, browser capture/import and session close? | Matching sections of `docs/autopilot-lanes.md` |
 | Existing executor for the chosen action? | Categories and symptom lookup in this index |

@@ -75,7 +75,7 @@ save; it does not create another memory store or auto-log a session summary.
 ## Evidence Task And Method Routes
 
 Business impact and workflow evidence guide the question; scanner output is an
-advisory lead, not a clean verdict. `rules/hunting.md` owns value-first posture and
+advisory lead, not a clean verdict. `rules/ccst/hunting.md` owns value-first posture and
 broad-scanner boundaries. Three modes, AI override and evidence-driven depth live
 in `skills/runtime-protocol.md#21-三模式决策discovery--exploitation--validation-modes`. Business-model maintenance, hypothesis selection, rotation and cross-stage
 coordination have one owner: `skills/src-hunter/SKILL.md`, read on demand. Return business-model updates for

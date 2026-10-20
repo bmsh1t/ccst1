@@ -101,20 +101,26 @@ first-use probe -> MCP filename/filePath -> browser_mcp_import -> private raw + 
 
 ```text
 run_xnlinkfinder BIN TARGETS_FILE SCOPE_FILE OUTPUT_FILE TARGET
-run_legacy_linkfinder TARGETS_FILE MAX_JS OUTPUT_FILE
+run_legacy_linkfinder BIN RESPONSE_FILE OUTPUT_FILE
 ```
 
 ### 3. Contracts
 
-- `normal` 只保留完整 JS inventory 和有界候选；`deep/full` 匿名上下文优先 xnLinkFinder，
-  `quick`、缺工具、非零退出或认证上下文使用逐 URL LinkFinder。
-- xnLinkFinder v8.2 在非 TTY 中必须从 stdin 读取 `TARGETS_FILE`；不得改回 `-i FILE`。
+- `quick/normal` 只保留完整 JS inventory 和有界候选；`deep/full` 匿名上下文优先 xnLinkFinder，
+  缺工具、非零退出或认证上下文使用逐 URL LinkFinder。
+- xnLinkFinder v8.2 在非 TTY 中从 stdin 读取原生 URL 列表；不得改回 `-i FILE`。
+  保留工具自身的重定向、单响应 `-mrs 20` 限制和 timebox，不新增下载器或 HAR 转换。
+- 先确定链接分析器，再逐个 curl 前 50 个 target-owned URL 做内置 endpoint/secret 提取；
+  选中 LinkFinder 时，前 25 个 URL 直接共用当前正文，不再下载一次。只用一个私有临时文件，
+  每 URL 清空后写入，正常结束与退出均清理。内置请求保持 10 秒，供 LinkFinder 共用的请求
+  使用原 LinkFinder 的 15 秒上限。下载失败跳过整个正文且不重试，LinkFinder 失败也标 `partial`。
+  原生 xnLinkFinder 与内置 secret 提取仍可能分别请求同一 URL；后续显式 secrets-hunter 仍是独立刷新。
 - xnLinkFinder 必须使用 `-sf SCOPE_FILE`、现有 `RATE_LIMIT`、depth=1 和工具级 timebox；v8.2 的
   depth=1 只请求显式输入，depth>1 才递归请求发现链接。`-sf` 是不安全的域名子串匹配，不能独立
   充当项目 scope owner；启动前必须拒绝越界输入，发布前再由 `url_belongs_to_target()` 严格过滤输出。
 - 任一输入 JS 使用 IP、单标签或越界 host，或 TARGET 带显式端口时，整批回退逐 URL LinkFinder；
   xnLinkFinder 的域名 scope 不能表达这些边界。
-- 认证 header 只允许逐 URL 按 target scope 选择，不能传给跨 origin 的递归分析。
+- 认证 header 只在采集时逐 URL 按 target scope 选择，不能传给链接分析器或跨 origin 的递归分析。
 - 两条路径继续发布既有 `js/linkfinder_endpoints.txt`，不新增 Surface/Queue owner。
 - scope 构建失败时清空临时 scope 并回退；xnLinkFinder 非零退出时保留已有部分输出，
   再追加 LinkFinder 结果并统一 exact 去重。
@@ -125,7 +131,8 @@ run_legacy_linkfinder TARGETS_FILE MAX_JS OUTPUT_FILE
 
 | 条件 | 结果 |
 |---|---|
-| deep/full、匿名、xnLinkFinder 可用 | stdin 输入、只请求显式输入、严格过滤后发布现有 endpoint artifact |
+| deep/full、匿名、xnLinkFinder 可用 | stdin 输入原生 URL 列表，保留工具原有限制、严格过滤输出；不运行 LinkFinder |
+| curl 或 LinkFinder 失败 | 记录失败、phase 保持 `partial`；不分析不完整正文、不隐式重取 |
 | xnLinkFinder 非零退出 | 保留部分输出、记录 warning，追加逐 URL LinkFinder 结果，phase 保持 `partial` |
 | scope 构建失败 | 清空 scope，记录 warning，回退逐 URL LinkFinder，phase 保持 `partial` |
 | IP、单标签、越界输入或显式端口 TARGET | scope 留空，不启动 xnLinkFinder，回退逐 URL LinkFinder |
@@ -136,14 +143,15 @@ run_legacy_linkfinder TARGETS_FILE MAX_JS OUTPUT_FILE
 
 - Good：scope 内非常见 TLD 和相对 API 路径被保留，认证信息不跨 origin。
 - Base：分析成功但没有 endpoint，保留空 artifact 和 analyzer 状态。
-- Bad：非 TTY 使用 `-i FILE` 后零请求却返回 0，或把同一认证 header 交给递归 crawler。
+- Bad：非 TTY 使用 `-i FILE` 后静默空结果，或把同一认证 header 交给递归 crawler。
 
 ### 6. Tests Required
 
 - Shell 语法和静态 wiring 固定 profile、scope、rate、depth、fallback 与输出路径。
-- fake xnLinkFinder 必须断言目标文件字节进入 stdin、参数包含 `-sf/-all/-d/-rl` 且没有 `-i`；
+- fake xnLinkFinder 必须断言目标文件字节进入 stdin、参数包含 `-sf/-all/-d/-rl/-mrs` 且没有 `-i`；
   同时覆盖恶意后缀域输出过滤、非零退出时保留已过滤的部分输出和显式端口回退。
-- 本地 HTTP fixture 至少验证一个 API 路径和一个认证路径能被已安装版本提取。
+- 临时直接调用至少验证一个 API 路径和一个认证路径能被已安装 LinkFinder 提取，
+  与内置解析共用一次 curl，失败保留 `partial`，正常与中断退出清理临时正文。
 
 ### 7. Wrong vs Correct
 
@@ -157,7 +165,7 @@ xnLinkFinder -i targets.txt + shared auth headers
 
 ```text
 anonymous deep/full: xnLinkFinder -sf scope ... < targets.txt
-authenticated/failed: per-URL LinkFinder fallback
+authenticated/failed: LinkFinder on the current curl response, then reuse the temporary file
 ```
 
 ---

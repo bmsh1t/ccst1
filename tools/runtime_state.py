@@ -5,7 +5,7 @@ Schema v2 (current):
     Pipeline-stage fields (current_stage / recon_completed / surface_ready / etc.)
     were removed in favor of derivation. They biased Claude towards a linear
     recon→hunt→report flow and conflicted with the non-linear hunting model
-    documented in rules/hunting.md and skills/src-hunting.
+    documented in rules/ccst/hunting.md and the retired src-hunting entry.
 
     What stays in session.json: only facts that genuinely cannot be derived
     from on-disk artifacts (mode, last_executed_workflow, enrichment_tools,

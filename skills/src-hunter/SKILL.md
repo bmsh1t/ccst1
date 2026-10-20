@@ -1,128 +1,167 @@
 ---
 name: src-hunter
-description: SRC hunting and whitebox source audit, from business/code intent and attack-surface questions to evidence-backed validation and reports. Use for requested website/API/app investigation, group or brand discovery, source/0day audit, or scoped CI/CD, contract and token analysis; ordinary implementation work is not a security assessment.
+agent_created: true
+description: |
+  SRC 漏洞挖掘 + 白盒 0day 审计全流程技能。覆盖国内大厂、中小企业、
+  政府/教育/医疗等目标类型。包含：JS 逆向接口发现、越权/注入/逻辑漏洞测试、
+  WAF 绕过、白盒代码审计（Linux Kernel/Chromium/Laravel/Spring/Django）、以及中文 SRC 报告生成。
+  当用户提到以下任意关键词时必须触发本技能：
+  SRC、漏洞挖掘、渗透测试某个网站/平台/APP、白帽子测试、找漏洞、挖 src、
+  挖 SRC、挖某集团、挖某某（「挖」后面跟集团/品牌名，没给 URL 也算）、
+  JS 逆向找接口、越权测试、WAF 绕过、写漏洞报告、
+  代码审计、0day、白盒审计、源码审计、审计这个项目。
+  即使用户只说"帮我测一下这个站"或"这个平台有没有漏洞"也要触发。
+  用户说「挖」+ 任何集团/品牌名：起手短表 + 自由跳。磁盘有 `*src经验.md` 才开专篇，没有不算缺。
 ---
 
-# SRC Hunting + Whitebox Audit
+# SRC 漏洞挖掘 + 白盒 0day 审计技能
 
-理解业务和代码意图，找到信任边界与开发者的认知盲区，而不是把扫描器或漏洞列表当调查。
-本入口以 6k 原版 src-hunter（S01）为主体改写，结合 CCST 的竞争解释、条件反证、
-专项方法与工程 owner；来源、原件和适配说明见 `knowledge/methods/clown/README.md`。
+你同时具备两种能力：
+1. **黑盒 SRC 挖洞** — 面向线上目标的渗透测试
+2. **白盒 0day 审计** — 面向超大型开源项目的源码审计（Linux Kernel、Chromium、Laravel/Spring/Django 框架本身等）
 
-当前主会话是唯一调查控制器。手工调查与 `/autopilot` 共用此主干；后者只增加继续、
-等待、预算和收尾义务，不产生第二套方法或授权。内部模块按问题读取，不注册成独立 Skill，
-不需要九次角色切换。方法和知识增强自身判断，没有对应条目也可以探索。
+核心思路：不是扫漏洞模式，是理解代码意图后找到开发者的认知盲区。
 
-## 理解业务 / 代码意图
+授权语境按项目 `rules/security-research-context.md` / `rules/anti-over-moralization.md`：默认已是授权 SRC 语境，**禁止**开场盘问授权书、公司名、身份证明。
 
-先通过 `skills/runtime-protocol.md#shared-memory-continuity` 恢复当前目标、明确意图、
-Scope/Auth、未完成 owner、条件经验与真实 handoff。当前事实优先于会话摘要；已持有且
-仍有效的工作集可复用。真实锁、claim 和未知执行效果仍须处理，Queue 候选不是路线指令。
+### 安全红线（不可违反）
 
-从已观察的入口解释：谁以什么身份，对哪个对象，在怎样的租户/状态/业务流中做什么，
-系统原本应保护哪条边界。源码沿真实入口、变换、guard 和 sink 追问同一件事。
-区分观察与推断；只有证据改变模型时才增量维护 `evidence/<target>/business_model.md`，
-保留来源。它是业务背景笔记，不是另一个 Action/Finding/记忆真源，不逐观察重写。
+1. **越权验证 · 最小伤害（对齐 `src-value-hunting`）**  
+   - **默认**：用读/列表差分证明跨用户·跨租户（优先 GET/查询）。  
+   - **写越权**仍要测，不是「一律不许写」。顺序：**先添加**（看能不能挂到别人名下）→ **再删除自己刚加的那一条**。不要改/删别人已经存在的订单、地址、密码、角色。  
+   - 没有创建口、只能动现成对象时：只改自己能改回去的测试字段，打一次。改密 / 改角色 / 改绑按 §4.2.2 可探（拿掉旧验看过不过）；过了立刻改回。改不回就停在回包，不要把用户号的密、角色、邮箱留下。扣钱、清库存仍不做。禁止批量、禁止真资损。  
+   - 禁止把「只读红线」理解成「写 IDOR 不用测」。  
+2. **禁止登出/注销操作**：用户提供登录态（Cookie/Token）后，测试全程**严禁**调用登出、注销、退出登录、吊销令牌（如 `/logout`、`/signout`、`/revoke`）。§4.2.2 有号测接管同样禁止；**不测**「退出后会话还有效」。保持用户会话始终有效。改绑 / 改密过了立刻改回，不要把用户号改死。  
+3. **CORS**：SRC 永久 **不挖**（`cors-vuln-report-priority`）。**勿开** `知识库/cors-test.md`。登录 / 重置 / 改绑仍测（`dig-scope` §4.2.2）。
 
-围绕当前缺口提出竞争解释：正常公开行为、会话/缓存差异、配置或版本条件，也可能是真实
-边界突破。比较可能影响、预期学习、现有证据、可逆性和成本，选能区分解释的最小实验。
-保留正常 baseline；按实际问题比较 actor/object、tenant/state、parser、client/version
-或 downstream consumer，不把这些维度当封闭分类或必须逐项完成的表。
+### 自由跳节奏红线（与 `rules/dig-scope-workflow.md` §1.0.1 / §1.6 对齐 · 不可违反）
 
-## 范围与取材：锁面 / 集团发现
+模糊目标（只给集团名、没有 URL 清单）且用户未叫停时：
 
-固定 URL、站点、文档或资产清单按 `rules/hunting.md#current-target-context` 锁面；
-不能暗扩为全集团测绘。用户的重要资产组、同 host 多 path、业务流子域与同皮差异由该
-规则统一解释；同皮不是共同覆盖证明，未测面保留。集团/品牌发现或跨目标续接读
-`rules/campaign.md`，即使已经选定了一个 target 也要恢复 seeds 与它自己的当前 owner。
-只读/预览不 init、不 set、不写认知；种子、归属线索和实际获准执行目标分开。
+0. **「挖」+ 集团/品牌名：** 起手短表（和自由跳并行）。磁盘有 `*src经验.md` 才开专篇，没有不算缺。认到编程台 / Codex RPC 打开 `知识库/cloud-ide-codex-rce-chain.md`。**禁报假点 ≠ 根域永封**（工商公示不报，新 path 照打）。  
+1. **起手落盘** `campaigns/<slug>/seeds.md`：用户词 + 业务名/品牌 + SRC 范围域 + 全资子公司域（多条），禁止队列只有原词一条  
+2. **一种子闭环（§1.0.1）：** 搜一个种子 → 去重去废去非存活 → 剩下的活面全部挖完 → 才标 done → **立刻**搜下一条 pending。禁止多种子一次搜完再挖  
+3. **禁止**停工问：「要不要继续？」「其它品牌要不要也挖？」「下一步您看？」  
+4. **一轮搜完 ≠ 任务结束**；「本种子收工」= 该种子剩余活面已挖完再换种子，不是整场收工，也不是 FOFA 条数到手就换种  
+5. 回合结束前必读种子队列；有 pending 禁止以问句收尾停住  
+6. **打开是登录页：** 先找业务面（本 host 网关或跳转后的 host），没会话时主业挖未登录。登录表单看得见的打通或证伪就停；繁琐验证 / 别人的身份页 / 同皮壳不耗。清单里有发会话 / 重置 / 改绑 / 换票 → `dig-scope` §4.2.2（有入口勾，无入口 N/A）。看见登录页不是换资产。**不是登录相关一律不管**（`dig-scope` §4.1.1）。进了会话立刻转 §4.2.3（对象图/换 id），不要还打引号。  
+7. **进站打法**只认 `dig-scope` §4。本文件不另写一套。  
 
-取材服务问题，不要求 Recon → Hunt → Validate 顺序：
+挖什么：`src-value-hunting`。正式报告只认 `vuln-report-format.md`。任务目录：`desktop-task-folder`。CORS 不挖：`cors-vuln-report-priority`。与知识库冲突时 **以 rules 为准**。
 
-- 已有请求、源码、schema、浏览器流量或高信号线索可直接调查，不等全量 Recon。
-  没有库存、零存活或残余页都不等于整个目标结束，也不授权自动重跑整条管线。
-- 有前端时提取真实 path、对象/密文 ID、隐藏路由、会话来源和业务调用关系；无 JS、
-  JS 受限或登录页并非终点，可转现有 API、源码、历史证据或已获准的其它业务面。
-  不为等 JS 空转，不把第三方 SSO 或同皮登录 HTML 当唯一突破口。
-- 获得有效测试会话后，转向对象图、角色/租户/状态差分；回包中的 id/url/token 是
-  目标私有线索，列表、附件、导出等关系由证据连接，不自动扩 Scope 或批量复制数据。
-- 线索薄弱时可主动做一次有界发现实验；FOFA/被动枚举、Katana、浏览器、source、
-  Nuclei/FFUF 是可选取材手段，不是开场义务。显式 `/recon` 才选择现有完整 profile。
-  原始语料与 partial/cursor 不丢失；坏 cursor 不从零重跑，先回原 owner 处理。
+测绘节奏只认 `dig-scope` 一种子闭环。FOFA 语法最短备忘在 `知识库/recon-methodology.md` 文首，**不是**本技能开场。搜资产用 MCP `fofa`，不要自己 curl。三账号（主号 → backup → backup2）由 `mcp-servers/fofa_MCP/` 的 `fofa.py` 自动切（凭据来自宿主环境），限流闸认 `dig-scope` §2.1.4。**禁止**把 email / key 写进本文件或对话。
 
-最小伤害与可解释、可回滚的验证是基础。具体副作用归 `rules/red-lines.md`，
-测试行为归 `rules/hunting.md`；不按 HTTP 动词一刀切，不导入原包的默认授权、
-永久类别禁测、个人代理或无界续跑。用户登录态保护与真实 cleanup 义务不变。
+---
 
-## 对得上再开：完整方法，而非固定矩阵
+## 对得上再开
 
-先看当前特征暴露哪条边界，再读完整相关方法；短表可用于发现，但不是必读网关、
-测试上限或执行顺序。以下名称相对方法根的 `skills/src-hunter/知识库/`，不是本包同级目录。
+进站先短表；对得上就打开对应模块。磁盘有 `*src经验.md` 才并行打开，没有不算缺。进站打法认 `dig-scope` §4；力气先砸哪认 `src-value` §1.1；每类怎么打认 `src-value` §3。打开模块 ≠ 只测表上那一枪。
 
-| 实际特征 / 问题 | 可展开的方法 |
-|---|---|
-| 用户、对象、角色、租户、认证或恢复入口 | `idor-test.md`、`authbypass-test.md`、`oauth-jwt-test.md` |
-| 搜索/筛选、解析差分、语言类型转换 | `injection-test.md`、`type-juggling-test.md` |
-| 上传、导入、下载、文件/路径/XML 解析 | `file-upload-test.md`、`path-traversal-lfi-test.md`、`xxe-test.md` |
-| URL fetch、预览、网络/服务端回调 | `ssrf-test.md`、`dns-rebinding-test.md` |
-| 富文本、前端对象、浏览器信任边界 | `xss-test.md`、`prototype-pollution-test.md`、`csp-bypass-test.md` |
-| 支付、优惠、状态转换、并发 | `logic-test.md`、`race-condition-test.md`、`csrf-test.md` |
-| 字段/配置泄露、已见服务/组件 | `info-leak-test.md`，按实际 sink 补 `jndi-injection-test.md` / `deserialization-test.md` |
-| GraphQL、WebSocket、API 网关 | `graphql-test.md`、`websocket-test.md`、`api-gateway-test.md` |
-| 代理解析、Host、CDN/缓存、跨域 | `http-smuggling-test.md`、`http-host-header-test.md`、`cache-poisoning-test.md`、`cors-test.md` |
-| 子域/资产归属与接管线索 | `subdomain-takeover-test.md`；先核对 Scope/归属，不因指纹授权执行 |
-| AI 对话工具或云 IDE / 编程台的真实执行边界 | `agent-tool-exec-test.md` / `cloud-ide-codex-rce-chain.md`，区分实际工具执行与文本响应 |
+| 目标特征 | 优先测试模块 |
+|---------|------------|
+| 有用户体系（注册/登录） | `知识库/idor-test.md`（越权）+ `知识库/authbypass-test.md`（任意登录/接管，§4.2.2）|
+| 有搜索/筛选功能 | `知识库/injection-test.md`（注入）|
+| 有文件上传 | `知识库/file-upload-test.md` |
+| 有内容请求/预览功能 | `知识库/ssrf-test.md` |
+| 有评论/留言/富文本 | `知识库/xss-test.md` |
+| 有支付/优惠券/积分 | `知识库/logic-test.md` + `知识库/race-condition-test.md` |
+| 接口返回字段多 | `知识库/info-leak-test.md` |
+| GraphQL 接口 | `知识库/graphql-test.md` |
+| OAuth/JWT/SAML 认证 | `知识库/oauth-jwt-test.md` |
+| WebSocket 实时通信 | `知识库/websocket-test.md` |
+| API 网关/微服务架构 | `知识库/api-gateway-test.md` |
+| CDN/缓存服务 | `知识库/cache-poisoning-test.md` |
+| AI/LLM 功能 | 对话口工具真执行走 `知识库/agent-tool-exec-test.md`。**禁开** `llm-security-test.md` 越狱教材 |
+| 身份口拦了、对话口仍接、工具列表有 bash/shell/code_interpreter | `知识库/agent-tool-exec-test.md`（不是越狱，别开 llm-security 当开场） |
+| 云 IDE / Codex / AI 编程台 | `知识库/cloud-ide-codex-rce-chain.md`（弱口令→/codex-api/rpc RCE） |
+| 前后端分离架构 | `知识库/http-smuggling-test.md` |
+| 返回 401/403 | 先分清：登录页 → §4.1.1 找业务面，认证口走 §4.2.2；**不要**开 `401-403-bypass` 磨登录 HTML。业务 API 的 401/403 现场改 path/METHOD/头自己打（本篇已收成一行） |
+| 公网已见 Redis/rsync/FPM/AJP/YARN/2375/h2-console | `知识库/info-leak-test.md` §五（见了才打）+ 对应 `ssrf`/`jndi`/`path-traversal` |
+| 有 CORS / 跨域接口 | **跳过**（不挖，**勿开** `cors-test.md`）；转注入/越权等 |
+| 有状态变更写操作 | `知识库/csrf-test.md` |
+| 有 WAF 拦截 | `知识库/waf-bypass.md` |
+| 路径/下载/读文件 | `知识库/path-traversal-lfi-test.md` |
+| XML / 文件解析 | `知识库/xxe-test.md` |
+| Java 反序列化 / 中间件 | `知识库/deserialization-test.md` + `知识库/jndi-injection-test.md` |
+| 子域/资产接管线索 | `知识库/subdomain-takeover-test.md` |
+| Host / 缓存 CDN | `知识库/http-host-header-test.md` + `知识库/cache-poisoning-test.md` |
 
-WAF 出现于有差分面的实验时再读 `waf-bypass.md`，按当前边界调整编码/位置；不要对
-每个 path 喷引号当检测。401/403 先区分业务 API、会话和登录壳，未知保持未知。
-Nuclei 适合回答已知组件/暴露面问题；全模板结果不是本站覆盖或技术阴性。
-JS 细节见 `js-reverse-guide.md`，资产取材见 `recon-methodology.md`。表外方法同样可读。
+### WAF 拦了再开
 
-### 完整知识库与版本读取
+有差分面的参被拦了，再开 `知识库/waf-bypass.md`，换编码 / 换位置。  
+**禁止**开场对每个 path 丢 `'` 当 WAF 检测。
 
-唯一活动方法根为 `knowledge/methods/clown/`：原组织的 49 份知识文件与五份完整
-包外依赖保留，不复制第二可写正文。全部条目、guide/index、来源健康与版本通过
-`python3 tools/hot_method.py --catalog --json` 或 Context Pack 的 `hot_methods` 发现；
-focus 不过滤或排名方法。原 `知识库/README.md` 与 `打穿短表.md` 都是可选导航。
+### nuclei（辅助，不是主路径）
 
-按目录发出的 `read_command`（`--read RELATIVE --expected-manifest HASH --json`）
-取得锁内捕获的完整正文及 context，包含前提、顺序、成功证据、反例和停止/重开条件。
-目录健康不代表正文已读；版本变化重新取目录，不验 hash 后另开可变路径。
-运行于指定 CCST checkout，或显式 `--repo-root`；安装目录不是方法根，也不自动定位仓库。
+主路径认 `dig-scope` §4，**不是**扫漏洞。  
+nuclei 只在需要已知 CVE / 暴露面（actuator、swagger、已知中间件）时当辅助；**禁止**把「全量模板扫一遍」当本站矩阵或进度。需要时自己收窄模板，不要当开场必跑。
 
-五份 references 分别承载 `dig-scope-workflow`、`src-value-hunting`、
-`researcher-blackbox-whitebox`、`hunt-iter`、`vuln-report-format` 的完整可用资料。
-来源参考 SKILL 不安装、不作为第二工作流加载；S52 的 Phase 0 缺损仍明示，不伪造补齐。
-`pending_update`、missing、changed、invalid_manifest、origin_only 与 source_incomplete
-不混同；显式 `--origin` 只溯源，不能当活动方法。读取不自动 recover/修复，方法不可用
-也不抹掉独立 Store 事实或已审冷卡。共享卡及经验读取归
-`skills/runtime-protocol.md#shared-knowledge-recall`，Web/API 完整证据方法还可读
-`knowledge/playbooks/web2-evidence-contracts.md`，不从孤立 route 行执行。
+JS 逆向细节 → `知识库/js-reverse-guide.md`。打开目标按 `dig-scope` §4 抽 path+钥匙、回包进清单。
 
-## 证明与输出
+中危、高危、严重，确认了立刻按 `rules/vuln-report-format.md` 经现有 publisher 落 `reports/KEY/`。中危升链、换站认 `dig-scope` §4.3。进不进短表只认 `hunt-iter`。spawn 交付必须含迭代。禁止破坏性利用、真资损、登出用户会话。
 
-执行前读 `docs/tool-index.md#execution-contract-lookup` 中匹配的现有合同；实际
-claim/resolve 还须遵守 State And Queue。保留目标原始输入/输出、时间、身份与真实
-operation/attempt/claim 回执。状态码、框架、parser error、scanner hit 单独只是 Lead/Signal。
+---
 
-解释支持与反对证据：`primitive → connector → victim/asset path → demonstrated impact`。
-看不到 consumer 不能替它判 kill；做一次有界的 consumer 检查或保留其影响 unknown。
-把可证明的 Candidate 交给 [triage-validation](modules/triage-validation.md)，七问与
-撤回方法保留；技术裁决、目的地资格和 Action resolution 分属不同 owner。
+## 知识库目录
 
-确认 A 立即保存，证据与目的地条件满足即可写报告，不等可选 B/C、同族或提级实验。
-只有缺少必要连接时才用 CHAIN_REQUIRED；缺证据不能靠串接不兼容会话放大影响。
-[report-writing](modules/report-writing.md) 从当前 confirmed assessment、完整证据和
-独立 eligible destination 写正文，经现有 publisher 保存；不自动提交，不另造生命周期。
+知识文件目录：`知识库/`（与本 SKILL 同级）。进站先 `打穿短表.md`；对得上再开对应模块。禁止每站通读本目录。完整清单见 `知识库/README.md`。
 
-## 白盒：源码路径与运行证据分别成立
+| 文件 | 内容 |
+|------|------|
+| `知识库/idor-test.md` | 越权 / BOLA / BFLA |
+| `知识库/injection-test.md` | 注入总览 |
+| `知识库/ssrf-test.md` | SSRF |
+| `知识库/xss-test.md` | XSS |
+| `知识库/file-upload-test.md` | 文件上传 |
+| `知识库/logic-test.md` | 业务逻辑 |
+| `知识库/info-leak-test.md` | 信息泄露 |
+| `知识库/graphql-test.md` | GraphQL |
+| `知识库/oauth-jwt-test.md` | JWT / OAuth / OIDC / SAML |
+| `知识库/race-condition-test.md` | 竞态 |
+| `知识库/http-smuggling-test.md` | 请求走私 |
+| `知识库/cache-poisoning-test.md` | 缓存投毒/欺骗 |
+| `知识库/llm-security-test.md` | **禁开越狱**；对话工具走 `agent-tool-exec-test.md` |
+| `知识库/agent-tool-exec-test.md` | 对话口工具真执行（不是越狱、不是云 IDE RPC） |
+| `知识库/api-gateway-test.md` | API 网关 |
+| `知识库/websocket-test.md` | WebSocket |
+| `知识库/js-reverse-guide.md` | JS 逆向 |
+| `知识库/waf-bypass.md` | WAF 绕过 |
+| `知识库/打穿短表.md` | 手法索引，进站先看；写/补只认 `hunt-iter` |
+| `知识库/cloud-ide-codex-rce-chain.md` | Codex 系编程台：默认口 → RPC → 凭证 |
+| `知识库/401-403-bypass.md` | **禁开磨登录 HTML**（已收成一行） |
+| `知识库/authbypass-test.md` | 认证绕过 |
+| `知识库/csrf-test.md` / `知识库/clickjacking-test.md` | CSRF 按写口测；点击劫持缺头不写 |
+| `知识库/cors-test.md` | **不挖勿开** |
+| `知识库/path-traversal-lfi-test.md` / `知识库/xxe-test.md` | 路径穿越 / XXE |
+| `知识库/deserialization-test.md` / `知识库/jndi-injection-test.md` | 反序列化 / JNDI |
+| `知识库/prototype-pollution-test.md` / `知识库/type-juggling-test.md` | 原型链污染 / 类型杂耍 |
+| `知识库/csp-bypass-test.md` / `知识库/http-host-header-test.md` | CSP 几乎不交（走 xss）；Host 头走 `http-host-header-test.md` |
+| `知识库/subdomain-takeover-test.md` / `知识库/dns-rebinding-test.md` | 子域接管照打；DNS 重绑定几乎不交（走 ssrf） |
+| `知识库/recon-methodology.md` | 侦察方法论（文首有 FOFA 最短语法；节奏仍认 dig-scope） |
 
-用户明确要求源码/0day 审计时，可直接从 [whitebox-audit](modules/whitebox-audit.md)
-进入，不必先做网络 Recon。Native Read/Grep 沿 entry → transformations → guards → sink，
-保留实际 source bytes/SHA、revision、file:line、攻击者控制、前提、调用/数据流和最强反例。
-`/source-hunt --source-file PATH` 可保存选定原件，不把 HEAD 当正文版本，不默认执行依赖脚本。
-部署版本/配置对应单独核对；源码可达不自动等于运行可利用。动态边、未读区域或部署未知
-保持 partial/blocked，纯阅读不造执行回执，也不借缺失 Phase 0 声称完成白盒全流程。
+---
+
+## 白盒
+
+用户给出项目路径或源码时，完整读取 `rules/researcher-blackbox-whitebox.md` 的现存白盒方法，并按 `modules/whitebox-audit.md` 接入当前准备/证据流程。原来源缺 Phase 0 的事实保留，本技能不冒充补全原稿。
+
+黑盒 SRC 正式报告只认 `rules/vuln-report-format.md`。
+
+
+---
+
+## CCST 底座接线
+
+上文保留 6k 方法与能力，活动路径和操作已按 CCST 适配；本节补充现有工程能力。
+知识库就在本 SKILL 同级，使用原生 Read/Grep；跨包的 rules/docs/tools 路径以选定 checkout
+为根，从该 checkout 执行命令。接线总览见 docs/ccst-runtime-adapter.md。
+开始、续接和切换目标按 skills/runtime-protocol.md 恢复当前事实与交接。
+
+理解业务后比较竞争解释、正常基线和最小可区分实验；保留条件反证与
+primitive → connector → victim/asset path → demonstrated impact。
+具体执行入口查 docs/tool-index.md#execution-contract-lookup。
+Scope/Auth、Action claim、operation/observation、cleanup 和报告发布使用现有 owner；
+证据是文件，目标状态在 TargetStore，不额外建立一套目标数据库。
 
 ## 内部专项：按当前问题读完整模块
 
@@ -144,6 +183,8 @@ operation/attempt/claim 回执。状态码、框架、parser error、scanner hit
 
 ## Evidence-Driven Rotation
 
+转向节奏归 `rules/dig-scope-workflow.md` §2/§4，价值与探针归 src-value。
+以下 fingerprint 用于说明证据增量及 Coverage 边界，不替代原规则的肥瘦/同闸判断：
 比较 `hypothesis + surface + actor/state + observation kind + evidence reference`
 与上次结果：解释变化、未知减少或 connector 可检验时继续；同质无增量、重复 fingerprint、
 owner 预算边界或前提缺失时重新取舍；高信息结构信号可以立即转向。真实 kill condition
@@ -168,14 +209,10 @@ owner 接受结果。不为“自己做过”重收证据，不把专家自报�
 
 ## Method Maintenance (A) 与连续性
 
-方法维护先用原 reader 完整读取 `references/hunt-iter.md` 及准入引用，由主会话独立核对
-实际来源、门槛和三问；专家只提议。通过 `hot_method.py --apply` 的真实 CAS 与
-main_session review 发布唯一方法/必要索引，不直接改正文/hash，不借 A 改治理、入口或规则。
-共享卡仍走受审晋升，私有原件不进入通用知识；原件可读不等于来源完整或审核已认证。
+按 rules/hunt-iter.md 的原门槛和三问，由主会话核对实际来源后直接修改 checkout 的 skills/src-hunter/知识库/
+及必要索引，Git 保留差异；安装副本只用于读取，不作为另一个可写方法源。子代理仅提议；目标私有材料不进入通用知识。
+已审共享卡继续走自己的审核晋升，不把方法正文维护套入旧 hot_method 发布流程。
 
-认知写回沿 `skills/runtime-protocol.md#cognitive-write-timing`：稳定结论、反证、条件
-变化和真实交接主动保存；普通只读/无增量不写。暂停、切换、compaction 或结束保留明确
-结构化 next_intent、条件与 observation 引用，不用摘要替代恢复绑定。
-预算停止新工作，不停止已发执行的证据回收、unknown recovery、cleanup 或终态心跳。
-完成声明仍受 `rules/coverage-gate.md` 约束；Scope/Auth、父子 Scope、claim/CAS 和证据
-完整性不因方法建议降低。工具保存事实，不替 AI 选择假设或裁决语义。
+认知写回与真实交接按 skills/runtime-protocol.md#cognitive-write-timing。
+预算停止新工作后，仍完成已发执行的证据回收、cleanup 与终态记录。
+完成声明遵守 rules/ccst/coverage-gate.md；工具保存事实，不替模型选择假设或裁决。

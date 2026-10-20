@@ -118,7 +118,7 @@ RETROSPECTIVE DECISION
 - 是当前目标的 dead end
 
 目标层写回时机唯一由
-[`skills/runtime-protocol.md#cognitive-write-timing`](../skills/runtime-protocol.md#cognitive-write-timing)
+[`skills/runtime-protocol.md#cognitive-write-timing`](../../skills/runtime-protocol.md#cognitive-write-timing)
 规定：有影响后续判断的稳定结论、反证、条件变化、路径决定，或暂停/换目标/compaction
 需要续接时，保存必要增量及真实引用，不等用户另说“记住”。本规则只帮助分流内容，
 不新增逐观察复盘或固定写回频率；执行事实和真实回执仍即时交给原 owner。

@@ -96,27 +96,44 @@ session can end within budget while keeping those residuals visible.
 
 ### 6k-original Entry, CCST Engineering Base
 
-The native core is organized from original 6k S01: business/code intent, scoped
-material acquisition, feature-matched complete methods, proof/output and whitebox
-reasoning. CLAUDE adapts S55's valid global principles. CCST's competing explanations,
-minimal experiments, conditional counterevidence and real owner contracts remain.
-Nine complete `skills/src-hunter/modules/*.md` resources retain recon, whitebox,
-credential, triage, reporting, CI/CD, mobile, Web3 and token capabilities without
-separate frontmatter registrations, old-name wrappers or symlinks. Explicit slash
-commands and optional real agents are not additional native Skill entries.
+The complete 6k method and capability contract lives inline in `CLAUDE.md`, which
+imports all eleven `rules/<original-name>.md` files and the CCST integration overview.
+Active instructions use the current checkout paths, host-visible tools and domain owners
+directly. `skills/src-hunter/SKILL.md` preserves the methods and adds CCST integration;
+source-byte preservation applies to the historical originals, not obsolete host instructions. Its `知识库/` holds the 49
+original knowledge files with separately identified additions. Nine complete
+`modules/*.md` resources retain recon, whitebox, credential, triage, reporting,
+CI/CD, mobile, Web3 and token capabilities without extra Skill registrations.
+CCST engineering rules live under `rules/ccst/`.
 
-`knowledge/methods/clown/` remains the only writable, versioned complete method
-root: 49 knowledge files and five full references retain the original organization.
-Its source-reference SKILL is not installed or a second active controller. The
-original 62 source identities/defects and published history stay immutable; S52's
-missing Phase 0 is not reconstructed. `hot_method.py --read` captures verified full
-bodies/context under the original lock. Catalogs and source availability are not
-reading, review or capability proofs.
+Read native Markdown directly. SRC starts from the original shortlist and expands
+matching complete methods, while preserving exploration beyond that index. Context
+Pack reads target facts, evidence and the reviewed-card catalog; it does not scan
+historical methods or emit `hot_methods`. Method updates follow the complete
+`rules/hunt-iter.md` admission and source review, edit the selected checkout
+`skills/src-hunter/知识库/` and necessary indexes directly, and retain the diff in Git.
+Installed copies are reading assets, not another writable method source. No catalog, manifest or hash reader
+is required for normal method use.
 
-Explicit `--migrate-entry` publishes only the allowlisted v2 navigation/consumer
-changes through the existing CAS/blob/witness/decision/receipt owner. Ordinary A
-cannot modify entry/governance files. Accepted rollback is another approved reverse
-transaction, not a historical receipt edit or checkout identity rebind.
+`rules/desktop-task-folder.md` owns current artifact paths and cleanup,
+`rules/playwright-browser-mcp.md` owns host-visible browser calls, and
+`rules/vuln-report-format.md` owns report prose and publication requirements.
+`docs/ccst-runtime-adapter.md` summarizes their connection to target and evidence owners.
+Engineering rules preserve persistent project preferences (including the default SRC
+CORS exclusion) and explicit user overrides; target history does not invent preferences.
+Temporary notes, matrices and campaign seeds cannot become another target lifecycle owner. The original rules own investigation cadence and default SRC
+prose; CCST retains Scope/Auth, claims, observations, cleanup and publication owners.
+The original S52's missing Phase 0 and other source defects stay visible. Browser
+and FOFA support assets are in `bin/` and `mcp-servers/`; their presence does not
+configure or enable an MCP host. Original Grok user guides are source material under
+`docs/user-guide/`, with their host applicability stated separately.
+
+`knowledge/methods/clown/`, its manifest and `.history` retain earlier source bytes,
+versions and receipts. `hot_method.py` remains available for explicit historical
+reading, maintenance and recovery, including the original narrow migration
+protocols. It cannot publish current native Markdown and is absent from normal
+Context/Checkpoint and installation prerequisites. Historical approvals and reviewed
+knowledge are not rewritten to make the new layout look previously accepted.
 
 Historical knowledge `related_skills` and reviewed bytes keep their review identity.
 `skill_reference_contract` supplies exact current reading navigation, shared by
@@ -555,9 +572,9 @@ is inspected for known retired or duplicate identities, including renamed paths;
 unowned/modified entries and unsafe or uninspectable paths reject the batch.
 Unrelated external Skills and disabled commands are preserved, never tree-deleted.
 
-An entry cutover requires all kinds plus prune and a fixed checkout/method/native
-candidate. `.ccst-entry-migration.json` binds root, direction, executor/source/method/
-native fingerprints, exact file operations, before/after receipts and expected entries
+An entry cutover requires all kinds plus prune and a fixed checkout/native
+candidate. `.ccst-entry-migration.json` binds root, direction, executor/source/native
+fingerprints, exact file operations, before/after receipts and expected entries
 before payload. Non-entry resources precede old-entry retirement; the new entry is last.
 The record's receipt phase fixes the verified after-state before receipt publication,
 including when receipt bytes are unchanged. Interrupted payloads resume only at exact
@@ -566,8 +583,9 @@ and completes the receipt/cleanup only. Third states, unplanned entries and chan
 sources are refused; read-only compare reports pending as critical drift, never repairs.
 Reverse sync uses a separately approved prior asset set and the migration-aware tools.
 
-Root CLAUDE/rules/tools/knowledge stay in the selected checkout; they are not installed
-into the global Skill package. A checked disk root is not all discovery roots or a
+Root CLAUDE, rules, tools, support assets and reviewed knowledge stay in the
+selected checkout. The complete src-hunter knowledge directory and modules are
+installed recursively as part of its Skill package. A checked disk root is not all discovery roots or a
 host cache, and does not prove natural method use or gains. Personal installation,
 host refresh and live G4 remain separately authorized. No cross-file atomicity,
 power-loss recovery or zero-downtime guarantee is implied.

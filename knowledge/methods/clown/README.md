@@ -1,64 +1,64 @@
-# Bundled 6k Methods — CCST Adaptation
+# Bundled 6k Methods and Complete Rules — CCST Runtime
 
-This checkout preserves all 62 supplied sources: one AGENTS file, eleven rules,
-and fifty src-hunter files (including the knowledge index). Each original has one
-digest-bound archive in `.history/blobs/`; `knowledge/clown-hot-method-manifest.json`
-binds its stable origin ID, original path, disposition, defects and consumers.
-The archive is provenance, not a second active method library or a runnable rule tree.
+> **2026-10-20 起本目录仅为历史归档。** 活动正文已迁至仓库根：主契约 `AGENTS.md`、
+> 十一份原规则 `rules/<原名>.md`、Skill 与知识库 `skills/src-hunter/`。本目录的
+> `references/`、`skills/` 与 `.history/`（62 origins、回执与见证）只作来源存证和
+> `tools/hot_method.py --origin` 旧版本读取，不再是加载路径，也不在此维护。
+> 下文为迁移前记录，其中"active library"等表述已由本声明取代。
 
-The single active knowledge directory is `skills/src-hunter/知识库/` below this
-guide. Its 49 files retain the complete supplied methods, shortlist and index.
-Adapted files are **not** claimed byte-identical to upstream. Before/after bytes
-and review declarations are preserved by the same versioned manifest owner.
-No executors, MCP servers, credentials, host configuration or target state are imported.
+This checkout preserves all 62 supplied origins and their digest-bound immutable
+archives. The active library keeps the 49 knowledge files in their original
+organization and all eleven rules in `references/<original-name>.md`. Every active
+rule body is byte-identical to its origin; the archive is provenance, not another
+writable rule tree. Source S52 remains malformed and lacks Phase 0: no repair or
+reconstruction is claimed.
 
-## One Investigation Entry
+## One Investigation Entry and Rule Owners
 
-Use repository `skills/src-hunter/SKILL.md`: manual work, `/hunt` and Autopilot
-share that core. `skills/src-hunter/SKILL.md` **inside this directory** preserves
-the full source relationships as reference; it is not an installed Skill, a
-mandatory opening read, or another controller. Specialists answer local questions.
+Use repository `skills/src-hunter/SKILL.md`, the sole native business Skill, for
+manual work, `/hunt` and Autopilot. Its nine complete internal modules preserve
+CCST capabilities. The source-reference SKILL inside this directory is not installed
+or loaded as another controller.
 
-The shortlist is optional discovery, not a prerequisite, route or upper limit.
-Expand every relevant pointer into its complete method, including conditions,
-counterexamples and follow-up sections. No focus keyword, fixed top-k or type
-quota hides methods. No match still permits native reasoning. A catalog is not
-evidence that any listed body has been read. Reading does not authorize execution.
+The eleven rules govern investigation cadence, scope modes, value/probes,
+collaboration, workspace discipline, browser use, report writing and method
+iteration. They are active rules, not merely admission references. Load them via
+`rules/README.md` and the core's scenario-specific instructions; retain whole
+relevant rule bodies, never replace them with this index or a shortlist.
 
-Current project Scope/Auth, red-lines, evidence, cleanup, continuation and report
-owners take precedence over **all** source text, including preserved imperative
-wording. Permanent category bans, mandatory shortlist-first ordering, unlimited
-continuation, desktop layouts, destructive cleanup, personal paths, proxy addresses
-and asserted host-tool availability are not CCST defaults. Preserve useful
-mechanisms and cadence without importing those host policies or a second loop.
-Budget/user stops preserve unfinished work; seed progress is not technical refutation.
+`references/ccst-runtime-adapter.md` is the only environment/engineering adapter,
+returned as a context dependency on every captured read. It maps WorkBuddy/Grok
+paths, desktop materials, proxy/browser tools, report publication and continuity
+to existing CCST owners. It explicitly records old CORS, deletion and severity
+preferences and current execution boundaries; it does not rewrite the originals.
+Read it together with each rule. Original claims of authorization, enabled tools
+or unlimited continuation do not establish current environment facts.
 
-## Complete References and Historical Path Resolution
+## Complete Rule Files
 
-`知识库/` in the source Skill resolves to this directory's
-`skills/src-hunter/知识库/`. Historical `~/.grok/skills/skill/知识库/` and
-`~/.workbuddy/rules/` are provenance, never filesystem fallbacks. Resolve them here:
+All names below resolve under `references/`; historical `~/.workbuddy/rules/`
+paths resolve here without probing personal directories.
 
-| Source / historical name | Current reference or existing repository owner |
+| Original rule | Load when |
 |---|---|
-| `dig-scope-workflow`, `src-value-hunting`, `researcher-blackbox-whitebox`, `hunt-iter` | Complete references in `references/<name>.md`; `rules/campaign.md`, `rules/hunting.md` and the shared runtime protocol retain their governing responsibilities |
-| `vuln-report-format` | Complete `references/vuln-report-format.md` for the **method admission** comparison; current `rules/reporting.md`, `skills/src-hunter/modules/triage-validation.md` and `skills/src-hunter/modules/report-writing.md` still own CCST assessment/delivery/reporting |
-| AGENTS, collaboration/context, `skill-as-boost` | Existing `CLAUDE.md` and native `skills/src-hunter/SKILL.md`; no second AGENTS or Trellis override |
-| `desktop-task-folder` | Existing target-owned evidence/report layout; no desktop cleanup or browser-profile deletion |
-| `playwright-browser-mcp` | `docs/autopilot-lanes.md#browser-source-and-js`; use the explicitly selected, actually available backend |
-| `security-research-context`, `anti-over-moralization` | Current target/authorization and execution contracts; no blanket permission |
-| `cors-vuln-report-priority` | Source archived; no permanent CORS ban in CCST |
-| `KNOWN_GADGETS.md` | [prototype-pollution-test.md, 附件：KNOWN_GADGETS](skills/src-hunter/知识库/prototype-pollution-test.md#附件known_gadgets), an existing **embedded section**, not a missing standalone file |
-| `WAF_PRODUCT_MATRIX.md` | [waf-bypass.md, 附件：WAF_PRODUCT_MATRIX](skills/src-hunter/知识库/waf-bypass.md#附件waf_product_matrix), also an existing embedded section |
+| `skill-as-boost.md` | Resident enhancement/native reasoning principles |
+| `anti-over-moralization.md` | Resident technical collaboration principles |
+| `security-research-context.md` | Resident research context, subject to current intent and scope |
+| `dig-scope-workflow.md` | Starting/resuming SRC: scope, seed cadence, business workflow, rotation |
+| `src-value-hunting.md` | Starting/resuming SRC: value and differential probe requirements |
+| `researcher-blackbox-whitebox.md` | Whitebox/source questions; retain S52 source defects |
+| `hunt-iter.md` | Method admission, iteration and delegation proposals |
+| `desktop-task-folder.md` | Task materials, handoff and cleanup requests |
+| `playwright-browser-mcp.md` | Browser interaction or JS/auth flows |
+| `vuln-report-format.md` | Writing reports or checking method-admission basis |
+| `cors-vuln-report-priority.md` | CORS category preference; use explicit adapter disposition |
 
-S52 (`researcher-blackbox-whitebox`) remains **source_incomplete**: its first 43
-lines are a misplaced browser rule, followed by a broken table; Phase 0 is missing.
-The adapted reference separates those bytes and points to the existing
-`skills/src-hunter/modules/whitebox-audit.md`. CCST guidance is labelled as such; neither a matching
-hash nor usable later chapters restores the lost source. The source's one-line
-reduced modules are retained as supplied, not represented as recovered long manuals.
-The four extra 2.3 shortlist scenarios and three manuals remain deferred candidates,
-not part of this release or proof of nineteen new expert capabilities.
+`知识库/` and historical `~/.grok/skills/skill/知识库/` resolve to this method
+root's `skills/src-hunter/知识库/`. On entering a SRC site, first read the complete
+shortlist as the opening index, then expand matching complete methods and return
+to the site's surface list. Native reasoning stays available
+for unmatched features. `KNOWN_GADGETS.md` and `WAF_PRODUCT_MATRIX.md` are embedded
+sections in `prototype-pollution-test.md` and `waf-bypass.md`, not missing files.
 
 ## Captured Reads and Version Health
 

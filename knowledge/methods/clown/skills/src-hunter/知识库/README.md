@@ -6,15 +6,15 @@ CCST 适配索引；原始索引由 manifest 的 S54 保存。完整宿主/权�
 
 ## 使用约定
 
-- 需要开场索引时读完整 `打穿短表.md`；对得上必须打开对应模块看细节。文件不长就整篇开；超长篇可先开点名节，不够就继续开。禁止每站通读本目录
+- SRC 进站先读完整 `打穿短表.md` 作开场索引；对得上必须打开对应模块看细节。文件不长就整篇开；超长篇可先开点名节，不够就继续开。禁止每站通读本目录
 - 磁盘有 `*src经验.md` 才开专篇，没有不算缺。开 `SKILL.md` 不会再带集团日记
 - 短表和「注入/SSRF/XSS/RCE」都不是上限。本站过全类型矩阵；四件套打在有差分面上（防空窗），不是只测这四类，也不是每个 path 喷 `'`。有会话时越权/逻辑与四件套同硬（`dig-scope` §4.2.3）
 - 方便和能力优先；省 token 是顺带，不挡开模块
 - 短表点名的手法用标题搜。有指针的肥篇只留实战中文 + 指针段；禁开/几乎不交的篇已收成一行。手法行不删、算成不改矮。
 - 篇内跳转已改成本目录真实文件（`idor-test.md` 一类）；不要再跟 `../xxx/SKILL.md`
-- 当前项目 Scope/Auth、执行、证据和停止规则优先；历史 rules 映射到方法根 `references/`，不读取个人配置，也不导入永久类别禁令。
+- 完整 rules 位于方法根 `references/`，环境/工程差异只认 `references/ccst-runtime-adapter.md`；Scope/Auth、真实执行和证据 owner 保持。
 - `cors-test.md` / `llm-security-test.md` 保留来源简条，不是 C 的禁读/禁测清单；方法和原生推理按实际问题使用。`401-403-bypass.md` 不把登录 HTML 当业务绕过证据。
-- 方法准入完整来源：`references/vuln-report-format.md`；正式报告由当前 `rules/reporting.md` 和 assessment/delivery/report owners 决定。
+- 正式 SRC 正文及方法准入只读完整 `references/vuln-report-format.md`；assessment/delivery/report owners 承接技术、资格及发布绑定。
 
 ## 文件清单
 
@@ -69,7 +69,7 @@ CCST 适配索引；原始索引由 manifest 的 S54 保存。完整宿主/权�
 | `xss-test.md` | XSS（中文开场 + 冷门事件 + XSS→RCE / 自定义协议） |
 | `xxe-test.md` | 专题知识（hack-skills 导入或融合） |
 
-**合计：48 个知识文件**（不含本 README）。源报告格式完整保存在方法根 `references/vuln-report-format.md`，仅用于方法准入对照；本库不替 C Finding 定级或决定报告发布。
+**合计：48 个知识文件**（不含本 README）。源报告格式完整保存在方法根 `references/vuln-report-format.md`，主导默认 SRC 正文并用于方法准入；发布绑定经现有 CCST owner，本库不覆写 Finding 技术裁决。
 
 ### 原有内嵌附件（不是缺失文件）
 

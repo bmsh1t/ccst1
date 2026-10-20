@@ -39,7 +39,6 @@ try:
     from tools.target_memory import load_active_file, load_goal_memory, format_current_handoff, format_experience_provenance
     from tools.current_truth import current_cell_projection
     from tools.target_store import TargetStore, runtime_store
-    from tools.hot_method import build_hot_method_projection
     from tools.operational_metrics import derive_operational_metrics
 except ImportError:  # pragma: no cover - direct tools/ execution
     from memory.target_profile import default_memory_dir
@@ -61,7 +60,6 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from target_memory import load_active_file, load_goal_memory, format_current_handoff, format_experience_provenance  # type: ignore
     from current_truth import current_cell_projection  # type: ignore
     from target_store import TargetStore, runtime_store  # type: ignore
-    from hot_method import build_hot_method_projection  # type: ignore
     from operational_metrics import derive_operational_metrics  # type: ignore
 
 
@@ -543,9 +541,9 @@ def _required_checks(blob: str, has_candidate: bool) -> list[str]:
     # Skill recommendation is retired (S1 native loading): the reporting rule
     # loads on the owner fact "a candidate awaits validation", which is what
     # the old triage-validation recommendation encoded.
-    checks = ["rules/coverage-gate.md"]
+    checks = ["rules/ccst/coverage-gate.md"]
     if has_candidate:
-        checks.append("rules/reporting.md")
+        checks.append("rules/ccst/reporting.md")
     return _dedupe(checks)
 
 
@@ -873,7 +871,6 @@ def _build_context_pack(
     repo = Path(repo_root)
     resolved_target = canonical_target_value(target)
     target_key = target_storage_key(resolved_target)
-    hot_methods = build_hot_method_projection(repo, focus=focus, include_catalog=True)
     store = runtime_store(repo, resolved_target)
     store_binding = store.binding()
     # Private assembly accepts only inputs captured by this call's owner reader.
@@ -1011,7 +1008,6 @@ def _build_context_pack(
             "next_actions": goal_memory["target"]["next_actions"],
         },
         "focus": focus,
-        "hot_methods": hot_methods,
         "tech_stack": tech_stack,
         "must_read": must_read,
         "knowledge_cards": cards,
@@ -1086,11 +1082,6 @@ def _build_context_pack(
             "store_id": store_binding["store_id"],
             "store_revision": store_binding["revision"],
             "snapshot_status": "bound",
-            "hot_methods_status": hot_methods.get("status", "invalid_manifest"),
-            "hot_methods_total": int((hot_methods.get("summary") or {}).get("total", 0) or 0),
-            "hot_methods_ready": int((hot_methods.get("summary") or {}).get("ready", 0) or 0),
-            "hot_methods_selected": int((hot_methods.get("summary") or {}).get("usable_selected", 0) or 0),
-            "hot_methods_bodies_read": hot_methods.get("bodies_read", False),
         },
     }
     return pack
@@ -1139,41 +1130,6 @@ def format_target_experiences(experiences: dict) -> list[str]:
     return experience_lines
 
 
-def _format_hot_methods(methods: dict) -> list[str]:
-    """Render the owner's complete discovery snapshot, never reopen method files."""
-    discovery = methods.get("discovery") or {}
-    lines = [
-        f"- Hot methods (unranked catalog; source health={methods.get('status', 'unavailable')}):",
-        f"  Source: {methods.get('source_id', '')}; manifest: {methods.get('manifest_path', '')}",
-        f"  Version: {methods.get('manifest_sha256', 'unknown')}; revision: {methods.get('revision_ref') or 'unversioned'}",
-        "  Bodies read: false — catalog presence is not a captured body read.",
-    ]
-    for key in ("guide", "index"):
-        lines.append(f"  {key}: {discovery.get(key, 'unavailable')} [{discovery.get(key + '_status', 'unknown')}]")
-        if discovery.get(key + "_read_command"):
-            lines.append(f"    Read: {discovery[key + '_read_command']}")
-    if discovery.get("catalog_command"):
-        lines.append(f"  Refresh catalog: {discovery['catalog_command']}")
-    for key in ("error", "revision_error", "pending"):
-        if methods.get(key):
-            lines.append(f"  {key}: {json.dumps(methods[key], ensure_ascii=False)}")
-    origins = methods.get("origins", [])
-    if origins:
-        lines.append(f"  Origin bytes: {sum(item['status'] == 'ready' for item in origins)}/{len(origins)} ready; provenance is not review admission.")
-        for item in origins:
-            if item["status"] != "ready" or item.get("source_incomplete"):
-                lines.append(f"    {item['id']}: {item['status']}; source_incomplete={item.get('source_incomplete', False)}; "
-                             f"{json.dumps(item.get('defects') or item.get('error') or '', ensure_ascii=False)}")
-    for item in methods.get("source_issues", []):
-        lines.append(f"  {item['path']}: {item['status']} — {item['error']}")
-    for item in methods.get("hot_methods", []):
-        lines.append(f"  - {item['path']} [{item['role']}; {item['status']}; usable={item['usable']}] "
-                     f"sha256={item['sha256']}; actual_sha256={item.get('actual_sha256') or 'unavailable'}; "
-                     f"scope={item.get('maintenance_scope', 'unversioned')}; origins={','.join(item.get('origin_refs', []))}")
-        lines.append(f"    Read: {item['read_command']}")
-    return lines
-
-
 def format_context_pack(pack: dict) -> str:
     advisory = pack.get("surface_advisory") or {}
     advisory_items = advisory.get("items") or []
@@ -1205,7 +1161,6 @@ def format_context_pack(pack: dict) -> str:
         *format_target_experiences(pack.get("target_experiences") or {}),
         "- Must read:",
         *_format_list(pack["must_read"]),
-        *_format_hot_methods(pack.get("hot_methods") or {}),
         "- Knowledge card catalog: select by information gap.",
         *(catalog_lines or ["  - None"]),
         "- Historical patterns (advisory; require current-target evidence):",

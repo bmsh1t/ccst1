@@ -1,4 +1,4 @@
-# Resin 出口代理池（ccst1）
+# Resin 出口代理池（CCST）
 
 VPS 命令行默认出口。非秘密连接信息在仓库根目录 `config.json` → `resin`，Token 在 `.env` → `RESIN_PROXY_TOKEN`；**mode 不要写进 config**。Resin 可用时默认 mode 是 **sticky**，同一目标/任务固定一个 Account。
 
@@ -32,7 +32,7 @@ RESIN_PROXY_TOKEN=YOUR_RESIN_PROXY_TOKEN
 读配置：
 
 ```bash
-cd /home/fsh1t/tool/ccst1
+cd -- /path/to/ccst-checkout
 python3 - <<'PY'
 import json
 from pathlib import Path
@@ -135,7 +135,7 @@ curl "http://YOUR_RESIN_HOST:2260/YOUR_RESIN_PROXY_TOKEN/Default/https/api.ipify
 ### 从 config + CredentialStore 组装 export
 
 ```bash
-cd /home/fsh1t/tool/ccst1
+cd -- /path/to/ccst-checkout
 # 默认 sticky；同一目标/任务保持 ACCOUNT 不变
 eval "$(MODE=sticky ACCOUNT=target-sess python3 - <<'PY'
 import json, os
@@ -162,6 +162,10 @@ PY
 
 ---
 
+浏览器使用独立进程/后端配置：shell export 不证明浏览器已走代理。
+在保留同一业务 session 的前提下，通过当前浏览器后端核验其实际出口；
+不要为切代理重启未结束的有状态流程。具体选择见 `docs/autopilot-lanes.md#browser-source-and-js`。
+
 ## 5. 冒烟
 
 ```bash
@@ -187,7 +191,7 @@ curl -x "http://YOUR_RESIN_HOST:2260" -U "Default:YOUR_RESIN_PROXY_TOKEN" https:
 ```text
 mode: rotate|sticky|...
 why: <一句话>
-proxy: <最终串>
+proxy: <脱敏后的 host:port 与 mode/account；不输出 token>
 verify: <一条 curl>
 ```
 

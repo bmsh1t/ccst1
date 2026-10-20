@@ -9,7 +9,7 @@ allowed-tools:
 ---
 # /autopilot
 <!-- AUTOPILOT_CRITICAL_RUNTIME_MANIFEST
-{"schema_version":2,"paths":[{"kind":"commands","relative_path":"autopilot.md"},{"kind":"commands","relative_path":"autopilot-round.md"},{"kind":"skills","relative_path":"runtime-protocol.md"},{"kind":"skills","relative_path":"src-hunter/SKILL.md"},{"kind":"skills","relative_path":"src-hunter/modules/web2-recon.md"},{"kind":"skills","relative_path":"src-hunter/modules/triage-validation.md"},{"kind":"skills","relative_path":"src-hunter/modules/report-writing.md"}],"mcp_contracts":["mcp__Playwright__*","mcp__chrome-devtools__*","mcp__fofamap__*"]}
+{"schema_version":3,"paths":[{"kind":"commands","relative_path":"autopilot.md"},{"kind":"commands","relative_path":"autopilot-round.md"},{"kind":"skills","relative_path":"runtime-protocol.md"},{"kind":"skills","relative_path":"src-hunter/SKILL.md"},{"kind":"skills","relative_path":"src-hunter/modules/web2-recon.md"},{"kind":"skills","relative_path":"src-hunter/modules/triage-validation.md"},{"kind":"skills","relative_path":"src-hunter/modules/report-writing.md"},{"kind":"skills","relative_path":"src-hunter/知识库/README.md"},{"kind":"skills","relative_path":"src-hunter/知识库/打穿短表.md"}],"mcp_contracts":["mcp__Playwright__*","mcp__chrome-devtools__*","mcp__fofamap__*"]}
 AUTOPILOT_CRITICAL_RUNTIME_MANIFEST -->
 Authoritative bootstrap contract (do not reinterpret): !`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_bootstrap.py" --json -- "$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"`
 Arguments: `<target> [--paranoid|--normal|--yolo] [--quick] [--deep [--max-lanes N]] [--auth-file PATH] [--context-file=PATH]`.
@@ -29,7 +29,7 @@ At start/target change/resume/compaction, read/apply complete
 `skills/runtime-protocol.md#shared-memory-continuity`. Check inherited judgments against current commands,
 not all source; unchecked = inherited/unverified.
 On demand: `skills/src-hunter/SKILL.md`. Do not loop `/hunt`.
-Before hunting apply `rules/hunting.md`; before network use `config.json.resin` via
+Before hunting apply `rules/ccst/hunting.md`; before network use `config.json.resin` via
 `docs/resin-proxy.md` in the same shell. Never output secrets/persist proxy setup.
 Only session-visible MCP; presence is not readiness. Missing/failed stays partial/blocked;
 no failed source/tool retries this invocation.
@@ -65,7 +65,7 @@ Review bounded owner/Surface/observation deltas on new evidence/assets, phase ch
 blocker/rotation/batch end. Waits/later writes: `--bounded` alone.
 
 ### Execution Invariants
-Per `rules/tool-ai-boundary.md`/`rules/coverage-gate.md`, evidence-supported families/primitives/chains
+Per `rules/ccst/tool-ai-boundary.md`/`rules/ccst/coverage-gate.md`, evidence-supported families/primitives/chains
 remain eligible. Scanner-negative/incomplete/memory proves no Coverage. Scope/Auth, request caps,
 partial cursors hold. Quick only lowers Recon cost; deep is value-first.
 Validation/publication: `commands/validate.md`/`commands/report.md`; no placeholder reports/auto-submission.
@@ -79,7 +79,7 @@ budget alone never requires another round. Resolve hypotheses; drain used `oast_
 Import/close browser artifacts/session; failed close stays partial/blocked, no replacement.
 Save memory/current handoff via Shared Memory Continuity before pause/handoff/finish. Register unresolved
 Actions before read-only Checkpoint.
-Before exhaustion: Coverage `rebuild` then `find-gaps` per `rules/coverage-gate.md`, then read-only Closure:
+Before exhaustion: Coverage `rebuild` then `find-gaps` per `rules/ccst/coverage-gate.md`, then read-only Closure:
 ```bash
 cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded --closure --projection-only --json
 ```
@@ -94,5 +94,5 @@ observation residuals create no mandatory actions.
 End: target/mode, evidence, findings/candidates, blockers/dead ends, next action, plus
 exactly one presentation-only `Memory recommendations` section in this final response
 only (promote / target-only / reject; `none` + reason per empty bucket). Use criteria from
-`knowledge/promotion-rules.md`/`rules/retrospective.md`; advisory, no writes or
+`knowledge/promotion-rules.md`/`rules/ccst/retrospective.md`; advisory, no writes or
 routing/budget/Queue/lifecycle/closure changes. Promotion stays review-gated.

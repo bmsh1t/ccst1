@@ -31,7 +31,7 @@
 
 ## Required Patterns
 
-- Coverage changes must keep `rules/coverage-gate.md` as the completion owner.
+- Coverage changes must keep `rules/ccst/coverage-gate.md` as the completion owner.
   Before a feature/workflow is `tested`, its evidence identifies the exercised
   input surface, observed role/state/business behavior, and validation depth;
   residual lanes stay in the existing reason-bearing coverage states rather

@@ -46,7 +46,7 @@ python3 "${SCRIPT_DIR}/tools/runtime_doctor.py" \
 echo "Done. Selected runtime files verified; unchanged owned retired files removed."
 echo "Entry cutover conflicts reject the whole batch; unrelated Skills are preserved."
 echo "Interrupted cutovers require the same fixed source/executor and migration record."
-echo "CLAUDE/rules/tools/knowledge remain in this checkout; host caches are not verified."
+echo "The src-hunter package includes its knowledge and modules. CLAUDE/rules/tools and reviewed knowledge remain in this checkout; host caches are not verified."
 echo ""
 
 # Offer Burp MCP setup

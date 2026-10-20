@@ -335,6 +335,41 @@ def compare_runtime(
             receipt = resolved_runtime / ".ccst-installed.json"
             owned = json.loads(receipt.read_text()) if receipt.is_file() else {}
             # compare_kind already applied the read-side object-shape contract.
+            # An interrupted ordinary upgrade can leave matching payload bytes
+            # with an older receipt. Preserve legacy missing/hashless receipts
+            # and the commands/agents-only read contract.
+            core_owner = owned.get(CORE_SKILL_PATH, {})
+            managed_install = (core_owner.get("kind") == "skills"
+                               and isinstance(core_owner.get("sha256"), str))
+            for result in results:
+                for item in result["items"]:
+                    if item["status"] != "ok":
+                        continue
+                    path = Path(item["runtime_path"])
+                    key = path.relative_to(resolved_runtime).as_posix()
+                    owner = owned.get(key)
+                    if owner is None and item["kind"] == "commands":
+                        alternative = _command_alternative(key)
+                        if not (resolved_runtime / alternative).exists():
+                            owner = owned.get(alternative)
+                    if owner is None:
+                        if not managed_install:
+                            continue
+                        reason = "ownership receipt is missing for installed resource"
+                    elif (owner.get("kind") != item["kind"]
+                          or not isinstance(owner.get("sha256"), str)):
+                        continue
+                    elif _file_hash(path, resolved_runtime) == owner["sha256"]:
+                        continue
+                    else:
+                        reason = "ownership receipt differs from installed bytes"
+                    item.update(status="diff", reason=reason)
+                    result["counts"]["ok"] -= 1
+                    result["counts"]["diff"] += 1
+                    drift += 1
+                    projection = {key: item[key] for key in ("kind", "status", "relative_path", "reason")}
+                    destination = critical_drift if (item["kind"], item["relative_path"]) in critical_paths else advisory_drift
+                    destination.append(projection)
             for entry in runtime_entries:
                 if not entry["known_identities"]:
                     continue
@@ -507,15 +542,21 @@ def _capture_runtime_sources(repo: Path, selected: list[str]) -> dict:
 
 
 def _release_binding(repo: Path, sources: dict) -> dict:
-    # Bind the executable checkout, not tests, journals or target data. The method
-    # manifest binds its own complete bodies/history through the existing reader.
+    # Bind the executable checkout and native Skill files, not historical method manifests,
+    # tests, journals or target data.
     checkout = {}
-    paths = [repo / "CLAUDE.md"]
+    paths = [repo / "AGENTS.md", repo / "CLAUDE.md", repo / "install.sh"]
     for directory, patterns in (("rules", ("*.md",)), ("docs", ("*.md",)),
+                                ("bin", ("*.mjs",)), ("mcp-servers", ("*.py", "*.ps1", "*.toml", "*.lock")),
                                 ("tools", ("*.py", "*.sh")), ("memory", ("*.py",)),
                                 ("knowledge", ("*.md", "*.json", "*.yaml", "*.yml"))):
         for pattern in patterns:
-            paths.extend(path for path in (repo / directory).rglob(pattern) if ".history" not in path.parts)
+            paths.extend(
+                path for path in (repo / directory).rglob(pattern)
+                if ".history" not in path.parts
+                and not path.is_relative_to(repo / "knowledge" / "methods" / "clown")
+                and path != repo / "knowledge" / "clown-hot-method-manifest.json"
+            )
     for path in sorted(set(paths)):
         digest = _file_hash(path, repo)
         if digest is not None:
@@ -525,10 +566,10 @@ def _release_binding(repo: Path, sources: dict) -> dict:
                 ("runtime_doctor.py", "artifact_io.py", "skill_reference_contract.py")}
     return {
         "source_sha256": _sha256(_json_text(checkout).encode()),
-        "source_scope": ["CLAUDE.md", "rules/**/*.md", "docs/**/*.md", "tools/**/*.py", "tools/**/*.sh",
-                         "memory/**/*.py", "knowledge/**/*.{md,json,yaml,yml} excluding .history"],
+        "source_scope": ["AGENTS.md", "CLAUDE.md", "install.sh", "rules/**/*.md", "docs/**/*.md",
+                         "bin/**/*.mjs", "mcp-servers/**/*.{py,ps1,toml,lock}", "tools/**/*.py", "tools/**/*.sh",
+                         "memory/**/*.py", "knowledge/**/*.{md,json,yaml,yml} excluding .history, methods/clown and clown-hot-method-manifest.json"],
         "executor_sha256": _sha256(_json_text(executor).encode()),
-        "method_manifest_sha256": _file_hash(repo / "knowledge/clown-hot-method-manifest.json", repo),
         "native_sha256": _sha256(_json_text(sources).encode()),
     }
 
@@ -730,8 +771,8 @@ def sync_runtime(
         if "skills" in selected and any(sources.get(e["path"], {}).get("sha256") != e["sha256"] for e in source_entries):
             raise ValueError("native source entries changed during preflight")
         binding = _release_binding(repo, sources) if cutover else None
-        if cutover and (not expected_entries or binding["method_manifest_sha256"] is None):
-            raise ValueError("entry migration requires a fixed method manifest and native entry set")
+        if cutover and not expected_entries:
+            raise ValueError("entry migration requires a fixed native entry set")
         header = {"schema_version": 1, "profile": "src-hunter-single-entry",
                   "direction": "forward" if forward else "reverse", "repo_root": str(repo),
                   "runtime_root": str(runtime), "kinds": selected, "prune": prune,
@@ -751,7 +792,7 @@ def sync_runtime(
             _verify_sync_state(runtime, operations, complete=receipt_phase)
         else:
             operations, after, conflicts = _prepare_sync_plan(runtime, owned, sources, selected, prune,
-                                                             entry_cutover=cutover or forward)
+                                                             entry_cutover=cutover)
             after_raw = _json_text(after)
             if "skills" in selected and (forward or cutover):
                 conflicts.extend(_check_known_entries(runtime, operations))
@@ -848,6 +889,7 @@ def format_report(payload: dict) -> str:
         for item in drift_items[:12]:
             lines.append(
                 f"  - {item['status'].upper():7} {item['relative_path']} -> {item['runtime_path']}"
+                + (f" ({item['reason']})" if item.get("reason") else "")
             )
         if len(drift_items) > 12:
             lines.append(f"  - ... {len(drift_items) - 12} more")

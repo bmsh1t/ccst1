@@ -1,3 +1,7 @@
+# CCST 工程开发入口
+
+本文件只服务本项目代码维护，不替代 CLAUDE.md 内嵌的产品主契约。
+
 <!-- TRELLIS:START -->
 # Trellis Instructions
 

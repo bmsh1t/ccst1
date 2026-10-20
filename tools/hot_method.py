@@ -34,6 +34,34 @@ ENTRY_MIGRATION_FILES = (
     "README.md", "skills/src-hunter/SKILL.md", "skills/src-hunter/知识库/README.md",
     "references/researcher-blackbox-whitebox.md",
 )
+RULES_MIGRATION_PROFILE = "6k-rules-originals"
+RULE_ORIGINALS = {
+    "S50": "dig-scope-workflow.md", "S51": "src-value-hunting.md",
+    "S52": "researcher-blackbox-whitebox.md", "S53": "hunt-iter.md",
+    "S56": "skill-as-boost.md", "S57": "anti-over-moralization.md",
+    "S58": "security-research-context.md", "S59": "desktop-task-folder.md",
+    "S60": "playwright-browser-mcp.md", "S61": "vuln-report-format.md",
+    "S62": "cors-vuln-report-priority.md",
+}
+RULE_ADAPTER = "references/ccst-runtime-adapter.md"
+RULE_INDEX = "skills/src-hunter/知识库/README.md"
+RULE_INDEX_LINKS = {
+    "需要开场索引时读完整 `打穿短表.md`": "SRC 进站先读完整 `打穿短表.md` 作开场索引",
+    "当前项目 Scope/Auth、执行、证据和停止规则优先；历史 rules 映射到方法根 `references/`，不读取个人配置，也不导入永久类别禁令。":
+        "完整 rules 位于方法根 `references/`，环境/工程差异只认 `references/ccst-runtime-adapter.md`；Scope/Auth、真实执行和证据 owner 保持。",
+    "方法准入完整来源：`references/vuln-report-format.md`；正式报告由当前 `rules/reporting.md` 和 assessment/delivery/report owners 决定。":
+        "正式 SRC 正文及方法准入只读完整 `references/vuln-report-format.md`；assessment/delivery/report owners 承接技术、资格及发布绑定。",
+    "仅用于方法准入对照；本库不替 C Finding 定级或决定报告发布。":
+        "主导默认 SRC 正文并用于方法准入；发布绑定经现有 CCST owner，本库不覆写 Finding 技术裁决。",
+}
+# V1 rules approvals bind this exact base set. New approvals also bind the
+# candidate's actual rule consumers; keep the historical set unchanged.
+RULE_RUNTIME_ASSETS = frozenset(LEGACY_SKILL_READ_PATHS.values()) | {
+    "CLAUDE.md", "rules/README.md", "rules/hunting.md", "rules/campaign.md",
+    "rules/reporting.md", "skills/runtime-protocol.md", "commands/report.md",
+    "agents/report-writer.md", "docs/architecture-contract.md", "docs/resin-proxy.md", "skills/README.md",
+    "commands/hunt.md",
+}
 _S01_DISPOSITIONS = (
     "keep full source reference under methods; root skills/src-hunting remains sole native entry; repair only host/path instructions",
     "S01 is the source of root skills/src-hunter/SKILL.md; keep full source reference under methods; nine specialist methods are internal modules",
@@ -682,12 +710,16 @@ def _load_transaction(files: _MethodFiles, identity: str, *, local_identity: boo
         if decision is not None or receipt is not None or (pending and pending.get("transaction_id") == identity):
             raise HotMethodError("journal refers to missing transaction")
         return None, None, None, pending
-    if (transaction.get("schema_version") != 1 or transaction.get("transaction_id") != identity
+    if (type(transaction.get("schema_version")) is not int or transaction["schema_version"] not in {1, 2}
+            or transaction.get("transaction_id") != identity
             or _digest(_json_bytes(transaction.get("request"))) != transaction.get("request_sha256")
             or not isinstance(transaction.get("files"), list) or not transaction["files"]
             or not isinstance(transaction.get("directories"), dict)):
         raise HotMethodError("invalid transaction binding")
     _recorded_request(transaction["request"])
+    if transaction["schema_version"] == 2 and not (
+            {"entry_migration", "rules_migration"} & transaction["request"].keys()):
+        raise HotMethodError("transaction v2 requires a runtime-bound migration")
     if (transaction["request"]["update"]["transaction_id"] != identity
             or transaction["request"]["update"]["expected_manifest"] != transaction["before_manifest"]):
         raise HotMethodError("transaction request identity/before manifest conflict")
@@ -751,6 +783,8 @@ def _load_transaction(files: _MethodFiles, identity: str, *, local_identity: boo
             raise HotMethodError("damaged transaction origin blob")
     if transaction["files"][-1]["path"] != str(MANIFEST_RELATIVE):
         raise HotMethodError("manifest must publish last")
+    if "rules_migration" in transaction["request"] or transaction["schema_version"] == 2:
+        _migration_approval(files, transaction)
     if decision is not None:
         if decision.get("mode") not in {"complete", "restore"} or decision != _decision(transaction, decision["mode"]):
             raise HotMethodError("decision transaction conflict")
@@ -856,13 +890,13 @@ def _validate_update(update: object, expected_manifest: str | None, *, locator: 
         validate_locator(item[locator])
 
 
-def _migration_marker(value: object, *, locator: str) -> None:
+def _migration_marker(value: object, *, locator: str, profile: str = ENTRY_MIGRATION_PROFILE) -> None:
     if (not isinstance(value, dict)
             or set(value) != {"schema_version", "profile", "direction", "approval"}
             or type(value["schema_version"]) is not int or value["schema_version"] != 1
-            or value["profile"] != ENTRY_MIGRATION_PROFILE
-            or value["direction"] not in {"forward", "reverse"}):
-        raise HotMethodError("unsupported entry migration profile/version/direction")
+            or value["profile"] != profile
+            or value["direction"] not in ({"forward", "reverse"} if profile == ENTRY_MIGRATION_PROFILE else {"forward"})):
+        raise HotMethodError("unsupported migration profile/version/direction")
     approval = value["approval"]
     if not isinstance(approval, dict) or set(approval) != {"sha256", locator}:
         raise HotMethodError("entry migration requires byte-bound approval material")
@@ -872,7 +906,8 @@ def _migration_marker(value: object, *, locator: str) -> None:
 
 def _recorded_request(request: object) -> None:
     if (not isinstance(request, dict)
-            or set(request) not in ({"bootstrap", "update"}, {"bootstrap", "update", "entry_migration"})
+            or set(request) not in ({"bootstrap", "update"}, {"bootstrap", "update", "entry_migration"},
+                                   {"bootstrap", "update", "rules_migration"})
             or type(request["bootstrap"]) is not bool):
         raise HotMethodError("invalid recorded request envelope")
     _validate_update(request["update"], None, locator="content_ref")
@@ -880,10 +915,16 @@ def _recorded_request(request: object) -> None:
         if request["bootstrap"]:
             raise HotMethodError("entry migration cannot bootstrap")
         _migration_marker(request["entry_migration"], locator="content_ref")
+    if "rules_migration" in request:
+        if request["bootstrap"]:
+            raise HotMethodError("rules import cannot bootstrap")
+        _migration_marker(request["rules_migration"], locator="content_ref", profile=RULES_MIGRATION_PROFILE)
 
 
 def _request(update: object, expected_manifest: str | None, bootstrap: bool,
-             *, entry_migration: dict | None = None) -> dict:
+             *, entry_migration: dict | None = None, rules_migration: dict | None = None) -> dict:
+    if entry_migration is not None and rules_migration is not None:
+        raise HotMethodError("migration profiles cannot be combined")
     _validate_update(update, expected_manifest, locator="content_path")
     public = json.loads(_json_bytes(update))
     materials = public.get("origin_materials", [])
@@ -893,13 +934,16 @@ def _request(update: object, expected_manifest: str | None, bootstrap: bool,
         if "content_path" in item:
             item["content_ref"] = _digest(item.pop("content_path").encode("utf-8"))
     request = {"bootstrap": bool(bootstrap), "update": public}
-    if entry_migration is not None:
+    for key, value, profile in (("entry_migration", entry_migration, ENTRY_MIGRATION_PROFILE),
+                                ("rules_migration", rules_migration, RULES_MIGRATION_PROFILE)):
+        if value is None:
+            continue
         if bootstrap:
-            raise HotMethodError("entry migration cannot bootstrap")
-        _migration_marker(entry_migration, locator="content_path")
-        marker = json.loads(_json_bytes(entry_migration))
+            raise HotMethodError("migration cannot bootstrap")
+        _migration_marker(value, locator="content_path", profile=profile)
+        marker = json.loads(_json_bytes(value))
         marker["approval"]["content_ref"] = _digest(marker["approval"].pop("content_path").encode("utf-8"))
-        request["entry_migration"] = marker
+        request[key] = marker
     return request
 
 
@@ -949,7 +993,21 @@ def _entry_origins(origins: list[dict], direction: str) -> list[dict]:
     return result
 
 
-def _check_entry_migration(files: _MethodFiles, before_raw: bytes, update: dict, marker: dict) -> None:
+def _entry_native_paths(direction: str) -> set[str]:
+    return (set(LEGACY_SKILL_READ_PATHS.values()) if direction == "forward"
+            else {f"skills/{name}/SKILL.md" for name in LEGACY_SKILL_READ_PATHS})
+
+
+def _rules_runtime_paths(candidate: dict) -> set[str]:
+    governed = {METHOD_ROOT + "/" + item["path"]
+                for item in candidate["entries"] + candidate["context_files"]}
+    consumers = {_relative(consumer.split("#", 1)[0])
+                 for origin in candidate["origins"] if origin["id"] in RULE_ORIGINALS
+                 for consumer in origin["consumers"]}
+    return set(RULE_RUNTIME_ASSETS) | (consumers - governed)
+
+
+def _check_entry_migration(files: _MethodFiles, before_raw: bytes, update: dict, marker: dict) -> bytes:
     before = json.loads(before_raw)
     if before["schema"] != MANIFEST_V2 or update.get("origin_materials"):
         raise HotMethodError("entry migration requires v2 without new origin materials")
@@ -976,8 +1034,7 @@ def _check_entry_migration(files: _MethodFiles, before_raw: bytes, update: dict,
     if _digest(approval_raw) != marker["approval"]["sha256"]:
         raise HotMethodError("entry migration approval material changed")
     approval = json.loads(approval_raw)
-    expected_paths = (set(LEGACY_SKILL_READ_PATHS.values()) if marker["direction"] == "forward"
-                      else {f"skills/{name}/SKILL.md" for name in LEGACY_SKILL_READ_PATHS})
+    expected_paths = _entry_native_paths(marker["direction"])
     native = {path: _digest(_read_absolute(files.repo / path)[0]) for path in sorted(expected_paths)}
     expected = {
         "schema_version": 1, "profile": ENTRY_MIGRATION_PROFILE, "direction": marker["direction"],
@@ -993,6 +1050,150 @@ def _check_entry_migration(files: _MethodFiles, before_raw: bytes, update: dict,
     for origin in candidate["origins"]:
         for consumer in origin["consumers"]:
             _read_absolute(files.repo / consumer.split("#", 1)[0])
+    return approval_raw
+
+
+def _check_rules_migration(files: _MethodFiles, before_raw: bytes, update: dict, marker: dict) -> bytes:
+    """Import only the eleven archived originals; never grant arbitrary rule editing."""
+    before = json.loads(before_raw)
+    if before["schema"] != MANIFEST_V2 or update.get("origin_materials") or len(before["origins"]) != 62:
+        raise HotMethodError("rules import requires the existing v2 62-origin source set")
+    old_entries = {e["path"]: e for e in before["entries"] + before["context_files"]}
+    if RULE_ADAPTER in old_entries:
+        raise HotMethodError("rules are already integrated; a new governance review is required")
+    changed = {item["path"]: item for item in update["files"]}
+    required = {"README.md", RULE_ADAPTER}
+    candidate = json.loads(before_raw)
+    candidate["revision_ref"] = f".history/receipts/{update['transaction_id']}.json"
+    origins = {o["id"]: o for o in candidate["origins"]}
+    if not set(RULE_ORIGINALS) <= origins.keys():
+        raise HotMethodError("rules import requires all eleven source identities")
+    entries = {e["path"]: e for e in candidate["entries"]}
+    inputs = _MethodFiles(files.repo)
+    for identity, name in RULE_ORIGINALS.items():
+        origin = origins[identity]
+        if origin["source_path"] != "rules/" + name:
+            raise HotMethodError("rule source filename does not match its stable identity")
+        path = "references/" + name
+        archived, _ = files.read(METHOD_ROOT + "/" + origin["archive_path"])
+        if _digest(archived) != origin["origin_sha256"]:
+            raise HotMethodError("rule origin archive changed")
+        entry = entries.get(path)
+        if entry is None:
+            if path in old_entries:
+                raise HotMethodError("rule path conflicts with an existing context")
+            entry = {"id": identity, "path": path, "role": "method", "source_path": origin["source_path"],
+                     "origin_refs": [identity], "maintenance_scope": "governance_reference"}
+            candidate["entries"].append(entry)
+        if old_entries.get(path, {}).get("sha256") != origin["origin_sha256"]:
+            required.add(path)
+            item = changed.get(path)
+            if item is None or inputs.read(item["content_path"])[0] != archived:
+                raise HotMethodError(f"rules import requires exact original bytes: {path}")
+        entry["sha256"] = origin["origin_sha256"]
+        origin["consumers"] = list(dict.fromkeys([METHOD_ROOT + "/" + path, *origin["consumers"],
+                                                "rules/README.md"]))
+        origin["disposition"] = ("Complete original rule is active; environment and engineering interfaces are owned by "
+                                 + RULE_ADAPTER + "; ordinary A cannot edit governance.")
+    # Permit exact navigation updates, never changes to the method inventory.
+    if RULE_INDEX in old_entries:
+        old_index, _ = files.read(METHOD_ROOT + "/" + RULE_INDEX)
+        index = old_index.decode("utf-8")
+        for old, new in RULE_INDEX_LINKS.items():
+            index = index.replace(old, new)
+        if index.encode("utf-8") != old_index:
+            required.add(RULE_INDEX)
+            item = changed.get(RULE_INDEX)
+            if item is None or inputs.read(item["content_path"])[0] != index.encode("utf-8"):
+                raise HotMethodError("rules import permits only exact rule-owner navigation in the index")
+    if set(changed) != required:
+        raise HotMethodError("rules import permits only original restoration, guide, exact index links and runtime adapter")
+    candidate["context_files"].append({"id": "ccst-rules-runtime-adapter", "path": RULE_ADAPTER,
+        "origin_refs": list(RULE_ORIGINALS), "maintenance_scope": "governance_reference",
+        "sha256": changed[RULE_ADAPTER]["after_sha256"]})
+    for context in candidate["entries"] + candidate["context_files"]:
+        if context["path"] in {"README.md", RULE_INDEX} and context["path"] in changed:
+            context["sha256"] = changed[context["path"]]["after_sha256"]
+    if candidate != update["manifest"]:
+        raise HotMethodError("rules import cannot change other methods, origin identity, defects or metadata")
+    approval_raw, _ = inputs.read(marker["approval"]["content_path"])
+    if _digest(approval_raw) != marker["approval"]["sha256"]:
+        raise HotMethodError("rules import approval material changed")
+    approval = json.loads(approval_raw)
+    expected = {
+        "schema_version": 1, "profile": RULES_MIGRATION_PROFILE, "direction": "forward",
+        "expected_manifest": _digest(before_raw), "after_manifest": _digest(_json_bytes(candidate)),
+        "files": [{k: item[k] for k in ("path", "before_sha256", "after_sha256")} for item in update["files"]],
+        "runtime_assets": {path: _digest(_read_absolute(files.repo / path)[0])
+                           for path in sorted(_rules_runtime_paths(candidate))},
+    }
+    if not isinstance(approval, dict) or set(approval) != {*expected, "authorization"}:
+        raise HotMethodError("invalid rules import approval binding")
+    _text(approval["authorization"], "approval authorization declaration")
+    if any(approval[key] != value for key, value in expected.items()):
+        raise HotMethodError("rules import approval does not bind this candidate/version")
+    for origin in candidate["origins"]:
+        for consumer in origin["consumers"]:
+            relative = consumer.split("#", 1)[0]
+            # New rules are published by this transaction, not prepared in the live tree.
+            if not (relative.startswith(METHOD_ROOT + "/") and relative[len(METHOD_ROOT) + 1:] in changed):
+                _read_absolute(files.repo / relative)
+    return approval_raw
+
+
+def _migration_approval(files: _MethodFiles, transaction: dict) -> dict:
+    request = transaction["request"]
+    if "entry_migration" in request:
+        marker = request["entry_migration"]
+        label, asset_key = "entry migration", "native_assets"
+        paths = _entry_native_paths(marker["direction"])
+    else:
+        marker = request["rules_migration"]
+        label, asset_key = "rules import", "runtime_assets"
+        paths = (RULE_RUNTIME_ASSETS if transaction["schema_version"] == 1
+                 else _rules_runtime_paths(request["update"]["manifest"]))
+    digest = marker["approval"]["sha256"]
+    raw, _ = files.read(HISTORY + "/blobs/" + digest)
+    if _digest(raw) != digest:
+        raise HotMethodError(f"{label} approval blob changed")
+    approval = json.loads(raw)
+    assets = approval.get(asset_key) if isinstance(approval, dict) else None
+    if (not isinstance(assets, dict) or set(assets) != paths
+            or approval.get("expected_manifest") != transaction["before_manifest"]
+            or approval.get("after_manifest") != transaction["after_manifest"]):
+        raise HotMethodError(f"{label} recorded approval binding conflict")
+    if transaction["schema_version"] == 2:
+        expected = {
+            "schema_version": 1, "profile": marker["profile"], "direction": marker["direction"],
+            "expected_manifest": transaction["before_manifest"], "after_manifest": transaction["after_manifest"],
+            "files": [{k: item[k] for k in ("path", "before_sha256", "after_sha256")}
+                      for item in request["update"]["files"]],
+        }
+        if set(approval) != {*expected, asset_key, "authorization"} or any(
+                approval.get(key) != value for key, value in expected.items()):
+            raise HotMethodError(f"{label} recorded approval binding conflict")
+        _text(approval["authorization"], "approval authorization declaration")
+    for digest in assets.values():
+        _hash(digest)
+    return approval
+
+
+def _check_migration_runtime(files: _MethodFiles, transaction: dict) -> None:
+    request = transaction["request"]
+    if "entry_migration" in request:
+        if transaction["schema_version"] == 1:
+            raise HotMethodError("legacy entry migration lacks a persisted runtime binding; complete refused")
+        label, asset_key = "entry migration", "native_assets"
+    elif "rules_migration" in request:
+        label, asset_key = "rules import", "runtime_assets"
+    else:
+        return
+    assets = _migration_approval(files, transaction)[asset_key]
+    if asset_key == "runtime_assets" and set(assets) != _rules_runtime_paths(request["update"]["manifest"]):
+        raise HotMethodError("rules import approval does not bind all runtime consumers; complete refused")
+    for path, digest in assets.items():
+        if _digest(_read_absolute(files.repo / path)[0]) != digest:
+            raise HotMethodError(f"{label} runtime consumer changed: {path}")
 
 
 def _verify_witness(files: _MethodFiles, item: dict, side: str, *, local_identity: bool = True) -> None:
@@ -1041,6 +1242,10 @@ def _position(files: _MethodFiles, item: dict, *, desired: str | None = None) ->
 
 def _barriers(files: _MethodFiles, transaction: dict) -> None:
     """Repeat visible preparation barriers before any recovery mutation."""
+    for key in ("entry_migration", "rules_migration"):
+        if key in transaction["request"] and (transaction["schema_version"] == 2 or key == "rules_migration"):
+            approval = transaction["request"][key]["approval"]
+            files.sync(HISTORY + "/blobs/" + approval["sha256"])
     for item in transaction["files"]:
         _position(files, item)
         for side in ("before", "after"):
@@ -1096,6 +1301,8 @@ def _publish_item(files: _MethodFiles, item: dict, desired: str) -> None:
 def _finish(files: _MethodFiles, transaction: dict, mode: str, *, recovery: bool) -> dict:
     identity = transaction["transaction_id"]
     desired = "after" if mode == "complete" else "before"
+    if mode == "complete":
+        _check_migration_runtime(files, transaction)
     _barriers(files, transaction)
     files.sync(HISTORY + "/pending.json")
     decision_path = _journal_path("decisions", identity)
@@ -1108,6 +1315,8 @@ def _finish(files: _MethodFiles, transaction: dict, mode: str, *, recovery: bool
     if recovery or decision is not None:
         files.create(decision_path, _json_bytes(_decision(transaction, mode)))
     for item in transaction["files"]:
+        if mode == "complete" and item["path"] == str(MANIFEST_RELATIVE):
+            _check_migration_runtime(files, transaction)
         _publish_item(files, item, desired)
     for item in transaction["files"]:
         if _position(files, item) != desired:
@@ -1130,7 +1339,7 @@ def _outcome(repo: Path, transaction: dict, receipt: dict, *, cleanup: str = "no
 
 
 def _prepare(files: _MethodFiles, request: dict, before: dict, before_raw: bytes, update: dict,
-             *, entry_migration: dict | None = None) -> dict:
+             *, entry_migration: dict | None = None, rules_migration: dict | None = None) -> dict:
     identity = update["transaction_id"]
     # Input transport directories are transient and may reveal private sources.
     # Only publication/recovery paths belong in the persisted directory bindings.
@@ -1147,8 +1356,12 @@ def _prepare(files: _MethodFiles, request: dict, before: dict, before_raw: bytes
     new_entries = {x["path"]: x for x in after["entries"] + after["context_files"]}
     if before["schema"] == MANIFEST_V2:
         _validate_revision(files.repo, before, before_raw)
+    approval_raw = None
     if entry_migration is not None:
-        _check_entry_migration(files, before_raw, update, entry_migration)
+        approval_raw = _check_entry_migration(files, before_raw, update, entry_migration)
+    if rules_migration is not None:
+        approval_raw = _check_rules_migration(files, before_raw, update, rules_migration)
+    governance_migration = entry_migration is not None or rules_migration is not None
     for entry in old_entries.values():
         body, _ = files.read(METHOD_ROOT + "/" + entry["path"])
         if _digest(body) != entry["sha256"]:
@@ -1158,7 +1371,7 @@ def _prepare(files: _MethodFiles, request: dict, before: dict, before_raw: bytes
     changed = {item["path"]: item for item in update["files"]}
     if set(changed) - set(new_entries):
         raise HotMethodError("updated file missing from new manifest")
-    if not request["bootstrap"] and entry_migration is None:
+    if not request["bootstrap"] and not governance_migration:
         old_payload = json.loads(before_raw)
         candidate = update["manifest"]
         for key in set(old_payload) | set(candidate):
@@ -1170,7 +1383,7 @@ def _prepare(files: _MethodFiles, request: dict, before: dict, before_raw: bytes
                 raise HotMethodError("ordinary maintenance cannot change existing entry metadata")
     for path, entry in new_entries.items():
         if path in changed:
-            if not request["bootstrap"] and entry_migration is None and (entry["maintenance_scope"] not in {"method", "index"} or path.startswith("references/") or path.endswith("SKILL.md")):
+            if not request["bootstrap"] and not governance_migration and (entry["maintenance_scope"] not in {"method", "index"} or path.startswith("references/") or path.endswith("SKILL.md")):
                 raise HotMethodError(f"governance/entry maintenance denied: {path}")
             if changed[path]["after_sha256"] != entry["sha256"]:
                 raise HotMethodError("after manifest/body hash mismatch")
@@ -1245,6 +1458,8 @@ def _prepare(files: _MethodFiles, request: dict, before: dict, before_raw: bytes
     for directory in (HISTORY, HISTORY + "/blobs", HISTORY + "/transactions", HISTORY + "/decisions",
                       HISTORY + "/receipts", HISTORY + "/witnesses", HISTORY + "/witnesses/" + identity):
         files.mkdir(directory)
+    if approval_raw is not None:
+        files.create(HISTORY + "/blobs/" + _digest(approval_raw), approval_raw)
     for origin in after["origins"]:
         path = METHOD_ROOT + "/" + origin["archive_path"]
         if origin["id"] in material_map:
@@ -1274,7 +1489,8 @@ def _prepare(files: _MethodFiles, request: dict, before: dict, before_raw: bytes
             raise HotMethodError("unexpected preparation replacement alias")
         _position(files, record)
         records.append(record)
-    transaction = {"schema_version": 1, "transaction_id": identity, "request": request,
+    transaction = {"schema_version": 2 if governance_migration else 1,
+                   "transaction_id": identity, "request": request,
                    "request_sha256": _digest(_json_bytes(request)), "files": records,
                    "directories": files.directories, "before_manifest": _digest(before_raw),
                    "after_manifest": _digest(_json_bytes(update["manifest"]))}
@@ -1295,8 +1511,16 @@ def migrate_entry(repo_root: Path | str, update: dict, *, entry_migration: dict,
     return _apply_request(repo_root, update, request, entry_migration=entry_migration, environ=environ)
 
 
+def import_rules(repo_root: Path | str, update: dict, *, rules_migration: dict,
+                 expected_manifest: str | None = None, environ: dict[str, str] | None = None) -> dict:
+    """Explicit original-rule import; normal method and entry maintenance stay bounded."""
+    request = _request(update, expected_manifest, False, rules_migration=rules_migration)
+    return _apply_request(repo_root, update, request, rules_migration=rules_migration, environ=environ)
+
+
 def _apply_request(repo_root: Path | str, update: dict, request: dict,
-                   *, entry_migration: dict | None = None, environ: dict[str, str] | None = None) -> dict:
+                   *, entry_migration: dict | None = None, rules_migration: dict | None = None,
+                   environ: dict[str, str] | None = None) -> dict:
     repo = _repo(repo_root)
     environment = os.environ if environ is None else environ
     if "CCST_CLOWN_SNAPSHOT" in environment:
@@ -1318,7 +1542,8 @@ def _apply_request(repo_root: Path | str, update: dict, request: dict,
         if _digest(before_raw) != request["update"]["expected_manifest"]:
             raise HotMethodError("manifest CAS conflict")
         if transaction is None:
-            transaction = _prepare(files, request, before, before_raw, update, entry_migration=entry_migration)
+            transaction = _prepare(files, request, before, before_raw, update,
+                                   entry_migration=entry_migration, rules_migration=rules_migration)
         else:
             files = _MethodFiles(repo, transaction["directories"])
             if any(_position(files, item) != "before" for item in transaction["files"]):
@@ -1393,6 +1618,7 @@ def build_parser() -> argparse.ArgumentParser:
     operation.add_argument("--origin")
     operation.add_argument("--apply")
     operation.add_argument("--migrate-entry", help="explicit versioned entry_migration + update envelope")
+    operation.add_argument("--import-rules", help="explicit original-rule rules_migration + update envelope")
     operation.add_argument("--recover")
     parser.add_argument("--expected-manifest")
     parser.add_argument("--bootstrap", action="store_true")
@@ -1415,18 +1641,19 @@ def main(argv: list[str] | None = None) -> int:
             result = read_methods(args.repo_root, args.read, expected_manifest=args.expected_manifest)
         elif args.origin:
             result = read_origin(args.repo_root, args.origin)
-        elif args.apply or args.migrate_entry:
+        elif args.apply or args.migrate_entry or args.import_rules:
             if not args.expected_manifest:
                 raise HotMethodError("publication requires --expected-manifest")
-            payload = json.loads(_read_absolute(Path(args.apply or args.migrate_entry).absolute())[0])
-            if args.migrate_entry:
-                if not isinstance(payload, dict) or set(payload) != {"entry_migration", "update"}:
-                    raise HotMethodError("entry migration requires explicit entry_migration + update")
+            payload = json.loads(_read_absolute(Path(args.apply or args.migrate_entry or args.import_rules).absolute())[0])
+            if args.migrate_entry or args.import_rules:
+                key = "entry_migration" if args.migrate_entry else "rules_migration"
+                if not isinstance(payload, dict) or set(payload) != {key, "update"}:
+                    raise HotMethodError(f"migration requires explicit {key} + update")
                 update = payload["update"]
                 if isinstance(update, dict):
                     identity = update.get("transaction_id")
-                result = migrate_entry(args.repo_root, update, entry_migration=payload["entry_migration"],
-                                       expected_manifest=args.expected_manifest)
+                publisher = migrate_entry if args.migrate_entry else import_rules
+                result = publisher(args.repo_root, update, **{key: payload[key]}, expected_manifest=args.expected_manifest)
             else:
                 if isinstance(payload, dict):
                     identity = payload.get("transaction_id")

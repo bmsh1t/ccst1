@@ -5,7 +5,9 @@ description: Author and publish an evidence-backed report for a current confirme
 # /report
 
 AI authors the report; the tool checks owner bindings, publishes exact bytes and indexes current reports.
-Load `skills/src-hunter/modules/report-writing.md` for evidence standards, destination format and writing guidance.
+Load `skills/src-hunter/modules/report-writing.md`, then directly read the complete 6k
+`rules/vuln-report-format.md` and `docs/ccst-runtime-adapter.md`.
+6k owns default SRC prose, language and layout; the module supplies evidence/publication binding.
 There is no category-based narrative, default impact, remediation or severity generator.
 
 ## Current evidence and delivery
@@ -33,8 +35,8 @@ and delivery without a report body. All technical/destination gates must pass fo
 eligible delivery; selecting deferred writing alone does not grant eligibility.
 Successful JSON exposes `validation_sync.assessment.id` and `validation_sync.delivery.id`;
 default text shows the same committed IDs and summary path. Preflight IDs are not receipts.
-Then query the Finding above, cite the actual operation/observation and judgment IDs
-in the author's Markdown, and publish below. No separate assessment/delivery CLI is needed.
+Then query the Finding above, preserve actual operation/observation and judgment bindings
+in the existing owners, tie body claims to their evidence, and publish below. No separate assessment/delivery CLI is needed.
 
 ## Inspect current reports and missing drafts
 
@@ -51,9 +53,11 @@ Damaged or stale registered reports remain historical Store records and are not 
 
 ## Author and publish
 
-Write the destination-specific Markdown draft using the native editor. Follow the report Skill, cite actual
-artifacts, and remove credentials, session material, unrelated personal data and raw secrets from the delivered
-copy. Preserve controlled originals separately. The tool does not rewrite or sanitize submitted prose.
+Write the default SRC draft under the complete 6k report-format, or an explicitly requested destination
+alternative. Finalize its CRLF/layout before publication and use actual evidence. External/shared copies
+redact credentials/session material and unrelated personal data; exact values are limited to explicitly
+selected target-private controlled delivery under the runtime adapter. Preserve controlled originals.
+The tool does not rewrite, format or sanitize submitted prose.
 
 Publish the draft with all four explicit inputs:
 

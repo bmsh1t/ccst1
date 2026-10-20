@@ -258,11 +258,11 @@ the final route decision; prompts and tools do not create another controller.
 
 | Layer | Responsibility |
 |:---|:---|
-| **`CLAUDE.md`** | Always-loaded project contract for authorization, AI/tool boundaries, state owners, and entry routing |
+| **`CLAUDE.md`** | Complete 6k main contract, with Claude host imports and explicit CCST adaptation |
 | **Runtime protocol** | Shared recovery, complete method reading, execution receipts and event-triggered write-back |
 | **Single native Skill** | `src-hunter`: 6k-original investigation structure with CCST reasoning and engineering contracts |
 | **Nine internal modules** | Complete on-demand recon, whitebox, validation, reporting, credential, mobile, CI/CD, Web3 and token methods under `skills/src-hunter/modules/`; not separate Skill registrations |
-| **Knowledge** | One versioned complete method root at `knowledge/methods/clown/`, plus on-demand reviewed cards; never the current target-state owner |
+| **Knowledge** | Complete native methods in `skills/src-hunter/知识库/`, plus reviewed cards in `knowledge/`; read directly as needed |
 | **Tools and state** | Deterministic replay, diff, raw evidence, Coverage, Ledger, Queue, Checkpoint, and recovery |
 | **Optional Agents** | Bounded specialist execution that returns evidence to the current Claude session; never a second target-state controller |
 
@@ -274,7 +274,7 @@ core with continuation/budget duties; specialist commands retain their explicit 
 ```
 YOU -> Claude Code CLI main session
     -> CLAUDE.md + runtime protocol
-    -> bounded Context Pack (current owner facts + complete unranked method catalog)
+    -> bounded Context Pack (current owner facts + evidence + reviewed-card catalog)
     -> src-hunter selects relevant complete methods/modules and evidence
     -> tool / MCP / optional specialist execution
     -> raw evidence -> Ledger / Queue / Checkpoint / Coverage -> recovery

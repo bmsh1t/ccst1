@@ -38,7 +38,7 @@ notes."
 - Current Finding, assessment, evidence, delivery and report relations from the selected target Store
 - Recent validation context and disclosed-report context as advisory inputs
 - Store-backed target experience, especially conditional negatives, prior handoffs and hypotheses
-- `rules/coverage-gate.md` when validation needs additional evidence
+- `rules/ccst/coverage-gate.md` when validation needs additional evidence
 
 Read current owners with explicit TARGET and the selected FINDING_ID:
 
@@ -64,7 +64,7 @@ only for explicit historical inspection, never as a current-state fallback.
   - DOWNGRADE / CHAIN REQUIRED: recommend the missing proof as advisory next intent
 
 Recommendations do not write state. Only persist on the operator's explicit
-request, using the complete examples in `rules/retrospective.md#写入目标层`.
+request, using the complete examples in `rules/ccst/retrospective.md#写入目标层`.
 `next`/`handoff` do not create or complete Queue Actions. Without registered
 evidence, explicitly recommend an unverified `note` or retain the hypothesis
 and missing evidence; never fabricate an operation or silently downgrade a write.

@@ -2,10 +2,15 @@
 
 ## 1. Scope / Trigger
 
-修改 `hot_method`、Context Pack 方法目录、`record-observation` 或浏览器原件适配时读取。
-本文取代旧 hot-method 的 focus/max-methods 选择合同；不改 TargetStore/schema、Finding、
-cleanup 或共享知识审核 owner。方法准入唯一正文仍是
-`knowledge/methods/clown/references/hunt-iter.md`，工具不代替主会话语义审核。
+修改历史 `hot_method` 协议、`record-observation` 或浏览器原件适配时读取。
+当前方法与规则直接读取 `skills/src-hunter/知识库/`、`rules/`，按
+`rules/hunt-iter.md` 直接维护 Markdown 与 Git 差异。Context Pack 不再读取旧方法目录。
+下文 hot-method 签名、发布、迁移和恢复约束仅描述保留的旧方法库，历史路径按原布局解释；
+它们不治理当前原生文件。当前入口为 CLAUDE.md；活动规则保留完整方法能力，
+路径/宿主调用/清理步骤必须直接适配现有 owner，不保留反向指令再靠外围映射覆盖。
+方法修改只写 checkout 的 skills/src-hunter/知识库/，安装副本只读。搬移文档后复核
+其相对链接；工程规则不能取消已生效的项目类别偏好。原生 observation 协议继续适用于当前执行与证据登记。
+本文不改 TargetStore/schema、Finding、cleanup 或共享知识审核 owner。
 
 ## 2. Signatures
 
@@ -15,6 +20,7 @@ hot_method.py --repo-root ROOT --read RELATIVE --expected-manifest HASH --json
 hot_method.py --repo-root ROOT --origin SOURCE_ID --json
 hot_method.py --repo-root ROOT --apply INPUT --expected-manifest HASH [--bootstrap] --json
 hot_method.py --repo-root ROOT --migrate-entry ENVELOPE_JSON --expected-manifest HASH --json
+hot_method.py --repo-root ROOT --import-rules ENVELOPE_JSON --expected-manifest HASH --json
 hot_method.py --repo-root ROOT --recover ID --mode complete|restore --json
 ```
 
@@ -25,6 +31,8 @@ expected_manifest=None, bootstrap=False, environ=None)`；`recover_update(repo_r
 transaction_id, *, mode="complete", environ=None)`。
 受限治理入口 `migrate_entry(repo_root, update, *, entry_migration,
 expected_manifest=None, environ=None)` 不扩大普通 `apply_update` 权限。
+`import_rules(repo_root, update, *, rules_migration, expected_manifest=None,
+environ=None)` 仅用于已批准的整套原规则接入，权限与 entry migration 分开。
 
 `validation_runner.py record-observation` 调用 `record_native_observation(*, repo_root,
 target, attempt_id, evidence=None, browser_capture_ref=None, execution=None,
@@ -52,8 +60,28 @@ expected_operation=None, action_id=None, claim_token=None, command_actor="valida
   当前 consumers/disposition；62 原始身份/defects、其余 metadata 与历史冻结。
   批准绑定 before/after manifest、四文件 hashes 和当前 core/九模块真实 bytes；仍保留
   有效 source、完整 admission 和 truthful main_session review，S52 缺损不授权。
-- UPDATE 与事务 schema 保持 1；仅新 request 外层增加 entry_migration。历史 request
-  解码区分传输 content_path 与持久 content_ref，原摘要和旧记录不回写。迁移复用同一
+  新事务保存批准原字节为 create-only blob；complete 在固定恢复方向前及 manifest
+  发布前重验 native_assets，消费者缺失或变化不能继续发布。
+- 整套 rules 导入使用独立 `{rules_migration, update}` envelope：schema=1、
+  profile=`6k-rules-originals`、direction=`forward`。只允许十一份已归档 rule 的原字节
+  恢复/补齐、现 guide、知识库索引的精确规则导航、新 `references/ccst-runtime-adapter.md` context 和这十一条的
+  current consumers/disposition；其余条目/metadata、62原始身份/defects、旧历史不变。
+  批准绑定 before/after manifest、文件 hashes 与实际运行消费者。新批准的资产集合
+  是原基础集合加候选十一 origins 的 consumers（去锚点，排除 manifest 已治理的方法正文）；
+  包含 rules/red-lines.md、docs/autopilot-lanes.md 等真实消费者，不能只用静态基础列表。
+  批准原字节保存为
+  create-only blob，complete 恢复和 manifest 发布前重验消费者版本，restore 允许消费者漂移。
+  已集成后拒再次导入。
+  S52 只保全缺损原文，不作为有效准入依据。复用原锁/CAS/publisher/recover；不扩大
+  普通 A 或四文件入口迁移，不另建发布 owner。规则主体、加载和适配唯一清单见
+  `rules/README.md`；adapter 随完整 read 返回，不能将目录或原生导入冒充 captured read。
+- UPDATE、迁移 marker、decision、receipt 保持 schema 1；新治理迁移 transaction 使用
+  schema 2，明确要求持久批准及完整消费者绑定，普通 A/bootstrap 事务仍为 1。
+  已接受的 v1 历史按原格式读取及精确重放，不重验当前消费者，不补写旧批准/blob。
+  未完成的 v1 入口事务缺持久绑定，或 v1 rules 批准漏候选消费者时拒绝 complete；
+  未固定 decision 时仍可 restore。新事务缺批准 blob 是损坏，不能降级为旧格式。
+  request 外层的 entry_migration/rules_migration 仍互斥；历史 request 解码区分传输
+  content_path 与持久 content_ref，原摘要和旧记录不回写。迁移复用同一
   publisher/recover；先备当前 consumers，再发布方法，最后退休旧原生入口。accepted
   回退走新批准反向事务，不直接改 manifest/receipt 或增加 adopt/rebind。
 - 文件 owner 持独占锁：独立 create-only blobs、before/after inode 见证、新路径 slot →

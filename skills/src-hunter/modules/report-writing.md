@@ -17,7 +17,12 @@ Before publishing a standalone report, query the selected Finding through
 target-owned evidence, and an eligible delivery decision bound to that
 assessment and destination. Preserve their exact IDs and artifact references.
 Historical validation-summary booleans are diagnostics, not report authority.
-AI writes destination-specific Markdown; `report_generator.py` does not fill in category narratives.
+Before drafting, directly read the complete `rules/vuln-report-format.md`
+and `docs/ccst-runtime-adapter.md`.
+The original 6k rule owns default SRC prose, language, chapters and layout;
+this module binds that authored body to CCST evidence/publication. Already-read
+complete bodies at the same version may be reused. `report_generator.py` does not
+fill in category narratives.
 Submit its body with explicit Finding, current assessment and eligible delivery IDs using
 `commands/report.md`. Missing text stays pending; finalize screenshots and wording before
 publication because registered bytes are immutable. A draft may record uncertainty without
@@ -52,10 +57,19 @@ operation/method, actors, preconditions, observed result, and impact connector.
 Use the smallest necessary sample and retain the controlled original outside the
 delivered copy.
 
-## Delivery Modes
+## Default SRC Format and Explicit Alternatives
 
-Choose the format requested for this deliverable; the finding lifecycle is the
-same for every mode.
+For SRC use the complete 6k report-format tables: Chinese first-person wording,
+the eight content blocks, full URLs and provenance, necessary reproducible artifacts,
+full-width ＃ separators and CRLF. The report rule defines controlled secrets,
+evidence-backed impact, severity, target-owned paths and immutable revisions;
+`commands/report.md` supplies the current publisher inputs.
+Do not substitute an English title formula, generic summary template or a 600-word cap.
+Finalize bytes before publication; publisher preserves the submitted UTF-8 body.
+
+Only when the user or selected destination explicitly requires a different format,
+use that delivery's actual fields. These alternatives retain the same Finding,
+assessment, evidence and independent delivery decision:
 
 | Format | Required emphasis |
 |---|---|
@@ -69,21 +83,15 @@ same for every mode.
 Platform conventions affect rendering and eligibility at that destination.
 They do not rewrite scope, evidence integrity, or the technical assessment.
 
-## Report Contract
+## Evidence Binding
 
-Include, as applicable:
-
-1. A title naming the test class, exact endpoint/operation, actor, demonstrated
-   impact, and scope: `[Bug Class] in [Exact Endpoint/Feature] allows [attacker role]
-   to [impact] [scope]`.
-2. An impact-first summary with factual scope and preconditions.
-3. Vulnerability details tied to the selected finding ID and source artifact.
-4. Reproduction steps using the exact artifact and the exact observed result.
-5. Impact limited to what the evidence demonstrates, with measured quantities
-   only when they are recorded.
-6. Remediation or retest notes without changing the canonical finding status.
-7. An Evidence Manifest containing artifact path, UTC capture time,
-   collector/source, purpose, SHA-256, and redaction note.
+Keep exact Finding, current assessment, eligible delivery and operation/artifact
+IDs in their existing Store/Ledger owners. Tie every body claim to those artifacts;
+do not add a second lifecycle or a mandatory ninth prose block. UTC capture times,
+hashes, source and redaction notes remain traceable through the existing evidence.
+Report content must distinguish demonstrated actions from supported permission
+inferences and untested boundaries. Source report severity is a writing/admission
+convention; it does not overwrite technical assessment or destination eligibility.
 
 ## Reproduction Artifacts
 
@@ -108,9 +116,11 @@ CVSS does not block core validation or local reporting.
 
 ## Evidence and Redaction
 
-- Keep credentials, tokens, session material, secrets, and unrelated customer
-  data out of the delivered report and hash manifest.
-- Use a redacted copy while preserving a reference to the controlled original.
+- Default external/shared copies redact credentials, session material and unrelated
+  personal data, with a binding to controlled originals. Exact values requested by
+  the source format are limited to an explicitly selected target-private controlled
+  delivery and its necessary sample, as defined by the runtime adapter.
+- Never place secrets in shared knowledge, public artifacts or tool logs.
 - Include actor comparison whenever the claim crosses an identity boundary.
 - State unavailable accounts, blocked paths, untested branches, assumptions,
   and residual uncertainty instead of implying exhaustive coverage.
@@ -131,15 +141,12 @@ or overwrite the canonical finding lifecycle.
 - Do not fill evidence gaps with "could potentially allow", "may allow", or
   an unproven chain. State the demonstrated action, method, and bounded impact.
 - Quantify only what the evidence supports.
-- Aim for under 600 words for a bounty submission unless the user or platform
-  requires a different length. Formal assessment reports follow their scope
-  and required sections, not this bounty word budget.
 - Separate independent root causes into separate bounty submissions; a formal
   assessment may contain separate finding sections. Combine steps as one chain
   only when the demonstrated outcome depends on those steps.
 - Answer clarification or severity disputes with recorded preconditions,
   artifacts, and measured impact; do not invent reachability or scale.
-- Never include raw test secrets or unrelated target data.
+- Follow the runtime adapter for private originals versus external/shared copies.
 
 ## Final Checklist
 
@@ -150,6 +157,7 @@ or overwrite the canonical finding lifecycle.
 [ ] Protocol-appropriate replayable artifact and observed result are included
 [ ] Demonstrated impact is separated from untested or theoretical impact
 [ ] If requested by the destination platform, recorded CVSS fields are copied unchanged
-[ ] Evidence manifest has path, UTC time, source, purpose, SHA-256, and redaction note
-[ ] No raw secrets, unrelated customer data, or second lifecycle state is created
+[ ] Complete 6k report-format and adapter applied, or explicit destination alternative
+[ ] Existing evidence references preserve UTC, source, purpose, SHA-256 and redaction
+[ ] Delivery privacy boundary respected; no second lifecycle state is created
 ```

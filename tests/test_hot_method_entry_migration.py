@@ -67,7 +67,8 @@ def owner(tmp_path):
         raw = f"Synthetic origin {identity}\n".encode()
         path = _write(root, f"inputs/{identity}", raw)
         materials.append({"id": identity, "content_path": path})
-        new["origins"].append({"id": identity, "source_path": f"{identity}.md",
+        source_path = "rules/" + hm.RULE_ORIGINALS[identity] if identity in hm.RULE_ORIGINALS else f"{identity}.md"
+        new["origins"].append({"id": identity, "source_path": source_path,
                                "origin_sha256": _hash(raw), "archive_path": ".history/blobs/" + _hash(raw),
                                "disposition": "synthetic origin", "defects": ["missing Phase 0"] if number == 52 else [],
                                "consumers": [hm.METHOD_ROOT + "/method.md"]})
@@ -315,3 +316,144 @@ def test_ordinary_a_after_entry_migration_keeps_governance_closed(owner):
     governance, _ = _migration(owner, "reverse", "reverse")
     with pytest.raises(hm.HotMethodError, match="ordinary maintenance"):
         hm.apply_update(owner, governance, environ={})
+
+
+def _rules_import(root):
+    before, digest = _manifest(root)
+    candidate = copy.deepcopy(before)
+    candidate['revision_ref'] = '.history/receipts/rules.json'
+    entries = {e['path']: e for e in candidate['entries'] + candidate['context_files']}
+    changed = []
+
+    def body(path, raw):
+        old = root / hm.METHOD_ROOT / path
+        item = {'path': path, 'before_sha256': _hash(old.read_bytes()) if old.exists() else None,
+                'after_sha256': _hash(raw), 'content_path': _write(root, 'inputs/rules/' + path, raw)}
+        if not old.exists():
+            info = root.stat()
+            item.update(mode=0o644, uid=info.st_uid, gid=info.st_gid)
+        changed.append(item)
+        entries[path]['sha256'] = _hash(raw)
+
+    for origin in candidate['origins']:
+        if origin['id'] not in hm.RULE_ORIGINALS:
+            continue
+        path = 'references/' + hm.RULE_ORIGINALS[origin['id']]
+        if path not in entries:
+            entry = {'id': origin['id'], 'path': path, 'role': 'method',
+                     'source_path': origin['source_path'], 'origin_refs': [origin['id']],
+                     'maintenance_scope': 'governance_reference'}
+            candidate['entries'].append(entry)
+            entries[path] = entry
+        body(path, (root / hm.METHOD_ROOT / origin['archive_path']).read_bytes())
+        origin['consumers'] = list(dict.fromkeys([hm.METHOD_ROOT + '/' + path, *origin['consumers'], 'rules/README.md']))
+        origin['disposition'] = ('Complete original rule is active; environment and engineering interfaces are owned by '
+                                 + hm.RULE_ADAPTER + '; ordinary A cannot edit governance.')
+    adapter = {'id': 'ccst-rules-runtime-adapter', 'path': hm.RULE_ADAPTER,
+               'origin_refs': list(hm.RULE_ORIGINALS), 'maintenance_scope': 'governance_reference'}
+    candidate['context_files'].append(adapter)
+    entries[hm.RULE_ADAPTER] = adapter
+    body(hm.RULE_ADAPTER, b'Synthetic explicit runtime adapter\n')
+    body('README.md', b'Synthetic complete rule loading guide\n')
+    for path in hm.RULE_RUNTIME_ASSETS:
+        if not (root / path).exists():
+            _write(root, path, b'Synthetic current runtime consumer\n')
+    marker = {'schema_version': 1, 'profile': '6k-rules-originals', 'direction': 'forward'}
+    approval = {**marker, 'authorization': 'Synthetic rules import declaration',
+                'expected_manifest': digest, 'after_manifest': _hash(hm._json_bytes(candidate)),
+                'files': [{k: item[k] for k in ('path', 'before_sha256', 'after_sha256')} for item in changed],
+                'runtime_assets': {p: _hash((root / p).read_bytes()) for p in sorted(hm.RULE_RUNTIME_ASSETS)}}
+    raw = hm._json_bytes(approval)
+    marker['approval'] = {'content_path': _write(root, 'inputs/rules-approval', raw), 'sha256': _hash(raw)}
+    update = {'schema_version': 1, 'transaction_id': 'rules', 'expected_manifest': digest,
+              'manifest': candidate, 'files': changed, 'review': _review(candidate)}
+    return update, marker
+
+
+def test_rules_import_preserves_originals_history_and_cli_reads(owner):
+    update, marker = _rules_import(owner)
+    historical = {p: p.read_bytes() for p in (owner / hm.HISTORY).rglob('*') if p.is_file()}
+    before = _manifest(owner)[0]
+    with pytest.raises(hm.HotMethodError, match='ordinary maintenance'):
+        hm.apply_update(owner, update, environ={})
+    result = hm.import_rules(owner, update, rules_migration=marker, environ={})
+    assert result['status'] == 'accepted'
+    assert all(p.read_bytes() == raw for p, raw in historical.items())
+    after, digest = _manifest(owner)
+    for old, new in zip(before['origins'], after['origins']):
+        assert {k: v for k, v in old.items() if k not in {'consumers', 'disposition'}} == {
+            k: v for k, v in new.items() if k not in {'consumers', 'disposition'}}
+    paths = ['references/' + name for name in hm.RULE_ORIGINALS.values()]
+    cli = subprocess.run([sys.executable, hm.__file__, '--repo-root', str(owner),
+                          *[a for p in paths for a in ('--read', p)], '--expected-manifest', digest, '--json'],
+                         capture_output=True, text=True, timeout=10)
+    assert cli.returncode == 0, cli.stdout + cli.stderr
+    captured = {f['path']: f for f in json.loads(cli.stdout)['files']}
+    for origin in after['origins']:
+        if origin['id'] in hm.RULE_ORIGINALS:
+            assert captured['references/' + hm.RULE_ORIGINALS[origin['id']]]['content'].encode() == (
+                owner / hm.METHOD_ROOT / origin['archive_path']).read_bytes()
+    assert captured[hm.RULE_ADAPTER]['content'] == 'Synthetic explicit runtime adapter\n'
+    shutil.rmtree(owner / 'inputs')
+    assert hm.import_rules(owner, update, rules_migration=marker, environ={})['receipt'] == result['receipt']
+
+
+@pytest.mark.parametrize('fault', ['original', 'defects', 'runtime', 'entry_profile'])
+def test_rules_import_rejects_out_of_scope_without_publication(owner, fault):
+    update, marker = _rules_import(owner)
+    before = (owner / hm.MANIFEST_RELATIVE).read_bytes()
+    if fault == 'original':
+        item = next(x for x in update['files'] if x['path'] == 'references/vuln-report-format.md')
+        raw = b'Rewrite source report policy\n'
+        (owner / item['content_path']).write_bytes(raw)
+        item['after_sha256'] = _hash(raw)
+        next(e for e in update['manifest']['entries'] if e['path'] == item['path'])['sha256'] = _hash(raw)
+    elif fault == 'defects':
+        update['manifest']['origins'][51]['defects'] = []
+    elif fault == 'runtime':
+        (owner / CORE_SKILL_PATH).write_bytes(b'Concurrent changed consumer\n')
+    else:
+        with pytest.raises(hm.HotMethodError):
+            hm.migrate_entry(owner, update, entry_migration=marker, environ={})
+        return
+    with pytest.raises(hm.HotMethodError):
+        hm.import_rules(owner, update, rules_migration=marker, environ={})
+    assert (owner / hm.MANIFEST_RELATIVE).read_bytes() == before
+    assert not (owner / hm.HISTORY / 'pending.json').exists()
+    assert not (owner / hm.HISTORY / 'transactions/rules.json').exists()
+
+
+@pytest.mark.parametrize('mode', ['complete', 'restore'])
+@pytest.mark.parametrize('runtime_drift', [False, True])
+def test_rules_import_interruption_uses_existing_recovery(owner, monkeypatch, mode, runtime_drift):
+    update, marker = _rules_import(owner)
+    before = (owner / hm.MANIFEST_RELATIVE).read_bytes()
+    publish = hm._publish_item
+    fired = False
+
+    def interrupt(files, item, desired):
+        nonlocal fired
+        publish(files, item, desired)
+        if not fired and item['before'] is None:
+            fired = True
+            raise OSError('Synthetic new-rule publication interruption')
+
+    with monkeypatch.context() as patch:
+        patch.setattr(hm, '_publish_item', interrupt)
+        with pytest.raises(OSError):
+            hm.import_rules(owner, update, rules_migration=marker, environ={})
+    assert fired
+    if runtime_drift:
+        runtime = owner / CORE_SKILL_PATH
+        original = runtime.read_bytes()
+        runtime.write_bytes(b'Concurrent runtime changed after interruption\n')
+        if mode == 'complete':
+            with pytest.raises(hm.HotMethodError, match='runtime consumer changed'):
+                hm.recover_update(owner, 'rules', mode=mode, environ={})
+            assert (owner / hm.HISTORY / 'pending.json').exists()
+            runtime.write_bytes(original)
+    assert hm.recover_update(owner, 'rules', mode=mode, environ={})['status'] == (
+        'accepted' if mode == 'complete' else 'restored')
+    if mode == 'restore':
+        assert (owner / hm.MANIFEST_RELATIVE).read_bytes() == before
+        assert not (owner / hm.METHOD_ROOT / 'references/vuln-report-format.md').exists()

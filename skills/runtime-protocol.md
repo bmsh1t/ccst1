@@ -1,34 +1,33 @@
 # Shared Runtime Protocol
 
-本协议只定义事实恢复、知识读取和写回；调查方法归 `src-hunter`，执行义务归对应命令。
+本协议只定义事实恢复、知识读取和写回；6k 完整 rules 定义调查/迭代/报告正文，
+`src-hunter` 接入专项方法，执行义务归对应命令。
 不要求每个动作依次经过 Target/Skill/Knowledge/Checks，也不重复常驻契约。
 
 ## Shared Knowledge Recall
 
-- 按信息缺口查方法：新现象、条件变化、旧假设受挫时重新判断；已读且有效的材料复用。
-  纯解释/规划不必查包，目标事实不能用通用知识猜测；需要工作集时用
-  `python3 tools/context_pack.py --target TARGET --focus '当前问题'`。
-- 完整目录供 AI 自选，不用关键词、固定 top-k 或强制短表选路。知识没有覆盖的面仍可探索；
-  query/body/header/cookie/path/文件等输入均在视野内，未测部分保持 unknown。
-- 本地卡见 `knowledge/index.md` 或 `/kb`；6k 方法见 `knowledge/methods/clown/README.md`
-  和 `knowledge/clown-hot-method-manifest.json`。用目录给出的 `read_command` 取得回答当前问题的
-  完整方法：`hot_method.py --read RELATIVE --expected-manifest HASH --json` 在同一锁内捕获、
-  校验并返回正文/上下文，不是先验 hash 再打开可变路径。目录不是已读证明；短表指针要展开
-  完整相关方法，表外仍可调查，不必先读来源 SKILL。方法保持前提、顺序、成功证据、反例和停止/重开条件。
-- `hot_methods` 的 guide/index、完整未排名目录及 manifest 版本不因 focus 或已知卡目录省略。
-  从当前 CCST checkout 运行，或显式 `--repo-root`；安装的 Skill 不提供仓库定位，禁止猜其它副本。
-  版本冲突重新取目录；`pending_update` 只显式 recover，读取不修复。missing/changed/invalid_manifest
-  不冒充可用正文或技术阴性，也不阻断已有 Store 事实恢复；`origin_only` 只准 `--origin` 溯源，
-  不当活动方法。`source_incomplete`/`private_source_unavailable` 明示缺损/无法独立复核，hash 正确不等于准入。
-- A 维护按当前 `knowledge/methods/clown/references/hunt-iter.md` 完整门槛及三问：主会话独立核对
-  实际来源，只由 `hot_method.py --apply` 发布唯一方法/必要索引并保留真实审核身份；子代理仅提议。
-  私有原件不进共享版本，治理参考/Skill/Rules 和已审共享卡仍走各自审核，不借方法维护放宽。
-- 卡召回接口的 `--known-catalog VERSION` 仅在当前上下文确实保留同版卡目录时使用，
-  不是 `context_pack.py` 的参数，也不省略 6k 方法目录。compaction/summary 后不复用此标记，
-  从当前 owner 恢复事实并重查需要的方法及引用，不信任压缩摘要中的旧选读判断。
+- `CLAUDE.md` 内嵌的 6k 主契约与十一份原规则完整加载，接线见 `rules/README.md` 和
+  `docs/ccst-runtime-adapter.md`。SRC 开场先读 `skills/src-hunter/知识库/打穿短表.md`，
+  按当前特征展开完整相关方法；短表是索引，不限制表外探索。
+- 当前方法直接读取 `skills/src-hunter/知识库/`，规则直接读取 `rules/`。
+  保留前提、步骤、成功证据、反例和停止/重开条件；目录不能冒称正文已读。
+  已完整读取且仍有效的内容可复用。缺文件明确报告，不用旧库或摘要偷偷补位。
+  日常读取不需要 catalog、manifest 或 `hot_method`。
+- 新现象、条件变化、旧假设受挫时重新判断信息缺口；纯解释/规划不必查包。
+  需要当前目标工作集时用 `python3 tools/context_pack.py --target TARGET --focus '当前问题'`。
+  Pack 提供目标事实、证据与已审知识卡目录，不选方法，不把工具信号变成调查路线。
+- 方法维护按完整 `rules/hunt-iter.md` 的准入门槛、三问与来源核对，由主会话审核后
+  直接修改选定 checkout 的 `skills/src-hunter/知识库/` 正文和必要索引，以 Git 保留差异；
+  安装目录副本只读，不在副本维护方法。子代理只提候选。
+  私有原件不进共享正文。`knowledge/methods/clown/`、旧 manifest 和 `hot_method.py`
+  仅供显式历史读取、维护或恢复，不更新当前原生方法。
+- 本地共享卡见 `knowledge/index.md` 或 `/kb`，继续遵守现有审核/晋升协议。
+  短卡全文读；长卡读取完整相关机制，再展开来源。卡召回的 `--known-catalog VERSION`
+  只在当前上下文确实保留同版卡目录时使用；它不是 `context_pack.py` 参数。
+  compaction 后从当前 owner 恢复事实并按需重读材料，不把摘要当已读证明。
 - 经验与现场冲突时核对适用条件。按问题召回：
   `python3 tools/experience_recall.py query --target TARGET --query '当前问题'`。
-  `current` 是独立的当前事实；`recalled` 是本目标经验与已审共享知识，不互相顶替。
+  `current` 是独立当前事实，`recalled` 是本目标经验与已审共享知识，不互相顶替。
   partial/unavailable 不等于没有经验，登记目录也不是审核证明。
 - 按 owner 返回的命令、来源 ID 和游标展开；query 排名游标不与 history 游标混用。
   精确版本纠错、来源、反证和关系使用 `commands/target.md` 的相关子命令。
@@ -82,7 +81,7 @@ Candidate 和确认 A 的持久化不等 B/C；预算停止新工作，不停止
 
 ## 2. Skill layer
 
-`skills/src-hunter/SKILL.md` 是唯一全局调查核心；专项只回答当前问题，不接管目标。
+`skills/src-hunter/SKILL.md` 是唯一调查入口；完整 6k rules 提供业务规则，专项只回答当前问题。
 知识提供完整方法；工具保存执行事实；规则处理完成和交付。无固定六域前置表、调用表或路由审计。
 
 ### 2.1 三模式决策：Discovery / Exploitation / Validation modes
@@ -98,8 +97,9 @@ Discovery 主动补证据；Exploitation 检查已有信号及连接；Validatio
 
 ### 2.3 层级归属标准
 
-全局调查判断在唯一核心 Skill；专项判断在完整内部模块；技巧/反例/案例在方法资料；
-稳定执行在工具；证据、完成和报告门在既有规则。完整正文只有一处，其他入口引用。
+业务规则在完整 6k rules，接口差异在其唯一 runtime adapter；核心组织原生推理，
+专项判断在完整内部模块，技巧/反例/案例在方法资料；稳定执行在工具，证据、完成与
+发布门在既有工程 owner。报告版式归 6k report-format。完整正文只有一处，其他入口引用。
 
 ## 3. Knowledge layer
 
@@ -108,7 +108,7 @@ Discovery 主动补证据；Exploitation 检查已有信号及连接；Validatio
 
 ## 4. Checks layer
 
-结束按 `rules/coverage-gate.md` 区分 Covered、Leads/Signals、Candidates、Blocked、
+结束按 `rules/ccst/coverage-gate.md` 区分 Covered、Leads/Signals、Candidates、Blocked、
 Not applicable、Dead ends、Still unknown 和 Next actions；无发现不是覆盖证明。
 
 ## 5. Execution and write-back

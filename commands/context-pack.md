@@ -13,7 +13,7 @@ surface 排名、覆盖矩阵、findings 索引、Evidence Ledger，以及 brows
 ## 必读规则
 
 ```text
-rules/context-loading.md
+rules/ccst/context-loading.md
 ```
 
 ## 用法
@@ -55,10 +55,10 @@ python3 tools/context_pack.py --target <target>
    - raw JS/source paths surfaced as `must_read` references
 6. 从 Store observation 和当前材料完整性检查生成只读证据摘要。
 7. 从 `knowledge/capabilities.yaml` 发布知识卡目录；Skill 发现使用 Claude Code 原生目录。
-8. 从方法 owner 取得 `hot_methods`：guide/index、完整未排名目录、manifest 版本、声明/实际 hash、
-   来源健康和真实 `read_command`；focus 不过滤，目录不冒称正文已读。缺失、漂移、pending、
-   invalid_manifest、origin_only 和 source_incomplete 分别保留诊断，不替代 Store 事实或技术裁决。
-9. 输出证据锚点、已记录的 Actor Matrix 缺口、未知项、矛盾点和 owner 写回入口。
+8. 输出证据锚点、已记录的 Actor Matrix 缺口、未知项、矛盾点和 owner 写回入口。
+
+6k 完整方法直接从 `skills/src-hunter/知识库/` 按需读取；Pack 不扫描旧方法库，
+不输出 `hot_methods`，不校验旧 manifest，也不替代根主契约与原规则的加载。
 
 `knowledge_cards`、`deferred_knowledge_cards`、
 `knowledge_card_recall`、`hypothesis_seeds`、`alternative_angles` 是空兼容字段，
@@ -74,10 +74,9 @@ python3 tools/context_pack.py --target TARGET --json
 
 文本与 JSON 均提供知识卡目录、目标事实和证据锚点。短卡按需全文读；长卡读取完整的
 相关机制，包括前提、证据门、反例与停止条件，再按需展开来源。`knowledge/index.md`
-仍是可直接读取的目录，不是额外必过步骤。`hot_methods` 的 `read_command` 是版本绑定的只读
-正文命令，不是调查路线或网络动作。按信息缺口展开完整方法；版本冲突刷新目录，不先验 hash
-再读可变路径。`context_pack.py` 不接受 `--known-catalog`；卡召回的同名标记不隐藏方法目录。
-在正确 checkout 运行或显式传 `--repo-root`，不从安装副本猜仓库。维护权限见共享协议的 A 边界。
+仍是可直接读取的目录，不是额外必过步骤。6k 方法用原生 Read 展开完整相关正文，
+维护遵循 `rules/hunt-iter.md` 与共享协议。`context_pack.py` 不接受 `--known-catalog`。
+在正确 checkout 运行或显式传 `--repo-root`，不从安装副本猜仓库。
 
 ## Skill / Focus 路由
 
@@ -89,7 +88,7 @@ python3 tools/context_pack.py --target TARGET --json
 - Context Pack 不推荐主 Skill；Claude 通过原生 Skill 工具按需加载。
 - 上下文窗口限制新增读取量，不限制知识访问；已读且未变的内容复用当前会话。
 - Context Pack 不生成动作安全门禁。
-- 结束前必须加入 `rules/coverage-gate.md`。
+- 结束前必须加入 `rules/ccst/coverage-gate.md`。
 - 上下文包不是结论或必过步骤；它是可按需读取的事实和引用视图。
 - 目录或观察不自动生成动作；Claude 选择假设后通过现有 owner 创建或激活 Queue action。
 - Skill 由 Claude 通过平台原生工具按需加载。Queue claim 不登记或校验 Skill 路由，

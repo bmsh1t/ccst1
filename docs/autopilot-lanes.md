@@ -170,7 +170,7 @@ Checkpoint, Pickup and preflight never initialize, import, or recreate old owner
 - `prepare_surface_context`: run one explicit `python3 tools/surface.py --target <target_shell> --refresh`, verify its bounded projection, load context, then refresh state.
 - `collect_candidate_evidence`: consume `state.structured_next.rubric.next_actions`, or a reviewed `state.memory_candidate_next` locatable `evidence_ref`; preserve `missing_labels` and refresh. Prose or `raw_endpoint` alone is not evidence.
 - Observation top-K and `remaining` are attention windows, not closure; use `/observations` for evidence-driven long-tail review.
-- Before unusual helpers, scan `docs/tool-index.md` once. Canonical contracts are `skills/runtime-protocol.md`, `rules/coverage-gate.md`, `rules/hunting.md`, `rules/tool-ai-boundary.md`, `rules/web-intel.md`, `knowledge/index.md`, `tools/checkpoint.py`, `tools/action_queue.py`, `tools/coverage_matrix.py`, `tools/evidence_ledger.py`, and `docs/evidence-runners.md`.
+- Before unusual helpers, scan `docs/tool-index.md` once. Canonical contracts are `skills/runtime-protocol.md`, `rules/ccst/coverage-gate.md`, `rules/ccst/hunting.md`, `rules/ccst/tool-ai-boundary.md`, `rules/ccst/web-intel.md`, `knowledge/index.md`, `tools/checkpoint.py`, `tools/action_queue.py`, `tools/coverage_matrix.py`, `tools/evidence_ledger.py`, and `docs/evidence-runners.md`.
 
 ## Browser Source And JS
 

@@ -81,12 +81,13 @@ eligibility decision are different claims. Pure-source impact may be submitted
 to the existing assessment owner with its exact limited scope; do not fabricate
 runtime verification or automatically promote it to a Finding.
 
-`rules/red-lines.md` and current Scope/Auth still govern proposed experiments.
+`rules/ccst/red-lines.md` and current Scope/Auth still govern proposed experiments.
 `skills/runtime-protocol.md` owns continuity/write-back; `triage-validation` owns
 proof readiness and `report-writing` owns expression of accepted results. This
 module cannot close Action/Coverage, confirm a Finding or submit a report.
 
-The versioned `references/researcher-blackbox-whitebox.md` remains available
-through the complete method reader. Its S52 source lacks Phase 0; keep that
-source defect explicit. This module supplies CCST source reasoning, not a
-reconstruction or proof of the missing upstream phase.
+Before whitebox/source investigation, directly read the complete
+`rules/researcher-blackbox-whitebox.md` and `docs/ccst-runtime-adapter.md`. The archived S52 source
+has misplaced browser text, a broken table and missing Phase 0. The active rule delegates browser
+operations to the shared browser rule and identifies the surviving source fragment. Use its available phases; this module supplies
+explicit CCST source/evidence capabilities, not a reconstruction of the missing text.

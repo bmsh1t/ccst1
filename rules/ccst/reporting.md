@@ -1,15 +1,17 @@
 # Reporting Rules
 
-This file owns cross-cutting reporting checks and scoring calibration.
+This file owns cross-cutting evidence, delivery and publication checks.
+The complete 6k `rules/vuln-report-format.md` owns default SRC prose, language,
+chapters and layout; load it through the original reader with its runtime adapter.
 `skills/src-hunter/modules/triage-validation.md` owns validation verdicts;
-`skills/src-hunter/modules/report-writing.md` owns presentation, delivery modes, titles,
-word budgets, and follow-up wording. Do not maintain another format here.
+`skills/src-hunter/modules/report-writing.md` binds authored bytes to existing owners.
+Do not maintain another default format, title formula or word budget here.
 
 ---
 
 ## 1. Claim Presentation
 
-Apply the Writing Rules in `skills/src-hunter/modules/report-writing.md`. Unproven impact
+Apply the complete 6k report-format and adapter through the report-writing module. Unproven impact
 stays an evidence gap, not a stronger claim created during report drafting.
 
 ## 2. RUN 7-QUESTION GATE BEFORE WRITING
@@ -40,7 +42,7 @@ Default proof ladder:
 - Secret / CI/CD / cloud → prove ownership and usable permissions with the least
   sensitive action. Secret exfiltration, privileged workflow execution, or cloud
   data access is reserved for cases where lower-risk proof cannot establish
-  impact and `rules/red-lines.md` allows the action.
+  impact and `rules/ccst/red-lines.md` allows the action.
 
 Escalated proof requirements:
 
@@ -109,9 +111,10 @@ expected exposure:
 
 ## 7. TWO TEST ACCOUNTS FOR IDOR
 
-Never test IDOR with only one account (testing yourself).
-- Account A = attacker (your account doing the request)
-- Account B = victim (whose data you're reading)
+A cross-identity claim needs independently attributable actor and victim-object evidence.
+Two controlled accounts provide the clearest comparison when available; a second account
+is not a universal execution prerequisite. Preserve any missing ownership/baseline evidence
+as uncertainty, never call access to one's own public object IDOR.
 
 For an identity-boundary claim, report must show the smallest reproducible
 actor/object differential, for example: Account A's session reached Account B's
@@ -119,7 +122,8 @@ private object. Use an equivalent artifact when the boundary is not HTTP.
 
 ## 8. Delivery
 
-Use `skills/src-hunter/modules/report-writing.md` for platform structure, title wording,
-length, independent submissions, and clarification responses. Delivery choices
+Use complete 6k report-format for default SRC structure and wording; use
+`skills/src-hunter/modules/report-writing.md` for evidence/publication binding and
+explicitly requested destination alternatives. Delivery choices
 do not change the validation result or evidence requirements; optional recorded
 CVSS remains read-only metadata.

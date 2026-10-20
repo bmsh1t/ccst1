@@ -8,7 +8,7 @@ Active vulnerability hunting through Claude CLI. Use the scanner as a bounded br
 
 ## 谁思考（认知归属）
 
-参数认知归属见 `rules/tool-ai-boundary.md` 的“谁思考”一节。本命令的关键分工：
+参数认知归属见 `rules/ccst/tool-ai-boundary.md` 的“谁思考”一节。本命令的关键分工：
 
 | 输入 | 谁思考 |
 |---|---|
@@ -31,14 +31,13 @@ When the current target context is missing, read it through:
 python3 tools/context_pack.py --target target.com
 ```
 
-Context Pack 中的 `hot_methods` 给出完整未排名目录、guide/index、来源健康及 manifest
-版本，focus 不过滤方法。按信息缺口执行 owner 返回的 `read_command`，取得同版本校验后的
-完整相关正文，目录不是已读证明；版本冲突重新取目录。来源故障/缺损或 pending 不当技术阴性，
-不丢 Store 事实；外部 `origin_only` 只供溯源。共同读取和 A 维护边界见
-`skills/runtime-protocol.md#shared-knowledge-recall`；不直接改正文/hash，不产生第二调查循环。
+6k 方法直接读取 `skills/src-hunter/知识库/`；按信息缺口展开完整正文，复用仍有效的已读内容。
+Context Pack 只补当前目标事实与证据，不要求方法 catalog/read 中间层。
+共同读取和维护边界见 `skills/runtime-protocol.md#shared-knowledge-recall`。
 
-For this hunting entrypoint, also read `rules/hunting.md`. It is the canonical
-hunting semantics and is loaded on demand rather than by every context pack.
+For this entrypoint read `rules/ccst/hunting.md` and follow `rules/README.md` to capture
+the complete 6k dig-scope/src-value rules and site-opening shortlist. The originals
+own hunting cadence/probes; hunting.md binds engineering constraints, not another workflow.
 
 For a genuinely new target, explicitly initialize it through
 `python3 tools/target_store.py init --store --target TARGET` before owner writes;
@@ -90,7 +89,7 @@ A signal with replayable evidence becomes a candidate finding through
 the Store claim API as soon as its evidence gate is met — without waiting for the
 operator to ask or for a summary boundary. Prose or a raw probe alone is not a
 finding; `/validate` can only run against a
-finding that already exists in the target Store. `rules/coverage-gate.md` owns
+finding that already exists in the target Store. `rules/ccst/coverage-gate.md` owns
 Lead -> Signal -> Candidate -> Validated Finding evidence requirements;
 `docs/evidence-runners.md` owns explicit Candidate/evidence registration. Persist
 useful candidates before the pass ends, independently of execution mode.
@@ -108,8 +107,9 @@ step references for conditional experience and handoff; retry registration witho
 replaying actions, and supplement the same attempt with the original predecessor.
 
 Do not become a passive scanner wrapper. Start with the most concrete evidence available.
-`/hunt` does not generate report drafts by default; use `/report` or
-`python3 tools/hunt.py --target target.com --report-only` after validation.
+Save confirmed A immediately. Once its evidence and destination gates pass, draft
+under complete 6k report-format and publish through `/report`; optional B/C never
+delay it. The report-only Hunt CLI indexes existing reports rather than authoring prose.
 
 ## Four-Layer Write-Back
 
@@ -160,11 +160,11 @@ contract does not enable automatic continuation.
 
 - **Auth / IDOR / role diff**: compare A/B users, object IDs, tenant/account IDs, export/download/report results.
 - **403 / auth boundary**: when a target-owned 401/403 has path, proxy, framework, or sibling evidence, let Claude select the exact path/header/method representation and execute it through browser, curl, or a raw sender. Use `validation_runner.py request-diff` only when the same-method one-dimension pair fits; otherwise retain raw evidence for explicit Store claim/evidence registration. A status change alone is not proof.
-- **GraphQL**: inspect schema/operation names and compare object/field authorization. Assess mutations by the actual side effects under `rules/red-lines.md` and current operator intent; test-owned reversible flows are not excluded merely because they use mutations.
+- **GraphQL**: inspect schema/operation names and compare object/field authorization. Assess mutations by the actual side effects under `rules/ccst/red-lines.md` and current operator intent; test-owned reversible flows are not excluded merely because they use mutations.
 - **SSRF / webhook / async**: use `tools/oast_listen.py` only when a URL-fetch or webhook sink exists.
 - **Upload/import/export**: confirm parser/authorization paths with minimal samples; record state-changing leads separately.
 - **JWT/OIDC/SAML/OAuth**: decode and inspect issuer/JWKS/callback/state/session binding signals before probing.
-- **SQL/NoSQL JSON body**: use the target-observed body or parameter shape and let Claude choose a bounded direct request. Optionally use `validation_runner.py request-diff` for an exact same-method pair; time-shaped candidates use AI interleaved sampling with a stable trend. Keep baseline/variant evidence and stop on transport, WAF, or ordinary application noise; do not invoke a fixed matrix or encoder catalogue.
+- **SQL/NoSQL JSON body**: use the target-observed body or parameter shape and the complete src-value parameter/probe requirements; select stack-appropriate probes, encoding and request positions. Optionally use `validation_runner.py request-diff` for an exact same-method pair; time-shaped candidates use AI interleaved sampling with a stable trend. Keep baseline/variant evidence; transport/WAF noise is not a finding. Probe requirements do not imply an automatic fixed tool pipeline.
 - **API leak / Swagger / Postman**: review `recon/<target>/exposure/` before widening.
 
 ## Blind/OAST Workflow
@@ -204,5 +204,5 @@ At a path decision, save only the changed conclusion, blocker or reopening
 condition through its existing owner, then follow the next evidence-backed question.
 A rotation alone does not require `/checkpoint`, a new handoff or a full coverage
 summary. At the end of the hunt pass, use the read-only Checkpoint above and apply
-`rules/coverage-gate.md`; a bounded stop leaves residual work explicit and is not
+`rules/ccst/coverage-gate.md`; a bounded stop leaves residual work explicit and is not
 an exhaustion claim.

@@ -35,7 +35,7 @@ PACKAGE_MAPPINGS 映射，两者都是设计边界：读锁文件/package.json.b
 
 - **vuln-report 报告纪律**（四层记忆系统对比，2026-09 确认）
   0x01~0x05 思考链 / 攻击链总览 / 失败表格——实战报告价值最高的部分，
-  搬进 report-writing skill 或 rules/reporting.md。内容整理，不是工程。
+  搬进 report-writing skill 或 rules/ccst/reporting.md。内容整理，不是工程。
 - **escalation 话术**（2026-09-14 skill/rule 审阅，原项目 reporting.md #10）
   报告被降级时的申诉模板（"requires only a free account" 等）。
   赏金谈判经济学，实战遇到降级再议。

@@ -12,9 +12,9 @@ description: 复盘本轮 hunt / validation / target session，并把经验分�
 ## 必读文件
 
 ```text
-rules/retrospective.md
+rules/ccst/retrospective.md
 memory/goals/active.json
-rules/coverage-gate.md
+rules/ccst/coverage-gate.md
 knowledge/promotion-rules.md
 ```
 
@@ -22,7 +22,7 @@ knowledge/promotion-rules.md
 
 ```text
 skills/runtime-protocol.md
-rules/red-lines.md
+rules/ccst/red-lines.md
 knowledge/index.md
 ```
 
@@ -132,7 +132,7 @@ RETROSPECTIVE DECISION
 按唯一写回时机协议保存影响后续判断的必要增量，不等用户再次说“记住”；
 无增量不重复写，明确只读/预览时不写目标层或 campaign 工作文件。
 
-exact command 使用 `rules/retrospective.md#写入目标层` 的完整示例，显式绑定 TARGET。
+exact command 使用 `rules/ccst/retrospective.md#写入目标层` 的完整示例，显式绑定 TARGET。
 negative 必须有适用条件、重开条件和同 Store 已登记的 `OPERATION_ID:STEP`（从零开始）；
 KILL 或低价值方向不自动证明 negative。缺登记证据时仅明确建议未验证 note 或保留假设。
 `next`/`handoff` 只是 advisory intent，不创建或完成 Queue Action。
@@ -148,9 +148,9 @@ KILL 或低价值方向不自动证明 negative。缺登记证据时仅明确建
 
 可复用经验先按 `knowledge/promotion-rules.md` 判断，再建议写入对应知识卡。
 跨目标共享仍走 `distill_target` 候选与 `knowledge_promote` 审核晋升。
-6k 方法正文增补另属既有方案 A：主控重新核对准入门槛、三问和来源后，
-通过 `hot_method` 维护唯一活动正文与版本；子代理只交候选，不能借复盘绕过审核，
-也不把方法维护改走 `knowledge_promote.review_existing`。
+6k 方法增补遵守完整 `rules/hunt-iter.md`：主控核对准入门槛、三问和来源后，
+直接修改选定 checkout 的 `skills/src-hunter/知识库/` 正文与必要索引，以 Git 保留差异；不改安装副本。
+子代理只交候选，不能借复盘绕过审核；方法维护不改走共享卡的 `knowledge_promote.review_existing`。
 
 如果没有合适知识卡，使用：
 
@@ -158,7 +158,8 @@ KILL 或低价值方向不自动证明 negative。缺登记证据时仅明确建
 knowledge/card-template.md
 ```
 
-默认不要直接修改知识库。输出 `proposed entry`，包含：
+共享知识卡默认只输出候选，不绕过审核发布；这不覆盖上面的原生方法维护合同。
+共享卡的 `proposed entry` 包含：
 
 ```text
 Evidence pattern:
@@ -189,10 +190,10 @@ skills/<skill>/SKILL.md
 如果问题来自红线、覆盖、上下文加载或验证标准，建议修改：
 
 ```text
-rules/red-lines.md
-rules/coverage-gate.md
-rules/context-loading.md
-rules/reporting.md
+rules/ccst/red-lines.md
+rules/ccst/coverage-gate.md
+rules/ccst/context-loading.md
+rules/ccst/reporting.md
 ```
 
 默认不要直接修改 Rules。输出具体 `target rule`、触发证据和建议改法。
@@ -213,7 +214,8 @@ Needs human review: yes/no + reason
 安全默认：
 
 - 目标层重要增量按唯一时机协议保存；无增量不重复写，明确只读/预览优先且不写。
-- 知识库、Skills、Rules 默认只输出建议，不自动改文件。
+- 原生方法由主控按 hunt-iter 审核后写回 checkout；共享卡及 Skill/Rule 流程变更默认输出建议，
+  不借方法维护绕过各自审核。用户已明确要求修复的工程变更按该授权执行。
 - 任何包含凭证、cookie、token、PII、客户数据、目标专属秘密的内容都不能晋升知识库。
 
 ## 禁止输出

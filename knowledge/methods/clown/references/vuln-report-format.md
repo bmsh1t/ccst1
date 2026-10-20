@@ -1,13 +1,3 @@
-# 6k 报告格式：完整准入来源参考
-
-> CCST 适配说明（非上游原文）：以下完整来源 S61 仅供 `references/hunt-iter.md`
-> 对照真实正文中的“漏洞等级”等准入条文。它不接管 CCST 的 Finding 定级、报告格式、
-> 隐私披露、提交资格或发布时机，不授权真实操作。当前 assessment/delivery/report owners、
-> `rules/reporting.md` 与 red-lines 仍有效。原文的类别禁令、桌面路径、明文披露及删除要求
-> 只作为来源保存，不在 C 生效。独立原件可由 `hot_method.py --origin S61 --json` 展开。
-
-## 完整上游正文
-
 # 漏洞报告写作格式（永久 · 唯一）
 
 > **2026-08-19：** 报告规则就这两部分。  

@@ -1,49 +1,24 @@
-# Rule Index
+# 规则加载
 
-This index is the loading contract for the current project. The rule files are
-the source of truth; commands and Skills only route to them.
+CLAUDE.md 承接完整 6k 主契约并原生导入以下十一份规则；保留文件名、方法与能力，
+活动正文直接使用 CCST 的路径、工具和持久化流程。其他宿主按 CLAUDE.md 的规则表完整读取。
+目录/清理归 desktop-task-folder，浏览器归 playwright-browser-mcp，报告归 vuln-report-format；
+docs/ccst-runtime-adapter.md 汇总接线。原来源与历史版本保持原件，不作为第二套活动指令。
 
-## Default Read
+- anti-over-moralization.md
+- cors-vuln-report-priority.md
+- desktop-task-folder.md
+- dig-scope-workflow.md
+- hunt-iter.md
+- playwright-browser-mcp.md
+- researcher-blackbox-whitebox.md
+- security-research-context.md
+- skill-as-boost.md
+- src-value-hunting.md
+- vuln-report-format.md
 
-Claude Code already loads the action-safety rule (`rules/red-lines.md`) through
-`CLAUDE.md`; it is resident on every session and takes precedence over the rules
-below. The context pack adds only route-specific checks:
+## CCST 工程规则
 
-- `rules/context-loading.md` — minimal context assembly.
-- `rules/coverage-gate.md` — coverage states and completion claims.
-
-`rules/context-loading.md` is loaded by the entrypoint as the assembly contract;
-`tools/context_pack.py::_required_checks()` owns the runtime execution checks
-and does not repeat the assembly rule.
-
-## On-Demand Read
-
-- Hunt or Autopilot: `rules/hunting.md`.
-- Tool orchestration or AI priority decisions: `rules/tool-ai-boundary.md`.
-- Web intelligence or advisory research: `rules/web-intel.md`.
-- Candidate validation or report preparation: `rules/reporting.md`.
-- Session review or reusable-knowledge promotion: `rules/retrospective.md`.
-
-The entrypoint that starts the workflow must name the on-demand rule before
-execution; `/context-pack` must not load `rules/hunting.md` unless the route
-explicitly requests it.
-
-## Semantic Owners
-
-Each rule has one semantic owner. Other files may reference or enforce the
-contract, but must not redefine it.
-
-| Rule | Owner |
-|---|---|
-| `context-loading.md` | `tools/context_pack.py` |
-| `red-lines.md` | `CLAUDE.md` loads it; `rules/red-lines.md` owns the semantics |
-| `coverage-gate.md` | `tools/coverage_matrix.py` |
-| `hunting.md` | `rules/hunting.md` |
-| `reporting.md` | `rules/reporting.md`; report rendering: `skills/src-hunter/modules/report-writing.md` |
-| `retrospective.md` | `commands/retrospect.md` |
-| `tool-ai-boundary.md` | `rules/tool-ai-boundary.md` |
-| `web-intel.md` | `tools/web_intel_artifact.py` |
-
-When a contract changes, update its owner and this index in the same change.
-
-Web 方法与信号索引迁至 `knowledge/playbooks/web2-evidence-contracts.md`，按信息缺口读取；不再作为 Context Pack 的公共必读检查。
+ccst/ 单独保存凭据、副作用、证据、目标状态、完成与发布等工程合同。
+它们接入现有工具，不另定 6k 的调查方法、类别偏好或迭代节奏。
+实际动作只读相关合同；项目开发规范位于 .trellis/spec/，入口见 docs/ccst-development.md。

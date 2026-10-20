@@ -1425,6 +1425,10 @@ An actual single-entry switch requires all kinds and prune. Its versioned
 source-scope/executor/method/native fingerprints, before/after receipts/hashes,
 every operation's path/source/owner/before/after hashes and expected entry identities.
 Ordinary later partial-kind sync remains available; it does not claim a cutover.
+Strict entry-cutover conflicts apply only to an actual switch. For ordinary
+updates, an already owned file matching the current desired source may complete
+an interrupted receipt update. A third state, including an intermediate payload
+after its source changes again, still conflicts.
 Source scope covers CLAUDE, rules, runtime docs, Python/Shell tools, Python memory
 and active knowledge (excluding historical archives); tests and target data are not
 release authority. The method manifest and reader bind method publication separately.
@@ -1433,17 +1437,27 @@ After preflight, record phase `payload` before publishing non-entry resources,
 retiring unchanged old entries, then publishing new entries last. Verify all bytes
 and entries; persist phase `receipt` before writing the after receipt. This phase
 fixes the after-state even when before/after receipt bytes are identical. Recheck
-receipt/payload/entries before clearing the record. Only identical fixed-version
-recovery may adopt recorded desired exact-after files; no record, source changes,
-unplanned entries or third states are refused. Receipt-phase recovery may only
+receipt/payload/entries before clearing the record. During an entry cutover, only
+identical fixed-version recovery may adopt recorded desired exact-after files;
+no record, source changes, unplanned entries or third states are refused. Receipt-phase recovery may only
 verify the after-state, complete its receipt and clean the record, not replay payload.
 Reverse synchronization requires approved prior assets and the migration-aware
 executor. These are process-interruption guarantees, not cross-file atomicity,
 power-loss recovery, zero downtime, all-roots inspection or host-cache acceptance.
 The read-side receipt root and every entry must be objects. Missing receipts and
 empty objects retain their current comparison semantics. Read-side entries need
-no new hash field or unknown-field policy; non-skills object records remain ignored.
+no new hash field or unknown-field policy; Skill inventory ignores non-skills object records.
 Do not lift the writer's stronger admission checks into the reader as a shape fix.
+When skills are selected for a single-entry profile, compare also checks the
+selected matching resources against existing hashed ownership records. A stale
+receipt becomes an existing `diff` item with an ownership reason and follows the
+same critical/advisory classification; it must not report clean merely because
+source and installed bytes match. Disabled-command renames use the existing
+ownership mapping. When the core entry has a hashed ownership record, a matching
+selected resource with no ownership entry is also drift (for example, a newly
+copied file whose receipt publication was interrupted). Missing/hashless legacy
+receipts and commands/agents-only comparison retain their read semantics;
+compare never repairs the receipt.
 ### Validation & Error Matrix
 Unknown/malformed ownership metadata fails visibly. Path escape/symlink or local
 modification preserves the destination and reports whole-batch conflict. An entry
