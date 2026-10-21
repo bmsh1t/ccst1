@@ -30,6 +30,7 @@ from memory.rotation import (  # noqa: E402
     rotate_if_needed,
     total_bytes,
 )
+from memory.hunt_journal import HuntJournal  # noqa: E402
 
 # Files we consider rotatable. Anything else in the directory is left alone.
 ROTATABLE = ("audit.jsonl", "patterns.jsonl", "journal.jsonl")
@@ -58,7 +59,7 @@ def _find_targets(root: Path) -> list[Path]:
         # surface their live path as a target even if the live file is gone.
         for bp in root.rglob(name + ".*"):
             stem = bp.with_suffix("")  # strip the .N suffix
-            if stem.name == name:
+            if stem.name == name and bp.suffix[1:].isascii() and bp.suffix[1:].isdigit():
                 found.add(stem)
     return sorted(found)
 
@@ -95,7 +96,12 @@ def do_rotate(root: Path, max_bytes: int, keep: int) -> int:
     """Rotate every oversize file. Returns the count rotated."""
     rotated = 0
     for path in _find_targets(root):
-        if rotate_if_needed(path, max_bytes=max_bytes, keep=keep):
+        if path.name == "journal.jsonl":
+            with HuntJournal(path).locked():
+                changed = rotate_if_needed(path, max_bytes=max_bytes, keep=keep)
+        else:
+            changed = rotate_if_needed(path, max_bytes=max_bytes, keep=keep)
+        if changed:
             rotated += 1
             print(f"rotated: {path}")
     return rotated
@@ -105,7 +111,11 @@ def do_purge(root: Path, keep: int) -> int:
     """Purge all existing backups. Returns the count removed."""
     removed = 0
     for path in _find_targets(root):
-        n = purge_backups(path, keep=keep)
+        if path.name == "journal.jsonl":
+            with HuntJournal(path).locked():
+                n = purge_backups(path, keep=keep)
+        else:
+            n = purge_backups(path, keep=keep)
         if n:
             removed += n
             print(f"purged {n} backup(s): {path}")

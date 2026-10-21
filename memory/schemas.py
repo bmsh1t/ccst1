@@ -14,7 +14,10 @@ CURRENT_SCHEMA_VERSION = 1
 JOURNAL_REQUIRED = {"ts", "target", "action", "vuln_class", "endpoint", "result", "schema_version"}
 # user_intent preserves the operator's original instruction for this session; it
 # survives summarization/compaction so a resumed run rebuilds intent, not just state.
-JOURNAL_OPTIONAL = {"severity", "payout", "technique", "notes", "tags", "session_id", "user_intent"}
+JOURNAL_OPTIONAL = {
+    "severity", "payout", "technique", "notes", "tags", "session_id", "user_intent",
+    "command_id", "store_id",
+}
 JOURNAL_ALL = JOURNAL_REQUIRED | JOURNAL_OPTIONAL
 
 PATTERN_REQUIRED = {"ts", "target", "vuln_class", "technique", "tech_stack", "schema_version"}
@@ -129,6 +132,12 @@ def validate_journal_entry(entry: dict) -> dict:
     if "session_id" in entry:
         if not isinstance(entry["session_id"], str) or not entry["session_id"].strip():
             raise SchemaError("Journal entry: 'session_id' must be a non-empty string")
+
+    if "command_id" in entry or "store_id" in entry:
+        for field in ("command_id", "store_id"):
+            value = entry.get(field)
+            if not isinstance(value, str) or not value.strip() or "\x00" in value:
+                raise SchemaError(f"Journal entry: '{field}' must be a non-empty string")
 
     return entry
 

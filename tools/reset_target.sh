@@ -143,31 +143,35 @@ done
 # itself is global cross-target memory and is preserved; only this target's
 # rows go, so the next round's resume/latest-session projections start clean.
 if [[ -n "${JOURNAL}" && -f "${JOURNAL}" ]]; then
-    FILTERED=$(python3 - "${JOURNAL}" "${CANONICAL_TARGET}" <<'PY'
+    FILTERED=$(python3 - "${JOURNAL}" "${CANONICAL_TARGET}" "${SCRIPT_REPO_ROOT}" <<'PY'
 import json
 import sys
 
 journal_path, target = sys.argv[1], sys.argv[2]
+sys.path.insert(0, sys.argv[3])
+from memory.hunt_journal import HuntJournal
+
 kept = []
 removed = 0
-with open(journal_path, encoding="utf-8") as handle:
-    for line in handle:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if target in line:
-            try:
-                entry = json.loads(stripped)
-            except ValueError:
-                kept.append(line.rstrip("\n"))
+with HuntJournal(journal_path).locked():
+    with open(journal_path, encoding="utf-8") as handle:
+        for line in handle:
+            stripped = line.strip()
+            if not stripped:
                 continue
-            if entry.get("vuln_class") == "session_summary":
-                removed += 1
-                continue
-        kept.append(line.rstrip("\n"))
-with open(journal_path, "w", encoding="utf-8") as handle:
-    for line in kept:
-        handle.write(line + "\n")
+            if target in line:
+                try:
+                    entry = json.loads(stripped)
+                except ValueError:
+                    kept.append(line.rstrip("\n"))
+                    continue
+                if entry.get("vuln_class") == "session_summary":
+                    removed += 1
+                    continue
+            kept.append(line.rstrip("\n"))
+    with open(journal_path, "w", encoding="utf-8") as handle:
+        for line in kept:
+            handle.write(line + "\n")
 print(removed)
 PY
     )

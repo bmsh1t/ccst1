@@ -408,6 +408,15 @@ legacy target profile, is history/projection rather than another final runtime
 writer. Journal/audit history stays available on demand without becoming default
 model context. No automatic long-term compaction or knowledge promotion is added.
 
+`remember` commits experience through that same Store, then appends its audit
+through `HuntJournal.append_once`. Optional journal `store_id/command_id` bind the
+canonical target and command; no second receipt database is introduced. A failed
+journal append retains the committed experience and returns a recoverable partial.
+Identical-input retry fills a missing journal row without another Store mutation.
+Deduplication covers retained live/numbered backups, not purged or unbound legacy
+history; old bytes remain unchanged and that boundary is visible. Append, rotation
+and explicit journal cleanup share the journal owner's sidecar lock.
+
 Knowledge discovery is not review admission. `knowledge_promote` binds registry
 `review_receipt` to immutable publication/review hashes and the explicit review
 artifacts; `knowledge_review` is the shared reader. New and legacy recall adapters

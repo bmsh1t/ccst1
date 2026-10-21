@@ -18,15 +18,26 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
-from memory.hunt_journal import HuntJournal
+from memory.hunt_journal import HuntJournal, JournalConflictError, JournalIntegrityError
 from memory.schemas import SchemaError, make_journal_entry
 from memory.target_profile import default_memory_dir
 from tools.target_memory import _operation_refs
-from tools.target_store import StoreError, runtime_store
+from tools.target_store import StoreError, runtime_store, target_switch_lock
 try:
     from tools.target_paths import canonical_target_value
 except ImportError:  # pragma: no cover - direct tools/ execution
     from target_paths import canonical_target_value
+
+
+class RememberJournalError(OSError):
+    """A committed experience has an unconfirmed journal write."""
+
+    def __init__(self, summary: dict):
+        self.summary = summary
+        super().__init__(
+            f"Store experience committed as {summary['experience_id']} "
+            f"(command_id={summary['command_id']}); journal not confirmed: {summary['error']}"
+        )
 
 
 def normalize_endpoint(value: str) -> str:
@@ -222,32 +233,62 @@ def remember_finding(
             statement += f"; {notes}"
         if kind == "note":
             statement = f"Unverified {result} account: {statement}"
-        receipt = store.remember(
-            command_id=command_id or f"remember:{uuid.uuid4().hex}", kind=kind,
-            statement=statement, conditions=conditions or "unknown",
-            reopen_when=reopen_when, next_intent=next_intent,
-            evidence=refs, actor=actor,
-        )
-    journal_saved = False
-    if receipt is None or not receipt["replayed"]:
-        try:
-            HuntJournal(memory_dir / "journal.jsonl").append(entry)
-        except OSError as exc:
-            if receipt is not None:
-                raise OSError(f"Store experience committed as {receipt['entity_id']}; journal append failed: {exc}") from exc
-            raise
-        journal_saved = True
-    return {
+        # Capture the same Store identity as the commit without holding a SQLite
+        # transaction during journal I/O or introducing another receipt owner.
+        with target_switch_lock(root, canonical_target):
+            binding = store.binding()
+            receipt = store.remember(
+                command_id=command_id or f"remember:{uuid.uuid4().hex}", kind=kind,
+                statement=statement, conditions=conditions or "unknown",
+                reopen_when=reopen_when, next_intent=next_intent,
+                evidence=refs, actor=actor,
+            )
+        entry.update(command_id=receipt["command_id"], store_id=binding["store_id"])
+    summary = {
+        "status": "ok",
         "target": requested_target, "resolved_target": canonical_target,
-        "endpoint": normalized_endpoint, "journal_saved": journal_saved,
+        "endpoint": normalized_endpoint, "journal_saved": False,
+        "journal_replayed": False, "journal_status": "pending",
         "finding_saved": False, "pattern_saved": False,
         "experience_saved": receipt is not None,
         "experience_id": receipt["entity_id"] if receipt else None,
+        "experience_replayed": receipt["replayed"] if receipt else False,
+        "command_id": receipt["command_id"] if receipt else None,
+        "store_id": entry.get("store_id"), "store_receipt": receipt,
         "tech_stack": requested_tech_stack,
     }
+    try:
+        journal = HuntJournal(memory_dir / "journal.jsonl")
+        if receipt is None:
+            journal.append(entry)
+            saved = True
+        else:
+            saved = journal.append_once(entry)
+    except (OSError, JournalConflictError, JournalIntegrityError) as exc:
+        if receipt is None:
+            raise
+        summary.update(
+            status="partial", journal_status="unconfirmed",
+            error=str(exc), error_type=type(exc).__name__,
+            recovery={
+                "command_id": receipt["command_id"],
+                "journal_path": str(memory_dir / "journal.jsonl"),
+                "action": "Resolve the journal error, then retry remember with the original resolved inputs "
+                          "and this --command-id. Do not repeat the network execution.",
+            },
+        )
+        raise RememberJournalError(summary) from exc
+    summary.update(journal_saved=saved, journal_replayed=not saved,
+                   journal_status="appended" if saved else "already_present")
+    if receipt and receipt["replayed"] and saved:
+        summary["journal_recovery_note"] = (
+            "Missing retained command binding was appended. Legacy unbound rows were preserved; "
+            "their ownership cannot be inferred. Purged bindings are outside deduplication retention."
+        )
+    return summary
 
 
-def main() -> None:
+def main() -> int:
     parser = argparse.ArgumentParser(description="Persist a finding into hunt memory")
     parser.add_argument("--target", default="", help="Target domain")
     parser.add_argument("--vuln-class", default="", help="Vulnerability class, e.g. idor")
@@ -273,7 +314,7 @@ def main() -> None:
     parser.add_argument("--reopen-when", default="", help="condition that reopens a negative result")
     parser.add_argument("--next-intent", default="", help="suggested next investigation step")
     parser.add_argument("--operation-ref", action="append", default=[], help="OPERATION_ID:STEP; repeatable")
-    parser.add_argument("--command-id", default=None, help="idempotent Store command ID")
+    parser.add_argument("--command-id", default=None, help="idempotent Store and journal command ID")
     parser.add_argument("--actor", default="operator", help="experience author")
     parser.add_argument("--memory-dir", default="", help="Optional hunt-memory directory")
     parser.add_argument("--repo-root", default="", help="Repository root for default memory and validation summary")
@@ -353,28 +394,46 @@ def main() -> None:
             command_id=args.command_id,
             actor=args.actor,
         )
-    except (SchemaError, StoreError, ValueError) as exc:
-        parser.error(str(exc))
+    except RememberJournalError as exc:
+        summary = exc.summary
+        if validate_summary_path is not None:
+            summary["validate_summary"] = str(validate_summary_path)
+        if args.json:
+            print(json.dumps(summary, indent=2))
+        else:
+            print(str(exc), file=sys.stderr)
+            print(summary["recovery"]["action"], file=sys.stderr)
+        return 2
+    except (SchemaError, StoreError, ValueError, OSError) as exc:
+        if args.json:
+            print(json.dumps({"status": "error", "error": str(exc), "error_type": type(exc).__name__}, indent=2))
+        else:
+            print(f"remember: {exc}", file=sys.stderr)
+        return 2
     if validate_summary_path is not None:
         summary["validate_summary"] = str(validate_summary_path)
 
     if args.json:
         print(json.dumps(summary, indent=2))
-        return
+        return 0
 
     print("REMEMBERED")
     print(f"Target: {summary['target']}")
     print(f"Endpoint: {summary['endpoint']}")
-    print(f"Journal: {'yes' if summary['journal_saved'] else 'no'}")
+    print(f"Journal: {summary['journal_status']}")
     print(f"Target profile updated: {'yes' if summary['finding_saved'] else 'no'}")
     print(f"Pattern saved: {'yes' if summary['pattern_saved'] else 'no'}")
     if summary.get("experience_saved"):
         print(f"Store experience: {summary['experience_id']}")
+        print(f"Command ID: {summary['command_id']}")
+    if summary.get("journal_recovery_note"):
+        print(summary["journal_recovery_note"])
     if summary.get("validate_summary"):
         print(f"Validate summary: {summary['validate_summary']}")
     if summary["tech_stack"]:
         print(f"Tech stack: {', '.join(summary['tech_stack'])}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

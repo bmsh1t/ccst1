@@ -42,8 +42,22 @@ requests merely to save memory. Without registered evidence, use an advisory not
 The journal remains an audit artifact. The command does not write `patterns.jsonl`
 or update target-profile findings/tested endpoints, and does not automatically
 promote knowledge across targets. An identical `--command-id` replay does not
-append another journal entry. If journal append fails after a Store commit, the
-error identifies the committed experience; preserve it and inspect the audit gap.
+duplicate a retained command-bound journal entry. If journal append fails after a
+Store commit, text/JSON reports `partial` (exit 2) with the committed receipt and
+`command_id`, including an automatically generated ID. Resolve the journal error,
+then retry with the **original resolved inputs and the same `--command-id`**; this
+only fills a missing journal row and does not save the experience twice. Saving
+memory never requires repeating the network execution. With `--from-validate`,
+keep the same summary bytes or pass its resolved fields explicitly.
+
+`journal_saved` means a row was appended by this call; `journal_replayed` means
+the same row already exists, and `journal_status` distinguishes `appended`,
+`already_present` and `unconfirmed`. Journal-only changes such as severity or tags
+under the same ID are explicit conflicts. Timestamps/session IDs preserve the
+original row. Deduplication covers the live file and existing numbered backups;
+explicit retention/purge can remove that binding. Legacy unbound rows are kept
+unchanged, so a first replay that repairs an absent binding cannot prove whether
+an old row belongs to it and includes a `journal_recovery_note`.
 
 For validation prefill, select the current target or an explicit summary:
 
