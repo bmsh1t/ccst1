@@ -116,8 +116,10 @@ def build_validate_scaffold(
     }
     if not runner_summary:
         scaffold["_scaffold_warnings"] = [
-            "no on-disk runner run recorded under this finding id — "
-            f"run `tools/validation_runner.py request-diff --finding-id {finding_id}` "
-            "first, then regenerate the scaffold"
+            "no registered evidence summary recorded under this finding id — "
+            "preserve the existing raw execution and register it with "
+            f"`tools/validation_runner.py record-evidence --target {target} --finding-id {finding_id} "
+            "--evidence-json FILE --attempt-id ORIGINAL_ATTEMPT`, then regenerate the scaffold; "
+            "do not repeat an execution merely to obtain a summary"
         ]
     return scaffold

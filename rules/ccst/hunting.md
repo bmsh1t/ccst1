@@ -92,7 +92,7 @@ AI/tool responsibilities remain in `rules/ccst/tool-ai-boundary.md`.
   （`BB_NUCLEI_MAX_TARGETS`，quick/standard/full 上限 50/100/200），
   用于显式选择的有界 CVE breadth 观察，不替代组件适用性判断或专项验证。
   SQLi/SSRF 由 AI 根据目标证据直接选择 browser/curl/raw
-  请求；需要稳定 HTTP 请求对时可选 `request-diff`，需要回调时使用 OAST Listener。
+  请求并保存原始材料，经原生证据入口登记；需要回调时使用 OAST Listener。
 - `summary.json` 是最新执行投影，running/skipped/unavailable/incomplete 也会发布；
   文件存在不证明完成。每轮 `nuclei_runs/<run-id>/` 保留输入、raw JSONL、日志、
   退出码与状态；lane 计数区分已完成和未完成 origin，失败输入仍留在 remaining。

@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Deterministic validation runner for Claude-driven security findings.
+"""Native evidence registration and review for Claude-driven security findings.
 
-Validation Runner v1 intentionally stays small:
+Public evidence entries:
 
-- request-diff: AI-supplied exact baseline/variant replay across one input dimension.
+- record-observation: preserve no-verdict native execution without a Finding.
 - record-evidence: register already-executed native observations without replay.
 - review-candidate: close/reopen one exact evidence bundle with an explicit receipt.
 
 AI 仍负责选择 hypothesis、解释业务影响、决定是否升级/降级；本工具只负责稳定
-执行 replay / diff / evidence bundle / ledger 写入。
+证据校验、原生登记和历史执行材料的幂等补写。共享 HTTP helper 继续服务已有调用者。
 """
 
 from __future__ import annotations
@@ -23,7 +23,6 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -36,39 +35,35 @@ if str(BASE_DIR) not in sys.path:
 try:
     from tools.artifact_io import write_json_atomic as _write_json, publish_bytes_create_only
     from tools.browser_evidence import read_target_artifact, read_browser_observation_capture
-    from tools.auth_session import AuthSession, add_cli_args, session_from_args
-    from tools.contracts import WIRE_FACT_NAMES, WIRE_NEEDLE_FACT_NAMES, artifact_digest_material, runner_operation_id, validate_observed_difference, runner_summary_lane
+    from tools.auth_session import AuthSession
+    from tools.contracts import artifact_digest_material, runner_operation_id, validate_observed_difference, runner_summary_lane
     from tools.evidence_identity import normalize_actor, normalize_object_scope, normalize_variant
-    from tools.response_diff import diff_responses, snapshot_response
-    from tools.request_diff import RequestPairError, request_pair_digest, validate_request_pair
     from tools.runner_candidate_review import review_candidate
     from tools.browser_surface import public_url_shape
-    from tools.evidence_identity import canonical_endpoint_identity, canonical_vuln_class, normalize_family, exact_endpoint_identity
+    from tools.evidence_identity import canonical_endpoint_identity, normalize_family, exact_endpoint_identity
     from tools.identity_contract import ClosureCellKey
-    from tools.private_artifacts import private_artifact_dir, write_private_json, write_private_text
+    from tools.private_artifacts import private_artifact_dir, write_private_text
     from tools.target_paths import canonical_target_value, target_storage_key, target_owned_nonempty_evidence_ref
     from tools.scope_context import url_belongs_to_target
     from tools.scope_source import load_scope_context
     from tools.autopilot_continuation import load_execution_scope, resolve_context_file
-    from tools.target_store import FindingNotFoundError, StoreError, TargetStore, runtime_store, target_switch_lock, validate_cleanup_confirmation
+    from tools.target_store import StoreError, TargetStore, runtime_store, target_switch_lock, validate_cleanup_confirmation
 except ImportError:  # pragma: no cover - direct tools/ execution
     from artifact_io import write_json_atomic as _write_json, publish_bytes_create_only
     from browser_evidence import read_target_artifact, read_browser_observation_capture
-    from auth_session import AuthSession, add_cli_args, session_from_args  # type: ignore
-    from contracts import WIRE_FACT_NAMES, WIRE_NEEDLE_FACT_NAMES, artifact_digest_material, runner_operation_id, validate_observed_difference, runner_summary_lane  # type: ignore
+    from auth_session import AuthSession  # type: ignore
+    from contracts import artifact_digest_material, runner_operation_id, validate_observed_difference, runner_summary_lane  # type: ignore
     from evidence_identity import normalize_actor, normalize_object_scope, normalize_variant  # type: ignore
-    from response_diff import diff_responses, snapshot_response  # type: ignore
-    from request_diff import RequestPairError, request_pair_digest, validate_request_pair  # type: ignore
     from runner_candidate_review import review_candidate
     from browser_surface import public_url_shape  # type: ignore
-    from evidence_identity import canonical_endpoint_identity, canonical_vuln_class, normalize_family, exact_endpoint_identity  # type: ignore
+    from evidence_identity import canonical_endpoint_identity, normalize_family, exact_endpoint_identity  # type: ignore
     from identity_contract import ClosureCellKey  # type: ignore
-    from private_artifacts import private_artifact_dir, write_private_json, write_private_text  # type: ignore
+    from private_artifacts import private_artifact_dir, write_private_text  # type: ignore
     from target_paths import canonical_target_value, target_storage_key, target_owned_nonempty_evidence_ref  # type: ignore
     from scope_context import url_belongs_to_target  # type: ignore
     from scope_source import load_scope_context  # type: ignore
     from autopilot_continuation import load_execution_scope, resolve_context_file
-    from target_store import FindingNotFoundError, StoreError, TargetStore, runtime_store, target_switch_lock, validate_cleanup_confirmation  # type: ignore
+    from target_store import StoreError, TargetStore, runtime_store, target_switch_lock, validate_cleanup_confirmation  # type: ignore
 
 
 SCHEMA_VERSION = 1
@@ -76,19 +71,8 @@ MAX_RESPONSE_BYTES = 1024 * 1024
 
 
 class RequestPreflightError(ValueError):
-    """Reject a request pair before any network I/O."""
+    """Reject a request before any network I/O."""
 
-
-# Parser/DB error markers. Category-agnostic: any declared fact that names a
-# DB/parser error marker (``error_marker_variant_only``) is checked with this,
-# regardless of which vulnerability family the AI is testing.
-DB_ERROR_MARKER_RE = re.compile(
-    r"SQL syntax|sqlite|mysql|mariadb|postgres|postgresql|psql|oracle|ORA-\d+|"
-    r"mssql|SQL Server|ODBC|JDBC|PDOException|SequelizeDatabaseError|"
-    r"near ['\"][^'\"]+['\"]: syntax error|unterminated quoted string|"
-    r"MongoError|CastError|BSON|NoSQL",
-    re.I,
-)
 
 RUNNER_RESULT_TO_FINDING_STATUS = {
     # validation_runner 只证明候选证据包，不代表 /validate gate 已通过。
@@ -129,50 +113,9 @@ def now_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _run_id() -> str:
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    return f"{stamp}-{uuid.uuid4().hex[:8]}"
-
-
 def _safe_id(value: str, default: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9._:-]+", "_", str(value or "").strip()).strip("._-")
     return cleaned[:120] or default
-
-
-def _default_finding_id(lane: str, url: str, method: str = "", family: str = "") -> str:
-    """Derive the default Finding ID from the full finding identity.
-
-    The cleaned path stays as the readable stem, but a short digest over
-    method+url+family keeps distinct endpoints (e.g. /a/b vs /a_b, or the
-    same path under a different method/class) from colliding into one ID
-    while identical identities still derive the same idempotent ID.
-    """
-    parsed = urllib.parse.urlparse(url)
-    path = parsed.path or "root"
-    suffix = _safe_id(path.replace("/", "_"), "endpoint")
-    identity = f"{str(method or '').upper()}|{str(url or '')}|{str(family or '')}"
-    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:8]
-    return f"{lane}-{suffix}-{digest}"
-
-
-def _bundle_dir(repo_root: Path, target: str, finding_id: str) -> Path:
-    target_key = target_storage_key(canonical_target_value(target))
-    path = (
-        repo_root
-        / "evidence"
-        / target_key
-        / "validation"
-        / _safe_id(finding_id, "finding")
-        / _run_id()
-    )
-    path.mkdir(parents=True, exist_ok=False)
-    return path
-
-
-def _private_bundle_dir(repo_root: Path, target: str, bundle: Path) -> Path:
-    target_key = target_storage_key(canonical_target_value(target))
-    relative = bundle.relative_to(repo_root / "evidence" / target_key / "validation")
-    return private_artifact_dir(repo_root, "validation", target_key, str(relative))
 
 
 def _read_json_object(path: Path) -> dict[str, Any]:
@@ -361,20 +304,6 @@ def _runner_command_context(store: TargetStore, *, action_id: str | None,
     return context
 
 
-def _ensure_primary_finding(store: TargetStore, *, finding_id: str, endpoint: str,
-                            method: str, family: str) -> None:
-    try:
-        store.finding(finding_id)
-    except FindingNotFoundError:
-        store.create_finding(
-            command_id=f"create-finding:{finding_id}", finding_id=finding_id,
-            endpoint=endpoint, method=method, family=family,
-            title=f"Validation candidate {finding_id}",
-            claim="The recorded validation operation requires technical assessment",
-            actor="validation-runner",
-        )
-
-
 def _store_observation(run: dict[str, Any], *, repo_root: Path, side: str | None, method: str,
                        family: str, observed_at: str, result: str,
                        incomplete: bool,
@@ -397,7 +326,7 @@ def _store_observation(run: dict[str, Any], *, repo_root: Path, side: str | None
         variant = side
         snapshot = run.get(side) or {}
         # Old saved summaries retain their recorded side-name semantics on retry.
-        # New replays always publish a separate, normalized observation per side.
+        # Later historical pair versions published normalized observations per side.
         observation = run.get(f"{side}_observation") or run
         variant = str(observation.get("variant") or variant)
     # Identity belongs to this observed step, never to its summary or sibling.
@@ -573,10 +502,6 @@ def sync_runner_artifacts(summary: dict[str, Any], *, repo_root: Path) -> dict[s
             return {"status": receipt.get("status", "updated"), "store": receipt}
         except Exception as exc:
             return {"status": "partial", "store": {"status": "error", "error": " ".join(str(exc).split())[:500]}}
-
-
-def parse_headers(values: list[str] | None) -> dict[str, str]:
-    return AuthSession(values or []).headers_dict()
 
 
 def _format_request(method: str, url: str, headers: dict[str, str], body: str = "") -> str:
@@ -765,495 +690,6 @@ def _validate_request_facts(
     return state_changing
 
 
-def _write_raw_http(
-    private_dir: Path,
-    prefix: str,
-    response: dict[str, Any],
-    repo_root: Path,
-) -> dict[str, str]:
-    request_path = write_private_text(private_dir / f"{prefix}request.txt", response["request_text"])
-    response_path = write_private_text(private_dir / f"{prefix}response.txt", response["response_text"])
-    identity_path = write_private_json(
-        private_dir / f"{prefix}identity.json",
-        {
-            "url_representation": "exact",
-            "requested_url": response.get("requested_url") or response.get("url", ""),
-            "final_url": response.get("final_url") or response.get("url", ""),
-            "redirect_chain": response.get("redirect_chain") or [],
-        },
-    )
-    return {
-        "request": _rel(request_path, repo_root),
-        "response": _rel(response_path, repo_root),
-        "identity": _rel(identity_path, repo_root),
-    }
-
-
-def _response_snapshot(response: dict[str, Any]) -> dict[str, Any]:
-    return snapshot_response(
-        response["status"],
-        response["headers"],
-        response["body"],
-        truncated=bool(response.get("body_truncated")),
-        observed_bytes=int(response.get("body_observed_bytes", 0) or 0),
-    )
-
-
-def _response_diff(baseline: dict[str, Any], variant: dict[str, Any]) -> dict[str, Any]:
-    payload = diff_responses(
-        baseline_status=baseline["status"],
-        baseline_headers=baseline["headers"],
-        baseline_body=baseline["body"],
-        variant_status=variant["status"],
-        variant_headers=variant["headers"],
-        variant_body=variant["body"],
-    )
-    payload["baseline"] = _response_snapshot(baseline)
-    payload["variant"] = _response_snapshot(variant)
-    return payload
-
-
-def _merge_request_headers(request: dict[str, Any], extra: dict[str, str] | None) -> dict[str, str]:
-    headers = {str(key): str(value) for key, value in (request.get("headers") or {}).items()}
-    for key, value in (extra or {}).items():
-        existing = next((name for name in headers if name.lower() == key.lower()), None)
-        if existing is not None:
-            del headers[existing]
-        headers[str(key)] = str(value)
-    return headers
-
-
-def _classifier_vuln_class(classifier: str, explicit: str = "") -> str:
-    return canonical_vuln_class(explicit or classifier)
-
-
-def _request_pair_materiality(run: dict[str, Any]) -> bool:
-    """Check the explicit threshold predicate; never decide a default outcome."""
-    changed = run.get("diff", {}).get("changed", {})
-    return bool(
-        changed.get("json_count")
-        or changed.get("status")
-        or changed.get("json_fields")
-        or abs(int(run.get("diff", {}).get("body_length", {}).get("delta", 0) or 0)) > 20
-    )
-
-
-def _run_wire_facts(run: dict[str, Any], baseline_body: str, variant_body: str) -> dict[str, bool]:
-    """Compute every declarable wire fact for one replay run.
-
-    Category-free by construction: these are predicates over raw observations
-    (status codes, body markers, JSON shape, diff numbers). No vulnerability
-    class, header vocabulary, or framework assumption participates.
-    """
-    diff = run.get("diff") if isinstance(run.get("diff"), dict) else {}
-    changed = diff.get("changed") or {}
-    count = diff.get("json_count") or {}
-    base_count = count.get("baseline")
-    var_count = count.get("variant")
-    count_delta = count.get("delta")
-    fields = diff.get("json_fields") or {}
-    fields_added = list(fields.get("added") or [])
-    fields_removed = list(fields.get("removed") or [])
-    body_delta = int((diff.get("body_length") or {}).get("delta", 0) or 0)
-    baseline_status = int((run.get("baseline") or {}).get("status") or 0)
-    variant_status = int((run.get("variant") or {}).get("status") or 0)
-
-    baseline_marker = bool(DB_ERROR_MARKER_RE.search(str(baseline_body or "")))
-    variant_marker = bool(DB_ERROR_MARKER_RE.search(str(variant_body or "")))
-    material = _request_pair_materiality(run)
-    identical = (
-        baseline_status == variant_status
-        and baseline_body == variant_body
-        and not (run.get("baseline") or {}).get("body_truncated")
-        and not (run.get("variant") or {}).get("body_truncated")
-    )
-
-    return {
-        "error_marker_variant_only": variant_marker and not baseline_marker,
-        "count_delta_positive": isinstance(count_delta, int) and count_delta > 0,
-        "count_delta_negative": isinstance(count_delta, int) and count_delta < 0,
-        "fields_added": bool(fields_added),
-        "fields_removed": bool(fields_removed),
-        "body_length_delta": abs(body_delta) > 20,
-        "status_delta": bool(changed.get("status")),
-        "material_diff_any": material,
-        "identical_success_pair": (
-            200 <= baseline_status < 400
-            and 200 <= variant_status < 400
-            and identical
-        ),
-        "both_sides_rejected": (
-            baseline_status >= 400 and variant_status >= 400 and identical
-        ),
-        # Absolute content fact: body bytes differ, no size threshold. A
-        # sub-threshold byte delta is still a different object.
-        "distinct_bodies": str(baseline_body or "") != str(variant_body or ""),
-        # Timing is aggregated across runs in _compute_wire_facts; a single
-        # run never claims it on its own.
-        "stable_timing_delta": False,
-    }
-
-
-NEEDLE_FACT_RE = re.compile(r"^([a-z_]+)::(.+)$", re.S)
-
-
-def _needle_fact(name: str, needle: str, runs: list[dict[str, Any]], baseline_bodies: list[str], variant_bodies: list[str]) -> bool:
-    """Mechanically verify one needle declaration across all runs.
-
-    ``variant_body_contains``: the needle appears in every variant body.
-    ``baseline_body_lacks``: the needle appears in no baseline body AND in
-    every variant body (variant-only presence). The needle is the AI's
-    judgment of what string proves the point; this function only checks.
-    """
-    if not runs:
-        return False
-    if name == "variant_body_contains":
-        return all(needle in str(variant or "") for variant in variant_bodies)
-    if name == "baseline_body_lacks":
-        return (
-            all(needle not in str(base or "") for base in baseline_bodies)
-            and all(needle in str(variant or "") for variant in variant_bodies)
-        )
-    return False
-
-
-def _compute_wire_facts(
-    runs: list[dict[str, Any]],
-    baseline_bodies: list[str],
-    variant_bodies: list[str],
-) -> dict[str, bool]:
-    """Aggregate per-run facts: a fact holds when it holds in EVERY run.
-
-    ``stable_timing_delta`` is the one cross-run fact: the variant must be
-    slower than the baseline in every run (sign stability). Magnitude
-    judgment stays with the AI review; the runner only checks the stable
-    direction.
-    """
-    per_run = [
-        _run_wire_facts(run, base, var)
-        for run, base, var in zip(runs, baseline_bodies, variant_bodies)
-    ]
-    facts: dict[str, bool] = {}
-    for name in WIRE_FACT_NAMES:
-        if name == "stable_timing_delta":
-            continue
-        facts[name] = bool(per_run) and all(item.get(name) for item in per_run)
-    timing_stable = False
-    if runs:
-        deltas: list[int] = []
-        for run in runs:
-            base_ms = int((run.get("baseline") or {}).get("elapsed_ms") or 0)
-            var_ms = int((run.get("variant") or {}).get("elapsed_ms") or 0)
-            deltas.append(var_ms - base_ms)
-        timing_stable = bool(deltas) and all(delta > 0 for delta in deltas)
-    facts["stable_timing_delta"] = timing_stable
-    # Needle facts are evaluated at reconciliation time per declared entry
-    # (they are parameterized), not precomputed here; _declared_fact_holds
-    # routes them to _needle_fact.
-    return facts
-
-
-def _declared_fact_holds(
-    declared: str,
-    runs: list[dict[str, Any]],
-    baseline_bodies: list[str],
-    variant_bodies: list[str],
-    facts: dict[str, bool],
-) -> bool:
-    """Resolve one declared expectation entry against the computed facts.
-
-    Plain names look up the aggregated fact; needle entries (name::needle)
-    verify their literal substring mechanically across all runs.
-    """
-    needle_match = NEEDLE_FACT_RE.match(declared)
-    if needle_match:
-        name, needle = needle_match.group(1), needle_match.group(2)
-        if name not in WIRE_NEEDLE_FACT_NAMES:
-            return False
-        return _needle_fact(name, needle, runs, baseline_bodies, variant_bodies)
-    return bool(facts.get(declared))
-
-
-def _request_pair_spec_view(spec: dict[str, Any]) -> dict[str, Any]:
-    def view(request: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "method": request["method"],
-            "url": request["url"],
-            "header_names": sorted(str(key).lower() for key in request.get("headers", {})),
-            **{key: request[key] for key in ("actor", "object_scope", "variant")},
-        }
-
-    return {
-        "baseline": view(spec["baseline_request"]),
-        "variant": view(spec["variant_request"]),
-        "subject_side": spec["subject_side"],
-        "active_dimension": spec["active_dimension"],
-        "evidence_shape": spec["evidence_shape"],
-        "classifier": spec["classifier"],
-        "vuln_class": _classifier_vuln_class(spec["classifier"], spec.get("vuln_class", "")),
-        "expected_signal": spec.get("expected_signal", ""),
-        "expect_auth": bool(spec.get("expect_auth") is True),
-    }
-
-
-def run_request_diff(
-    *,
-    repo_root: Path,
-    target: str,
-    request_spec: dict[str, Any],
-    timeout: int = 10,
-    finding_id: str = "",
-    repeat: int | None = None,
-    no_ledger: bool = False,
-    browser_observed: bool = False,
-    state_changing: bool | None = None,
-    redline_checked: bool = False,
-    identity_v2: dict[str, Any] | None = None,
-    headers: dict[str, str] | None = None,
-    session: AuthSession | None = None,
-    lane: str = "request_diff",
-    source: str = "validation-runner:request-diff",
-    attempt_id: str | None = None,
-    action_id: str | None = None,
-    claim_token: str | None = None,
-    command_actor: str = "validation-runner",
-    context_file: str | Path | None = None,
-) -> dict[str, Any]:
-    """Replay an AI-selected exact pair and persist shared diff evidence."""
-    context_file = resolve_context_file(context_file, session.context_file if session else None)
-    scope = load_execution_scope(repo_root, target, context_file)
-    with _runner_admission(repo_root, target) as (store, backend_binding):
-        try:
-            spec = validate_request_pair(request_spec)
-        except RequestPairError as exc:
-            if not str(exc).startswith("manual_required:") or action_id is not None or claim_token is not None:
-                raise
-            finding_id = finding_id or "request-diff-manual"
-            bundle = _bundle_dir(repo_root, target, finding_id)
-            summary = {
-                "schema_version": SCHEMA_VERSION,
-                "lane": lane,
-                "target": canonical_target_value(target),
-                "finding_id": finding_id,
-                "result": "manual_required",
-                "candidate_ready": False,
-                "manual_required": str(exc),
-                "evidence_shape": "request_diff",
-                "classifier": str(request_spec.get("classifier") or "generic") if isinstance(request_spec, dict) else "generic",
-            }
-            return _finalize_runner_summary(summary, bundle / "summary.json", repo_root, backend_binding=backend_binding)
-
-        baseline = spec["baseline_request"]
-        variant = spec["variant_request"]
-        effective_state = _validate_request_facts(state_changing, redline_checked)
-        if not url_belongs_to_target(baseline["url"], target) or not url_belongs_to_target(variant["url"], target):
-            raise RequestPreflightError("request pair contains an off-target URL")
-        if not all(scope.allows_active(request["url"]) for request in (baseline, variant)):
-            raise RequestPreflightError("request pair contains a URL excluded by saved Scope")
-        subject = spec[f"{spec['subject_side']}_request"]
-        family = _classifier_vuln_class(spec["classifier"], spec.get("vuln_class", "")) or "runner-observation"
-        finding_id = finding_id or _default_finding_id(
-            lane, subject["url"], method=subject["method"], family=family)
-        observations = {
-            side: {**{key: spec[f"{side}_request"][key] for key in ("actor", "object_scope", "variant")},
-                   "evidence_role": "subject" if side == spec["subject_side"] else "control"}
-            for side in ("baseline", "variant")
-        }
-        if identity_v2 is not None:
-            key = ClosureCellKey.from_dict(identity_v2)
-            dimensions = key.dimension_map
-            if key.schema_version != 3:
-                raise RequestPairError("historical identity requires an explicit v3 replacement")
-            if (key.endpoint, key.family) != (exact_endpoint_identity(subject["url"]), family):
-                raise RequestPairError("identity_v2 must match the declared subject endpoint and family")
-            for dimension, value in (("method", subject["method"]), ("actor_relation", subject["actor"]),
-                                     ("object_scope", subject["object_scope"])):
-                if dimension in dimensions and dimensions[dimension] != value:
-                    raise RequestPairError(f"identity_v2.{dimension} conflicts with the subject observation")
-            observations[spec["subject_side"]]["identity_dimensions"] = dimensions
-            observations[spec["subject_side"]]["identity_status"] = "complete"
-            observations[spec["subject_side"]]["identity_technique"] = key.technique
-            observations[spec["subject_side"]]["identity_v2"] = key.to_dict()
-            identity_v2 = key.to_dict()
-        for side in ("baseline", "variant"):
-            observations[side].setdefault("identity_status", "none")
-            observations[side].setdefault("identity_technique", "")
-            observations[side].setdefault("identity_v2", {})
-        try:
-            existing = store.finding(finding_id)
-        except FindingNotFoundError:
-            existing = None
-        if existing and (existing["endpoint"], existing["method"], existing["family"]) != (
-            subject["url"], subject["method"], family,
-        ):
-            raise StoreError("declared subject endpoint, method and family must match the existing finding")
-        command_context = _runner_command_context(
-            store, action_id=action_id, claim_token=claim_token, command_actor=command_actor,
-            endpoint=subject["url"], family=family,
-        )
-        started_at = now_utc()
-        attempt_id = attempt_id or f"attempt:{uuid.uuid4().hex}"
-        receipt = store.start_attempt(
-            attempt_id=attempt_id, source=source, started_at=started_at,
-            actor=command_actor, action_id=action_id, claim_token=claim_token,
-        )
-        if receipt["replayed"]:
-            raise StoreError("attempt already started; retry registration from its saved summary or execute with a new attempt_id")
-        _ensure_primary_finding(
-            store, finding_id=finding_id, endpoint=subject["url"],
-            method=subject["method"], family=family,
-        )
-        bundle = _bundle_dir(repo_root, target, finding_id)
-        private_bundle = _private_bundle_dir(repo_root, target, bundle)
-        pair_digest = request_pair_digest(spec)
-        header_overlay_digest = hashlib.sha256(
-            json.dumps(headers or {}, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        ).hexdigest() if headers else ""
-        auth_session_id = session.session_id() if session is not None else ""
-        write_private_json(private_bundle / "inputs.json", spec)
-        repeat_count = max(1, int(repeat if repeat is not None else spec["repeat"]))
-        runs: list[dict[str, Any]] = []
-        baseline_bodies: list[str] = []
-        variant_bodies: list[str] = []
-        for idx in range(1, repeat_count + 1):
-            base_headers = _merge_request_headers(baseline, headers)
-            variant_headers = _merge_request_headers(variant, headers)
-            prefix = "" if repeat_count == 1 else f"{idx}."
-            run: dict[str, Any] = {
-                "iteration": idx,
-                "baseline_url": baseline["url"],
-                "variant_url": variant["url"],
-                "active_dimension": spec["active_dimension"],
-                "baseline_observation": observations["baseline"],
-                "variant_observation": observations["variant"],
-                "artifacts": {},
-            }
-            runs.append(run)
-            side = "baseline"
-            try:
-                base = request_once(
-                    repo_root=repo_root,
-                    target=target, url=baseline["url"], method=baseline["method"],
-                    headers=base_headers, body=baseline["body"], timeout=timeout, session=session,
-                    context_file=context_file,
-                )
-                artifacts = _write_raw_http(private_bundle, f"{prefix}baseline.", base, repo_root)
-                run["artifacts"].update({f"baseline_{key}": value for key, value in artifacts.items()})
-                run["baseline"] = _response_snapshot(base)
-                side = "variant"
-                variant_response = request_once(
-                    repo_root=repo_root,
-                    target=target, url=variant["url"], method=variant["method"],
-                    headers=variant_headers, body=variant["body"], timeout=timeout, session=session,
-                    context_file=context_file,
-                )
-                artifacts = _write_raw_http(private_bundle, f"{prefix}variant.", variant_response, repo_root)
-                run["artifacts"].update({f"variant_{key}": value for key, value in artifacts.items()})
-            except (OSError, urllib.error.URLError, ValueError) as exc:
-                run["error"] = {"side": side, "type": type(exc).__name__}
-                return _finalize_runner_summary({
-                    "schema_version": SCHEMA_VERSION, "lane": lane,
-                    "target": canonical_target_value(target), "finding_id": finding_id,
-                    "url": subject["url"], "method": subject["method"],
-                    "generated_at": now_utc(), "result": "partial", "status": "partial",
-                    "candidate_ready": False, "runs": runs, "repeat": repeat_count,
-                    "request_pair": _request_pair_spec_view(spec), "request_spec_sha256": pair_digest,
-                    "identity_v2": identity_v2,
-                    "auth_session_id": auth_session_id,
-                    "state_changing": effective_state, "redline_checked": redline_checked,
-                    "attempt_id": attempt_id or "",
-                    **command_context,
-                    "classifier": spec["classifier"], "vuln_class": _classifier_vuln_class(
-                        spec["classifier"], spec.get("vuln_class", "")
-                    ),
-                    "error": run["error"],
-                }, bundle / "summary.json", repo_root, backend_binding=backend_binding)
-            run.update(_response_diff(base, variant_response))
-            baseline_bodies.append(str(base.get("body") or ""))
-            variant_bodies.append(str(variant_response.get("body") or ""))
-
-        classifier = spec["classifier"]
-        # These predicates only verify explicit declarations; they never select a test.
-        wire_facts = _compute_wire_facts(runs, baseline_bodies, variant_bodies)
-        declared_expected = list(spec.get("expected") or [])
-        if not declared_expected and spec.get("expect_auth") is True:
-            # Sugar: expect_auth is the missing-auth declaration expressed as a
-            # boolean; expand to its fact form so both spellings reconcile alike.
-            declared_expected = ["identical_success_pair"]
-        expected_check: dict[str, Any] = {}
-        if declared_expected:
-            observed = {
-                name: _declared_fact_holds(name, runs, baseline_bodies, variant_bodies, wire_facts)
-                for name in declared_expected
-            }
-            unmet = [name for name, holds in observed.items() if not holds]
-            candidate_ready = not unmet
-            expected_check = {
-                "declared": declared_expected,
-                "unmet": unmet,
-                "observed": observed,
-            }
-        else:
-            candidate_ready = False
-        # Intent routing: the AI declares which direction its expectation points
-        # (hazard evidence vs. boundary-holds evidence); the runner routes on the
-        # declaration mechanically and never infers direction from fact names.
-        #   hazard + confirmed  -> tested_finding (a hazard declaration held)
-        #   clean   + confirmed -> tested_clean   (a clean declaration held, with
-        #                                       expected_check archived as evidence)
-        #   either + unmet      -> candidate      (the declaration was wrong — the
-        #                           most signal-rich outcome, must reach review)
-        declaration_intent = str(spec.get("declaration_intent") or "hazard")
-        if candidate_ready:
-            # clean-intent confirmation is a mechanically-backed tested_clean;
-            # hazard-intent confirmation is a finding candidate as before.
-            result = "tested_clean" if declaration_intent == "clean" else "tested_finding"
-        else:
-            # An undeclared or unmet expectation is unresolved, never an automatic clean.
-            result = "candidate"
-        vuln_class = _classifier_vuln_class(classifier, spec.get("vuln_class", ""))
-        diff_path = bundle / "diff.json"
-        _write_json(diff_path, {"runs": runs, "request_pair": _request_pair_spec_view(spec)})
-        diff_summaries = [str(run.get("diff", {}).get("summary") or "") for run in runs]
-        ledger = None
-        summary = {
-            "schema_version": SCHEMA_VERSION,
-            "lane": lane,
-            "target": canonical_target_value(target),
-            "finding_id": finding_id,
-            "url": subject["url"],
-            "method": subject["method"],
-            "generated_at": now_utc(),
-            "result": result,
-            "candidate_ready": candidate_ready,
-            "state_changing": effective_state,
-            "redline_checked": redline_checked,
-            "evidence_shape": spec["evidence_shape"],
-            "classifier": classifier,
-            "vuln_class": vuln_class,
-            "active_dimension": spec["active_dimension"],
-            "expected_signal": spec["expected_signal"],
-            "request_spec_sha256": pair_digest,
-            "header_overlay_sha256": header_overlay_digest,
-            "auth_session_id": auth_session_id,
-            "identity_v2": identity_v2,
-            "identity_status": "complete" if identity_v2 else "none",
-            "identity_technique": str(identity_v2.get("technique") or "") if isinstance(identity_v2, dict) else "",
-            "request_pair": _request_pair_spec_view(spec),
-            "repeat": repeat_count,
-            "runs": runs,
-            "artifacts": {"diff": _rel(diff_path, repo_root)},
-            "ledger_record": ledger,
-            "expected_check": expected_check,
-            "declaration_intent": declaration_intent,
-            "expected_note": spec.get("expected_note", ""),
-            "attempt_id": attempt_id or "",
-            **command_context,
-        }
-        summary_path = bundle / "summary.json"
-        return _finalize_runner_summary(summary, summary_path, repo_root, backend_binding=backend_binding)
-
-
 def record_native_evidence(
     *,
     repo_root: Path,
@@ -1268,7 +704,7 @@ def record_native_evidence(
     claim_token: str | None = None,
     command_actor: str = "validation-runner",
 ) -> dict[str, Any]:
-    """Bind existing raw observations to the same witness as request-diff.
+    """Bind existing raw observations to the shared validation witness.
 
     Result and meaning are explicitly AI-assessed, not inferred from bytes.
     This operation verifies references and records evidence; it executes nothing.
@@ -1683,7 +1119,7 @@ def record_native_observation(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run deterministic validation evidence lanes")
+    parser = argparse.ArgumentParser(description="Register and review native validation evidence")
     sub = parser.add_subparsers(dest="lane", required=True)
 
     def add_common(p: argparse.ArgumentParser, *, finding_required: bool = False) -> None:
@@ -1707,25 +1143,6 @@ def build_parser() -> argparse.ArgumentParser:
         p.set_defaults(state_changing=None)
         p.add_argument("--redline-checked", action="store_true", default=False)
 
-    request_diff = sub.add_parser(
-        "request-diff",
-        help="Replay an AI-supplied exact baseline/variant request pair",
-    )
-    add_common(request_diff)
-    add_cli_args(request_diff, include_context=True)
-    request_diff.add_argument("--request-spec", required=True, help="JSON file containing schema-v1 baseline/variant requests")
-    request_diff.add_argument("--header", action="append", default=[], help="Header overlay applied to both requests")
-    request_diff.add_argument("--timeout", type=int, default=10)
-    request_diff.add_argument("--repeat", type=int, default=None)
-    request_diff.add_argument("--attempt-id", default="", help="primary Store execution attempt identity")
-    request_diff.add_argument("--browser-observed", action="store_true")
-    add_request_facts(request_diff)
-    request_diff.add_argument("--no-ledger", action="store_true")
-    request_diff.add_argument(
-        "--json",
-        action="store_true",
-        help="Print only the summary JSON (same output shape; kept for CLI symmetry with sibling tools)",
-    )
     record = sub.add_parser("record-evidence", help="Register already-executed native evidence without sending requests")
     add_common(record, finding_required=True)
     record.add_argument("--evidence-json", required=True, help="Schema-v1 observations with runs[].artifacts, source, generated_at, result and observed_difference")
@@ -1815,37 +1232,6 @@ def main(argv: list[str] | None = None) -> int:
                           "registration_receipt": saved.get("registration_receipt")}
                 print(json.dumps(output, ensure_ascii=False, indent=2))
                 return 1 if sync["status"] == "partial" or summary["outcome"] != "complete" else 0
-            elif args.lane == "request-diff":
-                auth_session = session_from_args(args).bind_target(args.target)
-                try:
-                    request_spec = json.loads(Path(args.request_spec).read_text(encoding="utf-8"))
-                except (OSError, json.JSONDecodeError) as exc:
-                    parser.error(f"--request-spec must point to a JSON object: {exc}")
-                if not isinstance(request_spec, dict):
-                    parser.error("--request-spec must contain a JSON object")
-                try:
-                    summary = run_request_diff(
-                        repo_root=repo_root,
-                        target=args.target,
-                        request_spec=request_spec,
-                        timeout=args.timeout,
-                        finding_id=args.finding_id,
-                        repeat=args.repeat,
-                        no_ledger=args.no_ledger,
-                        browser_observed=args.browser_observed,
-                        state_changing=args.state_changing,
-                        redline_checked=args.redline_checked,
-                        identity_v2=identity_v2,
-                        headers=parse_headers(args.header),
-                        session=auth_session,
-                        context_file=args.context_file,
-                        attempt_id=args.attempt_id or None,
-                        action_id=args.action_id, claim_token=args.claim_token, command_actor=args.actor,
-                    )
-                except (RequestPairError, RequestPreflightError) as exc:
-                    # Invalid input must fail before any network I/O.
-                    print(f"request-diff: invalid request spec: {exc}", file=sys.stderr)
-                    return 2
             elif args.lane == "record-evidence":
                 try:
                     evidence = json.loads(Path(args.evidence_json).read_text(encoding="utf-8"))

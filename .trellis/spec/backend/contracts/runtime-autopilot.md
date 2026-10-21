@@ -1312,7 +1312,7 @@ discover_parameters(..., max_urls=5, deep=False, resume=False) -> dict
   cursor. `--resume` consumes the same source/method/auth snapshot; incomplete
   work remains `partial` and retries the unadvanced POST batch when its tool is
   unavailable or fails.
-- AI-selected JSON/query/form replays use the existing HTTP/request-diff
+- AI-selected JSON/query/form experiments use the existing native HTTP
   boundary and preserve exact request/response evidence. Zero-day fuzzing may
   adapt only in deep mode and retains the same scope and evidence gates.
 - Skill selection/loading belongs to the native platform. Queue/Store do not

@@ -19,7 +19,8 @@ python3 tools/evidence_ledger.py summary --target <target> --endpoint /api/accou
 
 ## 登记已执行材料
 
-`evidence_ledger.py record` 和 `--from-probe` 已退役。Probe 通过 Store 保存自己的 attempt 与 observation。
+`evidence_ledger.py record`、`--from-probe` 和 `tools/probe.py` 已退役。
+无 Finding 的原生观察使用 `validation_runner.py record-observation`，不创建占位 Finding。
 原生工具、浏览器或多步执行的材料通过统一 Runner 登记到已存在的 Finding：
 
 ```bash

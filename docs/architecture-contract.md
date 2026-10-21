@@ -99,6 +99,15 @@ advisory/version/provider/freshness contract. Observation residuals can prevent
 an exhaustion claim without creating a mandatory next action; the current
 session can end within budget while keeping those residuals visible.
 
+The dedicated request-diff execution lane, request-pair parser, response-diff
+module and `probe.py` request/ledger wrapper are retired. Native execution uses
+browser, curl or a suitable raw sender; evidence/observation registration and
+historical pair/probe material retain their existing owner contracts. Shared HTTP
+`request_once` remains for parameter discovery and explicitly bound continuation
+calls, enforcing child/parent Scope before initial and redirected requests. It
+returns raw fields without saving or registering them. Native platform tools
+require their own execution boundary; registration does not constrain their I/O.
+
 ### 6k-original Entry, CCST Engineering Base
 
 The complete 6k method and capability contract lives inline in `CLAUDE.md`, which
@@ -529,7 +538,7 @@ Shared contracts and readers have explicit lower-level owners:
 
 | Owner | Shared responsibility |
 |---|---|
-| `contracts` | Wire-fact vocabulary, decision schema and bounded public observation validation; standard library only |
+| `contracts` | Decision schema and bounded public observation validation; standard library only |
 | `coverage_authoring` | Pure legacy Coverage author-draft and structural N/A classification shared by init/import; no Store or migration I/O |
 | `experience_contract` | Pure exact entity, claim-predicate, condition-binding and explicit validity declarations; existence/health remain Store-owned |
 | `experience_knowledge` | Read-only registry/review source capture and file-identity fencing; no index or target lifecycle writes |
@@ -663,7 +672,7 @@ power-loss recovery or zero-downtime guarantee is implied.
 
 | Entry/boundary | Actual guarantee | Not guaranteed |
 |---|---|---|
-| Validation Runner HTTP | Initial and redirected target/Scope checks before send; explicit side-effect declaration gate | Inferring all side effects from arbitrary requests |
+| Shared HTTP `request_once` | Initial and redirected target/Scope checks before send; caller-supplied AuthSession | Side-effect review, evidence persistence or automatic registration |
 | AuthSession | Credential replay bound to target/allowed origins and saved Scope | General network isolation |
 | Hunt request telemetry | Advisory throttling and observations; authenticated redirect strips credentials outside its credential boundary | Universal scope enforcement or sandboxing |
 | Native evidence registration | Target-owned references, identity/subject checks and atomic metadata | Preventing an already executed request |

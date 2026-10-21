@@ -13,7 +13,7 @@ Active vulnerability hunting through Claude CLI. Use the scanner as a bounded br
 | 输入 | 谁思考 |
 |---|---|
 | 假设选择、路线、验证深度 | **AI 判断** |
-| probe 的 endpoint/method/actor/variant | **执行事实**（Probe/Runner 登记到 Store observation） |
+| 实验的 endpoint/method/actor/variant | **执行事实**（原生材料经登记入口保存为 Store observation） |
 | claim 的 family/technique/risk_tier | **AI 判断**（按当前假设填写 activation metadata；类别模板已退役） |
 | claim 四件套（hypothesis_id/expected_learning/kill_condition/decision_reason） | **AI 判断**（永不模板化） |
 | target、ledger 落账、锁、witness | **机械** |
@@ -102,7 +102,7 @@ useful candidates before the pass ends, independently of execution mode.
 Already-executed native/browser/multi-step evidence enters the same validation
 path through `validation_runner.py record-evidence` after Candidate persistence
 (contract: `docs/evidence-runners.md#native-evidence-registration`). Do not rerun
-the experiment just to make it fit request-diff.
+the experiment merely to obtain a validation summary.
 
 Without a Finding, retain the same real execution through the separate
 `validation_runner.py record-observation` entry
@@ -164,12 +164,12 @@ contract does not enable automatic continuation.
 ## High-ROI Lanes
 
 - **Auth / IDOR / role diff**: compare A/B users, object IDs, tenant/account IDs, export/download/report results.
-- **403 / auth boundary**: when a target-owned 401/403 has path, proxy, framework, or sibling evidence, let Claude select the exact path/header/method representation and execute it through browser, curl, or a raw sender. Use `validation_runner.py request-diff` only when the same-method one-dimension pair fits; otherwise retain raw evidence for explicit Store claim/evidence registration. A status change alone is not proof.
+- **403 / auth boundary**: when a target-owned 401/403 has path, proxy, framework, or sibling evidence, let Claude select the exact path/header/method representation and execute it through browser, curl, or a raw sender. Retain each raw request/response and register native evidence through the existing Store boundary. A status change alone is not proof.
 - **GraphQL**: inspect schema/operation names and compare object/field authorization. Assess mutations by the actual side effects under `rules/ccst/red-lines.md` and current operator intent; test-owned reversible flows are not excluded merely because they use mutations.
 - **SSRF / webhook / async**: use `tools/oast_listen.py` only when a URL-fetch or webhook sink exists.
 - **Upload/import/export**: confirm parser/authorization paths with minimal samples; record state-changing leads separately.
 - **JWT/OIDC/SAML/OAuth**: decode and inspect issuer/JWKS/callback/state/session binding signals before probing.
-- **SQL/NoSQL JSON body**: use the target-observed body or parameter shape and the complete src-value parameter/probe requirements; select stack-appropriate probes, encoding and request positions. Optionally use `validation_runner.py request-diff` for an exact same-method pair; time-shaped candidates use AI interleaved sampling with a stable trend. Keep baseline/variant evidence; transport/WAF noise is not a finding. Probe requirements do not imply an automatic fixed tool pipeline.
+- **SQL/NoSQL JSON body**: use the target-observed body or parameter shape and the complete src-value parameter/probe requirements; select stack-appropriate probes, encoding and request positions. Choose browser, native HTTP or a raw sender for the observed experiment; time-shaped candidates use AI interleaved sampling with a stable trend. Keep baseline/variant evidence; transport/WAF noise is not a finding. Probe requirements do not imply an automatic fixed tool pipeline.
 - **API leak / Swagger / Postman**: review `recon/<target>/exposure/` before widening.
 
 ## Blind/OAST Workflow

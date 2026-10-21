@@ -14,13 +14,15 @@ created.
 ### 2. Signatures
 
 ```text
-python3 tools/validation_runner.py request-diff --target TARGET \
-  --request-spec REQUEST_SPEC.json --repeat 2
+python3 tools/validation_runner.py record-evidence --target TARGET \
+  --finding-id ID --evidence-json FILE --attempt-id ORIGINAL_ATTEMPT
 ```
 
-`REQUEST_SPEC.json` is the existing request-diff contract: AI supplies the
-target-owned baseline/variant pair, one active dimension, expected signal, and
-repeat count. Unsupported wire formats remain raw/manual evidence.
+AI supplies the target-owned requests, sequence and comparison basis using the
+appropriate native executor. Evidence registration consumes saved observations,
+not a request plan. Preserve the original attempt/time metadata and actual raw
+requests/responses. Byte-sensitive formats use a suitable raw sender or captured
+native material.
 
 ### 3. Contracts
 
@@ -35,24 +37,24 @@ repeat count. Unsupported wire formats remain raw/manual evidence.
 
 | Condition | Result |
 |---|---|
-| invalid request spec, target mismatch, off-scope endpoint | exit `2`, no request |
-| unsupported wire format or missing exact pair | `manual_required`, no clean result |
+| shared HTTP target mismatch, off-scope endpoint or stale continuation | reject before request; native tools require their own execution boundary |
+| experiment needs another wire format or stateful sequence | choose a suitable native executor; preserve actual evidence |
 | `429`, transport error, or block persists | record observation and stop that focused replay |
 | variant reaches app without stable protected/permission differential | signal/edge observation, not finding |
 
 ### 5. Good / Base / Bad Cases
 
 - Good: AI uses a stored WAF/response artifact to choose one boundary variant,
-  request-diff replays the exact pair, and the summary records lineage.
-- Base: the request does not fit request-diff; AI preserves raw evidence and
-  creates a target-owned finding claim/checkpoint action.
+  a native executor records the experiment, and registration preserves lineage.
+- Base: AI preserves browser/raw-sender evidence and explicitly registers the
+  target-owned candidate and its actual execution observations.
 - Bad: submit an off-target URL or turn a 200/status change into a finding.
 
 ### 6. Tests Required
 
-Cover request-spec scope/auth/side-effect rejection, exact-pair replay, raw
-artifact lineage, unsupported-wire manual handling, and Autopilot/Checkpoint
-projection of the resulting evidence.
+Cover Scope/Auth rejection before I/O, parent-continuation preservation, raw
+artifact lineage and native registration. Side-effect review precedes execution;
+registration validates declared effect facts before publication.
 
 ### 7. Wrong vs Correct
 
@@ -68,8 +70,8 @@ Correct: WAF context + target artifact -> one AI-selected pair -> shared
   use the context to choose one bounded, evidence-linked next probe, while stable
   content/permission/route evidence remains the promotion gate.
 - POST/JSON SQL coverage is AI-selected from observed fields and request
-  semantics. Use request-diff for one exact same-method pair; use
-  `timing_sql_runner.py` only for a time-shaped candidate. A budget boundary or
+  semantics. AI chooses the native executor and interleaved timing samples when
+  the evidence warrants them. A budget boundary or
   WAF-only response is not a clean result.
 - Scanner artifacts that feed `findings.json`, `surface.py`, and `checkpoint.py`
   must be idempotent per run. A rerun must overwrite or clear lane-local files
@@ -91,18 +93,29 @@ Correct: WAF context + target artifact -> one AI-selected pair -> shared
 
 ### Scope and signatures
 
-Use `validation_runner.py request-diff --target TARGET --request-spec SPEC` for
-an AI-selected exact request pair, or `record-evidence --target TARGET
---finding-id ID --evidence-json FILE --attempt-id ID` for already-executed native
-material. Both support `--repo-root`, explicit claim identity and side-effect
-facts. Native registration sends no requests. Shared auth inputs retain the
-AuthSession origin/scope rules; raw headers override only on the initial URL.
+Use `record-evidence --target TARGET --finding-id ID --evidence-json FILE
+--attempt-id ID` for already-executed native material. It supports `--repo-root`,
+explicit claim identity and side-effect facts, and sends no requests.
+`request-diff`, its request-pair parser, response-diff helper, fixed wire-fact
+vocabulary and `probe.py` wrapper are retired. Saved pair summaries retain original identity/digest,
+registration retry, candidate review and validation compatibility.
+
+Shared `request_once` remains for parameter discovery and explicitly bound HTTP
+calls. Load continuation auth with `session_from_args(..., env={}).bind_target(TARGET)`, then pass
+the session and original context to that API. Initial and redirected requests
+check current child/parent Scope; auth remains bound to allowed origins. This
+API returns raw fields without saving, starting an attempt or registering them.
+The caller reviews effects, records original metadata, saves private raw material
+and invokes native registration. Unrestricted shell/browser execution is governed
+by the platform, not by post-execution evidence registration.
+Historical probe JSON and existing Store receipts remain readable; preserve their
+original attempt/operation, without re-registering the same bytes as a new execution.
 
 ### Contracts
 
-- Request-diff specs with different baseline/variant URLs must declare
-  `subject_side` (`baseline` or `variant`). The selected side is the sole
-  Finding/Action/attempt identity anchor; omission is rejected before I/O.
+- Historical pair summaries retain their declared `subject_side` and per-side
+  method/URL/identity when registered again; retirement does not reinterpret
+  their subject/control roles or manufacture new execution.
 - Native `subject_step` explicitly selects a zero-based run index. Without it,
   only one exact endpoint/method match is accepted; ambiguous runs reject before
   any attempt or artifact publication.
@@ -127,8 +140,7 @@ AuthSession origin/scope rules; raw headers override only on the initial URL.
   explicit claim release. State transitions check claimant/token/version separately.
   Registration does not impose a new current-claim check. Preview/legacy/damage reject.
 - A real execution has its own attempt ID. A registration retry reuses the
-  attempt and immutable raw material; the request lane never resends a started
-  attempt. Operation is a Store registration receipt, not an HTTP request ID.
+  attempt and immutable raw material; registration never resends requests. Operation is a Store registration receipt, not an HTTP request ID.
 - Runner summary/diff files are internal target analysis artifacts, not public
   exports. Their subject, request-pair and per-step URLs preserve exact query
   values, duplicate keys and encoding. Raw requests and auth/error-log boundaries
@@ -139,7 +151,7 @@ AuthSession origin/scope rules; raw headers override only on the initial URL.
   registration/retry without rewriting old evidence or inventing missing values.
   The immutable identity, not mutable summary metadata, selects the comparison.
   Unknown representations reject. Native anchors still exactly match Finding
-  endpoint/method; both lanes register actual per-step endpoints and methods.
+  endpoint/method; native and historical registration preserve actual step endpoints and methods.
 - Raw requests/responses live in private target-owned files. Native evidence may
   reference other target-owned existing nonempty artifacts. Registration checks
   published digests before consuming them. Changed/missing raw material rejects,
@@ -223,7 +235,11 @@ AuthSession origin/scope rules; raw headers override only on the initial URL.
 
 | Input/failure | Required result |
 |---|---|
-| off-target request, bad claim, redline missing | reject before network/material side effects |
+| shared HTTP off-target request, excluded parent/child URL or stale context | reject before request |
+| native registration has a bad claim or invalid side-effect facts | reject before material publication; registration does not authorize prior I/O |
+| shared HTTP follows a redirect | enforce child/parent Scope and credential-origin boundary before sending |
+| continuation auth loaded in a credentialed shell | use only bound auth, no implicit environment merge |
+| retired request-diff/probe entry | unavailable before target I/O; native registration entries remain available |
 | same attempt/material | one operation; idempotent registration |
 | changed raw after publication | partial registration; no metadata commit |
 | partial/no-response execution | partial/unknown; preserve existing steps |
@@ -238,8 +254,9 @@ AuthSession origin/scope rules; raw headers override only on the initial URL.
 `tests/test_validation_runner.py`, `tests/test_validate_target_mode.py`,
 `tests/test_finding_index.py` and `tests/test_target_store.py` cover these
 boundaries, real CLI restart/recovery, current evidence integrity and report
-text preservation. `tests/test_response_diff.py` covers structural diffs;
-`tests/test_current_truth.py` ensures damaged evidence cannot authorize closure.
+text preservation. `tests/test_current_truth.py` ensures damaged evidence cannot authorize closure.
+Retirement verification uses isolated native-registration and saved-pair fixtures;
+removed execution tests are historical and are not a supported replay interface.
 `test_partial_variant_subject_registration_recovers_claim` uses a real temporary
 Store and mocks only HTTP for zero/one responses; it checks original raw/identity,
 first registration, summary reload/replay, explicit claim recovery and completion

@@ -78,9 +78,9 @@ the same case-state owner.
 | Config-file exposure | curl | **Yes** |
 | Directory fuzzing | ffuf | **Yes** |
 | nuclei templates | nuclei | **Yes** |
-| AI-selected HTTP replay / request-diff | browser, curl, or validation runner | **Yes** |
+| AI-selected HTTP requests | browser, curl, or raw sender | **AI-selected; explicitly carry the selected session within its Scope** |
 | Upload/file-processing candidates | browser, curl, or raw sender | **AI-selected; session propagated when used** |
-| SSTI/render-context candidates | browser, curl, or validation runner | **AI-selected; session propagated when used** |
+| SSTI/render-context candidates | browser, curl, or raw sender | **AI-selected; session propagated when used** |
 | MFA/SSO workflow review | browser, curl, or workflow runner | **Flow-dependent; no fixed request** |
 | SAML assertion replay | captured browser/curl flow or workflow runner | **Flow-dependent; no fixed request** |
 

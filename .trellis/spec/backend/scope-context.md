@@ -56,7 +56,7 @@ Profile input requires explicit import, so its exclusions are never silently
 discarded. Preview, damaged fence or missing taken-over database fails closed.
 Consumers use `load_scope_context`: Recon relations, Host verification,
 Autopilot bootstrap/state, continuations and FFUF rotation share the same source.
-Request-diff preflight, shared `request_once` and redirects also read this owner;
+Shared `request_once` and its redirects also read this owner;
 anonymous execution is subject to the same exclusions. AuthSession CLI creation,
 parameter-discovery inputs/forms and scanner derived active inputs consume saved
 Scope. Pass the actual repo root through every caller and preserve any narrower
@@ -118,8 +118,8 @@ missing context/private auth, wrong targets and v1 artifacts fail explicitly; cr
 a new artifact, never rewrite old identity or infer a TTL from `created_at`.
 
 `autopilot_continuation.load_execution_scope` composes current child and validated
-parent without publishing child Scope or new state. Runner pair preflight, initial
-send and every redirect use this owner. Explicit `context_file` must agree with an
+parent without publishing child Scope or new state. Shared HTTP initial send and
+every redirect use this owner. Explicit `context_file` must agree with an
 AuthSession's bound invocation reference; omitting a duplicate argument must not
 drop that reference. This is explicit session data, not an ambient global default.
 CLI auth comes only from the continuation's private source; anonymous contexts do

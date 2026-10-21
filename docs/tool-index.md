@@ -87,7 +87,6 @@ question/stop material through the recorded card, section and family.
 | Tool | When to use | One-line function |
 |---|---|---|
 | `tools/vuln_scanner.sh` | Recon done, want bounded breadth context | Bounded upstream Nuclei with per-run raw/log/exit/input receipts and residuals |
-| `tools/validation_runner.py` (`request-diff`) | Exact AI baseline/variant pair | Shared replay/diff across query, form, JSON, text, header/cookie, and path inputs |
 | `tools/validation_runner.py` (`record-evidence`) | Already-executed raw observations or final cleanup read-back | Registers evidence only; cleanup-only input binds exact mutation refs and never confirms a new finding |
 | `tools/validation_runner.py` (`record-observation`) | Saved native/browser observations, with no Finding required | [No-verdict registration](evidence-runners.md#native-observation-registration); immutable full snapshots, original-attempt supplements and registration-only retries |
 | `tools/sender_semantics.py` | Byte-exact/proxy/cache/smuggling work needs sender choice | `--list` / `--require ...`; sender capability matrix + raw HTTP/1 sender for low-level request semantics |
@@ -185,12 +184,12 @@ question/stop material through the recorded card, section and family.
 | Need to remember user_a/user_b sessions, owned objects, private markers, or an open hypothesis | `target_case_state.py summary` (+ `add-actor`/`add-session`/`add-object`/`add-hypothesis`) |
 | Observed object identifiers in cached artifacts | Native Read/Grep, then explicit Case object registration |
 | Concrete CMS/plugin/theme/library version observed, or network product/CPE identified | `/intel` → `tools/intel_engine.py`; add `/scan-cves` only after AI selects a reachable advisory |
-| 401/403 on interesting endpoint | AI direct browser/curl/raw request; optional `validation_runner.py request-diff` |
-| Anonymous `application-configuration` `200` | AI body review (config/oauth/security-answer content vs ordinary listing); preserve as a request-diff pair when promoting |
-| Multiple session files in `.private/` | AI-selected multi-role comparison via `validation_runner.py request-diff` owner/peer pairs |
-| Two account creds + numeric IDs | `validation_runner.py request-diff` owner/peer pair with `active_dimension=header:authorization` |
-| GraphQL endpoint discovered | manual bounded introspection, then `validation_runner.py request-diff` with the observed baseline/variant HTTP request spec |
-| OAuth `/authorize` `/callback` discovered | manual OAuth/OIDC flow review with an evidence-backed `request-diff` where an exact pair is known |
+| 401/403 on interesting endpoint | AI-selected browser/curl/raw request; preserve observations for native registration |
+| Anonymous `application-configuration` `200` | AI body review (config/oauth/security-answer content vs ordinary listing); preserve the observed request/response and comparison basis when promoting |
+| Multiple session files in `.private/` | AI-selected multi-role comparison using the relevant sessions; retain per-role request/response evidence |
+| Two account creds + numeric IDs | AI compares owner/peer object access and records the actual role, request and response |
+| GraphQL endpoint discovered | AI-selected schema/operation inspection and authorization comparisons; native evidence registration |
+| OAuth `/authorize` `/callback` discovered | AI-selected OAuth/OIDC flow review with per-step native request/response evidence |
 | Payment / coupon / wallet / cart / checkout endpoint | high-value business-logic lane |
 | Quota / OTP / payment / cart race signal | AI-selected workflow perturbation on the captured flow; preserve per-step raw evidence |
 | Blind SSRF / RCE / XXE candidate | `oast_listen.py start` |

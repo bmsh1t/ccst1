@@ -88,32 +88,6 @@ def runner_summary_lane(payload: dict[str, Any]) -> str:
     return lane or ""
 
 
-# Wire-fact vocabulary: the complete set of mechanically checkable facts the
-# AI may declare in ``expected``. The runner knows these predicates over raw
-# replay observations; it does NOT know vulnerability classes. Any category
-# (SQLi, NoSQLi, SSTI, IDOR, missing-auth, ...) uses the same vocabulary.
-WIRE_FACT_NAMES = frozenset({
-    "error_marker_variant_only",   # variant body shows a DB/parser error marker, baseline does not
-    "count_delta_positive",        # variant JSON count is greater than baseline
-    "count_delta_negative",        # variant JSON count is smaller than baseline
-    "fields_added",                # variant response added JSON fields
-    "fields_removed",              # variant response removed JSON fields
-    "body_length_delta",           # material body-length difference beyond noise threshold
-    "status_delta",                # status codes differ between the sides
-    "material_diff_any",           # any material response difference
-    "identical_success_pair",      # same successful status and complete retained response body
-    "both_sides_rejected",         # same rejected status and complete retained response body
-    "stable_timing_delta",         # variant consistently slower than baseline across repeats
-    "distinct_bodies",             # baseline and variant body bytes differ (no threshold)
-})
-# Needle facts take the form name::<literal substring>; the AI supplies the
-# needle (judgment), the runner verifies presence mechanically (reconciliation).
-WIRE_NEEDLE_FACT_NAMES = frozenset({
-    "variant_body_contains",       # needle appears in EVERY variant body
-    "baseline_body_lacks",         # needle appears in NO baseline body and EVERY variant body
-})
-
-
 # Shared validation input schema; consumers never import the validation CLI.
 MACHINE_DECISION_SCHEMA_VERSION = 2
 SEVEN_QUESTION_DEFINITIONS = (

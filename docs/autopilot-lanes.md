@@ -123,14 +123,11 @@ Checkpoint, Pickup and preflight never initialize, import, or recreate old owner
 - Raw root claims do not become Findings merely by reading Checkpoint. Explicit
   scanner-material registration creates immutable review work; AI creates a
   concrete Finding when its target/endpoint/method/family are known.
-- Matching deterministic replay follows `docs/evidence-runners.md` and `python3 tools/validation_runner.py <lane> --target <target_shell> ...`; its first positional argument is `<lane>` and it never accepts `--decision-json`.
-- `request-diff` is the shared request-pair primitive. AI supplies the exact
-  baseline/variant and `active_dimension`; SQLi/NoSQLi/etc. are classifiers, not
-  separate fixed-input lanes. Unsupported wire formats remain `manual_required`.
-- `request-diff` is optional. Claude chooses browser, native HTTP, MCP or an
-  existing runner to fit the experiment; comparisons are not forced into a
-  same-method pair. Retain raw evidence and use the existing owner interfaces.
-  Undeclared or unmet expectations stay candidates, not automatic clean results.
+- Claude chooses browser, native HTTP, MCP or an existing executor to fit the
+  experiment. Register saved observations through `validation_runner.py record-observation`
+  or `record-evidence` under `docs/evidence-runners.md`; registration never sends
+  requests. Preserve the real sequence, actors and raw artifacts without forcing
+  a same-method pair. Missing evidence remains unresolved, not automatically clean.
 - Explicitly state-changing Scanner probes, currently the retained HTTP method
   tampering check, require `ALLOW_UNSAFE_HTTP_TESTS=1`. Without that opt-in the
   request is skipped and recorded in `manual_review/unsafe_skipped.txt`; the
@@ -144,9 +141,13 @@ Checkpoint, Pickup and preflight never initialize, import, or recreate old owner
   separately from the unchanged classification `scope_hash`. Recreate old/stale
   artifacts with `autopilot_continuation.py create`; do not edit them in place.
   Forward the complete `arguments.hunt_auth_flags` argv, including `--context-file`,
-  not just its auth file. `validation_runner.py request-diff --target TARGET
-  --request-spec SPEC --context-file CONTEXT` enforces child AND parent Scope at
-  preflight, send and every redirect. Bound auth never inherits ambient credentials.
+  not just its auth file. Explicit HTTP calls can load the bound AuthSession with
+  `session_from_args(..., env={}).bind_target(TARGET)` and pass it plus `context_file` to the retained
+  `validation_runner.request_once` API; it enforces child AND parent Scope before
+  the initial request and every redirect. Save its returned raw fields and original
+  execution metadata, then register through the native contract in
+  `docs/evidence-runners.md#native-http-execution`. Bound auth never inherits
+  ambient credentials. There is no request-diff/probe CLI replacement.
   Hunt/recon/scanner and arjun/x8 subprocess chains cannot enforce the parent on
   their internal requests/redirects and therefore reject that context before
   execution. Report the unsupported boundary or choose the supported HTTP executor;
@@ -211,12 +212,12 @@ Checkpoint, Pickup and preflight never initialize, import, or recreate old owner
 ## SQL JSON And WAF
 
 - `live/wafw00f_hits.txt` is sampled host-level context. AI chooses the target-observed POST/JSON/query/form shape and exact test input, then uses browser/MCP/curl/raw sender directly.
-- Use `validation_runner.py request-diff` only for an exact same-method, one-dimension HTTP pair that benefits from stable replay, response diff, and canonical evidence. Time-shaped candidates use AI interleaved sampling with a stable median/MAD trend. `429`, transport failure, block pages, and WAF observations are not findings; never run a fixed matrix merely because parameters or a WAF exist.
-- Direct or browser evidence that does not fit request-diff remains raw evidence or a target-owned `finding_claim` until ready; explicitly persist the Candidate through `TargetStore.create_finding` and use `record-evidence` for formal validation. Checkpoint only reads the saved state.
+- Use the native executor that preserves the observed request semantics and save per-step evidence. Time-shaped candidates use AI interleaved sampling with a stable median/MAD trend. `429`, transport failure, block pages, and WAF observations are not findings; never run a fixed matrix merely because parameters or a WAF exist.
+- Direct or browser evidence remains raw evidence or a target-owned `finding_claim` until ready; explicitly persist the Candidate through `TargetStore.create_finding` and use `record-evidence` for formal validation. Checkpoint only reads the saved state.
 
 ## Access Limit
 
-- A path/proxy/framework/sibling/normalization signal may trigger an AI-selected exact request for any 401/403/404/405/415 access boundary; WAF is context, not a prerequisite. Execute through browser/curl/raw sender, and use `validation_runner.py request-diff` only when its one-dimension contract fits. Preserve raw evidence; AI submits technical and delivery judgments through `/validate`. A status change alone is not proof.
+- A path/proxy/framework/sibling/normalization signal may trigger an AI-selected exact request for any 401/403/404/405/415 access boundary; WAF is context, not a prerequisite. Execute through browser/curl/raw sender with the current Scope and preserve the actual request sequence. Preserve raw evidence; AI submits technical and delivery judgments through `/validate`. A status change alone is not proof.
 - Invoke setup helpers on demand: `/root/tool/aitool/zocom/mail_receiver.py` (environment-provided helper, not part of this repo — if absent, use any self-owned mailbox and keep the raw evidence) for self-owned test-account email verification, or `tools/cf_solver.py` for Cloudflare clearance. Persist results through private AuthSession/Case State and keep failures `blocked`/`partial`.
 
 ## Workflow Timing And Case State

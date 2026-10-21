@@ -84,8 +84,8 @@ Recon 批次按完成顺序保留 target 和来源计数，未采集的计数为
   decision_reason / skill_route / risk_tier；2026-09-14 起 `--id` 必填、无
   必填字段闸，AI 全量写、Queue 只验机械不变量）、result 判定、resolve 决策、
   报告影响评估。
-- **机器推导**：可从已有事实机械推导。endpoint/method/evidence_ref/
-  baseline_ref（`--from-evidence` / `--from-probe`）。
+- **机器推导**：可从已有原始材料读取的 endpoint/method/evidence_ref/
+  baseline_ref；引用采集原件，不推测未记录的执行事实。
 - **AI 判断（2026-09-13 修订）**：family/technique/skill_route/risk_tier 依据当前
   假设由 AI 填写——类别模板已退役；这些不是可凭类别机械推导的事实，风险标签
   也不构成危险操作的许可。

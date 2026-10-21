@@ -125,7 +125,7 @@ Store 保留集合级 family/精确 endpoint 检查，不要求每一步都匹�
 
 ## Native Evidence Registration
 
-已有 Finding 的浏览器、probe、curl、raw sender 等实验，先按 `/hunt` 契约保存
+已有 Finding 的浏览器、curl、raw sender 等实验，先按 `/hunt` 契约保存
 canonical Candidate，再登记已存在的原始材料。该入口不执行命令、不发请求、不造 diff；
 多步、不同方法、多字段身份上下文、multipart/binary 都不必改写为请求对。
 
@@ -207,8 +207,9 @@ version_diff）：
   `screenshot`、`callback`、`trace` 等引用。登记只保留引用和 SHA-256，不复制原始材料。
   内部 summary 保留精确 URL（参数值、重复参数、编码）；私有身份材料绑定其表示。
   旧去值摘要保持旧表示兼容，不伪造原值，不能代替精确 endpoint 绑定。
-  若 probe JSON 已同时包含 request/response，两项可引用同一个原文件；使用采集返回的
-  真实路径，不照抄示例路径或另拆文件。
+  若历史 probe JSON 已同时包含 request/response 且尚未登记，两项可引用同一个原文件；
+  使用采集返回的真实路径和原始实验 metadata，不照抄示例路径或另拆文件。
+  已有 Store operation 的材料沿用其收据；此入口不转换已登记的 probe attempt。
 - `actor` 使用 共享观察角色词汇（如 anonymous/owner/peer/low_role/admin/cross_tenant）；
   锚点步骤必须明确角色。`object_scope`、`variant` 可省略，默认 unknown/replay；
   具体账号、会话和业务条件保留在原始证据，不在摘要中写凭据。
@@ -252,7 +253,7 @@ stale，不能升级为可验证证据。后续再次关闭需重新审阅当前
 
 ### 绑定已认领行动
 
-`record-evidence` 和 `request-diff` 都可显式传入 Store execution Action 的 claim：
+`record-evidence` 可显式传入 Store execution Action 的 claim：
 
 ```bash
 python3 tools/validation_runner.py record-evidence --repo-root ROOT --target TARGET \
@@ -262,10 +263,10 @@ python3 tools/validation_runner.py record-evidence --repo-root ROOT --target TAR
 
 `--actor` 是认领行动的命令操作者，和 `runs[].actor` 的 owner/peer 观察角色分开。
 行动 ID 与 token 必须成对提供，endpoint/family 必须一致；错误、过期 claim 或 work
-行动在请求和材料发布前拒绝。未绑定调用仍可登记独立实验，不按 endpoint 自动认领。
+行动在材料发布前拒绝。未绑定调用仍可登记独立实验，不按 endpoint 自动认领。
 完整或部分 summary 都保留绑定和操作者，登记失败可用原生入口原 argv 重试，或将已保存
 summary 交给 `sync_runner_artifacts(summary, repo_root=...)` 重试登记。
-`request-diff` 不允许用同一 attempt 再次发送请求；真实重跑必须分配新 attempt。
+登记重试沿用原 attempt 和执行材料；真实重跑必须分配新 attempt。
 登记不完成行动，显式 resolve 使用返回的 `store_operation_id`；partial/unknown 不能完成。
 
 Store 验证的默认正文/延期正文模式、回执与重试见 [validate](../commands/validate.md)；
@@ -273,76 +274,63 @@ Store 验证的默认正文/延期正文模式、回执与重试见 [validate](.
 
 ## 常用 runner
 
-### Request diff (shared evidence primitive)
+### Native HTTP execution
 
-Claude chooses the exact baseline/variant pair and one active input dimension;
-the runner only validates scope/auth facts, replays both requests, stores raw
-evidence privately, and registers observations and explicit Finding links in one Store transaction.
-`classifier` is a signal label, not a fixed input generator. Query, form, JSON,
-XML/text, header/cookie, and path pairs can use the same contract. Unsupported
-multipart, compressed, protobuf, and gRPC wire bodies return `manual_required`
-without being marked clean. Use a canonical `vuln_class` when the pair must
-close a canonical Coverage family; an unclassified pair remains reviewable evidence.
+AI selects the requests, sequence and comparison method using browser, curl or a
+suitable raw sender. Preserve each real request and response, then register the
+saved material through `record-observation` or `record-evidence` as appropriate.
+There is no required pair schema, fixed difference vocabulary or automatic verdict.
+The `request-diff` execution entry, dedicated diff modules and `tools/probe.py`
+request/ledger wrapper are retired;
+existing pair summaries remain readable, reviewable and registration-retryable.
 
-```json
-{
-  "schema_version": 1,
-  "baseline_request": {
-    "method": "POST",
-    "url": "https://TARGET/api/search",
-    "headers": {"Content-Type": "application/json"},
-    "body": {"filter": {"name": "SAMPLE"}}
-  },
-  "variant_request": {
-    "method": "POST",
-    "url": "https://TARGET/api/search",
-    "headers": {"Content-Type": "application/json"},
-    "body": {"filter": {"name": "PAYLOAD"}}
-  },
-  "active_dimension": "body:/filter/name",
-  "evidence_shape": "request_diff",
-  "classifier": "sqli",
-  "expected_signal": "CHECK_FN",
-  "repeat": 2,
-  "subject_side": "baseline"
-}
+For an experiment to be registered through the native contract, record its unique
+attempt ID and original execution time before sending; claim any execution Action
+first. Retain that metadata alongside the raw files. A bound parent continuation
+requires an executor that enforces its child/parent Scope. The existing shared
+HTTP API supports this binding (call from the selected checkout):
+
+```python
+from argparse import Namespace
+from pathlib import Path
+from tools.auth_session import session_from_args
+from tools.validation_runner import request_once
+
+root = Path("ROOT").resolve()
+session = session_from_args(Namespace(
+    target="TARGET", repo_root=root, context_file="CONTEXT"), env={}).bind_target("TARGET")
+response = request_once(repo_root=root, target="TARGET", url="https://TARGET/path",
+                        session=session, context_file=session.context_file)
 ```
 
-当 baseline 与 variant 的 URL 不同（例如 path/query 变体）时，必须显式声明
-`subject_side` 为 `baseline` 或 `variant`。Finding、Action、attempt 和摘要均绑定
-该侧的精确 endpoint/method；省略会在发请求前拒绝，避免把变体误登记到另一侧。
+This API checks child/parent Scope before sending and on each redirect; it follows
+allowed redirects. The AuthSession comes only from the bound private source.
+The caller reviews side effects before sending and saves `request_text`,
+`response_text`, redirect/retention metadata and original execution metadata under
+the target's private validation directory before interpreting them. Do not print
+credentials. Truncated/error material remains partial. This function performs no
+attempt creation, persistence or registration. For byte-exact or stateful
+experiments, select a suitable executor; unrestricted shell/browser tools do not
+inherit this API's Scope boundary from later registration.
 
-Action Queue 的 `kind` 是生命周期字段，与描述性的 `type` 分开：
+Historical probe calls may already have registered an execution. Use their existing operation
+and observation refs directly with Store consumers. `record-evidence` cannot
+convert an already registered probe attempt into a Finding witness. Do not issue
+another request or invent a new attempt merely to register those same bytes again.
+
+Action Queue's `kind` remains separate from its descriptive `type`:
 
 ```bash
 python3 tools/action_queue.py --repo-root ROOT add --target TARGET --kind execution \
-  --type request-diff --metadata-json '{"endpoint":"https://TARGET/path","family":"Authz"}' \
-  --evidence "Recorded request pair" --next-question "What does it establish?" \
+  --type native-http --metadata-json '{"endpoint":"https://TARGET/path","family":"Authz"}' \
+  --evidence "Recorded request observations" --next-question "What does it establish?" \
   --action "Review the execution evidence" --json
 ```
 
-`execution` 必须同时提供 `endpoint` 和 `family`；普通人工工作使用 `--kind work`，
-且不得携带这两个执行身份字段。冲突输入在 Store 写入前失败。
-
-```bash
-python3 tools/validation_runner.py request-diff \
-  --target TARGET --request-spec REQUEST_SPEC.json --repeat 2
-```
-
-Request specs must preserve the observed wire shape. Encode query/path/form
-values structurally (for example with the request builder or `urlencode`), keep
-JSON as JSON, and never paste a manually double-encoded value into a second
-layer. The runner records the exact pair; it does not rewrite malformed input
-or infer a vulnerability from an encoding-only response change.
-
-Only explicit `expected` assertions are mechanically checked. A confirmed
-`declaration_intent=hazard` becomes `tested_finding` (a candidate, not a final
-finding); a confirmed `clean` declaration becomes `tested_clean`. Undeclared or
-unmet expectations remain `candidate`, including equal responses. Claude judges
-business meaning through the existing seven-question/four-gate validation.
-Each successful response is saved immediately; a later transport failure keeps
-those artifacts and returns `partial`, never clean or report-ready.
-
+Execution actions require endpoint/family; ordinary work uses `--kind work` and
+omits those fields. Register a bound experiment with its original attempt, claim
+and operator through the native evidence contract above. Do not repeat requests
+to produce a summary or manufacture a new execution from an existing probe receipt.
 
 ### Request smuggling capability gate
 
