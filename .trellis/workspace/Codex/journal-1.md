@@ -1167,3 +1167,39 @@ Explicit Autopilot investigation loads or reuses native src-hunter after Bootstr
 ### Next Steps
 
 - 整体任务保持in_progress；宿主/live/G4仍待后续验收，不安装、推送或归档。
+
+
+## Session 40: Retire request-diff and probe execution wrappers
+<!-- trellis-session: v=2 fp=5d9d172f481d28be -->
+
+**Date**: 2026-10-21
+**Task**: Retire request-diff and probe execution wrappers
+**Branch**: `refactor/10-11-capability-architecture`
+
+### Summary
+
+按用户请求删除独立HTTP执行包装，保留原生证据登记与共享Scope/Auth底座；34项隔离验收及4项历史读取检查通过。
+
+### Main Changes
+
+- 删除request_diff/response_diff/probe及请求对CLI、孤立wire词表；同步18文件。
+- 父续接文档使用既有AuthSession绑定与request_once；调用方保存原件后显式登记，历史收据不重复造执行。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `71760ee` | refactor: retire request-diff and probe execution wrappers |
+
+### Testing
+
+- [OK] 临时源码副本34项检查1.807秒通过，5次loopback请求；另4项历史probe JSON读取检查通过；未读改跑项目tests。
+- [OK] 独立审核无阻断项，旧词表文案遗漏已修正；最终diff检查通过。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 整体任务保持in_progress；宿主/live/G4未验收，未安装、推送或归档。
