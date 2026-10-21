@@ -82,7 +82,7 @@ description: |
 | 有 WAF 拦截 | `知识库/waf-bypass.md` |
 | 路径/下载/读文件 | `知识库/path-traversal-lfi-test.md` |
 | XML / 文件解析 | `知识库/xxe-test.md` |
-| Java 反序列化 / 中间件 | `知识库/deserialization-test.md` + `知识库/jndi-injection-test.md` |
+| Java 反序列化 / 中间件 / .NET `__VIEWSTATE` / Telerik | `知识库/deserialization-test.md` + `知识库/jndi-injection-test.md` |
 | 子域/资产接管线索 | `知识库/subdomain-takeover-test.md` |
 | Host / 缓存 CDN | `知识库/http-host-header-test.md` + `知识库/cache-poisoning-test.md` |
 
