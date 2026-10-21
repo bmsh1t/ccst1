@@ -1062,3 +1062,38 @@ A1–A10完成；6k方法、原生观察和兼容reader已交付，必要cleanup
 
 - C G4：另行确认真实宿主/模型、场景调用数、费用、端点、独立runtime及安装资产；U/AC5与AC6宿主部分保持deferred，不以M冒称使用效果。
 - A/B等待另行提交/归档授权；父任务未全面完成，保留所有继承WIP。
+
+
+## Session 37: Autopilot candidate review, severity and lane evidence repair
+<!-- trellis-session: v=2 fp=b6c7b664551e667a -->
+
+**Date**: 2026-10-21
+**Task**: Autopilot candidate review, severity and lane evidence repair
+**Branch**: `refactor/10-11-capability-architecture`
+
+### Summary
+
+Added exact candidate review receipts with summary/material binding, repaired 6k two-line severity, and added report lane ownership plus append-only corrections. Synthetic production-source acceptance: 100 assertions in 6.27s; two read-only reviews and final diff check passed.
+
+### Main Changes
+
+- Candidate close/reopen uses material SHA-256 and predecessor CAS; changed raw or diff material remains visible.
+- Report lane references are checked before completion; explicit corrections retain terminal history and budget.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `879a733` | fix(autopilot): bind candidate reviews and correct report lane evidence |
+
+### Testing
+
+- [OK] Isolated ed0c4e6 source copy with synthetic Store/evidence/reports, guarded CLI subprocesses; no project tests or live data.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Task remains in_progress; real report INDEX not rebuilt; live/model/G4 acceptance remains pending. No install, push or archive.

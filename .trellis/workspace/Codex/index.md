@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 36
-- **Last Active**: 2026-10-19
+- **Total Sessions**: 37
+- **Last Active**: 2026-10-21
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1064 | Active |
+| `journal-1.md` | ~1099 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 37 | 2026-10-21 | Autopilot candidate review, severity and lane evidence repair | `879a733` | `refactor/10-11-capability-architecture` |
 | 36 | 2026-10-19 | B收口完成与C跨进程机械验收 | - | `refactor/10-11-capability-architecture` |
 | 35 | 2026-10-19 | A 六项可靠性修复验收收尾 | - | `refactor/10-11-capability-architecture` |
 | 34 | 2026-10-17 | 6k完整集成与自包含Git交付收尾 | `a4a22e2d0b81d2c232be3518bdba89e652b19635`, `ba183ca88e1bf311e59f3b41348c318f96047e3f` | `refactor/10-11-capability-architecture` |
