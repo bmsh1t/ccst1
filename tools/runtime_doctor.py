@@ -495,12 +495,11 @@ def _skill_identity(body: str, path: Path) -> str:
 
 
 def _skill_entries(root: Path, *, allow_external_links: bool = False) -> list[dict]:
-    """Inspect identity, not just today's managed directories; never follow links.
+    """Inspect identities, allowing read-only external runtime Skill links.
 
-    The repo tree stays strict: a linked directory there is ambiguous. A runtime
-    tree may legitimately hold user-managed external skills as links, so callers
-    inspecting the installed runtime may skip them; a link that carries a managed
-    entry name is still refused because it would shadow a planned entry.
+    Repo sources and managed destinations stay link-free. Runtime discovery may
+    read linked third-party entries, but never hide a renamed CCST identity or
+    treat a linked known entry as receipt-owned.
     """
     base = root / "skills"
     if not _safe_path(base, root):
@@ -514,24 +513,46 @@ def _skill_entries(root: Path, *, allow_external_links: bool = False) -> list[di
     def onerror(error):
         raise error
 
-    for current, dirs, files in os.walk(base, followlinks=False, onerror=onerror):
-        for name in list(dirs):
-            candidate = Path(current) / name
-            if not candidate.is_symlink():
-                continue
-            if not allow_external_links or name in KNOWN_ENTRY_NAMES:
-                raise ValueError(f"cannot completely inspect linked Skill directory: {candidate}")
-            dirs.remove(name)
+    for current, dirs, files in os.walk(base, followlinks=allow_external_links, onerror=onerror):
+        directory = Path(current)
+        if allow_external_links:
+            # Inspect each logical alias, including its entry, but stop an
+            # ancestor link from recursively expanding the same directory.
+            if directory.resolve() in {parent.resolve() for parent in directory.parents
+                                       if parent.is_relative_to(base)}:
+                dirs.clear()
+        else:
+            for name in dirs:
+                if (directory / name).is_symlink():
+                    raise ValueError(f"cannot completely inspect linked Skill directory: {directory / name}")
         if "SKILL.md" not in files:
             continue
-        path = Path(current) / "SKILL.md"
-        digest = _file_hash(path, root)
-        raw = path.read_bytes()
-        if _sha256(raw) != digest:
-            raise ValueError(f"Skill changed during discovery: {path}")
+        path = directory / "SKILL.md"
+        linked = not _safe_path(path, root)
+        if allow_external_links and linked:
+            def signature(value):
+                return value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns
+
+            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+            with os.fdopen(fd, "rb") as handle:
+                before = os.fstat(handle.fileno())
+                if not stat.S_ISREG(before.st_mode):
+                    raise ValueError(f"not a regular linked Skill entry: {path}")
+                raw = handle.read()
+                after = os.fstat(handle.fileno())
+            if signature(before) != signature(after) or signature(after) != signature(path.stat()):
+                raise ValueError(f"linked Skill changed during discovery: {path}")
+            digest = _sha256(raw)
+        else:
+            digest = _file_hash(path, root)
+            raw = path.read_bytes()
+            if _sha256(raw) != digest:
+                raise ValueError(f"Skill changed during discovery: {path}")
         body = raw.decode("utf-8").replace("\r\n", "\n")
         identity = _skill_identity(body, path)
         known = sorted({identity, path.parent.name} & KNOWN_ENTRY_NAMES)
+        if linked and known:
+            raise ValueError(f"linked CCST Skill entry conflicts with managed discovery: {path} (identity={identity})")
         entries.append({"path": path.relative_to(root).as_posix(), "identity": identity,
                         "known_identities": known, "sha256": digest})
     return sorted(entries, key=lambda item: item["path"])

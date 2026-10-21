@@ -663,6 +663,11 @@ are executable prompt resources, not optional repository documentation.
   may differ from the directory name. Quoted keys/names are inspected; aliases,
   merges, ambiguous preambles or uninspectable frontmatter reject the check.
   Unrelated external Skills are not drift/prune.
+  Runtime discovery reads external directory/entry-file links only to inspect
+  their logical entry path and actual identity; renamed linked CCST identities
+  still conflict. Ancestor directory cycles stop expanding. Repo sources,
+  the selected skills root, managed destinations and ownership metadata remain
+  link-free; read compatibility never permits writing or pruning through a link.
 - Managed-root nested extras are drift, but a directory name is not file
   ownership. `--sync --prune` removes only unchanged receipt-owned retired files.
   Unknown or locally modified files remain; modified owned files report conflicts.
@@ -705,9 +710,12 @@ are executable prompt resources, not optional repository documentation.
   touching the repo copy.
 - Ordinary names such as `local.md` or `local.patch-notes.md` -> copied unchanged;
   patch exclusion must not become a substring filter or enable disabled commands.
-- Unrelated external Skill root -> ignored as drift and preserved; known retired or
-  duplicate identities at any inspected path -> visible conflict. Symlinked trees,
-  unreadable files or ambiguous identity syntax prevent a complete entry inspection.
+- Unrelated external Skill root, including a directory or SKILL.md file link ->
+  inspected for identity, ignored as drift and preserved. A linked known CCST
+  identity, including renamed/nested entries -> visible error. Repo source links,
+  a linked skills root, unreadable entry files or ambiguous identity syntax
+  prevent a complete entry inspection. An asset link without an entry is not a
+  CCST identity merely because its directory has a known name.
 - Repo-root marker missing -> `/autopilot` stops and asks the operator to launch
   Claude from this repository.
 - Critical runtime drift -> `/autopilot` stops, shows `/sync-check`, and requests explicit
@@ -736,6 +744,11 @@ are executable prompt resources, not optional repository documentation.
 - Runtime fixtures cover critical diff, missing-critical, advisory-only drift,
   missing/invalid manifest, manifest hash, HackerOne exclusion, and both gates.
 - Runtime fixtures prove external Skill nested resources survive compare/prune.
+- Runtime link fixtures prove external directory/file links pass the real
+  Bootstrap runtime gate; renamed/nested CCST identities still stop it. Cycles
+  terminate, external bytes survive sync, and managed write checks remain strict.
+  Focused isolated acceptance lives in
+  `.trellis/tasks/10-20-business-tools-native-execution/research/runtime-skill-links-check-20261021.py`.
 - Upgrade/repeat fixtures exercise the shared ownership-based installer, with
   command and agent patches in lower/upper/mixed case plus ordinary/near-match filenames.
   Every install retains source bytes, excludes patches, and preserves disabled
@@ -1419,7 +1432,9 @@ only when comparing skills; bootstrap consumes its existing OSError/ValueError b
 `.ccst-installed.json` records relative destination, kind and installed SHA256.
 An exclusive local file lock serializes sync. Whole-batch source/path/ownership/hash
 preflight precedes any payload/receipt publication; parent files, symlinks and local
-conflicts reject the batch. Root/lock creation is not a zero-filesystem-write promise.
+conflicts at managed destinations reject the batch. Unrelated external Skill
+links are inspected read-only and preserved; they are not install destinations.
+Root/lock creation is not a zero-filesystem-write promise.
 Only owned, unchanged obsolete files are pruned. No receipt means no deletion or
 overwrite of different bytes; native entries cannot be adopted on matching bytes
 alone. Disabled commands retain their name and state.

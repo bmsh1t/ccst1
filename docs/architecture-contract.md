@@ -614,6 +614,11 @@ only unchanged owned retired files can be removed. The selected Skill discovery 
 is inspected for known retired or duplicate identities, including renamed paths;
 unowned/modified entries and unsafe or uninspectable paths reject the batch.
 Unrelated external Skills and disabled commands are preserved, never tree-deleted.
+Runtime discovery may read linked third-party Skill entries to inspect identity;
+their normal directory/file links do not block Bootstrap. Linked known CCST
+entries still conflict, even under a renamed path. Sources, managed writes and
+ownership metadata retain strict path checks; discovery does not authorize
+installation through a link or alter the host's native Skill loader.
 
 An entry cutover requires all kinds plus prune and a fixed checkout/native
 candidate. `.ccst-entry-migration.json` binds root, direction, executor/source/native
