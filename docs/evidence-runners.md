@@ -227,6 +227,29 @@ version_diff）：
 现有 `replayed` 字段表示材料来自已执行实验；此命令本身只做登记，来源由
 `native-evidence:<source>` 明确区分。无需修改 witness、报告 schema 或另立生命周期。
 
+### 候选材料的显式复核
+
+已完成判断的具体候选仍被推荐时，先读取候选池的 `summary_path`、`summary_sha256` 和
+实际材料，再显式关闭。不要用 Finding 已报告这一条件批量关闭其它 attempt：
+
+```bash
+python3 tools/validation_runner.py review-candidate --repo-root ROOT --target TARGET \
+  --summary-json SUMMARY_PATH --expected-summary-sha256 REVIEWED_SHA256 \
+  --review-id REVIEW_ID --status closed --reason "已复核并报告，材料无新增" --actor OPERATOR --json
+```
+
+返回 `recorded` 或同内容重放的 `already_recorded`；输入/归属/材料冲突退出 2。
+同目录 `candidate-review.json` 是此材料复核的唯一 owner，保留事件历史。
+收据绑定 Store generation、Finding、attempt、operation、summary 哈希；关闭时检查完整
+`artifact_bindings`（含 diff）和登记原始材料。关闭不产生技术阴性、报告资格或 Queue 完成。
+新 summary/attempt、Store generation 或附件变化使原关闭失效，并保留可见 `review.status=stale`
+及原因；损坏的 Store 或收据仍明确报错。显式 open/stale 不再读取无关旧 assessment 以自动隐藏。
+
+重开使用 `--status open --review-id NEW_ID --expected-review-id PREVIOUS_ID`，以及前一收据中的
+`binding.summary_sha256`。这是撤销该收据的关闭，即使旧附件已损坏也可执行；损坏材料仍显示
+stale，不能升级为可验证证据。后续再次关闭需重新审阅当前材料，提交当前哈希和最新 review ID。
+同 ID 不同内容拒绝；所有后续事件都要求精确前驱。操作不修改 Finding 或报告正文。
+
 ### 绑定已认领行动
 
 `record-evidence` 和 `request-diff` 都可显式传入 Store execution Action 的 claim：

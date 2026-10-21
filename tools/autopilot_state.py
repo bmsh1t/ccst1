@@ -43,13 +43,15 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     )
 try:
     from tools.checkpoint_witness import (
-        is_canonical_coverage_lane_evidence_ref,
+        round_lane_evidence_ref,
+        effective_round_lane,
         load_checkpoint_witness as _load_checkpoint_witness,
         validate_round_progress,
     )
 except ImportError:  # pragma: no cover - direct tools/ execution
     from checkpoint_witness import (  # type: ignore
-        is_canonical_coverage_lane_evidence_ref,
+        round_lane_evidence_ref,
+        effective_round_lane,
         load_checkpoint_witness as _load_checkpoint_witness,
         validate_round_progress,
     )
@@ -100,7 +102,7 @@ try:
     )
     from tools.target_paths import canonical_target_value, classify_target, compact_url, target_storage_key, target_owned_nonempty_evidence_ref
     from tools.scope_context import target_list_entries, url_belongs_to_target
-    from tools.target_store import runtime_store
+    from tools.target_store import runtime_store, StoreError
 except ImportError:  # pragma: no cover - direct tools/ execution
     from finding_index import (  # type: ignore
         list_root_finding_claims,
@@ -120,7 +122,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     )
     from target_paths import canonical_target_value, classify_target, compact_url, target_storage_key, target_owned_nonempty_evidence_ref  # type: ignore
     from scope_context import target_list_entries, url_belongs_to_target
-    from target_store import runtime_store  # type: ignore
+    from target_store import runtime_store, StoreError  # type: ignore
 
 try:
     from tools.coverage_matrix import (
@@ -344,27 +346,21 @@ def _checkpoint_round_projection(
         return {}
     projected_lanes: list[dict] = []
     for lane in progress["lanes"]:
+        lane = effective_round_lane(lane)
         item = {"id": lane["id"], "status": lane["status"]}
-        for field in ("decision", "evidence_ref", "next_action"):
+        for field in ("decision", "evidence_ref", "next_action", "report_binding", "correction_id", "evidence_contract"):
             value = lane.get(field, "")
             if value:
                 item[field] = value
         projected_lanes.append(item)
     unfinished = [item["id"] for item in projected_lanes if item["status"] == "started"]
     invalid_evidence = []
-    for item in projected_lanes:
+    for item in progress["lanes"]:
         if item["status"] != "completed":
             continue
-        evidence_ref = target_owned_nonempty_evidence_ref(
-            repo_root,
-            target,
-            item.get("evidence_ref"),
-        )
-        if not evidence_ref or not is_canonical_coverage_lane_evidence_ref(
-            item["id"],
-            evidence_ref,
-            target,
-        ):
+        try:
+            round_lane_evidence_ref(repo_root, target, item)
+        except (OSError, ValueError, StoreError):
             invalid_evidence.append(item["id"])
     return {
         "status": progress["status"],

@@ -37,7 +37,8 @@ except ImportError:  # pragma: no cover - direct tools/ execution
 try:
     from tools.autopilot_args import MAX_LANES
     from tools.checkpoint_witness import (
-        is_canonical_coverage_lane_evidence_ref,
+        round_lane_evidence_ref,
+        validate_report_binding,
         load_checkpoint_witness as _load_checkpoint_witness,
         new_round_lane as _round_lane,
         validate_round_progress as _round_progress,
@@ -60,11 +61,12 @@ try:
     from tools.structured_findings import format_validation_runner_candidate_lines
     from tools.target_case_state import summary as build_case_state_summary
     from tools.target_paths import canonical_target_value, open_target_lock_file, target_storage_key, target_owned_nonempty_evidence_ref
-    from tools.target_store import TargetStore, runtime_store
+    from tools.target_store import TargetStore, runtime_store, StoreError
 except ImportError:  # pragma: no cover - direct tools/ execution
     from autopilot_args import MAX_LANES  # type: ignore
     from checkpoint_witness import (  # type: ignore
-        is_canonical_coverage_lane_evidence_ref,
+        round_lane_evidence_ref,
+        validate_report_binding,
         load_checkpoint_witness as _load_checkpoint_witness,
         new_round_lane as _round_lane,
         validate_round_progress as _round_progress,
@@ -93,7 +95,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from structured_findings import format_validation_runner_candidate_lines  # type: ignore
     from target_case_state import summary as build_case_state_summary  # type: ignore
     from target_paths import canonical_target_value, open_target_lock_file, target_storage_key, target_owned_nonempty_evidence_ref  # type: ignore
-    from target_store import TargetStore, runtime_store  # type: ignore
+    from target_store import TargetStore, runtime_store, StoreError  # type: ignore
 
 
 def now_utc() -> str:
@@ -199,18 +201,33 @@ def _invalid_completed_lane_evidence(
         if lane.get("status") != "completed":
             continue
         lane_id = str(lane.get("id") or "")
-        evidence_ref = target_owned_nonempty_evidence_ref(
-            repo_root,
-            target,
-            lane.get("evidence_ref"),
-        )
-        if not evidence_ref or not is_canonical_coverage_lane_evidence_ref(
-            lane_id,
-            evidence_ref,
-            target,
-        ):
+        try:
+            round_lane_evidence_ref(repo_root, target, lane)
+        except (OSError, ValueError, StoreError):
             invalid.append(lane_id)
     return invalid
+
+
+def _report_lane_binding(repo_root, target, finding_id, assessment_id, delivery_id, *, current=True):
+    values = (finding_id, assessment_id, delivery_id)
+    if not any(values):
+        return None
+    if not all(values):
+        raise ValueError("report lane requires --finding-id, --assessment-id and --delivery-id together")
+    store = runtime_store(repo_root, target)
+    before = store.binding()
+    binding = validate_report_binding({"store_id": before["store_id"], "finding_id": finding_id,
+        "assessment_id": assessment_id, "delivery_id": delivery_id})
+    finding = store.finding(finding_id)
+    assessment = finding.get("assessment") or {}
+    if current and (assessment.get("id") != assessment_id or assessment.get("verdict") != "confirmed" or not any(
+        item["id"] == delivery_id and item["assessment_id"] == assessment_id
+        and item["status"] == "eligible" and not item["stale"] for item in finding["deliveries"]
+    )):
+        raise ValueError("report lane must bind the current assessment and eligible delivery")
+    if store.binding() != before:
+        raise ValueError("report owner changed during lane claim; refresh the owner")
+    return binding
 
 
 def begin_round(repo_root: Path | str, target: str, *, max_lanes: int) -> dict:
@@ -245,6 +262,9 @@ def record_round_lane(
     *,
     lane: str,
     max_lanes: int,
+    finding_id: str = "",
+    assessment_id: str = "",
+    delivery_id: str = "",
 ) -> dict:
     """Atomically claim one stable lane ID against the active round budget."""
     if (
@@ -266,6 +286,10 @@ def record_round_lane(
         lanes = progress["lanes"]
         if lane_id in claimed:
             lane_record = next(item for item in lanes if item.get("id") == lane_id)
+            if any((finding_id, assessment_id, delivery_id)):
+                expected = lane_record.get("report_binding") or {}
+                if (finding_id, assessment_id, delivery_id) != tuple(expected.get(key) for key in ("finding_id", "assessment_id", "delivery_id")):
+                    raise ValueError("round lane claim cannot change its report binding")
             lane_status = str(lane_record.get("status") or "started")
             status = "already_claimed" if lane_status == "started" else f"already_{lane_status}"
             allowed = lane_status == "started"
@@ -282,8 +306,14 @@ def record_round_lane(
             lane_record = {}
             status, allowed = "budget_exhausted", False
         else:
+            report_binding = _report_lane_binding(repo_root, target, finding_id, assessment_id, delivery_id)
+            if lane_id.lower().startswith("report:") and report_binding is None:
+                raise ValueError("report lane claim requires explicit Finding, assessment and delivery IDs")
             claimed.append(lane_id)
             lane_record = _round_lane(lane_id)
+            lane_record["evidence_contract"] = 2
+            if report_binding:
+                lane_record["report_binding"] = report_binding
             lanes.append(lane_record)
             status, allowed = "claimed", True
         limit = int(progress.get("max_lanes", max_lanes) or max_lanes)
@@ -406,23 +436,16 @@ def record_round_lane_result(
         if lane_record is None:
             raise ValueError(f"round lane was not claimed: {lane_id}")
         if terminal_status == "completed":
-            terminal_evidence = target_owned_nonempty_evidence_ref(
+            normalized_evidence = target_owned_nonempty_evidence_ref(
                 repo_root,
                 target,
                 terminal_evidence,
             )
-            if not terminal_evidence:
+            if normalized_evidence:
+                terminal_evidence = normalized_evidence
+            elif not (lane_record.get("evidence_corrections") and terminal_evidence == lane_record.get("evidence_ref")):
                 raise ValueError(
                     "completed round lane requires target-owned, non-empty evidence_ref"
-                )
-            if not is_canonical_coverage_lane_evidence_ref(
-                lane_id,
-                terminal_evidence,
-                target,
-            ):
-                raise ValueError(
-                    "completed coverage lane requires canonical Coverage Matrix "
-                    "or current TargetStore evidence_ref"
                 )
         expected = {
             "status": terminal_status,
@@ -432,9 +455,13 @@ def record_round_lane_result(
         }
         if lane_record.get("status") in {"completed", "blocked"}:
             if any(lane_record.get(field) != value for field, value in expected.items()):
-                raise ValueError(f"terminal round lane cannot be rewritten: {lane_id}")
+                raise ValueError(f"terminal round lane cannot be rewritten: {lane_id}; use --correct-round-lane-evidence for a reference correction")
+            if terminal_status == "completed":
+                round_lane_evidence_ref(repo_root, target, lane_record)
             result_status = "already_recorded"
         else:
+            if terminal_status == "completed":
+                round_lane_evidence_ref(repo_root, target, {**lane_record, **expected})
             timestamp = now_utc()
             lane_record.update(expected)
             lane_record["finished_at"] = timestamp
@@ -462,6 +489,61 @@ def record_round_lane_result(
             "lane": dict(lane_record),
             "round_progress": dict(progress),
         }
+
+
+def correct_round_lane_evidence(repo_root, target, *, lane, expected_round_id, correction_id,
+                                evidence_ref, reason, actor, expected_correction_id=None,
+                                finding_id="", assessment_id="", delivery_id=""):
+    """Append a reference correction without rewriting the original terminal result."""
+    lane_id = _round_lane_text(" ".join(str(lane or "").split()), "id", max_length=200)
+    correction_id = _round_lane_text(correction_id, "correction_id", max_length=200)
+    reason = _round_lane_text(reason, "reason", max_length=500)
+    actor = _round_lane_text(actor, "actor", max_length=200)
+    expected_round_id = _round_lane_text(expected_round_id, "round_id", max_length=64)
+    evidence_ref = _round_lane_text(evidence_ref, "evidence_ref", max_length=500)
+    path = _checkpoint_witness_path(repo_root, target)
+    with checkpoint_witness_lock(repo_root, target):
+        payload = _load_checkpoint_witness(path)
+        progress = _round_progress(payload, allow_invalid_completed_evidence=True)
+        if progress.get("round_id") != expected_round_id:
+            raise ValueError("evidence correction targets a different round")
+        record = next((item for item in progress["lanes"] if item["id"] == lane_id), None)
+        if not record or record["status"] != "completed":
+            raise ValueError("evidence correction requires an existing completed lane")
+        corrections = record.get("evidence_corrections", [])
+        original_binding = record.get("report_binding") or next(
+            (item["report_binding"] for item in corrections if "report_binding" in item), None)
+        if original_binding:
+            if any((finding_id, assessment_id, delivery_id)) and (finding_id, assessment_id, delivery_id) != tuple(
+                original_binding[key] for key in ("finding_id", "assessment_id", "delivery_id")
+            ):
+                raise ValueError("evidence correction cannot change the claimed report owner")
+            binding = original_binding
+        elif any((finding_id, assessment_id, delivery_id)):
+            binding = _report_lane_binding(repo_root, target, finding_id, assessment_id, delivery_id, current=False)
+        else:
+            binding = (corrections[-1].get("report_binding") if corrections else None)
+        requested = {"id": correction_id, "previous": expected_correction_id, "evidence_ref": evidence_ref,
+                     "reason": reason, "actor": actor}
+        if binding:
+            requested["report_binding"] = binding
+        effective = {**record, "evidence_contract": 2, "evidence_corrections": [*corrections, requested]}
+        requested["evidence_ref"] = round_lane_evidence_ref(repo_root, target, effective)
+        existing = next((item for item in corrections if item["id"] == correction_id), None)
+        if existing:
+            if any(existing.get(key) != value for key, value in requested.items()):
+                raise ValueError("correction ID already has different content")
+            result_status = "already_recorded"
+        else:
+            previous = corrections[-1]["id"] if corrections else None
+            if previous != expected_correction_id:
+                raise ValueError(f"lane evidence correction changed; expected-correction-id must be {previous!r}")
+            requested["recorded_at"] = now_utc()
+            record["evidence_corrections"] = [*corrections, requested]
+            _round_progress(payload, allow_invalid_completed_evidence=True)
+            _write_json_atomic(path, payload)
+            result_status = "recorded"
+        return {"status": result_status, "path": str(path), "lane": dict(record), "round_progress": dict(progress)}
 
 
 def write_checkpoint_witness(
@@ -1535,6 +1617,7 @@ def build_parser() -> argparse.ArgumentParser:
     round_operation.add_argument("--round-begin", action="store_true")
     round_operation.add_argument("--record-round-lane", action="store_true")
     round_operation.add_argument("--record-round-lane-result", action="store_true")
+    round_operation.add_argument("--correct-round-lane-evidence", action="store_true")
     round_operation.add_argument("--record-global-review", action="store_true")
     parser.add_argument(
         "--round-id",
@@ -1542,6 +1625,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="round_id the lane was claimed under (required for --record-round-lane-result)",
     )
     parser.add_argument("--lane", default="")
+    parser.add_argument("--finding-id", default="", help="Report lane Finding owner, fixed at claim")
+    parser.add_argument("--assessment-id", default="", help="Report lane assessment owner, fixed at claim")
+    parser.add_argument("--delivery-id", default="", help="Report lane delivery owner, fixed at claim")
+    parser.add_argument("--correction-id", default="")
+    parser.add_argument("--expected-correction-id")
+    parser.add_argument("--reason", default="")
+    parser.add_argument("--actor", default="checkpoint")
     parser.add_argument("--max-lanes", type=int, default=0)
     parser.add_argument("--lane-status", default="")
     parser.add_argument("--review-status", default="")
@@ -1593,9 +1683,15 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else result["path"])
         return 0
-    if args.round_begin or args.record_round_lane or args.record_round_lane_result:
+    if args.round_begin or args.record_round_lane or args.record_round_lane_result or args.correct_round_lane_evidence:
         try:
-            if args.record_round_lane_result:
+            if args.correct_round_lane_evidence:
+                result = correct_round_lane_evidence(repo, resolved_target, lane=args.lane,
+                    expected_round_id=args.round_id, correction_id=args.correction_id,
+                    evidence_ref=args.evidence_ref or "", reason=args.reason, actor=args.actor,
+                    expected_correction_id=args.expected_correction_id,
+                    finding_id=args.finding_id, assessment_id=args.assessment_id, delivery_id=args.delivery_id)
+            elif args.record_round_lane_result:
                 if not str(args.round_id or "").strip():
                     raise ValueError("--round-id is required with --record-round-lane-result (from the begin/claim response)")
                 result = record_round_lane_result(
@@ -1619,9 +1715,12 @@ def main(argv: list[str] | None = None) -> int:
                         resolved_target,
                         lane=args.lane,
                         max_lanes=args.max_lanes,
+                        finding_id=args.finding_id,
+                        assessment_id=args.assessment_id,
+                        delivery_id=args.delivery_id,
                     )
                 )
-        except (OSError, ValueError, KeyError) as exc:
+        except (OSError, ValueError, KeyError, StoreError) as exc:
             print(f"checkpoint round budget failed: {exc}", file=sys.stderr)
             return 2
         print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else result["path"])

@@ -205,7 +205,8 @@ AuthSession origin/scope rules; raw headers override only on the initial URL.
   remains explicit; existing files are neither rewritten nor deleted.
 - Each index entry reads an explicit severity declaration from that report's
   immutable, hash-checked body. English Severity fields, Chinese 漏洞等级/严重程度
-  fields and the default SRC header (title, 目标网站URL, bare level) are supported.
+  fields (including a bare two-line label/value, with LF or CRLF) and the default
+  SRC header (title, 目标网站URL, bare level) are supported.
   中危/高危/严重 normalize to medium/high/critical; fenced examples and narrative
   severity words are not declarations. Missing, invalid or conflicting declarations
   display `unknown`, never a category/default medium. A single-step decision with explicit
@@ -827,3 +828,47 @@ Correct: successful integer or domain error -> CLI aggregate -> actual process e
 Wrong: copy every adjacent screenshot and authorize delivery from Markdown health alone.
 Correct: body-declared content-addressed files -> checked published copies -> shared
 Store report health, with historical body/receipt identities unchanged.
+
+
+## Scenario: explicit Runner candidate review
+
+### 1. Scope / Trigger
+Close one already reviewed evidence bundle that would otherwise recur in the candidate pool.
+`runner_candidate_review.py` owns receipts, shared by the Runner CLI and candidate reader.
+
+### 2. Signatures
+`review-candidate --target TARGET --repo-root ROOT --summary-json REF --review-id ID
+--expected-summary-sha256 SHA256 --status closed|open --reason TEXT [--actor ACTOR]
+[--expected-review-id ID] --json`. API: `review_candidate(..., expected_summary_sha256=...,
+expected_review_id=None)`. Candidate items expose `summary_sha256` alongside `summary_path`.
+
+### 3. Contracts
+Target-owned validation `summary.json` has one adjacent `candidate-review.json` with schema 1
+and append-only `events`: id, previous, status, reason, actor, recorded_at, binding. Binding contains
+target/store_id/finding_id/attempt_id/operation_id/summary_ref/summary_sha256. The target mutation
+lock serializes receipt writes; no Store schema/revision or Finding lifecycle mutation occurs.
+Close captures a complete Finding-linked operation and checks every summary artifact binding,
+including diff, against current bytes; run artifacts must match the registered operation.
+Open revokes the selected preceding receipt (its hash), even if its raw material is now damaged.
+
+### 4. Validation & Error Matrix
+| Condition | Result |
+|---|---|
+| exact ID/content replay | already_recorded, no event append |
+| wrong material hash/predecessor/owner or changed close bytes | exit 2, no receipt write |
+| summary/generation/artifact changed after review | visible stale review with reason |
+| explicit open/stale | visible, no old-assessment automatic suppression |
+| malformed receipt or unhealthy Store | explicit error |
+
+### 5. Good / Base / Bad Cases
+Good: close reviewed A, new B stays visible. Base: no receipt retains existing exact assessed-material
+suppression. Bad: infer closure from Finding report status or omit the reviewed material hash.
+
+### 6. Tests Required
+Isolated synthetic production-source check: close/replay/open CAS, stale summary/diff/raw, new attempt,
+foreign binding rejection, no Finding mutation, candidate pool visibility and CLI exit codes.
+Also verify 6k levels in actual publication/INDEX rebuild without changing body hashes.
+
+### 7. Wrong vs Correct
+Wrong: confirmed Finding hides all Runner attempts. Correct: one material receipt consumes one
+reviewed bundle; changed material remains visible and requires fresh review.

@@ -200,7 +200,7 @@ before review or round-witness publication.
 - `build_checkpoint(repo_root, *, target, ...) -> dict`
 - `write_checkpoint_witness(repo_root, target, checkpoint) -> dict`
 - `begin_round(repo_root, target, *, max_lanes) -> dict`
-- `record_round_lane(repo_root, target, *, lane, max_lanes) -> dict`
+- `record_round_lane(repo_root, target, *, lane, max_lanes, finding_id="", assessment_id="", delivery_id="") -> dict`
 - `prepare_round(repo_root, target, max_lanes) -> dict`
 - `settle_round(repo_root, target, *, note="", refresh_coverage=True) -> dict`
 - `load_closure_projection(repo_root, state, ...) -> dict` raises
@@ -1283,3 +1283,50 @@ identity consistent with its URL/method/family; the shared resolver verifies tha
 identity's current closure. Final Queue metadata must carry the same identity
 and review context. Missing identity remains unresolved, not a path fallback.
 Regression must include actual `read_matrix` output, not just hand-built grids.
+
+
+## Scenario: report lane binding and explicit evidence correction
+
+### 1. Scope / Trigger
+Prevent a report heartbeat from consuming another Finding's output; repair a completed reference
+without rewriting terminal history. `checkpoint.py` owns writes; `checkpoint_witness.py` owns shared
+structure/effective-evidence checks consumed by recovery and Autopilot state.
+
+### 2. Signatures
+Report claim adds `--finding-id ID --assessment-id ID --delivery-id ID` to `--record-round-lane`.
+Correction: `--correct-round-lane-evidence --round-id ID --lane ID --correction-id ID
+--evidence-ref REF --reason TEXT --actor ACTOR [--expected-correction-id ID]`.
+Historical unbound report correction also supplies the three report IDs.
+
+### 3. Contracts
+New claims carry `evidence_contract=2`. `report:*` requires a frozen `report_binding` with store_id,
+finding_id, assessment_id and delivery_id. Claim checks current eligible owners; completed evidence
+checks the exact registered report relation, bytes and authorization. Later stale status alone does
+not invalidate historical proof of production. Any new completed reports/ reference needs binding.
+`evidence_corrections` append id/previous/evidence_ref/reason/actor/recorded_at and optional fixed
+report_binding. Only completed lanes in the same active/completed round accept corrections. Original
+terminal fields, timestamps and budget stay unchanged; ordinary replay uses original fields while
+verifying effective evidence. Legacy unbound lanes retain their original target-only guarantee.
+
+### 4. Validation & Error Matrix
+| Condition | Result |
+|---|---|
+| wrong report owner/ref or damaged bytes | reject before completion, lane remains started |
+| altered ordinary terminal result | reject; explicit correction required |
+| correction duplicate ID with identical fields | already_recorded |
+| wrong round/predecessor, changed fixed owner, blocked/started lane | reject, no mutation |
+| historical report became stale, bytes/authorization intact | historical correction accepted |
+
+### 5. Good / Base / Bad Cases
+Good: claim report IDs, use publisher's exact path, correct explicit reference mistake with predecessor.
+Base: generic evidence, canonical Coverage and blocked-none behavior remain available.
+Bad: pick `tail -1` from a reports directory or execute after prepare without an allowed claim.
+
+### 6. Tests Required
+Synthetic Store/report round: wrong/right report, unchanged failed claim, exact terminal replay,
+legacy correction including stale report, duplicate/conflicting corrections, completed-round correction,
+owner/generation/integrity rejection and writer/resume/state agreement; no real target data.
+
+### 7. Wrong vs Correct
+Wrong: edit terminal evidence in place or add a correction lane that spends budget.
+Correct: append correction history to the original lane; readers project the effective reference.

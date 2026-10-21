@@ -39,12 +39,35 @@ Claim round lane before execution; distinct from Action id/token/actor:
 cd -- <repo_root_shell> && python3 tools/checkpoint.py --target <target_shell> --record-round-lane --lane <stable_lane_id> --max-lanes <invocation_batch.max_lanes> --json
 ```
 Only `allowed=true` proceeds; recover `already_claimed`; never replay other refusals.
+If claim failed because no active round existed, run prepare, then claim the selected lane again.
+Prepare success alone is not admission; obtain a fresh `allowed=true` before executing.
+For a report lane, use `report:<finding-id>` and add `--finding-id FINDING_ID
+--assessment-id ASSESSMENT_ID --delivery-id DELIVERY_ID` to claim. These IDs must select
+its current confirmed assessment and eligible delivery; the claim freezes its report owner.
+A single-step validation lane that creates those IDs uses its returned per-Finding validation summary
+for the heartbeat; a later separate report lane claims the committed IDs before publication.
 Terminal heartbeat after registration/resolve:
 ```bash
 cd -- <repo_root_shell> && python3 tools/checkpoint.py --target <target_shell> --record-round-lane-result --round-id <round_id_shell> --lane <stable_lane_id> --lane-status <completed_or_blocked> --decision <decision_shell> --evidence-ref <evidence_ref_shell> --next-action <next_action_shell> --json
 ```
-Completed needs nonempty target-owned evidence; blocked permits `none`. No raw responses/prompts/credentials.
+Completed needs nonempty target-owned evidence; blocked permits `none`. Report references must
+match the claimed Store/Finding/assessment/delivery and intact registered bytes. Use the exact
+publisher receipt, never a directory listing's last file. Wrong references leave the lane started.
+No raw responses/prompts/credentials.
 `started` lanes forbid closure. Claim/result errors: ERROR; preserve recovery, stop new work.
+
+## Correct A Completed Lane Reference
+Ordinary terminal replay keeps its original fields. For a reference mistake, append a correction:
+```bash
+python3 tools/checkpoint.py --repo-root ROOT --target TARGET --correct-round-lane-evidence \
+  --round-id ROUND_ID --lane LANE_ID --correction-id CORRECTION_ID \
+  --evidence-ref EXACT_REF --reason "wrong report reference" --actor OPERATOR --json
+```
+For a later correction, add `--expected-correction-id PREVIOUS_ID`. A historical unbound lane
+corrected to a report also requires its explicit Finding/assessment/delivery IDs. Existing bindings
+cannot change. Both active and completed rounds accept this operation; original result, timestamps
+and lane budget remain intact. Recovery and Closure use the latest correction. Historical registered
+reports may be stale after a later judgment, but their identity, bytes and authorization must remain valid.
 
 ## Settle And Status
 After heartbeats and shared saving/cleanup:

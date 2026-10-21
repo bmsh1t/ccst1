@@ -5,6 +5,7 @@ Validation Runner v1 intentionally stays small:
 
 - request-diff: AI-supplied exact baseline/variant replay across one input dimension.
 - record-evidence: register already-executed native observations without replay.
+- review-candidate: close/reopen one exact evidence bundle with an explicit receipt.
 
 AI 仍负责选择 hypothesis、解释业务影响、决定是否升级/降级；本工具只负责稳定
 执行 replay / diff / evidence bundle / ledger 写入。
@@ -40,6 +41,7 @@ try:
     from tools.evidence_identity import normalize_actor, normalize_object_scope, normalize_variant
     from tools.response_diff import diff_responses, snapshot_response
     from tools.request_diff import RequestPairError, request_pair_digest, validate_request_pair
+    from tools.runner_candidate_review import review_candidate
     from tools.browser_surface import public_url_shape
     from tools.evidence_identity import canonical_endpoint_identity, canonical_vuln_class, normalize_family, exact_endpoint_identity
     from tools.identity_contract import ClosureCellKey
@@ -57,6 +59,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from evidence_identity import normalize_actor, normalize_object_scope, normalize_variant  # type: ignore
     from response_diff import diff_responses, snapshot_response  # type: ignore
     from request_diff import RequestPairError, request_pair_digest, validate_request_pair  # type: ignore
+    from runner_candidate_review import review_candidate
     from browser_surface import public_url_shape  # type: ignore
     from evidence_identity import canonical_endpoint_identity, canonical_vuln_class, normalize_family, exact_endpoint_identity  # type: ignore
     from identity_contract import ClosureCellKey  # type: ignore
@@ -1745,6 +1748,17 @@ def build_parser() -> argparse.ArgumentParser:
     observation.add_argument("--claim-token")
     observation.add_argument("--json", action="store_true")
 
+    review = sub.add_parser("review-candidate", help="Close or reopen one exact reviewed candidate without changing its Finding")
+    review.add_argument("--target", required=True)
+    review.add_argument("--repo-root", default=str(BASE_DIR))
+    review.add_argument("--summary-json", required=True)
+    review.add_argument("--review-id", required=True)
+    review.add_argument("--expected-summary-sha256", required=True)
+    review.add_argument("--status", required=True, choices=("closed", "open"))
+    review.add_argument("--reason", required=True)
+    review.add_argument("--expected-review-id")
+    review.add_argument("--actor", default="validation-runner")
+    review.add_argument("--json", action="store_true")
     return parser
 
 
@@ -1764,6 +1778,12 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(f"--identity-v2-json must contain a valid versioned ClosureCellKey: {exc}")
     repo_root = Path(args.repo_root)
     try:
+        if args.lane == "review-candidate":
+            result = review_candidate(repo_root, args.target, summary_ref=args.summary_json,
+                review_id=args.review_id, status=args.status, reason=args.reason, actor=args.actor,
+                expected_review_id=args.expected_review_id, expected_summary_sha256=args.expected_summary_sha256)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 0
         with _runner_admission(repo_root, args.target) as (store, _):
             if args.lane == "record-observation":
                 if args.summary_json:

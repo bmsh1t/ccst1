@@ -95,7 +95,7 @@ def declared_report_severity(content: str) -> dict:
             src_header = len(header) == 3 and re.fullmatch(
                 r"目标网站\s*URL\s*[:：]\s*https?://\S+", header[1], re.I
             ) is not None
-        if re.fullmatch(rf"#{{1,6}}\s+{label}\s*[:：]? *", text, re.I):
+        if re.fullmatch(rf"(?:#{{1,6}}\s+)?{label}\s*[:：]? *", text, re.I):
             pending = True
             continue
         field = re.match(rf"(?:[-*]\s+)?{label}\s*[:：]\s*(.*)$", text, re.I)

@@ -91,7 +91,11 @@ workflow does not promise cross-entry deduplication or migrate old reports.
 
 The index retains all current registered reports, including reports registered through `/validate` or the
 explicit Store API. Severity is read only from each registered body's declaration; absent/invalid/conflicting
-values remain unknown. CVSS is optional destination metadata, not an automatic severity calculator.
+values remain unknown. The 6k two-line form `漏洞等级` followed by `中危`, `高危` or `严重`
+normalizes to `medium`, `high` or `critical`, with LF or CRLF. Heading, colon and SRC header forms
+remain accepted. Deferred decision severity does not override the later authored body.
+To repair an existing index after this parser update, explicitly run the index-only command above;
+registered report bytes and hashes stay unchanged. CVSS is optional destination metadata, not an automatic severity calculator.
 Publication does not submit a report externally or complete a Queue Action. External submission has its own
 explicit delivery event and receipt.
 

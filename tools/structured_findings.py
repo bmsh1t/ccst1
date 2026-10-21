@@ -3,13 +3,16 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
 try:
     from tools.contracts import runner_summary_lane
+    from tools.runner_candidate_review import candidate_review_state
 except ImportError:  # pragma: no cover - direct tools/ execution
     from contracts import runner_summary_lane
+    from runner_candidate_review import candidate_review_state
 
 try:
     from finding_index import verify_finalized_finding_owner_provenance
@@ -121,7 +124,7 @@ def load_validation_runner_candidate_pool(
     证据摘要暴露给 Claude 选择下一条 `/validate`，不会把它们升级成
     report-ready，也不会替 Claude 做价值排序。
     """
-    repo = Path(repo_root)
+    repo = Path(repo_root).resolve()
     resolved_target = canonical_target_value(target)
     target_key = target_storage_key(resolved_target)
     store = runtime_store(repo, resolved_target)
@@ -134,14 +137,21 @@ def load_validation_runner_candidate_pool(
     candidates: list[tuple[float, str, dict]] = []
     for path in validation_dir.rglob("summary.json"):
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            raw = path.read_bytes()
+            payload = json.loads(raw)
         except (OSError, json.JSONDecodeError):
             continue
         if not _runner_summary_is_candidate(payload):
             continue
         compact = _compact_runner_summary(payload, path, repo)
+        compact["summary_sha256"] = hashlib.sha256(raw).hexdigest()
+        explicit_review = candidate_review_state(store, path, summary_sha256=compact["summary_sha256"])
+        if explicit_review and explicit_review["status"] == "closed":
+            continue
+        if explicit_review:
+            compact["review"] = explicit_review
         finding_id = compact["id"]
-        if finding_id not in reviewed:
+        if not explicit_review and finding_id not in reviewed:
             reviewed[finding_id] = _reviewed_runner_material(store, finding_id)
         raw_refs = set()
         for run in payload.get("runs", []) if isinstance(payload.get("runs"), list) else []:
@@ -149,7 +159,7 @@ def load_validation_runner_candidate_pool(
             if isinstance(artifacts, dict):
                 raw_refs.update(_relative_to_repo(Path(ref), repo) for ref in artifacts.values()
                                 if isinstance(ref, str) and ref)
-        if raw_refs and raw_refs <= reviewed[finding_id].get(compact["attempt_id"], set()):
+        if not explicit_review and raw_refs and raw_refs <= reviewed[finding_id].get(compact["attempt_id"], set()):
             continue
         try:
             mtime = path.stat().st_mtime
@@ -520,7 +530,7 @@ def format_validation_runner_candidate_lines(
     for item in candidates[:limit]:
         lines.append(
             "{indent}{id} [{lane}/{result}] {method} {url}; "
-            "evidence={summary_path}; gate={gate}".format(
+            "evidence={summary_path}; summary_sha256={summary_sha256}; gate={gate}".format(
                 indent=indent,
                 id=item.get("id", "-"),
                 lane=item.get("lane", "-"),
@@ -528,7 +538,11 @@ def format_validation_runner_candidate_lines(
                 method=item.get("method", "GET"),
                 url=item.get("url", ""),
                 summary_path=item.get("summary_path", ""),
+                summary_sha256=item.get("summary_sha256", ""),
                 gate=item.get("report_gate", "requires /validate before report"),
             )
         )
+        if item.get("review"):
+            review = item["review"]
+            lines.append(f"{indent}  review={review['status']}; review_id={review['review_id']}; reason={review['reason']}")
     return lines

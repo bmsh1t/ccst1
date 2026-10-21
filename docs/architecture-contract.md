@@ -208,6 +208,12 @@ refuted. A valuable report claim cannot make unsupported evidence valid.
   shared target switch lock. Explicit target/output overrides cannot redirect a
   different owner's files. Runner summaries bind target/backend/store generation;
   preview execution and report publication reject before generated artifacts.
+- `runner_candidate_review` owns per-summary review-consumption receipts, not Finding judgments.
+  Explicit closure binds the caller-reviewed summary hash and complete artifact material; changes
+  invalidate that closure. Reopen preserves history and never alters assessment or delivery.
+- Checkpoint owns report lane bindings and append-only evidence corrections. Shared witness readers
+  verify the exact registered report identity and intact authorized bytes; original terminal results
+  and budgets remain immutable. Report staleness alone does not erase historical production proof.
 - Database identity binds target, schema version, store instance and revision.
   Missing, corrupted, foreign-target and unsupported-version stores fail visibly.
 - Writes use short transactions. Registration publishes operation, observation,

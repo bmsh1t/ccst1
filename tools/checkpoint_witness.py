@@ -8,10 +8,12 @@ from pathlib import Path
 
 try:
     from tools.autopilot_args import MAX_LANES
-    from tools.target_paths import canonical_target_value, target_storage_key
+    from tools.target_paths import canonical_target_value, target_storage_key, target_owned_nonempty_evidence_ref
+    from tools.target_store import runtime_store, ConflictError
 except ImportError:  # pragma: no cover - direct tools/ execution
     from autopilot_args import MAX_LANES  # type: ignore
-    from target_paths import canonical_target_value, target_storage_key  # type: ignore
+    from target_paths import canonical_target_value, target_storage_key, target_owned_nonempty_evidence_ref  # type: ignore
+    from target_store import runtime_store, ConflictError
 
 
 def _now_utc() -> str:
@@ -60,6 +62,60 @@ def is_canonical_coverage_lane_evidence_ref(
         f"evidence/{key}/coverage_matrix.json",
         f"state/{key}/metadata.sqlite3",
     }
+
+
+def validate_report_binding(binding: dict) -> dict:
+    fields = {"store_id", "finding_id", "assessment_id", "delivery_id"}
+    if not isinstance(binding, dict) or set(binding) != fields or any(
+        not isinstance(value, str) or not value or value != value.strip()
+        or len(value) > 200 or "\n" in value or "\r" in value
+        for value in binding.values()
+    ):
+        raise ValueError("round report binding requires Store, Finding, assessment and delivery IDs")
+    return dict(binding)
+
+
+def effective_round_lane(lane: dict) -> dict:
+    """Project the latest explicit evidence correction, retaining the original lane."""
+    result = dict(lane)
+    corrections = lane.get("evidence_corrections") or []
+    if corrections:
+        last = corrections[-1]
+        result["evidence_ref"] = last["evidence_ref"]
+        if "report_binding" in last:
+            result["report_binding"] = last["report_binding"]
+        result["evidence_contract"] = 2
+        result["correction_id"] = last["id"]
+    return result
+
+
+def round_lane_evidence_ref(repo_root, target, lane: dict) -> str:
+    """One evidence-ownership check for heartbeat, recovery and Closure."""
+    item = effective_round_lane(lane)
+    ref = target_owned_nonempty_evidence_ref(repo_root, target, item.get("evidence_ref"))
+    if not ref:
+        raise ValueError("completed round lane requires target-owned, non-empty evidence_ref")
+    if not is_canonical_coverage_lane_evidence_ref(item["id"], ref, target):
+        raise ValueError("completed coverage lane requires canonical Coverage Matrix or current TargetStore evidence_ref")
+    binding = item.get("report_binding")
+    if binding is None:
+        if item.get("evidence_contract") == 2 and Path(ref).parts[0] == "reports":
+            raise ValueError("report evidence requires Finding/assessment/delivery binding at lane claim")
+        return ref
+    binding = validate_report_binding(binding)
+    store = runtime_store(repo_root, target)
+    before = store.binding()
+    if before["store_id"] != binding["store_id"]:
+        raise ValueError("round lane report belongs to a different Store generation")
+    finding = store.finding(binding["finding_id"])
+    report = next((report for report in finding["reports"] if (
+        report["assessment_id"], report["delivery_id"], report["artifact_ref"]
+    ) == (binding["assessment_id"], binding["delivery_id"], ref)), None)
+    if not report or not report["artifact_available"] or not report["artifact_authorized"]:
+        raise ValueError("evidence_ref is not an intact registered report for this lane's Finding/assessment/delivery")
+    if store.binding() != before:
+        raise ConflictError("report owner changed during lane verification; retry")
+    return ref
 
 
 def validate_round_progress(
@@ -134,6 +190,34 @@ def validate_round_progress(
         for field in ("started_at", "updated_at"):
             if not isinstance(lane.get(field), str) or not lane.get(field):
                 raise ValueError("checkpoint round_progress lane timestamps are invalid")
+        if "evidence_contract" in lane and (type(lane["evidence_contract"]) is not int or lane["evidence_contract"] != 2):
+            raise ValueError("unsupported round lane evidence contract")
+        if "report_binding" in lane:
+            validate_report_binding(lane["report_binding"])
+        corrections = lane.get("evidence_corrections", [])
+        if not isinstance(corrections, list) or corrections and status != "completed":
+            raise ValueError("only completed round lanes may have evidence corrections")
+        previous, correction_ids = None, set()
+        fixed_binding = lane.get("report_binding")
+        for correction in corrections:
+            required = {"id", "previous", "evidence_ref", "reason", "actor", "recorded_at"}
+            if not isinstance(correction, dict) or not required <= set(correction) or set(correction) - required - {"report_binding"}:
+                raise ValueError("invalid round lane evidence correction")
+            for field, size in (("id", 200), ("evidence_ref", 500), ("reason", 500), ("actor", 200), ("recorded_at", 100)):
+                value = correction[field]
+                if not isinstance(value, str) or not value.strip() or len(value) > size or "\n" in value or "\r" in value:
+                    raise ValueError("invalid round lane evidence correction fields")
+            if correction["id"] in correction_ids or correction["previous"] != previous:
+                raise ValueError("invalid round lane evidence correction history")
+            if "report_binding" in correction:
+                validate_report_binding(correction["report_binding"])
+                if fixed_binding and correction["report_binding"] != fixed_binding:
+                    raise ValueError("evidence correction cannot change the claimed report owner")
+                fixed_binding = correction["report_binding"]
+            elif fixed_binding:
+                raise ValueError("evidence correction must retain the report owner")
+            previous = correction["id"]
+            correction_ids.add(previous)
         if status == "started":
             if any(lane.get(field) for field in ("decision", "evidence_ref", "next_action", "finished_at")):
                 raise ValueError("checkpoint started round lane has terminal fields")
@@ -148,7 +232,7 @@ def validate_round_progress(
             or (
                 not allow_invalid_completed_evidence
                 and status == "completed"
-                and lane.get("evidence_ref") == "none"
+                and effective_round_lane(lane).get("evidence_ref") == "none"
             )
         ):
             raise ValueError("checkpoint terminal round lane is incomplete")

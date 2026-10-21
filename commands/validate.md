@@ -109,3 +109,11 @@ cite those real IDs and operation/observation references, then follow
   query current facts and explicitly author a new decision with fresh predecessors.
 - **Current truth:** use returned per-Finding summaries/notes for this invocation only,
   never `findings/last-validate.json` as evidence; Store/INDEX own current report status.
+
+
+## Retire an already reviewed Runner candidate
+
+When a specific evidence bundle keeps resurfacing after review, use
+[explicit candidate review](../docs/evidence-runners.md#候选材料的显式复核) to close that bundle.
+This records review consumption only; Finding assessment, delivery and report state remain Store-owned.
+New material stays reviewable, and an explicit reopen preserves review history.

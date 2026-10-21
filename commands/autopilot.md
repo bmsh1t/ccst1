@@ -44,7 +44,9 @@ Reuse `state.lane_contract` at `text_available=true`; otherwise/new selection re
 2. AI selects `owner_continuations`; order is advisory; respect `runnable=false`.
    Read selected evidence/owner contracts before execution; retain deferred work.
    `handoff` returns to `src-hunter`; inventory/residuals never mandate Recon/Checkpoint.
-3. Round: claim per Round Mechanics before any action, including Recon.
+3. Round: claim per Round Mechanics before any action, including Recon or validation.
+   A missing-round refusal requires prepare followed by a fresh lane claim with `allowed=true`;
+   prepare alone never authorizes execution. Report claims bind the selected Finding/assessment/delivery.
 4. Execute once. Selected `run_recon`: `arguments.recon_flags` plus full-state/cursor contract
    in `docs/autopilot-lanes.md#recon-and-surface`; otherwise the selected lane.
    Before Action-bound execution read
