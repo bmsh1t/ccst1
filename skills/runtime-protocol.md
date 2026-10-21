@@ -84,6 +84,9 @@ Candidate 和确认 A 的持久化不等 B/C；预算停止新工作，不停止
 
 `skills/src-hunter/SKILL.md` 是唯一调查入口；完整 6k rules 提供业务规则，专项只回答当前问题。
 知识提供完整方法；工具保存执行事实；规则处理完成和交付。无固定六域前置表、调用表或路由审计。
+加载 Skill/短表不等于已展开方法；选择新问题时读取并应用匹配正文，当前上下文完整可复用。
+新会话、角色或权限改变后，按 `rules/dig-scope-workflow.md` §4.2.3 的会话后规则重新判断业务对象与可检验路径。
+缺双身份先核对授权范围内能否准备测试账号/对象；实际不可获得才记局部阻塞，不把匿名拒绝沿用到新身份。
 
 ### 2.1 三模式决策：Discovery / Exploitation / Validation modes
 
@@ -123,6 +126,7 @@ Not applicable、Dead ends、Still unknown 和 Next actions；无发现不是覆
 `result=""` 无裁决，不建占位 Finding、不自动解决 Action 或关闭 Coverage。
 已有 Candidate 的证明仍走独立 `record-evidence`。登记失败只重试登记；同次执行补证沿用
 attempt、完整快照和原 `expected_operation`，不重放未知网络效果，也不伪造 `:0` 引用。
+参数不确定先读所选子命令 `--help` 或 evidence-runners 的速查；区分未执行、已执行未登记和未知效果。
 
 ### Stateful Continuity
 

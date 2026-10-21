@@ -255,14 +255,14 @@ def _source_iterators(repo_root: Path, target: str) -> list[tuple[str, Iterable[
     sources = recon_source_iterators(repo_root, target)
     store = runtime_store(repo_root, target)
     def current_urls():
-        page = store.page("findings", limit=1000)
+        page = store.page("findings", limit=1000, status="active")
         while True:
             for row in page["items"]:
                 if row.get("endpoint"):
                     yield row["endpoint"]
             if not page["has_more"]:
                 return
-            page = store.page("findings", limit=1000, cursor=page["next_cursor"])
+            page = store.page("findings", limit=1000, cursor=page["next_cursor"], status="active")
     findings = current_urls()
     # Retain the existing first-seen order: claims precede JS inputs.
     sources.insert(len(sources) - 1, ("finding", findings))

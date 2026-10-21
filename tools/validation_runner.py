@@ -723,6 +723,8 @@ def record_native_evidence(
             finding = store.finding(finding_id)
         except StoreError as exc:
             raise ValueError("record-evidence requires an existing primary finding") from exc
+        if finding["disposition"]["status"] != "active":
+            raise ValueError("record-evidence requires an active Finding; explicitly reopen the withdrawn candidate first")
         for key, expected in (("target", target), ("finding_id", finding_id)):
             if key in evidence and evidence[key] != expected:
                 raise ValueError(f"native evidence {key} does not match the selected finding")

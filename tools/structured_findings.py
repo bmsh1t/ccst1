@@ -86,12 +86,8 @@ def _compact_runner_summary(payload: dict, path: Path, repo_root: Path) -> dict:
     }
 
 
-def _reviewed_runner_material(store, finding_id: str) -> dict[str, set[str]]:
+def _reviewed_runner_material(store, finding: dict) -> dict[str, set[str]]:
     """Only exact assessed attempts/material can retire a raw review candidate."""
-    try:
-        finding = store.finding(finding_id)
-    except FindingNotFoundError:
-        return {}
     assessment = finding["assessment"]
     if not assessment or not (
         assessment["verdict"] == "refuted"
@@ -134,6 +130,7 @@ def load_validation_runner_candidate_pool(
 
     binding = store.binding()
     reviewed: dict[str, dict[str, set[str]]] = {}
+    findings: dict[str, dict | None] = {}
     candidates: list[tuple[float, str, dict]] = []
     for path in validation_dir.rglob("summary.json"):
         try:
@@ -145,14 +142,22 @@ def load_validation_runner_candidate_pool(
             continue
         compact = _compact_runner_summary(payload, path, repo)
         compact["summary_sha256"] = hashlib.sha256(raw).hexdigest()
+        finding_id = compact["id"]
+        if finding_id not in findings:
+            try:
+                findings[finding_id] = store.finding(finding_id)
+            except FindingNotFoundError:
+                findings[finding_id] = None
+        finding = findings[finding_id]
+        if finding and finding["disposition"]["status"] == "withdrawn":
+            continue
         explicit_review = candidate_review_state(store, path, summary_sha256=compact["summary_sha256"])
         if explicit_review and explicit_review["status"] == "closed":
             continue
         if explicit_review:
             compact["review"] = explicit_review
-        finding_id = compact["id"]
         if not explicit_review and finding_id not in reviewed:
-            reviewed[finding_id] = _reviewed_runner_material(store, finding_id)
+            reviewed[finding_id] = _reviewed_runner_material(store, finding) if finding else {}
         raw_refs = set()
         for run in payload.get("runs", []) if isinstance(payload.get("runs"), list) else []:
             artifacts = run.get("artifacts") if isinstance(run, dict) else None
@@ -455,6 +460,8 @@ def format_structured_findings_lines(
             evidence_gap_count=structured_findings.get("evidence_gap_count", 0),
         )
     )
+    if "withdrawn" in structured_findings:
+        summary += f", active={structured_findings['active']}, withdrawn={structured_findings['withdrawn']}"
     if header and inline_header:
         lines.append(f"{indent}{header} {summary}")
     else:

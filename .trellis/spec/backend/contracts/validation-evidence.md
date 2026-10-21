@@ -113,6 +113,17 @@ original attempt/operation, without re-registering the same bytes as a new execu
 
 ### Contracts
 
+- Native evidence retains actual request bytes, response headers/body, execution
+  timestamps and exit code from capture; redacted examples are not raw evidence.
+  Curl trace/HAR can supply the request artifact; never reconstruct Content-Length,
+  tokens or execution times. Derive a new claim's exact query/method from the real
+  subject. A registration refusal does not authorize another network execution.
+  Store/Coverage CLI already emits JSON; do not add `--json`. Preserve subprocess
+  exit status through pipelines; use subcommand help for uncertain parameters.
+  `docs/evidence-runners.md` owns the executable capture and registration examples.
+- An unbound mistaken Finding is handled by Store v18 `dispose-finding`, not a
+  synthetic refutation or a Runner material review. New native evidence and
+  validation preflight reject withdrawn claims; Store rechecks new links atomically.
 - Historical pair summaries retain their declared `subject_side` and per-side
   method/URL/identity when registered again; retirement does not reinterpret
   their subject/control roles or manufacture new execution.
@@ -755,6 +766,11 @@ file-version tuple. The publisher and Store share this protocol, not separate pa
 
 ### 3. Contracts
 All four publication inputs are explicit; no implicit latest judgment selection.
+Each impact statement must distinguish observed identity/object/operation from
+inference: role/token or read access does not prove arbitrary writes/deletes, and
+hash disclosure does not prove password recovery or login. A passed decision form
+records the author's judgment, not independent reproduction. Publish supported A
+promptly, then apply the investigation stopping contract to worthwhile B/C.
 The Finding must have a current confirmed assessment and current eligible delivery,
 with intact linked observations. Publish the provided UTF-8 bytes unchanged before
 Store registration. Existing target/Finding/assessment/delivery report IDs remain
@@ -867,6 +883,9 @@ lock serializes receipt writes; no Store schema/revision or Finding lifecycle mu
 Close captures a complete Finding-linked operation and checks every summary artifact binding,
 including diff, against current bytes; run artifacts must match the registered operation.
 Open revokes the selected preceding receipt (its hash), even if its raw material is now damaged.
+Review never disposes a canonical Finding. A withdrawn unbound claim is excluded
+from the candidate pool even if raw unregistered summary material remains; explicit
+reopen restores ordinary review rules without rewriting that material.
 
 ### 4. Validation & Error Matrix
 | Condition | Result |

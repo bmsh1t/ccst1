@@ -103,7 +103,9 @@ Do not add a parallel coverage state or schema for these residual lanes.
 安全的证据生成动作。
 
 Evidence-driven depth does not mean evidence-only testing. 没有强证据时，
-可通过 Discovery mode actively generate new evidence，但不要求为结束本轮而继续采集。
+可通过 Discovery mode actively generate new evidence。Autopilot 是否结束按共享 Finish Contract，
+依据实际用户/范围/预算边界、阻止有用工作的真实阻塞，或有证据支持的无值得继续路线判断。
+保存 handoff、已有报告数量、匿名 401/403 或尚未准备可获取的会话本身不是停止依据。
 证据路径不可达、红线或材料缺失按事实记 `blocked`；`dead-end` 必须有条件化反证，
 `n/a` 必须确实不适用。投入价值低、预算结束或暂停仍保留原认知状态和未测面，不能当阴性。
 
@@ -140,7 +142,8 @@ COVERAGE SUMMARY
 高价值可行动线索。
 
 如果 `tools/action_queue.py summary --target <target>` 显示仍有 active action，
-不能声称全面完成。主会话可在预算内继续，或保留 active/pending 与明确 handoff 结束本轮，
+不能声称全面完成。有合理停止依据时保留 active/pending 与明确 handoff 结束本轮；
+否则继续选择有信息增量的工作。矩阵未清空和 loop_guard=continue 也不强制无界执行，
 不为停工伪造 resolve、blocked 或 dead-end。已发执行的回执、未知效果恢复、cleanup、
 claim 及终态心跳仍按原 owner 完成；预算不能取消这些义务。
 

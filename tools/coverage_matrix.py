@@ -1233,7 +1233,7 @@ def _rebuild_matrix_unlocked(
     matrix["store_id"] = store_binding["store_id"]
     matrix["store_revision"] = store_binding["revision"]
     endpoints = {ep["endpoint"]: ep for ep in new_endpoints}
-    page = store.page("findings", limit=1000)
+    page = store.page("findings", limit=1000, status="active")
     while True:
         for finding in page["items"]:
             raw_endpoint = str(finding.get("endpoint") or finding.get("url") or "")
@@ -1290,7 +1290,7 @@ def _rebuild_matrix_unlocked(
                 endpoints[coverage_path] = ep
         if not page["has_more"]:
             break
-        page = store.page("findings", limit=1000, cursor=page["next_cursor"])
+        page = store.page("findings", limit=1000, cursor=page["next_cursor"], status="active")
     new_endpoints = list(endpoints.values())
 
     # Apply scanner_pass.json as advisory scanner-swept metadata. Broad scanner

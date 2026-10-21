@@ -37,11 +37,18 @@ repeat requests just to gain admission. Runner labels and wire assertions do not
 For already-executed but unregistered material, use
 [native registration](../docs/evidence-runners.md#native-evidence-registration) first.
 Partial, unbound or damaged operations are refused even for a non-confirming review.
+An accidentally created, still-unbound Finding uses the explicit
+[withdrawal/reopen command](../docs/evidence-runners.md#误建未绑定-finding-的处置), not a fabricated refutation.
 
 ## 2. Fill the AI decision
 
 Fill `impact`, `evidence.summary`, every Q status/basis and every gate's explicit
 `passed` boolean, with notes where useful. Do not submit the empty scaffold.
+Tie each impact claim to the exercised identity, object and operation. An admin role/token or a user-list
+read does not prove arbitrary writes/deletes; leaked hashes do not prove recovered passwords or logins.
+State supported inference separately from observed effects. Do not perform destructive actions merely
+to justify a tier. A passed form records your judgment, not an independent reproduction.
+
 The machine fields map to the Q answers as follows:
 
 | Machine gate | AI judgment |

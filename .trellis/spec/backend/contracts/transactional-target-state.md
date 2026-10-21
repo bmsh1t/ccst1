@@ -121,7 +121,7 @@ Store notes; completed receipts map Experience IDs to file/line/digest. These
 offline contracts do not establish online learning gains or complete M8 costs. The
 distillation view now renders Finding claim/family/endpoint, technical verdict,
 destination decision and bounded conditional experience without blank aliases.
-Fresh stores use schema v17: advisory `note`, `active_goal`, Coverage reviews,
+Fresh stores use schema v18: advisory `note`, `active_goal`, Coverage reviews,
 observation identities, exact `experience_versions`, `experience_sources`,
 `experience_links` and append-only `experience_link_events`, plus accepted advisory
 claims/source refs. Version-bound supersedes/refutes/depends_on never rewrite old
@@ -131,10 +131,51 @@ Text correction scope uses exact retained declarations, not semantic equivalence
 different conditions retain a scoped connection, not global invalidation. Claim condition bindings and explicit
 validity windows use the v15 tables described below; reviewed knowledge uses v16
 external source attachments. v17 adds exact historical origins, never historical
-basis or claim support, using the same external-source owner tables.
-Existing stores require explicit backup-bound upgrade; v12/v13/v14/v15/v16 development
+basis or claim support, using the same external-source owner tables. v18 adds
+unbound Finding dispositions as described below.
+Existing stores require explicit backup-bound upgrade; v12/v13/v14/v15/v16/v17 development
 stores retain explicit upgrade paths.
 Use consumer-level save/restart/recall/recovery evidence, not test counts, for acceptance.
+
+### v18 unbound Finding disposition (2026-10-21)
+
+1. **Scope / Trigger.** Correct a mistakenly created canonical claim without
+   manufacturing a technical refutation or deleting evidence/history.
+2. **Signatures.** `dispose_finding(command_id, finding_id, status, reason, actor,
+   expected_disposition, replacement_id=None)` uses keyword arguments and the
+   existing `_command` transaction. CLI: `dispose-finding --target TARGET
+   --finding-id ID --status active|withdrawn --reason TEXT --command-id ID
+   [--expected-disposition ID] [--replacement-id ID] [--actor ACTOR] [--repo-root ROOT]`.
+   `finding_dispositions` stores append-only id/finding_id/status/replacement_id/
+   previous_id/reason/actor/revision/recorded_at. `finding(id)` includes current
+   disposition and ordered `disposition_history`; absent events mean active.
+3. **Contracts.** Both transitions require no Finding observation, assessment,
+   Action subject or Coverage review binding, including terminal Actions.
+   Optional replacement must be another currently active same-Store Finding;
+   reopening clears the current replacement. Exact predecessor CAS and stable
+   command identity prevent lost updates. Old command replay returns its original
+   receipt without undoing later transitions. Claims remain immutable.
+   New Finding links in creation, Action, execution, assessment and Coverage
+   writers require active status inside the owner transaction. Validation and
+   native-evidence preflight reject withdrawn claims before publishing material.
+   Runtime/Resume/Pack/Surface/Coverage and Runner candidate work exclude withdrawn
+   claims; raw history and Recall retain explicit disposition. Withdrawal creates
+   no assessment source, so it does not invalidate unrelated experience claims.
+   v17 and supported older Stores remain readable with default active status;
+   the new writer requires explicit backup-bound upgrade to v18.
+4. **Validation & Error Matrix.** Missing/foreign IDs, wrong predecessor, changed
+   command content, same-state new command, inactive replacement or any binding
+   reject atomically. CLI errors exit 2. Failed writes preserve revision/audit and
+   allow the same command to retry. Old schemas reject writes without upgrading.
+5. **Good/Base/Bad Cases.** Good: withdraw empty wrong-query claim A in favor of B.
+   Base: keep history visible and later explicitly reopen A. Bad: withdraw a
+   confirmed claim or infer a refuted verdict from administrative disposition.
+6. **Tests Required.** Isolated production-source checks cover CLI replay/reopen,
+   stale CAS/cursors, filtering before pagination, exact totals, full/bounded
+   consumers, Runner bypass, all bound-claim refusals, concurrent writers, injected
+   write rollback and actual v17 creation/backup/upgrade with retained claims.
+7. **Wrong vs Correct.** Closing a Runner summary leaves its canonical claim active;
+   use the Store owner for an unbound claim, and material review for evidence bundles.
 
 ### v15 claim applicability and independent recall context (2026-10-12)
 
@@ -263,18 +304,22 @@ Use consumer-level save/restart/recall/recovery evidence, not test counts, for a
 
 ## 2. Signatures
 
-- `finding_summary(limit=5)` returns a revision-bound claim preview, exact
-  `counts` (`total`, `confirmed`, `pending_validation`,
+- `finding_summary(limit=5)` returns a revision-bound active claim preview, exact
+  `counts` (`total`, `active`, `withdrawn`, `confirmed`, `pending_validation`,
   `validated_pending_report`, `reported`), and stable-ID `next_validation` /
   `next_report` claims. Counts, preview and follow-ups share one read snapshot;
-  no complete history is materialized to compute them.
-- `finding_state_page(limit=50, cursor=None)` pages claims with their latest
+  no complete history is materialized to compute them. `counts.total` includes
+  history; page `total` and follow-ups include only active claims.
+- `finding_state_page(limit=50, cursor=None, status=None)` pages claims with their latest
   recorded assessment and `report_recorded` boolean. It shares the ordinary
   Finding ID/revision cursor. Neither this page nor the summary expands raw
   evidence, delivery decisions or report history. A recorded assessment or
   historical report is not current evidence validity or delivery authority.
   `finding()` / `finding_page()` and current truth remain the checked expansion
   and authorization paths; stale reports stay recorded, not silently erased.
+  `finding_page`, `finding_state_page` and `page("findings")` accept
+  `status=active|withdrawn`, filtering before pagination and binding it to the cursor;
+  omitted status includes history. Rows carry the current `disposition`.
 - `action_summary(limit=5)` returns one-snapshot `items`, exact `counts`,
   `next_action`, `running_action` and `active_families`. It validates stored JSON
   without materializing full terminal histories. SQLite aggregation/scanning is

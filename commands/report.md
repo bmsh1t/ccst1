@@ -27,6 +27,10 @@ Use the exact observation, assessment and delivery IDs returned by the Store. Ev
 and impact must have reproducible evidence; a scanner match or plausible chain is not sufficient. Preserve
 assumptions and missing connectors rather than embellishing the claim. `findings/last-validate.json` is only a
 latest pointer, not a binding. The publisher enforces existing judgments, not the semantic truth of prose.
+Before publication, match each impact sentence to the specific observed identity, object and operation.
+Role names, visible menus and read access do not prove write/delete capability; hashes do not prove
+password recovery. Label remaining inferences and untested links explicitly. Publish supported A promptly,
+then return to the current investigation for worthwhile B/C under its stopping contract.
 
 If these IDs do not exist yet, use `/validate` with `report` replaced by exactly
 `{"mode":"deferred"}`. Fill the existing judgments/evidence, optionally preflight,

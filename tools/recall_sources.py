@@ -65,7 +65,7 @@ def acquire_current(repo_root: Path, target: str, *, limit: int = 20) -> dict:
     return {"binding": before, "memory": memory, "active_actions": actions,
             "findings": findings, "scope": {"status": "ready", **scope},
             "adjudications": {"owner": "TargetStore.finding_page", "page_ref": "current.findings",
-                               "fields": ["assessment", "deliveries"], "authority": "recorded decisions; recheck before execution"},
+                               "fields": ["disposition", "assessment", "deliveries"], "authority": "recorded decisions; recheck before execution"},
             "expansion": {"actions": "TargetStore.action_page(statuses=('ready','claimed','blocked'), cursor=...)",
                           "findings": "TargetStore.finding_page(cursor=...)"}}
 

@@ -330,6 +330,7 @@ def _load_findings(repo_root: Path, target_key: str, *, target: str | None = Non
         "url": item["endpoint"],
         "validation_status": "validated" if (item.get("assessment") or {}).get("verdict") == "confirmed" else "",
         "report_status": "generated" if item["report_recorded"] else "not_generated",
+        "disposition": item["disposition"],
     } for item in snapshot["items"]]}
 
 
@@ -906,7 +907,7 @@ def _build_context_pack(
     blob = _text_blob(focus, goal_memory, ranked, gaps, findings, local_intel)
     telerik_dialog_signal = _has_telerik_dialog_signal(blob)
     viewstate_signal = bool(re.search(r"\bviewstate\b|__viewstate", blob, re.I))
-    has_candidate = finding_summary["counts"]["total"] > finding_summary["counts"]["confirmed"]
+    has_candidate = finding_summary["counts"]["pending_validation"] > 0
     historical_patterns = []
     # 2026-09-12 收敛裁定：跨目标现场经验不自动进入本目标的 Pack。
     # surface 新计算路径已不再产生跨目标 pattern_suggestions，但升级前的
@@ -1073,6 +1074,8 @@ def _build_context_pack(
             "observation_stale": int((ranked.get("observation_inventory") or {}).get("stale", 0) or 0),
             "coverage_gaps": len(gaps),
             "findings": finding_summary["counts"]["total"],
+            "active_findings": finding_summary["counts"]["active"],
+            "withdrawn_findings": finding_summary["counts"]["withdrawn"],
             "validation_runner_candidates": len(runner_candidates),
             "historical_patterns": len(historical_patterns),
             "viewstate_signal": viewstate_signal,

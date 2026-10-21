@@ -79,20 +79,21 @@ def _project_finding_rows(items: list[dict]) -> list[dict]:
             "validation_status": {"confirmed": "validated", "refuted": "rejected"}.get(verdict, "unvalidated"),
             "report_status": "generated" if item["report_recorded"] else "not_generated",
             "assessment": assessment,
+            "disposition": item["disposition"],
         })
     return rows
 
 
 def _primary_finding_rows(repo_root: Path, target: str) -> list[dict]:
-    """Read all recorded Finding postures, not evidence or delivery authority."""
+    """Read active Finding postures, not evidence or delivery authority."""
     store = runtime_store(repo_root, target)
     rows = []
-    page = store.finding_state_page(limit=1000)
+    page = store.finding_state_page(limit=1000, status="active")
     while True:
         rows.extend(_project_finding_rows(page["items"]))
         if not page["has_more"]:
             return rows
-        page = store.finding_state_page(limit=1000, cursor=page["next_cursor"])
+        page = store.finding_state_page(limit=1000, cursor=page["next_cursor"], status="active")
 
 # Whitelist of fields that actually get persisted to session.json.
 # Anything else passed to update_runtime_state() is silently dropped.
@@ -1211,6 +1212,8 @@ def derive_state_view(repo_root: str | Path, target: str) -> dict:
     counts = runtime_store(repo_root_p, target).finding_summary()["counts"]
     findings = {
         "structured_total": counts["total"],
+        "active": counts["active"],
+        "withdrawn": counts["withdrawn"],
         "pending_validation": counts["pending_validation"],
         "owner_revalidation_pending": 0,
         "validated_pending_report": counts["validated_pending_report"],

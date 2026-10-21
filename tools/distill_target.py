@@ -122,6 +122,9 @@ def _bounded_evidence_view(evidence: dict, limit: int = 40) -> str:
             )
             if assessment:
                 lines.append(f"  reason={assessment.get('reason') or ''} boundary={assessment.get('boundary') or ''}")
+            disposition = f.get("disposition") or {}
+            if disposition.get("id"):
+                lines.append(f"  disposition={disposition['status']} reason={disposition['reason']} replacement={disposition['replacement_id']}")
             for delivery in deliveries:
                 lines.append(f"  delivery={delivery['destination']}:{delivery['status']} stale={bool(delivery['stale'])}")
             if f.get("evidence"):

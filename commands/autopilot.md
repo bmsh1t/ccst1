@@ -58,7 +58,8 @@ methods and internal modules for the current question. Reuse available material 
 2. Apply `src-hunter` to select the next evidence-backed question and method from current facts.
    `owner_continuations` supplies pending owner work; its order is advisory; respect `runnable=false`.
    Read selected evidence/owner contracts before execution; retain deferred work.
-   `handoff` returns to `src-hunter`; inventory/residuals never mandate Recon/Checkpoint.
+   `handoff` returns to `src-hunter` in this session; apply the Finish Contract before ending.
+   Inventory/residuals never mandate Recon/Checkpoint.
 3. Round: claim per Round Mechanics before any action, including Recon or validation.
    A missing-round refusal requires prepare followed by a fresh lane claim with `allowed=true`;
    prepare alone never authorizes execution. Report claims bind the selected Finding/assessment/delivery.
@@ -71,12 +72,12 @@ methods and internal modules for the current question. Reuse available material 
 5. Register/resolve/kill as applicable; require actual receipts. Missing outcomes stay recoverable;
    never replay unknown effects. No Finding: `record-observation` per
    `docs/evidence-runners.md#native-observation-registration`; existing Candidate: `record-evidence`.
-6. Round terminal heartbeat first; then exactly one post-lane refresh:
+6. Both modes refresh after each action; Round writes its terminal heartbeat first. Refresh once:
 ```bash
 cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded --loop-check --projection-only --json
 ```
 Use fresh `control`; re-read only after owner writes. Failed reads stop stale work; recover.
-`loop_guard.repetition_facts` is advisory, not above gates/claims. Decide continue/rotate/stop in-turn;
+`loop_guard` is advisory, not an endless-run mandate or above gates/claims. Decide continue/rotate/stop in-turn;
 write decision/next_action on rotation/blocker/stall only; Round heartbeats remain mandatory.
 Review bounded owner/Surface/observation deltas on new evidence/assets, phase change,
 blocker/rotation/batch end. Waits/later writes: `--bounded` alone.
@@ -91,6 +92,11 @@ Without an operator-declared external destination, deliver internally: Q7 record
 for a platform. External submission stays a manual operator action.
 
 ### Transition And Finish Contract
+Saving handoff is continuity, not a stopping reason. Stop for an actual user/scope/budget boundary,
+a demonstrated blocker preventing useful in-scope work, or an evidence-based judgment that no worthwhile
+next question remains. Explain the specific reason and valuable unpursued leads. Findings/report count,
+anonymous denial or missing-but-obtainable sessions alone do not justify stopping. Otherwise continue
+with `src-hunter`, including after publication. Round budget still ends only that bounded round.
 Read-only snapshots: `arguments.checkpoint_trigger`; cognitive writes:
 `skills/runtime-protocol.md#cognitive-write-timing`. All modes save evidence immediately.
 Do not delay confirmed A for B/C.
@@ -109,7 +115,8 @@ long-tail, Coverage/Ledger/Finding, Case/business chains, Queue/pending reports/
 Expand needed evidence; external relations passive. `commands/checkpoint.md`
 `--record-global-review` binds current snapshot/evidence; `follow_up` needs active Queue work.
 Re-read Closure after writes. Exhaustion requires
-`closure.verdict=finish` + `can_claim_exhausted=true`. Pending owners need handoff; bounded stop is not exhausted. Actor gaps are cell-local;
+`closure.verdict=finish` + `can_claim_exhausted=true`. A justified stop with pending owners needs handoff;
+handoff alone authorizes no stop or exhaustion. Actor gaps are cell-local;
 observation residuals create no mandatory actions.
 End: target/mode, evidence, findings/candidates, blockers/dead ends, next action, plus
 exactly one presentation-only `Memory recommendations` section in this final response

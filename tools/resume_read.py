@@ -54,7 +54,7 @@ def _structured_finding_followup(snapshot: dict, base_dir: str | Path, target: s
     findings_dir = Path(base_dir) / "findings" / target_storage_key(target)
     counts = snapshot["counts"]
     summary = {key: counts[key] for key in (
-        "total", "pending_validation", "validated_pending_report", "reported",
+        "total", "active", "withdrawn", "pending_validation", "validated_pending_report", "reported",
     )}
     summary.update(owner_revalidation_pending=0, draft_completion_pending=0, findings_dir=str(findings_dir))
     if counts["total"]:

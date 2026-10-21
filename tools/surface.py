@@ -855,7 +855,7 @@ def _load_intel_context(recon_dir: Path) -> dict:
 def _primary_scanner_findings(store: TargetStore) -> list[dict]:
     """Project Store claims for Surface without consulting legacy findings JSON."""
     findings = []
-    page = store.finding_state_page(limit=1000)
+    page = store.finding_state_page(limit=1000, status="active")
     while True:
         for item in page.get("items", []):
             assessment = item.get("assessment") or {}
@@ -875,7 +875,7 @@ def _primary_scanner_findings(store: TargetStore) -> list[dict]:
             })
         if not page.get("has_more"):
             return findings
-        page = store.finding_state_page(limit=1000, cursor=page.get("next_cursor"))
+        page = store.finding_state_page(limit=1000, cursor=page.get("next_cursor"), status="active")
 
 
 def _primary_action_queue(store: TargetStore) -> list[dict]:

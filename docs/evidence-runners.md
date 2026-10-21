@@ -10,6 +10,46 @@
 - 不要为了清队列而运行 runner；只在它能减少漂移、补足证据或复现复杂步骤时使用。
 - MCP/browser/source/JS 观察帮助 Claude 选择真实实验；已有完整执行材料可直接登记，不为接入状态而重复请求。
 
+## 执行与登记速查
+
+从选定 checkout 执行，始终显式传 target；不确定参数时只读对应子命令 `--help`。
+
+| 当前需要 | 现有入口 |
+| --- | --- |
+| 查看当前 Finding / 历史处置 | `python3 tools/target_store.py findings --target TARGET --id ID` |
+| 无 Finding 的已执行观察 | 下节 `record-observation`，不创建占位 Finding |
+| 已有 Finding 的完整原件 | `record-evidence --target TARGET --finding-id ID --evidence-json FILE --json` |
+| 未决覆盖 | `python3 tools/coverage_matrix.py rebuild --target TARGET`，再 `find-gaps --target TARGET` |
+| 保存当前交接 | `python3 tools/target_memory.py handoff --target TARGET '具体停止依据和进度' --next-intent '下一问题' --operation-ref OPERATION_ID:STEP --json` |
+
+Store 和 Coverage 命令本来输出 JSON，**不加 `--json`**；handoff 的摘要是必填位置参数。
+`OPERATION_ID:STEP` 必须来自登记回执。保存 handoff 不构成停止理由，Autopilot 按共享 Finish Contract 判断。
+保留完整命令结果与退出码；管道需 `set -o pipefail`，不能以 tail/head 或后续命令的成功掩盖登记拒绝。
+
+### 在执行时捕获原件
+
+用已有浏览器 HAR/export 或 curl trace 捕获实际请求；适当的 raw sender 用于字节敏感实验。
+下例仅用于已核对 Scope/副作用的请求；原生 curl 不自动继承项目 Auth/父 Scope，
+不加自动跟随跳转。认证用受控私有配置/会话来源，不把令牌放 argv 或日志输出。
+`capture_dir` 是本次独立的目标私有目录，`request_url` 是已选定的完整请求 URL：
+
+```bash
+umask 077
+mkdir -- "$capture_dir" || exit
+date -u +%Y-%m-%dT%H:%M:%S.%NZ > "$capture_dir/started_at.txt"
+request_exit=0
+curl --silent --show-error --max-time 30 --trace "$capture_dir/request-response.trace" --trace-time \
+  --dump-header "$capture_dir/response.headers" --output "$capture_dir/response.body" --url "$request_url" || request_exit=$?
+date -u +%Y-%m-%dT%H:%M:%S.%NZ > "$capture_dir/finished_at.txt"
+printf '%s\n' "$request_exit" > "$capture_dir/exit-code.txt"
+```
+
+检查保存的真实退出码和回包；传输失败/缺响应按 partial，HTTP 401 等仍是实际响应。
+`artifacts.request` 可引用带真实发送字节的 trace；同时登记 `response` 与 `response_headers`，
+必要时附 trace。时间取此次捕获，不能猜测、手填近似值或用登记时间替代。
+HAR/trace/受控原件保持真实身份；脱敏请求仅为明确标注的复现示例，不能当线缆原件。
+不要手写 Content-Length、占位 token 或替换 User-Agent 后宣称是原始请求。
+
 ## Native Observation Registration
 
 已执行但尚无 Finding（也可无 Action）的原生观察使用独立的 `record-observation`。
@@ -128,6 +168,9 @@ Store 保留集合级 family/精确 endpoint 检查，不要求每一步都匹�
 已有 Finding 的浏览器、curl、raw sender 等实验，先按 `/hunt` 契约保存
 canonical Candidate，再登记已存在的原始材料。该入口不执行命令、不发请求、不造 diff；
 多步、不同方法、多字段身份上下文、multipart/binary 都不必改写为请求对。
+创建 Candidate 前从实际 subject 请求确定完整 URL（含 query/编码）和 method；
+不要先用去 query 的接口目录建 ID，再为适配登记重复创建同一主张。
+已有不同 endpoint 的误建空候选按下方显式处置，不能覆盖身份或伪造一次无 query 请求。
 
 `--evidence-json` 使用现有 schema-v1 summary 的观察字段：
 
@@ -223,10 +266,41 @@ version_diff）：
 - 同一 attempt/材料重复登记复用 operation/path；Store 事务登记失败时
   返回非零并保留 `sync.status=partial`，修复原因后重跑登记即可，不重发请求。
   绑定 Queue 的执行仍需预先 claim，登记只写观察，继续/停止仍由 Claude resolve。
+- 参数/绑定拒绝先判断发生在执行前还是登记阶段。已执行保留原 attempt、时间和原件，仅修正登记；
+  未执行不补造原件，未知效果先恢复。读取失败不允许使用旧快照继续。
 
 登记成功后按 `/validate` 的 scaffold → 判断 → preflight → apply 流程继续。
 现有 `replayed` 字段表示材料来自已执行实验；此命令本身只做登记，来源由
 `native-evidence:<source>` 明确区分。无需修改 witness、报告 schema 或另立生命周期。
+
+### 误建未绑定 Finding 的处置
+
+`review-candidate` 只复核一份 runner 材料。误建的 canonical Finding 另由 Store 处置：
+仅限没有观察、裁决、Action 或 Coverage review 绑定的候选，不能撤回已验证/已报告的结论。
+
+```bash
+python3 tools/target_store.py dispose-finding --repo-root ROOT --target TARGET --finding-id MISTAKEN_ID \
+  --status withdrawn --replacement-id CORRECT_ID --reason '误建身份，实际证据归属 CORRECT_ID' \
+  --command-id WITHDRAWAL_ID --actor OPERATOR
+python3 tools/target_store.py findings --repo-root ROOT --target TARGET --id MISTAKEN_ID
+```
+
+无替代项可省 `--replacement-id`；替代项必须是同 Store 的另一条 active Finding。
+原 claim/证据不改，处置不是技术 refuted。活动分页/待验证与 Runner 候选池排除 withdrawn；
+不带 `--status` 的 Store 分页及按 ID 查询仍保留历史，`--status active|withdrawn` 在分页前过滤。
+
+显式重开：
+
+```bash
+python3 tools/target_store.py dispose-finding --repo-root ROOT --target TARGET --finding-id MISTAKEN_ID \
+  --status active --expected-disposition WITHDRAWAL_ID --reason '恢复该主张进行新调查' \
+  --command-id REOPEN_ID --actor OPERATOR
+```
+
+后续处置需当前精确前驱 ID。同命令/内容重试返回旧回执；错误前驱、同 ID 不同内容、
+绑定证据或 Action、外目标/不存在替代项均拒绝。新证据、Action 和验证前必须先重开。
+当前 schema 为 v18；旧库可读，新命令会提示显式 `upgrade-schema --backup ABSOLUTE_PRIVATE_BACKUP`，
+由已有数据操作授权决定是否升级，不自动迁移或删除候选。
 
 ### 候选材料的显式复核
 

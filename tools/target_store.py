@@ -50,8 +50,24 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from scope_context import SCHEMA_VERSION as SCOPE_SCHEMA_VERSION, read_scope_source, write_scope_source_locked
 
 
-SCHEMA_VERSION = 17
-COMPATIBLE_SCHEMA_VERSIONS = {8, 9, 10, 11, 12, 13, 14, 15, 16, SCHEMA_VERSION}
+SCHEMA_VERSION = 18
+COMPATIBLE_SCHEMA_VERSIONS = {8, 9, 10, 11, 12, 13, 14, 15, 16, 17, SCHEMA_VERSION}
+FINDING_DISPOSITIONS = ("active", "withdrawn")
+_FINDING_DISPOSITION_SCHEMA = """
+CREATE TABLE finding_dispositions (
+    id TEXT PRIMARY KEY NOT NULL,
+    finding_id TEXT NOT NULL REFERENCES findings(id),
+    status TEXT NOT NULL CHECK (status IN ('active','withdrawn')),
+    replacement_id TEXT REFERENCES findings(id),
+    previous_id TEXT UNIQUE REFERENCES finding_dispositions(id),
+    reason TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    revision INTEGER NOT NULL UNIQUE,
+    recorded_at TEXT NOT NULL,
+    CHECK (replacement_id IS NULL OR (status='withdrawn' AND replacement_id!=finding_id))
+);
+CREATE INDEX finding_dispositions_latest ON finding_dispositions(finding_id, revision DESC);
+"""
 COVERAGE_REVIEW_STATUSES = ("tested_clean", "tested_finding", "untested", "n_a")
 ENDPOINT_KIND_VALUES = (
     "untriaged", "api_endpoint", "page_route", "static_asset", "public_metadata",
@@ -496,7 +512,7 @@ CREATE TABLE action_completions (
     command_id TEXT REFERENCES audit(command_id),
     CHECK ((operation_id IS NOT NULL) + (artifact_id IS NOT NULL) + (command_id IS NOT NULL) = 1)
 );
-""" + _COVERAGE_REVIEW_SCHEMA + _EXPERIENCE_PROVENANCE_SCHEMA + _EXPERIENCE_MATERIAL_SCHEMA + _EXPERIENCE_CONDITION_SCHEMA + _EXPERIENCE_EXTERNAL_SCHEMA
+""" + _COVERAGE_REVIEW_SCHEMA + _EXPERIENCE_PROVENANCE_SCHEMA + _EXPERIENCE_MATERIAL_SCHEMA + _EXPERIENCE_CONDITION_SCHEMA + _EXPERIENCE_EXTERNAL_SCHEMA + _FINDING_DISPOSITION_SCHEMA
 
 
 class StoreError(ValueError):
@@ -947,7 +963,7 @@ class TargetStore:
             known = {"remember", "remember_hypothesis", "link_experience", "retract_experience_link",
                      "record_artifact_event", "assess", "create_action", "transition_action", "record_execution",
                      "upsert_case_actor", "upsert_case_session", "upsert_case_object", "upgrade_schema",
-                     "create_finding", "start_attempt", "decide_delivery", "register_report",
+                     "create_finding", "dispose_finding", "start_attempt", "decide_delivery", "register_report",
                      "record_delivery_event", "record_coverage_review", "set_active_goal"}
             if any(row["command"] not in known for row in commands):
                 reason = "unknown_audit_command"
@@ -973,6 +989,7 @@ class TargetStore:
                 entities = {"remember": ("experiences", "id"), "remember_hypothesis": ("experiences", "id"),
                             "create_action": ("actions", "id"), "transition_action": ("actions", "id"),
                             "record_execution": ("operations", "id"), "create_finding": ("findings", "id"),
+                            "dispose_finding": ("finding_dispositions", "id"),
                             "start_attempt": ("attempts", "id"), "decide_delivery": ("delivery_decisions", "id"),
                             "register_report": ("reports", "id"), "record_delivery_event": ("delivery_events", "id"),
                             "record_coverage_review": ("coverage_reviews", "id"), "upsert_case_actor": ("case_actors", "id"),
@@ -1471,11 +1488,40 @@ class TargetStore:
                 "claim": _text(candidate["claim"], "claim")}
 
     @staticmethod
-    def _ensure_finding(conn, claim: dict, now: str) -> None:
+    def _finding_status_sql(schema_version: int, column: str = "findings.id") -> str:
+        if schema_version < 18:
+            return "'active'"
+        return ("COALESCE((SELECT d.status FROM finding_dispositions d "
+                f"WHERE d.finding_id={column} ORDER BY d.revision DESC LIMIT 1),'active')")
+
+    @staticmethod
+    def _finding_dispositions(conn, rows: list[dict]) -> None:
+        for row in rows:
+            row["disposition"] = {"id": None, "status": "active", "replacement_id": None}
+        if not rows or conn.execute("SELECT schema_version FROM store").fetchone()[0] < 18:
+            return
+        by_id = {row["id"]: row for row in rows}
+        for item in conn.execute(f"""SELECT d.* FROM finding_dispositions d
+                WHERE d.finding_id IN ({','.join('?' for _ in by_id)}) AND d.revision=(
+                    SELECT max(x.revision) FROM finding_dispositions x WHERE x.finding_id=d.finding_id)""", list(by_id)):
+            by_id[item["finding_id"]]["disposition"] = dict(item)
+
+    def _require_active_finding(self, conn, finding_id: str) -> None:
+        row = conn.execute("SELECT id FROM findings WHERE id=?", (finding_id,)).fetchone()
+        if row is None:
+            raise FindingNotFoundError(f"finding missing: {finding_id}")
+        finding = dict(row)
+        self._finding_dispositions(conn, [finding])
+        if finding["disposition"]["status"] != "active":
+            raise ConflictError(f"finding {finding_id} is withdrawn; explicitly reopen it with dispose-finding before new work")
+
+    def _ensure_finding(self, conn, claim: dict, now: str) -> None:
         existing = conn.execute("SELECT * FROM findings WHERE id=?", (claim["id"],)).fetchone()
         if existing and any(existing[key] != value for key, value in claim.items()):
             raise ConflictError("finding ID is already bound to a different claim; no implicit overwrite")
-        if not existing:
+        if existing:
+            self._require_active_finding(conn, claim["id"])
+        else:
             conn.execute("""INSERT INTO findings (id,endpoint,method,family,title,claim,created_at)
                 VALUES (:id,:endpoint,:method,:family,:title,:claim,:created_at)""", {**claim, "created_at": now})
 
@@ -1489,6 +1535,45 @@ class TargetStore:
             self._ensure_finding(conn, candidate, now)
 
         return self._command("create_finding", command_id, candidate["id"], actor, candidate, mutate)
+
+    def dispose_finding(self, *, command_id: str, finding_id: str, status: str, reason: str,
+                        actor: str, expected_disposition: str | None,
+                        replacement_id: str | None = None) -> dict:
+        """Withdraw or reopen an unbound claim; never retract evidence or a technical judgment."""
+        finding_id = _identifier(finding_id, "finding_id")
+        if not isinstance(status, str) or status not in FINDING_DISPOSITIONS:
+            raise StoreError("finding disposition must be active or withdrawn")
+        reason = _text(reason, "reason")
+        if expected_disposition is not None:
+            expected_disposition = _identifier(expected_disposition, "expected_disposition")
+        if replacement_id is not None:
+            replacement_id = _identifier(replacement_id, "replacement_id")
+            if status != "withdrawn" or replacement_id == finding_id:
+                raise StoreError("replacement_id requires withdrawal and a different Finding")
+        material = (finding_id, status, reason, expected_disposition, replacement_id)
+
+        def mutate(conn, revision, now):
+            if conn.execute("SELECT schema_version FROM store").fetchone()[0] < 18:
+                raise StoreError("Finding disposition requires schema v18; run upgrade-schema with a verified private backup")
+            if not conn.execute("SELECT 1 FROM findings WHERE id=?", (finding_id,)).fetchone():
+                raise FindingNotFoundError(f"finding missing: {finding_id}")
+            previous = conn.execute("SELECT * FROM finding_dispositions WHERE finding_id=? ORDER BY revision DESC LIMIT 1",
+                                    (finding_id,)).fetchone()
+            if (previous["id"] if previous else None) != expected_disposition:
+                raise ConflictError("finding disposition changed; reload before writing")
+            if (previous["status"] if previous else "active") == status:
+                raise ConflictError("finding already has this disposition; replay its original command or choose a state transition")
+            # This owner only repairs unbound claims; assessed/evidence-backed work has its own review contracts.
+            for table, column in (("finding_observations", "finding_id"), ("assessments", "finding_id"),
+                                  ("actions", "subject_finding_id"), ("coverage_reviews", "finding_id")):
+                if conn.execute(f"SELECT 1 FROM {table} WHERE {column}=? LIMIT 1", (finding_id,)).fetchone():
+                    raise StoreError(f"finding {finding_id} is bound to {table}; dispose-finding only handles unbound candidates")
+            if replacement_id:
+                self._require_active_finding(conn, replacement_id)
+            conn.execute("INSERT INTO finding_dispositions VALUES (?,?,?,?,?,?,?,?,?)",
+                         (command_id, finding_id, status, replacement_id, expected_disposition, reason, actor, revision, now))
+
+        return self._command("dispose_finding", command_id, command_id, actor, material, mutate)
 
     def create_action(self, *, command_id: str, action_id: str, intent: str,
                       execution_key: str, actor: str, endpoint: str | None = None,
@@ -1542,6 +1627,8 @@ class TargetStore:
             raise StoreError("priority must be an explicit integer or null")
 
         def mutate(conn, revision, now):
+            if finding_id is not None:
+                self._require_active_finding(conn, finding_id)
             previous = conn.execute("SELECT id FROM actions WHERE execution_key=? LIMIT 1", (execution_key,)).fetchone()
             if previous and repeat_of is None:
                 raise ConflictError("execution intent already exists; reuse it or explicitly link the repeated action")
@@ -2001,8 +2088,8 @@ class TargetStore:
         operation_id = "operation:" + _digest(material)
 
         def mutate(conn, revision, now):
-            if finding_id is not None and not conn.execute("SELECT 1 FROM findings WHERE id=?", (finding_id,)).fetchone():
-                raise FindingNotFoundError(f"finding missing: {finding_id}")
+            if finding_id is not None:
+                self._require_active_finding(conn, finding_id)
             attempt = conn.execute("SELECT * FROM attempts WHERE id=?", (attempt_id,)).fetchone()
             if not attempt:
                 raise StoreError("attempt missing; retain raw files and explicitly register the execution attempt")
@@ -2076,6 +2163,7 @@ class TargetStore:
         material = (finding_id, verdict, reason, boundary, impact, refs, expected_assessment)
 
         def mutate(conn, revision, now):
+            self._require_active_finding(conn, finding_id)
             previous = conn.execute("SELECT id FROM assessments WHERE finding_id=? ORDER BY revision DESC LIMIT 1", (finding_id,)).fetchone()
             if (previous[0] if previous else None) != expected_assessment:
                 raise ConflictError("technical assessment changed; reload before submitting a new judgment")
@@ -2377,6 +2465,7 @@ class TargetStore:
             if claim:
                 existing = conn.execute("SELECT * FROM findings WHERE id=?", (claim["id"],)).fetchone()
                 if existing:
+                    self._require_active_finding(conn, claim["id"])
                     if any(existing[key] != claim[key] for key in ("endpoint", "method", "family")):
                         raise ConflictError("coverage finding identity changed")
                     # The existing claim is immutable; this review retains the new reason.
@@ -3601,6 +3690,8 @@ class TargetStore:
         after = self._cursor_after(binding, cursor)
         table = self._PAGE_TABLES[kind]
         condition, params = ("status=?", [status]) if status is not None else ("1", [])
+        if kind == "findings" and status is not None:
+            condition = self._finding_status_sql(meta["schema_version"]) + "=?"
         total = conn.execute(f"SELECT count(*) FROM {table} WHERE {condition}", params).fetchone()[0]
         remaining = conn.execute(f"SELECT count(*) FROM {table} WHERE {condition} AND id>?", (*params, after)).fetchone()[0]
         rows = [dict(row) for row in conn.execute(f"SELECT * FROM {table} WHERE {condition} AND id>? ORDER BY id LIMIT ?",
@@ -3613,15 +3704,24 @@ class TargetStore:
                     raise StoreError("stored action metadata is corrupt") from exc
                 if not isinstance(row["metadata"], dict):
                     raise StoreError("stored action metadata is not an object")
+        elif kind == "findings":
+            self._finding_dispositions(conn, rows)
         return self._slice(conn, binding, total=total, remaining=remaining, rows=rows, limit=limit)
+
+    @staticmethod
+    def _require_finding_status(status: str | None) -> None:
+        if status is not None and (not isinstance(status, str) or status not in FINDING_DISPOSITIONS):
+            raise StoreError("finding status filter must be active or withdrawn")
 
     def page(self, kind: str, *, limit: int = 50, cursor: str | None = None, status: str | None = None) -> dict:
         """Stable ID order, exact remainder and revision-bound cursor; never refresh state."""
         if not isinstance(kind, str) or kind not in self._PAGE_TABLES:
             raise StoreError("query kind must be actions, attempts, operations, findings or experiences")
         self._require_limit(limit)
-        if status is not None and (kind != "actions" or not isinstance(status, str) or status not in self._ACTION_STATES):
-            raise StoreError("status filter is only supported for action states")
+        if kind == "findings":
+            self._require_finding_status(status)
+        elif status is not None and (kind != "actions" or not isinstance(status, str) or status not in self._ACTION_STATES):
+            raise StoreError("status filter is only supported for action or Finding states")
         with self._connection() as conn:
             meta = dict(conn.execute("SELECT * FROM store").fetchone())
             return self._page_conn(conn, meta, kind, limit=limit, cursor=cursor, status=status)
@@ -3851,19 +3951,20 @@ class TargetStore:
         self._require_limit(limit)
         with self._connection() as conn:
             meta = dict(conn.execute("SELECT * FROM store").fetchone())
-            page = self._page_conn(conn, meta, "findings", limit=limit, cursor=cursor)
+            page = self._page_conn(conn, meta, "findings", limit=limit, cursor=cursor, status="active")
             for row in page["items"]:
                 assessment = conn.execute("SELECT id, verdict FROM assessments WHERE finding_id=? "
                                           "ORDER BY revision DESC LIMIT 1", (row["id"],)).fetchone()
                 row["assessment"] = dict(assessment) if assessment else None
             return page
 
-    def finding_page(self, *, limit: int = 50, cursor: str | None = None) -> dict:
+    def finding_page(self, *, limit: int = 50, cursor: str | None = None, status: str | None = None) -> dict:
         """Return full finding projections from one revision-bound read snapshot."""
         self._require_limit(limit)
+        self._require_finding_status(status)
         with self._connection() as conn:
             meta = dict(conn.execute("SELECT * FROM store").fetchone())
-            page = self._page_conn(conn, meta, "findings", limit=limit, cursor=cursor)
+            page = self._page_conn(conn, meta, "findings", limit=limit, cursor=cursor, status=status)
             self._finding_projections(conn, page["items"])
             return page
 
@@ -3884,16 +3985,17 @@ class TargetStore:
                 FROM findings f WHERE f.id IN ({placeholders})""", list(by_id)):
             by_id[item["id"]]["report_recorded"] = bool(item["recorded"])
 
-    def finding_state_page(self, *, limit: int = 50, cursor: str | None = None) -> dict:
+    def finding_state_page(self, *, limit: int = 50, cursor: str | None = None, status: str | None = None) -> dict:
         """Page claims and latest recorded posture without expanding evidence history.
 
         Use finding()/finding_page() or current truth for integrity and delivery
         decisions. These facts neither verify evidence nor authorize delivery.
         """
         self._require_limit(limit)
+        self._require_finding_status(status)
         with self._connection() as conn:
             meta = dict(conn.execute("SELECT * FROM store").fetchone())
-            page = self._page_conn(conn, meta, "findings", limit=limit, cursor=cursor)
+            page = self._page_conn(conn, meta, "findings", limit=limit, cursor=cursor, status=status)
             self._finding_states(conn, page["items"])
             return page
 
@@ -3902,25 +4004,30 @@ class TargetStore:
         self._require_limit(limit)
         with self._connection() as conn:
             meta = dict(conn.execute("SELECT * FROM store").fetchone())
-            counts = dict(conn.execute("""WITH posture AS (
+            disposition = self._finding_status_sql(meta["schema_version"], "f.id")
+            counts = dict(conn.execute(f"""WITH posture AS (
                 SELECT f.id, COALESCE(a.verdict, '') AS verdict,
+                    {disposition} AS disposition,
                     EXISTS(SELECT 1 FROM reports r WHERE r.finding_id=f.id) AS reported
                 FROM findings f LEFT JOIN assessments a ON a.finding_id=f.id
                     AND a.revision=(SELECT max(x.revision) FROM assessments x WHERE x.finding_id=f.id)
                 ) SELECT count(*) AS total,
+                    count(CASE WHEN disposition='active' THEN 1 END) AS active,
+                    count(CASE WHEN disposition='withdrawn' THEN 1 END) AS withdrawn,
                     count(CASE WHEN verdict='confirmed' THEN 1 END) AS confirmed,
-                    count(CASE WHEN verdict NOT IN ('confirmed','refuted') THEN 1 END) AS pending_validation,
+                    count(CASE WHEN disposition='active' AND verdict NOT IN ('confirmed','refuted') THEN 1 END) AS pending_validation,
                     count(CASE WHEN verdict='confirmed' AND NOT reported THEN 1 END) AS validated_pending_report,
                     count(CASE WHEN reported THEN 1 END) AS reported,
-                    min(CASE WHEN verdict NOT IN ('confirmed','refuted') THEN id END) AS next_validation,
+                    min(CASE WHEN disposition='active' AND verdict NOT IN ('confirmed','refuted') THEN id END) AS next_validation,
                     min(CASE WHEN verdict='confirmed' AND NOT reported THEN id END) AS next_report
                 FROM posture""").fetchone())
-            page = self._page_conn(conn, meta, "findings", limit=limit)
+            page = self._page_conn(conn, meta, "findings", limit=limit, status="active")
             rows = {row["id"]: row for row in page["items"]}
             next_ids = {key: counts.pop(key) for key in ("next_validation", "next_report")}
             for finding_id in next_ids.values():
                 if finding_id and finding_id not in rows:
                     rows[finding_id] = dict(conn.execute("SELECT * FROM findings WHERE id=?", (finding_id,)).fetchone())
+                    self._finding_dispositions(conn, [rows[finding_id]])
             self._finding_states(conn, list(rows.values()))
             return {**page, "counts": counts,
                     **{key: rows.get(finding_id) for key, finding_id in next_ids.items()}}
@@ -4226,6 +4333,7 @@ class TargetStore:
             if not row:
                 raise FindingNotFoundError(f"finding missing: {finding_id}")
             result = dict(row)
+            self._finding_dispositions(conn, [result])
             self._finding_projections(conn, [result])
             assessment_value = result["assessment"]
             if assessment_value:
@@ -4234,6 +4342,9 @@ class TargetStore:
                     (assessment_value["id"],),
                 )]
             return {**result,
+                    "disposition_history": ([dict(item) for item in conn.execute(
+                        "SELECT * FROM finding_dispositions WHERE finding_id=? ORDER BY revision", (finding_id,))]
+                        if conn.execute("SELECT schema_version FROM store").fetchone()[0] >= 18 else []),
                     "delivery_events": self._delivery_event_rows(conn, finding_id, result["reports"]),
                     "revision": conn.execute("SELECT revision FROM store").fetchone()[0]}
 
@@ -4291,8 +4402,8 @@ class TargetStore:
             if before["schema_version"] >= version:
                 return {"status": "already_current", "target": self.target,
                         "store_id": before["store_id"], "revision": before["revision"], "backup": None}
-            if before["schema_version"] not in {8, 9, 10, 11, 12, 13, 14, 15, 16}:
-                raise StoreError("Store schema upgrade requires schema v8, v9, v10, v11, v12, v13, v14, v15 or v16")
+            if before["schema_version"] not in {8, 9, 10, 11, 12, 13, 14, 15, 16, 17}:
+                raise StoreError("Store schema upgrade requires schema v8 through v17")
 
             backup = self.backup(backup_path)
             try:
@@ -4390,6 +4501,10 @@ class TargetStore:
                         conn.execute(f"INSERT INTO {table} SELECT * FROM {table}_v16")
                     for table in ("experience_claim_external_sources", "experience_external_sources"):
                         conn.execute(f"DROP TABLE {table}_v16")
+                if before["schema_version"] < 18 and version >= 18:
+                    for statement in _FINDING_DISPOSITION_SCHEMA.split(";"):
+                        if statement.strip():
+                            conn.execute(statement)
                 revision = before["revision"] + 1
                 conn.execute("UPDATE store SET schema_version=?,revision=? WHERE singleton=1",
                              (version, revision))
@@ -4472,6 +4587,8 @@ def _main() -> int:
     selection.add_argument("--id", default=None)
     selection.add_argument("--cursor", default=None)
     findings.add_argument("--limit", type=int, default=10)
+    findings.add_argument("--status", choices=FINDING_DISPOSITIONS,
+                          help="filter before paging; omitted includes withdrawn history")
     case = subparsers.add_parser("case", help="read full Case context without raw private material")
     create_finding = subparsers.add_parser(
         "create-finding",
@@ -4485,7 +4602,15 @@ def _main() -> int:
     create_finding.add_argument("--actor", default="operator")
     create_finding.add_argument("--command-id", default="",
                                 help="idempotency key; defaults to create-finding:<finding-id>")
-    for query in (findings, case, create_finding):
+    dispose = subparsers.add_parser("dispose-finding", help="withdraw or reopen an unbound Candidate, preserving its history")
+    dispose.add_argument("--finding-id", required=True)
+    dispose.add_argument("--status", choices=FINDING_DISPOSITIONS, required=True)
+    dispose.add_argument("--reason", required=True)
+    dispose.add_argument("--replacement-id", default=None, help="existing active Finding that replaces the mistaken claim")
+    dispose.add_argument("--expected-disposition", default=None, help="exact preceding disposition ID; omit only for the first withdrawal")
+    dispose.add_argument("--command-id", required=True, help="stable idempotency key for this disposition")
+    dispose.add_argument("--actor", default="operator")
+    for query in (findings, case, create_finding, dispose):
         query.add_argument("--target", required=True)
         query.add_argument("--repo-root", default="", help="repository data root")
     args = parser.parse_args()
@@ -4507,9 +4632,16 @@ def _main() -> int:
                     command_id=args.command_id or f"create-finding:{args.finding_id}",
                     finding_id=args.finding_id, endpoint=args.endpoint, method=args.method,
                     family=args.family, title=args.title, claim=args.claim, actor=args.actor)
+            elif args.command == "dispose-finding":
+                result = store.dispose_finding(
+                    command_id=args.command_id, finding_id=args.finding_id, status=args.status,
+                    reason=args.reason, actor=args.actor, replacement_id=args.replacement_id,
+                    expected_disposition=args.expected_disposition)
             else:
+                if args.id is not None and args.status is not None:
+                    raise StoreError("--status filters pages; omit it when expanding --id")
                 result = (store.finding(args.id) if args.id is not None else
-                          store.finding_page(limit=args.limit, cursor=args.cursor))
+                          store.finding_page(limit=args.limit, cursor=args.cursor, status=args.status))
     except (OSError, StoreError, ValueError) as exc:
         parser.error(str(exc))
     print(json.dumps(result, sort_keys=True))

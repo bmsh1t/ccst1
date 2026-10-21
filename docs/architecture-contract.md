@@ -97,7 +97,10 @@ Cached JS and source are read through native Read/Grep, without materials, reade
 wrappers or local cognitive extractors. Live `/intel` retains its independent
 advisory/version/provider/freshness contract. Observation residuals can prevent
 an exhaustion claim without creating a mandatory next action; the current
-session can end within budget while keeping those residuals visible.
+session can end while keeping those residuals visible when the entry's stopping contract is met.
+Handoff preserves continuity; it is not by itself a stopping reason. User/scope/budget boundaries,
+actual blockers or evidence-based investigation judgment decide when to stop, not report counts or
+automatic coverage enumeration. Both Autopilot modes consume fresh post-action state.
 
 The dedicated request-diff execution lane, request-pair parser, response-diff
 module and `probe.py` request/ledger wrapper are retired. Native execution uses
@@ -235,6 +238,12 @@ refuted. A valuable report claim cannot make unsupported evidence valid.
 - `runner_candidate_review` owns per-summary review-consumption receipts, not Finding judgments.
   Explicit closure binds the caller-reviewed summary hash and complete artifact material; changes
   invalidate that closure. Reopen preserves history and never alters assessment or delivery.
+- Store schema v18 adds explicit `dispose_finding` for mistaken unbound claims only. Withdraw/reopen
+  appends a predecessor-bound disposition; optional replacement names another active same-Store Finding.
+  Evidence, assessment, Action or Coverage-review bindings refuse this operation. Original claims/history
+  remain readable; active follow-up excludes withdrawn candidates, and new linked work requires reopen.
+  This is not technical refutation or withdrawal of an existing assessment/report. Older Stores remain
+  readable; the new command requires an explicit backed-up upgrade, never an automatic migration.
 - Checkpoint owns report lane bindings and append-only evidence corrections. Shared witness readers
   verify the exact registered report identity and intact authorized bytes; original terminal results
   and budgets remain immutable. Report staleness alone does not erase historical production proof.

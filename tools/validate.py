@@ -865,6 +865,8 @@ def load_finding_prefill(
         raise ValueError("findings directory does not match the selected target owner")
     store = runtime_store(owner_root, owner_target)
     finding = store.finding(finding_id)
+    if finding["disposition"]["status"] != "active":
+        raise ValueError("validation requires an active Finding; explicitly reopen the withdrawn candidate first")
     prefill = {
         "target": owner_target, "vuln_type": finding["family"], "endpoint": finding["endpoint"],
         "finding_id": finding_id, "summary": finding["claim"], "store_id": store.binding()["store_id"],

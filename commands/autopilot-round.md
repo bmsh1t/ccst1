@@ -34,7 +34,7 @@ cd -- <repo_root_shell> && python3 tools/autopilot_round.py prepare --target <ta
 `terminal`: no target work; Status/cleanup. Other results: Status, skipping lanes/settle.
 
 ## Round Mechanics
-Use Shared Automation's selected action. None executable: handoff/closure.
+Use Shared Automation's selected action and stopping reasons. None executable: handoff/closure.
 Claim round lane before execution; distinct from Action id/token/actor:
 ```bash
 cd -- <repo_root_shell> && python3 tools/checkpoint.py --target <target_shell> --record-round-lane --lane <stable_lane_id> --max-lanes <invocation_batch.max_lanes> --json
