@@ -55,6 +55,9 @@ Gates 1–3 and Q1/Q2/Q3/Q4/Q6 determine the technical verdict. Gate 4 and Q5/Q7
 destination eligibility separately. A real violation may remain `confirmed` while delivery
 is `ineligible` or `deferred`; `DO_NOT_REPORT` is not technical refutation.
 Failed/unknown technical evidence produces `inconclusive`, not `refuted`.
+Internal delivery (no declared external destination) records Q7 as `pass` with basis
+`internal delivery: not-applicable`; Gate 4 then covers only documented-behavior and
+known-issue checks, and eligibility is never deferred for a missing platform policy.
 
 Choose the report-writing mode:
 - **Default single-step:** provide `report.path` and fill `report.content` with the authored

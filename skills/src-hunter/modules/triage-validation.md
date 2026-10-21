@@ -157,6 +157,18 @@ are pitfalls, not an allowlist. A required but unproven impact connector stays
 CHAIN_REQUIRED; a complete chain or independently valid primitive is assessed
 at its demonstrated impact without waiting for optional siblings.
 
+Delivery modes:
+
+1. For an external bounty submission, check the program's current scope and
+   policy, and record the source.
+2. For internal delivery (internal audit, lab, CTF, authorized engagement,
+   research), there is no external policy surface: record `pass` with basis
+   `internal delivery: not-applicable`. Q5's documented-behavior check still
+   applies — intended behavior is a false positive in any delivery mode.
+3. When no destination was declared, default to internal delivery and record
+   that default; do not stop to ask for a platform. An operator-declared
+   external destination always overrides the default.
+
 ---
 
 ### Q7b: Verify the identity boundary

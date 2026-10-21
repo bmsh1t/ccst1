@@ -54,7 +54,9 @@ Damaged or stale registered reports remain historical Store records and are not 
 ## Author and publish
 
 Write the default SRC draft under the complete 6k report-format, or an explicitly requested destination
-alternative. Finalize its CRLF/layout before publication and use actual evidence. External/shared copies
+alternative. Internal delivery (internal audit, lab, CTF, authorized engagement) is a first-class
+destination: its Q7 is recorded as `internal delivery: not-applicable`, never a platform lookup, and
+publication proceeds on the confirmed assessment alone. Finalize its CRLF/layout before publication and use actual evidence. External/shared copies
 redact credentials/session material and unrelated personal data; exact values are limited to explicitly
 selected target-private controlled delivery under the runtime adapter. Preserve controlled originals.
 The tool does not rewrite, format or sanitize submitted prose.

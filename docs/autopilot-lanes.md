@@ -110,6 +110,9 @@ Checkpoint, Pickup and preflight never initialize, import, or recreate old owner
   `python3 tools/validate.py --target <target_shell> --finding-id <id> --decision-json <json_file_shell> --json`.
   Scaffold and preflight are read-only. Validation publishes AI report text,
   records separate technical/destination judgments and registers eligible reports.
+  With no operator-declared external destination, Q7 is recorded as
+  `internal delivery: not-applicable` (pass) and eligibility completes in-turn;
+  the loop never pauses to ask for a platform.
   Same-decision retry retains the bytes; a revised decision needs current
   predecessor IDs and a new report path. `/report` consumes the registered body.
 - Read state once per iteration and expand only the missing evidence. Refresh

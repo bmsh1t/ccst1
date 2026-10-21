@@ -69,6 +69,9 @@ Per `rules/ccst/tool-ai-boundary.md`/`rules/ccst/coverage-gate.md`, evidence-sup
 remain eligible. Scanner-negative/incomplete/memory proves no Coverage. Scope/Auth, request caps,
 partial cursors hold. Quick only lowers Recon cost; deep is value-first.
 Validation/publication: `commands/validate.md`/`commands/report.md`; no placeholder reports/auto-submission.
+Without an operator-declared external destination, deliver internally: Q7 records
+`internal delivery: not-applicable` and publication proceeds — never stop a round to ask
+for a platform. External submission stays a manual operator action.
 
 ### Transition And Finish Contract
 Read-only snapshots: `arguments.checkpoint_trigger`; cognitive writes:
