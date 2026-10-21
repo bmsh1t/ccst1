@@ -1131,3 +1131,39 @@ Explicit Autopilot investigation loads or reuses native src-hunter after Bootstr
 ### Next Steps
 
 - No runtime installation or live invocation was performed; task remains in_progress without push/archive.
+
+
+## Session 39: Task material ownership and recovery boundary
+<!-- trellis-session: v=2 fp=14548a3ecf36c806 -->
+
+**Date**: 2026-10-21
+**Task**: Task material ownership and recovery boundary
+**Branch**: `refactor/10-11-capability-architecture`
+
+### Summary
+
+收缩目录规则为材料归属与清理；启动恢复交回现有底座，按需工作笔记和持久迭代交接，显式target避免共享指针串目标。
+
+### Main Changes
+
+- 取消重复init/set/show链与固定线程必读/DONE；保留campaign seeds、证据原位、报告和浏览器清理边界。
+- 同步CLAUDE、hunt-iter、target/campaign、adapter、架构/运行规范和Skill目录标签；保留set --goal能力。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `d254a0c` | refactor(rules): keep task folders focused on materials and cleanup |
+
+### Testing
+
+- [OK] 一路独立只读审核发现的命令示例与措辞问题已修正；主代理diff审阅及git diff --cached --check通过。
+- [OK] 仅文案静态审核；未读取或运行项目tests、真实目标/报告、个人runtime，未进行实机验收。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 整体任务保持in_progress；宿主/live/G4仍待后续验收，不安装、推送或归档。
