@@ -56,6 +56,8 @@ methods and internal modules for the current question. Reuse available material 
 1. Consume Bootstrap `state`, then fresh `control`; obey `state.hard_gate`. Missing/stale/partial
    is not clean. `wait_recon`/`wait_scan`: poll lock and refresh, never duplicate-launch.
 2. Apply `src-hunter` to select the next evidence-backed question and method from current facts.
+   Before its first request, read/apply the matched complete method from the Skill's feature table;
+   reuse full body context. Skill/shortlist loading alone is not method use.
    `owner_continuations` supplies pending owner work; its order is advisory; respect `runnable=false`.
    Read selected evidence/owner contracts before execution; retain deferred work.
    `handoff` returns to `src-hunter` in this session; apply the Finish Contract before ending.
@@ -97,6 +99,8 @@ a demonstrated blocker preventing useful in-scope work, or an evidence-based jud
 next question remains. Explain the specific reason and valuable unpursued leads. Findings/report count,
 anonymous denial or missing-but-obtainable sessions alone do not justify stopping. Otherwise continue
 with `src-hunter`, including after publication. Round budget still ends only that bounded round.
+A failed writer or object cleanup constrains that operation; assess independent business paths before
+concluding it prevents useful work across the target.
 Read-only snapshots: `arguments.checkpoint_trigger`; cognitive writes:
 `skills/runtime-protocol.md#cognitive-write-timing`. All modes save evidence immediately.
 Do not delay confirmed A for B/C.

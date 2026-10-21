@@ -315,6 +315,9 @@ def _store_observation(run: dict[str, Any], *, repo_root: Path, side: str | None
         variant = str(run.get("variant") or "native")
         snapshot = run
         observation = run
+        observed_at = run["observed_at"] if observation_lane else run.get("observed_at", observed_at)
+        state_changing = run.get("state_changing", state_changing)
+        redline_checked = run.get("redline_checked", redline_checked)
     else:
         prefix = f"{side}_"
         endpoint = str(run.get(f"{side}_url") or "")
@@ -358,7 +361,7 @@ def _store_observation(run: dict[str, Any], *, repo_root: Path, side: str | None
         "endpoint": endpoint,
         "method": observed_method,
         "family": run["family"] if observation_lane else family,
-        "observed_at": run["observed_at"] if observation_lane else observed_at,
+        "observed_at": observed_at,
         "description": run["description"] if observation_lane else str((run.get("diff") or {}).get("summary") or f"{side} runner observation"),
         "artifacts": artifacts,
         "actor": str(observation.get("actor") or ("unknown" if side is None else "anonymous")),
@@ -366,8 +369,8 @@ def _store_observation(run: dict[str, Any], *, repo_root: Path, side: str | None
         "variant": variant,
         "error": str(run["error"].get("type") or "") if isinstance(run.get("error"), dict) else str(run.get("error") or ""),
         "truncated": bool(snapshot.get("truncated") or snapshot.get("body_truncated")),
-        "state_changing": run.get("state_changing") if observation_lane else state_changing,
-        "redline_checked": run.get("redline_checked", False) if observation_lane else redline_checked,
+        "state_changing": state_changing,
+        "redline_checked": redline_checked,
         "result": result,
         "detail": {
             "evidence_role": str(observation.get("evidence_role") or "unknown"),
@@ -759,9 +762,9 @@ def record_native_evidence(
         observed_difference = validate_observed_difference(
             required_text(evidence.get("observed_difference"), "observed_difference")
         )
-        captured_at = datetime.fromisoformat(required_text(evidence.get("generated_at"), "generated_at").replace("Z", "+00:00"))
-        if captured_at.tzinfo is None:
-            raise ValueError("native evidence generated_at must be an ISO-8601 timestamp with a timezone")
+        captured_at = datetime.fromisoformat(_native_timestamp(evidence.get("generated_at"), "generated_at"))
+        if (state_changing is not None and type(state_changing) is not bool or type(redline_checked) is not bool):
+            raise ValueError("native evidence execution facts must be boolean (state_changing may be null)")
         effective_state = _validate_request_facts(state_changing, redline_checked)
         cleanup = None
         if "cleanup_confirmation" in evidence:
@@ -803,6 +806,20 @@ def record_native_evidence(
                 for key in ("actor", "object_scope", "variant", "summary", "error", "body_truncated")
                 if key in raw_run
             }
+            if "observed_at" in raw_run:
+                run["observed_at"] = _native_timestamp(raw_run["observed_at"], f"runs[{index}].observed_at")
+                if datetime.fromisoformat(run["observed_at"]) < captured_at:
+                    raise ValueError("native evidence step predates its execution attempt")
+            state = raw_run.get("state_changing", effective_state)
+            checked = raw_run.get("redline_checked", redline_checked)
+            if (state is not None and type(state) is not bool or type(checked) is not bool):
+                raise ValueError("native evidence step facts must be boolean (state_changing may be null)")
+            _validate_request_facts(state, checked)
+            if cleanup is not None and state is not False:
+                raise ValueError("cleanup read-back must be explicitly read-only")
+            for key in ("state_changing", "redline_checked"):
+                if key in raw_run:
+                    run[key] = raw_run[key]
             for key, normalize in (("actor", normalize_actor), ("object_scope", normalize_object_scope), ("variant", normalize_variant)):
                 if key in run:
                     run[key] = normalize(required_text(run[key], f"runs[{index}].{key}"))
@@ -839,6 +856,7 @@ def record_native_evidence(
             anchor["cleanup_confirmation"] = cleanup
             # Reject incomplete/foreign mutation references before publishing a witness.
             linked = {(ref["operation_id"], ref["step"]) for ref in finding["evidence"]}
+            verified_at = datetime.fromisoformat(anchor.get("observed_at", captured_at.isoformat()))
             for ref in cleanup["mutation_refs"]:
                 if (ref["operation_id"], ref["step"]) not in linked:
                     raise ValueError("cleanup mutation reference is not linked to this finding")
@@ -846,7 +864,7 @@ def record_native_evidence(
                 mutation = next((row for row in operation["observations"] if row["step"] == ref["step"]), None)
                 if not mutation or mutation["state_changing"] != 1:
                     raise ValueError("cleanup mutation reference must identify a state-changing observation")
-                if captured_at < datetime.fromisoformat(mutation["observed_at"].replace("Z", "+00:00")):
+                if verified_at < datetime.fromisoformat(mutation["observed_at"].replace("Z", "+00:00")):
                     raise ValueError("cleanup read-back must not predate its mutation")
         command_context = _runner_command_context(
             store, action_id=action_id, claim_token=claim_token, command_actor=command_actor,
@@ -933,6 +951,8 @@ def _native_timestamp(value: Any, field: str) -> str:
     stamp = datetime.fromisoformat(_native_text(value, field).replace("Z", "+00:00"))
     if stamp.tzinfo is None:
         raise ValueError(f"native observation {field} requires a timezone")
+    if stamp > datetime.now(timezone.utc):
+        raise ValueError(f"native execution {field} cannot be in the future; retain the actual capture time")
     return stamp.astimezone(timezone.utc).isoformat()
 
 

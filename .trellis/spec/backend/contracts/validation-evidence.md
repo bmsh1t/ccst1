@@ -118,6 +118,10 @@ original attempt/operation, without re-registering the same bytes as a new execu
   Curl trace/HAR can supply the request artifact; never reconstruct Content-Length,
   tokens or execution times. Derive a new claim's exact query/method from the real
   subject. A registration refusal does not authorize another network execution.
+  DOM/fragment execution retains original navigation/DOM/dialog evidence and its
+  network provenance. A later homepage request cannot stand in for that navigation;
+  missing capture stays partial. HTTP actor labels/request URL identities are not
+  authenticated actor/object proof; null own-object read-back proves no ownership.
   Store/Coverage CLI already emits JSON; do not add `--json`. Preserve subprocess
   exit status through pipelines; use subcommand help for uncertain parameters.
   `docs/evidence-runners.md` owns the executable capture and registration examples.
@@ -152,6 +156,13 @@ original attempt/operation, without re-registering the same bytes as a new execu
   Registration does not impose a new current-claim check. Preview/legacy/damage reject.
 - A real execution has its own attempt ID. A registration retry reuses the
   attempt and immutable raw material; registration never resends requests. Operation is a Store registration receipt, not an HTTP request ID.
+- Native evidence `generated_at` retains the original attempt start. Optional
+  run `observed_at` retains that step's capture time; both require a timezone and
+  cannot be in the future, and steps cannot predate the attempt. Missing step time
+  preserves the prior generated_at default, never the registration time. New
+  facts are retained only when supplied so old material identities remain stable.
+  Native no-verdict observations share the no-future boundary. Saved historical
+  summary sync keeps its original facts without applying new ingestion rules.
 - Runner summary/diff files are internal target analysis artifacts, not public
   exports. Their subject, request-pair and per-step URLs preserve exact query
   values, duplicate keys and encoding. Raw requests and auth/error-log boundaries
@@ -190,6 +201,11 @@ original attempt/operation, without re-registering the same bytes as a new execu
 - Explicit `state_changing=true` requires `redline_checked`; method names do not
   imply effect. Unknown effect remains unknown. Redirects stay within target;
   sensitive headers require destination-origin authorization.
+  Native runs may explicitly override CLI state_changing (bool/null) and
+  redline_checked (bool) defaults. Summary top-level fields are defaults, not an
+  aggregate verdict; Store and cleanup consume effective per-step facts. Mixed
+  POST/GET evidence marks only actual mutations, not logins or read-backs by verb.
+  Historical pair-side facts keep their original summary semantics.
 - Runner never assesses technical truth, decides destination eligibility,
   registers an external delivery event, or resolves an Action. Explicit claim
   completion requires its complete operation or a valid work proof.
@@ -247,7 +263,7 @@ original attempt/operation, without re-registering the same bytes as a new execu
 | Input/failure | Required result |
 |---|---|
 | shared HTTP off-target request, excluded parent/child URL or stale context | reject before request |
-| native registration has a bad claim or invalid side-effect facts | reject before material publication; registration does not authorize prior I/O |
+| native registration has a bad claim, future/naive/backdated step time or invalid side-effect facts | reject before attempt/material publication; registration does not authorize prior I/O |
 | shared HTTP follows a redirect | enforce child/parent Scope and credential-origin boundary before sending |
 | continuation auth loaded in a credentialed shell | use only bound auth, no implicit environment merge |
 | retired request-diff/probe entry | unavailable before target I/O; native registration entries remain available |
@@ -327,8 +343,13 @@ object with `{"mode":"deferred"}`. Publish later using the existing
   }
   ```
 
-  Existing source/generated_at/observed_difference fields remain required. This
-  explicit cleanup-only form may use a different method/endpoint from the Finding;
+  Existing source/generated_at/observed_difference fields remain required. The
+  run may provide observed_at; cleanup ordering uses its effective capture time,
+  not attempt start or registration time. Its effective state_changing must be
+  False even with overrides; invalid facts reject before attempt/witness publication.
+  Reuse the actual read-back attempt on retry, never relabel one read as another
+  execution. Reference only real mutation steps, not every step of the experiment.
+  This explicit cleanup-only form may use a different method/endpoint from the Finding;
   it registers control evidence with no closure identity or new Finding claim.
   `record_execution(..., finding_id=ID)` owns the same-Store relation without a new
   table, lifecycle or schema upgrade. Decision-local status/receipt strings do not

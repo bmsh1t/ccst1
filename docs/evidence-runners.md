@@ -95,7 +95,8 @@ python3 tools/validation_runner.py record-observation --repo-root ROOT --target 
 - runs 保留原顺序、重复 URL、每步精确 method/family/真实含时区 `observed_at`、非空描述。
   每步可选 `actor/object_scope/variant/error/body_truncated/state_changing/redline_checked`；
   原件引用必须是同目标已有非空普通文件。不得放 Finding、结论、closure identity 或 cleanup。
-- `source/started_at` 来自原执行记录，不能用登记时间代替。每步不得早于执行开始。
+- `source/started_at` 来自原执行记录，不能用登记时间代替。每步不得早于执行开始，
+  开始与观察时间均不得晚于当前登记时刻；时钟有误先核对采集记录，不填未来时间。
   `--actor` 是本次**登记命令执行者**，不是 HTTP actor；未知 HTTP actor 保留 unknown。
   未绑定 Action 且无专属 family 时用 `runner-observation`，不推断漏洞类别或 Coverage。
 - `outcome=complete` 要求完整原件；缺响应、读取错误或截断用 `partial`。零 runs 仅允许
@@ -141,6 +142,9 @@ importer 保存一次实际选中 export 的原始 bytes，并在 capture summar
 text 仅能用于发现，坏 UTF-8/JSON/base64 不静默替换。旧 HAR 可复用既有原件 hash/长度；
 旧 JSON 无捕获基线时明确 `unverifiable_capture`，不能给当前重序列化文件补 hash 冒充历史。
 应使用留存的实际导出建立新 capture 身份，不为补登记而重新操作浏览器。
+DOM/fragment 载荷保留原导航 URL、DOM/对话框回读及关联网络来源；fragment 不在 HTTP
+请求中，不能靠另发首页 curl 证明浏览器执行。缺原请求时保留原 capture 的 partial/来源缺口，
+不把后补请求挂成同次导航。浏览器匿名结论先核对该会话的 Cookie/身份，不能沿用 curl 的身份。
 
 ### 不可变登记、重试与补证
 
@@ -187,6 +191,8 @@ canonical Candidate，再登记已存在的原始材料。该入口不执行命�
       "url": "https://TARGET/api/orders/1",
       "method": "GET",
       "actor": "owner",
+      "observed_at": "2026-09-16T10:00:01Z",
+      "state_changing": false,
       "artifacts": {
         "request": ".private/validation/TARGET/control.request.txt",
         "response": ".private/validation/TARGET/control.response.txt"
@@ -198,6 +204,9 @@ canonical Candidate，再登记已存在的原始材料。该入口不执行命�
       "actor": "peer",
       "object_scope": "other_object_same_org",
       "variant": "replay",
+      "observed_at": "2026-09-16T10:00:02Z",
+      "state_changing": true,
+      "redline_checked": true,
       "artifacts": {
         "request": ".private/validation/TARGET/transition.request.bin",
         "response": ".private/validation/TARGET/transition.response.bin"
@@ -210,7 +219,7 @@ canonical Candidate，再登记已存在的原始材料。该入口不执行命�
 ```bash
 python3 tools/validation_runner.py record-evidence --target TARGET \
   --finding-id FINDING_ID --evidence-json /tmp/native-observations.json \
-  --state-changing --redline-checked --json
+  --attempt-id native-attempt-1 --json
 ```
 
 多步实验的完整字段示例（baseline/对照步骤与锚点步骤同材料；`subject_step` 是
@@ -225,11 +234,14 @@ version_diff）：
   "attempt_id": "unique-attempt-id", "result": "tested_finding",
   "observed_difference": "...", "subject_step": 1,
   "runs": [
-    {"url": "http://TARGET/api/Users", "method": "POST", "actor": "anonymous", "variant": "baseline",
+    {"url": "http://TARGET/api/Users", "method": "GET", "actor": "anonymous", "variant": "baseline",
+     "observed_at": "2026-10-14T01:16:31+00:00", "state_changing": false,
      "artifacts": {"request": "evidence/TARGET/x.request.txt", "response": "evidence/TARGET/x.json"}},
     {"url": "http://TARGET/api/Users", "method": "POST", "actor": "anonymous", "variant": "role_diff",
+     "observed_at": "2026-10-14T01:16:32+00:00", "state_changing": true, "redline_checked": true,
      "artifacts": {"request": "evidence/TARGET/y.request.txt", "response": "evidence/TARGET/y.json"}},
     {"url": "http://TARGET/rest/user/login", "method": "POST", "actor": "owner", "variant": "replay",
+     "observed_at": "2026-10-14T01:16:33+00:00", "state_changing": false,
      "artifacts": {"request": "evidence/TARGET/z.request.txt", "response": "evidence/TARGET/z.json"}}
   ]
 }
@@ -241,7 +253,9 @@ version_diff）：
 --endpoint URL --method METHOD --family FAMILY --title T --claim C`（幂等键默认
 `create-finding:<finding-id>`，同键不同内容会被拒绝）。
 
-- `generated_at` 写原实验时间，必须含时区；`source` 写实际采集工具。
+- `generated_at` 写原 attempt 的开始时间，必须含时区；`source` 写实际采集工具。
+  每步可用 `observed_at` 保存真实捕获时间（含时区、小数秒）；不得早于 attempt 开始，
+  也不得晚于当前登记时刻。缺省仍沿用 `generated_at`，兼容原单时刻材料，不补登记时间。
 - Store 目标必须提供真实 `attempt_id`（材料字段或 `--attempt-id`）。小数秒会完整保留；
   同一次登记重试沿用 ID，真实重新执行使用新 ID。
 - URL、方法、类别从指定 Finding 读取；`runs` 必须含其精确 endpoint/method 对应的
@@ -256,13 +270,17 @@ version_diff）：
 - `actor` 使用 共享观察角色词汇（如 anonymous/owner/peer/low_role/admin/cross_tenant）；
   锚点步骤必须明确角色。`object_scope`、`variant` 可省略，默认 unknown/replay；
   具体账号、会话和业务条件保留在原始证据，不在摘要中写凭据。
+  对照原件应连接当前身份、对象与归属；本人对象读回 `data:null` 不证明本人归属。
+  `actor` 标签和 URL identity artifact 不代替身份验证；仅当证据足够时提供既有 v3 closure identity。
 - `result` 是 **AI 对已执行材料的判断**：tested_finding/candidate/tested_clean/dead_end/partial。
   输出固定标注 `assessment_source=ai`、`lane=native_evidence`，不伪装成自动语义判定。
   `tested_finding` 只产生可交给 `/validate` 的 Candidate，七问、四 gate 和报告标准保持不变。
 - 已知缺失响应、截断或执行错误必须是 `partial`：保存已获得材料，退出 1，不升级 Finding。
   完整实验至少保留输入/输出，不把截图或假设文字单独当执行证明。
-- 发生过状态改变时使用 `--state-changing --redline-checked`，只读实验可用
-  `--no-state-changing`；这些记录不追认或扩大原实验的执行许可。
+- 每步可明确 `state_changing`（bool/null）和 `redline_checked`（bool）；省略时沿用 CLI
+  `--state-changing/--no-state-changing` 与 `--redline-checked` 默认，summary 顶层也只是默认。
+  混合实验逐步声明，仅真实 mutation 为 true 且必须 redline_checked=true；POST/登录不自动
+  算 mutation，未知为 null。事实来自原执行审核，不追认或扩大许可。cleanup 只引用真实 mutation。
 - 同一 attempt/材料重复登记复用 operation/path；Store 事务登记失败时
   返回非零并保留 `sync.status=partial`，修复原因后重跑登记即可，不重发请求。
   绑定 Queue 的执行仍需预先 claim，登记只写观察，继续/停止仍由 Claude resolve。
@@ -270,8 +288,42 @@ version_diff）：
   未执行不补造原件，未知效果先恢复。读取失败不允许使用旧快照继续。
 
 登记成功后按 `/validate` 的 scaffold → 判断 → preflight → apply 流程继续。
-现有 `replayed` 字段表示材料来自已执行实验；此命令本身只做登记，来源由
-`native-evidence:<source>` 明确区分。无需修改 witness、报告 schema 或另立生命周期。
+Store 收据中的 `replayed` 表示同命令/材料幂等回放；此命令本身只做登记，
+`source` 保留实际采集工具。无需另立生命周期。
+
+### 已执行 cleanup 读回
+
+只登记实际恢复后的一次完整只读验证。保留其原 attempt、开始/捕获时间和原件，
+不能把同一读回改 ID/时间称作又执行一次；cleanup 失败保留 pending，不写 verified。
+`mutation_refs` 取本 Finding 的真实 state_changing=true 观察，不能把登录/读回一并引用。
+
+```json
+{
+  "schema_version": 1, "source": "curl", "generated_at": "2026-10-14T01:17:00Z",
+  "attempt_id": "original-cleanup-readback", "result": "candidate",
+  "observed_difference": "The actual final read-back matches the recorded test-owned baseline.",
+  "cleanup_confirmation": {
+    "status": "verified", "mutation_refs": [{"operation_id": "MUTATION_OPERATION_ID", "step": 1}],
+    "restored_state": "Test-owned object is back to its recorded baseline",
+    "verification_basis": "Attached final response matches that baseline"
+  },
+  "runs": [{
+    "url": "https://TARGET/api/test-owned-object", "method": "GET", "actor": "owner",
+    "observed_at": "2026-10-14T01:17:01Z", "state_changing": false,
+    "artifacts": {"request": "evidence/TARGET/readback.trace", "response": "evidence/TARGET/readback.body"}
+  }]
+}
+```
+
+```bash
+python3 tools/validation_runner.py record-evidence --repo-root ROOT --target TARGET \
+  --finding-id FINDING_ID --attempt-id original-cleanup-readback \
+  --evidence-json /tmp/cleanup-readback.json --no-state-changing --json
+```
+
+cleanup-only 必须一个完整只读 run、result=candidate、无 closure identity；可用不同于 Finding
+的 method/endpoint，作为 control 关联。顺序检查用该 run 的真实 observed_at，不用登记时刻。
+Store/publisher 核对这些引用与原件；verified 仍是作者的恢复判断，不是对 response 的自动语义证明。
 
 ### 误建未绑定 Finding 的处置
 

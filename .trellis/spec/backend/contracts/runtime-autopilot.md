@@ -41,7 +41,8 @@ mechanical safety, evidence and recovery constraints govern execution.
   internal modules stay problem-scoped. Owner continuations supply pending work,
   while the model uses src-hunter and current evidence to choose questions/methods.
 - A loaded Skill/shortlist does not establish method use. Read and apply complete
-  relevant methods, reusing body context when present. New identity/permissions
+  relevant methods before the selected question's first request, reusing body
+  context when present. New identity/permissions
   require reconsidering business paths under `rules/dig-scope-workflow.md` §4.2.3;
   determine whether authorized test identities can be obtained before treating
   a missing session as a local blocker. No mandatory login or exhaustive grid.
@@ -53,6 +54,8 @@ mechanical safety, evidence and recovery constraints govern execution.
   `loop_guard=continue` is advisory, not an endless execution mandate. Pending
   owner work requires continuity when stopping; handoff itself grants no stop or
   exhaustion claim. Round budgets retain their existing boundary.
+  Writer/object-cleanup failure constrains that operation; assess independent
+  business paths before treating it as a blocker to useful target-wide work.
 - Specialists default to zero; optional bounded independent questions stay within
   selected lanes and request/evidence budgets. No nested controller, full scan,
   final closure writer or extension of `max_lanes` is delegated.
