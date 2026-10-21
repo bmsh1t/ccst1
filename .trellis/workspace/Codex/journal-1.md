@@ -1203,3 +1203,39 @@ Explicit Autopilot investigation loads or reuses native src-hunter after Bootstr
 ### Next Steps
 
 - 整体任务保持in_progress；宿主/live/G4未验收，未安装、推送或归档。
+
+
+## Session 41: Autopilot depth live follow-up and native step evidence repair
+<!-- trellis-session: v=2 fp=35d579f01cc49a56 -->
+
+**Date**: 2026-10-21
+**Task**: Autopilot depth live follow-up and native step evidence repair
+**Branch**: `refactor/10-11-capability-architecture`
+
+### Summary
+
+普通claude-opus-4-8隔离Autopilot唯一复测14分17秒，业务调查扩展但完整方法和逐动作control未落实。修正逐步证据时间/副作用/红线及未来时间门禁、cleanup真实读回、唯一报告影响规则和局部阻塞文案。74项生产CLI定向断言通过；留存证据两路补核完成，最终差异scouts连接失败由主代理补查。工程提交已保存，未重跑live或运行项目tests、安装、推送、归档；整体in_progress。
+
+### Main Changes
+
+- 普通模式首批报告后继续业务调查；误建Finding撤回实际生效，原报告/Store保留审计。
+- 原生逐步observed_at/state_changing/redline_checked保留，历史省略字段及pair回放身份兼容。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `67eb3ed` | fix: continue autopilot investigation and retire mistaken unbound findings |
+| `8c5d017` | fix: preserve native step facts and evidence-backed report impact |
+
+### Testing
+
+- [OK] 74 assertions / 4.599 seconds，真实生产CLI和临时Store，future/type/顺序错误零发布拒绝；git diff --check通过。
+
+### Status
+
+[OK] 本轮工程收尾完成；整体任务 in_progress，复测后修正的模型行为仍未验收。
+
+### Next Steps
+
+- 本轮复测后修正未再live验证；完整方法应用、状态刷新、身份/影响证据仍需后续行为验收。

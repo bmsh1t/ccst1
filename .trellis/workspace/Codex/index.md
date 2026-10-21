@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 40
+- **Total Sessions**: 41
 - **Last Active**: 2026-10-21
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1205 | Active |
+| `journal-1.md` | ~1241 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 41 | 2026-10-21 | Autopilot depth live follow-up and native step evidence repair | `67eb3ed`, `8c5d017` | `refactor/10-11-capability-architecture` |
 | 40 | 2026-10-21 | Retire request-diff and probe execution wrappers | `71760ee` | `refactor/10-11-capability-architecture` |
 | 39 | 2026-10-21 | Task material ownership and recovery boundary | `d254a0c` | `refactor/10-11-capability-architecture` |
 | 38 | 2026-10-21 | Autopilot explicitly uses native src-hunter | `13140bc` | `refactor/10-11-capability-architecture` |
