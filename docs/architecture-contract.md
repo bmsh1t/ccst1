@@ -115,6 +115,13 @@ historical methods or emit `hot_methods`. Method updates follow the complete
 Installed copies are reading assets, not another writable method source. No catalog, manifest or hash reader
 is required for normal method use.
 
+`knowledge/index.md` links to the native shortlist and full method directory; the
+Skill points back to that index for CCST experience and cases. Each existing body
+keeps its path and maintenance owner. Directory consolidation, registration of all
+native methods and topic deduplication are deferred until the explicit capability
+comparison demonstrates a useful change. Native reading does not require review
+admission; shared recall and knowledge-backed projections keep that distinction.
+
 `rules/desktop-task-folder.md` owns current artifact paths and cleanup,
 `rules/playwright-browser-mcp.md` owns host-visible browser calls, and
 `rules/vuln-report-format.md` owns report prose and publication requirements.
@@ -408,6 +415,13 @@ use that same owner. Existing knowledge requires explicit byte-bound re-review;
 no registration, maturity label or index build silently grants review. Publication
 uses a knowledge-directory lock and compensating rollback, not a multi-file crash
 transaction. Native manual reading keeps unreviewed status visible.
+
+Surface advisory consumes the current bytes captured by that same publication
+review reader, not a second read after review. Missing, changed or withdrawn review
+material is an unavailable advisory with a reason; Surface facts and native method
+reading remain accessible. Distillation text retains the target experience version,
+review/applicability state, source health and exact correction/dependency references,
+so disputed historical advice cannot lose its warning in a new draft.
 
 Text and relation generations are rebuildable projections. Query never builds,
 downloads, upgrades or changes owners. Real local encoder/reranker adapters require

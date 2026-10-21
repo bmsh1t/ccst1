@@ -12,6 +12,10 @@
 其相对链接；工程规则不能取消已生效的项目类别偏好。原生 observation 协议继续适用于当前执行与证据登记。
 本文不改 TargetStore/schema、Finding、cleanup 或共享知识审核 owner。
 
+`knowledge/index.md` 与当前 Skill 提供双向按需导航，保留两处既有正文路径和准入。
+导航可见、原生已读与正式审核召回不同：不因为主题同名就去重，不为了目录统一把
+原生方法批量纳入 registry，也不自动继承旧卡的审核身份。
+
 ## 2. Signatures
 
 ```text

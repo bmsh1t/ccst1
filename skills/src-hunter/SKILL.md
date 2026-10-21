@@ -155,6 +155,8 @@ JS 逆向细节 → `知识库/js-reverse-guide.md`。打开目标按 `dig-scope
 上文保留 6k 方法与能力，活动路径和操作已按 CCST 适配；本节补充现有工程能力。
 知识库就在本 SKILL 同级，使用原生 Read/Grep；跨包的 rules/docs/tools 路径以选定 checkout
 为根，从该 checkout 执行命令。接线总览见 docs/ccst-runtime-adapter.md。
+需要项目经验、证据边界或案例来源时，按需读选定 checkout 的 `knowledge/index.md`；
+该索引也指回本技能的完整方法目录，不替代原篇或要求两边全文加载。
 开始、续接和切换目标按 skills/runtime-protocol.md 恢复当前事实与交接。
 
 理解业务后比较竞争解释、正常基线和最小可区分实验；保留条件反证与

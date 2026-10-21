@@ -65,6 +65,11 @@ python3 tools/context_pack.py --target <target>
 不表示已加载知识，也不会生成假设或测试路线。Claude 可直接运用已有知识；需要补充时
 按目录读取完整判断单元，不要求先跑 Pack 才能思考或选择方法。
 
+`surface_advisory` 的问题材料使用共享知识发布审核 owner 已捕获的当前字节。
+缺少有效审核、正文或审核依据变化时显示 `unavailable` 和原因，不输出已审建议；
+方法原文仍可从 `knowledge/cards/surface-unknown-probes.md` 原生读取并保持未审标签。
+这不隐藏 Surface 的 URL、事实、证据引用或展开入口，也不代替 Claude 的假设与选择。
+
 ## 输出与使用
 
 ```bash

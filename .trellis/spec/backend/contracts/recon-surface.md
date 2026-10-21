@@ -2,6 +2,44 @@
 
 > Recon 输入、派生 Surface、coverage 和排序契约。
 
+## Surface advisory 的当前审核字节
+
+### 1. Scope / Trigger
+
+修改 `surface_advisory` 的方法材料消费或跨入口审核语义时适用。
+
+### 2. Signatures
+
+`experience_knowledge.capture_source(repo_root, knowledge_id)` 的 available 结果包含
+`file`、`binding` 与私有 `files` 捕获；`build_surface_advisory(candidates, *, target, repo_root)`
+返回有界只读建议，不写 Queue 或执行网络。
+
+### 3. Contracts
+
+使用原发布审核 owner 的成熟度、身份、回执和依据校验，解析捕获的正文 bytes；
+不要审核后再读取正文/registry。`check_capture` 检查捕获依赖漂移。结果 source 保留
+publication version、content hash、review_state；捕获正文不进入 Store 或公共 JSON。
+
+### 4. Validation & Error Matrix
+
+当前有效审核 → ready；缺回执、改正文/审核依据、retired 或 draft → unavailable 与原因；
+捕获后依赖漂移 → unavailable。空候选 → empty。不可用建议不隐藏 Surface 原始事实和
+原生读卡入口，也不能伪造审核或回退到静态建议。
+
+### 5. Good / Base / Bad Cases
+
+Good：有效审核的原字节提供问题，来源可追溯。Base：未审卡仍可原生读并保持未审标签。
+Bad：仅凭登记/type 就输出已审建议，或以缺建议表示没有该方法。
+
+### 6. Tests Required
+
+隔离合成 fixture 覆盖有效审核、缺审、正文/依据篡改、退役、成熟度、捕获后漂移；
+验证 0 网络和无 Queue 写回，不使用真实审核文件或个人 runtime。
+
+### 7. Wrong vs Correct
+
+Wrong：审核通过后按当前路径再 Read。Correct：消费同次审核捕获的正文，最终复核捕获身份。
+
 ## Scenario: Scanner 原始语料、消费视图与完成态
 
 ### 1. Scope / Trigger

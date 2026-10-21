@@ -35,11 +35,13 @@ try:
     from tools.current_truth import current_cell_projection
     from tools.target_paths import canonical_target_value
     from tools.target_store import ConflictError, runtime_store
+    from tools.target_memory import format_experience_provenance
 except ImportError:  # pragma: no cover - direct tools/ execution
     sys.path.insert(0, str(BASE_DIR))
     from current_truth import current_cell_projection  # type: ignore
     from target_paths import canonical_target_value  # type: ignore
     from target_store import ConflictError, runtime_store  # type: ignore
+    from target_memory import format_experience_provenance
 
 
 def _load_source_evidence(repo: Path, target: str) -> dict:
@@ -129,9 +131,10 @@ def _bounded_evidence_view(evidence: dict, limit: int = 40) -> str:
     if experiences:
         lines.append(f"## Target Experiences（最近 {len(experiences)} 条）")
         for item in experiences:
-            lines.append(f"- {item['id']} [{item['kind']}] {item['statement']}")
+            lines.append(f"- {item['id']} version={item.get('version', 'unknown')} [{item['kind']}] {item['statement']}")
             lines.append(f"  conditions={item['conditions']} reopen_when={item['reopen_when']} next_intent={item['next_intent']}")
             lines.append(f"  recorded_by={item['recorded_by']}")
+            lines.extend(format_experience_provenance(item))
             if item.get("evidence"):
                 lines.append("  evidence=" + ", ".join(
                     f"{ref['operation_id']}:{ref['step']}" for ref in item["evidence"][:3]))

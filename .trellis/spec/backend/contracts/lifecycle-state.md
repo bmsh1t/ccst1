@@ -17,6 +17,9 @@
 - `/distill` reads bounded Store evidence/conditional experience; AI writes a
   card draft, then existing audit/promote validates provenance and redaction.
   Target memory is not a second Finding/Action lifecycle.
+  Default distillation text includes experience version, claims, review state,
+  applicability, source health and exact correction/dependency references through
+  `target_memory.format_experience_provenance`; pagination/ID expansion remains.
 - Validation: Store/current-truth, Action Queue, memory-loop, distillation and
   explicit migration regressions prove the corresponding contracts.
 - Action Queue `kind` is an owned Store lifecycle field (`work` or `execution`),

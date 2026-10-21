@@ -9,9 +9,11 @@ from pathlib import Path
 from urllib.parse import parse_qsl, urlparse
 
 try:
-    from tools.knowledge_registry import KnowledgeRegistryError, load_registry, parse_knowledge_document
+    from tools.knowledge_registry import KnowledgeRegistryError, parse_knowledge_document
+    from tools.experience_knowledge import capture_source, check_capture
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from knowledge_registry import KnowledgeRegistryError, load_registry, parse_knowledge_document
+    from knowledge_registry import KnowledgeRegistryError, parse_knowledge_document
+    from experience_knowledge import capture_source, check_capture
 
 
 MAX_ITEMS = 16
@@ -65,10 +67,13 @@ def _surface_family(item: dict, facts: dict) -> str:
 
 
 def _load_material(repo: Path) -> tuple[dict, dict]:
-    path = load_registry(repo).card_paths().get(MATERIAL_CARD)
-    if not path:
-        raise ValueError(f"active knowledge card missing: {MATERIAL_CARD}")
-    document = parse_knowledge_document((repo / path).read_text(encoding="utf-8"))
+    captured = capture_source(repo, MATERIAL_CARD)
+    if captured["status"] != "available":
+        raise ValueError(f"surface advisory knowledge {captured['status']}: {captured.get('reason', '')}")
+    # Parse the bytes already accepted by the common source owner. A second
+    # filesystem read after review could consume a different publication.
+    path = captured["file"]
+    document = parse_knowledge_document(captured["files"][repo.absolute() / path][1].decode("utf-8"))
     if document.frontmatter_error or not document.metadata or document.metadata.get("id") != MATERIAL_CARD:
         raise ValueError("invalid surface advisory knowledge frontmatter")
     material = document.metadata.get("surface_advisory")
@@ -84,7 +89,9 @@ def _load_material(repo: Path) -> tuple[dict, dict]:
                 raise ValueError(f"surface advisory {family}.{key} must contain text")
         if any(not isinstance(entry.get(key), str) or not entry[key].strip() for key in ("action", "why", "hint")):
             raise ValueError(f"surface advisory probe missing: {family}")
-    return material, {"card_id": MATERIAL_CARD, "path": path, "section": "frontmatter.surface_advisory"}
+    check_capture(captured)
+    return material, {"card_id": MATERIAL_CARD, "path": path, "section": "frontmatter.surface_advisory",
+                      "review_state": "reviewed", **captured["binding"]}
 
 
 def build_surface_advisory(

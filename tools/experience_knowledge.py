@@ -116,7 +116,7 @@ def capture_source(repo_root: Path, knowledge_id: str) -> dict:
                 result.update(status=review["status"], reason=review.get("reason", "knowledge review unavailable"))
                 return result
             check_capture(result)
-            result.update(status="available", binding={"owner": "knowledge", "record_id": knowledge_id,
+            result.update(status="available", file=ref, binding={"owner": "knowledge", "record_id": knowledge_id,
                           "version": review["sha256"], "content_sha256": sha256(raw)})
     except (KnowledgeRegistryError, OSError, UnicodeError, ValueError) as exc:
         result.update(status="unavailable", reason=f"{type(exc).__name__}: {exc}"[:240])

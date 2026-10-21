@@ -48,6 +48,9 @@ Store 视图中的 `windows.findings` / `windows.experiences` 给出准确余量
 不猜 offset。按 ID/完整 Case 展开是新查询，原始私密会话材料不会输出到 Case JSON。
 隔离根调用格式：`python3 tools/distill_target.py --repo-root ROOT evidence --target TARGET --json`。
 
+经验正文同时保留精确版本、`review_state`、适用条件、来源健康和纠错/依赖引用。
+受挑战、来源失效或待复核的旧经验是复盘素材，不能省略警示后当成当前成立的方法。
+
 新增内容按完整判断单元而非单点标签评审：模型见过吗、从允许的现场证据可推理吗、
 需要真实试错成本才知道什么差分？组合链的状态依赖、顺序、失败切换与反例须一起问，
 不能因为节点各自常见而丢失新连接。公开或可推理且无差分的不新增。

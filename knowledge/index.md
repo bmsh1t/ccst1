@@ -7,6 +7,12 @@
 它不负责指挥流程。具体执行顺序、工具选择、验证深度和写回位置仍由当前
 Skill 与检查层决定。
 
+完整 SRC 测法先从 [6k 手法短表](../skills/src-hunter/知识库/打穿短表.md) 和
+[完整方法目录](../skills/src-hunter/知识库/README.md) 按需展开；本索引补充 CCST
+经验、证据边界和案例入口。两处正文保持现有路径，短表或同名主题不构成能力上限，
+不要求同时通读。完整测法按 `rules/hunt-iter.md` 维护原篇；跨目标经验继续走
+本库的审核晋升；当前目标事实和条件纠错仍归 TargetStore。
+
 ## Capability Registry（新增经验先登记）
 
 `knowledge/capabilities.yaml` 是知识库治理总控，不是正文知识。
