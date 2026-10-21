@@ -325,7 +325,7 @@ def compare_runtime(
                              "relative_path": ENTRY_MIGRATION_RECORD})
     if "skills" in selected:
         source_entries = _skill_entries(resolved_repo)
-        runtime_entries = _skill_entries(resolved_runtime)
+        runtime_entries = _skill_entries(resolved_runtime, allow_external_links=True)
         forward = any(CORE_SKILL_NAME in entry["known_identities"] for entry in source_entries)
         if forward or any(CORE_SKILL_NAME in entry["known_identities"] for entry in runtime_entries):
             expected = {entry["path"]: entry["identity"] for entry in source_entries if entry["known_identities"]}
@@ -494,8 +494,14 @@ def _skill_identity(body: str, path: Path) -> str:
     return names[0]
 
 
-def _skill_entries(root: Path) -> list[dict]:
-    """Inspect identity, not just today's managed directories; never follow links."""
+def _skill_entries(root: Path, *, allow_external_links: bool = False) -> list[dict]:
+    """Inspect identity, not just today's managed directories; never follow links.
+
+    The repo tree stays strict: a linked directory there is ambiguous. A runtime
+    tree may legitimately hold user-managed external skills as links, so callers
+    inspecting the installed runtime may skip them; a link that carries a managed
+    entry name is still refused because it would shadow a planned entry.
+    """
     base = root / "skills"
     if not _safe_path(base, root):
         raise ValueError(f"cannot inspect linked Skill tree: {base}")
@@ -509,9 +515,13 @@ def _skill_entries(root: Path) -> list[dict]:
         raise error
 
     for current, dirs, files in os.walk(base, followlinks=False, onerror=onerror):
-        for name in dirs:
-            if (Path(current) / name).is_symlink():
-                raise ValueError(f"cannot completely inspect linked Skill directory: {Path(current) / name}")
+        for name in list(dirs):
+            candidate = Path(current) / name
+            if not candidate.is_symlink():
+                continue
+            if not allow_external_links or name in KNOWN_ENTRY_NAMES:
+                raise ValueError(f"cannot completely inspect linked Skill directory: {candidate}")
+            dirs.remove(name)
         if "SKILL.md" not in files:
             continue
         path = Path(current) / "SKILL.md"
@@ -691,7 +701,7 @@ def _validate_entry_record(record: dict, header: dict, sources: dict) -> None:
 def _check_known_entries(runtime: Path, operations: list[dict]) -> list[dict]:
     planned = {op["path"]: op for op in operations}
     conflicts = []
-    for entry in _skill_entries(runtime):
+    for entry in _skill_entries(runtime, allow_external_links=True):
         if not entry["known_identities"]:
             continue
         op = planned.get(entry["path"])
@@ -757,7 +767,7 @@ def sync_runtime(
                 if _file_hash(path, repo) is None:
                     raise ValueError(f"required runtime source missing or unsafe: {path}")
         source_entries = _skill_entries(repo)
-        runtime_entries = _skill_entries(runtime)
+        runtime_entries = _skill_entries(runtime, allow_external_links=True)
         forward = any(CORE_SKILL_NAME in entry["known_identities"] for entry in source_entries)
         if forward and [(e["path"], e["identity"]) for e in source_entries] != [(CORE_SKILL_PATH, CORE_SKILL_NAME)]:
             raise ValueError("source candidate must contain only skills/src-hunter/SKILL.md; mixed entry release refused")
@@ -820,7 +830,7 @@ def sync_runtime(
         def verify_entries():
             if cutover or forward:
                 actual = [{"path": e["path"], "identity": e["identity"]}
-                          for e in _skill_entries(runtime) if e["known_identities"]]
+                          for e in _skill_entries(runtime, allow_external_links=True) if e["known_identities"]]
                 if actual != expected_entries:
                     raise ValueError("runtime native entry set differs from the fixed candidate")
         try:
