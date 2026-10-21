@@ -185,9 +185,9 @@ except ImportError:  # pragma: no cover - direct tools/ execution
 
 # artifact reader 拆分（批次 7）：re-export 保持外部 import 零破坏。
 try:
-    from tools.autopilot_state_read import _load_case_state_projection, _load_json_inject_projection, _load_scanner_summary_projection, _load_sql_matrix_projections, _read_batch_lines, _read_batch_manifest_completed, _read_batch_ranked_targets, load_target_goal_memory
+    from tools.autopilot_state_read import _load_case_state_projection, _load_json_inject_projection, _load_scanner_summary_projection, _load_sql_matrix_projections, _read_batch_lines, _read_batch_manifest_completed, _read_batch_inventory_targets, load_target_goal_memory
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from autopilot_state_read import _load_case_state_projection, _load_json_inject_projection, _load_scanner_summary_projection, _load_sql_matrix_projections, _read_batch_lines, _read_batch_manifest_completed, _read_batch_ranked_targets, load_target_goal_memory
+    from autopilot_state_read import _load_case_state_projection, _load_json_inject_projection, _load_scanner_summary_projection, _load_sql_matrix_projections, _read_batch_lines, _read_batch_manifest_completed, _read_batch_inventory_targets, load_target_goal_memory
 
 
 # frontier/gate 拆分（批次 7）：re-export 保持外部 import 零破坏。
@@ -712,21 +712,30 @@ def _build_pivot_hint(
     recent_guard_advisories: list[dict],
     repo_source_summary: dict,
 ) -> str:
-    """Build one short advisory hint from current guard + repo-source signals."""
-    secret_findings = int(repo_source_summary.get("secret_findings", 0) or 0)
-    ci_findings = int(repo_source_summary.get("ci_findings", 0) or 0)
-    has_live_guard_pressure = bool(tripped_hosts)
-    has_repo_findings = secret_findings > 0 or ci_findings > 0
-
-    if has_live_guard_pressure and has_repo_findings:
-        return "live API has guard advisories; inspect repo source findings first."
-    if has_live_guard_pressure:
-        return "guard advisories are active; continue with the next ready target or quieter surface."
-    if secret_findings > 0:
-        return "repo source shows secrets; verify credential usability before widening live probing."
-    if ci_findings > 0:
-        return "repo source shows CI review candidates; inspect saved workflows and trust boundaries."
-    return ""
+    """Expose guard/source facts without prescribing a pivot or analysis method."""
+    facts = []
+    if tripped_hosts:
+        facts.append("live guard advisories are recorded")
+    if repo_source_summary.get("execution_mode") == "source-capture":
+        acquisition = str(repo_source_summary.get("status") or "unknown")
+        capture = str(repo_source_summary.get("source_capture_status") or "unknown")
+        workflows = str(repo_source_summary.get("workflow_status") or "unknown")
+        facts.append(
+            f"repository acquisition={acquisition}; selected source capture={capture}; "
+            f"workflow capture={workflows}"
+        )
+        secret_scan = str(repo_source_summary.get("secret_scan") or "unknown")
+        ci_scan = str(repo_source_summary.get("ci_scan") or "unknown")
+        if secret_scan == "not_run" and ci_scan == "not_run":
+            facts.append("secret/CI analysis was not run")
+        else:
+            facts.append(f"secret scan={secret_scan}; CI analysis={ci_scan}")
+    else:
+        for key, label in (("secret_findings", "secret"), ("ci_findings", "CI")):
+            count = repo_source_summary.get(key)
+            if type(count) is int and count > 0:
+                facts.append(f"historical repository {label} results={count}")
+    return "; ".join(facts)
 
 
 EXPOSURE_SUMMARY_KEYS = (
@@ -1080,8 +1089,8 @@ def _build_batch_autopilot_state(repo_root: str, target: str, resolved_target: s
     recon_in_progress = runtime_phase_in_progress(
         repo_root, resolved_target, "recon", runtime_state
     )
-    candidates = _read_batch_ranked_targets(
-        batch_dir / "high_value_targets.json",
+    candidates = _read_batch_inventory_targets(
+        batch_dir / "batch_inventory.json",
         completed,
     )
     scope = _scope_identity(repo_root, resolved_target)
@@ -1142,8 +1151,8 @@ def _build_batch_autopilot_state(repo_root: str, target: str, resolved_target: s
             "manifest": str(manifest_path),
             "summary": str(batch_dir / "batch_summary.md"),
             "ai_handoff": str(batch_dir / "ai_handoff.md"),
-            "surface_ranking": str(batch_dir / "surface_ranking.txt"),
-            "high_value_targets": str(batch_dir / "high_value_targets.json"),
+            "surface_inventory": str(batch_dir / "surface_inventory.txt"),
+            "batch_inventory": str(batch_dir / "batch_inventory.json"),
             "current_entries": current_entries,
             "completed": completed,
             "failed": failed,
@@ -3410,7 +3419,7 @@ def format_autopilot_state(state: dict) -> str:
             f"Failed: {len(batch.get('failed') or [])}",
             f"Pending: {len(batch.get('pending') or [])}",
             f"AI Handoff: {batch.get('ai_handoff', '')}",
-            f"Surface Ranking: {batch.get('surface_ranking', '')}",
+            f"Surface Inventory: {batch.get('surface_inventory', '')}",
             f"Manifest: {batch.get('manifest', '')}",
         ]
         lines.extend(_format_owner_continuations_lines(state))
@@ -3429,7 +3438,7 @@ def format_autopilot_state(state: dict) -> str:
             lines.extend(["", "Completed-domain candidates:"])
             for index, item in enumerate(candidates[:10], 1):
                 lines.append(
-                    f"{index}. {item['target']} (score hint {item.get('score', 0)})"
+                    f"{index}. {item['target']} — {item['recon_dir']}"
                 )
             lines.extend([
                 "",

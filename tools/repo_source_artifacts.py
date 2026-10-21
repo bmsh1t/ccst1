@@ -65,14 +65,23 @@ def load_repo_source_summary(repo_root: str | Path, target: str) -> dict:
                 summary["source_kind"] = str(meta.get("source_kind", "") or "")
                 summary["clone_performed"] = bool(meta.get("clone_performed", False))
                 summary["repo_commit"] = str(meta.get("repo_commit") or "")
-        except (OSError, json.JSONDecodeError):
+                if meta.get("execution_mode") == "source-capture":
+                    summary["execution_mode"] = "source-capture"
+                    capture = meta.get("source_capture")
+                    summary["source_capture_status"] = (
+                        str(capture.get("status") or "unknown")
+                        if isinstance(capture, dict) else "unknown"
+                    )
+                    summary["secret_scan"] = str(meta.get("secret_scan") or "unknown")
+                    summary["ci_scan"] = str(meta.get("ci_scan") or "unknown")
+        except (OSError, UnicodeError, json.JSONDecodeError):
             pass
 
     summary_text = ""
     if summary_path.exists():
         try:
             summary_text = summary_path.read_text(encoding="utf-8")
-        except OSError:
+        except (OSError, UnicodeError):
             summary_text = ""
 
     if summary_text:
@@ -80,9 +89,9 @@ def load_repo_source_summary(repo_root: str | Path, target: str) -> dict:
         ci_match = _CI_FINDINGS_RE.search(summary_text)
         confirmation_required = "confirmation required before clone" in summary_text.lower()
 
-        if secret_match:
+        if secret_match and summary.get("execution_mode") != "source-capture":
             summary["secret_findings"] = int(secret_match.group(1))
-        if ci_match:
+        if ci_match and summary.get("execution_mode") != "source-capture":
             summary["ci_findings"] = int(ci_match.group(1))
         if confirmation_required and not summary.get("status"):
             summary["status"] = "confirmation_required"
@@ -103,21 +112,41 @@ def load_repo_source_summary(repo_root: str | Path, target: str) -> dict:
                 raise ValueError("invalid workflow remainder")
             if payload["status"] == "complete" and (remaining or any(row["status"] != "ok" for row in rows)):
                 raise ValueError("incomplete workflow inventory claimed complete")
+            if payload.get("inventory_kind") == "source-capture" and payload["status"] != "not_run":
+                total = payload.get("total_files")
+                deferred = payload.get("deferred_paths")
+                if (type(total) is not int or total < 0 or not isinstance(deferred, list)
+                        or any(not isinstance(name, str) or not name for name in deferred)
+                        or len(deferred) != remaining):
+                    raise ValueError("invalid workflow totals or deferred paths")
+                directory_error = (total == 0 and payload["status"] == "partial"
+                                   and len(rows) == 1 and rows[0]["file_path"] == ".github/workflows"
+                                   and rows[0]["status"] == "unavailable")
+                if not directory_error and total != len(rows) + remaining:
+                    raise ValueError("inconsistent workflow inventory counts")
             summary["workflow_status"] = payload["status"]
             summary["workflow_remaining"] = remaining
-        except (OSError, ValueError):
+        except (OSError, UnicodeError, ValueError):
             summary["workflow_status"] = "invalid"
 
     status = str(summary.get("status", "") or "").strip()
     source_kind = str(summary.get("source_kind", "") or "").strip()
-    secret_findings = int(summary.get("secret_findings", 0) or 0)
-    ci_findings = int(summary.get("ci_findings", 0) or 0)
 
     summary_hint = ""
     if status == "confirmation_required":
         summary_hint = "confirmation required before clone"
+    elif summary.get("execution_mode") == "source-capture":
+        summary_hint = (
+            f"{source_kind or 'source'}, capture={summary['source_capture_status']}, "
+            f"workflows={summary.get('workflow_status', 'unknown')}, "
+            f"secret scan={summary['secret_scan']}, CI analysis={summary['ci_scan']}"
+        )
     elif source_kind:
-        summary_hint = f"{source_kind}, secrets={secret_findings}, ci={ci_findings}"
+        summary_hint = source_kind
+        if "secret_findings" in summary:
+            summary_hint += f", secrets={summary['secret_findings']}"
+        if "ci_findings" in summary:
+            summary_hint += f", ci={summary['ci_findings']}"
         if summary.get("workflow_status"):
             summary_hint += f", workflows={summary['workflow_status']}"
 

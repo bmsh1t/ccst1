@@ -1,1653 +1,389 @@
 #!/bin/bash
-# =============================================================================
-# Vulnerability Scanner
-# Candidate-first scan accounting over recon results. AI selects concrete
-# inputs; this script keeps scope/auth boundaries, bounded third-party scans,
-# passive candidate extraction, and canonical summary/index write-back.
-# Usage: ./vuln_scanner.sh <recon_dir> [--quick] [--full] [--skip module1,module2]
-# No fixed payload or virtual endpoint sweep is performed for SQLi, XSS, SSTI,
-# upload, MFA, or SAML. Validation remains owned by AI-selected generic tools.
-#
-# Coverage matrix feedback:
-#   On completion this script writes findings/<target>/scanner_pass.json,
-#   listing each (endpoint, vuln_class, module) pair the scanner touched.
-#   `tools/coverage_matrix.py rebuild` consumes this artifact as advisory
-#   scanner_swept metadata. Scanner-negative is not tested_clean.
-# =============================================================================
-
+# Bounded upstream Nuclei execution over live/explicit-priority inputs.
+# Scope/Auth and the existing phase lock admit execution; native review owns
+# hypotheses and findings. Per-run raw artifacts survive retries and failures.
+# Usage: vuln_scanner.sh RECON_DIR [--quick|--full] [--skip CSV]
 set -euo pipefail
-
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-NC='\033[0m'
-
-log_ok()    { echo -e "${GREEN}[+]${NC} $1"; }
-log_err()   { echo -e "${RED}[-]${NC} $1"; }
-log_warn()  { echo -e "${YELLOW}[!]${NC} $1"; }
-log_info()  { echo -e "${CYAN}[*]${NC} $1"; }
-log_step()  { echo -e "    ${CYAN}[>]${NC} $1"; }
-log_done()  { echo -e "    ${GREEN}[✓]${NC} $1"; }
-log_vuln()  { echo -e "    ${RED}[VULN]${NC} $1"; }
-log_crit()  { echo -e "    ${RED}[CRITICAL]${NC} $1"; }
-
-filter_target_urls_copy() {
-    local input_file="$1"
-    local output_file="$2"
-    local dropped_file="${3:-}"
-    local lane_label="${4:-target-filter}"
-    : > "$output_file"
-    if [ ! -s "$input_file" ] 2>/dev/null; then
-        return 0
-    fi
-
-    # Raw recon artifacts remain discovery-first. This derived file is the
-    # active-network view, so a scope-owner failure must stop the scanner.
-    if ! PYTHONPATH="$BASE_DIR${PYTHONPATH:+:$PYTHONPATH}" \
-        python3 - "$input_file" "$output_file" "$SCANNER_AUTH_TARGET" "$dropped_file" "$lane_label" "$BASE_DIR" <<'PY'
-import sys
-from pathlib import Path
-
-from tools.scope_context import url_belongs_to_target
-from tools.scope_source import load_scope_context
-
-source, destination, target, dropped_path, lane, repo_root = sys.argv[1:]
-scope = load_scope_context(repo_root, target)
-dropped = []
-with Path(source).open(encoding="utf-8", errors="replace") as reader, Path(
-    destination
-).open("w", encoding="utf-8") as writer:
-    for raw in reader:
-        value = raw.strip().split()[0] if raw.strip() else ""
-        if not value:
-            continue
-        if url_belongs_to_target(value, target) and scope.allows_active(value):
-            writer.write(value + "\n")
-        else:
-            dropped.append(value)
-if dropped_path and dropped:
-    with Path(dropped_path).open("a", encoding="utf-8") as handle:
-        for value in dropped:
-            handle.write(f"[OUT-OF-TARGET:{lane}] {value}\n")
-PY
-    then
-        : > "$output_file"
-        log_err "Unable to build target-owned network input for $lane_label"
-        return 1
-    fi
-}
-
-filter_direct_finding_urls_copy() {
-    local input_file="$1"
-    local output_file="$2"
-    local dropped_file="${3:-}"
-    local lane_label="${4:-direct-finding-filter}"
-    if [ ! -s "$input_file" ] 2>/dev/null; then
-        : > "$output_file"
-        return 0
-    fi
-
-    # Discovery artifacts may keep third-party URLs as chain context, but
-    # direct findings must stay target-owned. Otherwise embedded GitHub,
-    # Docker, social, or CDN links can become false positive IDOR/Authz
-    # findings and dominate checkpoint/action-queue ordering.
-    if command -v python3 &>/dev/null; then
-        if (cd "$BASE_DIR" 2>/dev/null && python3 -m tools.recon_filters \
-            "$input_file" "$output_file" "$TARGET" \
-            --log-file "$dropped_file" >/dev/null 2>&1); then
-            return 0
-        fi
-    fi
-
-    log_warn "Direct finding filter failed for $lane_label; preserving input for manual review"
-    cp "$input_file" "$output_file"
-    return 0
-}
-
-timeout_bin() {
-    if command -v timeout >/dev/null 2>&1; then
-        printf '%s\n' timeout
-    elif command -v gtimeout >/dev/null 2>&1; then
-        printf '%s\n' gtimeout
-    else
-        printf '%s\n' ""
-    fi
-}
-
-run_with_timeout() {
-    local limit="$1"
-    shift
-    local timeout_cmd
-    timeout_cmd="$(timeout_bin)"
-    if [ -n "$timeout_cmd" ]; then
-        "$timeout_cmd" "$limit" "$@"
-    else
-        "$@"
-    fi
-}
+umask 077
 
 RECON_DIR=""
-QUICK_MODE=""
-FULL_MODE=""
-USER_SKIP_CHECKS=""
-DEFAULT_SKIP_CHECKS=""
+SCAN_MODE=standard
 SKIP_CHECKS=""
-
+PHASE_ARGS=("$@")
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --quick)
-            QUICK_MODE="--quick"
-            ;;
-        --full)
-            FULL_MODE="--full"
-            ;;
+        --quick) SCAN_MODE=quick ;;
+        --full) SCAN_MODE=full ;;
         --skip)
             shift
-            if [ "$#" -eq 0 ]; then
-                log_err "--skip requires a comma-separated value"
-                exit 1
-            fi
-            USER_SKIP_CHECKS="${USER_SKIP_CHECKS:-}${USER_SKIP_CHECKS:+,}$1"
-            ;;
-        --skip=*)
-            USER_SKIP_CHECKS="${USER_SKIP_CHECKS:-}${USER_SKIP_CHECKS:+,}${1#--skip=}"
-            ;;
-        -*)
-            log_err "Unknown option: $1"
-            echo "Usage: $0 <recon_dir> [--quick] [--full] [--skip module1,module2]" >&2
-            exit 1
-            ;;
+            [ "$#" -gt 0 ] || { echo '--skip requires a value' >&2; exit 2; }
+            SKIP_CHECKS="${SKIP_CHECKS}${SKIP_CHECKS:+,}$1" ;;
+        --skip=*) SKIP_CHECKS="${SKIP_CHECKS}${SKIP_CHECKS:+,}${1#--skip=}" ;;
+        -*) echo "Unknown option: $1" >&2; exit 2 ;;
         *)
-            if [ -n "$RECON_DIR" ]; then
-                log_err "Unexpected argument: $1"
-                echo "Usage: $0 <recon_dir> [--quick] [--full] [--skip module1,module2]" >&2
-                exit 1
-            fi
-            RECON_DIR="$1"
-            ;;
+            [ -z "$RECON_DIR" ] || { echo "Unexpected argument: $1" >&2; exit 2; }
+            RECON_DIR="$1" ;;
     esac
     shift
 done
-
-if [ -z "$RECON_DIR" ]; then
-    echo "Usage: $0 <recon_dir> [--quick] [--full] [--skip module1,module2]" >&2
-    exit 1
-fi
-
-if [ ! -d "$RECON_DIR" ]; then
-    log_err "Recon directory not found: $RECON_DIR"
-    exit 1
-fi
-
-RECON_DIR="$(cd "$RECON_DIR" && pwd)"
-
-# Determine target name from recon dir
+SKIP_CHECKS="$(python3 - "$SKIP_CHECKS" <<'PY'
+import sys
+print(",".join(dict.fromkeys(value.strip().lower() for value in sys.argv[1].split(",") if value.strip())))
+PY
+)"
+[ -n "$RECON_DIR" ] && [ -d "$RECON_DIR" ] || {
+    echo 'Usage: vuln_scanner.sh RECON_DIR [--quick|--full] [--skip CSV]' >&2
+    exit 2
+}
 BASE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+RECON_DIR="$(cd "$RECON_DIR" && pwd)"
+export PYTHONPATH="$BASE_DIR${PYTHONPATH:+:$PYTHONPATH}"
 
-# Auth-aware hunting: load BBHUNT_AUTH_HEADERS into BB_AUTH_ARGS.
-# shellcheck source=tools/_auth_helper.sh
-. "$(dirname "$0")/_auth_helper.sh"
-BB_ANON_AUTH_ARGS=()
-
-if [ "$(basename "$(dirname "$RECON_DIR")")" = "sessions" ]; then
-    SESSION_ID=$(basename "$RECON_DIR")
-    TARGET=$(basename "$(dirname "$(dirname "$RECON_DIR")")")
-    DEFAULT_FINDINGS_DIR="$BASE_DIR/findings/$TARGET/sessions/$SESSION_ID"
+SESSION_ID=""
+if [ "$(basename "$(dirname "$RECON_DIR")")" = sessions ]; then
+    SESSION_ID="$(basename "$RECON_DIR")"
+    TARGET_HINT="$(basename "$(dirname "$(dirname "$RECON_DIR")")")"
 else
-    SESSION_ID=""
-    TARGET=$(basename "$RECON_DIR")
-    DEFAULT_FINDINGS_DIR="$BASE_DIR/findings/$TARGET"
+    TARGET_HINT="$(basename "$RECON_DIR")"
 fi
-
-# direct scanner 通过 recon manifest 恢复原始 target，避免把目录 storage key
-# 当作认证边界；缺少 manifest 时才回退到目录名。
-SCANNER_AUTH_TARGET="$(python3 - "$RECON_DIR/recon_manifest.jsonl" "$TARGET" <<'PY' 2>/dev/null || printf '%s\n' "$TARGET"
+SCANNER_AUTH_TARGET="$(python3 - "$RECON_DIR/recon_manifest.jsonl" "$TARGET_HINT" <<'PY'
 import json
 import sys
 from pathlib import Path
+from tools.target_paths import canonical_target_value
 
-manifest = Path(sys.argv[1])
-fallback = sys.argv[2]
-target = ""
-try:
-    with manifest.open(encoding="utf-8", errors="replace") as handle:
+path, fallback = sys.argv[1:]
+target = fallback
+if Path(path).is_file():
+    with Path(path).open(encoding="utf-8") as handle:
         for raw in handle:
             try:
                 row = json.loads(raw)
             except json.JSONDecodeError:
                 continue
-            target = str(row.get("target") or "").strip()
-            if target:
+            if isinstance(row, dict) and row.get("target"):
+                target = str(row["target"])
                 break
-except OSError:
-    pass
-print(target or fallback)
+canonical_target_value(target)
+print(target)
 PY
 )"
-SCANNER_LOCK_TARGET="$(PYTHONPATH="$BASE_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 - "$SCANNER_AUTH_TARGET" <<'PY' 2>/dev/null || printf '%s\n' "$SCANNER_AUTH_TARGET"
+TARGET="$(python3 - "$SCANNER_AUTH_TARGET" <<'PY'
 import sys
-
 from tools.target_paths import canonical_target_value
-
 print(canonical_target_value(sys.argv[1]))
 PY
 )"
-if [ "${BBHUNT_RUNTIME_PHASE_LOCKED:-}" != "scan" ] || [ "${BBHUNT_RUNTIME_LOCK_TARGET:-}" != "$SCANNER_LOCK_TARGET" ]; then
-    PHASE_ARGS=("$RECON_DIR")
-    [ -z "$QUICK_MODE" ] || PHASE_ARGS+=("$QUICK_MODE")
-    [ -z "$FULL_MODE" ] || PHASE_ARGS+=("$FULL_MODE")
-    [ -z "$USER_SKIP_CHECKS" ] || PHASE_ARGS+=("--skip" "$USER_SKIP_CHECKS")
+if [ "${BBHUNT_RUNTIME_PHASE_LOCKED:-}" != scan ] || [ "${BBHUNT_RUNTIME_LOCK_TARGET:-}" != "$TARGET" ]; then
     exec python3 "$BASE_DIR/tools/runtime_phase_exec.py" \
-        --repo-root "$BASE_DIR" --target "$SCANNER_LOCK_TARGET" --phase scan -- \
+        --repo-root "$BASE_DIR" --target "$TARGET" --phase scan -- \
         bash "$BASE_DIR/tools/vuln_scanner.sh" "${PHASE_ARGS[@]}"
 fi
+SCANNER_AUTH_SOURCE_TARGET="${BBHUNT_AUTH_TARGET:-}"
+. "$BASE_DIR/tools/_auth_helper.sh"
 bb_auth_bind_target "$SCANNER_AUTH_TARGET"
+# The shell helper clears cross-target credentials, but its same-target rebind
+# replaces URL scheme/port with the invocation target. Keep the original binding
+# for AuthSession to intersect/narrow before selecting upstream origins.
+if bb_auth_active && [ -n "$SCANNER_AUTH_SOURCE_TARGET" ]; then
+    export BBHUNT_AUTH_TARGET="$SCANNER_AUTH_SOURCE_TARGET"
+fi
 
-# Refuse missing, preview, or damaged domain state before scanner side effects.
-PYTHONPATH="$BASE_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 - "$BASE_DIR" "$SCANNER_AUTH_TARGET" <<'PY'
+# No artifact writes before the existing Store admission succeeds.
+python3 - "$BASE_DIR" "$TARGET" <<'PY'
 import sys
 from tools.target_store import runtime_store
-
-try:
-    runtime_store(sys.argv[1], sys.argv[2])
-except (ValueError, OSError) as exc:
-    print(f"scanner admission failed: {exc}", file=sys.stderr)
-    raise SystemExit(2)
+runtime_store(sys.argv[1], sys.argv[2])
 PY
-
+TARGET_KEY="$(python3 - "$TARGET" <<'PY'
+import sys
+from tools.target_paths import target_storage_key
+print(target_storage_key(sys.argv[1]))
+PY
+)"
+DEFAULT_FINDINGS_DIR="$BASE_DIR/findings/$TARGET_KEY"
+[ -z "$SESSION_ID" ] || DEFAULT_FINDINGS_DIR="$DEFAULT_FINDINGS_DIR/sessions/$SESSION_ID"
 FINDINGS_DIR="${FINDINGS_OUT_DIR:-$DEFAULT_FINDINGS_DIR}"
+FINDINGS_DIR="$(python3 - "$BASE_DIR" "$TARGET_KEY" "$FINDINGS_DIR" <<'PY'
+import sys
+from pathlib import Path
+root = Path(sys.argv[1]) / "findings" / sys.argv[2]
+output = Path(sys.argv[3]).absolute()
+if output.resolve() != output or (output / "nuclei_runs").resolve() != output / "nuclei_runs" or not output.is_relative_to(root):
+    raise ValueError("scanner output must stay in the target findings directory without symlinks")
+for name in ("summary.json", "summary.txt"):
+    path = output / name
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        raise ValueError("scanner summaries must be regular files without symlinks")
+print(output)
+PY
+)"
+case "$SCAN_MODE" in quick) DEFAULT_LIMIT=50; DEFAULT_TIMEOUT=180 ;; full) DEFAULT_LIMIT=200; DEFAULT_TIMEOUT=600 ;; *) DEFAULT_LIMIT=100; DEFAULT_TIMEOUT=600 ;; esac
+TARGET_LIMIT="${BB_NUCLEI_MAX_TARGETS:-$DEFAULT_LIMIT}"
+SCAN_TIMEOUT="${BB_CVE_TIMEOUT:-$DEFAULT_TIMEOUT}"
 THREADS="${BB_SCAN_THREADS:-10}"
-RATE_LIMIT="${BB_SCAN_RATE_LIMIT:-20}"  # Conservative default to avoid WAF blocks (429/403)
-PRIORITY_DIR="$RECON_DIR/priority"
+RATE_LIMIT="${BB_SCAN_RATE_LIMIT:-20}"
+for value in "$TARGET_LIMIT" "$SCAN_TIMEOUT" "$THREADS" "$RATE_LIMIT"; do
+    case "$value" in ''|*[!0-9]*) echo 'Scanner bounds must be positive integers' >&2; exit 2 ;; esac
+    [[ "$value" =~ [1-9] ]] || { echo 'Scanner bounds must be positive integers' >&2; exit 2; }
+done
+mkdir -p "$FINDINGS_DIR/nuclei_runs"
+RUN_DIR="$(mktemp -d "$FINDINGS_DIR/nuclei_runs/$(date -u +%Y%m%dT%H%M%SZ).XXXXXX")"
+STATUS=incomplete
+NUCLEI_RC=""
+: > "$RUN_DIR/raw.jsonl"
+: > "$RUN_DIR/stdout.log"
+: > "$RUN_DIR/stderr.log"
 
-if [ "$QUICK_MODE" = "--quick" ]; then
-    SCAN_MODE="quick"
-elif [ "$FULL_MODE" = "--full" ]; then
-    SCAN_MODE="full"
-else
-    SCAN_MODE="standard"
-fi
-
-SKIP_CHECKS="$DEFAULT_SKIP_CHECKS"
-if [ -n "$USER_SKIP_CHECKS" ]; then
-    SKIP_CHECKS="${SKIP_CHECKS:-}${SKIP_CHECKS:+,}$USER_SKIP_CHECKS"
-fi
-
-scanner_probe_guard() {
-    local label="$1"
-    local state_changing="${2:-0}"
-    local url="${3:-}"
-    local method="${4:-POST}"
-    local reason="state-changing action requires ALLOW_UNSAFE_HTTP_TESTS=1"
-
-    # The red-line contract follows the declared effect, not the HTTP verb or
-    # scanner category. Only explicitly state-changing probes enter this gate.
-    if [ "$state_changing" != "1" ]; then
-        return 0
-    fi
-
-    if [ "${ALLOW_UNSAFE_HTTP_TESTS:-0}" != "1" ]; then
-        log_warn "Skipping $label: $reason"
-        mkdir -p "$FINDINGS_DIR/manual_review"
-        printf '%s\tmethod=%s\tlabel=%s\turl=%s\treason=%s\n' \
-            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            "$method" \
-            "$label" \
-            "$url" \
-            "$reason" >> "$FINDINGS_DIR/manual_review/unsafe_skipped.txt"
-        return 1
-    fi
-
-    log_warn "$label is an explicitly state-changing action. Proceeding because ALLOW_UNSAFE_HTTP_TESTS=1 is set."
-    return 0
-}
-
-mkdir -p "$FINDINGS_DIR"/{upload,xss,sqli,takeover,misconfig,exposure,ssrf,cves,redirects,idor,auth_bypass,ssti,mfa,saml,manual_review,.tmp}
-MFA_REVIEW_FILE="$FINDINGS_DIR/manual_review/mfa_review.txt"
-: > "$MFA_REVIEW_FILE"
-NUCLEI_FAILURE_MARKER="$FINDINGS_DIR/.tmp/nuclei_failed"
-SCANNER_PARTIAL_MARKER="$FINDINGS_DIR/.tmp/scanner_partial"
-
-mark_nuclei_failure() {
-    local rc="$1"
-    printf 'exit=%s\n' "$rc" >> "$NUCLEI_FAILURE_MARKER"
-    log_warn "Nuclei lane failed (exit=$rc); scan remains incomplete"
-}
-
-mark_scanner_partial() {
-    local reason="$1"
-    printf '%s\n' "$reason" >> "$SCANNER_PARTIAL_MARKER"
-    log_warn "Scanner lane incomplete: $reason"
-}
-
-run_nuclei_timeout() {
-    local limit="$1"
-    shift
-    local rc=0 timeout_cmd
-    timeout_cmd="$(timeout_bin)"
-    if [ -n "$timeout_cmd" ]; then
-        if bb_auth_active; then
-            "$timeout_cmd" --preserve-status "$limit" nuclei -fhr "$@" || rc=$?
-        else
-            "$timeout_cmd" --preserve-status "$limit" nuclei "$@" || rc=$?
-        fi
-    elif bb_auth_active; then
-        nuclei -fhr "$@" || rc=$?
-    else
-        nuclei "$@" || rc=$?
-    fi
-    [ "$rc" -eq 0 ] || mark_nuclei_failure "$rc"
-    return "$rc"
-}
-
-log_nuclei_outcome() {
-    local rc="$1"
-    local count="$2"
-    local finding_label="$3"
-    local clean_label="$4"
-    [ "$count" -eq 0 ] || log_vuln "$finding_label: $count"
-    if [ "$rc" -ne 0 ]; then
-        log_warn "$clean_label: incomplete (Nuclei exit=$rc)"
-    elif [ "$count" -eq 0 ]; then
-        log_done "$clean_label: clean"
-    fi
-    return 0
-}
-
-# summary 只代表本轮正常完成；在任何可能中止的扫描工作前清除上一轮摘要。
-rm -f \
-    "$FINDINGS_DIR/summary.txt" \
-    "$FINDINGS_DIR/summary.json" \
-    "$FINDINGS_DIR/.summary.txt.tmp" \
-    "$FINDINGS_DIR/.summary.json.tmp" \
-    "$NUCLEI_FAILURE_MARKER" \
-    "$SCANNER_PARTIAL_MARKER"
-: > "$FINDINGS_DIR/manual_review/unsafe_skipped.txt"
-: > "$FINDINGS_DIR/manual_review/open_200_api.txt"
-: > "$FINDINGS_DIR/manual_review/standard_public_metadata.txt"
-: > "$FINDINGS_DIR/manual_review/external_chain_context.txt"
-rm -f \
-    "$FINDINGS_DIR/mfa/findings.txt" \
-    "$FINDINGS_DIR/saml/findings.txt" \
-    "$FINDINGS_DIR/saml/certs.txt"
-
-echo "============================================="
-echo "  Vulnerability Scanner — $TARGET"
-echo "  Recon: $RECON_DIR"
-echo "  Findings: $FINDINGS_DIR"
-echo "  Mode: $SCAN_MODE"
-echo "  Skip: ${SKIP_CHECKS:-none}"
-bb_auth_active && bb_auth_banner
-echo "============================================="
-echo ""
-
-# Helper: count findings
-count_findings() {
-    local file="$1"
-    if [ -f "$file" ] && [ -s "$file" ]; then
-        wc -l < "$file" | tr -d ' '
-    else
-        echo "0"
-    fi
-}
-
-count_vuln() {
-    count_findings "$1"
-}
-
-write_summary_json() {
-    local output_path="$1"
-
-    python3 - "$TARGET" "$SESSION_ID" "$SCAN_MODE" "$RECON_DIR" "$FINDINGS_DIR" \
-        "$SKIP_CHECKS" "$LIVE_COUNT" "$ORDERED_SCAN" "$NUCLEI_TARGETS_ALL" \
-        "$NUCLEI_TARGETS" "$NUCLEI_TARGET_LIMIT" \
-        "$NUCLEI_CVE_ENABLED" "$NUCLEI_CVE_STATUS" "$PARAM_URLS" \
-        "$API_ENDPOINTS_FILTERED" "$RECON_DIR/params/interesting_params.txt" \
-        "$FINDINGS_DIR/upload/upload_candidates.txt" \
-        "$FINDINGS_DIR/sqli/timebased_candidates.txt" \
-        "$FINDINGS_DIR/xss/reflected_marker_candidates.txt" \
-        "$FINDINGS_DIR/ssti/ssti_candidates.txt" \
-        "$FINDINGS_DIR/manual_review/mfa_review.txt" \
-        "$FINDINGS_DIR/saml/endpoints.txt" \
-        "$output_path" <<'PY'
-import json
+publish_summary() {
+    python3 - "$BASE_DIR" "$TARGET" "$SESSION_ID" "$SCAN_MODE" "$RECON_DIR" "$FINDINGS_DIR" "$RUN_DIR" \
+        "$STATUS" "$NUCLEI_RC" "$TARGET_LIMIT" "$SKIP_CHECKS" "$1" <<'PY'
 import gzip
+import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from tools.artifact_io import write_json_atomic, write_text_atomic
 
-(
-    target, session_id, scan_mode, recon_dir, findings_dir, skip_checks,
-    live_count, ordered_scan, nuclei_targets_all, nuclei_targets,
-    nuclei_target_limit, nuclei_cve_enabled, nuclei_cve_status, param_urls,
-    api_endpoints, interesting_params, upload_candidates, sqli_candidates,
-    xss_candidates, ssti_candidates, mfa_candidates, saml_candidates, output_path,
-) = sys.argv[1:]
-findings_root = Path(findings_dir)
-recon_root = Path(recon_dir)
-ordered_scan_path = Path(ordered_scan)
-nuclei_targets_all_path = Path(nuclei_targets_all)
-nuclei_targets_path = Path(nuclei_targets)
-param_urls_path = Path(param_urls)
-api_endpoints_path = Path(api_endpoints)
-interesting_params_path = Path(interesting_params)
-upload_candidates_path = Path(upload_candidates)
-sqli_candidates_path = Path(sqli_candidates)
-xss_candidates_path = Path(xss_candidates)
-ssti_candidates_path = Path(ssti_candidates)
-mfa_candidates_path = Path(mfa_candidates)
-saml_candidates_path = Path(saml_candidates)
+(repo, target, session, mode, recon, findings, run, status, rc, limit, skips, wrapper_rc) = sys.argv[1:]
+root, run_dir, recon_dir = Path(findings), Path(run), Path(recon)
+inputs = json.loads((run_dir / "input.json").read_text()) if (run_dir / "input.json").is_file() else {}
 
-categories = [
-    "upload",
-    "sqli",
-    "xss",
-    "ssti",
-    "takeover",
-    "misconfig",
-    "exposure",
-    "ssrf",
-    "cves",
-    "redirects",
-    "idor",
-    "auth_bypass",
-    "mfa",
-    "saml",
-]
-
-
-def count_lines(path: Path) -> int:
+def count_lines(path):
     if not path.is_file():
         return 0
+    opener = gzip.open if path.suffix == ".gz" else open
+    with opener(path, "rt", encoding="utf-8", errors="replace") as handle:
+        return sum(bool(line.strip()) for line in handle)
 
-    with path.open(encoding="utf-8", errors="replace") as handle:
-        return sum(1 for line in handle if line.rstrip("\n"))
-
-
-def count_raw_urls(root: Path) -> int:
-    for path in (root / "urls" / "raw" / "all.txt", root / "urls" / "raw" / "all.txt.gz"):
-        if not path.is_file():
+records = malformed = 0
+with (run_dir / "raw.jsonl").open("rb") as handle:
+    for raw in handle:
+        if not raw.strip():
             continue
-        opener = gzip.open if path.name.endswith(".gz") else Path.open
-        with opener(path, "rt", encoding="utf-8", errors="replace") as handle:
-            return sum(1 for line in handle if line.rstrip("\n"))
-    return 0
-
-
-def count_matching_lines(path: Path, marker: str) -> int:
-    if not path.is_file():
-        return 0
-
-    with path.open(encoding="utf-8", errors="replace") as handle:
-        return sum(1 for line in handle if marker in line)
-
-
-category_summary = {}
-total_findings = 0
-
-for category in categories:
-    category_dir = findings_root / category
-    files = []
-    category_total = 0
-
-    for path in sorted(category_dir.glob("*.txt")):
-        line_count = count_lines(path)
-        if line_count <= 0:
-            continue
-
-        category_total += line_count
-        files.append({
-            "path": str(path.relative_to(findings_root)),
-            "count": line_count,
-        })
-
-    artifacts = [
-        str(path.relative_to(findings_root))
-        for pattern in ("*.json", "*.md", "*.rc")
-        for path in sorted(category_dir.glob(pattern))
-        if path.is_file()
-    ]
-
-    category_summary[category] = {
-        "total": category_total,
-        "files": files,
-        "artifacts": artifacts,
-    }
-    total_findings += category_total
-
-manual_review_files = []
-seen_manual_paths = set()
-for path in list(findings_root.glob("*/manual*.txt")) + list((findings_root / "manual_review").glob("*.txt")):
-    if not path.is_file():
-        continue
-
-    rel = str(path.relative_to(findings_root))
-    if rel in seen_manual_paths:
-        continue
-
-    seen_manual_paths.add(rel)
-    manual_review_files.append({
-        "path": rel,
-        "count": count_lines(path),
-    })
-
-manual_review_items = sum(item["count"] for item in manual_review_files)
-skip_set = {item.strip() for item in skip_checks.split(",") if item.strip()}
-skip_all = "all" in skip_set
-mode_index = {"quick": 0, "standard": 1, "full": 2}.get(scan_mode, 1)
-
-
-def lane(
-    name: str,
-    *,
-    input_total: int,
-    limits: tuple[int, int, int] | None,
-    execution_kind: str,
-    skipped: bool = False,
-    status: str = "sampled",
-    selected_override: int | None = None,
-    continuation: str,
-) -> dict:
-    if skipped:
-        selected = 0
-        status = "skipped"
-    elif selected_override is not None:
-        selected = max(0, min(input_total, selected_override))
-    elif execution_kind == "candidate_only":
-        selected = 0
-        status = "candidate_only"
-    else:
-        selected = min(input_total, limits[mode_index] if limits else input_total)
-    remaining = max(0, input_total - selected)
-    return {
-        "lane": name,
-        "execution_kind": execution_kind,
-        "status": status,
-        "input_total": input_total,
-        "selected": selected,
-        "remaining": remaining,
-        "continuation": continuation,
+        try:
+            row = json.loads(raw.decode("utf-8"))
+            if not isinstance(row, dict):
+                raise ValueError("result is not an object")
+            records += 1
+        except (ValueError, UnicodeError):
+            malformed += 1
+if malformed or (int(wrapper_rc) and status in {"complete", "sampled", "running"}):
+    status = "incomplete"
+if malformed and not int(wrapper_rc):
+    wrapper_rc = "2"
+total = int(inputs.get("origin_count", 0))
+attempted = int(inputs.get("selected_count", 0)) if rc else 0
+completed = attempted if status in {"complete", "sampled"} and rc == "0" else 0
+remaining = total - completed
+relative = run_dir.relative_to(root).as_posix()
+raw_path = recon_dir / "urls/raw/all.txt"
+if not raw_path.is_file():
+    raw_path = raw_path.with_suffix(".txt.gz")
+artifacts = {name: f"{relative}/{name}" for name in (
+    "raw.jsonl", "stdout.log", "stderr.log", "exit_code.rc", "version.txt",
+    "input.json", "command.json", "input_candidates.txt", "ordered_scan_targets.txt",
+    "previous_summary.json", "previous_summary.txt",
+    "nuclei_targets_all.txt", "nuclei_targets.txt", "excluded_urls.txt",
+) if (run_dir / name).is_file()}
+review = (
+    f"Nuclei execution: {status}; exit={rc or ('unknown' if (run_dir / 'command.json').is_file() else 'not_run')}; completed origins={completed}/{total}.\n"
+    f"Raw tool records={records}; malformed records={malformed}; no finding assessment performed.\n"
+    f"Artifacts: {relative}/summary.json; {relative}/raw.jsonl; {relative}/stderr.log.\n"
+)
+write_text_atomic(run_dir / "review.txt", review)
+payload = {
+    "schema_version": 1, "execution_mode": "upstream-nuclei", "status": status,
+    "generated_at": datetime.now(timezone.utc).isoformat(), "target": target,
+    "session_id": session or None, "mode": mode, "recon_dir": recon,
+    "findings_dir": findings, "input_contract": "live-priority-origins",
+    "raw_url_count": count_lines(raw_path),
+    "active_url_count": count_lines(recon_dir / "urls/all.txt"),
+    "parameter_url_count": count_lines(recon_dir / "urls/with_params.txt"),
+    "live_count": inputs.get("live_count", 0),
+    "ordered_scan_count": inputs.get("ordered_count", 0),
+    "ordered_scan_file": str(run_dir / "ordered_scan_targets.txt"),
+    "nuclei_target_available_count": total, "nuclei_target_count": inputs.get("selected_count", 0),
+    "nuclei_target_limit": int(limit), "nuclei_targets_truncated": total > inputs.get("selected_count", 0),
+    "nuclei_cve": {"status": status, "input": "origin-bounded", "exit_code": int(rc) if rc else None,
+                   "attempted": attempted, "raw_record_count": records, "malformed_record_count": malformed},
+    "lane_coverage": {"nuclei_default": {
+        "lane": "nuclei_default", "execution_kind": "active_scanner", "status": status,
+        "input_total": total, "selected": completed, "remaining": remaining,
+        "continuation": f"review {relative}/summary.json and retained inputs before choosing follow-up",
         "closure_blocking": False,
-    }
-
-
-parameter_total = count_lines(param_urls_path)
-api_total = count_lines(api_endpoints_path)
-interesting_total = count_lines(interesting_params_path)
-upload_candidate_total = count_lines(upload_candidates_path)
-sqli_candidate_total = count_lines(sqli_candidates_path)
-xss_candidate_total = count_lines(xss_candidates_path)
-ssti_candidate_total = count_lines(ssti_candidates_path)
-mfa_candidate_total = count_lines(mfa_candidates_path)
-saml_candidate_total = count_lines(saml_candidates_path)
-nuclei_total = count_lines(nuclei_targets_all_path)
-nuclei_selected = count_lines(nuclei_targets_path)
-cve_completed = nuclei_selected if nuclei_cve_status == "complete" else 0
-lane_coverage = {
-    "xss_reflection": lane(
-        "xss_reflection",
-        input_total=xss_candidate_total,
-        limits=None,
-        execution_kind="candidate_only",
-        skipped=skip_all or "xss" in skip_set,
-        continuation="select an output-context request and validate it with browser or a canonical runner",
-    ),
-    "sqli": lane(
-        "sqli",
-        input_total=sqli_candidate_total,
-        limits=None,
-        execution_kind="candidate_only",
-        skipped=skip_all or "sqli" in skip_set,
-        continuation="select a query-context request and validate it with a canonical runner",
-    ),
-    "ssti": lane(
-        "ssti",
-        input_total=ssti_candidate_total,
-        limits=None,
-        execution_kind="candidate_only",
-        skipped=skip_all or "ssti" in skip_set,
-        continuation="select a render-context request and validate it with a canonical runner",
-    ),
-    "upload_candidates": lane(
-        "upload_candidates",
-        input_total=upload_candidate_total,
-        limits=None,
-        execution_kind="candidate_only",
-        skipped=skip_all or "upload" in skip_set,
-        continuation="select an upload or file-processing request and validate it with browser/raw sender",
-    ),
-    "nuclei_default": lane(
-        "nuclei_default",
-        input_total=nuclei_total,
-        limits=None,
-        execution_kind="active_scanner",
-        skipped=skip_all,
-        selected_override=nuclei_selected,
-        continuation="run the next bounded Nuclei origin sample",
-    ),
-    "cve": lane(
-        "cve",
-        input_total=nuclei_total,
-        limits=None,
-        execution_kind="active_scanner",
-        skipped=skip_all or "cves" in skip_set,
-        status=nuclei_cve_status,
-        selected_override=cve_completed,
-        continuation="run or resume the bounded CVE origin lane",
-    ),
-    "ssrf_candidates": lane(
-        "ssrf_candidates",
-        input_total=interesting_total,
-        limits=None,
-        execution_kind="candidate_only",
-        skipped=skip_all or "ssrf" in skip_set,
-        continuation="validate the SSRF candidates through a canonical runner",
-    ),
-    "open_redirect_candidates": lane(
-        "open_redirect_candidates",
-        input_total=interesting_total,
-        limits=None,
-        execution_kind="candidate_only",
-        skipped=skip_all or "redirects" in skip_set,
-        continuation="validate redirect candidates with baseline and destination evidence",
-    ),
-    "idor_candidates": lane(
-        "idor_candidates",
-        input_total=parameter_total + api_total,
-        limits=None,
-        execution_kind="candidate_only",
-        skipped=skip_all or "idor" in skip_set,
-        continuation="validate IDOR candidates with owner/peer actor replay",
-    ),
-    "mfa_candidates": lane(
-        "mfa_candidates",
-        input_total=mfa_candidate_total,
-        limits=None,
-        execution_kind="candidate_only",
-        skipped=skip_all or "mfa" in skip_set,
-        continuation="select a real MFA/auth workflow and validate pre/post-auth state",
-    ),
-    "saml_candidates": lane(
-        "saml_candidates",
-        input_total=saml_candidate_total,
-        limits=None,
-        execution_kind="candidate_only",
-        skipped=skip_all or "saml" in skip_set,
-        continuation="select an observed SAML/SSO flow and validate it with the generic workflow/browser path",
-    ),
+    }},
+    "artifacts": artifacts, "run_summary": f"{relative}/summary.json",
+    "requested_skips": [value.strip() for value in skips.split(",") if value.strip()],
+    "skipped_checks": ["nuclei"] if status == "skipped" else [],
+    "categories": {},
+    "manual_review": [{"path": f"{relative}/review.txt", "count": 3}],
+    "assessment_status": "not_run", "wrapper_exit_code": int(wrapper_rc),
 }
-
-summary = {
-    "schema_version": 1,
-    "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-    "target": target,
-    "session_id": session_id or None,
-    "mode": scan_mode,
-    "recon_dir": recon_dir,
-    "findings_dir": findings_dir,
-    "input_contract": "live-priority-targets",
-    "raw_url_count": count_raw_urls(recon_root),
-    "active_url_count": count_lines(recon_root / "urls" / "all.txt"),
-    "parameter_url_count": count_lines(recon_root / "urls" / "with_params.txt"),
-    "live_count": int(live_count or 0),
-    "ordered_scan_count": count_lines(ordered_scan_path),
-    "ordered_scan_file": str(ordered_scan_path),
-    "nuclei_target_available_count": count_lines(nuclei_targets_all_path),
-    "nuclei_target_count": count_lines(nuclei_targets_path),
-    "nuclei_target_limit": int(nuclei_target_limit),
-    "nuclei_targets_truncated": count_lines(nuclei_targets_all_path) > count_lines(nuclei_targets_path),
-    "nuclei_cve": {
-        "enabled": nuclei_cve_enabled == "1",
-        "status": nuclei_cve_status,
-        "input": "origin-bounded",
-        "candidate_count": count_lines(nuclei_targets_path),
-    },
-    "lane_coverage": lane_coverage,
-    "skipped_checks": [],
-    "categories": category_summary,
-    "totals": {
-        "findings": total_findings,
-        "manual_review_items": manual_review_items,
-        "high_value": {
-            "verified_sqli_pocs": 0,
-            "verified_rce_pocs": 0,
-            "verified_upload_pocs": 0,
-            "ssti_confirmed": 0,
-            "mfa_findings": count_lines(findings_root / "mfa" / "findings.txt"),
-            "saml_findings": count_lines(findings_root / "saml" / "findings.txt"),
-        },
-    },
-    "manual_review": manual_review_files,
-}
-
-for item in [item.strip() for item in skip_checks.split(",") if item.strip()]:
-    if item == "all":
-        summary["skipped_checks"] = ["all"]
-        break
-    if item not in summary["skipped_checks"]:
-        summary["skipped_checks"].append(item)
-
-Path(output_path).write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+# Per-run receipt precedes the disposable latest projection. Neither is a completion marker by existence.
+write_json_atomic(run_dir / "summary.json", payload)
+write_text_atomic(root / "summary.txt", review)
+write_json_atomic(root / "summary.json", payload)
+raise SystemExit(2 if malformed else 0)
 PY
 }
-
-tool_ok() {
-    command -v "$1" >/dev/null 2>&1
-}
-
-has_skip() {
-    local source="${1:-}"
-    local want="${2:-}"
-    [ -n "$want" ] || return 1
-    case ",$source," in
-        *",all,"*|*",$want,"*)
-            return 0
-            ;;
-        *)
-            return 1
-            ;;
-    esac
-}
-
-skip_has() {
-    has_skip "$SKIP_CHECKS" "$1"
-}
-
-scan_limit() {
-    local quick="$1"
-    local standard="$2"
-    local full="$3"
-
-    if [ "$QUICK_MODE" = "--quick" ]; then
-        printf '%s\n' "$quick"
-    elif [ "$FULL_MODE" = "--full" ]; then
-        printf '%s\n' "$full"
-    else
-        printf '%s\n' "$standard"
+finalize_run() {
+    local wrapper_rc="$?" publish_rc=0
+    trap - EXIT
+    publish_summary "$wrapper_rc" || publish_rc=$?
+    if [ "$publish_rc" -ne 0 ]; then
+        echo "Scanner summary incomplete or publication failed; artifacts: $RUN_DIR" >&2
+        [ "$wrapper_rc" -ne 0 ] || wrapper_rc=2
     fi
+    exit "$wrapper_rc"
 }
-
-iis_shortscan_total_timeout() {
-    if [ -n "${BBHUNT_IIS_SHORTSCAN_TOTAL_TIMEOUT:-}" ]; then
-        printf '%s\n' "$BBHUNT_IIS_SHORTSCAN_TOTAL_TIMEOUT"
-    else
-        scan_limit 120 600 1800
-    fi
-}
-
-iis_signature_grep() {
-    grep -qiE 'Microsoft-IIS|X-AspNet-Version|X-AspNetMvc-Version|X-Powered-By:[[:space:]]*ASP\.NET|ASP\.NET'
-}
-
-append_iis_targets_from_recon_file() {
-    local source_file="$1"
-    local output_file="$2"
-
-    [ -s "$source_file" ] || return 0
-
-    grep -iE 'Microsoft-IIS|X-AspNet-Version|X-AspNetMvc-Version|X-Powered-By:[[:space:]]*ASP\.NET|ASP\.NET' \
-        "$source_file" 2>/dev/null | awk '{print $1}' >> "$output_file" || true
-}
-
-detect_iis_shortname_targets() {
-    local output_file="$1"
-    local trace_file="$2"
-    local source_file probe_limit url headers header_summary
-
-    : > "$output_file"
-    : > "$trace_file"
-
-    for source_file in \
-        "$RECON_DIR/live/httpx_full.txt" \
-        "$RECON_DIR/httpx_full.txt" \
-        "$RECON_DIR/live/status_200.txt" \
-        "$RECON_DIR/live/status_3xx.txt" \
-        "$RECON_DIR/live/status_401.txt" \
-        "$RECON_DIR/live/status_403.txt"
-    do
-        append_iis_targets_from_recon_file "$source_file" "$output_file"
-    done
-
-    probe_limit=$(scan_limit 10 30 80)
-    while IFS= read -r url; do
-        [ -z "$url" ] && continue
-        grep -Fxq "$url" "$output_file" 2>/dev/null && continue
-
-        headers=$(curl -skI "${BB_AUTH_ARGS[@]}" --max-time 8 "$url" 2>/dev/null || true)
-        if printf '%s\n' "$headers" | iis_signature_grep; then
-            printf '%s\n' "$url" >> "$output_file"
-            header_summary=$(printf '%s\n' "$headers" | tr '\r' '\n' \
-                | grep -iE '^(server|x-aspnet|x-powered-by):' \
-                | tr '\n' ' ' | sed 's/[[:space:]]*$//') || true
-            [ -n "$header_summary" ] || header_summary="IIS/ASP.NET header fingerprint"
-            printf '[IIS-DETECTED] %s | %s\n' "$url" "$header_summary" >> "$trace_file"
-        fi
-    done < <(head -"$probe_limit" "$ORDERED_SCAN")
-
-    sort -u "$output_file" -o "$output_file" 2>/dev/null || true
-    if [ -s "$trace_file" ]; then
-        sort -u "$trace_file" -o "$trace_file" 2>/dev/null || true
-    else
-        rm -f "$trace_file"
-    fi
-}
-
-run_iis_shortname_checks() {
-    local iis_targets="$FINDINGS_DIR/.tmp/iis_shortname_targets.txt"
-    local iis_trace="$FINDINGS_DIR/.tmp/iis_shortname_detected.txt"
-    local shortscan_findings="$FINDINGS_DIR/misconfig/iis_shortnames.txt"
-    local manual_file="$FINDINGS_DIR/manual_review/iis_shortnames.txt"
-    local raw_dir="$FINDINGS_DIR/misconfig/iis_shortnames_raw"
-    local iis_count url safe_name raw_out result_count=0
-    local total_timeout deadline_ms remaining_ms timeout_seconds shortscan_rc
-
-    detect_iis_shortname_targets "$iis_targets" "$iis_trace"
-    rm -f "$shortscan_findings" "$manual_file"
-
-    if [ ! -s "$iis_targets" ]; then
-        log_done "IIS short filename: no IIS/ASP.NET fingerprint detected"
-        return 0
-    fi
-
-    iis_count=$(count_findings "$iis_targets")
-    log_step "IIS/ASP.NET fingerprint detected on $iis_count URL(s)"
-
-    if ! tool_ok shortscan; then
-        while IFS= read -r url; do
-            [ -z "$url" ] && continue
-            printf '[IIS-SHORTNAME-MANUAL] %s | shortscan missing; run: shortscan %s -s -p 1\n' "$url" "$url" >> "$manual_file"
-        done < "$iis_targets"
-        log_warn "shortscan not installed; wrote manual IIS short filename review hints: $manual_file"
-        return 0
-    fi
-
-    total_timeout="$(iis_shortscan_total_timeout)"
-    case "$total_timeout" in
-        ''|*[!0-9]*)
-            log_warn "Invalid BBHUNT_IIS_SHORTSCAN_TOTAL_TIMEOUT; using mode default"
-            total_timeout="$(scan_limit 120 600 1800)"
-            ;;
-    esac
-    deadline_ms=$(( $(now_ms) + total_timeout * 1000 ))
-    log_step "IIS short filename total budget: ${total_timeout}s"
-    mkdir -p "$raw_dir"
-    while IFS= read -r url; do
-        [ -z "$url" ] && continue
-
-        remaining_ms=$(( deadline_ms - $(now_ms) ))
-        if [ "$remaining_ms" -le 0 ]; then
-            mark_scanner_partial "IIS shortscan total deadline exhausted before $url"
-            printf '[IIS-SHORTNAME-REVIEW] %s | total shortscan budget exhausted; rerun: shortscan %s -s -p 1\n' \
-                "$url" "$url" >> "$manual_file"
-            continue
-        fi
-        timeout_seconds=$(( (remaining_ms + 999) / 1000 ))
-        [ "$timeout_seconds" -gt 900 ] && timeout_seconds=900
-
-        safe_name=$(printf '%s\n' "$url" | tr '[:upper:]' '[:lower:]' | sed 's|[^a-z0-9]|_|g')
-        raw_out="$raw_dir/${safe_name}.txt"
-
-        log_step "Running shortscan $url -s -p 1 (timeout ${timeout_seconds}s)"
-        shortscan_rc=0
-        run_with_timeout "$timeout_seconds" shortscan "$url" -s -p 1 > "$raw_out" 2>&1 || shortscan_rc=$?
-        if [ "$shortscan_rc" -ne 0 ]; then
-            log_warn "shortscan did not complete cleanly for $url; saved output: $raw_out"
-            mark_scanner_partial "IIS shortscan incomplete for $url (exit=$shortscan_rc)"
-            printf '[IIS-SHORTNAME-REVIEW] %s | shortscan incomplete (exit=%s); rerun: shortscan %s -s -p 1\n' \
-                "$url" "$shortscan_rc" "$url" >> "$manual_file"
-        fi
-
-        if [ ! -s "$raw_out" ]; then
-            printf '[IIS-SHORTNAME-REVIEW] %s | shortscan produced no output; rerun: shortscan %s -s -p 1\n' "$url" "$url" >> "$manual_file"
-            continue
-        fi
-
-        if grep -qi 'Vulnerable:' "$raw_out" && ! grep -qiE 'Vulnerable:[[:space:]]*No' "$raw_out"; then
-            printf '[IIS-SHORTNAME] %s | shortscan output: %s\n' "$url" "$raw_out" >> "$shortscan_findings"
-            result_count=$((result_count + 1))
-        else
-            log_done "IIS short filename: no positive shortscan signal for $url"
-        fi
-    done < "$iis_targets"
-
-    if [ "$result_count" -gt 0 ]; then
-        log_vuln "IIS short filename signals: $result_count"
-    fi
-
-    if [ -s "$manual_file" ]; then
-        log_warn "IIS short filename manual review hints: $(count_findings "$manual_file")"
-    else
-        rm -f "$manual_file"
-    fi
-}
-
-now_ms() {
-    python3 - <<'PY' 2>/dev/null || date +%s000
-import time
-
-print(time.monotonic_ns() // 1_000_000)
+trap finalize_run EXIT
+trap 'STATUS=incomplete; exit 130' INT
+trap 'STATUS=incomplete; exit 143' TERM
+# Retain the previous projection as history before clearing a stale completion claim.
+python3 - "$FINDINGS_DIR" "$RUN_DIR" <<'PY'
+import sys
+from pathlib import Path
+from tools.artifact_io import publish_bytes_create_only
+root, run = map(Path, sys.argv[1:])
+for name in ("summary.json", "summary.txt"):
+    old = root / name
+    if old.is_symlink():
+        raise ValueError("scanner summary must not be a symlink")
+    if old.is_file():
+        publish_bytes_create_only(run / ("previous_" + name), old.read_bytes())
+        old.unlink()
 PY
-}
+publish_summary 0
 
-collect_candidate_urls() {
-    local output="$1"
-    local lane="$2"
-    local pattern="$3"
-    local raw="$FINDINGS_DIR/.tmp/${lane}.raw.txt"
-    local source
-
-    : > "$raw"
-    shift 3
-    for source in "$@"; do
-        [ -s "$source" ] || continue
-        awk -v pattern="$pattern" '
-            tolower($0) ~ pattern {
-                for (field = 1; field <= NF; field++) {
-                    if ($field ~ /^https?:\/\//) {
-                        print $field
-                        break
-                    }
-                }
-            }
-        ' "$source" >> "$raw"
-    done
-
-    sort -u "$raw" -o "$raw" 2>/dev/null || true
-    filter_direct_finding_urls_copy \
-        "$raw" "$output" "$EXTERNAL_CHAIN_CONTEXT" "$lane"
-    sort -u "$output" -o "$output" 2>/dev/null || true
-    rm -f "$raw"
-}
-
-# Collect live URLs for scanning
-LIVE_URLS="$RECON_DIR/live/urls.txt"
-PARAM_URLS_RAW="$RECON_DIR/urls/with_params.txt"
-PARAM_URLS="$FINDINGS_DIR/.tmp/with_params.filtered.txt"
-ALL_URLS="$RECON_DIR/urls/all.txt"
-
-if [ ! -s "$LIVE_URLS" ] 2>/dev/null; then
-    log_warn "No live URLs found. Checking alternative locations..."
-    if [ -s "$RECON_DIR/live/httpx_full.txt" ]; then
-        awk '{print $1}' "$RECON_DIR/live/httpx_full.txt" > "$LIVE_URLS"
-    else
-        log_err "No live hosts data found in recon. Run recon_engine.sh first."
-        exit 1
-    fi
-fi
-
-EXTERNAL_CHAIN_CONTEXT="$FINDINGS_DIR/manual_review/external_chain_context.txt"
-: > "$EXTERNAL_CHAIN_CONTEXT"
-SCOPED_LIVE_URLS="$FINDINGS_DIR/.tmp/live_urls.target.txt"
-filter_target_urls_copy "$LIVE_URLS" "$SCOPED_LIVE_URLS" "$EXTERNAL_CHAIN_CONTEXT" "live"
-LIVE_URLS="$SCOPED_LIVE_URLS"
-
-LIVE_COUNT=$(wc -l < "$LIVE_URLS" 2>/dev/null || echo 0)
-log_info "Scanning $LIVE_COUNT live hosts"
-
-ORDERED_SCAN="$FINDINGS_DIR/ordered_scan_targets.txt"
-: > "$ORDERED_SCAN"
-
-for candidate_file in \
-    "$PRIORITY_DIR/critical_hosts.txt" \
-    "$PRIORITY_DIR/high_hosts.txt" \
-    "$PRIORITY_DIR/prioritized_hosts.txt" \
-    "$LIVE_URLS"
-do
-    [ -s "$candidate_file" ] && cat "$candidate_file" >> "$ORDERED_SCAN"
-done
-
-awk '!seen[$0]++' "$ORDERED_SCAN" > "${ORDERED_SCAN}.tmp" && mv "${ORDERED_SCAN}.tmp" "$ORDERED_SCAN"
-ORDERED_SCAN_SCOPED="$FINDINGS_DIR/.tmp/ordered_scan.target.txt"
-filter_target_urls_copy "$ORDERED_SCAN" "$ORDERED_SCAN_SCOPED" "$EXTERNAL_CHAIN_CONTEXT" "ordered-scan"
-mv "$ORDERED_SCAN_SCOPED" "$ORDERED_SCAN"
-if [ ! -s "$ORDERED_SCAN" ]; then
-    log_err "No target-owned scan targets found"
-    exit 1
-fi
-
-if bb_auth_active; then
-    AUTH_LIVE_URLS="$FINDINGS_DIR/.tmp/live_urls.auth-scope.txt"
-    AUTH_ORDERED_SCAN="$FINDINGS_DIR/.tmp/ordered_scan.auth-scope.txt"
-    bb_auth_filter_file "$LIVE_URLS" "$AUTH_LIVE_URLS"
-    bb_auth_filter_file "$ORDERED_SCAN" "$AUTH_ORDERED_SCAN"
-    if [ ! -s "$AUTH_ORDERED_SCAN" ]; then
-        log_err "Auth session has no target-owned scan URL for $SCANNER_AUTH_TARGET"
-        exit 1
-    fi
-    LIVE_URLS="$AUTH_LIVE_URLS"
-    ORDERED_SCAN="$AUTH_ORDERED_SCAN"
-    LIVE_COUNT=$(wc -l < "$LIVE_URLS" 2>/dev/null || echo 0)
-fi
-
-NUCLEI_TARGET_LIMIT="${BB_NUCLEI_MAX_TARGETS:-$(scan_limit 50 100 200)}"
-case "$NUCLEI_TARGET_LIMIT" in
-    ''|*[!0-9]*|0)
-        log_err "BB_NUCLEI_MAX_TARGETS must be a positive integer"
-        exit 1
-        ;;
-esac
-NUCLEI_TARGETS_ALL="$FINDINGS_DIR/.tmp/nuclei_targets_all.txt"
-NUCLEI_TARGETS="$FINDINGS_DIR/.tmp/nuclei_targets.txt"
-NUCLEI_CVE_ENABLED=1
-case "${BBHUNT_DISABLE_NUCLEI_CVES:-0}" in
-    1|true|TRUE|yes|YES|on|ON) NUCLEI_CVE_ENABLED=0 ;;
-esac
-NUCLEI_CVE_STATUS="disabled"
-python3 - "$ORDERED_SCAN" "$NUCLEI_TARGETS_ALL" "$NUCLEI_TARGETS" "$NUCLEI_TARGET_LIMIT" <<'PY'
+python3 - "$BASE_DIR" "$SCANNER_AUTH_TARGET" "$RECON_DIR" "$RUN_DIR" "$TARGET_LIMIT" 2> "$RUN_DIR/stderr.log" <<'PY'
+import json
+import os
 import sys
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
+from tools.artifact_io import write_json_atomic, write_text_atomic
+from tools.auth_session import AuthSession
+from tools.scope_context import url_belongs_to_target
+from tools.scope_source import load_scope_context
 
-source, all_output, selected_output, limit = sys.argv[1:]
-seen = set()
-origins = []
-for raw in Path(source).read_text(encoding="utf-8", errors="replace").splitlines():
-    value = raw.strip().split()[0] if raw.strip() else ""
-    try:
-        parsed = urlsplit(value)
-    except ValueError:
+repo, target, recon, run, limit = sys.argv[1:]
+recon, run = Path(recon), Path(run)
+scope = load_scope_context(repo, target)
+session = AuthSession.from_env(os.environ).bind_target(target).bind_scope(scope)
+live = recon / "live/urls.txt"
+if not live.is_file() or not live.stat().st_size:
+    live = recon / "live/httpx_full.txt"
+if not live.is_file() or not live.stat().st_size:
+    raise ValueError("No live input; select live target URLs before scanning")
+sources = [recon / "priority" / name for name in ("critical_hosts.txt", "high_hosts.txt", "prioritized_hosts.txt")]
+sources.append(live)
+ordered, origins, excluded, candidates = [], [], [], []
+seen, seen_origins = set(), set()
+for source in sources:
+    if not source.is_file():
         continue
-    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
-        continue
-    origin = urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), "", "", ""))
-    if origin not in seen:
-        seen.add(origin)
-        origins.append(origin)
-Path(all_output).write_text("\n".join(origins) + ("\n" if origins else ""), encoding="utf-8")
-selected = origins[:int(limit)]
-Path(selected_output).write_text("\n".join(selected) + ("\n" if selected else ""), encoding="utf-8")
-PY
-NUCLEI_AVAILABLE_COUNT=$(wc -l < "$NUCLEI_TARGETS_ALL" 2>/dev/null | tr -d ' ' || echo 0)
-NUCLEI_SELECTED_COUNT=$(wc -l < "$NUCLEI_TARGETS" 2>/dev/null | tr -d ' ' || echo 0)
-if [ "$NUCLEI_AVAILABLE_COUNT" -gt "$NUCLEI_SELECTED_COUNT" ]; then
-    log_warn "Nuclei breadth bounded to $NUCLEI_SELECTED_COUNT/$NUCLEI_AVAILABLE_COUNT service origins (limit=$NUCLEI_TARGET_LIMIT)"
-else
-    log_info "Nuclei breadth: $NUCLEI_SELECTED_COUNT service origins"
-fi
-
-# ============================================================
-# Noise filter prep: SPA fingerprints + dedup'd PARAM_URLS
-# ============================================================
-mkdir -p "$FINDINGS_DIR/.tmp"
-SPA_FP="$FINDINGS_DIR/.tmp/spa_fingerprints.json"
-API_ENDPOINTS_FILTERED="$FINDINGS_DIR/.tmp/api_endpoints.target.txt"
-SENSITIVE_PATHS_FILTERED="$FINDINGS_DIR/.tmp/sensitive_paths.target.txt"
-if command -v python3 &>/dev/null; then
-    log_step "Computing SPA-fallback fingerprints..."
-    (cd "$BASE_DIR" 2>/dev/null && python3 -m tools.noise_filter fingerprint \
-        --hosts "$ORDERED_SCAN" --out "$SPA_FP" 2>/dev/null) || \
-        python3 "$(dirname "$0")/noise_filter.py" fingerprint \
-            --hosts "$ORDERED_SCAN" --out "$SPA_FP" 2>/dev/null || true
-
-    if [ -s "$PARAM_URLS_RAW" ]; then
-        log_step "Dedup + liveness-filter PARAM_URLS..."
-        (cd "$BASE_DIR" 2>/dev/null && python3 -m tools.noise_filter dedup \
-            --input "$PARAM_URLS_RAW" --output "$PARAM_URLS" 2>/dev/null) || \
-            python3 "$(dirname "$0")/noise_filter.py" dedup \
-                --input "$PARAM_URLS_RAW" --output "$PARAM_URLS" 2>/dev/null || \
-            cp "$PARAM_URLS_RAW" "$PARAM_URLS"
-    else
-        : > "$PARAM_URLS"
-    fi
-else
-    [ -s "$PARAM_URLS_RAW" ] && cp "$PARAM_URLS_RAW" "$PARAM_URLS" || : > "$PARAM_URLS"
-fi
-
-filter_target_urls_copy "$RECON_DIR/urls/api_endpoints.txt" "$API_ENDPOINTS_FILTERED" "$EXTERNAL_CHAIN_CONTEXT" "api-endpoints"
-filter_target_urls_copy "$RECON_DIR/urls/sensitive_paths.txt" "$SENSITIVE_PATHS_FILTERED" "$EXTERNAL_CHAIN_CONTEXT" "sensitive-paths"
-# Always keep PARAM_URLS readable downstream even if filter produced empty file.
-[ -f "$PARAM_URLS" ] || cp "$PARAM_URLS_RAW" "$PARAM_URLS" 2>/dev/null || : > "$PARAM_URLS"
-filter_target_urls_copy "$PARAM_URLS" "${PARAM_URLS}.scoped" "$EXTERNAL_CHAIN_CONTEXT" "parameter-urls"
-mv "${PARAM_URLS}.scoped" "$PARAM_URLS"
-
-if bb_auth_active; then
-    AUTH_PARAM_URLS="$FINDINGS_DIR/.tmp/with_params.auth-scope.txt"
-    AUTH_API_ENDPOINTS="$FINDINGS_DIR/.tmp/api_endpoints.auth-scope.txt"
-    AUTH_SENSITIVE_PATHS="$FINDINGS_DIR/.tmp/sensitive_paths.auth-scope.txt"
-    bb_auth_filter_file "$PARAM_URLS" "$AUTH_PARAM_URLS"
-    bb_auth_filter_file "$API_ENDPOINTS_FILTERED" "$AUTH_API_ENDPOINTS"
-    bb_auth_filter_file "$SENSITIVE_PATHS_FILTERED" "$AUTH_SENSITIVE_PATHS"
-    PARAM_URLS="$AUTH_PARAM_URLS"
-    API_ENDPOINTS_FILTERED="$AUTH_API_ENDPOINTS"
-    SENSITIVE_PATHS_FILTERED="$AUTH_SENSITIVE_PATHS"
-fi
-
-if [ "$NUCLEI_CVE_ENABLED" = "1" ]; then
-    NUCLEI_CVE_STATUS="ready"
-fi
-log_info "Nuclei CVE supplement: ${NUCLEI_CVE_STATUS} (BBHUNT_DISABLE_NUCLEI_CVES=1 to disable)"
-
-# ============================================================
-# Check 0: Upload surface candidates
-# ============================================================
-echo ""
-if ! skip_has upload; then
-    log_info "Check 0: Upload surface candidates (AI-selected validation)"
-    collect_candidate_urls \
-        "$FINDINGS_DIR/upload/upload_candidates.txt" \
-        "upload_candidates" \
-        'upload|multipart|attachment|filename|avatar|media|document|import' \
-        "$PARAM_URLS" "$PARAM_URLS_RAW" "$API_ENDPOINTS_FILTERED" "$SENSITIVE_PATHS_FILTERED" "$ALL_URLS"
-    UPLOAD_COUNT=$(count_findings "$FINDINGS_DIR/upload/upload_candidates.txt")
-    [ "$UPLOAD_COUNT" -gt 0 ] \
-        && log_warn "Upload review candidates: $UPLOAD_COUNT (AI/browser validation required)" \
-        || log_done "Upload candidates: none found"
-else
-    rm -f "$FINDINGS_DIR/upload/upload_candidates.txt"
-    log_warn "Skipping upload checks (--skip)"
-fi
-
-# ============================================================
-# Check 0.5: SQL injection candidates
-# ============================================================
-echo ""
-if ! skip_has sqli; then
-    log_info "Check 0.5: SQLi candidates (AI-selected validation)"
-    collect_candidate_urls \
-        "$FINDINGS_DIR/sqli/timebased_candidates.txt" \
-        "sqli_candidates" \
-        '(^|[?&/])(q|query|search|filter|sort|order|where|id|ref|report|export)([=/]|$)|/api/|search|query|filter|sort|order|report|export' \
-        "$PARAM_URLS" "$PARAM_URLS_RAW" "$API_ENDPOINTS_FILTERED"
-    SQLI_COUNT=$(count_findings "$FINDINGS_DIR/sqli/timebased_candidates.txt")
-    [ "$SQLI_COUNT" -gt 0 ] \
-        && log_warn "SQLi review candidates: $SQLI_COUNT (AI-selected request required)" \
-        || log_done "SQLi candidates: none found"
-else
-    rm -f "$FINDINGS_DIR/sqli/timebased_candidates.txt"
-    log_warn "Skipping SQLi checks (--skip)"
-fi
-
-# ============================================================
-# Check 1: XSS candidates
-# ============================================================
-echo ""
-if ! skip_has xss; then
-    log_info "Check 1: XSS candidates (AI/browser-selected validation)"
-    collect_candidate_urls \
-        "$FINDINGS_DIR/xss/reflected_marker_candidates.txt" \
-        "xss_candidates" \
-        '[?&]' \
-        "$PARAM_URLS" "$PARAM_URLS_RAW"
-    XSS_COUNT=$(count_findings "$FINDINGS_DIR/xss/reflected_marker_candidates.txt")
-    [ "$XSS_COUNT" -gt 0 ] \
-        && log_warn "XSS review candidates: $XSS_COUNT (browser/validation required)" \
-        || log_done "XSS candidates: none found"
-else
-    rm -f "$FINDINGS_DIR/xss/reflected_marker_candidates.txt"
-    log_warn "Skipping XSS checks (--skip)"
-fi
-
-# ============================================================
-# Check 1.5: SSTI candidates
-# ============================================================
-echo ""
-if ! skip_has ssti; then
-    log_info "Check 1.5: SSTI candidates (AI-selected validation)"
-    collect_candidate_urls \
-        "$FINDINGS_DIR/ssti/ssti_candidates.txt" \
-        "ssti_candidates" \
-        'template|render|preview|view|format|message|content|subject|name|title|email|report|pdf' \
-        "$PARAM_URLS" "$PARAM_URLS_RAW" "$API_ENDPOINTS_FILTERED" "$SENSITIVE_PATHS_FILTERED"
-    SSTI_COUNT=$(count_findings "$FINDINGS_DIR/ssti/ssti_candidates.txt")
-    [ "$SSTI_COUNT" -gt 0 ] \
-        && log_warn "SSTI review candidates: $SSTI_COUNT (AI-selected request required)" \
-        || log_done "SSTI candidates: none found"
-else
-    rm -f "$FINDINGS_DIR/ssti/ssti_candidates.txt"
-    log_warn "Skipping SSTI checks (--skip)"
-fi
-
-# ============================================================
-# Check 2: Subdomain Takeover
-# ============================================================
-echo ""
-if ! skip_has takeover; then
-log_info "Check 2: Subdomain Takeover"
-
-SUBDOMAINS="$FINDINGS_DIR/.tmp/subdomains.target.txt"
-filter_target_urls_copy "$RECON_DIR/subdomains/all.txt" "$SUBDOMAINS" "$EXTERNAL_CHAIN_CONTEXT" "takeover-subdomains"
-
-# Subjack
-if command -v subjack &>/dev/null && [ -s "$SUBDOMAINS" ]; then
-    log_step "Running subjack..."
-    subjack -w "$SUBDOMAINS" \
-        -t "$THREADS" \
-        -timeout 30 \
-        -ssl \
-        -o "$FINDINGS_DIR/takeover/subjack_results.txt" 2>/dev/null || true
-
-    SUBJACK_COUNT=$(count_findings "$FINDINGS_DIR/takeover/subjack_results.txt")
-    [ "$SUBJACK_COUNT" -gt 0 ] && log_vuln "Subjack found $SUBJACK_COUNT potential takeovers" || log_done "Subjack: no takeovers"
-fi
-
-else
-    log_warn "Skipping takeover checks (--skip)"
-fi
-
-# ============================================================
-# Check 3: Misconfigurations
-# ============================================================
-echo ""
-if ! skip_has misconfig; then
-log_info "Check 3: Misconfigurations"
-
-run_iis_shortname_checks
-else
-    log_warn "Skipping misconfiguration checks (--skip)"
-fi
-
-# ============================================================
-# Check 4: Sensitive Data Exposure
-# ============================================================
-echo ""
-if ! skip_has exposure; then
-log_info "Check 4: Sensitive Data Exposure"
-
-# Manual check: sensitive paths from recon
-if [ -s "$SENSITIVE_PATHS_FILTERED" ]; then
-    log_step "Verifying sensitive paths from recon..."
-    : > "$FINDINGS_DIR/exposure/verified_sensitive.txt"
-    : > "$FINDINGS_DIR/manual_review/public_exposure_review.txt"
-    while IFS= read -r url; do
-        STATUS=$(curl -s "${BB_AUTH_ARGS[@]}" -o /dev/null -w "%{http_code}" --max-time 5 "$url" 2>/dev/null || echo "000")
-        BODY_FILE=$(mktemp "$FINDINGS_DIR/manual_review/.exposure_body.XXXXXX")
-        curl -s "${BB_AUTH_ARGS[@]}" --max-time 5 -o "$BODY_FILE" "$url" 2>/dev/null || true
-        if [ "$STATUS" = "200" ]; then
-            if python3 "$BASE_DIR/tools/public_exposure_signals.py" --url "$url" --status "$STATUS" --body-file "$BODY_FILE" --standard-public-metadata >/dev/null 2>&1; then
-                echo "[STANDARD-PUBLIC-METADATA] $STATUS $url" >> "$FINDINGS_DIR/manual_review/standard_public_metadata.txt"
-                rm -f "$BODY_FILE"
+    with source.open(encoding="utf-8") as handle:
+        for raw in handle:
+            value = raw.strip().split()[0] if raw.strip() else ""
+            if not value:
                 continue
-            fi
-            if python3 "$BASE_DIR/tools/public_exposure_signals.py" --url "$url" --status "$STATUS" --body-file "$BODY_FILE" --candidate-ready >/dev/null 2>&1; then
-                echo "$STATUS $url" >> "$FINDINGS_DIR/exposure/verified_sensitive.txt"
-            else
-                BODY_SIZE=$(wc -c < "$BODY_FILE" | tr -d ' ')
-                echo "[PUBLIC-EXPOSURE-REVIEW] $STATUS $BODY_SIZE $url" >> "$FINDINGS_DIR/manual_review/public_exposure_review.txt"
-            fi
-        fi
-        rm -f "$BODY_FILE"
-    done < <(head -50 "$SENSITIVE_PATHS_FILTERED")
+            candidates.append(value)
+            try:
+                parsed = urlsplit(value)
+                parsed.port
+            except ValueError:
+                excluded.append(value)
+                continue
+            origin = urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), "", "", ""))
+            allowed = (
+                parsed.scheme.lower() in {"http", "https"} and parsed.hostname
+                and parsed.username is None and parsed.password is None
+                and url_belongs_to_target(value, target) and scope.allows_active(value)
+                and scope.allows_active(origin)
+                and (session.is_empty() or (session.allows_url(value) and session.allows_url(origin)))
+            )
+            if not allowed:
+                excluded.append(value)
+                continue
+            if value not in seen:
+                seen.add(value)
+                ordered.append(value)
+            if origin not in seen_origins:
+                seen_origins.add(origin)
+                origins.append(origin)
+selected = origins[:int(limit)]
+for name, rows in (("input_candidates.txt", candidates), ("ordered_scan_targets.txt", ordered),
+                   ("nuclei_targets_all.txt", origins), ("nuclei_targets.txt", selected), ("excluded_urls.txt", excluded)):
+    write_text_atomic(run / name, "".join(value + "\n" for value in rows))
+write_json_atomic(run / "input.json", {"source_paths": [str(path) for path in sources if path.is_file()],
+    "live_count": sum(bool(line.strip()) for line in live.read_text(encoding="utf-8").splitlines()),
+    "ordered_count": len(ordered), "origin_count": len(origins), "selected_count": len(selected),
+    "excluded_count": len(excluded), "auth_applied": (not session.is_empty())})
+if not selected:
+    raise ValueError("No target/Scope/Auth-owned service origins available")
+PY
 
-    VERIFIED=$(count_findings "$FINDINGS_DIR/exposure/verified_sensitive.txt")
-    [ "$VERIFIED" -gt 0 ] && log_vuln "Verified sensitive paths: $VERIFIED" || log_done "Sensitive paths: clean"
+case ",$SKIP_CHECKS," in
+    *,all,*|*,nuclei,*|*,cves,*) STATUS=skipped; exit 0 ;;
+esac
+case "${BBHUNT_DISABLE_NUCLEI_CVES:-0}" in
+    1|true|TRUE|yes|YES|on|ON) STATUS=skipped; exit 0 ;;
+esac
+if ! command -v nuclei >/dev/null 2>&1; then
+    STATUS=unavailable
+    printf '%s\n' 'nuclei is not available; no scan was run' > "$RUN_DIR/stderr.log"
+    exit 2
 fi
-else
-    log_warn "Skipping exposure checks (--skip)"
+TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
+if [ -z "$TIMEOUT_BIN" ]; then
+    STATUS=unavailable
+    printf '%s\n' 'timeout/gtimeout is required for bounded execution; no scan was run' > "$RUN_DIR/stderr.log"
+    exit 2
 fi
-
-# ============================================================
-# Check 5: SSRF (Server-Side Request Forgery)
-# ============================================================
-echo ""
-if ! skip_has ssrf; then
-log_info "Check 5: SSRF Detection"
-
-# Flag URL parameters for manual SSRF testing
-if [ -s "$RECON_DIR/params/interesting_params.txt" ]; then
-    grep -iE '(url|redirect|dest|uri|path|file|doc|load|link|src|source|target|callback|domain|site|feed|rurl|return|next)' \
-        "$RECON_DIR/params/interesting_params.txt" > "$FINDINGS_DIR/ssrf/ssrf_params_manual.txt" 2>/dev/null || true
-    MANUAL_SSRF=$(count_findings "$FINDINGS_DIR/ssrf/ssrf_params_manual.txt")
-    [ "$MANUAL_SSRF" -gt 0 ] && log_warn "Params for manual SSRF testing: $MANUAL_SSRF"
-fi
-else
-    log_warn "Skipping SSRF checks (--skip)"
-fi
-
-# ============================================================
-# Check 6: CVE Detection
-# ============================================================
-echo ""
-if ! skip_has cves; then
-log_info "Check 6: Known CVEs"
-
-if [ "$NUCLEI_CVE_ENABLED" = "1" ] && command -v nuclei &>/dev/null && [ -s "$NUCLEI_TARGETS" ]; then
-    # Cap total CVE scan time: quick=180s, standard/full=600s. Without this,
-    # nuclei -tags cve against a target with hundreds of URLs can run for
-    # >90 min, causing hunt.py orchestration to time out. Honor BB_CVE_TIMEOUT
-    # env var for operators who need a different budget.
-    if [ "$SCAN_MODE" = "quick" ]; then
-        CVE_TIMEOUT="${BB_CVE_TIMEOUT:-180}"
-    else
-        CVE_TIMEOUT="${BB_CVE_TIMEOUT:-600}"
-    fi
-    log_step "Running nuclei CVE templates (max ${CVE_TIMEOUT}s)..."
+"$TIMEOUT_BIN" --kill-after=5s 10 nuclei -version > "$RUN_DIR/version.txt" 2>&1 || printf 'version query failed: %s\n' "$?" >> "$RUN_DIR/version.txt"
+NUCLEI_ARGS=(
+    -l "$RUN_DIR/nuclei_targets.txt" -tags cve -severity medium,high,critical
+    -etags dos,bruteforce,fuzz -ept code,headless -dr -duc -ni -jsonl -silent
+    -rate-limit "$RATE_LIMIT" -concurrency "$THREADS" -o "$RUN_DIR/raw.jsonl"
+)
+python3 - "$RUN_DIR" "$SCAN_TIMEOUT" "${NUCLEI_ARGS[@]}" <<'PY'
+import os
+import shutil
+import sys
+from pathlib import Path
+from tools.artifact_io import write_json_atomic
+from tools.auth_session import AuthSession
+run, timeout, *args = sys.argv[1:]
+write_json_atomic(Path(run) / "command.json", {
+    "executable": shutil.which("nuclei"), "timeout_seconds": int(timeout), "args": args,
+    "auth_header_names": [header.split(":", 1)[0] for header in AuthSession.from_env(os.environ).headers_list()],
+    "auth_session_id": os.environ.get("BBHUNT_SESSION_ID", ""),
+    "template_revision": "unknown; uses installed cve-tag templates",
+})
+PY
+STATUS=running
+publish_summary 0
+# Upstream restrictions are mechanical, without side-effect inference from arbitrary templates.
+if "$TIMEOUT_BIN" --kill-after=5s "$SCAN_TIMEOUT" nuclei \
+    "${NUCLEI_ARGS[@]}" "${BB_AUTH_ARGS[@]}" \
+    > "$RUN_DIR/stdout.log" 2> "$RUN_DIR/stderr.log"; then
     NUCLEI_RC=0
-    run_nuclei_timeout "$CVE_TIMEOUT" \
-        -l "$NUCLEI_TARGETS" \
-        -tags cve \
-        -severity medium,high,critical \
-        -silent \
-        -rate-limit "$RATE_LIMIT" \
-        -concurrency "$THREADS" \
-        "${BB_AUTH_ARGS[@]}" \
-        -output "$FINDINGS_DIR/cves/nuclei_cves.txt" 2>/dev/null || NUCLEI_RC=$?
-    CVE_COUNT=$(count_findings "$FINDINGS_DIR/cves/nuclei_cves.txt")
-    log_nuclei_outcome "$NUCLEI_RC" "$CVE_COUNT" "CVEs found" "CVEs"
-    [ "$NUCLEI_RC" -eq 0 ] && NUCLEI_CVE_STATUS="complete" || NUCLEI_CVE_STATUS="incomplete"
-elif [ "$NUCLEI_CVE_ENABLED" = "1" ] && [ ! -s "$NUCLEI_TARGETS" ]; then
-    NUCLEI_CVE_STATUS="not_applicable"
-    log_done "Nuclei CVE: not applicable (no origin targets)"
-elif [ "$NUCLEI_CVE_ENABLED" = "1" ]; then
-    NUCLEI_CVE_STATUS="unavailable"
-    log_warn "Optional nuclei CVE lane unavailable; use tools/cve_scan.sh when nuclei is installed"
 else
-    log_info "Nuclei CVE lane disabled; use /scan-cves after AI selects an applicable component"
+    NUCLEI_RC=$?
 fi
-else
-NUCLEI_CVE_STATUS="skipped"
-    log_warn "Skipping CVE checks (--skip)"
+printf '%s\n' "$NUCLEI_RC" > "$RUN_DIR/exit_code.rc"
+if [ "$NUCLEI_RC" -ne 0 ]; then
+    STATUS=incomplete
+    echo "Nuclei did not complete (exit=$NUCLEI_RC); raw artifacts: $RUN_DIR" >&2
+    exit 2
 fi
-
-# ============================================================
-# Check 7: Open Redirects
-# ============================================================
-echo ""
-if ! skip_has redirects; then
-log_info "Check 7: Open Redirects"
-
-# Flag redirect parameters for manual testing
-if [ -s "$RECON_DIR/params/interesting_params.txt" ]; then
-    grep -iE '(redirect|return|next|url|callback|goto|continue|dest|rurl|return_to|out)' \
-        "$RECON_DIR/params/interesting_params.txt" > "$FINDINGS_DIR/redirects/redirect_params_manual.txt" 2>/dev/null || true
-    MANUAL_REDIR=$(count_findings "$FINDINGS_DIR/redirects/redirect_params_manual.txt")
-    [ "$MANUAL_REDIR" -gt 0 ] && log_warn "Params for manual redirect testing: $MANUAL_REDIR"
-fi
-else
-    log_warn "Skipping redirect checks (--skip)"
-fi
-
-# ============================================================
-# Check 8: IDOR / Auth Bypass / Business Logic
-# ============================================================
-echo ""
-log_info "Check 8: IDOR / Auth Bypass / Business Logic"
-
-mkdir -p "$FINDINGS_DIR/idor"
-mkdir -p "$FINDINGS_DIR/auth_bypass"
-
-# 8a: Check for IDOR-prone parameters in collected URLs
-if ! skip_has idor && [ -s "$PARAM_URLS" ]; then
-    log_step "Flagging IDOR-prone parameters..."
-    : > "$FINDINGS_DIR/idor/idor_candidates.txt"
-    IDOR_RAW="$FINDINGS_DIR/.tmp/idor_candidates.raw.txt"
-    grep -iE '[?&](id|user_id|uid|account|profile|order|order_id|invoice|doc|file_id|report|ticket|msg|message_id|comment_id|item|product_id|cart|session|ref|record)=' \
-        "$PARAM_URLS" > "$IDOR_RAW" 2>/dev/null || true
-    filter_direct_finding_urls_copy \
-        "$IDOR_RAW" \
-        "$FINDINGS_DIR/idor/idor_candidates.txt" \
-        "$FINDINGS_DIR/manual_review/external_chain_context.txt" \
-        "idor_candidates"
-    IDOR_COUNT=$(count_findings "$FINDINGS_DIR/idor/idor_candidates.txt")
-    [ "$IDOR_COUNT" -gt 0 ] && log_warn "IDOR candidate URLs: $IDOR_COUNT (manual testing required)" || log_done "IDOR params: none found"
-fi
-
-# 8b: Check for numeric/sequential IDs in API endpoints
-if ! skip_has idor && [ -s "$API_ENDPOINTS_FILTERED" ]; then
-    log_step "Checking API endpoints for sequential IDs..."
-    : > "$FINDINGS_DIR/idor/api_sequential_ids.txt"
-    grep -E '/[0-9]{1,8}(/|$|\?)' "$API_ENDPOINTS_FILTERED" \
-        > "$FINDINGS_DIR/idor/api_sequential_ids.txt" 2>/dev/null || true
-    SEQ_COUNT=$(count_findings "$FINDINGS_DIR/idor/api_sequential_ids.txt")
-    [ "$SEQ_COUNT" -gt 0 ] && log_warn "API endpoints with sequential IDs: $SEQ_COUNT" || log_done "Sequential IDs: none"
-fi
-
-# 8c: Auth bypass checks — test unauthenticated access to API endpoints
-if ! skip_has auth_bypass && [ -s "$API_ENDPOINTS_FILTERED" ]; then
-    log_step "Testing API endpoints for unauthenticated access..."
-    : > "$FINDINGS_DIR/auth_bypass/unauth_api_access.txt"
-    while IFS= read -r api_url; do
-        STATUS=$(curl -s "${BB_ANON_AUTH_ARGS[@]}" -o /dev/null -w "%{http_code}" --max-time 5 "$api_url" 2>/dev/null || echo "000")
-        BODY=$(curl -s "${BB_ANON_AUTH_ARGS[@]}" --max-time 5 "$api_url" 2>/dev/null || true)
-        BODY_SIZE=$(printf '%s' "$BODY" | wc -c | tr -d ' ')
-        # Flag endpoints returning 200 with substantial body (not just error pages)
-        if [ "$STATUS" = "200" ] && [ "$BODY_SIZE" -gt 500 ]; then
-            if printf '%s' "$BODY" | python3 "$BASE_DIR/tools/public_exposure_signals.py" --url "$api_url" --status "$STATUS" --authz-candidate >/dev/null 2>&1; then
-                echo "[UNAUTH-CANDIDATE] $STATUS $BODY_SIZE $api_url" >> "$FINDINGS_DIR/auth_bypass/unauth_api_access.txt"
-            else
-                # Discovery-first：普通匿名 200 大响应仍保留为 review 线索，
-                # 不在 scanner 阶段直接丢弃，避免漏掉后续可链式利用的数据面。
-                echo "[OPEN-200-REVIEW] $STATUS $BODY_SIZE $api_url" >> "$FINDINGS_DIR/manual_review/open_200_api.txt"
-            fi
-        fi
-    done < <(head -30 "$API_ENDPOINTS_FILTERED")
-    UNAUTH_COUNT=$(count_findings "$FINDINGS_DIR/auth_bypass/unauth_api_access.txt")
-    [ "$UNAUTH_COUNT" -gt 0 ] && log_vuln "Unauthenticated API access: $UNAUTH_COUNT" || log_done "Auth bypass: clean"
-fi
-
-# 8d: Exposed config files (env.js, app_env.js)
-if [ -s "$RECON_DIR/exposure/config_files.txt" ] 2>/dev/null; then
-    cp "$RECON_DIR/exposure/config_files.txt" "$FINDINGS_DIR/exposure/config_files.txt" 2>/dev/null || true
-    CFG_COUNT=$(count_findings "$FINDINGS_DIR/exposure/config_files.txt")
-    [ "$CFG_COUNT" -gt 0 ] && log_vuln "Exposed config files from recon: $CFG_COUNT"
-fi
-
-# 8e: HTTP method tampering (PUT/DELETE on endpoints that should only accept GET/POST)
-if ! skip_has auth_bypass && [ -s "$LIVE_URLS" ]; then
-    FIRST_LIVE_URL=$(head -1 "$LIVE_URLS" 2>/dev/null || true)
-    if [ -n "$FIRST_LIVE_URL" ]; then
-        log_step "Testing HTTP method tampering on sample endpoints..."
-        while IFS= read -r url; do
-            for METHOD in PUT DELETE PATCH; do
-                if ! scanner_probe_guard "HTTP method tampering" "1" "$url" "$METHOD"; then
-                    continue
-                fi
-                STATUS=$(curl -s "${BB_AUTH_ARGS[@]}" -o /dev/null -w "%{http_code}" -X "$METHOD" --max-time 5 "$url" 2>/dev/null || echo "000")
-                if [ "$STATUS" = "200" ] || [ "$STATUS" = "201" ] || [ "$STATUS" = "204" ]; then
-                    echo "$METHOD $STATUS $url" >> "$FINDINGS_DIR/auth_bypass/method_tampering.txt"
-                fi
-            done
-        done < <(head -10 "$LIVE_URLS")
-        # A later GET SPA shell cannot invalidate an observation from another method.
-        # Status-only candidates still require manual verification.
-        METHOD_COUNT=$(count_findings "$FINDINGS_DIR/auth_bypass/method_tampering.txt")
-        [ "$METHOD_COUNT" -gt 0 ] && log_warn "Method tampering findings: $METHOD_COUNT (manual verification needed)" || log_done "Method tampering: clean"
-    fi
-fi
-
-if skip_has idor; then
-    log_warn "Skipping IDOR candidate checks (--skip)"
-fi
-
-if skip_has auth_bypass; then
-    log_warn "Skipping auth-bypass checks (--skip)"
-fi
-
-# 8f: Auth flow review candidates — low-noise passive keyword matching only
-if ! skip_has auth_flow; then
-    log_step "Flagging auth-flow review candidates (MFA / SAML / SSO)..."
-    AUTH_FLOW_REVIEW="$FINDINGS_DIR/manual_review/auth_flow_review.txt"
-    : > "$AUTH_FLOW_REVIEW"
-
-    for candidate_file in \
-        "$PARAM_URLS" \
-        "$ALL_URLS" \
-        "$RECON_DIR/urls/api_endpoints.txt" \
-        "$RECON_DIR/params/interesting_params.txt"
-    do
-        [ -s "$candidate_file" ] || continue
-        grep -iE 'mfa|2fa|otp|totp|saml|sso|relaystate|samlrequest|samlresponse' \
-            "$candidate_file" >> "$AUTH_FLOW_REVIEW" 2>/dev/null || true
-    done
-
-    if [ -s "$AUTH_FLOW_REVIEW" ]; then
-        sort -u "$AUTH_FLOW_REVIEW" -o "$AUTH_FLOW_REVIEW"
-        AUTH_FLOW_COUNT=$(count_findings "$AUTH_FLOW_REVIEW")
-        log_warn "Auth-flow review candidates: $AUTH_FLOW_COUNT (manual MFA/SAML review recommended)"
-    else
-        rm -f "$AUTH_FLOW_REVIEW"
-        log_done "Auth-flow review candidates: none found"
-    fi
-else
-    log_warn "Skipping auth-flow review checks (--skip)"
-fi
-
-if [ ! -s "$FINDINGS_DIR/manual_review/unsafe_skipped.txt" ]; then
-    rm -f "$FINDINGS_DIR/manual_review/unsafe_skipped.txt"
-fi
-if [ ! -s "$FINDINGS_DIR/manual_review/open_200_api.txt" ]; then
-    rm -f "$FINDINGS_DIR/manual_review/open_200_api.txt"
-fi
-if [ ! -s "$FINDINGS_DIR/manual_review/standard_public_metadata.txt" ]; then
-    rm -f "$FINDINGS_DIR/manual_review/standard_public_metadata.txt"
-fi
-if [ ! -s "$FINDINGS_DIR/manual_review/external_chain_context.txt" ]; then
-    rm -f "$FINDINGS_DIR/manual_review/external_chain_context.txt"
-fi
-
-# ============================================================
-# Check 9: MFA / 2FA review candidates
-# ============================================================
-echo ""
-if ! skip_has mfa; then
-    log_info "Check 9: MFA / 2FA review candidates (AI-selected validation)"
-    : > "$MFA_REVIEW_FILE"
-    collect_candidate_urls \
-        "$MFA_REVIEW_FILE" \
-        "mfa_candidates" \
-        'mfa|2fa|otp|totp|sso|authenticate|verify|challenge|recovery|step[-_ ]?up' \
-        "$PARAM_URLS" "$PARAM_URLS_RAW" "$API_ENDPOINTS_FILTERED" "$SENSITIVE_PATHS_FILTERED" "$ALL_URLS"
-    MFA_COUNT=$(count_findings "$MFA_REVIEW_FILE")
-    [ "$MFA_COUNT" -gt 0 ] \
-        && log_warn "MFA/2FA review candidates: $MFA_COUNT (controlled pre/post-auth validation required)" \
-        || log_done "MFA/2FA candidates: none found"
-else
-    rm -f "$MFA_REVIEW_FILE"
-    log_warn "Skipping MFA checks (--skip)"
-fi
-
-if [ ! -s "$MFA_REVIEW_FILE" ]; then
-    rm -f "$MFA_REVIEW_FILE"
-fi
-
-# ============================================================
-# Check 10: SAML / SSO review candidates
-# ============================================================
-echo ""
-if ! skip_has saml; then
-    log_info "Check 10: SAML / SSO review candidates (AI-selected validation)"
-    rm -f \
-        "$FINDINGS_DIR/saml/findings.txt" \
-        "$FINDINGS_DIR/saml/certs.txt"
-    collect_candidate_urls \
-        "$FINDINGS_DIR/saml/endpoints.txt" \
-        "saml_candidates" \
-        'saml|sso|openid|oidc|relaystate|samlrequest|samlresponse|jwk|jwks' \
-        "$PARAM_URLS" "$PARAM_URLS_RAW" "$API_ENDPOINTS_FILTERED" "$SENSITIVE_PATHS_FILTERED" "$ALL_URLS"
-    SAML_COUNT=$(count_findings "$FINDINGS_DIR/saml/endpoints.txt")
-    [ "$SAML_COUNT" -gt 0 ] \
-        && log_warn "SAML/SSO review candidates: $SAML_COUNT (AI-selected flow validation required)" \
-        || log_done "SAML/SSO candidates: none found"
-else
-    rm -f "$FINDINGS_DIR/saml/endpoints.txt" "$FINDINGS_DIR/saml/findings.txt" "$FINDINGS_DIR/saml/certs.txt"
-    log_warn "Skipping SAML checks (--skip)"
-fi
-
-# ============================================================
-# Consolidate Findings
-# ============================================================
-echo ""
-log_info "Consolidating findings..."
-
-# Merge all findings into summary
-TOTAL_FINDINGS=0
-FINDING_SUMMARY="$FINDINGS_DIR/summary.txt"
-FINDING_SUMMARY_JSON="$FINDINGS_DIR/summary.json"
-FINDING_SUMMARY_TMP="$FINDINGS_DIR/.summary.txt.tmp"
-FINDING_SUMMARY_JSON_TMP="$FINDINGS_DIR/.summary.json.tmp"
-FINDING_INDEX_JSON="$FINDINGS_DIR/scanner_candidates.json"
-
-if [ -s "$NUCLEI_FAILURE_MARKER" ] || [ -s "$SCANNER_PARTIAL_MARKER" ]; then
-    if python3 "$BASE_DIR/tools/finding_index.py" "$FINDINGS_DIR" --target "$TARGET" --output "$FINDING_INDEX_JSON" >/dev/null; then
-        log_warn "Preserved partial scanner candidates in $FINDING_INDEX_JSON"
-    else
-        log_warn "Unable to preserve partial scanner candidates"
-    fi
-    if [ -s "$NUCLEI_FAILURE_MARKER" ]; then
-        log_err "One or more Nuclei lanes failed; scan remains incomplete"
-    else
-        log_err "One or more scanner lanes were interrupted; scan remains incomplete"
-    fi
-    exit 1
-fi
-
-{
-    echo "============================================="
-    echo "  Vulnerability Scan Summary — $TARGET"
-    echo "  Scan Date: $(date)"
-    echo "  Recon Data: $RECON_DIR"
-    echo "============================================="
-    echo ""
-
-    for category in upload sqli xss ssti takeover misconfig exposure ssrf cves redirects idor auth_bypass mfa saml; do
-        CAT_TOTAL=0
-        echo "--- $category ---"
-        for file in "$FINDINGS_DIR/$category/"*.txt; do
-            if [ -f "$file" ] && [ -s "$file" ]; then
-                COUNT=$(wc -l < "$file" | tr -d ' ')
-                CAT_TOTAL=$((CAT_TOTAL + COUNT))
-                echo "  $(basename "$file"): $COUNT findings"
-            fi
-        done
-        echo "  Category total: $CAT_TOTAL"
-        TOTAL_FINDINGS=$((TOTAL_FINDINGS + CAT_TOTAL))
-        echo ""
-    done
-
-    echo "============================================="
-    echo "  TOTAL FINDINGS: $TOTAL_FINDINGS"
-    echo "============================================="
-    echo "  SQLi review candidates: $(count_vuln "$FINDINGS_DIR/sqli/timebased_candidates.txt")"
-    echo "  Upload review candidates: $(count_vuln "$FINDINGS_DIR/upload/upload_candidates.txt")"
-    echo "  SSTI review candidates: $(count_vuln "$FINDINGS_DIR/ssti/ssti_candidates.txt")"
-    echo "  MFA Findings: $(count_vuln "$FINDINGS_DIR/mfa/findings.txt")"
-    echo "  SAML Findings: $(count_vuln "$FINDINGS_DIR/saml/findings.txt")"
-    echo ""
-    echo "  Items requiring manual review:"
-    for file in "$FINDINGS_DIR"/*/manual*.txt "$FINDINGS_DIR/manual_review/"*.txt; do
-        [ -f "$file" ] && [ -s "$file" ] && echo "    - $file ($(wc -l < "$file" | tr -d ' ') items)"
-    done
-} > "$FINDING_SUMMARY_TMP"
-
-if python3 "$BASE_DIR/tools/finding_index.py" "$FINDINGS_DIR" --target "$TARGET" --output "$FINDING_INDEX_JSON" >/dev/null; then
-    log_done "Structured findings: $FINDING_INDEX_JSON"
-else
-    rm -f "$FINDING_SUMMARY_TMP" "$FINDING_SUMMARY_JSON_TMP"
-    log_err "Unable to write structured findings index; scan remains incomplete"
-    exit 1
-fi
-
-if write_summary_json "$FINDING_SUMMARY_JSON_TMP"; then
-    mv "$FINDING_SUMMARY_TMP" "$FINDING_SUMMARY"
-    # JSON 是 completion marker，必须在 Store review registration 后发布。
-    mv "$FINDING_SUMMARY_JSON_TMP" "$FINDING_SUMMARY_JSON"
-    log_done "Structured summary: $FINDING_SUMMARY_JSON"
-else
-    rm -f "$FINDING_SUMMARY_TMP" "$FINDING_SUMMARY_JSON_TMP"
-    log_err "Unable to write structured summary JSON; scan remains incomplete"
-    exit 1
-fi
-
-# scanner_pass.json — records which (endpoint, vuln_class) pairs this run
-# touched, so tools/coverage_matrix.py rebuild can attach advisory
-# scanner_swept metadata. It must not close cells as `tested_clean`;
-# failures here MUST NOT change scanner exit semantics (R4 / NG3).
-if python3 "$BASE_DIR/tools/scanner_pass_writer.py" \
-        --target "$TARGET" \
-        --findings-dir "$FINDINGS_DIR" \
-        --recon-dir "$RECON_DIR" \
-        --scanner-version "vuln_scanner.sh@$(git -C "$BASE_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)" \
-        >/dev/null 2>&1; then
-    log_done "Coverage matrix feedback: $(dirname "$FINDINGS_DIR")/scanner_pass.json"
-else
-    log_warn "Unable to write scanner_pass.json (coverage matrix feedback skipped)"
-fi
-
-cat "$FINDING_SUMMARY"
-
-echo ""
-echo "  All findings saved to: $FINDINGS_DIR/"
-echo ""
-echo "  Next: Inspect registered reports and pending drafts; /report authors missing text"
-echo "    python3 tools/report_generator.py $FINDINGS_DIR"
-echo "============================================="
+STATUS="$(python3 - "$RUN_DIR/input.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+payload = json.loads(Path(sys.argv[1]).read_text())
+print("sampled" if payload["selected_count"] < payload["origin_count"] else "complete")
+PY
+)"
+echo "Nuclei exited 0; artifacts: $RUN_DIR. Inspect summary status and raw records for review."

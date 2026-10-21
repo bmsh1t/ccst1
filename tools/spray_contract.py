@@ -118,7 +118,10 @@ def _shortlist_metadata_digest(passes_source: Path, passwords: list[str]) -> str
                 raise ValueError(f"missing shortlist reason at {metadata_path}:{line_no}")
             if payload.get("hibp_bucket") not in {"sweet", "zero", "unknown", "common"}:
                 raise ValueError(f"invalid shortlist HIBP bucket at {metadata_path}:{line_no}")
-            if not isinstance(payload.get("hibp_count"), int):
+            count = payload.get("hibp_count")
+            unknown = payload["hibp_bucket"] == "unknown"
+            valid_count = (type(count) is int and (count >= 0 or (count == -1 and unknown)))
+            if "hibp_count" not in payload or not (valid_count or (count is None and unknown)):
                 raise ValueError(f"invalid shortlist HIBP count at {metadata_path}:{line_no}")
             prefixes.append(prefix)
 

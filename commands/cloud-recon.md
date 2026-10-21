@@ -1,41 +1,24 @@
 ---
-description: Sweep cloud assets for a target — public S3/Azure/GCP bucket candidates via S3Scanner/cloud_enum and CloudFlare origin-IP hints via CloudFail or fallback DNS history. Usage: /cloud-recon --keyword <name> | /cloud-recon --cf-bypass <domain>
+description: Review observed cloud-storage or origin candidates using native inspection or a selected upstream CLI. Usage: /cloud-recon TARGET [--keyword NAME | --cf-bypass HOST]
 ---
 
 # /cloud-recon
 
-Discover cloud-storage and origin-IP candidates. Treat results as candidates until ownership and permissions are verified.
+Choose a concrete storage, bucket-binding or origin question from cached cloud
+candidates, DNS, source or browser evidence. A brand permutation or associated IP
+does not establish ownership or extend the target set.
 
-## Run This (the only required step)
+Read metadata and exact DNS/HTTP evidence natively. When bulk discovery helps,
+invoke installed cloud_enum, S3Scanner or CloudFail directly for the selected input,
+using that version's help. These are alternatives selected by evidence, without a
+required multi-cloud chain or automatic history fallback.
 
-```bash
-bash tools/cloud_recon.sh --keyword acme
-bash tools/cloud_recon.sh --keyword acme --s3-only
-bash tools/cloud_recon.sh --cf-bypass api.target.com
-```
+Keep raw output, command/version, input, exit status and ownership uncertainty in
+a new private target directory; see
+[Direct upstream execution](../docs/tool-index.md#direct-upstream-execution).
+Check current Scope before active requests and bind credentials to allowed origins.
+An origin comparison needs relevant Host/SNI controls.
 
-## What It Runs
-
-| Tool | Mode | What it finds |
-|---|---|---|
-| `s3scanner` | `--keyword` | Public/listable S3-compatible buckets |
-| `cloud_enum` | `--keyword` | AWS/Azure/GCP storage permutations |
-| `cloudfail` | `--cf-bypass` | CloudFlare origin-IP candidates |
-| built-in fallback | `--cf-bypass` | crt.sh + DNS hints when CloudFail is missing |
-
-## Output
-
-```text
-findings/cloud/<timestamp>/s3scanner.txt
-findings/cloud/<timestamp>/cloud_enum.txt
-findings/cloud/<timestamp>/cloudfail.txt
-findings/cloud/<timestamp>/non_cf_ips.txt
-```
-
-## When To Use
-
-- `/recon` created non-empty `recon/<target>/exposure/cloud_storage_candidates.txt`, `s3_bucket_candidates.txt`, or `exposure/cloud/cloud_enum.txt`.
-- The brand keyword is stable enough for cloud bucket permutations.
-- WAF/origin hints suggest a CloudFlare-protected host may expose a direct origin.
-
-After reviewing candidates, use only minimal permission/ownership checks before promoting a Signal.
+Prove the smallest useful permission or isolation difference before a Finding claim.
+Unavailable tools and inconclusive discovery remain unknown. Public listing, an
+origin IP or a successful HTTP response alone establishes no security impact.

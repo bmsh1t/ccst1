@@ -61,10 +61,8 @@ jobs:
           tests/test_resume_tool.py
           tests/test_spray_orchestrator.py
           tests/test_validate_target_mode.py
-      - name: Run repository Shell contracts
-        run: |
-          bash tests/test_cicd_scanner.sh
-          bash tests/test_recon_denoising_integration.sh
+      - name: Run Recon Shell contracts
+        run: bash tests/test_recon_denoising_integration.sh
 
   full-suite:
     if: >-

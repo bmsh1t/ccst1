@@ -3,19 +3,21 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import stat
-import tempfile
 from pathlib import Path
 
-from repo_ci_scan import scan_repo_ci
-from repo_scan_models import RepoFinding, RepoSourceMeta
-from repo_secret_scan import scan_repo_secrets
-from repo_source import MAX_REPO_SIZE_BYTES, RepoConfirmationRequired, acquire_repo_source
 try:
-    from tools.artifact_io import write_text_atomic as _write_text_atomic
+    from tools.repo_scan_models import RepoSourceMeta
+    from tools.repo_source import MAX_REPO_SIZE_BYTES, RepoConfirmationRequired, acquire_repo_source
+    from tools.repo_workflows import capture_repo_workflows
+except ImportError:
+    from repo_scan_models import RepoSourceMeta
+    from repo_source import MAX_REPO_SIZE_BYTES, RepoConfirmationRequired, acquire_repo_source
+    from repo_workflows import capture_repo_workflows
+try:
+    from tools.artifact_io import publish_bytes_create_only, write_text_atomic as _write_text_atomic
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from artifact_io import write_text_atomic as _write_text_atomic
+    from artifact_io import publish_bytes_create_only, write_text_atomic as _write_text_atomic
 
 
 try:
@@ -32,7 +34,7 @@ def _exposure_dir(target: str, repo_root: str | Path | None = None) -> Path:
     path = root / "findings" / target_storage_key(target) / "exposure"
     if path != path.resolve():
         raise ValueError("repo-source output must not traverse symlinks")
-    path.mkdir(parents=True, exist_ok=True)
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
     return path
 
 
@@ -58,7 +60,7 @@ def capture_source_files(repo_path: str, paths: list[str], exposure_dir: Path) -
                 data = handle.read(1024 * 1024 + 1)
             if len(data) > 1024 * 1024:
                 raise ValueError("source exceeds 1 MiB; choose a smaller existing material")
-            content = data.decode("utf-8")
+            data.decode("utf-8")
         except (OSError, ValueError) as exc:
             row["reason"] = str(exc)
             rows.append(row)
@@ -67,21 +69,9 @@ def capture_source_files(repo_path: str, paths: list[str], exposure_dir: Path) -
         directory = exposure_dir / "repo_source_files"
         if directory.resolve() != directory:
             raise ValueError("source artifact directory must not traverse symlinks")
-        directory.mkdir(parents=True, exist_ok=True)
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         artifact = directory / f"{digest}.txt"
-        if artifact.is_symlink() or (artifact.exists() and artifact.read_bytes() != data):
-            raise ValueError("existing source snapshot differs from its content identity")
-        with tempfile.NamedTemporaryFile(dir=directory, delete=False) as handle:
-            temporary = Path(handle.name)
-        try:
-            _write_text_atomic(temporary, content)
-            try:
-                os.link(temporary, artifact)
-            except FileExistsError:
-                if artifact.is_symlink() or artifact.read_bytes() != data:
-                    raise ValueError("source snapshot changed during publication")
-        finally:
-            temporary.unlink(missing_ok=True)
+        publish_bytes_create_only(artifact, data)
         row.update(status="ok", sha256=digest, size_bytes=len(data),
                    artifact=artifact.relative_to(exposure_dir).as_posix())
         rows.append(row)
@@ -93,12 +83,11 @@ def capture_source_files(repo_path: str, paths: list[str], exposure_dir: Path) -
 
 def render_repo_summary(
     meta: RepoSourceMeta,
-    secret_findings: list[RepoFinding],
-    ci_findings: list[RepoFinding],
-    workflow_scan: dict | None = None,
+    source_capture: dict,
+    workflow_capture: dict,
 ) -> str:
     lines = [
-        "# Repository Source Hunt Summary",
+        "# Repository Source Capture",
         "",
         f"- Source kind: {meta.source_kind}",
         f"- Repo URL: {meta.repo_url or '(local only)'}",
@@ -113,43 +102,39 @@ def render_repo_summary(
     ]
     if meta.threshold_reasons:
         lines.append(f"- Threshold reasons: {', '.join(meta.threshold_reasons)}")
+    lines.extend([
+        f"- Capture status: {meta.status}",
+        f"- Selected source capture: {source_capture['status']}",
+        f"- Workflow capture: {workflow_capture['status']}; remaining files: {workflow_capture['remaining_files']}",
+        "- Secret scan: not_run; CI analysis: not_run",
+        "- Read the retained originals natively; collection is not an audit or a clean verdict.",
+        "- Source references: repo_source_meta.json/source_capture; workflow references: repo_workflows.json",
+    ])
     if meta.status == "confirmation_required":
-        lines.append("- Scan status: confirmation required before clone")
-    else:
-        lines.append(f"- Secret findings: {len(secret_findings)}")
-        lines.append(f"- CI findings: {len(ci_findings)}")
-        for finding in (secret_findings + ci_findings)[:10]:
-            location = f"{finding.file_path}:{finding.line_number}" if finding.line_number else finding.file_path
-            lines.append(f"- [{finding.severity}] {finding.rule_id} :: {location}")
-    if workflow_scan is not None:
-        lines.extend([
-            f"- Workflow scan: {workflow_scan['status']}; remaining files: {workflow_scan['remaining_files']}",
-            "- CI entries are review candidates, not severity/impact judgments.",
-            "- Workflow originals and diagnostics: repo_workflows.json; snapshots: repo_workflows/",
-        ])
+        lines.append("- Acquisition: confirmation required before clone")
     return "\n".join(lines) + "\n"
 
 
 def _write_result_bundle(
     target: str,
     meta: RepoSourceMeta,
-    secret_findings: list[RepoFinding],
-    ci_findings: list[RepoFinding],
+    source_capture: dict,
+    workflow_capture: dict,
     *,
     repo_root: str | Path | None = None,
-    workflow_scan: dict | None = None,
-    source_capture: dict | None = None,
 ) -> Path:
     exposure_dir = _exposure_dir(target, repo_root)
     payload = meta.to_dict()
-    if source_capture is not None:
-        payload["source_capture"] = source_capture
+    payload.update(
+        execution_mode="source-capture",
+        source_capture=source_capture,
+        secret_scan="not_run",
+        ci_scan="not_run",
+    )
     _write_json(exposure_dir / "repo_source_meta.json", payload)
-    _write_json(exposure_dir / "repo_secrets.json", [finding.to_dict() for finding in secret_findings])
-    _write_json(exposure_dir / "repo_ci_findings.json", [finding.to_dict() for finding in ci_findings])
     _write_text_atomic(
         exposure_dir / "repo_summary.md",
-        render_repo_summary(meta, secret_findings, ci_findings, workflow_scan),
+        render_repo_summary(meta, source_capture, workflow_capture),
     )
     return exposure_dir
 
@@ -173,11 +158,16 @@ def run_source_hunt(
         )
     except RepoConfirmationRequired as exc:
         exc.meta.status = "confirmation_required"
-        exposure_dir = _write_result_bundle(target, exc.meta, [], [], repo_root=repo_root)
-        _write_json(exposure_dir / "repo_workflows.json", {
+        source_capture = {"status": "not_requested", "files": [], "deferred_paths": []}
+        workflow_capture = {
             "schema_version": 1, "status": "not_run", "total_files": None,
             "remaining_files": None, "workflows": [],
-        })
+            "inventory_kind": "source-capture", "analysis_status": "not_run",
+        }
+        exposure_dir = _write_result_bundle(
+            target, exc.meta, source_capture, workflow_capture, repo_root=repo_root
+        )
+        _write_json(exposure_dir / "repo_workflows.json", workflow_capture)
         return {
             "status": "confirmation_required",
             "exposure_dir": str(exposure_dir),
@@ -185,29 +175,28 @@ def run_source_hunt(
         }
 
     try:
-        secret_findings = scan_repo_secrets(resolved_repo_path)
         exposure_dir = _exposure_dir(target, repo_root)
         source_capture = capture_source_files(resolved_repo_path, source_files or [], exposure_dir)
-        ci_findings = scan_repo_ci(resolved_repo_path, artifact_dir=exposure_dir, repo_commit=source_meta.repo_commit)
-        workflow_scan = json.loads((exposure_dir / "repo_workflows.json").read_text(encoding="utf-8"))
-        if workflow_scan["status"] != "complete" or source_capture["status"] == "partial":
+        workflow_capture = capture_repo_workflows(
+            resolved_repo_path, artifact_dir=exposure_dir, repo_commit=source_meta.repo_commit
+        )
+        if workflow_capture["status"] != "complete" or source_capture["status"] == "partial":
             source_meta.status = "partial"
         exposure_dir = _write_result_bundle(
             target,
             source_meta,
-            secret_findings,
-            ci_findings,
+            source_capture,
+            workflow_capture,
             repo_root=repo_root,
-            workflow_scan=workflow_scan,
-            source_capture=source_capture,
         )
         return {
             "status": source_meta.status,
             "exposure_dir": str(exposure_dir),
             "source_meta": source_meta.to_dict(),
-            "secret_count": len(secret_findings),
-            "ci_count": len(ci_findings),
-            "workflow_status": workflow_scan["status"],
+            "execution_mode": "source-capture",
+            "secret_scan": "not_run",
+            "ci_scan": "not_run",
+            "workflow_status": workflow_capture["status"],
             "source_capture": source_capture,
         }
     finally:
@@ -216,7 +205,7 @@ def run_source_hunt(
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description="Repository source leak and CI risk scanner")
+    parser = argparse.ArgumentParser(description="Acquire and capture repository originals for native review")
     parser.add_argument("--target", required=True, help="Target/program name used under findings/<target>/")
     parser.add_argument("--repo-url", default="", help="GitHub public repo URL or owner/repo reference")
     parser.add_argument("--repo-path", default="", help="Local repository path already available on disk")

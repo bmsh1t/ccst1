@@ -147,6 +147,26 @@ unknown-effect recovery and cleanup still bind execution. Partial/remainder fact
 and review references survive full/bounded/loop/compact views and forbid false
 exhaustion. Low priority and budget stops are not technical refutations.
 
+### Business-tool retirement and native execution
+
+Business CVE/takeover/cloud/secrets/org-CI wrappers and static token grading
+are retired. Wordlist preparation, employee OSINT and EBurst remain optional
+helpers for bulk operations, source normalization and bounded upstream execution.
+Wrapping an upstream tool alone is not a retirement criterion. Native `src-hunter` and the model
+choose methods and optionally invoke mature upstream CLIs directly; retained
+helpers supply concrete acquisition, parsing, protocol, evidence or recovery value.
+No new controller, mandatory tool sequence or static assessment owner is introduced.
+
+Source acquisition captures explicit source and workflow originals with byte hashes,
+revision context, bounds and partial diagnostics; secret/CI analyses stay `not_run`.
+Explicit scanner execution preserves bounded Nuclei input/raw/exit/run receipts
+and summary-reader residuals, including failure and missing-tool states. It does
+not create Finding, Action or Coverage records or infer a scanner pass from old files.
+Recon batch inventories retain completion order and source counts; cached CI links
+are unverified source references. Historical evidence is retained. Store/schema,
+Scope/Auth, evidence identity, memory, report and recovery owners remain unchanged.
+Personal installation and host/live acceptance remain outside this repository change.
+
 ## Domain Facts and Ownership
 
 | Concept | Durable meaning | Not its responsibility |

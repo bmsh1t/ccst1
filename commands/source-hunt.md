@@ -1,98 +1,72 @@
 ---
-description: Scan a GitHub public repo or local repo path for leaked secrets, risky config files, GitHub Actions / CI patterns, and source-derived hunting leads. Usage: /source-hunt target.com --repo-url https://github.com/org/repo [--allow-large-repo]
+description: Review target-owned source with native Read/Grep; optionally acquire a bounded repository and preserve selected source/workflow originals. Usage: /source-hunt TARGET --repo-path PATH [--source-file RELATIVE_PATH]
 ---
 
 # /source-hunt
 
-Scan source repositories for exposure observations and source-backed review candidates.
+Read the source that answers the current question, then follow entry points, guards,
+object/tenant bindings and sinks with native Read/Grep. Use
+`skills/src-hunter/modules/whitebox-audit.md` when useful. Select secret or CI analysis
+from the actual evidence; collection does not run either analysis or create findings.
 
-## Run This (the only required step)
+## Optional acquisition and original capture
 
-```bash
-python3 tools/source_hunt.py --target target.com --repo-url https://github.com/org/repo
-python3 tools/source_hunt.py --target target.com --repo-path /path/to/local/repo
-python3 tools/source_hunt.py --target target.com --repo-url https://github.com/org/repo --allow-large-repo
-```
-
-Claude may directly Read/Grep the local repository or cached raw artifacts after this scan. No second source parser is required.
-
-## What This Writes
-
-```text
-findings/<target>/exposure/repo_source_meta.json
-findings/<target>/exposure/repo_secrets.json
-findings/<target>/exposure/repo_ci_findings.json
-findings/<target>/exposure/repo_summary.md
-```
-
-## Use When
-
-- Public repo URL is visible in target footer, docs, package metadata, GitHub org, or disclosed reports.
-- `/surface` shows source-backed, route/auth, CI/CD, secret, or framework-intel leads.
-- You need source-backed route, auth, object, tenant, GraphQL, export, or dangerous-sink evidence.
-
-Read exact paths directly, then choose any explicit validation or queue action.
-
-## CI evidence and judgment boundary
-
-The built-in GitHub Actions checks emit **review candidates**, not vulnerability verdicts or severity claims.
-`pull_request_target` plus checkout alone does not prove that attacker-controlled code runs. Inspect the
-trigger, job/step conditions, permissions, checkout ref and actual data flow in the saved workflow before
-judging impact. Existing rule IDs and the `repo_ci_findings.json` list remain; CI `severity` and `confidence`
-are `unknown`, and `metadata.status` is `candidate`. No Finding/assessment or Queue action is created.
-
-Additional outputs:
-
-```text
-findings/<target>/exposure/repo_workflows.json
-findings/<target>/exposure/repo_workflows/<sha256>.yaml
-```
-
-The inventory maps original repository paths to exact source-byte snapshots, SHA-256, size and per-file
-status. `artifact` and candidate `metadata.workflow_artifact` paths are relative to this exposure directory.
-Candidate line numbers locate their job context in those original bytes. Every bounded workflow is saved,
-including workflows with no matching pattern and invalid YAML; snapshots survive temporary clone cleanup.
-Identical bytes reuse a snapshot, and a changed existing snapshot is refused rather than overwritten.
-Files are private (0600); these internal source materials are not redacted public reports.
-
-`repo_source_meta.repo_commit` and the inventory's `repo_commit` record the acquired local Git HEAD when
-available. They are version context, **not a claim that the working tree is clean**: the snapshot hash binds
-what was actually read. A non-Git folder or unavailable Git revision stays explicitly unknown.
-
-The scan reads at most 256 workflows and 1 MiB per file. `deferred_paths` retains unscanned workflow names
-for deliberate follow-up; `remaining_files`, oversized/unreadable/invalid
-entries and unsafe paths make the result `partial`; the CLI exits 2 while retaining available candidates and
-raw material. Omitted files are not tested-clean. A complete inventory only means this bounded GitHub Actions
-collection and these checks finished, not that the repository is free of CI vulnerabilities. Files outside
-these bounds require deliberate follow-up from the source/version context, not automatic wider scanning.
-
-Local paths do not trigger remote GitHub requests. Existing clone-size approval and secret scanning remain.
-No remote `sisakulint` call replaces local inspection, and no missing optional tool becomes a clean result.
-
-
-## Selected source evidence for whitebox questions
+For a local checkout, native reading needs no preparation. Use this helper when you
+need persistent original bytes or a bounded public clone:
 
 ```bash
 python3 tools/source_hunt.py --target TARGET --repo-path PATH --source-file src/routes.py --source-file src/service.py
+python3 tools/source_hunt.py --target TARGET --repo-url https://github.com/org/repo --source-file src/routes.py
 ```
 
-`--source-file` selects repository-relative UTF-8 files explicitly (repeatable;
-32 distinct files, 1 MiB each). The existing source/secret/CI scan still runs;
-this is not an execution mode or a general parser. For already saved originals,
-read them directly instead of recollecting. Local input performs no remote acquisition.
+Local input performs no remote acquisition. The existing clone-size boundary remains;
+use `--allow-large-repo` only for a deliberately selected larger repository. Do not run
+repository scripts, builds, hooks or workflows merely to read them.
 
-`repo_source_meta.json/source_capture` binds each original path to its exact
-SHA256, byte count and private `repo_source_files/<sha256>.txt` snapshot. Read
-that snapshot with native Read/Grep and cite its original path and line range.
-The hash binds dirty/current bytes independently of Git HEAD; no Git means
-revision unknown. Empty files are valid empty originals, not a clean audit.
+## Retained artifacts
 
-Missing, non-UTF-8, oversized and unsafe/symlink paths are per-file unavailable;
-deferred names are explicit. Any omission makes capture and the command partial
-(exit 2), retaining successful originals. Existing changed snapshots fail rather
-than overwrite evidence. A complete capture only covers selected files; it says
-nothing about unrequested files, deployment correspondence or exploitability.
+```text
+findings/<target-key>/exposure/repo_source_meta.json
+findings/<target-key>/exposure/repo_summary.md
+findings/<target-key>/exposure/repo_source_files/<sha256>.txt
+findings/<target-key>/exposure/repo_workflows.json
+findings/<target-key>/exposure/repo_workflows/<sha256>.yaml
+```
 
-Use `skills/src-hunter/modules/whitebox-audit.md` for entry/guard/sink analysis and conditional
-source-to-runtime handoff. Source suggestions never run code, create an Action,
-confirm a Finding or bypass `triage-validation` and the assessment owner.
+Use the canonical target key from `tools/target_paths.py`; acquisition writes these
+paths for you. Meta explicitly records `execution_mode=source-capture`,
+`secret_scan=not_run` and `ci_scan=not_run`. Historical `repo_secrets.json` and
+`repo_ci_findings.json` remain readable and are neither overwritten nor counted as
+this run's results.
+
+`--source-file` is repeatable: at most 32 distinct repository-relative UTF-8 files,
+1 MiB each. `source_capture` maps original paths to exact SHA-256, byte count and
+private snapshot. Missing, non-UTF-8, oversized or unsafe/symlink paths are unavailable;
+`deferred_paths` retains names beyond the bound. Any omission makes capture partial
+(exit 2), preserving successful originals. Empty files are valid empty originals.
+
+Workflow collection preserves at most 256 `.yml`/`.yaml` originals under
+`.github/workflows`, 1 MiB each, without YAML parsing or pattern checks. Invalid YAML
+is still retained as source bytes. The inventory records paths, hashes, sizes,
+per-file status, `remaining_files` and deferred names. Unreadable, oversized or unsafe
+files and deferred work make the inventory partial. `analysis_status=not_run` is
+independent of collection status.
+
+Snapshots preserve BOM and line endings, use private files (0600), reuse identical
+bytes and refuse changed existing snapshots. `repo_commit` is the acquired Git HEAD
+when available, otherwise unknown. It does not prove a clean working tree or matching
+deployment; the snapshot hash identifies the bytes actually read. A complete capture
+only describes these collected files, with no clean audit or exploitability claim.
+
+## Native analysis and handoff
+
+Read retained originals and cite original paths, line context, hash and revision.
+For GitHub Actions, trace event input through conditions, permissions, checkout refs,
+expressions and code execution. An event name or checkout alone proves no exploit.
+Use a directly invoked upstream tool such as `sisakulint` or `gitleaks` only when it
+answers the selected question; retain its raw output, command/version and exit status.
+
+Connect a source lead to the target's deployed entry before runtime validation. Then
+use existing evidence registration and assessment owners for the selected request.
+Source capture or upstream output does not authorize execution, create an Action or
+confirm a Finding.

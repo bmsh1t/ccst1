@@ -17,14 +17,25 @@ python3 tools/hunt.py --target <target> --scan-only --quick
 bash tools/vuln_scanner.sh <recon_dir> [--quick|--full] [--skip <modules>]
 ```
 
-正常出口的 `summary.json` 至少包含：
+每轮在 `findings/<target-key>/nuclei_runs/<run-id>/` 保存独立执行回执，
+`summary.json` 是 latest 投影，存在本身不表示完成。至少包含：
 
 ```json
 {
-  "input_contract": "live-priority-targets",
+  "execution_mode": "upstream-nuclei",
+  "status": "sampled",
+  "assessment_status": "not_run",
+  "input_contract": "live-priority-origins",
   "raw_url_count": 19000,
   "parameter_url_count": 4,
-  "ordered_scan_count": 3
+  "ordered_scan_count": 3,
+  "lane_coverage": {
+    "nuclei_default": {
+      "execution_kind": "active_scanner", "status": "sampled",
+      "input_total": 3, "selected": 2, "remaining": 1,
+      "closure_blocking": false
+    }
+  }
 }
 ```
 
@@ -40,35 +51,43 @@ autopilot_gate._scanner_lane_residuals(state: dict) -> list[dict]
 
 - `recon/<target>/urls/all.txt` 和 collector 原始文件是完整证据语料，不删除、
   不覆盖参数值、顺序、重复参数、编码等变体。
-- 常规 broad scanner 的 `ordered_scan_targets.txt` 只由 `priority/*.txt` 与
-  `live/urls.txt` 按顺序合并并 exact 去重；参数 lane 独立消费
-  `urls/with_params.txt` 的派生视图。
+- 每轮 `ordered_scan_targets.txt` 只由已有 `priority/critical_hosts.txt`、
+  `high_hosts.txt`、`prioritized_hosts.txt` 与 `live/urls.txt` 按顺序合并、exact 去重；
+  live URL 文件缺失或为空时沿用 `live/httpx_full.txt` 的 URL 列。
+  保留候选、排除项及完整 origin 输入；不修改 Recon 原件，不再自动运行参数/漏洞类别 lanes。
+- 每个 URL 与其 origin 都必须通过 target、当前 Scope 和选定 AuthSession 边界。
+  origin 去重不能放宽已有 scheme/port 边界；当前 Scope owner 的 URL path/query
+  是 seed 上下文，未实现路径级限制。外部来源仍留在 Recon/raw 和排除清单。
+  执行沿用 Store admission、canonical target key 和 phase lock，不写领域状态。
 - General Nuclei consumes only the origin-deduplicated bounded derivative of
   that ordered list: quick/standard/full default to 50/100/200 origins, with
   `BB_NUCLEI_MAX_TARGETS` as an explicit override. `summary.json` must retain
   available/selected/truncated counts. This is a bounded breadth sensor, not
   exhaustive coverage; raw or long-tail paths require an AI-selected,
   evidence-backed targeted input.
-- The integrated CVE lane covers low-to-critical templates on those bounded
-  origins. It excludes only DoS/brute-force tags, local `code` templates, and
-  external interactsh callbacks by default; headless/JavaScript/fuzz/intrusive
-  labels are not category-level skips. Rate, concurrency, and timeout caps are
-  the execution controls; scanner output remains advisory until exact replay
-  and impact validation.
-- Explicitly state-changing Scanner probes, including upload canaries and HTTP
-  method tampering, require `ALLOW_UNSAFE_HTTP_TESTS=1`. Without the opt-in they
-  are skipped, recorded under `manual_review/unsafe_skipped.txt`, and remain
-  reviewable rather than clean; HTTP method alone is not a universal effect
-  classifier.
+- The integrated pass uses installed Nuclei `cve` tags at medium/high/critical,
+  excluding DoS/bruteforce/fuzz tags and code/headless protocols. Redirects,
+  template update checks and interactsh are disabled. Rate, concurrency and timeout
+  are explicit positive bounds; `timeout`/`gtimeout` is required. Template revision
+  is currently unknown and stated in `command.json`; these flags do not establish
+  that arbitrary installed templates are free of side effects or cover every CVE.
+- Upload canaries, method-tampering probes, fixed categories and automatic
+  severity/impact mapping are retired from this integrated entry. Native Skill/model
+  selects targeted methods from evidence and existing execution/evidence owners.
+  `--skip nuclei|cves|all` or `BBHUNT_DISABLE_NUCLEI_CVES` records skipped execution;
+  retired category skip names are recorded under `requested_skips` only and do not
+  project category skips or constrain native investigation. `skipped_checks` contains
+  only `nuclei` when the integrated pass is skipped.
 - `commands/autopilot.md` and `agents/autopilot.md` are controller prompts,
   not embedded playbooks. Guard their UTF-8 sizes at 20 KiB and 32 KiB while
   separately testing required runtime references and rejecting embedded payload
   tables; do not use line count as a prompt-cost proxy.
 - bounded Surface/projection 是默认 AI 窗口，不是能力上限；长尾通过 index
   分页、raw 查询或证据驱动的专项列表继续消费。
-- findings 目录创建后立即删除旧 canonical summary 和临时 summary；consolidation
-  先生成 `findings.json`，成功后再以 `summary.json` 作为最后发布的 completion marker。
-  finding index 或 summary 序列化失败都必须非零退出；历史 raw evidence 不随之删除。
+- 旧 latest summary 在本轮独立目录保留为 `previous_summary.json/txt` 后替换为当前
+  非终态投影。每轮保留输入、raw JSONL、stdout/stderr、version、command、真实上游退出码
+  （已知时）、review 和 summary；不删除旧类别产物、findings 或历史原件。
+  per-run summary 先于 latest 发布；没有跨文件事务保证。写入失败非零，保留已落盘原件。
 - 任一 Nuclei lane 非零退出时，该 lane 必须显示 `incomplete`，不得同时显示
   `clean`。`hunt.py` 使用既有 `scan_failed / run_vuln_scan_failed` breadcrumb，
   Dashboard 显示 `Failed`，不能把已执行失败显示成 `Skipped` 或成功。
@@ -81,10 +100,11 @@ autopilot_gate._scanner_lane_residuals(state: dict) -> list[dict]
 - 未识别 manual-review 文件只是证据索引，不得自动成为 workflow lead、Candidate、
   Coverage 结论或 Queue 动作。`unsafe_skipped.txt`、`open_200_api.txt` 和
   `standard_public_metadata.txt` 继续使用各自已有的专用 handler。
-- Incomplete scanner runs still pass successful lane outputs through the canonical
-  `finding_index` owner as unvalidated candidates. They do not publish `summary.json`
-  or `scanner_pass.json`, so partial evidence stays reviewable without claiming
-  scanner completion or tested-clean coverage.
+- 当前 scanner 不调用 `finding_index`、consolidation 或 `scanner_pass_writer`，不自动
+  创建 Finding、Action 或 Coverage 记录。失败、缺工具、skipped、running 也发布真实状态，
+  失败保留 raw 且 `selected=0`、全部输入留为 remaining；坏 JSONL/UTF-8 使该轮 incomplete。
+  complete/sampled 只描述上游 exit-zero 执行，raw 条数不是确认漏洞数；`assessment_status=not_run`。
+  SIGKILL 无 trap 时保留此前非终态回执，不用旧 completed 投影冒充本轮结果。
 - Recon's configured soft budget is advisory telemetry, not a phase-stop or
   completion verdict. A completed run records `run_budget.status=ok` and may set
   `soft_budget_status=advisory_exceeded`; only interruption, parent/tool timeout,
@@ -131,9 +151,9 @@ autopilot_gate._scanner_lane_residuals(state: dict) -> list[dict]
   with positive `remaining` is `closure_blocking` and resumes through the existing
   Recon frontier; completed and non-success states are non-blocking. The
   quick/normal batch caps remain unchanged.
-- Scanner `summary.json.lane_coverage` records `input_total`, `selected`,
-  `remaining`, `execution_kind`, and continuation for bounded XSS, SQLi, SSTI,
-  Nuclei/CVE, SSRF, Open Redirect, and IDOR lanes. Positive remaining input uses
+- Scanner `summary.json.lane_coverage` now writes only `nuclei_default`, with
+  `input_total`, completed `selected`, `remaining`, `execution_kind`, and continuation.
+  Historical multi-lane summaries remain readable. Positive remaining input uses
   the same global-review token contract as advisory Recon residuals; candidate-only
   depth is retained and cannot be reported as scanner-tested.
 - Scanner reader 与直接 state 的 gate 共用 `_scanner_lane_accounting()`：三项计数仅接受
@@ -163,14 +183,15 @@ autopilot_gate._scanner_lane_residuals(state: dict) -> list[dict]
 
 | 条件 | 结果 |
 |---|---|
-| 缺少 live data / ordered input | 非零退出，本轮无 `summary.txt/json` |
+| 缺少 live data / 没有允许的 origin | 非零退出，保留 incomplete 回执和错误原文 |
 | killed / stopped / timeout / non-zero | incomplete，不得解释为零发现或完成 |
-| 任一已启动 Nuclei lane 非零退出 | 记录失败标记、非零退出且不发布 summary |
-| canonical finding index 写入失败 | 非零退出且不发布 summary |
+| Nuclei 非零、超时或坏 JSONL/UTF-8 | 非零、incomplete、已完成输入为 0；保留 raw/退出事实/remaining |
+| Nuclei 或 timeout 不可用 | unavailable、非零、不执行；输入和剩余仍可审阅 |
+| 显式 nuclei/cves/all skip | skipped、零 wrapper 退出；未执行不等完成或无漏洞 |
 | Recon soft budget exceeded but run reaches normal end | `run_budget.status=ok`, advisory telemetry only |
 | Recon parent/tool interruption or timeout | `run_budget.status=partial`, preserve artifacts, handoff |
-| summary 序列化/落盘失败 | 清理临时文件、非零退出，不发布 canonical summary |
-| 正常到达 consolidation | 写入新 summary，计数 raw/parameter/ordered 三类输入 |
+| summary 序列化/落盘失败 | 清理临时文件、非零退出；保留已落盘的本轮及历史原件 |
+| 正常上游退出、合法 JSONL | complete 或有 remaining 的 sampled，保留输入/raw/review；analysis not_run |
 | raw corpus 从 1 增至 19K、live/priority 不变 | `ordered_scan_count` 不变 |
 | 需要历史长尾或专项 CVE | 分页/查询 raw corpus 并构造专项输入，不扩大默认 broad input |
 | manual_review 路径缺失、空、绝对或越出 target findings 根目录 | 不进入 Surface 索引 |
@@ -197,10 +218,11 @@ autopilot_gate._scanner_lane_residuals(state: dict) -> list[dict]
 
 - `tests/test_vuln_scanner_script.py`：19K raw fixture 下断言 raw=19000、parameter
   为原始参数行数、ordered 仅等于 live/priority exact 去重数，且 raw 文件未改变。
-- 同文件预写旧 summary 后在 consolidation 前退出，断言 summary 被清理、
-  `findings.json` 保留。
-- 注入 summary JSON 写入失败，断言脚本非零退出且 canonical/temp summary 均不存在。
-- 注入 Nuclei 非零退出或 finding-index 写入失败，断言脚本非零退出且不发布 summary。
+- 用临时目录和无网络 fake Nuclei 调用真实入口：覆盖合法/空输出、非零、坏 JSONL/编码、
+  unavailable、skip、timeout 和 Scope/Auth 输入筛选；断言 raw/退出码/残余和 Store binding。
+- 预放旧 summary、类别产物和 `findings.json`，断言仅更新 latest；旧 summary 原文进入本轮
+  previous 快照，其余历史原件未变。输出 symlink/非法 bounds 拒绝。
+- 写入失败必须非零；保留原件并暴露非终态，不能声称完成。项目历史测试清单不代表本轮已运行。
 - `tests/test_recon_engine_script.py` 与 `tests/test_runtime_state.py`：软预算超限仍可调度
   后续阶段并投影为 advisory；真实中断才投影为 partial。
 - `tests/test_autopilot_state_tool.py`：command/agent/rule 同时固定 wrapper、专项扩展和
@@ -218,9 +240,7 @@ autopilot_gate._scanner_lane_residuals(state: dict) -> list[dict]
 - `tests/test_surface_tool.py`：canonical summary 新增未知 manual-review 文件后，断言
   完整 ranked 索引、有界 projection 和默认文本可见；同时覆盖空、缺失、重复、绝对及
   越界路径，并固定未知条目不进入 workflow leads。
-- `tests/test_vuln_scanner_script.py`：upload and method-tampering fixtures must
-  prove the explicit opt-in gate skips requests, preserves the review artifact,
-  and leaves the approved path unchanged.
+- 活动调用/import/install/prompt 不得引用已退役类别扫描、源码评级和业务包装。
 
 ### 7. Wrong vs Correct
 
@@ -235,7 +255,7 @@ int(fractional_count) -> remaining=0 -> valid；root *.json -> 无差别解析 S
 
 ```text
 raw corpus -> Surface/专项消费者
-live + priority -> ordered_scan_targets -> quick broad scanner -> 正常 consolidation -> summary
+live + priority -> Scope/Auth-owned origins -> bounded upstream -> raw/exit/status/remaining -> native review
 共享严格计数 -> 无效标记与 residual 保留；按文件归属排除 summary -> 独立 claim 继续可恢复
 ```
 
@@ -1256,9 +1276,9 @@ python3 tools/coverage_matrix.py mark-endpoint-kind --target target.com --endpoi
 
 ### 1. Scope / Trigger
 
-Use this contract whenever `tools/vuln_scanner.sh`,
-`tools/scanner_pass_writer.py`, or `tools/coverage_matrix.py` exchange scanner
-coverage feedback.
+Use this contract for historical scanner-pass reads and explicit
+`tools/scanner_pass_writer.py` / `tools/coverage_matrix.py` compatibility.
+The current integrated scanner writes raw receipts only and does not invoke this writer.
 
 ### 2. Signatures
 
@@ -1269,6 +1289,8 @@ coverage feedback.
 
 - `scanner_pass.json` records scanner-touched `(endpoint, vuln_class, module)`
   pairs only as advisory context.
+- Do not derive a new pass from historical category files after an integrated Nuclei
+  run or interruption. Their existence cannot establish this run's touched endpoints/classes.
 - Pre-created category directories are not scanner-touched evidence; a module
   needs at least one regular file in its category directory before
   `scanner_pass_writer.py` records it.
@@ -1686,46 +1708,53 @@ invented priority score. Live provider acquisition/freshness/Scope contracts sta
 unchanged. Regression: tests/test_intel_neutral_selection.py.
 
 
-## Scenario: Preserved workflow sources and unassessed CI signals
+## Scenario: Source capture and native repository review
 
 ### 1. Scope / Trigger
-`source-hunt` scans a local checkout or a bounded acquired clone. Retiring CI
-impact/confidence guesses requires retained source bytes before clone cleanup.
+`source-hunt` optionally acquires a selected repository and retains originals for
+native review. Collection status must stay separate from secret/CI analysis.
 
 ### 2. Signatures
-`scan_repo_ci(repo_path, *, artifact_dir=None, repo_commit="") -> list[RepoFinding]`
-retains its list API and four historical rule IDs. The source-hunt CLI/options
-and prior bundle filenames remain. Optional artifact_dir writes a workflow inventory
-and content-addressed snapshots; direct list-only calls reject incomplete scans.
+`capture_repo_workflows(repo_path, *, artifact_dir, repo_commit="") -> dict`
+publishes a bounded inventory and exact snapshots. `source_hunt.run_source_hunt()`
+retains repository acquisition and adds repeatable `--source-file` capture.
+The prior static secret/CI scanner modules and `RepoFinding` model are retired.
 
 ### 3. Contracts
-CI severity/confidence are unknown; metadata.status=candidate. Trigger/checkout,
-self-hosted/event, expression/run and unpinned-reference co-occurrence are facts for
-review, not exploitability or Finding authority. Unknown/invalid configuration is
-not negative evidence. Preserve all unpinned references for a job, not only the first.
-
-`repo_workflows.json` contains schema_version, repo_commit, complete/partial status,
-total/remaining file counts, deferred_paths for unscanned file names, and per-file records: source file_path, status, and
-size/hash/artifact where available. Source `artifact` paths are relative to the
-inventory directory, as are candidate workflow_artifact refs; line_number locates
-the original job context. UTF-8 decoding/parsing uses the same bytes saved in the
-snapshot, preserving BOM/CRLF and even invalid source bytes. Output files are 0600;
-content-addressed snapshots are atomically created, reused only for identical bytes,
-never overwritten. Missing/modified sources cannot become verified evidence.
-
-repo_commit is acquired Git HEAD context, not a clean-worktree assertion. Per-file
-hash is the exact observation identity. Repo size approval, clone and secret scanner
-behavior remain; no remote substitution or new dependency. No Store writes/assessment
-or automatic Queue activation. Missing workflows means no GitHub Actions files found,
-not that other CI formats were scanned or the repository is safe.
+- Meta records `execution_mode=source-capture`, `secret_scan=not_run` and
+  `ci_scan=not_run`. It never emits automatic secret/CI findings or ratings.
+  Existing `repo_secrets.json` and `repo_ci_findings.json` remain unchanged;
+  recovery reads historical counts only for a historical summary, never invents zero counts.
+- `repo_workflows.json` records `inventory_kind=source-capture`, `analysis_status=not_run`,
+  schema version, repo commit, complete/partial collection, total/remaining counts,
+  deferred names and per-file path/status/size/hash/artifact. Capture at most 256
+  direct `.yml`/`.yaml` files from `.github/workflows`, 1 MiB each. No YAML parsing,
+  regex CI rules, severity/confidence or line-signal generation. Even invalid YAML
+  or invalid UTF-8 remains exact source bytes.
+- Explicit source capture accepts at most 32 distinct repository-relative UTF-8
+  files, 1 MiB each, with path/hash/size/artifact and explicit deferred names.
+  Missing, unsafe, nonregular, invalid-UTF-8 and oversized sources are unavailable;
+  successful empty files are valid originals. Any omission makes this capture partial.
+- Source and workflow snapshots preserve BOM/CRLF, are private 0600 files and
+  content-addressed. Reuse requires identical bytes; conflicts refuse replacement.
+  Artifact paths are relative to the exposure inventory. Git HEAD is revision context
+  only; actual file hashes bind the observed working-tree bytes, not deployed code.
+- Acquisition uses the existing clone approval boundary. It does not execute repository
+  scripts/workflows or write Store, Action, Finding or Coverage state. Native Read/Grep
+  and optionally direct upstream tools provide analysis; preserve their own inputs,
+  command/version/exit/raw and use existing domain owners for explicit follow-up.
+- Recon stores cached GitHub links in `cicd/source_candidates.json` with source path,
+  line and `ownership=unverified`, `analysis_status=not_run`. Manifest phase `source_refs`
+  records successful reference collection, including empty collection; it is not a
+  skipped CI scan or a requirement to investigate every link. URLs do not expand Scope.
 
 ### 4. Validation & Error Matrix
-- Bad encoding/YAML/root/jobs/steps: retain bounded bytes; per-file invalid; continue others.
-- Malformed job among valid jobs: retain valid-job candidates and flag the workflow invalid.
+- Invalid YAML/UTF-8 workflow: retain exact bytes; collection may complete, analysis not_run.
+- Invalid UTF-8 explicitly selected source: unavailable/partial; retain other successful originals.
 - Source links/nonregular files or linked output directories: do not read through/publish outside them.
 - More than 256 files or a file above 1 MiB: partial and explicit remainder/oversized, not clean.
 - Snapshot hash conflict or publication failure: nonzero; retain old bytes/manifests; cleanup temp clone.
-- Incomplete scan with artifact_dir: preserve candidates/diagnostics, source-hunt exits 2.
+- Partial capture: preserve successful originals and omission/deferred diagnostics; source-hunt exits 2.
 - Confirmation needed before acquisition: not_run inventory, no reuse of old complete status.
 - Damaged/inconsistent inventory in consumer: workflow_status=invalid, not complete.
 
@@ -1735,13 +1764,13 @@ Base: local modified working tree records its HEAD context plus different actual
 Bad: infer attacker-code execution from pull_request_target and default checkout alone.
 
 ### 6. Tests Required
-`tests/test_repo_ci_scan.py` covers old signal discovery, unassessed semantics,
-exact bytes/hash/job lines, all unpinned refs, empty/unmatched/invalid material,
-limits, source/output path safety, corruption, local commit context, failure cleanup
-and post-clone source access. `test_repo_root_seams.py` checks explicit-root outputs
-and no Store mutation; Resume/Autopilot retain candidates and incomplete source health.
+An isolated local fixture must cover exact BOM/CRLF and invalid workflow bytes,
+empty originals, limits, unsafe paths, immutable conflicts, not_run/partial statuses,
+historical secret/CI byte preservation, source-summary compatibility and unchanged
+Store binding. No repository scripts, network or project test-suite execution is
+needed for that capture contract. Historical scanner tests describe the retired behavior.
 
 ### 7. Wrong vs Correct
 Wrong: pattern matched -> high-confidence vulnerability -> source clone removed.
-Correct: preserve bounded exact workflow -> expose signals + diagnostics -> AI reviews
+Correct: preserve bounded exact workflow -> source inventory + capture diagnostics -> AI reviews
 conditions/ref/permissions/data flow -> explicit domain actions if warranted.

@@ -3,13 +3,17 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
 import subprocess
 import tempfile
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from repo_scan_models import RepoSourceMeta
+try:
+    from tools.repo_scan_models import RepoSourceMeta
+except ImportError:
+    from repo_scan_models import RepoSourceMeta
 
 MAX_REPO_SIZE_BYTES = 200 * 1024 * 1024
 MAX_REPO_FILE_COUNT = 20_000
@@ -114,7 +118,10 @@ def probe_local_repo(repo_path: str) -> RepoSourceMeta:
         dirs[:] = [name for name in dirs if name != ".git"]
         for filename in files:
             file_path = Path(root) / filename
-            size_bytes += file_path.stat().st_size
+            info = file_path.lstat()
+            if not stat.S_ISREG(info.st_mode):
+                continue
+            size_bytes += info.st_size
             file_count += 1
 
     return RepoSourceMeta(

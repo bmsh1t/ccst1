@@ -36,6 +36,8 @@ tools/spray_orchestrator.sh https://target.test/login \
 `spray-shortlist.txt` 与同目录 `spray-shortlist.jsonl` 均须为 `0600`。JSONL 顺序与密码一致，
 每行包含 `schema_version=1`、`pwd_sha256_prefix`、`source`、`hibp_count`、`hibp_bucket`、
 `reason`。入口拒绝 candidate pool/ranked alias、缺失 metadata 或摘要漂移。
+未查询 HIBP 时写 `hibp_count=null`、`hibp_bucket=unknown`；已有查询失败的
+`-1/unknown` 仍可读取。已知计数为非负整数，不能用 0 替代未知。
 
 ## 模式
 

@@ -4,12 +4,12 @@ HIBP k-anonymity password breach checker.
 
 Reads a password wordlist, queries the HaveIBeenPwned /range/ API using
 k-anonymity (only first 5 chars of SHA-1 are sent), enriches each password
-with its breach count, then writes the ranked output.
+with its breach count, then writes candidates in input order.
 
-Why rank by breach count:
-  - HIGH count (>1M):  "Password123" — already in every generic spray list
-  - SWEET SPOT (1-1k): proven-real passwords not yet over-used
-  - ZERO count:        never seen — could be truly company-specific (or random)
+Counts describe HIBP observations, not candidate priority or target relevance.
+Failed queries remain unknown (-1); zero requires a valid range response.
+Legacy bucket names and the default -ranked.txt filename remain compatible.
+Exit 2 means enrichment is incomplete; available results are still written.
 
 Usage:
   tools/breach_checker.py <wordlist.txt>
@@ -25,7 +25,9 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from http.client import HTTPException
 from itertools import islice
 from pathlib import Path
 
@@ -44,6 +46,7 @@ def positive_int(value: str) -> int:
 
 
 def bucket_for_count(count: int) -> str:
+    """Return legacy count-band labels; the names do not assign priority."""
     if count < 0:
         return "unknown"
     if count == 0:
@@ -54,11 +57,8 @@ def bucket_for_count(count: int) -> str:
 
 
 def rank_results(passwords: list[str], results: dict[str, int]) -> list[tuple[str, int]]:
-    """按审阅价值分桶，并在桶内保留目标输入顺序。"""
-    priority = {"sweet": 0, "zero": 1, "unknown": 2, "common": 3}
-    indexed = [(password, results.get(password, -1), index) for index, password in enumerate(passwords)]
-    indexed.sort(key=lambda row: (priority[bucket_for_count(row[1])], row[2]))
-    return [(password, count) for password, count, _ in indexed]
+    """Legacy entry point: attach counts while preserving candidate input order."""
+    return [(password, results.get(password, -1)) for password in passwords]
 
 
 def sha1_prefix_suffix(password: str) -> tuple[str, str]:
@@ -67,13 +67,39 @@ def sha1_prefix_suffix(password: str) -> tuple[str, str]:
     return digest[:5], digest[5:]
 
 
+def _parse_range_response(body: str) -> dict[str, int]:
+    """Reject invalid responses instead of treating them as zero-count ranges."""
+    if not body.strip():
+        raise ValueError("empty HIBP range response")
+    counts: dict[str, int] = {}
+    for line in body.splitlines():
+        suffix, separator, count_text = line.strip().partition(":")
+        if (
+            not separator
+            or len(suffix) != 35
+            or any(char not in "0123456789abcdefABCDEF" for char in suffix)
+            or not count_text.isascii()
+            or not count_text.isdecimal()
+        ):
+            raise ValueError("invalid HIBP range response")
+        suffix = suffix.upper()
+        count = int(count_text)
+        if suffix in counts and counts[suffix] != count:
+            raise ValueError("conflicting counts in HIBP range response")
+        counts[suffix] = count
+    return {suffix: count for suffix, count in counts.items() if count > 0}
+
+
 def query_range(prefix: str, retries: int = 3) -> dict[str, int]:
     """Query HIBP /range/{prefix}, return {suffix: count}.
 
     Uses Add-Padding header (HIBP-recommended privacy feature that pads the
     response with random fake entries so an observer can't infer real hits
-    from response size).
+    from response size). ``retries`` is the total attempt limit; failures
+    propagate when it is exhausted.
     """
+    if retries < 1:
+        raise ValueError("retries must be a positive integer")
     req = urllib.request.Request(
         API_URL.format(prefix),
         headers={"User-Agent": USER_AGENT, "Add-Padding": "true"},
@@ -82,23 +108,14 @@ def query_range(prefix: str, retries: int = 3) -> dict[str, int]:
         try:
             with urllib.request.urlopen(req, timeout=15) as resp:
                 body = resp.read().decode("utf-8")
-            return {
-                suffix: int(count)
-                for line in body.splitlines()
-                if ":" in line
-                for suffix, count in [line.strip().split(":", 1)]
-                if int(count) > 0  # drop padded fake entries (count=0)
-            }
+            return _parse_range_response(body)
         except urllib.error.HTTPError as e:
-            if e.code == 429:  # rate limited
-                time.sleep(2 ** attempt)
-                continue
-            raise
+            if e.code != 429 or attempt == retries - 1:
+                raise
         except (urllib.error.URLError, TimeoutError):
             if attempt == retries - 1:
                 raise
-            time.sleep(2 ** attempt)
-    return {}
+        time.sleep(2 ** attempt)
 
 
 def check_batch(passwords: list[str], concurrent: int) -> dict[str, int]:
@@ -114,6 +131,7 @@ def check_batch(passwords: list[str], concurrent: int) -> dict[str, int]:
         prefix_groups.setdefault(prefix, []).append((pwd, suffix))
 
     results: dict[str, int] = {}
+    failures: Counter[str] = Counter()
     completed = 0
     total = len(prefix_groups)
     start = time.time()
@@ -129,10 +147,12 @@ def check_batch(passwords: list[str], concurrent: int) -> dict[str, int]:
                     bucket = future.result()
                     for pwd, suffix in prefix_groups[prefix]:
                         results[pwd] = bucket.get(suffix, 0)
-                except Exception:
+                except (OSError, ValueError, HTTPException) as exc:
                     # API 失败保持 unknown，不伪装成未泄露。
                     for pwd, _ in prefix_groups[prefix]:
                         results[pwd] = -1
+                    reason = f"HTTP {exc.code}" if isinstance(exc, urllib.error.HTTPError) else type(exc).__name__
+                    failures[reason] += 1
 
                 if completed % 500 == 0 or completed == total:
                     elapsed = time.time() - start
@@ -147,6 +167,9 @@ def check_batch(passwords: list[str], concurrent: int) -> dict[str, int]:
                     )
 
     print("", file=sys.stderr)
+    if failures:
+        reasons = ", ".join(f"{reason}: {count}" for reason, count in sorted(failures.items()))
+        print(f"[!] Failed HIBP prefixes ({reasons}); associated counts remain unknown.", file=sys.stderr)
     return results
 
 
@@ -158,13 +181,13 @@ def main() -> int:
     )
     p.add_argument("wordlist", type=Path, help="Input wordlist (one password per line)")
     p.add_argument("-o", "--output", type=Path,
-                   help="Output ranked file (default: <input>-ranked.txt)")
+                   help="Output candidates in input order (default: <input>-ranked.txt)")
     p.add_argument("--min-count", type=int, default=0,
-                   help="Keep passwords with breach count >= N (default: 0 = keep all)")
+                   help="Keep known counts >= N (default: 0); unknown counts are always kept")
     p.add_argument("--max-count", type=int, default=None,
-                   help="Keep passwords with breach count <= N (e.g. 1000000 drops generic)")
+                   help="Keep known counts <= N; unknown counts are always kept")
     p.add_argument("--concurrent", type=positive_int, default=20,
-                   help="Parallel HIBP requests (default: 20; HIBP allows ~25/sec)")
+                   help="Parallel HIBP requests (default: 20)")
     p.add_argument("--limit", type=positive_int, default=None,
                    help="Process only first N unique passwords (testing/preview)")
     p.add_argument("--shuffle", action="store_true",
@@ -216,7 +239,7 @@ def main() -> int:
     results = check_batch(passwords, args.concurrent)
     elapsed = time.time() - start
 
-    print(f"[+] Done in {elapsed:.1f}s")
+    print(f"[*] Queries finished in {elapsed:.1f}s")
 
     # API error 保持为 unknown；显式 count 范围只过滤已知计数。
     filtered = [
@@ -244,32 +267,29 @@ def main() -> int:
 
     # Stats
     in_breach = sum(1 for _, c in filtered if c > 0)
-    sweet = sum(1 for _, c in filtered if 1 <= c <= 1000)
-    generic = sum(1 for _, c in filtered if c > 1_000_000)
+    count_1_to_1000 = sum(1 for _, c in filtered if 1 <= c <= 1000)
+    count_over_1000 = sum(1 for _, c in filtered if c > 1000)
     unknown = sum(1 for _, c in filtered if c < 0)
 
     print()
     print("=" * 60)
     print("  Breach Check Summary")
     print("=" * 60)
+    print(f"  Status:           {'partial' if unknown else 'complete'}")
     print(f"  Output:           {output}")
     if args.with_counts:
         print(f"  Counts TSV:       {output.with_name(output.stem + '-counts.tsv')}")
-    print(f"  Total ranked:     {len(filtered):,}")
+    print(f"  Total output:     {len(filtered):,}")
     if filtered:
-        in_pct = 100 * in_breach / len(filtered)
-        print(f"  In any breach:    {in_breach:,} ({in_pct:.1f}%)")
-        print(f"  Sweet spot (1-1k):  {sweet:,}  "
-              f"-- used by some humans, not in every spray list")
-        print(f"  Generic (>1M):      {generic:,}  "
-              f"-- skip these, already in every spray list")
-        print(f"  Never seen (0):     {len(filtered)-in_breach-unknown:,}  "
-              f"-- possibly company-specific")
-        if unknown:
-            print(f"  Unknown (API err):  {unknown:,}")
+        print(f"  Count 1-1000:     {count_1_to_1000:,}")
+        print(f"  Count >1000:      {count_over_1000:,}")
+        print(f"  Count 0:          {len(filtered)-in_breach-unknown:,}")
+        print(f"  Unknown:          {unknown:,}")
     print("=" * 60)
 
-    return 0
+    if unknown:
+        print("[!] Enrichment incomplete; unknown candidates are retained (exit 2).", file=sys.stderr)
+    return 2 if unknown else 0
 
 
 if __name__ == "__main__":

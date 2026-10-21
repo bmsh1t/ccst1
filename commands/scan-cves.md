@@ -1,48 +1,31 @@
 ---
-description: Run a focused nuclei CVE sweep against a host or recon directory, optionally filtered by year. Runs log4j-scan in parallel when installed for legacy enterprise stacks. Usage: /scan-cves <host-or-file> [--year 2024] | /scan-cves --recon <recon-dir>
+description: Select a reachable advisory and invoke upstream Nuclei directly with an explicit template and bounded input. Usage: /scan-cves TARGET_OR_INPUT [--recon RECON_DIR]
 ---
 
 # /scan-cves
 
-Targeted nuclei scan of the `cve/` template directory plus optional log4j-scan.
+Start from the observed product/version, deployed entry and current advisory sources.
+Use /intel when applicability is unknown. Select a reachable CVE/template and its
+actual target URLs; a year or severity label does not select an applicable test.
 
-## Usage
+Use the installed upstream CLI directly. Check its local help and selected template,
+then retain command/version, exact template, input, raw JSONL, logs and exit status
+under the target's findings directory. Shared Scope/Auth and artifact conventions
+are in [Direct upstream execution](../docs/tool-index.md#direct-upstream-execution).
 
+After selecting TEMPLATE_PATH, TARGET_URL and a new private RUN_DIR:
+
+```bash
+nuclei -u "$TARGET_URL" -t "$TEMPLATE_PATH" -dr -duc -jsonl -o "$RUN_DIR/nuclei.jsonl"
 ```
-/scan-cves https://target.com
-/scan-cves --recon recon/target.com
-/scan-cves --year 2024 recon/target.com/live/urls.txt
-```
 
-## Why a separate command
+Choose rate, concurrency and timeout from the selected target/template. For several
+entries prepare an explicit short input list. Updates are explicit maintenance.
+Log4j or another specialist scanner is an alternative when it answers the current
+question, without an automatic second scan.
 
-The normal recon/scanner pass does not run a product-wide CVE sweep. This command
-is the explicit, focused path for **known CVEs**, which:
-
-- Cuts the runtime by an order of magnitude (high/critical CVE templates only).
-- Surfaces signals that pay even on dormant programs (CVE-2021-44228 still hits
-  on legacy enterprise hosts).
-- Lets you re-scan one or two URLs without rerunning the full pipeline.
-
-The integrated scanner runs its bounded origin Nuclei pass by default
-(`NUCLEI_CVE_ENABLED=1`; opt out with `BBHUNT_DISABLE_NUCLEI_CVES=1`); prefer
-this command when the AI has selected a
-reachable component, version, or advisory. SQLi and SSRF are handled by their
-dedicated probes/OAST routes and do not use Nuclei by default.
-
-Set `NUCLEI_NO_UPDATE=1` to skip the template update on each run when
-iterating quickly.
-
-## Output
-
-`findings/cve/<timestamp>/`:
-- `nuclei_cve.jsonl` — one finding per line (template ID, host, severity)
-- `log4j.txt` — optional log4j-scan output when the scanner is installed
-
-## After a hit
-
-1. Confirm the version manually (don't trust the template — show the response).
-2. Check current target context, existing disclosure status, and patch posture;
-   many CVE hits are stale, already disclosed, or mid-remediation.
-3. Provide a minimal reproducible PoC that proves the version and practical
-   impact; continue to the applicable validation lane when the evidence supports it.
+An upstream hit is unassessed evidence. Verify affected version, reachability,
+controls and practical impact with the smallest discriminating experiment. Preserve
+partial output on failure; missing tools, nonzero exits and empty output do not prove
+clean coverage. The integrated vuln_scanner.sh entry separately reports its bounded
+origin execution and residuals.

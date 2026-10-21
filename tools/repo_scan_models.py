@@ -22,23 +22,3 @@ class RepoSourceMeta:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
-
-
-@dataclass
-class RepoFinding:
-    rule_id: str
-    category: str
-    severity: str
-    confidence: str
-    source: str
-    file_path: str
-    line_number: int | None
-    match_type: str
-    title: str
-    secret_preview: str = ""
-    evidence_snippet: str = ""
-    remediation: str = ""
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)

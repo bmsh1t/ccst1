@@ -1,33 +1,36 @@
 ---
-description: 生成目标相关的凭据候选池；cewler 原词、Hashcat 规则和品牌 pydictor 变异分层落盘，不执行 Spray。Usage /wordlist-gen <target> [--mode minimal|balanced|aggressive]
+description: Prepare a credential candidate pool with optional wordlist helper or upstream tools. Usage: /wordlist-gen TARGET [SEED_FILE]
 ---
 
 # /wordlist-gen
 
-生成供 AI 审阅的候选池，不生成可直接 live 的密码清单。
+Prepare candidates when the selected login question warrants them. Use known test
+accounts, observed defaults, reviewed seeds or relevant brand/business terms.
+Keep source and uncertainty; website, Hashcat, pydictor and HIBP are optional inputs.
 
-```bash
-tools/wordlist_engine.sh target.com --filter strict --mode balanced
-```
+Read existing materials natively. Invoke cewler/CeWL only for deliberately selected
+in-scope pages; upstream Hashcat --stdout with a chosen seed/rule or pydictor can
+provide useful offline variations. Check installed help and bound output cost.
+Missing optional tools leave that source unavailable.
 
-## 数据流
+`tools/wordlist_engine.sh` remains an optional batch helper with its original
+depth/mode/filter/length/rate options. Use `--seed-file FILE --skip-crawl` for
+selected local inputs, `--skip-brand` to omit brand expansion, `--skip-hashcat`
+to omit mutation, and `--rule-file`
+for an explicitly selected Hashcat rule. `--repo-root` fixes output ownership
+independently of the current directory; `--timeout` bounds each upstream stage.
+The original website/brand recipe is a convenience, not a required method chain.
+Each run retains source output, argv, stdout/stderr and exit status under
+`wordlists/runs/`; latest files retain compatibility paths and prior bytes are
+saved with the run. Exit 2 means empty/unavailable/partial material. `ranked.txt`
+is a compatibility alias of the pool, not a ranking or an approved shortlist.
 
-1. cewler → `from-website.txt`。
-2. 稳定去重和长度过滤 → `cleaned.txt`。
-3. Hashcat 对 cleaned 原词批量变异 → `website-hashcat.txt`。
-4. pydictor 只扩展域名品牌词 → `brand-pydictor.txt`。
-5. 按“品牌定向 → cleaned 原词 → Hashcat 变异”稳定 exact 去重 → `candidate-pool.txt`。
+Preserve source-specific output and stable exact deduplication in private files under
+recon/<target-key>/wordlists/; compute the key with tools/target_paths.py.
+candidate-pool.txt is review material. No synthetic ranking turns it into live input.
+Optional /breach-check enriches reviewed candidates and retains unknown counts.
 
-`ranked.txt` 是兼容 alias，含义同 candidate pool；不得直接交给 live `/spray`。
-
-## 模式
-
-| 模式 | Hashcat rule | 用途 |
-|---|---|---|
-| minimal | `top10_2025.rule` | 小型候选池 |
-| balanced | `best66.rule` | 默认 |
-| aggressive | `OneRuleToRuleThemStill.rule` | 仅离线候选准备 |
-
-工具发现顺序：显式环境变量 → `$PATH` → `$HOME/Tools`。单个来源缺失时保留其他来源；所有来源均为空才失败。不自动安装工具。
-
-下一步：`/breach-check candidate-pool.txt --with-counts`，再由 AI 结合目标证据生成有限的 `spray-shortlist.txt`。
+For a selected credential experiment, the AI writes finite spray-shortlist.txt and
+matching spray-shortlist.jsonl required by /spray, with reasons/provenance per entry.
+Existing shortlist, dry-run, lockout, request, stop and evidence contracts remain in
+agents/credential-hunter.md and skills/src-hunter/modules/credential-attack.md.

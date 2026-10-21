@@ -53,7 +53,7 @@ selected bounded investigation. The scanner is not a prerequisite for `/hunt`:
 python3 tools/hunt.py --target target.com --scan-only      # recon exists → scan cached surface
 python3 tools/hunt.py --target target.com                  # explicitly select Recon + scanner pipeline
 python3 tools/hunt.py --target target.com --quick          # lower-cost path
-python3 tools/hunt.py --target target.com --scan-only --scanner-full  # expanded bounded scanner/candidate coverage; no fixed payload lanes
+python3 tools/hunt.py --target target.com --scan-only --scanner-full  # larger bounded upstream origin batch
 ```
 
 The default Hunt CLI runs Recon and scanner; `--recon-only` skips the scanner,
@@ -70,7 +70,12 @@ BBHUNT_COOKIE='session=REDACTED' python3 tools/hunt.py --target target.com --sca
 Environment auth also supports `BBHUNT_AUTH_HEADER`; auth is propagated into
 the Python helpers and shell recon / scanner toolchain where supported.
 
-Success signal: a concrete scanner/probe artifact is written and any claimed domain registration has a Store receipt. Raw scanner summaries remain advisory. If no artifact is written, inspect the command result.
+For scanner execution, inspect status, raw JSONL, logs, exit code and input remainder in
+`findings/<target-key>/nuclei_runs/<run-id>/summary.json`. The latest summary also
+represents running, skipped, unavailable or incomplete states; its presence is not
+completion. Successful execution of selected templates is not audited coverage.
+Native review registers an actual supported candidate through existing owners;
+raw output does not create or assess a Finding automatically.
 
 For business-model maintenance, hypothesis selection, rotation and cross-stage
 questions use `skills/src-hunter/SKILL.md` on demand, not for every action. These are shared methods, not

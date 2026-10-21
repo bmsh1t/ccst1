@@ -1,18 +1,30 @@
 ---
-description: 收集公开邮箱/姓名并生成用户名候选；已知用户名时可跳过。Usage /osint-employees <target> [--with-linkedin] [--with-pydictor-social]
+description: Prepare public identity materials with an optional OSINT helper or selected upstream tools. Usage: /osint-employees TARGET
 ---
 
 # /osint-employees
 
-未知用户名时运行：
+Use existing reviewed usernames when available. For a remaining identity question,
+select public sources or one upstream collector such as theHarvester/CrossLinked.
+Check installed help, select sources/budget and retain URLs, dates, raw output and
+exit status. This command prepares evidence without a login attempt.
 
-```bash
-tools/osint_employees.sh target.com
-```
+The optional `tools/osint_employees.sh` helper retains theHarvester, opt-in
+CrossLinked and offline username/pydictor expansion. Its original options remain;
+`--emails-file FILE`, `--names-file FILE`, `--skip-harvester` and `--skip-usernames` allow local material
+without a collector. `--repo-root` controls the target artifact root and
+`--timeout` bounds each stage. Missing optional tools retain other sources with
+an unavailable/partial receipt rather than erasing the collected material.
+Each `osint/runs/` directory keeps raw collector files, argv, stdout/stderr,
+exit status and a dated summary; existing latest material names stay available.
+`observed-names.txt` and `inferred-names.txt` distinguish source observations
+from email-pattern guesses. Neither confirms an application account.
 
-流程：theHarvester → 邮箱 local-part 姓名 → username-anarchy；可选 CrossLinked 和姓名 pydictor。工具发现顺序为显式环境变量、`$PATH`、`$HOME/Tools`，不会自动安装。
+Keep public observations, inferred names and username permutations separate under
+canonical recon/<target-key>/osint/. Native reasoning can derive observed formats;
+username-anarchy is optional for selected offline expansion. A public email does
+not confirm an application account; its local-part does not establish a person's name.
 
-输出位于 canonical `recon/<target-key>/osint/`：`emails.txt`、`employee-names.txt`、
-`usernames.txt` 及可选 `personal-passwords.txt`；URL、域名和 host:port 与其他 target 工具共用 key。
-
-如果已提供经过审阅的 users file，Credential Lane 直接使用它，跳过本步骤；已确认用户名和推断用户名必须在 decision package 中分开计数。该命令只准备候选，不触发 live 认证。
+Use [Direct upstream execution](../docs/tool-index.md#direct-upstream-execution)
+for path/Scope conventions. Pass reviewed inputs and confirmed/inferred counts to
+the credential decision package; existing /spray contracts handle live authentication.

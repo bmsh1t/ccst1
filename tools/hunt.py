@@ -49,7 +49,6 @@ from memory.target_profile import default_memory_dir
 from tools.auth_session import AuthSession, add_cli_args, session_from_args
 from tools.autopilot_continuation import resolve_context_file, reject_unsupported_continuation
 from tools.credential_store import CredentialStore
-from tools.eburst_lane import resolve_eburst
 from tools.runtime_config import is_ctf_mode_enabled, load_runtime_config
 from runtime_exec import run_live_argv_command
 from tools.runtime_state import (
@@ -737,16 +736,12 @@ def _batch_recon_result(canonical_target, recon_ok, started, *, ctf_mode=False):
 
 def check_tools():
     """Check which tools are installed."""
-    tools = ["subfinder", "httpx", "nuclei", "ffuf", "nmap", "amass", "gau", "subjack", "eburst"]
+    tools = ["subfinder", "httpx", "nuclei", "ffuf", "nmap", "amass", "gau", "subjack"]
     installed = []
     missing = []
 
     for tool in tools:
-        success = (
-            resolve_eburst().get("status") == "ready"
-            if tool == "eburst"
-            else _command_exists(tool)
-        )
+        success = _command_exists(tool)
         if success:
             installed.append(tool)
         else:
@@ -863,13 +858,13 @@ def _scanner_timeout_seconds(*, quick: bool = False, scanner_full: bool = False)
 
 
 def run_vuln_scan(domain, quick=False, scanner_full=False, scanner_skip=""):
-    """Run vulnerability scanner on recon results."""
+    """Run bounded upstream Nuclei and preserve raw execution accounting."""
     recon_dir = _resolve_recon_dir(domain)
     if not os.path.isdir(recon_dir):
         log("err", f"No recon data found for {domain}. Run recon first.")
         return False
 
-    log("info", f"Running vulnerability scanner on {domain}...")
+    log("info", f"Running bounded Nuclei on {domain}...")
     script = os.path.join(TOOLS_DIR, "vuln_scanner.sh")
     scanner_flags = []
     if scanner_full:
@@ -902,17 +897,10 @@ def run_vuln_scan(domain, quick=False, scanner_full=False, scanner_skip=""):
 
 
 def _finalize_interrupted_scan(domain):
-    """Preserve flushed scanner candidates without publishing completion markers."""
-    target = classify_target(domain)["target"]
+    """Keep the scanner's per-run raw receipts without re-indexing old categories."""
     findings_dir = _resolve_findings_dir(domain)
-    try:
-        from tools.finding_index import index_scanner_material
-
-        payload = index_scanner_material(findings_dir, target=target)
-    except Exception as exc:  # Best-effort recovery must not change scan failure semantics.
-        log("warn", f"Unable to preserve interrupted scanner candidates for {target}: {exc}")
-        return
-    log("warn", f"Preserved {payload['total']} interrupted scanner candidate(s) in {findings_dir}")
+    log("warn", f"Interrupted Nuclei artifacts remain in {findings_dir}/nuclei_runs; "
+                "inspect execution status and remaining input before continuing")
 
 
 def _extract_js_endpoints(js_text):
@@ -963,7 +951,7 @@ def run_js_analysis(domain):
 
 
 def run_repo_source_hunt(domain, repo_url="", repo_path="", allow_large_repo=False):
-    """Run standalone repo source scanning and persist findings under findings/<domain>/exposure."""
+    """Acquire repository originals for native review under the target exposure directory."""
     if not repo_url and not repo_path:
         log("warn", "run_repo_source_hunt requires --repo-url or --repo-path")
         return False
@@ -1044,8 +1032,24 @@ def show_status():
     # Check findings
     if os.path.isdir(FINDINGS_DIR):
         finding_targets = [d for d in os.listdir(FINDINGS_DIR) if os.path.isdir(os.path.join(FINDINGS_DIR, d))]
-        print(f"  Scanned targets: {len(finding_targets)}")
+        print(f"  Findings/artifact targets: {len(finding_targets)}")
         for t in finding_targets:
+            summary_json = Path(FINDINGS_DIR) / t / "summary.json"
+            if summary_json.is_file():
+                try:
+                    payload = json.loads(summary_json.read_text(encoding="utf-8"))
+                except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                    print(f"    - {t}: unreadable scanner summary ({type(exc).__name__})")
+                    continue
+                if isinstance(payload, dict) and payload.get("execution_mode") == "upstream-nuclei":
+                    nuclei = payload.get("nuclei_cve")
+                    if not isinstance(nuclei, dict):
+                        print(f"    - {t}: invalid Nuclei execution summary; path={summary_json}")
+                        continue
+                    print(f"    - {t}: Nuclei {payload.get('status', 'unknown')}; "
+                          f"raw records={nuclei.get('raw_record_count', 'unknown')}; "
+                          f"receipt={payload.get('run_summary', '')}")
+                    continue
             summary = os.path.join(FINDINGS_DIR, t, "summary.txt")
             if os.path.exists(summary):
                 with open(summary) as f:
@@ -1318,17 +1322,16 @@ Examples:
         """
     )
     parser.add_argument("--target", type=str, help="Specific target (domain, IP, CIDR, or primary-domain batch file) to hunt")
-    parser.add_argument("--quick", action="store_true", help="Quick scan mode (fewer checks)")
+    parser.add_argument("--quick", action="store_true", help="Quick Recon and smaller bounded Nuclei origin batch")
     parser.add_argument("--recon-only", action="store_true", help="Only run reconnaissance")
-    parser.add_argument("--scan-only", action="store_true", help="Only run vulnerability scanner")
-    parser.add_argument("--scanner-full", action="store_true", help="Run vuln scanner in full mode even when recon is quick")
+    parser.add_argument("--scan-only", action="store_true", help="Only run bounded upstream Nuclei over cached live inputs")
+    parser.add_argument("--scanner-full", action="store_true", help="Use the larger bounded Nuclei origin batch even when Recon is quick")
     parser.add_argument(
         "--scanner-skip",
         default="",
         help=(
-            "Temporary comma-separated vuln scanner modules to skip for this invocation only; "
-            "XSS is delegated to recon/validation; --scanner-full does not enable a Nuclei XSS lane, "
-            "and this value is never inherited across targets/sessions"
+            "Invocation-only skip list: nuclei/cves/all disable the integrated upstream pass; "
+            "retired category names do not activate or disable native investigations"
         ),
     )
     parser.add_argument("--report-only", action="store_true", help="Only generate reports")

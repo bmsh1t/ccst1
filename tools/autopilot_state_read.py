@@ -457,15 +457,16 @@ def _read_batch_manifest_completed(path: Path) -> list[str]:
     return list(dict.fromkeys(completed))
 
 
-def _read_batch_ranked_targets(path: Path, completed: list[str]) -> list[dict]:
-    """Return AI handoff candidates that are backed by completed recon."""
+def _read_batch_inventory_targets(path: Path, completed: list[str]) -> list[dict]:
+    """Return completed target sources in completion order without value guesses."""
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        payload = []
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        payload = {}
     completed_set = set(completed)
-    ranked = []
-    for item in payload if isinstance(payload, list) else []:
+    sources = {}
+    rows = payload.get("targets", []) if isinstance(payload, dict) else []
+    for item in rows if isinstance(rows, list) else []:
         if not isinstance(item, dict):
             continue
         target = str(item.get("target") or "").strip().rstrip("/").lower()
@@ -473,25 +474,13 @@ def _read_batch_ranked_targets(path: Path, completed: list[str]) -> list[dict]:
             target = target[2:]
         if target not in completed_set:
             continue
-        try:
-            score = int(item.get("score", 0) or 0)
-        except (TypeError, ValueError):
-            score = 0
-        ranked.append({
+        sources[target] = {
             "target": target,
-            "score": score,
-            "top_signals": item.get("top_signals") or [],
-            "recon_dir": str(item.get("recon_dir") or f"recon/{target_storage_key(target)}"),
-        })
-    ranked_targets = {item["target"] for item in ranked}
-    ranked.extend(
-        {
-            "target": target,
-            "score": 0,
-            "top_signals": [],
             "recon_dir": f"recon/{target_storage_key(target)}",
+            "artifact_line_counts": item.get("artifact_line_counts")
+            if isinstance(item.get("artifact_line_counts"), dict) else {},
         }
+    return [
+        sources.get(target, {"target": target, "recon_dir": f"recon/{target_storage_key(target)}"})
         for target in completed
-        if target not in ranked_targets
-    )
-    return ranked
+    ]

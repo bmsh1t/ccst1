@@ -31,8 +31,17 @@ python3 tools/oast_listen.py start|markers|poll|stop --target <target>
 - 内部 preflight/run `request_shape` 保留值和布尔类型；Trevor attempts `raw` 保留原行，
   Case CLI 输出已加载的内部值。它们不是公开报告。实际认证隔离、private_ref 校验、
   私有材料0600/0700和 hash/attempt 绑定不变；Queue metadata 不复制凭据。
-- Gitleaks 内部采集不使用 `--redact`；源码 `secret_preview` 保留精确值，去重不能用遮盖后
-  前后缀（不同中段会碰撞）。`tests/test_repo_root_seams.py` 覆盖外部/内建扫描与保存结果。
+- 源码 helper 只保留原件，不自动执行 Gitleaks/内建秘密扫描或生成 `secret_preview`。
+  原生审阅或选定上游工具保留私有原件与准确 byte/hash 身份；遮盖后前后缀不能作为
+  原件去重身份，秘密值不进入公开 summary、Queue metadata 或共享发布。
+- AI shortlist 的 `hibp_count` 必须存在：未查询可为 `null`，配 `hibp_bucket=unknown`；
+  现有 API 失败的 `-1/unknown` 兼容保留。已知计数接受非负整数；布尔、小数和其它负数
+  拒绝。这里仅验证材料格式，不以 HIBP 分桶判断调查价值或授权 live spray。
+- `breach_checker.py` 按稳定去重及显式 shuffle/limit 后的输入顺序输出；兼容 `sweet` 等
+  bucket 标签和 `-ranked.txt` 文件名不表示价值排序。显式 count 过滤只作用于已知值。
+  429/传输重试耗尽或空、损坏 range 响应保持 `-1/unknown`；只有成功解析的 range 才能
+  返回 0。存在未知项时仍发布结果，摘要为 `partial`、退出码为 `2`；完整查询退出 `0`。
+  错误仅汇总类型与 prefix 数量，不输出候选、hash prefix 或远端响应正文。
 - CSRF helper URL 和 OAuth 重定向必须通过 `scope_context.url_belongs_to_target()`；跨 Scope
   在网络请求或凭据转发前分类为 guarded/scope error。
 - OAST `start` 创建当前监听代次的活动 `oast-callback`；`poll` 无回调保持活动，有回调
@@ -209,70 +218,33 @@ users/passwords -> --users FILE --passwords FILE
 
 ---
 
-## Scenario: Evidence-gated Exchange EBurst lane
+## Native upstream execution boundary
 
-### 1. Scope / Trigger
+Business wrappers for CVE, takeover, cloud, secrets, org CI and static token
+grading are retired. Wordlist, employee OSINT and EBurst helpers remain optional
+for input preparation, bulk operations and bounded execution. Native Skill/model selects
+the question, sources and optional mature upstream CLI; tool discovery supplies
+availability facts rather than a required execution sequence.
 
-Use only when target-owned Recon contains Exchange/OWA/EWS/Autodiscover evidence. It is an optional
-interface-availability lane, never baseline Recon or an automatic credential spray.
+Exchange/OWA/EWS/Autodiscover observations remain source facts. Optional external
+EBurst discovery in `external_arsenal.sh` is inventory only. The retained
+`eburst_lane.py` resolves dependencies only when selected; it is not a default
+capability prerequisite. It checks current Scope and accepts HTTPS inputs for
+the retained `-C` command, rejects unsupported parent Scope continuation, and
+saves exact stdout/stderr and exits in unique runs without rewriting historical raw.
+Wordlist/OSINT helpers retain original options and material paths with per-run
+stage receipts. Local source inputs are supported; missing optional stages yield
+partial/unavailable rather than success. Pool aliases and inferred identities
+are never automatically approved as live inputs.
+Credential execution still uses the existing spray preflight,
+input binding, private evidence and explicit live decision.
 
-### 2. Signatures
-
-```bash
-python3 tools/eburst_lane.py --target TARGET [--host TARGET_OWNED_URL] [--timeout 120]
-```
-
-External resolution checks `EBURST_HOME`, `BBHUNT_TOOLS_DIR`/`OSMEDEUS_TOOLS_DIR`, then
-`$HOME/Tools/EBurst`; `EBurst.py` requires a Python 2 interpreter (`EBURST_PYTHON`, `python2`, or
-`python2.7`).
-
-### 3. Contracts
-
-- `detect_exchange_hosts()` reads only bounded live technology/URL artifacts and applies
-  `url_belongs_to_target()` before a host can enter the command.
-- The lane invokes EBurst with argv `INTERPRETER EBurst.py -C -d HOST`, `shell=False`, one host at a
-  time, at most 5 hosts, and a 1..900 second per-host timeout. Auth environment variables are removed.
-- Results publish `recon/<target-key>/exchange/eburst/summary.json` and 0600 raw output files. Missing
-  EBurst/Python 2 is `unavailable`; timeout/non-zero is `partial`/`failed`, never tested-clean.
-- EBurst's legacy user/password mode is not routed by Autopilot; reviewed credential testing uses the
-  existing `/spray` preflight and action queue contracts.
-
-### 4. Validation & Error Matrix
-
-| Condition | Result |
-|---|---|
-| No Exchange evidence | `not_applicable`, no network execution |
-| Missing script or Python 2 | `unavailable`, exit 1 |
-| Off-target/invalid explicit host | structured error, exit 2, no execution |
-| Host timeout/non-zero | raw evidence retained, `timeout`/`failed`, non-zero lane result |
-| All selected hosts succeed | `ok`; interface reachability only, not an auth finding |
-
-### 5. Good / Base / Bad Cases
-
-- Good: target-owned `/owa` evidence selects one host and stores a bounded `-C` result.
-- Base: Exchange signal exists but runtime is absent; record `unavailable` and continue other lanes.
-- Bad: feed `urls/all.txt` without evidence filtering, pass third-party hosts, or invoke EBurst's dictionary mode.
-
-### 6. Tests Required
-
-- `tests/test_eburst_lane.py`: resolver/runtime, Exchange detection, target scope, argv, timeout, raw evidence,
-  summary status, and artifact path.
-- `tests/test_external_arsenal.py`: shared-tools discovery must not install or execute the external tool.
-- `tests/test_capability_profile.py`: `exchange.eburst` remains bounded and advisory.
-
-### 7. Wrong vs Correct
-
-#### Wrong
-
-```text
-all URL corpus -> EBurst dictionary mode -> third-party hosts / unbounded credentials
-```
-
-#### Correct
-
-```text
-Exchange evidence -> target-owned bounded hosts -> EBurst -C with timeout -> scoped raw/summary artifact
-```
+Direct CLI calls retain exact selected input, installed executable/version,
+bounded command, raw stdout/stderr, real exit and missing/partial status in a
+target-owned run directory. A tool result does not assess a Finding or close
+Coverage. Existing platform permissions and execution owners determine request
+boundaries; a Markdown instruction is not a process/network sandbox. See
+`docs/tool-index.md#direct-upstream-execution` for current entry guidance.
 
 ---
 

@@ -224,13 +224,15 @@ add skips because of previous target context.
 > python3 tools/hunt.py --target target.com --scan-only --scanner-full
 > python3 tools/hunt.py --target target.com --auth-file .private/auth.json
 > # Optional, per-invocation exclusion only when explicitly requested now:
-> python3 tools/hunt.py --target target.com --scan-only --scanner-skip module1,module2
+> python3 tools/hunt.py --target target.com --scan-only --scanner-skip nuclei
 > ./tools/recon_engine.sh target.com
 > python3 tools/source_hunt.py --target target.com --repo-path /path/to/repo
 > python3 tools/intel_engine.py --target target.com --tech nextjs
 > python3 tools/runtime_doctor.py --kind commands,agents
 > ```
 
+> **Business tools:** Skill/native reasoning selects source analysis and upstream tools directly; see [tool index](docs/tool-index.md#direct-upstream-execution). Redundant scanners have been retired; wordlist, employee OSINT and EBurst helpers remain optional for preparation and bounded execution. Evidence, memory, recovery and execution owners retain their contracts.
+>
 > **Repo-local note:** launch Claude Code inside this repository. The slash commands reference local `tools/`, `memory/`, and optional `config.json`.
 >
 > **Local/CTF note:** localhost/private IP/CIDR/list targets stay valid inputs. Helper guards keep the supplied target set active and write advisory audit/replay state instead of pausing for external bounty metadata such as policy text, allowed-method notes, or `scope_snapshot.json`.
@@ -590,7 +592,7 @@ closeable only after mapping to one of the canonical coverage cells above.
 | `validate.py` | Explicit evidence-linked technical and delivery decisions; CVSS optional; report severity is explicitly declared or unknown |
 | `report_generator.py` | H1/Bugcrowd/Intigriti report output |
 | `scope_checker.py` | Deterministic target matching with anchored suffix matching |
-| `cicd_scanner.sh` | GitHub Actions SAST — wraps [sisakulint](https://github.com/sisaku-security/sisakulint) remote scan (52 rules, 81.6% GHSA coverage) |
+| `source_hunt.py` / `repo_workflows.py` | Bounded repository/source/workflow originals for native review; no automatic secret/CI scan |
 
 </details>
 
@@ -600,7 +602,7 @@ closeable only after mapping to one of the canonical coverage cells above.
 
 | Tool | Target |
 |:---|:---|
-| `vuln_scanner.sh` | Breadth scanner and candidate/accounting producer; active validation is AI-selected |
+| `vuln_scanner.sh` | Optional bounded upstream Nuclei; per-run raw inputs/results/logs/exit and residual accounting |
 | `validation_runner.py` | Optional exact-request replay, diff, raw evidence, and canonical write-back |
 
 </details>

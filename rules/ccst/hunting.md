@@ -87,14 +87,17 @@ AI/tool responsibilities remain in `rules/ccst/tool-ai-boundary.md`.
 - bounded Surface/projection 只是默认消费窗口，不是 AI 能力上限。需要长尾证据时，
   可按 Surface page/source/shape 分页、用 `rg` 查询 raw artifact，或根据组件、CVE、
   路径、参数和行为证据构造专项列表并运行 targeted templates。
-- 集成 scanner 的 Nuclei supplement 默认开启（`NUCLEI_CVE_ENABLED=1`，用
+- 集成 scanner 的 Nuclei supplement 默认开启（用
   `BBHUNT_DISABLE_NUCLEI_CVES=1` 关闭），只接收有界 origin
   （`BB_NUCLEI_MAX_TARGETS`，quick/standard/full 上限 50/100/200），
-  主要用于已选组件/版本的 CVE 验证。SQLi/SSRF 由 AI 根据目标证据直接选择 browser/curl/raw
+  用于显式选择的有界 CVE breadth 观察，不替代组件适用性判断或专项验证。
+  SQLi/SSRF 由 AI 根据目标证据直接选择 browser/curl/raw
   请求；需要稳定 HTTP 请求对时可选 `request-diff`，需要回调时使用 OAST Listener。
-- `summary.json` 只证明本轮选定的 live/priority scanner
-  input 正常走到 consolidation；不表示历史 URL 全量扫描、tested-clean、目标安全或攻击面耗尽。
-  killed/stopped/timeout/non-zero 都是 incomplete，不得解释为零发现或 scanner complete。
+- `summary.json` 是最新执行投影，running/skipped/unavailable/incomplete 也会发布；
+  文件存在不证明完成。每轮 `nuclei_runs/<run-id>/` 保留输入、raw JSONL、日志、
+  退出码与状态；lane 计数区分已完成和未完成 origin，失败输入仍留在 remaining。
+  不从旧类别文件推断本轮 scanner-pass，不自动创建 Finding/Assessment/Action。
+  successful/sampled 只描述选定上游模板执行，不表示 tested-clean、安全或穷尽。
 
 ## Rotation
 

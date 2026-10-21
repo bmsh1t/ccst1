@@ -1,5 +1,5 @@
 ---
-description: Select an evidence-backed token review path for EVM or Solana targets. Uses token_scanner.py as an optional signal source and does not impose a fixed class order or risk verdict. Usage: /token-scan <contract_path_or_dir> [--chain solana]
+description: Select an evidence-backed token review path for EVM or Solana targets. Uses native source and chain-state analysis without a static risk verdict. Usage: /token-scan <contract_path_or_dir> [--chain solana]
 ---
 
 # /token-scan
@@ -7,7 +7,7 @@ description: Select an evidence-backed token review path for EVM or Solana targe
 Review a token or program by selecting the most informative trust, authority,
 accounting, liquidity, or transfer question from the supplied code and chain
 context. `skills/src-hunter/modules/meme-coin-audit.md` owns the direct-only decision
-contract; this command owns entry and optional scanner handoff.
+contract; this command supplies the selected source/chain context.
 
 ## Usage
 
@@ -15,9 +15,10 @@ contract; this command owns entry and optional scanner handoff.
 /token-scan CONTRACT_OR_DIRECTORY [--chain solana]
 ```
 
-Run `tools/token_scanner.py` only when its bounded static signal can answer a
-current question. Scanner output is a lead with file/line provenance, not a
-finding or a clean verdict.
+Use native Read/Grep to trace the selected authority, transfer or accounting
+path across implementations, callers and guards. Read relevant deployed state
+through a selected upstream RPC/CLI when needed; a source name or pattern match
+provides no risk verdict.
 
 ## Decision Tree
 
@@ -41,7 +42,7 @@ it, or stop when the invariant is preserved and no new evidence question remains
 ## Evidence and Handoff
 
 - Preserve chain, contract/program identity, source/version, authority context,
-  and raw scanner or analysis artifacts.
+  and original source, transaction or analysis artifacts.
 - Use a test account/resource and the least-impact read-back needed to decide the
   hypothesis. Do not infer a rug vector from a name, age, liquidity amount, or
   regex match alone.

@@ -59,7 +59,10 @@ and `/pickup` reacquire current evidence health. Damaged/revoked raw retains
 history but cannot authorize a current closure or report. An old JSON profile
 is not a fallback for a missing or damaged Store.
 
-## Reproduce the acceptance
+## Historical acceptance commands
+
+The commands below document the earlier release exercise. Business wrapper retirement
+supersedes its CI-scanner check; this list is not the current cleanup validation gate.
 
 ```bash
 python -m pytest -q tests

@@ -41,7 +41,7 @@ BBHUNT_ENABLE_AMASS=1 python3 tools/hunt.py --target target.com --recon-only
 BBHUNT_ENABLE_AMASS=1 bash tools/recon_engine.sh target.com
 ```
 
-`hunt.py --recon-only` 默认使用 normal profile；quick/normal 都保留 raw 证据归档；Coverage/scanner
+`hunt.py --recon-only` 默认使用 normal profile；quick/normal 都保留 raw 证据归档。
 `--deep` 使用 3600 秒默认 Recon 软预算（normal/full 为 1800 秒）；通过
 `BBHUNT_RECON_SOFT_BUDGET_SECONDS` 可按环境覆盖。软预算只是覆盖遥测阈值：超过后仍继续
 后续阶段，且不会把完整运行误报为 partial；父进程超时、工具中断或非零失败才以 partial
@@ -376,25 +376,33 @@ recon/<list-stem>/
 ├── batch_manifest.jsonl
 ├── batch_summary.md
 ├── ai_handoff.md
-├── surface_ranking.txt
-├── high_value_targets.json
+├── surface_inventory.txt
+├── batch_inventory.json
 ├── completed_targets.txt
 ├── failed_targets.txt
 ├── grouped_targets.tsv
 └── <domain> -> ../<domain>
 ```
 
-## What To Do Next
+## Review collected evidence
 
-1. Single target → run `/surface target.com` to build an AI-first cached attack-surface review pack.
-2. List target → read `recon/<list-stem>/batch_summary.md`, `ai_handoff.md`, `surface_ranking.txt`, and `high_value_targets.json`; use `recon/<list-stem>/<domain>` only as a grouped browsing link, then run `/surface <domain>` or `/autopilot <domain> --normal`.
-3. Read `recon/<target>/recon_manifest.jsonl` when a phase looks empty; distinguish skipped/partial phases from true low-signal results.
-4. If exposure files are non-empty, review them as high-value pivots before broad scanning.
-5. If the target looks app-like, SPA/authenticated, object/workflow-heavy, GraphQL, WebSocket, or business-critical, capture/import browser/source/JS evidence before scanner quick.
-6. If no live hosts, APIs, params, JS, or exposure candidates appear, preserve the low-signal recon state and move on unless new scope/browser/source evidence appears.
+Single-target source paths can be read directly or through `/surface`. For a list,
+`batch_summary.md`, `ai_handoff.md`, `surface_inventory.txt` and `batch_inventory.json`
+retain completed targets and source counts in completion order. Grouped links remain
+browsing conveniences; choose further work on an actual target. Counts do not rank
+business value.
+
+Read `recon/<target>/recon_manifest.jsonl` when a phase looks empty; distinguish
+skipped, partial and successful empty collection. Choose browser, source, JS or
+targeted execution from the question and available evidence. Empty inventory does
+not establish that the target was audited or determine the next method.
 
 ## References
 
 - Full recon playbook: `skills/src-hunter/modules/web2-recon.md`
 - Direct engine: `tools/recon_engine.sh`
 - Orchestrator entrypoint: `tools/hunt.py --recon-only`
+
+Cached GitHub references are saved with source paths/line numbers in
+`cicd/source_candidates.json`; `analysis_status=not_run`. Recon does not scan detected
+organizations or decide CI exploitability. Select owned source before native review.

@@ -2,7 +2,7 @@
 
 > **Purpose**: When `/autopilot` `/hunt` `/recon` is running, Claude consults this table to discover which `tools/*` script fits the current evidence shape. The "When to use" column answers *"why would Claude choose this now?"*
 >
-> **Convention**: Tools marked **⚠️ underused** exist in the repo but are rarely referenced in slash commands or agent prompts — surface them deliberately when their trigger fires.
+> **Selection**: Native Skill/model reasoning selects methods and upstream tools. Retained project helpers provide concrete protocol, parsing, evidence or recovery value; file presence is not a reason to run a tool.
 >
 > **Path convention**: All paths are relative to repo root.
 
@@ -10,13 +10,11 @@
 
 | Tool | When to use | One-line function |
 |---|---|---|
-| `tools/recon_engine.sh` | New target / stale recon / primary-domain batch | Expanded pipeline: batch→subdomain→probe→ports→urls→js→fuzz→config→API-leak→identity/cloud→params→cicd |
+| `tools/recon_engine.sh` | New target / stale recon / primary-domain batch | Explicit bulk collection with raw sources, cursors and phase accounting; cached CI links only |
 | `tools/cf_solver.py` | Confirmed Cloudflare challenge or expired clearance | Evidence-triggered 2Captcha+Playwright; stores clearance privately for recon |
 | `tools/recon_adapter.py` | Reading recon output programmatically | Unified reader for `recon/<target>/`; streams and pages compact FFUF evidence without loading full artifacts |
 | `tools/recon_candidates.py` | Cached routing evidence | Builds bounded candidates and host ranking; `--asset-cursor` resumes relation pages; never expands Scope |
 | `tools/recon_host_verify.py` | Host pivot candidates were derived | One bounded read-only Host/SNI/default-vhost response comparison; appends observations without changing Scope or Queue |
-| `tools/cloud_recon.sh` | Target brand likely owns buckets | S3/Azure/GCP discovery + CloudFlare origin reveal |
-| `tools/cve_scan.sh` | Pre-engagement nuclei sweep | Fast nuclei pass scoped to known CVE templates |
 | `tools/intel_engine.py` | Versioned component/service review | `/intel` owner — OSV/GHSA/NVD, KEV/EPSS, local signals, atomic `intel.json` |
 | `tools/intel_artifact.py` | AI selects an omitted advisory group or filter | Read-only, bounded, cursor-paged query over the complete `intel.json`; never writes findings or Queue |
 | `tools/technology_inventory.py` | Multiple consumers need reliable httpx/Nmap tech, version, service, or CPE data | Shared JSONL/text/Nmap parser and atomic component inventory owner |
@@ -51,7 +49,7 @@ manual review lane.
 | `cloud_enum` | `recon/<target>/exposure/cloud/cloud_enum.txt`, `cloud_enum.log` | Treat as candidate cloud ownership evidence; pivot to `/cloud-recon` or minimal ownership checks |
 | Generic asset relations | `recon/<target>/exposure/asset_relation_*` | Queue `scope-review`; keep external relations non-executable |
 | Host pivot response comparison | `recon/<target>/exposure/host_collision_observations.jsonl`, `host_collision_summary.json` | Compare only target-owned controls; a difference remains a candidate and requires independent validation |
-| Batch ranking | `recon/<list-stem>/surface_ranking.txt`, `ai_handoff.md`, `high_value_targets.json` | Pick completed domains with concrete signals; never hunt `recon/<list-stem>/` as a target |
+| Batch inventory | `recon/<list-key>/surface_inventory.txt`, `ai_handoff.md`, `batch_inventory.json` | Completed targets and source counts in completion order; select follow-up natively |
 
 OpenAPI metadata probing defaults to 20 live origins. Set
 `BBHUNT_OPENAPI_MAX_PLATFORM_HOSTS=0` for no host limit.
@@ -76,28 +74,26 @@ question/stop material through the recorded card, section and family.
 |---|---|---|
 | `tools/param_discovery.py` (or `.sh`) | Live URLs exist, parameters thin | Target-scoped/auth-aware hidden parameter mining (arjun + x8) |
 | `tools/dns_expand.py` | AI sees a DNS naming/scope gap after passive Recon | Bounded alterx/dnsgen + puredns expansion |
-| `tools/takeover_scanner.sh` | subdomains/all.txt populated | dnsReaper + subjack subdomain takeover scan |
-| `tools/secrets_hunter.sh` | After JS/source collection | trufflehog/noseyparker/gitleaks — verified secret discovery |
-| `tools/cicd_scanner.sh` | GitHub org name detected | sisakulint remote scan of `.github/workflows/*.yml` |
-| `tools/source_hunt.py` | Public/local source and a concrete question | Exposure candidates + selected `--source-file` byte-bound originals |
+| `tools/source_hunt.py` | Need persistent source originals or a bounded clone | Acquisition and explicit source/workflow capture; analyses not_run |
 | `tools/repo_source.py` | Need to clone target's public repo | Size-bounded GitHub repo acquisition |
-| `tools/repo_ci_scan.py` | Cloned repo present | YAML-based CI workflow danger pattern check |
-| `tools/repo_secret_scan.py` | Cloned repo present | Filesystem high-signal secret regex sweep |
-| `tools/repo_source_artifacts.py` | After source_hunt run | Persist source-hunt artifacts in findings/ |
+| `tools/repo_workflows.py` | Repository acquisition needs retained CI originals | Bounded exact workflow snapshots and inventory; no parsing or ratings |
+| `tools/repo_source_artifacts.py` | Resume source capture or historical analysis | Read source/workflow status without inventing zero findings |
+| `tools/wordlist_engine.sh` | Selected sources need bulk offline mutation or website words | Optional word-pool recipe with local seeds, stage logs and compatibility paths |
+| `tools/osint_employees.sh` | Public identity sources need collection and permutation | Optional OSINT preparation; observed/inferred materials and raw receipts stay separate |
 | `tools/external_arsenal.sh` | Bootstrapping or diagnosing a box | Detect tools, install hints, and explicit `--versions` smoke |
 
 ## 3. Vuln & Bug-class testers
 
 | Tool | When to use | One-line function |
 |---|---|---|
-| `tools/vuln_scanner.sh` | Recon done, want bounded breadth context | Bounded Nuclei/passive candidates with residual accounting; never report-ready proof |
+| `tools/vuln_scanner.sh` | Recon done, want bounded breadth context | Bounded upstream Nuclei with per-run raw/log/exit/input receipts and residuals |
 | `tools/validation_runner.py` (`request-diff`) | Exact AI baseline/variant pair | Shared replay/diff across query, form, JSON, text, header/cookie, and path inputs |
 | `tools/validation_runner.py` (`record-evidence`) | Already-executed raw observations or final cleanup read-back | Registers evidence only; cleanup-only input binds exact mutation refs and never confirms a new finding |
 | `tools/validation_runner.py` (`record-observation`) | Saved native/browser observations, with no Finding required | [No-verdict registration](evidence-runners.md#native-observation-registration); immutable full snapshots, original-attempt supplements and registration-only retries |
 | `tools/sender_semantics.py` | Byte-exact/proxy/cache/smuggling work needs sender choice | `--list` / `--require ...`; sender capability matrix + raw HTTP/1 sender for low-level request semantics |
 | `tools/aspnet_viewstate_knownkey.py` ⚠️ manual-only | Captured page contains `__VIEWSTATE` | Offline machineKey check; `--reveal-key` only for controlled validation |
 | `tools/telerik_knownkey.py` ⚠️ manual-only | Captured Telerik `SerializedParameters` | Offline vendored Badsecrets default-key check; no HTTP or state write |
-| `tools/token_scanner.py` | Smart contract / token audit | Token red-flag scanner — meme coin rug vectors |
+| `tools/eburst_lane.py` | Explicitly selected Exchange HTTPS interface check | Optional bounded upstream `-C` adapter; current Scope, raw bytes and exits, no credentials |
 
 ## 4. Browser / JS / Source intelligence
 
@@ -122,11 +118,8 @@ question/stop material through the recorded card, section and family.
 | `tools/auth_session.py` | Carrying auth across recon/scan/replay | Auth-session helpers; produces `BBHUNT_*` headers |
 | `tools/_auth_helper.sh` | Shell scripts sourcing auth env | Reads `BBHUNT_AUTH_HEADERS` into `BB_AUTH_ARGS=(-H ...)` |
 | `tools/credential_store.py` | Loading `.env` secrets without leaking | Bounded credential loader |
-| `tools/wordlist_engine.sh` | Credential candidate pool needed | cewler + Hashcat + brand pydictor; pool is not live input |
-| `tools/osint_employees.sh` | Identity surface / username candidates needed | theHarvester + username-anarchy into `recon/<target>/osint/` |
-| `tools/breach_checker.py` | Enrich prepared password candidates | HIBP sweet/zero/common/unknown buckets; sends SHA-1 prefixes only |
+| `tools/breach_checker.py` | Enrich prepared password candidates | HIBP counts in input order; failures stay unknown; SHA-1 prefixes only |
 | `tools/spray_orchestrator.sh` ⚠️ controlled | Credential lane selected after AI shortlist | input-bound dry-run; request spec; unified audit/stop/resume; private evidence |
-| `tools/eburst_lane.py` ⚠️ Exchange-only | Exchange/OWA/EWS evidence in target recon | External EBurst `-C` interface check with scope/timeout/artifact bounds; credentials stay in `/spray` |
 
 ## 6. OAST / async (Blind vulnerabilities)
 
@@ -204,13 +197,13 @@ question/stop material through the recorded card, section and family.
 | Standard scans plateaued | AI-selected focused fuzz on remaining unexplored surface |
 | Unicode / filter representation needs review | AI selects the exact representation and preserves raw evidence |
 | Public/local source, uncertain reachability or guard | `skills/src-hunter/modules/whitebox-audit.md`; `source_hunt.py --source-file PATH`, native Read/Grep |
-| Brand keyword for buckets | `cloud_recon.sh` |
+| Observed cloud binding or useful discovery gap | Native review; selected upstream cloud_enum/S3Scanner via `/cloud-recon` |
 | Batch recon manifest exists | read `recon/<list-stem>/batch_manifest.jsonl`, then run `/surface` or `/hunt` on completed domains |
 | Identity/cloud intel from recon has hits | review `exposure/identity_intel/summary.md` and `exposure/cloud/cloud_enum.txt`, then pivot to `/intel` or `/cloud-recon` |
 | Passive DNS shows a naming dialect or evidence-backed hostname gap | AI-selected `dns_expand.py`, then refresh `/surface` |
-| `subdomains/all.txt` ready | `takeover_scanner.sh` |
+| Dangling DNS/service evidence | Native DNS/provider review; optional upstream dnsReaper/subjack via `/takeover` |
 | Live URLs but no params | `param_discovery.py --target TARGET --from-recon` |
-| Exchange/OWA/EWS/Autodiscover signal in `technology_inventory` or URL evidence | `eburst_lane.py --target <target>` (interface check only; use `/spray` for controlled credentials) |
+| Exchange/OWA/EWS/Autodiscover evidence | Native review or selected upstream interface tool; `/spray` for controlled credentials |
 | Concrete webpack/chunk/source-map signal | `deep_js_packer.py`, then Claude native Read/Grep on recovered paths |
 | JS bundles cached without recovery evidence | Claude native Read/Grep on exact selected paths |
 | Recon done, want bounded breadth context | `vuln_scanner.sh` (candidate/residual summary; AI chooses validation) |
@@ -223,11 +216,53 @@ question/stop material through the recorded card, section and family.
 
 ---
 
-## Underused inventory (worth knowing they exist)
+## Direct upstream execution
 
-These tools exist in the repo but are rarely cited in slash-command or sub-agent prompts. Surface them when the trigger fits — they are battle-tested and ready:
+Native Read/Grep and the complete src-hunter Skill decide the current question,
+selected input and interpretation. The commands `/scan-cves`, `/takeover`,
+`/cloud-recon`, `/secrets-hunt`, `/wordlist-gen`, `/osint-employees` and `/token-scan`
+remain method entry points; they do not require project wrappers or a fixed tool
+chain. Mature upstream CLIs remain available directly through the native platform.
 
-- `wordlist_engine.sh` / `osint_employees.sh` / `breach_checker.py` — manual credential-prep chain; useful when identity surface matters
+`wordlist_engine.sh`, `osint_employees.sh` and `eburst_lane.py` remain optional
+helpers where source preparation, bulk operations or bounded execution save
+repeated setup. Retaining a helper does not select it automatically. The first
+two preserve material compatibility paths plus unique run logs; `ranked.txt`
+remains a pool alias, and observed/inferred identity files are not confirmed users.
+EBurst retains only the upstream interface-check mode and per-run binary output.
+
+Before executing, read the selected version's local help and the exact template/input.
+Recover current Scope/Auth and apply `rules/ccst/red-lines.md`. Native shell execution
+uses platform permissions; artifact registration is not a network sandbox. Filter
+initial inputs to the current target set, constrain redirect/recursive expansion and
+credential replay, and preserve external associations as unverified context.
+
+Use canonical target keys, not a method name as the target:
+
+```bash
+TARGET_KEY=$(python3 -c 'import sys; from tools.target_paths import target_storage_key; print(target_storage_key(sys.argv[1]))' "$TARGET")
+umask 077
+mkdir -p "findings/$TARGET_KEY/upstream"
+RUN_DIR=$(mktemp -d "findings/$TARGET_KEY/upstream/run.XXXXXX")
+```
+
+Save selected inputs, original output, stdout/stderr, exit code, command arguments,
+version and source/template/revision hashes in that unique run directory. Keep secret
+values private and cite references in public summaries. Interpret exit status using
+upstream semantics: findings-present can be a documented nonzero result, while
+missing tools, transport failure and incomplete inputs remain separate. Empty output
+never proves target safety. Do not suppress failures, install automatically or replace
+a missing tool with local pattern verdicts.
+
+Native review promotes a supported hypothesis through existing Candidate, observation,
+assessment and report owners. A capture receipt, scanner result or list of inputs
+creates no Finding, Action completion, Coverage closure or report automatically.
+
+The retained integrated scanner is an optional bounded execution convenience:
+`findings/<key>/nuclei_runs/<run-id>/` keeps exact inputs, raw JSONL, logs and receipts;
+latest `summary.json` explicitly records status and unfinished origins. It does not
+produce category×endpoint scanner-pass records. Historical raw artifacts and old
+scanner-pass/secret/CI files remain unchanged for explicit review.
 
 ---
 
@@ -240,7 +275,7 @@ When adding a new `tools/*` script:
 3. Keep description ≤ 80 characters
 4. Don't list test fixtures, `__init__.py`, internal helpers
 
-When deprecating a tool: keep the row but prefix label with `(deprecated)`.
+When retiring a wrapper, migrate active callers, prompts, installers and artifact readers before removal. Keep history in task notes rather than executable index rows.
 
 ---
 

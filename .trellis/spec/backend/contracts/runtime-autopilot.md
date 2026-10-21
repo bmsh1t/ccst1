@@ -260,7 +260,7 @@ wiring changes.
   mutations, and returns null rates for empty denominators. Unknown evidence roles
   are not complete. Safety outcomes, semantic replay and stopping compliance remain
   null with an explanation; an artifact ref does not prove any of them.
-- Checks use PATH/file presence and the existing EBurst owner resolver only; never
+- Checks use PATH/file presence only; retired business lanes are not prerequisites. Never
   run version probes, subprocesses, networks, installers or browsers. Presence is
   not execution success; HTTPX tool identity remains Recon's responsibility.
 - Session MCP names remain declarations, always unchecked here. A local browser
@@ -1056,7 +1056,7 @@ run_live_argv_command(argv, *, cwd=None, env=None, timeout=None,
   filtering, inherited lock FDs and best-effort signal registration. Direct
   retains raw int results (busy=75), inherited cwd/env, timeout=None, inherited
   lock FDs, and require_signal_handlers=True. Recon's exact
-  URL marker, scan's canonical marker, inventory sync and candidate preservation
+  URL marker, scan's canonical marker, inventory sync and raw-artifact preservation
   remain caller-owned; shell internals are unchanged by this execution helper.
 - Both phase adapters acquire `runtime_phase_lock(..., include_fd=True)` and pass
   the returned FD through `pass_fds=(lock_fd,)`. The context only closes its own
@@ -1066,13 +1066,17 @@ run_live_argv_command(argv, *, cwd=None, env=None, timeout=None,
   SIGKILL cannot run finally: the running marker remains historical after the
   final lock holder exits, but no longer causes wait. Do not add PID/time guesses
   or claim coverage of descendants that deliberately close the FD.
-- Hunt/CVE compatibility paths pass data as separate argv elements; native
-  scanner input flags (`-u`/`-l`) replace echo/cat pipelines. Authentication
-  remains environment/file based and never enters argv or public logs.
+- Hunt and the retained scanner pass data as separate argv elements; generated
+  scanner input uses `-l`. AuthSession is selected through environment/file binding;
+  its headers enter only the private upstream invocation, while command receipts
+  record header names/session references without values. This is not protection
+  against local process inspection.
 - Response bodies and generated scanner input lists use invocation-owned
   temporary files, close them before child-process use, and remove them after
   synchronous completion or failure. Fixed `/tmp` or target-directory input
-  names are invalid because concurrent runs can overwrite evidence.
+  names are invalid because concurrent runs can overwrite evidence. The retained
+  scanner instead publishes input files in a unique target-owned run directory;
+  these persist with raw/exit/status receipts after completion or failure.
 
 ### 4. Validation & Error Matrix
 

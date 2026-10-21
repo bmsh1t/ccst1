@@ -1,50 +1,33 @@
 ---
-description: Hunt leaked credentials in a filesystem path, git history, JS bundles from a recon run, or an entire GitHub org. Wraps trufflehog, noseyparker, and gitleaks, with regex fallback. Usage: /secrets-hunt --filesystem <dir> | --git <repo> | --js-bundle <recon-dir> | --github-org <org>
+description: Review exact secret-like source evidence; optionally invoke gitleaks, noseyparker or TruffleHog directly. Usage: /secrets-hunt TARGET --filesystem PATH | --git REPO | --js-bundle RECON_DIR
 ---
 
 # /secrets-hunt
 
-Find leaked API keys, tokens, and credentials. Treat hits as evidence leads until provider/ownership/usability are minimally proven.
+Read exact cached source and context first. Distinguish public identifiers,
+example/test keys, expired values and possible credentials. Follow ownership,
+issuer, reachable use and effective permissions before judging impact.
 
-Treat secret exposure as a vulnerability signal: value depends on whether the key is valid,
-target-owned, scoped to useful permissions, and tied to concrete security
-impact.
+For a concrete bulk/history gap, select one installed upstream scanner and read
+its local help. Gitleaks and noseyparker can inspect local files/history.
+TruffleHog provider verification makes external requests and requires deliberate
+selection within current authorization. GitHub organization input requires
+explicitly selected in-scope repositories. Reuse cached JS without silently
+re-fetching it as a second scanner workflow.
 
-## Run This (the only required step)
+For a selected local SOURCE_DIR and new private target RUN_DIR:
 
 ```bash
-bash tools/secrets_hunter.sh --filesystem /path/to/project
-bash tools/secrets_hunter.sh --git https://github.com/target/repo
-bash tools/secrets_hunter.sh --js-bundle recon/target.com
-bash tools/secrets_hunter.sh --github-org acme-corp
+gitleaks dir "$SOURCE_DIR" --report-format json --report-path "$RUN_DIR/gitleaks.json"
 ```
 
-## Scanners
+Use current upstream syntax; preserve raw values privately, source path/line,
+revision/hash, command/version, logs and exit status. See
+[Direct upstream execution](../docs/tool-index.md#direct-upstream-execution).
+Gitleaks normally uses exit 1 for detections; interpret the selected version's
+exit meanings and keep execution failure separate. An unavailable scanner remains
+unavailable, without an automatic regex fallback or clean verdict.
 
-The script uses whichever is installed:
-
-| Scanner | Strength |
-|---|---|
-| `trufflehog` | Verifies live keys against issuer APIs where supported |
-| `noseyparker` | Fast on large histories with low false positives |
-| `gitleaks` | Solid default rule pack |
-| regex fallback | Last-resort local signal when scanners are missing |
-
-## Output
-
-```text
-findings/secrets/<timestamp>/trufflehog.jsonl
-findings/secrets/<timestamp>/noseyparker.jsonl
-findings/secrets/<timestamp>/gitleaks.json
-findings/secrets/<timestamp>/regex_hits.txt
-```
-
-## Handling Hits
-
-- Prefer verified hits and target-owned context.
-- Keep proof minimal: show the key is valid for the exposed target/provider; do not pivot beyond what is needed for evidence.
-- Do not chase generic leakage risk. Prove the vulnerability impact with the
-  smallest useful request, then move to Candidate / validation if the evidence
-  is meaningful.
-- If the hit comes from recon API leak artifacts, preserve the exact source file and line.
-- After meaningful hits, rerun `/surface target.com` or continue with `/validate` when the evidence is candidate-quality.
+A match or verified-key label is an unassessed lead. Collect minimum useful
+permission/ownership evidence before an HTTP candidate and register actual
+execution through existing owners. Public summaries cite private artifacts.

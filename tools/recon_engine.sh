@@ -21,21 +21,7 @@ log_step()  { echo -e "    ${CYAN}[>]${NC} $1"; }
 log_done()  { echo -e "    ${GREEN}[✓]${NC} $1"; }
 log_vuln()  { echo -e "${RED}[VULN]${NC} $1"; }
 
-# Emit a machine-readable hint block at the end of a phase. Format is a
-# YAML-style key: value block prefixed with `## CLAUDE_HINT` so Claude (in CLI)
-# can quickly grok the phase outcome + recommended next action without re-reading
-# the full stdout or stat'ing every output file. Pass key/value pairs as args.
-#
-# Usage:
-#   emit_claude_hint \
-#     phase subdomain_enum \
-#     subdomain_total 234 \
-#     sources subfinder,assetfinder \
-#     next_priority_action "bash tools/takeover_scanner.sh recon/<t>/subdomains/all.txt"
-#
-# Multi-line values (lists): pass empty value, then add subsequent rows with the
-# `- ` prefix using emit_claude_hint_list (see below) — kept separate so this
-# function stays trivially `set -e` safe.
+# Emit observed phase facts and artifact references for native review.
 emit_claude_hint() {
     {
         echo ""
@@ -56,20 +42,6 @@ emit_claude_hint_list() {
         for item in "$@"; do
             echo "  - ${item}"
         done
-    } 2>/dev/null || true
-}
-
-# Emit a `next_actions` block (≥1 action). Pass each action as a separate arg.
-# Trailing blank line keeps the block visually separated from subsequent phases.
-# Intent: surface ≥2 candidate next moves so the agent picks based on evidence
-# rather than being locked into a single prescriptive directive.
-emit_claude_hint_actions() {
-    {
-        echo "next_actions:"
-        for action in "$@"; do
-            echo "  - ${action}"
-        done
-        echo ""
     } 2>/dev/null || true
 }
 
@@ -747,9 +719,6 @@ post_compress_raw_recon_urls() {
         compressed_raw_files "$compressed" \
         min_size_mb          "$min_mb" \
         note                 "Active all.txt/with_params.txt/exposure/live/subdomains preserved; raw URL archive is gzip evidence"
-    emit_claude_hint_actions \
-        "continue analysis from recon/${RECON_TARGET_KEY}/urls/all.txt; raw URL/source .gz files are evidence archives" \
-        "if disk remains tight, review large recon logs before deleting any recon intelligence"
 }
 
 FFUF_PID=""
@@ -1078,7 +1047,7 @@ run_domain_list_batch() {
     local mode_flag="${2:-}"
     local batch_name batch_key batch_dir targets_file manifest completed_file failed_file summary_file
     local scope_metadata_file scope_hash
-    local high_value_file ranking_file ai_handoff_file target_links_file
+    local inventory_file inventory_text_file ai_handoff_file target_links_file
     local pending_file run_targets_file processed_file batch_size_raw batch_size batch_reset chunk_mode
     batch_name="$(basename "$list_file")"
     batch_key="$(python3 - "$list_file" "$BASE_DIR" <<'PY'
@@ -1102,8 +1071,8 @@ PY
     completed_file="$batch_dir/completed_targets.txt"
     failed_file="$batch_dir/failed_targets.txt"
     summary_file="$batch_dir/batch_summary.md"
-    high_value_file="$batch_dir/high_value_targets.json"
-    ranking_file="$batch_dir/surface_ranking.txt"
+    inventory_file="$batch_dir/batch_inventory.json"
+    inventory_text_file="$batch_dir/surface_inventory.txt"
     ai_handoff_file="$batch_dir/ai_handoff.md"
     target_links_file="$batch_dir/grouped_targets.tsv"
     scope_metadata_file="$batch_dir/scope_context.json"
@@ -1317,180 +1286,57 @@ PY
     batch_size_label="full"
     [ "$chunk_mode" -eq 1 ] && batch_size_label="$batch_size"
 
-    python3 - "$BASE_DIR" "$batch_key" "$completed_file" "$high_value_file" "$ranking_file" "$ai_handoff_file" <<'PY'
-import json
-import re
+    python3 - "$BASE_DIR" "$batch_key" "$completed_file" "$inventory_file" "$inventory_text_file" "$ai_handoff_file" <<'PY'
 import sys
 from pathlib import Path
-from urllib.parse import urlparse
-
 base_dir = Path(sys.argv[1])
-batch_key = sys.argv[2]
-completed_file = Path(sys.argv[3])
-high_value_file = Path(sys.argv[4])
-ranking_file = Path(sys.argv[5])
-ai_handoff_file = Path(sys.argv[6])
+sys.path.insert(0, str(base_dir))
+from tools.artifact_io import write_json_atomic, write_text_atomic
+from tools.target_paths import target_storage_key
 
-def storage_key(target: str) -> str:
-    return target.replace("/", "_")
+batch_key, completed, inventory, inventory_text, handoff = sys.argv[2:]
 
-def read_lines(path: Path, limit: int | None = None) -> list[str]:
+def count(path):
     if not path.is_file():
-        return []
-    out = []
+        return None
     with path.open(encoding="utf-8", errors="replace") as handle:
-        for raw in handle:
-            value = raw.strip()
-            if not value:
-                continue
-            out.append(value)
-            if limit and len(out) >= limit:
-                break
-    return out
+        return sum(bool(row.strip()) for row in handle)
 
-def line_count(path: Path) -> int:
-    return len(read_lines(path))
-
-def first_existing_count(recon_dir: Path, *rel_paths: str) -> int:
-    for rel in rel_paths:
-        count = line_count(recon_dir / rel)
-        if count:
-            return count
-    return 0
-
-def host_count(lines: list[str], keywords: tuple[str, ...]) -> int:
-    hosts = set()
-    for item in lines:
-        candidate = item.split()[0]
-        parsed = urlparse(candidate if "://" in candidate else f"//{candidate}")
-        host = (parsed.netloc or parsed.path).split("/")[0].lower()
-        if any(token in host for token in keywords):
-            hosts.add(host)
-    return len(hosts)
-
-def add_score(score_parts: list[dict], points: int, reason: str) -> int:
-    points = int(points or 0)
-    if points > 0:
-        score_parts.append({"points": points, "reason": reason})
-    return points
-
-targets = []
-seen = set()
-for target in read_lines(completed_file):
-    if target in seen:
-        continue
-    seen.add(target)
-    targets.append(target)
-
+paths = (
+    "subdomains/all.txt", "live/urls.txt", "urls/all.txt", "urls/with_params.txt",
+    "urls/api_endpoints.txt", "js/endpoints.txt", "exposure/api_doc_candidates.txt",
+    "exposure/api_leak_candidates.txt", "exposure/config_files.txt", "ports/open_host_ports.txt",
+)
 results = []
-for target in targets:
-    recon_dir = base_dir / "recon" / storage_key(target)
-    live_urls = read_lines(recon_dir / "live" / "urls.txt")
-    subdomains_lines = read_lines(recon_dir / "subdomains" / "all.txt")
-    host_lines = live_urls + subdomains_lines
-    details = {
-        "subdomains": line_count(recon_dir / "subdomains" / "all.txt"),
-        "live_hosts": first_existing_count(recon_dir, "live/urls.txt", "live/httpx_full.txt"),
-        "urls": first_existing_count(recon_dir, "urls/all.txt", "live/urls.txt"),
-        "api_endpoints": line_count(recon_dir / "urls" / "api_endpoints.txt"),
-        "param_urls": line_count(recon_dir / "urls" / "with_params.txt"),
-        "js_endpoints": line_count(recon_dir / "js" / "endpoints.txt"),
-        "api_doc_candidates": line_count(recon_dir / "exposure" / "api_doc_candidates.txt"),
-        "api_leak_candidates": line_count(recon_dir / "exposure" / "api_leak_candidates.txt"),
-        "verified_secrets": line_count(recon_dir / "exposure" / "api_leak_trufflehog_verified.jsonl"),
-        "config_exposures": line_count(recon_dir / "exposure" / "config_files.txt"),
-        "identity_emails": line_count(recon_dir / "exposure" / "identity_intel" / "emails.txt"),
-        "leaksearch_hits": line_count(recon_dir / "exposure" / "identity_intel" / "leaksearch.txt"),
-        "cloud_enum_hits": line_count(recon_dir / "exposure" / "cloud" / "cloud_enum.txt"),
-        "status_401": line_count(recon_dir / "live" / "status_401.txt"),
-        "status_403": line_count(recon_dir / "live" / "status_403.txt"),
-        "open_ports": first_existing_count(recon_dir, "ports/open_host_ports.txt", "ports/open_ports_all.txt", "ports/open_ports.txt", "ports/open_ports_naabu.txt"),
-    }
-    details["api_hosts"] = host_count(host_lines, ("api", "graphql", "gateway", "gw"))
-    details["admin_hosts"] = host_count(
-        host_lines,
-        ("admin", "internal", "portal", "sso", "idp", "auth", "dev", "stage", "staging"),
-    )
-
-    score_parts = []
-    score = 0
-    score += add_score(score_parts, min(details["live_hosts"] * 3, 45), f"{details['live_hosts']} live host(s)")
-    score += add_score(score_parts, min(details["api_endpoints"] // 3, 35), f"{details['api_endpoints']} API endpoint(s)")
-    score += add_score(score_parts, min(details["param_urls"] // 5, 25), f"{details['param_urls']} parameterized URL(s)")
-    score += add_score(score_parts, min(details["js_endpoints"] // 4, 25), f"{details['js_endpoints']} JS endpoint(s)")
-    score += add_score(score_parts, min(details["api_doc_candidates"] * 8, 40), f"{details['api_doc_candidates']} API doc candidate(s)")
-    score += add_score(score_parts, min(details["api_leak_candidates"] * 10, 60), f"{details['api_leak_candidates']} API leak candidate(s)")
-    score += add_score(score_parts, min(details["verified_secrets"] * 20, 60), f"{details['verified_secrets']} verified secret candidate(s)")
-    score += add_score(score_parts, min(details["config_exposures"] * 6, 30), f"{details['config_exposures']} config exposure candidate(s)")
-    score += add_score(score_parts, min(details["cloud_enum_hits"] // 2, 25), f"{details['cloud_enum_hits']} cloud_enum line(s)")
-    score += add_score(score_parts, min(details["leaksearch_hits"] // 2, 20), f"{details['leaksearch_hits']} LeakSearch line(s)")
-    score += add_score(score_parts, min(details["api_hosts"] * 5, 25), f"{details['api_hosts']} API-like host(s)")
-    score += add_score(score_parts, min(details["admin_hosts"] * 5, 25), f"{details['admin_hosts']} admin/auth/internal-like host(s)")
-    score += add_score(score_parts, min((details["status_401"] + details["status_403"]) * 2, 20), f"{details['status_401'] + details['status_403']} auth/403 surface(s)")
-    score += add_score(score_parts, min(details["open_ports"] * 2, 20), f"{details['open_ports']} open port line(s)")
-
-    score_parts.sort(key=lambda item: item["points"], reverse=True)
-    results.append({
-        "target": target,
-        "score": score,
-        "details": details,
-        "top_signals": score_parts[:6],
-        "recon_dir": f"recon/{storage_key(target)}",
-        "next": f"/surface {target}",
-    })
-
-results.sort(key=lambda item: (-item["score"], item["target"]))
-
-high_value_file.write_text(json.dumps(results, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
-with ranking_file.open("w", encoding="utf-8") as handle:
-    handle.write("ATTACK SURFACE RANKING - TOP 50\n")
-    handle.write(f"Batch: {batch_key}\n")
-    handle.write("=" * 80 + "\n\n")
-    if not results:
-        handle.write("No completed targets with recon artifacts yet.\n")
-    for idx, item in enumerate(results[:50], 1):
-        d = item["details"]
-        signals = "; ".join(part["reason"] for part in item["top_signals"]) or "no strong surface counters"
-        handle.write(f"#{idx:2d} | {item['target']:30s} | Score: {item['score']:5d}\n")
-        handle.write(
-            "     "
-            f"Subdomains: {d['subdomains']:3d} | Live: {d['live_hosts']:3d} | "
-            f"URLs: {d['urls']:4d} | API: {d['api_endpoints']:4d} | "
-            f"Params: {d['param_urls']:4d} | JS: {d['js_endpoints']:4d}\n"
-        )
-        handle.write(
-            "     "
-            f"API docs: {d['api_doc_candidates']:3d} | API leaks: {d['api_leak_candidates']:3d} | "
-            f"Secrets: {d['verified_secrets']:3d} | Configs: {d['config_exposures']:3d} | "
-            f"Cloud: {d['cloud_enum_hits']:3d} | Identity: {d['identity_emails'] + d['leaksearch_hits']:3d}\n"
-        )
-        handle.write(f"     Signals: {signals}\n")
-        handle.write(f"     Next: /surface {item['target']}  ->  /hunt {item['target']}\n\n")
-    handle.write("=" * 80 + "\n")
-    handle.write(f"Total completed targets ranked: {len(results)}\n")
-
-with ai_handoff_file.open("w", encoding="utf-8") as handle:
-    handle.write(f"# AI Handoff — Batch Attack Surface ({batch_key})\n\n")
-    handle.write("Read this before choosing the next target from a list recon. ")
-    handle.write("The batch directory is an index only; continue on individual completed domains.\n\n")
-    handle.write("## Top Targets\n\n")
-    handle.write("| Rank | Target | Score | Why it matters | Next |\n")
-    handle.write("|---:|---|---:|---|---|\n")
-    for idx, item in enumerate(results[:10], 1):
-        why = "; ".join(part["reason"] for part in item["top_signals"][:3]) or "low-signal completed target"
-        handle.write(f"| {idx} | `{item['target']}` | {item['score']} | {why} | `/surface {item['target']}` |\n")
-    if not results:
-        handle.write("| - | - | - | no completed targets yet | rerun recon batch |\n")
-    handle.write("\n## Files For Claude\n\n")
-    handle.write(f"- Ranking: `recon/{batch_key}/surface_ranking.txt`\n")
-    handle.write(f"- Structured targets: `recon/{batch_key}/high_value_targets.json`\n")
-    handle.write(f"- Manifest: `recon/{batch_key}/batch_manifest.jsonl`\n")
-    handle.write(f"- Grouped target links: `recon/{batch_key}/<domain>` -> `recon/<domain>`\n\n")
-    handle.write("## Recommended Flow\n\n")
-    handle.write("1. Pick a top target with concrete surface signals, not the batch index directory.\n")
-    handle.write("2. Run `/surface <domain>` to rank that domain's cached URLs/JS/exposure.\n")
-    handle.write("3. Run `/hunt <domain>` or `/autopilot <domain> --normal` only after reading `/surface`.\n")
+seen = set()
+with Path(completed).open(encoding="utf-8") as handle:
+    for raw in handle:
+        target = raw.strip()
+        if not target or target in seen:
+            continue
+        seen.add(target)
+        recon = base_dir / "recon" / target_storage_key(target)
+        results.append({"target": target, "recon_dir": recon.relative_to(base_dir).as_posix(),
+                        "manifest": (recon / "recon_manifest.jsonl").relative_to(base_dir).as_posix(),
+                        "artifact_line_counts": {name: count(recon / name) for name in paths}})
+write_json_atomic(inventory, {"schema_version": 1, "batch_key": batch_key,
+    "ordering": "completed-input-order", "target_count": len(results), "targets": results})
+text = [f"BATCH SURFACE INVENTORY — {batch_key}",
+        "Counts describe cached nonempty lines; missing artifacts are unknown. No value ranking.", ""]
+for item in results:
+    text.append(f"Target: {item['target']}; source: {item['recon_dir']}")
+    text.extend(f"  {name}: {value if value is not None else 'missing'}"
+                for name, value in item["artifact_line_counts"].items())
+    text.append("")
+write_text_atomic(inventory_text, "\n".join(text) + "\n")
+notes = [f"# Recon Batch Handoff — {batch_key}", "",
+    "The batch is an index. Each target retains its own manifest, raw sources and unfinished work.",
+    "Completion here describes collection, not audited depth, business value or vulnerability status.", "",
+    f"Inventory: recon/{batch_key}/batch_inventory.json",
+    f"Readable counts: recon/{batch_key}/surface_inventory.txt",
+    f"Execution history: recon/{batch_key}/batch_manifest.jsonl", "", "Completed target sources:"]
+notes.extend(f"- {item['target']}: {item['recon_dir']}; {item['manifest']}" for item in results)
+write_text_atomic(handoff, "\n".join(notes) + "\n")
 PY
 
     {
@@ -1508,15 +1354,15 @@ PY
         echo "- Remaining: $remaining_total"
         echo "- Manifest: \`recon/$batch_key/batch_manifest.jsonl\`"
         echo "- AI handoff: \`recon/$batch_key/ai_handoff.md\`"
-        echo "- Surface ranking: \`recon/$batch_key/surface_ranking.txt\`"
-        echo "- High-value targets: \`recon/$batch_key/high_value_targets.json\`"
+        echo "- Surface inventory: \`recon/$batch_key/surface_inventory.txt\`"
+        echo "- Batch inventory: \`recon/$batch_key/batch_inventory.json\`"
         echo "- Grouped target links: \`recon/$batch_key/<domain>\` -> \`recon/<domain>\`"
         echo "- Grouped target TSV: \`recon/$batch_key/grouped_targets.tsv\`"
         if [ "$chunk_mode" -eq 1 ] && [ "$remaining_total" -gt 0 ]; then
             echo "- Continue: \`BBHUNT_BATCH_SIZE=$batch_size python3 tools/hunt.py --target $list_file --recon-only\`"
         fi
         echo ""
-        echo "## AI Handoff — Top Attack Surface"
+        echo "## AI Handoff — Collected Surface"
         echo ""
         if [ -s "$ai_handoff_file" ]; then
             sed -n '1,80p' "$ai_handoff_file"
@@ -1549,13 +1395,9 @@ PY
         remaining            "$remaining_total" \
         manifest             "recon/$batch_key/batch_manifest.jsonl" \
         ai_handoff           "recon/$batch_key/ai_handoff.md" \
-        surface_ranking      "recon/$batch_key/surface_ranking.txt" \
+        surface_inventory    "recon/$batch_key/surface_inventory.txt" \
         grouped_links        "recon/$batch_key/<domain> -> recon/<domain>" \
         note                 "targets.txt is treated as a primary-domain batch; each target has its own recon/<domain>/"
-    emit_claude_hint_actions \
-        "$([ "$chunk_mode" -eq 1 ] && [ "$remaining_total" -gt 0 ] && echo "rerun with BBHUNT_BATCH_SIZE=${batch_size} to process the next batch" || echo "read recon/${batch_key}/batch_summary.md and recon/${batch_key}/surface_ranking.txt, then choose the highest-signal domain for /surface or /hunt")" \
-        "review recon/<domain>/exposure/api_leak_candidates.txt and identity/cloud artifacts per completed domain" \
-        "rerun failed targets individually after checking recon/${batch_key}/failed_targets.txt"
 
     echo ""
     echo "============================================="
@@ -2154,10 +1996,6 @@ emit_claude_hint \
     sources              "$SUBDOMAIN_SOURCES" \
     amass_enabled       "$([ "$AMASS_ENABLED" -eq 1 ] && echo true || echo false)" \
     passive_only         "true"
-emit_claude_hint_actions \
-    "bash tools/takeover_scanner.sh recon/${RECON_TARGET_KEY}/subdomains/all.txt   # dangling CNAME quick wins" \
-    "bash tools/cloud_recon.sh --keyword \"${TARGET%%.*}\"   # auto-derive bucket keyword from target" \
-    "python3 tools/surface.py --target ${TARGET}   # rank P1 before deeper recon"
 sync_observation_inventory subdomain_enum
 
 # ============================================================
@@ -2355,10 +2193,6 @@ emit_claude_hint \
     live_hosts_total     "$LIVE_TOTAL" \
     httpx_present        "$([ -n "$HTTPX_BIN" ] && echo true || echo false)" \
     puredns_present      "$(command -v puredns >/dev/null 2>&1 && echo true || echo false)"
-emit_claude_hint_actions \
-    "python3 tools/surface.py --target ${TARGET}   # build AI surface review pack before broad fuzz" \
-    "spawn recon-ranker if live hosts > 50; otherwise read surface.py directly" \
-    "if live_hosts_total stays 0 after retry, preserve recon as low-signal and revisit only if scope/browser/source evidence changes"
 
 # ============================================================
 # Phase 2.5: WAF Fingerprinting
@@ -2717,9 +2551,6 @@ emit_claude_hint \
     waf_results_lines    "$WAF_HITS" \
     waf_context_ref      "recon/${RECON_TARGET_KEY}/live/waf_context.json" \
     wafw00f_present      "$(command -v wafw00f >/dev/null 2>&1 && echo true || echo false)"
-emit_claude_hint_actions \
-    "on a target-owned high-value 401/403, let AI choose one evidence-linked path/header/method replay through browser, curl, raw sender, or request-diff" \
-    "WAF fingerprinting is context only; no sampled WAF hit does not suppress path, proxy, or authorization-boundary testing"
 
 # ============================================================
 # Phase 2.6: Origin Discovery
@@ -2858,9 +2689,6 @@ emit_claude_hint \
     unwaf_present        "$(command -v unwaf >/dev/null 2>&1 && echo true || echo false)" \
     unwaf_enabled        "$([ "$UNWAF_ENABLE" -eq 1 ] && echo true || echo false)" \
     unwaf_skipped        "$([ "$UNWAF_SKIP" -eq 1 ] && echo true || echo false)"
-emit_claude_hint_actions \
-    "curl -H \"Host: ${RECON_TARGET_KEY}\" http://<origin_ip>/   # WAF bypass via origin" \
-    "if origin_candidates is 0, preserve that as an unattempted/low-signal origin lane"
 
 # ============================================================
 # Phase 3: Port Scanning
@@ -3121,9 +2949,6 @@ emit_claude_hint \
     phase                port_scan \
     open_ports_total     "$PORTS_OPEN" \
     port_url_candidates  "$PORT_URL_CANDIDATES"
-emit_claude_hint_actions \
-    "review non-standard ports (8080/3000/9200/etc) for less-reviewed surface" \
-    "review recon/${RECON_TARGET_KEY}/urls/port_candidates.txt as a target-owned URL candidate view; keep off-target rows as external context"
 
 # ============================================================
 # Phase 4: URL Collection
@@ -3261,10 +3086,6 @@ emit_claude_hint \
     api_endpoints_filtered "$URLS_API_FILTERED" \
     sensitive_paths_filtered "$URLS_SENS_FILTERED" \
     url_filter_log       "$URL_FILTER_LOG"
-emit_claude_hint_actions \
-    "compare api_endpoints access across both owned sessions (owner vs peer) on ${TARGET}" \
-    "python3 tools/param_discovery.py --target ${TARGET} --list recon/${RECON_TARGET_KEY}/live/urls.txt --method GET   # mine hidden params" \
-    "expose raw JS paths for native Read/Grep when JS artifacts exist"
 
 # ============================================================
 # Phase 5: JS Analysis
@@ -3487,10 +3308,6 @@ emit_claude_hint \
     linkfinder_endpoints   "$JS_LINKFINDER" \
     unverified_secret_strings "$JS_SECRETS" \
     secrets_verified       "false (regex-grep only; not interactsh-verified)"
-emit_claude_hint_actions \
-    "bash tools/secrets_hunter.sh --js-bundle recon/${RECON_TARGET_KEY}   # trufflehog-verified secrets" \
-    "expose cached JS paths for native Read/Grep hypothesis work" \
-    "tools/oast_listen.py start --target ${TARGET}   # blind callback channel for any RCE/SSRF lead"
 
 # ============================================================
 # Phase 6: Directory Fuzzing
@@ -4212,9 +4029,6 @@ emit_claude_hint \
     phase                config_exposure \
     exposed_count        "$CONFIG_EXPOSED" \
     paths_checked        11
-emit_claude_hint_actions \
-    "curl each exposed path; grep response body for keys/tokens" \
-    "bash tools/secrets_hunter.sh --filesystem recon/${RECON_TARGET_KEY}/exposure/   # verify any extracted keys"
 
 # ============================================================
 # Phase 6.6: Exposure Candidate Correlation
@@ -4327,10 +4141,6 @@ emit_claude_hint \
     s3_bucket_candidates "$S3_BUCKET_COUNT" \
     external_hosts       "$EXTERNAL_SERVICE_COUNT" \
     note                 "derived from recon artifacts only; no extra OSINT scan"
-emit_claude_hint_actions \
-    "curl recon/${RECON_TARGET_KEY}/exposure/api_doc_candidates.txt entries first; Swagger/OpenAPI often exposes auth model and hidden endpoints" \
-    "run /cloud-recon --keyword ${TARGET%%.*} only when cloud candidates look target-owned" \
-    "run /secrets-hunt --filesystem recon/${RECON_TARGET_KEY}/exposure/ if config/cloud artifacts contain key-like material"
 
 # ============================================================
 # Phase 6.7: API Leak Detection
@@ -4469,10 +4279,6 @@ emit_claude_hint \
     swagger_lines        "$SWAGGER_LINE_COUNT" \
     leak_candidates      "$API_LEAK_CANDIDATE_COUNT" \
     verified_secrets     "$API_LEAK_VERIFIED_COUNT"
-emit_claude_hint_actions \
-    "review recon/${RECON_TARGET_KEY}/exposure/api_leak_candidates.txt; prioritize imported Postman collections and OpenAPI specs" \
-    "if verified_secrets > 0, inspect recon/${RECON_TARGET_KEY}/exposure/api_leak_trufflehog_verified.jsonl and validate minimal impact only" \
-    "use /secrets-hunt --filesystem recon/${RECON_TARGET_KEY}/exposure/api_leaks/ for a fuller scanner pass when candidates are non-empty"
 
 # ============================================================
 # Phase 6.7.5: API Candidate Validation (Denoising)
@@ -4572,9 +4378,6 @@ emit_claude_hint \
     operations             "$OPENAPI_OPERATION_COUNT" \
     auth_boundaries        "$OPENAPI_AUTH_BOUNDARY_COUNT" \
     platform_metadata      "$OPENAPI_PLATFORM_METADATA_COUNT"
-emit_claude_hint_actions \
-    "review recon/${RECON_TARGET_KEY}/api_specs/auth_boundary_candidates.jsonl and select high-value operations" \
-    "capture anonymous baseline plus controlled auth/role/object differences before promoting a finding"
 
 # ============================================================
 # Phase 6.8: Identity and Cloud Intel
@@ -4704,10 +4507,6 @@ emit_claude_hint \
     leaksearch_lines     "$LEAKSEARCH_COUNT" \
     cloud_enum_status    "$CLOUD_ENUM_STATUS" \
     cloud_enum_lines     "$CLOUD_ENUM_COUNT"
-emit_claude_hint_actions \
-    "review recon/${RECON_TARGET_KEY}/exposure/identity_intel/summary.md before SSO/reset/invite hypotheses" \
-    "review recon/${RECON_TARGET_KEY}/exposure/cloud/cloud_enum.txt only as candidate cloud evidence" \
-    "if identity/cloud hits are meaningful, carry them into /intel or /cloud-recon for focused follow-up"
 
 # ============================================================
 # Phase 7: Parameter Discovery
@@ -4760,74 +4559,44 @@ emit_claude_hint \
     unique_params        "$UNIQUE_PARAMS" \
     interesting_params   "$INTERESTING_PARAMS" \
     note                 "extraction only — not active hidden-param mining"
-emit_claude_hint_actions \
-    "python3 tools/param_discovery.py --target ${TARGET} --list recon/${RECON_TARGET_KEY}/live/urls.txt --method GET   # active arjun/x8 mining" \
-    "review interesting_params.txt for redirect/url/path candidates"
 
 # ============================================================
-# Phase 8: CI/CD Workflow Scan (auto-detect GitHub org)
+# Phase 8: Cached source references for native CI/source review
 # ============================================================
-recon_budget_checkpoint cicd
-log_info "Phase 8: CI/CD Workflow Scan"
-
-GITHUB_ORGS=""
-GITHUB_ORGS_INPUT_TOTAL=0
-CICD_SCANNER="$(dirname "$0")/cicd_scanner.sh"
-CICD_SUCCEEDED=0
-CICD_FAILED=0
-
-# Extract github.com/<org> patterns from recon data
-for f in "$RECON_DIR/live/httpx_full.txt" "$RECON_DIR/js/endpoints.txt" "$RECON_DIR/urls/all.txt"; do
-    if [ -f "$f" ]; then
-        GITHUB_ORGS="$GITHUB_ORGS $(grep -oP 'github\.com/\K[a-zA-Z0-9_-]+' "$f" 2>/dev/null || true)"
-    fi
-done
-
-# Deduplicate and limit to 5. Append `|| true` so an empty pipeline under
-# `set -euo pipefail` (grep -v returning 1 on empty input) does not kill recon.
-GITHUB_ORGS=$(echo "$GITHUB_ORGS" | tr ' ' '\n' | grep -v '^$' | sort -u || true)
-GITHUB_ORGS_INPUT_TOTAL=$(printf '%s\n' "$GITHUB_ORGS" | grep -cE '^[a-zA-Z0-9_-]+' 2>/dev/null || true)
-GITHUB_ORGS=$(printf '%s\n' "$GITHUB_ORGS" | head -5 || true)
-
-if [ -n "$GITHUB_ORGS" ] && [ -x "$CICD_SCANNER" ] && command -v sisakulint &>/dev/null; then
-    for ORG in $GITHUB_ORGS; do
-        log_info "CI/CD scan: org:$ORG"
-        if bash "$CICD_SCANNER" "org:$ORG" --output-dir "$RECON_DIR/cicd/$ORG/"; then
-            CICD_SUCCEEDED=$((CICD_SUCCEEDED + 1))
-        else
-            CICD_FAILED=$((CICD_FAILED + 1))
-            log_warn "CI/CD scan failed for org:$ORG"
-        fi
-    done
-else
-    if [ -z "$GITHUB_ORGS" ]; then
-        log_warn "GitHub org not detected — CI/CD scan skipped"
-    elif ! command -v sisakulint &>/dev/null; then
-        log_warn "sisakulint not installed — CI/CD scan skipped"
-    fi
-fi
-
-CICD_ORGS_FOUND=$(printf '%s\n' "$GITHUB_ORGS" | grep -cE '^[a-zA-Z0-9_-]+' 2>/dev/null || true)
-[ -n "$CICD_ORGS_FOUND" ] || CICD_ORGS_FOUND=0
-CICD_PHASE_STATUS="skipped"
-if [ -n "$GITHUB_ORGS" ] && [ -x "$CICD_SCANNER" ] && command -v sisakulint >/dev/null 2>&1; then
-    CICD_PHASE_STATUS=$([ "$CICD_FAILED" -eq 0 ] && echo ok || echo partial)
-elif [ -n "$GITHUB_ORGS" ]; then
-    CICD_PHASE_STATUS="unavailable"
-fi
+recon_budget_checkpoint source_refs
+log_info "Phase 8: Cached source references (CI analysis not run)"
+mkdir -p "$RECON_DIR/cicd"
+CICD_SOURCE_COUNT="$(python3 - "$BASE_DIR" "$RECON_DIR" <<'PY'
+import re
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from tools.artifact_io import write_json_atomic
+root = Path(sys.argv[2])
+rows = []
+for relative in ("live/httpx_full.txt", "js/endpoints.txt", "urls/all.txt"):
+    path = root / relative
+    if not path.is_file():
+        continue
+    with path.open(encoding="utf-8", errors="replace") as handle:
+        for line, raw in enumerate(handle, 1):
+            for match in re.finditer(r"(?:https?://)?github\.com/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?", raw):
+                rows.append({"url": match.group(0), "source_path": relative, "line_number": line,
+                             "status": "source_candidate", "ownership": "unverified"})
+write_json_atomic(root / "cicd/source_candidates.json", {
+    "schema_version": 1, "analysis_status": "not_run", "source_count": len(rows), "sources": rows,
+})
+print(len(rows))
+PY
+)"
 record_recon_phase \
-    cicd \
-    "$CICD_PHASE_STATUS" \
-    "recon/${RECON_TARGET_KEY}/cicd/" \
-    "$CICD_ORGS_FOUND" \
-    "orgs_detected=${CICD_ORGS_FOUND}; succeeded=${CICD_SUCCEEDED}; failed=${CICD_FAILED}; missing scanner/tool is unavailable, not tested clean; input_total=$GITHUB_ORGS_INPUT_TOTAL; selected=$CICD_ORGS_FOUND; remaining=$((GITHUB_ORGS_INPUT_TOTAL > CICD_ORGS_FOUND ? GITHUB_ORGS_INPUT_TOTAL - CICD_ORGS_FOUND : 0)); continuation=next GitHub org sample; closure_blocking=false"
+    source_refs ok "recon/${RECON_TARGET_KEY}/cicd/source_candidates.json" "$CICD_SOURCE_COUNT" \
+    "cached source references only; CI analysis=not_run; links do not establish ownership or expand Scope"
 emit_claude_hint \
-    phase                cicd \
-    orgs_scanned         "$CICD_ORGS_FOUND" \
-    sisakulint_present   "$(command -v sisakulint >/dev/null 2>&1 && echo true || echo false)"
-emit_claude_hint_actions \
-    "review findings/cicd/<org>/scan_results.txt for pull_request_target / unsafe-context risks" \
-    "if no GitHub orgs were auto-detected, leave CI/CD as no cached signal rather than tested clean"
+    phase source_refs \
+    source_references "$CICD_SOURCE_COUNT" \
+    analysis_status not_run \
+    artifact "recon/${RECON_TARGET_KEY}/cicd/source_candidates.json"
 
 # FFUF is independent of the later evidence-only lanes; collect its durable
 # state now so Surface never observes a half-published directory artifact.
@@ -4893,10 +4662,6 @@ emit_claude_hint \
     host_ranking_hosts          "$HOST_RANKING_HOSTS" \
     asset_relation_candidates  "$ASSET_RELATION_CANDIDATES" \
     active_probing             "host_collision_only"
-emit_claude_hint_actions \
-    "review Host pivot observations with default-vhost/CDN/error-page controls; differences remain candidates" \
-    "route AI candidates through web-llm-tool-chains before behavioral validation" \
-    "review external asset relationships as provenance-backed context; do not treat association as target scope"
 
 # ============================================================
 # Optional post-run storage guard
@@ -5016,16 +4781,14 @@ echo "  Cloud candidates:  $(wc -l < "$RECON_DIR/exposure/cloud_storage_candidat
 [ -f "$RECON_MANIFEST" ] && \
 echo "  Phase manifest:    $RECON_MANIFEST"
 
-[ -d "$RECON_DIR/cicd" ] && \
-echo "  CI/CD findings:   $(find "$RECON_DIR/cicd" -name 'scan_results.txt' -exec grep -cP '\.github/workflows/' {} + 2>/dev/null | awk -F: '{s+=$NF} END {print s+0}')"
+[ -f "$RECON_DIR/cicd/source_candidates.json" ] && \
+echo "  Source references: $CICD_SOURCE_COUNT (CI analysis not_run)"
 
 echo ""
 echo "  Results: $RECON_DIR/"
 echo "============================================="
 echo ""
-echo "  Next: Build the AI evidence pack, then choose the highest-value hypothesis"
+echo "  Collected artifacts are ready for native review."
 echo "    python3 tools/surface.py --target $TARGET"
 echo "    python3 tools/context_pack.py --target $TARGET"
-echo "    # Optional breadth sensor after AI/browser/source review:"
-echo "    python3 tools/hunt.py --target $TARGET --scan-only --quick"
 echo "============================================="

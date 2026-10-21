@@ -27,7 +27,7 @@
 | [Browser 与 JavaScript](./contracts/browser-js.md) | 修改会话内 Playwright/Chrome DevTools MCP 证据、增量发现或 JS 分析时读取 | 已完成 |
 | [Validation 与 Evidence](./contracts/validation-evidence.md) | 修改主动验证、证据门禁或 validation runner 时读取 | 已完成 |
 | [Lifecycle 与 State](./contracts/lifecycle-state.md) | 修改身份、checkpoint、case、observation 或 Action Queue 时读取 | 已完成 |
-| [外部集成](./contracts/integrations.md) | 修改 OAST、solver、spray、EBurst 或动态 token adapter 时读取 | 已完成 |
+| [外部集成](./contracts/integrations.md) | 修改 OAST、solver、spray、原生上游调用或动态 token adapter 时读取 | 已完成 |
 | [ScopeContext](./scope-context.md) | 多资产 Scope 解析、排除、分类和续跑身份 | 已完成 |
 | [日志规范](./logging-guidelines.md) | stdout/stderr、JSONL、轮换和敏感信息 | 已完成 |
 

@@ -27,7 +27,7 @@ browser/source/JS 证据与最新上下文得出。工具输出只能提供候�
 Claude-facing 文案应优先使用：
 
 - `AI Review Pool`
-- `advisory score hint`
+- `observed source facts`
 - `coverage hint`
 - `surface-review`
 - `low-priority / reopenable`
@@ -48,6 +48,22 @@ Claude-facing 文案应优先使用：
 新排序只使用已有来源事实、显式优先级或已记录状态，不再由路径词推测价值。
 旧 rubric/关键词分数不能决定候选可见性、方法、补证要求或报告资格；仅改称
 “advisory”不算删除。证据解释、角色组合和方法选择交给 Claude。
+
+## 保留工具的标准
+
+保留有明确协议、解析、采集、字节复现、证据保存或恢复价值的机械辅助。
+没有独立准备/执行价值的重复业务包装、静态漏洞评级、固定下一步方法链和批次价值评分退役；
+选源、方法、判断由现有 `src-hunter` 与原生模型完成，不再增加 controller。
+
+包装上游本身不是删除理由。`wordlist_engine`、`osint_employees`、`eburst_lane`
+保留为可选 helper：批量变异、来源整理、输入约束和有界 raw 回执有复用价值。
+候选池（含兼容 `ranked.txt`）不等于审阅后 shortlist，推断姓名不等于确认账号，
+EBurst 执行成功不等于接口可利用或凭据有效。它们不规定必跑路线。
+
+源码 helper 仅获取和保存选定原件，secret/CI analysis 明示 `not_run`。
+显式 scanner 仅保存有界 Nuclei 执行输入、raw、退出码及 residual，失败不等零发现成功。
+Recon 批次按完成顺序保留 target 和来源计数，未采集的计数为 unknown。
+这些产物不能自动写 Finding/Action/Coverage；历史证据、底座 owner 与恢复仍保留。
 
 ## 回归要求
 
