@@ -759,7 +759,6 @@ capabilities:
       - csaf-provider-metadata
       - security.txt
     routes:
-      - tools/public_exposure_signals.py
       - tools/surface.py
       - tools/checkpoint.py
   - id: sqli-low-risk-probes

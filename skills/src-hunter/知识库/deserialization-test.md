@@ -993,6 +993,18 @@ ViewState MAC/encryption uses keys from `web.config`:
 4. `.config` backup files left on server
 5. Azure App Service: sometimes in `WEBSITE_AUTH_ENCRYPTION_KEY` env var
 
+**已知 key 爆破（本仓离线工具，途径 3 的实现）**：Badsecrets 已知 key 数据集，对捕获材料做实际密码学验证，全程离线不发包：
+
+```bash
+# ASP.NET ViewState：对已捕获页面正文逐把验签/解密
+python3 tools/aspnet_viewstate_knownkey.py --body-file <捕获正文> --page-url <捕获页URL> \
+  [--cookies-file <cookie.json>]   # ViewStateUserKey 绑定时提供
+# 命中默认只出 key 指纹；需要按 4.3 锻造时加 --reveal-key（受控验证）
+
+# Telerik：对已捕获响应里的 SerializedParameters 逐把验证
+python3 tools/telerik_knownkey.py --body-file <捕获正文> [--max-values 8]
+```
+
 ### 4.3 ViewState Forgery
 
 ```bash
@@ -1025,6 +1037,7 @@ ysoserial.exe -p ViewState \
 # Blacklist3r tool: try known/default keys:
 Blacklist3r.exe --viewstate "BASE64_VIEWSTATE" --path "/page.aspx" --apppath "/"
 # Tests common validation/decryption key pairs
+# 本仓等价离线实现见 4.2 已知 key 爆破（aspnet_viewstate_knownkey）
 
 # ASP.NET __VIEWSTATEGENERATOR value:
 # Helps identify the target page's ViewState key derivation
