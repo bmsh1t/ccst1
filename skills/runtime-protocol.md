@@ -34,8 +34,9 @@
   查询不构建索引、迁移或下载模型；显式建设才使用已提供的真实模型，缺模型明示 unavailable。
   关系路径是待验证假设，不能写 Action/Finding 或授权执行。
 
-Autopilot 先完成当轮 Bootstrap，再为选定工作补充方法；查知识不抢占真实锁和待回收执行。
-唯一 src-hunter 通过平台原生 description 发现，九专项是其内部按需模块。
+唯一 src-hunter 保留平台原生 description 发现；显式 Autopilot 调查使用它，加载与复用遵守
+`commands/autopilot.md#investigation-skill`（round 共享同一入口）。先完成当轮 Bootstrap 与必要
+执行恢复，再选择新调查；查知识不抢占真实锁和待回收执行。九专项是其内部按需模块。
 历史 related_skills 标签不是可直接调用的原生 Skill；需要定位时经
 `python3 tools/skill_reference_contract.py REFERENCE --repo-root ROOT --json` 精确解析当前阅读路径，
 再原生 Read 正文。该导航不改卡字节/审核版本，不选择路线或登记查阅。

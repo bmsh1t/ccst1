@@ -3,6 +3,7 @@ description: AI-first autonomous hunt loop for one target or a target list.
 allowed-tools:
   - Bash
   - Agent
+  - Skill
   - "mcp__Playwright__*"
   - "mcp__chrome-devtools__*"
   - "mcp__fofamap__*"
@@ -28,7 +29,7 @@ continuation-aware HTTP boundary in `docs/autopilot-lanes.md#recon-and-surface`.
 At start/target change/resume/compaction, read/apply complete
 `skills/runtime-protocol.md#shared-memory-continuity`. Check inherited judgments against current commands,
 not all source; unchecked = inherited/unverified.
-On demand: `skills/src-hunter/SKILL.md`. Do not loop `/hunt`.
+Do not loop `/hunt`.
 Before hunting apply `rules/ccst/hunting.md`; before network use `config.json.resin` via
 `docs/resin-proxy.md` in the same shell. Never output secrets/persist proxy setup.
 Only session-visible MCP; presence is not readiness. Missing/failed stays partial/blocked;
@@ -38,10 +39,24 @@ Session owns claims/writes/closure. Default zero specialists; delegate per
 Reuse `state.lane_contract` at `text_available=true`; otherwise/new selection read that section in
 `docs/autopilot-lanes.md`.
 
+### Investigation Skill
+Use `src-hunter` for this session's investigation: business understanding, hypotheses, method selection,
+evidence interpretation and rotation. After Bootstrap admission and required execution recovery, load it
+before choosing new investigative work. Reuse the complete current Skill body when it is already in context;
+otherwise invoke the host's native Skill tool with `src-hunter`. On a host without that tool, read and apply
+complete `skills/src-hunter/SKILL.md` from the selected checkout. A description, path or runtime hash check
+alone is not the Skill body. Restore missing body context after compaction; do not invoke again per lane/round.
+Apply it in this same session using current target/Scope, facts, mode and remaining budget. This command
+retains continuation, waits, claims, evidence write-back and closure; Skill loading starts no separate hunt,
+controller or delegation. Waiting, terminal cleanup and recovery do not require a fresh Skill invocation.
+Apply `skills/runtime-protocol.md#shared-knowledge-recall`: start SRC from the shortlist, then expand complete
+methods and internal modules for the current question. Reuse available material instead of loading the whole library.
+
 ### State Consumption Loop
 1. Consume Bootstrap `state`, then fresh `control`; obey `state.hard_gate`. Missing/stale/partial
    is not clean. `wait_recon`/`wait_scan`: poll lock and refresh, never duplicate-launch.
-2. AI selects `owner_continuations`; order is advisory; respect `runnable=false`.
+2. Apply `src-hunter` to select the next evidence-backed question and method from current facts.
+   `owner_continuations` supplies pending owner work; its order is advisory; respect `runnable=false`.
    Read selected evidence/owner contracts before execution; retain deferred work.
    `handoff` returns to `src-hunter`; inventory/residuals never mandate Recon/Checkpoint.
 3. Round: claim per Round Mechanics before any action, including Recon or validation.

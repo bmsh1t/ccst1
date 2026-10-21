@@ -3,6 +3,7 @@ description: Run one bounded, resumable /autopilot round for native /loop schedu
 allowed-tools:
   - Bash
   - Agent
+  - Skill
   - ToolSearch
   - CronList
   - CronDelete

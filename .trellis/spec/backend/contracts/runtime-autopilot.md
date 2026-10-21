@@ -27,6 +27,19 @@ mechanical safety, evidence and recovery constraints govern execution.
 
 - The current Claude session alone selects hypotheses, routes, depth and stop
   points, and coordinates writes through existing owners. No second controller.
+- `commands/autopilot.md#investigation-skill` explicitly uses the native `src-hunter`
+  before selecting new investigative work, after Bootstrap admission and required
+  execution recovery. `/autopilot-round` consumes the same Shared Automation section;
+  both commands allow the native Skill tool. Existing full body context is reused;
+  absent body context is restored through native Skill invocation, or complete
+  checkout-file reading on a host without that tool. Description/manifest/hash
+  metadata is not body context. The original description remains unchanged for
+  native discovery; no Python selector, Store load receipt or per-lane invocation.
+- Skill application retains the same session, target/Scope, mode and remaining
+  budget. Waits, terminal cleanup and execution recovery do not require a fresh
+  Skill call. Shortlist and complete relevant methods follow Shared Knowledge Recall;
+  internal modules stay problem-scoped. Owner continuations supply pending work,
+  while the model uses src-hunter and current evidence to choose questions/methods.
 - Specialists default to zero; optional bounded independent questions stay within
   selected lanes and request/evidence budgets. No nested controller, full scan,
   final closure writer or extension of `max_lanes` is delegated.
@@ -140,6 +153,13 @@ completion; it is neither an invalid technical judgment nor a reason to begin a
 new round. Ordinary settlement without a review reason retains its prior status.
 
 ### 6. Tests Required
+
+- For Skill entry guidance, review the composed Shared Automation instructions:
+  fresh investigation loads src-hunter; retained body is reused; missing body after
+  compaction is restored; round shares the same rule; waits/cleanup/recovery retain
+  priority; unavailable Skill tools use complete native file reads. Verify unchanged
+  description and absence of a second controller. Prompt/diff checks establish the
+  written contract only; actual host/model invocation requires separate live evidence.
 
 `tests/test_autopilot_round.py` covers all four exact reasons at prepare and both
 settle paths, unchanged witness/Store on completed replay, active close ordering,
