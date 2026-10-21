@@ -17,12 +17,15 @@ CLAUDE.md 内嵌主契约，十一份 rules、src-hunter 和知识库保留完�
 
 ## 目标、材料与清理
 
-目录、开始/续接和清理的唯一操作说明见
-[目标工作目录](../rules/desktop-task-folder.md)。KEY 来自 target_storage_key/工具返回值。
+材料归属和清理见 [目标材料规则](../rules/desktop-task-folder.md)；
+KEY 来自 target_storage_key/工具返回值。开始/续接按所用命令入口和
+[Shared Memory Continuity](../skills/runtime-protocol.md#shared-memory-continuity)，
+自动模式沿用 Autopilot 的 Bootstrap/round 流程，不追加一套目录初始化或恢复步骤。
 
 资产与提取源码归 recon，原始证据归 evidence 或既有注册根，浏览器原件归目标 private
-目录，报告经 publisher 发布。目标事实、Action、Finding 与交接使用现有 TargetStore/API；
-工作笔记只引用它们。无具体 target 的集团 seeds 按
+目录，报告经 publisher 发布。目标事实、Action、Finding 与认知交接使用现有 TargetStore/API；
+运行状态、checkpoint 与批次续接使用各自 owner，工作笔记按需并引用真实状态。
+无具体 target 的集团 seeds 按
 [campaign](../rules/ccst/campaign.md) 保存与续接，不借用旧目标的 Store。
 
 清理临时工作文件不清除目标历史；既有证据 ref、已发布报告与恢复材料保持原位。

@@ -113,6 +113,16 @@ mechanical safety, evidence and recovery constraints govern execution.
   the investigation core's handoff contract. Manual hunt has no mandatory scanner
   or duplicate ordered loop; rotation alone requires no full checkpoint/coverage
   review. Completion gates and unresolved recovery work remain mandatory.
+- `rules/desktop-task-folder.md` owns materials and cleanup only. Startup/recovery
+  follows command entry and Shared Memory Continuity; no additional init/set/show
+  sequence or mandatory thread/DONE file. Known-target calls pass the target
+  explicitly, including concurrent/delegated work; shared active-pointer changes
+  are optional. Store domain facts, Runtime/checkpoint/batch continuation files
+  and Coverage retain their existing owners. Optional notes use work-item/thread
+  paths and owner refs; real delegation still returns iteration candidates and
+  source/report refs under `hunt-iter`. Pending candidates survive pause/switch/
+  compaction through existing memory/handoff. Campaign seeds retain unbound
+  cross-target progress; notes and seeds do not prove target completion.
 - Round budgets and explicit lane completion remain mandatory. Budget exhaustion
   alone creates no new work. `recon_phase_partial` binds its recovery head to the
   actual phase, artifact and remaining count; other Recon work cannot substitute.
@@ -140,6 +150,7 @@ mechanical safety, evidence and recovery constraints govern execution.
 | Review-like prefix or non-first reason | Existing normal routing; no broadened review gate |
 | Snapshot races during review | Both fields expose the current recovery head |
 | Repeated identity enrichment | Same summary path; historical `intelligence.md` untouched |
+| Static review of task-folder guidance and active callers | No duplicate startup chain or mandatory shared note file; explicit target, durable candidate handoff and evidence/cleanup boundaries remain |
 
 ### 5. Good/Base/Bad Cases
 

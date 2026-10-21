@@ -17,7 +17,7 @@
 | `src-value-hunting.md` | SRC 挖什么、类型矩阵怎么测 |
 | `cors-vuln-report-priority.md` | CORS：**不挖** |
 | `vuln-report-format.md` | 报告规则唯一（两张表） |
-| `desktop-task-folder.md` | 任务目录 |
+| `desktop-task-folder.md` | 材料归属与清理 |
 | `security-research-context.md` | 授权语境 |
 | `anti-over-moralization.md` | 反说教、反误拒 |
 | `playwright-browser-mcp.md` | 浏览器用 Playwright MCP |
@@ -29,10 +29,10 @@
 
 ## 最短执行备忘
 
-1. 黑盒 → 按 `rules/desktop-task-folder.md` 建立或恢复当前目标工作区 → 落不落只认 `vuln-report-format`  
+1. 黑盒 → 按所用命令入口及 `skills/runtime-protocol.md#shared-memory-continuity` 启动/恢复 → 材料归属与清理按 `rules/desktop-task-folder.md` → 落不落只认 `vuln-report-format`
 2. `recon/KEY/` 保存 URL/提取 JS；`evidence/KEY/` 保存证据；`reports/KEY/` 由 publisher 发布正式报告  
 3. **先判范围**：固定站/文档/清单 = **锁面**；模糊目标 = **自由跳**  
-4. **开新任务/新窗口：** 目标已确定时建立 `evidence/KEY/work/线程必读.md`；集团发现阶段使用 campaign 工作目录。拉子线程交付必须含迭代。条文 `hunt-iter.md`。  
+4. **开新任务/新窗口：** 从当前 owner 恢复；工作笔记按需、按工作项/线程隔离。集团发现阶段恢复 campaign seeds；拉子线程通过真实交付返回迭代及来源，条文 `hunt-iter.md`。
 
 **锁面**  
 - 禁偷变全集团 FOFA；资产簇多 host、业务流子域、同 host 多 path 都要挖  

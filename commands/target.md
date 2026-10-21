@@ -25,25 +25,27 @@ description: 管理 Claude CLI 漏洞挖掘中的活跃目标记忆。用法：/
 
 ## 命令
 
-首次使用先显式初始化 Store；已有活动 Store 时该命令幂等返回。
+仅未初始化的新目标先显式初始化 Store；已有目标直接 `show TARGET` 恢复。
+`set` 用于主动选择目标或设置意图，不是恢复前提；下列命令按需使用。
+已有活动 Store 时 `init` 幂等返回。
 历史待导入、preview 或损坏状态会报错，不会隐式迁移。
 
 ```bash
 python3 tools/target_store.py init --store --target TARGET
 python3 tools/target_memory.py set TARGET --goal "Find high-value Web/API leads"
-python3 tools/target_memory.py show
 python3 tools/target_memory.py show TARGET
 
-python3 tools/target_memory.py note "Login is account-gated; API paths expose org_id"
-python3 tools/target_memory.py lead "Possible IDOR on /api/org/{id}/users"
-python3 tools/target_memory.py next "Compare org user list access across both accounts"
-python3 tools/target_memory.py handoff "Recon complete; next step is role-diff on org APIs"
+python3 tools/target_memory.py note "Login is account-gated; API paths expose org_id" --target TARGET
+python3 tools/target_memory.py lead "Possible IDOR on /api/org/{id}/users" --target TARGET
+python3 tools/target_memory.py next "Compare org user list access across both accounts" --target TARGET
+python3 tools/target_memory.py handoff "Recon complete; next step is role-diff on org APIs" --target TARGET
 ```
 
 `set TARGET` 只选择已初始化目标，省略 `--goal` 会保留原目标意图。
 `--mode`、`--phase`、`--hypothesis`、`--skill`、`--knowledge` 已退役；运行阶段由
 Runtime 管理，结构化假设由 Case 管理，Skill/知识选择由 AI 按当前证据决定。
-其他写入命令可以加 `--target TARGET`，避免依赖活跃目标指针。
+已知目标时用 `show TARGET` 读取，写入命令显式加 `--target TARGET`；并发和子代理同样如此，
+避免读写落到共享活跃指针指向的其他目标。无参 `show` 仍可查看主动选择的活跃目标。
 
 `dead-end` 和 `pattern` 必须关联已登记执行。将下例的 `OPERATION_ID:0` 替换为真实
 执行收据 ID 与从零开始的 observation 序号；无执行证据时使用 `note` 保存未验证观察。
@@ -89,11 +91,13 @@ state/<target_key>/metadata.sqlite3       目标意图与经验
 
 ## 建议 Claude 流程
 
-1. 如果存在，先读取 `memory/goals/active.json`。
-2. 运行 `python3 tools/target_memory.py show`。
+1. 确定本次实际目标；共享 active pointer 仅表示主动选择，不能覆盖已知目标。
+2. 运行 `python3 tools/target_memory.py show TARGET`，无需先 `set`。
 3. 从 Store、Runtime、Case 与当前证据恢复意图和假设，选择相关 Skill。
 4. 只加载当前线索需要的知识库文件。
-5. 长会话结束前运行 `python3 tools/target_memory.py handoff "...summary..."`。
+5. 按 [Shared Memory Continuity](../skills/runtime-protocol.md#shared-memory-continuity)
+   保存必要交接，使用 `python3 tools/target_memory.py handoff "...summary..." --target TARGET`，
+   按该合同附条件、下一意图和已登记执行引用。
 
 ## 记录纪律
 

@@ -32,9 +32,10 @@
 保存，不能用 campaign 进度替代真实 operation/step 或 current_handoff。
 
 换到已确立的活面，先确认其 Scope/Auth 和初始化状态；新目标先走上述显式初始化，
-之后新旧目标都用 `python3 tools/target_memory.py set TARGET` 显式选择，再运行
-`python3 tools/target_memory.py show TARGET --json` 读取它自己的 `current_handoff` 和
-`next_actions`。跨进程续接、压缩后恢复同样先读 seeds，再从选定目标 owner 恢复；
+之后按 [Shared Memory Continuity](../../skills/runtime-protocol.md#shared-memory-continuity)
+显式携带该 target 读取它自己的 `current_handoff`、`next_actions` 和未完成工作。
+恢复无需先切换共享 active pointer；`target_memory set` 仍可主动选择目标或通过 `--goal`
+设置意图。并发和子代理始终显式携带 target。跨进程续接、压缩后恢复同样先读 seeds，再从选定目标 owner 恢复；
 不能拿旧目标 handoff、旧 active pointer、摘要或有界历史推断当前意图。
 只读/预览仅读取这些材料，不初始化、不 set、不写回。
 

@@ -133,7 +133,17 @@ admission; shared recall and knowledge-backed projections keep that distinction.
 `docs/ccst-runtime-adapter.md` summarizes their connection to target and evidence owners.
 Engineering rules preserve persistent project preferences (including the default SRC
 CORS exclusion) and explicit user overrides; target history does not invent preferences.
-Temporary notes, matrices and campaign seeds cannot become another target lifecycle owner. The original rules own investigation cadence and default SRC
+Startup and recovery follow the command entry and Shared Memory Continuity, without
+an extra directory-rule init/set/show sequence. Known-target calls carry the target
+explicitly; changing the shared active pointer is optional and is not a recovery prerequisite.
+TargetStore owns domain facts and cognitive handoffs; Runtime, checkpoint, batch
+continuations and Coverage retain their own interfaces rather than all becoming SQLite state.
+Work notes are optional and use distinct work-item/thread paths. Real delegation
+returns iteration candidates and source refs under `hunt-iter`; pending candidates
+survive pause/switch/compaction through existing memory and handoff owners.
+Temporary notes, matrices and campaign seeds cannot become another target lifecycle owner.
+Campaign seeds retain cross-target discovery progress and references to established targets.
+The original rules own investigation cadence and default SRC
 prose; CCST retains Scope/Auth, claims, observations, cleanup and publication owners.
 The original S52's missing Phase 0 and other source defects stay visible. Browser
 and FOFA support assets are in `bin/` and `mcp-servers/`; their presence does not

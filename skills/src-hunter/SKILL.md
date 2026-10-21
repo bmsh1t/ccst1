@@ -47,7 +47,7 @@ description: |
 6. **打开是登录页：** 先找业务面（本 host 网关或跳转后的 host），没会话时主业挖未登录。登录表单看得见的打通或证伪就停；繁琐验证 / 别人的身份页 / 同皮壳不耗。清单里有发会话 / 重置 / 改绑 / 换票 → `dig-scope` §4.2.2（有入口勾，无入口 N/A）。看见登录页不是换资产。**不是登录相关一律不管**（`dig-scope` §4.1.1）。进了会话立刻转 §4.2.3（对象图/换 id），不要还打引号。  
 7. **进站打法**只认 `dig-scope` §4。本文件不另写一套。  
 
-挖什么：`src-value-hunting`。正式报告只认 `vuln-report-format.md`。任务目录：`desktop-task-folder`。CORS 不挖：`cors-vuln-report-priority`。与知识库冲突时 **以 rules 为准**。
+挖什么：`src-value-hunting`。正式报告只认 `vuln-report-format.md`。材料与清理：`desktop-task-folder`。CORS 不挖：`cors-vuln-report-priority`。与知识库冲突时 **以 rules 为准**。
 
 测绘节奏只认 `dig-scope` 一种子闭环。FOFA 语法最短备忘在 `知识库/recon-methodology.md` 文首，**不是**本技能开场。搜资产用 MCP `fofa`，不要自己 curl。三账号（主号 → backup → backup2）由 `mcp-servers/fofa_MCP/` 的 `fofa.py` 自动切（凭据来自宿主环境），限流闸认 `dig-scope` §2.1.4。**禁止**把 email / key 写进本文件或对话。
 

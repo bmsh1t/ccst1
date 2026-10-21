@@ -1,7 +1,7 @@
-# CCST 目标工作目录与清理
+# CCST 目标材料归属与清理
 
 保留资产、提取源码、工作材料与正式报告分开的原则。当前工作目录是选定的 CCST
-checkout；目标材料按下表归属，不另建桌面任务树或第二套 queue/state/findings。
+checkout；本规则只管材料归属与清理，启动、恢复和交接使用现有底座接口。
 本文中的 KEY 使用现有 target_storage_key / 工具返回值，不自行清洗目标名。
 
 ## 1. 当前目录
@@ -12,30 +12,33 @@ checkout；目标材料按下表归属，不另建桌面任务树或第二套 qu
 | 提取 JS、source 与分析材料 | `recon/KEY/js/` 或采集工具返回的实际子目录；已有材料原位读取 |
 | 原始请求、响应与其他证据 | `evidence/KEY/` 及工具返回的已登记证据根 |
 | 浏览器原件、Cookie、storage、HAR、console、截图 | `.private/browser/KEY/`；认证材料遵守现有 AuthSession 私有存储合同 |
-| 临时脚本、接口清单、方法矩阵、线程必读与 DONE | `evidence/KEY/work/`；只保存工作材料和 owner 引用 |
-| Action、Finding、覆盖依据、当前意图与续接 | `state/KEY/metadata.sqlite3`，通过现有 TargetStore/Action/Finding/记忆接口读写 |
+| 按需保存的临时脚本、接口清单、方法矩阵与工作笔记 | `evidence/KEY/work/`；按工作项/线程隔离文件名或子目录，只保存工作材料和 owner 引用 |
+| 目标事实、Action、Finding、当前意图与认知交接 | `state/KEY/metadata.sqlite3`，通过现有 TargetStore/Action/Finding/记忆接口读写 |
+| 运行状态、checkpoint 与工具批次续接 | `state/KEY/` 下各 owner 的文件，通过现有 Runtime/checkpoint/continuation 接口处理 |
 | 正式报告及派生索引 | `reports/KEY/`；通过 `/report` 或 `/validate` 的既有 publisher 发布、登记 |
 | 尚未绑定具体 target 的集团种子、剩余活面与跨目标进度 | `campaigns/<slug>/seeds.md`，遵守 [campaign](ccst/campaign.md) |
 
 `findings/KEY/`、`.private/validation/KEY/` 等既有输出根继续有效。生产者返回的路径优先，
 不得为目录美观移动已登记原件、修改证据 ref 或把私有材料搬进共享目录。
 
-## 2. 开始、续接与交付
+## 2. 工作材料与接口边界
 
-1. 从 checkout 运行项目命令。已知目标先确认 Scope/Auth 和初始化状态；新目标走
-   `python3 tools/target_store.py init --store --target TARGET`，不手建数据库或猜状态文件。
-2. 已初始化目标用 `python3 tools/target_memory.py set TARGET` 选择，随后
-   `python3 tools/target_memory.py show TARGET --json` 恢复真实意图与交接；明确只读时不 set/init。
-3. 需要产出工作材料时建立 `evidence/KEY/work/线程必读.md`，指向当前
-   `rules/hunt-iter.md`、目标及 owner 引用。真实跨代理交付另含 `DONE.md` 的迭代候选；
-   不复制 Action/Finding 状态，不把工作矩阵的勾选当作 Coverage 已关闭。
-4. 尚无具体 target 的集团发现先建或恢复 `campaigns/<slug>/seeds.md`；线程说明先放
-   同一 campaign 工作目录，具体目标确立后再接它自己的 Store。不得借旧目标保存新目标状态。
-5. URL 清单与提取 JS 分开；只按需要创建对应材料目录，不创建空报告或占位状态。
+开始/续接按所用命令入口和
+[Shared Memory Continuity](../skills/runtime-protocol.md#shared-memory-continuity) 恢复；
+自动模式沿用 Autopilot 的 Bootstrap/round 流程。本规则不追加初始化或恢复步骤。
+已知目标的调用显式携带 target，无需先切换共享 active pointer。
+`target_memory set` 用于主动选择目标，也可通过 `--goal` 设置意图；并发和子代理不靠切换该指针定位目标。
+
+1. 工作笔记按需创建，不强制 `线程必读.md` 或 `DONE.md`。真实跨代理交付按现有
+   handoff 合同返回，迭代内容遵守 [hunt-iter](hunt-iter.md)。笔记只引用真实状态，
+   不另建 queue/state/findings，不把工作矩阵勾选或交付文件存在当作 Coverage/Closure 完成。
+2. 尚无具体 target 的集团发现使用 `campaigns/<slug>/seeds.md`；工作笔记按需放同一
+   campaign 工作目录，具体目标确立后再接它自己的 Store。不得借旧目标保存新目标状态。
+3. URL 清单与提取 JS 分开；只按需要创建对应材料目录，不创建空报告或占位状态。
    暂存 JS 有分析价值时保存到采集 owner 的目标目录；已登记原件保持原位。
-6. 报告写法、发布和更新遵守 [vuln-report-format](vuln-report-format.md)；报告路径取
+4. 报告写法、发布和更新遵守 [vuln-report-format](vuln-report-format.md)；报告路径取
    publisher 回执，不通过重命名或覆盖文件改变已发布报告。续跑/增量仍使用同一目标 owner。
-7. 用户另要桌面结构时，仅导出明确要求的交付副本；真实状态、证据与恢复位置仍按上述 owner。
+5. 用户另要桌面结构时，仅导出明确要求的交付副本；真实状态、证据与恢复位置仍按上述 owner。
 
 ## 3. 用户要求清理时
 
