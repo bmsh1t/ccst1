@@ -1097,3 +1097,37 @@ Added exact candidate review receipts with summary/material binding, repaired 6k
 ### Next Steps
 
 - Task remains in_progress; real report INDEX not rebuilt; live/model/G4 acceptance remains pending. No install, push or archive.
+
+
+## Session 38: Autopilot explicitly uses native src-hunter
+<!-- trellis-session: v=2 fp=11ddc143d822bdfe -->
+
+**Date**: 2026-10-21
+**Task**: Autopilot explicitly uses native src-hunter
+**Branch**: `refactor/10-11-capability-architecture`
+
+### Summary
+
+Explicit Autopilot investigation loads or reuses native src-hunter after Bootstrap and execution recovery. Original Skill description/body unchanged; same session, Scope and budget; round shares the contract.
+
+### Main Changes
+
+- Added Skill tool permission to both Autopilot commands and a shared investigation loading/application contract.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `13140bc` | fix(autopilot): explicitly use native src-hunter for investigation |
+
+### Testing
+
+- [OK] Independent read-only prompt review found no blockers; main diff review and git diff --check passed. No automated or live-model tests for this prompt-only change.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- No runtime installation or live invocation was performed; task remains in_progress without push/archive.

@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 37
+- **Total Sessions**: 38
 - **Last Active**: 2026-10-21
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1099 | Active |
+| `journal-1.md` | ~1133 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 38 | 2026-10-21 | Autopilot explicitly uses native src-hunter | `13140bc` | `refactor/10-11-capability-architecture` |
 | 37 | 2026-10-21 | Autopilot candidate review, severity and lane evidence repair | `879a733` | `refactor/10-11-capability-architecture` |
 | 36 | 2026-10-19 | B收口完成与C跨进程机械验收 | - | `refactor/10-11-capability-architecture` |
 | 35 | 2026-10-19 | A 六项可靠性修复验收收尾 | - | `refactor/10-11-capability-architecture` |
