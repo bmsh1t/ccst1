@@ -25,18 +25,16 @@ specialist's work. Specialists default to zero; do not delegate again.
 ## Required Handoff
 
 Use the existing `docs/autopilot-lanes.md#inline-specialist-propagation` content
-pack, not a second dispatch format. The parent supplies:
+pack. Require:
 
 - Explicit target, Scope/test boundary, exact URL seed when present, scoped auth
-  references and current-invocation Bootstrap/state with `action=continue`.
-- Confirmed facts and current hypotheses/status, the single sub-goal and its
-  no-repeat boundary, evidence pointers with JSON key/line range/read shape, and
-  the specialist matching reason. Incremental work names its delta.
+  references and fresh current-invocation Bootstrap/state with `action=continue`.
+- The pack's confirmed facts/hypotheses, single sub-goal/delta/no-repeat boundary,
+  self-describing evidence pointers and specialist matching reason.
 - Literal `arguments.deep`, `invocation_batch.bounded`,
-  `invocation_batch.max_lanes`, and `invocation_batch.handoff`, plus this task's
-  request/evidence budget and stop condition. Do not reparse slash text or infer
-  flags. For `arguments.deep=true`, apply `DEEP HUNT MODE` to this task only;
-  otherwise keep normal depth. Neither mode adds another lane or extends budget.
+  `invocation_batch.max_lanes`, `invocation_batch.handoff`, request/evidence budget
+  and stop condition. Do not infer flags from slash text. `arguments.deep=true`
+  applies `DEEP HUNT MODE` to this task; otherwise normal depth. Preserve the budget.
 
 Missing target or test boundary means no execution: return the missing input to
 the parent. Missing, stale, partial or unreadable materials remain explicit
@@ -67,39 +65,37 @@ files as current truth. Read locatable raw artifacts with native Read/Grep;
 missing values stay unknown, and summaries do not substitute for original bodies.
 
 Apply `skills/runtime-protocol.md#shared-knowledge-recall` and
-`skills/runtime-protocol.md#shared-memory-continuity`: restore relevant current facts, distinguish inherited
-judgments, and select cards by information gap from the full catalog. Reuse
-already-read content. This agent returns continuity updates for the parent to
-save; it does not create another memory store or auto-log a session summary.
+`skills/runtime-protocol.md#shared-memory-continuity`: restore relevant facts,
+check inherited judgments and recall by information gap; reuse valid body context.
+Return continuity updates for parent write-back; do not auto-log or create a memory store.
 
 ## Evidence Task And Method Routes
 
 Business impact and workflow evidence guide the question; scanner output is an
-advisory lead, not a clean verdict. `rules/ccst/hunting.md` owns value-first posture and
-broad-scanner boundaries. Three modes, AI override and evidence-driven depth live
-in `skills/runtime-protocol.md#21-三模式决策discovery--exploitation--validation-modes`. Business-model maintenance, hypothesis selection, rotation and cross-stage
-coordination have one owner: `skills/src-hunter/SKILL.md`, read on demand. Return business-model updates for
-the parent to save. The shared coordinator owns validation/report handoff;
-automatic continuation and budgets stay in `commands/autopilot.md`.
-Do not turn these into a second Core Loop or finish
-checklist. Within the assigned task, turn a concrete signal into the smallest
-bounded evidence-producing step, or state the precise blocker/dead-end.
+advisory lead. Apply `rules/ccst/hunting.md` and
+`skills/runtime-protocol.md#21-三模式决策discovery--exploitation--validation-modes`.
+Use complete `skills/src-hunter/SKILL.md` for business understanding, hypotheses,
+method selection and rotation when not supplied; read/apply the matching complete
+method before its first request. Return business-model updates to the parent.
+Within this task, choose the smallest bounded evidence-producing step or state
+the precise blocker/dead-end; continuation, validation/report handoff and closure
+remain parent-owned.
 
-Load only the matching method section when it is not already supplied:
+Read the matching complete execution section when not already supplied:
 
 | Evidence question | Existing method owner |
 |---|---|
-| Actors/sessions/objects/private markers/hypotheses, workflow or timing comparison | `docs/autopilot-lanes.md#workflow-timing-and-case-state` and `docs/autopilot-lanes.md#state-and-queue`; Case is context, not a backlog, route score or global gate |
-| Browser/API/auth state, exact source/JS routes, chunk/source-map gaps | `docs/autopilot-lanes.md#browser-source-and-js`; `tools/deep_js_packer.py` only for concrete gaps, never JS count alone |
-| Focused fuzz from a concrete template, target-derived seeds/transforms and random-miss groups | `skills/src-hunter/modules/web2-recon.md#focused-discovery-boundary`; isolated raw/summary run directory, route existence remains a Signal |
-| DNS/asset naming, certificate/JS/source gap | `docs/autopilot-lanes.md#credentials-and-asset-expansion` (including its conditional caller Surface-refresh handoff when DNS expansion adds hosts; never refresh parent state yourself) and `docs/tool-index.md`; host count alone is not a trigger |
-| Software/version/advisory applicability | `commands/intel.md` and `docs/autopilot-lanes.md#software-and-intel`; keep affected ranges, provider failure/staleness and route reachability separate; versionless representative pages retain their cursors |
+| Actors/sessions/objects/private markers/hypotheses, workflow or timing | `docs/autopilot-lanes.md#workflow-timing-and-case-state` and `docs/autopilot-lanes.md#state-and-queue` |
+| Browser/API/auth state, source/JS routes, chunk/source-map gaps | `docs/autopilot-lanes.md#browser-source-and-js` |
+| Focused fuzz: template, target-derived seeds/transforms, random-miss controls | `skills/src-hunter/modules/web2-recon.md#focused-discovery-boundary`; route differences remain Signals |
+| DNS/asset naming, certificate/JS/source gap | `docs/autopilot-lanes.md#credentials-and-asset-expansion`: added hosts require the counts/evidence and caller Surface-refresh request in 「待落库」; no added hosts means no refresh request; never refresh parent state |
+| Software/version/advisory applicability | `commands/intel.md` and `docs/autopilot-lanes.md#software-and-intel`; retain versionless representative-page cursors |
 | WordPress or Exchange/OWA/EWS/Autodiscover | `knowledge/cards/wordpress-surface-intelligence.md` or the existing EBurst entry in `docs/autopilot-lanes.md#software-and-intel` |
-| SQL/JSON/WAF or access-boundary comparison | `docs/autopilot-lanes.md#sql-json-and-waf` and `docs/autopilot-lanes.md#access-limit`; status changes, WAF blocks, `429` and transport errors are not findings |
+| SQL/JSON/WAF or access-boundary comparison | `docs/autopilot-lanes.md#sql-json-and-waf` and `docs/autopilot-lanes.md#access-limit` |
 | Byte-exact proxy/cache/desync | `docs/autopilot-lanes.md#wire-and-live-action-boundaries`; `tools/sender_semantics.py --require` gates sender capabilities, browser/urllib cannot prove wire absence |
-| Login/protocol/credential evidence | `skills/src-hunter/modules/credential-attack.md` and `commands/spray.md`; reviewed finite shortlist, dry-run/preflight, rate/lockout and stop-on-hit; no direct candidate-pool replay or inferred password grant |
+| Login/protocol/credential evidence | `skills/src-hunter/modules/credential-attack.md` and `commands/spray.md`; no direct candidate-pool replay or inferred password grant |
 | Self-owned test-account email or Cloudflare clearance | Existing setup-helper entries in `docs/autopilot-lanes.md#access-limit` |
-| Candidate registration, replay/claim binding, technical judgment or report preparation | `docs/evidence-runners.md`, `commands/validate.md`, `commands/report.md`; return proposed evidence/spec/body for parent-owned registration, CAS and assessment |
+| Candidate proof, technical judgment or report preparation | `docs/evidence-runners.md`, `commands/validate.md`, `commands/report.md`; return evidence/spec/body for parent registration, CAS and assessment |
 
 These routes are examples, not a fixed order or family whitelist. Any supported
 family, primitive or chain may be investigated within the supplied boundary.
@@ -109,16 +105,13 @@ with the next question instead of using a tool cap or scanner-negative as closur
 Demoted public-metadata leads such as `standard_public_metadata.txt` stay available
 for evidence-based re-review; do not delete them or force another broad sweep.
 
-For browser work, use one visible session backend under the lane's selection,
-switch and close contract. Persist via native `filename`/`filePath` parameters,
-never by copying response bodies through the model. Missing/unpersisted Network,
-Console or complete HttpOnly state is `partial`/`blocked`, never a complete capture
-or tested-clean. JSHook MCP is an optional evidence source only when visible in
-this session and a specific runtime JavaScript question remains unresolved.
-Keep dependent steps in the same process/socket/browser context; restore complete
-session state explicitly when changing processes and refresh rotating tokens
-from the legitimate baseline. Return the native artifacts and focused capture
-manifest for the parent's import; preserve recoverable state before closing.
+Browser work follows the lane's one-backend selection, switch and close contract.
+Persist native `filename`/`filePath` originals; missing/unpersisted Network, Console
+or complete HttpOnly state remains `partial`/`blocked`. JSHook MCP is optional only
+when visible and a concrete runtime JS question remains. Keep dependent steps in
+one process/socket/browser context; process changes require complete state restore
+and rotating-token refresh from the legitimate baseline. Return originals and
+the focused manifest for parent import; preserve recoverable state before closing.
 
 ## Write Boundary And Result
 

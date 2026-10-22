@@ -27,12 +27,11 @@ Retain `--context-file <arguments.context_file_shell>` when present (also in
 `arguments.hunt_auth_flags`). Unsupported executor: never drop context; use the
 continuation-aware HTTP boundary in `docs/autopilot-lanes.md#recon-and-surface`.
 At start/target change/resume/compaction, read/apply complete
-`skills/runtime-protocol.md#shared-memory-continuity`. Check inherited judgments against current commands,
+`skills/runtime-protocol.md#shared-memory-continuity`. Ground this task in `state.target_memory` first:
+owner-bound intent, current handoff, review/condition warnings and bounded history. Expand relevant
+history through its owner commands; no matching filename does not mean no memory. Recover fresh
+memory after compaction or owner changes. Check inherited judgments against relevant current commands,
 not all source; unchecked = inherited/unverified.
-Consume `state.target_memory` first: it carries the owner-bound intent, current handoff, review/condition
-warnings and bounded history with expansion commands. Use it to ground this task before looking for
-loose notes. Expand older relevant experience through its owner commands; no matching filename does
-not mean no memory. After compaction or owner changes, recover fresh memory through the shared protocol.
 Do not loop `/hunt`.
 Before hunting apply `rules/ccst/hunting.md`; before network use `config.json.resin` via
 `docs/resin-proxy.md` in the same shell. Never output secrets/persist proxy setup.

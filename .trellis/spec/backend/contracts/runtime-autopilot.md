@@ -60,7 +60,13 @@ mechanical safety, evidence and recovery constraints govern execution.
   selected lanes and request/evidence budgets. No nested controller, full scan,
   final closure writer or extension of `max_lanes` is delegated.
 - Compressed guidance must reference real sections that retain the displaced
-  constraints, not merely existing files. When DNS expansion returns positive
+  constraints, not merely existing files. Keep command frontmatter, Bootstrap
+  expansions, critical manifest and consumed headings stable: round reads the
+  complete `Shared Automation` H2; `_lane_contract_text` includes lane subsections
+  and fenced content. Retain CLAUDE's complete 6k imports. Measure resident imports,
+  command bodies, on-demand lanes and optional agents separately; byte counts do
+  not establish token, cost or model-behavior improvements.
+  When DNS expansion returns positive
   `new_resolved_hosts` or `new_all_hosts`, the specialist hands off those counts,
   evidence refs and a Surface-refresh request through the existing pending-write
   tail; only the caller refreshes Surface. No added hosts means no DNS-driven

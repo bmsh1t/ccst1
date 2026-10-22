@@ -1,59 +1,48 @@
 # 6k 的 CCST 宿主与底座接线
 
-CLAUDE.md 内嵌主契约，十一份 rules、src-hunter 和知识库保留完整方法与能力。
-当前路径、工具调用和文件操作直接写在对应活动正文中；本文件汇总边界与来源，
-不要求执行时逐条翻译另一套宿主指令。根 AGENTS.md 不再是本项目入口。
+CLAUDE.md、十一份 rules、src-hunter 和知识库保留完整方法与能力；活动正文已采用
+CCST 路径与操作。本文件导航现有合同并记录来源；根 AGENTS.md 不再是项目入口。
 
 ## 读取与维护
 
-- 从选定 CCST checkout 开始，完整加载 CLAUDE.md 及其十一规则导入。SRC 先读
-  `skills/src-hunter/知识库/打穿短表.md`，再按现场展开相关完整方法；不每站通读整库。
-- 规则、docs、tools 路径以 checkout 为根。Skill 内的 `知识库/`、`modules/` 相对该包，
-  安装器会递归同步；安装副本可以读取，方法维护只写 checkout 的
-  `skills/src-hunter/知识库/` 及必要索引，避免两个可写来源。
-- 方法维护按 `rules/hunt-iter.md` 的准入、三问和来源核对，由主会话直接改 Markdown，
-  Git 保留差异；子代理只提候选。已审共享卡继续使用 knowledge 的审核/晋升流程。
-- 原生读取不经过 catalog、manifest 或 hot_method；缺失就报告缺失，不用历史正文悄悄补位。
+- 从选定 checkout 完整加载 CLAUDE.md 及十一规则。rules/docs/tools 相对 checkout，
+  Skill 内的 `知识库/`、`modules/` 相对该包，安装器递归同步。
+- 方法读取、短表展开与维护遵守
+  [Shared Knowledge Recall](../skills/runtime-protocol.md#shared-knowledge-recall)：原生 Read/Grep，
+  按问题读完整方法；缺失明示，不用历史正文补位。
+- 方法维护只写 checkout 的 `skills/src-hunter/知识库/` 及必要索引；安装副本只读。
+  按 hunt-iter 准入、三问和来源核对，由主会话修改并保留 Git 差异；子代理只提候选。
+  已审共享卡仍走 knowledge 审核/晋升。
 
 ## 目标、材料与清理
 
-材料归属和清理见 [目标材料规则](../rules/desktop-task-folder.md)；
-KEY 来自 target_storage_key/工具返回值。开始/续接按所用命令入口和
+材料目录、owner 与清理步骤见 [目标材料规则](../rules/desktop-task-folder.md)，
+KEY 取 target_storage_key/工具回执。开始/续接遵守所用命令入口和
 [Shared Memory Continuity](../skills/runtime-protocol.md#shared-memory-continuity)，
-自动模式沿用 Autopilot 的 Bootstrap/round 流程，不追加一套目录初始化或恢复步骤。
-
-资产与提取源码归 recon，原始证据归 evidence 或既有注册根，浏览器原件归目标 private
-目录，报告经 publisher 发布。目标事实、Action、Finding 与认知交接使用现有 TargetStore/API；
-运行状态、checkpoint 与批次续接使用各自 owner，工作笔记按需并引用真实状态。
-无具体 target 的集团 seeds 按
-[campaign](../rules/ccst/campaign.md) 保存与续接，不借用旧目标的 Store。
-
-清理临时工作文件不清除目标历史；既有证据 ref、已发布报告与恢复材料保持原位。
-桌面目录仅在用户要求导出时作为交付副本，不能变成第二套运行状态。
+自动模式沿用 Bootstrap/round。各类状态仍由现有 owner 保存，工作笔记按需引用；
+无 target 的集团 seeds 按 [campaign](../rules/ccst/campaign.md) 续接，不借旧目标 Store。
+已登记证据、报告与恢复材料保持原位；桌面目录只作用户要求的导出副本。
 
 ## 工具与宿主
 
-- 浏览器完整调用步骤见 [浏览器规则](../rules/playwright-browser-mcp.md)，使用当前会话
-  实际暴露的 Playwright/Chrome DevTools MCP 和参数。导入/登记走已有证据接口。
-- FOFA 使用当前可用的 FOFA/FofaMap MCP。原版三账号支持位于 `mcp-servers/fofa_MCP/`，
-  双槽浏览器启动器位于 `bin/`；配置方式见 [native-tools](native-tools.md)。资产存在不代表
-  MCP 已启用，也不授权修改个人宿主配置。实际工具名以会话 schema 为准，避免重复查询。
-- 代理按 [resin-proxy](resin-proxy.md) 当前配置使用；Git remote 取当前仓库。
-  Git push、安装和更改个人配置不是规则隐含动作。
-- 执行接口查 [tool-index](tool-index.md)，事实恢复查
-  [runtime-protocol](../skills/runtime-protocol.md)。Scope/Auth、claim/CAS、operation、
-  cleanup、技术裁决和目的地资格继续由各自 owner 负责。
+- 浏览器按 [浏览器规则](../rules/playwright-browser-mcp.md) 使用会话可见 Playwright/Chrome
+  DevTools MCP；FOFA 用可用的 FOFA/FofaMap MCP。工具名/参数以当前 schema 为准。
+  三账号支持在 `mcp-servers/fofa_MCP/`，双槽启动器在 `bin/`，配置见
+  [native-tools](native-tools.md)；资产存在不证明 MCP 已启用，也不授权修改个人配置。
+- 代理按 [resin-proxy](resin-proxy.md) 当前配置，Git remote 取当前仓库。
+  push、安装和个人配置变更均非规则隐含动作。
+- 执行前查 [tool-index](tool-index.md#execution-contract-lookup) 的匹配合同。
+  Scope/Auth、claim/CAS、operation、cleanup、裁决与资格仍归各自 owner。
 
 ## 报告与连续性
 
-正文、等级、发布/更新与私有实值边界见 [vuln-report-format](../rules/vuln-report-format.md)，
-具体 publisher 参数见 [report](../commands/report.md)。先完成正文格式再发布，保留当前
-Finding/assessment/delivery 绑定与不可变文件；外发/共享副本脱敏，受控私有原件保持完整。
-技术成立、目的地资格、报告发布和外部提交各有真实状态，不能凭文件存在互相替代。
-
-持续推进和方法迭代保留；当前用户范围、停止指令、明确预算及真实执行资源仍生效。
-动作结果即时交原 owner 保存，稳定结论及暂停/切换/compaction 的认知交接走 memory API。
-未知效果、cleanup 和终态记录必须处理；有界停止保留残余，不宣称未测项已覆盖。
+发布前遵守 [vuln-report-format](../rules/vuln-report-format.md)，参数查
+[report](../commands/report.md)。保留当前 Finding/assessment/delivery 绑定、不可变文件；
+外发/共享副本脱敏，私有原件完整。技术成立、目的地资格、发布与外部提交各有真实状态。
+持续推进/迭代遵守 CLAUDE.md 与当前入口的范围、停止、预算和资源边界。证据即时写 owner，
+稳定结论及暂停/切换/compaction 的认知交接按
+[Cognitive Write Timing](../skills/runtime-protocol.md#cognitive-write-timing)。
+未知效果、cleanup 和终态记录仍须完成；有界停止保留残余，不记为已覆盖。
 
 ## 来源与历史
 

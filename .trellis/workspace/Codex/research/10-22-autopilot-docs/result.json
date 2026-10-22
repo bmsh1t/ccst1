@@ -1,0 +1,39 @@
+{
+  "status": "passed",
+  "checks": [
+    "real selected-lane extraction retains complete section text",
+    "frontmatter, bootstrap, round, complete 6k imports and core investigation/finish contracts unchanged",
+    "specialist owner-write/result boundary and adapter source history unchanged",
+    "39 Markdown references resolve to existing paths and, where provided, section anchors",
+    "real runtime inventory comparison accepts unchanged critical manifest and current sources"
+  ],
+  "measurements": [
+    {
+      "path": "commands/autopilot.md",
+      "before_bytes": 10326,
+      "after_bytes": 10211,
+      "before_chars": 10290,
+      "after_chars": 10175,
+      "sha256": "6b45dd9b1405427f006a8d91af4df06f4ec41464bb55c0c1e21cfad527d93245"
+    },
+    {
+      "path": "agents/autopilot.md",
+      "before_bytes": 10481,
+      "after_bytes": 9261,
+      "before_chars": 10455,
+      "after_chars": 9225,
+      "sha256": "0ec9f88da5bffefb2412e7262ab2422911788bed0e30580f63e77d3a2b24760e"
+    },
+    {
+      "path": "docs/ccst-runtime-adapter.md",
+      "before_bytes": 4796,
+      "after_bytes": 3760,
+      "before_chars": 2594,
+      "after_chars": 2222,
+      "sha256": "1043bec3fefb4769afc19690f8e8cf426562a1d2a8284981730b5756b10662ee"
+    }
+  ],
+  "resident_before_bytes": 141888,
+  "resident_after_bytes": 140852,
+  "limits": "Document/runtime interfaces only; no model invocation, target I/O, or project tests."
+}
