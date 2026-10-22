@@ -44,7 +44,7 @@
 
 ## 测绘执行（owner：现有 recon 工具面）
 
-- 资产发现只用现有工具面：`tools/hunt.py --recon-only`、recon-agent 管线
+- 资产发现只用现有工具面：`/recon` 的 `tools/hunt.py --recon-only` 管线
   （subfinder/httpx/katana/waymore）、fofamap MCP（FOFA 检索）；不自建测绘循环。
 - 先活筛再进站；控股关系过一遍（存疑/参股默认不挖，登记 lead 不进站）。
 

@@ -209,6 +209,10 @@ consumer 可重开。未测和低优先保持 unresolved；临时排除只随本
 主会话复核 actor、target、revision、session/state 的兼容性与 Scope/Auth，再通过原领域
 owner 接受结果。不为“自己做过”重收证据，不把专家自报当 Finding/Action 已完成。
 
+只读复核仅审阅父会话明确目标的现有证据；不发目标请求、不运行采集或投影刷新，
+不初始化、导入或修复 Store。缺失或无效材料返回 unknown 与恢复建议；状态及派生
+产物由父会话通过原 owner 写回。普通 `surface.py` 也可能发布投影，不在只读复核中运行。
+
 ## Method Maintenance (A) 与连续性
 
 按 rules/hunt-iter.md 的原门槛和三问，由主会话核对实际来源后直接修改 checkout 的 skills/src-hunter/知识库/

@@ -358,18 +358,17 @@ tools are skipped, not fatal.
 `agents/` are explicit specialist/compatibility roles; the directory is the
 source of truth and these roles are not an implicit second controller.
 
+Recon, Surface, Chain, Web3 and Token work uses the existing commands and complete
+internal modules. For an independent second opinion, use a general-purpose
+subagent with the [shared handoff and read-only boundary](skills/src-hunter/SKILL.md#real-delegation-and-execution-handoff).
+
 | Agent | What It Does | Model |
 |:---|:---|:---|
 | **autopilot** | Bounded specialist task delegated by the current session | Prefer Sonnet -> current session fallback |
-| **recon-agent** | Subdomain enum, live hosts, URL crawl, nuclei | Prefer Haiku *(fast)* → current session fallback |
-| **recon-ranker** | AI review and prioritization of recon + memory evidence | Prefer Haiku *(fast)* -> current session fallback |
 | **report-writer** | Professional reports, impact-first, human tone | Prefer Opus *(quality)* → current session fallback |
 | **validator** | 7-Question Gate + 4-gate finding validation | Prefer Sonnet → current session fallback |
-| **chain-builder** | Independent review of one evidence-backed connector | Prefer Sonnet → current session fallback |
 | **disclosed-researcher** | Disclosed-report metadata and retained full-body source observations | Prefer Sonnet -> current session fallback |
 | **credential-hunter** | Credential-prep stages; prepares controlled spray decisions | Prefer Sonnet -> current session fallback |
-| **web3-auditor** | Contract invariant review and bounded source/state proof | Prefer Sonnet -> current session fallback |
-| **token-auditor** | Meme/token contract and launch-risk review | Prefer Sonnet -> current session fallback |
 
 Agent frontmatter now uses `model: inherit` instead of hard versioned model
 IDs. Claude Code follows the current session model, while the table above

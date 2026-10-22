@@ -116,7 +116,7 @@ ctf-web 原文 -> 现代 AI 可能漏掉的可迁移 delta -> knowledge/cards / 
 | `client-side-advanced.md` | 中 | 只吸收 CSP/XSSI/XS-Leak/postMessage/normalization 边界 | `browser-client-boundaries.md`, `xs-leak-oracle.md`, `xss-client-injection.md` |
 | `cves.md` | 中 | 不复制 CVE；吸收“版本→可达路径→低风险验证”模型 | `known software intelligence lane`, `information-disclosure-source-config.md` |
 | `field-notes.md` | 中 | 保留 optional；只用于补遗漏 checklist，不默认加载 | 多张卡的对照索引 |
-| `web3.md` | 低（Web2 视角） | 排除 Web2 默认吸收；交给 Web3 专线 | `web3/`, `agents/web3-auditor.md` |
+| `web3.md` | 低（Web2 视角） | 排除 Web2 默认吸收；交给 Web3 专线 | `skills/src-hunter/modules/web3-audit.md` |
 | `llm-attacks.md` | 中-高 | 选择性蒸馏工具调用/RAG/agent 权限边界 | `web-llm-tool-chains.md`, `ssrf-url-fetch.md`, `information-disclosure-source-config.md` |
 
 ## 精选蒸馏主题

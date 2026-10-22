@@ -71,22 +71,23 @@ mechanical safety, evidence and recovery constraints govern execution.
   evidence refs and a Surface-refresh request through the existing pending-write
   tail; only the caller refreshes Surface. No added hosts means no DNS-driven
   refresh request. A stale projection is not an automatic refresh.
-- State does not infer a need for `recon-ranker` from evidence-group counts or
-  long-tail size. The existing read-only agent remains explicitly callable through
-  native discovery and `/autopilot` guidance. Do not replace retired thresholds
-  with an always-on recommendation or a second capability registry.
-- The ranker reads current target memory/Findings/experience through existing
+- State does not select a specialist from evidence-group counts or long-tail size.
+  Generic delegation may answer an explicit bounded independent question under
+  src-hunter's handoff contract. Retired specialist entries require no replacement
+  registry, automatic recommendation or controller.
+- Read-only review reads current target memory/Findings/experience through existing
   Store queries with an explicit target, and raw evidence or current cached
   projections. Retired JSON/PatternDB is history, not a missing-Store fallback.
   Even plain `surface.py` can publish projections: refresh/build/init/repair
-  belongs to the parent, not this read-only specialist. Missing/stale/invalid
-  inputs remain gaps; available raw material is still reviewable. Each pager
+  belongs to the parent, not the reviewer. Review sends no target requests and
+  performs no acquisition or Store import. Missing/stale/invalid inputs remain
+  unknown with recovery advice; available raw material is still reviewable. Each pager
   keeps its own target/filter-bound cursor; `target_memory show` is not a pager.
 - `next_tool_hint` / `enrichment_hints` remain compatibility fields. Ordinary
   state emits empty values; full-state `guard_safe_pivot` retains cached
   `context_pack` / `checkpoint` hints, while bounded state omits those hints.
-  Existing Intel hints are unchanged. Bootstrap may still compact an explicitly
-  supplied legacy ranker hint; this is serialization, not automatic invocation.
+  Existing Intel hints are unchanged. Bootstrap emits empty `enrichment_hints`
+  even when supplied historical specialist hints; it does not revive retired entries.
   Surface facts, exact URLs, references, statistics and pagination stay available.
 - Cached JS/source paths go directly to native Read/Grep. `js_reader`,
   `source_intel`, `intelligence_extractor` and `/js-read` are retired. Historical
@@ -161,7 +162,7 @@ mechanical safety, evidence and recovery constraints govern execution.
 | Input | Required result |
 |---|---|
 | Only raw JS/source/browser/Case/Intel observations | No automatic route or Queue insertion |
-| Empty, sparse or multi-source long-tail Surface | Preserve facts/cursors; no automatic ranker recommendation |
+| Empty, sparse or multi-source long-tail Surface | Preserve facts/cursors; no automatic specialist selection |
 | All hosts tripped by request guard | Cached-evidence pivot and full hints retained; bounded output stays compact |
 | Untested coverage, no explicit owner work | `stop_bounded`, retained residuals, no exhaustion |
 | Active runtime phase or explicit Queue work | Existing lock/owner continuation preserved |
@@ -204,12 +205,16 @@ an exhaustion claim. Producer diagnostics alone do not test coordinator routing.
 
 `tests/test_autopilot_bootstrap.py::test_state_preserves_surface_facts_without_choosing_ranker`
 checks full/bounded state across empty/sparse/rich evidence, exact facts/cursors,
-Store binding and source-byte preservation. Existing explicit-hint serialization,
-cached-evidence guard, owner continuation and closure-advice digest tests remain.
-`tests/test_recon_ranker_contract.py` executes the ranker's documented CLI queries
-against current/empty/missing/stale fixtures, including exact URL and Finding
-pagination, current handoff and unchanged Store binding/raw files. Agent smoke
-tests retain frontmatter/tool compatibility; no model behavior is inferred.
+Store binding and source-byte preservation. Historical specialist-hint serialization
+is retired; cached-evidence guard, owner continuation and closure-advice digest
+checks remain relevant.
+The former ranker CLI/agent checks describe a retired entry, not current executable
+coverage. Agent retirement uses an isolated baseline-to-current runtime check:
+ordinary sync retains old owned files, prune removes exactly unchanged retired
+agents, modified obsolete files reject the whole batch, and user extras remain.
+Also preserve surviving agent/command/module bytes, recursive Skill resources,
+critical manifest and bounded owner/Surface/memory projections. No host/model
+behavior is inferred.
 
 `tests/test_ai_native_skill_convergence_baseline.py` keeps the thin-agent owner
 contract, resolves the three-mode reference to its actual section, and checks

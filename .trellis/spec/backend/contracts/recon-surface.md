@@ -4,9 +4,9 @@
 
 ## Native entry and review reuse
 
-`surface._surface_options` does not recommend chain-builder from Review Pool
-counts. The native agent description remains discoverable; actual primitive
-evidence and the connector method determine whether independent review is useful.
+`surface._surface_options` selects no specialist from Review Pool counts.
+Actual primitive evidence and the connector method determine whether bounded
+independent review through generic delegation is useful.
 Surface invocation may publish its own rebuildable index/projection, so ordinary
 viewing is not described as universally read-only. Reuse unchanged valid views;
 query or refresh only the view needed by a changed input or evidence question.
@@ -18,8 +18,10 @@ rebuild/find-gaps/ledger/surface as a fixed sequence. Actual finish keeps the ga
 Closure and execution-recovery/claim/heartbeat duties. KB/Context navigation adds
 no route audit or no-delta memory write; use the shared Cognitive Write Timing.
 
-Chain/Web3/Token commands and agents retain native description, tool permissions,
+Chain/Web3/Token commands retain native description, tool permissions,
 inputs, outputs and parent handoff while reading one complete internal method.
+Their duplicate agent entries are retired; commands/modules and generic delegation
+retain the methods and independent-review handoff.
 Module migration must preserve all distinct method statements and evidence/stop
 boundaries before deleting entry copies; native discovery count is not a cost
 or model-benefit measure. Non-HTTP contract evidence remains analysis material.

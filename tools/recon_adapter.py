@@ -2,7 +2,7 @@
 Recon output adapter — normalizes recon data across formats.
 
 Reads the nested directory format produced by recon_engine.sh and provides
-a unified API for surface and recon-ranker consumers.
+a unified API for Surface and native evidence review.
 
 Handles fallback paths (e.g. httpx_full.txt at root vs live/httpx_full.txt)
 and can normalize a recon directory by creating missing derived files used by

@@ -1,0 +1,27 @@
+{
+  "status": "passed",
+  "baseline": "1a8a95d0589463f0a3aebff037034bbc2b5e0953",
+  "checks": [
+    "five agents removed; five survivors, 37 commands, complete modules/6k body and critical manifest preserved",
+    "real compact projection discards historical specialist hints; owner, Surface, cursor, memory and lane facts unchanged",
+    "baseline installs 10 owned agents; ordinary current sync retains all five retired owned copies",
+    "prune removes exactly five unchanged owned agents; all current payloads/receipts match and unowned extra bytes/mtime survive",
+    "modified obsolete agent rejects the whole batch before pending command writes; payload/receipt bytes and mtimes preserved"
+  ],
+  "agents_before": 10,
+  "agents_after": 5,
+  "commands": 37,
+  "skill_resources": 62,
+  "removed": [
+    "agents/claude-bug-bounty/chain-builder.md",
+    "agents/claude-bug-bounty/recon-agent.md",
+    "agents/claude-bug-bounty/recon-ranker.md",
+    "agents/claude-bug-bounty/token-auditor.md",
+    "agents/claude-bug-bounty/web3-auditor.md"
+  ],
+  "limits": [
+    "no project tests, real runtime, target data, network or paid model calls",
+    "pure projection fixture does not exercise owner-state acquisition or host discovery/cache behavior"
+  ],
+  "elapsed_seconds": 1.046
+}

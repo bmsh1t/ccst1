@@ -38,7 +38,7 @@ Before hunting apply `rules/ccst/hunting.md`; before network use `config.json.re
 Only session-visible MCP; presence is not readiness. Missing/failed stays partial/blocked;
 no failed source/tool retries this invocation.
 Session owns claims/writes/closure. Default zero specialists; delegate per
-`docs/autopilot-lanes.md#inline-specialist-propagation`; `recon-ranker` optional/read-only.
+`docs/autopilot-lanes.md#inline-specialist-propagation`.
 Reuse `state.lane_contract` at `text_available=true`; otherwise/new selection read that section in
 `docs/autopilot-lanes.md`.
 
