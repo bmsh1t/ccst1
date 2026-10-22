@@ -24,6 +24,8 @@ Only fresh Bootstrap `action=continue` proceeds; otherwise terminal cron cleanup
 `STATUS: ERROR reason=<bounded-summary>`; stop before target work/sync.
 Read complete H2 `commands/autopilot.md#shared-automation` with this Bootstrap, excluding main Bootstrap.
 Never invoke `/autopilot`.
+Bootstrap initializes the single-target Store before prepare; the shared new-target
+Recon default applies after the round starts and its selected lane is claimed.
 
 ## Prepare And Terminal Precheck
 Run once; no state precheck:

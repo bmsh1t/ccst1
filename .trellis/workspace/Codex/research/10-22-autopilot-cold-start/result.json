@@ -1,0 +1,22 @@
+{
+  "status": "passed",
+  "baseline_readers": "f98398a",
+  "checks": [
+    "missing/invalid arguments stop before target writes",
+    "ordinary state query remains read-only and requires initialization",
+    "invalid context, malformed credentials and target mismatch stop before initialization",
+    "invalid explicit Scope cannot create a Store",
+    "fresh ordinary startup initializes the real Store; seed/quick flags and loop-check work",
+    "repeat startup preserves Store identity/revision, goal, experience, Action, Scope and fence",
+    "fresh Round prepare starts after Bootstrap; replay preserves its round and budget",
+    "list Bootstrap reads batch state without initializing unselected targets",
+    "list accepts child-bound auth; selected child validates binding and rejects a mismatch before init",
+    "bound/anonymous child startup retains parent Scope/context without publishing or inheriting auth",
+    "legacy, preview, missing-fenced and damaged Stores are refused without migration/replacement",
+    "real critical runtime drift stops before initialization",
+    "Claude entry contracts retain fresh Recon/evidence exception, claim ordering and runtime identities"
+  ],
+  "network_or_private_runtime_attempts": 0,
+  "claude_host_tested": false,
+  "elapsed_seconds": 2.211
+}

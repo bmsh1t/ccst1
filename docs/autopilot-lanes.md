@@ -70,7 +70,9 @@ already recorded anything.
 ## State And Queue
 
 All ordinary domain commands require an explicitly initialized target Store.
-`hunt.py` initializes a new target before execution; other callers use
+Autopilot Bootstrap initializes single targets after its admission checks, before
+state reads and Round prepare. `hunt.py` initializes targets selected for its
+pipeline; other callers use
 `python3 tools/target_store.py init --store --target <target_shell>` explicitly.
 Legacy data needs explicit import; missing/fenced/damaged state needs recovery.
 Checkpoint, Pickup and preflight never initialize, import, or recreate old owners.

@@ -24,17 +24,25 @@
 - 可选 recon/browser/source artifact 不存在：返回空投影或 unavailable，交给状态层决定
   下一步，不能把缺失当作 tested-clean。
 - Context Pack 本地 JSON 读取健康见下方“本地 intel 材料诊断”；坏材料不能折叠为成功空结果。
-- bootstrap 发现 inventory summary 或 surface projection missing/stale/invalid：返回结构化
-  `needs_sync`/`prepare_surface_context`，保持零 target-write，不能为“兜底”加载大型 body 或
+- bootstrap 的只读 state reader 发现 inventory summary 或 surface projection missing/stale/invalid：
+  返回结构化健康与 residual，保持零 target-write，不能为“兜底”加载大型 body 或
   执行 ranking。recon 成功后的 surface finalizer 是明确的 best-effort 派生；失败必须保留 raw
   recon、输出 warning，并让后续显式 refresh 恢复。
-- bootstrap 读取损坏的 canonical state 时返回 `stop_state_error` 和有界错误类型/原因；不得
+- 显式单目标 Bootstrap 在参数、Scope/Auth/context、关键 runtime gate 后调用已有 init owner，
+  再读取 state；普通 state/resume/loop/checkpoint 查询不初始化。已有 primary 保留身份与事实，
+  legacy/preview/fenced-missing/damaged 不迁移或重建。初始化/后续状态读取失败返回
+  `stop_state_error`；若前置 Scope 读取先发现损坏，则保留对应的 `stop_invalid_context`。
+- bootstrap 读取损坏的 canonical state 时返回所属 gate 的结构化错误和有界类型/原因；不得
   输出 traceback、覆盖损坏文件或继续目标动作。已有历史 probe summary 读取失败必须保持 partial，不能伪装为空；cursor 索引字段缺失或类型错误（非布尔整数）同样返回 partial 和 invalid_cursor，不得崩溃。
 - bootstrap 的 runtime compare 遇到 `OSError`/`ValueError` 时返回 `stop_runtime_error`；参数
   gate 仍优先，错误不得触发 target state 读取或自动 runtime sync。
 - bootstrap 应用 continuation 时，私有认证副本的实际 open/read 抛出 `OSError` 族必须在读取
   边界转换为 `ValueError` 并保留 cause，由 bootstrap 返回结构化 `stop_invalid_context`；
   不得输出 traceback 或泄露会话秘密，也不得继续 runtime/target-state 读取。
+- 显式或 continuation 绑定的认证内容在 init 前复用 `AuthSession.from_sources(env={}, ...)`
+  校验；坏 JSON/header/形态或 target mismatch 返回 `stop_invalid_context`，不继承环境认证，
+  不把凭据正文写进启动投影或错误摘要。列表阶段只验证内容；选定子目标后才验证认证 target，
+  不能将合法域名绑定凭据与列表文件路径比较。
 - 可选 `distill/corpus/` 缺失时，case resolver 返回结构化 `unavailable`，普通
   `/kb`/知识路由继续；启用来源解析后发现 stale/invalid corpus、坏 offset/hash 或 dangling
   ref 时必须返回不可用结果，不能返回部分 payload 或伪可信摘要。

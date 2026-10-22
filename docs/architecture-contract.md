@@ -9,7 +9,7 @@ file-format/CLI compatibility constraints; it does not build another Agent runti
 The native-first refactor was completed and archived on 2026-09-26. Ordinary
 domain readers and writers require the existing `TargetStore`; uninitialized,
 legacy, preview or damaged state fails visibly instead of selecting a retired
-backend. `/hunt` and the explicit Store init command own fresh initialization.
+backend. `/autopilot`, `/hunt` and the explicit Store init command own fresh initialization.
 Case, Action, observation, assessment, delivery, report and saved experience
 retain separate responsibilities in that single database.
 
@@ -43,6 +43,10 @@ families; canonical Coverage mapping remains optional and unknown labels cannot 
   preview and damaged/fenced-missing targets are refused without implicit migration.
 - `hunt_target()` invokes that primitive as the explicit start-target operation,
   after input/scope/auth checks and before target execution or artifact side effects.
+  Autopilot Bootstrap invokes it for a single target after argument, Scope/Auth/context
+  and critical runtime checks, before state reading and Round prepare. Existing
+  primary targets retain their identity and facts; rejected legacy/damaged targets
+  are never migrated or recreated by startup.
   Lists initialize each actual target at execution time, not during list parsing.
   Other domain entry points must either be explicit creation operations or require
   initialization. Ordinary writes, queries, checkpoint/resume and previews never
@@ -174,7 +178,9 @@ Historical knowledge `related_skills` and reviewed bytes keep their review ident
 registry/audit and installer identity checks; unknown/missing references fail. It
 neither registers old Skills nor changes ranking, target basis or Store schemas.
 
-Missing Recon, zero live hosts and collection residuals do not choose an investigation
+New/empty automatic targets without prior work or usable supplied evidence start
+with Recon under the shared entry contract; supplied evidence can start directly.
+Missing Recon on existing targets, zero live hosts and collection residuals do not choose an investigation
 route or hide Queue/Finding/Runner work. Valid collection continuations are optional;
 invalid cursors remain non-runnable. Real locks, Scope/Auth/parent scope, claims,
 unknown-effect recovery and cleanup still bind execution. Partial/remainder facts

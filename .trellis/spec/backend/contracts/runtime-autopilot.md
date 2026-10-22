@@ -282,9 +282,16 @@ wiring changes.
   canonical target fields, URL `seed_url`, auth-file fields, cadence fields,
   `recon_flags`, `hunt_auth_flags`, and `errors`. It exits zero for invalid argv
   so the prompt can consume the structured action.
-- Bootstrap order is args -> internal continuation Scope/Auth validation ->
-  read-only runtime compare -> advisory capability profile -> compact target
-  state. Invalid arguments/context or critical runtime drift never call the
+- Bootstrap order is args -> Scope/context and explicit/bound Auth validation ->
+  read-only runtime compare -> advisory capability profile -> explicit single-target
+  Store initialization -> compact target state. Explicit/bound auth is parsed by
+  `AuthSession.from_sources(env={}, ...)`, never by ambient credential discovery.
+  List startup validates credential content only; concrete target binding is checked
+  after selecting a child, so a domain-bound credential is not compared with a list path.
+  Lists initialize selected targets through their execution owner. Existing primary
+  Stores retain identity/revision/facts; legacy, preview, fenced-missing and damaged
+  targets are refused without migration or replacement. Invalid arguments/context
+  or critical runtime drift never initialize a Store or call the
   capability profile or `build_autopilot_state()`; advisory drift continues and
   clean root/nested invocations emit the same conclusion.
 - Bootstrap `capabilities.schema_version=2` is a bounded target-independent local
@@ -299,7 +306,7 @@ wiring changes.
   `clear` use explicit runtime root, `CCST_RUNTIME_ROOT`, then `~/.claude`.
   Recovery is explicit, never inferred from PATH presence. Invalid UTF-8/schema,
   oversized files, symlinks and special files remain visible as invalid rather
-  than hanging bootstrap; CLI invalid/error exit is 2. Startup never writes.
+  than hanging bootstrap; CLI invalid/error exit is 2. Startup never writes this marker.
 - `surface_advisory` is a bounded read-only projection over the existing Surface
   review window. It may expose missing questions and a smallest-safe-probe
   description, but must not send requests, refresh stale projections, select a
@@ -347,6 +354,8 @@ wiring changes.
 - tenth captured non-empty token -> `overflow`, stop
 - duplicate identical core flag -> accepted idempotently
 - missing, conflicting, or unreadable `--auth-file` -> `stop_invalid_arguments`
+- malformed auth content or a mismatched credential target -> `stop_invalid_context`,
+  bounded non-secret diagnostic and no Store initialization
 - invalid arguments/context or critical runtime drift -> `capabilities.checked=false`; profile and
   target state are not called
 - advisory-only runtime drift -> project bounded advisory paths, then continue
@@ -354,6 +363,10 @@ wiring changes.
   `action=continue` without installation or inferred lane readiness
 - capability probe raises -> `capabilities.status=unknown`,
   `reason=profile-error`; target state still runs and `action=continue`
+- fresh single target + clean runtime -> explicit init before state read; loop-check
+  and Round prepare can use the Store without requiring a later execution to create it
+- repeated startup -> existing Store binding, goal, experience, Actions and Scope unchanged
+- ordinary state query on an absent Store -> visible initialization error, no implicit init
 
 ### 5. Good/Base/Bad Cases
 
@@ -393,6 +406,11 @@ wiring changes.
   `tests/test_autopilot_bootstrap.py`; the former inline-contract test file is retired.
 - `tests/test_claude_release_wiring.py` runs staged runtime + localhost fake API
   for real CLI discovery, empty arguments and flag-first quick/deep expansion.
+- Current cold-start engineering acceptance lives in
+  `.trellis/workspace/Codex/research/10-22-autopilot-cold-start/check_startup.py`.
+  It calls real Bootstrap/Store/loop/Round APIs with baseline state readers,
+  staged runtime receipts and an offline audit hook; it does not run project tests
+  or establish real Claude Recon execution or host synchronization.
   Parser/bootstrap edge cases remain covered by their owner tests.
 
 ### 7. Wrong vs Correct
@@ -438,24 +456,29 @@ runtime markers, or target-owned URL filtering changes.
 
 ### 3. Contracts
 
-- Every Claude CLI `/autopilot` invocation consumes one read-only bootstrap
+- Every Claude CLI `/autopilot` invocation consumes one admission/bootstrap result
   before starting recon, scan, surface, or historical resume work. Bootstrap
-  owns ctf mode, runtime drift, repo root, args, advisory capabilities, and initial compact state;
-  fresh/existing is an output of state inspection, not a branch chosen before it.
+  owns ctf mode, runtime drift, repo root, args, advisory capabilities, explicit
+  single-target init and initial compact state. Inspect unfinished owner work before
+  choosing investigation. New/empty targets without prior work or usable supplied
+  request/source/browser evidence default to Recon in Shared Automation; supplied
+  evidence may start directly. Existing-target inventory gaps do not force Recon.
 - Compact bootstrap uses `build_autopilot_bootstrap_state()` and the same shared
   control-facts/action selector as full state. It may stat recon inputs and read
   bounded sidecars, but must not line-count/parse `with_params.txt`, load the
   monolithic observation body, call `load_surface_context()`/`rank_surface()`,
   synchronize inventory, or write target state. Only an exact-hit bounded
-  projection may supply ranked candidates; otherwise return
-  `prepare_surface_context` after higher-priority actions are exhausted.
+  projection may supply ranked candidates; otherwise expose missing/stale material
+  as a residual rather than selecting a collection route. This state reader remains
+  strictly read-only; initialization belongs to its explicit Bootstrap caller.
 - Recon budget telemetry is read through `recon_artifacts.run_budget`, not a second
   Autopilot state owner. `status=ok` with `advisory_exceeded=true` remains eligible
   for normal Closure; `status=partial` is a resumable handoff and cannot be treated
   as tested-clean or target exhaustion.
-- Startup priority is `wait` -> structured candidate evidence/validation ->
-  validation-runner candidate -> substantive durable queue -> fresh recon/no-live
-  terminal -> historical/surface work -> pending report -> handoff.
+- State selector priority is `wait` -> owner revalidation/structured candidate
+  evidence/validation -> validation-runner candidate -> substantive durable queue
+  -> pending report/draft -> handoff. Shared Automation selects new investigation,
+  including the fresh-target Recon default; the Python selector does not launch it.
   `action_queue.py` owns durable selection/sorting; `autopilot_state.py` only
   projects its selected row.
 - Checkpoint-generated typed actions, including `viewstate-integrity-review`,
@@ -885,7 +908,7 @@ change. Lexical assertions alone do not prove that Claude CLI loads a file.
   minimal SSE message ending in `message_stop`. It never forwards traffic.
 - Tests build an allowlisted child environment with staged user/config paths,
   dummy API key, localhost base URL, no session persistence and disabled
-  non-essential traffic. Only the read-only Python bootstrap needs Bash; a fully
+  non-essential traffic. Only the Python bootstrap expansion needs Bash; a fully
   empty tool set denies that expansion in Claude Code 2.1.278. The fake endpoint
   returns text only and never emits tool calls. Real OAuth/provider/config
   variables are not inherited; MCP config is strict.

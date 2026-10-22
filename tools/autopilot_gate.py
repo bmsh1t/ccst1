@@ -971,7 +971,7 @@ def _describe_next_step(state: dict) -> str:
     if action == "refresh_recon":
         return f"refresh recon before going deeper on {target}."
     if action == "handoff":
-        return "return to src-hunter: choose evidence and a complete method for the current question, explicitly select collection if useful, or stop this invocation within budget; no Recon or checkpoint prerequisite."
+        return "return to src-hunter under commands/autopilot.md#shared-automation; choose evidence and a complete method for the current question, respecting its startup and finish conditions."
     return "review current owner facts and choose the next evidence question in src-hunter."
 
 def _actionable_coverage_gaps(matrix: dict) -> list[dict]:

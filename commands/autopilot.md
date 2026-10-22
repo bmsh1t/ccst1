@@ -39,16 +39,22 @@ Round mechanics belong to `/autopilot-round`; ordinary runs only recover existin
 
 ### State Consumption Loop
 
-1. **Restore.** Only fresh Bootstrap `action=continue` admits work; obey
+1. **Start or resume.** Only fresh Bootstrap `action=continue` admits work; obey
    `state.hard_gate`; report missing input/error. Confirm critical drift
-   through `/sync-check`; never auto-sync/install. Start, switch, resume or compaction:
+   through `/sync-check`; never auto-sync/install. After admission checks, Bootstrap
+   initializes a single-target Store before reading state; lists initialize each
+   selected target through the execution owner. Start, switch, resume or compaction:
    apply `skills/runtime-protocol.md#shared-memory-continuity` from `state.target_memory`.
 
 2. **Continue.** Recover unfinished execution first; Round recovery uses
    `commands/autopilot-round.md`. On `wait_recon`/`wait_scan`, poll and refresh
    without duplicate launches. Otherwise apply [Investigation Skill](#investigation-skill).
+   A new/empty target with no prior work or usable supplied request/source/browser
+   evidence starts with `/recon`, preserving `arguments.recon_flags`, seed URL and
+   auth/context. Supplied usable evidence may start the investigation directly.
+   After Recon's Surface finalizer, read the material and choose the next question.
    `owner_continuations` order is advisory; keep deferred work and obey `runnable=false`.
-   Gaps mandate neither Recon nor Checkpoint. Do not loop `/hunt`.
+   Existing-target gaps mandate neither Recon nor Checkpoint. Do not loop `/hunt`.
 
 3. **Execute and save.** Read evidence and the selected `docs/autopilot-lanes.md`
    section; reuse matching `state.lane_contract` at `text_available=true`.

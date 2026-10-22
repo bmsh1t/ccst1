@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""为 Claude inline `/autopilot` 生成只读启动契约。"""
+"""为 Claude inline `/autopilot` 检查准入、初始化目标并生成启动契约。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 try:
+    from tools.auth_session import AuthSession
     from tools.autopilot_args import parse_autopilot_args
     from tools.autopilot_continuation import load_continuation
     from tools.autopilot_state import build_autopilot_bootstrap_state, describe_next_step
@@ -22,7 +23,9 @@ try:
     from tools.runtime_doctor import KIND_ORDER, compare_runtime
     from tools.scope_context import ScopeContext, ScopeContextError
     from tools.scope_source import load_scope_context
+    from tools.target_store import initialize_target_store
 except ModuleNotFoundError:  # 兼容 `python3 tools/autopilot_bootstrap.py` 直接执行
+    from auth_session import AuthSession
     from autopilot_args import parse_autopilot_args
     from autopilot_continuation import load_continuation
     from autopilot_state import build_autopilot_bootstrap_state, describe_next_step
@@ -35,6 +38,7 @@ except ModuleNotFoundError:  # 兼容 `python3 tools/autopilot_bootstrap.py` 直
     from runtime_doctor import KIND_ORDER, compare_runtime
     from scope_context import ScopeContext, ScopeContextError
     from scope_source import load_scope_context
+    from target_store import initialize_target_store
 
 
 SCHEMA_VERSION = 1
@@ -752,7 +756,7 @@ def build_autopilot_bootstrap(
     runtime_root: str | Path | None = None,
     round_defaults: bool = False,
 ) -> dict[str, Any]:
-    """按 args -> runtime drift -> target state 顺序构建只读启动结果。"""
+    """按参数/Scope -> runtime drift -> 显式初始化 -> 目标读取顺序启动。"""
     resolved_repo = Path(repo_root or REPO_ROOT).resolve()
     invocation_cwd = Path(cwd or Path.cwd()).resolve()
     arguments = parse_autopilot_args(
@@ -836,6 +840,12 @@ def build_autopilot_bootstrap(
             }
         else:
             scope_context = load_scope_context(resolved_repo, arguments["target"])
+        if arguments.get("auth_file"):
+            # Lists defer credential target binding until a concrete child is selected.
+            AuthSession.from_sources(
+                env={}, file=arguments["auth_file"],
+                target=None if arguments["target_kind"] == "list" else arguments["target"],
+            )
     except ScopeContextError as exc:
         payload["action"] = "stop_invalid_scope"
         payload["error"] = {
@@ -843,7 +853,7 @@ def build_autopilot_bootstrap(
             "reason": " ".join(str(exc).split())[:500],
         }
         return payload
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, TypeError) as exc:
         payload["action"] = "stop_invalid_context"
         payload["error"] = {
             "type": type(exc).__name__,
@@ -880,6 +890,9 @@ def build_autopilot_bootstrap(
     payload["capabilities"]["degraded_marker"] = load_capability_degraded_marker(runtime_root)
 
     try:
+        # Slash invocation explicitly starts a target; state queries never initialize it.
+        if arguments["target_kind"] != "list":
+            initialize_target_store(resolved_repo, str(arguments["target"]))
         state = build_autopilot_bootstrap_state(
             str(resolved_repo),
             str(arguments["target"]),

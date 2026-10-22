@@ -101,9 +101,10 @@ focused discovery section of `commands/recon.md`.
 ## Profile and Artifact Compatibility
 
 - Explicit `/recon` selects the existing full profile; `--quick` lowers cost and
-  `--deep` enables the deeper JS path. Fresh `/autopilot` does not select Recon
-  merely because inventory is absent. Pending collection is optional, not a
-  reason to rerun the whole pipeline; invalid cursors require owner repair.
+  `--deep` enables the deeper JS path. New/empty `/autopilot` targets without prior
+  work or usable supplied evidence start with Recon under `commands/autopilot.md#shared-automation`.
+  Existing targets' missing inventory or pending collection does not require a
+  pipeline rerun; invalid cursors require owner repair.
 - Raw hosts, URLs, JS, parameters, and exposure observations remain lossless.
   Filtered/ordered views are projections and never shrink the authoritative raw
   corpus.
