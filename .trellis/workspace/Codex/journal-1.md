@@ -1377,3 +1377,39 @@ Aligned validation receipts and on-demand viewing, consolidated complete Chain/W
 ### Next Steps
 
 - Use in host sessions; model depth, description triggering, token cost and real-target behavior remain unmeasured.
+
+
+## Session 46: Retire five redundant specialist agents
+<!-- trellis-session: v=2 fp=314e8b99a21214f6 -->
+
+**Date**: 2026-10-22
+**Task**: Retire five redundant specialist agents
+**Branch**: `refactor/10-11-capability-architecture`
+
+### Summary
+
+退役五个重复 agent，保留 37 commands、完整 6k 方法与通用委派；隔离安装/清理/冲突验收通过，真实 runtime 未同步。
+
+### Main Changes
+
+- 删除 recon-agent/recon-ranker/chain-builder/web3-auditor/token-auditor；活动引用改用 commands/modules；只读约束收归 src-hunter handoff；Bootstrap 停止透传历史 Ranker。
+- 现行规范与 research/10-22-agent-retirement 验收记录同步；安装器和 durable owner 未改。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `190e132` | refactor(agents): retire five redundant specialist entries |
+
+### Testing
+
+- [OK] 定点临时 source-copy 验收约 1.05 秒：10→5 owned agents、37 commands/62 Skill 资源、普通 sync、精确 prune、用户 extra 与修改旧副本的整批拒绝。
+- [OK] git diff --check 与一次性 default 只读独立复核通过；未读取运行 tests、真实目标/runtime、网络或付费模型。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 实际宿主仍需显式根的现有 sync --prune；修改过旧副本会拒绝整批。未声称宿主缓存、模型能力、费用或 compaction 恢复改善；没有新建或归档旧任务。
