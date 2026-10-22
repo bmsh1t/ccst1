@@ -468,8 +468,16 @@ def _query_partition(repo_root, target, snapshot, query, *, limit=5, offset=0, e
             channel = "fts5-bm25"
         except (sqlite3.Error, ValueError, KeyError, TypeError) as exc:
             health = unavailable(exc)
-    if channel != "fts5-bm25":
-        ranked = [ref for ref, doc in by_ref.items() if not query or any(token.casefold() in _document_text(doc).casefold() for token in tokens)]
+    lexical = [ref for ref, doc in by_ref.items() if not query or any(token.casefold() in _document_text(doc).casefold() for token in tokens)]
+    if channel == "fts5-bm25":
+        # A healthy token index must not hide substring matches (notably Chinese).
+        seen = set(ranked)
+        extra = [ref for ref in lexical if ref not in seen]
+        ranked.extend(extra)
+        if extra:
+            channel += "+fresh-source-lexical"
+    else:
+        ranked = lexical
         channel = "fresh-source-lexical" if query else "source-order"
     ranked = [ref for ref in ranked if ref in by_ref]
     lexical_ranks = {ref: index for index, ref in enumerate(ranked, 1)}
@@ -491,7 +499,7 @@ def _query_partition(repo_root, target, snapshot, query, *, limit=5, offset=0, e
                 ranked = sorted(fused, key=lambda ref: (-fused[ref], ref))
                 semantic = {"status": "ready", "model": identity}
                 model_binding["encoder"] = identity
-                channel = "rrf60-fts5-exact-cosine"
+                channel = f"rrf60-{channel}-exact-cosine"
             except (LocalModelError, OSError, ValueError, KeyError, TypeError) as exc:
                 semantic = unavailable(exc)
     if query and reranker_path is not None:

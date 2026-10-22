@@ -449,8 +449,9 @@ def _lane_contract_projection(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
-    """生成仅供 startup 路由使用的有界 state 视图。"""
+    """Preserve startup routing and the existing bounded owner memory snapshot."""
     next_action = str(state.get("next_action") or "")
+    resume = state.get("resume_summary") or {}
     structured = state.get("structured_findings") or {}
     structured_next = (
         structured.get("next_owner_revalidation")
@@ -586,6 +587,9 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "target_kind": str(state.get("target_kind") or "domain"),
+        "target_memory": ({**resume["target_memory"],
+                           "source_binding": resume["source_binding"]}
+                          if state.get("target_kind") != "list" and resume.get("target_memory") else {}),
         "scope": {
             key: (state.get("scope") or {})[key]
             for key in ("status", "scope_ref", "scope_hash", "summary", "reason")

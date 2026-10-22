@@ -46,6 +46,10 @@ Store 视图中的 `windows.findings` / `windows.experiences` 给出准确余量
 `next_command` 和 `expand_command`；`case_expand_command` 展开完整 Case 元数据。
 命令已绑定真实数据根和目标，直接执行；游标因 revision 变化失效时重新生成视图，
 不猜 offset。按 ID/完整 Case 展开是新查询，原始私密会话材料不会输出到 Case JSON。
+`windows.ledger` 描述已采集 observation 的尾部预览；源被截断时总量/余量为 unknown。
+其 `next_command` 从完整 operation 历史第一页开始浏览，按 operation ID 升序，
+不是这 40 条 observation 的下一页。使用返回的 operation cursor 继续，按 `--id`
+展开有序 observations、原件引用及当前 `artifact_health`；元数据页本身不验证原件。
 隔离根调用格式：`python3 tools/distill_target.py --repo-root ROOT evidence --target TARGET --json`。
 
 经验正文同时保留精确版本、`review_state`、适用条件、来源健康和纠错/依赖引用。

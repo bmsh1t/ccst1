@@ -29,6 +29,10 @@ continuation-aware HTTP boundary in `docs/autopilot-lanes.md#recon-and-surface`.
 At start/target change/resume/compaction, read/apply complete
 `skills/runtime-protocol.md#shared-memory-continuity`. Check inherited judgments against current commands,
 not all source; unchecked = inherited/unverified.
+Consume `state.target_memory` first: it carries the owner-bound intent, current handoff, review/condition
+warnings and bounded history with expansion commands. Use it to ground this task before looking for
+loose notes. Expand older relevant experience through its owner commands; no matching filename does
+not mean no memory. After compaction or owner changes, recover fresh memory through the shared protocol.
 Do not loop `/hunt`.
 Before hunting apply `rules/ccst/hunting.md`; before network use `config.json.resin` via
 `docs/resin-proxy.md` in the same shell. Never output secrets/persist proxy setup.

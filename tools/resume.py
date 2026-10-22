@@ -97,16 +97,17 @@ def _checkpoint_followup(checkpoint: dict) -> dict:
                           and queue and isinstance(queue[0], dict) else {})
 
     evidence = []
+    context = checkpoint.get("context_pack") or {}
+    for value in context.get("evidence_anchors") or []:
+        text = str(value or "").strip()
+        if text and text not in evidence:
+            # Anchors carry inseparable correction warnings and expansion commands.
+            evidence.append(text)
     for value in (
         current_action.get("evidence_ref"),
         current_action.get("evidence"),
         current_action.get("result"),
     ):
-        text = str(value or "").strip()
-        if text and text not in evidence:
-            evidence.append(text[:300])
-    context = checkpoint.get("context_pack") or {}
-    for value in context.get("evidence_anchors") or []:
         text = str(value or "").strip()
         if text and text not in evidence:
             evidence.append(text[:300])

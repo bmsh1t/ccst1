@@ -70,6 +70,20 @@ def _load_source_evidence(repo: Path, target: str) -> dict:
         window["next_command"] = (shlex.join([*command, "--cursor", window["next_cursor"]])
                                   if window["has_more"] else "")
         window["expand_command"] = shlex.join([*command, "--id", "FINDING_ID" if name == "findings" else "EXPERIENCE_ID"])
+    operations = ["python3", "tools/target_store.py", "operations", "--repo-root", str(repo.resolve()),
+                  "--target", target]
+    captured_count = len(entries)
+    truncated = truth["source"]["truncated"]
+    windows["ledger"] = {
+        "unit": "observations", "total": None if truncated else captured_count,
+        "returned": min(40, captured_count), "remaining": None if truncated else max(0, captured_count - 40),
+        "has_more": truncated or captured_count > 40,
+        "order": "tail of captured observed_at,operation_revision,step order",
+        "source_truncated": truncated,
+        "next_command": shlex.join([*operations, "--limit", "10"]) if truncated or captured_count > 40 else "",
+        "continuation_scope": "full operation history from the start, ordered by operation ID; not the next observation page",
+        "expand_command": shlex.join([*operations, "--id", "OPERATION_ID"]),
+    }
     case_state = store.case_state(include_hypotheses=False)
     if store.binding()["revision"] != revision:
         raise ConflictError("target changed during distillation view; retry")
@@ -90,7 +104,7 @@ def _bounded_evidence_view(evidence: dict, limit: int = 40) -> str:
                      "results and technical verdicts below are historical judgments, not current raw integrity.")
     entries = evidence["ledger"][-limit:]
     if entries:
-        lines.append(f"## Evidence Ledger（最近 {len(entries)} 条，机器事实）")
+        lines.append(f"## Evidence Ledger（已采集观察尾部 {len(entries)} 条，完整性见 source_truncated）")
         for e in entries:
             lines.append(
                 "- {event} {method} {endpoint} [{cls}/{actor}/{variant}] result={result} ref={ref}".format(
@@ -145,6 +159,8 @@ def _bounded_evidence_view(evidence: dict, limit: int = 40) -> str:
         lines.append(f"## {name} window: total={window['total']} remaining={window['remaining']}; order={window['order']}")
         if window["next_command"]:
             lines.append(f"  next: {window['next_command']}")
+        if window.get("continuation_scope"):
+            lines.append(f"  continuation: {window['continuation_scope']}")
         lines.append(f"  expand: {window['expand_command']}")
     case_state = evidence["case_state"]
     if case_state:
@@ -170,7 +186,7 @@ def build_evidence_view(repo: Path, target: str) -> dict:
         "health": evidence["health"],
         "view": _bounded_evidence_view(evidence),
         "evidence_counts": {
-            "ledger": len(evidence["ledger"]),
+            "ledger": evidence["windows"]["ledger"]["total"],
             "findings": evidence.get("windows", {}).get("findings", {}).get("total", len(evidence["findings"])),
             "experiences": evidence.get("windows", {}).get("experiences", {}).get("total", len(evidence.get("experiences") or [])),
             "case_state": bool(evidence["case_state"]),

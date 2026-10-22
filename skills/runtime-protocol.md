@@ -70,6 +70,10 @@ Candidate 和确认 A 的持久化不等 B/C；预算停止新工作，不停止
 
 最小恢复：`python3 tools/target_memory.py show TARGET`；需要整体工作/覆盖时读
 `python3 tools/resume.py --target TARGET`。原件与历史通过返回的 ID/命令展开。
+Autopilot Bootstrap 的 `state.target_memory` 已携带同一 owner 的最小恢复视图与来源绑定，
+当前有效时直接使用；更早的相关经验按其中 `experience_window` 命令查询/展开。
+换目标、compaction 丢失或 owner 更新后重新恢复，不用文件名搜索或直接 SQL 代替
+带纠错、适用条件与来源健康的 owner 视图。无关纯解释不要求查目标，明确只读不写回。
 写回显式 `--target TARGET`；active pointer 只选择已初始化目标，不是意图/状态 owner。
 缺库、legacy、damaged、fenced 按显式初始化/恢复流程处理，不猜空状态。
 参数、收据、失败重试和纠错详情见 `commands/target.md`，实际调用前只读相关合同。

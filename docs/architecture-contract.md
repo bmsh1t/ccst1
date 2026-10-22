@@ -430,6 +430,21 @@ is not a readable continuation. Category scores cannot silently remove candidate
 from the accessible set. Optional-source failure is visible, not a successful
 empty result. Native reasoning still decides relevance and action.
 
+Autopilot bootstrap preserves Resume's existing bound five-entry memory view and
+separate current handoff; it does not wait for a filename search to recover intent.
+The same owner queries refresh after target/context changes. Lists do not borrow a
+member's memory, and advisory intent never overrides execution gates. Compact
+experience anchors retain owner review state and exact expansion before bounded
+detail; incomplete context requires expansion before use. Resume does not truncate
+those anchors again. Text retrieval unions FTS and fresh substring candidates
+before fusion/paging, so an index cannot hide a Chinese substring match.
+
+Distillation's observation preview provides full operation-history navigation via
+`target_store.py operations`; that ID-ordered cursor is not a continuation of the
+chronological observation preview. Metadata pages mark artifact health unchecked;
+ID expansion checks current bytes and preserves invalid historical references with
+explicit health. Source-truncated preview counts remain unknown.
+
 Legacy notes are mapped by evidence level: provably linked experience retains
 its meaning; unsupported historical statements remain explicitly unverified
 advice with their original type/source; corrupt, foreign or ambiguous material

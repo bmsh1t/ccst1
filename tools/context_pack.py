@@ -626,14 +626,6 @@ def _build_evidence_anchors(
     local_intel: dict,
 ) -> list[str]:
     anchors: list[str] = []
-    for item in (ranked.get("review_pool") or ranked.get("p1", []))[:3]:
-        anchors.append(_surface_anchor(item))
-    anchors.extend(_local_intel_anchors(local_intel)[:6])
-    for lead in _json_list(ranked.get("workflow_leads"))[:3]:
-        title = str(lead.get("title") or "").strip()
-        category = str(lead.get("category") or "workflow").strip()
-        priority = str(lead.get("priority") or "medium").strip()
-        anchors.append(f"Workflow lead [{priority}/{category}]: {title}")
     target_memory = goal_memory.get("target") or {}
     for label, field in (
         ("Target lead", "active_leads"),
@@ -643,7 +635,22 @@ def _build_evidence_anchors(
         for item in (target_memory.get(field) or [])[-2:]:
             text = _entry_text(item)
             if text:
-                anchors.append(f"{label}: {text}")
+                entry_id = item.get("entry_id", "")
+                command = (goal_memory.get("source") or {}).get("experience_window", {}).get("history_command", "")
+                expand = f"{command} --id {shlex.quote(entry_id)}" if command and entry_id else ""
+                conditions = (item.get("structured") or {}).get("conditions", "unknown")
+                detail = f"conditions={conditions}; " + " ".join(format_experience_provenance(item, indent=""))
+                completeness = "context incomplete; expand before use" if len(detail) > 1600 else "context attached"
+                anchors.append(f"{label} [{entry_id}] review_state={item.get('review_state', 'unknown')}; "
+                               f"{completeness}; expand={expand}; {detail[:1600]}; statement preview: {text[:160]}")
+    for item in (ranked.get("review_pool") or ranked.get("p1", []))[:3]:
+        anchors.append(_surface_anchor(item))
+    anchors.extend(_local_intel_anchors(local_intel)[:6])
+    for lead in _json_list(ranked.get("workflow_leads"))[:3]:
+        title = str(lead.get("title") or "").strip()
+        category = str(lead.get("category") or "workflow").strip()
+        priority = str(lead.get("priority") or "medium").strip()
+        anchors.append(f"Workflow lead [{priority}/{category}]: {title}")
     for gap in gaps[:5]:
         anchors.append(_gap_anchor(gap))
     for finding in findings[:3]:

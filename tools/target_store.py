@@ -4589,6 +4589,11 @@ def _main() -> int:
     findings.add_argument("--limit", type=int, default=10)
     findings.add_argument("--status", choices=FINDING_DISPOSITIONS,
                           help="filter before paging; omitted includes withdrawn history")
+    operations = subparsers.add_parser("operations", help="browse execution metadata or expand one operation with current artifact health")
+    operation_selection = operations.add_mutually_exclusive_group()
+    operation_selection.add_argument("--id", default=None)
+    operation_selection.add_argument("--cursor", default=None)
+    operations.add_argument("--limit", type=int, default=10)
     case = subparsers.add_parser("case", help="read full Case context without raw private material")
     create_finding = subparsers.add_parser(
         "create-finding",
@@ -4610,7 +4615,7 @@ def _main() -> int:
     dispose.add_argument("--expected-disposition", default=None, help="exact preceding disposition ID; omit only for the first withdrawal")
     dispose.add_argument("--command-id", required=True, help="stable idempotency key for this disposition")
     dispose.add_argument("--actor", default="operator")
-    for query in (findings, case, create_finding, dispose):
+    for query in (findings, operations, case, create_finding, dispose):
         query.add_argument("--target", required=True)
         query.add_argument("--repo-root", default="", help="repository data root")
     args = parser.parse_args()
@@ -4627,6 +4632,20 @@ def _main() -> int:
             store = runtime_store(repo_root, args.target)
             if args.command == "case":
                 result = store.case_state()
+            elif args.command == "operations":
+                binding = store.binding()
+                if args.id is None:
+                    result = store.page("operations", limit=args.limit, cursor=args.cursor)
+                    result["artifact_health"] = {"status": "not_checked", "reason": "page contains metadata; expand --id for current byte checks"}
+                else:
+                    result = store.execution(args.id)
+                    try:
+                        result["artifact_health"] = store.verify_operation(args.id)
+                    except (OSError, StoreError) as exc:
+                        result["artifact_health"] = {"integrity": "invalid", "reason": str(exc), "semantic_verification": False}
+                if store.binding() != binding:
+                    raise ConflictError("target changed during operation query; retry")
+                result["source_binding"] = binding
             elif args.command == "create-finding":
                 result = store.create_finding(
                     command_id=args.command_id or f"create-finding:{args.finding_id}",
