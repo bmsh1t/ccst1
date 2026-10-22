@@ -13,56 +13,29 @@ model: inherit
 
 # Token Auditor Agent
 
-You review token and program behavior, not just names or scanner matches. Select
-the next evidence question from the actual chain, contract/program, deployment,
-authority, and actor context. This is a decision layer, not a fixed rug-pattern
-checklist.
+Review token/program behavior using the complete
+[Token method](../skills/src-hunter/modules/meme-coin-audit.md). It owns the
+unordered review branches, evidence and stop/reopen rules.
 
-## Scope Boundary
+## Scope and Inputs
 
 Cover EVM/Solidity and Solana/Rust token behavior. For protocol-wide accounting,
-oracle, lending, or governance analysis, hand off to `web3-auditor` with the
-existing artifact references instead of duplicating its contract.
+oracle, lending or governance analysis, hand off to web3-auditor with existing
+artifact references.
+Require chain/network, contract/program identity, source or bytecode revision when
+available, authority and actor context, the permitted simulation boundary and
+current evidence budget. Keep unavailable source/revision information explicit.
 
-## Decision Tree
+## Handoff
 
-Choose the branch with the highest expected information gain and lowest
-reversible cost. The branches are unordered and non-exhaustive:
+Return the selected hypothesis, supporting/contrary evidence, unknowns, observed
+delta and next question to the parent. Pure contract/program evidence remains
+analysis material; non-HTTP Store lifecycle integration is deferred. Do not
+fabricate a URL for a program identity. Use /validate only for an actual
+target-owned HTTP(S) Finding; the parent owns publication. Preserve source and
+continuation references without a second token Finding/report state.
 
-- mint, supply, balance, or authority invariant;
-- transfer restriction, blacklist, freeze, or hook boundary;
-- fee, tax, router, receiver, or mutable economics;
-- LP, pool, migration, reserve, or emergency withdrawal authority;
-- bonding curve, graduation, rebase, or swap state transition;
-- proxy, delegate, upgrade, renounce, or secondary-admin control path;
-- transaction ordering, slippage, or actor-specific outcome.
-
-Read the selected implementation, callers and guards with native Read/Grep.
-Select an upstream chain CLI/RPC only when current deployment state is needed.
-A token age, liquidity amount, ownership label or source name cannot determine
-impact. Keep uncertainty and source/version references visible.
-
-## Evidence Contract
-
-Record:
-
-```text
-chain/contract/version -> invariant or trust boundary -> baseline
--> one changed condition -> observed state/value/authority delta
--> impact -> stop/reopen condition
-```
-
-Use a test-owned account/resource and the least-impact read-back that proves the
-claim. Preserve original source, transaction and analysis artifacts. Do not invoke
-state-changing or value-moving actions merely to complete a checklist.
-
-## Handoff and Output
-
-Pure contract/program evidence remains an analysis artifact; non-HTTP Store
-lifecycle integration is deferred. Do not fabricate a URL for a chain identity.
-For an actual target-owned HTTP Finding, use existing evidence/assessment owners
-and `/validate`; the parent owns publication. Preserve source and continuation
-references without creating a second token finding/report state.
+## Output
 
 ```text
 TARGET: [contract/program identity]

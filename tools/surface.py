@@ -2071,7 +2071,7 @@ def format_surface_output(ranked: dict, target: str) -> str:
 
 
 def _surface_options(ranked: dict, target: str) -> list[str]:
-    """Return ≥2 candidate next moves derived from current evidence."""
+    """Return candidate next moves derived from current evidence."""
     stats = ranked.get("stats") or {}
     recon_artifacts = ranked.get("recon_artifacts") or {}
     recon_counts = recon_artifacts.get("counts") or {}
@@ -2080,7 +2080,6 @@ def _surface_options(ranked: dict, target: str) -> list[str]:
     review_count = stats.get("review_pool", 0)
     if review_count > 0:
         options.append(f"review the AI surface pool ({review_count} candidates) and choose the next evidence step")
-        options.append("spawn chain-builder after Claude chooses a candidate from the evidence")
     if recon_counts.get("browser_xhr_urls", 0) > 0 or recon_counts.get("browser_api_urls", 0) > 0:
         options.append("inspect browser-observed XHR/API endpoints before broad fuzz")
     if recon_counts.get("structured_findings", 0) > 0:

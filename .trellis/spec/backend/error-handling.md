@@ -183,22 +183,33 @@ JSON/text 展示路径及 Store binding 不变；与 Finding focused tests 同�
 ### 2. Signatures
 
 `write_disclosed_patterns(target, repo_root=None, *, output_path=None, cache_ttl_hours=72,
-no_mcp=False) -> Path`；两个查询 helper 返回 `QueryResult(reports, successes, errors)`。
+no_mcp=False, vertical="") -> Path`；CLI 可传 `--vertical INDUSTRY`。
+两个查询 helper 返回 `QueryResult(reports, successes, errors)`。
 provider `search_disclosed_reports(...) -> list[dict]` 不变，坏 search 结构抛 `HackerOneAPIError`。
 
 ### 3. Contracts
 
-cache 只保留 `target/same/similar/coverage_status/cached_at_ts`。仅所有实际请求完整成功
+cache 保留 `target/vertical/same/similar/coverage_status/cached_at_ts`，缺 vertical 的旧
+cache 视为未提供行业，已提供字段必须是字符串。请求行业规范化空白，TTL 与行业都
+匹配才命中；显式行业优先占现有最多五次 similar 查询中的一位，不从业务正文猜行业。
+失配的完整 cache 可作失败回退，分别披露 requested/material industry，不混淆旧查询条件。
+仅所有实际请求完整成功
 才保存，包括合法零结果；没有计划的 similar 请求不算失败。任何请求失败均不改旧 cache
 bytes/mtime/时间，program 失败后 keyword 成功仍为 partial。partial 有新报告只展示新材料，
 无新报告或全部失败可展示一份有效旧快照，不混合。no-mcp 完全跳过 cache/client/inventory。
 Markdown 分开显示 query status、material source/query time/stale 与 coverage；Generated at
 只是文档生成时间。直接调用 renderer 未传查询事实时不推断 complete 或成功零结果。
 cache/Markdown 复用 `write_text_atomic`，独立原子发布；写失败上抛且 CLI 不打印成功路径。
+重建前严格读取实际 output，精确保留所有 fenced code 之外 `## Read in full` 章节
+到下一同级/更高标题的原文（包含 CRLF）；只有文件缺失表示没有旧正文。
+新全文阅读由 agent 保存到实际 output 的 `.readings.md` sibling，生成器只链接不改正文。
+首次创建 sibling 时由 agent 在摘要补链接，后续重建自动引用。不新增阅读/缓存 owner、
+并发编辑锁或跨文件事务。
 
 ### 4. Validation & Error Matrix
 
 - fresh 成功 cache → cached，不查询／刷新时间；完整成功空列表 → complete/no_mcp_coverage。
+- 行业失配 → 重新查询；失败回退保持旧 bytes/mtime/时间/行业与显式条件差异。
 - 部分请求失败 → partial；无成功请求或 client 缺失 → unavailable。诊断包含请求标识、
   错误类型及单行原因，每条最多 500 字符；错误状态不另行持久化。
 - 缺失／错误 provider envelope、非列表 nodes 或坏条目 → 请求失败。report/team 只允许
@@ -210,11 +221,13 @@ cache/Markdown 复用 `write_text_atomic`，独立原子发布；写失败上抛
   强制刷新。历史错误写成成功空结果的材料不推测恢复，不新增迁移。
 - 单文件 publication 失败 → 保留对应旧完整文件；Markdown 失败不回滚已写成功 cache，
   不宣称跨文件事务。正常生成 unavailable 文档仍返回 CLI 0，不等同于上游查询成功。
+- 旧 output 非UTF-8或读取失败 → exit 2，保留原摘要与 cache，无成功路径。
+  no-mcp 仍不读 cache/client/inventory，但保留旧阅读章节和独立文件链接。
 
 ### 5. Good/Base/Bad Cases
 
 Good：上游全失败仍显示旧报告及原时间／过期说明。Base：全部成功且零报告可替换旧快照。
-Bad：把异常转成空列表，再写新时间；或把坏类型的假值当作无 report。
+Bad：把异常转成空列表，再写新时间；把旧行业当本次结果；重建抹掉人工全文引文。
 
 ### 6. Tests Required
 
@@ -222,8 +235,12 @@ Bad：把异常转成空列表，再写新时间；或把坏类型的假值当�
 完整成功零结果、TTL hit/强制刷新、no-mcp、不合法 TTL/响应/cache、真实 provider→owner
 接线及 publication failure；断言旧 bytes/mtime/时间、报告归属、诊断和 CLI 不伪报成功。
 mock 查询传输而非整个 owner；保留表顺序、recall 命令及 Store binding 不变。
+本轮在隔离生产副本用 assert-based check 验证实际 API/CLI 行业接线、配额、行业/legacy
+缓存、失配失败与部分材料、旧全文 CRLF/fence/章节边界、独立文件、自定义 output、
+no-mcp、读/解码/发布失败与 CLI exit；不读取或运行项目 tests。
 
 ### 7. Wrong vs Correct
 
 `except Exception: return []` → 保留成功数与有界诊断，仅 complete 允许发布成功 cache；
 `report or {}` → 在真假值判断前验证对象／null 类型。
+`render(...); overwrite(summary)` → 先捕获旧阅读章节，生成事实后保留原文并引用独立文件。

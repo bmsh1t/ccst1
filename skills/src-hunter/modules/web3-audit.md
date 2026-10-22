@@ -20,6 +20,8 @@ does not resolve Action or confirm Finding.
 - Entry: Invoke only for an explicitly scoped contract or program. Require
   chain/network, deployment identity, source or bytecode revision, and the
   permitted read-only, fork, simulation, or transaction boundary.
+  Establish deployment/upgrade control, relevant actors and protocol value at
+  risk. These facts affect ROI and evidence depth; they are not universal skip thresholds.
 - Evidence: Before promotion, retain source/bytecode and revision hash, affected
   function and caller privilege, invariant or state delta, baseline simulation,
   and a reproducible local-fork or on-chain read-back. Static patterns and TVL
@@ -30,22 +32,66 @@ does not resolve Action or confirm Finding.
 
 ## Decision Tree
 
+The classes are unordered and non-exhaustive. Select the invariant or trust
+boundary that answers the current question; inspect siblings, callers and
+downstream consumers when current evidence points there. Choose the branch with
+the clearest expected learning and lowest reversible cost.
+
 - Source or bytecode identity is missing -> resolve the deployment/revision
   first; do not mix verified source with another implementation.
-- Privileged roles, upgrade paths, or initialization are present -> compare all
-  sibling entry points and authority transitions, then follow the highest-value
-  state or asset boundary.
-- Accounting, vault, token, or settlement state is present -> map the invariant
-  across every create/update/withdraw/claim path and test the smallest controlled
-  state differential.
-- External price, oracle, bridge, callback, or flash-liquidity dependency is
-  present -> verify freshness, source independence, bounds, and the downstream
-  value decision before considering manipulation impact.
-- Signed messages, permits, or cross-chain messages are present -> compare
-  domain, nonce, chain, contract, actor, and replay scope.
+- Bridge or cross-chain dependency -> follow source independence, bounds,
+  message/actor binding and the downstream value or authority decision.
 - A candidate changes caller authority, protected state, or recoverable value in
   a reproducible boundary -> hand it to validation; otherwise keep the signal
   as an invariant gap or informational note.
+
+### Accounting Desync
+Compare balance, share, debt, reward, and supply invariants across all relevant
+state transitions and early/partial paths. Map create/update/withdraw/claim and
+settlement behavior, then test the smallest controlled state differential.
+
+### Access Control
+Compare role, modifier, initializer, proxy, and sibling-function boundaries for
+the actor that can actually reach the call. Follow authority transitions to the
+highest-value state or asset boundary.
+
+### Incomplete Code Path
+Compare paired lifecycle operations and refunds, including failure, partial,
+cancel, and retry states. Every create/deposit path needs its intended
+reverse/refund behavior.
+
+### Off-By-One
+Exercise equality, empty, first, last, deadline, epoch, and rounding boundaries
+only where the code or state model makes them relevant. Include index/loop
+boundaries and the final element.
+
+### Oracle / Price Manipulation
+Trace freshness, confidence, source, window, decimal, and fallback assumptions
+to the value or authorization decision they influence. Follow oracle, reserve,
+TWAP and price-feed inputs through their downstream consumers.
+Verify source independence and bounds before considering manipulation impact.
+
+### ERC4626 Vaults
+Check conversion, donation, transfer, preview, and first-depositor invariants
+against the implementation's actual asset/share model.
+
+### Reentrancy
+Trace external calls, callbacks, and state ordering across the reachable call
+graph; prove a controlled state or value delta before claiming impact. Include
+token-transfer and sibling-function callback paths.
+
+### Flash Loan
+Determine whether a same-transaction price or liquidity assumption can change a
+protected outcome, and require a bounded state/value differential.
+
+### Signature Replay
+Trace nonce, domain, chain, contract, expiry, and message binding across sign and
+consume paths. Include permits and cross-chain messages, checking actor binding
+and replay scope.
+
+### Proxy / Upgrade
+Trace implementation ownership, initialization, delegatecall, storage layout,
+upgrade authorization, and version transition behavior.
 
 ## Local Attention Clues
 
@@ -67,6 +113,8 @@ a reason to exhaust every branch. Global priorities belong to the main session.
   read-back that would falsify it.
 - Pivot checkpoint: after a bounded branch yields no state or authority delta,
   switch to the next independent invariant or stop; do not broaden live actions.
+  Stop when the invariant is disproven, evidence is insufficient, or the claim
+  is proven; preserve the next action and concrete reopen condition.
 - Handoff checkpoint: preserve the minimal reproduction, gas/value context,
   cleanup status, and unresolved proof question.
 
@@ -75,10 +123,16 @@ a reason to exhaust every branch. Global priorities belong to the main session.
 The minimum proof is `identified revision -> controlled caller/state -> concrete
 invariant or authority differential -> bounded value/permission impact ->
 repeatable read-back`. TVL, a privileged function name, a regex hit, or a failed
-transaction alone does not pass. Use the existing source/fork/subprocess
+transaction alone does not pass or determine severity. Choose existing local
+analysis, chain tooling or a Foundry PoC only when the selected hypothesis needs it.
+Record `target/version -> invariant or boundary -> baseline -> one changed condition
+-> observed state/value/authorization delta -> impact -> stop/reopen condition`.
+Use the existing source/fork/subprocess
 boundary. `triage-validation` provides assessment methods; non-HTTP contract
 evidence is not yet integrated with the Store validation/report lifecycle.
 Preserve analysis artifacts without substituting a fictional HTTP identity.
+Use `/validate` only for an actual target-owned HTTP(S) Finding. Report-writing
+methods remain available for analysis documents without claiming Store registration.
 
 ## Red Lines
 

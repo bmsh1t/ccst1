@@ -13,9 +13,8 @@ Purpose:
       (b) similar-target reports — what tech-stack peers paid on,
           ready for pattern transfer
 
-    Output is a markdown document the agent consults via the
-    Question -> Tool advisory table. The module does NOT auto-spawn;
-    invocation is up to Claude's working_hypothesis reasoning.
+    Output is a markdown document for on-demand evidence review.
+    Invocation and pattern applicability remain Claude's decisions.
 
 Design notes:
     - Uses the existing HackerOne MCP client (mcp/hackerone-mcp/server.py).
@@ -33,12 +32,14 @@ import argparse
 import importlib.util
 import json
 import math
+import re
 import shlex
 import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:
@@ -138,6 +139,9 @@ def _load_cache(repo_root: Path, target: str) -> dict | None:
         raise ValueError("cache root must be an object")
     if "target" in payload and payload["target"] != target:
         raise ValueError("cache target does not match requested target")
+    if not isinstance(payload.get("vertical", ""), str):
+        raise ValueError("cache vertical must be a string")
+    payload.setdefault("vertical", "")
     _parse_reports(payload.get("same"))
     _parse_reports(payload.get("similar"))
     timestamp = payload.get("cached_at_ts")
@@ -205,9 +209,9 @@ def search_similar_targets(
     same_program = target.split(".")[0]
     seen: set[str] = set()
     result = QueryResult()
-    keywords = [value for value in (tech_stack or []) if value]
+    keywords = [value for value in (tech_stack or []) if value and value != vertical]
     if vertical:
-        keywords.append(vertical)
+        keywords.insert(0, vertical)
     for keyword in keywords[:5]:
         query = _query_reports(h1_client, f"similar keyword={keyword}", keyword=keyword, limit=limit)
         result.successes += query.successes
@@ -233,6 +237,8 @@ def render_disclosed_patterns_md(
     material_queried_at: float | None = None,
     material_stale: bool = False,
     diagnostics: list[str] | None = None,
+    requested_vertical: str | None = None,
+    material_vertical: str | None = None,
 ) -> str:
     """Render the disclosed_patterns.md document per Contract 1.
 
@@ -262,6 +268,12 @@ def render_disclosed_patterns_md(
         subset = " (successful subset only)" if query_status == "partial" and material_source == "live" else ""
         lines.append(f"_Material queried at: {queried_at}{subset}_")
         lines.append(f"_Material stale: {'yes' if material_stale else 'no'}_")
+    if requested_vertical is not None:
+        lines.append(f"_Requested industry: {requested_vertical or 'not supplied'}_")
+        industry = "none" if material_vertical is None else material_vertical or "not supplied"
+        lines.append(f"_Material industry: {industry}_")
+        if material_source == "cache" and requested_vertical != material_vertical:
+            lines.append("_Cached industry differs from this request; retained material is from the earlier query._")
     lines.append(
         f"_Same-target reports: {len(same)} | "
         f"Similar-target reports: {len(similar)}_"
@@ -280,7 +292,7 @@ def render_disclosed_patterns_md(
     lines.append(
         "> Horizontal pattern transfer from HackerOne hacktivity. These are "
         "NOT findings on this target — they are starting points for "
-        "working_hypothesis generation."
+        "evidence-backed hypothesis generation."
     )
     lines.append("")
 
@@ -312,7 +324,7 @@ def render_disclosed_patterns_md(
                 f"{report.disclosed_at} | {title[:80]} | {report.url} |"
             )
     else:
-        lines.append("_No similar-target reports surfaced (no tech-stack hint or empty results)._")
+        lines.append("_No similar-target reports surfaced (no tech-stack/industry hint or empty results)._")
     lines.append("")
 
     lines.append("## Target memory")
@@ -343,6 +355,31 @@ def _load_tech_stack_hint(repo_root: Path, target: str) -> list[str]:
     return component_labels(inventory, include_versions=False, limit=10)
 
 
+def _retained_full_readings(content: str) -> str:
+    """Keep legacy authored reading sections outside fenced code verbatim."""
+    lines = content.splitlines(keepends=True)
+    retained: list[str] = []
+    start: int | None = None
+    fence = ""
+    for index, line in enumerate(lines):
+        text = line.rstrip("\r\n")
+        if fence:
+            if re.fullmatch(r" {0,3}" + re.escape(fence[0]) + "{" + str(len(fence)) + r",}[ \t]*", text):
+                fence = ""
+            continue
+        opening = re.match(r" {0,3}(`{3,}|~{3,})(.*)$", text)
+        if opening and (opening[1][0] != "`" or "`" not in opening[2]):
+            fence = opening[1]
+            continue
+        if re.match(r" {0,3}#{1,2}(?:[ \t]+|$)", text):
+            if start is not None:
+                retained.append("".join(lines[start:index]))
+            start = index if text.strip() == "## Read in full" else None
+    if start is not None:
+        retained.append("".join(lines[start:]))
+    return "".join(retained)
+
+
 def write_disclosed_patterns(
     target: str,
     repo_root: Path | str | None = None,
@@ -350,13 +387,25 @@ def write_disclosed_patterns(
     output_path: Path | str | None = None,
     cache_ttl_hours: float = DEFAULT_CACHE_TTL_HOURS,
     no_mcp: bool = False,
+    vertical: str = "",
 ) -> Path:
     """Run the full pipeline; write evidence/<target>/disclosed_patterns.md."""
     if not math.isfinite(cache_ttl_hours):
         raise ValueError("cache TTL must be finite")
+    if not isinstance(vertical, str):
+        raise ValueError("vertical must be a string")
+    vertical = " ".join(vertical.split())
     repo = Path(repo_root) if repo_root else BASE_DIR
     resolved_target = canonical_target_value(target)
     target_key = target_storage_key(resolved_target)
+    output_path = Path(output_path) if output_path is not None else repo / "evidence" / target_key / "disclosed_patterns.md"
+    # shortcut: authored edits need one writer; add a lock before supporting concurrent edits.
+    try:
+        readings = _retained_full_readings(output_path.read_bytes().decode("utf-8"))
+    except FileNotFoundError:
+        readings = ""
+    except UnicodeError as error:
+        raise ValueError(f"disclosure output is not UTF-8: {output_path}") from error
 
     cache = None
     diagnostics: list[str] = []
@@ -364,6 +413,7 @@ def write_disclosed_patterns(
     coverage_status = "mcp_unavailable"
     query_status = "skipped" if no_mcp else "unavailable"
     source, queried_at, stale = "none", None, False
+    material_vertical = None
     if not no_mcp:
         try:
             cache = _load_cache(repo, resolved_target)
@@ -372,7 +422,7 @@ def write_disclosed_patterns(
         if cache is not None:
             queried_at = float(cache["cached_at_ts"])
             stale = cache_ttl_hours <= 0 or time.time() - queried_at > cache_ttl_hours * 3600
-        if cache is not None and not stale:
+        if cache is not None and not stale and cache["vertical"] == vertical:
             query_status = "cached"
         else:
             h1_client = _load_h1_client()
@@ -382,7 +432,7 @@ def write_disclosed_patterns(
                 tech_stack = _load_tech_stack_hint(repo, target_key)
                 same_result = search_same_target(resolved_target, h1_client=h1_client)
                 similar_result = search_similar_targets(
-                    resolved_target, tech_stack=tech_stack, h1_client=h1_client,
+                    resolved_target, tech_stack=tech_stack, vertical=vertical, h1_client=h1_client,
                 )
                 same, similar = same_result.reports, similar_result.reports
                 errors = same_result.errors + similar_result.errors
@@ -391,10 +441,12 @@ def write_disclosed_patterns(
                 query_status = "partial" if errors and successes else "unavailable" if errors else "complete"
                 if query_status == "complete" or same or similar:
                     source, queried_at, stale = "live", time.time(), False
+                    material_vertical = vertical
                     coverage_status = "partial" if errors else "covered" if same or similar else "no_mcp_coverage"
                 if query_status == "complete":
                     _save_cache(repo, resolved_target, {
                         "target": resolved_target,
+                        "vertical": vertical,
                         "same": [vars(report) for report in same],
                         "similar": [vars(report) for report in similar],
                         "coverage_status": coverage_status,
@@ -404,13 +456,19 @@ def write_disclosed_patterns(
             same, similar = _parse_reports(cache["same"]), _parse_reports(cache["similar"])
             coverage_status = cache["coverage_status"]
             source = "cache"
+            material_vertical = cache["vertical"]
 
     md = render_disclosed_patterns_md(
         resolved_target, same, similar, coverage_status, repo_root=repo,
         query_status=query_status, material_source=source, material_queried_at=queried_at,
         material_stale=stale, diagnostics=diagnostics,
+        requested_vertical=vertical, material_vertical=material_vertical,
     )
-    output_path = Path(output_path) if output_path is not None else repo / "evidence" / target_key / "disclosed_patterns.md"
+    readings_path = output_path.with_suffix(".readings.md")
+    if readings_path.is_file():
+        md += f"\n## Full-report readings\n\n[Source quotations and observations]({quote(readings_path.name)})\n"
+    if readings:
+        md += "\n" + readings
     write_text_atomic(output_path, md)
     return output_path
 
@@ -420,6 +478,7 @@ def main(argv: list[str] | None = None) -> int:
         description="HackerOne disclosed-pattern horizontal transfer for a target."
     )
     parser.add_argument("--target", required=True, help="target domain (e.g. example.com)")
+    parser.add_argument("--vertical", default="", help="explicit industry hint for similar-target queries")
     parser.add_argument(
         "--cache-ttl-hours",
         type=float,
@@ -443,13 +502,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    out = write_disclosed_patterns(
-        args.target,
-        repo_root=args.repo_root,
-        output_path=args.output,
-        cache_ttl_hours=args.cache_ttl_hours,
-        no_mcp=args.no_mcp,
-    )
+    try:
+        out = write_disclosed_patterns(
+            args.target,
+            repo_root=args.repo_root,
+            output_path=args.output,
+            cache_ttl_hours=args.cache_ttl_hours,
+            no_mcp=args.no_mcp,
+            vertical=args.vertical,
+        )
+    except (OSError, ValueError) as error:
+        parser.exit(2, f"disclosure_search: {error}\n")
     print(f"disclosed_patterns written: {out}")
     return 0
 

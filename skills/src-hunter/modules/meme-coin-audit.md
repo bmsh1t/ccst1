@@ -31,6 +31,10 @@ does not resolve Action or confirm Finding.
 
 ## Decision Tree
 
+Branches are alternatives, not a required sequence. Choose the highest expected
+information gain and lowest reversible cost; follow another evidence-supported
+branch or stop when the invariant is preserved and no new question remains.
+
 - Identity or chain state is unknown -> resolve the mint/contract, deployment,
   program revision, and current authority set before interpreting code.
 - EVM token -> inspect mint, transfer restrictions, fee controls, ownership,
@@ -42,6 +46,22 @@ does not resolve Action or confirm Finding.
 - A holder, caller, or pool can be denied, drained, diluted, or redirected in a
   repeatable bounded simulation -> hand the canonical state delta to validation;
   otherwise keep the result as a lead or informational risk.
+
+| Signal | Question to answer |
+|---|---|
+| Mint, supply, or balance authority | Can an unintended actor create or alter supply outside the intended invariant? |
+| Transfer, blacklist, freeze, or hook behavior | Can a controller selectively prevent or redirect transfers? |
+| Fee, tax, router, or receiver controls | Can mutable economics produce an unbounded or actor-specific outcome? |
+| LP, pool, migration, or emergency withdrawal path | Can liquidity or reserves be moved by an unintended authority? |
+| Bonding curve or graduation state | Can mutable parameters or transitions change value without the intended checks? |
+| EVM proxy or Solana upgrade/authority state | Can implementation or mint/freeze/upgrade control change after deployment? |
+| Renounce, delegate, or secondary admin signal | Does the public ownership state match the effective control path? |
+| Rebase, swap, or transfer-order behavior | Can a bounded transaction change price, balances, or user outcomes unexpectedly? |
+
+Include transaction ordering, slippage, or actor-specific outcome when they affect
+the selected boundary. Read the selected implementation, callers and guards with
+native Read/Grep; select an upstream chain CLI/RPC only when current deployment
+state is needed.
 
 ## Local Attention Clues
 
@@ -73,9 +93,15 @@ a reason to exhaust every branch. Global priorities belong to the main session.
 The minimum proof is `identified token/program -> authority or source evidence ->
 controlled baseline -> bounded variant -> holder/pool/permission state change ->
 repeatable read-back`. A scanner hit, retained authority name, low liquidity, or
-failed sell alone does not pass. `triage-validation` provides assessment methods;
+failed sell alone does not pass. A token age, liquidity amount, ownership label
+or source name cannot determine impact. Keep uncertainty and source/version
+references visible. Record `chain/contract/version -> invariant or trust boundary
+-> baseline -> one changed condition -> observed state/value/authority delta
+-> impact -> stop/reopen condition` and preserve original source, transaction and
+analysis artifacts. `triage-validation` provides assessment methods;
 non-HTTP token/program evidence remains analysis material pending Store lifecycle
 integration. Do not substitute a fictional HTTP identity for a program.
+Use `/validate` only for an actual target-owned HTTP(S) Finding; the parent owns publication.
 
 ## Red Lines
 
@@ -83,3 +109,5 @@ Use read-only calls, simulations, test-owned wallets, and reversible fixtures.
 Do not trade live funds, drain or freeze unrelated holders, publish irreversible
 authority changes, or retain private keys. The model selects the branch and
 existing deterministic tooling records the evidence.
+Use the least-impact read-back that proves the claim; do not invoke state-changing
+or value-moving actions merely to complete a checklist.

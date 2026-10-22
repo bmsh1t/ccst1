@@ -58,7 +58,8 @@ only for explicit historical inspection, never as a current-state fallback.
 - A one-sentence reason
 - One concrete next action
 - A target-memory write-back recommendation:
-  - PASS: keep evidence path and report next step
+  - PASS: return evidence and the decision for parent validation; consume an
+    existing single-step report, or identify deferred text/new delivery work
   - KILL: explain the failed premise; recommend a conditional negative only when
     supported by registered observations, not merely because it is unreportable
   - DOWNGRADE / CHAIN REQUIRED: recommend the missing proof as advisory next intent
@@ -88,7 +89,9 @@ and missing evidence; never fabricate an operation or silently downgrade a write
   identity. Finding has no summary-locator field. If the returned path was not
   retained, report that gap instead of using `last-validate.json` to bind another
   Finding. Do not rerun validation merely to recover an artifact path.
-- Hand off PASS cases to `/report`; hand off non-PASS cases back to hunt memory / next evidence step
+- Hand off the decision to the parent for `/validate` when owner judgments are missing.
+  Single-step publication receipts complete that report work; `/report` is for
+  deferred text or an explicit new delivery. Non-PASS cases return the next evidence step.
 
 ## Scope
 
@@ -118,7 +121,8 @@ of Q1-Q7, Q7b and never-submit/chain precedence; do not maintain a second
 checklist here. Apply it to target-bound, protocol-appropriate reproducible
 evidence and output exactly one:
 
-- **PASS** — all required evidence and destination checks pass; hand off to report writing.
+- **PASS** — all required evidence and destination checks pass; return the decision
+  for parent validation or consume its existing report receipts.
 - **KILL [Q#]** — the named question fails; do not report the candidate.
 - **DOWNGRADE** — the evidence proves a lower impact; state the required change.
 - **CHAIN REQUIRED** — a concrete connector remains to be built and proved.
@@ -145,8 +149,8 @@ DECISION: [PASS / KILL Q# / DOWNGRADE / CHAIN REQUIRED]
 REASON: [One clear sentence explaining why]
 
 ACTION: [What researcher should do next]
-- PASS: "Proceed to /report"
+- PASS: "Apply /validate if needed and consume its receipts; /report only for deferred text or a new delivery."
 - KILL: "Do not report this candidate. Move on, or demote it to Lead/Signal with the next evidence action."
 - DOWNGRADE: "Collect the lowest-risk missing differential for the claimed impact, then re-triage"
-- CHAIN REQUIRED: "Build [specific chain]. Confirm it works end-to-end. Then report both together."
+- CHAIN REQUIRED: "Prove [specific connector] end to end; combine only when the impact requires that path, preserving independent findings."
 ```

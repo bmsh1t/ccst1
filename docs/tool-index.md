@@ -19,7 +19,7 @@
 | `tools/intel_artifact.py` | AI selects an omitted advisory group or filter | Read-only, bounded, cursor-paged query over the complete `intel.json`; never writes findings or Queue |
 | `tools/technology_inventory.py` | Multiple consumers need reliable httpx/Nmap tech, version, service, or CPE data | Shared JSONL/text/Nmap parser and atomic component inventory owner |
 | `tools/web_intel_artifact.py` | Official-source gap | Verified Web Intel recorder: TTL, source groups, atomic index |
-| `tools/disclosure_search.py` / `disclosed-researcher` | Target or comparable disclosed-report pattern may transfer | Bounded disclosed-pattern research; records evidence, not a finding |
+| `tools/disclosure_search.py` / `disclosed-researcher` | Target or comparable disclosed-report pattern may transfer | Industry-aware cached metadata and independent full-report readings |
 | `tools/scope_checker.py` | Verifying target classification | Deterministic host/URL classifier against active target set |
 | `tools/scope_context.py` | Global Scope owner | Parses text lists/manifest v1, applies exclusions, classifies external context, and emits stable Scope hash |
 | `tools/scope_source.py` | Inspect or explicitly update target Scope | `show` / `publish --manifest` / `publish --profile`; primary Scope lives in `state/<key>/scope.json`, replacement requires its current SHA256 |
@@ -41,7 +41,7 @@ manual review lane.
 | `tools/openapi_semantics.py` | `api_specs/*`, `urls/api_endpoints.txt` | Review semantic auth boundaries; declarations remain leads, not findings |
 | API leak consolidation | `recon/<target>/exposure/api_leak_candidates.txt` | Review before scanner breadth; imported Postman/OpenAPI candidates can drive exact endpoint probes |
 | `porch-pirate` Postman search | `recon/<target>/exposure/api_leaks/postman_leaks.txt` | Look for workspace/collection URLs, environment names, tokens, and non-production API hosts |
-| `postleaksNg` | `recon/<target>/exposure/api_leaks/postleaks_urls.txt`, `postleaksNg.log`, `postleaksNg/` | Extract collection/spec URLs; feed interesting files into `/secrets-hunt --filesystem recon/<target>/exposure/api_leaks/` when non-empty |
+| `postleaksNg` | `recon/<target>/exposure/api_leaks/postleaks_urls.txt`, `postleaksNg.log`, `postleaksNg/` | Extract collection/spec URLs; select `/secrets-hunt TARGET --filesystem recon/<target>/exposure/api_leaks/` when the evidence needs it |
 | Osmedeus `SwaggerSpy` | `recon/<target>/exposure/api_leaks/swagger_leaks.txt` | Treat as API-spec discovery candidates; validate liveness and auth boundary before broad fuzzing |
 | Verified secret pass | `recon/<target>/exposure/api_leak_trufflehog_verified.jsonl` | Evidence for attribution/usability and follow-up validation; choose the concrete action from the observed surface and apply `rules/ccst/red-lines.md` |
 | `emailfinder` | `recon/<target>/exposure/identity_intel/emails.txt` | Seed tenant, reset-flow, invite, SSO, and username-format hypotheses |
@@ -200,7 +200,7 @@ question/stop material through the recorded card, section and family.
 | Observed cloud binding or useful discovery gap | Native review; selected upstream cloud_enum/S3Scanner via `/cloud-recon` |
 | Batch recon manifest exists | read `recon/<list-stem>/batch_manifest.jsonl`, then run `/surface` or `/hunt` on completed domains |
 | Identity/cloud intel from recon has hits | review `exposure/identity_intel/summary.md` and `exposure/cloud/cloud_enum.txt`, then pivot to `/intel` or `/cloud-recon` |
-| Passive DNS shows a naming dialect or evidence-backed hostname gap | AI-selected `dns_expand.py`, then refresh `/surface` |
+| Passive DNS shows a naming dialect or evidence-backed hostname gap | AI-selected `dns_expand.py`; refresh `/surface` when new inputs require an updated view |
 | Dangling DNS/service evidence | Native DNS/provider review; optional upstream dnsReaper/subjack via `/takeover` |
 | Live URLs but no params | `param_discovery.py --target TARGET --from-recon` |
 | Exchange/OWA/EWS/Autodiscover evidence | Native review or selected upstream interface tool; `/spray` for controlled credentials |

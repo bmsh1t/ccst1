@@ -281,6 +281,44 @@ delay saving/reporting an independently confirmed primitive or sibling.
 | Subdomain takeover | + OAuth redirect_uri registered at that subdomain | Critical |
 | GraphQL introspection | + auth bypass mutation or IDOR on node() | High |
 
+### Evidence-Bounded Connector Review
+
+Start from a canonical Finding and target-bound replayable primitive when its
+current validation result identifies a missing connector or a possible impact
+change. Select one connector hypothesis, its prerequisite, expected learning,
+and kill condition using information gain, plausible value and lowest reversible cost.
+
+| Observed primitive | Connector question | Typical evidence gate |
+|---|---|---|
+| Identity or object boundary | Does a different actor, tenant, role, or object cross the protected boundary? | Reproducible actor/object differential |
+| Server-side fetch or callback | Does the server reach a controlled internal or downstream boundary? | Raw fetch plus a second controlled signal |
+| Redirect, token, or session behavior | Does a legal flow bind the token/code/session to the wrong party? | Controlled account/session transition |
+| Parser, upload, or deserialization behavior | Does a downstream consumer produce data, state, or controlled execution impact? | Read-back or bounded consumer evidence |
+| Schema, source, or configuration exposure | Does the exposed material unlock a reachable protected action? | Proven ownership, reachability, and least-impact action |
+| Workflow, race, or quota primitive | Does a bounded replay change a protected state or limit? | Repeatable state delta on a test resource |
+| WebSocket, gRPC, GraphQL, or LLM/RAG signal | Does the observed channel cross an identity, object, or tool boundary? | Target-bound frame/RPC/query/tool artifact and impact delta |
+
+These common shapes are not an allowlist. Select another evidence-supported
+connector or stop at the primitive when none is testable. Record each hop as
+`validated finding ID -> connector hypothesis -> prerequisite -> replayable artifact
+-> observed delta -> impact`, keeping target identity, actor context, raw artifacts
+and evidence hashes. Change one meaningful boundary at a time; choose the existing
+command, MCP, browser or raw replay path that fits it, without a second runner.
+
+Before combined reporting, each linked Finding passes canonical validation or
+the complete path is proven end to end. Independent Findings stay separate;
+combine only when demonstrated impact requires the linked path. The parent
+consumes `/validate` receipts; deferred text or a new delivery need uses `/report`.
+
+After a bounded batch without confirmation or a repeated progress fingerprint,
+preserve the next evidence action and return to the parent lifecycle. The
+fingerprint is hypothesis, surface, actor/state, observation kind, and evidence
+reference; repetition without evidence delta is a stop/rotation signal, never a
+reason to widen inputs. Stop adding hops once the claimed impact is proven.
+Unavailable or out-of-scope prerequisites keep a chain open only with a concrete
+reopen condition. Write through existing Finding/Queue/evidence owners; do not
+create another finding, queue, ledger or report state.
+
 ---
 
 ## Scoring Reference

@@ -112,8 +112,8 @@ claude                          # Start Claude Code from this repo root
 /hunt target.com                # Test for vulnerabilities
 # Read cached JS bundles with Claude native Read/Grep when present
 /source-hunt target.com --repo-path /path/to/repo
-/validate                       # Check finding before writing
-/report                         # Generate submission-ready report
+/validate                       # Record judgment; default also publishes the authored report
+# /report                       # Deferred text or an explicit new eligible delivery
 /sync-check                     # Check repo/runtime drift after pulls or weird CLI behavior
 ```
 
@@ -293,8 +293,10 @@ stage independently.
 
 ## Commands
 
-Default lane: **`/recon target.com` -> `/hunt target.com` -> `/validate` -> `/report`**.
-Use this Core 4 when you want a clear Claude Code CLI loop from attack-surface discovery to report gating.
+Typical lane: **`/recon target.com` -> `/hunt target.com` -> `/validate`**.
+Default single-step validation publishes its authored report; consume the receipts.
+Use `/report` for deferred text or an explicit new eligible delivery. These four
+entries remain independently available, without a mandatory four-command sequence.
 
 ### Core 4 Workflow
 
@@ -302,24 +304,24 @@ Use this Core 4 when you want a clear Claude Code CLI loop from attack-surface d
 |:---|:---|
 | `/recon target.com` | Full recon — subdomains, live hosts, URLs, nuclei scan |
 | `/hunt target.com` | Active testing — tech detect, test highest-ROI bugs |
-| `/validate` | 7-Question Gate + 4 gates — PASS / KILL / DOWNGRADE / CHAIN REQUIRED |
-| `/report` | Submission-ready report for H1/Bugcrowd/Intigriti/Immunefi |
+| `/validate` | Evidence-bound technical/destination decision; optional authored report publication |
+| `/report` | Author missing text for a current confirmed Finding and eligible delivery |
 
 ### Power Commands
 
 | Command | What It Does |
 |:---|:---|
 | `/scope <asset>` | Summarize the active target set before testing |
-| `/triage` | Quick 2-minute go/no-go before deep validation |
-| `/source-hunt target.com` | Source repo scan — secrets, risky configs, GitHub Actions / CI issues |
-| `/chain` | Find B and C from bug A — systematic exploit chaining |
-| `/web3-audit <contract>` | 10-class smart contract checklist + Foundry PoC |
-| `/token-scan <token>` | Meme/token risk review and rug-pull checklist |
+| `/triage` | Optional advisory go/no-go from a description and existing evidence |
+| `/source-hunt target.com` | Preserve source/CI originals, then select native analysis when needed |
+| `/chain` | Review an evidence-backed primitive for one meaningful connector |
+| `/web3-audit <contract>` | Contract invariants and trust boundaries; Foundry when the hypothesis needs it |
+| `/token-scan <token>` | Evidence-backed authority, transfer, accounting and liquidity review |
 | `/autopilot target.com` | Full autonomous hunt loop with safety checkpoints |
 | `/autopilot-round target.com` | One bounded native `/loop` round with stable terminal status |
 | `/surface target.com` | AI Review Pool with advisory evidence from recon + memory |
 | `/pickup target.com` | Continue previous hunt — shows what's untested |
-| `/remember` | Save finding or pattern to persistent memory |
+| `/remember` | Save target experience and journal audit without changing verdicts |
 | `/intel target.com` | Version-aware OSV/GHSA/NVD advisories enriched by KEV/EPSS and local evidence |
 | `/sync-check` | Check whether repo commands/agents/skills match the installed Claude runtime |
 | `/memory-gc` | Report or rotate oversized hunt-memory JSONL files |
@@ -337,9 +339,9 @@ tools are skipped, not fatal.
 
 | Command | What It Does |
 |:---|:---|
-| `/secrets-hunt --js-bundle <dir>` | Hunt leaked credentials in source, JS bundles, or GitHub orgs |
+| `/secrets-hunt TARGET --js-bundle <dir>` | Review leaked credentials in source, JS bundles, or GitHub orgs |
 | `/takeover --recon <dir>` | Subdomain takeover candidates from a recon run |
-| `/cloud-recon --keyword <name>` | Public S3 / Azure / GCP buckets + CloudFlare-bypassed origin IP hints |
+| `/cloud-recon TARGET --keyword <name>` | Cloud ownership and origin clues through selected upstream tools |
 | `/param-discover --target TARGET --url URL` | Target-scoped hidden HTTP parameters via Arjun / x8 |
 | `/scan-cves <host>` | Focused nuclei CVE sweep + optional log4j-scan |
 | `/arsenal [tool]` | Lists installed external tools or prints install hints |
@@ -363,10 +365,10 @@ source of truth and these roles are not an implicit second controller.
 | **recon-ranker** | AI review and prioritization of recon + memory evidence | Prefer Haiku *(fast)* -> current session fallback |
 | **report-writer** | Professional reports, impact-first, human tone | Prefer Opus *(quality)* → current session fallback |
 | **validator** | 7-Question Gate + 4-gate finding validation | Prefer Sonnet → current session fallback |
-| **chain-builder** | Systematic A-B-C exploit chaining | Prefer Sonnet → current session fallback |
-| **disclosed-researcher** | Disclosed-report pattern research and hypothesis seeds | Prefer Sonnet -> current session fallback |
+| **chain-builder** | Independent review of one evidence-backed connector | Prefer Sonnet → current session fallback |
+| **disclosed-researcher** | Disclosed-report metadata and retained full-body source observations | Prefer Sonnet -> current session fallback |
 | **credential-hunter** | Credential-prep stages; prepares controlled spray decisions | Prefer Sonnet -> current session fallback |
-| **web3-auditor** | 10-class contract audit + Foundry PoC stubs | Prefer Sonnet -> current session fallback |
+| **web3-auditor** | Contract invariant review and bounded source/state proof | Prefer Sonnet -> current session fallback |
 | **token-auditor** | Meme/token contract and launch-risk review | Prefer Sonnet -> current session fallback |
 
 Agent frontmatter now uses `model: inherit` instead of hard versioned model

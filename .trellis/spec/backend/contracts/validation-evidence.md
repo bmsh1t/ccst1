@@ -230,6 +230,9 @@ original attempt/operation, without re-registering the same bytes as a new execu
   The machine report writer delegates create-only byte publication to
   `artifact_io.publish_bytes_create_only`, retaining its trailing-newline
   normalization and domain admission; it does not change report identity.
+  Consume that invocation's registered report and receipts; PASS does not require
+  publishing again through `/report`. `/triage` is optional protocol-neutral
+  advisory input, not a required preliminary validation command.
 - `/report` indexes registered AI text; missing bodies remain `pending_drafts`.
   Publishing new text requires explicit body/Finding/current assessment/current eligible
   delivery inputs. It never generates category narratives or implies external submission
@@ -238,6 +241,9 @@ original attempt/operation, without re-registering the same bytes as a new execu
   the target-bound Finding. A retained invocation summary is optional diagnostics
   only after target/Finding identity checks; there is no Finding summary locator
   and no requirement to rerun validation to recover one.
+  `/report` and report-writer enter for deferred missing text or an explicit new
+  eligible delivery. Their existing report-ID schemes are not unified here;
+  corrected routing prevents accidental double publication without migrating history.
 - Validation refresh preserves runtime breadcrumbs and explicit
   `source_knowledge_refs` without generating pattern scores or appending to
   `hunt-memory/pattern_calibration.jsonl`. Historical calibration inspection

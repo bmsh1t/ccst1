@@ -2,6 +2,30 @@
 
 > Recon 输入、派生 Surface、coverage 和排序契约。
 
+## Native entry and review reuse
+
+`surface._surface_options` does not recommend chain-builder from Review Pool
+counts. The native agent description remains discoverable; actual primitive
+evidence and the connector method determine whether independent review is useful.
+Surface invocation may publish its own rebuildable index/projection, so ordinary
+viewing is not described as universally read-only. Reuse unchanged valid views;
+query or refresh only the view needed by a changed input or evidence question.
+
+`/check-coverage` references the complete Coverage Gate, not another completion
+policy. `find-gaps --limit N` exposes all unhandled cells with paging metadata;
+there is no `find-gaps --all`. A preview or read-only checkpoint does not require
+rebuild/find-gaps/ledger/surface as a fixed sequence. Actual finish keeps the gate,
+Closure and execution-recovery/claim/heartbeat duties. KB/Context navigation adds
+no route audit or no-delta memory write; use the shared Cognitive Write Timing.
+
+Chain/Web3/Token commands and agents retain native description, tool permissions,
+inputs, outputs and parent handoff while reading one complete internal method.
+Module migration must preserve all distinct method statements and evidence/stop
+boundaries before deleting entry copies; native discovery count is not a cost
+or model-benefit measure. Non-HTTP contract evidence remains analysis material.
+Verify these contracts in an isolated source-copy check with exact baseline
+frontmatter, migrated method statements, output fields, links and Surface options.
+
 ## Surface advisory 的当前审核字节
 
 ### 1. Scope / Trigger
@@ -890,7 +914,11 @@ not a vulnerability judgment layer.
   - `ffuf -u '<evidence-backed-template-with-FUZZ>' -w '<run-dir>/wordlist.txt' ... -s -json`
   - `recon/<target_key>/focused_fuzz/<run_id>/dirs/ffuf_results.jsonl.gz`
   - `python3 tools/recon_adapter.py --recon-dir <run-dir> --summarize-ffuf ...`
-  - `python3 tools/target_memory.py lead|dead-end '<evidence and decision>' --target <target>`
+  - `python3 tools/target_memory.py lead '<evidence and decision>' --target <target>`
+  - `python3 tools/target_memory.py dead-end '<evidence and decision>' --target <target>
+    --conditions '<exact input/actor/deployment>' --reopen-when '<changed boundary>'
+    --operation-ref OPERATION_ID:STEP` uses an actual registered observation;
+    without one, save an advisory note rather than a negative conclusion.
 - OpenAPI semantic facts:
   - `recon/<target_key>/api_specs/{operations,auth_boundary_candidates,platform_metadata,errors}.jsonl`
   - `recon/<target_key>/api_specs/{spec_urls,public_operations,unauth_api_findings}.txt`

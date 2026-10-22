@@ -1,15 +1,18 @@
 ---
-description: "Quick 7-Question Gate triage on a report candidate before writing a report. Rejects N/A submissions before they happen. Faster than /validate — for quick go/no-go decisions. Usage: /triage"
+description: "Advisory 7-Question Gate triage on a report candidate from its description and evidence. Gives a quick go/no-go without recording validation or publishing a report. Usage: /triage"
 ---
 
 # /triage
 
-Quick triage to decide: report, downgrade, or keep hunting?
+Quick advisory triage to decide: validate, downgrade, or keep hunting?
 
 ## When to Use
 
-Use this before spending time writing a full report. If triage passes, run
-`/validate` for the full 4-gate check, then `/report`. Do not use `/triage`
+Use this when a quick review will change whether to prepare a full decision.
+It records no assessment or publication and is optional before `/validate`.
+If triage passes, select the existing Store Finding and follow `/validate`.
+Single-step success already publishes its authored report; deferred text or a
+new delivery need uses `/report`. Do not use `/triage`
 as an early exploration kill-switch for raw leads, anomalies, hypotheses, or
 chain seeds.
 
@@ -38,7 +41,8 @@ them as not applicable for local/lab delivery.
 
 ## Output
 
-**GO:** "All 7 pass. Run /validate for full check, then /report."
+**GO:** "Evidence supports validation. Run /validate and consume its receipts;
+use /report when deferred text or a new delivery is needed."
 
 **KILL [reason]:**
 - "Q1 fails — no target-bound reproducible artifact yet"

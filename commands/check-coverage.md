@@ -4,120 +4,51 @@ description: 检查当前目标或本轮输出是否满足覆盖基线。用法�
 
 # /check-coverage
 
-检查覆盖基线。
+按完整 `rules/ccst/coverage-gate.md` 复核本轮覆盖、证据深度、残留和停止理由。
+这是 AI 覆盖审查入口，不执行扫描、不裁决漏洞，也不替代 Closure owner。
 
-这个命令不是漏洞验证，也不是扫描器。它用于防止 Claude 过早收工，确保本轮工作交代清楚“测了什么、没测什么、为什么”。
+## 目标与读取
 
-## 必读文件
-
-```text
-rules/ccst/coverage-gate.md
-memory/goals/active.json
-```
-
-建议同时读取：
-
-```text
-knowledge/cards/coverage-prompts.md
-rules/ccst/red-lines.md
-```
-
-## 自动步骤
-
-先解析当前目标。优先从 `$ARGUMENTS` 读取；没有参数时读取
-`memory/goals/active.json` 的 `target`。如果仍然没有目标，停止并要求用户给出目标。
-
-有目标后先运行：
+优先使用 `$ARGUMENTS` 的目标；没有参数时可读 `memory/goals/active.json` 选择指针。
+无法确定目标就要求明确目标，指针不代替当前 Store 的领域状态。
+复用当前有效的 Coverage、Actor Matrix、Surface 和目标经验；只查询缺失或变化的视图：
 
 ```bash
-python3 tools/coverage_matrix.py rebuild --target <target>
-python3 tools/coverage_matrix.py find-gaps --target <target>
-python3 tools/evidence_ledger.py summary --target <target>
-python3 tools/surface.py --target <target>
+python3 tools/coverage_matrix.py find-gaps --target TARGET --limit 50
+python3 tools/evidence_ledger.py summary --target TARGET
 ```
 
-`find-gaps` 默认返回有语义证据的 high-value gap，减少通用 endpoint x class
-噪音；需要审阅完整矩阵时追加 `--all`。两种模式都只读，不会改变 Coverage 状态。
+以上按问题选择，不要求每次都运行。`find-gaps` 返回全部未处置格的有界窗口、
+总数、余量及完整展开命令；不按语义/分数筛选，没有 `--all` 参数。
+AI 根据业务、原始证据和实际覆盖深度判断哪些 gap 值得追，矩阵不是逐格实测清单。
+输入变化且需要发布派生缓存时，显式使用 `coverage_matrix.py rebuild` 或 `/surface --refresh`；
+普通 checkpoint 或读卡不强制重建。
 
-解释方式：
+## 审查与收尾
 
-- `find-gaps` 非空：不能说“全面完成”，必须列出高价值 gap 和下一步。
-- `find-gaps` 为空：仍需结合 `/surface`、target memory、Workflow Leads、action-gated scanner leads、blocked/n/a/dead-end 解释覆盖状态。
-- Evidence Ledger 的 Actor Matrix gaps 非空：不能说 authz/IDOR/业务逻辑完整覆盖；必须列出缺少的 actor/object/replay 差异。
-- `rebuild` 没有 endpoint：说明 recon/source/browser 输入不足，不能把空矩阵当成全面覆盖。
-- 如果某个 gap 的继续测试会触发 `rules/ccst/red-lines.md`，标记为 `blocked: red-line`，并给出低风险替代验证。
+- 说明核心输入、角色/对象/状态、真实观察和验证深度；`tested` 需要对应证据。
+- 未处置格非空不自动要求逐格测试；值得追的 gap 选择不追时说明理由和续接条件。
+- Actor Matrix 的缺口不能被匿名请求或单一身份结果补成完整 authz/IDOR 覆盖。
+- 空矩阵、没有 live host 或扫描零结果不证明全面完成；保留输入缺失与其他工作。
+- 按 gate 交代 lead/signal/candidate、blocked、n/a、dead-end、unknown 和下一步；
+  原因、证据和实际未覆盖范围不可省略，红线阻塞沿现有规则处理。
+- 普通查看不写记忆。有稳定结论、转向或交接时按
+  `skills/runtime-protocol.md#cognitive-write-timing` 写回；实际结束仍走 Coverage/Closure，
+  Autopilot 的 claim、回收、heartbeat 和全局复核责任不变。
 
-## 使用场景
-
-- `/hunt`、`/surface`、`/source-hunt` 或手工测试结束前
-- 准备向用户汇报“没有发现有效漏洞”前
-- 准备切换目标或写 handoff 前
-- 某个 Skill 输出过短、缺少未覆盖项时
-
-## 检查问题
-
-1. 当前目标和阶段是什么？
-2. 本轮覆盖了哪些核心 surface？
-3. 每个核心 surface 至少有哪些 lane 被判断过？
-4. 对 authz/IDOR/业务逻辑，是否覆盖 anonymous、owner、peer、low_role、cross_tenant？
-5. 哪些是 `tested`，证据是什么？
-6. 哪些是 `lead` / `signal`，下一步是什么？
-7. 哪些是 `candidate`，是否需要 `/validate`？
-8. 哪些是 `blocked`，阻塞原因是什么？
-9. 哪些是 `n/a`，为什么不适用？
-10. 哪些还是 `unknown`，下一步是什么？
-11. 是否有动作被 `rules/ccst/red-lines.md` 阻止？
-
-## 输出格式
+## 输出
 
 ```text
 COVERAGE CHECK
-- Target:
-- Phase:
-- Matrix:
-- High-value gaps:
-- Evidence ledger:
-- Actor matrix gaps:
-- Covered:
-- Leads / Signals:
-- Candidates:
-- Blocked:
-- Not applicable:
-- Dead ends:
-- Still unknown:
-- Red-line blocked:
-- Next actions:
-- Decision: continue / handoff / validate / report-not-ready
+- Target / Phase:
+- Covered inputs, roles/state and evidence depth:
+- Worthwhile gaps / Actor Matrix gaps:
+- Leads / Signals / Candidates:
+- Blocked / Not applicable / Dead ends:
+- Unknown / Intentionally deferred, with reason and reopen condition:
+- Next evidence action:
+- Decision and stopping reason: continue / handoff / validate / report-not-ready
 ```
 
-## 决策
-
-### continue
-
-仍有高价值 `unknown` 或明确 next action，应继续测试。
-
-### handoff
-
-本轮可以停止，但必须写清楚剩余项和下一步。
-
-### validate
-
-存在 `candidate`，应该进入 `/validate`。
-
-### report-not-ready
-
-没有 candidate，或证据不足，不能写报告。
-
-## 禁止输出
-
-没有覆盖摘要时，不要输出：
-
-```text
-已全面测试，没有发现问题。
-```
-
-应该输出：
-
-```text
-本轮覆盖了 X；未覆盖 Y；没有形成可验证 Candidate；下一步是 Z。
-```
+有 Candidate 时 follow `/validate`；已有 single-step 报告消费收据，deferred text
+或明确新交付才 `/report`。没有证据和覆盖说明时，不宣称“全面测试，没有问题”。

@@ -4,9 +4,10 @@ description: Select an evidence-backed smart-contract review path for EVM or Sol
 
 # /web3-audit
 
-Review a supplied contract or repository by selecting the highest-value
-evidence question for the observed protocol, trust boundary, and deployment
-context.
+Review a supplied contract or repository using the complete
+[Web3 method](../skills/src-hunter/modules/web3-audit.md). It owns invariant
+branches, preflight, evidence and stop/reopen rules; this command owns entry
+and artifact handoff.
 
 ## Usage
 
@@ -14,43 +15,16 @@ context.
 /web3-audit CONTRACT_OR_REPO
 ```
 
-`skills/src-hunter/modules/web3-audit.md` owns the direct-only decision contract. This command
-owns entry and artifact handoff; it does not duplicate its phase gates or create
-a second audit state.
+Provide source/deployment identity, chain/network, revision, actors and the
+permitted simulation or transaction boundary. Select the current question from
+that evidence and preserve original analysis artifacts.
 
-## Decision Tree
+## Handoff
 
-Select one or more branches from current code, deployment, and protocol evidence.
-The list is unordered and non-exhaustive:
-
-| Signal | Question to answer |
-|---|---|
-| Balance, share, debt, or reward accounting | Do all state transitions preserve the same invariant? |
-| Role, modifier, initializer, or proxy boundary | Can an unintended actor reach a protected function or implementation? |
-| Paired lifecycle functions | Does every create/deposit path have a complete reverse/refund path? |
-| Deadline, epoch, index, or loop boundary | Does equality, empty state, or final element produce an unintended result? |
-| Oracle, reserve, TWAP, or price feed | Can stale, low-confidence, or manipulable data change value or authorization? |
-| ERC4626 conversion/transfer | Are share/asset conversions and first-depositor boundaries consistent? |
-| External call or token transfer | Is the state transition safe across reentrancy and callback boundaries? |
-| Signature, nonce, domain, or replay evidence | Is authorization bound to the intended chain, contract, and message instance? |
-| Upgrade or delegatecall evidence | Is implementation ownership and storage compatibility enforced? |
-
-Choose the branch with the clearest expected learning and lowest reversible cost.
-Do not skip a high-value branch solely because another class is earlier in a
-table, and do not infer a finding from a pattern match alone.
-
-## Evidence and Handoff
-
-- Preserve source/deployment identity, version, actor, and raw analysis artifacts.
-- Use existing local analysis, chain tooling, or Foundry only when the selected
-  hypothesis needs it; choose the concrete test from the observed code.
-- Stop when the invariant is disproven, evidence is insufficient, or the claim
-  is proven. Record the next action/reopen condition through canonical owners.
-- Preserve non-HTTP contract/program evidence as analysis artifacts. The Store
-  validation/report lifecycle currently requires a target-owned HTTP(S) Finding;
-  non-HTTP integration is deferred. Do not invent an HTTP URL to register it.
-  Use `/validate` only for an actual HTTP Finding; report-writing methods remain
-  available for an analysis document without claiming Store registration.
+Pure contract/program evidence remains analysis material; non-HTTP Store lifecycle
+integration is deferred. Do not fabricate an HTTP URL for a contract identity.
+Use /validate only for an actual target-owned HTTP(S) Finding. Report-writing
+methods remain available for an analysis document without Store registration.
 
 ## Output
 

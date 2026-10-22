@@ -101,4 +101,6 @@ python3 tools/context_pack.py --target TARGET --json
 - browser 证据默认只读 `recon/<target>/browser/` 的 XHR/API/params/form/page-JS 小索引；
   不默认加载 `evidence/<target>/browser/...` 的原始 requests/console/storage。
 - Actor Matrix 缺口不是结论；它只是提醒哪些角色/对象/replay 还没有结构化记录。
-- 工具推荐不是强制路线，也不是固定工具清单；Claude 必须说明选择原因并把实际 route 写回 Action Queue metadata。
+- 工具推荐不是强制路线或路由记账要求。认知增量按
+  `skills/runtime-protocol.md#cognitive-write-timing` 保存；真实 Action、claim 和
+  Runner 执行事实仍由各 owner 记录，纯导航不追加 Queue metadata。

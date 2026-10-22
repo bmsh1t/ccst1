@@ -4,7 +4,8 @@ description: "Record an evidence-bound AI validation decision, separating techni
 
 # /validate
 
-Review a selected Candidate before `/report`. AI judges evidence and impact; the tool checks
+Review a selected Candidate and record its decision, optionally publishing its
+authored report in the same invocation. AI judges evidence and impact; the tool checks
 schema, owner bindings and integrity, then records the explicit decision. It does not run tests.
 
 Load [triage-validation](../skills/src-hunter/modules/triage-validation.md) for Q1–Q7, Q7b, impact,
@@ -101,7 +102,9 @@ Apply rechecks bindings, current raw integrity and predecessor CAS; preflight is
 ## 4. Consume receipts and recover failures
 
 Successful apply returns `status=updated`, the Finding-owned `summary_path`, and committed
-`validation_sync.assessment.id` / `validation_sync.delivery.id`. For deferred writing,
+`validation_sync.assessment.id` / `validation_sync.delivery.id`. Single-step
+success with a report consumes the returned registered report and current Store/INDEX;
+it does not require another `/report` publication. For deferred writing or a new eligible delivery,
 cite those real IDs and operation/observation references, then follow
 [`/report`](report.md) for authorship, publication eligibility and current report status.
 

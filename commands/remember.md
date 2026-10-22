@@ -59,16 +59,20 @@ explicit retention/purge can remove that binding. Legacy unbound rows are kept
 unchanged, so a first replay that repairs an absent binding cannot prove whether
 an old row belongs to it and includes a `journal_recovery_note`.
 
-For validation prefill, select the current target or an explicit summary:
+For validation prefill, retain the original `/validate` receipt's `summary_path`
+and pass it explicitly:
 
 ```bash
-python3 tools/remember.py --from-validate --target TARGET --json
-python3 tools/remember.py --from-validate --validate-json VALIDATION_SUMMARY_PATH --json
+python3 tools/remember.py --from-validate --target TARGET \
+  --validate-json VALIDATION_SUMMARY_PATH --json
 ```
 
-Copy the canonical Finding's exact `validation_summary` path. Do not infer a
-filename or import the repository-global last-validation pointer into another
-target. Prefill provides fields, not operation evidence.
+Verify that summary's target and Finding identity. The Finding projection has no
+summary locator, and `--target` alone does not locate one. If the original receipt
+was not retained, state the gap or pass the resolved fields explicitly; do not
+guess a filename, use the global latest pointer or rerun validation to recover it.
+Prefill provides fields, not operation evidence; current Store/INDEX owns verdicts
+and report status.
 
 Recover saved experience with `python3 tools/target_memory.py show TARGET` or
 `python3 tools/experience_recall.py query --target TARGET --json`; use the returned

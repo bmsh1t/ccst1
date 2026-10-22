@@ -10,18 +10,21 @@ projection). It never deletes raw recon or changes finding/observation lifecycle
 replace Claude's judgment.
 Claude CLI 下这是 `/autopilot` 的默认证据整理入口：把 recon、目标记忆、知识线索和检查信号合并为 URL 顺序的 AI Review Pool 与 Workflow Leads，由 Claude 判断下一步。
 
-## Run This (the only required step)
+## Query or Refresh When Needed
 
-Replace `target.com` with the supplied target.
+Reuse a current review pack when its inputs are unchanged. When another view is
+needed, replace `target.com` with the supplied target and select one output form:
 
 ```bash
 python3 tools/surface.py --target target.com
 python3 tools/surface.py --target target.com --json
-python3 tools/surface.py --target target.com --refresh
-python3 tools/surface.py --repo-root /path/to/data --target target.com --json
 ```
 
-If `recon/<target>/` is missing, run `/recon target.com` first. If the output says the recon cache is thin, refresh recon instead of manually reading every file.
+Use `--repo-root /path/to/data` for an explicit data root and `--refresh` when
+changed or invalid derived inputs require rebuilding. These are alternatives,
+not a command sequence. Ordinary invocation may publish rebuildable artifacts.
+Missing or thin recon is a collection gap; choose `/recon` when the current
+question needs collection, while retaining existing source/browser/Finding work.
 
 ## What This Reads
 
@@ -105,7 +108,10 @@ route kind nor source count chooses a preferred test. Full queries are fresh rea
 3. For FFUF evidence, compare random-miss controls and heavy response signatures, then page the full artifact by status/signature when needed. A control match is a noise hypothesis, not an exclusion.
 4. If a candidate includes JS/source/browser/exposure hints, run that enrichment when it changes the next proof.
 5. If a candidate is auth-gated, preserve auth state and compare roles/objects rather than widening blindly.
-6. Before checkpoint/finish, run `/check-coverage` and write back the chosen candidate, blocker, or dead end with `/target`.
+6. Ordinary checkpoint viewing needs no coverage rebuild or memory write. Save
+   substantive changes under `skills/runtime-protocol.md#cognitive-write-timing`.
+   Actual pass/target completion still satisfies `rules/ccst/coverage-gate.md`
+   and the existing Closure owner; `/check-coverage` is an optional review entry.
 
 Bounded FFUF evidence paging:
 

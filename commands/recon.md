@@ -212,9 +212,14 @@ python3 tools/target_memory.py lead \
   --target target.com
 python3 tools/target_memory.py dead-end \
   "Focused fuzz scope: <template + evidence>; artifact: $RUN_DIR/dirs/ffuf_results.jsonl.gz; result: <why no useful signal>" \
-  --target target.com
+  --target target.com --conditions '<exact template, method, actor, input and deployment>' \
+  --reopen-when '<new input, identity, deployment or contrary evidence>' \
+  --operation-ref OPERATION_ID:STEP
 ```
 
+Use the actual registered execution ID and zero-based observation step; register
+already-executed material through `record-observation` without repeating the requests.
+Without registered evidence, save an advisory `target_memory.py note`, not a dead-end.
 No useful difference records the bounded scope so a resumed session does not
 repeat it. A stable difference may justify one next round, but there is no
 automatic expansion or global round limit. The same contract applies to pattern

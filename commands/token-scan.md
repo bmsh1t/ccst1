@@ -4,10 +4,10 @@ description: Select an evidence-backed token review path for EVM or Solana targe
 
 # /token-scan
 
-Review a token or program by selecting the most informative trust, authority,
-accounting, liquidity, or transfer question from the supplied code and chain
-context. `skills/src-hunter/modules/meme-coin-audit.md` owns the direct-only decision
-contract; this command supplies the selected source/chain context.
+Review a supplied token/program using the complete
+[Token method](../skills/src-hunter/modules/meme-coin-audit.md). It owns the
+authority, accounting, liquidity and transfer branches, evidence and stop rules;
+this command supplies source/chain context.
 
 ## Usage
 
@@ -15,42 +15,16 @@ contract; this command supplies the selected source/chain context.
 /token-scan CONTRACT_OR_DIRECTORY [--chain solana]
 ```
 
-Use native Read/Grep to trace the selected authority, transfer or accounting
-path across implementations, callers and guards. Read relevant deployed state
-through a selected upstream RPC/CLI when needed; a source name or pattern match
-provides no risk verdict.
+Provide chain/network, contract/program identity, source or bytecode revision when
+available, authority and actor context, plus the permitted simulation boundary.
+Keep unavailable source/revision information explicit. Preserve original source,
+transaction and analysis artifacts.
 
-## Decision Tree
+## Handoff
 
-Choose the branch with the highest expected information gain and lowest
-reversible cost. Branches are alternatives, not a required sequence:
-
-| Signal | Question to answer |
-|---|---|
-| Mint, supply, or balance authority | Can an unintended actor create or alter supply outside the intended invariant? |
-| Transfer, blacklist, freeze, or hook behavior | Can a controller selectively prevent or redirect transfers? |
-| Fee, tax, router, or receiver controls | Can mutable economics produce an unbounded or actor-specific outcome? |
-| LP, pool, migration, or emergency withdrawal path | Can liquidity or reserves be moved by an unintended authority? |
-| Bonding curve or graduation state | Can mutable parameters or transitions change value without the intended checks? |
-| EVM proxy or Solana upgrade/authority state | Can implementation or mint/freeze/upgrade control change after deployment? |
-| Renounce, delegate, or secondary admin signal | Does the public ownership state match the effective control path? |
-| Rebase, swap, or transfer-order behavior | Can a bounded transaction change price, balances, or user outcomes unexpectedly? |
-
-The list is non-exhaustive. Select another branch when target evidence supports
-it, or stop when the invariant is preserved and no new evidence question remains.
-
-## Evidence and Handoff
-
-- Preserve chain, contract/program identity, source/version, authority context,
-  and original source, transaction or analysis artifacts.
-- Use a test account/resource and the least-impact read-back needed to decide the
-  hypothesis. Do not infer a rug vector from a name, age, liquidity amount, or
-  regex match alone.
-- Record one boundary, baseline, changed condition, observed delta, impact, and
-  stop/reopen condition. Pure contract/program evidence remains an analysis
-  artifact: non-HTTP Store lifecycle integration is deferred. The existing
-  validation/report lifecycle accepts actual target-owned HTTP(S) Findings;
-  do not fabricate a URL for a token/program identity.
+Pure contract/program evidence remains analysis material; non-HTTP Store lifecycle
+integration is deferred. Do not fabricate a URL for a token/program identity.
+Use /validate only for an actual target-owned HTTP(S) Finding; the parent owns publication.
 
 ## Output
 

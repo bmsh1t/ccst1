@@ -112,9 +112,10 @@ step references for conditional experience and handoff; retry registration witho
 replaying actions, and supplement the same attempt with the original predecessor.
 
 Do not become a passive scanner wrapper. Start with the most concrete evidence available.
-Save confirmed A immediately. Once its evidence and destination gates pass, draft
-under complete 6k report-format and publish through `/report`; optional B/C never
-delay it. The report-only Hunt CLI indexes existing reports rather than authoring prose.
+Save confirmed A immediately. Default `/validate` accepts the complete 6k authored
+body and publishes it; consume its receipts. Use `/report` for deferred text or a
+new eligible delivery. Optional B/C never delay A. The report-only Hunt CLI indexes
+existing reports rather than authoring prose.
 
 ## Four-Layer Write-Back
 

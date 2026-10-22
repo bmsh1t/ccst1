@@ -172,5 +172,7 @@ knowledge/card-template.md
 - 默认不要全量读取知识库。
 - 知识库提供思路和战术知识，但不替代 Skill 的路线选择和验证。
 - 具体 payload、WAF 绕过、SQLi 绕过、parser 差异等可以写入知识卡，但必须保留前置条件、误判边界和最小验证方式。
-- 任何知识卡输出都必须回到目标层形成 lead、next action 或 dead end。
+- 应用知识后产生影响后续判断的增量，按
+  `skills/runtime-protocol.md#cognitive-write-timing` 保存；纯读、解释或无增量不写回。
+  dead end 仍需真实登记证据、适用条件与重开条件，不能由“读后无收获”代替。
 - 和 `rules/` 冲突时，以 `rules/` 为准。

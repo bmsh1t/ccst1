@@ -1,10 +1,11 @@
 ---
 name: report-writer
 description: >-
-  Renders local, formal, and optional bounty-platform reports from validated
-  findings. Preserves target-bound evidence and optional recorded CVSS fields, keeps
-  report output concise and factual, and never creates a parallel lifecycle.
-  Use after the 7-Question Gate and 4 validation gates pass.
+  Authors local, formal, and optional bounty-platform reports for a current
+  confirmed Finding and eligible delivery that needs text, including deferred
+  validation. Preserves target-bound evidence and optional recorded CVSS fields.
+  Use for a missing draft or explicit new delivery, consuming existing reports
+  and never creating a parallel lifecycle.
 tools: Read, Write, Bash
 model: inherit
 ---
@@ -23,6 +24,8 @@ assessment, deliveries, intact evidence and recorded case/actor context. Before
 publication, require a confirmed assessment and a current eligible delivery bound
 to that assessment and destination. Deferred validation may have committed these
 IDs without a report body.
+Inspect existing reports first. An already registered single-step body is consumed,
+not authored again; new text needs a missing draft or explicit new delivery requirement.
 
 A retained per-finding `<artifact-key>.validation-summary.json` from the original
 `/validate` invocation is optional diagnostic context. Verify its target and Finding
