@@ -1,0 +1,141 @@
+{
+  "commit": "d8a91a1eaf0eb71758565279c385b000de2761e9",
+  "fixture": "/tmp/ccst-arch-cost-optimized-v6mwxtla",
+  "source_files": 142,
+  "source_hashes": {
+    "tools/coverage_matrix.py": "1c46fc2b71b99893c8ca2e0312f28c9f0dbee477c97d0b6bc1dcd0d0e357b820",
+    "tools/surface_index.py": "d6e70b612f98563baff3d6c4a760a454c290da1eab1c07ab6a05289b51107d7f",
+    "tools/surface_projection.py": "fa45817b75ceb0b9a3ca300cc4c5655ddb421a407247791f330279629a4ff8d1",
+    "tools/target_store.py": "c2daec7b3b7927ae39a1117e30b6cee8fff12688766654749a0a98f6c4434ec8",
+    "tools/recall_index.py": "7b3d82246abf20dcc6e04ed23d32246157eb08fc8df64e0eb5d9fa6bb986aa28",
+    "tools/experience_recall.py": "9559213ce0e8bb1cffe5652ce26961e7da29031e6b67d22f60d8d3986b3e7eeb",
+    "tools/relation_recall.py": "0f5b4f169a00a86e8312b7a736e300bedcb4eeaac11def0b2ccdea7a9dbd5d92"
+  },
+  "checks": {
+    "coverage_duplicate_work": {
+      "url_count": 40,
+      "endpoint_count": 40,
+      "calls": {
+        "coverage_source_fingerprint": 2,
+        "build_surface_index_input_manifest": 3,
+        "_rebuild_matrix_unlocked": 1,
+        "current_cell_projection": 1
+      },
+      "profiled_read_seconds": 0.1067,
+      "seconds": 0.1388
+    },
+    "known_stale_surface_checks": {
+      "status": "stale",
+      "reason": "store-revision-mismatch",
+      "calls_before_stale_return": {},
+      "seconds": 0.0213
+    },
+    "handoff_repeated_expansion": {
+      "history_rows": 1,
+      "handoff_already_in_history": true,
+      "calls": {
+        "_experience_page_conn": 1,
+        "_experience_health": 1
+      },
+      "seconds": 0.0032
+    },
+    "lexical_serialization": {
+      "documents": 250,
+      "query_terms": 12,
+      "record_bytes": 4096,
+      "document_serializations": 250,
+      "fts_channel": "fts5-bm25",
+      "local_seconds": 0.0199,
+      "boundary": "generation validation stub only; actual FTS deserialize/match and lexical function executed",
+      "seconds": 0.039
+    },
+    "dependency_closure_rewalk": {
+      "chain_nodes": 120,
+      "retained_version_reads": 120,
+      "unique_versions": 120,
+      "local_seconds": 0.0298,
+      "boundary": "exact production dependency walker on minimal synthetic in-memory schema; not end-to-end Store benchmark",
+      "seconds": 0.0346
+    },
+    "relation_paging_no_progress": {
+      "normal_paths": 1,
+      "simulated_preparation_seconds": 1.01,
+      "default_budget_seconds": 1,
+      "first_examined": 1,
+      "second_examined": 0,
+      "same_cursor": false,
+      "boundary": "controlled monotonic clock reproduces preparation overrunning budget; no actual large-graph threshold claimed",
+      "seconds": 0.0029
+    },
+    "recall_help_navigation": {
+      "current_commands_in_top_help": true,
+      "current_command_count_hidden": 0,
+      "seconds": 0.0199
+    },
+    "coverage_integrity_and_races": {
+      "equal_fixed_time_projection": true,
+      "standalone_rebuild_checks_index": true,
+      "file_and_store_races_rejected": true,
+      "seconds": 0.4608
+    },
+    "surface_same_revision_bytes": {
+      "same_revision_changed_bytes_rejected": true,
+      "calls": {
+        "build_surface_input_manifest": 1,
+        "closure_records": 1
+      },
+      "seconds": 0.0653
+    },
+    "lexical_behavior_equivalence": {
+      "baseline_equal_cases": 27,
+      "includes_fts_missing_corrupt_chinese_empty_punctuation": true,
+      "seconds": 0.0093
+    },
+    "generation_and_parse_reuse": {
+      "generation_reads_for_two_partitions": 2,
+      "parse_capture_forwarded": true,
+      "stale_binding_uses_fresh_lexical": true,
+      "old_cursor_rejected": true,
+      "seconds": 0.3858
+    },
+    "dependency_cache_integrity": {
+      "cycle_diamond_exact_version_external_refs_equal": true,
+      "per_edge_hash_corruption_rejected": true,
+      "retained_content_and_missing_version_rejected": true,
+      "seconds": 0.0021
+    },
+    "health_chain_cycle_diamond": {
+      "nodes": 124,
+      "full_health_dto_matches_baseline": true,
+      "origin_is_advisory_and_bad_basis_propagates_through_cycles": true,
+      "seconds": 0.0554
+    },
+    "handoff_and_claim_health_reuse": {
+      "outside_window_handoff_retained": true,
+      "handoff_mutation_does_not_alias_history": true,
+      "claim_health_calls": 1,
+      "claim_dto_equal_when_healthy_and_corrupt": true,
+      "seconds": 0.1655
+    },
+    "relation_progress_and_budgets": {
+      "bounded_pages_complete_without_repeated_cursor": 7,
+      "cycle_and_condition_conflict_skipped": true,
+      "empty_seeds_advance": true,
+      "insufficient_bytes_explicit_error": true,
+      "changed_graph_rejected": true,
+      "seconds": 0.0013
+    },
+    "legacy_cli_help_compatibility": {
+      "top_and_command_help_discoverable": true,
+      "legacy_help_retained": true,
+      "seconds": 0.0134
+    }
+  },
+  "isolation": {
+    "source_read_only": true,
+    "project_tests_read_or_run": false,
+    "network": false,
+    "original_data": false,
+    "new_model_calls": false
+  }
+}

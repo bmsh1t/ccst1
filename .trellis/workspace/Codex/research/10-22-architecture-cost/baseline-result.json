@@ -1,0 +1,79 @@
+{
+  "commit": "d8a91a1eaf0eb71758565279c385b000de2761e9",
+  "fixture": "/tmp/ccst-arch-cost-audit-8bup7l3a",
+  "source_files": 142,
+  "checks": {
+    "coverage_duplicate_work": {
+      "url_count": 40,
+      "endpoint_count": 40,
+      "calls": {
+        "coverage_source_fingerprint": 3,
+        "build_surface_index_input_manifest": 8,
+        "_rebuild_matrix_unlocked": 1,
+        "current_cell_projection": 1
+      },
+      "profiled_read_seconds": 0.0919,
+      "seconds": 0.1199,
+      "measurement_note": "Counts are ordinary Python function entries. Generator _connection profiler events were removed because enter/exit resumes are not distinct database connections. Timings include profiler overhead."
+    },
+    "known_stale_surface_checks": {
+      "status": "stale",
+      "reason": "store-revision-mismatch",
+      "calls_before_stale_return": {
+        "build_surface_input_manifest": 1,
+        "current_cell_projection": 1,
+        "closure_records": 1
+      },
+      "seconds": 0.0293
+    },
+    "handoff_repeated_expansion": {
+      "history_rows": 1,
+      "handoff_already_in_history": true,
+      "calls": {
+        "_experience_page_conn": 2,
+        "_experience_health": 2
+      },
+      "seconds": 0.0018
+    },
+    "lexical_serialization": {
+      "documents": 250,
+      "query_terms": 12,
+      "record_bytes": 4096,
+      "document_serializations": 3000,
+      "fts_channel": "fts5-bm25",
+      "local_seconds": 0.08,
+      "boundary": "generation validation stub only; actual FTS deserialize/match and lexical function executed",
+      "seconds": 0.0913
+    },
+    "dependency_closure_rewalk": {
+      "chain_nodes": 120,
+      "retained_version_reads": 7260,
+      "unique_versions": 120,
+      "local_seconds": 0.3615,
+      "boundary": "exact production dependency walker on minimal synthetic in-memory schema; not end-to-end Store benchmark",
+      "seconds": 0.3624
+    },
+    "relation_paging_no_progress": {
+      "normal_paths": 1,
+      "simulated_preparation_seconds": 1.01,
+      "default_budget_seconds": 1,
+      "first_examined": 0,
+      "second_examined": 0,
+      "same_cursor": true,
+      "boundary": "controlled monotonic clock reproduces preparation overrunning budget; no actual large-graph threshold claimed",
+      "seconds": 0.0002
+    },
+    "recall_help_navigation": {
+      "current_commands_in_top_help": false,
+      "current_command_count_hidden": 10,
+      "seconds": 0.0048
+    }
+  },
+  "isolation": {
+    "source_read_only": true,
+    "project_tests_read_or_run": false,
+    "network": false,
+    "original_data": false,
+    "new_model_calls": false
+  }
+}

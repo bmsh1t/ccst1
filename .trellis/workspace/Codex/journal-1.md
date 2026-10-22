@@ -1308,3 +1308,38 @@ Explicit Autopilot investigation loads or reuses native src-hunter after Bootstr
 ### Next Steps
 
 - 基于已留存失败单独定位宿主契约遵循与交付回执；任务维持in_progress，不归咎Store或6k，不扩样本挑成功
+
+
+## Session 44: 架构与成本优化：同次读取复用和分页推进
+<!-- trellis-session: v=2 fp=9131eaca09eb8107 -->
+
+**Date**: 2026-10-22
+**Task**: 架构与成本优化：同次读取复用和分页推进
+**Branch**: `refactor/10-11-capability-architecture`
+
+### Summary
+
+优化已确认的重复读取、长链开销和零进度关系分页；16个新增场景及168条兼容断言通过，未宣称模型费用或宿主恢复已改善。
+
+### Main Changes
+
+- Coverage指纹3→2、manifest8→3；250条12词序列化3000→250；120节点版本读取7260→120；补齐CLI与纠错导航。
+- 保留精确版本/来源hash/原件字节/fence校验，复用handoff与claim健康，关系预算不足明确推进或报错。验收资料：research/10-22-architecture-cost/README.md。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f1a5e08` | perf(runtime): reuse acquired sources and prevent stalled recall pagination |
+
+### Testing
+
+- [OK] 隔离生产副本：16个新增场景全过，含27组lexical完整结果对照和来源/字节竞态；现有研究配方16场景168条断言全过；三名只读探子无阻断，主线程diff/语法/源码hash一致。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 观察真实Autopilot使用成本；完整Coverage/排序和逐根内存遍历仍存在。未运行tests或付费模型，未修改真实数据、6k方法、个人runtime；旧宿主压缩恢复失败结论不变，不推送或归档任务。

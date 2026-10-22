@@ -1,0 +1,90 @@
+{
+  "source_commit": "d8a91a1",
+  "experiment": "/root/ccst-runs/ccst-memory-recovery-20261022-nw2nc6j3/formal",
+  "initial_seven_usd": 2.466211,
+  "including_compact_and_recovery_usd": 2.7726599999999997,
+  "tokens_including_compact_and_recovery": {
+    "inputTokens": 258940,
+    "cacheReadInputTokens": 1611520,
+    "cacheCreationInputTokens": 0,
+    "outputTokens": 26888
+  },
+  "cached_fraction_of_input": 0.8615634656715461,
+  "visible_tools_including_recovery": 80,
+  "no_new_material": {
+    "no_agents": 20,
+    "no_files": 13,
+    "missing_file": 1,
+    "unchanged": 11
+  },
+  "repeated_no_new_inputs": 30,
+  "cases": {
+    "b_recall_1": {
+      "initial_usd": 0.420219,
+      "with_recovery_usd": 0.420219,
+      "tool_calls": 21,
+      "no_new_material": {
+        "no_agents": 15,
+        "no_files": 6
+      },
+      "repeated_no_new_inputs": 18
+    },
+    "b_recall_2": {
+      "initial_usd": 0.21222400000000002,
+      "with_recovery_usd": 0.518673,
+      "tool_calls": 13,
+      "no_new_material": {
+        "no_files": 5,
+        "no_agents": 3,
+        "missing_file": 1
+      },
+      "repeated_no_new_inputs": 3
+    },
+    "b_empty": {
+      "initial_usd": 0.432367,
+      "with_recovery_usd": 0.432367,
+      "tool_calls": 16,
+      "no_new_material": {
+        "no_agents": 2,
+        "unchanged": 11
+      },
+      "repeated_no_new_inputs": 9
+    },
+    "c_corrected_1": {
+      "initial_usd": 0.20730600000000002,
+      "with_recovery_usd": 0.20730600000000002,
+      "tool_calls": 4,
+      "no_new_material": {
+        "no_files": 2
+      },
+      "repeated_no_new_inputs": 0
+    },
+    "c_corrected_2": {
+      "initial_usd": 0.6758830000000002,
+      "with_recovery_usd": 0.6758830000000002,
+      "tool_calls": 13,
+      "no_new_material": {},
+      "repeated_no_new_inputs": 0
+    },
+    "d_unrelated": {
+      "initial_usd": 0.16452499999999998,
+      "with_recovery_usd": 0.16452499999999998,
+      "tool_calls": 0,
+      "no_new_material": {},
+      "repeated_no_new_inputs": 0
+    },
+    "e_readonly": {
+      "initial_usd": 0.353687,
+      "with_recovery_usd": 0.353687,
+      "tool_calls": 13,
+      "no_new_material": {},
+      "repeated_no_new_inputs": 0
+    }
+  },
+  "declared_always_loaded_context": {
+    "files": 14,
+    "characters": 67568,
+    "bytes": 141888
+  },
+  "no_new_model_calls": true
+}
