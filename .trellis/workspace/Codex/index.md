@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 44
+- **Total Sessions**: 45
 - **Last Active**: 2026-10-22
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1345 | Active |
+| `journal-1.md` | ~1379 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 45 | 2026-10-22 | Native entry contracts and disclosure preservation | `30fce2d` | `refactor/10-11-capability-architecture` |
 | 44 | 2026-10-22 | 架构与成本优化：同次读取复用和分页推进 | `f1a5e08` | `refactor/10-11-capability-architecture` |
 | 43 | 2026-10-22 | 记忆恢复优化与真实宿主验收 | `88d8f05` | `refactor/10-11-capability-architecture` |
 | 42 | 2026-10-22 | 记忆系统全面验收：保存通过，Autopilot续接未达标 | `6680b3c` | `refactor/10-11-capability-architecture` |

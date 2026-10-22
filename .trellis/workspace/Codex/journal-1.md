@@ -1343,3 +1343,37 @@ Explicit Autopilot investigation loads or reuses native src-hunter after Bootstr
 ### Next Steps
 
 - 观察真实Autopilot使用成本；完整Coverage/排序和逐根内存遍历仍存在。未运行tests或付费模型，未修改真实数据、6k方法、个人runtime；旧宿主压缩恢复失败结论不变，不推送或归档任务。
+
+
+## Session 45: Native entry contracts and disclosure preservation
+<!-- trellis-session: v=2 fp=8042ab6a85db7ebc -->
+
+**Date**: 2026-10-22
+**Task**: Native entry contracts and disclosure preservation
+**Branch**: `refactor/10-11-capability-architecture`
+
+### Summary
+
+Aligned validation receipts and on-demand viewing, consolidated complete Chain/Web3/Token methods, and preserved industry-bound disclosure cache and authored readings.
+
+### Main Changes
+
+- Preserved 10 agents, 37 commands, six specialty frontmatters and full 6k files.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `30fce2d` | fix(workflow): align native entries and retain disclosure readings |
+
+### Testing
+
+- [OK] Isolated production API and real CLI with synthetic provider passed; full diff and git diff --check passed.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Use in host sessions; model depth, description triggering, token cost and real-target behavior remain unmeasured.
