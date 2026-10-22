@@ -1451,3 +1451,41 @@ Aligned validation receipts and on-demand viewing, consolidated complete Chain/W
 
 - 未读取或运行项目 tests；旧精确文案与大小断言未复核。宿主 runtime 未同步，未做真实 Claude 或目标验收。
 - 本轮无新任务，不归档旧任务，不 push；tools/autopilot_state.py 与 tools/surface_projection.py 的已有改动仍留在工作区。
+
+
+## Session 48: Autopilot 收敛为自动化入口
+<!-- trellis-session: v=2 fp=161b0cec23cadafb -->
+
+**Date**: 2026-10-22
+**Task**: Autopilot 收敛为自动化入口
+**Branch**: `refactor/10-11-capability-architecture`
+
+### Summary
+
+参照上游职责分工：Autopilot 只负责恢复、自动继续、等待、刷新、checkpoint 与结束，6k 和现有 owner 承担调查及执行细则。
+
+### Main Changes
+
+- 主入口 14,326→6,242 字节（约减 56.4%），保留动态 Bootstrap、manifest、固定锚点、Round 恢复及执行顺序。
+- Skill 加载集中到 runtime-protocol#native-skill-loading，解除回指；Global Review 范围集中到 checkpoint#global-review，Round 和 architecture 引用同步。
+- 更新 runtime-autopilot 开发契约；research/10-22-autopilot-automation 保存定点验收和静态读取集合，相关四份全文合计 36,713→29,684 字节，6k 常驻材料未改。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `1f8518d` | refactor(autopilot): keep the entry focused on automation |
+
+### Testing
+
+- [OK] 定点检查通过：真实参数解析器、manifest reader、AST 提取的 lane reader、42 个引用、原规则和 src-hunter 字节保留；约 0.43 秒。
+- [OK] 两份独立只读复核未发现实质问题；最终 diff 审查和 git diff --check 通过；原有两个 Python 文件哈希保持。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 未创建或归档 Trellis 任务；未读取/运行项目 tests，旧文案/结构断言未复核。未同步宿主、访问目标、联网或调用真实 Claude 模型。
+- 静态集合不代表实际 token 或调查效果；6k 常驻体量留待另项。tools/autopilot_state.py 和 tools/surface_projection.py 的既有改动仍在工作区。
