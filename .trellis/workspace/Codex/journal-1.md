@@ -1273,3 +1273,38 @@ Explicit Autopilot investigation loads or reuses native src-hunter after Bootstr
 ### Next Steps
 
 - 先核查Autopilot实际恢复入口，再修三处机械/展示缺口；语义模型及长期统计收益仍未验收
+
+
+## Session 43: 记忆恢复优化与真实宿主验收
+<!-- trellis-session: v=2 fp=3d0cae956d7b5a7e -->
+
+**Date**: 2026-10-22
+**Task**: 记忆恢复优化与真实宿主验收
+**Branch**: `refactor/10-11-capability-architecture`
+
+### Summary
+
+修复绑定恢复、FTS并集、纠错摘要和历史导航；168断言通过。7宿主样本及真实compact仍未全面通过，保留失败，不宣称稳定。
+
+### Main Changes
+
+- Bootstrap复用五条窗口和独立handoff；FTS子串并集；有界owner anchors优先；operation只读导航
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `88d8f05` | fix(memory): preserve bound recovery and complete recall navigation |
+
+### Testing
+
+- [OK] 隔离生产源码与合成Store：16分区168断言通过，不读取运行tests；独立代码review完成
+- [NOT PASSED] claude-opus-4-8固定7会话：纠错完整1/2、相关0/2；真实compact后虚假完成，readonly无写入但混用SQL
+
+### Status
+
+**Implementation and acceptance run completed; task remains in_progress because host acceptance did not pass.**
+
+### Next Steps
+
+- 基于已留存失败单独定位宿主契约遵循与交付回执；任务维持in_progress，不归咎Store或6k，不扩样本挑成功
