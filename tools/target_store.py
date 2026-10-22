@@ -17,6 +17,7 @@ import sqlite3
 import stat
 import uuid
 from contextlib import contextmanager, nullcontext
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -1074,12 +1075,13 @@ class TargetStore:
                 owners.extend({"owner": owner, "record_id": key} for owner, key in sorted(changed) if owner in ("operation", "experience"))
             return {"binding": binding, "experience_ids": ids, "owner_keys": owners, "full_acquisition_reason": None}
 
-    def _recall_dependencies(self, conn, experience_id):
+    def _recall_dependencies(self, conn, experience_id, *, nodes=None):
         """Retain unavailable locators and traverse exact versions, including origins."""
+        nodes = {} if nodes is None else nodes
         version = conn.execute("SELECT max(version) FROM experience_versions WHERE experience_id=?", (experience_id,)).fetchone()[0]
         pending, seen, refs = [(experience_id, version)], set(), set()
 
-        def external(owner, record_id):
+        def external(owner, record_id, refs):
             if owner in ("artifact", "assessment", "operation", "session", "object", "knowledge", "history"):
                 refs.add((owner, record_id))
             if owner == "artifact":
@@ -1087,11 +1089,8 @@ class TargetStore:
             elif owner == "assessment":
                 refs.update(("operation", row[0]) for row in conn.execute("SELECT operation_id FROM assessment_observations WHERE assessment_id=?", (record_id,)))
 
-        while pending:
-            key = pending.pop()
-            if key in seen:
-                continue
-            seen.add(key)
+        def read_node(key):
+            dependencies, refs = [], set()
             row = conn.execute("SELECT * FROM experience_versions WHERE experience_id=? AND version=?", key).fetchone()
             if row is None:
                 raise StoreError("recall dependency retained version is missing")
@@ -1107,20 +1106,20 @@ class TargetStore:
                 retained = conn.execute("SELECT content_sha256 FROM experience_versions WHERE experience_id=? AND version=?", (source["source_experience_id"], source["source_version"])).fetchone()
                 if retained is None or retained[0] != source["content_sha256"]:
                     raise StoreError("recall source retained binding is corrupt")
-                pending.append((source["source_experience_id"], source["source_version"]))
-            pending.extend(tuple(row) for row in conn.execute("SELECT target_id,target_version FROM experience_links WHERE experience_id=? AND experience_version=? AND relation='depends_on'", key))
+                dependencies.append((source["source_experience_id"], source["source_version"]))
+            dependencies.extend(tuple(row) for row in conn.execute("SELECT target_id,target_version FROM experience_links WHERE experience_id=? AND experience_version=? AND relation='depends_on'", key))
             tables = ["experience_material_sources"]
             if conn.execute("SELECT schema_version FROM store").fetchone()[0] >= 16:
                 tables.append("experience_external_sources")
             for table in tables:
                 for source in conn.execute(f"SELECT owner,record_id FROM {table} WHERE experience_id=? AND experience_version=?", key):
-                    external(*source)
+                    external(*source, refs)
             for table in ("experience_claim_endpoints", "experience_claim_conditions"):
                 for endpoint in conn.execute(f"SELECT e.owner,e.record_id,e.version FROM {table} e JOIN experience_claims c ON c.id=e.claim_id WHERE c.experience_id=? AND c.experience_version=?", key):
                     if endpoint["owner"] == "experience":
-                        pending.append((endpoint["record_id"], endpoint["version"]))
+                        dependencies.append((endpoint["record_id"], endpoint["version"]))
                     else:
-                        external(endpoint["owner"], endpoint["record_id"])
+                        external(endpoint["owner"], endpoint["record_id"], refs)
             for ref in snapshot["evidence"]:
                 if (not isinstance(ref, dict) or not isinstance(ref.get("operation_id"), str)
                         or type(ref.get("step")) is not int or ref["step"] < 0
@@ -1128,9 +1127,21 @@ class TargetStore:
                         or not conn.execute("SELECT 1 FROM observations WHERE operation_id=? AND step=?",
                                             (ref["operation_id"], ref["step"])).fetchone()):
                     raise StoreError("retained observation binding is corrupt")
-                external("operation", ref["operation_id"])
+                external("operation", ref["operation_id"], refs)
                 for artifact in conn.execute("SELECT artifact_id FROM observation_artifacts WHERE operation_id=? AND step=?", (ref["operation_id"], ref["step"])):
-                    external("artifact", artifact[0])
+                    external("artifact", artifact[0], refs)
+            return dependencies, refs
+
+        while pending:
+            key = pending.pop()
+            if key in seen:
+                continue
+            seen.add(key)
+            if key not in nodes:
+                nodes[key] = read_node(key)
+            dependencies, direct_refs = nodes[key]
+            pending.extend(dependencies)
+            refs.update(direct_refs)
         return [{"owner": owner, "record_id": key} for owner, key in sorted(refs)]
 
     @staticmethod
@@ -1314,7 +1325,9 @@ class TargetStore:
             rows = [dict(row) for row in conn.execute(f"SELECT * FROM experiences WHERE id IN ({','.join('?' for _ in ids)}) ORDER BY created_at DESC,id DESC", ids)] if ids else []
             if len(rows) != len(ids):
                 raise StoreError("one or more recall experience IDs are missing")
-            dependencies = {row["id"]: self._recall_dependencies(conn, row["id"]) for row in rows}
+            # Share validated direct nodes only within this transaction; roots keep separate closures.
+            nodes = {}
+            dependencies = {row["id"]: self._recall_dependencies(conn, row["id"], nodes=nodes) for row in rows}
             for row in rows:
                 retained = conn.execute("SELECT snapshot_json FROM experience_versions WHERE experience_id=? ORDER BY version DESC LIMIT 1", (row["id"],)).fetchone()
                 snapshot = json.loads(retained[0])
@@ -2616,8 +2629,9 @@ class TargetStore:
             result["snapshot"] = json.loads(result.pop("snapshot_json"))
             if _digest(result["snapshot"]) != result["content_sha256"]:
                 raise StoreError("retained experience version content mismatch")
-            node = self._experience_health(conn, [(experience_id, result["version"])])[(experience_id, result["version"])]
-            result.update(claims=self._experience_claim_rows(conn, experience_id, result["version"]), sources=node["sources"], source_health=node["health"], review_state=node["review_state"],
+            health = self._experience_health(conn, [(experience_id, result["version"])])
+            node = health[(experience_id, result["version"])]
+            result.update(claims=self._experience_claim_rows(conn, experience_id, result["version"], health), sources=node["sources"], source_health=node["health"], review_state=node["review_state"],
                           applicability=node["applicability"],
                           correction_refs=[link for link in node["links"] if link["relation"] != "depends_on"],
                           dependency_refs=[link for link in node["links"] if link["relation"] == "depends_on"])
@@ -2858,7 +2872,7 @@ class TargetStore:
         except ValueError as exc:
             raise StoreError(str(exc)) from exc
 
-    def _claim_entity_view(self, conn, endpoint, meta, captured=None):
+    def _claim_entity_view(self, conn, endpoint, meta, experience_health, captured=None):
         binding = entity_binding({**meta, **{key: endpoint[key] for key in ENTITY_FIELDS if key not in meta}})
         current = self._experience_entity(conn, endpoint["owner"], endpoint["record_id"])
         health = "available" if binding == current else "version_changed"
@@ -2867,11 +2881,11 @@ class TargetStore:
                                                   captured["artifacts"] if captured is not None else {})
         elif health == "available" and endpoint["owner"] == "experience":
             key = (endpoint["record_id"], endpoint["version"])
-            if self._experience_health(conn, [key], **(captured or {}))[key]["unhealthy"]:
+            if experience_health[key]["unhealthy"]:
                 health = "needs_review"
         return {**binding, "health": health}
 
-    def _experience_claim_rows(self, conn, experience_id, version, captured=None):
+    def _experience_claim_rows(self, conn, experience_id, version, health, captured=None):
         rows = []
         meta = dict(conn.execute("SELECT target,store_id FROM store").fetchone())
         for row in conn.execute("SELECT * FROM experience_claims WHERE experience_id=? AND experience_version=? ORDER BY id", (experience_id, version)):
@@ -2882,8 +2896,8 @@ class TargetStore:
                 claim["source_refs"].extend(dict(ref) for ref in conn.execute(
                     "SELECT * FROM experience_claim_external_sources WHERE claim_id=?", (claim["id"],)))
             for endpoint in conn.execute("SELECT * FROM experience_claim_endpoints WHERE claim_id=?", (claim["id"],)):
-                claim[endpoint["side"]] = self._claim_entity_view(conn, endpoint, meta, captured)
-            bindings = {row["role"]: self._claim_entity_view(conn, row, meta, captured) for row in conn.execute(
+                claim[endpoint["side"]] = self._claim_entity_view(conn, endpoint, meta, health, captured)
+            bindings = {row["role"]: self._claim_entity_view(conn, row, meta, health, captured) for row in conn.execute(
                 "SELECT * FROM experience_claim_conditions WHERE claim_id=? ORDER BY role", (claim["id"],))}
             claim["condition_bindings"] = bindings or None
             validity = conn.execute("SELECT valid_from,valid_until FROM experience_claim_validity WHERE claim_id=?", (claim["id"],)).fetchone()
@@ -3224,13 +3238,17 @@ class TargetStore:
             node["unhealthy"] = node["review_state"] != "advisory" or any(
                 item["purpose"] == "basis" and item["status"] != "available" for item in node["health"])
         # Monotone closure: withdrawal never removes a bad dependency or revives advice.
-        changed = True
-        while changed:
-            changed = False
-            for node in nodes.values():
-                if not node["unhealthy"] and any(nodes[key]["unhealthy"] for key in node["edges"]):
-                    node["unhealthy"] = True
-                    changed = True
+        parents, pending = {}, []
+        for key, node in nodes.items():
+            for dependency in node["edges"]:
+                parents.setdefault(dependency, []).append(key)
+            if node["unhealthy"]:
+                pending.append(key)
+        while pending:
+            for parent in parents.get(pending.pop(), ()):
+                if not nodes[parent]["unhealthy"]:
+                    nodes[parent]["unhealthy"] = True
+                    pending.append(parent)
         for node in nodes.values():
             for source in node["sources"]:
                 if "owner" in source:
@@ -3258,7 +3276,7 @@ class TargetStore:
         health = self._experience_health(conn, [(key, versions.get(key)) for key in ids], **(captured or {}))
         for row in rows:
             node = health[(row["id"], versions.get(row["id"]))]
-            row.update(claims=self._experience_claim_rows(conn, row["id"], versions.get(row["id"]), captured), version=versions.get(row["id"]), sources=node["sources"], source_health=node["health"],
+            row.update(claims=self._experience_claim_rows(conn, row["id"], versions.get(row["id"]), health, captured), version=versions.get(row["id"]), sources=node["sources"], source_health=node["health"],
                        correction_refs=[link for link in node["links"] if link["relation"] != "depends_on"],
                        dependency_refs=[link for link in node["links"] if link["relation"] == "depends_on"],
                        review_state=node["review_state"],
@@ -3834,11 +3852,16 @@ class TargetStore:
                      WHERE a.entity_id=e.id AND a.command='remember_hypothesis') DESC,
                     e.id DESC LIMIT 1""").fetchone()
             page = self._experience_page_conn(conn, meta, limit=limit)
-            handoffs = self._experience_page_conn(conn, meta, kinds=["handoff"], limit=1)["items"]
+            handoff = next((row for row in page["items"] if row["kind"] == "handoff"), None)
+            if handoff is None:
+                handoffs = self._experience_page_conn(conn, meta, kinds=["handoff"], limit=1)["items"]
+                handoff = handoffs[0] if handoffs else None
+            else:
+                handoff = deepcopy(handoff)
             return {"target": self.target, "store_id": meta["store_id"], "revision": meta["revision"],
                     "created_at": meta["created_at"], "active_goal": meta["active_goal"],
                     "current_hypothesis": premise[0] if premise else "", "experiences": page,
-                    "current_handoff": handoffs[0] if handoffs else None}
+                    "current_handoff": handoff}
 
     def _experience_page_conn(self, conn, meta: dict, *, kinds: list[str] | None = None,
                               query: str = "", limit: int = 20, cursor: str | None = None) -> dict:

@@ -202,19 +202,24 @@ def publish_generation(repo_root, target, namespace, snapshot, payload: dict, *,
                 shutil.rmtree(directory)
 
 
+def _bind_generation(generation, snapshot):
+    manifest = generation["manifest"]
+    if snapshot is not None and manifest is not None and manifest["binding"] != snapshot["binding"]:
+        return {**generation, "payload": None,
+                "health": {"status": "stale", "reason": "source binding changed; explicit rebuild required"}}
+    return generation
+
+
 def read_generation(repo_root, target, namespace, *, snapshot=None, shared=False) -> dict:
     """Reader locks protect copied payloads from prune; stale data is never usable."""
     try:
         root = _root(repo_root, target, namespace, shared=shared)
         with _lock(root, exclusive=False):
             manifest, payload, capture = _load_generation(root, target, namespace, shared=shared)
-            if snapshot is not None and manifest["binding"] != snapshot["binding"]:
-                return {"manifest": manifest, "payload": None, "capture": capture,
-                        "health": {"status": "stale", "reason": "source binding changed; explicit rebuild required"}}
             health = {"status": "ready"}
             if not shared and capture is None:
                 health["capture"] = {"status": "missing", "reason": "legacy generation requires full acquisition"}
-            return {"manifest": manifest, "payload": payload, "capture": capture, "health": health}
+            return _bind_generation({"manifest": manifest, "payload": payload, "capture": capture, "health": health}, snapshot)
     except (OSError, ValueError, KeyError, TypeError) as exc:
         return {"manifest": None, "payload": None, "capture": None, "health": unavailable(exc)}
 
@@ -447,12 +452,13 @@ def _semantic_rank(payload, query, encoder_path):
     return sorted(scores, key=lambda ref: (-scores[ref], ref)), scores, encoder.identity
 
 
-def _query_partition(repo_root, target, snapshot, query, *, limit=5, offset=0, encoder_path=None, reranker_path=None, shared=False):
+def _query_partition(repo_root, target, snapshot, query, *, limit=5, offset=0, encoder_path=None, reranker_path=None, shared=False, generation=None):
     if (not isinstance(query, str) or len(query) > 512
             or (limit is not None and (type(limit) is not int or limit < 1))
             or type(offset) is not int or offset < 0):
         raise RecallIndexError("query must be <=512 characters, offset >=0 and limit positive or None")
-    generation = read_generation(repo_root, target, "text", snapshot=snapshot, shared=shared)
+    generation = (read_generation(repo_root, target, "text", snapshot=snapshot, shared=shared)
+                  if generation is None else _bind_generation(generation, snapshot))
     by_ref = {doc["source_ref"]: doc for doc in snapshot["documents"]}
     tokens = re.findall(r"\w+", query, re.UNICODE)
     ranked, channel = [], "source-order"
@@ -468,13 +474,19 @@ def _query_partition(repo_root, target, snapshot, query, *, limit=5, offset=0, e
             channel = "fts5-bm25"
         except (sqlite3.Error, ValueError, KeyError, TypeError) as exc:
             health = unavailable(exc)
-    lexical = [ref for ref, doc in by_ref.items() if not query or any(token.casefold() in _document_text(doc).casefold() for token in tokens)]
+    lexical = list(by_ref) if not query else []
+    folded_tokens = [token.casefold() for token in tokens]
+    seen = set(ranked)
+    if folded_tokens:
+        for ref, doc in by_ref.items():
+            if ref not in seen:
+                text = _document_text(doc).casefold()
+                if any(token in text for token in folded_tokens):
+                    lexical.append(ref)
     if channel == "fts5-bm25":
         # A healthy token index must not hide substring matches (notably Chinese).
-        seen = set(ranked)
-        extra = [ref for ref in lexical if ref not in seen]
-        ranked.extend(extra)
-        if extra:
+        ranked.extend(lexical)
+        if lexical:
             channel += "+fresh-source-lexical"
     else:
         ranked = lexical
@@ -532,7 +544,7 @@ def _query_partition(repo_root, target, snapshot, query, *, limit=5, offset=0, e
 
 
 def query_text(repo_root, target, snapshot, query, *, limit=5, offset=0,
-               encoder_path=None, reranker_path=None, include_knowledge=True):
+               encoder_path=None, reranker_path=None, include_knowledge=True, generations=None):
     """Fuse independent partitions; missing/stale indexes use current lexical originals."""
     if (not isinstance(query, str) or len(query) > 512
             or (limit is not None and (type(limit) is not int or limit < 1))
@@ -548,7 +560,8 @@ def query_text(repo_root, target, snapshot, query, *, limit=5, offset=0,
     for name, part in partitions.items():
         result = _query_partition(repo_root, target, part, query, limit=None,
                                   encoder_path=encoder_path, reranker_path=reranker_path,
-                                  shared=name == "knowledge")
+                                  shared=name == "knowledge",
+                                  generation=generations.get(name) if generations is not None else None)
         results[name] = {"health": result["health"], "pagination": result["pagination"],
                          "source_health": part["health"]}
         for position, item in enumerate(result["items"], 1):

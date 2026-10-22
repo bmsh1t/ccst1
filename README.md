@@ -358,7 +358,7 @@ source of truth and these roles are not an implicit second controller.
 
 | Agent | What It Does | Model |
 |:---|:---|:---|
-| **autopilot** | Autonomous hunt loop with advisory guard telemetry | Prefer Sonnet -> current session fallback |
+| **autopilot** | Bounded specialist task delegated by the current session | Prefer Sonnet -> current session fallback |
 | **recon-agent** | Subdomain enum, live hosts, URL crawl, nuclei | Prefer Haiku *(fast)* → current session fallback |
 | **recon-ranker** | AI review and prioritization of recon + memory evidence | Prefer Haiku *(fast)* -> current session fallback |
 | **report-writer** | Professional reports, impact-first, human tone | Prefer Opus *(quality)* → current session fallback |
@@ -371,7 +371,8 @@ source of truth and these roles are not an implicit second controller.
 
 Agent frontmatter now uses `model: inherit` instead of hard versioned model
 IDs. Claude Code follows the current session model, while the table above
-documents the preferred model class for each role.
+documents the preferred model class for each role; it does not automatically
+route work to a cheaper model.
 
 <br>
 
@@ -387,8 +388,8 @@ documents the preferred model class for each role.
 
 - AI chooses the hypothesis, exact test input, route, and stop condition.
 - Browser/MCP/curl/raw sender are the default exploration paths.
-- `validation_runner.py request-diff` is an optional exact-pair evidence
-  primitive; it does not generate inputs or decide final impact.
+- The former `validation_runner.py request-diff` primitive is retired;
+  current exploration uses the native paths above and existing evidence owners.
 - Unsupported wire shapes remain manual/unresolved instead of being reported
   as clean.
 

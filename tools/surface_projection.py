@@ -437,13 +437,13 @@ def load_surface_projection(
     meta = store.binding()
     if not payload.get("complete") or not isinstance(payload.get("surface"), dict):
         return _projection_result(path, "invalid", "incomplete-projection")
+    if binding.get("store_id") != meta["store_id"] or int(binding.get("revision", -1)) != int(meta["revision"]):
+        return _projection_result(path, "stale", "store-revision-mismatch")
     try:
         current = build_surface_input_manifest(repo_root, resolved, memory_dir=memory_dir)
     except (OSError, ValueError) as exc:
         return _projection_result(path, "invalid", f"manifest-error: {exc}")
     current_fingerprint = str(current.get("fingerprint") or "")
-    if binding.get("store_id") != meta["store_id"] or int(binding.get("revision", -1)) != int(meta["revision"]):
-        return _projection_result(path, "stale", "store-revision-mismatch", input_fingerprint=current_fingerprint)
     if str(payload.get("input_fingerprint") or "") != current_fingerprint:
         return _projection_result(
             path,

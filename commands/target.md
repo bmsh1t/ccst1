@@ -58,6 +58,40 @@ python3 tools/target_memory.py pattern "Object-owner comparison isolates access 
   --target TARGET --operation-ref OPERATION_ID:0
 ```
 
+## 版本、来源与纠错
+
+检索候选用 `python3 tools/experience_recall.py query --target TARGET --query "..."`；
+历史翻页用 `history --target TARGET --limit 20`，反证与依赖展开用
+`context --target TARGET --id EXPERIENCE_ID --version N`。各命令接受各自返回的
+`--cursor`；`python3 tools/experience_recall.py --help` 列出现行入口。
+
+完整原文和精确来源由 TargetStore 提供，以下均为只读：
+
+```bash
+python3 tools/target_memory.py version --target TARGET --id EXPERIENCE_ID --version N
+python3 tools/target_memory.py sources --target TARGET --id EXPERIENCE_ID --id ANOTHER_ID
+python3 tools/target_memory.py entity --target TARGET --owner experience --id EXPERIENCE_ID
+python3 tools/target_memory.py knowledge-source --target TARGET --id KNOWLEDGE_ID
+python3 tools/target_memory.py history-source --target TARGET --id IMPORTED_EXPERIENCE_ID --full
+```
+
+`version` 省略 `--version` 时读当前版本；`entity` 返回写关系所需的 owner 绑定，
+可用 owner 见 `entity --help`。`history-source --full` 展开已导入记录的原文与历史元数据。
+
+纠错通过追加关系保存。先读取 `show TARGET --json` 的当前 revision，再显式写入：
+
+```bash
+python3 tools/target_memory.py link --target TARGET --id NEW_EXPERIENCE_ID --to OLD_EXPERIENCE_ID \
+  --relation supersedes --conditions "same declared scope" --reason "corrected observation" \
+  --command-id UNIQUE_COMMAND_ID --expected-revision REVISION
+python3 tools/target_memory.py retract-link --target TARGET --id LINK_ID \
+  --reason "correction withdrawn" --command-id ANOTHER_COMMAND_ID --expected-revision NEW_REVISION
+```
+
+`--relation` 支持 `supersedes`、`refutes`、`depends_on`；不同适用条件保留为条件性关系。
+`retract-link --id` 指关系 ID；撤回仍保留历史。两种写入都支持 `--actor`（默认 operator），
+revision 冲突时先重新读取，不重写旧经验或伪造版本。
+
 ## 写入位置
 
 ```text

@@ -328,6 +328,7 @@ def traverse(graph, seeds, *, generation=None, direction="out", predicates=None,
             raise ValueError("invalid cursor conditions")
     paths, examined, cycles, incompatible, used = [], 0, 0, 0, 0
     reason = None
+    progressed = False
     while state["seed"] < len(seed_keys):
         stack = state["stack"]
         if not stack:
@@ -343,14 +344,18 @@ def traverse(graph, seeds, *, generation=None, direction="out", predicates=None,
                         "expand_from": graph["nodes"][frame["node"]]}
                 size = len(_json(path).encode())
                 if used + size > max_bytes:
+                    if not paths:
+                        raise ValueError(f"relation path requires max_bytes >= {size}; increase the response budget")
                     reason = "response_budget"
                     break
                 paths.append(path)
                 used += size
             frame["emitted"] = True
-        if time.monotonic() - started >= max_seconds:
+        # Setup can exhaust the budget; allow one state transition so a cursor always advances.
+        if time.monotonic() - started >= max_seconds and progressed:
             reason = "time_budget"
             break
+        progressed = True
         if len(path_edges) == max_depth:
             state["depth_limited"] += int(bool(adjacency[frame["node"]]))
             stack.pop()

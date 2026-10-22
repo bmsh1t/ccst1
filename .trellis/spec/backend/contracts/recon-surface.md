@@ -769,7 +769,13 @@ python3 tools/surface_finalizer.py --repo-root <repo> --target <target> --json
   输入继续保守绑定。不得排除整个 manual_review，也不得移除 Store revision 校验。
 - Manifest 构建与投影加载的 Store 身份/版本通过 `TargetStore.binding()` 读取，不在 Surface
   重复查询 Store 身份表。Wire binding 仍仅为 target/policy_version/as_of/store_id/revision，
-  不合入 backend；保持原读取时点与前后检查，不缓存 binding 或用它替代文件完整性校验。
+  不合入 backend；已知 Store/revision 不匹配时提前返回 stale，不构造完整 manifest，也不返回
+  冒充当前输入的旧 fingerprint。可能有效的 projection 仍重新构造 manifest 并校验证据 bytes。
+- `coverage_source_fingerprint()` 在同次获取内向
+  `load_surface_index_status(..., _input_manifest=...)` 共享输入清单。
+  `read_matrix()` 保留前后独立指纹及证据校验，可向内部 rebuild 传 `_source_fingerprint`，
+  并以 `iter_surface_index(..., _status=...)` 复用该次状态；独立 `rebuild_matrix()` 和 iterator
+  默认继续自行复验，防止惰性迭代前的文件漂移。不得跨调用复用 manifest、binding 或健康。
 - 被消费 review 文件即使为空仍绑定；从缺失到出现、编辑、删除或构建期间变化都须失效。
   Store 已登记 raw artifact 在 revision 未变时仍按文件 metadata 绑定。Checkpoint lane/封轮
   witness 本身不是 Surface 输入，不能导致 stale；创建 Action 等真实 owner 写入仍会失效。
@@ -794,6 +800,8 @@ python3 tools/surface_finalizer.py --repo-root <repo> --target <target> --json
 | 写入未被消费的 manual_review lane 附件或 checkpoint witness | Surface 保持 valid；不增加 Store revision |
 | summary/专用 handler/Store 引用的 review 改变 | Surface stale；保持真实输入失效能力 |
 | v6 projection 被 v7 reader 读取 | 显式刷新；不消费旧摘要或自动改写 |
+| Store/revision 已不匹配 | manifest 构建前返回 stale，省略当前 input_fingerprint |
+| Store revision 未变但原件 bytes 改变 | 可能有效的 projection 仍需校验并拒绝旧输入 |
 
 ### 5. Good / Base / Bad Cases
 
@@ -816,6 +824,8 @@ python3 tools/surface_finalizer.py --repo-root <repo> --target <target> --json
   删除、registered artifact 无 revision 变化失效、路径归属、构建竞态，以及 Action 写入失效。
   Binding 回归须断言 wire 字段/类型与 owner 对应，valid 读取保留内容和指纹，store_id/revision
   不匹配仍为 `stale/store-revision-mismatch` 且不返回旧候选；读取不改 projection 或 Store。
+- 同次获取优化须比较固定 `as_of` 的完整 Coverage DTO，并验证读取中的 Recon/Store 漂移、
+  独立 rebuild 惰性迭代前漂移、原件同 revision 篡改及 manifest/fingerprint 调用次数。
   Full/Checkpoint 消费测试须先由 `build_surface_review()` 显式发布投影，不能依赖读取时排名。
 - Cursor：status/kind/source filter、全量恰好一次可达、revision/filter reject、读取前后字节不变。
 - Scaling：仅在 `/tmp` 生成 30 万 URL 与百 MB inventory，校验末行仍可由 index 展开、URL 顺序、exact identity、untouched

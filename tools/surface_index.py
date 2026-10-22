@@ -699,7 +699,7 @@ def _sort_annotated_lines(input_path: Path, output_path: Path, *, sort_executabl
         )
 
 
-def load_surface_index_status(repo_root: str | Path, target: str) -> dict:
+def load_surface_index_status(repo_root: str | Path, target: str, *, _input_manifest: dict | None = None) -> dict:
     """仅校验 manifest/stat；不打开完整 index 正文。"""
     repo = Path(repo_root).resolve()
     resolved = canonical_target_value(target)
@@ -721,7 +721,7 @@ def load_surface_index_status(repo_root: str | Path, target: str) -> dict:
     if not _binding_matches(index_path, binding):
         return {"status": "stale", "reason": "index-binding-mismatch", "path": str(index_path)}
     try:
-        current = build_surface_index_input_manifest(repo, resolved)
+        current = _input_manifest if _input_manifest is not None else build_surface_index_input_manifest(repo, resolved)
     except SurfaceIndexError as exc:
         return {"status": "invalid", "reason": str(exc), "path": str(index_path)}
     if current["fingerprint"] != str(manifest.get("input_fingerprint") or ""):
@@ -744,9 +744,9 @@ def load_surface_index_status(repo_root: str | Path, target: str) -> dict:
     }
 
 
-def iter_surface_index(repo_root: str | Path, target: str) -> Iterator[dict]:
+def iter_surface_index(repo_root: str | Path, target: str, *, _status: dict | None = None) -> Iterator[dict]:
     """顺序读取有效 index；坏行 fail-fast，不能静默缩小攻击面。"""
-    status = load_surface_index_status(repo_root, target)
+    status = _status if _status is not None else load_surface_index_status(repo_root, target)
     if status.get("status") != "valid":
         raise SurfaceIndexError(
             f"surface index unavailable: {status.get('status')} {status.get('reason')}"

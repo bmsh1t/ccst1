@@ -10,7 +10,10 @@ no schema, automatic memory writes or execution authority.
 
 - `compact_autopilot_state(state)["target_memory"]` reuses
   `state.resume_summary.target_memory` plus its `source_binding`.
-- `query_text(...)` retains FTS ranking and appends fresh lexical-only matches.
+- `query_text(..., generations=None)` retains FTS ranking and appends fresh
+  lexical-only matches; optional generations come from the same acquisition.
+- `relation_recall.traverse(..., max_seconds=1.0, max_bytes=200000, cursor=None)`
+  preserves bounded traversal and rejects a response budget smaller than one path.
 - `target_store.py operations --target TARGET [--repo-root ROOT]
   [--limit N --cursor CURSOR | --id OPERATION_ID]` reads metadata/history.
 - `build_evidence_view(...)["windows"]["ledger"]` describes the observation
@@ -29,6 +32,26 @@ no schema, automatic memory writes or execution authority.
   before semantic fusion, reranking or pagination. Deduplicate exact source refs.
   Channel and ranking digest reflect the actual sources, including missing-index
   semantic fusion. Query never rebuilds an index.
+- Lexical supplement normalizes each non-FTS document once per query, preserving
+  empty-query source order and punctuation-only empty results. Reused generations
+  must still match each freshly acquired partition binding; unavailable/stale
+  generations retain explicit health and use current lexical sources. Knowledge
+  parse reuse never skips raw bytes, registry, publication receipt or final fences.
+- `recall_rows` shares only validated direct dependency nodes keyed by exact
+  `(experience_id, version)` within its SQL transaction. Each root collects its
+  own complete external references, including origins, cycles and shared tails;
+  every source edge retains its expected-hash check. Basis health propagates
+  through reverse edges once per newly unhealthy node; origins stay diagnostic.
+  Claim endpoints reuse the enclosing acquisition's health graph. Later reads
+  acquire health and verify external bytes again.
+- `memory_context` reuses the newest handoff in the ordered recent page, with an
+  independent returned object. Only a missing handoff requires the separate query
+  so older handoffs outside the window remain accessible.
+- Relation time budget includes graph preparation but permits one traversal state
+  transition per page to ensure progress after setup exhausts the time budget.
+  Edge/path/depth/byte limits remain enforced. If no path fits `max_bytes`, raise
+  `ValueError` with the required minimum instead of repeating the same cursor;
+  callers may increase budgets with the existing cursor.
 - Experience anchors place owner review state, incomplete-context warning and
   exact ID expansion before bounded detail/statement previews. Conditions and
   correction/applicability/source metadata come from the existing DTO/formatter.
@@ -57,6 +80,9 @@ no schema, automatic memory writes or execution authority.
 | More than 40 observations | Exact preview remainder or unknown plus usable history entry |
 | Bad operation ID/cursor/missing Store | Existing CLI error, exit 2, no initialization |
 | Changed artifact | History retained with invalid health, no owner mutation |
+| Cached dependency reached through two differently bound edges | Verify both expected hashes; reject the corrupt edge |
+| Setup exceeds relation time budget | Cursor advances or query completes; no unchanged zero-progress page |
+| First relation path exceeds response bytes | Explicit error with required `max_bytes`; no looping cursor |
 
 ## 5. Good / Base / Bad
 
@@ -73,6 +99,10 @@ bootstrap binding/wait/list/empty behavior, and real operation CLI paging/expans
 with tampered bytes. Do not access personal runtime or real target data. Host
 checks use the requested model, independent sessions, hidden oracle and actual
 file/owner receipts; small samples establish behavior only, not statistical gains.
+Cost checks compare full return values and count repeated work using synthetic
+chains/cycles/diamonds, mixed FTS/substring cases, generation drift, page-window
+handoffs and controlled relation clocks. A smaller bounded output does not prove
+bounded source reads or lower model cost.
 
 ## 7. Wrong → Correct
 
@@ -80,3 +110,5 @@ Healthy FTS replaces substring candidates → union before ranking/paging.
 State has memory but bootstrap drops it → preserve the existing bound DTO.
 Truncate away a warning → bound at the producer with an explicit expansion.
 Forty observations without continuation → expose full execution-history navigation.
+Global dependency visited set → per-root closure over same-transaction node reuse.
+Time budget returns an unchanged cursor → one bounded transition or explicit budget error.

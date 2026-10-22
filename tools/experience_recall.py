@@ -216,7 +216,7 @@ def query_recall(repo_root: Path, *, target: str, query: str = "", limit: int = 
         raise ValueError("source_ref must be a nonempty string")
     if type(context_limit) is not int or not 1 <= context_limit <= 1000 or type(context_max_bytes) is not int or not 1024 <= context_max_bytes <= 4000000:
         raise ValueError("context limit must be 1..1000 and max_bytes 1024..4000000")
-    snapshot, _ = acquire_index_snapshot(repo_root, target, include_knowledge=include_knowledge)
+    snapshot, generations = acquire_index_snapshot(repo_root, target, include_knowledge=include_knowledge)
     offset, decoded = 0, None
     if cursor:
         try:
@@ -227,7 +227,7 @@ def query_recall(repo_root: Path, *, target: str, query: str = "", limit: int = 
         except (ValueError, KeyError, TypeError) as exc:
             raise ValueError("invalid or stale recall cursor; restart query") from exc
     result = query_text(repo_root, target, snapshot, query, limit=limit, offset=offset,
-                        encoder_path=encoder_path, reranker_path=reranker_path)
+                        encoder_path=encoder_path, reranker_path=reranker_path, generations=generations)
     binding = {"source": snapshot["binding"], "query": query, "source_ref": source_ref,
                "generations": result["pagination"]["generations"],
                "ranking": result["pagination"]["ranking_binding"]}
@@ -246,7 +246,8 @@ def query_recall(repo_root: Path, *, target: str, query: str = "", limit: int = 
              for item in selected if item["source_ref"].startswith("experience:")]
     counterevidence = context_page(repo_root, target, roots=roots, limit=context_limit, max_bytes=context_max_bytes)
     fresh = acquire_snapshot(repo_root, target, include_knowledge=include_knowledge,
-                             previous_capture=snapshot.get("capture"))
+                             previous_capture=snapshot.get("capture"),
+                             knowledge_parse_capture=snapshot.get("knowledge_parse_capture"))
     if not same_snapshot(fresh, snapshot):
         raise StoreError("recall sources changed during query; retry")
     verify_context(repo_root, target, counterevidence)
@@ -297,7 +298,10 @@ def history_view(repo_root: Path, *, target: str, limit: int = 20,
 
 def _index_cli(argv: list[str]) -> int:
     from tools.recall_index import build_text_index, index_status, prune_generations
-    parser = argparse.ArgumentParser(description="Explicit read-only recall and derived-index lifecycle")
+    parser = argparse.ArgumentParser(
+        description="Explicit read-only recall and derived-index lifecycle",
+        epilog="Use <command> --help for options. Legacy --target TARGET [--kind KIND] invocation remains supported; "
+               "use --target TARGET --help for its options.")
     parser.add_argument("command", choices=("query", "history", "context", "index-build", "index-status", "index-prune",
                                              "relation-build", "relation-query", "relation-status", "relation-prune"))
     parser.add_argument("--target")
@@ -406,8 +410,9 @@ def _index_cli(argv: list[str]) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     actual = list(sys.argv[1:] if argv is None else argv)
-    if actual and actual[0] in {"query", "history", "context", "index-build", "index-status", "index-prune",
-                                "relation-build", "relation-query", "relation-status", "relation-prune"}:
+    if (actual in (["--help"], ["-h"]) or actual and actual[0] in {
+            "query", "history", "context", "index-build", "index-status", "index-prune",
+            "relation-build", "relation-query", "relation-status", "relation-prune"}):
         return _index_cli(actual)
     parser = argparse.ArgumentParser(
         description="Read Store experiences and reviewed knowledge cards."

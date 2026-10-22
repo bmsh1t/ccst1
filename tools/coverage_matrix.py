@@ -293,7 +293,7 @@ def coverage_source_fingerprint(
     """Bind a rebuilt matrix to its inputs without reading large bodies."""
     repo = Path(repo_root) if repo_root else BASE_DIR
     key = _storage_key(target)
-    store = runtime_store(repo, target)
+    runtime_store(repo, target)
     paths = (
         repo / "recon" / key / "urls" / "all_filtered.txt",
         repo / "recon" / key / "urls" / "all.txt",
@@ -324,7 +324,8 @@ def coverage_source_fingerprint(
             "st_dev": stat.st_dev,
             "st_ino": stat.st_ino,
         })
-    surface_status = load_surface_index_status(repo, target)
+    surface_inputs = build_surface_index_input_manifest(repo, target)
+    surface_status = load_surface_index_status(repo, target, _input_manifest=surface_inputs)
     surface_binding = {
         "status": str(surface_status.get("status") or "invalid"),
         "reason": str(surface_status.get("reason") or ""),
@@ -336,13 +337,12 @@ def coverage_source_fingerprint(
             "index_binding": manifest.get("index_binding") or {},
             "row_count": int(manifest.get("row_count", 0) or 0),
         })
-    store_binding = store.binding()
     payload = {
         "build_version": COVERAGE_BUILD_VERSION,
         "inputs": items,
         "surface_index": surface_binding,
-        "store": store_binding,
-        "surface_inputs": build_surface_index_input_manifest(repo, target)["fingerprint"],
+        "store": surface_inputs["store"],
+        "surface_inputs": surface_inputs["fingerprint"],
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
@@ -960,7 +960,7 @@ def read_matrix(
     if not isinstance(reference_time, str) or not reference_time.strip():
         raise ValueError("as_of must be a non-empty timestamp")
     inputs = coverage_source_fingerprint(target, repo)
-    matrix = _rebuild_matrix_unlocked(target, repo, force_clean=current_only)
+    matrix = _rebuild_matrix_unlocked(target, repo, force_clean=current_only, _source_fingerprint=inputs)
     if inputs != coverage_source_fingerprint(target, repo):
         raise StoreError("primary coverage inputs changed during assembly")
     matrix["as_of"] = matrix["last_updated"] = reference_time
@@ -989,6 +989,7 @@ def _rebuild_matrix_unlocked(
     repo_root: Path | str | None = None,
     *,
     force_clean: bool = False,
+    _source_fingerprint: str | None = None,
 ) -> dict:
     """Project Recon, Store findings, observations and authored reviews.
 
@@ -1026,7 +1027,8 @@ def _rebuild_matrix_unlocked(
     if surface_status.get("status") == "valid":
         source_rows = (
             (str(item.get("url") or ""), item.get("sources") or ("surface",))
-            for item in iter_surface_index(repo, target)
+            # Only read_matrix supplies a fingerprint and checks inputs again after assembly.
+            for item in iter_surface_index(repo, target, _status=surface_status if _source_fingerprint is not None else None)
             if item.get("target_owned") and str(item.get("url") or "")
         )
     else:
@@ -1361,10 +1363,8 @@ def _rebuild_matrix_unlocked(
         for family, review in ep.pop("reviews", {}).items():
             ep["cells"][family]["review"] = review
     matrix["policy_skips"] = _xss_policy_skip(repo, target_key, new_endpoints)
-    matrix["source_fingerprint"] = coverage_source_fingerprint(
-        target,
-        repo,
-    )
+    matrix["source_fingerprint"] = (_source_fingerprint if _source_fingerprint is not None
+                                    else coverage_source_fingerprint(target, repo))
     if store.binding() != store_binding:
         raise StoreError("primary coverage inputs changed during assembly")
     return matrix
