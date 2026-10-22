@@ -1,0 +1,16 @@
+{
+  "status": "passed",
+  "baseline": "d9d215a70b2dbafe5844a1e50d79290b81825a51",
+  "checks": [
+    "unchanged entry frontmatter/bootstrap, CLAUDE import declarations and src-hunter materials; Round retains every shared workflow/recovery/finish section",
+    "21 unique checkout references, 5 local links and incoming command anchors resolve",
+    "real manifest reader accepts unchanged inventory; real lane reader retains full sections and controller reference",
+    "real pure parser accepts all documented examples, defaults, combined quick/deep and bound auth/context; rejects invalid caps/modes"
+  ],
+  "command_before_bytes": 10176,
+  "command_after_bytes": 14326,
+  "shared_automation_bytes": 11628,
+  "command_sha256": "05eba03cb93e62ebe4431b7e284b16b97ba05cbf871315566885156b288f453f",
+  "limits": "Static document/source interfaces only; no project tests, target-state acquisition, actual runtime install, Claude/model calls or network.",
+  "elapsed_seconds": 0.266
+}

@@ -607,21 +607,26 @@ explicit /validate memory token -> legacy recovery; canonical report -> report c
 targets.txt -> batch recon -> select completed domain -> domain state preflight
 ```
 
-## Scenario: Thin Shared Automation Entry Contracts
+## Scenario: Readable Shared Automation Entry Contracts
 
 ### 1. Scope / Trigger
 
 Use this contract whenever `commands/autopilot.md`, `commands/autopilot-round.md`
-or `agents/autopilot.md` is edited. The B2 controlled merge (2026-10-10) replaced
-the monolithic controller prompt with thin loop contracts; regressions here break
-release wiring, entry budgets and delegation boundaries, not just prose.
+or `agents/autopilot.md` is edited. Entry guidance must show how an investigation
+progresses while preserving release wiring, evidence, recovery and delegation
+boundaries. The 2026-10-22 readability revision replaces the former 11 KiB entry
+budget with a complete, navigable workflow; method content stays with src-hunter.
 
 ### 2. Signatures
 
-- `commands/autopilot.md`: frontmatter, critical manifest comment, the
+- `commands/autopilot.md`: unchanged frontmatter, user-facing purpose/usage,
+  critical manifest comment, the
   `Authoritative bootstrap contract (do not reinterpret): !`python3 ...`` line,
-  then one `## Shared Automation` H2 with Startup And Recovery / State
-  Consumption Loop / Execution Invariants / Transition And Finish Contract.
+  then one `## Shared Automation` H2. Its first subsection is State Consumption
+  Loop; Startup And Recovery, Investigation Skill, Execution Invariants,
+  Refresh After An Action and Transition And Finish Contract remain inside that H2.
+  Keep the `shared-automation`, `investigation-skill` and `state-consumption-loop`
+  anchors: Round, runtime-protocol and Bootstrap consume them.
 - `commands/autopilot-round.md`: `Authoritative round bootstrap (do not
   reinterpret)` and `Native fixed-loop prompt identity (do not reinterpret)`
   lines, then round-only mechanics (Bootstrap Gate / Prepare And Terminal
@@ -630,12 +635,29 @@ release wiring, entry budgets and delegation boundaries, not just prose.
 
 ### 3. Contracts
 
-- Combined size of the two command files is bounded by the merged floor of
-  11 KiB (restored anchor prefixes, settle stale-Surface contract and full
-  descriptions exceed the pre-merge draft's 10 KiB budget).
-- Methodology stays out of entry prompts: `skills/src-hunter/SKILL.md` is the
+- Present the normal workflow before conditional mechanics: recover the target;
+  choose an evidence-backed question; test/register/refresh; validate and publish
+  when ready; continue, rotate or finish with an explicit reason. Recovery need
+  not repeat within a valid session, nor does this sequence force Recon, a scan,
+  validation before evidence is ready, or closure after each experiment.
+- Each step names its purpose, result and next transition. Detailed execution,
+  recovery and finish requirements follow in referenced sections of the same
+  Shared Automation body. Use ordinary prose around necessary field names;
+  do not compress them into unexplained slash-separated shorthand to meet a cap.
+  Measure bytes separately; increased clarity does not prove token/cost or
+  model-behavior improvement. Static reference checks prove neither readability
+  nor host compliance by themselves.
+- Vulnerability-specific methodology stays out of entry prompts: `skills/src-hunter/SKILL.md` is the
   single investigation core; problem-scoped specialists and complete methods
   are referenced on demand, without a second global investigation loop.
+- Preserve exact bootstrap/manifest, Round mechanics, claim-before-execution,
+  report identity binding, terminal-heartbeat-before-refresh, fresh-control reads,
+  parent Scope/Auth propagation, no replay of unknown effects and final closure
+  conditions. User-facing examples and defaults must match `parse_autopilot_args`.
+- A blanket failed-tool retry prohibition must not override the existing bounded
+  browser transient-error retry or registration-only retry with saved material.
+  These exceptions follow their original owners; they grant no arbitrary source,
+  Action-claim or unknown-effect network replay.
 - `agents/autopilot.md` is a routing-table delegation contract: evidence
   question -> method owner rows, read-only Store queries, parent-owned writes;
   no second Core Loop or finish checklist.
@@ -651,7 +673,12 @@ release wiring, entry budgets and delegation boundaries, not just prose.
 
 - Anchor prefix line missing or rewritten -> `test_claude_release_wiring`
   StopIteration at the bootstrap JSON extraction.
-- Combined entry size over 11 KiB -> `test_combined_entry_budget_and_pre_execution_claim_owner` fails.
+- Main workflow or conditional clauses outside the Shared Automation H2 -> Round
+  misses the shared contract; preserve complete H2 consumption and nested sections.
+- Broken link or Skill-loading back-reference cycle -> requested instructions are
+  unavailable; each reference must reach the complete relevant owner section.
+- Documented usage differs from parser defaults/flags -> incorrect operator
+  behavior; check examples using the actual pure argument parser.
 - Finish contract downgrades the memory-recommendation section to optional ->
   `test_memory_recommendation_section_is_required_once_and_presentation_only`
   fails; a live bounded round omits the section at finish.
@@ -659,14 +686,24 @@ release wiring, entry budgets and delegation boundaries, not just prose.
 
 ### 5. Good/Base/Bad Cases
 
-- Good: add a lane rule to `docs/autopilot-lanes.md` and reference it from the routing table; entries stay under budget.
-- Base: renaming a Shared Automation sub-section updates both commands' contract tests in the same change.
-- Bad: pasting methodology steps into `commands/autopilot.md`, or deleting the `(do not reinterpret)` prefixes to save bytes.
+- Good: the investigation loop is understandable before reading the mechanics;
+  relevant lane and method details stay with their existing owners.
+- Base: retain consumed headings while reorganizing prose, then inspect Round's
+  complete shared body and all referenced anchors.
+- Bad: a short entry made of unexplained state fields and scattered links, or
+  copied vulnerability methods, or a changed Bootstrap prefix merely to save bytes.
 
 ### 6. Tests Required
 
-- `tests/test_autopilot_round_contract.py::test_combined_entry_budget_and_pre_execution_claim_owner`
-  asserts the 11 KiB combined budget and pre-execution claim ownership.
+- The former 11 KiB budget assertion describes the earlier compression policy,
+  not the readability acceptance criterion. Pre-execution claim ownership remains
+  mandatory. Historical exact-prose/size checks need separate review if run; the
+  2026-10-22 focused check neither reads nor changes project tests.
+- Isolated document acceptance preserves frontmatter, exact Bootstrap/manifest,
+  complete Shared Automation consumption, all command references, real lane
+  section extraction and parser-backed usage. Independently review semantic
+  retention and normal/blocked/recovered/round/finish paths; do not claim live
+  Claude behavior from static checks.
 - `tests/test_claude_release_wiring.py::test_installed_autopilot_loads_in_real_claude`
   asserts the anchor prefix line and installed-body equality.
 - `tests/test_ai_native_skill_convergence_baseline.py` resolves the three-mode
@@ -676,12 +713,12 @@ release wiring, entry budgets and delegation boundaries, not just prose.
 
 ### 7. Wrong vs Correct
 
-Wrong: compress the bootstrap line to `Bootstrap: !`...`` and inline hunt
-methodology into the command so it stays self-contained.
+Wrong: compress the bootstrap line to `Bootstrap: !`...`` or shorten the entry
+until a reader must reconstruct the investigation from several manuals.
 
-Correct: keep the full anchor prefixes, point at
-`skills/src-hunter/SKILL.md` on demand, and let the routing table reference
-lane/method owners.
+Correct: keep the full anchor prefixes, explain the investigation and its
+transitions first, load `skills/src-hunter/SKILL.md`, then consult the complete
+execution/recovery/finish sections when their conditions apply.
 
 ## Claude Runtime Packaging and Drift Preflight
 
