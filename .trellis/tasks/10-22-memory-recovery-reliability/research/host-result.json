@@ -1,0 +1,458 @@
+{
+  "b_recall_1": {
+    "model": "claude-opus-4-8",
+    "cli": "2.1.304",
+    "exit": 1,
+    "seconds": 94.432,
+    "subtype": "error_max_turns",
+    "turns": 17,
+    "cost_usd_cli": 0.420219,
+    "tools": {
+      "ListAgents": 15,
+      "Glob": 6
+    },
+    "owner_calls": [],
+    "plan_exists": false,
+    "binding_after": {
+      "store_id": "19898e6b4d4c48639b571a02cb9d726c",
+      "revision": 36
+    },
+    "counts_after": {
+      "experiences": 36,
+      "observations": 0,
+      "findings": 0,
+      "reports": 0
+    },
+    "changed_before_files": [],
+    "added_files": [],
+    "compact_boundary": false,
+    "recovery_result": null,
+    "source_changed": [],
+    "db_integrity": "ok",
+    "fk_errors": [],
+    "expected_tokens_in_output": {
+      "ledger_csv": false,
+      "rows_json": false,
+      "exp-c7-042": false,
+      "exp-b7-109": false,
+      "Copper": false,
+      "Brass": false,
+      "format=csv": false,
+      "匿名": false,
+      "401": false,
+      "LANTERN-4821": false
+    },
+    "unexpected_network_tool_calls": [],
+    "stderr_bytes": 0,
+    "revision_before": 36
+  },
+  "b_recall_2": {
+    "model": "claude-opus-4-8",
+    "cli": "2.1.304",
+    "exit": 0,
+    "seconds": 109.018,
+    "subtype": "success",
+    "turns": 7,
+    "cost_usd_cli": 0.518673,
+    "tools": {
+      "Glob": 8,
+      "ListAgents": 3,
+      "Read": 2
+    },
+    "owner_calls": [],
+    "plan_exists": false,
+    "binding_after": {
+      "store_id": "19898e6b4d4c48639b571a02cb9d726c",
+      "revision": 36
+    },
+    "counts_after": {
+      "experiences": 36,
+      "observations": 0,
+      "findings": 0,
+      "reports": 0
+    },
+    "changed_before_files": [],
+    "added_files": [],
+    "compact_boundary": true,
+    "recovery_result": {
+      "subtype": "success",
+      "is_error": false,
+      "duration_ms": 40795,
+      "duration_api_ms": 107104,
+      "num_turns": 8,
+      "result": "**offline/request-plan.md** 已创建（本地离线准备）。",
+      "total_cost_usd": 0.518673,
+      "usage": {
+        "input_tokens": 26114,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 79680,
+        "output_tokens": 2357,
+        "output_tokens_details": {
+          "thinking_tokens": 0
+        },
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 0,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "",
+        "iterations": [],
+        "speed": "standard",
+        "fallback_credit": null
+      },
+      "modelUsage": {
+        "claude-opus-4-8": {
+          "inputTokens": 53384,
+          "outputTokens": 6417,
+          "cacheReadInputTokens": 182656,
+          "cacheCreationInputTokens": 0,
+          "webSearchRequests": 0,
+          "costUSD": 0.518673,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 64000,
+          "thinkingTokens": 0,
+          "canonicalModel": "claude-opus-4-8",
+          "provider": "firstParty",
+          "costBasis": "list"
+        }
+      },
+      "permission_denials": [],
+      "errors": null
+    },
+    "source_changed": [],
+    "db_integrity": "ok",
+    "fk_errors": [],
+    "expected_tokens_in_output": {
+      "ledger_csv": false,
+      "rows_json": false,
+      "exp-c7-042": false,
+      "exp-b7-109": false,
+      "Copper": false,
+      "Brass": false,
+      "format=csv": false,
+      "匿名": false,
+      "401": false,
+      "LANTERN-4821": false
+    },
+    "unexpected_network_tool_calls": [],
+    "stderr_bytes": 0,
+    "revision_before": 36
+  },
+  "b_empty": {
+    "model": "claude-opus-4-8",
+    "cli": "2.1.304",
+    "exit": 1,
+    "seconds": 67.463,
+    "subtype": "error_max_turns",
+    "turns": 17,
+    "cost_usd_cli": 0.432367,
+    "tools": {
+      "ListAgents": 2,
+      "Glob": 1,
+      "Read": 13
+    },
+    "owner_calls": [],
+    "plan_exists": false,
+    "binding_after": {
+      "store_id": "c6a227186ed246eab86ff48918da5526",
+      "revision": 0
+    },
+    "counts_after": {
+      "experiences": 0,
+      "observations": 0,
+      "findings": 0,
+      "reports": 0
+    },
+    "changed_before_files": [],
+    "added_files": [],
+    "compact_boundary": false,
+    "recovery_result": null,
+    "source_changed": [],
+    "db_integrity": "ok",
+    "fk_errors": [],
+    "expected_tokens_in_output": {
+      "ledger_csv": false,
+      "rows_json": false,
+      "exp-c7-042": false,
+      "exp-b7-109": false,
+      "Copper": false,
+      "Brass": false,
+      "format=csv": false,
+      "匿名": false,
+      "401": false,
+      "LANTERN-4821": false
+    },
+    "unexpected_network_tool_calls": [],
+    "stderr_bytes": 0,
+    "revision_before": 0
+  },
+  "c_corrected_1": {
+    "model": "claude-opus-4-8",
+    "cli": "2.1.304",
+    "exit": 0,
+    "seconds": 35.465,
+    "subtype": "success",
+    "turns": 5,
+    "cost_usd_cli": 0.20730600000000002,
+    "tools": {
+      "Glob": 3,
+      "Edit": 1
+    },
+    "owner_calls": [],
+    "plan_exists": true,
+    "binding_after": {
+      "store_id": "19898e6b4d4c48639b571a02cb9d726c",
+      "revision": 39
+    },
+    "counts_after": {
+      "experiences": 38,
+      "observations": 0,
+      "findings": 0,
+      "reports": 0
+    },
+    "changed_before_files": [],
+    "added_files": [
+      "offline/request-plan.md"
+    ],
+    "compact_boundary": false,
+    "recovery_result": null,
+    "source_changed": [],
+    "db_integrity": "ok",
+    "fk_errors": [],
+    "expected_tokens_in_output": {
+      "ledger_csv": true,
+      "rows_json": true,
+      "exp-c7-042": true,
+      "exp-b7-109": true,
+      "Copper": true,
+      "Brass": true,
+      "format=csv": false,
+      "匿名": false,
+      "401": false,
+      "LANTERN-4821": false
+    },
+    "unexpected_network_tool_calls": [],
+    "stderr_bytes": 0,
+    "revision_before": 39
+  },
+  "c_corrected_2": {
+    "model": "claude-opus-4-8",
+    "cli": "2.1.304",
+    "exit": 0,
+    "seconds": 64.4,
+    "subtype": "success",
+    "turns": 14,
+    "cost_usd_cli": 0.6758830000000002,
+    "tools": {
+      "Bash": 12,
+      "Write": 1
+    },
+    "owner_calls": [
+      {
+        "line": 178,
+        "name": "Bash",
+        "input": {
+          "command": "cd -- /root/ccst-runs/ccst-memory-recovery-20261022-nw2nc6j3/formal/c_corrected_2/project && python3 tools/experience_recall.py query --repo-root . --target memory-lab.invalid --limit 5 2>&1 | head -80",
+          "description": "Query target experience memory"
+        }
+      },
+      {
+        "line": 372,
+        "name": "Bash",
+        "input": {
+          "command": "cd -- /root/ccst-runs/ccst-memory-recovery-20261022-nw2nc6j3/formal/c_corrected_2/project && python3 tools/experience_recall.py history --repo-root . --target memory-lab.invalid --limit 5 --id memory:668ff407d4114999888b153640adf3e9 2>&1 | python3 -c \"import json,sys; d=json.load(sys.stdin); print(json.dumps(d,ensure_ascii=False,indent=1)[:6000])\" 2>&1 | head -120",
+          "description": "Expand superseded r7 memory"
+        }
+      },
+      {
+        "line": 617,
+        "name": "Bash",
+        "input": {
+          "command": "cd -- /root/ccst-runs/ccst-memory-recovery-20261022-nw2nc6j3/formal/c_corrected_2/project && python3 tools/experience_recall.py history --repo-root . --target memory-lab.invalid --limit 5 --id memory:668ff407d4114999888b153640adf3e9 2>&1 | python3 -c \"\nimport json,sys\nd=json.load(sys.stdin)\ndef walk(o,p=''):\n    if isinstance(o,dict):\n        if o.get('id','').startswith('memory:668ff407') or o.get('experience_id','').startswith('memory:668ff407'):\n            print('FOUND',p); print(json.dumps(o,ensure_ascii=False,indent=1)[:4000])\n        for k,v in o.items(): walk(v,p+'/'+str(k))\n    elif isinstance(o,list):\n        for i,v in enumerate(o): walk(v,p+f'[{i}]')\nwalk(d)\n\"",
+          "description": "Extract r7 memory record"
+        }
+      },
+      {
+        "line": 1273,
+        "name": "Bash",
+        "input": {
+          "command": "cd -- /root/ccst-runs/ccst-memory-recovery-20261022-nw2nc6j3/formal/c_corrected_2/project && grep -rn \"exports/preview\\|rows_json\\|exp-c7-042\\|file_kind\" . --exclude-dir=.git 2>/dev/null | head -20; echo \"=== recall help ===\"; python3 tools/experience_recall.py --help 2>&1 | head -40",
+          "description": "Search local material for preview API and check recall CLI"
+        }
+      },
+      {
+        "line": 3010,
+        "name": "Bash",
+        "input": {
+          "command": "cd -- /root/ccst-runs/ccst-memory-recovery-20261022-nw2nc6j3/formal/c_corrected_2/project && python3 tools/remember.py --help 2>&1 | head -50",
+          "description": "Show remember.py usage"
+        }
+      },
+      {
+        "line": 3134,
+        "name": "Bash",
+        "input": {
+          "command": "cd -- /root/ccst-runs/ccst-memory-recovery-20261022-nw2nc6j3/formal/c_corrected_2/project && python3 tools/target_memory.py --help 2>&1 | head -40",
+          "description": "Show target_memory.py usage"
+        }
+      },
+      {
+        "line": 3206,
+        "name": "Bash",
+        "input": {
+          "command": "cd -- /root/ccst-runs/ccst-memory-recovery-20261022-nw2nc6j3/formal/c_corrected_2/project && python3 tools/target_memory.py note --help 2>&1 | head -30",
+          "description": "Show note subcommand usage"
+        }
+      },
+      {
+        "line": 3315,
+        "name": "Bash",
+        "input": {
+          "command": "cd -- /root/ccst-runs/ccst-memory-recovery-20261022-nw2nc6j3/formal/c_corrected_2/project && python3 tools/target_memory.py note --target memory-lab.invalid --conditions \"tenant=Copper; release=r8\" --next-intent \"取得 Copper/Brass 身份与执行授权并登记真实执行后，按 offline/request-plan.md 的 S0–S4 以 representation=rows_json 比较；未授权不执行\" --actor operator --command-id \"r8-offline-request-plan\" --json \"离线已写 offline/request-plan.md（r8，representation=rows_json 双租户只读预览计划）。r7 的 ledger_csv 基线、匿名 401 基线、format=csv 空壳观察均不能用于 r8，计划中已列为停用结论。本轮未发任何目标请求。\" 2>&1 | tail -20",
+          "description": "Save advisory target note about r8 offline plan"
+        }
+      }
+    ],
+    "plan_exists": true,
+    "binding_after": {
+      "store_id": "19898e6b4d4c48639b571a02cb9d726c",
+      "revision": 40
+    },
+    "counts_after": {
+      "experiences": 39,
+      "observations": 0,
+      "findings": 0,
+      "reports": 0
+    },
+    "changed_before_files": [
+      "state/memory-lab.invalid/metadata.sqlite3"
+    ],
+    "added_files": [
+      "offline/request-plan.md"
+    ],
+    "compact_boundary": false,
+    "recovery_result": null,
+    "source_changed": [],
+    "db_integrity": "ok",
+    "fk_errors": [],
+    "expected_tokens_in_output": {
+      "ledger_csv": true,
+      "rows_json": true,
+      "exp-c7-042": true,
+      "exp-b7-109": true,
+      "Copper": true,
+      "Brass": true,
+      "format=csv": true,
+      "匿名": true,
+      "401": true,
+      "LANTERN-4821": false
+    },
+    "unexpected_network_tool_calls": [],
+    "stderr_bytes": 0,
+    "revision_before": 39
+  },
+  "d_unrelated": {
+    "model": "claude-opus-4-8",
+    "cli": "2.1.304",
+    "exit": 0,
+    "seconds": 20.509,
+    "subtype": "success",
+    "turns": 1,
+    "cost_usd_cli": 0.16452499999999998,
+    "tools": {},
+    "owner_calls": [],
+    "plan_exists": false,
+    "binding_after": {
+      "store_id": "19898e6b4d4c48639b571a02cb9d726c",
+      "revision": 6
+    },
+    "counts_after": {
+      "experiences": 6,
+      "observations": 0,
+      "findings": 0,
+      "reports": 0
+    },
+    "changed_before_files": [],
+    "added_files": [],
+    "compact_boundary": false,
+    "recovery_result": null,
+    "source_changed": [],
+    "db_integrity": "ok",
+    "fk_errors": [],
+    "expected_tokens_in_output": {
+      "ledger_csv": false,
+      "rows_json": false,
+      "exp-c7-042": false,
+      "exp-b7-109": false,
+      "Copper": false,
+      "Brass": false,
+      "format=csv": false,
+      "匿名": false,
+      "401": false,
+      "LANTERN-4821": false
+    },
+    "unexpected_network_tool_calls": [],
+    "stderr_bytes": 0,
+    "revision_before": 6
+  },
+  "e_readonly": {
+    "model": "claude-opus-4-8",
+    "cli": "2.1.304",
+    "exit": 0,
+    "seconds": 37.101,
+    "subtype": "success",
+    "turns": 14,
+    "cost_usd_cli": 0.353687,
+    "tools": {
+      "Bash": 12,
+      "Read": 1
+    },
+    "owner_calls": [
+      {
+        "line": 621,
+        "name": "Bash",
+        "input": {
+          "command": "timeout 120 python3 tools/checkpoint.py --target memory-lab.invalid 2>&1 | head -120",
+          "description": "Read checkpoint for target (read-only)"
+        }
+      }
+    ],
+    "plan_exists": false,
+    "binding_after": {
+      "store_id": "19898e6b4d4c48639b571a02cb9d726c",
+      "revision": 6
+    },
+    "counts_after": {
+      "experiences": 6,
+      "observations": 0,
+      "findings": 0,
+      "reports": 0
+    },
+    "changed_before_files": [],
+    "added_files": [],
+    "compact_boundary": false,
+    "recovery_result": null,
+    "source_changed": [],
+    "db_integrity": "ok",
+    "fk_errors": [],
+    "expected_tokens_in_output": {
+      "ledger_csv": true,
+      "rows_json": false,
+      "exp-c7-042": true,
+      "exp-b7-109": true,
+      "Copper": true,
+      "Brass": true,
+      "format=csv": true,
+      "匿名": true,
+      "401": true,
+      "LANTERN-4821": false
+    },
+    "unexpected_network_tool_calls": [],
+    "stderr_bytes": 0,
+    "revision_before": 6
+  }
+}

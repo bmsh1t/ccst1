@@ -15,12 +15,12 @@
   "branch": "refactor/10-11-capability-architecture",
   "base_branch": "refactor/10-11-capability-architecture",
   "worktree_path": null,
-  "commit": null,
+  "commit": "88d8f05",
   "pr_url": null,
   "subtasks": [],
   "children": [],
   "parent": "10-20-business-tools-native-execution",
   "relatedFiles": [],
-  "notes": "",
+  "notes": "工程修复与168断言通过；7会话及真实compact复验完成，纠错1/2、相关0/2、compact恢复失败、只读SQL入口不合规。保留in_progress，详见research/result.md。",
   "meta": {}
 }
