@@ -1239,3 +1239,37 @@ Explicit Autopilot investigation loads or reuses native src-hunter after Bootstr
 ### Next Steps
 
 - 本轮复测后修正未再live验证；完整方法应用、状态刷新、身份/影响证据仍需后续行为验收。
+
+
+## Session 42: 记忆系统全面验收：保存通过，Autopilot续接未达标
+<!-- trellis-session: v=2 fp=e339127225997715 -->
+
+**Date**: 2026-10-22
+**Task**: 记忆系统全面验收：保存通过，Autopilot续接未达标
+**Branch**: `refactor/10-11-capability-architecture`
+
+### Summary
+
+固定fb17040隔离验收：194项成功断言、3项失败；6个claude-opus-4-8真实新会话，自动续接/纠错未通过。中文FTS回退、纠错摘要丢警告、蒸馏ledger缺翻页。未改产品或真实数据，未安装/推送/归档。
+
+### Main Changes
+
+- 记录机械与宿主验收配方、完整结果和失败证据
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `6680b3c` | docs: record memory acceptance failures and isolated host evidence |
+
+### Testing
+
+- [OK] 13个机械分区10通过3失败；journal61断言通过；6会话源码/SQLite/FK完整性通过
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 先核查Autopilot实际恢复入口，再修三处机械/展示缺口；语义模型及长期统计收益仍未验收
