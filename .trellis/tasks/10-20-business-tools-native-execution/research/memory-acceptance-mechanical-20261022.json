@@ -1,0 +1,962 @@
+{
+  "commit": "fb1704076e477cc67e24611f6b563089d5fa45c1",
+  "checks": 133,
+  "seconds": 13.315,
+  "sections": [
+    {
+      "name": "evidence-backed memory, conditional corrections, revocation",
+      "status": "passed",
+      "assertions": 34,
+      "seconds": 0.272
+    },
+    {
+      "name": "retained versions and basis propagation",
+      "status": "passed",
+      "assertions": 7,
+      "seconds": 0.04
+    },
+    {
+      "name": "text recall, lifecycle and honest model degradation",
+      "status": "passed",
+      "assertions": 23,
+      "seconds": 0.927
+    },
+    {
+      "name": "explicit relationship recall and stale-index boundaries",
+      "status": "passed",
+      "assertions": 14,
+      "seconds": 0.646
+    },
+    {
+      "name": "distillation projection and correction-status fault probe",
+      "status": "passed",
+      "assertions": 6,
+      "seconds": 0.156
+    },
+    {
+      "name": "synthetic knowledge publication integrity",
+      "status": "passed",
+      "assertions": 10,
+      "seconds": 0.023
+    },
+    {
+      "name": "surface advisory publication-review fault probe",
+      "status": "passed",
+      "assertions": 6,
+      "seconds": 0.026
+    },
+    {
+      "name": "real process persistence and isolated recovery",
+      "status": "passed",
+      "assertions": 16,
+      "seconds": 2.479
+    },
+    {
+      "name": "multilingual indexed and fresh-source relevance",
+      "status": "failed",
+      "error": "AssertionError: Building FTS must not lose existing Chinese substring recall",
+      "trace": [
+        {
+          "file": "/root/tool/ccst(rename-_Ya66f2)/ccst3/ccst/.trellis/tasks/10-20-business-tools-native-execution/research/memory-acceptance-check-20261022.py",
+          "line": 45
+        },
+        {
+          "file": "/root/tool/ccst(rename-_Ya66f2)/ccst3/ccst/.trellis/tasks/10-20-business-tools-native-execution/research/memory-acceptance-check-20261022.py",
+          "line": 546
+        },
+        {
+          "file": "/root/tool/ccst(rename-_Ya66f2)/ccst3/ccst/.trellis/tasks/10-20-business-tools-native-execution/research/memory-acceptance-check-20261022.py",
+          "line": 30
+        }
+      ],
+      "seconds": 0.981
+    },
+    {
+      "name": "1000-record accumulation, damaged index and changed bytes",
+      "status": "passed",
+      "assertions": 8,
+      "seconds": 6.691
+    },
+    {
+      "name": "corrected handoff summary warning",
+      "status": "failed",
+      "error": "AssertionError: Summary anchors must preserve challenged next-intent warning",
+      "trace": [
+        {
+          "file": "/root/tool/ccst(rename-_Ya66f2)/ccst3/ccst/.trellis/tasks/10-20-business-tools-native-execution/research/memory-acceptance-check-20261022.py",
+          "line": 45
+        },
+        {
+          "file": "/root/tool/ccst(rename-_Ya66f2)/ccst3/ccst/.trellis/tasks/10-20-business-tools-native-execution/research/memory-acceptance-check-20261022.py",
+          "line": 612
+        },
+        {
+          "file": "/root/tool/ccst(rename-_Ya66f2)/ccst3/ccst/.trellis/tasks/10-20-business-tools-native-execution/research/memory-acceptance-check-20261022.py",
+          "line": 30
+        }
+      ],
+      "seconds": 0.174
+    },
+    {
+      "name": "save committed but explicit index update fails",
+      "status": "passed",
+      "assertions": 5,
+      "seconds": 0.27
+    },
+    {
+      "name": "distillation ledger continuation beyond forty records",
+      "status": "failed",
+      "error": "AssertionError: Truncated ledger must expose usable continuation",
+      "trace": [
+        {
+          "file": "/root/tool/ccst(rename-_Ya66f2)/ccst3/ccst/.trellis/tasks/10-20-business-tools-native-execution/research/memory-acceptance-check-20261022.py",
+          "line": 45
+        },
+        {
+          "file": "/root/tool/ccst(rename-_Ya66f2)/ccst3/ccst/.trellis/tasks/10-20-business-tools-native-execution/research/memory-acceptance-check-20261022.py",
+          "line": 636
+        },
+        {
+          "file": "/root/tool/ccst(rename-_Ya66f2)/ccst3/ccst/.trellis/tasks/10-20-business-tools-native-execution/research/memory-acceptance-check-20261022.py",
+          "line": 30
+        }
+      ],
+      "seconds": 0.352
+    }
+  ],
+  "issues": [],
+  "facts": {
+    "text_recall": {
+      "no_index": {
+        "lexical": {
+          "status": "unavailable",
+          "reason": "[Errno 2] No such file or directory: '/tmp/ccst-memory-acceptance-4jm1hf66/checkout/state/memory-text.invalid/recall-index/text'"
+        },
+        "semantic": {
+          "status": "unavailable",
+          "reason": "no explicit local encoder"
+        },
+        "reranker": {
+          "status": "unavailable",
+          "reason": "no explicit local reranker"
+        }
+      },
+      "indexed_match": {
+        "channel": "fts5-bm25",
+        "lexical_rank": 1,
+        "cosine": null,
+        "rrf": null,
+        "reranker": null,
+        "partition": "target"
+      },
+      "stale_match": {
+        "channel": "fresh-source-lexical",
+        "lexical_rank": 1,
+        "cosine": null,
+        "rrf": null,
+        "reranker": null,
+        "partition": "target"
+      },
+      "failed_model_build": {
+        "status": "unavailable"
+      }
+    },
+    "relations": {
+      "initial_edges": 2,
+      "updated_edges": 3,
+      "path_epistemic": "hypothesis",
+      "stale_status": "stale"
+    },
+    "knowledge_integrity": {
+      "fixture_only": true,
+      "real_review_performed": false,
+      "review_binding_checked": true,
+      "content_truth_evaluated": false
+    },
+    "challenged_handoff": {
+      "active": {},
+      "raw_active": {},
+      "target": {
+        "schema_version": 1,
+        "target": "process-a.invalid",
+        "created_at": "2026-10-22T01:07:00.199607+00:00",
+        "updated_at": "2026-10-22T01:07:01.645152+00:00",
+        "mode": "hunt",
+        "phase": "unknown",
+        "active_goal": "",
+        "current_hypothesis": "",
+        "current_handoff": {
+          "ts": "2026-10-22T01:07:00.745697+00:00",
+          "text": "导出尚未检查",
+          "entry_id": "process-handoff",
+          "kind": "handoff",
+          "recorded_by": "operator",
+          "evidence_refs": [],
+          "structured": {
+            "conditions": "tenant=A; build=7",
+            "next_intent": "检查只读导出预览"
+          },
+          "claims": [],
+          "sources": [],
+          "source_health": [
+            {
+              "experience_id": "process-handoff",
+              "version": 2,
+              "purpose": "basis",
+              "status": "available"
+            }
+          ],
+          "review_state": "disputed",
+          "applicability": {
+            "conditions": "tenant=A; build=7",
+            "comparison": "not_evaluated",
+            "corrections": [
+              {
+                "link_id": "cancel-handoff-link",
+                "relation": "refutes",
+                "direction": "incoming",
+                "withdrawn": false,
+                "conditions": "tenant=A; build=7",
+                "source_conditions": "tenant=A; build=7",
+                "target_conditions": "tenant=A; build=7",
+                "comparison": "identical_declarations",
+                "effect": "whole_record"
+              }
+            ]
+          },
+          "correction_refs": [
+            {
+              "id": "cancel-handoff-link",
+              "experience_id": "cancel-handoff",
+              "target_id": "process-handoff",
+              "experience_version": 28,
+              "target_version": 2,
+              "relation": "refutes",
+              "conditions": "tenant=A; build=7",
+              "rationale": "Synthetic correction",
+              "revision": 29,
+              "retraction_id": null,
+              "retraction_reason": null,
+              "applicability": {
+                "conditions": "tenant=A; build=7",
+                "source_conditions": "tenant=A; build=7",
+                "target_conditions": "tenant=A; build=7",
+                "comparison": "identical_declarations",
+                "effect": "whole_record"
+              }
+            }
+          ],
+          "dependency_refs": []
+        },
+        "scope_notes": [
+          {
+            "ts": "2026-10-22T01:07:00.866970+00:00",
+            "text": "noise-0021",
+            "entry_id": "noise-0021",
+            "kind": "note",
+            "recorded_by": "fixture",
+            "evidence_refs": [],
+            "structured": {
+              "conditions": "tenant=A; release=1"
+            },
+            "claims": [],
+            "sources": [],
+            "source_health": [
+              {
+                "experience_id": "noise-0021",
+                "version": 24,
+                "purpose": "basis",
+                "status": "available"
+              }
+            ],
+            "review_state": "advisory",
+            "applicability": {
+              "conditions": "tenant=A; release=1",
+              "comparison": "not_evaluated",
+              "corrections": []
+            },
+            "correction_refs": [],
+            "dependency_refs": []
+          },
+          {
+            "ts": "2026-10-22T01:07:00.871612+00:00",
+            "text": "noise-0022",
+            "entry_id": "noise-0022",
+            "kind": "note",
+            "recorded_by": "fixture",
+            "evidence_refs": [],
+            "structured": {
+              "conditions": "tenant=A; release=1"
+            },
+            "claims": [],
+            "sources": [],
+            "source_health": [
+              {
+                "experience_id": "noise-0022",
+                "version": 25,
+                "purpose": "basis",
+                "status": "available"
+              }
+            ],
+            "review_state": "advisory",
+            "applicability": {
+              "conditions": "tenant=A; release=1",
+              "comparison": "not_evaluated",
+              "corrections": []
+            },
+            "correction_refs": [],
+            "dependency_refs": []
+          },
+          {
+            "ts": "2026-10-22T01:07:00.876130+00:00",
+            "text": "noise-0023",
+            "entry_id": "noise-0023",
+            "kind": "note",
+            "recorded_by": "fixture",
+            "evidence_refs": [],
+            "structured": {
+              "conditions": "tenant=A; release=1"
+            },
+            "claims": [],
+            "sources": [],
+            "source_health": [
+              {
+                "experience_id": "noise-0023",
+                "version": 26,
+                "purpose": "basis",
+                "status": "available"
+              }
+            ],
+            "review_state": "advisory",
+            "applicability": {
+              "conditions": "tenant=A; release=1",
+              "comparison": "not_evaluated",
+              "corrections": []
+            },
+            "correction_refs": [],
+            "dependency_refs": []
+          },
+          {
+            "ts": "2026-10-22T01:07:00.880269+00:00",
+            "text": "noise-0024",
+            "entry_id": "noise-0024",
+            "kind": "note",
+            "recorded_by": "fixture",
+            "evidence_refs": [],
+            "structured": {
+              "conditions": "tenant=A; release=1"
+            },
+            "claims": [],
+            "sources": [],
+            "source_health": [
+              {
+                "experience_id": "noise-0024",
+                "version": 27,
+                "purpose": "basis",
+                "status": "available"
+              }
+            ],
+            "review_state": "advisory",
+            "applicability": {
+              "conditions": "tenant=A; release=1",
+              "comparison": "not_evaluated",
+              "corrections": []
+            },
+            "correction_refs": [],
+            "dependency_refs": []
+          },
+          {
+            "ts": "2026-10-22T01:07:01.645152+00:00",
+            "text": "cancel-handoff",
+            "entry_id": "cancel-handoff",
+            "kind": "note",
+            "recorded_by": "fixture",
+            "evidence_refs": [],
+            "structured": {
+              "conditions": "tenant=A; build=7"
+            },
+            "claims": [],
+            "sources": [],
+            "source_health": [
+              {
+                "experience_id": "cancel-handoff",
+                "version": 28,
+                "purpose": "basis",
+                "status": "available"
+              }
+            ],
+            "review_state": "advisory",
+            "applicability": {
+              "conditions": "tenant=A; build=7",
+              "comparison": "not_evaluated",
+              "corrections": [
+                {
+                  "link_id": "cancel-handoff-link",
+                  "relation": "refutes",
+                  "direction": "outgoing",
+                  "withdrawn": false,
+                  "conditions": "tenant=A; build=7",
+                  "source_conditions": "tenant=A; build=7",
+                  "target_conditions": "tenant=A; build=7",
+                  "comparison": "identical_declarations",
+                  "effect": "whole_record"
+                }
+              ]
+            },
+            "correction_refs": [
+              {
+                "id": "cancel-handoff-link",
+                "experience_id": "cancel-handoff",
+                "target_id": "process-handoff",
+                "experience_version": 28,
+                "target_version": 2,
+                "relation": "refutes",
+                "conditions": "tenant=A; build=7",
+                "rationale": "Synthetic correction",
+                "revision": 29,
+                "retraction_id": null,
+                "retraction_reason": null,
+                "applicability": {
+                  "conditions": "tenant=A; build=7",
+                  "source_conditions": "tenant=A; build=7",
+                  "target_conditions": "tenant=A; build=7",
+                  "comparison": "identical_declarations",
+                  "effect": "whole_record"
+                }
+              }
+            ],
+            "dependency_refs": []
+          }
+        ],
+        "active_leads": [],
+        "dead_ends": [],
+        "next_actions": [
+          {
+            "ts": "2026-10-22T01:07:00.745697+00:00",
+            "text": "检查只读导出预览",
+            "entry_id": "process-handoff",
+            "kind": "handoff",
+            "recorded_by": "operator",
+            "evidence_refs": [],
+            "structured": {
+              "conditions": "tenant=A; build=7",
+              "next_intent": "检查只读导出预览"
+            },
+            "claims": [],
+            "sources": [],
+            "source_health": [
+              {
+                "experience_id": "process-handoff",
+                "version": 2,
+                "purpose": "basis",
+                "status": "available"
+              }
+            ],
+            "review_state": "disputed",
+            "applicability": {
+              "conditions": "tenant=A; build=7",
+              "comparison": "not_evaluated",
+              "corrections": [
+                {
+                  "link_id": "cancel-handoff-link",
+                  "relation": "refutes",
+                  "direction": "incoming",
+                  "withdrawn": false,
+                  "conditions": "tenant=A; build=7",
+                  "source_conditions": "tenant=A; build=7",
+                  "target_conditions": "tenant=A; build=7",
+                  "comparison": "identical_declarations",
+                  "effect": "whole_record"
+                }
+              ]
+            },
+            "correction_refs": [
+              {
+                "id": "cancel-handoff-link",
+                "experience_id": "cancel-handoff",
+                "target_id": "process-handoff",
+                "experience_version": 28,
+                "target_version": 2,
+                "relation": "refutes",
+                "conditions": "tenant=A; build=7",
+                "rationale": "Synthetic correction",
+                "revision": 29,
+                "retraction_id": null,
+                "retraction_reason": null,
+                "applicability": {
+                  "conditions": "tenant=A; build=7",
+                  "source_conditions": "tenant=A; build=7",
+                  "target_conditions": "tenant=A; build=7",
+                  "comparison": "identical_declarations",
+                  "effect": "whole_record"
+                }
+              }
+            ],
+            "dependency_refs": []
+          }
+        ],
+        "useful_patterns": [],
+        "session_handoffs": [],
+        "facts": {}
+      },
+      "recent_entries": [
+        {
+          "ts": "2026-10-22T01:07:01.645152+00:00",
+          "text": "cancel-handoff",
+          "entry_id": "cancel-handoff",
+          "kind": "note",
+          "recorded_by": "fixture",
+          "evidence_refs": [],
+          "structured": {
+            "conditions": "tenant=A; build=7"
+          },
+          "claims": [],
+          "sources": [],
+          "source_health": [
+            {
+              "experience_id": "cancel-handoff",
+              "version": 28,
+              "purpose": "basis",
+              "status": "available"
+            }
+          ],
+          "review_state": "advisory",
+          "applicability": {
+            "conditions": "tenant=A; build=7",
+            "comparison": "not_evaluated",
+            "corrections": [
+              {
+                "link_id": "cancel-handoff-link",
+                "relation": "refutes",
+                "direction": "outgoing",
+                "withdrawn": false,
+                "conditions": "tenant=A; build=7",
+                "source_conditions": "tenant=A; build=7",
+                "target_conditions": "tenant=A; build=7",
+                "comparison": "identical_declarations",
+                "effect": "whole_record"
+              }
+            ]
+          },
+          "correction_refs": [
+            {
+              "id": "cancel-handoff-link",
+              "experience_id": "cancel-handoff",
+              "target_id": "process-handoff",
+              "experience_version": 28,
+              "target_version": 2,
+              "relation": "refutes",
+              "conditions": "tenant=A; build=7",
+              "rationale": "Synthetic correction",
+              "revision": 29,
+              "retraction_id": null,
+              "retraction_reason": null,
+              "applicability": {
+                "conditions": "tenant=A; build=7",
+                "source_conditions": "tenant=A; build=7",
+                "target_conditions": "tenant=A; build=7",
+                "comparison": "identical_declarations",
+                "effect": "whole_record"
+              }
+            }
+          ],
+          "dependency_refs": []
+        },
+        {
+          "ts": "2026-10-22T01:07:00.880269+00:00",
+          "text": "noise-0024",
+          "entry_id": "noise-0024",
+          "kind": "note",
+          "recorded_by": "fixture",
+          "evidence_refs": [],
+          "structured": {
+            "conditions": "tenant=A; release=1"
+          },
+          "claims": [],
+          "sources": [],
+          "source_health": [
+            {
+              "experience_id": "noise-0024",
+              "version": 27,
+              "purpose": "basis",
+              "status": "available"
+            }
+          ],
+          "review_state": "advisory",
+          "applicability": {
+            "conditions": "tenant=A; release=1",
+            "comparison": "not_evaluated",
+            "corrections": []
+          },
+          "correction_refs": [],
+          "dependency_refs": []
+        },
+        {
+          "ts": "2026-10-22T01:07:00.876130+00:00",
+          "text": "noise-0023",
+          "entry_id": "noise-0023",
+          "kind": "note",
+          "recorded_by": "fixture",
+          "evidence_refs": [],
+          "structured": {
+            "conditions": "tenant=A; release=1"
+          },
+          "claims": [],
+          "sources": [],
+          "source_health": [
+            {
+              "experience_id": "noise-0023",
+              "version": 26,
+              "purpose": "basis",
+              "status": "available"
+            }
+          ],
+          "review_state": "advisory",
+          "applicability": {
+            "conditions": "tenant=A; release=1",
+            "comparison": "not_evaluated",
+            "corrections": []
+          },
+          "correction_refs": [],
+          "dependency_refs": []
+        },
+        {
+          "ts": "2026-10-22T01:07:00.871612+00:00",
+          "text": "noise-0022",
+          "entry_id": "noise-0022",
+          "kind": "note",
+          "recorded_by": "fixture",
+          "evidence_refs": [],
+          "structured": {
+            "conditions": "tenant=A; release=1"
+          },
+          "claims": [],
+          "sources": [],
+          "source_health": [
+            {
+              "experience_id": "noise-0022",
+              "version": 25,
+              "purpose": "basis",
+              "status": "available"
+            }
+          ],
+          "review_state": "advisory",
+          "applicability": {
+            "conditions": "tenant=A; release=1",
+            "comparison": "not_evaluated",
+            "corrections": []
+          },
+          "correction_refs": [],
+          "dependency_refs": []
+        },
+        {
+          "ts": "2026-10-22T01:07:00.866970+00:00",
+          "text": "noise-0021",
+          "entry_id": "noise-0021",
+          "kind": "note",
+          "recorded_by": "fixture",
+          "evidence_refs": [],
+          "structured": {
+            "conditions": "tenant=A; release=1"
+          },
+          "claims": [],
+          "sources": [],
+          "source_health": [
+            {
+              "experience_id": "noise-0021",
+              "version": 24,
+              "purpose": "basis",
+              "status": "available"
+            }
+          ],
+          "review_state": "advisory",
+          "applicability": {
+            "conditions": "tenant=A; release=1",
+            "comparison": "not_evaluated",
+            "corrections": []
+          },
+          "correction_refs": [],
+          "dependency_refs": []
+        }
+      ],
+      "active_matches": false,
+      "source": {
+        "kind": "store",
+        "store_id": "0e91c5b33aee4cefb7d8c27e96247d8f",
+        "revision": 29,
+        "experience_window": {
+          "total": 28,
+          "remaining": 23,
+          "has_more": true,
+          "next_cursor": "eyJhZnRlciI6IFsiMjAyNi0xMC0yMlQwMTowNzowMC44NjY5NzArMDA6MDAiLCAibm9pc2UtMDAyMSJdLCAia2luZCI6ICJleHBlcmllbmNlcyIsICJraW5kcyI6IFsiaGFuZG9mZiIsICJoeXBvdGhlc2lzIiwgIm5lZ2F0aXZlIiwgIm5vdGUiLCAicHJpbWl0aXZlIl0sICJvcmRlciI6ICJjcmVhdGVkX2F0X2Rlc2MsaWRfZGVzYyIsICJxdWVyeSI6ICIiLCAicmV2aXNpb24iOiAyOSwgInN0YXR1cyI6IG51bGwsICJzdG9yZV9pZCI6ICIwZTkxYzViMzNhZWU0Y2VmYjdkOGMyN2U5NjI0N2Q4ZiIsICJ0YXJnZXQiOiAicHJvY2Vzcy1hLmludmFsaWQiLCAidmVyc2lvbiI6IDF9",
+          "cursor_owner": "TargetStore.experience_page",
+          "recall_command": "python3 tools/experience_recall.py query --repo-root /tmp/ccst-memory-acceptance-4jm1hf66/checkout --target process-a.invalid --limit 5",
+          "history_command": "python3 tools/experience_recall.py history --repo-root /tmp/ccst-memory-acceptance-4jm1hf66/checkout --target process-a.invalid --limit 5",
+          "next_command": "python3 tools/experience_recall.py history --repo-root /tmp/ccst-memory-acceptance-4jm1hf66/checkout --target process-a.invalid --limit 5 --cursor eyJhZnRlciI6IFsiMjAyNi0xMC0yMlQwMTowNzowMC44NjY5NzArMDA6MDAiLCAibm9pc2UtMDAyMSJdLCAia2luZCI6ICJleHBlcmllbmNlcyIsICJraW5kcyI6IFsiaGFuZG9mZiIsICJoeXBvdGhlc2lzIiwgIm5lZ2F0aXZlIiwgIm5vdGUiLCAicHJpbWl0aXZlIl0sICJvcmRlciI6ICJjcmVhdGVkX2F0X2Rlc2MsaWRfZGVzYyIsICJxdWVyeSI6ICIiLCAicmV2aXNpb24iOiAyOSwgInN0YXR1cyI6IG51bGwsICJzdG9yZV9pZCI6ICIwZTkxYzViMzNhZWU0Y2VmYjdkOGMyN2U5NjI0N2Q4ZiIsICJ0YXJnZXQiOiAicHJvY2Vzcy1hLmludmFsaWQiLCAidmVyc2lvbiI6IDF9",
+          "expand_command": "python3 tools/experience_recall.py history --repo-root /tmp/ccst-memory-acceptance-4jm1hf66/checkout --target process-a.invalid --limit 5 --id EXPERIENCE_ID"
+        }
+      },
+      "active_path": "/tmp/ccst-memory-acceptance-4jm1hf66/checkout/memory/goals/active.json",
+      "target_path": "/tmp/ccst-memory-acceptance-4jm1hf66/checkout/state/process-a.invalid/metadata.sqlite3"
+    },
+    "multilingual": {
+      "without_index": {
+        "匿名访问财务导出被拒绝": [
+          {
+            "id": "experience:zh",
+            "channel": "fresh-source-lexical"
+          }
+        ],
+        "匿名": [
+          {
+            "id": "experience:zh",
+            "channel": "fresh-source-lexical"
+          }
+        ],
+        "未登录导出账单": [],
+        "Unauthenticated": [
+          {
+            "id": "experience:en",
+            "channel": "fresh-source-lexical"
+          }
+        ],
+        "unauthenticated invoice export": [
+          {
+            "id": "experience:en",
+            "channel": "fresh-source-lexical"
+          }
+        ],
+        "download bills without login": []
+      },
+      "with_fts": {
+        "匿名访问财务导出被拒绝": [
+          {
+            "id": "experience:zh",
+            "channel": "fts5-bm25"
+          }
+        ],
+        "匿名": [],
+        "未登录导出账单": [],
+        "Unauthenticated": [
+          {
+            "id": "experience:en",
+            "channel": "fts5-bm25"
+          }
+        ],
+        "unauthenticated invoice export": [
+          {
+            "id": "experience:en",
+            "channel": "fts5-bm25"
+          }
+        ],
+        "download bills without login": []
+      },
+      "paraphrase_guarantee": false,
+      "semantic_requested": false
+    },
+    "accumulation": {
+      "samples": [
+        {
+          "records": 200,
+          "query_seconds": 0.1155,
+          "hits": [
+            "experience:acc-00000"
+          ]
+        },
+        {
+          "records": 1000,
+          "query_seconds": 0.2935,
+          "hits": [
+            "experience:acc-00000"
+          ]
+        }
+      ],
+      "fts_build_seconds": 0.5885,
+      "indexed_query_seconds": 0.3067,
+      "records": 1000
+    },
+    "summary_warning": {
+      "handoff_state": "disputed",
+      "next_actions": [
+        {
+          "ts": "2026-10-22T01:07:10.504279+00:00",
+          "text": "继续旧方向",
+          "entry_id": "h-old",
+          "kind": "handoff",
+          "recorded_by": "fixture",
+          "evidence_refs": [],
+          "structured": {
+            "conditions": "tenant=A",
+            "next_intent": "继续旧方向"
+          },
+          "claims": [],
+          "sources": [],
+          "source_health": [
+            {
+              "experience_id": "h-old",
+              "version": 1,
+              "purpose": "basis",
+              "status": "available"
+            }
+          ],
+          "review_state": "disputed",
+          "applicability": {
+            "conditions": "tenant=A",
+            "comparison": "not_evaluated",
+            "corrections": [
+              {
+                "link_id": "counter-link",
+                "relation": "refutes",
+                "direction": "incoming",
+                "withdrawn": false,
+                "conditions": "tenant=A",
+                "source_conditions": "tenant=A",
+                "target_conditions": "tenant=A",
+                "comparison": "identical_declarations",
+                "effect": "whole_record"
+              }
+            ]
+          },
+          "correction_refs": [
+            {
+              "id": "counter-link",
+              "experience_id": "counter",
+              "target_id": "h-old",
+              "experience_version": 2,
+              "target_version": 1,
+              "relation": "refutes",
+              "conditions": "tenant=A",
+              "rationale": "Synthetic correction",
+              "revision": 3,
+              "retraction_id": null,
+              "retraction_reason": null,
+              "applicability": {
+                "conditions": "tenant=A",
+                "source_conditions": "tenant=A",
+                "target_conditions": "tenant=A",
+                "comparison": "identical_declarations",
+                "effect": "whole_record"
+              }
+            }
+          ],
+          "dependency_refs": []
+        }
+      ],
+      "anchors": [
+        "Current next intent (advisory, not Queue): 继续旧方向"
+      ]
+    },
+    "index_partial": {
+      "target": "partial-index.invalid",
+      "receipt": {
+        "revision": 1,
+        "command_id": "invalid-update",
+        "command": "remember",
+        "entity_id": "invalid-update",
+        "actor": "operator",
+        "content_sha256": "66a2080eecf5fc019481609ab57044118517cc072fca02d3750d4c608fa0c97a",
+        "recorded_at": "2026-10-22T01:07:10.739215+00:00",
+        "replayed": false
+      },
+      "save_status": "saved",
+      "index_update": {
+        "requested": "text",
+        "partition": "target",
+        "status": "partial",
+        "indexes": {
+          "text": {
+            "result": {
+              "health": {
+                "status": "unavailable"
+              },
+              "acquisition": {
+                "mode": "full",
+                "full_acquisition_reason": "generation_unavailable",
+                "experience_rows_read": 1,
+                "owner_groups_read": 0,
+                "reused_experiences": 0,
+                "external_probes": 0,
+                "knowledge_acquisition": "not_requested",
+                "knowledge_parse": {
+                  "mode": "not_requested"
+                }
+              },
+              "partitions": {
+                "target": {
+                  "manifest": null,
+                  "health": {
+                    "status": "unavailable",
+                    "reason": "requested encoder unavailable; previous generation preserved: model requires an existing non-symlink local directory"
+                  },
+                  "provider": {
+                    "status": "unavailable",
+                    "reason": "model requires an existing non-symlink local directory"
+                  },
+                  "source_health": {
+                    "target": {
+                      "status": "ready"
+                    }
+                  },
+                  "acquisition": {
+                    "mode": "full",
+                    "full_acquisition_reason": "generation_unavailable",
+                    "experience_rows_read": 1,
+                    "owner_groups_read": 0,
+                    "reused_experiences": 0,
+                    "external_probes": 0,
+                    "knowledge_acquisition": "not_requested",
+                    "knowledge_parse": {
+                      "mode": "not_requested"
+                    }
+                  }
+                }
+              }
+            },
+            "recovery_command": "python3 tools/experience_recall.py index-build --repo-root /tmp/ccst-memory-acceptance-4jm1hf66/checkout --full-rebuild --target partial-index.invalid --no-knowledge --encoder-path /tmp/ccst-memory-acceptance-4jm1hf66/missing-encoder"
+          }
+        },
+        "reason": "Save committed; index update incomplete. Rebuild only the index; do not repeat the save."
+      },
+      "partial": true
+    },
+    "distill_ledger": {
+      "source_count": 45,
+      "visible_count": 40,
+      "windows": {
+        "findings": {
+          "total": 0,
+          "remaining": 0,
+          "has_more": false,
+          "next_cursor": null,
+          "store_id": "42872ae30cc24cbc8cad409855705bce",
+          "revision": 90,
+          "order": "id",
+          "next_command": "",
+          "expand_command": "python3 tools/target_store.py findings --repo-root /tmp/ccst-memory-acceptance-4jm1hf66/checkout --limit 10 --target ledger-window.invalid --id FINDING_ID"
+        },
+        "experiences": {
+          "total": 0,
+          "remaining": 0,
+          "has_more": false,
+          "next_cursor": null,
+          "store_id": "42872ae30cc24cbc8cad409855705bce",
+          "revision": 90,
+          "order": "created_at_desc,id_desc",
+          "next_command": "",
+          "expand_command": "python3 tools/experience_recall.py history --repo-root /tmp/ccst-memory-acceptance-4jm1hf66/checkout --json --limit 10 --target ledger-window.invalid --id EXPERIENCE_ID"
+        }
+      },
+      "view_head": "## Current evidence health: {\"status\": \"ready\", \"source_kind\": \"store\", \"invalid_count\": 0, \"invalid_rows\": [], \"last_valid_offset\": 0}\nsource_truncated=False; results and technical verdicts below are historical judgments, not current raw integrity.\n## Evidence Ledger（最近 40 条，机器事实）\n- operation:d31002a28c38643faa1d4a5b2fabba143fc2e9deed8a098f2d7d06a01f60800b:0 GET /synthetic [synthetic//] result= ref=evidence/ledger-window.invalid/obs-05.txt\n- operation:fddbd929da8ca09ee0f37dce0055bb8ed482bc834cf662c1ef91cd42f968a52d:0 GET /synthetic [synthetic//] result= ref=evidence/ledger-window.invalid/obs-06.txt\n- operation:0ea8da71f7445f8672078b63482ff20811e45742b2f957f58cd65479f2f64d88:0 GET /synthetic [synthetic//] result= ref=evidence/ledger-window.invalid/obs-07.txt\n- operation:e866bb5337328830811"
+    }
+  },
+  "isolation": {
+    "source_files": 142,
+    "source": "fixed commit archive",
+    "project_tests_read_or_run": false,
+    "real_target_data_read": false,
+    "real_knowledge_read_or_published": false,
+    "network_allowed": false,
+    "model_experiment_or_human_review": false,
+    "production_code_changed": false
+  }
+}

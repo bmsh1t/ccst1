@@ -1,0 +1,329 @@
+{
+  "a_save": {
+    "model": "claude-opus-4-8",
+    "cli": "2.1.304",
+    "exit": 0,
+    "seconds": 66.842,
+    "subtype": "success",
+    "turns": 23,
+    "cost_usd_cli": 0.490399,
+    "tools": {
+      "Read": 3,
+      "Bash": 19
+    },
+    "owner_calls": [
+      {
+        "line": 234,
+        "name": "Bash",
+        "input": {
+          "command": "ls skills | head; echo ---; find skills -name 'runtime-protocol*'; echo ---; python3 tools/target_memory.py show memory-lab.invalid 2>&1 | head -60",
+          "description": "Locate runtime protocol and show target memory"
+        }
+      },
+      {
+        "line": 238,
+        "name": "Bash",
+        "input": {
+          "command": "python3 tools/target_memory.py --help 2>&1 | head -40",
+          "description": "Show target_memory CLI options"
+        }
+      },
+      {
+        "line": 277,
+        "name": "Bash",
+        "input": {
+          "command": "python3 tools/target_memory.py note --help 2>&1 | head -30; echo ---; python3 tools/target_memory.py handoff --help 2>&1 | head -30; echo ---; python3 tools/target_memory.py lead --help 2>&1 | head -30",
+          "description": "Show note/handoff/lead usage"
+        }
+      },
+      {
+        "line": 593,
+        "name": "Bash",
+        "input": {
+          "command": "python3 tools/target_memory.py fact --help 2>&1 | sed -n '1,25p'; echo ---; python3 tools/target_memory.py next --help 2>&1 | sed -n '1,20p'",
+          "description": "Show fact and next usage"
+        }
+      },
+      {
+        "line": 988,
+        "name": "Bash",
+        "input": {
+          "command": "python3 tools/target_memory.py fact --target memory-lab.invalid --key export-anonymous-baseline \"合成演练记录（offline/export-notes.md，无真实 execution 登记）：部署 Copper r7，匿名 GET /exports/preview 返回 401。仅证明匿名基线，不覆盖成员态，也不能当作导出权限结论。\" --json 2>&1 | head -20",
+          "description": "Record anonymous baseline fact"
+        }
+      },
+      {
+        "line": 997,
+        "name": "Bash",
+        "input": {
+          "command": "set -e\npython3 tools/target_memory.py fact --target memory-lab.invalid --key export-copper-member-baseline \"受控 Copper 成员使用自身对象 exp-c7-042，在只读预览 /exports/preview?file_kind=ledger_csv 成功。这是成员访问自身对象的基线，不证明可访问他人或其他租户对象。\" --json >/dev/null\npython3 tools/target_memory.py fact --target memory-lab.invalid --key export-format-csv-legacy \"format=csv 是该部署的 UI 历史参数，结果为空壳 HTML；不能据此判断导出权限，后续判断以 file_kind 表示的返回内容为准。\" --json >/dev/null\npython3 tools/target_memory.py fact --target memory-lab.invalid --key export-brass-object-pending \"Brass 租户受控对象为 exp-b7-109；跨租户比较尚未执行。两租户测试身份尚未提供，不可假设已有 session。\" --json >/dev/null\npython3 tools/target_memory.py fact --target memory-lab.invalid --key export-canary-lantern-4821 \"A-only canary：LANTERN-4821。仅属于本目标的诊断标记，没有业务含义。\" --json >/dev/null\necho ok",
+          "description": "Record remaining export boundary facts"
+        }
+      },
+      {
+        "line": 1116,
+        "name": "Bash",
+        "input": {
+          "command": "python3 tools/target_memory.py handoff --target memory-lab.invalid --conditions \"部署 Copper r7，对照租户 Brass；身份：Copper 成员持自身对象 exp-c7-042，Brass 测试身份未提供；表示：只读预览 /exports/preview?file_kind=ledger_csv；材料为合成演练记录，无真实 execution 登记\" --next-intent \"待获得 Copper/Brass 两租户测试身份与执行授权后：先分别取两租户自身对象的预览基线，再用 Copper 身份请求 Brass 对象 exp-b7-109 的同一表示并比较；届时需先登记真实执行，未授权前不做真实请求、不建 Finding、不断言漏洞。\" \"离线导出边界整理完毕：匿名 /exports/preview 401 只是匿名基线；Copper 成员对自身 exp-c7-042 的 ledger_csv 只读预览成功是成员态基线；format=csv 为 UI 历史参数、返回空壳 HTML，不可用于权限判断；Brass 对象 exp-b7-109 的跨租户比较尚未执行；测试身份未提供。材料均属合成测试记录，未形成已验证漏洞或真实执行登记。\" --json 2>&1 | tail -20",
+          "description": "Write end-of-session handoff"
+        }
+      },
+      {
+        "line": 1131,
+        "name": "Bash",
+        "input": {
+          "command": "python3 tools/target_memory.py show memory-lab.invalid 2>&1 | sed -n '1,40p'",
+          "description": "Verify saved target memory"
+        }
+      }
+    ],
+    "plan_exists": false,
+    "binding_after": {
+      "store_id": "19898e6b4d4c48639b571a02cb9d726c",
+      "revision": 6
+    },
+    "counts_after": {
+      "experiences": 6,
+      "observations": 0,
+      "findings": 0,
+      "reports": 0
+    },
+    "changed_before_files": [],
+    "source_changed": [],
+    "db_integrity": "ok",
+    "fk_errors": [],
+    "expected_tokens_in_output": {
+      "ledger_csv": true,
+      "rows_json": false,
+      "exp-c7-042": true,
+      "exp-b7-109": true,
+      "Copper": true,
+      "Brass": true,
+      "format=csv": true,
+      "匿名": true,
+      "401": true,
+      "LANTERN-4821": true
+    },
+    "unexpected_network_tool_calls": [],
+    "stderr_bytes": 0
+  },
+  "b_recall": {
+    "model": "claude-opus-4-8",
+    "cli": "2.1.304",
+    "exit": 0,
+    "seconds": 209.831,
+    "subtype": "success",
+    "turns": 6,
+    "cost_usd_cli": 0.1847265,
+    "tools": {
+      "ListAgents": 1,
+      "Glob": 4
+    },
+    "owner_calls": [],
+    "plan_exists": false,
+    "binding_after": {
+      "store_id": "19898e6b4d4c48639b571a02cb9d726c",
+      "revision": 36
+    },
+    "counts_after": {
+      "experiences": 36,
+      "observations": 0,
+      "findings": 0,
+      "reports": 0
+    },
+    "changed_before_files": [],
+    "source_changed": [],
+    "db_integrity": "ok",
+    "fk_errors": [],
+    "expected_tokens_in_output": {
+      "ledger_csv": false,
+      "rows_json": false,
+      "exp-c7-042": false,
+      "exp-b7-109": false,
+      "Copper": false,
+      "Brass": false,
+      "format=csv": false,
+      "匿名": false,
+      "401": false,
+      "LANTERN-4821": false
+    },
+    "unexpected_network_tool_calls": [],
+    "stderr_bytes": 0,
+    "revision_before": 36
+  },
+  "b_empty": {
+    "model": "claude-opus-4-8",
+    "cli": "2.1.304",
+    "exit": 0,
+    "seconds": 143.481,
+    "subtype": "success",
+    "turns": 13,
+    "cost_usd_cli": 0.37036,
+    "tools": {
+      "ListAgents": 3,
+      "Glob": 9
+    },
+    "owner_calls": [],
+    "plan_exists": false,
+    "binding_after": {
+      "store_id": "42f1ed89ff0147bf8ff6cc659754e3b1",
+      "revision": 0
+    },
+    "counts_after": {
+      "experiences": 0,
+      "observations": 0,
+      "findings": 0,
+      "reports": 0
+    },
+    "changed_before_files": [],
+    "source_changed": [],
+    "db_integrity": "ok",
+    "fk_errors": [],
+    "expected_tokens_in_output": {
+      "ledger_csv": false,
+      "rows_json": false,
+      "exp-c7-042": false,
+      "exp-b7-109": false,
+      "Copper": false,
+      "Brass": false,
+      "format=csv": false,
+      "匿名": false,
+      "401": false,
+      "LANTERN-4821": false
+    },
+    "unexpected_network_tool_calls": [],
+    "stderr_bytes": 0,
+    "revision_before": 0
+  },
+  "c_corrected": {
+    "model": "claude-opus-4-8",
+    "cli": "2.1.304",
+    "exit": 1,
+    "seconds": 110.924,
+    "subtype": "error_max_turns",
+    "turns": 17,
+    "cost_usd_cli": 0.60999,
+    "tools": {
+      "ListAgents": 3,
+      "Glob": 3,
+      "Read": 9,
+      "Write": 2,
+      "Edit": 1
+    },
+    "owner_calls": [],
+    "plan_exists": true,
+    "binding_after": {
+      "store_id": "19898e6b4d4c48639b571a02cb9d726c",
+      "revision": 39
+    },
+    "counts_after": {
+      "experiences": 38,
+      "observations": 0,
+      "findings": 0,
+      "reports": 0
+    },
+    "changed_before_files": [],
+    "source_changed": [],
+    "db_integrity": "ok",
+    "fk_errors": [],
+    "expected_tokens_in_output": {
+      "ledger_csv": false,
+      "rows_json": false,
+      "exp-c7-042": false,
+      "exp-b7-109": false,
+      "Copper": false,
+      "Brass": false,
+      "format=csv": false,
+      "匿名": false,
+      "401": false,
+      "LANTERN-4821": false
+    },
+    "unexpected_network_tool_calls": [],
+    "stderr_bytes": 0,
+    "revision_before": 39
+  },
+  "d_unrelated": {
+    "model": "claude-opus-4-8",
+    "cli": "2.1.304",
+    "exit": 0,
+    "seconds": 17.343,
+    "subtype": "success",
+    "turns": 1,
+    "cost_usd_cli": 0.155035,
+    "tools": {},
+    "owner_calls": [],
+    "plan_exists": false,
+    "binding_after": {
+      "store_id": "19898e6b4d4c48639b571a02cb9d726c",
+      "revision": 6
+    },
+    "counts_after": {
+      "experiences": 6,
+      "observations": 0,
+      "findings": 0,
+      "reports": 0
+    },
+    "changed_before_files": [],
+    "source_changed": [],
+    "db_integrity": "ok",
+    "fk_errors": [],
+    "expected_tokens_in_output": {
+      "ledger_csv": false,
+      "rows_json": false,
+      "exp-c7-042": false,
+      "exp-b7-109": false,
+      "Copper": false,
+      "Brass": false,
+      "format=csv": false,
+      "匿名": false,
+      "401": false,
+      "LANTERN-4821": false
+    },
+    "unexpected_network_tool_calls": [],
+    "stderr_bytes": 0,
+    "revision_before": 6
+  },
+  "e_readonly": {
+    "model": "claude-opus-4-8",
+    "cli": "2.1.304",
+    "exit": 0,
+    "seconds": 45.662,
+    "subtype": "success",
+    "turns": 18,
+    "cost_usd_cli": 0.382267,
+    "tools": {
+      "Bash": 17
+    },
+    "owner_calls": [],
+    "plan_exists": false,
+    "binding_after": {
+      "store_id": "19898e6b4d4c48639b571a02cb9d726c",
+      "revision": 6
+    },
+    "counts_after": {
+      "experiences": 6,
+      "observations": 0,
+      "findings": 0,
+      "reports": 0
+    },
+    "changed_before_files": [],
+    "source_changed": [],
+    "db_integrity": "ok",
+    "fk_errors": [],
+    "expected_tokens_in_output": {
+      "ledger_csv": true,
+      "rows_json": false,
+      "exp-c7-042": true,
+      "exp-b7-109": true,
+      "Copper": true,
+      "Brass": true,
+      "format=csv": true,
+      "匿名": true,
+      "401": true,
+      "LANTERN-4821": false
+    },
+    "unexpected_network_tool_calls": [],
+    "stderr_bytes": 0,
+    "revision_before": 6
+  }
+}

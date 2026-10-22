@@ -1,0 +1,1 @@
+{"status": "passed", "baseline": "fb1704076e477cc67e24611f6b563089d5fa45c1", "overlay": [], "assertions": 61, "seconds": 1.095, "scope": "synthetic Store/journal; no project tests, private data, network or host execution"}
