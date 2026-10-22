@@ -34,13 +34,21 @@
   查询不构建索引、迁移或下载模型；显式建设才使用已提供的真实模型，缺模型明示 unavailable。
   关系路径是待验证假设，不能写 Action/Finding 或授权执行。
 
-唯一 src-hunter 保留平台原生 description 发现；显式 Autopilot 调查使用它，加载与复用遵守
-`commands/autopilot.md#investigation-skill`（round 共享同一入口）。先完成当轮 Bootstrap 与必要
-执行恢复，再选择新调查；查知识不抢占真实锁和待回收执行。九专项是其内部按需模块。
+九专项是 src-hunter 的内部按需模块；知识读取不抢占真实锁和待回收执行。
 历史 related_skills 标签不是可直接调用的原生 Skill；需要定位时经
 `python3 tools/skill_reference_contract.py REFERENCE --repo-root ROOT --json` 精确解析当前阅读路径，
 再原生 Read 正文。该导航不改卡字节/审核版本，不选择路线或登记查阅。
 Queue/Store 不持有 Skill 注册表或知识推荐状态。
+
+## Native Skill Loading
+
+唯一 `src-hunter` 保留原生 description 发现。显式 Autopilot（含 Round）在 Bootstrap
+准入及必要执行恢复后、选择新调查前使用它。当前完整正文可复用；缺失时用原生 Skill
+工具调用 `src-hunter`，无该工具的宿主才读取所选 checkout 的完整
+`skills/src-hunter/SKILL.md`。description、路径或 hash 不能代替正文；压缩后缺失须恢复，
+不按 lane/round 重复调用。等待、终态清理和执行恢复无需新调用。
+在同一会话中携带当前目标/Scope、事实、模式和剩余预算应用它；不新开调查或委派。
+方法读取按 Shared Knowledge Recall，加载 Skill 或短表不等于已经应用具体方法。
 
 ## Shared Memory Continuity
 

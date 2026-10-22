@@ -80,7 +80,7 @@ Missing, malformed, or stale Surface never blocks settle or flips a settled roun
 Surface-backed advisory lead open until a later explicit `/surface` refresh.
 ### Status
 First validate coordinator `status`/`round_progress`; unknown/malformed means ERROR.
-Prepare/settle/replay `review_required`: shared Global Review + fresh Closure; no new lane/round.
+Prepare/settle/replay `review_required`: apply `commands/checkpoint.md#global-review`, then fresh Closure; no new lane/round.
 After review discard old coordinator status; project current
 `closure` and `structured_findings.reported`:
 - Review still required: `STATUS: CONTINUE next_action=global-review`

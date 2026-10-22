@@ -45,8 +45,16 @@ AI 决定测试顺序、下一行动、全局复核结论和是否重开历史�
 浏览器材料并记录导入结果；失败保留可诊断状态，heartbeat 仍保存。导入默认不登记待审
 行动；需要登记时单独运行 `browser_mcp_import.py --focused-manifest ... --enqueue`。
 
-完成一次有实质 lane 的 Autopilot round 后，目标范围的最终综合复核仍由同一
-Checkpoint owner 记录。先读取 Closure 返回的 `snapshot_digest`，再写入当前证据引用：
+### Global Review
+
+Autopilot 声称耗尽前，以及 Round 返回 `review_required` 时，先读 Coverage 与 Closure，
+再综合复核当前目标：Surface/Observation 长尾、Coverage/Ledger/Finding、Case/业务链、
+Queue/待报告/Runtime、资产关系/`chain_context`、Browser/JS/Source/Intel，及范围、
+外部依赖、阻塞和残余候选。按需展开证据；外部关系只作被动背景，缺失或截断不算完成。
+Actor 缺口只限制对应比较；观察残余不自动生成行动。
+
+同一 Checkpoint owner 记录复核：先取 Closure 的 `snapshot_digest`，再提交当前证据引用。
+写回后重读 Closure；只有 `closure.verdict=finish` 且 `can_claim_exhausted=true` 才能声称耗尽。
 
 ```bash
 python3 tools/checkpoint.py --target target.com --record-global-review \

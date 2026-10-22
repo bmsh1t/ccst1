@@ -1,0 +1,169 @@
+{
+  "status": "passed",
+  "baseline": "1c6fb2f981d69378cd1d8ece646f09bc64413b11",
+  "resolved_references": 42,
+  "command_before_bytes": 14326,
+  "command_after_bytes": 6242,
+  "command_sha256": "60bc645322ec18b04f4bbc467a8c4f35f634ba36fc272257a3bb5b3befd4f421",
+  "reading_sets": {
+    "owners_full_files": {
+      "before": {
+        "sources": {
+          "commands/autopilot.md": 14326,
+          "commands/autopilot-round.md": 6042,
+          "commands/checkpoint.md": 5312,
+          "skills/runtime-protocol.md": 11033
+        },
+        "bytes": 36713
+      },
+      "after": {
+        "sources": {
+          "commands/autopilot.md": 6242,
+          "commands/autopilot-round.md": 6070,
+          "commands/checkpoint.md": 5847,
+          "skills/runtime-protocol.md": 11525
+        },
+        "bytes": 29684
+      }
+    },
+    "startup_sections": {
+      "before": {
+        "sources": {
+          "commands/autopilot.md": 14326,
+          "skills/runtime-protocol.md#Shared Knowledge Recall": 3367,
+          "skills/runtime-protocol.md#Shared Memory Continuity": 3244,
+          "skills/src-hunter/SKILL.md": 17193,
+          "skills/src-hunter/知识库/打穿短表.md": 42596
+        },
+        "bytes": 80726
+      },
+      "after": {
+        "sources": {
+          "commands/autopilot.md": 6242,
+          "skills/runtime-protocol.md#Shared Knowledge Recall": 3119,
+          "skills/runtime-protocol.md#Shared Memory Continuity": 3244,
+          "skills/src-hunter/SKILL.md": 17193,
+          "skills/src-hunter/知识库/打穿短表.md": 42596,
+          "skills/runtime-protocol.md#Native Skill Loading": 738
+        },
+        "bytes": 73132
+      }
+    },
+    "action_sections": {
+      "before": {
+        "sources": {
+          "commands/autopilot.md": 14326,
+          "skills/runtime-protocol.md#Shared Knowledge Recall": 3367,
+          "skills/runtime-protocol.md#Shared Memory Continuity": 3244,
+          "skills/src-hunter/SKILL.md": 17193,
+          "skills/src-hunter/知识库/打穿短表.md": 42596,
+          "rules/ccst/hunting.md": 6332,
+          "rules/ccst/tool-ai-boundary.md": 4661,
+          "skills/runtime-protocol.md#5. Execution and write-back": 1344,
+          "docs/autopilot-lanes.md#State And Queue": 5466,
+          "docs/evidence-runners.md#绑定已认领行动": 1279
+        },
+        "bytes": 99808
+      },
+      "after": {
+        "sources": {
+          "commands/autopilot.md": 6242,
+          "skills/runtime-protocol.md#Shared Knowledge Recall": 3119,
+          "skills/runtime-protocol.md#Shared Memory Continuity": 3244,
+          "skills/src-hunter/SKILL.md": 17193,
+          "skills/src-hunter/知识库/打穿短表.md": 42596,
+          "skills/runtime-protocol.md#Native Skill Loading": 738,
+          "rules/ccst/hunting.md": 6332,
+          "rules/ccst/tool-ai-boundary.md": 4661,
+          "skills/runtime-protocol.md#5. Execution and write-back": 1344,
+          "docs/autopilot-lanes.md#State And Queue": 5466,
+          "docs/evidence-runners.md#绑定已认领行动": 1279
+        },
+        "bytes": 92214
+      }
+    },
+    "exhaustion_sections": {
+      "before": {
+        "sources": {
+          "commands/autopilot.md": 14326,
+          "skills/runtime-protocol.md#Shared Knowledge Recall": 3367,
+          "skills/runtime-protocol.md#Shared Memory Continuity": 3244,
+          "skills/src-hunter/SKILL.md": 17193,
+          "skills/src-hunter/知识库/打穿短表.md": 42596,
+          "rules/ccst/hunting.md": 6332,
+          "rules/ccst/tool-ai-boundary.md": 4661,
+          "skills/runtime-protocol.md#5. Execution and write-back": 1344,
+          "docs/autopilot-lanes.md#State And Queue": 5466,
+          "docs/evidence-runners.md#绑定已认领行动": 1279,
+          "rules/ccst/coverage-gate.md": 10762,
+          "rules/ccst/retrospective.md": 8989,
+          "knowledge/promotion-rules.md": 9955,
+          "commands/checkpoint.md#显式轮次与复核": 2423
+        },
+        "bytes": 131937
+      },
+      "after": {
+        "sources": {
+          "commands/autopilot.md": 6242,
+          "skills/runtime-protocol.md#Shared Knowledge Recall": 3119,
+          "skills/runtime-protocol.md#Shared Memory Continuity": 3244,
+          "skills/src-hunter/SKILL.md": 17193,
+          "skills/src-hunter/知识库/打穿短表.md": 42596,
+          "skills/runtime-protocol.md#Native Skill Loading": 738,
+          "rules/ccst/hunting.md": 6332,
+          "rules/ccst/tool-ai-boundary.md": 4661,
+          "skills/runtime-protocol.md#5. Execution and write-back": 1344,
+          "docs/autopilot-lanes.md#State And Queue": 5466,
+          "docs/evidence-runners.md#绑定已认领行动": 1279,
+          "rules/ccst/coverage-gate.md": 10762,
+          "rules/ccst/retrospective.md": 8989,
+          "knowledge/promotion-rules.md": 9955,
+          "commands/checkpoint.md#Global Review": 2331
+        },
+        "bytes": 124251
+      }
+    },
+    "resident_full_files": {
+      "before": {
+        "sources": {
+          "CLAUDE.md": 7077,
+          "docs/ccst-runtime-adapter.md": 3760,
+          "rules/anti-over-moralization.md": 4831,
+          "rules/cors-vuln-report-priority.md": 380,
+          "rules/desktop-task-folder.md": 5382,
+          "rules/dig-scope-workflow.md": 66343,
+          "rules/hunt-iter.md": 15728,
+          "rules/playwright-browser-mcp.md": 3393,
+          "rules/researcher-blackbox-whitebox.md": 6882,
+          "rules/security-research-context.md": 752,
+          "rules/skill-as-boost.md": 2508,
+          "rules/src-value-hunting.md": 11896,
+          "rules/vuln-report-format.md": 10864,
+          "rules/ccst/red-lines.md": 1056
+        },
+        "bytes": 140852
+      },
+      "after": {
+        "sources": {
+          "CLAUDE.md": 7077,
+          "docs/ccst-runtime-adapter.md": 3760,
+          "rules/anti-over-moralization.md": 4831,
+          "rules/cors-vuln-report-priority.md": 380,
+          "rules/desktop-task-folder.md": 5382,
+          "rules/dig-scope-workflow.md": 66343,
+          "rules/hunt-iter.md": 15728,
+          "rules/playwright-browser-mcp.md": 3393,
+          "rules/researcher-blackbox-whitebox.md": 6882,
+          "rules/security-research-context.md": 752,
+          "rules/skill-as-boost.md": 2508,
+          "rules/src-value-hunting.md": 11896,
+          "rules/vuln-report-format.md": 10864,
+          "rules/ccst/red-lines.md": 1056
+        },
+        "bytes": 140852
+      }
+    }
+  },
+  "elapsed_seconds": 0.43,
+  "limits": "Static specified reading sets, not actual host loads/tokens. Unchanged method-specific expansions and tool outputs excluded. No project tests, target I/O, runtime installation, network or model calls."
+}

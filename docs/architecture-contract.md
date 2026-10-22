@@ -86,7 +86,7 @@ Skills provide methods, applicability conditions, counterexamples and evidence
 requirements, not fixed test sequences or duplicated native tool manuals.
 The native platform owns Skill discovery and loading. Natural-language discovery retains the original
 `src-hunter` description; explicit Autopilot uses that Skill before choosing new investigation, following
-`commands/autopilot.md#investigation-skill`. The current body is reused in the same session and restored
+`skills/runtime-protocol.md#native-skill-loading`. The current body is reused in the same session and restored
 when absent, including after compaction. Hosts without a Skill tool read the complete selected-checkout
 body natively. Internal modules and knowledge remain problem-scoped; no extra controller or load receipt.
 Queue/Store do not require

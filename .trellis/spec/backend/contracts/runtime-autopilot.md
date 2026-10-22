@@ -27,7 +27,8 @@ mechanical safety, evidence and recovery constraints govern execution.
 
 - The current Claude session alone selects hypotheses, routes, depth and stop
   points, and coordinates writes through existing owners. No second controller.
-- `commands/autopilot.md#investigation-skill` explicitly uses the native `src-hunter`
+- `commands/autopilot.md#investigation-skill` triggers the shared
+  `skills/runtime-protocol.md#native-skill-loading` contract for `src-hunter`
   before selecting new investigative work, after Bootstrap admission and required
   execution recovery. `/autopilot-round` consumes the same Shared Automation section;
   both commands allow the native Skill tool. Existing full body context is reused;
@@ -607,118 +608,95 @@ explicit /validate memory token -> legacy recovery; canonical report -> report c
 targets.txt -> batch recon -> select completed domain -> domain state preflight
 ```
 
-## Scenario: Readable Shared Automation Entry Contracts
+## Scenario: Automation-Only Entry Contracts
 
 ### 1. Scope / Trigger
 
-Use this contract whenever `commands/autopilot.md`, `commands/autopilot-round.md`
-or `agents/autopilot.md` is edited. Entry guidance must show how an investigation
-progresses while preserving release wiring, evidence, recovery and delegation
-boundaries. The 2026-10-22 readability revision replaces the former 11 KiB entry
-budget with a complete, navigable workflow; method content stays with src-hunter.
+Apply when changing Autopilot entry guidance or its shared reading boundaries.
+Autopilot automates the existing investigation, rather than defining another
+method. This supersedes both the old combined 11 KiB cap and the expanded
+readability revision.
 
 ### 2. Signatures
 
-- `commands/autopilot.md`: unchanged frontmatter, user-facing purpose/usage,
-  critical manifest comment, the
-  `Authoritative bootstrap contract (do not reinterpret): !`python3 ...`` line,
-  then one `## Shared Automation` H2. Its first subsection is State Consumption
-  Loop; Startup And Recovery, Investigation Skill, Execution Invariants,
-  Refresh After An Action and Transition And Finish Contract remain inside that H2.
-  Keep the `shared-automation`, `investigation-skill` and `state-consumption-loop`
-  anchors: Round, runtime-protocol and Bootstrap consume them.
-- `commands/autopilot-round.md`: `Authoritative round bootstrap (do not
-  reinterpret)` and `Native fixed-loop prompt identity (do not reinterpret)`
-  lines, then round-only mechanics (Bootstrap Gate / Prepare And Terminal
-  Precheck / Round Mechanics / Settle And Status / Native Loop Ownership) that
-  read `commands/autopilot.md#shared-automation` instead of duplicating it.
+- Keep command frontmatter, critical manifest and exact dynamic Bootstrap lines.
+- `commands/autopilot.md#shared-automation` owns restore/continue/execute/refresh
+  timing and stopping. Keep its `state-consumption-loop` and `investigation-skill`
+  anchors; Round and Bootstrap consume the former paths.
+- `skills/runtime-protocol.md#native-skill-loading` owns body loading/reuse/recovery.
+  `commands/checkpoint.md#global-review` owns review scope and snapshot submission.
+- `commands/autopilot-round.md` retains prepare, claim, heartbeat, correction,
+  settle/status and exact native-loop cleanup. Ordinary Autopilot reads it only
+  to recover existing Round obligations; it does not start a Round implicitly.
 
 ### 3. Contracts
 
-- Present the normal workflow before conditional mechanics: recover the target;
-  choose an evidence-backed question; test/register/refresh; validate and publish
-  when ready; continue, rotate or finish with an explicit reason. Recovery need
-  not repeat within a valid session, nor does this sequence force Recon, a scan,
-  validation before evidence is ready, or closure after each experiment.
-- Each step names its purpose, result and next transition. Detailed execution,
-  recovery and finish requirements follow in referenced sections of the same
-  Shared Automation body. Use ordinary prose around necessary field names;
-  do not compress them into unexplained slash-separated shorthand to meet a cap.
-  Measure bytes separately; increased clarity does not prove token/cost or
-  model-behavior improvement. Static reference checks prove neither readability
-  nor host compliance by themselves.
-- Vulnerability-specific methodology stays out of entry prompts: `skills/src-hunter/SKILL.md` is the
-  single investigation core; problem-scoped specialists and complete methods
-  are referenced on demand, without a second global investigation loop.
-- Preserve exact bootstrap/manifest, Round mechanics, claim-before-execution,
-  report identity binding, terminal-heartbeat-before-refresh, fresh-control reads,
-  parent Scope/Auth propagation, no replay of unknown effects and final closure
-  conditions. User-facing examples and defaults must match `parse_autopilot_args`.
-- A blanket failed-tool retry prohibition must not override the existing bounded
-  browser transient-error retry or registration-only retry with saved material.
-  These exceptions follow their original owners; they grant no arbitrary source,
-  Action-claim or unknown-effect network replay.
-- `agents/autopilot.md` is a routing-table delegation contract: evidence
-  question -> method owner rows, read-only Store queries, parent-owned writes;
-  no second Core Loop or finish checklist.
-- Preserved semantics: anchor prefixes feed the release-wiring body compare;
-  B1 DNS caller-refresh handoff; missing/malformed/stale Surface never blocks
-  settle or flips a settled round back to active; compaction judgments re-check
-  facts and references against the current on-disk owner; the finish contract
-  keeps the exactly-once presentation-only `Memory recommendations` section
-  required per the "Advisory Memory Recommendation at Bounded Finish" scenario
-  (the B2 live round caught the merged optional downgrade eliding it).
+- Keep the main command near upstream scale (about 4–6 KiB including wiring).
+  Delete duplicated explanations; leave a clear trigger pointing to the existing
+  complete owner. Do not move an expanded controller into a new mandatory manual.
+- Measure the command, shared owners, resident imports and conditional sections
+  separately. Main plus shared-owner bytes must shrink; report comparable static
+  startup/action/finish reading sets, including the unchanged resident baseline.
+  Bytes do not prove tokens, fees, host loading or investigation effectiveness.
+- Explicit Autopilot applies src-hunter after admission/recovery and before new
+  investigation. Native Skill loading never points back to an automation entry.
+  Full existing 6k rules, methods, discovery description and modules remain intact.
+- Bootstrap returns data, not automatic continuation. Claude must obey action and
+  hard gates, wait on real locks, preserve pending work, execute/record and read
+  fresh control. Owner continuation order and loop_guard remain advisory.
+- Round alone adds new Round claims/heartbeats. Existing unfinished Round work
+  still needs recovery from ordinary mode. Registration precedes heartbeat;
+  heartbeat precedes refresh. Report identity and corrections remain Round-owned.
+- Scope/Auth/context, pre-execution Action claims, evidence receipts, unknown-effect
+  recovery and failure handling remain in the selected execution owner. Preserve
+  exact argv and read the complete section before use. Never replace a parent-bound
+  executor by dropping context.
+- Detailed browser/registration retry rules remain at their owners. The default
+  failed-source rule permits only explicit bounded exceptions; failed Action claims
+  do not gain retries. Browser cleanup still runs before leaving a used session.
+- Continue after publication unless an actual stopping reason holds. Handoff,
+  report count, anonymous denial or missing-but-obtainable sessions are not reasons
+  alone. Budget limits new work, not recovery/cleanup/write-back/Checkpoint/Closure.
+  Exhaustion needs fresh Closure finish plus can_claim_exhausted, with Global Review.
+- Keep exactly one final presentation-only Memory recommendations section. It
+  does not write, promote knowledge or alter routing/budget/lifecycle.
+  Optional `agents/autopilot.md` remains a delegation contract, not a second loop.
 
 ### 4. Validation & Error Matrix
 
-- Anchor prefix line missing or rewritten -> `test_claude_release_wiring`
-  StopIteration at the bootstrap JSON extraction.
-- Main workflow or conditional clauses outside the Shared Automation H2 -> Round
-  misses the shared contract; preserve complete H2 consumption and nested sections.
-- Broken link or Skill-loading back-reference cycle -> requested instructions are
-  unavailable; each reference must reach the complete relevant owner section.
-- Documented usage differs from parser defaults/flags -> incorrect operator
-  behavior; check examples using the actual pure argument parser.
-- Finish contract downgrades the memory-recommendation section to optional ->
-  `test_memory_recommendation_section_is_required_once_and_presentation_only`
-  fails; a live bounded round omits the section at finish.
-- Round file duplicating Shared Automation instead of referencing the H2 -> round-contract ordering/uniqueness assertions fail.
+- Changed Bootstrap line/manifest/frontmatter -> native entry wiring may break.
+- Missing Shared Automation body/anchor -> Round or Bootstrap loses instructions.
+- Native Skill body absent or circular reference -> restore from its shared owner.
+- Missing owner section -> cannot treat a link as preserved behavior.
+- Failed/missing state -> recover; do not act on stale control.
+- Round recovery removed from ordinary mode -> stranded claimed execution.
+- Smaller entry with larger mandatory reading set -> no proven context reduction.
 
 ### 5. Good/Base/Bad Cases
 
-- Good: the investigation loop is understandable before reading the mechanics;
-  relevant lane and method details stay with their existing owners.
-- Base: retain consumed headings while reorganizing prose, then inspect Round's
-  complete shared body and all referenced anchors.
-- Bad: a short entry made of unexplained state fields and scattered links, or
-  copied vulnerability methods, or a changed Bootstrap prefix merely to save bytes.
+- Good: restore -> continue src-hunter -> execute/write back -> refresh -> repeat.
+- Base: selected action reads its existing complete execution section once and
+  reuses it until invalidated; finish reads the existing review owner.
+- Bad: copy method steps into Autopilot, create a new controller/manual, or delete
+  an explicit wait/claim/write-back trigger because the called tool validates inputs.
 
 ### 6. Tests Required
 
-- The former 11 KiB budget assertion describes the earlier compression policy,
-  not the readability acceptance criterion. Pre-execution claim ownership remains
-  mandatory. Historical exact-prose/size checks need separate review if run; the
-  2026-10-22 focused check neither reads nor changes project tests.
-- Isolated document acceptance preserves frontmatter, exact Bootstrap/manifest,
-  complete Shared Automation consumption, all command references, real lane
-  section extraction and parser-backed usage. Independently review semantic
-  retention and normal/blocked/recovered/round/finish paths; do not claim live
-  Claude behavior from static checks.
-- `tests/test_claude_release_wiring.py::test_installed_autopilot_loads_in_real_claude`
-  asserts the anchor prefix line and installed-body equality.
-- `tests/test_ai_native_skill_convergence_baseline.py` resolves the three-mode
-  reference, checks DNS handoff wording and the compaction re-check clause, and
-  pins the required-once memory-recommendation finish section
-  (`test_memory_recommendation_section_is_required_once_and_presentation_only`).
+- One isolated focused check: real parser-backed usage, exact release wiring,
+  complete Round shared-section consumption, incoming/outgoing links, actual lane
+  extraction, preserved method bytes and composed reading measurements.
+- Review normal, blocked, compaction, pending-Round, validation/publication and
+  finish paths for retained obligations. Static checks do not establish Claude behavior.
+- Historical document-shape assertions need separate review; this 2026-10-22 scope
+  neither reads nor changes project tests. Evidence remains in workspace research.
 
 ### 7. Wrong vs Correct
 
-Wrong: compress the bootstrap line to `Bootstrap: !`...`` or shorten the entry
-until a reader must reconstruct the investigation from several manuals.
+Wrong: expanding every exception into the command, then hiding that body behind
+a mandatory link to claim a smaller entry.
 
-Correct: keep the full anchor prefixes, explain the investigation and its
-transitions first, load `skills/src-hunter/SKILL.md`, then consult the complete
-execution/recovery/finish sections when their conditions apply.
+Correct: keep automation timing in the entry, full methods with src-hunter,
+shared loading/write-back with runtime-protocol and review details with Checkpoint.
 
 ## Claude Runtime Packaging and Drift Preflight
 
