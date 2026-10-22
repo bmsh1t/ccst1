@@ -1489,3 +1489,41 @@ Aligned validation receipts and on-demand viewing, consolidated complete Chain/W
 
 - 未创建或归档 Trellis 任务；未读取/运行项目 tests，旧文案/结构断言未复核。未同步宿主、访问目标、联网或调用真实 Claude 模型。
 - 静态集合不代表实际 token 或调查效果；6k 常驻体量留待另项。tools/autopilot_state.py 和 tools/surface_projection.py 的既有改动仍在工作区。
+
+
+## Session 49: 修复 Autopilot 新目标启动回归
+<!-- trellis-session: v=2 fp=aa535946c5e115dc -->
+
+**Date**: 2026-10-22
+**Task**: 修复 Autopilot 新目标启动回归
+**Branch**: `refactor/10-11-capability-architecture`
+
+### Summary
+
+共享 Bootstrap 在准入后、状态读取及 Round prepare 前显式初始化；恢复新目标 Recon 默认并保留已供材料例外。
+
+### Main Changes
+
+- 复用 Store init 与 AuthSession 校验，不增加状态 owner；列表只校验认证内容，子目标启动再校验绑定。
+- 同步普通/Round/Recon/架构/lane/开发规范；handoff 机器提示引用共享启动和结束合同。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `cee2c1f` | fix(autopilot): initialize fresh targets before state reads |
+
+### Testing
+
+- [OK] 隔离真实 API 检查 13 组通过，约 2.21 秒；临时源码使用基线 state reader、staged runtime 及安装归属 receipt，覆盖新普通/Round/loop、旧事实保留、认证/Scope/损坏/漂移拒绝。
+- [OK] 独立只读复核定位列表 auth 绑定回归并修复；最终 diff 审查通过，原有两个 Python 文件哈希保持且未提交。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 未读取或运行 tests，未执行真实 Claude/Recon/目标/付费模型，未同步宿主或 push；入口默认不等于 Claude 实跑验收。
+- 无新任务，不归档旧任务；tools/autopilot_state.py 和 tools/surface_projection.py 既有改动继续保留。
+- 初始化/恢复改动须验证新目标启动后首次 owner 消费；旧文案/预先建库夹具不能替代启动链验收。

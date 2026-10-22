@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 48
+- **Total Sessions**: 49
 - **Last Active**: 2026-10-22
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1491 | Active |
+| `journal-1.md` | ~1529 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 49 | 2026-10-22 | 修复 Autopilot 新目标启动回归 | `cee2c1f` | `refactor/10-11-capability-architecture` |
 | 48 | 2026-10-22 | Autopilot 收敛为自动化入口 | `1f8518d` | `refactor/10-11-capability-architecture` |
 | 47 | 2026-10-22 | Autopilot 调查主线整理 | `65be265` | `refactor/10-11-capability-architecture` |
 | 46 | 2026-10-22 | Retire five redundant specialist agents | `190e132` | `refactor/10-11-capability-architecture` |
