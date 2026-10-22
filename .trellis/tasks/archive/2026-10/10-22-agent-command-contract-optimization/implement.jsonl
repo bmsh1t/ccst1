@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Current owner, integrity, native method and focused validation contracts"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Current owner, integrity, native method and focused validation contracts"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Current owner, integrity, native method and focused validation contracts"}
+{"file": ".trellis/spec/backend/contracts/recon-surface.md", "reason": "Current owner, integrity, native method and focused validation contracts"}
+{"file": ".trellis/spec/backend/contracts/validation-evidence.md", "reason": "Current owner, integrity, native method and focused validation contracts"}
+{"file": ".trellis/spec/backend/contracts/memory-recovery.md", "reason": "Current owner, integrity, native method and focused validation contracts"}
+{"file": ".trellis/tasks/10-22-agent-command-contract-optimization/research/preservation.md", "reason": "Exact method and caller preservation constraints"}

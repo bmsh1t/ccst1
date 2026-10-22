@@ -1,0 +1,25 @@
+{
+  "status": "passed",
+  "baseline": "2ce0171",
+  "documents": {
+    "migrated_methods": 25,
+    "checked_links": 21,
+    "protected_files": 79,
+    "entry_document_bytes_before": 111279,
+    "entry_document_bytes_after": 102385
+  },
+  "cases": [
+    "vertical quota and normalization",
+    "same-industry/legacy cache reuse",
+    "cross-industry failure and partial isolation",
+    "strict legacy-cache health",
+    "CRLF/fenced legacy readings and independent notes",
+    "no-mcp and custom output",
+    "read/decode/publication failure preserves existing bytes",
+    "real disclosure CLI/provider vertical handoff",
+    "CLI invalid output exit 2 without success",
+    "real find-gaps help matches documentation"
+  ],
+  "surface": "review remains available without count-driven chain delegation",
+  "scope": "isolated source and synthetic inputs; no model/host acceptance"
+}
