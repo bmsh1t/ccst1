@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 46
+- **Total Sessions**: 47
 - **Last Active**: 2026-10-22
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1415 | Active |
+| `journal-1.md` | ~1453 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 47 | 2026-10-22 | Autopilot 调查主线整理 | `65be265` | `refactor/10-11-capability-architecture` |
 | 46 | 2026-10-22 | Retire five redundant specialist agents | `190e132` | `refactor/10-11-capability-architecture` |
 | 45 | 2026-10-22 | Native entry contracts and disclosure preservation | `30fce2d` | `refactor/10-11-capability-architecture` |
 | 44 | 2026-10-22 | 架构与成本优化：同次读取复用和分页推进 | `f1a5e08` | `refactor/10-11-capability-architecture` |

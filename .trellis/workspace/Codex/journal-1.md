@@ -1413,3 +1413,41 @@ Aligned validation receipts and on-demand viewing, consolidated complete Chain/W
 ### Next Steps
 
 - 实际宿主仍需显式根的现有 sync --prune；修改过旧副本会拒绝整批。未声称宿主缓存、模型能力、费用或 compaction 恢复改善；没有新建或归档旧任务。
+
+
+## Session 47: Autopilot 调查主线整理
+<!-- trellis-session: v=2 fp=01a965e2935fc7ce -->
+
+**Date**: 2026-10-22
+**Task**: Autopilot 调查主线整理
+**Branch**: `refactor/10-11-capability-architecture`
+
+### Summary
+
+仅整理 Claude CLI 的 Autopilot 文档：五步调查主线先于条件细节，保留 6k 方法入口与执行约束。
+
+### Main Changes
+
+- commands/autopilot.md 增加用途、用法、参数和清楚的调查循环；细分恢复、执行、刷新及结束规则，保留 Bootstrap、manifest 和固定锚点。
+- runtime-autopilot 契约以可读流程替代历史 11 KiB 预算；明确浏览器一次瞬时故障重试与登记重试的已有边界。
+- 新增 research/10-22-autopilot-flow 验收脚本、结果和说明；主命令 10,176→14,326 字节，清晰度优先，不宣称费用或调查效果改善。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `65be265` | docs(autopilot): restore a readable investigation flow |
+
+### Testing
+
+- [OK] 定点静态验收通过：真实纯参数解析器、manifest reader、lane 提取、21 个 checkout 引用与 5 个内部链接；最终约 0.27 秒。
+- [OK] 两位独立只读复核未发现阻断；采纳三条小修后重新验收，git diff --check 通过；已有两处 Python 改动哈希保持。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 未读取或运行项目 tests；旧精确文案与大小断言未复核。宿主 runtime 未同步，未做真实 Claude 或目标验收。
+- 本轮无新任务，不归档旧任务，不 push；tools/autopilot_state.py 与 tools/surface_projection.py 的已有改动仍留在工作区。
