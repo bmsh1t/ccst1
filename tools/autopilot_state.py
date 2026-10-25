@@ -196,9 +196,9 @@ except ImportError:  # pragma: no cover - direct tools/ execution
 
 # frontier/gate 拆分（批次 7）：re-export 保持外部 import 零破坏。
 try:
-    from tools.autopilot_gate import RECON_COLLECTION_REASONS, _actionable_coverage_gaps, _blocking_recon_phase_gate, _build_actionable_frontier, build_control_projection, _candidate_items_for_next_action, _closure_frontier_matches, _closure_reason_frontier, _describe_next_step, _format_owner_continuations_lines, _recon_phase_residuals, _scanner_lane_residuals, describe_next_step
+    from tools.autopilot_gate import RECON_COLLECTION_REASONS, _actionable_coverage_gaps, _blocking_recon_phase_gate, _build_actionable_frontier, build_control_projection, _candidate_items_for_next_action, _closure_frontier_matches, _closure_reason_frontier, _describe_next_step, _format_owner_continuations_lines, _recon_phase_residuals, _scanner_lane_residuals, _should_guard_safe_pivot, describe_next_step
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from autopilot_gate import RECON_COLLECTION_REASONS, _actionable_coverage_gaps, _blocking_recon_phase_gate, _build_actionable_frontier, build_control_projection, _candidate_items_for_next_action, _closure_frontier_matches, _closure_reason_frontier, _describe_next_step, _format_owner_continuations_lines, _recon_phase_residuals, _scanner_lane_residuals, describe_next_step
+    from autopilot_gate import RECON_COLLECTION_REASONS, _actionable_coverage_gaps, _blocking_recon_phase_gate, _build_actionable_frontier, build_control_projection, _candidate_items_for_next_action, _closure_frontier_matches, _closure_reason_frontier, _describe_next_step, _format_owner_continuations_lines, _recon_phase_residuals, _scanner_lane_residuals, _should_guard_safe_pivot, describe_next_step
 
 PLACEHOLDER_OBJECT_SEGMENTS = {"nan", "undefined", "null", "none", "object", "[object object]"}
 DECISION_PROJECTION_SCHEMA_VERSION = 1
@@ -586,33 +586,6 @@ def _resume_targets_bound_to_surface(state: dict) -> bool:
         and any(str(item.get(key) or "").strip() for key in ("evidence_ref", "evidence", "summary_ref"))
         for item in owners
     )
-
-
-def _should_guard_safe_pivot(next_action: str, guard_status: dict) -> bool:
-    """Return whether live probing should pause and cached-evidence work should continue."""
-    if next_action in {
-        "run_recon",
-        "wait_recon",
-        "wait_scan",
-        "revalidate_finding_owner",
-        "collect_candidate_evidence",
-        "validate_finding",
-        "review_validation_candidate",
-        "resume_action_queue",
-        "prepare_surface_context",
-        "complete_report_draft",
-        "recon_no_live_hosts",
-        "report_finding",
-        "run_intel",
-        "collect_web_intel",
-        "test_advisory_applicability",
-        "review_intel_group",
-    }:
-        return False
-    tracked = int(guard_status.get("tracked_hosts", 0) or 0)
-    tripped = int(guard_status.get("tripped_hosts", 0) or 0)
-    ready = int(guard_status.get("ready_hosts", 0) or 0)
-    return tracked > 0 and tripped > 0 and ready == 0
 
 
 def _build_guard_hint(guard_status: dict, recommended_targets: list[dict]) -> str:
@@ -1456,8 +1429,6 @@ def _build_domain_autopilot_state(
         "tripped_hosts": tripped_hosts,
         "settings": guard_status.get("settings", {}),
     }
-    if control["selection_mode"] == "fallback" and has_recon and _should_guard_safe_pivot(next_action, guard_status):
-        next_action = "guard_safe_pivot"
     pivot_hint = _build_pivot_hint(
         tripped_hosts=tripped_hosts,
         recent_guard_advisories=facts.get("recent_guard_advisories") or [],
@@ -1538,8 +1509,6 @@ def _build_domain_autopilot_state(
         "guard_hint": _build_guard_hint(guard_state, surface_review_candidates),
         "pivot_hint": pivot_hint,
         "tech_stack": tech_stack,
-        "next_action": next_action,
-        "fallback_action": next_action,
         "intel_continuation": intel_continuation,
         "next_tool_hint": next_tool_hint,
         "enrichment_hints": enrichment_hints,

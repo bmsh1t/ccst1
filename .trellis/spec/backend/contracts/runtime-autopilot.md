@@ -126,6 +126,10 @@ mechanical safety, evidence and recovery constraints govern execution.
   hints without replacing the business token. Active lock tokens remain
   `wait_recon`/`wait_scan`; compact and loop views consume this projection, not
   separate owner priorities. Empty work returns to investigation.
+  The same gate owns the existing Guard fallback: only empty-frontier fallback
+  with Recon and all tracked hosts cooling changes `next_action`/`fallback_action`
+  to `guard_safe_pivot`. `primary_next_action` stays the original owner hint;
+  lock, recovery, owner priority, lane and Intel exemptions remain unchanged.
 - Closure builds recovery descriptions only through `_closure_reason_frontier`.
   Finalization preserves fixed reason precedence/verdict, retains independent
   checkpoint recovery under a primary Round reason, and replaces duplicate

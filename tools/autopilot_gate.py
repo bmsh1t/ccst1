@@ -765,6 +765,33 @@ def _closure_reason_frontier(
     return None
 
 
+def _should_guard_safe_pivot(next_action: str, guard_status: dict) -> bool:
+    """Return whether live probing should pause and cached-evidence work should continue."""
+    if next_action in {
+        "run_recon",
+        "wait_recon",
+        "wait_scan",
+        "revalidate_finding_owner",
+        "collect_candidate_evidence",
+        "validate_finding",
+        "review_validation_candidate",
+        "resume_action_queue",
+        "prepare_surface_context",
+        "complete_report_draft",
+        "recon_no_live_hosts",
+        "report_finding",
+        "run_intel",
+        "collect_web_intel",
+        "test_advisory_applicability",
+        "review_intel_group",
+    }:
+        return False
+    tracked = int(guard_status.get("tracked_hosts", 0) or 0)
+    tripped = int(guard_status.get("tripped_hosts", 0) or 0)
+    ready = int(guard_status.get("ready_hosts", 0) or 0)
+    return tracked > 0 and tripped > 0 and ready == 0
+
+
 def build_control_projection(state: dict) -> dict:
     """Derive compatibility hints from one owner frontier without ranking owners."""
     hard_gate = _hard_gate_projection(state)
@@ -781,7 +808,7 @@ def build_control_projection(state: dict) -> dict:
         if hard_gate else recovery["lane"] if recovery
         else work[0]["lane"] if len(work) == 1 else "controller"
     )
-    return {
+    projection = {
         "hard_gate": hard_gate,
         "owner_continuations": frontier,
         "next_action": action,
@@ -793,6 +820,11 @@ def build_control_projection(state: dict) -> dict:
             else "direct" if frontier else "fallback"
         ),
     }
+    if (projection["selection_mode"] == "fallback" and state.get("has_recon")
+            and _should_guard_safe_pivot(action, state.get("guard_status") or {})):
+        # Preserve the original owner hint while cooling live requests.
+        projection.update(next_action="guard_safe_pivot", fallback_action="guard_safe_pivot")
+    return projection
 
 
 def _format_owner_continuations_lines(state: dict) -> list[str]:
