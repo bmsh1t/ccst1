@@ -25,13 +25,7 @@
   短卡全文读；长卡读取完整相关机制，再展开来源。卡召回的 `--known-catalog VERSION`
   只在当前上下文确实保留同版卡目录时使用；它不是 `context_pack.py` 参数。
   compaction 后从当前 owner 恢复事实并按需重读材料，不把摘要当已读证明。
-- 经验与现场冲突时核对适用条件。按问题召回：
-  `python3 tools/experience_recall.py query --target TARGET --query '当前问题'`。
-  `current` 是独立当前事实，`recalled` 是本目标经验与已审共享知识，不互相顶替。
-  partial/unavailable 不等于没有经验，登记目录也不是审核证明。
-- 按 owner 返回的命令、来源 ID 和游标展开；query 排名游标不与 history 游标混用。
-  精确版本纠错、来源、反证和关系使用 `commands/target.md` 的相关子命令。
-  查询不构建索引、迁移或下载模型；显式建设才使用已提供的真实模型，缺模型明示 unavailable。
+- 本目标经验与已审共享知识的检索按 [Problem Recall](#problem-recall)。
   关系路径是待验证假设，不能写 Action/Finding 或授权执行。
 
 九专项是 src-hunter 的内部按需模块；知识读取不抢占真实锁和待回收执行。
@@ -60,20 +54,6 @@ Queue/Store 不持有 Skill 注册表或知识推荐状态。
 继承的工具限制/准入判断在使用前只查相关当前命令；未核对则标 inherited/unverified，
 不通读源码。按原时间戳、时区和精度判事件顺序；历史先后不证明当前可达性。
 
-### Cognitive Write Timing
-
-| 触发 | 写回 |
-|---|---|
-| 执行返回/中断 | 即时保存 raw、operation/observation、真实回执；按 owner 完成 Candidate 登记、终态心跳及未知效果回收 |
-| 稳定结论、反证、条件变化、证伪、转向/阻塞 | 保存影响后续判断的增量、证据及适用/重开条件；无增量不重复记 |
-| 暂停、换目标、compaction、结束 | 保存未落盘判断和明确下一意图；需要续接时写结构化 handoff，完成判断仍归 Coverage/Closure |
-
-不因读 Skill、模式变化、工具次数、lane/round 或 checkpoint cadence 追加认知整理；
-不逐观察 note/classify/fusion/重写业务模型。Checkpoint 是只读快照，不是写回频率。
-Candidate 和确认 A 的持久化不等 B/C；预算停止新工作，不停止回收、cleanup、心跳和闭合。
-原始观察、假设、技术结论分开；dead-end 必须有条件和重开条件。跨目标知识走审核晋升，
-不后台提取聊天、不自动共享目标私有事实。
-
 ### 1. Target layer
 
 最小恢复：`python3 tools/target_memory.py show TARGET`；需要整体工作/覆盖时读
@@ -84,13 +64,41 @@ Autopilot Bootstrap 的 `state.target_memory` 已携带同一 owner 的最小恢
 带纠错、适用条件与来源健康的 owner 视图。无关纯解释不要求查目标，明确只读不写回。
 写回显式 `--target TARGET`；active pointer 只选择已初始化目标，不是意图/状态 owner。
 缺库、legacy、damaged、fenced 按显式初始化/恢复流程处理，不猜空状态。
-参数、收据、失败重试和纠错详情见 `commands/target.md`，实际调用前只读相关合同。
-
 `current_handoff` 独立于有界历史；`next_actions` 只取最新交接的显式 `next_intent`，
-不是 Queue，旧意图不因仍可召回就变成待办。保存使用 `handoff --conditions ...`
-`--next-intent ... --operation-ref OPERATION_ID:0`；operation-ref 可重复，必须绑定当前目标
-已登记 observation。没有登记证据的内容仍是建议；补 expected 不补足证据、不确认 Finding。
-纠错用精确版本的 link/retract-link，保留不同条件与历史，不自动完成其他 owner 工作。
+不是 Queue。使用前连同 conditions、review_state、source_health 和纠错关系读取；
+最新不等于仍适用；遇到 disputed/superseded/needs_review，先核对纠错和当前证据，
+不沿用旧结论，也不因此停止独立调查。
+Case premise 只是预览，需要它支撑判断时展开当前 Case。缺关键依据按下节召回。
+
+### Problem Recall
+
+选择下一问题、复用旧结论或重复实验前，判断工作集是否含有需要的依据：
+
+- 缺相关历史、准备重试旧路径或压缩后依据不足：按具体问题召回。
+- origin、身份、对象、表示或部署条件变化：核对相关经验与反证；旧阴性只覆盖记录的条件，
+  变化部分仍需验证。若当前工作集已含完整依据，可直接比较。
+- 同问题、相关来源和条件未变化且正文/反证已充分读取：复用，不按请求、工具次数或轮次重查。
+
+用 `python3 tools/experience_recall.py query --target TARGET --query '当前问题'`。
+`current` 是独立当前事实，`recalled` 是历史候选；一并消费 `counterevidence` 的相关纠错、
+依赖与来源。条件文字和无反证命中均不证明结论有效。partial/unavailable 不等于没有经验；
+依赖的信息仍被裁切时，按返回的来源 ID、精确 version 和该页命令展开后再用。
+读取/展开、游标、纠错与索引的操作合同统一见 `commands/target.md#恢复与问题召回`。
+
+### Cognitive Write Timing
+
+| 触发 | 写回 |
+|---|---|
+| 执行返回/中断 | 即时保存 raw、operation/observation、真实回执；按 owner 完成 Candidate 登记、终态心跳及未知效果回收 |
+| 稳定结论、反证、条件变化、证伪、转向/阻塞 | 保存影响后续判断的增量、证据及适用/重开条件；无增量不重复记 |
+| 暂停、换目标、compaction、结束 | 保存未落盘判断和明确下一意图；需要续接时写结构化 handoff，完成判断仍归 Coverage/Closure |
+
+写回内容、凭据引用、参数与重试按 `commands/target.md#交接与证据`，区分原始观察、
+假设和技术结论。子代理交付增量，主会话接受后写入；只读/预览只返回建议。
+不因读 Skill、模式变化、工具次数、lane/round 或 checkpoint cadence 追加认知整理，
+不逐观察 note/classify/fusion/重写业务模型。Checkpoint 是只读快照，不是写回频率。
+Candidate 和确认 A 的持久化不等 B/C；预算停止新工作，不停止回收、cleanup、心跳和闭合。
+跨目标知识走审核晋升，不后台提取聊天、不自动共享目标私有事实。
 
 ## 2. Skill layer
 
@@ -133,12 +141,11 @@ Not applicable、Dead ends、Still unknown 和 Next actions；无发现不是覆
 通过既有 owner 登记证据、Action、Finding、技术裁决和交付；Checkpoint 不写这些状态。
 普通同会话读取不填交接表；真实委派按 `src-hunter` 的 handoff 合同交付，主会话接受。
 
-尚无 Finding 的原生观察走 `validation_runner.py record-observation`，按
-`docs/evidence-runners.md#native-observation-registration` 保存原件、有序步骤和真实 operation 引用；
-`result=""` 无裁决，不建占位 Finding、不自动解决 Action 或关闭 Coverage。
-已有 Candidate 的证明仍走独立 `record-evidence`。登记失败只重试登记；同次执行补证沿用
-attempt、完整快照和原 `expected_operation`，不重放未知网络效果，也不伪造 `:0` 引用。
-参数不确定先读所选子命令 `--help` 或 evidence-runners 的速查；区分未执行、已执行未登记和未知效果。
+尚无 Finding 的观察走 `validation_runner.py record-observation`；已有 Candidate 的证明
+走 `record-evidence`。首次原生执行前读 `docs/evidence-runners.md#在执行时捕获原件`；
+登记、回执与失败恢复见同文档 `#native-observation-registration` 及对应 Finding 证据合同。
+观察登记不建占位 Finding、不自动解决 Action 或关闭 Coverage；区分未执行、已执行未登记和未知效果。
+参数不确定先读所选子命令 `--help`。
 
 ### Stateful Continuity
 

@@ -53,10 +53,9 @@ required. This command restores context, not permission to start extra testing.
 - Target-level memory and structured findings
 - Runtime state and recon cache health
 
-Use the returned recall command, cursor and item IDs to expand saved goals, notes,
-conditions, next intentions and handoff. The default preview is not the full
-memory, and a SQLite path is not a text-reading command. Reading `/pickup` does
-not change the active-target pointer.
+Apply `skills/runtime-protocol.md#problem-recall` to any missing decision basis.
+Use the returned IDs, versions and expansion commands under `commands/target.md#恢复与问题召回`.
+A SQLite path is not a text-reading command. Reading `/pickup` does not change the active-target pointer.
 
 Finding, tested-endpoint and untested-endpoint collections also default to five
 items each. `domain_windows` records exact totals, returned counts, remaining

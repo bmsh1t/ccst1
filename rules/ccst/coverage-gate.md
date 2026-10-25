@@ -208,10 +208,7 @@ blocked: red-line
 
 ## 和目标层的关系
 
-覆盖结论应写回目标层：
-
-- 新线索：`python3 tools/target_memory.py lead "..."`
-- 下一步：`python3 tools/target_memory.py next "..."`
-- 无效方向：`python3 tools/target_memory.py dead-end --target TARGET --conditions 'same tenant; JSON; release 1' --reopen-when 'role or release changes' --operation-ref OPERATION_ID:0 'Peer read denied'`
-
-`OPERATION_ID:0` 必须指向本目标 Store 中已登记的 observation；没有执行证据时保存 advisory note，不伪造负向经验。Coverage 由 `tools/coverage_matrix.py` 从当前 Store 和证据健康派生；目标经验保存在同一 Store，负责矩阵之外的条件、重开标准和下一步意图。
+Coverage 由 `tools/coverage_matrix.py` 从当前 Store 和证据健康派生。
+影响后续判断的经验按 `skills/runtime-protocol.md#cognitive-write-timing` 保存，
+具体条件、证据引用与重开要求见 `commands/target.md#交接与证据`。
+目标经验保留矩阵之外的条件、重开标准与下一意图，不代替 Coverage 或生成第二份覆盖状态。

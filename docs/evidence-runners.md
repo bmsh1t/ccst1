@@ -20,10 +20,9 @@
 | 无 Finding 的已执行观察 | 下节 `record-observation`，不创建占位 Finding |
 | 已有 Finding 的完整原件 | `record-evidence --target TARGET --finding-id ID --evidence-json FILE --json` |
 | 未决覆盖 | `python3 tools/coverage_matrix.py rebuild --target TARGET`，再 `find-gaps --target TARGET` |
-| 保存当前交接 | `python3 tools/target_memory.py handoff --target TARGET '具体停止依据和进度' --next-intent '下一问题' --operation-ref OPERATION_ID:STEP --json` |
+| 保存当前交接 | [目标记忆：交接与证据](../commands/target.md#交接与证据) |
 
-Store 和 Coverage 命令本来输出 JSON，**不加 `--json`**；handoff 的摘要是必填位置参数。
-`OPERATION_ID:STEP` 必须来自登记回执。保存 handoff 不构成停止理由，Autopilot 按共享 Finish Contract 判断。
+Store 和 Coverage 命令本来输出 JSON，**不加 `--json`**。
 保留完整命令结果与退出码；管道需 `set -o pipefail`，不能以 tail/head 或后续命令的成功掩盖登记拒绝。
 
 ### 在执行时捕获原件
@@ -31,6 +30,9 @@ Store 和 Coverage 命令本来输出 JSON，**不加 `--json`**；handoff 的�
 用已有浏览器 HAR/export 或 curl trace 捕获实际请求；适当的 raw sender 用于字节敏感实验。
 下例仅用于已核对 Scope/副作用的请求；原生 curl 不自动继承项目 Auth/父 Scope，
 不加自动跟随跳转。认证用受控私有配置/会话来源，不把令牌放 argv 或日志输出。
+登记失败只重试已保存的登记材料，不重放未知网络效果。原生观察同次补证沿用
+attempt、完整快照与原 `expected_operation`，按下方 Native observation registration；
+已有 Finding 的证据按对应 `record-evidence` 合同登记。
 `capture_dir` 是本次独立的目标私有目录，`request_url` 是已选定的完整请求 URL：
 
 ```bash

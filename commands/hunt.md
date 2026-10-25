@@ -117,23 +117,11 @@ body and publishes it; consume its receipts. Use `/report` for deferred text or 
 new eligible delivery. Optional B/C never delay A. The report-only Hunt CLI indexes
 existing reports rather than authoring prose.
 
-## Four-Layer Write-Back
+## Memory Continuity
 
-Apply `skills/runtime-protocol.md#shared-memory-continuity` and its
-`skills/runtime-protocol.md#cognitive-write-timing`, as in ordinary conversation
-and autopilot. These are alternatives for a real event or handoff, not a four-command
-tail after every action. Claude saves important progress without waiting for a
-user reminder; bind each needed write to the current target:
-
-```bash
-python3 tools/target_memory.py lead "..." --target TARGET
-python3 tools/target_memory.py next "..." --target TARGET
-python3 tools/target_memory.py note "Unverified observation and remaining evidence gap" --target TARGET
-python3 tools/target_memory.py handoff "..." --target TARGET
-```
-
-Use `dead-end` only with `--conditions`, `--reopen-when`, and an existing
-`--operation-ref OPERATION_ID:0`; see `commands/target.md` for the evidence contract.
+Apply `skills/runtime-protocol.md#shared-memory-continuity` for recovery,
+problem recall and write timing. Reuse current material, consult relevant history
+and counterevidence when needed, and save accepted deltas through `commands/target.md`.
 At the end of a meaningful hunt pass, inspect the read-only checkpoint:
 
 ```bash
@@ -142,7 +130,7 @@ python3 tools/checkpoint.py --target target.com
 
 Checkpoint does not save target memory or create Findings/Actions (see
 `commands/checkpoint.md`). Save useful progress explicitly with the target-memory
-commands above; register Findings/Actions through their Store owners.
+commands; register Findings/Actions through their Store owners.
 
 Reusable lessons should be promoted through `/retrospect`, not copied directly
 from a target into the knowledge base without review.

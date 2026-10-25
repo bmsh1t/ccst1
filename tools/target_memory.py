@@ -142,6 +142,7 @@ def _experience_entry(row: dict) -> dict:
         "ts": row.get("created_at", ""),
         "text": str(row.get("statement") or "").strip(),
         "entry_id": row.get("id", ""),
+        "version": row["version"],
         "kind": row.get("kind", ""),
         "recorded_by": row.get("recorded_by", ""),
         "evidence_refs": [
@@ -240,6 +241,10 @@ def load_goal_memory(repo_root: str | Path, target: str, *, experience_limit: in
                 "history_command": shlex.join(history_args),
                 "next_command": shlex.join([*history_args, "--cursor", page["next_cursor"]]) if page["has_more"] else "",
                 "expand_command": shlex.join([*history_args, "--id", "EXPERIENCE_ID"]),
+                "context_command": shlex.join([
+                    *history_args[:2], "context", *history_args[3:-2],
+                    "--id", "EXPERIENCE_ID", "--version", "VERSION",
+                ]),
             },
         },
         "active_path": str(active_path),
@@ -504,7 +509,7 @@ def write_handoff(args: argparse.Namespace) -> str | dict:
         return _indexed_save(args, target, receipt)
     if getattr(args, "json", False):
         return {"target": target, "receipt": receipt}
-    return f"Handoff saved for {target} [{receipt['entity_id']}]"
+    return f"Handoff saved for {target} [{receipt['entity_id']}] next_intent={(getattr(args, 'next_intent', None) or '').strip() or '(none)'}"
 
 
 def format_entries(entries: list[dict]) -> list[str]:
@@ -538,7 +543,7 @@ def format_summary(title: str, active: dict, target_memory: dict,
 
 def format_experience_provenance(entry: dict, *, indent: str = "  ") -> list[str]:
     """Preserve owner-provided provenance and review state in text consumers."""
-    return [
+    return ([f"{indent}version: {entry['version']}"] if entry.get("version") is not None else []) + [
         f"{indent}{key}: {json.dumps(entry.get(key), ensure_ascii=False)}"
         for key in ("claims", "review_state", "applicability", "source_health", "sources",
                     "correction_refs", "dependency_refs")
@@ -601,6 +606,7 @@ def show(args: argparse.Namespace) -> str | dict:
         lines.append(f"Next page: {window['next_command']}")
     lines.append(f"Expand: {window['expand_command']}")
     lines.append(f"Recall by question: {window['recall_command']}")
+    lines.append(f"Counterevidence by ID/version: {window['context_command']}")
     return "\n".join(lines)
 
 

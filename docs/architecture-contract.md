@@ -366,6 +366,17 @@ and cross-target promotion remains reviewed. Manual hunt reuses the investigatio
 core instead of imposing a scanner or a second ordered loop. Coverage/Closure at
 finish and actual claim/receipt/heartbeat obligations are unchanged.
 
+The model-facing paths are recovery, problem recall and cognitive write-back.
+Runtime-protocol owns timing; commands/target owns memory CLI, handoff and
+correction operations; evidence-runners owns capture/registration. Command and
+agent entries reference these contracts rather than maintaining alternative
+write schedules. Before relying on history or repeating work, missing evidence
+or changed conditions triggers problem recall and counterevidence review.
+Sufficient current material is reused; no per-request classification/fusion cycle
+or new memory controller is added. Recovery entries preserve their exact Store
+version so their independent counterevidence can be expanded without another
+latest-version lookup.
+
 Normal memory commands, Python APIs, default text and JSON must use one domain
 meaning. `target_memory.py` remains a thin interface; `show` must read the same
 Store that accepted the write. `set TARGET` selects an initialized target only;

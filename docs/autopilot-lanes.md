@@ -62,10 +62,12 @@ under-specified task.
 
 Specialists without owner-write access end their report with a structured
 「待落库」 tail (fact key, summary, evidence refs, suggested owner action);
-the controller writes each entry back immediately through the existing
-Store commands (`target_memory.py fact/lead/next`, Action Queue, native evidence registration)
-before starting the next lane. The controller does not assume the specialist
-already recorded anything.
+the controller reviews the proposals and writes accepted evidence or decision-relevant
+deltas through their owners (`commands/target.md`, Action Queue and
+`docs/evidence-runners.md`) before starting the next lane, under
+`skills/runtime-protocol.md#cognitive-write-timing`. Pure review without an accepted
+delta returns `待落库: none`; ranking does not create an Action or Finding.
+The controller does not assume the specialist already recorded anything.
 
 ## State And Queue
 
@@ -126,10 +128,7 @@ Checkpoint, Pickup and preflight never initialize, import, or recreate old owner
   scanner-material registration creates immutable review work; AI creates a
   concrete Finding when its target/endpoint/method/family are known.
 - Claude chooses browser, native HTTP, MCP or an existing executor to fit the
-  experiment. Register saved observations through `validation_runner.py record-observation`
-  or `record-evidence` under `docs/evidence-runners.md`; registration never sends
-  requests. Preserve the real sequence, actors and raw artifacts without forcing
-  a same-method pair. Missing evidence remains unresolved, not automatically clean.
+  experiment, under `skills/runtime-protocol.md#5-execution-and-write-back`.
 - Explicitly state-changing Scanner probes, currently the retained HTTP method
   tampering check, require `ALLOW_UNSAFE_HTTP_TESTS=1`. Without that opt-in the
   request is skipped and recorded in `manual_review/unsafe_skipped.txt`; the
@@ -187,12 +186,14 @@ Checkpoint, Pickup and preflight never initialize, import, or recreate old owner
   `evidence_ref` (`evidence/<target_key>/browser/pending-import-manifest.json`
   with a `{"captures": [...]}` body), `python3 tools/checkpoint.py
   --record-round-lane-result` auto-imports that manifest through the
-  `browser_mcp_import` owner function - the AI does not need to remember a
-  separate importer call. The import result is recorded on the lane heartbeat
+  `browser_mcp_import` owner function as recovery for a pending import.
+  Normal execution imports and registers immediately under
+  `docs/evidence-runners.md#在执行时捕获原件`; terminal auto-import does not replace
+  observation registration. The import result is recorded on the lane heartbeat
   (`browser_import`); import failure is a lane warning (`status: failed` with
   reason), never a heartbeat failure. An `already_recorded` replay never
-  re-imports; manual `--focused-manifest` runs remain available for
-  non-round-lane imports.
+  re-imports; retry a failed import explicitly with `--focused-manifest` and
+  complete its observation registration before relying on it.
 - Read exact source/JS artifacts with Claude native Read/Grep or bounded delegation.
   Raw observations do not create Queue work; only an explicit owner claim does.
   `tools/deep_js_packer.py` requires concrete runtime/chunk/source-map evidence;

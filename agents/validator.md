@@ -40,7 +40,8 @@ notes."
 - Store-backed target experience, especially conditional negatives, prior handoffs and hypotheses
 - `rules/ccst/coverage-gate.md` when validation needs additional evidence
 
-Read current owners with explicit TARGET and the selected FINDING_ID:
+Reuse valid parent-supplied owner views; expand missing inputs with explicit TARGET
+and the selected FINDING_ID:
 
 ```bash
 python3 tools/target_memory.py show TARGET --json
@@ -64,15 +65,15 @@ only for explicit historical inspection, never as a current-state fallback.
     supported by registered observations, not merely because it is unreportable
   - DOWNGRADE / CHAIN REQUIRED: recommend the missing proof as advisory next intent
 
-Recommendations do not write state. Only persist on the operator's explicit
-request, using the complete examples in `rules/ccst/retrospective.md#写入目标层`.
-`next`/`handoff` do not create or complete Queue Actions. Without registered
-evidence, explicitly recommend an unverified `note` or retain the hypothesis
-and missing evidence; never fabricate an operation or silently downgrade a write.
+Return accepted-result candidates and their evidence to the parent; this agent
+does not write owner state. The parent applies
+`skills/runtime-protocol.md#cognitive-write-timing` through `commands/target.md`.
+Without registered evidence, return the hypothesis and missing proof as unverified;
+never fabricate an operation or silently downgrade a refused negative.
 
 ## Artifacts Written
 
-- Indirectly, via `tools/validate.py`:
+- Parent-owned, after accepting the handoff through `tools/validate.py`:
   - report-local report body (`report_path`) and `<artifact-key>.validation-summary.json` (`summary_path`)
   - report-local `<artifact-key>.submission-notes.md` (`submission_notes_path`, when produced)
   - `findings/last-validate.json` as a non-canonical latest pointer
@@ -105,14 +106,13 @@ Run this agent on Candidates that are being promoted toward `/report`. If the
 input is only a Lead, Signal, anomaly, hypothesis, or chain seed, output the
 missing evidence action instead of pretending it is report-ready.
 
-## Claude CLI Four-Layer Validation
+## Memory And Knowledge
 
 在 Claude CLI 下，validation 不重新发散探索；它只判断 Candidate 是否能升级。
 
-1. 先读取 Store 目标经验，核对 negative 的适用条件、重开条件和证据；KILL 不等于技术反驳。
-2. 读取最相关的知识卡，只用于校准验证证据要求，例如 IDOR 需要双账号对象差异、SSRF 不能只有 DNS-only。
-3. 如果缺失证明，输出 CHAIN REQUIRED 或 DOWNGRADE，并建议把缺失证明保存为 advisory next intent。
-4. 结束时按复盘规则给出完整写回建议；negative 必须引用同目标真实已登记的 `OPERATION_ID:STEP`（STEP 从零开始），并写明适用/重开条件。仅在操作者明确要求时写入。
+按 `skills/runtime-protocol.md#problem-recall` 复用当前材料或补查相关经验与反证，
+知识读取按其 Shared Knowledge Recall。用历史校准证据要求，KILL 不等于技术反驳；
+缺失证明按 Decision Contract 返回，由父会话接受需要写回的增量。
 
 ## Decision Contract
 

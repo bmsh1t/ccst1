@@ -55,7 +55,7 @@ python3 tools/coverage_matrix.py find-gaps --target TARGET
 ```bash
 python3 tools/target_store.py findings --target TARGET
 python3 tools/target_store.py findings --target TARGET --id FINDING_ID
-python3 tools/experience_recall.py query --target TARGET --json
+python3 tools/experience_recall.py query --target TARGET --query '当前复盘问题' --json
 ```
 
 `memory/goals/active.json` 仅用于选择目标。缺库/缺 Finding ID 必须显式失败，合法空库
@@ -123,41 +123,9 @@ RETROSPECTIVE DECISION
 需要续接时，保存必要增量及真实引用，不等用户另说“记住”。本规则只帮助分流内容，
 不新增逐观察复盘或固定写回频率；执行事实和真实回执仍即时交给原 owner。
 明确只读/预览时只展示建议，不写目标层或 campaign 工作文件。
-TARGET 必须是已初始化目标；以下内容按实际观察替换，不把示例结论当作事实：
-
-```bash
-python3 tools/target_memory.py lead --target TARGET \
-  --conditions 'peer session; same tenant; JSON representation' \
-  'Hypothesis: compare the saved control and peer response'
-python3 tools/target_memory.py next --target TARGET \
-  'Compare the existing control with the saved peer response'
-python3 tools/target_memory.py dead-end --target TARGET \
-  --conditions 'peer session; same tenant; JSON representation; recorded deployment' \
-  --reopen-when 'role, tenant, representation or deployment changes' \
-  --operation-ref OPERATION_ID:0 \
-  'No peer read was observed under these recorded conditions'
-python3 tools/target_memory.py handoff --target TARGET \
-  --conditions 'saved response only; impact not established' \
-  --next-intent 'Compare existing control before another experiment' \
-  --operation-ref OPERATION_ID:0 \
-  'Candidate remains unconfirmed'
-```
-
-`OPERATION_ID:STEP` 必须引用同目标 Store 已登记的真实 observation，STEP 从零开始；
-此处的 `OPERATION_ID:0` 必须替换为实际登记返回的 operation ID 和对应步骤。
-artifact 路径、Finding ID、虚构执行都不是替代品。negative 必须有非空且明确的适用条件、
-重开条件和 operation 引用，仅在这些条件下成立；KILL 只是不报告 candidate，不证明 negative。
-没有登记证据时保留假设/缺失证据；需要按上述时机保存时使用明确未验证的 note：
-
-```bash
-python3 tools/target_memory.py note --target TARGET \
-  'Unverified observation: peer-read evidence is still missing'
-```
-
-不得隐式把失败的 negative 转成 note，也不得为了写经验虚构/自动登记 observation。
-`next`/`handoff` 是 advisory intent，不创建或完成 Queue Action。
-
-写回内容必须去掉凭证、token、cookie、PII 和客户数据。
+具体命令、条件/重开要求、凭据引用、交接与失败恢复统一见
+[`commands/target.md#交接与证据`](../../commands/target.md#交接与证据)。
+先按 Shared Memory Continuity 核对当前事实与相关反证，再决定本次需要保留的增量。
 
 ### 写入知识库
 

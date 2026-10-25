@@ -53,12 +53,16 @@ Round mechanics belong to `/autopilot-round`; ordinary runs only recover existin
    evidence starts with `/recon`, preserving `arguments.recon_flags`, seed URL and
    auth/context. Supplied usable evidence may start the investigation directly.
    After Recon's Surface finalizer, read the material and choose the next question.
+   Before relying on history or repeating an experiment, apply
+   `skills/runtime-protocol.md#problem-recall`; use returned corrections and conditions.
    `owner_continuations` order is advisory; keep deferred work and obey `runnable=false`.
    Existing-target gaps mandate neither Recon nor Checkpoint. Do not loop `/hunt`.
 
 3. **Execute and save.** Read evidence and the selected `docs/autopilot-lanes.md`
    section; reuse matching `state.lane_contract` at `text_available=true`.
+   Before the first native request, read `docs/evidence-runners.md#在执行时捕获原件`.
    Execute once; immediately apply `skills/runtime-protocol.md#5-execution-and-write-back`.
+   Save accepted memory deltas under `skills/runtime-protocol.md#cognitive-write-timing`.
    Round claims before execution and writes its terminal heartbeat after write-back.
 
 4. **Refresh.** After each action and any terminal heartbeat, run below once.
@@ -84,7 +88,7 @@ selected contract permits. Default zero specialists; delegation follows
 `loop_guard` is advisory. Review bounded deltas at new evidence, phase change,
 blocker, rotation or batch end. Waits/later writes use `--bounded` alone; reread
 only after owner writes. Use `arguments.checkpoint_trigger` for snapshots and
-write decision/next_action only on rotation, blocker or stall.
+save decision-relevant memory under `skills/runtime-protocol.md#cognitive-write-timing`.
 
 ### Investigation Skill
 
@@ -102,6 +106,7 @@ is no stop reason. Consider independent paths after a writer or cleanup failure.
 Closure afterward; budget alone requires no new round. Before leaving: resolve hypotheses,
 register pending Actions before Checkpoint, drain used `oast_listen`, import/close
 browser work under its lane contract, and save memory/current handoff.
+Use `commands/target.md#交接与证据` for handoff and consume its receipt.
 External submission remains manual.
 
 Before exhaustion, run Coverage `rebuild` then `find-gaps`, and read Closure:

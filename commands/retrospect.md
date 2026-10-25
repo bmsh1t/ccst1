@@ -70,7 +70,7 @@ Skills 或 Rules。
 ```bash
 python3 tools/target_store.py findings --target TARGET
 python3 tools/target_store.py findings --target TARGET --id FINDING_ID
-python3 tools/experience_recall.py query --target TARGET --json
+python3 tools/experience_recall.py query --target TARGET --query '当前复盘问题' --json
 ```
 
 按 selected Finding 查询返回的 assessment/evidence/delivery/report 关系展开原始材料；

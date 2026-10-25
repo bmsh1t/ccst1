@@ -10,6 +10,9 @@ no schema, automatic memory writes or execution authority.
 
 - `compact_autopilot_state(state)["target_memory"]` reuses
   `state.resume_summary.target_memory` plus its `source_binding`.
+- Recovery entries retain their owner-provided `version`; `experience_window.context_command`
+  expands counterevidence using that entry's ID/version. Its budget is independent
+  of the recent-history limit.
 - `query_text(..., generations=None)` retains FTS ranking and appends fresh
   lexical-only matches; optional generations come from the same acquisition.
 - `relation_recall.traverse(..., max_seconds=1.0, max_bytes=200000, cursor=None)`
@@ -25,9 +28,28 @@ no schema, automatic memory writes or execution authority.
   handoff, next intent, conditions/provenance, owner binding and expansion
   commands. No second read or active-pointer fallback. Lists have no single-target
   memory; lock/wait, Scope and recovery gates are unchanged.
+- Model-facing timing has one owner: Shared Memory Continuity in runtime-protocol.
+  Its problem recall covers missing historical basis, repeated experiments,
+  changed origin/actor/object/conditions and lost compact context. Existing complete
+  material may be reused; no per-request query or automatic applicability judgment.
+  Memory CLI/authoring details live in commands/target, capture in evidence-runners.
+  Autopilot/Hunt/validator do not maintain narrower write schedules.
+- Recovery carries the same correction/source-health fields with exact versions.
+  Latest handoff/next intent remain advisory even when disputed or superseded;
+  consumers review counterevidence without suppressing independent investigation.
+  Preserving fields in a fresh process proves durable recovery, not model compact
+  compliance; real host behavior is evaluated separately.
 - Native command installation and discovery do not prove dynamic expansion.
   Host acceptance must distinguish pre-expanded script receipts from a later
   model tool replay. Do not inject expected target answers into acceptance prompts.
+- Isolated Claude host checks load `--setting-sources user,project,local` from the
+  synthetic session/project. Verify root `CLAUDE.md`, its adapter import and the
+  invoked command/Bootstrap in the first main request; runtime-doctor/discovery
+  success alone does not prove delivery. Missing entry rules fail admission.
+  Compact auxiliary requests may omit those rules. The observer checks only the
+  preregistered initial request, keeps a failed entry closed, and leaves authority
+  validation to the existing gateway. It forwards bytes unchanged and stores only
+  message shapes, hashes and markers, never credentials, raw prompts or thinking.
 - FTS hits keep BM25 order; substring-only matches retain source order and join
   before semantic fusion, reranking or pagination. Deduplicate exact source refs.
   Channel and ranking digest reflect the actual sources, including missing-index
@@ -67,11 +89,23 @@ no schema, automatic memory writes or execution authority.
   it is not the next chronological observation page. Current truth still owns
   closure/identity health; successful artifact hashing is not a technical verdict.
 
+- Handoff examples include explicit `--next-intent`. Omission remains legal and means
+  no next action; it never revives older intent. The text save receipt shows the trimmed
+  value accepted by Store, or `(none)` for an empty intent.
+  All experience/handoff text fields use role labels and private credential references,
+  never secret values. Evidence links identify the actual supporting observation steps;
+  one `:0` cannot stand for a batch. These are authoring duties in commands/target,
+  not a claim that Store validates prose or automatically redacts credentials.
+
 ## 4. Validation & Error Matrix
 
 | Input | Required behavior |
 | --- | --- |
 | Older handoff beyond recent five | Bootstrap retains handoff and owner warning |
+| Recovery entry to counterevidence | Exact retained ID/version opens its own context page |
+| First host request lacks expected root/import rules | Fail entry verification; exclude sample from rule-effect comparison |
+| Admitted host sends compact auxiliary request without rules | Forward unchanged through the same allowlisted gateway |
+| Failed host entry later sends a matching request | Remain rejected; do not admit a retry as the original sample |
 | List / initialized empty target | No foreign memory / real empty bound memory |
 | Locked target with memory | Wait remains authoritative |
 | Mixed English FTS and Chinese substring | Both accessible, no duplicates over pages |
@@ -99,6 +133,13 @@ bootstrap binding/wait/list/empty behavior, and real operation CLI paging/expans
 with tampered bytes. Do not access personal runtime or real target data. Host
 checks use the requested model, independent sessions, hidden oracle and actual
 file/owner receipts; small samples establish behavior only, not statistical gains.
+Probe rule loading without provider forwarding first. A local observer check covers
+initial mismatch, compact auxiliary requests, failed-entry retries, request-only
+mode, authority rejection, byte preservation and exclusion of hidden thinking.
+Record real `compact_boundary` separately from owner-memory recovery. Check new
+observations and structured handoff fields after continuation; CLI success or more
+requests do not prove them. Preserve failed samples and harness versions; count the
+last cumulative CLI cost once. Observer-induced errors limit stability conclusions.
 Cost checks compare full return values and count repeated work using synthetic
 chains/cycles/diamonds, mixed FTS/substring cases, generation drift, page-window
 handoffs and controlled relation clocks. A smaller bounded output does not prove
@@ -112,3 +153,5 @@ Truncate away a warning → bound at the producer with an explicit expansion.
 Forty observations without continuation → expose full execution-history navigation.
 Global dependency visited set → per-root closure over same-transaction node reuse.
 Time budget returns an unchanged cursor → one bounded transition or explicit budget error.
+Runtime sync is clean so rules must be loaded → verify the first actual main request.
+Every request must contain project rules → gate the initial request; allow compact auxiliaries.

@@ -252,6 +252,8 @@ def format_resume_output(summary: dict | None, target: str) -> str:
             if entries:
                 lines.append(f"  Expand: {window['history_command']} --id {shlex.quote(entries[0]['entry_id'])}")
             lines.append(f"  Recall by question: {window['recall_command']}")
+            if window.get("context_command"):
+                lines.append(f"  Counterevidence by ID/version: {window['context_command']}")
 
     if summary["finding_titles"]:
         lines.append("")
