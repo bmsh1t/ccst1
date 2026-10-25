@@ -23,7 +23,7 @@ import sys
 from collections.abc import Iterable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import unquote_plus, urlparse, urlsplit, urlunsplit
+from urllib.parse import unquote_plus, urlparse, urlsplit
 
 try:
     from tools.artifact_io import write_json_atomic as _write_json_atomic
@@ -33,15 +33,15 @@ except ImportError:  # pragma: no cover - direct tools/ execution
 
 try:
     from tools.target_store import runtime_store
-    from tools.target_paths import canonical_target_value, resolve_target_url, target_storage_key
+    from tools.target_paths import canonical_target_value, target_storage_key
     from tools.scope_context import url_belongs_to_target
 except ImportError:  # pragma: no cover - direct tools/ execution
     from target_store import runtime_store  # type: ignore
-    from target_paths import canonical_target_value, resolve_target_url, target_storage_key  # type: ignore
+    from target_paths import canonical_target_value, target_storage_key  # type: ignore
     from scope_context import url_belongs_to_target
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 INDEX_KIND = "surface_exact_url_index"
 MANIFEST_KIND = "surface_exact_url_index_manifest"
 SUMMARY_KIND = "surface_exact_url_index_summary"
@@ -223,22 +223,6 @@ def _iter_lines(path: Path) -> Iterator[str]:
                 yield value
 
 
-def _default_host(recon_dir: Path) -> str:
-    for line in _iter_lines(recon_dir / HTTPX_PATH):
-        value = line.split()[0] if line.split() else ""
-        if value:
-            parsed = urlsplit(value)
-            if parsed.scheme and parsed.netloc:
-                return urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
-            return value
-    return ""
-
-
-def _iter_js_urls(path: Path, default_host: str) -> Iterator[str]:
-    for endpoint in _iter_lines(path):
-        yield resolve_target_url(endpoint, default_host)
-
-
 def recon_source_iterators(repo_root: Path, target: str) -> list[tuple[str, Iterable[str]]]:
     """Read the same Recon URL sources without building or publishing an index."""
     key = target_storage_key(target)
@@ -247,7 +231,8 @@ def recon_source_iterators(repo_root: Path, target: str) -> list[tuple[str, Iter
         (label, _iter_lines(_artifact_path(recon_dir, relative)))
         for label, relative in _url_artifact_specs(recon_dir)
     ]
-    sources.append(("js", _iter_js_urls(recon_dir / JS_ENDPOINT_PATH, _default_host(recon_dir))))
+    # Legacy bare paths stay unbound hints; a live sibling host is not source provenance.
+    sources.append(("js", _iter_lines(recon_dir / JS_ENDPOINT_PATH)))
     return sources
 
 

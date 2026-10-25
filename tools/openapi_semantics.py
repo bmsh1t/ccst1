@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
+import shutil
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -25,9 +28,13 @@ except ImportError:  # pragma: no cover - direct tools/ execution
 try:
     from tools.target_paths import canonical_target_value, target_storage_key
     from tools.scope_context import url_belongs_to_target
+    from tools.scope_source import load_scope_context
+    from tools.recon_target_selector import select_collection, record_results
 except ImportError:  # pragma: no cover - 兼容 python3 tools/openapi_semantics.py
     from target_paths import canonical_target_value, target_storage_key
     from scope_context import url_belongs_to_target
+    from scope_source import load_scope_context
+    from recon_target_selector import select_collection, record_results
 
 
 SCHEMA_VERSION = 1
@@ -111,7 +118,12 @@ def _jsonl(records: list[dict]) -> str:
     ) + "\n"
 
 
-def _fetch_url(url: str, timeout: int, max_bytes: int) -> tuple[bytes, str]:
+def _fetch_url(url: str, timeout: int, max_bytes: int, *, authorize: Callable[[str], None]) -> tuple[bytes, str]:
+    class ScopedRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            authorize(newurl)
+            return super().redirect_request(req, fp, code, msg, headers, newurl)
+
     request = urllib.request.Request(
         url,
         headers={
@@ -120,7 +132,7 @@ def _fetch_url(url: str, timeout: int, max_bytes: int) -> tuple[bytes, str]:
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with urllib.request.build_opener(ScopedRedirect()).open(request, timeout=timeout) as response:
             content_length = response.headers.get("Content-Length", "")
             if content_length.isdigit() and int(content_length) > max_bytes:
                 raise FetchError(f"response exceeds {max_bytes} bytes")
@@ -604,7 +616,7 @@ def _collect_platform_metadata(
                 raw, _content_type = fetcher(url, timeout, max_bytes)
             except FetchError as exc:
                 # 常见 4xx 只是标准路径不存在；网络/5xx/超限才是采集错误。
-                if exc.status is None or exc.status >= 500:
+                if exc.status is None or exc.status >= 500 or exc.status == 429:
                     errors.append(_error_record(url, "metadata_fetch", str(exc)))
                 continue
             try:
@@ -693,15 +705,38 @@ def run(
     max_platform_hosts: int = DEFAULT_MAX_PLATFORM_HOSTS,
     timeout: int = 10,
     max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
-    fetcher: Fetcher = _fetch_url,
+    fetcher: Fetcher | None = None,
+    rate_limit: float = 50,
 ) -> dict:
     if max_platform_hosts < 0:
         raise ValueError("max_platform_hosts must be >= 0")
     if timeout <= 0 or max_response_bytes <= 0:
         raise ValueError("timeout and max_response_bytes must be > 0")
+    if not math.isfinite(rate_limit) or rate_limit <= 0:
+        raise ValueError("rate_limit must be finite and positive")
 
     repo = Path(repo_root)
     resolved_target = canonical_target_value(target)
+    scope = load_scope_context(repo, resolved_target)
+    scope_hash = scope.scope_hash
+    next_request_at = 0.0
+
+    def authorize(url: str) -> None:
+        nonlocal next_request_at
+        time.sleep(max(0, next_request_at - time.monotonic()))
+        current = load_scope_context(repo, resolved_target)
+        if current.scope_hash != scope_hash:
+            raise ValueError("OpenAPI Scope changed during collection; restart with current Scope")
+        if not url_belongs_to_target(url, resolved_target) or not current.allows_active(url):
+            raise FetchError("request excluded by target Scope")
+        next_request_at = time.monotonic() + 1 / rate_limit
+
+    def scoped_fetch(url: str, timeout: int, max_bytes: int) -> tuple[bytes, str]:
+        authorize(url)
+        if fetcher is not None:
+            return fetcher(url, timeout, max_bytes)
+        return _fetch_url(url, timeout, max_bytes, authorize=authorize)
+
     storage_key = target_storage_key(resolved_target)
     recon_dir = repo / "recon" / storage_key
     api_specs_dir = recon_dir / "api_specs"
@@ -716,7 +751,7 @@ def run(
 
     for source_url in candidate_urls:
         try:
-            raw, _content_type = fetcher(source_url, timeout, max_response_bytes)
+            raw, _content_type = scoped_fetch(source_url, timeout, max_response_bytes)
         except FetchError as exc:
             errors.append(_error_record(source_url, "spec_fetch", str(exc)))
             continue
@@ -735,14 +770,50 @@ def run(
         if operation["security_status"] in {"explicit_public", "anonymous_optional"}
     ]
     auth_boundaries = _auth_boundary_records(operations)
+    origins = [origin for origin in _live_origins(recon_dir)
+         if any(url_belongs_to_target(origin + path, resolved_target)
+                and scope.allows_active(origin + path) for path in PLATFORM_PATHS.values())]
+    metadata_plan = select_collection(
+        target=resolved_target, urls=origins,
+        identity="platform-metadata-v1:" + json.dumps(PLATFORM_PATHS, sort_keys=True),
+        state_path=api_specs_dir / "metadata_state.json",
+        plan_path=api_specs_dir / "metadata_plan.json",
+        targets_path=api_specs_dir / "metadata_targets.txt",
+        limit=max_platform_hosts or max(1, len(origins)), repo_root=repo,
+    )
+    selected_origins = [item["url"] for item in metadata_plan["selected"]]
     metadata, metadata_errors, metadata_hosts = _collect_platform_metadata(
-        _live_origins(recon_dir),
-        max_hosts=max_platform_hosts,
+        selected_origins,
+        max_hosts=0,
         timeout=timeout,
         max_bytes=max_response_bytes,
-        fetcher=fetcher,
+        fetcher=scoped_fetch,
     )
+    failed_origins = {urlunsplit((*urlsplit(item["source"])[:2], "", "", ""))
+                      for item in metadata_errors}
+    summary_path = api_specs_dir / OWNED_ARTIFACTS["summary"]
+    if summary_path.exists():
+        previous = json.loads(summary_path.read_text(encoding="utf-8"))
+        # Keep prior batches as raw history, including misses/errors replaced in this view.
+        history = api_specs_dir / "history" / str(time.time_ns())
+        history.mkdir(parents=True)
+        for filename in OWNED_ARTIFACTS.values():
+            source = api_specs_dir / filename
+            if source.is_file():
+                shutil.copyfile(source, history / filename)
+        if previous.get("scope_hash") == scope_hash:
+            prior_metadata = [json.loads(line) for line in
+                              _read_lines(api_specs_dir / OWNED_ARTIFACTS["platform_metadata"])]
+            metadata = [item for item in prior_metadata if item["origin"] not in selected_origins] + metadata
+            errors.extend(item for item in
+                          (json.loads(line) for line in _read_lines(api_specs_dir / OWNED_ARTIFACTS["errors"]))
+                          if item["stage"] == "metadata_fetch"
+                          and urlunsplit((*urlsplit(item["source"])[:2], "", "", "")) in origins
+                          and urlunsplit((*urlsplit(item["source"])[:2], "", "", "")) not in selected_origins)
     errors.extend(metadata_errors)
+    completed = metadata_plan["completed_count"] + len(selected_origins) - len(failed_origins)
+    metadata_hosts.update(total=len(origins), completed=completed, remaining=len(origins) - completed,
+                          overflow=metadata_plan["remaining_count"], failed=len(failed_origins))
 
     if errors:
         status = "partial"
@@ -760,6 +831,7 @@ def run(
         "status": status,
         "target": resolved_target,
         "storage_key": storage_key,
+        "scope_hash": scope_hash,
         "counts": {
             "candidate_urls": len(candidate_urls),
             "specs_parsed": len(parsed_sources),
@@ -804,6 +876,11 @@ def run(
         api_specs_dir / OWNED_ARTIFACTS["summary"],
         json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
     )
+    results_path = api_specs_dir / "metadata_results.tsv"
+    _atomic_write_text(results_path, "".join(
+        f"{origin}\t{'partial' if origin in failed_origins else 'ok'}\n" for origin in selected_origins))
+    record_results(target=resolved_target, state_path=api_specs_dir / "metadata_state.json",
+                   results_path=results_path, repo_root=repo)
     return summary
 
 
@@ -814,6 +891,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-platform-hosts", type=int, default=DEFAULT_MAX_PLATFORM_HOSTS)
     parser.add_argument("--timeout", type=int, default=10)
     parser.add_argument("--max-response-bytes", type=int, default=DEFAULT_MAX_RESPONSE_BYTES)
+    parser.add_argument("--rate-limit", type=float, default=50, help="Maximum request starts per second, including redirects")
     parser.add_argument("--json", action="store_true")
     return parser
 
@@ -827,6 +905,7 @@ def main(argv: list[str] | None = None) -> int:
             max_platform_hosts=args.max_platform_hosts,
             timeout=args.timeout,
             max_response_bytes=args.max_response_bytes,
+            rate_limit=args.rate_limit,
         )
     except (OSError, ValueError) as exc:
         print(f"openapi semantics failed: {exc}", file=sys.stderr)

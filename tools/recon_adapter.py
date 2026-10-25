@@ -27,9 +27,9 @@ from urllib.parse import urlsplit
 
 
 try:
-    from tools.artifact_io import write_json_atomic
+    from tools.artifact_io import write_json_atomic, write_text_atomic
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from artifact_io import write_json_atomic
+    from artifact_io import write_json_atomic, write_text_atomic
 
 
 FFUF_SUMMARY_SCHEMA = "ffuf-summary-v1"
@@ -56,6 +56,34 @@ class ReconAdapter:
 
     def __init__(self, recon_dir: str | Path):
         self._dir = Path(recon_dir)
+
+    def publish_katana_receipts(self, capture: Path, seeds: Path, output: Path,
+                                results: Path, exit_code: int) -> None:
+        """Publish discovered URLs before per-seed collection receipts; retain raw."""
+        seen, successful, failed_origins = set(), set(), set()
+        if capture.is_file():
+            with capture.open(encoding="utf-8") as handle:
+                for line in handle:
+                    if not line.strip():
+                        continue
+                    row = json.loads(line)
+                    request = row.get("request") if isinstance(row, dict) else None
+                    endpoint = request.get("endpoint") if isinstance(request, dict) else None
+                    if not isinstance(endpoint, str) or not endpoint.startswith(("http://", "https://")):
+                        raise ValueError("invalid Katana request receipt")
+                    seen.add(endpoint)
+                    response = row.get("response")
+                    status = response.get("status_code") if isinstance(response, dict) else None
+                    if row.get("error") or type(status) is not int or status < 100 or status >= 500 or status == 429:
+                        failed_origins.add(urlsplit(endpoint)[:2])
+                    else:
+                        successful.add(endpoint.rstrip("/"))
+        receipts = []
+        for seed in seeds.read_text(encoding="utf-8").splitlines():
+            ok = exit_code == 0 and seed.rstrip("/") in successful and urlsplit(seed)[:2] not in failed_origins
+            receipts.append(seed + "\t" + ("ok" if ok else "partial") + "\n")
+        write_text_atomic(output, "".join(url + "\n" for url in sorted(seen)))
+        write_text_atomic(results, "".join(receipts))
 
     def _read_lines(self, *paths: str) -> list[str]:
         """Read non-empty lines from the first existing file in paths.
@@ -791,6 +819,12 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     action.add_argument("--summarize-ffuf", action="store_true")
     action.add_argument("--read-ffuf", action="store_true")
     action.add_argument("--ffuf-control-size", action="store_true")
+    action.add_argument("--katana-receipts", action="store_true")
+    parser.add_argument("--capture", type=Path)
+    parser.add_argument("--seeds", type=Path)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--results", type=Path)
+    parser.add_argument("--exit-code", type=int, default=0)
     parser.add_argument("--controls", default="", help="Result-only FFUF control JSONL")
     parser.add_argument("--attempted", type=int, default=0)
     parser.add_argument("--succeeded", type=int, default=0)
@@ -807,6 +841,11 @@ def main(argv: list[str] | None = None) -> int:
     args = _build_cli_parser().parse_args(argv)
     adapter = ReconAdapter(args.recon_dir)
     try:
+        if args.katana_receipts:
+            if not all((args.capture, args.seeds, args.output, args.results)):
+                raise ValueError("--katana-receipts requires --capture, --seeds, --output and --results")
+            adapter.publish_katana_receipts(args.capture, args.seeds, args.output, args.results, args.exit_code)
+            return 0
         if args.ffuf_control_size:
             if not args.controls:
                 raise ValueError("--controls is required with --ffuf-control-size")

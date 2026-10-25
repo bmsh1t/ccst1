@@ -164,6 +164,25 @@ def _write_lines_atomic(path: Path, values: list[str]) -> None:
     write_text_atomic(path, "\n".join(values) + "\n" if values else "")
 
 
+def build_source_references(recon_dir: str | Path) -> int:
+    """Keep cached source locations as unverified references, without CI analysis."""
+    root = Path(recon_dir)
+    rows = []
+    for relative in ("live/httpx_full.txt", "js/endpoints.txt", "urls/all.txt"):
+        path = root / relative
+        if not path.is_file():
+            continue
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            for line, raw in enumerate(handle, 1):
+                for match in re.finditer(r"(?:https?://)?github\.com/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?", raw):
+                    rows.append({"url": match.group(0), "source_path": relative, "line_number": line,
+                                 "status": "source_candidate", "ownership": "unverified"})
+    write_json_atomic(root / "cicd/source_candidates.json", {
+        "schema_version": 1, "analysis_status": "not_run", "source_count": len(rows), "sources": rows,
+    })
+    return len(rows)
+
+
 def build_js_deep_candidates(
     input_path: str | Path, output_path: str | Path, *, limit: int = DEFAULT_JS_CANDIDATE_LIMIT,
 ) -> dict:
@@ -1172,6 +1191,7 @@ def main(argv: list[str] | None = None) -> int:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--target")
     mode.add_argument("--js-input")
+    mode.add_argument("--source-refs", type=Path, help="Publish cached source refs from a Recon directory")
     parser.add_argument(
         "--asset-input",
         help="Optional normalized asset-relation observation JSONL for --target mode",
@@ -1191,6 +1211,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--js-limit", type=int, default=DEFAULT_JS_CANDIDATE_LIMIT)
     args = parser.parse_args(argv)
     try:
+        if args.source_refs:
+            print(build_source_references(args.source_refs))
+            return 0
         if args.js_input:
             if args.asset_input:
                 raise ValueError("--asset-input is only supported with --target")

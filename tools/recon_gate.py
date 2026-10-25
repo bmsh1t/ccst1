@@ -3,8 +3,19 @@
 
 from __future__ import annotations
 
+import argparse
+import fcntl
 import glob
+import json
+import os
+import sys
+from datetime import datetime, timezone
 from pathlib import Path
+
+try:
+    from tools.target_paths import target_storage_key
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from target_paths import target_storage_key
 
 
 _PARTIAL_STATUSES = frozenset({"partial", "error", "failed", "failure", "incomplete"})
@@ -166,3 +177,55 @@ def gate_from_record(repo_root: str | Path, record: dict) -> dict:
                 "evidence before treating this phase as fully complete."
             )
     return gate
+
+
+def append_recon_record(repo_root: str | Path, *, target: str, mode: str, phase: str,
+                        status: str, artifact: str, count: int, note: str = "",
+                        collector: bool = False, duration: int = 0) -> None:
+    """Explicit producer write; gate readers remain passive and recompute health."""
+    if type(count) is not int or count < 0 or type(duration) is not int or duration < 0:
+        raise ValueError("Recon count and duration must be nonnegative integers")
+    target_key = target_storage_key(target)
+    manifest = Path(repo_root) / "recon" / target_key / "recon_manifest.jsonl"
+    record = {
+        "record_type": "recon_collector" if collector else "recon_phase",
+        "target": target, "target_key": target_key, "mode": mode,
+        "collector" if collector else "phase": phase,
+        "status": status, "artifact": artifact, "count": count, "note": note,
+        "recorded_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+    if collector:
+        record.update({"schema_version": 1, "duration_seconds": duration})
+    else:
+        record["gate"] = gate_from_record(repo_root, record)
+    line = json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
+    with os.fdopen(os.open(manifest, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600), "a", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        handle.write(line)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Publish an existing Recon phase or collector receipt")
+    parser.add_argument("--repo-root", required=True, type=Path)
+    parser.add_argument("--target", required=True)
+    parser.add_argument("--mode", required=True)
+    parser.add_argument("--phase", required=True)
+    parser.add_argument("--status", required=True)
+    parser.add_argument("--artifact", default="")
+    parser.add_argument("--count", type=int, default=0)
+    parser.add_argument("--note", default="")
+    parser.add_argument("--collector", action="store_true")
+    parser.add_argument("--duration", type=int, default=0)
+    args = parser.parse_args(argv)
+    try:
+        append_recon_record(**vars(args))
+    except (OSError, ValueError) as exc:
+        print(f"recon_gate: {exc}", file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

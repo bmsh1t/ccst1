@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Choose bounded, rotating FFUF targets from the live HTTPX inventory.
+"""Choose bounded, rotating collection inputs from the live inventory.
 
 The complete live URL list remains the recon source of truth.  This module
-only owns the derived directory-fuzzing queue, so a five-host per-run budget
-does not mark the remaining services as covered.
+only owns derived sampling progress; collection receipts never establish
+vulnerability coverage.
 """
 
 from __future__ import annotations
@@ -24,16 +24,17 @@ except ImportError:  # pragma: no cover - direct tools/ execution
 try:
     from tools.target_paths import canonical_target_value, target_storage_key
     from tools.technology_inventory import parse_httpx_text_line
-    from tools.scope_context import ScopeContext
+    from tools.scope_context import ScopeContext, url_belongs_to_target
     from tools.scope_source import load_scope_context
 except ImportError:  # pragma: no cover - direct tools/ execution
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
     from technology_inventory import parse_httpx_text_line  # type: ignore
-    from scope_context import ScopeContext  # type: ignore
+    from scope_context import ScopeContext, url_belongs_to_target  # type: ignore
     from scope_source import load_scope_context  # type: ignore
 
 
 STATE_SCHEMA = 1
+FFUF_INPUT_POLICY = hashlib.sha256(b"ffuf:exact-selected-origin:v1").hexdigest()
 BASE_DIR = Path(__file__).resolve().parents[1]
 
 def _utc_now() -> str:
@@ -122,13 +123,15 @@ def _load_state(
     *,
     scope_ref: str = "",
     scope_hash: str = "",
+    fingerprint_field: str = "wordlist_sha256",
 ) -> dict:
     canonical_target = canonical_target_value(target)
     if not path.exists():
         return {
             "schema": STATE_SCHEMA,
             "target": canonical_target,
-            "wordlist_sha256": wordlist_sha256,
+            fingerprint_field: wordlist_sha256,
+            **({"input_policy_sha256": FFUF_INPUT_POLICY} if fingerprint_field == "wordlist_sha256" else {}),
             "inventory_fingerprint": _fingerprint_urls(sorted(urls)),
             "scope_ref": scope_ref,
             "scope_hash": scope_hash,
@@ -139,27 +142,36 @@ def _load_state(
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError(f"invalid FFUF target state: {path}: {exc}") from exc
+        raise ValueError(f"invalid Recon sampling state: {path}: {exc}") from exc
     if not isinstance(payload, dict) or payload.get("schema") != STATE_SCHEMA:
-        raise ValueError(f"invalid FFUF target state schema: {path}")
+        raise ValueError(f"invalid Recon sampling state schema: {path}")
     if str(payload.get("target") or "") != canonical_target:
-        raise ValueError(f"FFUF target state belongs to a different target: {path}")
+        raise ValueError(f"Recon sampling state belongs to a different target: {path}")
+    if not isinstance(payload.get("last_selected", ""), str):
+        raise ValueError(f"invalid selection position: {path}")
     completed = payload.get("completed")
     if not isinstance(completed, dict):
-        raise ValueError(f"invalid completed map in FFUF target state: {path}")
+        raise ValueError(f"invalid completed map in Recon sampling state: {path}")
     active = payload.get("active", [])
     if not isinstance(active, list) or any(not isinstance(item, str) for item in active):
-        raise ValueError(f"invalid active batch in FFUF target state: {path}")
-    if str(payload.get("wordlist_sha256") or "") != wordlist_sha256:
+        raise ValueError(f"invalid active batch in Recon sampling state: {path}")
+    if str(payload.get(fingerprint_field) or "") != wordlist_sha256:
         completed = {}
+        payload["last_selected"] = ""
     if str(payload.get("scope_hash") or "") != scope_hash:
         completed = {}
+        payload["last_selected"] = ""
+    if fingerprint_field == "wordlist_sha256":
+        if payload.get("input_policy_sha256") != FFUF_INPUT_POLICY:
+            completed = {}
+            payload["last_selected"] = ""
+        payload["input_policy_sha256"] = FFUF_INPUT_POLICY
     payload["completed"] = {
         url: value
         for url, value in completed.items()
         if url in urls and isinstance(value, dict) and value.get("status") == "ok"
     }
-    payload["wordlist_sha256"] = wordlist_sha256
+    payload[fingerprint_field] = wordlist_sha256
     payload["scope_ref"] = scope_ref
     payload["scope_hash"] = scope_hash
     payload["inventory_fingerprint"] = _fingerprint_urls(sorted(urls))
@@ -167,12 +179,14 @@ def _load_state(
     return payload
 
 
-def _pick_batch(candidates: list[dict], completed: set[str], limit: int) -> list[dict]:
+def _pick_batch(candidates: list[dict], completed: set[str], limit: int, after: str = "") -> list[dict]:
     """Apply the batch budget in explicit URL order, without category preferences."""
     if limit <= 0:
         return []
-    return sorted((item for item in candidates if item["url"] not in completed),
-                  key=lambda item: item["url"])[:limit]
+    pending = sorted((item for item in candidates if item["url"] not in completed),
+                     key=lambda item: item["url"])
+    return ([item for item in pending if item["url"] > after]
+            + [item for item in pending if item["url"] <= after])[:limit]
 
 
 def select_targets(
@@ -202,15 +216,47 @@ def select_targets(
         scope_ref=scope_ref,
         scope_hash=scope_hash,
     )
+    return _publish_selection(target, candidates, state, state_path, plan_path, targets_path, limit)
+
+
+def select_collection(*, target: str, urls: list[str], identity: str, state_path: Path,
+                      plan_path: Path, targets_path: Path, limit: int,
+                      repo_root: str | Path = BASE_DIR, origins_only: bool = False) -> dict:
+    """Select collection seeds; only published result receipts can complete them."""
+    if limit < 1 or not identity.strip():
+        raise ValueError("collection identity and positive limit are required")
+    context = load_scope_context(repo_root, target)
+    eligible = set()
+    for url in urls:
+        url = url.strip()
+        if not url or not url_belongs_to_target(url, target) or not context.allows_active(url):
+            continue
+        if origins_only:
+            parsed = urlsplit(url)
+            url = urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
+            if not context.allows_active(url):
+                continue
+        eligible.add(url)
+    fingerprint = _fingerprint_urls([identity, *sorted(eligible)])
+    state = _load_state(state_path, target, fingerprint, eligible,
+                        scope_ref=context.source_ref or context.root_target,
+                        scope_hash=context.scope_hash, fingerprint_field="collection_fingerprint")
+    return _publish_selection(target, [{"url": url} for url in sorted(eligible)], state,
+                              state_path, plan_path, targets_path, limit)
+
+
+def _publish_selection(target: str, candidates: list[dict], state: dict, state_path: Path,
+                       plan_path: Path, targets_path: Path, limit: int) -> dict:
     completed = set(state["completed"])
-    selected = _pick_batch(candidates, completed, limit)
+    selected = _pick_batch(candidates, completed, limit, str(state.get("last_selected") or ""))
     plan = {
         "schema": STATE_SCHEMA,
         "target": canonical_target_value(target),
-        "scope_ref": scope_ref,
-        "scope_hash": scope_hash,
+        "scope_ref": state["scope_ref"],
+        "scope_hash": state["scope_hash"],
+        **({"input_policy_sha256": state["input_policy_sha256"]} if "wordlist_sha256" in state else {}),
         "limit": limit,
-        "order": "url",
+        "order": "rotating-url",
         "eligible_count": len(candidates),
         "completed_count": len(completed),
         "pending_count": max(0, len(candidates) - len(completed)),
@@ -220,6 +266,9 @@ def select_targets(
         "generated_at": _utc_now(),
     }
     state["active"] = [item["url"] for item in selected]
+    state["eligible_count"] = len(candidates)
+    if selected:
+        state["last_selected"] = selected[-1]["url"]
     state["updated_at"] = _utc_now()
     _atomic_json(state_path, state)
     _atomic_json(plan_path, plan)
@@ -232,31 +281,33 @@ def record_results(*, target: str, state_path: Path, results_path: Path,
     try:
         state = json.loads(state_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError(f"invalid FFUF target state: {state_path}: {exc}") from exc
+        raise ValueError(f"invalid Recon sampling state: {state_path}: {exc}") from exc
     if not isinstance(state, dict) or state.get("schema") != STATE_SCHEMA:
-        raise ValueError(f"invalid FFUF target state schema: {state_path}")
+        raise ValueError(f"invalid Recon sampling state schema: {state_path}")
     if str(state.get("target") or "") != canonical_target_value(target):
-        raise ValueError(f"FFUF target state belongs to a different target: {state_path}")
+        raise ValueError(f"Recon sampling state belongs to a different target: {state_path}")
+    if "wordlist_sha256" in state and state.get("input_policy_sha256") != FFUF_INPUT_POLICY:
+        raise ValueError("FFUF input policy changed or missing; select targets again before recording")
     scope_hash = load_scope_context(repo_root, target).scope_hash
     if str(state.get("scope_hash") or "") != scope_hash:
-        raise ValueError(f"FFUF target state Scope changed or binding missing: {state_path}")
+        raise ValueError(f"Recon sampling state Scope changed or binding missing: {state_path}")
     active_raw = state.get("active", [])
     if not isinstance(active_raw, list) or any(not isinstance(item, str) for item in active_raw):
-        raise ValueError(f"invalid active batch in FFUF target state: {state_path}")
+        raise ValueError(f"invalid active batch in Recon sampling state: {state_path}")
     active = set(active_raw)
     completed = state.get("completed")
     if not isinstance(completed, dict):
-        raise ValueError(f"invalid completed map in FFUF target state: {state_path}")
+        raise ValueError(f"invalid completed map in Recon sampling state: {state_path}")
 
     seen: set[str] = set()
     for raw in results_path.read_text(encoding="utf-8", errors="replace").splitlines():
         url, separator, status = raw.partition("\t")
         if not separator or not url or status not in {"ok", "partial", "failed"}:
-            raise ValueError(f"invalid FFUF target result row: {results_path}")
+            raise ValueError(f"invalid Recon sampling result row: {results_path}")
         if url not in active:
-            raise ValueError(f"FFUF result is not part of active target batch: {url}")
+            raise ValueError(f"Recon sampling result is not part of active target batch: {url}")
         if url in seen:
-            raise ValueError(f"duplicate FFUF target result row: {url}")
+            raise ValueError(f"duplicate Recon sampling result row: {url}")
         seen.add(url)
         if status == "ok":
             completed[url] = {"status": "ok", "completed_at": _utc_now()}
@@ -294,6 +345,8 @@ def load_rotation_status(repo_root: str | Path, target: str) -> dict:
         context = load_scope_context(repo_root, target)
         scope_ref, scope_hash = context.source_ref or context.root_target, context.scope_hash
         for payload in (plan, state):
+            if payload.get("input_policy_sha256") != FFUF_INPUT_POLICY:
+                raise ValueError("FFUF input policy changed or missing; rotation must restart")
             recorded_hash = str(payload.get("scope_hash") or "")
             if recorded_hash != scope_hash:
                 raise ValueError("Scope changed or binding missing; FFUF rotation must restart")
@@ -318,11 +371,35 @@ def load_rotation_status(repo_root: str | Path, target: str) -> dict:
     }
 
 
+def collection_accounting(*, target: str, state_path: Path, plan_path: Path,
+                          repo_root: str | Path = BASE_DIR) -> str:
+    """Describe published collection progress, refusing mismatched snapshots."""
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    scope_hash = load_scope_context(repo_root, target).scope_hash
+    for payload in (state, plan):
+        if (not isinstance(payload, dict) or payload.get("schema") != STATE_SCHEMA
+                or payload.get("target") != canonical_target_value(target)
+                or payload.get("scope_hash") != scope_hash):
+            raise ValueError("collection accounting target/schema/Scope mismatch")
+    total = plan.get("eligible_count")
+    completed = state.get("completed")
+    selected = plan.get("selected")
+    if (type(total) is not int or total < 0 or total != state.get("eligible_count")
+            or not isinstance(completed, dict) or len(completed) > total
+            or any(not isinstance(item, dict) or item.get("status") != "ok" for item in completed.values())
+            or not isinstance(selected, list) or len(selected) > total):
+        raise ValueError("invalid collection accounting counts")
+    return (f"input_total={total}; selected={len(completed)}; remaining={total-len(completed)}; "
+            f"batch_selected={len(selected)}; selected_means=collected_successfully")
+
+
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Select rotating bounded FFUF targets")
+    parser = argparse.ArgumentParser(description="Select rotating bounded Recon inputs")
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--select", action="store_true")
     mode.add_argument("--record-results", action="store_true")
+    mode.add_argument("--accounting", action="store_true")
     parser.add_argument("--target", required=True)
     parser.add_argument("--repo-root", type=Path, default=BASE_DIR)
     parser.add_argument("--state", required=True, type=Path)
@@ -331,6 +408,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--plan", type=Path, default=Path("dirs/ffuf_target_plan.json"))
     parser.add_argument("--targets", type=Path, default=Path("dirs/ffuf_targets.txt"))
     parser.add_argument("--wordlist", type=Path)
+    parser.add_argument("--collection-identity")
+    parser.add_argument("--origins-only", action="store_true")
     parser.add_argument("--results", type=Path)
     parser.add_argument("--limit", type=int, default=5)
     return parser
@@ -339,7 +418,18 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     try:
-        if args.select:
+        if args.accounting:
+            print(collection_accounting(target=args.target, state_path=args.state,
+                                        plan_path=args.plan, repo_root=args.repo_root))
+            return 0
+        if args.select and args.collection_identity:
+            payload = select_collection(
+                target=args.target, urls=args.urls.read_text(encoding="utf-8").splitlines(),
+                identity=args.collection_identity, state_path=args.state, plan_path=args.plan,
+                targets_path=args.targets, limit=args.limit, repo_root=args.repo_root,
+                origins_only=args.origins_only,
+            )
+        elif args.select:
             if args.wordlist is None:
                 raise ValueError("--wordlist is required with --select")
             payload = select_targets(

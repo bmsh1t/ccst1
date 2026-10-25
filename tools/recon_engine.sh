@@ -58,37 +58,9 @@ record_recon_phase() {
 
     # Manifest 是阶段账本，不做价值判断；用于让 Claude 区分“无结果”和“未运行/跳过”。
     [ -n "${RECON_MANIFEST:-}" ] || return 0
-    python3 - "$BASE_DIR" "$RECON_MANIFEST" "$TARGET" "${RECON_TARGET_KEY:-}" "$RECON_PROFILE" \
-        "$phase" "$status" "$artifact" "$count" "$note" <<'PY' || true
-import json
-import sys
-from datetime import datetime, timezone
-
-base_dir, manifest, target, target_key, profile, phase, status, artifact, count, note = sys.argv[1:]
-sys.path.insert(0, base_dir)
-from tools.recon_gate import gate_from_record
-
-try:
-    count_value = int(str(count).strip() or "0")
-except ValueError:
-    count_value = 0
-
-record = {
-    "record_type": "recon_phase",
-    "target": target,
-    "target_key": target_key,
-    "mode": profile,
-    "phase": phase,
-    "status": status,
-    "artifact": artifact,
-    "count": count_value,
-    "note": note,
-    "recorded_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-}
-record["gate"] = gate_from_record(base_dir, record)
-with open(manifest, "a", encoding="utf-8") as handle:
-    handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
-PY
+    python3 "$BASE_DIR/tools/recon_gate.py" --repo-root "$BASE_DIR" --target "$TARGET" \
+        --mode "$RECON_PROFILE" --phase "$phase" --status "$status" \
+        --artifact "$artifact" --count "$count" --note "$note"
 }
 
 record_recon_collector() {
@@ -100,30 +72,9 @@ record_recon_collector() {
     local note="${6:-}"
 
     [ -n "${RECON_MANIFEST:-}" ] || return 0
-    python3 - "$RECON_MANIFEST" "$TARGET" "${RECON_TARGET_KEY:-}" "$RECON_PROFILE" \
-        "$collector" "$status" "$artifact" "$count" "$duration" "$note" <<'PY' || true
-import json
-import sys
-from datetime import datetime, timezone
-
-manifest, target, target_key, profile, collector, status, artifact, count, duration, note = sys.argv[1:]
-record = {
-    "schema_version": 1,
-    "record_type": "recon_collector",
-    "target": target,
-    "target_key": target_key,
-    "mode": profile,
-    "collector": collector,
-    "status": status,
-    "artifact": artifact,
-    "count": int(count or 0),
-    "duration_seconds": int(duration or 0),
-    "note": note,
-    "recorded_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-}
-with open(manifest, "a", encoding="utf-8") as handle:
-    handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
-PY
+    python3 "$BASE_DIR/tools/recon_gate.py" --repo-root "$BASE_DIR" --target "$TARGET" \
+        --mode "$RECON_PROFILE" --phase "$collector" --status "$status" --collector \
+        --artifact "$artifact" --count "$count" --note "$note" --duration "$duration"
 }
 
 build_filtered_first_backstop() {
@@ -170,8 +121,10 @@ import sys
 base_dir, target, input_raw, output_raw, mode = sys.argv[1:]
 sys.path.insert(0, base_dir)
 from tools.scope_context import url_belongs_to_target
+from tools.scope_source import load_scope_context
 
 source = Path(input_raw)
+scope = load_scope_context(base_dir, target) if mode == "http-url" else None
 values = []
 seen = set()
 if source.is_file():
@@ -182,7 +135,8 @@ if source.is_file():
             continue
         if mode == "http-url" and not candidate.lower().startswith(("http://", "https://")):
             continue
-        if url_belongs_to_target(candidate, target) and candidate not in seen:
+        if (url_belongs_to_target(candidate, target) and candidate not in seen
+                and (scope is None or scope.allows_active(candidate))):
             seen.add(candidate)
             values.append(candidate)
 Path(output_raw).write_text(("\n".join(values) + "\n") if values else "", encoding="utf-8")
@@ -224,67 +178,6 @@ parsed = urlsplit(sys.argv[1].strip())
 if parsed.scheme not in {"http", "https"} or not parsed.netloc:
     raise SystemExit(2)
 print(urlunsplit((parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", "")))
-PY
-}
-
-filter_ffuf_targets() {
-    local targets_file="$1"
-    local alias_map="$2"
-    local target="$3"
-    python3 - "$targets_file" "$alias_map" "$target" <<'PY'
-import os
-import sys
-import tempfile
-from pathlib import Path
-from urllib.parse import urlsplit, urlunsplit
-
-targets_path = Path(sys.argv[1])
-alias_path = Path(sys.argv[2])
-target = sys.argv[3].strip()
-target_host = urlsplit(target if "://" in target else f"//{target}").hostname or ""
-target_host = target_host.lower()
-seen = set()
-seen_originals = set()
-targets = []
-aliases = []
-
-for raw in targets_path.read_text(encoding="utf-8", errors="replace").splitlines():
-    value = raw.strip()
-    if not value:
-        continue
-    if value in seen_originals:
-        continue
-    seen_originals.add(value)
-    parsed = urlsplit(value)
-    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
-        continue
-    host = (parsed.hostname or "").lower()
-    canonical_host = target_host if host == f"www.{target_host}" else host
-    try:
-        port = parsed.port
-    except ValueError:
-        continue
-    if (parsed.scheme.lower() == "http" and port == 80) or (parsed.scheme.lower() == "https" and port == 443):
-        port = None
-    netloc = canonical_host
-    if port is not None:
-        netloc = f"{netloc}:{port}"
-    canonical = urlunsplit((parsed.scheme.lower(), netloc, parsed.path.rstrip("/"), "", ""))
-    key = (parsed.scheme.lower(), canonical_host, port, parsed.path.rstrip("/"))
-    if key not in seen:
-        seen.add(key)
-        targets.append(canonical)
-    aliases.append((canonical, value))
-
-def atomic_write(path: Path, content: str) -> None:
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as handle:
-        temporary = Path(handle.name)
-        handle.write(content)
-    os.replace(temporary, path)
-
-atomic_write(targets_path, ("\n".join(targets) + "\n") if targets else "")
-alias_lines = [f"{canonical}\t{original}" for canonical, original in aliases]
-atomic_write(alias_path, ("\n".join(alias_lines) + "\n") if alias_lines else "")
 PY
 }
 
@@ -511,12 +404,12 @@ archive_collector_artifact() {
     archive_path="$archive_root/$relative"
     if [ -f "$artifact" ]; then
         mkdir -p "$(dirname "$archive_path")" || return 1
-        cp -p "$artifact" "$archive_path"
+        cp -p "$artifact" "$archive_path" || return 1
         archived=1
     fi
     if [ -f "${artifact}.gz" ]; then
         mkdir -p "$(dirname "${archive_path}.gz")" || return 1
-        cp -p "${artifact}.gz" "${archive_path}.gz"
+        cp -p "${artifact}.gz" "${archive_path}.gz" || return 1
         archived=1
     fi
     [ "$archived" -eq 1 ]
@@ -544,6 +437,12 @@ run_collector_task() {
                 note="could not archive prior artifact; current result not published"
                 printf '%s\t%s\t%s\n' "$status" "$duration" "$note" > "$meta_file"
                 return 0
+            fi
+            if [ "$artifact" = "$RECON_DIR/urls/katana.txt" ]; then
+                merged_artifact="${temp_artifact}.merged"
+                { append_artifact "$artifact"; cat "$temp_artifact"; } \
+                    | awk 'NF && !seen[$0]++' > "$merged_artifact"
+                mv -f "$merged_artifact" "$temp_artifact"
             fi
             mv -f "$temp_artifact" "$artifact"
             rm -f "${artifact}.gz"
@@ -721,29 +620,29 @@ post_compress_raw_recon_urls() {
         note                 "Active all.txt/with_params.txt/exposure/live/subdomains preserved; raw URL archive is gzip evidence"
 }
 
-FFUF_PID=""
+FFUF_WORKER_PIDS=()
+FFUF_WORK_DIR=""
 JS_RESPONSE_TMP=""
 
-stop_ffuf_phase() {
-    local pid="${FFUF_PID:-}"
-    [ -n "$pid" ] || return 0
-    if kill -0 "$pid" 2>/dev/null; then
-        kill "$pid" 2>/dev/null || true
+cleanup_ffuf_workers() {
+    local pid
+    for pid in "${FFUF_WORKER_PIDS[@]}"; do
+        kill -TERM "$pid" 2>/dev/null || true
+    done
+    for pid in "${FFUF_WORKER_PIDS[@]}"; do
         wait "$pid" 2>/dev/null || true
+    done
+    FFUF_WORKER_PIDS=()
+    if [ -n "$FFUF_WORK_DIR" ] && [ -d "$FFUF_WORK_DIR" ]; then
+        log_warn "FFUF interrupted or incomplete originals retained: $FFUF_WORK_DIR" >&2
     fi
-    FFUF_PID=""
 }
 
 cleanup_auth_tmpfiles() {
-    stop_ffuf_phase
+    cleanup_ffuf_workers
     [ -n "${JS_RESPONSE_TMP:-}" ] && rm -f -- "$JS_RESPONSE_TMP"
     [ -n "${WAFW00F_HEADERS_FILE:-}" ] && [ -f "$WAFW00F_HEADERS_FILE" ] && rm -f "$WAFW00F_HEADERS_FILE"
     [ -n "${HTTPX_RUN_TMP:-}" ] && [ -f "$HTTPX_RUN_TMP" ] && rm -f "$HTTPX_RUN_TMP"
-    [ -n "${FFUF_RESULT_TMP:-}" ] && [ -f "$FFUF_RESULT_TMP" ] && rm -f "$FFUF_RESULT_TMP"
-    [ -n "${FFUF_TARGET_RESULTS_TMP:-}" ] && [ -f "$FFUF_TARGET_RESULTS_TMP" ] && rm -f "$FFUF_TARGET_RESULTS_TMP"
-    [ -n "${FFUF_CONTROL_TMP:-}" ] && [ -f "$FFUF_CONTROL_TMP" ] && rm -f "$FFUF_CONTROL_TMP"
-    [ -n "${FFUF_CONTROL_RUN_TMP:-}" ] && [ -f "$FFUF_CONTROL_RUN_TMP" ] && rm -f "$FFUF_CONTROL_RUN_TMP"
-    [ -n "${FFUF_CONTROL_WORDLIST_TMP:-}" ] && [ -f "$FFUF_CONTROL_WORDLIST_TMP" ] && rm -f "$FFUF_CONTROL_WORDLIST_TMP"
     return 0  # Always succeed: EXIT trap propagates its return code to the script
 }
 
@@ -1529,6 +1428,7 @@ OPENAPI_PLATFORM_HOST_BUDGET="${BBHUNT_OPENAPI_MAX_PLATFORM_HOSTS:-20}"
 RECON_COMPRESS_MIN_MB="${BBHUNT_RECON_COMPRESS_MIN_MB:-5}"
 require_positive_integer BB_THREADS "$THREADS"
 require_positive_integer BB_RATE_LIMIT "$RATE_LIMIT"
+REQUEST_INTERVAL=$(awk -v rate="$RATE_LIMIT" 'BEGIN { printf "%.9f", 1/rate }')
 require_positive_integer SUBFINDER_THREADS "$SUBFINDER_THREADS"
 require_positive_integer GAU_THREADS "$GAU_THREADS"
 require_positive_integer BBHUNT_RECON_JS_CANDIDATE_LIMIT "$JS_CANDIDATE_LIMIT"
@@ -1636,6 +1536,7 @@ touch "$RECON_DIR/subdomains/all.txt" \
 : > "$RECON_DIR/urls/js_files_analysis.txt"
 : > "$RECON_DIR/js/endpoints.txt"
 : > "$RECON_DIR/js/endpoints_raw.txt"
+: > "$RECON_DIR/js/endpoint_sources.jsonl"
 : > "$RECON_DIR/js/potential_secrets.txt"
 : > "$RECON_DIR/js/linkfinder_endpoints.txt"
 : > "$RECON_DIR/js/request_targets.txt"
@@ -1795,28 +1696,55 @@ collect_waymore_urls() {
         2> "$RECON_DIR/logs/waymore.log"
 }
 
+# Sampling state is derived collection progress, never vulnerability coverage.
+select_collection_batch() {
+    local name="$1" input="$2" limit="$3" identity="$4"
+    shift 4
+    python3 "$BASE_DIR/tools/recon_target_selector.py" --select \
+        --repo-root "$BASE_DIR" --target "$TARGET" --collection-identity "$identity" \
+        --urls "$input" --limit "$limit" --state "$RECON_DIR/${name}_state.json" \
+        --plan "$RECON_DIR/${name}_plan.json" --targets "$RECON_DIR/${name}_targets.txt" "$@" \
+        >> "$RECON_DIR/logs/sampling.log" 2>&1
+}
+
+record_collection_batch() {
+    local name="$1" results="$2"
+    python3 "$BASE_DIR/tools/recon_target_selector.py" --record-results \
+        --repo-root "$BASE_DIR" --target "$TARGET" --state "$RECON_DIR/${name}_state.json" \
+        --results "$results" >> "$RECON_DIR/logs/sampling.log" 2>&1
+}
+
+collection_accounting() {
+    python3 "$BASE_DIR/tools/recon_target_selector.py" --accounting \
+        --repo-root "$BASE_DIR" --target "$TARGET" \
+        --state "$RECON_DIR/${1}_state.json" --plan "$RECON_DIR/${1}_plan.json"
+}
+
 collect_katana_urls() {
     local output="$1"
     command -v katana >/dev/null 2>&1 || return 3
-    [ -s "$RECON_DIR/live/urls.txt" ] || return 4
-    KATANA_INPUT_TOTAL=$(wc -l < "$RECON_DIR/live/urls.txt" 2>/dev/null | tr -d ' ' || echo 0)
-    KATANA_SELECTED=$((KATANA_INPUT_TOTAL > 50 ? 50 : KATANA_INPUT_TOTAL))
-    head -50 "$RECON_DIR/live/urls.txt" > "$RECON_DIR/urls/katana_targets.txt"
+    [ -s "$RECON_DIR/urls/katana_targets.txt" ] || return 4
     local perf_args=()
     [ -n "${KATANA_CONCURRENCY:-}" ] && perf_args+=(-c "$KATANA_CONCURRENCY")
     [ -n "${KATANA_PARALLELISM:-}" ] && perf_args+=(-p "$KATANA_PARALLELISM")
+    local capture="$RECON_DIR/urls/katana_runs/$(basename "$output").jsonl" rc=0
+    mkdir -p "$(dirname "$capture")"
+    chmod 700 "$(dirname "$capture")"
+    (umask 077
     run_with_timeout 300 katana \
         -list "$RECON_DIR/urls/katana_targets.txt" \
         -d 3 -jc -kf all -silent -dr -fs rdn -do \
         -rl "$RATE_LIMIT" \
         "${perf_args[@]}" \
         "${BB_AUTH_ARGS[@]}" \
-        -o "$output" \
-        2> "$RECON_DIR/logs/katana.log"
+        -jsonl -o "$capture" \
+        > /dev/null 2> "$RECON_DIR/logs/katana.log") || rc=$?
+    python3 "$BASE_DIR/tools/recon_adapter.py" --recon-dir "$RECON_DIR" --katana-receipts \
+        --capture "$capture" --seeds "$RECON_DIR/urls/katana_targets.txt" --output "$output" \
+        --results "$RECON_DIR/urls/katana_results.tsv" --exit-code "$rc" || return 1
+    return "$rc"
 }
 
-KATANA_INPUT_TOTAL=0
-KATANA_SELECTED=0
 
 echo "============================================="
 echo "  Recon Engine — $TARGET"
@@ -2966,11 +2894,18 @@ start_collector waymore "$RECON_DIR/urls/waymore.txt" \
 wait_collector_group
 
 # katana 依赖 live hosts，因此只能在被动 URL collector 之后运行。
-KATANA_INPUT_TOTAL=$(wc -l < "$RECON_DIR/live/urls.txt" 2>/dev/null | tr -d ' ' || echo 0)
-KATANA_SELECTED=$((KATANA_INPUT_TOTAL > 50 ? 50 : KATANA_INPUT_TOTAL))
+select_collection_batch urls/katana "$RECON_DIR/live/urls.txt" 50 "katana-d3-jc-kf-all-v1"
+: > "$RECON_DIR/urls/katana_results.tsv"
 start_collector katana "$RECON_DIR/urls/katana.txt" \
     "recon/${RECON_TARGET_KEY}/urls/katana.txt" collect_katana_urls
 wait_collector_group
+
+if [ "$(cut -f1 "$RECON_DIR/logs/collectors/katana.status")" != "ok" ] || \
+   [ ! -f "$RECON_DIR/urls/katana_results.tsv" ]; then
+    awk 'NF {print $0 "\tpartial"}' "$RECON_DIR/urls/katana_targets.txt" > "$RECON_DIR/urls/katana_results.tsv"
+fi
+record_collection_batch urls/katana "$RECON_DIR/urls/katana_results.tsv"
+KATANA_ACCOUNTING="$(collection_accounting urls/katana)"
 
 # Merge only primary collector outputs into a run-scoped raw staging file.
 # Derived Active files from previous runs must never feed back into this corpus.
@@ -2992,12 +2927,15 @@ URLS_API=0
 URLS_SENS=0
 URL_COLLECTION_STATUS="ok"
 [ "$RAW_URLS_TOTAL" -eq 0 ] && URL_COLLECTION_STATUS="partial"
+if grep -q $'\tpartial$' "$RECON_DIR/urls/katana_results.tsv"; then
+    URL_COLLECTION_STATUS="partial"
+fi
 record_recon_phase \
     url_collection \
     "$URL_COLLECTION_STATUS" \
     "recon/${RECON_TARGET_KEY}/urls/raw/all.txt" \
     "$RAW_URLS_TOTAL" \
-    "raw URL staging is retained until Active publication; Active all.txt is published after filtering; input_total=$KATANA_INPUT_TOTAL; selected=$KATANA_SELECTED; remaining=$((KATANA_INPUT_TOTAL - KATANA_SELECTED)); continuation=next Katana target sample; closure_blocking=false"
+    "raw URL staging is retained until Active publication; Active all.txt is published after filtering; $KATANA_ACCOUNTING; continuation=next Katana target sample; closure_blocking=false"
 
 # ============================================================
 # Phase 4.5: URL Denoising (non-destructive)
@@ -3250,8 +3188,26 @@ PY
                 log_warn "JS download failed; skipping incomplete response"
                 continue
             fi
-            sed -nE 's/.*["'"'"']([a-zA-Z0-9_/.-]*(\/[a-zA-Z0-9_/.-]+)+)["'"'"'].*/\1/p' \
-                "$JS_RESPONSE_TMP" >> "$RECON_DIR/js/endpoints_raw.txt" 2>/dev/null || true
+            if ! python3 - "$js_url" "$JS_RESPONSE_TMP" "$RECON_DIR/js/endpoints_raw.txt" "$RECON_DIR/js/endpoint_sources.jsonl" <<'PY_JS_ENDPOINTS'
+import json
+import re
+import sys
+from pathlib import Path
+source_url, response_path, endpoints_path, sources_path = sys.argv[1:]
+content = Path(response_path).read_text(encoding="utf-8", errors="replace")
+pattern = re.compile(r"""["']([a-zA-Z0-9_/.-]*(?:/[a-zA-Z0-9_/.-]+)+)["']""")
+with open(endpoints_path, "a", encoding="utf-8") as endpoints, open(sources_path, "a", encoding="utf-8") as sources:
+    for match in pattern.finditer(content):
+        endpoint = match.group(1)
+        # A bundle host is not the document base, even for root-relative requests.
+        resolved = endpoint
+        endpoints.write(resolved + "\n")
+        sources.write(json.dumps({"source_url": source_url, "endpoint": endpoint, "url": "", "binding": "unbound", "requires": "document_base_url"}) + "\n")
+PY_JS_ENDPOINTS
+            then
+                JS_ANALYSIS_STATUS="partial"
+                log_warn "JS endpoint extraction failed; captured sources remain available"
+            fi
             grep -Eio "([a-zA-Z0-9_-]*(api[_-]?key|apiKey|api[_-]?secret|access[_-]?token|auth[_-]?token|client[_-]?secret|password|secret[_-]?key|secretKey|token)[a-zA-Z0-9_-]*)[\"'[:space:]]*[:=][\"'[:space:]]*[\"' ]?([A-Za-z0-9_./+=:-]{8,})" \
                 "$JS_RESPONSE_TMP" >> "$RECON_DIR/js/potential_secrets.txt" 2>/dev/null || true
             if [ -n "$LINKFINDER_BIN" ] && [ "$JS_RESPONSE_INDEX" -le "$LINKFINDER_MAX_JS" ]; then
@@ -3329,103 +3285,25 @@ FFUF_SAMPLE_COUNT=0
 FFUF_OVERFLOW=0
 FFUF_STATUS_COUNTS="{}"
 FFUF_HEAVY_SIGNATURES="-"
-FFUF_RESULT_TMP=""
-FFUF_CONTROL_TMP=""
-FFUF_CONTROL_RUN_TMP=""
-FFUF_CONTROL_WORDLIST_TMP=""
-FFUF_TARGET_RESULTS_TMP=""
 FFUF_TARGET_PLAN="$RECON_DIR/dirs/ffuf_target_plan.json"
 FFUF_TARGETS_FILE="$RECON_DIR/dirs/ffuf_targets.txt"
 FFUF_TARGET_STATE="$RECON_DIR/dirs/ffuf_target_state.json"
-FFUF_TARGET_ALIAS_MAP=""
-FFUF_TARGET_PENDING=0
-FFUF_TARGET_SELECTION_STATUS="not-run"
-FFUF_TARGET_RECORD_STATUS="not-run"
-FFUF_RESULT_ARTIFACT=""
 FFUF_PHASE_ARTIFACT="recon/${RECON_TARGET_KEY}/dirs/"
-FFUF_SUMMARY_ARTIFACT="-"
-FFUF_SKIP_REASON=""
-FFUF_SUMMARY_OK="false"
-DIR_FUZZ_STATUS="pending"
 FFUF_LOG="$RECON_DIR/logs/ffuf.log"
 FFUF_EFFECTIVE_BUDGET_SECONDS="$DIR_FUZZ_HARD_BUDGET_SECONDS"
 FFUF_PHASE_DEADLINE_SECONDS=$((SECONDS + FFUF_EFFECTIVE_BUDGET_SECONDS))
 FFUF_PHASE_DEADLINE_EPOCH=$(( $(date +%s) + FFUF_EFFECTIVE_BUDGET_SECONDS ))
-FFUF_PHASE_STATE="$RECON_DIR/dirs/ffuf_phase_state.json"
 FFUF_HOST_CONCURRENCY="${BBHUNT_FFUF_HOST_CONCURRENCY:-4}"
 require_positive_integer BBHUNT_FFUF_HOST_CONCURRENCY "$FFUF_HOST_CONCURRENCY"
 : > "$FFUF_LOG"
 
-write_ffuf_phase_state() {
-    local path="$1"
-    shift
-    python3 - "$path" "$@" <<'PY'
-import json
-import os
-import sys
-
-(
-    path,
-    status,
-    artifact,
-    summary_artifact,
-    skip_reason,
-    attempted,
-    succeeded,
-    failed,
-    control_failed,
-    interrupted,
-    observations,
-    parse_errors,
-    sample_count,
-    overflow,
-    status_counts,
-    heavy_signatures,
-    target_selection,
-    target_record,
-    pending,
-    host_concurrency,
-    target_threads,
-    summary_ok,
-    worker_count,
-    note,
-) = sys.argv[1:]
-try:
-    status_counts_value = json.loads(status_counts or "{}")
-except json.JSONDecodeError:
-    status_counts_value = {}
-payload = {
-    "schema_version": 1,
-    "status": status,
-    "artifact": artifact,
-    "summary_artifact": summary_artifact,
-    "skip_reason": skip_reason,
-    "attempted": int(attempted or 0),
-    "succeeded": int(succeeded or 0),
-    "failed": int(failed or 0),
-    "control_failed": int(control_failed or 0),
-    "interrupted": int(interrupted or 0),
-    "observations": int(observations or 0),
-    "parse_errors": int(parse_errors or 0),
-    "sample_count": int(sample_count or 0),
-    "overflow": int(overflow or 0),
-    "status_counts": status_counts_value,
-    "heavy_signatures": heavy_signatures,
-    "target_selection": target_selection,
-    "target_record": target_record,
-    "pending": int(pending or 0),
-    "host_concurrency": int(host_concurrency or 0),
-    "target_threads": int(target_threads or 0),
-    "summary_ok": summary_ok == "true",
-    "worker_count": int(worker_count or 0),
-    "note": note,
-}
-temporary = f"{path}.tmp.{os.getpid()}"
-with open(temporary, "w", encoding="utf-8") as handle:
-    json.dump(payload, handle, ensure_ascii=False, sort_keys=True)
-    handle.write("\n")
-os.replace(temporary, path)
-PY
+stop_ffuf_request() {
+    if [ -n "${ffuf_pid:-}" ]; then
+        # GNU timeout forwards TERM and bounds a stubborn child with --kill-after.
+        kill -TERM "$ffuf_pid" 2>/dev/null || true
+        wait "$ffuf_pid" 2>/dev/null || true
+        ffuf_pid=""
+    fi
 }
 
 ffuf_run_target() {
@@ -3433,6 +3311,7 @@ ffuf_run_target() {
     local worker_dir="$2"
     local wordlist="$3"
     local target_threads="$4"
+    local target_rate="$5"
     local worker_log="$worker_dir/worker.log"
     local control_words="$worker_dir/control_words.txt"
     local control_run="$worker_dir/control.jsonl"
@@ -3448,6 +3327,11 @@ ffuf_run_target() {
     local spa_fallback_size=0
     local remaining
     local filter_args=()
+    local ffuf_pid="" timeout_cmd
+    timeout_cmd="$(timeout_bin)"
+    trap 'exit 143' TERM
+    trap 'exit 130' INT
+    trap 'stop_ffuf_request' EXIT
 
     : > "$worker_log"
     : > "$control_run"
@@ -3455,7 +3339,7 @@ ffuf_run_target() {
     : > "$spa_fallback"
     printf '%s\n' "$base_url" > "$worker_dir/url.txt"
     printf 'Fuzzing: %s\n' "$base_url" >> "$worker_log"
-    bb_auth_args_for_url "$base_url"
+    bb_auth_args_for_url "$base_url" || return 1
 
     printf '__bbhunt_missing_%s_%s\n__bbhunt_missing_%s_%s\n' \
         "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM" > "$control_words"
@@ -3466,14 +3350,18 @@ ffuf_run_target() {
         return 0
     fi
     # Feed wordlists through stdin: ffuf interprets ':' in paths as a keyword separator.
-    if run_with_timeout "$remaining" ffuf -u "${base_url}/FUZZ" \
+    "$timeout_cmd" --kill-after=2 "$remaining" ffuf -u "${base_url}/FUZZ" \
         -w - \
         -mc all \
         -s -json \
         -t 1 \
+        -rate "$target_rate" \
         -timeout 10 \
         "${BB_URL_AUTH_ARGS[@]}" \
-        2>> "$worker_log" < "$control_words" > "$control_run"; then
+        2>> "$worker_log" < "$control_words" > "$control_run" &
+    ffuf_pid=$!
+    if wait "$ffuf_pid"; then
+        ffuf_pid=""
         if ! spa_fallback_size="$(python3 "$BASE_DIR/tools/recon_adapter.py" \
             --recon-dir "$RECON_DIR" \
             --ffuf-control-size \
@@ -3490,6 +3378,7 @@ ffuf_run_target() {
         fi
     else
         control_exit=$?
+        ffuf_pid=""
         control_failed=1
         control_ok=0
         if [ "$control_exit" -eq 124 ] || [ "$control_exit" -eq 130 ]; then
@@ -3504,18 +3393,23 @@ ffuf_run_target() {
         interrupted=1
         printf '%s\n' "FFUF deadline reached before main request" >> "$worker_log"
     else
-        if run_with_timeout "$remaining" ffuf -u "${base_url}/FUZZ" \
+        # Explicit controls above are paced; FFUF auto-calibration bypasses -rate.
+        "$timeout_cmd" --kill-after=2 "$remaining" ffuf -u "${base_url}/FUZZ" \
             -w - \
             -mc 200,301,302,403,405 \
-            -ac \
             "${filter_args[@]}" \
             -t "$target_threads" \
+            -rate "$target_rate" \
             -timeout 10 \
             "${BB_URL_AUTH_ARGS[@]}" \
-            -s -json 2>> "$worker_log" < "$wordlist" > "$main_run"; then
+            -s -json 2>> "$worker_log" < "$wordlist" > "$main_run" &
+        ffuf_pid=$!
+        if wait "$ffuf_pid"; then
+            ffuf_pid=""
             main_ok=1
         else
             main_exit=$?
+            ffuf_pid=""
             if [ "$main_exit" -eq 124 ] || [ "$main_exit" -eq 130 ]; then
                 interrupted=1
             fi
@@ -3532,20 +3426,6 @@ ffuf_run_target() {
     fi
 }
 
-cleanup_ffuf_background() {
-    local worker_pid temporary
-    for worker_pid in "${worker_pids[@]:-}"; do
-        kill "$worker_pid" 2>/dev/null || true
-    done
-    if [ -n "${work_dir:-}" ] && [ -d "$work_dir" ]; then
-        rm -rf -- "$work_dir"
-    fi
-    for temporary in "${result_tmp:-}" "${control_tmp:-}" "${target_results_tmp:-}" "${FFUF_TARGET_ALIAS_MAP:-}"; do
-        [ -n "$temporary" ] && rm -f -- "$temporary"
-    done
-    return 0
-}
-
 run_ffuf_phase() {
     local wordlist=""
     local skip_reason=""
@@ -3555,6 +3435,7 @@ run_ffuf_phase() {
     local max_fuzz
     local worker_limit
     local target_threads
+    local target_rate
     local worker_count=0
     local worker_failures=0
     local work_dir=""
@@ -3565,24 +3446,9 @@ run_ffuf_phase() {
     local summary_artifact="-"
     local summary_ok="false"
     local phase_status="skipped"
-    local -a worker_pids=()
     local base_url url worker_dir worker_pid worker_summary worker_status worker_attempted
     local worker_succeeded worker_failed worker_control_failed worker_interrupted
-    local summary_values
-    trap 'cleanup_ffuf_background; exit 143' TERM INT
-    trap 'cleanup_ffuf_background' EXIT
-
-    FFUF_ATTEMPTED=0
-    FFUF_SUCCEEDED=0
-    FFUF_FAILED=0
-    FFUF_CONTROL_FAILED=0
-    FFUF_INTERRUPTED=0
-    FFUF_OBSERVATIONS=0
-    FFUF_PARSE_ERRORS=0
-    FFUF_SAMPLE_COUNT=0
-    FFUF_OVERFLOW=0
-    FFUF_STATUS_COUNTS="{}"
-    FFUF_HEAVY_SIGNATURES="-"
+    local summary_values phase_note
 
     if ! command -v ffuf >/dev/null 2>&1; then
         skip_reason="ffuf not installed"
@@ -3606,6 +3472,8 @@ run_ffuf_phase() {
 
     if [ -n "$wordlist" ]; then
         max_fuzz=$([ "$QUICK_MODE" = "--quick" ] && echo 2 || echo 5)
+        archive_collector_artifact "$FFUF_TARGET_STATE" || return 1
+        archive_collector_artifact "$FFUF_TARGET_PLAN" || return 1
         if python3 "$BASE_DIR/tools/recon_target_selector.py" \
             --select \
             --target "$TARGET" \
@@ -3627,43 +3495,41 @@ with open(sys.argv[1], encoding="utf-8") as handle:
 print(int(payload.get("remaining_count", payload.get("pending_count", 0))))
 PY
 )"; then
-            :
-        else
-            target_selection="partial"
-            printf '%s\n' "target plan pending count could not be read" >> "$FFUF_LOG"
-        fi
-        if [ ! -s "$FFUF_TARGETS_FILE" ]; then
-            if grep -q '"exhausted": true' "$FFUF_TARGET_PLAN" 2>/dev/null; then
-                skip_reason="directory target rotation exhausted"
+                :
             else
-                skip_reason="no scope-owned live URL"
+                target_selection="partial"
+                    printf '%s\n' "target plan pending count could not be read" >> "$FFUF_LOG"
             fi
-            wordlist=""
-        elif FFUF_TARGET_ALIAS_MAP="$(mktemp "$RECON_DIR/dirs/.ffuf-target-aliases.XXXXXX")" && \
-             filter_ffuf_targets "$FFUF_TARGETS_FILE" "$FFUF_TARGET_ALIAS_MAP" "$TARGET"; then
-            printf 'filtered FFUF targets before execution: %s\n' "$(wc -l < "$FFUF_TARGETS_FILE" | tr -d ' ')" >> "$FFUF_LOG"
+            if [ ! -s "$FFUF_TARGETS_FILE" ]; then
+                if grep -q '"exhausted": true' "$FFUF_TARGET_PLAN" 2>/dev/null; then
+                    skip_reason="directory target rotation exhausted"
+                else
+                    skip_reason="no scope-owned live URL"
+                fi
+                wordlist=""
+            fi
         else
-            skip_reason="FFUF target de-duplication failed"
-            rm -f "$FFUF_TARGET_ALIAS_MAP"
-            FFUF_TARGET_ALIAS_MAP=""
+            target_selection="failed"
             wordlist=""
+            skip_reason="directory target selection failed"
+            printf '%s\n' "Directory target selection failed; raw live inventory preserved" >> "$FFUF_LOG"
         fi
-    else
-        target_selection="failed"
-        skip_reason="directory target selection failed"
-        printf '%s\n' "Directory target selection failed; raw live inventory preserved" >> "$FFUF_LOG"
     fi
-fi
 
-if [ -n "$wordlist" ]; then
+    if [ -n "$wordlist" ]; then
         worker_limit="$FFUF_HOST_CONCURRENCY"
         [ "$worker_limit" -gt "$max_fuzz" ] && worker_limit="$max_fuzz"
+        [ "$worker_limit" -gt "$THREADS" ] && worker_limit="$THREADS"
+        [ "$worker_limit" -gt "$RATE_LIMIT" ] && worker_limit="$RATE_LIMIT"
         target_threads=$((THREADS / worker_limit))
-        [ "$target_threads" -lt 1 ] && target_threads=1
-        work_dir="$(mktemp -d "$RECON_DIR/dirs/.ffuf-workers.XXXXXX")"
-        result_tmp="$(mktemp "$RECON_DIR/dirs/.ffuf-results.XXXXXX")"
-        control_tmp="$(mktemp "$RECON_DIR/dirs/.ffuf-controls.XXXXXX")"
-        target_results_tmp="$(mktemp "$RECON_DIR/dirs/.ffuf-target-results.XXXXXX")"
+        target_rate=$((RATE_LIMIT / worker_limit))
+        FFUF_WORK_DIR="$(mktemp -d "$RECON_DIR/dirs/.ffuf-workers.XXXXXX")"
+        work_dir="$FFUF_WORK_DIR"
+        result_tmp="$work_dir/results.jsonl"
+        control_tmp="$work_dir/controls.jsonl"
+        target_results_tmp="$work_dir/target-results.tsv"
+        : > "$control_tmp"
+        : > "$target_results_tmp"
         if command -v gzip >/dev/null 2>&1 && gzip -c /dev/null > "$result_tmp" 2>> "$FFUF_LOG"; then
             FFUF_USE_GZIP="true"
             result_artifact="$RECON_DIR/dirs/ffuf_results.jsonl.gz"
@@ -3685,21 +3551,20 @@ if [ -n "$wordlist" ]; then
             worker_dir="$work_dir/target-$(printf '%04d' "$worker_count")"
             mkdir -p "$worker_dir"
             (
-                set +e
-                ffuf_run_target "$base_url" "$worker_dir" "$wordlist" "$target_threads"
+                ffuf_run_target "$base_url" "$worker_dir" "$wordlist" "$target_threads" "$target_rate"
             ) &
-            worker_pids+=("$!")
-            while [ "${#worker_pids[@]}" -ge "$worker_limit" ]; do
-                worker_pid="${worker_pids[0]}"
+            FFUF_WORKER_PIDS+=("$!")
+            while [ "${#FFUF_WORKER_PIDS[@]}" -ge "$worker_limit" ]; do
+                worker_pid="${FFUF_WORKER_PIDS[0]}"
                 if wait "$worker_pid"; then
                     :
                 else
                     worker_failures=$((worker_failures + 1))
                 fi
-                worker_pids=("${worker_pids[@]:1}")
+                FFUF_WORKER_PIDS=("${FFUF_WORKER_PIDS[@]:1}")
             done
         done < "$FFUF_TARGETS_FILE"
-        for worker_pid in "${worker_pids[@]}"; do
+        for worker_pid in "${FFUF_WORKER_PIDS[@]}"; do
             if wait "$worker_pid"; then
                 :
             else
@@ -3707,15 +3572,16 @@ if [ -n "$wordlist" ]; then
             fi
         done
 
+        FFUF_WORKER_PIDS=()
         for worker_dir in "$work_dir"/target-*; do
             [ -d "$worker_dir" ] || continue
             [ -s "$worker_dir/worker.log" ] && cat "$worker_dir/worker.log" >> "$FFUF_LOG"
             [ -s "$worker_dir/control.jsonl" ] && cat "$worker_dir/control.jsonl" >> "$control_tmp"
             if [ -s "$worker_dir/main.jsonl" ]; then
                 if [ "$FFUF_USE_GZIP" = "true" ]; then
-                    gzip -c "$worker_dir/main.jsonl" >> "$result_tmp" || worker_failures=$((worker_failures + 1))
+                    gzip -c "$worker_dir/main.jsonl" >> "$result_tmp" || return 1
                 else
-                    cat "$worker_dir/main.jsonl" >> "$result_tmp" || worker_failures=$((worker_failures + 1))
+                    cat "$worker_dir/main.jsonl" >> "$result_tmp" || return 1
                 fi
             fi
             [ -s "$worker_dir/spa_fallback.tsv" ] && cat "$worker_dir/spa_fallback.tsv" >> "$RECON_DIR/dirs/spa_fallback.txt"
@@ -3723,13 +3589,6 @@ if [ -n "$wordlist" ]; then
             if [ -s "$worker_summary" ]; then
                 IFS=$'\t' read -r base_url worker_status worker_attempted worker_succeeded worker_failed worker_control_failed worker_interrupted < "$worker_summary"
                 printf '%s\t%s\n' "$base_url" "$worker_status" >> "$target_results_tmp"
-                if [ -s "$FFUF_TARGET_ALIAS_MAP" ]; then
-                    while IFS=$'\t' read -r alias_base alias_original; do
-                        [ "$alias_base" = "$base_url" ] || continue
-                        [ "$alias_original" = "$base_url" ] && continue
-                        printf '%s\t%s\n' "$alias_original" "$worker_status" >> "$target_results_tmp"
-                    done < "$FFUF_TARGET_ALIAS_MAP"
-                fi
                 FFUF_ATTEMPTED=$((FFUF_ATTEMPTED + worker_attempted))
                 FFUF_SUCCEEDED=$((FFUF_SUCCEEDED + worker_succeeded))
                 FFUF_FAILED=$((FFUF_FAILED + worker_failed))
@@ -3739,35 +3598,16 @@ if [ -n "$wordlist" ]; then
                 base_url="$(cat "$worker_dir/url.txt" 2>/dev/null || true)"
                 [ -n "$base_url" ] || continue
                 printf '%s\tfailed\n' "$base_url" >> "$target_results_tmp"
-                if [ -s "$FFUF_TARGET_ALIAS_MAP" ]; then
-                    while IFS=$'\t' read -r alias_base alias_original; do
-                        [ "$alias_base" = "$base_url" ] || continue
-                        [ "$alias_original" = "$base_url" ] && continue
-                        printf '%s\tfailed\n' "$alias_original" >> "$target_results_tmp"
-                    done < "$FFUF_TARGET_ALIAS_MAP"
-                fi
                 FFUF_ATTEMPTED=$((FFUF_ATTEMPTED + 1))
                 FFUF_FAILED=$((FFUF_FAILED + 1))
                 worker_failures=$((worker_failures + 1))
             fi
         done
-        rm -rf "$work_dir"
 
-        if [ -s "$target_results_tmp" ]; then
-            if python3 "$BASE_DIR/tools/recon_target_selector.py" \
-                --record-results \
-                --target "$TARGET" \
-                --state "$FFUF_TARGET_STATE" \
-                --results "$target_results_tmp" \
-                >> "$FFUF_LOG" 2>&1; then
-                target_record="ok"
-            else
-                target_record="failed"
-                printf '%s\n' "FFUF target rotation state update failed; completed coverage was not advanced" >> "$FFUF_LOG"
-            fi
-        fi
 
         if [ "$FFUF_ATTEMPTED" -gt 0 ]; then
+            archive_collector_artifact "$RECON_DIR/dirs/ffuf_results.jsonl" || return 1
+            archive_collector_artifact "$RECON_DIR/dirs/ffuf_summary.json" || return 1
             mv -f "$result_tmp" "$result_artifact"
             result_tmp=""
             if [ "$FFUF_USE_GZIP" = "true" ]; then
@@ -3821,8 +3661,21 @@ PY
             rm -f "$result_tmp"
             result_tmp=""
         fi
-        rm -f "$control_tmp" "$target_results_tmp" "$FFUF_TARGET_ALIAS_MAP"
-        FFUF_TARGET_ALIAS_MAP=""
+        if [ -s "$target_results_tmp" ] && [ "$summary_ok" = "true" ] && [ "$FFUF_PARSE_ERRORS" -eq 0 ]; then
+            if python3 "$BASE_DIR/tools/recon_target_selector.py" \
+                --record-results \
+                --target "$TARGET" \
+                --state "$FFUF_TARGET_STATE" \
+                --results "$target_results_tmp" \
+                >> "$FFUF_LOG" 2>&1; then
+                target_record="ok"
+            else
+                target_record="failed"
+                printf '%s\n' "FFUF target rotation state update failed; completed coverage was not advanced" >> "$FFUF_LOG"
+            fi
+        fi
+
+        rm -f "$control_tmp" "$target_results_tmp"
         control_tmp=""
         target_results_tmp=""
         if [ "$FFUF_ATTEMPTED" -gt 0 ]; then
@@ -3835,117 +3688,43 @@ PY
         fi
     fi
 
+    if [ "$phase_status" = "ok" ] && [ -n "$work_dir" ]; then
+        rm -rf -- "$work_dir"
+        FFUF_WORK_DIR=""
+    fi
     if [ "$FFUF_ATTEMPTED" -eq 0 ] && [ -z "$skip_reason" ]; then
         skip_reason="no usable base URLs"
     fi
-    if ! write_ffuf_phase_state \
-        "$FFUF_PHASE_STATE" \
-        "$phase_status" \
-        "${FFUF_PHASE_ARTIFACT:-$result_artifact}" \
-        "$summary_artifact" \
-        "$skip_reason" \
-        "$FFUF_ATTEMPTED" "$FFUF_SUCCEEDED" "$FFUF_FAILED" "$FFUF_CONTROL_FAILED" \
-        "$FFUF_INTERRUPTED" "$FFUF_OBSERVATIONS" "$FFUF_PARSE_ERRORS" "$FFUF_SAMPLE_COUNT" \
-        "$FFUF_OVERFLOW" "$FFUF_STATUS_COUNTS" "$FFUF_HEAVY_SIGNATURES" \
-        "$target_selection" "$target_record" "$target_pending" \
-        "${worker_limit:-0}" "${target_threads:-0}" "$summary_ok" "$worker_count" \
-        "background host workers; per-target control then main; aggregate thread budget is bounded"; then
-        printf '%s\n' "Could not publish FFUF phase state" >> "$FFUF_LOG"
-        return 1
-    fi
-}
-
-wait_for_ffuf_phase() {
-    local wait_status=0
-    local state_values
-    if [ -n "${FFUF_PID:-}" ]; then
-        if wait "$FFUF_PID"; then
-            :
-        else
-            wait_status=$?
-            log_warn "Background FFUF phase exited with status $wait_status"
-        fi
-        FFUF_PID=""
-    fi
-    if [ ! -s "$FFUF_PHASE_STATE" ]; then
-        DIR_FUZZ_STATUS="partial"
-        FFUF_SKIP_REASON="background FFUF phase exited before publishing state"
-        FFUF_PHASE_ARTIFACT="recon/${RECON_TARGET_KEY}/dirs/"
-        FFUF_SUMMARY_ARTIFACT="-"
-        RECON_PHASE_PARTIAL=1
-    elif state_values="$(python3 - "$FFUF_PHASE_STATE" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], encoding="utf-8") as handle:
-    payload = json.load(handle)
-fields = (
-    "status", "artifact", "summary_artifact", "skip_reason", "attempted", "succeeded",
-    "failed", "control_failed", "interrupted", "observations", "parse_errors", "sample_count",
-    "overflow", "status_counts", "heavy_signatures", "target_selection", "target_record",
-    "pending", "host_concurrency", "target_threads", "summary_ok", "worker_count",
-)
-missing = [field for field in fields if field not in payload]
-if missing:
-    raise ValueError(f"missing FFUF phase state fields: {', '.join(missing)}")
-values = []
-for field in fields:
-    value = payload.get(field, "{}" if field == "status_counts" else "-")
-    if field == "status_counts":
-        value = json.dumps(value or {}, separators=(",", ":"))
-    elif field == "summary_ok":
-        value = "true" if value else "false"
-    value = str(value).replace("\t", " ").replace("\n", " ")
-    values.append(value)
-print("\t".join(values))
-PY
-)"; then
-        IFS=$'\t' read -r DIR_FUZZ_STATUS FFUF_PHASE_ARTIFACT FFUF_SUMMARY_ARTIFACT FFUF_SKIP_REASON \
-            FFUF_ATTEMPTED FFUF_SUCCEEDED FFUF_FAILED FFUF_CONTROL_FAILED FFUF_INTERRUPTED \
-            FFUF_OBSERVATIONS FFUF_PARSE_ERRORS FFUF_SAMPLE_COUNT FFUF_OVERFLOW FFUF_STATUS_COUNTS \
-            FFUF_HEAVY_SIGNATURES FFUF_TARGET_SELECTION_STATUS FFUF_TARGET_RECORD_STATUS FFUF_TARGET_PENDING \
-            FFUF_EFFECTIVE_HOST_CONCURRENCY FFUF_TARGET_THREADS FFUF_SUMMARY_OK FFUF_WORKER_COUNT <<< "$state_values"
-        if [ "$wait_status" -ne 0 ] && [ "$DIR_FUZZ_STATUS" = "ok" ]; then
-            DIR_FUZZ_STATUS="partial"
-            RECON_PHASE_PARTIAL=1
-        fi
-        case "$DIR_FUZZ_STATUS" in
-            partial|failed|incomplete) RECON_PHASE_PARTIAL=1 ;;
-        esac
-    else
-        DIR_FUZZ_STATUS="partial"
-        FFUF_SKIP_REASON="FFUF phase state could not be parsed"
-        RECON_PHASE_PARTIAL=1
-    fi
-
     if [ "$FFUF_ATTEMPTED" -gt 0 ]; then
-        log_done "Directory fuzzing complete: attempted=$FFUF_ATTEMPTED succeeded=$FFUF_SUCCEEDED failed=$FFUF_FAILED observations=$FFUF_OBSERVATIONS (background workers=$FFUF_WORKER_COUNT)"
+        log_done "Directory fuzzing complete: attempted=$FFUF_ATTEMPTED succeeded=$FFUF_SUCCEEDED failed=$FFUF_FAILED observations=$FFUF_OBSERVATIONS (host workers=$worker_count)"
     else
-        log_warn "Directory fuzzing skipped: ${FFUF_SKIP_REASON:-no runnable inputs}"
+        log_warn "Directory fuzzing skipped: ${skip_reason:-no runnable inputs}"
     fi
-    FFUF_PHASE_NOTE="bounded host sampling with rotation; background=true; host_concurrency=${FFUF_EFFECTIVE_HOST_CONCURRENCY:-0}; target_threads=${FFUF_TARGET_THREADS:-0}; budget=${FFUF_EFFECTIVE_BUDGET_SECONDS}s (hard=${DIR_FUZZ_HARD_BUDGET_SECONDS}s); attempted=$FFUF_ATTEMPTED succeeded=$FFUF_SUCCEEDED failed=$FFUF_FAILED control_failed=$FFUF_CONTROL_FAILED interrupted=$FFUF_INTERRUPTED parse_errors=$FFUF_PARSE_ERRORS target_selection=$FFUF_TARGET_SELECTION_STATUS target_record=$FFUF_TARGET_RECORD_STATUS pending=$FFUF_TARGET_PENDING; not complete directory coverage"
-    [ -n "$FFUF_SKIP_REASON" ] && FFUF_PHASE_NOTE="$FFUF_PHASE_NOTE; skipped_reason=$FFUF_SKIP_REASON"
+    phase_note="bounded host sampling with rotation; host_concurrency=${worker_limit:-0}; target_threads=${target_threads:-0}; rate_limit=$RATE_LIMIT; overlaps_later_phases=false; budget=${FFUF_EFFECTIVE_BUDGET_SECONDS}s (hard=${DIR_FUZZ_HARD_BUDGET_SECONDS}s); attempted=$FFUF_ATTEMPTED succeeded=$FFUF_SUCCEEDED failed=$FFUF_FAILED control_failed=$FFUF_CONTROL_FAILED interrupted=$FFUF_INTERRUPTED parse_errors=$FFUF_PARSE_ERRORS target_selection=$target_selection target_record=$target_record pending=$target_pending; not complete directory coverage"
+    [ -n "$skip_reason" ] && phase_note="$phase_note; skipped_reason=$skip_reason"
     record_recon_phase \
         dir_fuzz \
-        "$DIR_FUZZ_STATUS" \
+        "$phase_status" \
         "$FFUF_PHASE_ARTIFACT" \
         "$FFUF_OBSERVATIONS" \
-        "$FFUF_PHASE_NOTE"
+        "$phase_note"
     emit_claude_hint \
         phase                dir_fuzz \
-        status               "$DIR_FUZZ_STATUS" \
+        status               "$phase_status" \
         hosts_attempted      "$FFUF_ATTEMPTED" \
         hosts_succeeded      "$FFUF_SUCCEEDED" \
         hosts_failed         "$FFUF_FAILED" \
         interrupted          "$FFUF_INTERRUPTED" \
         hard_budget_seconds  "$DIR_FUZZ_HARD_BUDGET_SECONDS" \
         effective_budget_seconds "$FFUF_EFFECTIVE_BUDGET_SECONDS" \
-        host_concurrency     "${FFUF_EFFECTIVE_HOST_CONCURRENCY:-0}" \
-        target_threads       "${FFUF_TARGET_THREADS:-0}" \
-        background           "true" \
-        target_selection     "$FFUF_TARGET_SELECTION_STATUS" \
-        target_record        "$FFUF_TARGET_RECORD_STATUS" \
-        pending_targets      "$FFUF_TARGET_PENDING" \
+        host_concurrency     "${worker_limit:-0}" \
+        target_threads       "${target_threads:-0}" \
+        background           "false" \
+        overlaps_later_phases "false" \
+        rate_limit           "$RATE_LIMIT" \
+        target_selection     "$target_selection" \
+        target_record        "$target_record" \
+        pending_targets      "$target_pending" \
         observations         "$FFUF_OBSERVATIONS" \
         status_counts        "$FFUF_STATUS_COUNTS" \
         heavy_signatures     "$FFUF_HEAVY_SIGNATURES" \
@@ -3954,13 +3733,11 @@ PY
         artifact             "$FFUF_PHASE_ARTIFACT" \
         targets_plan         "recon/${RECON_TARGET_KEY}/dirs/ffuf_target_plan.json" \
         targets_state        "recon/${RECON_TARGET_KEY}/dirs/ffuf_target_state.json" \
-        summary              "$FFUF_SUMMARY_ARTIFACT" \
+        summary              "$summary_artifact" \
         interpretation       "AI review required; control matches are evidence hints, not exclusions"
 }
 
-run_ffuf_phase &
-FFUF_PID=$!
-log_step "Directory fuzzing scheduled in background (pid=$FFUF_PID, host_concurrency=$FFUF_HOST_CONCURRENCY); continuing with later recon phases"
+run_ffuf_phase
 
 # ============================================================
 # Phase 6.5: Config File Exposure Check
@@ -3969,7 +3746,18 @@ recon_budget_checkpoint config_exposure
 echo ""
 log_info "Phase 6.5: Config File Exposure Check"
 
-if [ -s "$RECON_DIR/live/urls.txt" ]; then
+CONFIG_ATTEMPTED=0
+CONFIG_SUCCEEDED=0
+CONFIG_FAILED=0
+CONFIG_PHASE_STATUS="skipped"
+CONFIG_INPUT="$RECON_DIR/exposure/config_eligible.txt"
+mkdir -p "$RECON_DIR/exposure"
+build_target_owned_input "$RECON_DIR/live/urls.txt" "$CONFIG_INPUT" http-url
+select_collection_batch exposure/config "$CONFIG_INPUT" 30 "config-paths-v1" --origins-only
+CONFIG_INPUT="$RECON_DIR/exposure/config_targets.txt"
+touch "$RECON_DIR/exposure/config_files.txt" "$RECON_DIR/exposure/config_probes.tsv"
+: > "$RECON_DIR/exposure/config_results.tsv"
+if [ -s "$CONFIG_INPUT" ]; then
     log_step "Checking for exposed config files (env.js, app_env.js, .env, etc.)..."
     CONFIG_PATHS=(
         "/env.js"
@@ -3985,20 +3773,40 @@ if [ -s "$RECON_DIR/live/urls.txt" ]; then
         "/assets/env.js"
     )
 
-    mkdir -p "$RECON_DIR/exposure"
-    : > "$RECON_DIR/exposure/config_files.txt"
-
     while IFS= read -r base_url; do
         if ! CONFIG_ORIGIN="$(url_origin "$base_url")"; then
             log_warn "Skipping invalid config probe base URL: $base_url"
             continue
         fi
+        CONFIG_ORIGIN_STATUS="ok"
         for path in "${CONFIG_PATHS[@]}"; do
             CONFIG_URL="${CONFIG_ORIGIN}${path}"
+            if ! python3 - "$BASE_DIR" "$TARGET" "$CONFIG_URL" <<'PY_CONFIG_SCOPE'
+import sys
+sys.path.insert(0, sys.argv[1])
+from tools.scope_source import load_scope_context
+raise SystemExit(0 if load_scope_context(sys.argv[1], sys.argv[2]).allows_active(sys.argv[3]) else 3)
+PY_CONFIG_SCOPE
+            then
+                printf '%s\t0\tScope check failed\t3\n' "$CONFIG_URL" >> "$RECON_DIR/exposure/config_probes.tsv"
+                log_warn "Config Scope check failed; stopping collection without advancing this batch"
+                exit 2
+            fi
             bb_auth_args_for_url "$CONFIG_URL"
-            STATUS=$(curl -s "${BB_URL_AUTH_ARGS[@]}" -o /dev/null -w "%{http_code}" --max-time 5 "$CONFIG_URL" 2>/dev/null || echo "000")
+            CONFIG_ATTEMPTED=$((CONFIG_ATTEMPTED + 1))
+            CONFIG_EXIT=0
+            CONFIG_RESPONSE=$(curl -q -s "${BB_URL_AUTH_ARGS[@]}" -o /dev/null -w $'%{http_code}\t%{content_type}' --max-time 5 "$CONFIG_URL" 2>> "$RECON_DIR/logs/config.log") || CONFIG_EXIT=$?
+            STATUS="${CONFIG_RESPONSE%%$'\t'*}"
+            CONTENT_TYPE="${CONFIG_RESPONSE#*$'\t'}"
+            printf '%s\t%s\t%s\t%s\n' "$CONFIG_URL" "$STATUS" "$CONTENT_TYPE" "$CONFIG_EXIT" >> "$RECON_DIR/exposure/config_probes.tsv"
+            sleep "$REQUEST_INTERVAL"
+            if [ "$CONFIG_EXIT" -ne 0 ] || ! [[ "$STATUS" =~ ^[1-4][0-9][0-9]$ ]] || [ "$STATUS" = "429" ]; then
+                CONFIG_FAILED=$((CONFIG_FAILED + 1))
+                CONFIG_ORIGIN_STATUS="partial"
+                continue
+            fi
+            CONFIG_SUCCEEDED=$((CONFIG_SUCCEEDED + 1))
             if [ "$STATUS" = "200" ]; then
-                CONTENT_TYPE=$(curl -sI "${BB_URL_AUTH_ARGS[@]}" --max-time 5 "$CONFIG_URL" 2>/dev/null | grep -i content-type | head -1 || true)
                 # Only flag if it returns JS/JSON/text (not HTML error pages)
                 if echo "$CONTENT_TYPE" | grep -qiE '(javascript|json|text/plain)'; then
                     echo "[EXPOSED] $CONFIG_URL" >> "$RECON_DIR/exposure/config_files.txt"
@@ -4006,25 +3814,33 @@ if [ -s "$RECON_DIR/live/urls.txt" ]; then
                 fi
             fi
         done
-    done < <(head -30 "$RECON_DIR/live/urls.txt")
+        printf '%s\t%s\n' "$CONFIG_ORIGIN" "$CONFIG_ORIGIN_STATUS" >> "$RECON_DIR/exposure/config_results.tsv"
+    done < "$CONFIG_INPUT"
+    sort -u "$RECON_DIR/exposure/config_files.txt" -o "$RECON_DIR/exposure/config_files.txt"
 
     CONFIG_COUNT=$(wc -l < "$RECON_DIR/exposure/config_files.txt" 2>/dev/null | tr -d ' ')
-    [ "$CONFIG_COUNT" -gt 0 ] && log_warn "Exposed config files: $CONFIG_COUNT" || log_done "Config files: clean"
+    CONFIG_PHASE_STATUS="ok"
+    if [ "$CONFIG_FAILED" -gt 0 ]; then
+        CONFIG_PHASE_STATUS="partial"
+        [ "$CONFIG_SUCCEEDED" -eq 0 ] && CONFIG_PHASE_STATUS="failed"
+        log_warn "Config collection incomplete: successful=$CONFIG_SUCCEEDED failed=$CONFIG_FAILED"
+    else
+        log_done "Config collection complete: candidates=$CONFIG_COUNT requests=$CONFIG_SUCCEEDED"
+    fi
 else
-    log_warn "No live hosts — skipping config check"
+    CONFIG_PHASE_STATUS="ok"
+    log_info "No pending config origins in current inventory"
 fi
 
 CONFIG_EXPOSED=$(wc -l < "$RECON_DIR/exposure/config_files.txt" 2>/dev/null | tr -d ' ' || echo 0)
-CONFIG_PHASE_STATUS="skipped"
-[ -s "$RECON_DIR/live/urls.txt" ] && CONFIG_PHASE_STATUS="ok"
-CONFIG_INPUT_TOTAL=$(wc -l < "$RECON_DIR/live/urls.txt" 2>/dev/null | tr -d ' ' || echo 0)
-CONFIG_SELECTED=$((CONFIG_INPUT_TOTAL > 30 ? 30 : CONFIG_INPUT_TOTAL))
+record_collection_batch exposure/config "$RECON_DIR/exposure/config_results.tsv"
+CONFIG_ACCOUNTING="$(collection_accounting exposure/config)"
 record_recon_phase \
     config_exposure \
     "$CONFIG_PHASE_STATUS" \
     "recon/${RECON_TARGET_KEY}/exposure/config_files.txt" \
     "$CONFIG_EXPOSED" \
-    "fixed low-impact config path probes; evidence candidates require AI review; input_total=$CONFIG_INPUT_TOTAL; selected=$CONFIG_SELECTED; remaining=$((CONFIG_INPUT_TOTAL - CONFIG_SELECTED)); continuation=next config sample; closure_blocking=false"
+    "fixed config probes; candidates require AI review; attempted=$CONFIG_ATTEMPTED; succeeded=$CONFIG_SUCCEEDED; failed=$CONFIG_FAILED; rate_limit=$RATE_LIMIT; probe_receipts=recon/${RECON_TARGET_KEY}/exposure/config_probes.tsv; $CONFIG_ACCOUNTING; continuation=next config sample; closure_blocking=false"
 emit_claude_hint \
     phase                config_exposure \
     exposed_count        "$CONFIG_EXPOSED" \
@@ -4344,10 +4160,12 @@ OPENAPI_SEMANTIC_STATUS="failed"
 OPENAPI_OPERATION_COUNT=0
 OPENAPI_AUTH_BOUNDARY_COUNT=0
 OPENAPI_PLATFORM_METADATA_COUNT=0
+OPENAPI_ACCOUNTING=""
 if python3 "$BASE_DIR/tools/openapi_semantics.py" \
     --repo-root "$BASE_DIR" \
     --target "$TARGET" \
     --max-platform-hosts "$OPENAPI_PLATFORM_HOST_BUDGET" \
+    --rate-limit "$RATE_LIMIT" \
     >> "$RECON_DIR/logs/denoising.log" 2>&1; then
     OPENAPI_SEMANTIC_STATUS="$(python3 - "$RECON_DIR/api_specs/summary.json" <<'PY' 2>/dev/null || printf 'partial\n'
 import json
@@ -4361,6 +4179,7 @@ PY
     OPENAPI_OPERATION_COUNT=$(wc -l < "$RECON_DIR/api_specs/operations.jsonl" 2>/dev/null | tr -d ' ' || echo 0)
     OPENAPI_AUTH_BOUNDARY_COUNT=$(wc -l < "$RECON_DIR/api_specs/auth_boundary_candidates.jsonl" 2>/dev/null | tr -d ' ' || echo 0)
     OPENAPI_PLATFORM_METADATA_COUNT=$(wc -l < "$RECON_DIR/api_specs/platform_metadata.jsonl" 2>/dev/null | tr -d ' ' || echo 0)
+    OPENAPI_ACCOUNTING="$(collection_accounting api_specs/metadata)"
     log_done "OpenAPI operations: $OPENAPI_OPERATION_COUNT; auth boundaries: $OPENAPI_AUTH_BOUNDARY_COUNT"
 else
     log_warn "OpenAPI semantic extraction failed — raw API candidates remain available"
@@ -4371,7 +4190,7 @@ record_recon_phase \
     "$OPENAPI_SEMANTIC_STATUS" \
     "recon/${RECON_TARGET_KEY}/api_specs/summary.json" \
     "$OPENAPI_OPERATION_COUNT" \
-    "schema declarations are discovery facts; runtime auth evidence remains required"
+    "schema declarations are discovery facts; runtime auth evidence remains required; $OPENAPI_ACCOUNTING; continuation=next platform metadata sample; closure_blocking=false"
 emit_claude_hint \
     phase                  openapi_semantics \
     status                 "$OPENAPI_SEMANTIC_STATUS" \
@@ -4566,29 +4385,7 @@ emit_claude_hint \
 recon_budget_checkpoint source_refs
 log_info "Phase 8: Cached source references (CI analysis not run)"
 mkdir -p "$RECON_DIR/cicd"
-CICD_SOURCE_COUNT="$(python3 - "$BASE_DIR" "$RECON_DIR" <<'PY'
-import re
-import sys
-from pathlib import Path
-sys.path.insert(0, sys.argv[1])
-from tools.artifact_io import write_json_atomic
-root = Path(sys.argv[2])
-rows = []
-for relative in ("live/httpx_full.txt", "js/endpoints.txt", "urls/all.txt"):
-    path = root / relative
-    if not path.is_file():
-        continue
-    with path.open(encoding="utf-8", errors="replace") as handle:
-        for line, raw in enumerate(handle, 1):
-            for match in re.finditer(r"(?:https?://)?github\.com/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?", raw):
-                rows.append({"url": match.group(0), "source_path": relative, "line_number": line,
-                             "status": "source_candidate", "ownership": "unverified"})
-write_json_atomic(root / "cicd/source_candidates.json", {
-    "schema_version": 1, "analysis_status": "not_run", "source_count": len(rows), "sources": rows,
-})
-print(len(rows))
-PY
-)"
+CICD_SOURCE_COUNT="$(python3 "$BASE_DIR/tools/recon_candidates.py" --source-refs "$RECON_DIR")"
 record_recon_phase \
     source_refs ok "recon/${RECON_TARGET_KEY}/cicd/source_candidates.json" "$CICD_SOURCE_COUNT" \
     "cached source references only; CI analysis=not_run; links do not establish ownership or expand Scope"
@@ -4597,10 +4394,6 @@ emit_claude_hint \
     source_references "$CICD_SOURCE_COUNT" \
     analysis_status not_run \
     artifact "recon/${RECON_TARGET_KEY}/cicd/source_candidates.json"
-
-# FFUF is independent of the later evidence-only lanes; collect its durable
-# state now so Surface never observes a half-published directory artifact.
-wait_for_ffuf_phase
 
 # ============================================================
 # Routing candidates: derive from existing evidence, then run one bounded
@@ -4680,26 +4473,6 @@ record_recon_phase \
     "append-only deduplicated raw URL archive; Active views remain run-scoped"
 post_compress_raw_recon_urls "$RECON_DIR"
 
-# Surface index/projection 是可重建派生视图。收尾失败不能抹掉已完成的
-# recon artifact，也不能把本次 recon 伪装成 tested-clean；后续显式
-# `/surface --refresh` 可恢复。
-SURFACE_FINALIZER_STATUS="ok"
-if ! python3 "$BASE_DIR/tools/surface_finalizer.py" \
-    --repo-root "$BASE_DIR" \
-    --target "$TARGET" \
-    --json; then
-    SURFACE_FINALIZER_STATUS="failed"
-    log_warn "Surface finalizer failed; raw recon remains complete. Run python3 tools/surface.py --target $TARGET --refresh to retry."
-else
-    log_done "Surface exact index and bounded projection refreshed"
-fi
-record_recon_phase \
-    surface_finalize \
-    "$SURFACE_FINALIZER_STATUS" \
-    "state/${RECON_TARGET_KEY}/surface-projection.json" \
-    0 \
-    "derived cache only; failure is recoverable and does not close attack surface"
-
 # ============================================================
 # Route-kind observation layer (facts only, never a judgment)
 # ============================================================
@@ -4745,6 +4518,28 @@ emit_claude_hint \
     elapsed_seconds     "$RECON_ELAPSED_SECONDS" \
     soft_budget_seconds "$RECON_SOFT_BUDGET_SECONDS" \
     soft_budget_status  "$RECON_SOFT_BUDGET_STATUS"
+
+sync_observation_inventory final
+
+# Surface index/projection 是可重建派生视图。收尾失败不能抹掉已完成的
+# recon artifact，也不能把本次 recon 伪装成 tested-clean；后续显式
+# `/surface --refresh` 可恢复。
+SURFACE_FINALIZER_STATUS="ok"
+if ! python3 "$BASE_DIR/tools/surface_finalizer.py" \
+    --repo-root "$BASE_DIR" \
+    --target "$TARGET" \
+    --json; then
+    SURFACE_FINALIZER_STATUS="failed"
+    log_warn "Surface finalizer failed; raw recon remains complete. Run python3 tools/surface.py --target $TARGET --refresh to retry."
+else
+    log_done "Surface exact index and bounded projection refreshed"
+fi
+record_recon_phase \
+    surface_finalize \
+    "$SURFACE_FINALIZER_STATUS" \
+    "state/${RECON_TARGET_KEY}/surface-projection.json" \
+    0 \
+    "derived cache only; failure is recoverable and does not close attack surface"
 
 # ============================================================
 # Summary

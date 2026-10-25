@@ -295,12 +295,18 @@ recon/<target>/
 ├── urls/filter.log
 ├── urls/filter_summary.json
 ├── browser/request_shapes.json           # value-free request/GraphQL/realtime shapes with raw refs
+├── urls/katana_state.json               # response-backed collection progress, not tested coverage
+├── urls/katana_runs/*.jsonl             # per-run request/response/error receipts
+├── api_specs/metadata_state.json        # platform metadata rotation, not tested coverage
 ├── js/endpoints.txt
+├── js/endpoint_sources.jsonl             # source JS URL and unbound path; document base is required before URL binding
 ├── js/potential_secrets.txt
 ├── js/deep_candidates.txt
 ├── dirs/
 ├── params/
 └── exposure/
+    ├── config_state.json                # origin sampling and successful receipts
+    ├── config_probes.tsv                # actual HTTP status/type/exit, retained across batches
     ├── api_doc_candidates.txt
     ├── api_leak_candidates.txt
     ├── api_leak_trufflehog_verified.jsonl

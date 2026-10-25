@@ -123,6 +123,22 @@ autopilot_gate._scanner_lane_residuals(state: dict) -> list[dict]
   origin 去重不能放宽已有 scheme/port 边界；当前 Scope owner 的 URL path/query
   是 seed 上下文，未实现路径级限制。外部来源仍留在 Recon/raw 和排除清单。
   执行沿用 Store admission、canonical target key 和 phase lock，不写领域状态。
+- FFUF 的执行 URL 由 `recon_target_selector` 一次归一和选择；Shell 不再把 www
+  改为 apex，也不向未执行 origin 回填成功/失败。scheme、host、port 由实际选中 URL
+  保留，采样完成不是漏洞覆盖。FFUF state/plan 绑定 `input_policy_sha256`；旧/不同策略
+  在选择时清除派生 completed/last_selected，读取不报 exhausted、登记拒绝旧策略。
+  Recon 在替换前通过现有 collector history 归档旧 state/plan；raw/Store/历史证据不改写。
+  此策略仅用于 wordlist FFUF 状态；Katana/config/OpenAPI collection_fingerprint 不受影响。
+- FFUF 外层阶段同步执行，内部仍按既有预算并发多个 origin。全局 EXIT/TERM/INT 清理
+  终止并等待 worker；worker 清理自己当前的 timeout/FFUF，保留未完成原件。只有 raw
+  发布、摘要成功且无解析错误后才推进采样完成；取消不写 completed，不用 phase-state JSON
+  在父子 Shell 间往返字段。原件和 metadata 不具备跨文件或掉电事务保证。
+- Katana 原件解析与 URL/采集回执发布归 `ReconAdapter.publish_katana_receipts`；
+  缺响应、429/5xx、超时和坏 JSON 不得变成完成采集。结果先于 progress 提交。
+  `recon_target_selector.collection_accounting` 读取同目标 state/plan 的成功进度；
+  `recon_candidates.build_source_references` 保留原来源与行号，不确认源码归属。
+- Shell 显式调用 `recon_gate.append_recon_record` 发布 manifest；发布失败传播到 CLI。
+  `runtime_state` 仅通过同一 gate reader 读取并重算健康，不补写或修复 manifest。
 - General Nuclei consumes only the origin-deduplicated bounded derivative of
   that ordered list: quick/standard/full default to 50/100/200 origins, with
   `BB_NUCLEI_MAX_TARGETS` as an explicit override. `summary.json` must retain
@@ -782,13 +798,17 @@ python3 tools/surface_finalizer.py --repo-root <repo> --target <target> --json
   encoding、scheme/port、path case 和 trailing slash variant 必须保留独立 exact row。
 - Index 合并 provenance 并保存稳定 first-seen sequence；shape/ordered signature 只做导航，不能
   删除 variant。所有 target-owned exact row 都参与同一个 URL 顺序窗口。
+- JS 提取按源 JS URL 解析 `/path` 与 `//host/path`，并写入
+  `js/endpoint_sources.jsonl`（source_url/endpoint/url）。文档相对路径及历史无来源裸路径
+  保持未绑定提示；exact index 和旧 ranker 路径均不得借第一个存活子域名补造来源。
 - URL review window 是 bounded 注意力窗口，返回 total/returned/remaining/limit；overflow 和未展示的 observation 仍为
   `untouched`，不能推导 tested-clean、exhausted、finding 或 Skill route。
 - Projection 必须绑定所有 review 输入，且仅在完整扫描前后 manifest fingerprint 一致时原子发布。
   full state、context-pack/checkpoint 只复用 exact hit；bootstrap/full state 遇到
   miss/stale/invalid 返回 `prepare_surface_context`，closure 保持
   `surface_projection_pending`，不得用 fallback ranking 驱动 hunt 或 finish。
-- Surface projection/manifest schema 为 7。`scanner_manual_review_paths()` 与 scanner
+- Surface projection/manifest schema 为 8，exact index schema 为 2。旧缓存须显式刷新，
+  防止沿用猜测 JS 主机归属的派生结果。`scanner_manual_review_paths()` 与 scanner
   中性索引共享 summary target/path 校验；`MANUAL_REVIEW_INPUTS` 是三个专用 handler 的
   共同输入定义。顶层 `findings/<target>/manual_review/` 中未被 summary、专用 handler 或
   Store artifact 引用的复核附件不进入 manifest；包括只为附件创建的父目录。其余 findings
@@ -809,8 +829,9 @@ python3 tools/surface_finalizer.py --repo-root <repo> --target <target> --json
   读取不自动重建。材料窗口的缺失/过期是 unknown，不等于零条 workflow leads。
 - Observation body 是 lifecycle owner；summary 在 body replace 成功后发布并绑定 body/source。
   `page` cursor 绑定 target、filter 和 body revision，读取不写 lifecycle。
-- Recon finalizer 是 best-effort 派生步骤。失败保留 raw recon 和已有 owner state，后续显式
-  `surface.py --refresh` 可恢复。
+- Recon finalizer 在 route-kind、预算日志及最后一次 Observation inventory 同步后发布，
+  正常收尾和调用方重复 inventory 同步不得立即使其过期。它是 best-effort 派生步骤；
+  失败保留 raw recon 和已有 owner state，后续显式 `surface.py --refresh` 可恢复。
 
 ### 4. Validation & Error Matrix
 
@@ -825,7 +846,7 @@ python3 tools/surface_finalizer.py --repo-root <repo> --target <target> --json
 | high-priority finding/runner/queue 存在 | bootstrap 直接返回对应 action，不打开大型 artifact |
 | 写入未被消费的 manual_review lane 附件或 checkpoint witness | Surface 保持 valid；不增加 Store revision |
 | summary/专用 handler/Store 引用的 review 改变 | Surface stale；保持真实输入失效能力 |
-| v6 projection 被 v7 reader 读取 | 显式刷新；不消费旧摘要或自动改写 |
+| 旧 projection/index schema 被当前 reader 读取 | 显式刷新；不消费旧摘要或自动改写 |
 | Store/revision 已不匹配 | manifest 构建前返回 stale，省略当前 input_fingerprint |
 | Store revision 未变但原件 bytes 改变 | 可能有效的 projection 仍需校验并拒绝旧输入 |
 
@@ -1852,3 +1873,64 @@ needed for that capture contract. Historical scanner tests describe the retired 
 Wrong: pattern matched -> high-confidence vulnerability -> source clone removed.
 Correct: preserve bounded exact workflow -> source inventory + capture diagnostics -> AI reviews
 conditions/ref/permissions/data flow -> explicit domain actions if warranted.
+
+## Scenario: Bounded collection continuation and request pacing
+
+### 1. Scope / Trigger
+
+Recon Katana/config/platform metadata inputs, FFUF pacing and JS source provenance.
+
+### 2. Signatures
+
+`recon_target_selector.select_collection(target, urls, identity, state_path, plan_path,
+targets_path, limit, repo_root, origins_only=False)` uses keyword arguments;
+CLI: `--select --collection-identity ID [--origins-only]`, then existing `--record-results`.
+`openapi_semantics.run(..., rate_limit=50)` / CLI `--rate-limit` gates each request start.
+
+### 3. Contracts
+
+- Derived collection state binds target, Scope hash and collection/input fingerprint.
+  `last_selected` rotates failures behind the unvisited tail; only published `ok`
+  results enter `completed`. A missing result never completes an input. Changed
+  Scope/config/input resets completion; old material remains discovery history.
+- Katana selects up to 50 seeds in the parent; success merges old/current URL output.
+  Retain per-run JSONL, require an actual seed response, and keep an origin with
+  transport/429/5xx errors pending even when Katana exits zero.
+  Config selects up to 30 unique origins and retains hit/HTTP receipts. Metadata
+  selects the next bounded origins and merges prior same-Scope rows; history keeps
+  replaced errors. Collection exhaustion is not vulnerability coverage.
+- Gate accounting is cumulative `input_total = selected + remaining`, where selected
+  means successful collection; `batch_selected` separately records this batch size.
+  Residuals remain advisory (`closure_blocking=false`) under existing global review.
+- FFUF receives allocated `-rate` on controls and main, worker count is bounded by
+  host/thread/rate budgets, and completes before subsequent active phases. Explicit
+  random controls replace `-ac`, whose automatic calibration bypasses pacing.
+  Publish results before committing progress; selection failure must not use stale inputs.
+- Config makes one GET per path, records actual HTTP status/type/exit; 429/5xx/transport
+  errors stay failed or partial, 404 is a valid miss. No redirects or user curlrc.
+  Scope failure stops the batch without advancing it. No global rate-firewall claim.
+- OpenAPI checks target and saved Scope at each request and redirect, after any rate
+  wait; Scope changes abort. Metadata 429 is retryable, never a successful miss.
+- A bundle's host is not a page base. Root/document-relative extracted JS paths stay
+  unbound in endpoints/source records until real document provenance exists.
+
+### 4. Validation & Error Matrix
+
+Failure in first sample → next tail then retry; exhausted → zero new selected requests;
+changed Scope → reject; config 503/429 → incomplete; missing page → no fabricated URL.
+
+### 5. Good / Base / Bad Cases
+
+Good: several subdomains remain visible across samples. Base: empty input, zero requests.
+Bad: rotating only input while replacing old output, or counting a failed batch as complete.
+
+### 6. Tests Required
+
+Isolated production-copy assertions in task `10-23-autopilot-reliability-cost/research`:
+rotation/failure/reset, real loopback status/redirect/revocation, actual FFUF timing,
+old batch retention, exhausted no requests and JS source binding. No real targets.
+
+### 7. Wrong vs Correct
+
+Wrong: `head -N` repeatedly or rely on `-rate` plus `-ac`.
+Correct: scope-bound selection/receipt progress and measure real request starts.

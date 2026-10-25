@@ -30,7 +30,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
 
 
 # Bump when selection semantics change; stale derived decisions must not replay.
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 PROJECTION_KIND = "surface_projection"
 MANIFEST_KIND = "surface_input_manifest"
 
@@ -415,9 +415,10 @@ def load_surface_projection(
 ) -> dict:
     """只在 schema、target 和当前 manifest 全部命中时返回可消费投影。"""
     resolved = canonical_target_value(target)
-    store = runtime_store(repo_root, resolved)
     path = surface_projection_path(repo_root, resolved)
     if not path.is_file():
+        # 全新目标没有任何投影文件：先于 store 读取返回 missing，让
+        # bootstrap 在首个 lane 初始化 store 之前正常走空 surface。
         return _projection_result(path, "missing", "projection-missing")
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -434,6 +435,7 @@ def load_surface_projection(
         return _projection_result(path, "invalid", "store-binding-missing")
     if not isinstance(binding.get("as_of", ""), str):
         return _projection_result(path, "invalid", "as-of-binding-invalid")
+    store = runtime_store(repo_root, resolved)
     meta = store.binding()
     if not payload.get("complete") or not isinstance(payload.get("surface"), dict):
         return _projection_result(path, "invalid", "incomplete-projection")
