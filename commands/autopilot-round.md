@@ -3,6 +3,8 @@ description: Run one bounded, resumable /autopilot round for native /loop schedu
 allowed-tools:
   - Bash
   - Agent
+  - TaskOutput
+  - TaskStop
   - Skill
   - ToolSearch
   - CronList
@@ -36,7 +38,8 @@ cd -- <repo_root_shell> && python3 tools/autopilot_round.py prepare --target <ta
 `terminal`: no target work; Status/cleanup. Other results: Status, skipping lanes/settle.
 
 ## Round Mechanics
-Use Shared Automation's selected action and stopping reasons. None executable: handoff/closure.
+Use Shared Automation's selected action and stopping reasons. An empty owner continuation
+list still returns to src-hunter for investigation; only actual stopping conditions end the round.
 Claim round lane before execution; distinct from Action id/token/actor:
 ```bash
 cd -- <repo_root_shell> && python3 tools/checkpoint.py --target <target_shell> --record-round-lane --lane <stable_lane_id> --max-lanes <invocation_batch.max_lanes> --json
@@ -55,7 +58,8 @@ cd -- <repo_root_shell> && python3 tools/checkpoint.py --target <target_shell> -
 ```
 Completed needs nonempty target-owned evidence; blocked permits `none`. Report references must
 match the claimed Store/Finding/assessment/delivery and intact registered bytes. Use the exact
-publisher receipt, never a directory listing's last file. Wrong references leave the lane started.
+publisher CLI's `Publication receipt: {...}` field `artifact_ref` for `--evidence-ref`,
+never a directory listing's last file. Wrong references leave the lane started.
 No raw responses/prompts/credentials.
 `started` lanes forbid closure. Claim/result errors: ERROR; preserve recovery, stop new work.
 
@@ -78,6 +82,8 @@ After heartbeats and shared saving/cleanup:
 cd -- <repo_root_shell> && python3 tools/autopilot_round.py settle --target <target_shell> --json
 ```
 `settled`/`already_settled` complete only this round; no memory save, Queue sync or Surface refresh.
+Untested observations retain `handoff`; budget exhaustion ends this invocation's new work,
+while a later scheduled or explicit round may continue. Never start another round to bypass this budget.
 Missing, malformed, or stale Surface never blocks settle or flips a settled round back to active; it keeps the
 Surface-backed advisory lead open until a later explicit `/surface` refresh.
 ### Status

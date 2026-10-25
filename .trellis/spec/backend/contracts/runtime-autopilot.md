@@ -57,9 +57,25 @@ mechanical safety, evidence and recovery constraints govern execution.
   exhaustion claim. Round budgets retain their existing boundary.
   Writer/object-cleanup failure constrains that operation; assess independent
   business paths before treating it as a blocker to useful target-wide work.
-- Specialists default to zero; optional bounded independent questions stay within
-  selected lanes and request/evidence budgets. No nested controller, full scan,
-  final closure writer or extension of `max_lanes` is delegated.
+  Budget stops cite the actual current clock and applicable allocation/reserve;
+  resume retains the old boundary unless explicitly reallocated. Cumulative cost
+  needs the allocation's baseline, retained across resume unless reallocated;
+  unavailable cost is unknown, not exhausted.
+- Shared Automation explicitly invokes the thin `recon-ranker` after multi-subdomain
+  or multi-business-surface Recon, including resumed material without a retained review.
+  Stagnation/finish review needs a concrete unresolved prioritization or missed-path
+  question; unchanged material/question reuses its existing answer/handoff. No call
+  merely per lane/round. User/scope/budget stops and execution recovery take precedence.
+  Other specialists remain optional bounded questions within the same budget.
+  Ranker review sends no target requests, writes no state, creates no lane and cannot
+  decide Closure or extend `max_lanes`. Unavailable/failed native Agent is explicit
+  incomplete independent review; the parent continues its own investigation.
+  The dispatch requests `run_in_background=false` because the next selection depends
+  on it; current Claude CLI defaults to background. A returned handle requires native
+  TaskOutput/TaskStop within the assigned allocation; both entries allow those tools.
+  Dispatch acknowledgment is not review completion. Same frontend/anonymous denial
+  permits deduplicating that layer only; independent origin/object authorization
+  remains subject to dig-scope-workflow's evidence and session conditions.
 - Compressed guidance must reference real sections that retain the displaced
   constraints, not merely existing files. Keep command frontmatter, Bootstrap
   expansions, critical manifest and consumed headings stable: round reads the
@@ -73,9 +89,10 @@ mechanical safety, evidence and recovery constraints govern execution.
   tail; only the caller refreshes Surface. No added hosts means no DNS-driven
   refresh request. A stale projection is not an automatic refresh.
 - State does not select a specialist from evidence-group counts or long-tail size.
-  Generic delegation may answer an explicit bounded independent question under
-  src-hunter's handoff contract. Retired specialist entries require no replacement
-  registry, automatic recommendation or controller.
+  The shared command's Claude-side invocation applies `docs/autopilot-lanes.md#recon-ranker-review`
+  and src-hunter's handoff contract; Python emits no ranker recommendation or review owner.
+  Only accepted evidence/decision deltas need existing owner write-back; an advisory
+  ranking alone creates no Action/Finding. The other four retired specialists stay retired.
 - Read-only review reads current target memory/Findings/experience through existing
   Store queries with an explicit target, and raw evidence or current cached
   projections. Retired JSON/PatternDB is history, not a missing-Store fallback.
@@ -101,18 +118,57 @@ mechanical safety, evidence and recovery constraints govern execution.
 - `owner_continuations` represents explicit Queue/Finding/runner work and durable
   Recon continuation. Runtime locks, target initialization, evidence integrity,
   budgets and transaction recovery retain their existing owners.
+- `autopilot_gate.build_control_projection` constructs the ordinary owner frontier
+  once and derives `next_action`, `primary_next_action`, `fallback_action`,
+  `selection_mode` and `next_lane`. A single business owner retains its compatibility
+  token; multiple owners use `handoff` + `ai_priority`, with each exact action/ref
+  preserved for Claude's selection. Recovery items precede new work in rendered
+  hints without replacing the business token. Active lock tokens remain
+  `wait_recon`/`wait_scan`; compact and loop views consume this projection, not
+  separate owner priorities. Empty work returns to investigation.
+- Closure builds recovery descriptions only through `_closure_reason_frontier`.
+  Finalization preserves fixed reason precedence/verdict, retains independent
+  checkpoint recovery under a primary Round reason, and replaces duplicate
+  diagnostics without discarding another Recon cursor or Queue item. Snapshot
+  and repeated-prerequisite overrides still publish both continuation aliases
+  after their final change. Reason IDs/text normalize to the shared helper;
+  historical raw evidence and owner state are unchanged.
 - Closure's `actionable_frontier` is a legacy read-only alias. Publish
   `owner_continuations` after every review/race/bounded-stop override, so an empty
   final continuation cannot retain an earlier action. Loop `control` uses the
   same canonical field; array order is not AI priority.
+- Post-action `--loop-check --projection-only` retains `control.next_step`, the
+  Surface status/path/fingerprint/refresh and continuation command, display-window
+  counts, and observation inventory health/counts. These are reading references,
+  not new owner actions or tested-coverage counts. Missing counts stay unknown;
+  stale/missing projections remain diagnostic. Expand changed or unread material
+  before selecting work; empty owner continuations return to src-hunter.
+  Settling inherited Round work returns ordinary `/autopilot` to this same loop.
+- State, compact Bootstrap and loop control expose the existing Checkpoint's
+  `round_progress` and `checkpoint_health` without creating a Round or replacing
+  the business `next_action`. Unfinished lanes recover first; completed lanes
+  with budget remaining allow further investigation. Invalid witness data requires
+  repair; active Recon/scan locks retain priority. Closure can exclude Round
+  recovery while computing post-round business state.
 - `observation_residuals` records untested cell count, unresolved Case hypotheses,
   actor gap and incomplete Intel without creating new actions. With no owner
-  obligation, unresolved observations yield `blocked` + `stop_bounded` and
-  `can_claim_exhausted=false`, not a target exhaustion claim.
+  obligation, unresolved observations yield `handoff` + `next_action=handoff`
+  and `can_claim_exhausted=false`. They cannot establish a target-wide blocker
+  or stop Round prepare. Actual user/scope/budget limits or evidence-based
+  investigation judgment govern stopping; the existing claim owner enforces
+  this round's budget. A later invocation can continue the remaining work.
+- Repeated local prerequisite stagnation retains its reasons and `round_guard`
+  but returns non-exhaustive `handoff` to independent investigation. Rebuild the
+  frontier from real owners; a failed diagnostic lane is not a global blocker.
+- Report continuations use Store's current assessment/delivery and checked report
+  status. A historical report cannot suppress a new pending destination; damaged
+  same-binding reports require repair. This check reads current evidence bytes,
+  even when a bounded summary returns only a few claims.
 - A valid digest-matched `global_review` covering every non-blocking residual token
-  dissolves only those residuals: Closure publishes `blocked` + `stop_bounded` with
+  completes their review only: Closure publishes `handoff` with
   `bounded_recon_residual_deferred` and an empty continuation array, never an
-  exhaustion claim. Queue, Finding, unfinished-round, evidence and checkpoint
+  exhaustion or blocked claim. It returns to native investigation unless the
+  entry's actual stopping conditions apply. Queue, Finding, unfinished-round, evidence and checkpoint
   obligations — including `closure_blocking` scanner lanes — keep their
   owner-backed entries. Scanner residual review tokens bind execution semantics
   (`execution_kind`, `status`, `input_total`, `selected`, `remaining`,
@@ -120,6 +176,10 @@ mechanical safety, evidence and recovery constraints govern execution.
   display/time drift does not. Store-mode partial/unreadable evidence maps to the
   same evidence-ledger owner, `repair_evidence_ledger` action and reason frontier
   as the legacy `ledger_*` reasons.
+- An otherwise finishable target requires a valid current Global Review in both
+  ordinary and Round modes, including when no Round has ever existed. Missing,
+  invalid or stale review returns its existing review-required handoff. This
+  gate does not preempt unfinished investigation, recovery or explicit owner work.
 - Actor/session gaps are non-blocking context for unrelated work, not automatic
   session acquisition. Actual role-based evidence still requires the relevant
   identity boundary. Advisory review never impersonates execution evidence.
@@ -165,11 +225,13 @@ mechanical safety, evidence and recovery constraints govern execution.
 | Only raw JS/source/browser/Case/Intel observations | No automatic route or Queue insertion |
 | Empty, sparse or multi-source long-tail Surface | Preserve facts/cursors; no automatic specialist selection |
 | All hosts tripped by request guard | Cached-evidence pivot and full hints retained; bounded output stays compact |
-| Untested coverage, no explicit owner work | `stop_bounded`, retained residuals, no exhaustion |
+| Untested coverage, no explicit owner work, budget remaining | `handoff`, retained residuals; Round prepare starts/resumes investigation |
 | Active runtime phase or explicit Queue work | Existing lock/owner continuation preserved |
 | Evidence or snapshot damage | Visible integrity/recovery error, never empty success |
 | Exact subject closure with identity-free tested Coverage cell | `missing_matching_ledger_terminal` |
-| Valid global review consumes non-blocking bounded residuals | `blocked` + `stop_bounded` with `bounded_recon_residual_deferred`; blocking owner obligations keep their entries |
+| Valid global review covers non-blocking bounded residuals | `handoff` with `bounded_recon_residual_deferred`; blocking owner obligations keep their entries |
+| Otherwise finishable ordinary target without a current review | Existing Global Review handoff; `can_claim_exhausted=false` |
+| Post-action projection with new or unread Surface material | Keep reading references, display remainder and next-step explanation without creating Actions |
 | First reason is an exact review-required case, including form_insufficient | All three coordinator paths return `review_required`; diagnostics remain intact |
 | Review-like prefix or non-first reason | Existing normal routing; no broadened review gate |
 | Snapshot races during review | Both fields expose the current recovery head |
@@ -201,16 +263,27 @@ settle paths, unchanged witness/Store on completed replay, active close ordering
 round identity/budget and full diagnostic preservation. Its exact-first-reason
 regression guards normal statuses; `test_autopilot_round_contract.py` checks the
 command consumer. Keep the real residual-token regression in
-`test_autopilot_state_tool.py` passing: filling tokens permits bounded stop, never
-an exhaustion claim. Producer diagnostics alone do not test coordinator routing.
+`test_autopilot_state_tool.py` aligned: filling tokens completes review but retains
+investigation handoff, never a stop or exhaustion claim. Producer diagnostics
+alone do not test coordinator routing.
+The offline reproduction at
+`.trellis/workspace/Codex/research/10-23-autopilot-continuation/check_continuation.py`
+checks multi-subdomain prepare/settle and next-round continuation, existing lane
+budget/recovery gates, ordinary/round Global Review parity and post-action
+material navigation in an isolated source/Store copy. It never reads `tests/`,
+private runtime or real target data, and does not establish model obedience.
 
 `tests/test_autopilot_bootstrap.py::test_state_preserves_surface_facts_without_choosing_ranker`
 checks full/bounded state across empty/sparse/rich evidence, exact facts/cursors,
 Store binding and source-byte preservation. Historical specialist-hint serialization
 is retired; cached-evidence guard, owner continuation and closure-advice digest
 checks remain relevant.
-The former ranker CLI/agent checks describe a retired entry, not current executable
-coverage. Agent retirement uses an isolated baseline-to-current runtime check:
+The former ranker CLI and old agent checks describe the historical implementation,
+not the restored thin review role. Its explicit ordinary/Round command wiring and
+read-only handoff require focused guidance review; temporary runtime sync must discover
+the agent and enforce its existing critical-manifest binding, including missing/changed
+installed bytes. These checks do not establish actual host invocation or model depth.
+Historical agent retirement used an isolated baseline-to-current runtime check:
 ordinary sync retains old owned files, prune removes exactly unchanged retired
 agents, modified obsolete files reject the whole batch, and user extras remain.
 Also preserve surviving agent/command/module bytes, recursive Skill resources,
@@ -244,7 +317,9 @@ user-owned edits. `test_js_reader.py` checks retirement instead of the deleted A
 Wrong: observed JS / missing actor / Intel lead -> mandatory route or session task
 Correct: observations -> native reasoning; explicit owner command -> durable work
 Wrong: no generated frontier -> target exhausted
-Correct: unresolved observations -> bounded stop with residuals and no exhaustion claim
+Correct: unresolved observations -> native investigation handoff; actual stopping conditions remain separate
+Wrong: a non-empty completed Round is the only reason to require Global Review
+Correct: every otherwise finishable target needs current review, independent of mode
 Wrong: form_insufficient -> start new round or return ordinary settlement
 Correct: form_insufficient -> review_required, original diagnostics and owner boundaries
 ```
@@ -658,9 +733,18 @@ readability revision.
   Delete duplicated explanations; leave a clear trigger pointing to the existing
   complete owner. Do not move an expanded controller into a new mandatory manual.
 - Measure the command, shared owners, resident imports and conditional sections
-  separately. Main plus shared-owner bytes must shrink; report comparable static
-  startup/action/finish reading sets, including the unchanged resident baseline.
+  separately. Remove duplicate prose; a required execution/recovery example may
+  grow its on-demand owner document. Report comparable static startup/action/finish
+  reading sets, including the unchanged resident baseline and added bytes.
   Bytes do not prove tokens, fees, host loading or investigation effectiveness.
+- Native dispatch examples supply actual Skill `skill/args` and Agent
+  `subagent_type/description/prompt`; use host-exposed names. Ranker receives explicit
+  deep/mode/budget and zero target requests, with DEEP HUNT MODE applied to review.
+- Same-call state may reuse Resume runtime/recon/repo-source facts and an explicit
+  `coverage_state` passed to `build_autopilot_state`/`load_closure_projection`.
+  Closure rechecks discovery fingerprint and reacquires current evidence bytes;
+  drift rejects reused Coverage. Public queue/case snapshot arguments are forwarded.
+  No cross-call cache, serialized private truth or changed memory page windows.
 - Explicit Autopilot applies src-hunter after admission/recovery and before new
   investigation. Native Skill loading never points back to an automation entry.
   Full existing 6k rules, methods, discovery description and modules remain intact.

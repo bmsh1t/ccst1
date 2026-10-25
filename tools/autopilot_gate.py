@@ -62,12 +62,32 @@ _CLOSURE_REASON_OWNERS = {
     "round_lane_unclaimed": {"round-progress"},
     "store_partial": {"evidence-ledger"},
     "store_unreadable": {"evidence-ledger"},
+    "ledger_partial": {"evidence-ledger"},
+    "ledger_unreadable": {"evidence-ledger"},
+    "checkpoint_stale": {"checkpoint"},
+    "checkpoint_invalid": {"checkpoint"},
+    "runtime_phase_active": {"runtime"},
 }
 
 
 def describe_next_step(state: dict) -> str:
     """Return a single-line bounded next-step instruction for controllers."""
     return " ".join(_describe_next_step(state).split())[:500]
+
+
+def round_recovery_reason(state: dict) -> str:
+    """Describe existing checkpoint work without changing the investigation route."""
+    progress = state.get("round_progress") or {}
+    if progress.get("invalid_evidence_lanes"):
+        return "round_lane_evidence_invalid"
+    if progress.get("status") != "active":
+        return ""
+    if progress.get("unfinished_lanes"):
+        return "round_lane_unfinished"
+    if progress.get("budget_reached"):
+        return "round_closure_pending"
+    return ""
+
 
 def _candidate_items_for_next_action(ranked: dict, next_action: str) -> list[dict]:
     if next_action == "hunt_p2":
@@ -213,6 +233,11 @@ def _hard_gate_projection(state: dict) -> dict:
             "action": "wait_scan",
             "reason": "the target scan phase lock is still held",
         }
+    if (state.get("checkpoint_health") or {}).get("status") == "invalid":
+        return {
+            "action": "repair_checkpoint",
+            "reason": str(state["checkpoint_health"].get("reason") or "invalid checkpoint witness"),
+        }
     if state.get("target_kind") == "list" and action in {
         "invalid_batch_target",
         "select_completed_domain",
@@ -234,6 +259,8 @@ def _frontier_item(
     expected_information_gain: str,
     stop_condition: str,
     item_id: str = "",
+    next_action: str = "handoff",
+    reason: str = "",
 ) -> dict:
     """Build a bounded read-only action handoff from an existing owner."""
     item = {
@@ -245,7 +272,11 @@ def _frontier_item(
             str(expected_information_gain or "").split()
         )[:300],
         "stop_condition": " ".join(str(stop_condition or "").split())[:300],
+        "next_action": next_action,
+        "lane": _FRONTIER_LANES.get(owner, "controller"),
     }
+    if reason:
+        item["reason"] = reason
     return item
 
 
@@ -263,11 +294,16 @@ def _build_actionable_frontier(
     target = str(state.get("resolved_target") or state.get("target") or "")
     frontier: list[dict] = []
 
+    round_reason = round_recovery_reason(state)
+    if round_reason:
+        frontier.append(_closure_reason_frontier(round_reason, state, matrix))
+
     queue_next = state.get("action_queue_next") if isinstance(state.get("action_queue_next"), dict) else {}
     if queue_next:
         metadata = queue_next.get("metadata") if isinstance(queue_next.get("metadata"), dict) else {}
         frontier.append(_frontier_item(
             owner="action_queue",
+            next_action="resume_action_queue",
             item_id=str(queue_next.get("id") or ""),
             action=str(queue_next.get("action") or queue_next.get("type") or "resume queued action"),
             evidence_ref=str(
@@ -281,13 +317,19 @@ def _build_actionable_frontier(
         ))
 
     findings = state.get("structured_findings") if isinstance(state.get("structured_findings"), dict) else {}
-    for key, label in (("next_owner_revalidation", "revalidate finding owner"), ("next_validation", "validate finding"), ("next_draft_completion", "complete finding report draft"), ("next_report", "report validated finding")):
+    for key, action, label in (
+        ("next_owner_revalidation", "revalidate_finding_owner", "revalidate finding owner"),
+        ("next_validation", "validate_finding", "validate finding"),
+        ("next_draft_completion", "complete_report_draft", "complete finding report draft"),
+        ("next_report", "report_finding", "report validated finding"),
+    ):
         finding = findings.get(key) if isinstance(findings.get(key), dict) else {}
         if not finding:
             continue
         finding_id = str(finding.get("id") or "")
         frontier.append(_frontier_item(
             owner="finding",
+            next_action=action,
             item_id=finding_id,
             action=str(finding.get("required_action") or finding.get("action") or label),
             evidence_ref=str(finding.get("evidence_ref") or finding.get("source_file") or f"state/{target_storage_key(target)}/metadata.sqlite3#{finding_id}"),
@@ -296,15 +338,16 @@ def _build_actionable_frontier(
         ))
         break
 
-    for owner, item, default_action, default_gain in (
-        ("validation-runner", state.get("validation_runner_next"), "review validation candidate", "apply the canonical evidence gate"),
-        ("finding-claim", state.get("root_finding_claim_next"), "register the Finding claim", "determine whether the claim enters the canonical lifecycle"),
+    for owner, item, action, default_action, default_gain in (
+        ("validation-runner", state.get("validation_runner_next"), "review_validation_candidate", "review validation candidate", "apply the canonical evidence gate"),
+        ("finding-claim", state.get("root_finding_claim_next"), "collect_candidate_evidence", "register the Finding claim", "determine whether the claim enters the canonical lifecycle"),
     ):
         if not isinstance(item, dict) or not item:
             continue
         item_id = str(item.get("id") or item.get("claim_id") or item.get("lane") or "")
         frontier.append(_frontier_item(
             owner=owner,
+            next_action=action,
             item_id=item_id,
             action=str(item.get("next_action") or item.get("required_action") or default_action),
             evidence_ref=str(item.get("summary_path") or item.get("source_file") or item.get("evidence_ref") or ""),
@@ -317,6 +360,7 @@ def _build_actionable_frontier(
         status = str(continuation.get("status"))
         item = _frontier_item(
             owner="recon",
+            reason=f"cidr_continuation_{status}",
             item_id=f"cidr:{continuation.get('next_offset', status)}",
             action=("Repair the invalid CIDR continuation before resuming Recon" if status == "invalid" else f"optional bounded CIDR recon from offset {continuation.get('next_offset', 0)}"),
             evidence_ref=str(continuation.get("path") or f"recon/{target_storage_key(target)}/live/cidr_continuation.json"),
@@ -337,22 +381,11 @@ def _build_actionable_frontier(
     return deduped if limit is None else deduped[:limit]
 
 
-def _execution_frontier_item(item: dict, *, impact_hint: str = "") -> dict:
-    """Remove controller ranking while retaining owner facts for AI arbitration."""
-    projected = dict(item)
-    owner = str(projected.get("owner") or "")
-    projected.update({
-        "lane": _FRONTIER_LANES.get(owner, "controller"),
-        "impact_hint": " ".join(str(impact_hint or "").split())[:300],
-        "evidence_status": "owner-backed",
-        "closure_blocking": bool(projected.get("closure_blocking", True)),
-        "continuity": False,
-        "runnable": bool(projected.get("runnable", True)),
-    })
-    return projected
-
-
-def _closure_frontier_matches(reason: str, item: dict) -> bool:
+def _closure_frontier_matches(reason: str, item: dict, action: str = "") -> bool:
+    if item.get("reason"):
+        return item["reason"] == reason
+    if reason == "next_action_pending":
+        return bool(action) and item.get("next_action") == action
     owners = _CLOSURE_REASON_OWNERS.get(reason)
     if owners:
         return str(item.get("owner") or "") in owners
@@ -414,6 +447,13 @@ def _closure_reason_frontier(
         )
         return _frontier_item(
             owner="round-progress",
+            reason=reason,
+            next_action={
+                "round_lane_evidence_invalid": "repair_round_lane_evidence",
+                "round_lane_unfinished": "resume_round_lane",
+                "round_closure_pending": "complete_round_closure",
+                "round_lane_unclaimed": "resume_round_lane",
+            }[reason],
             item_id=label,
             action={
                 "round_lane_evidence_invalid": "Repair the invalid evidence for round lane {label}",
@@ -559,7 +599,8 @@ def _closure_reason_frontier(
         else:
             expected_information_gain = "obtain the owner-written phase result before selecting more work"
             stop_condition = "refresh after the matching phase completes or record its bounded blocker"
-        action_text = describe_next_step({**state, "next_action": action})
+        phase = "scan" if action == "wait_scan" else "recon"
+        action_text = f"Wait for the active {phase} phase to release its target runtime lock"
         if reason == "cidr_continuation_invalid":
             action_text = "Repair the invalid CIDR continuation before selecting collection"
         elif reason == "cidr_continuation_pending":
@@ -650,13 +691,21 @@ def _closure_reason_frontier(
     }
     if reason in evidence_specs:
         owner, action_text, evidence_ref = evidence_specs[reason]
+        expected_gain = "restore the owner evidence needed for deterministic Closure"
+        stop_condition = "record a complete owner result or bounded blocker, then recompute Closure"
+        if reason == "coverage_ledger_evidence_missing":
+            expected_gain = "bind each Coverage terminal to the exact identity and vulnerability result that produced it"
+            stop_condition = "record matching owner evidence for every terminal cell, then recompute Closure"
+        elif reason in {"ledger_partial", "ledger_unreadable", "store_partial", "store_unreadable"}:
+            expected_gain = "restore the evidence owner needed to evaluate canonical closure cells"
+            stop_condition = "restore current evidence integrity or record the bounded recovery blocker"
         return _frontier_item(
             owner=owner,
             item_id=reason,
             action=action_text,
             evidence_ref=evidence_ref,
-            expected_information_gain="restore the owner evidence needed for deterministic Closure",
-            stop_condition="record a complete owner result or bounded blocker, then recompute Closure",
+            expected_information_gain=expected_gain,
+            stop_condition=stop_condition,
         )
     if reason == "next_action_pending" and current_action not in {"", "handoff"}:
         owner = {
@@ -678,17 +727,30 @@ def _closure_reason_frontier(
             "prepare_surface_context": "surface-context",
             "hunt_p1": "surface",
             "hunt_p2": "surface",
-        }.get(current_action)
-        if owner:
-            return _frontier_item(
-                owner=owner,
-                item_id=current_action,
-                action=describe_next_step({**state, "next_action": current_action}),
-                evidence_ref=f"state/{target_key}/session.json",
-                expected_information_gain="resolve the selected owner action",
-                stop_condition="record the owner result or a bounded blocker, then recompute Closure",
-            )
-    if reason in {"coverage_missing", "coverage_empty", "coverage_invalid"}:
+        }.get(current_action, "controller")
+        source = {
+            "recon": state.get("recon_artifacts"),
+            "intel": state.get("intel_continuation"),
+            "action_queue": state.get("action_queue_next"),
+            "validation-runner": state.get("validation_runner_next"),
+            "case_state": state.get("case_state"),
+            "surface-context": state.get("surface_projection"),
+        }.get(owner) or {}
+        evidence_ref = next((str(source[key]) for key in (
+            "evidence_ref", "evidence", "summary_path", "path", "recon_dir", "intel_path", "inventory_path"
+        ) if source.get(key)), f"state/{target_key}/metadata.sqlite3")
+        return _frontier_item(
+            owner=owner,
+            item_id=current_action,
+            action=describe_next_step({
+                **state, "next_action": current_action,
+                "selection_mode": "direct", "owner_continuations": [],
+            }),
+            evidence_ref=evidence_ref,
+            expected_information_gain="resolve the selected owner action",
+            stop_condition="record the owner result or a bounded blocker, then recompute Closure",
+        )
+    if reason in {"coverage_missing", "coverage_empty", "coverage_invalid", "coverage_stale"}:
         return _frontier_item(
             owner="coverage",
             item_id=reason,
@@ -703,15 +765,34 @@ def _closure_reason_frontier(
     return None
 
 
-def _build_owner_continuations(
-    state: dict,
-    ranked: dict | None = None,
-    *,
-    actionable_frontier: list[dict] | None = None,
-) -> list[dict]:
-    """Compatibility view of explicit owner continuations; never ranks observations."""
-    items = actionable_frontier if actionable_frontier is not None else _build_actionable_frontier(state, None, limit=None)
-    return [_execution_frontier_item(item) for item in items]
+def build_control_projection(state: dict) -> dict:
+    """Derive compatibility hints from one owner frontier without ranking owners."""
+    hard_gate = _hard_gate_projection(state)
+    frontier = [] if hard_gate else _build_actionable_frontier(state, None)
+    work = [item for item in frontier if item["owner"] != "round-progress"]
+    recovery = next((item for item in frontier if item["owner"] == "round-progress"), None)
+    action = (
+        hard_gate["action"] if hard_gate
+        else work[0]["next_action"] if len(work) == 1
+        else "handoff"
+    )
+    lane = (
+        ("recon-and-surface" if state.get("target_kind") == "list" else "state-and-queue")
+        if hard_gate else recovery["lane"] if recovery
+        else work[0]["lane"] if len(work) == 1 else "controller"
+    )
+    return {
+        "hard_gate": hard_gate,
+        "owner_continuations": frontier,
+        "next_action": action,
+        "primary_next_action": action,
+        "fallback_action": action,
+        "next_lane": lane,
+        "selection_mode": (
+            "hard_gate" if hard_gate else "ai_priority" if len(work) > 1
+            else "direct" if frontier else "fallback"
+        ),
+    }
 
 
 def _format_owner_continuations_lines(state: dict) -> list[str]:
@@ -747,6 +828,10 @@ def _format_owner_continuations_lines(state: dict) -> list[str]:
 
 
 _FRONTIER_LANES = {
+    "runtime": "state-and-queue",
+    "round-progress": "state-and-queue",
+    "checkpoint": "state-and-queue",
+    "evidence-ledger": "state-and-queue",
     "action_queue": "state-and-queue",
     "finding": "state-and-queue",
     "finding-claim": "state-and-queue",
@@ -770,7 +855,22 @@ _FRONTIER_LANES = {
 
 def _describe_next_step(state: dict) -> str:
     """Render a human-friendly next-step hint from the computed state."""
-    action = state.get("next_action", "")
+    hard_gate = state.get("hard_gate") or {}
+    if hard_gate.get("action") == "repair_checkpoint":
+        return "Repair the invalid checkpoint witness before starting new work: " + str(hard_gate.get("reason") or "")
+    frontier = state.get("owner_continuations") or []
+    recovery = next((item for item in frontier if item.get("owner") == "round-progress"), None)
+    if recovery and not hard_gate:
+        return (
+            str(recovery["action"])
+            + "; apply commands/autopilot-round.md to existing round work before new investigation."
+        )
+    if state.get("selection_mode") == "ai_priority" and not hard_gate:
+        return (
+            f"Select among the {len(frontier)} owner continuations using current evidence; "
+            "array order is not priority. Resume the selected owner work, then refresh state."
+        )
+    action = hard_gate.get("action") or state.get("next_action", "")
     target = state.get("target", "target")
     resume_targets = state.get("resume_targets", []) or []
     surface_review_candidates = (

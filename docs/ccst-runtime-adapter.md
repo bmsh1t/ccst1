@@ -10,18 +10,12 @@ CCST 路径与操作。本文件导航现有合同并记录来源；根 AGENTS.m
 - 方法读取、短表展开与维护遵守
   [Shared Knowledge Recall](../skills/runtime-protocol.md#shared-knowledge-recall)：原生 Read/Grep，
   按问题读完整方法；缺失明示，不用历史正文补位。
-- 方法维护只写 checkout 的 `skills/src-hunter/知识库/` 及必要索引；安装副本只读。
-  按 hunt-iter 准入、三问和来源核对，由主会话修改并保留 Git 差异；子代理只提候选。
-  已审共享卡仍走 knowledge 审核/晋升。
 
 ## 目标、材料与清理
 
-材料目录、owner 与清理步骤见 [目标材料规则](../rules/desktop-task-folder.md)，
-KEY 取 target_storage_key/工具回执。开始/续接遵守所用命令入口和
-[Shared Memory Continuity](../skills/runtime-protocol.md#shared-memory-continuity)，
-自动模式沿用 Bootstrap/round。各类状态仍由现有 owner 保存，工作笔记按需引用；
-无 target 的集团 seeds 按 [campaign](../rules/ccst/campaign.md) 续接，不借旧目标 Store。
-已登记证据、报告与恢复材料保持原位；桌面目录只作用户要求的导出副本。
+目录、owner 和清理见 [目标材料规则](../rules/desktop-task-folder.md)；
+恢复和认知写回见 [Shared Memory Continuity](../skills/runtime-protocol.md#shared-memory-continuity)。
+无 target 的集团 seeds 按 [campaign](../rules/ccst/campaign.md) 续接。
 
 ## 工具与宿主
 
@@ -36,13 +30,9 @@ KEY 取 target_storage_key/工具回执。开始/续接遵守所用命令入口�
 
 ## 报告与连续性
 
-发布前遵守 [vuln-report-format](../rules/vuln-report-format.md)，参数查
-[report](../commands/report.md)。保留当前 Finding/assessment/delivery 绑定、不可变文件；
-外发/共享副本脱敏，私有原件完整。技术成立、目的地资格、发布与外部提交各有真实状态。
-持续推进/迭代遵守 CLAUDE.md 与当前入口的范围、停止、预算和资源边界。证据即时写 owner，
-稳定结论及暂停/切换/compaction 的认知交接按
+发布格式见 [vuln-report-format](../rules/vuln-report-format.md)，执行参数及 owner 绑定见
+[report](../commands/report.md)；连续性与交接按
 [Cognitive Write Timing](../skills/runtime-protocol.md#cognitive-write-timing)。
-未知效果、cleanup 和终态记录仍须完成；有界停止保留残余，不记为已覆盖。
 
 ## 来源与历史
 

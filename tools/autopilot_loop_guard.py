@@ -392,6 +392,7 @@ def _loop_control_projection(state: dict) -> dict:
             "owner": text(item.get("owner"), 80),
             "id": text(item.get("id"), 300),
             "action": text(item.get("action"), 500),
+            "next_action": text(item.get("next_action"), 120),
             "evidence_ref": text(item.get("evidence_ref"), 300),
             "expected_information_gain": text(item.get("expected_information_gain"), 300),
             "stop_condition": text(item.get("stop_condition"), 300),
@@ -413,6 +414,8 @@ def _loop_control_projection(state: dict) -> dict:
             "reason": text(hard_gate.get("reason"), 300),
         } if hard_gate else {},
         "owner_continuations": frontier,
+        "round_progress": state.get("round_progress") or {},
+        "checkpoint_health": state.get("checkpoint_health") or {},
     }
 
 def _format_loop_guard_line(state: dict) -> str:

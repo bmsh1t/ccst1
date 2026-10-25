@@ -42,6 +42,9 @@ Queue/Store 不持有 Skill 注册表或知识推荐状态。
 `skills/src-hunter/SKILL.md`。description、路径或 hash 不能代替正文；压缩后缺失须恢复，
 不按 lane/round 重复调用。等待、终态清理和执行恢复无需新调用。
 在同一会话中携带当前目标/Scope、事实、模式和剩余预算应用它；不新开调查或委派。
+原生调用示例（填入当前事实，不传占位符）：
+`Skill({"skill":"src-hunter","args":"目标/Scope=…；当前问题/事实=…；deep=…；剩余预算=…"})`。
+工具 schema 或安装命名空间不同则使用宿主实际暴露的名称。
 方法读取按 Shared Knowledge Recall，加载 Skill 或短表不等于已经应用具体方法。
 
 ## Shared Memory Continuity
@@ -102,9 +105,6 @@ Candidate 和确认 A 的持久化不等 B/C；预算停止新工作，不停止
 
 ## 2. Skill layer
 
-`skills/src-hunter/SKILL.md` 是唯一调查入口；完整 6k rules 提供业务规则，专项只回答当前问题。
-知识提供完整方法；工具保存执行事实；规则处理完成和交付。无固定六域前置表、调用表或路由审计。
-加载 Skill/短表不等于已展开方法；选择新问题时读取并应用匹配正文，当前上下文完整可复用。
 新会话、角色或权限改变后，按 `rules/dig-scope-workflow.md` §4.2.3 的会话后规则重新判断业务对象与可检验路径。
 缺双身份先核对授权范围内能否准备测试账号/对象；实际不可获得才记局部阻塞，不把匿名拒绝沿用到新身份。
 
@@ -128,7 +128,7 @@ Discovery 主动补证据；Exploitation 检查已有信号及连接；Validatio
 ## 3. Knowledge layer
 
 索引用于发现，方法用于思考，已审共享知识用于有来源的复用；三者不混同。
-短卡全文读，长文读完整相关机制，再按需展开来源，不通读全库。知识不保存当前目标状态。
+知识不保存当前目标状态。
 
 ## 4. Checks layer
 
@@ -142,8 +142,8 @@ Not applicable、Dead ends、Still unknown 和 Next actions；无发现不是覆
 普通同会话读取不填交接表；真实委派按 `src-hunter` 的 handoff 合同交付，主会话接受。
 
 尚无 Finding 的观察走 `validation_runner.py record-observation`；已有 Candidate 的证明
-走 `record-evidence`。首次原生执行前读 `docs/evidence-runners.md#在执行时捕获原件`；
-登记、回执与失败恢复见同文档 `#native-observation-registration` 及对应 Finding 证据合同。
+走 `record-evidence`。完整捕获、登记、回执消费及失败恢复合同归
+`docs/evidence-runners.md#在执行时捕获原件`，首次原生执行前读取。
 观察登记不建占位 Finding、不自动解决 Action 或关闭 Coverage；区分未执行、已执行未登记和未知效果。
 参数不确定先读所选子命令 `--help`。
 

@@ -158,6 +158,10 @@ def _compact_candidate(item: dict[str, Any]) -> dict[str, Any]:
         "lifecycle_status",
         "provenance_reason",
         "required_action",
+        "assessment_id",
+        "delivery_id",
+        "destination",
+        "report_requirement",
         "source",
         "category",
         "artifact",
@@ -410,34 +414,12 @@ def _lane_contract_projection(state: dict[str, Any]) -> dict[str, Any]:
     ``id``/``ref``/``reason`` keys are preserved so older consumers are
     unaffected.
     """
-    action = str(state.get("next_action") or "")
-    if action in {
-        "run_recon",
-        "run_batch_recon",
-        "select_completed_domain",
-        "prepare_surface_context",
-        "collect_candidate_evidence",
-        "hunt_p1",
-    }:
-        lane = "recon-surface"
-    elif action in {
-        "wait_recon",
-        "wait_scan",
-        "revalidate_finding_owner",
-        "validate_finding",
-        "resume_action_queue",
-        "review_validation_candidate",
-        "complete_report_draft",
-        "report_finding",
-        "recon_no_live_hosts",
-    }:
-        lane = "state-and-queue"
-    elif action == "resume_case_state":
-        lane = "workflow-case"
-    elif action in {"run_intel", "collect_web_intel", "test_advisory_applicability", "review_intel_group"}:
-        lane = "software-intel"
-    else:
-        lane = "controller"
+    lane = {
+        "recon-and-surface": "recon-surface",
+        "workflow-timing-and-case-state": "workflow-case",
+        "software-and-intel": "software-intel",
+        "state-and-queue": "state-and-queue",
+    }.get(state.get("next_lane"), "controller")
     ref, reason = _LANE_CONTRACTS[lane]
     projection: dict[str, Any] = {"id": lane, "ref": ref, "reason": reason}
     # ``repo_root`` rides on the state built by autopilot_state; the compact
@@ -610,6 +592,8 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
             if key in (state.get("hard_gate") or {})
         },
         "next_step": describe_next_step(state),
+        "round_progress": state.get("round_progress") or {},
+        "checkpoint_health": state.get("checkpoint_health") or {},
         "lane_contract": _lane_contract_projection(state),
         "wait": next_action in {"wait_recon", "wait_scan"},
         "recon": {

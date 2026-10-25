@@ -69,6 +69,36 @@ deltas through their owners (`commands/target.md`, Action Queue and
 delta returns `待落库: none`; ranking does not create an Action or Finding.
 The controller does not assume the specialist already recorded anything.
 
+### Recon Ranker Review
+
+`commands/autopilot.md#surface-review` owns invocation, shared by ordinary and Round
+Autopilot. Send the content pack above plus the explicit checkout/data root, root
+target/Scope, current Store/Surface bindings and reading references, observed business
+surfaces, tried paths/reopening conditions, unread areas, relevant target memory and
+one review question. Pass compact facts and expandable originals, not the full conversation
+or credentials. Reuse `src-hunter` and its relevant complete methods.
+
+Invoke the native tool with the role name exposed by the host, for example:
+`Agent({"subagent_type":"recon-ranker","description":"Review current business surfaces","run_in_background":false,"prompt":"<filled content pack, including deep, remaining parent budget, review allocation/deadline>"})`.
+The entry owns foreground selection and waiting. Reading the file or receiving a task handle
+is not a completed review. If the host still returns a handle, use its task-result tool
+(`TaskOutput`) to await completion; at the assigned deadline use `TaskStop` and retain
+the partial review. Do not launch dependent experiments in the dispatch batch or
+before the result/failure. Include actual `arguments.deep`,
+`invocation_batch.bounded/max_lanes/handoff`, remaining lanes when a Round is active,
+and the parent's remaining session budget. Assign this review a concrete allocation
+or deadline within that budget, reserving execution and write-back time; unknown
+parent budget stays explicit, never unlimited. Missing mode/allocation returns a
+supplied-material assessment and the gaps without new tool reads. Reuse supplied
+current facts; request only the missing evidence needed for this review question.
+
+The ranker has zero target requests and no writes/delegation. This advisory review
+uses the current investigation's budget, creates no separate lane, and cannot extend
+`max_lanes`. The parent checks its cited evidence, chooses/claims actual work before
+execution, and retains accepted decisions and reviewed-material references in the
+existing memory/handoff when continuity needs them. No extra review state or checklist.
+Neither the review nor an empty shortlist replaces Coverage, Global Review or Closure.
+
 ## State And Queue
 
 All ordinary domain commands require an explicitly initialized target Store.
@@ -138,6 +168,11 @@ Checkpoint, Pickup and preflight never initialize, import, or recreate old owner
 
 ## Recon And Surface
 
+- Scope comes from `ScopeContext.classify/allows_active`: `root_target` admits its
+  owned assets under the existing identity rules; `in_scope` adds explicit patterns,
+  and `out_of_scope` wins. An empty `in_scope` list alone does not mean unauthorized.
+  Distinct origins remain separate: matching frontend/login bytes do not establish
+  shared backend data, roles, object boundaries or tested coverage.
 - Batch continuations use schema v2 and bind `scope_sha256` (complete source bytes)
   separately from the unchanged classification `scope_hash`. Recreate old/stale
   artifacts with `autopilot_continuation.py create`; do not edit them in place.
@@ -155,8 +190,9 @@ Checkpoint, Pickup and preflight never initialize, import, or recreate old owner
   dropping context or calling a shell/browser instead is not an equivalent constrained path.
   The Hunt commands below apply without a parent continuation; they do not override this gate.
 
-- `run_recon` is an explicitly selected collection action, not a missing-inventory
-  prerequisite. Before choosing its parameters, read full state with
+- New empty automatic targets follow the startup Recon default in
+  `commands/autopilot.md#state-consumption-loop`. For an existing target's selected
+  `run_recon`, read full state with
   `python3 tools/autopilot_state.py --target <target_shell> --json` and its current
   Recon owner references. Compact does not contain every cursor/phase detail;
   standalone `--projection-only` is not a full-state query. This query does not

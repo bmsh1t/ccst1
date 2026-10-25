@@ -106,6 +106,20 @@ Handoff preserves continuity; it is not by itself a stopping reason. User/scope/
 actual blockers or evidence-based investigation judgment decide when to stop, not report counts or
 automatic coverage enumeration. Both Autopilot modes consume fresh post-action state.
 
+State acquires owner facts; `autopilot_gate` builds their continuation projection once.
+Legacy action tokens, compact views and lane hints derive from that projection;
+multiple owner items remain available for Claude to choose. Closure keeps its own
+evidence verdict and shares only the reason-to-continuation rendering. Empty owner
+work returns to investigation. Round retains claims, budgets and recovery under
+the same Autopilot loop.
+
+Recon's Shell owns execution, rate/time bounds, workers and raw-file lifetime.
+Its FFUF phase runs synchronously while retaining bounded per-origin workers;
+root and www stay distinct. Existing ReconAdapter, target selector, candidates and
+gate modules own parsing, collection accounting, source navigation and manifest
+publication respectively. Raw publication and a valid summary precede collection
+progress. Read-side health checks do not publish or repair producer state.
+
 The dedicated request-diff execution lane, request-pair parser, response-diff
 module and `probe.py` request/ledger wrapper are retired. Native execution uses
 browser, curl or a suitable raw sender; evidence/observation registration and

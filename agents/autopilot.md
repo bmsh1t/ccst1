@@ -20,7 +20,8 @@ the parent alone claims lanes, writes owner state, and decides closure.
 One bounded question benefits from independent evidence review or collection:
 for example, a workflow comparison, a source/JS question, or a candidate's missing
 proof. Work only on that assigned sub-goal, not a target-wide hunt or another
-specialist's work. Specialists default to zero; do not delegate again.
+specialist's work. This execution subagent never delegates again; the parent owns
+surface review and any other specialist selection.
 
 ## Required Handoff
 
@@ -81,24 +82,12 @@ Within this task, choose the smallest bounded evidence-producing step or state
 the precise blocker/dead-end; continuation, validation/report handoff and closure
 remain parent-owned.
 
-Read the matching complete execution section when not already supplied:
+Read the matching complete section of `docs/autopilot-lanes.md`; its execution
+contracts and the Skill's internal modules own the methods. Relevant specialty
+navigation (WordPress, Exchange, credentials, DNS, source, wire semantics) stays in
+those sections instead of a second route table here.
 
-| Evidence question | Existing method owner |
-|---|---|
-| Actors/sessions/objects/private markers/hypotheses, workflow or timing | `docs/autopilot-lanes.md#workflow-timing-and-case-state` and `docs/autopilot-lanes.md#state-and-queue` |
-| Browser/API/auth state, source/JS routes, chunk/source-map gaps | `docs/autopilot-lanes.md#browser-source-and-js` |
-| Focused fuzz: template, target-derived seeds/transforms, random-miss controls | `skills/src-hunter/modules/web2-recon.md#focused-discovery-boundary`; route differences remain Signals |
-| DNS/asset naming, certificate/JS/source gap | `docs/autopilot-lanes.md#credentials-and-asset-expansion`: added hosts require the counts/evidence and caller Surface-refresh request in 「待落库」; no added hosts means no refresh request; never refresh parent state |
-| Software/version/advisory applicability | `commands/intel.md` and `docs/autopilot-lanes.md#software-and-intel`; retain versionless representative-page cursors |
-| WordPress or Exchange/OWA/EWS/Autodiscover | `knowledge/cards/wordpress-surface-intelligence.md` or the existing EBurst entry in `docs/autopilot-lanes.md#software-and-intel` |
-| SQL/JSON/WAF or access-boundary comparison | `docs/autopilot-lanes.md#sql-json-and-waf` and `docs/autopilot-lanes.md#access-limit` |
-| Byte-exact proxy/cache/desync | `docs/autopilot-lanes.md#wire-and-live-action-boundaries`; `tools/sender_semantics.py --require` gates sender capabilities, browser/urllib cannot prove wire absence |
-| Login/protocol/credential evidence | `skills/src-hunter/modules/credential-attack.md` and `commands/spray.md`; no direct candidate-pool replay or inferred password grant |
-| Self-owned test-account email or Cloudflare clearance | Existing setup-helper entries in `docs/autopilot-lanes.md#access-limit` |
-| Candidate proof, technical judgment or report preparation | `docs/evidence-runners.md`, `commands/validate.md`, `commands/report.md`; return evidence/spec/body for parent registration, CAS and assessment |
-
-These routes are examples, not a fixed order or family whitelist. Any supported
-family, primitive or chain may be investigated within the supplied boundary.
+Any supported family, primitive or chain may be investigated within the supplied boundary.
 Stale Case context cannot outrank fresh evidence; actor gaps limit the affected
 comparison, not unrelated discovery. Preserve partial cursors and residual unknowns
 with the next question instead of using a tool cap or scanner-negative as closure.
