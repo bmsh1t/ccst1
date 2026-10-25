@@ -4040,24 +4040,69 @@ class TargetStore:
                     count(CASE WHEN disposition='withdrawn' THEN 1 END) AS withdrawn,
                     count(CASE WHEN verdict='confirmed' THEN 1 END) AS confirmed,
                     count(CASE WHEN disposition='active' AND verdict NOT IN ('confirmed','refuted') THEN 1 END) AS pending_validation,
-                    count(CASE WHEN verdict='confirmed' AND NOT reported THEN 1 END) AS validated_pending_report,
-                    count(CASE WHEN reported THEN 1 END) AS reported,
-                    min(CASE WHEN disposition='active' AND verdict NOT IN ('confirmed','refuted') THEN id END) AS next_validation,
-                    min(CASE WHEN verdict='confirmed' AND NOT reported THEN id END) AS next_report
+                    count(CASE WHEN reported THEN 1 END) AS report_recorded,
+                    min(CASE WHEN disposition='active' AND verdict NOT IN ('confirmed','refuted') THEN id END) AS next_validation
                 FROM posture""").fetchone())
             page = self._page_conn(conn, meta, "findings", limit=limit, status="active")
             rows = {row["id"]: row for row in page["items"]}
-            next_ids = {key: counts.pop(key) for key in ("next_validation", "next_report")}
+            counts.update(validated_pending_report=0, reported=0)
+            next_ids = {"next_validation": counts.pop("next_validation"), "next_report": None}
+            report_states = {}
+            # Only current eligible claims need byte checks; historical bodies stay unexpanded.
+            candidates = conn.execute(f"""SELECT f.id FROM findings f JOIN assessments a ON a.finding_id=f.id
+                AND a.revision=(SELECT max(x.revision) FROM assessments x WHERE x.finding_id=f.id)
+                WHERE {disposition}='active' AND a.verdict='confirmed' AND EXISTS(
+                    SELECT 1 FROM delivery_decisions d WHERE d.finding_id=f.id
+                    AND d.assessment_id=a.id AND d.status='eligible' AND d.revision=(
+                        SELECT max(x.revision) FROM delivery_decisions x
+                        WHERE x.finding_id=d.finding_id AND x.destination=d.destination))
+                ORDER BY f.id""")
+            operation_integrity = {}
+            while batch := candidates.fetchmany(100):
+                projected = [{"id": item["id"], "disposition": {"status": "active"}} for item in batch]
+                self._finding_projections(conn, projected, report_only=True, operation_integrity=operation_integrity)
+                for item in projected:
+                    pending = bool(item["pending_reports"])
+                    counts["reported"] += int(item["report_current"])
+                    counts["validated_pending_report"] += int(pending)
+                    if pending and next_ids["next_report"] is None:
+                        next_ids["next_report"] = item["id"]
+                    if item["id"] in rows or item["id"] == next_ids["next_report"]:
+                        report_states[item["id"]] = {key: item[key] for key in ("report_current", "pending_reports")}
             for finding_id in next_ids.values():
                 if finding_id and finding_id not in rows:
                     rows[finding_id] = dict(conn.execute("SELECT * FROM findings WHERE id=?", (finding_id,)).fetchone())
                     self._finding_dispositions(conn, [rows[finding_id]])
             self._finding_states(conn, list(rows.values()))
+            for item in rows.values():
+                item.update(report_states.get(item["id"], {"report_current": False, "pending_reports": []}))
             return {**page, "counts": counts,
                     **{key: rows.get(finding_id) for key, finding_id in next_ids.items()}}
 
-    def _finding_projections(self, conn, rows: list[dict]) -> None:
-        """Batch one page's relations; acquire each supporting operation once per read."""
+    @staticmethod
+    def _finding_report_status(row: dict) -> dict:
+        assessment = row.get("assessment") or {}
+        if (row.get("disposition", {}).get("status") != "active"
+                or assessment.get("verdict") != "confirmed"):
+            return {"report_current": False, "pending_reports": []}
+        reports = row.get("reports") or []
+        current_pairs = {(item["assessment_id"], item["delivery_id"]) for item in reports if not item["stale"]}
+        recorded_pairs = {(item["assessment_id"], item["delivery_id"]) for item in reports}
+        pending = []
+        for delivery in row.get("deliveries") or []:
+            pair = (assessment["id"], delivery["id"])
+            if (delivery["status"] == "eligible" and not delivery["stale"]
+                    and delivery["assessment_id"] == assessment["id"] and pair not in current_pairs):
+                pending.append({
+                    "finding_id": row["id"], "assessment_id": assessment["id"],
+                    "delivery_id": delivery["id"], "destination": delivery["destination"],
+                    "status": "repair_required" if pair in recorded_pairs else "needs_draft",
+                })
+        return {"report_current": bool(current_pairs), "pending_reports": pending}
+
+    def _finding_projections(self, conn, rows: list[dict], *, report_only: bool = False,
+                             operation_integrity: dict | None = None) -> None:
+        """Batch current relations; summary mode omits historical reports and evidence DTOs."""
         if not rows:
             return
         by_id = {row["id"]: row for row in rows}
@@ -4080,25 +4125,32 @@ class TargetStore:
                     WHERE x.finding_id=d.finding_id AND x.destination=d.destination)
                 ORDER BY d.destination""", ids):
             by_id[item["finding_id"]]["deliveries"].append(dict(item))
-        for item in conn.execute(f"""SELECT finding_id,operation_id,step FROM finding_observations
-                WHERE finding_id IN ({placeholders}) ORDER BY operation_id,step""", ids):
-            by_id[item["finding_id"]]["evidence"].append(
-                {"operation_id": item["operation_id"], "step": item["step"]})
+        if not report_only:
+            for item in conn.execute(f"""SELECT finding_id,operation_id,step FROM finding_observations
+                    WHERE finding_id IN ({placeholders}) ORDER BY operation_id,step""", ids):
+                by_id[item["finding_id"]]["evidence"].append(
+                    {"operation_id": item["operation_id"], "step": item["step"]})
+        report_filter = """ AND r.assessment_id=(SELECT id FROM assessments
+                WHERE finding_id=r.finding_id ORDER BY revision DESC LIMIT 1)
+            AND r.delivery_id=(SELECT id FROM delivery_decisions
+                WHERE finding_id=r.finding_id AND destination=r.destination ORDER BY revision DESC LIMIT 1)
+            """ if report_only else ""
         for item in conn.execute(f"""SELECT r.*, a.ref AS artifact_ref,
                 a.sha256 AS artifact_sha256, a.size AS artifact_size
                 FROM reports r JOIN artifacts a ON a.id=r.artifact_id
-                WHERE r.finding_id IN ({placeholders}) ORDER BY r.generated_at""", ids):
+                WHERE r.finding_id IN ({placeholders}) {report_filter} ORDER BY r.generated_at""", ids):
             by_id[item["finding_id"]]["reports"].append(dict(item))
         if assessments:
-            operation_integrity = {}
+            if operation_integrity is None:
+                operation_integrity = {}
             assessment_ids = list(assessments)
-            for ref in conn.execute(f"""SELECT ao.assessment_id,ao.operation_id,ao.step,
+            for ref in (() if report_only else conn.execute(f"""SELECT ao.assessment_id,ao.operation_id,ao.step,
                     b.kind,a.id AS artifact_id,a.ref,a.sha256
                     FROM assessment_observations ao
                     JOIN observation_artifacts b ON b.operation_id=ao.operation_id AND b.step=ao.step
                     JOIN artifacts a ON a.id=b.artifact_id
                     WHERE ao.assessment_id IN ({','.join('?' for _ in assessment_ids)})
-                    ORDER BY ao.operation_id,ao.step,b.kind""", assessment_ids):
+                    ORDER BY ao.operation_id,ao.step,b.kind""", assessment_ids)):
                 item = dict(ref)
                 assessment_id = item.pop("assessment_id")
                 item["event_id"] = f"{item['operation_id']}:{item['step']}"
@@ -4122,6 +4174,9 @@ class TargetStore:
             for delivery in row["deliveries"]:
                 delivery["stale"] = not valid or delivery["assessment_id"] != assessment["id"]
             self._report_rows(conn, row["reports"], assessment, row["deliveries"], assessment_valid=valid)
+            row.update(self._finding_report_status(row))
+            if report_only:
+                continue
             # Read projections only: destination policy and damaged bytes never
             # rewrite the immutable technical assessment.
             row["technical_conclusion"] = dict(assessment) if assessment else None

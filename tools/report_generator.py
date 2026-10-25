@@ -116,18 +116,6 @@ def declared_report_severity(content: str) -> dict:
     return {"severity": values[0], "reason": "explicit report declaration"}
 
 
-def _is_reportable_structured_finding(finding):
-    """Require a confirmed assessment and its current eligible delivery."""
-    if not isinstance(finding, dict) or not finding.get("url"):
-        return False
-    assessment = finding.get("assessment") or {}
-    return assessment.get("verdict") == "confirmed" and any(
-        item.get("status") == "eligible" and not item.get("stale")
-        and item.get("assessment_id") == assessment.get("id")
-        for item in finding.get("deliveries", [])
-    )
-
-
 def _publish_bytes(report_file, data):
     """Publish complete bytes without overwrite; retry only identical bytes."""
     path = Path(report_file)
@@ -167,7 +155,7 @@ def _read_report_body(body_file):
 def _primary_findings(store: TargetStore) -> list[dict]:
     """Project Store findings into the report renderer's read-only shape."""
     findings = []
-    page = store.finding_page(limit=1000)
+    page = store.finding_page(limit=1000, status="active")
     while True:
         for item in page.get("items", []):
             if not isinstance(item, dict):
@@ -196,11 +184,12 @@ def _primary_findings(store: TargetStore) -> list[dict]:
                 "assessment": assessment,
                 "deliveries": finding.get("deliveries", []),
                 "reports": reports,
+                "pending_reports": finding["pending_reports"],
                 "evidence": finding.get("evidence", []),
             })
         if not page.get("has_more"):
             break
-        page = store.finding_page(limit=1000, cursor=page.get("next_cursor"))
+        page = store.finding_page(limit=1000, cursor=page.get("next_cursor"), status="active")
     return findings
 
 
@@ -237,11 +226,14 @@ def _publish_authored_report(store, report_dir, *, finding_id, assessment_id, de
             destination.parent.mkdir(exist_ok=True)
             _publish_bytes(destination, data)
         _publish_bytes(report_file, content.encode("utf-8"))
-    return store.register_report(
+    receipt = store.register_report(
         command_id=f"report:{report_id}", report_id=report_id, finding_id=finding_id,
         assessment_id=assessment_id, delivery_id=delivery_id, artifact=str(report_file),
         actor="report-generator",
     )
+    return {**receipt, "report_id": receipt["entity_id"], "store_id": store.binding()["store_id"],
+            "finding_id": finding_id, "assessment_id": assessment_id, "delivery_id": delivery_id,
+            "artifact_ref": report_file.relative_to(store.root).as_posix()}
 
 
 def _process_primary_reports(store, report_dir, target_name):
@@ -250,18 +242,7 @@ def _process_primary_reports(store, report_dir, target_name):
     as_of = datetime.now(timezone.utc).isoformat()
     entries, pending_drafts = [], []
     for finding in _primary_findings(store):
-        if _is_reportable_structured_finding(finding):
-            assessment_id = finding["assessment"]["id"]
-            registered_pairs = {(r["assessment_id"], r["delivery_id"]) for r in finding["reports"]}
-            for delivery in finding["deliveries"]:
-                if (delivery["status"] == "eligible" and not delivery["stale"]
-                        and delivery["assessment_id"] == assessment_id
-                        and (assessment_id, delivery["id"]) not in registered_pairs):
-                    pending_drafts.append({
-                        "finding_id": finding["id"], "assessment_id": assessment_id,
-                        "delivery_id": delivery["id"], "destination": delivery["destination"],
-                        "status": "needs_draft",
-                    })
+        pending_drafts.extend(finding["pending_reports"])
         for report in finding["reports"]:
             if report["stale"]:
                 continue
@@ -285,8 +266,10 @@ def _process_primary_reports(store, report_dir, target_name):
                               pending_drafts=pending_drafts)
 
 
-def process_findings_dir(findings_dir, *, finding_id="", assessment_id="", delivery_id="", body_file=None):
+def process_findings_dir(findings_dir, *, finding_id="", assessment_id="", delivery_id="", body_file=None, receipt_out=None):
     """Publish optional authored text, then rebuild the target's bound report index."""
+    if receipt_out is not None:
+        receipt_out.clear()
     submission = (finding_id, assessment_id, delivery_id, body_file)
     if any(submission) and not all(submission):
         raise ValueError("publication requires finding_id, assessment_id, delivery_id and body_file together")
@@ -300,8 +283,10 @@ def process_findings_dir(findings_dir, *, finding_id="", assessment_id="", deliv
             raise StoreError(f"report output does not match directory owner: {report_dir}")
         report_dir.mkdir(parents=True, exist_ok=True)
         if body_file is not None:
-            _publish_authored_report(store, report_dir, finding_id=finding_id,
-                                    assessment_id=assessment_id, delivery_id=delivery_id, body_file=body_file)
+            receipt = _publish_authored_report(store, report_dir, finding_id=finding_id,
+                                               assessment_id=assessment_id, delivery_id=delivery_id, body_file=body_file)
+            if receipt_out is not None:
+                receipt_out.update(receipt)
         return _process_primary_reports(store, str(report_dir), store.key)
 
 
@@ -364,7 +349,7 @@ def _write_report_index(report_dir, target_name, total_reports, report_index, *,
             summary_lines.append("\n## Awaiting authored drafts\n\n")
             summary_lines.extend(
                 f"- {item['finding_id']} → {item['destination']} "
-                f"(assessment `{item['assessment_id']}`, delivery `{item['delivery_id']}`)\n"
+                f"(assessment `{item['assessment_id']}`, delivery `{item['delivery_id']}`, {item['status']})\n"
                 for item in pending_drafts
             )
         _write_text_atomic(summary_file, "".join(summary_lines))
@@ -488,15 +473,19 @@ def main(argv=None):
         print(f"[-] Not a directory: {args.findings_dir}")
         sys.exit(1)
 
+    publication_receipt = {}
     try:
         total, index = process_findings_dir(args.findings_dir, finding_id=args.finding_id,
                                            assessment_id=args.assessment_id, delivery_id=args.delivery_id,
-                                           body_file=args.body_file)
+                                           body_file=args.body_file, receipt_out=publication_receipt)
         repo_root, target = _finding_backend_context(args.findings_dir)
         report_dir = repo_root / "reports" / target_storage_key(target)
         pending = json.loads((report_dir / "INDEX.json").read_text(encoding="utf-8"))["pending_drafts"]
     except (OSError, ValueError, StoreError) as exc:
         parser.error(str(exc))
+    finally:
+        if publication_receipt:
+            print("Publication receipt: " + json.dumps(publication_receipt, ensure_ascii=False, sort_keys=True))
 
     print(f"\n[+] Indexed {total} current reports")
     if index:

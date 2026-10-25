@@ -97,6 +97,12 @@ python3 tools/validate.py --target TARGET --finding-id FINDING_ID \
 
 Preflight is read-only: success is `status=preflight_ok`; invalid input exits `2` with
 `status=preflight_invalid` and an `errors` list. Fix the input before applying.
+Read `decision_preview.verdict`, `gates` and `questions` before apply: preflight_ok
+means valid input, not a confirmed finding or publishable report. Filling a Q's
+`basis` without its `status` leaves it `unknown`; top-level `passed` cannot override
+those answers. If the preview differs from your intended judgment, correct the
+specific answers from evidence. Explicit unknown/failed judgments remain valid
+inputs and apply as inconclusive; never change them merely to obtain confirmation.
 Apply rechecks bindings, current raw integrity and predecessor CAS; preflight is not a receipt.
 
 ## 4. Consume receipts and recover failures

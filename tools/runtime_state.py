@@ -77,7 +77,7 @@ def _project_finding_rows(items: list[dict]) -> list[dict]:
             "type": item["family"], "category": item["family"], "vuln_class": item["family"],
             "title": item["title"], "summary": item["claim"],
             "validation_status": {"confirmed": "validated", "refuted": "rejected"}.get(verdict, "unvalidated"),
-            "report_status": "generated" if item["report_recorded"] else "not_generated",
+            "report_status": "generated" if item.get("report_current") else "recorded" if item.get("report_recorded") else "not_generated",
             "assessment": assessment,
             "disposition": item["disposition"],
         })

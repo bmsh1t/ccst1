@@ -125,6 +125,13 @@ original attempt/operation, without re-registering the same bytes as a new execu
   Store/Coverage CLI already emits JSON; do not add `--json`. Preserve subprocess
   exit status through pipelines; use subcommand help for uncertain parameters.
   `docs/evidence-runners.md` owns the executable capture and registration examples.
+  Its reviewed anonymous direct-HTTP example captures and registers in one tool
+  execution using `finally`, returning actual operation/observation refs. It retains
+  empty bodies and failed responses without fabricated wire artifacts. Registration
+  retry never resends the request. Persist attempt/start/registration argv before
+  sending; preserve URL literals with curl globbing/path normalization disabled.
+  SIGTERM/SIGKILL/power loss still requires explicit recovery. Browser/MCP import
+  and registration happen immediately after tool return, before new investigation.
 - An unbound mistaken Finding is handled by Store v18 `dispose-finding`, not a
   synthetic refutation or a Runner material review. New native evidence and
   validation preflight reject withdrawn claims; Store rechecks new links atomically.
@@ -156,6 +163,16 @@ original attempt/operation, without re-registering the same bytes as a new execu
   Registration does not impose a new current-claim check. Preview/legacy/damage reject.
 - A real execution has its own attempt ID. A registration retry reuses the
   attempt and immutable raw material; registration never resends requests. Operation is a Store registration receipt, not an HTTP request ID.
+- `record-evidence --expected-operation ID` can attach a Finding to an already
+  registered observation from the same attempt. Preserve source, original start,
+  complete snapshot and Action/claim binding; the recorder may change without
+  restarting the attempt. Both native registration paths verify predecessor
+  artifacts before publishing a supplement. Store retains predecessor CAS and
+  identical-retry idempotency; altered original bytes never gain a new trusted hash.
+- Validation scaffold uses the shared `validation_finding_key` directory identity
+  and selects the newest complete, intact, Store-linked exact subject endpoint/method.
+  Cleanup-only runs remain separate; malformed or damaged newer summaries cannot
+  hide an earlier eligible main experiment. The validation gate still checks the witness.
 - Native evidence `generated_at` retains the original attempt start. Optional
   run `observed_at` retains that step's capture time; both require a timezone and
   cannot be in the future, and steps cannot predate the attempt. Missing step time
@@ -201,6 +218,10 @@ original attempt/operation, without re-registering the same bytes as a new execu
 - Explicit `state_changing=true` requires `redline_checked`; method names do not
   imply effect. Unknown effect remains unknown. Redirects stay within target;
   sensitive headers require destination-origin authorization.
+  Native registration errors name the affected `runs[].redline_checked` declaration
+  (or record-evidence's CLI default), never an unsupported record-observation flag
+  or a claim that registration precedes network execution. Missing declaration still
+  rejects before attempt, raw-summary or observation publication; retry uses saved raw.
   Native runs may explicitly override CLI state_changing (bool/null) and
   redline_checked (bool) defaults. Summary top-level fields are defaults, not an
   aggregate verdict; Store and cleanup consume effective per-step facts. Mixed
@@ -222,6 +243,11 @@ original attempt/operation, without re-registering the same bytes as a new execu
   `source_knowledge_refs` type/existence checks. Preflight aggregates errors;
   apply preserves its fail-fast CLI error and reacquires current inputs before
   writing. A successful preflight is not a receipt or a reusable authorization.
+  Its `decision_preview` exposes the technical verdict and effective gate/Q statuses
+  from the same `build_validation_summary`/`validation_evidence_passed` used by apply,
+  without writing a report or predicting delivery readiness. Basis-only Q answers
+  remain unknown; a valid inconclusive judgment stays admissible. No second verdict
+  reducer, automatic pass filling or confirmation gate is added.
 - In the default single-step mode, AI report bytes are atomically published before separate assessment,
   destination decision and eligible report registration. Their deterministic
   command IDs allow partial retries; a new judgment requires predecessor IDs.
@@ -780,10 +806,14 @@ AI owns method/impact reasoning and wording; deterministic owners retain eligibi
 evidence integrity and publication. Category templates and `generate_report()` are retired.
 
 ### 2. Signatures
-`process_findings_dir(findings_dir, *, finding_id="", assessment_id="", delivery_id="", body_file=None)`
+`process_findings_dir(findings_dir, *, finding_id="", assessment_id="", delivery_id="", body_file=None, receipt_out=None)`
 returns the unchanged `(total_reports, report_index)` tuple. The CLI exposes those
 four inputs as `--finding-id`, `--assessment-id`, `--delivery-id`, `--body-file`.
 The no-input call only indexes; the four-input call publishes then indexes.
+Optional `receipt_out` receives the committed report/Store/Finding/assessment/delivery
+IDs and exact `artifact_ref`. CLI emits that JSON as `Publication receipt: {...}`, even
+if subsequent indexing fails; failure still exits nonzero. Report heartbeat consumes
+that reference directly, never a directory listing or INDEX's last entry.
 `hunt.generate_reports(domain)` returns an integer count or raises
 `ReportGenerationError`. `hunt.main() -> int` propagates through
 `raise SystemExit(main())`; report-only failure exits `2`, success exits `0`.
@@ -802,9 +832,11 @@ The Finding must have a current confirmed assessment and current eligible delive
 with intact linked observations. Publish the provided UTF-8 bytes unchanged before
 Store registration. Existing target/Finding/assessment/delivery report IDs remain
 stable; retry only identical bytes. Never guess completeness from narrative markers.
-INDEX/SUMMARY include derived `pending_drafts` per unreported eligible destination;
-no new state table. Missing text does not block other valid reports. Registered stale
-bodies are omitted from the current index, retained on disk and in history.
+INDEX/SUMMARY consume Store's derived `pending_reports` per active, current eligible
+destination lacking a valid report. Missing text is `needs_draft`; a damaged registered
+report at the same binding is `repair_required`. Historical reports do not suppress new
+assessment/delivery work. No new state table; pending text does not block other valid
+reports. Stale bodies remain on disk and in history, outside the current index.
 Manual mode records supplied inputs or a supplied draft without default impact,
 remediation or severity. Attachments go to manual drafts; only standalone tool-style
 `![label](poc_screenshots/<64-lowercase-sha256><optional-safe-extension>)` references

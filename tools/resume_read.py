@@ -50,7 +50,7 @@ def load_structured_finding_followup(
 
 
 def _structured_finding_followup(snapshot: dict, base_dir: str | Path, target: str) -> dict:
-    """Summarize recorded posture; current truth owns evidence/delivery checks."""
+    """Project the Store's checked current report follow-ups and recorded verdicts."""
     findings_dir = Path(base_dir) / "findings" / target_storage_key(target)
     counts = snapshot["counts"]
     summary = {key: counts[key] for key in (
@@ -68,8 +68,16 @@ def _structured_finding_followup(snapshot: dict, base_dir: str | Path, target: s
             "id": item["id"], "type": item["family"], "severity": "medium", "confidence": verdict,
             "url": item["endpoint"],
             "validation_status": {"confirmed": "validated", "refuted": "rejected"}.get(verdict, "candidate"),
-            "report_status": "generated" if item["report_recorded"] else "not_generated",
+            "report_status": "generated" if item["report_current"] else "not_generated",
         }, findings_dir)
+        if key == "next_report" and item["pending_reports"]:
+            pending = item["pending_reports"][0]
+            summary[key].update({name: pending[name] for name in ("assessment_id", "delivery_id", "destination")})
+            summary[key]["report_requirement"] = pending["status"]
+            summary[key]["required_action"] = (
+                "Repair the registered report evidence before publishing" if pending["status"] == "repair_required"
+                else "Author and publish the report for the current eligible delivery"
+            )
     return summary
 
 

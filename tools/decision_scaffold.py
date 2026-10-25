@@ -34,9 +34,11 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     )
 
 try:
-    from tools.target_paths import target_storage_key
+    from tools.target_paths import canonical_target_value, target_storage_key, validation_finding_key
+    from tools.target_store import runtime_store, StoreError
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from target_paths import target_storage_key  # type: ignore
+    from target_paths import canonical_target_value, target_storage_key, validation_finding_key  # type: ignore
+    from target_store import runtime_store, StoreError
 
 
 # validate scaffold 里永远留给 AI 的字段（判断字段，机器不预填值）
@@ -47,8 +49,8 @@ VALIDATE_AI_FIELDS_NOTE = (
 
 
 def _latest_runner_run(repo_root: Path, target: str, finding_id: str) -> str | None:
-    """Return the newest on-disk runner run recorded under this finding id."""
-    runs_dir = repo_root / "evidence" / target_storage_key(target) / "validation" / finding_id
+    """Choose the newest complete linked subject witness, keeping cleanup separate."""
+    runs_dir = repo_root / "evidence" / target_storage_key(target) / "validation" / validation_finding_key(finding_id)
     if not runs_dir.is_dir():
         return None
     candidates = [
@@ -58,14 +60,31 @@ def _latest_runner_run(repo_root: Path, target: str, finding_id: str) -> str | N
     ]
     if not candidates:
         return None
-    latest = max(candidates, key=lambda path: path.stat().st_mtime)
-    try:
-        payload = json.loads(latest.read_text(encoding="utf-8", errors="replace"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    if payload.get("finding_id") != finding_id:
-        return None
-    return str(latest.relative_to(repo_root))
+    store = runtime_store(repo_root, target)
+    finding = store.finding(finding_id)
+    linked = {(ref["operation_id"], ref["step"]) for ref in finding["evidence"]}
+    for path in sorted(candidates, key=lambda item: item.stat().st_mtime, reverse=True):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if (not isinstance(payload, dict) or payload.get("finding_id") != finding_id
+                    or not isinstance(payload.get("target"), str)
+                    or canonical_target_value(payload["target"]) != canonical_target_value(target)
+                    or payload.get("cleanup_only") or not payload.get("store_operation_id")):
+                continue
+            operation_id = payload["store_operation_id"]
+            execution = store.execution(operation_id)
+            if execution["outcome"] != "complete" or not any(
+                (operation_id, row["step"]) in linked
+                and (row["endpoint"], row["method"]) == (finding["endpoint"], finding["method"])
+                and not row.get("detail", {}).get("cleanup_confirmation")
+                for row in execution["observations"]
+            ):
+                continue
+            store.verify_operation(operation_id)
+        except (OSError, ValueError, StoreError):
+            continue  # A damaged/partial witness cannot hide an earlier valid experiment.
+        return str(path.relative_to(repo_root))
+    return None
 
 
 def build_validate_scaffold(
@@ -119,7 +138,9 @@ def build_validate_scaffold(
             "no registered evidence summary recorded under this finding id — "
             "preserve the existing raw execution and register it with "
             f"`tools/validation_runner.py record-evidence --target {target} --finding-id {finding_id} "
-            "--evidence-json FILE --attempt-id ORIGINAL_ATTEMPT`, then regenerate the scaffold; "
+            "--evidence-json FILE --attempt-id ORIGINAL_ATTEMPT` "
+            "(add `--expected-operation ORIGINAL_OPERATION` if the attempt was already registered), "
+            "then regenerate the scaffold; "
             "do not repeat an execution merely to obtain a summary"
         ]
     return scaffold

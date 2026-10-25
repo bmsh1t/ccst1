@@ -306,13 +306,23 @@ Use consumer-level save/restart/recall/recovery evidence, not test counts, for a
 
 - `finding_summary(limit=5)` returns a revision-bound active claim preview, exact
   `counts` (`total`, `active`, `withdrawn`, `confirmed`, `pending_validation`,
-  `validated_pending_report`, `reported`), and stable-ID `next_validation` /
+  `validated_pending_report`, `reported`, `report_recorded`), and stable-ID `next_validation` /
   `next_report` claims. Counts, preview and follow-ups share one read snapshot;
   no complete history is materialized to compute them. `counts.total` includes
   history; page `total` and follow-ups include only active claims.
+  Report status shares `_finding_projections` / `_report_rows` with full reads:
+  SQL selects active/current confirmed/eligible claims in batches of 100, then
+  verifies current evidence, report bodies and managed attachments, reusing
+  operation checks within this read. It omits historical reports and evidence DTOs;
+  bounded returned rows do not imply constant I/O. `reported` counts claims with
+  a valid current report; `validated_pending_report` counts claims with a pending
+  eligible destination. Both can include the same claim. `report_recorded` retains
+  historical existence. Preview/follow-up rows expose `report_current` and
+  `pending_reports` (`needs_draft` or same-binding `repair_required`), shared by
+  report indexing and Autopilot; old assessments never suppress new pending work.
 - `finding_state_page(limit=50, cursor=None, status=None)` pages claims with their latest
   recorded assessment and `report_recorded` boolean. It shares the ordinary
-  Finding ID/revision cursor. Neither this page nor the summary expands raw
+  Finding ID/revision cursor. This lightweight page does not expand raw
   evidence, delivery decisions or report history. A recorded assessment or
   historical report is not current evidence validity or delivery authority.
   `finding()` / `finding_page()` and current truth remain the checked expansion

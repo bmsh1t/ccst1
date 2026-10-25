@@ -47,8 +47,10 @@ python3 tools/report_generator.py ROOT/findings/TARGET
 ```
 
 Without a body submission, this only rebuilds `reports/TARGET/INDEX.json` and `SUMMARY.md` from the Store.
-`pending_drafts` lists each current eligible Finding/assessment/delivery pair that has no registered report.
-Missing text remains `needs_draft`; it does not block indexing other valid reports or cause template fallback.
+`pending_drafts` lists each active, current eligible Finding/assessment/delivery pair without a valid report.
+Missing text is `needs_draft`; a damaged registered report for that binding is `repair_required`.
+Historical reports do not suppress a new assessment's pending delivery; destinations are independent.
+Pending work does not block indexing other valid reports or cause template fallback.
 CLI output always shows the missing-draft count and canonical INDEX/SUMMARY paths, including mixed results.
 Damaged or stale registered reports remain historical Store records and are not silently recreated.
 `findings.json`, raw scanner claims and index entries are not lifecycle owners.
@@ -70,6 +72,11 @@ python3 tools/report_generator.py ROOT/findings/TARGET \
   --finding-id FINDING_ID --assessment-id ASSESSMENT_ID --delivery-id DELIVERY_ID \
   --body-file ROOT/reports/TARGET/drafts/report.md
 ```
+
+Successful registration emits `Publication receipt: {...}` with `report_id`, `store_id`,
+Finding/assessment/delivery IDs and the exact target-owned `artifact_ref`. Use that reference
+for a report lane heartbeat. The receipt remains visible if later index generation fails;
+the command still exits nonzero for that failure.
 
 The body must be non-empty UTF-8. Each destination gets its own explicit submission; no body is automatically
 reused for another destination. The IDs must still select the current confirmed assessment and eligible
@@ -133,5 +140,6 @@ require the normal observation/artifact registration; delivery-copy damage does 
 
 `generate_report()` and the category templates/narrative helpers are retired, not moved to another registry.
 Call `process_findings_dir(..., finding_id=..., assessment_id=..., delivery_id=..., body_file=...)` for publication;
-its existing `(total_reports, report_index)` result is retained. Calling it with only the directory indexes current
+optional `receipt_out={}` receives the committed receipt without changing the existing
+`(total_reports, report_index)` result. Calling it with only the directory indexes current
 reports and pending drafts. No historical body, raw evidence, Store schema or report eligibility rule is migrated.

@@ -358,11 +358,13 @@ reviews may need one explicit re-review after the binding semantics change.
   and the refresh command, not claim a successful empty material review.
 - The explicit post-lane `--loop-check --projection-only` projection returns the
   existing `loop_guard` plus a bounded `control` object (`hard_gate`,
-  `priority_frontier`, `next_action`, `fallback_action`, and `selection_mode`).
-  The controller may use this as its refreshed frontier state; it must not issue
-  a second ordinary state read for the same heartbeat unless the command fails or
-  a later owner write requires a fresh snapshot. The projection is derived only
-  and creates no owner state.
+  `owner_continuations`, `next_action`, `next_step`, `fallback_action`, and
+  `selection_mode`). It also keeps Surface health/path/fingerprint/refresh and
+  continuation references, display-window counts and observation inventory
+  health/counts. The controller expands changed or unread materials from those
+  references; empty owner work still returns to src-hunter. It need not repeat
+  the same state query merely to recover references discarded by projection.
+  The projection is derived only and creates no owner state.
 
 ### 5. Good/Base/Bad Cases
 
@@ -910,7 +912,8 @@ Python 入口保持 `parse_autopilot_args(argv, *, round_defaults=False)` 和
   `coverage_high_value_gaps` 进入既有三轮 guard；fingerprint 绑定 semantic Coverage、Ledger、Queue、
   Observation 和有界 Surface candidate/review identity，忽略 Coverage rebuild timestamp。阈值处有
   target-owned adjacent Surface 候选则沿用 rotation；没有任何 authoritative 或 eligible continuation
-  时返回 non-exhaustive `blocked/stagnant_prerequisite`。
+  时返回 non-exhaustive `handoff/stagnant_prerequisite`，保留原失败原因和 `round_guard`，
+  从真实 owner 重建 frontier 后交回独立调查，不把局部停滞当成全目标 blocked。
 - Queue semantic fingerprint 忽略 Queue 容器的 `created_at/updated_at`，但保留 action 排序和证据
   字段；Observation 绑定 summary sidecar 的 `inventory_binding.sha256`。纯记账时间不能重置三轮
   guard，同数量但正文不同的新 Observation 必须重置。
@@ -927,6 +930,7 @@ Python 入口保持 `parse_autopilot_args(argv, *, round_defaults=False)` 和
 | `--max-lanes` 缺 `--deep`、为 0/负数/超 32/重复 | bootstrap `stop_invalid_arguments`，不启动 target work |
 | bounded invocation 达到 N | checkpoint + action queue sync + terminal handoff；不启动 lane N+1 |
 | round precheck 发现 active started lane | `handoff/round_lane_unfinished`，恢复同一 lane，不选新 lane |
+| 普通 state/compact/loop 读取已有 Round，lane 完成但预算未满 | 展示 round_progress，继续选择调查；不建议立即封轮 |
 | round precheck 发现 active 且全部 lane terminal | `handoff/round_closure_pending`，零目标重放并完成 closure |
 | terminal lane 再次 claim | `allowed=false`，保留 decision/evidence_ref/next_action |
 | terminal heartbeat 冲突，或 completed evidence 缺失/为空/越 target/越 repo | exit `2`，不覆盖已有 heartbeat |

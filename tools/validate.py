@@ -1553,9 +1553,18 @@ def run_machine_preflight(args: argparse.Namespace) -> dict[str, Any]:
     info, _, findings_dir, report_path, _ = _build_machine_validation_input(
         args, collect_errors=True,
     )
+    summary = build_validation_summary(
+        info, all_pass=all(info[f"{key}_pass"] for key in MACHINE_DECISION_GATE_KEYS),
+        report_path=None,
+    )
     return {
         "status": "preflight_ok",
         "read_only": True,
+        "decision_preview": {
+            "verdict": "confirmed" if validation_evidence_passed(summary) else "inconclusive",
+            "gates": {key: info[f"{key}_pass"] for key in MACHINE_DECISION_GATE_KEYS},
+            "questions": {key: value["status"] for key, value in summary["seven_question_gate"]["questions"].items()},
+        },
         "decision_path": info["machine_decision"]["source"],
         "target": info["target"],
         "finding_id": info["finding_id"],

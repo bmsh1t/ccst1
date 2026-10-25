@@ -30,27 +30,118 @@ Store 和 Coverage 命令本来输出 JSON，**不加 `--json`**。
 用已有浏览器 HAR/export 或 curl trace 捕获实际请求；适当的 raw sender 用于字节敏感实验。
 下例仅用于已核对 Scope/副作用的请求；原生 curl 不自动继承项目 Auth/父 Scope，
 不加自动跟随跳转。认证用受控私有配置/会话来源，不把令牌放 argv 或日志输出。
-登记失败只重试已保存的登记材料，不重放未知网络效果。原生观察同次补证沿用
-attempt、完整快照与原 `expected_operation`，按下方 Native observation registration；
-已有 Finding 的证据按对应 `record-evidence` 合同登记。
-`capture_dir` 是本次独立的目标私有目录，`request_url` 是已选定的完整请求 URL：
+父会话的可编排脚本将捕获和登记放在**同一次工具执行**中；多步脚本收集有序 `runs`，
+在 `finally` 提交本批。浏览器/MCP 工具返回后立即按对应合同导入并登记，下一调查前
+消费回执。子代理仍只交付原件/执行元数据，由父会话登记。
+登记失败只重试已保存的登记材料；同次补证沿用 attempt、完整快照与原 expected_operation，
+不重放未知网络效果。原生观察和已有 Finding 的补证分别按下方 registration 合同处理。
+以下是已审核只读、匿名、直连 HTTP 请求的可执行最小例子；认证、代理及浏览器实验使用
+对应捕获合同，不能照搬匿名身份或绕过所需代理。`target` 已初始化，`request_url` 已选定：
 
 ```bash
-umask 077
-mkdir -- "$capture_dir" || exit
-date -u +%Y-%m-%dT%H:%M:%S.%NZ > "$capture_dir/started_at.txt"
-request_exit=0
-curl --silent --show-error --max-time 30 --trace "$capture_dir/request-response.trace" --trace-time \
-  --dump-header "$capture_dir/response.headers" --output "$capture_dir/response.body" --url "$request_url" || request_exit=$?
-date -u +%Y-%m-%dT%H:%M:%S.%NZ > "$capture_dir/finished_at.txt"
-printf '%s\n' "$request_exit" > "$capture_dir/exit-code.txt"
+python3 - "$target" "$request_url" <<'PY_CAPTURE'
+import json, os, shlex, subprocess, sys, uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from tools.private_artifacts import private_artifact_dir, write_private_json
+from tools.scope_source import load_scope_context
+from tools.scope_context import url_belongs_to_target
+from tools.target_paths import canonical_target_value, target_storage_key
+from tools.target_store import runtime_store
+
+root = Path.cwd()
+target = canonical_target_value(sys.argv[1])
+url = sys.argv[2]
+runtime_store(root, target)
+if not url_belongs_to_target(url, target) or not load_scope_context(root, target).allows_active(url):
+    raise ValueError("request outside target Scope")
+os.umask(0o077)
+attempt = "native-" + uuid.uuid4().hex
+directory = private_artifact_dir(root, "validation", target_storage_key(target), attempt)
+trace, headers, body = (directory / name for name in ("wire.trace", "response.headers", "response.body"))
+started = datetime.now(timezone.utc).isoformat()
+request_exit = None
+registration_exit = 2
+registration_argv = [
+    sys.executable, "tools/validation_runner.py", "record-observation",
+    "--repo-root", str(root), "--target", target, "--attempt-id", attempt,
+    "--evidence-json", str(directory / "observations.json"), "--json",
+]
+execution = {"url": url, "method": "GET", "attempt_id": attempt, "started_at": started,
+             "finished_at": None, "exit_code": None, "registration_argv": registration_argv}
+write_private_json(directory / "execution.json", execution)
+try:
+    with (directory / "request.stderr").open("w") as err:
+        request_exit = subprocess.run([
+            "curl", "--disable", "--globoff", "--path-as-is", "--http1.1", "--noproxy", "*", "--silent", "--show-error",
+            "--max-time", "30", "--trace", str(trace), "--trace-time",
+            "--dump-header", str(headers), "--output", str(body), "--url", url,
+        ], stderr=err, check=False).returncode
+finally:
+    finished = datetime.now(timezone.utc).isoformat()
+    execution.update(finished_at=finished, exit_code=request_exit)
+    write_private_json(directory / "execution.json", execution)
+    wire = trace.read_bytes() if trace.is_file() else b""
+    sent, received = b"=> Send header" in wire, b"<= Recv header" in wire
+    outcome = "complete" if sent and received and request_exit == 0 else "partial" if sent else "unknown"
+    artifacts = {"request": str(trace.relative_to(root))} if sent else {}
+    if received:
+        artifacts["response"] = str(trace.relative_to(root))
+    for kind, path in (("response_headers", headers), ("response_body", body)):
+        if path.is_file() and path.stat().st_size:
+            artifacts[kind] = str(path.relative_to(root))
+    write_private_json(directory / "observations.json", {
+        "schema_version": 1, "kind": "native-observation", "source": "curl-trace",
+        "started_at": started, "outcome": outcome,
+        "runs": [{"url": url, "method": "GET", "observed_at": finished,
+                  "description": "Captured response to the selected read-only request",
+                  "actor": "anonymous", "state_changing": False, "artifacts": artifacts,
+                  "error": "" if outcome == "complete" else f"curl exit {request_exit}; response incomplete"}] if sent else [],
+    })
+    result = subprocess.run(registration_argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    (directory / "registration.stdout").write_bytes(result.stdout)
+    (directory / "registration.stderr").write_bytes(result.stderr)
+    write_private_json(directory / "registration-exit.json", {"exit_code": result.returncode})
+    if result.stdout.strip():
+        try:
+            receipt = json.loads(result.stdout)
+        except (ValueError, UnicodeError):
+            receipt = None
+        if isinstance(receipt, dict):
+            sync = receipt.get("sync") or {}
+            refs = receipt.get("observation_refs") or []
+            print(json.dumps({"registration_exit": result.returncode,
+                              "sync_status": sync.get("status"),
+                              "store_operation_id": receipt.get("store_operation_id"),
+                              "observation_refs_preview": refs[:3], "observation_refs_total": len(refs),
+                              "error": str(receipt.get("error") or (sync.get("store") or {}).get("error") or "")[:500],
+                              "receipt_path": str(directory / "registration.stdout")}, ensure_ascii=False))
+        else:
+            print(json.dumps({"registration_exit": result.returncode,
+                              "receipt_path": str(directory / "registration.stdout"),
+                              "error": "registration output is not a JSON receipt; inspect saved output"}))
+    else:
+        print(json.dumps({"registration_exit": result.returncode,
+                          "registration_retry_command": shlex.join(registration_argv),
+                          "execution_metadata": str(directory / "execution.json")}))
+    sys.stderr.buffer.write(result.stderr[:1000])
+    registration_exit = result.returncode
+raise SystemExit(registration_exit or (0 if request_exit == 0 else 1))
+PY_CAPTURE
 ```
 
-检查保存的真实退出码和回包；传输失败/缺响应按 partial，HTTP 401 等仍是实际响应。
-`artifacts.request` 可引用带真实发送字节的 trace；同时登记 `response` 与 `response_headers`，
-必要时附 trace。时间取此次捕获，不能猜测、手填近似值或用登记时间替代。
-HAR/trace/受控原件保持真实身份；脱敏请求仅为明确标注的复现示例，不能当线缆原件。
-不要手写 Content-Length、占位 token 或替换 User-Agent 后宣称是原始请求。
+父会话检查 `sync.status`、`store_operation_id`、`observation_refs`；退出 1 也可能已经
+成功登记 partial/unknown，不能因此重发请求。失败优先使用登记器返回的
+`registration_retry_command`；登记器没有输出时，例子返回保存 envelope 的登记专用命令。
+`execution.json` 在发送前保存 attempt、开始时间和登记 argv；中断后先核对原件/envelope，
+缺失部分保持未知，不直接重放请求。`finally` 不保证 SIGTERM、SIGKILL、二次中断或掉电时完成；
+执行元数据与 trace 用于恢复，结束时间不能猜填。HTTP 401/403/500 仍是实际中性响应，不自动判漏洞。
+空 body 保留原文件但不提交空引用；双向 trace 是实际请求/响应字节，不能重写它冒充原件。
+例子保留完整 registration.stdout/stderr，输出状态、操作 ID、最多三个引用预览和引用总数。
+所需的其余引用及 registration_retry_command 从 receipt_path 读取；预览不是全部回执。
+缺字段时读取保存的回执，不能把不完整 stdout 当已核对成功。handoff 重用其 observation_refs，
+不手拼 operation ID 或用目录最后一个文件代替引用。
+
 
 ## Native Observation Registration
 
@@ -100,6 +191,8 @@ python3 tools/validation_runner.py record-observation --repo-root ROOT --target 
 - `source/started_at` 来自原执行记录，不能用登记时间代替。每步不得早于执行开始，
   开始与观察时间均不得晚于当前登记时刻；时钟有误先核对采集记录，不填未来时间。
   `--actor` 是本次**登记命令执行者**，不是 HTTP actor；未知 HTTP actor 保留 unknown。
+  run.actor 使用角色 `anonymous/owner/peer/low_role/cross_tenant/admin/unknown`；账号名不是角色。
+  对象所有者与测试账号关系依据本次证据说明，不能为了通过枚举校验猜角色。
   未绑定 Action 且无专属 family 时用 `runner-observation`，不推断漏洞类别或 Coverage。
 - `outcome=complete` 要求完整原件；缺响应、读取错误或截断用 `partial`。零 runs 仅允许
   真实效果 `unknown`，不伪造 endpoint 或 `:0`。未知副作用保持 null；只有真实已审核的
@@ -162,6 +255,7 @@ create-only；登记收据单独保存在相邻 `registrations/`。同名不同�
 `--expected-operation ORIGINAL_OPERATION`；不要只传新增 step，也不要把补证重试的前驱
 改成刚返回的新 operation。旧 operation/summary/原件保留。浏览器补证另建 capture 身份，
 原 capture 不原地覆盖，仍是同一次 execution attempt。
+补证前核验前驱登记原件；缺失、改写或撤销的原件需先恢复/处理，不能重新计算 hash 后沿用。
 
 首次可选 `--action-id ID --claim-token TOKEN`，由 Store 检查当时 claimant/登记 actor；
 无前驱的精确 start 重试走历史收据，claim 已释放或改派不能强制重新认领。带原前驱的补证
@@ -223,6 +317,12 @@ python3 tools/validation_runner.py record-evidence --target TARGET \
   --finding-id FINDING_ID --evidence-json /tmp/native-observations.json \
   --attempt-id native-attempt-1 --json
 ```
+
+若同一实际执行已通过 `record-observation` 登记，追加候选关联时加
+`--expected-operation ORIGINAL_OPERATION_ID`，保留原 `attempt_id`、`source`、
+`generated_at`（原 attempt 开始时间）及完整执行快照；不重新发请求。
+原 Action/claim 关联自动沿用，显式传入必须匹配；登记人可以变化。
+前驱原件损坏会在发布摘要前拒绝，错误或过期前驱由 Store 拒绝；相同材料重试幂等。
 
 多步实验的完整字段示例（baseline/对照步骤与锚点步骤同材料；`subject_step` 是
 **顶层零基 run 索引**，指向与 Finding 的 endpoint/method 精确对应的执行步骤；
@@ -442,9 +542,10 @@ experiments, select a suitable executor; unrestricted shell/browser tools do not
 inherit this API's Scope boundary from later registration.
 
 Historical probe calls may already have registered an execution. Use their existing operation
-and observation refs directly with Store consumers. `record-evidence` cannot
-convert an already registered probe attempt into a Finding witness. Do not issue
-another request or invent a new attempt merely to register those same bytes again.
+and observation refs directly with Store consumers. When a Finding needs a native witness,
+`record-evidence --expected-operation ORIGINAL_OPERATION` links the complete saved snapshot
+under the original attempt/source/start and Action binding. Do not issue another request or
+invent a new attempt merely to register those same bytes again.
 
 Action Queue's `kind` remains separate from its descriptive `type`:
 

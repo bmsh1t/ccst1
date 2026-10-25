@@ -121,6 +121,12 @@ def compact_url(value: str, *, limit: int = URL_DISPLAY_LIMIT) -> str:
     return f"{preview} {marker}"
 
 
+def validation_finding_key(finding_id: str) -> str:
+    """Keep the historical runner directory key shared by readers and writers."""
+    cleaned = re.sub(r"[^A-Za-z0-9._:-]+", "_", str(finding_id or "").strip()).strip("._-")
+    return cleaned[:120] or "finding"
+
+
 def resolve_target_url(value: str, base_url: str = "") -> str:
     """Resolve a discovered URL or path against an origin without mangling it."""
     raw = str(value or "").strip()

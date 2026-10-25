@@ -319,7 +319,7 @@ def _load_findings(repo_root: Path, target_key: str, *, target: str | None = Non
         "id": item["id"], "type": item["family"], "category": item["family"],
         "url": item["endpoint"],
         "validation_status": "validated" if (item.get("assessment") or {}).get("verdict") == "confirmed" else "",
-        "report_status": "generated" if item["report_recorded"] else "not_generated",
+        "report_status": "generated" if item["report_current"] else "not_generated",
         "disposition": item["disposition"],
     } for item in snapshot["items"]]}
 
@@ -724,7 +724,7 @@ def _write_back_commands(repo_root: Path, target: str) -> list[str]:
         f'{memory} lead "STATEMENT" --target {target_arg} --conditions "CONDITIONS" --reopen-when "REOPEN_WHEN" --next-intent "NEXT_INTENT"',
         f'{memory} next "NEXT_INTENT" --target {target_arg}',
         f'{memory} dead-end "STATEMENT" --target {target_arg} --conditions "CONDITIONS" --reopen-when "REOPEN_WHEN" --operation-ref OPERATION_ID:0',
-        f'{memory} handoff "STATEMENT" --target {target_arg}',
+        f'{memory} handoff "STATEMENT" --target {target_arg} --next-intent "NEXT_INTENT"',
         shlex.join([
             "python3", "tools/validation_runner.py", "record-evidence", "--repo-root", str(repo_root.resolve()),
             "--target", target, "--finding-id", "FINDING_ID", "--evidence-json", "EVIDENCE_JSON",

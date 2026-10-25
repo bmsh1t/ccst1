@@ -43,7 +43,7 @@ try:
     from tools.evidence_identity import canonical_endpoint_identity, normalize_family, exact_endpoint_identity
     from tools.identity_contract import ClosureCellKey
     from tools.private_artifacts import private_artifact_dir, write_private_text
-    from tools.target_paths import canonical_target_value, target_storage_key, target_owned_nonempty_evidence_ref
+    from tools.target_paths import canonical_target_value, target_storage_key, target_owned_nonempty_evidence_ref, validation_finding_key
     from tools.scope_context import url_belongs_to_target
     from tools.scope_source import load_scope_context
     from tools.autopilot_continuation import load_execution_scope, resolve_context_file
@@ -59,7 +59,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from evidence_identity import canonical_endpoint_identity, normalize_family, exact_endpoint_identity  # type: ignore
     from identity_contract import ClosureCellKey  # type: ignore
     from private_artifacts import private_artifact_dir, write_private_text  # type: ignore
-    from target_paths import canonical_target_value, target_storage_key, target_owned_nonempty_evidence_ref  # type: ignore
+    from target_paths import canonical_target_value, target_storage_key, target_owned_nonempty_evidence_ref, validation_finding_key  # type: ignore
     from scope_context import url_belongs_to_target  # type: ignore
     from scope_source import load_scope_context  # type: ignore
     from autopilot_continuation import load_execution_scope, resolve_context_file
@@ -111,11 +111,6 @@ def _dedupe_keep_order(items: list[str]) -> list[str]:
 
 def now_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _safe_id(value: str, default: str) -> str:
-    cleaned = re.sub(r"[^A-Za-z0-9._:-]+", "_", str(value or "").strip()).strip("._-")
-    return cleaned[:120] or default
 
 
 def _read_json_object(path: Path) -> dict[str, Any]:
@@ -457,7 +452,7 @@ def _sync_primary_store(summary: dict[str, Any], *, repo_root: Path, store: Targ
         state_changing=summary.get("state_changing"),
         redline_checked=bool(summary.get("redline_checked")),
         observed_at=str(summary.get("generated_at") or now_utc()),
-        expected_operation=summary.get("expected_operation") if observation_lane else None,
+        expected_operation=summary.get("expected_operation"),
         observation_outcome=summary.get("outcome") if observation_lane else None,
     )
     if observation_lane:
@@ -688,7 +683,8 @@ def _validate_request_facts(
     # recorded evidence and must not create a second gate in the runner.
     if state_changing is True and not redline_checked:
         raise RequestPreflightError(
-            "state-changing validation requires --redline-checked before any request"
+            "state-changing evidence registration requires redline_checked=true "
+            "in the affected runs[] entry (or the record-evidence CLI default)"
         )
     return state_changing
 
@@ -703,6 +699,7 @@ def record_native_evidence(
     redline_checked: bool = False,
     identity_v2: dict[str, Any] | None = None,
     attempt_id: str | None = None,
+    expected_operation: str | None = None,
     action_id: str | None = None,
     claim_token: str | None = None,
     command_actor: str = "validation-runner",
@@ -763,6 +760,17 @@ def record_native_evidence(
             required_text(evidence.get("observed_difference"), "observed_difference")
         )
         captured_at = datetime.fromisoformat(_native_timestamp(evidence.get("generated_at"), "generated_at"))
+        if expected_operation is not None:
+            predecessor = store.execution(expected_operation)
+            attempt = predecessor["attempt"]
+            if (attempt["id"], attempt["source"], attempt["started_at"]) != (
+                attempt_id, source, captured_at.astimezone(timezone.utc).isoformat(),
+            ):
+                raise ValueError("predecessor attempt/source/started_at mismatch")
+            if (action_id is not None or claim_token is not None) and (action_id, claim_token) != (attempt["action_id"], attempt["claim_token"]):
+                raise ValueError("supplement cannot replace the original Action/claim association")
+            action_id, claim_token = attempt["action_id"], attempt["claim_token"]
+            store.verify_operation(expected_operation)
         if (state_changing is not None and type(state_changing) is not bool or type(redline_checked) is not bool):
             raise ValueError("native evidence execution facts must be boolean (state_changing may be null)")
         effective_state = _validate_request_facts(state_changing, redline_checked)
@@ -870,11 +878,12 @@ def record_native_evidence(
             store, action_id=action_id, claim_token=claim_token, command_actor=command_actor,
             endpoint=url, family=vuln_class,
         )
-        store.start_attempt(
-            attempt_id=attempt_id, source=source,
-            started_at=captured_at.astimezone(timezone.utc).isoformat(), actor=command_actor,
-            action_id=action_id, claim_token=claim_token,
-        )
+        if expected_operation is None:
+            store.start_attempt(
+                attempt_id=attempt_id, source=source,
+                started_at=captured_at.astimezone(timezone.utc).isoformat(), actor=command_actor,
+                action_id=action_id, claim_token=claim_token,
+            )
         summary = {
             "schema_version": SCHEMA_VERSION,
             "lane": "native_evidence",
@@ -899,6 +908,7 @@ def record_native_evidence(
             "subject_step": subject_step,
             **({"cleanup_only": True} if cleanup is not None else {}),
             "attempt_id": attempt_id or "",
+            **({"expected_operation": expected_operation} if expected_operation is not None else {}),
             **command_context,
         }
         # Bind the internal exact-URL representation to the immutable identity;
@@ -928,7 +938,7 @@ def record_native_evidence(
         operation_id = _runner_operation_id(material)
         summary_path = (
             repo_root / "evidence" / target_storage_key(target)
-            / "validation" / _safe_id(finding_id, "finding")
+            / "validation" / validation_finding_key(finding_id)
             / f"native-{operation_id.split(':')[-1]}" / "summary.json"
         )
         if result == "partial":
@@ -1042,6 +1052,7 @@ def record_native_observation(
             if action_id is not None and (action_id, claim_token) != (attempt["action_id"], attempt["claim_token"]):
                 raise ValueError("supplement cannot replace the original Action/claim association")
             action_id, claim_token = attempt["action_id"], attempt["claim_token"]
+            store.verify_operation(expected_operation)
         scope = load_scope_context(repo_root, target)
         pending_bytes: dict[Path, bytes] = {}
         runs = []
@@ -1169,6 +1180,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(record, finding_required=True)
     record.add_argument("--evidence-json", required=True, help="Schema-v1 observations with runs[].artifacts, source, generated_at, result and observed_difference")
     record.add_argument("--attempt-id", default="", help="primary Store execution attempt identity")
+    record.add_argument("--expected-operation", help="Original predecessor when linking an already registered attempt to a Finding")
     add_request_facts(record)
     record.add_argument("--json", action="store_true")
 
@@ -1262,6 +1274,7 @@ def main(argv: list[str] | None = None) -> int:
                         evidence=evidence, state_changing=args.state_changing,
                         redline_checked=args.redline_checked, identity_v2=identity_v2,
                         attempt_id=args.attempt_id or None,
+                        expected_operation=args.expected_operation,
                         action_id=args.action_id, claim_token=args.claim_token, command_actor=args.actor,
                     )
                 except (OSError, ValueError) as exc:
