@@ -19,7 +19,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from tools.knowledge_registry import KnowledgeRegistryError, load_registry, parse_knowledge_document
-from tools.knowledge_review import read_published_review
+from tools.knowledge_review import knowledge_path, read_published_review
 from tools.knowledge_relations import method_descriptor, parse_method_relations
 from tools.scope_context import read_scope_source
 from tools.target_paths import canonical_target_value
@@ -94,8 +94,25 @@ def acquire_knowledge(repo_root: Path, *, parsed_capture=None,
 
 
 def _acquire_knowledge(repo_root: Path, *, parsed_capture=None):
+    repo_root = repo_root.absolute()
     documents, errors, excluded, observed = [], [], [], {}
     parse_entries, parsed_sources, reused_sources = {}, 0, 0
+
+    def read_review_bytes(path: Path) -> bytes:
+        ref = str(path.relative_to(repo_root))
+        try:
+            raw = path.read_bytes()
+        except FileNotFoundError:
+            if ref in observed and observed[ref] is not None:
+                raise StoreError("knowledge source disappeared during acquisition; retry")
+            observed[ref] = None
+            raise
+        fingerprint = hashlib.sha256(raw).hexdigest()
+        if ref in observed and observed[ref] != fingerprint:
+            raise StoreError("knowledge review changed during acquisition; retry")
+        observed[ref] = fingerprint
+        return raw
+
     methods = {}
     try:
         registry_path = repo_root / "knowledge" / "capabilities.yaml"
@@ -129,7 +146,7 @@ def _acquire_knowledge(repo_root: Path, *, parsed_capture=None):
                 raise ValueError("knowledge path contains symlink")
             if not path.resolve().is_relative_to((repo_root / "knowledge").resolve()):
                 raise ValueError("knowledge escapes root")
-            raw = path.read_bytes()
+            raw = read_review_bytes(path)
             source_hash = hashlib.sha256(raw).hexdigest()
             observed[ref] = source_hash
             text = raw.decode("utf-8")
@@ -175,7 +192,7 @@ def _acquire_knowledge(repo_root: Path, *, parsed_capture=None):
                                  "source_hash": source_hash, "text": text,
                                  "body": body, "metadata": metadata,
                                  "parse_digest": _parse_entry_digest(body, metadata)}
-            review = read_published_review(repo_root, entry, raw)
+            review = read_published_review(repo_root, entry, raw, read_bytes=read_review_bytes)
             methods[entry["id"]] = method_descriptor(entry, metadata, body, source_hash, review)
             if review["status"] != "ready":
                 errors.append({"ref": ref, "status": "review-unverified", "review": review,
@@ -201,10 +218,16 @@ def _acquire_knowledge(repo_root: Path, *, parsed_capture=None):
             error = {"source_ref": document["source_ref"], "ref": record["file"], "reason": str(exc)}
             document["method_relation_errors"].append(error)
             errors.append(error)
-    if registry_path.read_bytes() != registry_before or any(
-            hashlib.sha256((repo_root / ref).read_bytes()).hexdigest() != value
-            for ref, value in observed.items()):
-        raise StoreError("knowledge source bytes changed; retry acquisition")
+    if knowledge_path(repo_root, "knowledge/capabilities.yaml").read_bytes() != registry_before:
+        raise StoreError("knowledge registry changed; retry acquisition")
+    for ref, value in observed.items():
+        path = knowledge_path(repo_root, ref)
+        try:
+            current = hashlib.sha256(path.read_bytes()).hexdigest()
+        except FileNotFoundError:
+            current = None
+        if current != value:
+            raise StoreError("knowledge source bytes changed; retry acquisition")
     health = {"status": "partial" if errors else "ready", "errors": errors, "excluded": excluded,
               "registry_hash": registry_hash, "count": len(documents)}
     parse_capture = {"schema_version": 1, "registry_hash": registry_hash,
@@ -450,13 +473,8 @@ def acquire_snapshot(repo_root: Path, target: str, *, include_knowledge: bool = 
     if include_knowledge:
         knowledge, knowledge_health, parse_capture, parse_stats = acquire_knowledge(
             repo_root, parsed_capture=knowledge_parse_capture, return_parse_capture=True)
-        second_knowledge, second_health, second_capture, second_stats = acquire_knowledge(
-            repo_root, parsed_capture=parse_capture, return_parse_capture=True)
-        if ((knowledge, knowledge_health) != (second_knowledge, second_health)
-                or parse_capture != second_capture):
-            raise StoreError("knowledge sources changed; retry acquisition")
         stats["knowledge_parse"] = {"mode": "incremental" if knowledge_parse_capture else "full",
-                                     "parse": parse_stats, "verification_parse": second_stats}
+                                    "parse": parse_stats, "verification": "all-source-byte-fence"}
     else:
         knowledge, knowledge_health, parse_capture = [], {"status": "not_requested"}, None
         stats["knowledge_parse"] = {"mode": "not_requested"}
@@ -501,16 +519,10 @@ def acquire_knowledge_snapshot(repo_root: Path, *, parsed_capture=None) -> dict:
     """Acquire an independent shared snapshot; never open a target Store."""
     documents, health, parse_capture, parse_stats = acquire_knowledge(
         Path(repo_root), parsed_capture=parsed_capture, return_parse_capture=True)
-    second, second_health, second_capture, second_stats = acquire_knowledge(
-        Path(repo_root), parsed_capture=parse_capture, return_parse_capture=True)
-    if (documents, health) != (second, second_health):
-        raise StoreError("knowledge sources changed; retry acquisition")
-    if parse_capture != second_capture:
-        raise StoreError("knowledge parse capture changed; retry acquisition")
     return knowledge_snapshot(documents, health, parse_capture=parse_capture,
                               acquisition={"mode": "incremental" if parsed_capture else "full",
                                            "parse": parse_stats,
-                                           "verification_parse": second_stats})
+                                           "verification": "all-source-byte-fence"})
 
 
 def text_partitions(snapshot: dict) -> dict:

@@ -108,11 +108,18 @@ no schema, automatic memory writes or execution authority.
   never secret values. Evidence links identify the actual supporting observation steps;
   one `:0` cannot stand for a batch. These are authoring duties in commands/target,
   not a claim that Store validates prose or automatically redacts credentials.
+- Each knowledge snapshot acquires/parses once. The final byte fence includes registry,
+  cards, publication receipts, reviews and blind-answer artifacts, including missing
+  paths observed during reads. A changed/missing/appearing dependency rejects the
+  mixed snapshot. Later calls recheck all bytes; parse reuse does not cache trust.
+  Acquisition stats use `verification=all-source-byte-fence`, not fictional second parses.
 
 ## 4. Validation & Error Matrix
 
 | Input | Required behavior |
 | --- | --- |
+| Review chain changes during another card read | Reject mixed knowledge snapshot |
+| Missing next intent | Empty next actions, explicit save receipt |
 | Older handoff beyond recent five | Bootstrap retains handoff and owner warning |
 | Recovery entry to counterevidence | Exact retained ID/version opens its own context page |
 | First host request lacks expected root/import rules | Fail entry verification; exclude sample from rule-effect comparison |

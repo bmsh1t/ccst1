@@ -623,7 +623,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  python3 tools/target_memory.py show TARGET\n"
             "  python3 tools/target_memory.py set TARGET --goal 'Review ownership boundary'\n"
             "  python3 tools/target_memory.py note --target TARGET 'Unverified routing note'\n"
-            "  python3 tools/target_memory.py handoff --target TARGET 'Resume from saved evidence'\n"
+            "  python3 tools/target_memory.py handoff --target TARGET 'Resume from saved evidence' --next-intent 'Review the saved role differential'\n"
             "Use dead-end --help or pattern --help for evidence-backed experience.\n"
             "For a fresh target only: python3 tools/target_store.py init --store --target TARGET\n"
             "Use --repo-root ROOT on isolated checkouts; reads and memory writes never initialize a Store."
@@ -700,7 +700,7 @@ def build_parser() -> argparse.ArgumentParser:
     handoff_parser.add_argument("summary", nargs="+")
     handoff_parser.add_argument("--target", default=None)
     handoff_parser.add_argument("--conditions", default=None)
-    handoff_parser.add_argument("--next-intent", default=None)
+    handoff_parser.add_argument("--next-intent", default=None, help="Explicit next intent; omission means none and never inherits an older intent")
     handoff_parser.add_argument("--operation-ref", action="append", default=[], help=OPERATION_REF_HELP)
     handoff_parser.add_argument("--command-id", default=None)
     handoff_parser.add_argument("--actor", default="operator")
