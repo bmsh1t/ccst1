@@ -893,9 +893,11 @@ def build_autopilot_bootstrap(
         # Slash invocation explicitly starts a target; state queries never initialize it.
         if arguments["target_kind"] != "list":
             initialize_target_store(resolved_repo, str(arguments["target"]))
+        # Compact output already uses Resume's bound five-entry memory and handoff.
         state = build_autopilot_bootstrap_state(
             str(resolved_repo),
             str(arguments["target"]),
+            include_goal_memory=False,
         )
         if arguments.get("auth_file") and state.get("target_kind") == "list":
             for candidate in (state.get("batch") or {}).get("candidates") or []:

@@ -1195,6 +1195,7 @@ def _load_autopilot_control_facts(
     case_state_summary: dict | None = None,
     coverage_state: dict | None = None,
     full_domain_context: bool = False,
+    include_goal_memory: bool = True,
 ) -> dict:
     """一次性读取 next-action 所需控制事实。
 
@@ -1276,7 +1277,7 @@ def _load_autopilot_control_facts(
         recon_control,
         recon_in_progress=recon_in_progress,
     )
-    target_goal_memory = load_target_goal_memory(repo_root, resolved_target)
+    target_goal_memory = load_target_goal_memory(repo_root, resolved_target) if include_goal_memory else {}
     case_state = _load_case_state_projection(
         repo_root,
         resolved_target,
@@ -1587,8 +1588,9 @@ def build_autopilot_bootstrap_state(
     *,
     queue_snapshot: dict | None = None,
     case_state_summary: dict | None = None,
+    include_goal_memory: bool = True,
 ) -> dict:
-    """构建 slash expansion 专用的严格只读、bounded state。"""
+    """构建只读 bounded state，默认保留20条记忆诊断视图。"""
     repo_root = str(Path(repo_root).resolve())
     resolved_memory_dir = memory_dir or str(default_memory_dir(repo_root))
     resolved_target = canonical_target_value(target)
@@ -1601,6 +1603,7 @@ def build_autopilot_bootstrap_state(
         resolved_target,
         resolved_memory_dir,
         fast_recon=True,
+        include_goal_memory=include_goal_memory,
     )
     observation_inventory = peek_inventory_summary(repo_root, resolved_target)
     projection = load_surface_projection(

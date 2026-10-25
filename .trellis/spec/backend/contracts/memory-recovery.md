@@ -28,6 +28,10 @@ no schema, automatic memory writes or execution authority.
   handoff, next intent, conditions/provenance, owner binding and expansion
   commands. No second read or active-pointer fallback. Lists have no single-target
   memory; lock/wait, Scope and recovery gates are unchanged.
+- Slash Bootstrap skips the unconsumed twenty-entry `target_goal_memory` diagnostic
+  read; default builders and full/bounded diagnostics retain it. The five-entry
+  Resume acquisition and its final owner-binding check remain intact. Context Pack
+  formats owner-provided memory paths and still reacquires memory before returning.
 - Model-facing timing has one owner: Shared Memory Continuity in runtime-protocol.
   Its problem recall covers missing historical basis, repeated experiments,
   changed origin/actor/object/conditions and lost compact context. Existing complete

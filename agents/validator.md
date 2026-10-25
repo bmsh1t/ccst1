@@ -45,7 +45,6 @@ and the selected FINDING_ID:
 
 ```bash
 python3 tools/target_memory.py show TARGET --json
-python3 tools/target_store.py findings --target TARGET
 python3 tools/target_store.py findings --target TARGET --id FINDING_ID
 ```
 

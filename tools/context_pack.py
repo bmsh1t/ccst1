@@ -38,7 +38,7 @@ try:
     from tools.target_paths import compact_url, canonical_target_value, target_storage_key
     from tools.target_memory import load_active_file, load_goal_memory, format_current_handoff, format_experience_provenance
     from tools.current_truth import current_cell_projection
-    from tools.target_store import TargetStore, runtime_store
+    from tools.target_store import runtime_store
     from tools.operational_metrics import derive_operational_metrics
 except ImportError:  # pragma: no cover - direct tools/ execution
     from memory.target_profile import default_memory_dir
@@ -59,7 +59,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from target_paths import compact_url, canonical_target_value, target_storage_key  # type: ignore
     from target_memory import load_active_file, load_goal_memory, format_current_handoff, format_experience_provenance  # type: ignore
     from current_truth import current_cell_projection  # type: ignore
-    from target_store import TargetStore, runtime_store  # type: ignore
+    from target_store import runtime_store  # type: ignore
     from operational_metrics import derive_operational_metrics  # type: ignore
 
 
@@ -277,18 +277,8 @@ def _resolve_cli_args(args: argparse.Namespace, repo_root: Path) -> tuple[str, s
 
 def _load_goal_memory(repo_root: Path, target: str) -> dict:
     projection = load_goal_memory(repo_root, target, experience_limit=5)
-    projection["active_path"] = _display(
-        repo_root / "memory" / "goals" / "active.json", repo_root
-    )
-    if projection.get("source", {}).get("kind") == "store":
-        projection["target_path"] = _display(
-            TargetStore(repo_root, target).path, repo_root
-        )
-    else:
-        projection["target_path"] = _display(
-            repo_root / "memory" / "goals" / "targets" / f"{target_storage_key(target)}.json",
-            repo_root,
-        )
+    projection["active_path"] = _display(Path(projection["active_path"]), repo_root)
+    projection["target_path"] = _display(Path(projection["target_path"]), repo_root)
     return projection
 
 

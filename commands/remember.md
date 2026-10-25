@@ -35,8 +35,7 @@ python3 tools/remember.py --target TARGET --vuln-class idor \
 
 `OPERATION_ID:STEP` refers to the actual zero-based observation step in an existing execution
 in this target Store. A raw file path is not an operation reference. Register
-already executed evidence through the existing evidence workflow
-(`python3 tools/validation_runner.py record-evidence --help`); do not repeat
+already executed evidence through `docs/evidence-runners.md#在执行时捕获原件`; do not repeat
 requests merely to save memory. Without registered evidence, use an advisory note.
 
 The journal remains an audit artifact. The command does not write `patterns.jsonl`
