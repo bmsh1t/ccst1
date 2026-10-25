@@ -28,8 +28,9 @@ no schema, automatic memory writes or execution authority.
   handoff, next intent, conditions/provenance, owner binding and expansion
   commands. No second read or active-pointer fallback. Lists have no single-target
   memory; lock/wait, Scope and recovery gates are unchanged.
-- Slash Bootstrap skips the unconsumed twenty-entry `target_goal_memory` diagnostic
-  read; default builders and full/bounded diagnostics retain it. The five-entry
+- Slash Bootstrap, loop-check projection and Checkpoint assembly skip the unconsumed
+  twenty-entry `target_goal_memory` diagnostic read; default builders, full/bounded
+  diagnostics and Closure retain it. The five-entry
   Resume acquisition and its final owner-binding check remain intact. Context Pack
   formats owner-provided memory paths and still reacquires memory before returning.
 - Model-facing timing has one owner: Shared Memory Continuity in runtime-protocol.
@@ -182,6 +183,9 @@ hash bytes separately from output size. Include shared artifact sources, error
 metadata, revocation, missing bytes and changes during/following acquisition.
 Compact checks compare the entire top-level key set minus permitted aliases,
 candidate count/order and complete records, not only keys that survived rendering.
+Loop/Checkpoint checks compare complete final output, count memory acquisitions,
+and inject source/Store changes through the optimized callers; Closure keeps its
+complete diagnostic memory and digest inputs.
 
 ## 7. Wrong → Correct
 

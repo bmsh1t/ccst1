@@ -278,6 +278,10 @@ reviews may need one explicit re-review after the binding semantics change.
   atomically replaces a small witness containing
   `schema_version`, `kind=autopilot_checkpoint_witness`, `generated_at`,
   `target`, `target_key`, and `context_pack` recommendation fields.
+- Checkpoint assembly skips the unused twenty-entry state memory projection.
+  Its Context Pack memory and final source-byte/Store rechecks remain intact;
+  the second internal return remains the full Resume summary. Round closure and
+  global review retain complete state memory as part of the Closure digest.
 - Witness context includes the card catalog, card recall compatibility fields,
   `reference_hints`, and `required_checks`; it does not duplicate full surface,
   finding, evidence, or queue bodies. Context Pack no longer emits

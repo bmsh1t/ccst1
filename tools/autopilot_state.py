@@ -1651,6 +1651,7 @@ def build_autopilot_state(
     queue_snapshot: dict | None = None,
     case_state_summary: dict | None = None,
     coverage_state: dict | None = None,
+    include_goal_memory: bool = True,
 ) -> dict:
     """Build an autopilot state; bounded mode never rebuilds the full surface."""
     if bounded:
@@ -1661,10 +1662,12 @@ def build_autopilot_state(
             queue_snapshot=queue_snapshot,
             case_state_summary=case_state_summary,
             coverage_state=coverage_state,
+            include_goal_memory=include_goal_memory,
         )
     return _build_autopilot_state(
         repo_root, target, memory_dir=memory_dir, queue_snapshot=queue_snapshot,
         case_state_summary=case_state_summary, coverage_state=coverage_state,
+        include_goal_memory=include_goal_memory,
     )[0]
 
 
@@ -1673,6 +1676,7 @@ def _build_autopilot_state(
     queue_snapshot: dict | None = None, case_state_summary: dict | None = None,
     coverage_state: dict | None = None,
     full_domain_context: bool = False,
+    include_goal_memory: bool = True,
 ) -> tuple[dict, dict]:
     """Assemble current owner inputs acquired within one Checkpoint call."""
     repo_root = str(Path(repo_root).resolve())
@@ -1691,6 +1695,7 @@ def _build_autopilot_state(
         case_state_summary=case_state_summary,
         coverage_state=coverage_state,
         full_domain_context=full_domain_context,
+        include_goal_memory=include_goal_memory,
     )
     projection = load_surface_projection(
         repo_root,
@@ -3837,6 +3842,7 @@ def main() -> int:
             state_kwargs = {
                 "memory_dir": args.memory_dir or None,
                 "bounded": args.bounded,
+                "include_goal_memory": not (args.projection_only and args.loop_check),
             }
             if queue_snapshot is not None:
                 state_kwargs["queue_snapshot"] = queue_snapshot

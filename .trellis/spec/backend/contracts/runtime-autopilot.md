@@ -144,6 +144,9 @@ mechanical safety, evidence and recovery constraints govern execution.
   stale/missing projections remain diagnostic. Expand changed or unread material
   before selecting work; empty owner continuations return to src-hunter.
   Settling inherited Round work returns ordinary `/autopilot` to this same loop.
+  Only this projection skips the unused twenty-entry diagnostic memory read;
+  ordinary full/bounded state and Closure keep it. Recovery memory remains bound
+  and independently checked; omitting an unused view does not omit owner validation.
 - State, compact Bootstrap and loop control expose the existing Checkpoint's
   `round_progress` and `checkpoint_health` without creating a Round or replacing
   the business `next_action`. Unfinished lanes recover first; completed lanes

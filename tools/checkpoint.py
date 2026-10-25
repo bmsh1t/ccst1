@@ -1156,6 +1156,7 @@ def _build_checkpoint(
         case_state_summary=case_state,
         coverage_state=matrix,
         full_domain_context=full_domain_context,
+        include_goal_memory=False,
     )
     coverage_rebuilt = False
     gaps = list(matrix.get("_coverage_gaps") or _matrix_gaps(matrix))
