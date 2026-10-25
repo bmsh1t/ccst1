@@ -112,26 +112,6 @@ def load_target_memory_file(path: Path, *, expected_target: str | None = None) -
     )
 
 
-def new_target_memory(target: str) -> dict:
-    canonical_target = canonical_target_value(target)
-    ts = now_utc()
-    return {
-        "schema_version": SCHEMA_VERSION,
-        "target": canonical_target,
-        "created_at": ts,
-        "updated_at": ts,
-        "mode": "hunt",
-        "phase": "unknown",
-        "scope_notes": [],
-        "active_leads": [],
-        "dead_ends": [],
-        "next_actions": [],
-        "useful_patterns": [],
-        "session_handoffs": [],
-        "facts": {},
-    }
-
-
 def _experience_entry(row: dict) -> dict:
     structured = {
         key: row[key]
@@ -512,12 +492,6 @@ def write_handoff(args: argparse.Namespace) -> str | dict:
     return f"Handoff saved for {target} [{receipt['entity_id']}] next_intent={(getattr(args, 'next_intent', None) or '').strip() or '(none)'}"
 
 
-def format_entries(entries: list[dict]) -> list[str]:
-    if not entries:
-        return ["- None"]
-    return [f"- {item.get('text', '').strip()}" for item in entries if item.get("text")]
-
-
 def format_summary(title: str, active: dict, target_memory: dict,
                    *, memory_path: Path | None = None, repo_root: Path | None = None) -> str:
     path = memory_path or target_memory_path(target_memory.get("target", ""), repo_root)
@@ -578,12 +552,10 @@ def show(args: argparse.Namespace) -> str | dict:
     projection = load_goal_memory(repo_root or BASE_DIR, target)
     if getattr(args, "json", False):
         return projection
-    target_memory = projection["target"] or new_target_memory(target)
+    target_memory = projection["target"]
     summary = format_summary("TARGET MEMORY", projection["active"], target_memory,
-                             memory_path=Path(projection["target_path"]) if projection.get("source") else None,
+                             memory_path=Path(projection["target_path"]),
                              repo_root=repo_root)
-    if projection.get("source", {}).get("kind") != "store":
-        return summary
     lines = [summary]
     lines.extend(format_current_handoff(target_memory))
     entries = projection.get("recent_entries", [])

@@ -69,6 +69,14 @@ no schema, automatic memory writes or execution authority.
 - `memory_context` reuses the newest handoff in the ordered recent page, with an
   independent returned object. Only a missing handoff requires the separate query
   so older handoffs outside the window remain accessible.
+- Experience paging reuses `total` as the initial remaining count only without a
+  cursor. Later pages still count the filtered tail on the same read transaction;
+  ordering, exact remainder and revision-bound cursor validation stay unchanged.
+- Counterevidence acquisition reads each artifact status once per artifact ID,
+  retaining every root reference and source-specific status/error metadata. This
+  reuse lasts for one `_acquire` call only. Page rechecks, subsequent pages and
+  composite-query `verify_context` reacquire status and bytes; Store revision alone
+  never establishes external artifact health.
 - Relation time budget includes graph preparation but permits one traversal state
   transition per page to ensure progress after setup exhausts the time budget.
   Edge/path/depth/byte limits remain enforced. If no path fits `max_bytes`, raise
@@ -106,6 +114,9 @@ no schema, automatic memory writes or execution authority.
 | First host request lacks expected root/import rules | Fail entry verification; exclude sample from rule-effect comparison |
 | Admitted host sends compact auxiliary request without rules | Forward unchanged through the same allowlisted gateway |
 | Failed host entry later sends a matching request | Remain rejected; do not admit a retry as the original sample |
+| Experience page without / with cursor | Reuse total / count the filtered tail; identical page output |
+| Multiple context roots share an artifact | One status read per acquisition; retain all references |
+| Artifact or Store changes during context assembly | Reject mixed result; never reuse across final recheck |
 | List / initialized empty target | No foreign memory / real empty bound memory |
 | Locked target with memory | Wait remains authoritative |
 | Mixed English FTS and Chinese substring | Both accessible, no duplicates over pages |
@@ -144,6 +155,10 @@ Cost checks compare full return values and count repeated work using synthetic
 chains/cycles/diamonds, mixed FTS/substring cases, generation drift, page-window
 handoffs and controlled relation clocks. A smaller bounded output does not prove
 bounded source reads or lower model cost.
+For reuse changes, compare complete outputs and cursors on the same synthetic Store
+and index generation. Count SQL, assembled rows, connections and actual artifact
+hash bytes separately from output size. Include shared artifact sources, error
+metadata, revocation, missing bytes and changes during/following acquisition.
 
 ## 7. Wrong → Correct
 

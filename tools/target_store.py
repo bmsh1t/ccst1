@@ -3902,11 +3902,12 @@ class TargetStore:
             params.extend(terms)
         where = " AND ".join(predicates)
         total = conn.execute(f"SELECT count(*) FROM experiences WHERE {where}", params).fetchone()[0]
+        remaining = total
         if after is not None:
             predicates.append("(created_at,id) < (?,?)")
             params.extend(after)
-        where = " AND ".join(predicates)
-        remaining = conn.execute(f"SELECT count(*) FROM experiences WHERE {where}", params).fetchone()[0]
+            where = " AND ".join(predicates)
+            remaining = conn.execute(f"SELECT count(*) FROM experiences WHERE {where}", params).fetchone()[0]
         rows = [dict(row) for row in conn.execute(
             f"SELECT * FROM experiences WHERE {where} ORDER BY created_at DESC,id DESC LIMIT ?",
             (*params, limit))]

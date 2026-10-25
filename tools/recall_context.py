@@ -43,6 +43,7 @@ def _acquire(store, roots):
     """Use only public owner reads; retain unavailable references instead of dropping them."""
     binding = store.binding()
     records, items, root_refs = {}, {}, []
+    artifacts = {}
 
     def read(key):
         if key not in records:
@@ -51,6 +52,14 @@ def _acquire(store, roots):
             except StoreError as exc:
                 records[key] = {"status": "unavailable", "reason": str(exc)}
         return records[key]
+
+    def read_artifact(artifact_id):
+        if artifact_id not in artifacts:
+            try:
+                artifacts[artifact_id] = {"record": store.artifact_status(artifact_id)}
+            except StoreError as exc:
+                artifacts[artifact_id] = {"status": "unavailable", "reason": str(exc)}
+        return artifacts[artifact_id]
 
     def add(identity, record, relationship, parent, expansion):
         key = digest(identity)
@@ -89,10 +98,11 @@ def _acquire(store, roots):
                 material = {"status": source["health"], "record": source}
                 if source["owner"] == "artifact":
                     identity = {"owner": "artifact", "record_id": source["record_id"]}
-                    try:
-                        material["artifact"] = store.artifact_status(source["record_id"])
-                    except StoreError as exc:
-                        material.update(status="unavailable", reason=str(exc))
+                    captured_artifact = read_artifact(source["record_id"])
+                    if "record" in captured_artifact:
+                        material["artifact"] = captured_artifact["record"]
+                    else:
+                        material.update(captured_artifact)
                 source_expansion = expansion
                 if source["owner"] == "history":
                     source_expansion = shlex.join(["python3", str(Path(__file__).resolve().with_name("target_memory.py")),
@@ -119,11 +129,7 @@ def _acquire(store, roots):
         for health in record["source_health"]:
             if health.get("artifact_id"):
                 artifact_id = health["artifact_id"]
-                try:
-                    raw = store.artifact_status(artifact_id)
-                    captured_artifact = {"status": health["status"], "record": raw}
-                except StoreError as exc:
-                    captured_artifact = {"status": "unavailable", "reason": str(exc)}
+                captured_artifact = {"status": health["status"], **read_artifact(artifact_id)}
                 add({"owner": "artifact", "record_id": artifact_id}, captured_artifact,
                     {"relation": health["purpose"]}, parent, expansion)
     if store.binding() != binding:
