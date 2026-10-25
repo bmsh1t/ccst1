@@ -87,12 +87,16 @@ token、密码实值、个人身份信息或客户数据。未验证内容用明
 `experience_window` 给出查询、历史和反证入口；五条预览不是完整记忆。
 
 ```bash
-python3 tools/experience_recall.py query --target TARGET --query '当前问题与适用条件' --json
-python3 tools/experience_recall.py history --target TARGET --limit 20 --json
+python3 tools/experience_recall.py query --target TARGET --query '当前问题与适用条件' --compact
+python3 tools/experience_recall.py history --target TARGET --limit 20 --compact
 python3 tools/experience_recall.py context --target TARGET --id EXPERIENCE_ID --version VERSION --json
 ```
 
 `current` 与 `recalled` 分开消费；query 的 `counterevidence` 页独立于排名 top-k。
+Claude 读取 query/history 时可加 `--compact`（也可用于恢复窗口返回的这两类命令）：
+只省精确重复的展示字段，完整经验在 `recalled[].record` 或 `experiences.items`；
+来源、排名、当前事实、反证、健康和分页保留。默认或 `--json` 仍返回完整兼容字段，
+两种输出参数不混用；context 的独立展开命令不加 `--compact`。
 query 精确来源展开可用 `--source-ref experience:ID`；保留历史版本则用下节的 version。
 按它的 `next_command` 展开相关纠错/依赖，按条目的 `expand_command` 读精确版本；
 不得把它的游标传给 query/history。三种游标分别归各自命令；反证预算用

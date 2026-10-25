@@ -82,9 +82,10 @@ Case premise 只是预览，需要它支撑判断时展开当前 Case。缺关�
   变化部分仍需验证。若当前工作集已含完整依据，可直接比较。
 - 同问题、相关来源和条件未变化且正文/反证已充分读取：复用，不按请求、工具次数或轮次重查。
 
-用 `python3 tools/experience_recall.py query --target TARGET --query '当前问题'`。
+用 `python3 tools/experience_recall.py query --target TARGET --query '当前问题' --compact`。
 `current` 是独立当前事实，`recalled` 是历史候选；一并消费 `counterevidence` 的相关纠错、
-依赖与来源。条件文字和无反证命中均不证明结论有效。partial/unavailable 不等于没有经验；
+依赖与来源。紧凑输出的完整经验正文、条件和版本在 `recalled[].record`，不重复展示其别名。
+条件文字和无反证命中均不证明结论有效。partial/unavailable 不等于没有经验；
 依赖的信息仍被裁切时，按返回的来源 ID、精确 version 和该页命令展开后再用。
 读取/展开、游标、纠错与索引的操作合同统一见 `commands/target.md#恢复与问题召回`。
 

@@ -142,8 +142,8 @@ question/stop material through the recorded card, section and family.
 | `tools/target_store.py dispose-finding --target TARGET --finding-id ID --status withdrawn --reason TEXT --command-id ID` | Correcting a mistaken unbound Candidate | Append withdrawal or explicit active/reopen with predecessor; optional replacement-id; rejects evidence/assessment/Action/Coverage bindings; preserves history |
 | `tools/target_migration.py --backfill-coverage-source SOURCE --repo-root ROOT --target TARGET` | Recovering historical Coverage annotations after cutover | Manifest-bound historical import with source pointers; preserves newer reviews and grants no closure |
 | `tools/resume.py` | Continuing previous target work | `/pickup` backend — summarize prior session+untested endpoints |
-| `tools/experience_recall.py query --target TARGET --query QUESTION` | 按问题读取经验/已审方法 | current 独立于 ranked recalled；health/pagination 明示缺失与余量 |
-| `tools/experience_recall.py history --target TARGET` | 原始 Store 历史翻页 | --cursor 使用 Store 游标，--id 展开单条；不得混用 query 游标 |
+| `tools/experience_recall.py query --target TARGET --query QUESTION [--compact]` | 按问题读取经验/已审方法 | current 独立于 ranked recalled；完整经验在 record；health/pagination 明示缺失与余量 |
+| `tools/experience_recall.py history --target TARGET [--compact]` | 原始 Store 历史翻页 | 完整经验在 experiences.items；--cursor 使用 Store 游标，--id 展开单条；不得混用 query 游标 |
 | `tools/experience_recall.py index-build / index-status / index-prune` | 显式管理派生文本索引 | 目标 capture 按 Store audit/外部字节变化局部重采；`--shared` 不打开目标库、知识仍全量审核；`--full-rebuild` 重建；模型不隐式下载 |
 | `tools/experience_recall.py context --target TARGET --id ID --version VERSION` | 展开精确历史更正/反证/依赖 | 独立 `--context-limit` / `--context-max-bytes` 和返回游标；完整原文用返回的 expand_command，不回填最新版本 |
 | `tools/experience_recall.py relation-query --target TARGET --seeds @entities.json` | 精确实体多跳读取 | v4 包含 Case 显式关联、Action→operation→artifact 与实际 attempt/step 来源；路径仍为假设，旧格式需 --full-rebuild |

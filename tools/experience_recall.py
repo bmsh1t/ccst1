@@ -296,6 +296,37 @@ def history_view(repo_root: Path, *, target: str, limit: int = 20,
             "cursor_owner": "TargetStore.experience_page"}
 
 
+def _compact_recall(result: dict) -> dict:
+    """Omit exact display aliases while preserving complete records and context."""
+    def same(left, right):
+        return json.dumps(left, sort_keys=True) == json.dumps(right, sort_keys=True)
+
+    view = dict(result)
+    if result.get("view") == "history":
+        page = result["experiences"]
+        records = page["items"]
+        if same(view.get("target_page"), page):
+            view.pop("target_page", None)
+    else:
+        records, recalled = [], []
+        for item in result["recalled"]:
+            doc = dict(item)
+            if str(doc.get("source_ref", "")).startswith("experience:"):
+                record = doc["record"]
+                records.append(record)
+                for key in ("text", "conditions", "review_state", "kind", "claims",
+                            "source_health", "correction_refs", "dependency_refs", "applicability"):
+                    record_key = "statement" if key == "text" else key
+                    if key in doc and record_key in record and same(doc[key], record[record_key]):
+                        doc.pop(key)
+            recalled.append(doc)
+        view["recalled"] = recalled
+    aliases = [_store_entry(row, result["target"]) for row in records]
+    if same(view.get("target_entries"), aliases):
+        view.pop("target_entries", None)
+    return view
+
+
 def _index_cli(argv: list[str]) -> int:
     from tools.recall_index import build_text_index, index_status, prune_generations
     parser = argparse.ArgumentParser(
@@ -328,10 +359,14 @@ def _index_cli(argv: list[str]) -> int:
     parser.add_argument("--max-edges", type=int, default=1000)
     parser.add_argument("--max-bytes", type=int, default=200000)
     parser.add_argument("--max-seconds", type=float, default=1.0)
-    parser.add_argument("--json", action="store_true")
+    output = parser.add_mutually_exclusive_group()
+    output.add_argument("--json", action="store_true", help="complete JSON (default)")
+    output.add_argument("--compact", action="store_true", help="query/history JSON without exact display aliases; complete records and counterevidence remain")
     args = parser.parse_args(argv)
     try:
         root = Path(args.repo_root)
+        if args.compact and args.command not in {"query", "history"}:
+            raise ValueError("--compact belongs to query/history")
         if args.shared:
             if args.command not in {"index-build", "index-status", "index-prune", "relation-build", "relation-query", "relation-status", "relation-prune"} or args.target or args.no_knowledge:
                 raise ValueError("--shared requires an index lifecycle or relation query command without --target/--no-knowledge")
@@ -402,7 +437,7 @@ def _index_cli(argv: list[str]) -> int:
     except (StoreError, OSError, UnicodeError, ValueError) as exc:
         print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 2
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    print(json.dumps(_compact_recall(result) if args.compact else result, ensure_ascii=False, indent=2))
     if args.command in {"index-build", "relation-build"} and result["health"]["status"] != "ready":
         return 2
     return 0

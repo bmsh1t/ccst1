@@ -38,6 +38,13 @@ no schema, automatic memory writes or execution authority.
   material may be reused; no per-request query or automatic applicability judgment.
   Memory CLI/authoring details live in commands/target, capture in evidence-runners.
   Autopilot/Hunt/validator do not maintain narrower write schedules.
+- Recall query/history offer explicit `--compact` JSON for Claude. It removes only
+  JSON-identical aliases: history's duplicate page, derived `target_entries`,
+  and experience document fields already present in their complete `record`.
+  Unequal and unknown fields remain; current facts, ranking/source identity, health,
+  counterevidence and all independent cursors/expansion commands remain unchanged.
+  Default/`--json` output and Python APIs retain their full compatibility shape.
+  `--compact` and `--json` are exclusive; other subcommands reject compact before owner I/O.
 - Recovery carries the same correction/source-health fields with exact versions.
   Latest handoff/next intent remain advisory even when disputed or superseded;
   consumers review counterevidence without suppressing independent investigation.
@@ -118,6 +125,9 @@ no schema, automatic memory writes or execution authority.
 
 | Input | Required behavior |
 | --- | --- |
+| Compact query/history | Complete record, current facts, health, ranking and independent cursors remain; only exact aliases disappear |
+| Different/unknown display fields | Retain them, including JSON type differences; never truncate records or candidate order |
+| Compact with JSON or another subcommand | Exit 2 before owner I/O |
 | Review chain changes during another card read | Reject mixed knowledge snapshot |
 | Missing next intent | Empty next actions, explicit save receipt |
 | Older handoff beyond recent five | Bootstrap retains handoff and owner warning |
@@ -170,6 +180,8 @@ For reuse changes, compare complete outputs and cursors on the same synthetic St
 and index generation. Count SQL, assembled rows, connections and actual artifact
 hash bytes separately from output size. Include shared artifact sources, error
 metadata, revocation, missing bytes and changes during/following acquisition.
+Compact checks compare the entire top-level key set minus permitted aliases,
+candidate count/order and complete records, not only keys that survived rendering.
 
 ## 7. Wrong → Correct
 
