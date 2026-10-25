@@ -102,6 +102,59 @@ for r in data['results']:
 "
 ```
 
+### 2.3 门户 SPA 指向的独立 API 主机：匿名 Swagger + external 前缀
+
+企业对外注册 / 供应商 / 客户门户的常见形态：前端在 `main.<hash>.js` 里把 `API_URL` 写死到**另一个**主机（`xxx-api.target.com`），该主机自带 `/swagger/v1/swagger.json`；文档把 `Bearer` 声明成全局鉴权，但为对外注册流程单开的 `external` / `public` / `portal` / `*WithoutCheck` 前缀路由**实际不校验**。
+
+做法：不登录先拉 Swagger（常常 200，几百 KB），从 `paths` 里挑带 `external` / `public` / `portal` / `withoutcheck` / `anonymous` 的 GET/POST，按它自己的路径格式填占位值（税号位数、车牌、GUID），再看回包是不是业务主数据。
+
+```bash
+curl -s "https://xxx-api.target.com/swagger/v1/swagger.json" -o sw.json
+python3 - <<'PY'
+import json
+d = json.load(open("sw.json"))
+for p, ms in d["paths"].items():
+    if any(k in p.lower() for k in ("external","public","portal","withoutcheck","anonymous")):
+        for m, o in ms.items():
+            if m in ("get","post"):
+                print(m.upper(), p, o.get("tags"))
+PY
+```
+
+判据：匿名回包直接给业务主数据（姓名 + 证件号 + 地址、车牌 + 车主公司 CNPJ + 内部伙伴编码、内部 SAP/ERP 报文）。只回 `{}`、只回 true/false、或全局 Bearer 对每个口都生效 → 不是这条。
+
+**别用「错误长度的输入回 400」当精确匹配的证据。** 路径参数真正叫什么要看 Swagger：参数名叫 `term` / `q` / `search` 的，就是检索词不是主键。这类口一旦接受单字符，等于不需要任何已知证件号就能换回一批真人（实测单字符回 192 条含 CPF + 姓名 + 街道）。两个必然踩的坑：
+
+- 拿 `111`、某个单词去查回 400，就以为它做了长度或格式校验 → 错，那是「命中范围过宽」的拒绝。换成更窄的数字串（`70`、`9999`）就出数，按数字逐层切分能把整表捞完，这比「按已知证件号精确反查」严重一档。
+- 只拿一个不存在的值回 204 就写「精确匹配」→ 错，204 只证明那一个值不在库里，不证明参数是主键。真正的对照是**输入一个明显不是证件的串**（如 `88888888888` 这类占位号）看它是否仍然回一批记录。
+
+### 2.4 OData 后端按载荷属性下标取身份、且不验签
+
+企业供应商/客户门户的第二种常见形态：前端是 AngularJS/Kendo 一类的 SPA，后端是 ASP.NET WebAPI OData（路径以 `/xxx/oData/` 结尾），旁边另有一个 `/sts/` 服务发令牌。这类站的回包很诚实，顺着报错就能把鉴权结构摸出来。
+
+摸的顺序：
+
+1. 拉 Swagger 或 `/<前缀>/oData/$metadata`（常常 200，几十 KB），拿到全部实体集名和字段。`$metadata` 开、实体集却 401/406 是常态，别在这里停。
+2. 直接 GET 一个实体集，看 500 的 `innererror.message`。常见三种：
+   - `Value cannot be null. Parameter name: values` + `String.Join` → 安全头过滤器在读某个请求头，缺了直接崩。
+   - 一段纯文本 `... - cookieToken <值> - token <值>` → 双提交 XSRF，只要 `X-XSRF-TOKEN` 头等于 `XSRF-TOKEN` Cookie 就过；这类值常常由 `/sts/cookie` 一类的口免登录下发，而且**每次都是同一个固定值**（不绑会话）。
+   - `Index was out of range ... at List`1.get_Item(Int32 index)` → 代码在按**下标**取 token 载荷里的属性。
+3. `Authorization: Bearer abc` 回 `Index was outside the bounds of the array` → 它按 `.` 切 token 且不验签。此时逐个试载荷属性个数：5 个 500、6 个 200，就是 `Properties().ToList()[5]`。
+4. 造令牌：header `{"alg":"none"}`、payload 六个属性、第三段随便一个字符。GET 实体集，配 `$count=true` 看总量。
+
+先拿双提交值，再造令牌，再打实体集：
+
+```bash
+curl -s -D - -o /dev/null https://TARGET/sts/cookie | grep -i '^set-cookie: XSRF-TOKEN'
+python3 -c 'import base64,json;b=lambda o: base64.urlsafe_b64encode(json.dumps(o).encode()).decode().rstrip("=");print(b({"alg":"none"})+"."+b({"a":"x","b":"x","c":"x","d":"x","e":"x","f":"00000000000"})+".x")'
+curl -s -H "Cookie: XSRF-TOKEN=$XS" -H "X-XSRF-TOKEN: $XS" -H "Authorization: Bearer $TOK" \
+     "https://TARGET/xxx/oData/Fornecedor?\$top=1&\$count=true"
+```
+
+判据：实体集整表返回——`@odata.count` 上万、单次响应到 MB 级，且带他方业务数据或个人证件号；并且三组对照齐全：去掉 Authorization 回 500、载荷少一个属性回 500、满属性回 200。第六个属性换成别的值（`0` / 真实证件号 / `x`）仍返回同一张表，说明服务端只是把它当身份取出来，从没拿去过滤。
+
+假点：实体集恒定 406/401（另有一层真鉴权，`$metadata` 开不算）；令牌里的身份确实被拿去过滤、只回自己那一条；或者拿不到任何能免登录下发的 XSRF 值。
+
 ---
 
 ## 三、JS 文件信息泄露
