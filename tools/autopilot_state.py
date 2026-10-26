@@ -1110,8 +1110,8 @@ def _scope_identity(repo_root: str | Path, target: str) -> dict:
 def _is_untouched_target(repo_root: str | Path, target: str) -> bool:
     """全新目标判定：无 active store、无任何 state/findings 数据。
 
-    Bootstrap 先于任何 lane 运行，而全新目标由首个 lane 的 hunt.py 显式
-    初始化（lane 契约）。仅这种目标走空事实集；fenced/缺件 store 或待迁移
+    Bootstrap 会先显式初始化；普通只读查询对尚未初始化的目标走空事实集。
+    已初始化目标仍读取真实 Store；fenced/缺件 store 或待迁移
     legacy 数据不满足本判定，继续按 StoreError 向上抛出。
     """
     root = Path(repo_root)
@@ -1131,7 +1131,7 @@ def _fresh_target_control_facts(
     resolved_target: str,
     resolved_memory_dir: str,
 ) -> dict:
-    """未触碰目标的控制事实：无 recon、无记忆、无队列，下一步即 Recon。
+    """未触碰目标的控制事实；与已初始化空 Store 共用初次 Recon 默认。
 
     只使用 store 无关的只读 loader（guard/recon 统计走文件系统）；store
     派生的事实一律为空，由首个 lane 初始化后再走完整读取路径。
@@ -1342,6 +1342,7 @@ def _load_autopilot_control_facts(
         "runtime_state": runtime_state,
         "runtime_derived": runtime_derived,
         "recon_artifacts": recon_artifacts,
+        "recon_control": recon_control,
         "dir_fuzz_rotation": dir_fuzz_rotation,
         "recon_in_progress": recon_in_progress,
         "scan_in_progress": scan_in_progress,
@@ -1404,6 +1405,9 @@ def _build_domain_autopilot_state(
         checkpoint_health = {"status": "invalid", "path": str(witness_path), "reason": str(exc)}
     control = build_control_projection({
         **facts, "target": target,
+        "recon_artifacts": facts.get("recon_control", facts.get("recon_artifacts")),
+        "observation_inventory": observation_inventory,
+        "surface_projection": surface_projection,
         "round_progress": round_progress, "checkpoint_health": checkpoint_health,
     })
     intel_continuation = facts.get("intel_continuation") or {}

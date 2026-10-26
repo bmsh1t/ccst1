@@ -68,23 +68,13 @@ Complete this template:
 Use the supplied target as the active target record. Use observed exploitability,
 evidence, and reproducibility as the validation basis.
 
-Common tiers — each tier carries an evidence bar, not just examples. The bar
-gates the tier: below the bar, downgrade to whatever IS demonstrated:
-
-- **Critical** — bar: attacker-controlled execution or full-account takeover
-  demonstrated without unrealistic preconditions (any-user ATO without
-  interaction, RCE, SQLi with data exfil, admin auth bypass).
-- **High** — bar: demonstrated access to other users' or the company's real
-  data at scale, or privilege escalation that works from a low-priv identity
-  (mass PII exfil, internal SSRF with data, stored XSS reaching other users).
-- **Medium** — bar: exploit chain completed but impact bounded to a single
-  user or non-critical data, or requires meaningful conditions (IDOR on
-  specific user non-critical data, XSS on sensitive page requiring click).
-- **Low** — bar: real but small blast radius or complex preconditions
-  (non-sensitive info disclosure, clickjacking with PoC on a sensitive action).
-
-A tier claim must name a real victim and answer "what did the attacker actually
-get/do, shown in evidence?" — "possibly could" answers never meet a bar.
+Default SRC severity and reportability belong to `rules/vuln-report-format.md`;
+read its complete current tables, without maintaining another class-to-tier map here.
+An explicit user/destination alternative uses its declared rules. Record the
+affected identity, protected data/state, reachability, preconditions and proven
+scope before selecting a tier. A class name or "possibly could" is not evidence.
+Missing grading or report metadata leaves delivery/text pending; it does not
+erase independently confirmed technical evidence.
 Public/non-sensitive data alone does not prove a confidentiality violation;
 payment policy cannot decide technical impact.
 
@@ -164,7 +154,8 @@ Delivery modes:
 2. For internal delivery (internal audit, lab, CTF, authorized engagement,
    research), there is no external policy surface: record `pass` with basis
    `internal delivery: not-applicable`. Q5's documented-behavior check still
-   applies — intended behavior is a false positive in any delivery mode.
+   applies — intended public behavior with no violated boundary can refute the
+   technical claim; documented or accepted risk alone cannot.
 3. When no destination was declared, default to internal delivery and record
    that default; do not stop to ask for a platform. An operator-declared
    external destination always overrides the default.
@@ -262,24 +253,27 @@ Privacy-policy wording, cookie banners, footer ICP filing numbers
 Prove a chain end to end before claiming its combined impact. This does not
 delay saving/reporting an independently confirmed primitive or sibling.
 
-> If the candidate **already** proves the chain end to end, it is no longer
-> "chain required" — verdict is **REPORT** at the Valid Result severity. Use
-> **CHAIN_REQUIRED** only when the connecting hop still needs to be built.
+> A complete proven chain removes **CHAIN_REQUIRED** for that claim. Severity
+> and reportability still follow the report-format and destination decision.
+> Use **CHAIN_REQUIRED** only when a connector needed for the claimed impact remains unproven.
 
 | Standalone Finding | Chain Required | Valid Result |
 |---|---|---|
-| Open redirect | + OAuth redirect_uri → auth code theft | ATO (Critical) |
-| Clickjacking | + sensitive action + working PoC | Medium |
-| CORS wildcard | + credentialed request exfils user PII | High |
-| CSRF | + sensitive non-payment action (change email, delete account) | High |
-| Rate limit bypass | + OTP/reset token brute force succeeds | Medium/High |
-| SSRF DNS-only | + internal service access + data returned | Medium |
-| Host header injection | + password reset email uses injected host | High |
-| Prompt injection | + reads other user's data (IDOR) | High |
-| S3 bucket listing | + JS bundles contain API keys or OAuth secrets | Medium/High |
-| Self-XSS | + CSRF to trigger it on victim without their knowledge | Medium |
-| Subdomain takeover | + OAuth redirect_uri registered at that subdomain | Critical |
-| GraphQL introspection | + auth bypass mutation or IDOR on node() | High |
+| Open redirect | + OAuth redirect_uri → auth code theft | Prove usable code and the resulting session/identity boundary |
+| Clickjacking | + sensitive action + working PoC | Demonstrated protected action under the stated interaction |
+| CORS wildcard | + credentialed request exfils user PII | Technical read impact; default SRC exclusion still applies |
+| CSRF | + sensitive non-payment action (change email, delete account) | Proven state/identity change, with recovery |
+| Rate limit bypass | + OTP/reset token brute force succeeds | Proven authentication or recovery bypass |
+| SSRF DNS-only | + internal service access + data returned | Server-side fetch and bounded internal/data impact |
+| Host header injection | + password reset email uses injected host | Token exposure; account impact requires the remaining proof |
+| Prompt injection | + reads other user's data (IDOR) | Cross-identity data read |
+| S3 bucket listing | + JS bundles contain API keys or OAuth secrets | Credential material; usable authority requires key validation |
+| Self-XSS | + CSRF to trigger it on victim without their knowledge | Execution in another user's security context |
+| Subdomain takeover | + OAuth redirect_uri registered at that subdomain | Prove actual code/token delivery and resulting access |
+| GraphQL introspection | + auth bypass mutation or IDOR on node() | Object/field/action authorization failure |
+
+These are evidence questions, not preset severities or delivery permissions.
+Apply the current report-format rules after proving the claimed outcome.
 
 ### Evidence-Bounded Connector Review
 
@@ -331,9 +325,9 @@ for reporting and does not require or calculate a score.
 
 ## PRE-SEVERITY GATE
 
-Before assigning **High** or **Critical**, record all four:
+Before assigning a severity under the selected report rules, record all four:
 
-1. **Complete chain** — attacker precondition → primitive → connector → final outcome.
+1. **Complete proof** — attacker precondition → primitive → final outcome; a connector is required only when the claimed impact depends on it.
 2. **Concrete outcome** — exact affected identity, data, privilege, money, or system control.
 3. **Repeatability** — reproduce from a fresh session/state and preserve the replay evidence.
 4. **Remaining boundary** — state what is still untested, assumed, environment-specific, or role-dependent.
@@ -342,7 +336,7 @@ Route incomplete claims without inventing a new gate status:
 
 - A missing connector required to make the primitive reportable → **CHAIN_REQUIRED**.
 - A valid primitive whose claimed impact is not yet proven → **DOWNGRADE** to the demonstrated outcome.
-- A bug-class name, scanner severity, theoretical blast radius, or unbuilt chain never justifies High/Critical by itself.
+- A bug-class name, scanner severity, theoretical blast radius, or unbuilt chain never justifies a higher tier by itself.
 
 This calibrates severity after Q1-Q7; it does not erase the Candidate or create Q8.
 

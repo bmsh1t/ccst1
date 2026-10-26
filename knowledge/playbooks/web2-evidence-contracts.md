@@ -31,7 +31,7 @@ source_refs: []
 3. Establish a baseline before changing one boundary at a time.
 4. Use the model's least invasive test input for the observed parser, identity,
    state, cache, browser, or transport boundary; use one changed axis at a time.
-5. Save target-bound raw evidence for every Candidate and queue executable actions.
+5. Capture and register target-bound raw evidence through the native path below, including observations before a Candidate exists.
 6. Use `triage-validation` before reporting; a framework name, status code, or
    parser error alone remains a Lead/Signal.
 7. Write the result to the existing owner and leave a concrete next action or stop reason.
@@ -44,6 +44,16 @@ information gap. A catalog path is not a file read, and this Skill keeps no card
 
 Cards provide patterns, counterexamples, and evidence prompts. They do not own
 the target state or force an execution sequence.
+
+## 原生执行与登记
+
+按 [Evidence Runners](../../docs/evidence-runners.md#native-http-execution) 执行：
+先记录 attempt 与真实开始时间；有执行 Action 时先 claim。选择能保持本次协议、
+Scope/AuthSession、父 Scope 和副作用约束的 browser/curl/raw sender；原生工具不自动继承这些约束。
+保留逐步请求/响应原件、身份、对象和最终状态，对照时一次只改一个边界。
+无 Finding 用 `validation_runner.py record-observation`，已有 Finding 用
+`validation_runner.py record-evidence --finding-id ID`；各自 envelope 与补证规则沿用该文档。
+登记器不发送请求、不生成差分或裁决；登记失败只重试原材料，效果未知不重放业务动作。
 
 ## Boundary-First Pattern Router
 
@@ -106,8 +116,8 @@ methods, fields, and workflow states. A stable 403/404 or no server-side delta i
 a stop condition; introspection or a UI difference is not an authorization proof.
 多 session 场景用矩阵方法：对每个高价值端点在 owner/peer（必要时 cross-tenant）
 上下文各发一次同样请求，只比较身份/对象/角色差，纯状态码差保持 Signal。
-机器重放用 request-diff owner/peer 对（`active_dimension=header:authorization`），
-匿名暴露用无凭据 vs 有凭据对；越权与否由 validate gates 判断。
+按上节原生执行与登记保留 owner/peer 请求对，只改变身份；
+匿名暴露用无凭据 vs 有凭据对，越权与否由 validate gates 判断。
 
 ### Access-Control Boundary Matrix
 
@@ -152,9 +162,9 @@ controlled `/spray` run with lockout, rate limits, and stop conditions.
 ### GraphQL Lane
 
 发现 GraphQL endpoint 后按当前信息缺口选择有界 introspection（schema/operation 名称、
-`node(id)` 可枚举性）或双角色对象对照；精确 HTTP 操作用
-`validation_runner.py request-diff` owner/peer 对。批量、alias 和 mutation 都要先看
-实际副作用：对测试自有且可回滚的资源，可以在 `rules/red-lines.md` 允许的最小范围内
+`node(id)` 可枚举性）或双角色对象对照；精确 HTTP 操作按上节原生执行与登记
+保留 owner/peer 请求对。批量、alias 和 mutation 都要先看
+实际副作用：对测试自有且可回滚的资源，可以在 `rules/ccst/red-lines.md` 允许的最小范围内
 验证；真实订单生命周期或不可逆动作只记录为 Lead，并保留后续安全验证条件。
 
 ### Workflow Perturbation Lane
@@ -166,7 +176,7 @@ Candidate。
 
 ### JWT / Token AI-Owned Lane
 
-令牌伪造类证据的机器证明通道：`request-diff` 保存精确
+令牌伪造类证据按上节原生执行与登记保存精确
 请求对（见 `knowledge/cards/auth-sso-token-edge-cases.md`）；
 身份/权限 delta 之外的差异（可 decode、状态/长度、反射 marker）保持
 Signal/Candidate。
@@ -242,17 +252,17 @@ rules/
 | Signal / 证据形态 | Delta reference | 当前项目优先工具 / 动作 | 停止条件 |
 |---|---|---|---|
 | 真实 JWT/JWE token；`kid`/`jku`/`jwk`/`iss`/JWKS/OIDC metadata；JWT claims 参与权限、租户或余额 | `knowledge/cards/auth-sso-token-edge-cases.md` | 先无验证 decode；有真实 token 再考虑 `jwt_tool`；用 `curl`/`urllib` 读取 JWKS/OIDC metadata；用最小 replay 证明 auth boundary | 没有真实 token、没有 issuer/JWKS metadata、没有可 replay 的权限差异时停止 |
-| `/admin`、`/internal`、`/api/export`、`/debug` 等 401/403；encoded slash、双斜杠、大小写、尾随点/分号响应差异；网关与后端栈不一致 | `knowledge/cards/auth-access.md`, `knowledge/cards/path-allowlist-normalization.md`, `knowledge/cards/path-pattern-management-exposure.md` | AI 根据目标证据选择一个精确的 path/header/method 请求，用 browser/curl/raw sender 执行；同方法单变量请求对可选交给 `validation_runner.py request-diff`；否则保留 raw evidence/`finding_claim` 并交给 Checkpoint | baseline、随机 miss、路径/Header 单变量无稳定后端/内容/权限差异时停止；状态变化单独保持 Signal |
+| `/admin`、`/internal`、`/api/export`、`/debug` 等 401/403；encoded slash、双斜杠、大小写、尾随点/分号响应差异；网关与后端栈不一致 | `knowledge/cards/auth-access.md`, `knowledge/cards/path-allowlist-normalization.md`, `knowledge/cards/path-pattern-management-exposure.md` | AI 选择一个有证据的 path/header/method 单变量请求，按上节原生执行与登记保存 baseline/variant 原件及实际差异 | baseline、随机 miss、路径/Header 单变量无稳定后端/内容/权限差异时停止；状态变化单独保持 Signal |
 | Spring/Java 指纹、`/actuator`、Jolokia、Whitelabel、heapdump/management path | `knowledge/cards/path-pattern-management-exposure.md`, `knowledge/cards/information-disclosure-source-config.md` | 比较不存在路径、Actuator root 和单个只读 endpoint；确认 content-type、JSON link/key、heapdump magic 或目标特定数据 | 200 返回登录页、Whitelabel、SPA fallback、统一错误页或普通 health 文案时保持 Signal |
 | WordPress、`wp-json`、`wp-content/plugins`、主题、`admin-ajax.php`、`xmlrpc.php`、已知插件/主题版本 | `knowledge/cards/wordpress-surface-intelligence.md` | 高价值目标且版本/覆盖缺口存在时按需执行有界 `wpscan --enumerate p,t`，保存 raw JSON；随后验证组件启用、版本范围、路由与权限/影响边界 | WPScan 命中、残留静态文件、`wp-json`/XML-RPC 可达或单个 200 只算 Signal；无启用版本、可达路由或稳定影响时不测试历史 CVE |
 | `url`/`uri`/`webhook`/`callback`/`image`/`fetch`/`import` 参数；`/_next/image`；PDF/image/HTML 转换器；OAST/DNS 回调 | `knowledge/cards/ssrf-url-fetch.md`, `knowledge/cards/ssrf-internal-impact.md`, `knowledge/cards/render-pipeline-ssrf.md` | `tools/oast_listen.py`；Next image 先做正常图片 baseline 和唯一 callback；redirect/parser probe；只在 URL fetch 已成立后测试 metadata/internal-service 方向 | `/_next/image` 只有 200/400、图片体或 optimizer 错误，或只有 DNS-only 且无内部访问/数据/状态影响时保持 Lead |
 | upload/import/convert/export/download；DOCX/SVG/PDF/image/archive 处理；文件名、EXIF、QR、条码、压缩包参与后端逻辑 | `knowledge/cards/upload-parser.md`, `knowledge/cards/upload-to-execution.md`, `knowledge/cards/xxe-xml-parser.md`, `knowledge/cards/sqli-hidden-surfaces.md` | 浏览器/HTTP 精确复现；最小样本文件；OAST 仅用于 parser side effect；导出/下载授权用 owner/peer 双账号对照 | 无可控文件内容/文件名/metadata，或上传后不可触达任何处理路径时停止 |
 | Node/Express/lodash/qs/flat/pug/vm2/happy-dom；JSON merge/clone/deep set；JS/source 暴露服务端渲染或模板链 | `knowledge/cards/node-prototype-pollution.md` | `/source-hunt` 与 Claude 原生 Read/Grep；JSON body 单变量 pollution probe；寻找权限字段/模板 sink | 没有 Node 相关栈证据或没有 JSON/对象合并输入点时停止 |
-| SQL/NoSQL 但普通参数无效；Header、EXIF、QR、XML、stored profile、Host、X-Forwarded-For、Mongo regex/$where 参与查询 | `knowledge/cards/sqli-hidden-surfaces.md`, `knowledge/cards/nosql-query-injection.md` | AI 根据真实请求形状选择直接测试；需要同方法单变量重放时可用 `validation_runner.py request-diff`；时间信号用 AI 交错采样验证趋势；不使用固定矩阵 | 无错误差异、时间差异、状态差异或查询上下文证据时停止 |
-| OData header/service document、`$metadata`、`$filter`、`$select`、`$orderby`、`$expand`、`$batch` | `knowledge/cards/odata-query-boundaries.md` | 保存 owner baseline；比较字段、predicate/order、navigation 和 direct-vs-batch；必要时用 `validation_runner.py request-diff`（owner/peer 对，`active_dimension=header:authorization`）做对象/租户对照 | metadata/operator/HTTP 200 单独保持 Signal；无受限字段、关联对象或 batch 策略差异时停止 |
+| SQL/NoSQL 但普通参数无效；Header、EXIF、QR、XML、stored profile、Host、X-Forwarded-For、Mongo regex/$where 参与查询 | `knowledge/cards/sqli-hidden-surfaces.md`, `knowledge/cards/nosql-query-injection.md` | AI 根据真实请求形状选择同方法单变量实验，按上节原生执行与登记；时间信号用 AI 交错采样验证趋势，不使用固定矩阵 | 无错误差异、时间差异、状态差异或查询上下文证据时停止 |
+| OData header/service document、`$metadata`、`$filter`、`$select`、`$orderby`、`$expand`、`$batch` | `knowledge/cards/odata-query-boundaries.md` | 保存 owner baseline，比较字段、predicate/order、navigation 和 direct-vs-batch；按上节原生执行与登记做 owner/peer 对象/租户对照，只改变一个边界 | metadata/operator/HTTP 200 单独保持 Signal；无受限字段、关联对象或 batch 策略差异时停止 |
 | LDAP/AD/目录搜索错误、LDAP filter/DN 拼接、XPath parser/expression、员工搜索/组织图 | `knowledge/cards/ldap-xpath-query-boundaries.md` | 先确认 filter/DN/XPath context；建立合法/false/语法错误 control；只在测试对象上比较 auth/result/attribute 差异 | 只有 backend 指纹、wildcard 正常搜索、单次 500/长度差或 XPath quote error 时停止 |
 | Java/Python/PHP/.NET/Werkzeug/SoapClient serialized blob、cookie、backup/import、session object、ViewState、`rO0AB`、`aced0005`、pickle/base64 形态 | `knowledge/cards/insecure-deserialization.md`, `knowledge/cards/controlled-rce-impact.md` | 先按格式/绑定识别 → MAC/签名/加密完整性 → 真实 deserialize/consume 验证；OAST URLDNS/JRMP 只在 lab/安全边界明确时用 | 不能证明对象被后端反序列化/消费，或 ViewState 只有可见、可解码、MAC error 时停止 |
-| GraphQL endpoint、introspection、`node(id)`、批量 query、mutation、tenant/user/object id | `knowledge/cards/graphql.md`；同时参考本文件的 Web/API 证据合同 | manual introspection；双角色对象对照用 `validation_runner.py` 原语；批量/alias 只测最小次数；mutation 按真实副作用分支，测试自有且可回滚资源可在红线控制内验证，不可逆真实订单动作只记录 | 没 schema/operation 名称、无对象 ID、无身份差异时停止 |
+| GraphQL endpoint、introspection、`node(id)`、批量 query、mutation、tenant/user/object id | `knowledge/cards/graphql.md`；同时参考本文件的 Web/API 证据合同 | manual introspection；双角色对象对照按上节原生执行与登记；批量/alias 只测最小次数；mutation 按真实副作用分支，测试自有且可回滚资源可在红线控制内验证，不可逆真实订单动作只记录 | 没 schema/operation 名称、无对象 ID、无身份差异时停止 |
 | Next.js `/_next/data/<build-id>/...json`、动态 route data、`__NEXT_DATA__` | `knowledge/cards/api-idor.md`, `knowledge/cards/information-disclosure-source-config.md` | 比较 anonymous/owner/peer/cross-tenant；保持 route/build-id 不变，只替换一个对象 ID，并和 HTML/API baseline 对照 | 只有公开 prerender JSON、build metadata、当前 owner 数据或单账号 200 时停止 |
 | `application/grpc*`、grpc-status/trailers、protobuf、reflection、gRPC-Web、grpc-gateway、JSON transcoding | `knowledge/cards/grpc-api-boundaries.md` | 保存 h2 headers/body/trailers；区分 status 12/16/7/3/0；比较 edge/backend metadata 和自有身份/对象差异 | reflection、status 12/3 或 HTTP 200 单独只算 transport/method Signal；无私有数据或状态差异时停止 |
 | Cognito `IdentityPoolId`、`GetId`、`GetCredentialsForIdentity`、unauth role、临时 STS | `knowledge/cards/cloud-cognito-identity-pool.md`, `knowledge/cards/cloud-control-plane-pivots.md` | 从目标配置确认 region/pool；依次记录匿名凭证是否签发、caller ARN、单个 IAM action/resource allow/deny | `IdentityPoolId` 或 `GetId` 成功不升级；没有匿名凭证、caller 和非预期 action 影响时停止 |

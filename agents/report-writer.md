@@ -17,6 +17,10 @@ Render the selected canonical finding using
 create a finding, validation, queue, or report lifecycle of its own, and it must
 not replace structured validation with model judgement.
 
+Write only the assigned draft artifact. Return its bytes/path, evidence refs and
+current assessment/delivery IDs to the parent; the parent accepts and publishes
+through the existing owner. Do not invoke validation, registration or the publisher.
+
 ## Required Input
 
 Query the target-bound Finding using `commands/report.md`. Recover its current
@@ -49,7 +53,7 @@ invent endpoint, actor, response, severity, or quantity.
 
 Load the report-writing module and directly read the complete
 `rules/vuln-report-format.md` and `docs/ccst-runtime-adapter.md`. Default SRC
-language, eight blocks and layout follow 6k. Explicit user/destination alternatives
+severity, reportability, language, eight blocks and layout follow 6k. Explicit user/destination alternatives
 follow their requested fields. Keep the same canonical Finding and evidence bindings;
 never replace the original default with another title formula or word cap. If present,
 copy recorded `cvss.version`, `cvss.score`, and `cvss.vector` unchanged from the

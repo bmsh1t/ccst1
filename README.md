@@ -359,14 +359,15 @@ tools are skipped, not fatal.
 source of truth and these roles are not an implicit second controller.
 
 Recon, Surface, Chain, Web3 and Token work uses the existing commands and complete
-internal modules. Autopilot explicitly invokes the thin `recon-ranker` for multi-asset
-surface review and uses it for a concrete missed-path question at stagnation or before
-finish; unchanged reviews are reused. Other independent questions may use a general-purpose
+internal modules. Autopilot reviews business and technical surfaces in the main session.
+It may invoke the thin `recon-ranker` when an independent second opinion would help a
+concrete prioritization or missed-path question; unchanged reviews are reused.
+Multiple subdomains alone do not require a subagent. Other independent questions may use a general-purpose
 subagent with the [shared handoff and read-only boundary](skills/src-hunter/SKILL.md#real-delegation-and-execution-handoff).
 
 | Agent | What It Does | Model |
 |:---|:---|:---|
-| **recon-ranker** | Read-only business-surface priorities and missed-path review; parent chooses execution | Current session |
+| **recon-ranker** | Read-only business/technical surface priorities and missed-path review; parent chooses execution | Current session |
 | **autopilot** | Bounded specialist task delegated by the current session | Prefer Sonnet -> current session fallback |
 | **report-writer** | Professional reports, impact-first, human tone | Prefer Opus *(quality)* → current session fallback |
 | **validator** | 7-Question Gate + 4-gate finding validation | Prefer Sonnet → current session fallback |

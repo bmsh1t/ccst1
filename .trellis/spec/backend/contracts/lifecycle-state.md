@@ -199,9 +199,9 @@ before review or round-witness publication.
 
 - `build_checkpoint(repo_root, *, target, ...) -> dict`
 - `write_checkpoint_witness(repo_root, target, checkpoint) -> dict`
-- `begin_round(repo_root, target, *, max_lanes) -> dict`
-- `record_round_lane(repo_root, target, *, lane, max_lanes, finding_id="", assessment_id="", delivery_id="") -> dict`
-- `prepare_round(repo_root, target, max_lanes) -> dict`
+- `begin_round(repo_root, target, *, max_lanes=None) -> dict`
+- `record_round_lane(repo_root, target, *, lane, max_lanes=None, finding_id="", assessment_id="", delivery_id="") -> dict`
+- `prepare_round(repo_root, target, max_lanes=None) -> dict`
 - `settle_round(repo_root, target, *, note="", refresh_coverage=True) -> dict`
 - `load_closure_projection(repo_root, state, ...) -> dict` raises
   `coverage_matrix.CoverageEvidenceChangedError(StoreError)` for mismatched acquisitions.
@@ -290,9 +290,15 @@ reviews may need one explicit re-review after the binding semantics change.
 - Explicit witness publication preserves the prior `global_review` while
   owner writes change its digest; Closure then reports it stale until the
   current snapshot is reviewed again.
-- `round_progress` is the same witness's bounded execution budget. Reads and
-  mutations use the checkpoint target lock; active rounds retain their original
-  max and unique claimed lane IDs across CLI/context restarts.
+- `round_progress` records execution with an optional explicit lane cap. Reads and
+  mutations use the checkpoint target lock; active rounds retain their saved
+  cap or unset value and unique claimed lane IDs across CLI/context restarts.
+  New uncapped rounds use `schema_version=2`, explicit `max_lanes=null` and
+  `remaining_lanes=null`, and `budget_reached=false`; missing fields are invalid.
+  Existing/new bounded rounds retain v1 integer caps (1..32), derived counts and
+  refusal after the cap. No legacy witness is inferred uncapped or migrated.
+  Lane claims use the saved cap and may omit the CLI option; new-round prepare/begin
+  may also omit it. Claims beyond 16/32 remain admissible only for uncapped rounds.
 - `settle_round()` holds that same target lock from its Closure preflight through
   read-only Checkpoint/current Coverage queries, round closure and final projection.
   The lock is same-thread reentrant so existing checkpoint owner functions remain
@@ -312,7 +318,7 @@ reviews may need one explicit re-review after the binding semantics change.
 - `checkpoint.py` mutations and `autopilot_state.py` Closure projection use the
   same `checkpoint_witness.validate_round_progress()` structural validator.
   The reader-only recovery flag may expose historical completed lanes with
-  invalid evidence for repair, but it never relaxes schema, `1..MAX_LANES`,
+  invalid evidence for repair, but it never relaxes schema, optional-cap validation,
   derived-count, lane-order, bounded-text, timestamp, or terminal-field checks.
 - New explicit passive claims (`idle:*`, `monitor:*`, `verify:idle*`,
   `verify:no-change*`, or `idle-no-change`) are rejected before budget mutation;
@@ -332,7 +338,9 @@ reviews may need one explicit re-review after the binding semantics change.
 - Atomic witness publication fails -> the explicit writer fails fast; a successful
   read-only Checkpoint does not claim that a witness was saved.
 - Corrupt JSON, invalid `round_progress`, duplicate lane IDs, contradictory
-  derived counts, or a max outside `1..MAX_LANES` fail before mutation.
+  derived counts, or an integer cap outside `1..MAX_LANES` fail before mutation.
+  Null/missing v1 caps, absent v2 cap/remaining fields and a reached budget on an
+  uncapped round fail; the reader recovery flag does not waive these checks.
 - Missing lane timestamps fail in both the mutation owner and read-only Closure
   projection; historical invalid completed evidence remains a non-exhaustive
   repair handoff only through the explicit reader recovery flag.
@@ -857,8 +865,9 @@ Python 入口保持 `parse_autopilot_args(argv, *, round_defaults=False)` 和
   `invocation_batch={bounded,max_lanes,handoff}` 是唯一 command/agent 输入；达到 N 个命名
   substantive lane 后显式保存未决 work，再读取 checkpoint、说明 handoff 并结束本次 invocation。
   新发现留给下一次 invocation，不是永久 coverage 上限。
-- `/autopilot-round` 省略参数时只把同一 parser 的 cadence/deep/max-lanes 默认值切为
-  `normal/true/8`，用户显式 cadence 与 max-lanes 优先；普通 `/autopilot` 默认值不得变化。
+- `/autopilot-round` 省略参数时只把同一 parser 的 cadence/deep 默认值切为
+  `normal/true`；两入口都不默认设置 max-lanes。用户显式上限仍有效，活动 Round
+  保留已有 cap。未指定整轮时间/费用/项数额度时不能自行补值作为结束依据。
   round 读取并服从 `commands/autopilot.md`，后者仍是唯一完整 hunt controller contract。
 - `/autopilot-round` 的 substantive lane 必须按 `claim/start -> target work -> terminal heartbeat
   -> loop guard` 排序。active started lane 跨 context/process loss 优先恢复且不重复计预算；
@@ -874,7 +883,7 @@ Python 入口保持 `parse_autopilot_args(argv, *, round_defaults=False)` 和
   `verify:<candidate>` 仍可执行。`hunt_p1/hunt_p2` 由 controller 选择一个具体有界候选；没有
   可执行候选时写回既有 blocker/handoff，不把方向选择交给 operator，也不用 passive monitoring
   代替 owner-selected work。
-- `/loop 10m ...` 创建 fixed-interval recurring cron；round 只负责一次有界调用。任何 target action
+- `/loop 10m ...` 创建 fixed-interval recurring cron；需要按项数有界调用时显式传 max-lanes。任何 target action
   前先执行不带 `--max-lanes-reached` 的 closure precheck：`finish`、`blocked` 立即投影终态并
   停止，只有 `handoff` 可进入 canonical round；缺失、损坏、矛盾或未知 verdict 返回 ERROR。
 - target exhaustion 必须先由 coverage owner rebuild，再显式读取
@@ -942,7 +951,7 @@ Python 入口保持 `parse_autopilot_args(argv, *, round_defaults=False)` 和
 | round precheck 为 `finish` 且 `structured_findings.reported>0` | `STATUS: DONE` + 有界 blind spots；零 target action |
 | round precheck 为 `finish` 且 reported=0 | `STATUS: EXHAUSTED reason=evidence-bounded` + 有界 blind spots；零 target action |
 | round precheck 为 `blocked` | `STATUS: BLOCKED reason=<bounded>`；零 target action并取消 recurrence |
-| round precheck/final 为 `handoff` | 最多消费本轮 lane budget；`STATUS: CONTINUE next_action=<bounded>` |
+| round precheck/final 为 `handoff` | 按 Shared Automation 继续；只服从显式 lane cap，`STATUS: CONTINUE next_action=<bounded>` |
 | closure 缺失、损坏、字段矛盾或 verdict 未知 | `STATUS: ERROR reason=<bounded>`；停止本轮并取消 recurrence |
 | Surface candidate 缺 matrix path、高价值 gap 或 exact Queue final outcome | closure `handoff`；保留 candidate |
 | bootstrap 非 `continue` | 不读取 closure/target；精确清理 matching cron 后 `STATUS: ERROR` |
@@ -957,7 +966,7 @@ Python 入口保持 `parse_autopilot_args(argv, *, round_defaults=False)` 和
   同 finding 显式重跑可恢复。
 - Good：`/autopilot localhost --deep --normal --max-lanes 2` 在两条 substantive lane 后留下
   durable queue，并以 handoff 自然结束；下一会话从 queue 继续。
-- Good：`/loop 10m /autopilot-round localhost` 每轮默认只消费三条 lane；终态从 owner 投影为
+- Good：`/loop 10m /autopilot-round localhost --max-lanes 3` 每轮按显式上限消费三条 lane；终态从 owner 投影为
   DONE/EXHAUSTED 后取消 recurrence，重复调用不再执行 target action。
 - Good：lane 工具完成并写 evidence 后、final closure 前发生 context loss；下一轮读取 terminal
   heartbeat，跳过重复网络请求并继续其 next action/closure。

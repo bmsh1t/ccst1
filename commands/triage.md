@@ -47,7 +47,7 @@ use /report when deferred text or a new delivery is needed."
 **KILL [reason]:**
 - "Q1 fails — no target-bound reproducible artifact yet"
 - "Q4 fails — the required precondition is unreachable or out of scope"
-- "Q7 fails — open redirect alone is not submittable. Chain it with OAuth theft first."
+- "Q7 destination exclusion — preserve the proven primitive and record that destination's rule; missing OAuth impact is a separate CHAIN REQUIRED claim."
 
 **DOWNGRADE:**
 - "Q6 — the current artifact does not prove the claimed impact. Collect the lowest-risk missing differential before reporting."

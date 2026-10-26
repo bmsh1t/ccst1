@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic orchestration for one bounded Autopilot round.
+"""Deterministic orchestration for one resumable Autopilot round.
 
 Round persistence remains owned by ``checkpoint`` and its existing state
 readers.  This module only fixes the order in which those owners are called.
@@ -136,7 +136,7 @@ def _result(
 def prepare_round(
     repo_root: Path | str,
     target: str,
-    max_lanes: int,
+    max_lanes: int | None = None,
 ) -> dict:
     """Preflight Closure and start or resume the checkpoint-owned round.
 
@@ -144,7 +144,7 @@ def prepare_round(
     Repeating this operation while the round is active delegates to
     ``begin_round`` which preserves its round id and budget.
     """
-    if (
+    if max_lanes is not None and (
         isinstance(max_lanes, bool)
         or not isinstance(max_lanes, int)
         or not 1 <= max_lanes <= MAX_LANES
@@ -281,7 +281,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("operation", choices=("prepare", "settle"))
     parser.add_argument("--target", required=True)
     parser.add_argument("--repo-root", default=str(Path(__file__).resolve().parents[1]))
-    parser.add_argument("--max-lanes", type=int, default=0)
+    parser.add_argument("--max-lanes", type=int, help="Explicit lane limit; omitted means no project limit")
     parser.add_argument("--note", default="")
     parser.add_argument("--no-refresh-coverage", action="store_true")
     parser.add_argument("--json", action="store_true")
@@ -292,7 +292,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     operation = args.operation
-    if operation == "prepare" and args.max_lanes < 1:
+    if operation == "prepare" and args.max_lanes is not None and args.max_lanes < 1:
         parser.error("--max-lanes must be a positive integer for prepare")
     try:
         result = (

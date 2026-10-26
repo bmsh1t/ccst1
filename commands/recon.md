@@ -14,6 +14,11 @@ scanner; it is not a per-phase switch. No `--phase` or `--ffuf-rotation-only` ex
 The supplied target, IP, CIDR, or primary-domain batch list is already the active
 target context. Start directly with **Run This**.
 
+Inside an active `/autopilot`, this command is its collection step: retain the
+parent target/Scope, auth/context and any explicit user/host limits. Before target I/O, apply
+`skills/runtime-protocol.md#native-skill-loading` if src-hunter's body is absent.
+Follow [Return To Autopilot](#return-to-autopilot) after launching the pipeline.
+
 A brand/group name or otherwise ambiguous scope is not a target yet: read
 `rules/ccst/campaign.md` first and run the campaign layer (seed queue -> live-surface
 list) before invoking this pipeline per discovered surface.
@@ -77,6 +82,19 @@ Success signal:
   `recon/<list-stem>/<domain> -> ../<domain>` for browsing by source list.
 
 If these files are absent or empty, read the command output. Do not spend another turn restating the recon phases.
+
+## Return To Autopilot
+
+This section applies only when called from an active `/autopilot`. A background
+task ID or "you will be notified" message means collection is still running;
+keep the invocation active and use native TaskOutput/Read to wait, respecting any
+explicit parent limit. A collector timeout ends that operation, not Autopilot.
+Do not return a final answer or ask whether to continue.
+After completion, read the exit result and manifest, refresh Autopilot state,
+then perform Surface Review and continue the parent investigation in this session.
+Partial collection retains usable material and unknowns; it is not a target-wide
+blocker. Only the parent's Finish Contract permits stopping. Standalone `/recon`
+still reports its own collection result without starting an autonomous hunt.
 
 ## AI-selected DNS expansion
 

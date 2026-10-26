@@ -29,14 +29,14 @@ description: |
 1. **越权验证 · 最小伤害（对齐 `src-value-hunting`）**  
    - **默认**：用读/列表差分证明跨用户·跨租户（优先 GET/查询）。  
    - **写越权**仍要测，不是「一律不许写」。顺序：**先添加**（看能不能挂到别人名下）→ **再删除自己刚加的那一条**。不要改/删别人已经存在的订单、地址、密码、角色。  
-   - 没有创建口、只能动现成对象时：只改自己能改回去的测试字段，打一次。改密 / 改角色 / 改绑按 §4.2.2 可探（拿掉旧验看过不过）；过了立刻改回。改不回就停在回包，不要把用户号的密、角色、邮箱留下。扣钱、清库存仍不做。禁止批量、禁止真资损。  
+   - 没有创建口、只能动现成对象时：先确认受控对象、原状态和恢复路径，再改测试字段一次并恢复核验。改密 / 改角色 / 改绑按 `dig-scope` §4.2.2 的写入前置条件执行；缺条件保留未验证，继续其它调查。扣钱、清库存仍不做。禁止批量、禁止真资损。
    - 禁止把「只读红线」理解成「写 IDOR 不用测」。  
-2. **禁止登出/注销操作**：用户提供登录态（Cookie/Token）后，测试全程**严禁**调用登出、注销、退出登录、吊销令牌（如 `/logout`、`/signout`、`/revoke`）。§4.2.2 有号测接管同样禁止；**不测**「退出后会话还有效」。保持用户会话始终有效。改绑 / 改密过了立刻改回，不要把用户号改死。  
+2. **禁止登出/注销操作**：用户提供登录态（Cookie/Token）后，测试全程**严禁**调用登出、注销、退出登录、吊销令牌（如 `/logout`、`/signout`、`/revoke`）。§4.2.2 有号测接管同样禁止；**不测**「退出后会话还有效」。保持用户会话始终有效；可能吊销会话的改绑 / 改密实验按 §4.2.2 换用独立受控测试账号。
 3. **CORS**：SRC 永久 **不挖**（`cors-vuln-report-priority`）。**勿开** `知识库/cors-test.md`。登录 / 重置 / 改绑仍测（`dig-scope` §4.2.2）。
 
 ### 自由跳节奏红线（与 `rules/dig-scope-workflow.md` §1.0.1 / §1.6 对齐 · 不可违反）
 
-模糊目标（只给集团名、没有 URL 清单）且用户未叫停时：
+先按 `rules/dig-scope-workflow.md` §0 沿用入口目标与 Scope；裸主域名及其 Scope 内子域调查不自动变成集团发现。以下仅适用于集团/品牌发现意图，且用户未叫停时：
 
 0. **「挖」+ 集团/品牌名：** 起手短表（和自由跳并行）。磁盘有 `*src经验.md` 才开专篇，没有不算缺。认到编程台 / Codex RPC 打开 `知识库/cloud-ide-codex-rce-chain.md`。**禁报假点 ≠ 根域永封**（工商公示不报，新 path 照打）。  
 1. **起手落盘** `campaigns/<slug>/seeds.md`：用户词 + 业务名/品牌 + SRC 范围域 + 全资子公司域（多条），禁止队列只有原词一条  
@@ -44,12 +44,12 @@ description: |
 3. **禁止**停工问：「要不要继续？」「其它品牌要不要也挖？」「下一步您看？」  
 4. **一轮搜完 ≠ 任务结束**；「本种子收工」= 该种子剩余活面已挖完再换种子，不是整场收工，也不是 FOFA 条数到手就换种  
 5. 回合结束前必读种子队列；有 pending 禁止以问句收尾停住  
-6. **打开是登录页：** 先找业务面（本 host 网关或跳转后的 host），没会话时主业挖未登录。登录表单看得见的打通或证伪就停；繁琐验证 / 别人的身份页 / 同皮壳不耗。清单里有发会话 / 重置 / 改绑 / 换票 → `dig-scope` §4.2.2（有入口勾，无入口 N/A）。看见登录页不是换资产。**不是登录相关一律不管**（`dig-scope` §4.1.1）。进了会话立刻转 §4.2.3（对象图/换 id），不要还打引号。  
+6. **打开是登录页：** 先找业务面（本 host 网关或跳转后的 host），没会话时主业挖未登录。登录表单看得见的打通或证伪就停；繁琐验证 / 别人的身份页 / 同皮壳不耗。清单里有发会话 / 重置 / 改绑 / 换票 → `dig-scope` §4.2.2（有入口勾，无入口 N/A，缺写入条件保留未验证并继续其它调查）。看见登录页不是换资产。**不是登录相关一律不管**（`dig-scope` §4.1.1）。取得会话后按 §4.2.3 补对象/身份对照，下一调查按 `src-value` §1.1 取舍。
 7. **进站打法**只认 `dig-scope` §4。本文件不另写一套。  
 
 挖什么：`src-value-hunting`。正式报告只认 `vuln-report-format.md`。材料与清理：`desktop-task-folder`。CORS 不挖：`cors-vuln-report-priority`。与知识库冲突时 **以 rules 为准**。
 
-测绘节奏只认 `dig-scope` 一种子闭环。FOFA 语法最短备忘在 `知识库/recon-methodology.md` 文首，**不是**本技能开场。搜资产用 MCP `fofa`，不要自己 curl。三账号（主号 → backup → backup2）由 `mcp-servers/fofa_MCP/` 的 `fofa.py` 自动切（凭据来自宿主环境），限流闸认 `dig-scope` §2.1.4。**禁止**把 email / key 写进本文件或对话。
+集团/品牌发现的测绘节奏只认 `dig-scope` 一种子闭环；具体目标的 Recon 仍按调用命令执行。FOFA 语法最短备忘在 `知识库/recon-methodology.md` 文首，**不是**本技能开场。搜资产用 MCP `fofa`，不要自己 curl。三账号（主号 → backup → backup2）由 `mcp-servers/fofa_MCP/` 的 `fofa.py` 自动切（凭据来自宿主环境），限流闸认 `dig-scope` §2.1.4。**禁止**把 email / key 写进本文件或对话。
 
 ---
 
@@ -175,12 +175,12 @@ Scope/Auth、Action claim、operation/observation、cleanup 和报告发布使�
 | Candidate 证明、影响分级、反证/撤回、技术与交付分离 | [triage-validation](modules/triage-validation.md) |
 | 已接受结果的正文、可追溯原件、脱敏与发布 | [report-writing](modules/report-writing.md) |
 | 明确 in-scope 的 trigger/ref、runner、凭据/制品/部署边界 | [cicd-security](modules/cicd-security.md) |
-| 明确 in-scope 的 Android/iOS build、静态/动态/后端差分 | [mobile-pentest](modules/mobile-pentest.md) |
+| 明确 in-scope 的 Android/iOS build、本地受保护数据/组件边界、静态/动态/后端差分 | [mobile-pentest](modules/mobile-pentest.md) |
 | 明确 in-scope 的合约、chain/source/bytecode、不变量/签名/oracle | [web3-audit](modules/web3-audit.md) |
 | 明确 in-scope 的 token/program、authority、LP、Token-2022/holder 影响 | [meme-coin-audit](modules/meme-coin-audit.md) |
 
 这些是阅读导航，不是 Skill catalog、自动选路或九模块流水线。局部方法可组合、可返回
-反证或 unknown；全局转向仍由主会话决定。非 HTTP 合约/token 的既有 Store 接入限制不变，
+反证或 unknown；全局转向仍由主会话决定。非 HTTP 专项证据的既有 Store 接入限制不变，
 不能编造 HTTP identity。未授权的专项不因代码名、品牌或研究身份自动执行。
 
 ## Evidence-Driven Rotation
@@ -189,7 +189,9 @@ Scope/Auth、Action claim、operation/observation、cleanup 和报告发布使�
 以下 fingerprint 用于说明证据增量及 Coverage 边界，不替代原规则的肥瘦/同闸判断：
 比较 `hypothesis + surface + actor/state + observation kind + evidence reference`
 与上次结果：解释变化、未知减少或 connector 可检验时继续；同质无增量、重复 fingerprint、
-owner 预算边界或前提缺失时重新取舍；高信息结构信号可以立即转向。真实 kill condition
+owner 预算边界或前提缺失时重新取舍；高信息结构信号可调整下一调查，强技术线索按
+`rules/src-value-hunting.md` §1.1 判断。任何转向前，已发执行的证据回收、未知效果恢复
+和必要清理先完成。真实 kill condition
 才支持条件化否定。时间、低收益、预算结束或 scanner-negative 不能证明覆盖/耗尽。
 
 路径决策或真实 handoff 时保存证据增量（含无增量）、剩余前提与重开条件；同一现场内

@@ -82,7 +82,7 @@ Planner, Controller, model loop, automatic chain generator, or session manager.
 
 Autopilot is an automatic execution mode, not a second investigation workflow.
 Manual and automatic entries share `skills/src-hunter/SKILL.md` as the only native
-Skill, its complete problem-scoped internal modules, the memory protocol, Rules and owner APIs. Autopilot adds continuation, waits, budgets, read-only checkpoint cadence and handoff;
+Skill, its complete problem-scoped internal modules, the memory protocol, Rules and owner APIs. Autopilot adds continuation, waits, explicit-limit handling, read-only checkpoint cadence and handoff;
 it does not own different finding, evidence or report standards. Shared execution
 contracts are read on demand and never enable automatic continuation by themselves.
 
@@ -102,7 +102,7 @@ wrappers or local cognitive extractors. Live `/intel` retains its independent
 advisory/version/provider/freshness contract. Observation residuals can prevent
 an exhaustion claim without creating a mandatory next action; the current
 session can end while keeping those residuals visible when the entry's stopping contract is met.
-Handoff preserves continuity; it is not by itself a stopping reason. User/scope/budget boundaries,
+Handoff preserves continuity; it is not by itself a stopping reason. User/scope/explicit-limit boundaries,
 actual blockers or evidence-based investigation judgment decide when to stop, not report counts or
 automatic coverage enumeration. Both Autopilot modes consume fresh post-action state.
 
@@ -110,8 +110,11 @@ State acquires owner facts; `autopilot_gate` builds their continuation projectio
 Legacy action tokens, compact views and lane hints derive from that projection;
 multiple owner items remain available for Claude to choose. Closure keeps its own
 evidence verdict and shares only the reason-to-continuation rendering. Empty owner
-work returns to investigation. Round retains claims, budgets and recovery under
-the same Autopilot loop.
+work returns to investigation, with `run_recon` as the empty new-target default
+under Shared Automation, not a prerequisite for existing evidence. Round retains
+claims, optional explicit lane caps and recovery under the same Autopilot loop.
+Neither mode assigns a default whole-investigation time, cost or lane budget.
+Per-operation timeouts, rate limits and review allocations remain local execution bounds.
 
 Recon's Shell owns execution, rate/time bounds, workers and raw-file lifetime.
 Its FFUF phase runs synchronously while retaining bounded per-origin workers;
@@ -175,6 +178,7 @@ Temporary notes, matrices and campaign seeds cannot become another target lifecy
 Campaign seeds retain cross-target discovery progress and references to established targets.
 The original rules own investigation cadence and default SRC
 prose; CCST retains Scope/Auth, claims, observations, cleanup and publication owners.
+Explicit Autopilot integration follows `docs/ccst-runtime-adapter.md`.
 The original S52's missing Phase 0 and other source defects stay visible. Browser
 and FOFA support assets are in `bin/` and `mcp-servers/`; their presence does not
 configure or enable an MCP host. Original Grok user guides are source material under

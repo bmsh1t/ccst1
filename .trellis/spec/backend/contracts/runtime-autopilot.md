@@ -19,7 +19,7 @@ mechanical safety, evidence and recovery constraints govern execution.
 - `load_closure_projection(repo_root, state, ...)` reacquires owner snapshots.
 - `build_decision_projection(state, "closure"|"loop_check")` preserves the
   canonical `owner_continuations` view and relevant residual diagnostics.
-- `prepare_round(repo_root, target, max_lanes)` and
+- `prepare_round(repo_root, target, max_lanes=None)` and
   `settle_round(repo_root, target, *, note="", refresh_coverage=True)` return
   `status=review_required` for the exact first-reason cases below.
 
@@ -36,11 +36,26 @@ mechanical safety, evidence and recovery constraints govern execution.
   checkout-file reading on a host without that tool. Description/manifest/hash
   metadata is not body context. The original description remains unchanged for
   native discovery; no Python selector, Store load receipt or per-lane invocation.
-- Skill application retains the same session, target/Scope, mode and remaining
-  budget. Waits, terminal cleanup and execution recovery do not require a fresh
+- Skill application retains the same session, target type/Scope, mode and any explicit
+  user/host limits, or `unset`. Waits, terminal cleanup and execution recovery do not require a fresh
   Skill call. Shortlist and complete relevant methods follow Shared Knowledge Recall;
   internal modules stay problem-scoped. Owner continuations supply pending work,
   while the model uses src-hunter and current evidence to choose questions/methods.
+- `rules/dig-scope-workflow.md` §0 owns target classification: domain (including
+  a bare primary domain), IP/CIDR, host:port, URL and target list are fixed-target
+  inputs. In-scope subdomain discovery does not imply group/brand discovery.
+  Missing history/material or Skill loading must not create a campaign seed queue.
+  Shared Automation starts new/empty targets without prior work or usable supplied
+  evidence with Recon; existing work and usable supplied evidence retain their
+  recovery/direct-investigation paths. The Skill/module guidance preserves this
+  command contract without another controller or a universal inventory gate.
+  The 6k/Autopilot integration boundary lives in `docs/ccst-runtime-adapter.md`;
+  command-specific control changes do not rewrite shared 6k investigation rules.
+- Nested `/recon` retains the active Autopilot invocation. A background handle
+  requires bounded native waiting, followed by fresh state, Surface Review and
+  investigation; it grants no final response or "continue?" stop. Its standalone
+  collection behavior is unchanged. The consumed Recon command is critical runtime
+  content, so an older installed copy cannot silently omit this return contract.
 - A loaded Skill/shortlist does not establish method use. Read and apply complete
   relevant methods before the selected question's first request, reusing body
   context when present. New identity/permissions
@@ -49,24 +64,36 @@ mechanical safety, evidence and recovery constraints govern execution.
   a missing session as a local blocker. No mandatory login or exhaustive grid.
 - Both modes refresh post-action state; round mode first writes its terminal
   heartbeat. `handoff` returns to investigation in this session unless an actual
-  user/scope/budget boundary, demonstrated blocker or evidence-based no-worthwhile-
+  user/scope/explicit-limit boundary, demonstrated blocker or evidence-based no-worthwhile-
   next-question judgment justifies stopping. Report counts, anonymous denial and
   missing-but-obtainable sessions alone do not. Explain valuable unpursued leads.
   `loop_guard=continue` is advisory, not an endless execution mandate. Pending
   owner work requires continuity when stopping; handoff itself grants no stop or
-  exhaustion claim. Round budgets retain their existing boundary.
+  exhaustion claim. Neither entry assigns default whole-investigation time, cost or
+  lane limits. Unset limits do not authorize inventing a deadline or write-back cutoff.
+  Saved active Round limits remain authoritative across resume.
   Writer/object-cleanup failure constrains that operation; assess independent
   business paths before treating it as a blocker to useful target-wide work.
-  Budget stops cite the actual current clock and applicable allocation/reserve;
+  Explicit-limit stops cite their user/host source and actual clock/count/cost receipts;
   resume retains the old boundary unless explicitly reallocated. Cumulative cost
   needs the allocation's baseline, retained across resume unless reallocated;
   unavailable cost is unknown, not exhausted.
-- Shared Automation explicitly invokes the thin `recon-ranker` after multi-subdomain
-  or multi-business-surface Recon, including resumed material without a retained review.
-  Stagnation/finish review needs a concrete unresolved prioritization or missed-path
-  question; unchanged material/question reuses its existing answer/handoff. No call
-  merely per lane/round. User/scope/budget stops and execution recovery take precedence.
-  Other specialists remain optional bounded questions within the same budget.
+- Shared Automation compares available business and technical surfaces in the parent
+  after Recon. The thin `recon-ranker` is an optional second opinion for a concrete
+  prioritization or missed-path question that benefits from independent review.
+  Multiple subdomains, first post-Recon selection, resume/compaction or lane/round
+  completion alone do not trigger delegation; a clear next experiment proceeds inline.
+  When selected, its existing content pack and single review include both surfaces,
+  evidence refs and missing material. `rules/src-value-hunting.md` §1.1 owns default
+  priorities and evidence-backed changes; no technical quota, score or new selector.
+  Technical clues can precede routine object tests, but never execution recovery or
+  cleanup. Missing material stays unknown; deferred paths remain untested.
+  Unchanged material/question reuses its existing answer/handoff. User/scope/budget
+  stops and execution recovery take precedence. The optional ranker stays outside
+  the critical runtime manifest; its missing/drift status is advisory, not a startup gate.
+  Other specialists remain optional bounded questions respecting any explicit limits.
+  A review's local deadline does not end the parent investigation; an unset parent limit
+  is valid and does not prevent a concrete review allocation.
   Ranker review sends no target requests, writes no state, creates no lane and cannot
   decide Closure or extend `max_lanes`. Unavailable/failed native Agent is explicit
   incomplete independent review; the parent continues its own investigation.
@@ -125,11 +152,35 @@ mechanical safety, evidence and recovery constraints govern execution.
   preserved for Claude's selection. Recovery items precede new work in rendered
   hints without replacing the business token. Active lock tokens remain
   `wait_recon`/`wait_scan`; compact and loop views consume this projection, not
-  separate owner priorities. Empty work returns to investigation.
+  separate owner priorities. Empty work returns to investigation. For a truly
+  empty single target, the same projection defaults to `run_recon` with lane
+  `recon-and-surface` and selection mode `fallback`, never a hard gate or Queue item.
+  Resume's existing Store binding (revision zero means initialization only),
+  saved memory, raw claims, runtime/Recon records, browser/source/scan material,
+  observation/Surface health and claimed Round work prevent treating prior work
+  as empty. Missing Recon alone never requires restarting it; partial/zero-result
+  collection and invalid cached material retain their diagnostics and recovery.
+  Conversation-supplied usable evidence can override this initial default at the
+  command layer. State passes its cached observation/Surface facts into this
+  projection before deriving all action/lane fields. Both modes use the same
+  stat-based Recon control facts; full diagnostics retain exact counts separately.
+  FFUF raw files without a summary remain prior material, through the existing
+  adapter's metadata-only missing-summary view; no extra Store scan or schema.
   The same gate owns the existing Guard fallback: only empty-frontier fallback
   with Recon and all tracked hosts cooling changes `next_action`/`fallback_action`
   to `guard_safe_pivot`. `primary_next_action` stays the original owner hint;
   lock, recovery, owner priority, lane and Intel exemptions remain unchanged.
+  Regression history: `76d16e6` removed the initial Recon branch while removing
+  the blanket inventory gate; `bd619ea` made empty work fall back to `handoff`.
+  Regress the real initialized Store path, not just the untouched-target shortcut
+  or rendered instruction text. Native acceptance must verify expanded Bootstrap
+  and complete Skill body delivery, actual requests and return/finish behavior;
+  keep input open through background completion. Local 2026-10-26 acceptance
+  restored Skill→Recon startup, but still observed probes during Recon, omitted
+  method reads and early finish with budget/leads remaining. Two published lab
+  reports do not establish full automation acceptance or stable model obedience.
+  That run used the earlier global-rule edits, now withdrawn. Its model behavior
+  does not validate the narrowed, adapter-only integration wording.
 - Closure builds recovery descriptions only through `_closure_reason_frontier`.
   Finalization preserves fixed reason precedence/verdict, retains independent
   checkpoint recovery under a primary Round reason, and replaces duplicate
@@ -214,7 +265,7 @@ mechanical safety, evidence and recovery constraints govern execution.
   source/report refs under `hunt-iter`. Pending candidates survive pause/switch/
   compaction through existing memory/handoff. Campaign seeds retain unbound
   cross-target progress; notes and seeds do not prove target completion.
-- Round budgets and explicit lane completion remain mandatory. Budget exhaustion
+- Explicit Round limits and lane completion remain mandatory. Reaching a supplied limit
   alone creates no new work. `recon_phase_partial` binds its recovery head to the
   actual phase, artifact and remaining count; other Recon work cannot substitute.
 - A first Closure reason of `global_review_required`, `global_review_stale`,
@@ -264,6 +315,14 @@ new round. Ordinary settlement without a review reason retains its prior status.
   priority; unavailable Skill tools use complete native file reads. Verify unchanged
   description and absence of a second controller. Prompt/diff checks establish the
   written contract only; actual host/model invocation requires separate live evidence.
+- For investigation priority and Recon review, compare ordinary business evidence,
+  a target-bound technical clue, an unverified product name, missing technical material
+  and pending execution recovery. Parent review and any selected ranker pack consider both
+  surfaces; strong evidence may change the next question under src-value §1.1,
+  while weak signals cannot force priority and deferral cannot count as coverage.
+  Preserve command arguments, selected-review budget/wait and owner boundaries.
+  Multiple hosts or first/resumed selection must not force a ranker call. In an isolated
+  runtime copy, missing/drifted ranker is advisory while a missing core Skill remains critical.
 
 `tests/test_autopilot_round.py` covers all four exact reasons at prepare and both
 settle paths, unchanged witness/Store on completed replay, active close ordering,
@@ -342,7 +401,7 @@ wiring changes.
 ### 2. Signatures
 
 - Inline command: `/autopilot <target> [--paranoid|--normal|--yolo] [--quick] [--deep] [--max-lanes N] [--auth-file PATH] [--context-file=PATH]`
-- Parser: `parse_autopilot_args(argv, cwd=None) -> dict`
+- Parser: `parse_autopilot_args(argv, cwd=None, *, round_defaults=False) -> dict`
 - Capability profile: `build_capability_profile(repo_root=None, *, which=shutil.which) -> dict`
 - Capability degraded marker: `load_capability_degraded_marker(runtime_root=None)` /
   `write_capability_degraded_marker(runtime_root=None, *, reason, missing, source, profile)` /
@@ -364,6 +423,12 @@ wiring changes.
   canonical target fields, URL `seed_url`, auth-file fields, cadence fields,
   `recon_flags`, `hunt_auth_flags`, and `errors`. It exits zero for invalid argv
   so the prompt can consume the structured action.
+- Both entry modes omit a lane cap by default: `max_lanes=null`,
+  `invocation_batch.bounded=false`, `handoff=normal_finish_condition`.
+  `round_defaults=True` changes only cadence/deep to normal/true; it never supplies
+  a numeric limit. Explicit `--deep --max-lanes N` retains its 1..32 validation and
+  existing handoff contract. Unset whole-run limits do not disable per-operation
+  timeouts, collector batches, rate/concurrency controls or evidence recovery.
 - Bootstrap order is args -> Scope/context and explicit/bound Auth validation ->
   read-only runtime compare -> advisory capability profile -> explicit single-target
   Store initialization -> compact target state. Explicit/bound auth is parsed by

@@ -19,12 +19,13 @@ assessment and destination. Preserve their exact IDs and artifact references.
 Historical validation-summary booleans are diagnostics, not report authority.
 Before drafting, directly read the complete `rules/vuln-report-format.md`
 and `docs/ccst-runtime-adapter.md`.
-The original 6k rule owns default SRC prose, language, chapters and layout;
+The original 6k rule owns default SRC severity, reportability, prose, language, chapters and layout;
 this module binds that authored body to CCST evidence/publication. Already-read
 complete bodies at the same version may be reused. `report_generator.py` does not
 fill in category narratives.
-Submit its body with explicit Finding, current assessment and eligible delivery IDs using
-`commands/report.md`. Missing text stays pending; finalize screenshots and wording before
+The main session submits the body with explicit Finding, current assessment and eligible delivery IDs using
+`commands/report.md`. A delegated report-writer returns draft bytes/path and bindings to the parent;
+it does not invoke validation, registration or publication. Missing text stays pending; finalize screenshots and wording before
 publication because registered bytes are immutable. A draft may record uncertainty without
 claiming a reportable vulnerability. The publisher checks bindings, not the truth of prose.
 Known, duplicate, or accepted-risk status may reject one destination without

@@ -42,8 +42,9 @@ Queue/Store 不持有 Skill 注册表或知识推荐状态。
 `skills/src-hunter/SKILL.md`。description、路径或 hash 不能代替正文；压缩后缺失须恢复，
 不按 lane/round 重复调用。等待、终态清理和执行恢复无需新调用。
 在同一会话中携带当前目标/Scope、事实、模式和剩余预算应用它；不新开调查或委派。
+沿用入口已确定的目标类型与 Scope；加载技能不将域名重判为集团发现，启动顺序仍归当前命令。
 原生调用示例（填入当前事实，不传占位符）：
-`Skill({"skill":"src-hunter","args":"目标/Scope=…；当前问题/事实=…；deep=…；剩余预算=…"})`。
+`Skill({"skill":"src-hunter","args":"目标类型/Scope=…；新目标或续接/已有材料=…；当前问题/事实=…；deep=…；剩余预算=…"})`。
 工具 schema 或安装命名空间不同则使用宿主实际暴露的名称。
 方法读取按 Shared Knowledge Recall，加载 Skill 或短表不等于已经应用具体方法。
 

@@ -30,12 +30,14 @@ conclusion.
 ## Evidence-Driven Decision Tree
 
 Select the branch with the clearest expected learning, highest plausible value,
-and lowest reversible cost. Branches are alternatives, not a mandatory order.
+and lowest reversible cost, after applying the invoking command's startup and
+recovery requirements. Branches are alternatives, not a mandatory order.
 
 | Observed state | Preferred decision | Handoff |
 |---|---|---|
 | No active target or scope context | Establish the target record and stop before network work | `commands/target.md` / runtime protocol |
-| No inventory or a materially stale inventory | Compare available request/source/browser evidence and the current information gap; choose bounded collection only if useful | Native evidence or explicitly selected `/recon TARGET [--quick|--deep]` |
+| New/empty `/autopilot` target with no prior work or usable supplied evidence | Start target I/O with Recon under the invoking command's startup contract, retaining seed URL and auth/context | `commands/autopilot.md#shared-automation` |
+| Existing target or usable supplied evidence, with missing or materially stale inventory | Compare available request/source/browser evidence and the current information gap; choose bounded collection only if useful | Native evidence or explicitly selected `/recon TARGET [--quick|--deep]` |
 | Inventory exists but the valuable surface is unclear | Refresh the bounded Surface view and ask one feature-level question | `/surface`, `tools/surface.py` |
 | Browser, JS, source, schema, or history names a missing host/path/parameter | Choose one evidence-linked expansion, not a generic dictionary | `tools/dns_expand.py --reason <evidence>`, focused FFUF, native Read/Grep |
 | Authenticated API exposes object or role state | Compare the same object/action across owned actors before broad probes | `knowledge/playbooks/web2-evidence-contracts.md`, actor-pair evidence |
@@ -73,7 +75,7 @@ Host/SNI comparison candidates.
 
 Within the question supplied by the main session, choose the collection method
 that best distinguishes the competing explanations with reversible cost. Return
-new business/actor/workflow evidence, unexpected high-value signals and proposed
+new business/actor/workflow and component/protocol/source evidence, unexpected high-value signals and proposed
 pivots to `skills/src-hunter/SKILL.md`; Recon does not rank the whole target or
 own global stopping. Technology narrows a local hypothesis, not a finding.
 

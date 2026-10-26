@@ -204,13 +204,12 @@ curl -X POST "https://oauth.target.com/token" \
 https://target.com/callback#access_token=TOKEN&token_type=Bearer
 
 # 风险:
-# 1. Referer 泄露（访问外部链接时）
+# 1. 当前页面脚本读取 location.hash/href 后主动传出
 # 2. 浏览器历史记录
-# 3. 日志记录
+# 3. 客户端遥测主动采集完整 URL（fragment 不在普通服务端访问日志里）
 
-# 测试: 在回调页面插入外部资源
-<img src="https://attacker.com/log">
-# 检查 attacker.com 日志是否收到 Referer 含 token
+# 测试: 在受控回调链中检查页面脚本/跳转是否实际把 token 传到非预期来源
+# URL fragment 不进入 HTTP Referer 或 document.referrer；只加载外部图片不能证明它泄露
 ```
 
 ### 2.6 PKCE 缺失测试
@@ -630,7 +629,7 @@ python3 jwt_tool.py JWT -X s -ju https://attacker.com/malicious-jwks.json
 
 ## 7. OAUTH 2.0 — STATE PARAMETER MISSING (CSRF)
 
-State parameter prevents CSRF in OAuth. If missing:
+Check how the callback is bound to the initiating browser session. Missing `state` alone does not prove CSRF; equivalent validated session/PKCE binding may prevent code injection. Test with two controlled identities:
 
 ```
 Attack:
@@ -639,8 +638,11 @@ Attack:
 
 2. Get the authorization code (stop before exchanging it)
 3. Craft URL: https://target.com/oauth/callback?code=ATTACKER_CODE
-4. Victim clicks that URL → their session binds to ATTACKER's OAuth identity
-→ ACCOUNT TAKEOVER
+4. Controlled victim browser opens that URL; verify the final authenticated identity.
+→ If the browser is logged into the attacker's account: login CSRF, not victim-account takeover.
+→ If the attacker's identity is linked to the victim's existing account and the attacker can
+  independently log in as that victim: account-linking takeover. Prove that extra transition;
+  account writes still require dig-scope §4.2.2 recovery conditions.
 ```
 
 ---
@@ -677,8 +679,8 @@ redirect_uri=urn:ietf:wg:oauth:2.0:oob  (mobile apps)
 Implicit flow: token sent in URL fragment `#access_token=...`
 
 **Fragment leakage scenarios**:
-- Redirect to attacker page: fragment accessible via `document.referrer` or via `<script>window.location.href</script>` in target page
-- Open redirect: `redirect_uri=https://target.com/open-redirect?url=https://attacker.com` → token in fragment lands at attacker's page
+- A page's script can read its own `location.hash/href`; `document.referrer` never contains a fragment. Prove an actual transmission to a non-authorized origin before claiming leakage.
+- An open redirect may preserve/inherit a fragment: trace the real redirect chain to a controlled landing page and verify the token appears in that page's own `location.hash`. A redirect parameter alone does not prove this path.
 
 ---
 
@@ -696,12 +698,13 @@ Attack: During token exchange, add scope=admin or scope=read:admin
 ## 11. TOKEN LEAKAGE VECTORS
 
 ### Referer Header
-Token in URL → page loads external resource → Referer leaks token:
+Query tokens may leak under a Referrer-Policy that sends the full URL to that destination; default cross-origin policies often send only the origin. Fragments are always excluded from Referer:
 ```
-https://target.com/dashboard#access_token=TOKEN
+https://target.com/dashboard?access_token=TOKEN
 → HTML loads: <img src="https://analytics.third-party.com/track">
-→ Referer: https://target.com/dashboard#access_token=TOKEN
-→ analytics.third-party.com sees token in Referer logs
+→ Inspect the actual Referer under the page's policy; do not assume the query is sent.
+https://target.com/dashboard#access_token=TOKEN
+→ The fragment is absent from Referer regardless of policy.
 ```
 
 ### Server Logs
@@ -741,7 +744,7 @@ CDN logs
 □ Test redirect_uri manipulation (open redirect, prefix match, path confusion)
 □ Can tokens be exchanged more than once?
 □ Test scope escalation during token exchange
-□ Implicit flow: check for token in Referer/history
+□ Implicit flow: check location.hash, actual redirect/script transmission and history; fragment never enters Referer
 □ PKCE: can code_challenge be bypassed or code_verifier be empty?
 □ Check for authorization code reuse (code must be single-use)
 □ Test account linking abuse: link OAuth to existing account with same email

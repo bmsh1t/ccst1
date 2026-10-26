@@ -6,7 +6,7 @@
 适用：Use only when a token, liquidity pool, or Solana program is explicitly in scope. Separates token identity, authority state, market/liquidity state, and holder impact to choose the next branch within the allowed simulation boundary; command and probe knowledge remains on demand, and a centralization note alone stops before promotion.
 
 Separate token identity, authority state, market/liquidity state, and holder
-impact. Select the next branch from observed chain data and the allowed
+impact. Select the next branch from source interfaces, recorded fixture state or observed chain data and the allowed
 simulation boundary; concrete command and probe knowledge remains on demand.
 
 ## Direct Execution Contract
@@ -17,15 +17,17 @@ contrary evidence and unknowns as well as results; propose global pivots to the
 main session. Same-session reading requires no handoff form. Expert self-report
 does not resolve Action or confirm Finding.
 
-- Entry: Invoke only for an explicitly scoped token or program. Require chain
-  and network, mint/contract identity, source or bytecode revision when
-  available, and a read-only, simulation, or transaction boundary.
-- Evidence: Before promotion, retain address and revision, authority/role
+- Entry: Invoke only for an explicitly scoped token or program. Source review binds
+  revision, simulated roles/state and the permitted local analysis/simulation boundary.
+  Deployed-behavior claims additionally require chain/network, mint/contract,
+  implementation and current authority/state evidence.
+- Evidence: Before promotion, retain revision/local-fixture identity (and deployment when claimed), authority/role
   evidence, verified source or decoded instruction, clean transfer or read-only
   baseline, smallest controlled variant, and impact read-back. Scanner or
   branding signals are leads only.
-- Stop: Stop when token/network identity, authority data, or reproducible impact
-  is unavailable; when the result is only a centralization note; or when a live
+- Stop: Stop the affected claim when revision or reproducible impact is unavailable;
+  missing deployment/authority state blocks deployed-behavior claims, not source analysis.
+  Stop when the result is only a centralization note or when a live
   trade or irreversible action would be required. Hand bounded candidates to
   `triage-validation`.
 
@@ -35,8 +37,9 @@ Branches are alternatives, not a required sequence. Choose the highest expected
 information gain and lowest reversible cost; follow another evidence-supported
 branch or stop when the invariant is preserved and no new question remains.
 
-- Identity or chain state is unknown -> resolve the mint/contract, deployment,
-  program revision, and current authority set before interpreting code.
+- Source revision is unknown -> resolve it before interpreting code. Record local
+  roles/state assumptions for simulation; resolve mint/contract, deployment and current
+  authority separately before making claims about a live token.
 - EVM token -> inspect mint, transfer restrictions, fee controls, ownership,
   upgrade, and liquidity-consumer branches according to observed interfaces.
 - Solana or Token-2022 program -> inspect mint/freeze/update/close authority,
@@ -79,8 +82,8 @@ a reason to exhaust every branch. Global priorities belong to the main session.
 
 ## Phase Checkpoints
 
-- Identity checkpoint: bind address, chain, deployment/revision, authority set,
-  and permitted value boundary.
+- Identity checkpoint: bind revision/local fixture, actor/authority assumptions and
+  permitted value boundary; add address, chain and current deployment/state when claimed.
 - Baseline checkpoint: capture a clean read or test-owned transfer/simulation,
   including actor, amount, pool, and resulting state.
 - Pivot checkpoint: after a bounded branch yields no authority, asset, or holder
@@ -95,11 +98,13 @@ controlled baseline -> bounded variant -> holder/pool/permission state change ->
 repeatable read-back`. A scanner hit, retained authority name, low liquidity, or
 failed sell alone does not pass. A token age, liquidity amount, ownership label
 or source name cannot determine impact. Keep uncertainty and source/version
-references visible. Record `chain/contract/version -> invariant or trust boundary
+references visible. Record `revision/fixture (plus chain/contract for deployed claims) -> invariant or trust boundary
 -> baseline -> one changed condition -> observed state/value/authority delta
 -> impact -> stop/reopen condition` and preserve original source, transaction and
-analysis artifacts. `triage-validation` provides assessment methods;
-non-HTTP token/program evidence remains analysis material pending Store lifecycle
+analysis artifacts. `triage-validation` provides assessment methods.
+A local fixture or fork proves only its recorded revision, configuration and state;
+production exploitability requires matching deployment and state evidence.
+Non-HTTP token/program evidence remains analysis material pending Store lifecycle
 integration. Do not substitute a fictional HTTP identity for a program.
 Use `/validate` only for an actual target-owned HTTP(S) Finding; the parent owns publication.
 

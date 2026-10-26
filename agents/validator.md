@@ -122,7 +122,10 @@ evidence and output exactly one:
 
 - **PASS** — all required evidence and destination checks pass; return the decision
   for parent validation or consume its existing report receipts.
-- **KILL [Q#]** — the named question fails; do not report the candidate.
+- **KILL [Q#]** — name the failed premise and whether it is technical or delivery-only.
+  Q5/Q7 exclusion rejects or defers that destination while preserving confirmed
+  technical evidence. Missing text, severity metadata or policy input requests
+  completion; it is not a technical demotion or refutation.
 - **DOWNGRADE** — the evidence proves a lower impact; state the required change.
 - **CHAIN REQUIRED** — a concrete connector remains to be built and proved.
 
@@ -132,7 +135,7 @@ If the `burp` MCP server is available:
 
 1. For Q1's reproduction record, call `burp.get_proxy_history` filtered by the finding's endpoint
 2. Pull the exact request/response from proxy history — no need to ask the researcher to paste it
-3. Replay the request through Burp to confirm it's still reproducible right now
+3. For read-only review, reuse the captured request and response; return a missing-replay action to the parent. Replay only under an explicit execution handoff with Scope, claim and side-effect conditions satisfied
 4. If the finding involves OOB (SSRF, blind injection), check Collaborator for callbacks
 5. Cross-reference the endpoint's response headers/cookies with known vulnerable patterns
 
@@ -148,8 +151,8 @@ DECISION: [PASS / KILL Q# / DOWNGRADE / CHAIN REQUIRED]
 REASON: [One clear sentence explaining why]
 
 ACTION: [What researcher should do next]
-- PASS: "Apply /validate if needed and consume its receipts; /report only for deferred text or a new delivery."
-- KILL: "Do not report this candidate. Move on, or demote it to Lead/Signal with the next evidence action."
+- PASS: "Return the decision/evidence to the parent for /validate; consume its receipts. /report only for deferred text or a new delivery."
+- KILL: "Return the precise technical gap or destination exclusion. Preserve confirmed evidence for Q5/Q7 delivery failures; request missing evidence/metadata without rewriting owner state."
 - DOWNGRADE: "Collect the lowest-risk missing differential for the claimed impact, then re-triage"
 - CHAIN REQUIRED: "Prove [specific connector] end to end; combine only when the impact requires that path, preserving independent findings."
 ```

@@ -1,8 +1,8 @@
 # Reporting Rules
 
 This file owns cross-cutting evidence, delivery and publication checks.
-The complete 6k `rules/vuln-report-format.md` owns default SRC prose, language,
-chapters and layout; load it through the original reader with its runtime adapter.
+The complete 6k `rules/vuln-report-format.md` owns default SRC severity, reportability,
+prose, language, chapters and layout; read it with its runtime adapter.
 `skills/src-hunter/modules/triage-validation.md` owns validation verdicts;
 `skills/src-hunter/modules/report-writing.md` binds authored bytes to existing owners.
 Do not maintain another default format, title formula or word budget here.

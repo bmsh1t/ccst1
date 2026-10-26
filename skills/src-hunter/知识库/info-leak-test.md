@@ -188,7 +188,7 @@ curl -s "https://api.github.com/user" -H "Authorization: token $PAT"
 curl -s "https://api.github.com/user/repos?affiliation=owner&per_page=5" -H "Authorization: token $PAT"
 ```
 
-算成：me 是真人 login/姓名，且对该号仓 `permissions.admin=true`（能当这个 GitHub 号用）。官方 org 仓只有 pull 也要把个人仓 admin 写进危害。
+算成：带 PAT 的 `/user` 返回对应身份、无凭据对照失败，证明令牌被认可；影响只写该令牌实际允许的操作/资源。仓库 `permissions.admin=true` 是账号的仓库角色，不能推出该 PAT 有写仓/管理权限或完整账号控制。classic PAT 的 scope 头可辅助核对，fine-grained PAT 要看其资源/权限限制；能力用范围内最小只读请求证明，未测写入不宣称可写。
 
 假点：钥已吊销；`/user` 401；只是 GitHub App 安装令牌读公开 org。密钥实值只进正式报告，不进本篇。
 
@@ -239,12 +239,13 @@ curl -s "https://api.github.com/user/repos?affiliation=owner&per_page=5" -H "Aut
 打（不登录）：
 
 1. `GET /user/list` 拿 `access_key`+`secret_key`
-2. 对照：假 16 位 ak 打 `GET /user/akInfo?ak=` 应 `access key not exists`；真 ak 问出 `user_id`/user_type
-3. `GET /admin/getVol?name=` 看他用户业务卷（Owner / InodeCount）
+2. 对照：假 16 位 ak 打 `GET /user/akInfo?ak=` 应 `access key not exists`；实际 ak 问出 `user_id`/user_type。这是 AK 到账号的查询，未用 SK，不能认定密钥对有效
+3. `GET /admin/getVol?name=` 看范围内业务卷（Owner / InodeCount）；匿名查询成功单独证明元数据暴露，不证明使用了该 AK/SK
+4. 验证密钥对时，按该产品实际签名协议用 AK/SK 签一个范围内只读请求；同请求对照错误 SK/无签名，确认服务端确实校验签名及实际允许的资源。缺少签名接口/验证条件时保留 SK 有效性未验证
 
-算成：完整 AK/SK 且真钥问出身份/他用户业务卷。
+算成：分别记录完整凭证字段泄露、匿名用户/卷信息暴露；只有正确签名成功且错误 SK/无签名被拒，才确认该密钥对在该接口有效，不外推其它权限。
 
-假点：只出版本/集群名没有钥；list 空；真假钥同一句；只有自己的空测试卷。密钥实值只进正式报告，不进本篇。单站没中不删短表这行。
+假点：只出版本/集群名、list 空或字段是占位值。真假 SK 结果相同不能确认签名认证；卷为空不否定已观察的凭证字段泄露，但业务数据影响未证。密钥实值只进正式报告，不进本篇。单站没中不删短表这行。
 
 ```bash
 # 内网地址泄露

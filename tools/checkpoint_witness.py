@@ -129,17 +129,21 @@ def validate_round_progress(
         return {}
     if (
         not isinstance(progress, dict)
-        or progress.get("schema_version") != 1
+        or type(progress.get("schema_version")) is not int
+        or progress.get("schema_version") not in {1, 2}
         or progress.get("status") not in {"active", "completed"}
     ):
         raise ValueError("checkpoint round_progress is invalid")
 
     limit = progress.get("max_lanes")
+    unlimited = progress["schema_version"] == 2 and "max_lanes" in progress and limit is None
     claimed = progress.get("claimed_lanes")
     if (
-        isinstance(limit, bool)
-        or not isinstance(limit, int)
-        or not 1 <= limit <= MAX_LANES
+        (not unlimited and (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= MAX_LANES
+        ))
         or not isinstance(claimed, list)
         or any(
             not isinstance(item, str)
@@ -150,15 +154,20 @@ def validate_round_progress(
             for item in claimed
         )
         or len(set(claimed)) != len(claimed)
-        or len(claimed) > limit
+        or (not unlimited and len(claimed) > limit)
         or isinstance(progress.get("claimed_count"), bool)
         or not isinstance(progress.get("claimed_count"), int)
         or progress.get("claimed_count") != len(claimed)
-        or isinstance(progress.get("remaining_lanes"), bool)
-        or not isinstance(progress.get("remaining_lanes"), int)
-        or progress.get("remaining_lanes") != limit - len(claimed)
+        or (unlimited and (
+            "remaining_lanes" not in progress or progress["remaining_lanes"] is not None
+        ))
+        or (not unlimited and (
+            isinstance(progress.get("remaining_lanes"), bool)
+            or not isinstance(progress.get("remaining_lanes"), int)
+            or progress.get("remaining_lanes") != limit - len(claimed)
+        ))
         or not isinstance(progress.get("budget_reached"), bool)
-        or progress.get("budget_reached") != (len(claimed) >= limit)
+        or progress.get("budget_reached") != (not unlimited and len(claimed) >= limit)
     ):
         raise ValueError("checkpoint round_progress budget fields are invalid")
 

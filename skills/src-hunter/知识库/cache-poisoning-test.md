@@ -335,49 +335,22 @@ for header, value in headers_to_test:
 
 ### 7.3 缓存键探测
 
+先捕获已核对副作用的 baseline/variant 原件，再比较缓存信号；不自动生成随机 Host、路由或 POST。Body 对照必须保持方法、路径、身份和相关头一致，不能拿 GET 与带 Body 的 POST 把差异归因于 Body。
+
 ```python
-def detect_cache_key(url):
-    """探测缓存键组成"""
-    
-    import random
-    
-    components = {
-        "Host": f"test{random.randint(1000,9999)}.com",
-        "Path": f"/test{random.randint(1000,9999)}",
-        "Query": f"?test={random.randint(1000,9999)}",
-        "Method": "POST",
-        "Body": f"test={random.randint(1000,9999)}",
-    }
-    
-    results = {}
-    
-    # 测试每个组件
-    for component, value in components.items():
-        # 发送两次请求，第二次修改该组件
-        r1 = requests.get(url)
-        cache_status_1 = r1.headers.get('X-Cache', 'Unknown')
-        
-        if component == "Host":
-            r2 = requests.get(url, headers={"Host": value})
-        elif component == "Path":
-            r2 = requests.get(url + value)
-        elif component == "Query":
-            r2 = requests.get(url + value)
-        elif component == "Method":
-            r2 = requests.post(url)
-        elif component == "Body":
-            r2 = requests.post(url, data=value)
-        
-        cache_status_2 = r2.headers.get('X-Cache', 'Unknown')
-        
-        # 如果第二次是 MISS，说明该组件在缓存键中
-        if cache_status_2 == "MISS":
-            results[component] = "In cache key"
-        else:
-            results[component] = "Not in cache key"
-    
-    return results
+def cache_key_observation(baseline_headers, variant_headers):
+    """只整理已捕获响应头，不发请求、不把 HIT/MISS 当作键组成裁决。"""
+    def signals(headers):
+        normalized = {name.lower(): value for name, value in headers.items()}
+        return {name: normalized.get(name)
+                for name in ('x-cache', 'cf-cache-status', 'age', 'etag', 'vary')}
+
+    return {"baseline": signals(baseline_headers),
+            "variant": signals(variant_headers),
+            "cache_key_membership": "unknown"}
 ```
+
+缺头、Unknown、BYPASS、DYNAMIC，以及单次 HIT/MISS 均不足以确认输入是否入键。先在隔离测试对象上确认可缓存与正常复用，再做有界 A/B/A 对照：只改一个组件，关联实际响应内容、Age/ETag、缓存层与条目身份；MISS 可能来自冷缓存/过期，HIT 可能是变体已有独立条目。区分节点差异、Vary 和归一化。没有条目复用或独立分区的证据就保留未知，不能据此停止整条缓存调查。
 
 ---
 
@@ -850,8 +823,8 @@ curl "https://target.com/page?cachebuster=abc123" -v
 ### → X-Cache: MISS (new cache entry? or same as /page?)
 
 curl "https://target.com/page" -v
-### → X-Cache: HIT and response matches previous? Then /page is the key (query excluded)
-### → X-Cache: MISS? Then query IS in the key
+### HIT + matching body is only a signal; it may be a separate pre-existing entry.
+### MISS may be cold/expired/bypassed. Follow the controls in "7.3 缓存键探测" above; membership stays unknown without entry evidence.
 ```
 
 ### 3.5 Reflected Parameter in JavaScript

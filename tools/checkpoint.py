@@ -149,22 +149,22 @@ def _new_checkpoint_witness(target: str) -> dict:
     }
 
 
-def _new_round_progress(max_lanes: int) -> dict:
-    if (
+def _new_round_progress(max_lanes: int | None) -> dict:
+    if max_lanes is not None and (
         isinstance(max_lanes, bool)
         or not isinstance(max_lanes, int)
         or not 1 <= max_lanes <= MAX_LANES
     ):
         raise ValueError(f"max_lanes must be an integer from 1 to {MAX_LANES}")
     return {
-        "schema_version": 1,
+        "schema_version": 2 if max_lanes is None else 1,
         "round_id": f"round-{os.urandom(8).hex()}",
         "status": "active",
-        "max_lanes": int(max_lanes),
+        "max_lanes": max_lanes,
         "claimed_lanes": [],
         "lanes": [],
         "claimed_count": 0,
-        "remaining_lanes": int(max_lanes),
+        "remaining_lanes": max_lanes,
         "budget_reached": False,
         "started_at": now_utc(),
         "updated_at": now_utc(),
@@ -230,7 +230,7 @@ def _report_lane_binding(repo_root, target, finding_id, assessment_id, delivery_
     return binding
 
 
-def begin_round(repo_root: Path | str, target: str, *, max_lanes: int) -> dict:
+def begin_round(repo_root: Path | str, target: str, *, max_lanes: int | None = None) -> dict:
     """Start a round or resume the active round after an interrupted invocation."""
     path = _checkpoint_witness_path(repo_root, target)
     with checkpoint_witness_lock(repo_root, target):
@@ -261,13 +261,13 @@ def record_round_lane(
     target: str,
     *,
     lane: str,
-    max_lanes: int,
+    max_lanes: int | None = None,
     finding_id: str = "",
     assessment_id: str = "",
     delivery_id: str = "",
 ) -> dict:
-    """Atomically claim one stable lane ID against the active round budget."""
-    if (
+    """Atomically claim one stable lane ID, preserving any saved round limit."""
+    if max_lanes is not None and (
         isinstance(max_lanes, bool)
         or not isinstance(max_lanes, int)
         or not 1 <= max_lanes <= MAX_LANES
@@ -284,6 +284,7 @@ def record_round_lane(
             raise ValueError("round lane claim requires an active round; run --round-begin first")
         claimed = progress.get("claimed_lanes") if isinstance(progress.get("claimed_lanes"), list) else []
         lanes = progress["lanes"]
+        limit = progress["max_lanes"]
         if lane_id in claimed:
             lane_record = next(item for item in lanes if item.get("id") == lane_id)
             if any((finding_id, assessment_id, delivery_id)):
@@ -302,7 +303,7 @@ def record_round_lane(
                 "lane": {},
                 "round_progress": dict(progress),
             }
-        elif len(claimed) >= int(progress.get("max_lanes", max_lanes) or max_lanes):
+        elif limit is not None and len(claimed) >= limit:
             lane_record = {}
             status, allowed = "budget_exhausted", False
         else:
@@ -316,12 +317,11 @@ def record_round_lane(
                 lane_record["report_binding"] = report_binding
             lanes.append(lane_record)
             status, allowed = "claimed", True
-        limit = int(progress.get("max_lanes", max_lanes) or max_lanes)
         progress.update({
             "claimed_lanes": claimed,
             "claimed_count": len(claimed),
-            "remaining_lanes": max(0, limit - len(claimed)),
-            "budget_reached": len(claimed) >= limit,
+            "remaining_lanes": None if limit is None else max(0, limit - len(claimed)),
+            "budget_reached": limit is not None and len(claimed) >= limit,
             "updated_at": now_utc(),
         })
         _write_json_atomic(path, payload)
@@ -1633,7 +1633,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--expected-correction-id")
     parser.add_argument("--reason", default="")
     parser.add_argument("--actor", default="checkpoint")
-    parser.add_argument("--max-lanes", type=int, default=0)
+    parser.add_argument("--max-lanes", type=int, help="Explicit new-round limit; omitted means no project limit")
     parser.add_argument("--lane-status", default="")
     parser.add_argument("--review-status", default="")
     parser.add_argument("--decision", default="")
@@ -1706,7 +1706,7 @@ def main(argv: list[str] | None = None) -> int:
                     expected_round_id=str(args.round_id or "").strip(),
                 )
             else:
-                if args.max_lanes < 1:
+                if args.max_lanes is not None and args.max_lanes < 1:
                     raise ValueError("--max-lanes must be a positive integer")
                 result = (
                     begin_round(repo, resolved_target, max_lanes=args.max_lanes)

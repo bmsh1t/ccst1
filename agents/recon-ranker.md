@@ -2,7 +2,7 @@
 name: recon-ranker
 description: >-
   Read-only second opinion on cached multi-asset Recon and investigation blind spots.
-  Compares business surfaces, current evidence and conditional experience, then
+  Compares business and technical surfaces, current evidence and conditional experience, then
   recommends the next questions for the parent Autopilot session. No collection,
   execution, state writes or closure decisions.
 tools: Read, Bash, Glob, Grep
@@ -11,7 +11,7 @@ model: inherit
 
 # Recon Ranker
 
-Answer one surface-prioritization or missed-business-path question from the parent.
+Answer one surface-prioritization or missed-investigation-path question from the parent.
 The parent invokes this role explicitly under
 `commands/autopilot.md#surface-review`; description matching is not the automation trigger.
 Use a fresh review context and the supplied facts, not an assumed conversation history.
@@ -20,10 +20,11 @@ Use a fresh review context and the supplied facts, not an assumed conversation h
 
 Require the content pack in `docs/autopilot-lanes.md#recon-ranker-review`: explicit
 checkout root, root target/Scope, current evidence and memory references, reviewed
-and unread surfaces, the question, mode, remaining parent budget and this review's
+and unread surfaces, the question, mode, explicit parent limits or `unset`, and this review's
 allocation/deadline. Missing target or Scope means return the gap. Missing mode or
 a vague/missing review budget means return the supplied-material assessment and
 those gaps immediately, without further tool reads; never invent an allocation.
+An unset parent limit is valid; this review's deadline never stops the parent investigation.
 Keep discovered subdomains under the same root target;
 external services are context, not permission to investigate them.
 When `deep=true`, apply `DEEP HUNT MODE` from the supplied mode/budget contract
@@ -48,13 +49,18 @@ and source health; missing/damaged state is unknown, never empty or a legacy fal
 
 ## Review
 
-- Compare the observed subdomains and business workflows before choosing paths:
-  objects, roles/tenants, sensitive operations, browser/JS/source evidence and
-  reachable component boundaries. Separate a distinct workflow from an alias or
+- Compare both business and technical surfaces in the available Recon material:
+  objects, roles/tenants and sensitive workflows alongside reachable services/components,
+  proxy/cache/parser differences and source-to-execution paths. Bind technical clues
+  to the target's request, version/configuration or source evidence; a product name or
+  scanner severity alone does not establish priority. Use `rules/src-value-hunting.md`
+  §1.1 for default priorities and evidence-backed changes, without a second ranking formula.
+  Missing technical material stays unknown; identify useful missing evidence rather than
+  declaring no technical opportunity. Separate a distinct workflow from an alias or
   repeated login shell using evidence, not hostname guesses. Identical frontend
   bytes alone cannot establish shared backend permissions, data or tested coverage.
 - The Surface preview is a lexical window, not a ranked or complete inventory.
-  Inspect cached host/business material and page the exact index when needed for
+  Inspect cached host/business/technical material and page the exact index when needed for
   the question. State what was reviewed and what remains unread; never treat the
   first page or source count as coverage.
 - Challenge the parent's current direction with supported alternatives. Explain
@@ -75,9 +81,10 @@ Do not confirm vulnerabilities, close work, or extend the parent's lane budget.
 Return one compact review:
 
 - Target, question, effective mode/budget and the material/owner references reviewed.
-- Up to three next investigation questions with exact evidence refs, business value,
-  prerequisites, counterevidence and a proposed distinguishing experiment.
-- Other worthwhile or unread business surfaces, residual page commands and unknowns;
+- Up to three next investigation questions with exact evidence refs, plausible impact,
+  expected learning, prerequisites, counterevidence and a proposed distinguishing experiment.
+  Let evidence determine the mix; neither business nor technical paths need a reserved slot.
+- Other worthwhile or unread business and technical surfaces, residual page commands and unknowns;
   explain why these were deferred. An empty shortlist does not prove exhaustion.
 - `待落库`: only proposed decision-relevant deltas with source refs and conditions,
   or `none`. The parent checks and accepts them through existing owners.

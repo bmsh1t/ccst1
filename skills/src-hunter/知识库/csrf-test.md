@@ -83,12 +83,11 @@ If attacker can write cookies for .target.com from subdomain XSS or cookie tossi
 
 ## 4. SAMESITE BYPASS SCENARIOS
 
-**SameSite=Lax** (modern browser default): cookies sent for top-level GET navigation, NOT for cross-site iframe/form POST.
+**Explicit SameSite=Lax**: cookies may accompany cross-site top-level safe-method navigation (typically GET), not cross-site image/iframe fetches or POST. An omitted SameSite attribute may be defaulted to Lax with browser-specific exceptions; it is not equivalent to explicitly setting Lax.
 
 **Bypass SameSite=Lax via GET method**:
 ```html
-<!-- If server accepts GET for state-changing endpoint: -->
-<img src="https://target.com/account/delete?confirm=yes">
+<!-- Controlled endpoint only: Lax requires top-level navigation, not an image. -->
 <script>document.location = 'https://target.com/transfer?to=attacker&amount=1000';</script>
 ```
 
@@ -102,7 +101,7 @@ window.location = 'https://target.com/account/modify?evil=true';
 **SameSite=None** (legacy or explicit): cookies sent everywhere → classic CSRF applies.
 
 **Cookie issued recently? Lax exemption:**
-Chrome has a 2-minute exception where Lax cookies ARE sent on cross-site POSTs if the cookie was just set (for OAuth flows). Race window: set cookie, immediately trigger CSRF within 2 minutes.
+Some browsers allow recently created cookies without an explicit SameSite attribute on cross-site top-level POST navigation for roughly two minutes. Explicit SameSite=Lax does not get this grace period. Verify the actual Set-Cookie, creation/refresh behavior, browser version and outgoing Cookie header; do not infer it from opening a login page.
 
 ---
 
@@ -205,15 +204,15 @@ xhr.send('confirm=yes&csrf_token=' + token);
 
 ## 9. OAUTH CSRF (STATE PARAMETER MISSING)
 
-OAuth flow without `state` parameter → CSRF on the OAuth authorization:
+Missing `state` is a signal; check equivalent validated session/PKCE binding before claiming CSRF. Full identity/impact criteria are in `oauth-jwt-test.md` §7:
 
 **Attack**:
 1. Attacker initiates OAuth flow, gets authorization code
 2. Before exchanging code, stops the flow (captures the redirect URL with code)
 3. Sends victim the crafted URL: `https://target.com/oauth/callback?code=ATTACKER_CODE`
-4. Victim's browser exchanges the attacker's code → victim's account linked to attacker's OAuth provider
+4. In a controlled browser, verify which account the callback actually authenticates.
 
-**Impact**: Attacker can log in as victim.
+**Impact**: Logging the browser into the attacker's account proves login CSRF. Account takeover additionally requires linking the attacker's identity to the victim's existing account and proving independent victim-account access. Keep these results separate; any account-link write follows `dig-scope` §4.2.2.
 
 ---
 
@@ -314,17 +313,17 @@ This converts a path traversal into a CSRF-like attack without needing a CSRF to
 
 ---
 
-## 13. SAMESITE=LAX ADVANCED BYPASS TECHNIQUES
+## 13. SAMESITE DEFAULTS AND LAX NAVIGATION
 
-### 13.1 Top-level navigation via `window.open()` (2-minute window)
+### 13.1 Default-Lax recent-cookie grace period (browser-dependent)
 
-Chrome's Lax+POST exception: cookies with `SameSite=Lax` are sent on cross-site POST requests if the cookie was set within the last 2 minutes (exists for OAuth flows).
+This conditional path requires a recently created cookie with **no explicit SameSite attribute**, a browser that implements the grace period and a top-level POST. Explicit `SameSite=Lax` remains excluded. Observe the cookie and actual request; a popup or elapsed five seconds alone proves nothing.
 
 ```javascript
-// Attacker page: trigger login to set a fresh cookie, then immediately CSRF
-// Step 1: Force victim to visit target (sets fresh session cookie)
+// Controlled browser/account; authentication writes follow dig-scope §4.2.2.
+// Step 1: Observe whether this flow actually creates a new cookie without SameSite.
 window.open('https://target.com/login');
-// Step 2: Within 2 minutes, POST to state-changing endpoint
+// Step 2: Only after confirming the cookie prerequisite, test a controlled top-level POST.
 setTimeout(() => {
     const form = document.createElement('form');
     form.method = 'POST';

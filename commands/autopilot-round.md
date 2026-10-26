@@ -1,5 +1,5 @@
 ---
-description: Run one bounded, resumable /autopilot round for native /loop scheduling.
+description: Run one resumable /autopilot round, optionally bounded for native /loop scheduling.
 allowed-tools:
   - Bash
   - Agent
@@ -18,8 +18,9 @@ allowed-tools:
 Authoritative round bootstrap (do not reinterpret): !`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_bootstrap.py" --json --round-defaults -- "$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"`
 Native fixed-loop prompt identity (do not reinterpret): `/autopilot-round $ARGUMENTS`
 
-Defaults: `--normal --deep --max-lanes 16`; arguments match `/autopilot`.
-Active checkpoint owns `max_lanes`.
+Defaults: `--normal --deep`; arguments match `/autopilot`. No lane cap is added.
+Optional `--max-lanes N` sets an explicit cap. Active checkpoints retain their saved
+cap or unset value across resume; omission does not erase an existing round's limit.
 
 ## Bootstrap Gate
 Only fresh Bootstrap `action=continue` proceeds; otherwise terminal cron cleanup, then
@@ -32,8 +33,10 @@ Recon default applies after the round starts and its selected lane is claimed.
 ## Prepare And Terminal Precheck
 Run once; no state precheck:
 ```bash
-cd -- <repo_root_shell> && python3 tools/autopilot_round.py prepare --target <target_shell> --max-lanes <invocation_batch.max_lanes> --json
+cd -- <repo_root_shell> && python3 tools/autopilot_round.py prepare --target <target_shell> --json
 ```
+Append `--max-lanes N` only when Bootstrap `invocation_batch.max_lanes` is an integer;
+omit the option for `null`. Use the returned round progress as the saved boundary.
 `started|resumed`: recover `started` heartbeats; enter Shared Automation.
 `terminal`: no target work; Status/cleanup. Other results: Status, skipping lanes/settle.
 
@@ -42,8 +45,9 @@ Use Shared Automation's selected action and stopping reasons. An empty owner con
 list still returns to src-hunter for investigation; only actual stopping conditions end the round.
 Claim round lane before execution; distinct from Action id/token/actor:
 ```bash
-cd -- <repo_root_shell> && python3 tools/checkpoint.py --target <target_shell> --record-round-lane --lane <stable_lane_id> --max-lanes <invocation_batch.max_lanes> --json
+cd -- <repo_root_shell> && python3 tools/checkpoint.py --target <target_shell> --record-round-lane --lane <stable_lane_id> --json
 ```
+The claim reads the active round's saved cap; no per-claim cap is required.
 Only `allowed=true` proceeds; recover `already_claimed`; never replay other refusals.
 If claim failed because no active round existed, run prepare, then claim the selected lane again.
 Prepare success alone is not admission; obtain a fresh `allowed=true` before executing.
@@ -82,8 +86,9 @@ After heartbeats and shared saving/cleanup:
 cd -- <repo_root_shell> && python3 tools/autopilot_round.py settle --target <target_shell> --json
 ```
 `settled`/`already_settled` complete only this round; no memory save, Queue sync or Surface refresh.
-Untested observations retain `handoff`; budget exhaustion ends this invocation's new work,
-while a later scheduled or explicit round may continue. Never start another round to bypass this budget.
+Untested observations retain `handoff`. Reaching an explicitly supplied lane cap ends new work
+for this invocation; never start another round to bypass it. Without a cap, lane count does not
+end the round: use Shared Automation's actual stopping reasons.
 Missing, malformed, or stale Surface never blocks settle or flips a settled round back to active; it keeps the
 Surface-backed advisory lead open until a later explicit `/surface` refresh.
 ### Status

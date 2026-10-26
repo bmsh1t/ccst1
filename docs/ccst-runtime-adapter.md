@@ -13,6 +13,10 @@ CCST 路径与操作。本文件导航现有合同并记录来源；根 AGENTS.m
 
 ## 目标、材料与清理
 
+显式 `/autopilot` 调用中，6k 提供范围语义、调查方法与证据判断；
+启动、后台等待、继续和退出按
+[Shared Automation](../commands/autopilot.md#shared-automation) 执行。
+
 目录、owner 和清理见 [目标材料规则](../rules/desktop-task-folder.md)；
 恢复和认知写回见 [Shared Memory Continuity](../skills/runtime-protocol.md#shared-memory-continuity)。
 无 target 的集团 seeds 按 [campaign](../rules/ccst/campaign.md) 续接。

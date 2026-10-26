@@ -21,11 +21,11 @@
 6. assumerole 另打一枪：`filename=*-*`（或 `*`）、`Action=*`。有的实现是**后段 Policy 盖前段**，钥匙变成整桶。通了先 `list_objects`，再删/盖列出来的 key。**List/Delete 403 别停**：对任意 key GET/PUT。领钥 XHR 不带登录头也打。**sibling drive 匿名票 `illegal user id` 不等于本网关也拒**：匿名 xluser 票过闸的 STS 口照打。query `upload_dir`/`dir` 原样进 OSS Policy 时填 `*`。页面走 CDN 时，强制刷新或等缓存过完再验收  
 7. PUT 时头里试 `x-cos-acl: public-read`、`x-cos-grant-full-control: id="你的UIN"`（OSS/S3 对等头一样）。**对象真变成公有读、或控制权到你的 UIN** 才算；只 200 不算接管
 8. 没有「文件已存在」预言时仍猜短原文件名（`1.jpg`/`2.png`/`5.jpg`）匿名 GET CDN。token 口若前端写死 AES/盐，未登录自己算 sign，`filename=*` 常直接下发 appId+bucket，CDN 前缀拼出来就能下**他人证件照**  
-9. **落地页写死 supabase / nocode `role=anon` JWT 时，rest 表 CRUD 不是终点。** 带 `apikey` + `Authorization: Bearer` 打 `POST /storage/v1/object/{桶}/{官方前缀/探测key}`。官方封面/案例图常在 `use-cases/`、`covers/` 一类前缀。第一次 POST 自己的探测文件；同一对象名再 POST，头加 `x-upsert: true`，正文改成另一串标记。公开 `GET /storage/v1/object/public/{桶}/{key}` 对照两次正文。**不要真盖官方运营图**，同前缀能盖自己刚传的 = 官方同前缀同样能盖。打完 DELETE 探测文件。rest `/rest/v1/` 403 别停，存储 REST 常另开。
+9. **落地页写死 supabase / nocode `role=anon` JWT 时，rest 表 CRUD 不是终点。** 带 `apikey` + `Authorization: Bearer` 打 `POST /storage/v1/object/{桶}/{官方前缀/探测key}`。官方封面/案例图常在 `use-cases/`、`covers/` 一类前缀。第一次 POST 自己的探测文件；同一对象名再 POST，头加 `x-upsert: true`，正文改成另一串标记，GET 对照两次正文。这里只证明该身份可创建/覆盖自己的对象；同前缀不保证相同 owner/RLS。跨归属验证用受控 B 预置且归属、访问规则明确的对象，由 A/匿名尝试覆盖，B 独立读回后恢复核验；缺 B 或恢复条件保留跨用户覆盖未验证。**不要真盖官方运营图**。清理自建探测文件并核验。rest `/rest/v1/` 403 别停，存储 REST 常另开。
 
-算成：再打开/下载**对方那篇/那张图**，内容变成你传的；或 list 出别人的 key 并能删/盖；或官方前缀上 `x-upsert` 把探测文件盖成第二串标记（同前缀官方对象同一把钥）。只证明自己能传到自己的 key → 假点。
+算成：在归属和授权边界已知的受控对象上，A/匿名越权覆盖后，B 独立读回确认内容改变并完成恢复。列出 key、PUT/POST 200、同前缀或覆盖自建探测文件均不能单独证明跨用户覆盖；匿名创建是否越权另按该桶的预期策略判断。
 
-假点：`*` 只签发废桶；通配了但覆盖 403；改的是自己的对象；策略服务端写死盖不掉；只通自己前缀；CDN 一直不刷新看起来没盖上。单站没中不删短表这行。
+假点：只有预期允许的自有对象操作。覆盖 403 仅说明该请求被拒；CDN 未刷新、缺独立对象或凭证范围不明时保留未验证，不能据此否定整条上传/跨对象路径。单站没中不删短表这行。
 
 和 S3 预签名「改自己的 Content-Type」、和「带签 URL 改租户读他文件」、和下面「桶策略对匿名全开」「签名没绑 Host」「签名覆盖 Content-Type」都不是一条：本条是 **凭证范围被通配成整桶，覆盖或清掉他人对象**。
 
@@ -70,12 +70,12 @@
 1. 抄 online/prod 的 AK/SK（实值只进报告）  
 2. 自己算 POST policy，expiration 拉长，`starts-with $key` 按 JS 原样（空就空）  
 3. POST 桶：对照假签 `SignatureDoesNotMatch`、无签 `conditions has no signature`  
-4. 任意 key PUT 后 CDN GET；DELETE 自己刚传的证明钥能写。官方页面已经引用的对象试覆盖  
-5. List/PUT 403 别停：先 `GetBucketLocation`。对照假 AK `InvalidAccessKeyId`。页面桶名拼错（staic/static）试邻近  
+4. 在受控测试前缀用唯一 key PUT，独立 GET 核验内容后 DELETE 并核验清理。跨归属覆盖沿用上面的受控 A/B 对照与恢复条件，不覆盖官方运营对象。
+5. List/PUT 403 别停：可用 `GetBucketLocation` 核对桶身份；同请求比较真 AK/SK 签名、错误 SK 和无签名。仅地域回包或假 AK 报错不能证明 SK 有效；页面桶名拼错按范围内已知桶线索核对。
 
-算成：完整永久云钥能签（真签 PUT 200 或 GetBucketLocation 出地域）。能盖官方已有对象更稳。
+算成：真 AK/SK 签名成功且错误 SK/无签名被拒，才证明该接口接受密钥对；受控对象独立读回可证实相应写权限。凭证字段泄露、签名能力和跨对象影响分别记录，不凭地域或 200 外推权限。
 
-假点：InvalidAccessKeyId；只能传到固定前缀；getUploadSign 其实是 SSO 接口没有本地钥；钥过期。密钥实值不进库。单站没中不删短表这行。
+假点：钥无效/过期，或 getUploadSign 实为 SSO 接口且没有暴露本地钥。固定前缀只是权限限制；真假签名结果相同则签名能力未证，不能据此否定已观察的凭证字段泄露。密钥实值不进库。单站没中不删短表这行。
 
 和 STS 通配（先申请临时票）、和桶策略对匿名全开（不用钥）、和 viewer XOR 藏 COS 永久钥（要解开再问 AccountId）都不是一条：本条是 **webpack 明文永久钥 + 前端自己算签**。
 

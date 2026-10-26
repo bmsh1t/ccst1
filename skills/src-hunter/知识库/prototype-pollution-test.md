@@ -415,18 +415,32 @@ Object.defineProperty(Object.prototype, '__proto__', {
 
 ### 4.4 Key Distinction: Shallow vs Deep
 
-`Object.assign` does NOT pollute prototype (shallow copy, safe). Only recursive/deep merge functions are vulnerable. Always verify the merge depth.
+Shallow vs deep is not a safety test. `Object.assign({}, source)` can invoke the inherited `__proto__` setter when source has an own enumerable key of that name (for example, parsed JSON), changing the **destination object's prototype**. This does not by itself modify global `Object.prototype`. Trace the actual assignment/merge and which objects later consume the inherited value.
+
+```javascript
+// Local, non-persistent contrast; no global prototype is modified.
+const source = JSON.parse('{"__proto__":{"marker":"inherited"}}');
+const assigned = Object.assign({}, source);
+console.assert(assigned.marker === 'inherited');
+console.assert(!Object.hasOwn(assigned, 'marker'));
+console.assert(({}).marker === undefined);
+const spread = { ...source };
+console.assert(Object.hasOwn(spread, '__proto__'));
+console.assert(Object.getPrototypeOf(spread) === Object.prototype);
+```
+
+Object spread creates an own data property in this contrast; downstream unsafe merges can still make the retained key dangerous. Confirm target-local vs global effects and a real consuming operation before claiming impact.
 
 ---
 
 ## 5. EXPLOITATION FLOW
 
 ```
-1. Find merge sink (prototype-pollution-test.md Section 0)
-   └── JSON body parsed and deep-merged into server object
+1. Find assignment/merge sink (prototype-pollution-test.md Section 0)
+   └── Trace parsed keys into the actual destination object
 
 2. Confirm pollution:
-   └── {"__proto__":{"testxyz":"1"}} → check if testxyz appears globally
+   └── Check the destination prototype/inherited marker and its consuming path; record global effects separately
 
 3. Identify technology stack:
    ├── Express + EJS → outputFunctionName gadget (Section 1.2)

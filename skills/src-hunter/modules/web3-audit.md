@@ -17,17 +17,18 @@ contrary evidence and unknowns as well as results; propose global pivots to the
 main session. Same-session reading requires no handoff form. Expert self-report
 does not resolve Action or confirm Finding.
 
-- Entry: Invoke only for an explicitly scoped contract or program. Require
-  chain/network, deployment identity, source or bytecode revision, and the
-  permitted read-only, fork, simulation, or transaction boundary.
-  Establish deployment/upgrade control, relevant actors and protocol value at
-  risk. These facts affect ROI and evidence depth; they are not universal skip thresholds.
+- Entry: Invoke only for an explicitly scoped contract or program. Source review binds
+  the source/bytecode revision and permitted local analysis/simulation boundary.
+  Claims about deployed behavior additionally bind chain/network, deployment,
+  implementation/upgrade control and current state. Record relevant actors and
+  value assumptions; missing deployment data does not block source analysis.
 - Evidence: Before promotion, retain source/bytecode and revision hash, affected
   function and caller privilege, invariant or state delta, baseline simulation,
-  and a reproducible local-fork or on-chain read-back. Static patterns and TVL
+  and reproducible controlled local-deployment, fork or on-chain read-back. Static patterns and TVL
   are leads only.
-- Stop: Stop on source, revision, chain, scope, or reproducibility mismatch; on
-  a hard economic kill; or when impact cannot be bounded. Hand reproducible
+- Stop: Stop the affected claim on source/revision, scope or reproducibility mismatch;
+  chain/deployment mismatch blocks deployed-behavior claims. Stop an economic claim when
+  its required economic precondition is disproven or impact cannot be bounded. Hand reproducible
   candidates to `triage-validation`; never move live value outside scope.
 
 ## Decision Tree
@@ -37,8 +38,9 @@ boundary that answers the current question; inspect siblings, callers and
 downstream consumers when current evidence points there. Choose the branch with
 the clearest expected learning and lowest reversible cost.
 
-- Source or bytecode identity is missing -> resolve the deployment/revision
-  first; do not mix verified source with another implementation.
+- Source or bytecode identity is missing -> resolve the revision first. Deployment
+  claims also need the actual implementation binding; local source review can proceed
+  without a deployed address and must not assume one.
 - Bridge or cross-chain dependency -> follow source independence, bounds,
   message/actor binding and the downstream value or authority decision.
 - A candidate changes caller authority, protected state, or recoverable value in
@@ -107,8 +109,8 @@ a reason to exhaust every branch. Global priorities belong to the main session.
 
 ## Phase Checkpoints
 
-- Identity checkpoint: bind chain, deployment, implementation, revision, and
-  value boundary before reading behavior.
+- Identity checkpoint: bind revision, local fixture/analysis and value assumptions;
+  add chain, deployment and implementation for deployed-behavior claims.
 - Invariant checkpoint: name the expected invariant, actor, state variables, and
   read-back that would falsify it.
 - Pivot checkpoint: after a bounded branch yields no state or authority delta,
@@ -127,6 +129,8 @@ transaction alone does not pass or determine severity. Choose existing local
 analysis, chain tooling or a Foundry PoC only when the selected hypothesis needs it.
 Record `target/version -> invariant or boundary -> baseline -> one changed condition
 -> observed state/value/authorization delta -> impact -> stop/reopen condition`.
+A local fixture or fork proves behavior only under its recorded revision,
+configuration and state; production exploitability needs matching deployment and state evidence.
 Use the existing source/fork/subprocess
 boundary. `triage-validation` provides assessment methods; non-HTTP contract
 evidence is not yet integrated with the Store validation/report lifecycle.

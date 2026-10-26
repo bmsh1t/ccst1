@@ -24,14 +24,15 @@ actions. Ordinary Card changes do not require a new lane.
 ## Inline Specialist Propagation
 
 This section applies only to automatic mode. The supported Claude inline delegation
-path receives mode and budget from the
+path receives mode and any explicit limits from the
 same bootstrap object as the controller. Every specialist handoff includes the
 literal values `arguments.deep` and `invocation_batch.bounded`,
 `invocation_batch.max_lanes`, and `invocation_batch.handoff`; specialists do not
 reparse slash-command text or infer a mode from the objective. For
 `arguments.deep=true`, include the label `DEEP HUNT MODE` and apply the
 value-first comprehensive-depth contract to the assigned lane while preserving
-the controller's `max_lanes` boundary. For `arguments.deep=false`, keep normal
+the controller's explicit `max_lanes` boundary when set; `null` means no lane cap.
+Do not create a whole-investigation budget when none was supplied. For `arguments.deep=false`, keep normal
 depth. A specialist reports its effective mode and batch boundary; the inline
 controller alone claims lanes, writes owner state, and decides closure.
 
@@ -71,30 +72,32 @@ The controller does not assume the specialist already recorded anything.
 
 ### Recon Ranker Review
 
-`commands/autopilot.md#surface-review` owns invocation, shared by ordinary and Round
-Autopilot. Send the content pack above plus the explicit checkout/data root, root
+`commands/autopilot.md#surface-review` owns optional invocation, shared by ordinary and Round
+Autopilot. When selected, send the content pack above plus the explicit checkout/data root, root
 target/Scope, current Store/Surface bindings and reading references, observed business
-surfaces, tried paths/reopening conditions, unread areas, relevant target memory and
-one review question. Pass compact facts and expandable originals, not the full conversation
+and technical surfaces with their evidence refs, tried paths/reopening conditions,
+unread areas, relevant target memory and one review question. Pass compact facts and expandable originals, not the full conversation
 or credentials. Reuse `src-hunter` and its relevant complete methods.
 
-Invoke the native tool with the role name exposed by the host, for example:
-`Agent({"subagent_type":"recon-ranker","description":"Review current business surfaces","run_in_background":false,"prompt":"<filled content pack, including deep, remaining parent budget, review allocation/deadline>"})`.
+For the selected review, invoke the native tool with the role name exposed by the host, for example:
+`Agent({"subagent_type":"recon-ranker","description":"Review business and technical surfaces","run_in_background":false,"prompt":"<filled content pack, including deep, explicit parent limits or unset, review allocation/deadline>"})`.
 The entry owns foreground selection and waiting. Reading the file or receiving a task handle
 is not a completed review. If the host still returns a handle, use its task-result tool
 (`TaskOutput`) to await completion; at the assigned deadline use `TaskStop` and retain
 the partial review. Do not launch dependent experiments in the dispatch batch or
 before the result/failure. Include actual `arguments.deep`,
 `invocation_batch.bounded/max_lanes/handoff`, remaining lanes when a Round is active,
-and the parent's remaining session budget. Assign this review a concrete allocation
-or deadline within that budget, reserving execution and write-back time; unknown
-parent budget stays explicit, never unlimited. Missing mode/allocation returns a
+and any explicit parent limits, or `unset`. Assign this review a concrete allocation
+or deadline for the question, fitting any supplied parent limit. An unset parent limit
+does not prevent review or authorize inventing a session cutoff; the review deadline
+ends only this review. Missing mode/review allocation returns a
 supplied-material assessment and the gaps without new tool reads. Reuse supplied
 current facts; request only the missing evidence needed for this review question.
 
 The ranker has zero target requests and no writes/delegation. This advisory review
-uses the current investigation's budget, creates no separate lane, and cannot extend
-`max_lanes`. The parent checks its cited evidence, chooses/claims actual work before
+respects any explicit investigation limits, creates no separate lane, and cannot extend
+a saved `max_lanes`. It compares both surfaces in one review; missing material remains unknown.
+The parent applies `rules/src-value-hunting.md` §1.1 to the cited evidence and chooses/claims actual work before
 execution, and retains accepted decisions and reviewed-material references in the
 existing memory/handoff when continuity needs them. No extra review state or checklist.
 Neither the review nor an empty shortlist replaces Coverage, Global Review or Closure.

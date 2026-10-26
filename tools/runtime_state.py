@@ -1060,10 +1060,12 @@ def inspect_recon_artifacts_fast(repo_root: str | Path, target: str) -> dict:
             Path("dirs/ffuf-results-summary.json"),
         )
     )
+    # Without a summary, the adapter checks raw-file metadata, never raw bodies.
+    ffuf_missing_summary = {} if ffuf_ready else ReconAdapter(recon_dir).get_ffuf_summary()
     counts.update(
         {
             "ffuf_observations": None if ffuf_ready else 0,
-            "ffuf_legacy_raw_files": 0,
+            "ffuf_legacy_raw_files": None if ffuf_missing_summary.get("legacy_raw_files") else 0,
         }
     )
 
@@ -1142,7 +1144,7 @@ def inspect_recon_artifacts_fast(repo_root: str | Path, target: str) -> dict:
         "exposure_paths": exposure_paths,
         "infra_ready": bool(infra_paths),
         "infra_paths": infra_paths,
-        "ffuf_needs_summary": False,
+        "ffuf_needs_summary": bool(ffuf_missing_summary.get("needs_summary")),
         "missing": missing,
         "warnings": warnings,
     }

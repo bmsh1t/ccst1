@@ -96,7 +96,7 @@ source_refs:
 - 对前缀/深链单变量注入 ../、尾斜杠、编码点。
 - 对比代理与后端对同一路径的归一结果。
 - 对前端拼 URL 处测 CSPT。
-- 401/403 路径或代理边界存在证据时，由 AI 选择受 Scope/Auth/预算约束的单变量 replay，经 browser、curl、raw sender 或适配的 `request-diff` 执行；没有足够证据时保持 unresolved。
+- 401/403 路径或代理边界存在证据时，由 AI 选择受 Scope/Auth/预算约束的单变量 replay，按 [Web2 原生执行与登记](../playbooks/web2-evidence-contracts.md#原生执行与登记) 捕获并登记原件；没有足够证据时保持 unresolved。
 
 ## 关联 Skills
 
