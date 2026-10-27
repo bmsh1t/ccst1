@@ -13,7 +13,7 @@
 | `tools/recon_engine.sh` | New target / stale recon / primary-domain batch | Explicit bulk collection with raw sources, cursors and phase accounting; cached CI links only |
 | `tools/cf_solver.py` | Confirmed Cloudflare challenge or expired clearance | Evidence-triggered 2Captcha+Playwright; stores clearance privately for recon |
 | `tools/recon_adapter.py` | Reading recon output programmatically | Unified reader for `recon/<target>/`; streams and pages compact FFUF evidence without loading full artifacts |
-| `tools/recon_candidates.py` | Cached routing evidence | Builds bounded candidates and host ranking; `--asset-cursor` resumes relation pages; never expands Scope |
+| `tools/recon_candidates.py` | Cached candidate facts | Publishes candidate facts and full host inventory in name order; `--asset-cursor` resumes relation pages; never expands Scope |
 | `tools/recon_host_verify.py` | Host pivot candidates were derived | One bounded read-only Host/SNI/default-vhost response comparison; appends observations without changing Scope or Queue |
 | `tools/intel_engine.py` | Versioned component/service review | `/intel` owner — OSV/GHSA/NVD, KEV/EPSS, local signals, atomic `intel.json` |
 | `tools/intel_artifact.py` | AI selects an omitted advisory group or filter | Read-only, bounded, cursor-paged query over the complete `intel.json`; never writes findings or Queue |
@@ -23,9 +23,9 @@
 | `tools/scope_checker.py` | Verifying target classification | Deterministic host/URL classifier against active target set |
 | `tools/scope_context.py` | Global Scope owner | Parses text lists/manifest v1, applies exclusions, classifies external context, and emits stable Scope hash |
 | `tools/scope_source.py` | Inspect or explicitly update target Scope | `show` / `publish --manifest` / `publish --profile`; primary Scope lives in `state/<key>/scope.json`, replacement requires its current SHA256 |
-| `tools/target_paths.py` | Computing per-target storage keys | Normalize target string for `recon/`/`findings/` directories |
+| `tools/target_paths.py` | Computing per-target storage keys | Owns canonical target keys, including path-bound list keys |
 
-Primary-domain list input (`targets.txt`) is handled by `tools/recon_engine.sh` as a batch dispatcher: each line writes its own `recon/<domain>/`; `recon/<list-stem>/` is only the manifest/summary index.
+Primary-domain list input (`targets.txt`) is handled by `tools/recon_engine.sh` as a batch dispatcher: each line writes its own `recon/<domain>/`; `recon/<list-key>/` is only the manifest/summary index. Obtain `list-key` from `tools/target_paths.py`'s `target_storage_key()`: sanitized stem + `--` + the first ten SHA256 characters of the canonical real path.
 
 ### `/recon` artifact map — read these before broad hunting
 
@@ -100,14 +100,13 @@ question/stop material through the recorded card, section and family.
 |---|---|---|
 | `tools/browser_evidence.py` | MCP browser evidence already imported | Compact linkage/readiness and baseline-checked original JSON/HAR step reading; never launches a browser or registers Store facts |
 | `tools/browser_mcp_import.py` | Chrome DevTools/Playwright MCP artifacts ready | Normalize discovery materials and preserve one original-byte network baseline; discovery is not experiment completeness |
-| `tools/browser_playwright_fallback.py` | Neither browser MCP backend is usable | Capture one target-owned page with Python Playwright and reuse the MCP importer; never installs browsers |
 | `tools/browser_surface.py` | Browser evidence dumped | Extract XHR/API/GraphQL/realtime shapes from browser evidence |
 | `tools/deep_js_packer.py` | Concrete webpack/chunk/source-map signal | Evidence-gated Packer bundle/page recovery into existing JS artifacts |
 | `tools/surface.py` | Cached recon ready for review | Stream every exact target-owned URL into a neutral bounded review window; publish counts and complete expansion |
 | `tools/surface_index.py` | Large URL corpus needs exact dedupe or long-tail paging | External-sort exact URL index with provenance union, lossless variants, shape/source/ownership cursor filters |
 | `tools/surface_projection.py` | Bootstrap/context consumers need a fast URL-ordered review view | Manifest-bound bounded cache; only exact hits are consumable, stale/missing remains explicit refresh work |
 | `tools/surface_finalizer.py` | Recon completed or derived surface needs recovery | Shared non-fatal recon post-processor for exact index, complete streaming review, inventory summary, and projection |
-| `tools/finding_index.py` | Listing/querying structured findings | Structured finding index store + query API |
+| `tools/finding_index.py` | Scanner review material or explicit historical inspection | Scanner-material index and historical readers; TargetStore owns Finding facts |
 | `tools/structured_findings.py` | Reading single finding | Helpers to rank/load structured findings |
 
 ## 5. Auth & credentials
@@ -130,11 +129,11 @@ question/stop material through the recorded card, section and family.
 
 | Tool | When to use | One-line function |
 |---|---|---|
-| `tools/hunt.py` | Master hunt entrypoint (CLI) | Orchestrator — wraps recon, scan, zero-day, and report flows |
+| `tools/hunt.py` | Explicit recon/scan pipeline (CLI) | Single targets default to recon + bounded scan; reports are explicit; lists run batch recon |
 | `tools/autopilot_state.py` | Reading current autopilot state | Shared control facts plus compact read-only bootstrap/full diagnostic state; compact mode never ranks large surface bodies |
 | `tools/capability_profile.py show / record-degraded / clear --runtime-root ROOT` | Persisting a confirmed tool/MCP outage across sessions, then explicitly acknowledging recovery | Runtime-global advisory marker; startup reads only and never treats it as target evidence |
-| `tools/observation_inventory.py` | Large/resumed recon corpus | Persist neutral untouched/stale observations; stat-bound summary and revision cursor; never routes a Skill |
-| `tools/action_queue.py` | Actionable evidence exists or checkpoint has next actions | Persistent action queue: ingest, choose next, resolve, summarize |
+| `tools/observation_inventory.py` | Large/resumed recon corpus | Owns neutral Recon `observations.json`; stat-bound summary and revision cursor are derived; never routes a Skill |
+| `tools/action_queue.py` | AI selects explicit Action work | Thin Store adapter: list, claim explicit `--id`, resolve and summarize; AI chooses the action |
 | `tools/target_case_state.py` | Multi-actor/object validation context | Actor/session/object/hypothesis registry and private auth refs; context memory only — no backlog, no route score |
 | `tools/coverage_matrix.py` | Reviewing unresolved cells and endpoint kinds | Primary mark commands append Store reviews; `reviews [--history] [--id ID]` expands them; rebuilt cells still require execution evidence |
 | `tools/target_store.py upgrade-schema --target TARGET --repo-root ROOT --backup ABSOLUTE_BACKUP` | Enabling current Store capabilities on an older schema | Explicit verified-backup upgrade to current schema v18; ordinary reads/init do not upgrade |
@@ -198,7 +197,7 @@ question/stop material through the recorded card, section and family.
 | Unicode / filter representation needs review | AI selects the exact representation and preserves raw evidence |
 | Public/local source, uncertain reachability or guard | `skills/src-hunter/modules/whitebox-audit.md`; `source_hunt.py --source-file PATH`, native Read/Grep |
 | Observed cloud binding or useful discovery gap | Native review; selected upstream cloud_enum/S3Scanner via `/cloud-recon` |
-| Batch recon manifest exists | read `recon/<list-stem>/batch_manifest.jsonl`, then run `/surface` or `/hunt` on completed domains |
+| Batch recon manifest exists | read `recon/<list-key>/batch_manifest.jsonl` using `target_paths.target_storage_key()`, then run `/surface` or `/hunt` on completed domains |
 | Identity/cloud intel from recon has hits | review `exposure/identity_intel/summary.md` and `exposure/cloud/cloud_enum.txt`, then pivot to `/intel` or `/cloud-recon` |
 | Passive DNS shows a naming dialect or evidence-backed hostname gap | AI-selected `dns_expand.py`; refresh `/surface` when new inputs require an updated view |
 | Dangling DNS/service evidence | Native DNS/provider review; optional upstream dnsReaper/subjack via `/takeover` |
@@ -291,12 +290,18 @@ Read only the owner needed for a selected action, not this entire table as a che
 
 | Question | Owner |
 |---|---|
+| Automatic continuation, checkpoint cadence and stopping? | `commands/autopilot.md#shared-automation`; capped or inherited Round mechanics in `commands/autopilot-round.md` |
 | Which hypothesis to continue, rotate or stop? | `skills/src-hunter/SKILL.md` |
-| Context and method selection? | `skills/runtime-protocol.md#shared-knowledge-recall` |
+| Context and complete method reading? | `skills/runtime-protocol.md#shared-knowledge-recall` |
+| Recover current target facts or recall a prior problem? | `skills/runtime-protocol.md#shared-memory-continuity`, `skills/runtime-protocol.md#problem-recall` |
+| When to save accepted cognitive deltas? | `skills/runtime-protocol.md#cognitive-write-timing` |
+| Target memory commands, handoff and corrections? | `commands/target.md#命令`, `commands/target.md#交接与证据`, `commands/target.md#版本来源与纠错` |
 | Dependent session/process/socket continuity? | `skills/runtime-protocol.md#stateful-continuity` |
 | Raw evidence versus AI judgment? | `rules/ccst/tool-ai-boundary.md` |
 | Candidate validity and report readiness? | `skills/src-hunter/modules/triage-validation.md`, `commands/validate.md` |
 | Side effects and stop controls? | `rules/ccst/red-lines.md` |
 | Who accepts a write? | `skills/runtime-protocol.md#5-execution-and-write-back` |
-| Claim/resolve, browser capture/import and session close? | Matching sections of `docs/autopilot-lanes.md` |
+| Capture originals, consume receipts or recover a failed registration? | `docs/evidence-runners.md#在执行时捕获原件` |
+| Register observations without a Finding or evidence for an existing Finding? | `docs/evidence-runners.md#native-observation-registration`, `docs/evidence-runners.md#native-evidence-registration` |
+| Claim/resolve or browser import and session close? | `docs/autopilot-lanes.md#state-and-queue`, `docs/autopilot-lanes.md#browser-source-and-js` |
 | Existing executor for the chosen action? | Categories and symptom lookup in this index |

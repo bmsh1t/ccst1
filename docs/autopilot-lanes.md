@@ -112,12 +112,12 @@ pipeline; other callers use
 Legacy data needs explicit import; missing/fenced/damaged state needs recovery.
 Checkpoint, Pickup and preflight never initialize, import, or recreate old owners.
 
-- Already-executed browser/native/multi-step evidence uses
-  `validation_runner.py record-evidence` with an existing Finding and explicit
-  attempt ID. It sends no requests. Raw material and its private exact request
-  identity are published before one Store operation registers observations and
-  links. Registration retry uses the saved attempt/material; a real rerun needs
-  a new attempt. Unknown family remains intact.
+- Already-executed browser/native/multi-step evidence follows
+  `docs/evidence-runners.md#native-observation-registration` (`record-observation`
+  without a Finding) or `docs/evidence-runners.md#native-evidence-registration`
+  (`record-evidence` with an existing Finding), with an explicit attempt ID.
+  Neither registration sends requests. The matching owner preserves original
+  material, attempt/retry identity and unknown families.
 - AI selects work. `action_queue.py claim --target <target_shell> --id <id>`
   requires an explicit ID; metadata may describe the judgment but cannot forge
   execution fields, change identity without a repeat reason, or carry credentials.
@@ -219,7 +219,7 @@ Checkpoint, Pickup and preflight never initialize, import, or recreate old owner
 
 ## Browser Source And JS
 
-- Browser actions use only visible Playwright/Chrome MCP when available, with one active backend at a time: choose Chrome DevTools MCP for deep Network/Runtime/Console/performance work, or Playwright MCP for page interaction, authentication, and workflow capture. If neither backend is usable, capture one target-owned page with `python3 tools/browser_playwright_fallback.py --target <target_shell> --url <seed_url>`; it uses the installed Python Playwright package and never installs a browser. Choose from evidence before making any MCP call; never probe both for availability (sequentially or concurrently) because a probe may start both browsers, and never run both concurrently. Never run `agent-browser` or `playwright-cli` through Bash. First use is a harmless page-list/session probe: reuse a matching same-target session, or close stale/unrelated pages before opening a context. Retry once only for timeout, disconnect, or closed-context errors; missing/configuration/permission/protocol errors do not retry.
+- Browser actions use only visible Playwright/Chrome MCP when available, with one active backend at a time: choose Chrome DevTools MCP for deep Network/Runtime/Console/performance work, or Playwright MCP for page interaction, authentication, and workflow capture. If neither backend is usable, continue independent work from available JS/source/API evidence; retain browser-dependent checks as untested or blocked until MCP access is restored. Choose from evidence before making any MCP call; never probe both for availability (sequentially or concurrently) because a probe may start both browsers, and never run both concurrently. Never run `agent-browser` or `playwright-cli` through Bash. First use is a harmless page-list/session probe: reuse a matching same-target session, or close stale/unrelated pages before opening a context. Retry once only for timeout, disconnect, or closed-context errors; missing/configuration/permission/protocol errors do not retry.
 - After a second failure, checkpoint the blocker in the existing Action Queue, pivot to JS/source/API evidence, and probe again only next invocation, after repair, or on explicit operator retry. On success import native artifacts via `tools/browser_mcp_import.py` (`--auth-required` for authenticated captures). Missing Network/state stays partial.
 - Reuse one visible browser/MCP session per invocation. Never close or switch while an authenticated or stateful workflow still depends on in-memory browser state. If unique evidence requires the other backend, switch only at a lane boundary after the current workflow is complete and its artifacts plus recoverable session references are persisted; otherwise defer that backend to the next invocation. Close the current session first, record the handoff, and open the replacement only after the close succeeds. After importing the required artifacts, call the session's native `browser_close`/equivalent before handoff, finish, or an intentional pivot; do not open a second session to replace an unclosed one. If close is unavailable or fails, record the browser session as `partial`/`blocked` and leave the next invocation to repair it.
 - When a browser round lane finishes with the focused capture manifest as its

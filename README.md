@@ -30,7 +30,7 @@
 
 ```
   Core 4 workflow  ·  Power commands  ·  Claude CLI agents  ·  Skill routing
-  15 canonical web2 closure classes + discovery families  ·  10 web3 bug classes
+  19 canonical web2 closure classes + discovery families  ·  10 web3 bug classes
   Burp MCP  ·  Caido MCP  ·  JSHook MCP  ·  HackerOne MCP  ·  Autonomous Mode
 ```
 
@@ -64,7 +64,7 @@ Claude Bug Bounty is an **agent harness** — not just scripts. It reasons about
 | Before | After |
 |:---|:---|
 | Run scripts manually, hope for the best | AI orchestrates 25+ tools in the right order |
-| Write reports from scratch (45 min each) | Report-writer agent generates submission-ready reports in 60s |
+| Write reports from scratch | AI-authored reports use saved evidence and explicit validation decisions |
 | Forget what worked last month | Persistent memory — per-target episodes plus human-reviewed knowledge cards |
 | Can't see live traffic from Claude | Burp/Caido MCP integration — Claude reads your proxy history |
 | Hunt one endpoint at a time | `/autopilot` runs full hunt loops with safety checkpoints |
@@ -117,7 +117,7 @@ claude                          # Start Claude Code from this repo root
 /sync-check                     # Check repo/runtime drift after pulls or weird CLI behavior
 ```
 
-> **AI-first investigation:** recover current facts, then choose evidence and complete methods for the current question. Recon, browser, API and source are alternatives, not prerequisites for one another. Preserve useful leads and validate evidence-backed candidates.
+> **AI-first investigation:** recover current facts, then choose evidence and complete methods for the current question. Fresh, empty automatic targets start with Recon; usable supplied request, source or browser material can start the investigation directly. Preserve useful leads and validate evidence-backed candidates.
 
 **Step 3 — Go Autonomous**
 
@@ -271,7 +271,7 @@ the final route decision; prompts and tools do not create another controller.
 The Core 4 — **`/recon`, `/hunt`, `/validate`, `/report`** — are explicit tools, not
 a mandatory sequence. Start from the current question and available evidence;
 source/API investigation does not require full Recon. `/autopilot` reuses the same
-core with continuation/budget duties; specialist commands retain their explicit scope.
+core with continuation, explicit-limit handling and handoff; specialist commands retain their explicit scope.
 
 ```
 YOU -> Claude Code CLI main session
@@ -446,16 +446,28 @@ route work to a cheaper model.
 <summary><b>Autonomous Hunt Loop</b> — <code>/autopilot</code></summary>
 <br>
 
-7-step loop that runs continuously: **scope - recon - rank - hunt - validate - report - checkpoint**
+Fresh, empty targets start with Recon; usable supplied evidence can start directly.
+While Recon runs, investigate independent in-scope questions with available evidence.
+Collect its final result and review new Surface material before relying on it or stopping.
+Choose a complete method, execute, capture/register evidence, refresh state and select
+the next question. `recon-ranker` is an optional read-only second opinion.
+Validation and report publication return to investigation.
 
-Three checkpoint modes:
-- `--paranoid` — still auto-selects the next branch; checkpoints after meaningful findings or strong partial signals
-- `--normal` — batches findings, checkpoints every few minutes
-- `--yolo` — minimal stops (still requires approval for report submissions)
+Checkpoint cadence does not authorize stopping:
 
-Built-in telemetry: circuit breaker state, per-host pacing hints, and every request logged to `audit.jsonl`.
+- `--paranoid` (default) — after each substantive change
+- `--normal` — per batch
+- `--yolo` — at blockers, handoff and finish
 
-Those helper controls stay in **advisory audit/replay** behavior for the supplied target set: requests are still logged, and helper state is recorded for reproducibility.
+There is no default whole-investigation time, cost or lane limit. Explicit
+`--max-seconds=SECONDS` or `--deep --max-lanes N` can bound an invocation;
+ordinary uncapped runs need no new Round. Per-operation timeouts and rate limits
+still apply. Continuation and stopping follow [the automatic controller](commands/autopilot.md#shared-automation);
+external report submission remains manual.
+
+Project HTTP helpers record advisory pacing, circuit-breaker and request audit
+metadata. Native shell/browser/MCP calls still need the selected execution
+contract's capture and registration; helper telemetry is not universal request logging.
 
 </details>
 
@@ -590,7 +602,7 @@ closeable only after mapping to one of the canonical coverage cells above.
 
 | Tool | What It Does |
 |:---|:---|
-| `hunt.py` | Master orchestrator — chains recon, scan, report |
+| `hunt.py` | Single targets run recon + bounded scan by default; reports are explicit; lists run batch recon |
 | `recon_engine.sh` | Subdomain enum + DNS + live hosts + URL crawl |
 | `cf_solver.py` | Optional manual Cloudflare challenge clearance helper; not auto-run |
 | `technology_inventory.py` | Shared httpx JSONL/text component and version inventory owner |
@@ -644,7 +656,7 @@ JSHook remains an explicit runtime-evidence integration. See
 | `tools/target_store.py` | Authoritative per-target intent, experience and evidence-linked domain facts |
 | `tools/experience_recall.py` | Bounded target experience and reviewed knowledge references with source health |
 | `pattern_db.py` | Historical PatternDB import/inspection; no ordinary runtime writes or automatic cross-target recall |
-| `audit_log.py` | Every outbound request logged + advisory per-host pacing/breaker telemetry |
+| `audit_log.py` | Append-only audit for instrumented callers; pacing/breaker helpers remain advisory |
 | `schemas.py` | Schema validation for all entry types (versioned) |
 
 </details>
@@ -671,7 +683,7 @@ claude-bug-bounty/
 ├── hooks/                      Session start/stop hooks
 ├── docs/                       Payload arsenal + technique guides
 ├── web3/                       Smart contract skill chain
-├── scripts/                    Maintained wrappers; campaign scripts are archived
+├── scripts/                    Entry navigation; campaign scripts are archived
 ├── archive/                    Historical campaign scripts and root clutter manifests
 └── wordlists/                  5 wordlists
 ```
@@ -696,7 +708,7 @@ lanes. A missing optional tool remains an explicit limitation, not a clean scan.
 
 ```bash
 # Debian 13 (requires repositories providing Python 3.13)
-sudo apt install git python3.13 python3.13-venv jq rsync
+sudo apt install git python3.13 python3.13-venv jq
 # Optional external-tool prerequisites
 sudo apt install golang nodejs
 ```
@@ -718,11 +730,13 @@ environment used for release acceptance. Launch Claude from this checkout with
 the venv active; Python tools and target data remain in the checkout. Install
 external recon/scan tools separately when needed via `bash install_tools.sh`.
 
-Re-run `bash install.sh` after updating. It preserves disabled commands and
-external Skill roots. With rsync, files inside this repository's Skill roots are
-mirrored, so keep custom Skills in separate roots. Without rsync, stale files
-remain visible to the doctor; review them before explicit cleanup. Installation
-does not migrate target databases. See [Web2 release acceptance](docs/web2-release.md)
+Re-run `bash install.sh` after updating. It calls `runtime_doctor.py --sync --prune`
+with whole-batch preflight, hash-based ownership receipts and an entry-migration
+journal. Only unchanged owned retired files are removed; modified or unowned
+conflicts reject the batch. Disabled commands and unrelated external Skills are
+preserved. Interrupted entry migrations require the same fixed checkout/executor
+and migration record; see `/sync-check`. Installation does not migrate target
+databases. See [Web2 release acceptance](docs/web2-release.md)
 for upgrade, recovery, verification commands and the tested support boundary.
 
 ### API Keys
@@ -766,20 +780,12 @@ Configure in `~/.config/subfinder/config.yaml`:
 
 ## The Golden Rules
 
-These are always active. Non-negotiable.
-
-```
- 1. USE TARGET SET DIRECTLY treat the supplied target set as the execution scope
- 2. NO THEORETICAL BUGS    "Can attacker do this RIGHT NOW?" — if no, stop
- 3. KILL WEAK FAST         Gate 0 is 30 seconds, saves hours
- 4. KEEP NOTES ADVISORY    target notes guide pacing/replay, not execution bans
- 5. 5-MINUTE RULE          nothing after 5 min = move on
- 6. RECON ONLY AUTO        manual testing finds unique bugs
- 7. IMPACT-FIRST           "worst thing if auth broken?" drives target selection
- 8. SIBLING RULE           9 endpoints have auth? check the 10th
- 9. A→B SIGNAL             confirming A means B exists nearby — hunt it
-10. VALIDATE FIRST         7-Question Gate (15 min) before report (30 min)
-```
+Use the [execution contract index](docs/tool-index.md#execution-contract-lookup)
+for current method, Scope, evidence, validation and memory requirements.
+Autonomous work follows the [continuation and finish contract](commands/autopilot.md#transition-and-finish-contract):
+reports and checkpoints return to investigation while useful work remains.
+There is no default investigation deadline; explicit user limits and the selected
+operation's execution controls remain effective.
 
 <br>
 

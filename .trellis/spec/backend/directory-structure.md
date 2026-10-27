@@ -14,7 +14,7 @@ Claude 侧编排，Python/Shell 工具负责确定性执行、证据保存和状
 | `agents/` | 可选 Claude specialist 的职责边界 | `agents/autopilot.md`、`agents/validator.md` |
 | `skills/` | 领域执行方法和按需参考资料 | `skills/src-hunter/modules/web2-recon.md`、`skills/src-hunter/modules/cicd-security.md` |
 | `rules/` | 全局约束、状态模型和工具/AI 边界 | `rules/ccst/hunting.md`、`rules/ccst/tool-ai-boundary.md` |
-| `knowledge/` | 小型知识卡、payload pack、playbook、capability registry 和正式卡治理产物 | `knowledge/capabilities.yaml`、`knowledge/cards/api-idor.md`、`knowledge/governance/events.jsonl` |
+| `knowledge/` | 小型知识卡、payload pack、playbook、capability registry 和发布审核回执 | `knowledge/capabilities.yaml`、`knowledge/cards/api-idor.md`、`knowledge/reviews/<id>/` |
 | `tools/` | 可独立调用、可测试的确定性 CLI 与共享模块 | `tools/autopilot_state.py`、`tools/evidence_ledger.py` |
 | `memory/` | append-only journal、审计、schema 和目标记忆实现 | `memory/audit_log.py`、`memory/schemas.py` |
 | `tests/` | pytest 行为、跨层契约和 runtime staging 测试 | `tests/test_finding_index.py`、`tests/test_claude_runtime_integration.py` |
@@ -27,11 +27,13 @@ Claude 侧编排，Python/Shell 工具负责确定性执行、证据保存和状
 `memory/goals/`。测试必须通过 `tmp_path` 或隔离 staging root 写入，不能依赖本机历史
 目标数据。
 
-大型 Surface 的事实与派生文件必须分层：原始 recon URL 和
-`state/<target>/observations.json` 是完整性数据；`recon/<target>/surface/{index.jsonl,
-manifest.json,summary.json}`、`state/<target>/observations-summary.json` 和
-`state/<target>/surface-projection.json` 是可删除重建的索引/sidecar/cache。派生目录不能反向
-成为 finding、action、coverage 或 observation lifecycle owner。
+Finding、Action 和实际执行的 observations 归 `state/<target-key>/metadata.sqlite3` 中的
+TargetStore。Recon 的中性材料清单及审阅状态仍归 `observation_inventory.py` 管理的
+`state/<target-key>/observations.json`，两种 observation 不可混同。
+原始 recon URL 和完整 inventory 必须保留；`recon/<target-key>/surface/{index.jsonl,
+manifest.json,summary.json}`、`state/<target-key>/observations-summary.json` 和
+`state/<target-key>/surface-projection.json` 是可重建的索引/sidecar/cache。派生目录不能
+反向成为 Finding、Action、Coverage review 或 observation 的事实 owner。
 
 `distill/corpus/` 是可删除、gitignored 的本地案例数据面，不是仓库知识权威，也不能默认
 进入 Claude context。其 `reports.jsonl`、`index.json`、`manifest.json` 只能由
@@ -44,8 +46,8 @@ controller 或 session/state 语义。
 ## 模块组织规则
 
 1. **状态所有者优先**：跨工具共享的 schema、身份算法或 mutation API 放在拥有该状态的
-   模块，例如 finding 写入归 `tools/finding_index.py`，目标路径归
-   `tools/target_paths.py`，知识注册表解析归 `tools/knowledge_registry.py`。
+   模块，例如 Finding 创建归 `tools/target_store.py` 的 `TargetStore.create_finding()`，
+   目标路径归 `tools/target_paths.py`，知识注册表解析归 `tools/knowledge_registry.py`。
 2. **CLI 薄封装**：复杂模块使用 `build_parser()`/`main(argv)` 暴露命令，核心逻辑保持为
    可导入函数。`tools/action_queue.py` 和 `tools/knowledge_audit.py` 是现有范例。
 3. **直接执行兼容**：`tools/*.py` 需要同时支持 `python3 tools/x.py` 和从测试中
@@ -53,20 +55,22 @@ controller 或 session/state 语义。
    模式，不新增全局路径黑魔法。
 4. **共享规则不复制**：命令文档描述控制流，工具实现稳定解析/落盘；不要在多个 Markdown、
    Python 和 Shell 文件中各维护一份 storage-key、状态迁移或 capability 解析算法。
+   入口保留何时读取、执行及消费回执的触发点；捕获/登记/失败恢复细则引用
+   `docs/evidence-runners.md`，认知读取/写回时机引用 `skills/runtime-protocol.md`。
 5. **新增知识资产先登记**：正式卡片、payload pack 和 playbook 必须登记到
    `knowledge/capabilities.yaml`，并通过 `tools/knowledge_audit.py --strict`。
 6. **知识状态分层**：卡片来源 frontmatter 解析归 `tools/knowledge_registry.py`，本地案例
    查询归 `tools/case_corpus.py`（规范化投影在 `tools/corpus_projection.py`）。
-   候选晋升走 `/distill` 直线流程（`tools/distill_target.py evidence` 出有界视图，AI 直写草稿；草稿在
-   `knowledge/candidates/`，人工 `mv` 进 cards 即 promote——git 即生命周期，
-   无第二个状态机；原 candidates/lifecycle 状态机 2026-09-11 随
-   09-11-simple-efficient-refactor 零-B 归档）。
-7. **治理投影不是路由状态**：`tools/knowledge_value_review.py` 生成的全卡矩阵只承载人工/AI
-   advisory 复核；active/load/layer 仍由 registry 决定，maturity 证据由正式卡事件校验。
+   `/distill` 产出 `knowledge/candidates/` 草稿；`tools/knowledge_promote.py` 负责审核后
+   发布正式卡、登记 registry、保存回执并 audit。`tools/knowledge_review.py` 校验正文与
+   审核原件的字节绑定；移动文件或 maturity 标签本身不构成已审核发布。
+7. **治理投影不是路由状态**：`tools/kb_review.py` 只展示 registry、maturity 和已记录的 pull
+   事实；零 pull 不代表未使用。`tools/knowledge_retire.py` 显式更新退役状态并保留正文；
+   可见性归 registry，当前发布审核有效性归 `knowledge_review.py`。
 8. **大型 Surface 分层**：exact URL identity/provenance/page 归
-   `tools/surface_index.py`，bounded cache 归 `tools/surface_projection.py`，完整 observation
-   与 summary sidecar 归 `tools/observation_inventory.py`，控制面路由归
-   `tools/autopilot_state.py`。consumer 只能调用 owner API，不能自行扫描大文件或复制
+   `tools/surface_index.py`，bounded cache 归 `tools/surface_projection.py`，Recon inventory
+   与 summary sidecar 归 `tools/observation_inventory.py`，控制事实投影归
+   `tools/autopilot_state.py`，调查路线由 Claude 选择。consumer 调用 owner API，不复制
    fingerprint/schema。
 
 ## 命名约定
@@ -76,16 +80,17 @@ controller 或 session/state 语义。
 - 目标磁盘目录不得自行清洗字符串，统一使用 `canonical_target_value()` 和
   `target_storage_key()`。
 - JSON/JSONL 持久化对象包含 `schema_version`；时间字段使用 UTC ISO-8601。
-- 目标级状态文件使用明确所有者名称，例如 `action_queue.json`、`session.json`、
-  `checkpoint_latest.json`；不要创建含义重叠的 `state2.json` 或 `final_new.json`。
+- Store 领域事实不再另建 JSON writer；外置 owner 文件使用明确名称，例如 `scope.json`、
+  `session.json`、`checkpoint_latest.json`。旧 `action_queue.json` 仅供显式历史读取/迁移，
+  不作缺库 fallback；不要创建含义重叠的 `state2.json` 或 `final_new.json`。
 
 ## 新功能落位示例
 
 - 新增一个确定性 replay runner：实现放 `tools/`，行为测试放 `tests/`，操作说明放
   `docs/evidence-runners.md`，产出的原始证据写目标作用域目录。
-- 新增一个知识路线：先判断是现有卡增量还是新卡；正式卡放 `knowledge/cards/`，登记
-  registry，再在 `tools/context_pack.py` 增加 signal 路由和回归测试；如含案例来源，使用
-  结构化 `source_refs`，按需通过 case corpus resolver 查询，不能内联报告正文。
+- 新增共享知识：先判断是既有卡复审还是新候选，走上述发布/审核 owner；Context Pack
+  通过 registry 展示目录，由 Claude 选择相关方法，不增加关键词选路。如含案例来源，
+  使用结构化 `source_refs`，按需通过 case corpus resolver 查询，不能内联报告正文。
 - 新增 slash command：命令契约放 `commands/`；如果需要状态读写，调用现有 owner API，
   不在 Markdown 内拼接另一套 JSON writer。
 

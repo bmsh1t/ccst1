@@ -123,12 +123,11 @@ automation suspended. User interruption never needs a Checkpoint approval.
    section; reuse matching `state.lane_contract` at `text_available=true`.
    Fully read the selected original method before its first experiment: a shortlist,
    search hit or file prefix is only navigation. Before the first native request,
-   read the complete `docs/evidence-runners.md#在执行时捕获原件` section and prepare
-   capture plus registration in the same tool execution. Use `record-observation`
-   when no Finding exists; inspect its receipt before the next experiment.
-   Registration failure retries saved materials, never a request just to recreate
-   evidence. Preserve actual request timestamps and bytes; do not backfill them
-   from memory. Apply `skills/runtime-protocol.md#5-execution-and-write-back`.
+   read the complete [capture and registration contract](../docs/evidence-runners.md#在执行时捕获原件).
+   Prepare capture plus registration in the same tool execution. Use `record-observation`
+   when no Finding exists; consume the registration receipt before the next experiment.
+   Recover failures from saved materials under that contract.
+   Apply `skills/runtime-protocol.md#5-execution-and-write-back`.
    Save accepted memory deltas under `skills/runtime-protocol.md#cognitive-write-timing`.
    Round claims before execution and writes its terminal heartbeat after write-back.
 

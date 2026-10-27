@@ -10,7 +10,6 @@ was previously fixed to `BASE_DIR`.
 | Candidate | Classification | Runtime boundary | CLI |
 |---|---|---|---|
 | `browser_evidence` | `narrow-root-injected` | `load_last_browser_evidence(evidence_root=...)` | none |
-| `browser_playwright_fallback` | `narrow-root-injected` | `capture_with_playwright(evidence_root=..., recon_root=...)` | existing `--evidence-root` / `--recon-root` |
 | `cf_solver` | `repo-root-dependent` | `load_config`, `check_cookie`, `write_output` | `main --repo-root` |
 | `remember` | `repo-root-dependent` | validation-summary and default memory resolution | `main --repo-root` |
 | `request_guard` | `repo-root-dependent` | `memory_dir` is required by preflight/record/status owners | existing `--memory-dir` |
