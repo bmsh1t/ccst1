@@ -1,5 +1,5 @@
 #!/bin/bash
-# Claude Bug Bounty — install skills, slash commands, and agents into Claude Code.
+# Claude Bug Bounty — install managed skills, commands, agents and lifecycle hooks.
 
 set -euo pipefail
 
@@ -44,6 +44,7 @@ python3 "${SCRIPT_DIR}/tools/runtime_doctor.py" \
     --repo-root "${SCRIPT_DIR}" --runtime-root "${HOME}/.claude" --sync --prune
 
 echo "Done. Selected runtime files verified; unchanged owned retired files removed."
+echo "CCST lifecycle hook groups are managed in settings.json; other settings and hooks are preserved. Restart Claude after sync."
 echo "Entry cutover conflicts reject the whole batch; unrelated Skills are preserved."
 echo "Interrupted cutovers require the same fixed source/executor and migration record."
 echo "The src-hunter package includes its knowledge and modules. CLAUDE/rules/tools and reviewed knowledge remain in this checkout; host caches are not verified."

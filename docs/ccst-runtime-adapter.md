@@ -17,6 +17,31 @@ CCST 路径与操作。本文件导航现有合同并记录来源；根 AGENTS.m
 启动、后台等待、继续和退出按
 [Shared Automation](../commands/autopilot.md#shared-automation) 执行。
 
+Claude 宿主入口并行送达完整 `src-hunter` 正文和共享运行协议，Bootstrap 单独完成
+Scope/Auth、安装一致性和目标状态准入。正文分块带来源指纹、原包路径和结束标记，
+避免宿主预览截断与末尾空白丢失；收到正文不等于获准执行。
+`tools/autopilot_host.py` 只保留本次会话/调用/目标绑定和可丢弃的源码快照，
+不保存目标进度、Finding 或记忆。目标列表先走已有批次选择，再绑定具体目标。
+
+SessionStart 在压缩/重启后恢复同源完整正文；当前事件给出的 `resume` 命令重新调用
+Bootstrap，获取最新 Scope/Auth、owner 和记忆，保留原 invocation。
+新用户消息暂停自动结束检查，同任务继续时显式恢复；普通换任务与用户中断不会强行续跑。
+Claude 原生后台结果的完整 `task-notification` 封套不算新用户任务，只保留当前启停状态，
+不激活已暂停的调用。该封套识别不是发送者认证，不读取模型历史。
+Stop 读取当前 owner 与同一 Checkpoint Global Review 的停止依据；未完执行不能正常收尾，
+重复无进展退出标为未完成。Closure 仍单独判定是否有证据声明耗尽。
+可选 `--max-seconds=SECONDS` 在入口绑定时限，恢复保留起点和额度；
+lane 限制绑定入口额度/继承的活动 Round。结束复核不能新增或缩短额度，
+也不能借旧已完成 Round 停止新调用。费用上限由原生宿主执行。
+Recon/Scan 运行中可并行独立且有依据的调查；锁只防同阶段重复启动，
+结束前仍须回收结果。有效范围/限制/整体阻塞退出不要求补齐耗尽表单。
+
+安装与恢复钩子通过 [sync-check](../commands/sync-check.md) 的既有 ownership/journal
+写入选定 runtime 的 `settings.json`，只管理 CCST 组；首次安装或 hook 版本变化要求
+全量 kinds 加 `--prune`。未授权时不安装个人 runtime。原生 description 发现保持不变。
+宿主机制已在 Claude Code 2.1.304 的隔离假 API 上验证；正文送达与停止校验不证明
+模型正确使用方法，也不能发现所有绕过登记合同的原生请求。
+
 目录、owner 和清理见 [目标材料规则](../rules/desktop-task-folder.md)；
 恢复和认知写回见 [Shared Memory Continuity](../skills/runtime-protocol.md#shared-memory-continuity)。
 无 target 的集团 seeds 按 [campaign](../rules/ccst/campaign.md) 续接。

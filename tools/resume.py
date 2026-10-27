@@ -125,7 +125,7 @@ def _checkpoint_followup(checkpoint: dict) -> dict:
     if not isinstance(redline_unchecked, (int, float)):
         redline_unchecked = 0
     if decision in {"wait_recon", "wait_scan"}:
-        blocker = f"{decision}: an existing long-running phase owns the target"
+        blocker = f"{decision}: phase still running; independent evidence-backed work may continue"
     elif status == "blocked":
         blocker = str(current_action.get("result") or current_action.get("notes") or "blocked").strip()
     elif redline_unchecked > 0:

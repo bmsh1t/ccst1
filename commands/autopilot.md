@@ -29,16 +29,50 @@ batch, `--yolo` at blockers/handoff/finish. Cadence never authorizes stopping.
 `--quick` lowers Recon cost; `--deep` follows evidence and value. No project-default
 time, cost or lane limit applies. `--deep --max-lanes N` optionally sets an explicit
 limit of 1–32 new investigation work items; omit it to continue without a lane cap.
+Optional `--max-seconds=SECONDS` binds an explicit elapsed-time limit at entry;
+omit it for no time cap. Combine value options as `--option=value` within the
+existing nine-token inline argument limit.
 
 <!-- AUTOPILOT_CRITICAL_RUNTIME_MANIFEST
-{"schema_version":3,"paths":[{"kind":"commands","relative_path":"autopilot.md"},{"kind":"commands","relative_path":"autopilot-round.md"},{"kind":"commands","relative_path":"recon.md"},{"kind":"skills","relative_path":"runtime-protocol.md"},{"kind":"skills","relative_path":"src-hunter/SKILL.md"},{"kind":"skills","relative_path":"src-hunter/modules/web2-recon.md"},{"kind":"skills","relative_path":"src-hunter/modules/triage-validation.md"},{"kind":"skills","relative_path":"src-hunter/modules/report-writing.md"},{"kind":"skills","relative_path":"src-hunter/知识库/README.md"},{"kind":"skills","relative_path":"src-hunter/知识库/打穿短表.md"}],"mcp_contracts":["mcp__Playwright__*","mcp__chrome-devtools__*","mcp__fofamap__*"]}
+{"schema_version":4,"host_hooks":true,"paths":[{"kind":"commands","relative_path":"autopilot.md"},{"kind":"commands","relative_path":"autopilot-round.md"},{"kind":"commands","relative_path":"recon.md"},{"kind":"skills","relative_path":"runtime-protocol.md"},{"kind":"skills","relative_path":"src-hunter/SKILL.md"},{"kind":"skills","relative_path":"src-hunter/modules/web2-recon.md"},{"kind":"skills","relative_path":"src-hunter/modules/triage-validation.md"},{"kind":"skills","relative_path":"src-hunter/modules/report-writing.md"},{"kind":"skills","relative_path":"src-hunter/知识库/README.md"},{"kind":"skills","relative_path":"src-hunter/知识库/打穿短表.md"}],"mcp_contracts":["mcp__Playwright__*","mcp__chrome-devtools__*","mcp__fofamap__*"]}
 AUTOPILOT_CRITICAL_RUNTIME_MANIFEST -->
-Authoritative bootstrap contract (do not reinterpret): !`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_bootstrap.py" --json -- "$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"`
-Arguments: `<target> [--paranoid|--normal|--yolo] [--quick] [--deep [--max-lanes N]] [--auth-file PATH] [--context-file=PATH]`.
+Authoritative bootstrap contract (do not reinterpret): !`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_host.py" entry --session-id "${CLAUDE_SESSION_ID}" -- "$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"`
+Complete original sources (ordered parts):
+!`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_host.py" body --session-id "${CLAUDE_SESSION_ID}" --part 0`
+!`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_host.py" body --session-id "${CLAUDE_SESSION_ID}" --part 1`
+!`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_host.py" body --session-id "${CLAUDE_SESSION_ID}" --part 2`
+!`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_host.py" body --session-id "${CLAUDE_SESSION_ID}" --part 3`
+!`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_host.py" body --session-id "${CLAUDE_SESSION_ID}" --part 4`
+!`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_host.py" body --session-id "${CLAUDE_SESSION_ID}" --part 5`
+!`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_host.py" body --session-id "${CLAUDE_SESSION_ID}" --part 6`
+!`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_host.py" body --session-id "${CLAUDE_SESSION_ID}" --part 7`
+
+Arguments: `<target> [--paranoid|--normal|--yolo] [--quick] [--deep [--max-lanes N]] [--auth-file PATH] [--context-file=PATH] [--max-seconds=SECONDS]`.
 
 ## Shared Automation
 
-Round mechanics belong to `/autopilot-round`; ordinary runs only recover existing Round work.
+Fresh targets start Recon. While it runs, investigate independent in-scope questions
+using available evidence; wait only for missing inputs the next experiment needs.
+Apply the selected method, capture/register, refresh and choose the next question.
+Collect Recon's final result and review new Surface material when it arrives.
+Publishing a report returns to investigation; a saved next action is not completion.
+
+Round mechanics belong to `/autopilot-round`; use them for existing Round work or
+an explicitly supplied lane cap. Ordinary uncapped runs need no new Round.
+
+The native host supplies complete static bodies alongside Bootstrap; only
+`action=continue` admits investigation. Each `CCST_ENTRY` source hash must match
+`host.source_sha256`; apply the bodies in this parent session.
+`CCST_SOURCE` names the original file/package root.
+Missing bodies, truncated previews or `CCST_AUTOPILOT_INCOMPLETE` forbid new target
+work. Natural Skill discovery remains available; no duplicate Skill invocation is
+needed for an already delivered complete body.
+
+The binding is this `host.session_id` + `host.invocation_id`. On resume/compaction
+or a new user message continuing this investigation, run the current hook's
+`host.resume_command` before dependent work: it refreshes Scope/Auth, owner state
+and memory without starting another invocation. A changed task/cancellation leaves
+automation suspended. User interruption never needs a Checkpoint approval.
 
 ### State Consumption Loop
 
@@ -54,27 +88,32 @@ Round mechanics belong to `/autopilot-round`; ordinary runs only recover existin
    apply `skills/runtime-protocol.md#shared-memory-continuity` from `state.target_memory`.
    Carry any explicit user/host time, cost or lane limit. Treat absent limits as
    unset; do not invent a deadline, allocation or write-back cutoff.
-   When a limit exists, retain its starting clock/cost and reserve needed write-back
-   time. Resume/compaction preserves that boundary unless explicitly changed.
+   `host.started_at` is the invocation's Unix starting time; `host.elapsed_seconds`
+   is measured, not estimated. Resume/compaction preserves this clock. Retain the
+   admitted `host.max_seconds`/`host.round_limit` and their source; reserve write-back time only when
+   the user/host supplied that boundary.
 
 2. **Continue.** Recover unfinished execution first; read Bootstrap's
    `state.round_progress` and use `commands/autopilot-round.md` for existing Round work.
-   No prior Round means no Round recovery. Completed lanes allow further investigation
+   With an explicit lane cap and no active Round, use that command's Prepare And
+   Terminal Precheck, claims, heartbeats and settle without invoking its Bootstrap.
+   Otherwise no prior Round means no Round recovery. Completed lanes allow further investigation
    unless an explicit limit was reached. Settling an inherited Round returns here.
-   On `wait_recon`/`wait_scan`, poll and refresh
-   without duplicate launches. A background task handle keeps this invocation
-   active: wait through native TaskOutput/Read, respecting any explicit limit, then
-   resume here; a pending notification is not a final response or handoff boundary.
-   Before selecting or executing new work (including
-   fresh Recon), load `src-hunter` in this parent session through the native `Skill`
-   tool as shown in [Investigation Skill](#investigation-skill).
+   `wait_recon`/`wait_scan` tracks that running phase, not a global pause.
+   Retain its background handle and avoid duplicate launches. Independently supported
+   tests, evidence analysis, validation and registration may proceed in parallel;
+   do not race the same mutable session/object or read unfinished artifacts as final.
+   Consume the terminal TaskOutput and refresh before relying on its final outputs
+   or stopping. If no independent useful work is available, wait/poll that handle.
+   Before selecting or executing new work (including fresh Recon), apply the complete
+   delivered `src-hunter` body under [Investigation Skill](#investigation-skill).
    `state.next_action=run_recon` is the initial default for a new/empty target.
    Without prior work or usable supplied request/source/browser evidence, start
    target I/O with `/recon`, preserving `arguments.recon_flags`,
    seed URL and auth/context. Do not precede it with ad-hoc probes to create material.
    Supplied usable evidence may start the investigation directly.
-   After Recon's Surface finalizer, read the material and apply [Surface Review](#surface-review)
-   before choosing the next question.
+   After Recon's Surface finalizer, apply [Surface Review](#surface-review) to its new
+   material and adjust the next question; keep prior parallel work and its evidence.
    Before relying on history or repeating an experiment, apply
    `skills/runtime-protocol.md#problem-recall`; use returned corrections and conditions.
    `owner_continuations` order is advisory; keep deferred work and obey `runnable=false`.
@@ -82,8 +121,14 @@ Round mechanics belong to `/autopilot-round`; ordinary runs only recover existin
 
 3. **Execute and save.** Read evidence and the selected `docs/autopilot-lanes.md`
    section; reuse matching `state.lane_contract` at `text_available=true`.
-   Apply `skills/runtime-protocol.md#5-execution-and-write-back`; before the first
-   native request read `docs/evidence-runners.md#在执行时捕获原件`.
+   Fully read the selected original method before its first experiment: a shortlist,
+   search hit or file prefix is only navigation. Before the first native request,
+   read the complete `docs/evidence-runners.md#在执行时捕获原件` section and prepare
+   capture plus registration in the same tool execution. Use `record-observation`
+   when no Finding exists; inspect its receipt before the next experiment.
+   Registration failure retries saved materials, never a request just to recreate
+   evidence. Preserve actual request timestamps and bytes; do not backfill them
+   from memory. Apply `skills/runtime-protocol.md#5-execution-and-write-back`.
    Save accepted memory deltas under `skills/runtime-protocol.md#cognitive-write-timing`.
    Round claims before execution and writes its terminal heartbeat after write-back.
 
@@ -119,10 +164,11 @@ save decision-relevant memory under `skills/runtime-protocol.md#cognitive-write-
 
 ### Investigation Skill
 
-Apply `skills/runtime-protocol.md#native-skill-loading` in this parent session:
-actually invoke `Skill({"skill":"src-hunter","args":"<current target type/Scope, fresh or resumed, available evidence, deep, explicit limits or unset>"})`
-when its complete body is absent. Child reading and description metadata are not
-parent body context. Reuse retained context; apply Shared Knowledge Recall to the question.
+Apply the delivered original body and `skills/runtime-protocol.md#native-skill-loading`
+in this parent session with current target/Scope, facts, mode and explicit limits
+or unset. Child reading and description metadata are not parent body context.
+Reuse retained bodies; apply Shared Knowledge Recall to read the complete method
+for the selected question. Recovery restores numbered original-source parts.
 
 ### Surface Review
 
@@ -166,11 +212,17 @@ browser work under its lane contract, and save memory/current handoff.
 Use `commands/target.md#交接与证据` for handoff and consume its receipt.
 External submission remains manual.
 
-When stopping at an explicit limit, name its user/host source and show the measured
-elapsed time, lane count or cost against it. Cost requires actual receipts and the
-allocation's starting value; unknown usage is not exhaustion. Without an explicit
+When stopping at an explicit limit, name its entry/owner source and use the exact
+admitted time threshold or Round identity in `termination.limit`, using
+`commands/checkpoint.md#global-review`. An early write-back reserve is not itself
+an elapsed limit. A time limit not bound by `--max-seconds=SECONDS` cannot be
+introduced at the stopping review. Native host time/cost limits remain host-enforced interruptions;
+unavailable cost receipts cannot authorize a normal completion. Without an explicit
 limit, return to step 2 while worthwhile work remains. Saving a next action or
 reaching a report/checkpoint never creates a stopping limit.
+An explicit time cap is a ceiling, not a minimum runtime. Continue useful work or
+use another evidence-backed stop reason when it applies; never sleep merely to
+reach the deadline.
 
 Before exhaustion, run Coverage `rebuild` then `find-gaps`, and read Closure:
 
@@ -181,6 +233,17 @@ cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_she
 Apply `commands/checkpoint.md#global-review`; incomplete evidence proves nothing.
 Reread after writes. Exhaustion requires `closure.verdict=finish` and
 `can_claim_exhausted=true`.
+
+For every normal automatic stop, record that same current Global Review with
+`--termination-json` bound to `host.session_id` and `host.invocation_id`; preserve
+unresolved owner work and reopening conditions. Finish handoff/write-back first,
+then read fresh Closure and submit once. A stale digest requires a fresh read,
+not repeated submission of the old value. An actual user/scope/explicit-limit
+boundary may stop with `closure.verdict=handoff`; do not try to manufacture exhaustion
+or repeat a valid stop review solely to clear residual coverage tokens.
+Use the structured reasons in `commands/checkpoint.md#global-review`. The Stop hook verifies current owners and
+binding, then releases this invocation. Repeated unchanged stop rejection suspends
+automation as incomplete; it never establishes exhaustion or a default budget.
 
 Final output: target/mode, evidence, findings/candidates, blockers, next action;
 exactly one final-only, presentation-only `Memory recommendations` section

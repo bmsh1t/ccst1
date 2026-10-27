@@ -714,6 +714,7 @@ def record_global_review(
     residual_unknowns: list[str] | None = None,
     decision: str,
     next_action: str = "",
+    termination: dict | None = None,
 ) -> dict:
     """Persist the target-wide review witness through the Checkpoint owner."""
     repo = Path(repo_root)
@@ -750,6 +751,8 @@ def record_global_review(
                 "decision": decision,
                 "next_action": next_action,
             }
+            if termination is not None:
+                review["termination"] = termination
             checked = validate_global_review(
                 repo,
                 resolved_target,
@@ -1001,6 +1004,7 @@ ACTION_DECISIONS = {
     "high-risk-lane-review": "validate",
     "viewstate-integrity-review": "validate",
     "handoff": "handoff",
+    "continue_investigation": "continue",
     "recon_no_live_hosts": "handoff",
     "revalidate_finding_owner": "continue",
     "collect_candidate_evidence": "continue",
@@ -1052,7 +1056,7 @@ def _runtime_wait_candidate(wait_action: str, target: str) -> dict:
         "type": wait_action,
         "status": "transient",
         "action": action,
-        "command_hint": "poll existing run; do not enqueue persistent validation/report work yet",
+        "command_hint": "track the existing run; independent evidence-backed work and registration may continue",
         "redline_required": False,
         "stop_condition": "completed workflow is written or the matching phase lock releases",
     }
@@ -1202,14 +1206,11 @@ def _build_checkpoint(
         "expansion_scope": "fresh query of all stored actions, including terminal history",
     }
     runtime_wait_action = str(state.get("next_action") or "")
-    if runtime_wait_action in {"wait_recon", "wait_scan"}:
-        # 活跃 phase gate 属于瞬时执行态，不是持久 queue 工作。只要匹配 flock
-        # 仍被持有，就不要 enqueue validation/report/surface candidates。
+    default_candidate = queue_snapshot["running_action"]
+    if runtime_wait_action in {"wait_recon", "wait_scan"} and not default_candidate:
         decision = _decision_for_action(runtime_wait_action)
-        default_candidate = {}
         recommended_executable_action = _runtime_wait_candidate(runtime_wait_action, resolved_target)
     else:
-        default_candidate = queue_snapshot["running_action"]
         recommended_executable_action = default_candidate
         decision = "continue"
     next_action_label = str(
@@ -1642,6 +1643,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--evidence-refs-json", default="[]")
     parser.add_argument("--cross-source-links-json", default="[]")
     parser.add_argument("--residual-unknowns-json", default="[]")
+    parser.add_argument("--termination-json", help="Optional Autopilot stop reason and current host invocation binding")
     parser.add_argument("--next-action", default="")
     round_operation.add_argument(
         "--record-round-closure",
@@ -1668,6 +1670,9 @@ def main(argv: list[str] | None = None) -> int:
             evidence_refs = json.loads(args.evidence_refs_json)
             cross_source_links = json.loads(args.cross_source_links_json)
             residual_unknowns = json.loads(args.residual_unknowns_json)
+            termination = json.loads(args.termination_json) if args.termination_json is not None else None
+            if args.termination_json is not None and not isinstance(termination, dict):
+                raise ValueError("--termination-json must be an object")
             result = record_global_review(
                 repo,
                 resolved_target,
@@ -1678,6 +1683,7 @@ def main(argv: list[str] | None = None) -> int:
                 residual_unknowns=residual_unknowns,
                 decision=args.decision,
                 next_action=args.next_action,
+                termination=termination,
             )
         except (OSError, ValueError, KeyError, json.JSONDecodeError, TypeError) as exc:
             print(f"checkpoint global review failed: {exc}", file=sys.stderr)

@@ -223,16 +223,6 @@ def _scanner_lane_residuals(state: dict) -> list[dict]:
 def _hard_gate_projection(state: dict) -> dict:
     """Return only target-state conditions that forbid cross-owner arbitration."""
     action = str(state.get("next_action") or "")
-    if state.get("recon_in_progress"):
-        return {
-            "action": "wait_recon",
-            "reason": "the target recon phase lock is still held",
-        }
-    if state.get("scan_in_progress"):
-        return {
-            "action": "wait_scan",
-            "reason": "the target scan phase lock is still held",
-        }
     if (state.get("checkpoint_health") or {}).get("status") == "invalid":
         return {
             "action": "repair_checkpoint",
@@ -597,10 +587,10 @@ def _closure_reason_frontier(
             )
             stop_condition = "advance or complete the durable cursor, or record its explicit blocker"
         else:
-            expected_information_gain = "obtain the owner-written phase result before selecting more work"
+            expected_information_gain = "recover the phase result; independent evidence-backed work may proceed meanwhile"
             stop_condition = "refresh after the matching phase completes or record its bounded blocker"
         phase = "scan" if action == "wait_scan" else "recon"
-        action_text = f"Wait for the active {phase} phase to release its target runtime lock"
+        action_text = f"Collect the active {phase} result before dependent work or final stopping; do not launch it twice"
         if reason == "cidr_continuation_invalid":
             action_text = "Repair the invalid CIDR continuation before selecting collection"
         elif reason == "cidr_continuation_pending":
@@ -837,8 +827,10 @@ def build_control_projection(state: dict) -> dict:
     action = (
         hard_gate["action"] if hard_gate
         else work[0]["next_action"] if len(work) == 1
+        else "wait_recon" if not frontier and state.get("recon_in_progress")
+        else "wait_scan" if not frontier and state.get("scan_in_progress")
         else "run_recon" if not frontier and _needs_initial_recon(state)
-        else "handoff"
+        else "continue_investigation"
     )
     lane = (
         ("recon-and-surface" if state.get("target_kind") == "list" else "state-and-queue")
@@ -962,20 +954,20 @@ def _describe_next_step(state: dict) -> str:
             )
         return (
             f"Start with /recon {target}, preserving flags, seed URL and auth/context. "
-            "Load native Skill src-hunter first if its body is absent. "
+            "Apply the complete src-hunter body under skills/runtime-protocol.md#native-skill-loading first. "
             "Usable request/source/browser evidence already supplied for this target "
             "may replace this initial default. After Recon, refresh state and continue "
             "investigation under commands/autopilot.md#shared-automation."
         )
     if action == "wait_recon":
         return (
-            f"wait/poll the existing /recon {target} run; do not launch another recon. "
-            "Refresh state after the matching recon phase lock releases."
+            f"Track the existing /recon {target} run; do not launch another recon. "
+            "Independent work using available evidence may proceed. Collect its result and refresh before dependent work or final stopping."
         )
     if action == "wait_scan":
         return (
-            f"wait/poll the existing scan-only quick run for {target}; do not launch another "
-            "scan-only quick. Refresh state after the matching scan phase lock releases."
+            f"Track the existing scan-only quick run for {target}; do not launch another scan-only quick. "
+            "Independent work using available evidence may proceed. Collect its result and refresh before dependent work or final stopping."
         )
     if action == "revalidate_finding_owner":
         finding = (state.get("structured_findings") or {}).get("next_owner_revalidation") or {}
@@ -1146,10 +1138,10 @@ def _describe_next_step(state: dict) -> str:
         )
     if action == "refresh_recon":
         return f"refresh recon before going deeper on {target}."
-    if action == "handoff":
+    if action in {"continue_investigation", "handoff"}:
         return (
             "Continue under commands/autopilot.md#shared-automation in this session. "
-            "Before new work, invoke native Skill src-hunter if its full body is absent. "
+            "Apply the complete delivered src-hunter body; restore missing host context before new work. "
             "Recover work or choose a complete method from current evidence within the bound Scope. "
             "Collect missing material when the next question requires it. "
             "Handoff is not a stop condition."

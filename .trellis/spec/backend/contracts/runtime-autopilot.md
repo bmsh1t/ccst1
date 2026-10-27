@@ -32,10 +32,48 @@ mechanical safety, evidence and recovery constraints govern execution.
   before selecting new investigative work, after Bootstrap admission and required
   execution recovery. `/autopilot-round` consumes the same Shared Automation section;
   both commands allow the native Skill tool. Existing full body context is reused;
-  absent body context is restored through native Skill invocation, or complete
-  checkout-file reading on a host without that tool. Description/manifest/hash
+  explicit entry delivers original source through `autopilot_host`, without
+  depending on model-initiated Skill invocation. Independent dynamic static parts
+  may precede Bootstrap, but never admit investigation. Each part validates the
+  same observed source contract and retains boundary whitespace with end markers;
+  its source hash matches the admitted host binding. Description/manifest/hash
   metadata is not body context. The original description remains unchanged for
   native discovery; no Python selector, Store load receipt or per-lane invocation.
+- The host stores only private session/invocation/target/arguments and an immutable
+  source snapshot. SessionStart settings hooks restore complete source parts for
+  compact/resume; the current prompt-bound resume refreshes Bootstrap, Scope/Auth,
+  owners and memory without a new invocation. Source change or damaged recovery
+  bytes fail visibly. Bootstrap is never cached as target truth. Original body
+  reads are independent of activation order and add no second preparation state.
+- Normal Stop consumes fresh state/Closure and the existing Checkpoint review's
+  optional `termination`: `reason`, `session_id`, `invocation_id`, `boundary`.
+  Only explicit_limit also requires `limit`, either positive integer
+  `elapsed_seconds` measured from the persisted invocation start, or a `round_id`
+  whose current owner has an explicit cap and budget_reached. Seconds must equal
+  the optional entry `--max-seconds=SECONDS`; Round must match the saved active
+  Round or a new Round under this entry's explicit cap, never its prior completed
+  Round. Resume preserves the clock and admitted limits; review cannot create or
+  shorten them. No natural-language threshold parser. Cost caps
+  remain native host interruptions without a fabricated cost receipt.
+  Reasons are scope_boundary, explicit_limit, global_blocker and
+  no_worthwhile_work; only a complete current review can authorize the same
+  invocation. Active execution/rounds block; no_worthwhile_work cannot bypass
+  runnable blocking owners. Other reasons retain unfinished owners/reopening
+  conditions in residual_unknowns. A valid complete review with missing residual
+  tokens retains its fields in form_insufficient: scope/limit/global-blocker stops
+  may consume it, but Closure and no_worthwhile_work still require full review.
+  Review checks do not prove semantic value or
+  replace Closure exhaustion. A batch list uses its existing state continuation,
+  never a synthetic list Store/review.
+- Repeated identical Stop rejection suspends as incomplete, without a default
+  investigation cap. Calling resume does not clear that progress identity.
+  New user prompts suspend enforcement; same-task continuation explicitly rearms
+  using the current resume command. Native interruption needs no review, ordinary
+  later conversation is not forced into a hunt, and a bound session changing cwd
+  still receives its suspension/recovery events. Subagent events are excluded.
+  Native background `task-notification` envelopes delivered through
+  UserPromptSubmit preserve the binding unchanged; they never suspend an active
+  investigation or rearm a suspended one. Ordinary user prompts still suspend.
 - Skill application retains the same session, target type/Scope, mode and any explicit
   user/host limits, or `unset`. Waits, terminal cleanup and execution recovery do not require a fresh
   Skill call. Shortlist and complete relevant methods follow Shared Knowledge Recall;
@@ -51,9 +89,12 @@ mechanical safety, evidence and recovery constraints govern execution.
   command contract without another controller or a universal inventory gate.
   The 6k/Autopilot integration boundary lives in `docs/ccst-runtime-adapter.md`;
   command-specific control changes do not rewrite shared 6k investigation rules.
-- Nested `/recon` retains the active Autopilot invocation. A background handle
-  requires bounded native waiting, followed by fresh state, Surface Review and
-  investigation; it grants no final response or "continue?" stop. Its standalone
+- Nested `/recon` retains the active Autopilot invocation. Live phase locks are
+  duplicate-launch guards, not cross-owner hard gates: current Queue/Finding work
+  remains visible and independent evidence-backed investigation may proceed.
+  A background handle requires result collection before dependent work or final
+  stopping, followed by fresh state and Surface Review. It grants no final response
+  or "continue?" stop. Its standalone
   collection behavior is unchanged. The consumed Recon command is critical runtime
   content, so an older installed copy cannot silently omit this return contract.
 - A loaded Skill/shortlist does not establish method use. Read and apply complete
@@ -148,11 +189,12 @@ mechanical safety, evidence and recovery constraints govern execution.
 - `autopilot_gate.build_control_projection` constructs the ordinary owner frontier
   once and derives `next_action`, `primary_next_action`, `fallback_action`,
   `selection_mode` and `next_lane`. A single business owner retains its compatibility
-  token; multiple owners use `handoff` + `ai_priority`, with each exact action/ref
+  token; multiple owners use `continue_investigation` + `ai_priority`, with each exact action/ref
   preserved for Claude's selection. Recovery items precede new work in rendered
   hints without replacing the business token. Active lock tokens remain
   `wait_recon`/`wait_scan`; compact and loop views consume this projection, not
-  separate owner priorities. Empty work returns to investigation. For a truly
+  separate owner priorities. Empty work returns `continue_investigation`;
+  Closure maps that guidance to its existing handoff meaning. For a truly
   empty single target, the same projection defaults to `run_recon` with lane
   `recon-and-surface` and selection mode `fallback`, never a hard gate or Queue item.
   Resume's existing Store binding (revision zero means initialization only),
@@ -429,6 +471,8 @@ wiring changes.
   a numeric limit. Explicit `--deep --max-lanes N` retains its 1..32 validation and
   existing handoff contract. Unset whole-run limits do not disable per-operation
   timeouts, collector batches, rate/concurrency controls or evidence recovery.
+  An ordinary invocation with an explicit lane cap uses the existing Round
+  prepare/claim/result/settle owner; uncapped ordinary work creates no Round.
 - Bootstrap order is args -> Scope/context and explicit/bound Auth validation ->
   read-only runtime compare -> advisory capability profile -> explicit single-target
   Store initialization -> compact target state. Explicit/bound auth is parsed by
@@ -1427,8 +1471,9 @@ Use when Autopilot `next_action`, Checkpoint candidate selection, or Checkpoint 
   remainder and explicit expansion. AI selects new work. An already-running
   action may be shown as the current action; otherwise the pointer is empty.
 - `decision=continue` leaves selection to AI, including an empty queue. Live
-  `wait_recon` / `wait_scan` is the transient process gate. Raw materials remain
-  visible independently of whether anyone registered review work.
+  `wait_recon` / `wait_scan` is a transient phase pointer, used when no running
+  action is selected. Independent claims and materials remain visible; only
+  duplicate phase launches and work needing unfinished outputs wait.
 - Same-call private assembly can reuse acquired owner inputs. Public Pack/State
   entries reject caller snapshots and read fresh owners; each Checkpoint reads
   current evidence integrity and checks Store revision drift before returning.
@@ -1679,9 +1724,19 @@ removed, conflicts, conflict_details and status (`complete|rejected|partial`);
 CLI --sync returns nonzero on rejection/partial. Successful entry migration also
 returns direction, native_entries and release fingerprints.
 `compare_runtime(repo_root, runtime_root, kinds=None)` reads ownership receipts
-only when comparing skills; bootstrap consumes its existing OSError/ValueError boundary.
+when comparing skills or required command-owned hooks; Bootstrap consumes its existing OSError/ValueError boundary.
 ### Contracts
 `.ccst-installed.json` records relative destination, kind and installed SHA256.
+The optional virtual key `settings.json#ccst-autopilot` records kind=hooks,
+exact owned groups and their semantic SHA256. It is not a filesystem destination.
+Required groups come from `claude_hook_contract`, which imports no domain owner.
+Compare preserves legacy receipt read semantics and checks this entry independently;
+it never applies the writer's full receipt requirements to unrelated legacy entries.
+Unowned matching groups, missing/modified owned groups and disableAllHooks refuse
+publication; missing/changed/unowned/disabled groups block critical readiness.
+Only managed groups are replaced, preserving unrelated settings and hook order.
+Hook source changes require all kinds and prune, using the same fixed-source
+entry journal, preflight, publication and receipt-phase recovery below.
 An exclusive local file lock serializes sync. Whole-batch source/path/ownership/hash
 preflight precedes any payload/receipt publication; parent files, symlinks and local
 conflicts at managed destinations reject the batch. Unrelated external Skill

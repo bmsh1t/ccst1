@@ -1,0 +1,48 @@
+{
+  "status": "passed_with_recorded_limits",
+  "source_sha256": {
+    "tools/autopilot_host.py": "d98a690072bcf05123ec0b36c97ca9245208803bfc3828f7b2f9cb9da3966591",
+    "tools/claude_hook_contract.py": "4ec446fc3eb3b07c312819357929d476f24d47e521ab375d08c46255996eedd7",
+    "tools/autopilot_args.py": "52fc028c6125c3a81bbd4ef0d07ff909feecb33c7e7bd35a7626fafe29270f65",
+    "tools/autopilot_gate.py": "595b0b64f3ccb5ada88da451a7be549bd2e142bd63b6a894696282d87bf20388",
+    "tools/autopilot_state.py": "39fc2fe4faa2855617019dc7f82195e2a7ae504e0553dd6523437f8f6c165861",
+    "tools/checkpoint.py": "729375968adcda1812c4fb01af4e8609fb3a9eed398b2e5e028c022c8f5300c9",
+    "tools/resume.py": "5fdb9009859fdd219bd5575835ecdf20249b2dd3e854a2dfaa9628c18af412c2",
+    "tools/runtime_doctor.py": "beddac5d2a67bd5562156a63c88b0032a0e8000ee5112487409b80f7b6596a6c",
+    "commands/autopilot.md": "35a59d27cc7e75157714edfa3d50d32d0290184ac10695d6052994f7e6aac2e9",
+    "commands/autopilot-round.md": "5a1942267d2dcebed1050fb7df4128c4009b9b0462508e136da63ad878271d6b",
+    "commands/checkpoint.md": "9c0bc8cff262e0e8ac96c28c876341efe0714b8c1b26951e7addcbef3593bd3c",
+    "commands/recon.md": "a4ba34a084a179abcd9ada64869851fe61d8a0ea2770c125aa2c3bd91483fd79",
+    "commands/sync-check.md": "ecf64caad30130428541f66f8229089bda785ed948c51097e800ab9ce6bbe53e",
+    "skills/runtime-protocol.md": "b55d955438f46e54580a2bdc3b3a392a886ec10eec8c57ad6e97ea72c707760f",
+    "docs/architecture-contract.md": "993d4735ef406d6c8bd577c2fb915e06557e98a89bfa4e0192f1a2f307acc7b8",
+    "docs/ccst-runtime-adapter.md": "994fb7cba60e8e9fcdb22305fb0254709b03f5ad298f9daa84f5bc2f35740221",
+    "docs/autopilot-lanes.md": "57228d59447ba68efdfa8c86be0fe985565375dc6d1c832503a27462a436042b",
+    "install.sh": "231ed5bbcf6ea0a653acb30aa90b94bca5afbbf3993706fd5b7d01fab6f329eb",
+    ".trellis/spec/backend/contracts/runtime-autopilot.md": "e8db8bfacd2817ae1f0661b37b11e15b0617f45be0323d059949a25b61b27ec8"
+  },
+  "checks": {
+    "owner_integration": "/var/tmp/ccst-host-contract-chcaloub/acceptance.json",
+    "native_time_resume": "/var/tmp/ccst-host-mechanics-13otpgh_/acceptance.json",
+    "native_background": "/var/tmp/ccst-host-mechanics-53xdvo1p/acceptance.json",
+    "multiasset_live": "/var/tmp/ccst-autopilot-host-live-39yocc7w/acceptance.json",
+    "fresh_turn_capped": "/var/tmp/ccst-autopilot-host-live-aerf7kf_/acceptance.json",
+    "fresh_without_turn_cap": "/var/tmp/ccst-autopilot-host-live-6r623x_2/acceptance.json"
+  },
+  "independent_reviews": {
+    "host_lifecycle": "no further material issue in source-bound delivery, prompt/compact/restart/Stop transitions",
+    "installer": "external settings writers must be quiescent; receipt/journal normal recovery has no additional finding"
+  },
+  "limits": [
+    "project tests never accessed or executed",
+    "real target data and personal runtime never inspected or modified",
+    "6k protected paths unchanged",
+    "native automatic context-pressure compact not exercised",
+    "live model method consumption/capture behavior still deviates; no per-tool semantic gate added",
+    "fresh and multi-asset recovery have successful limited examples; full method-consumption reliability remains open"
+  ],
+  "excluded_existing_wip": [
+    ".trellis/workspace/Codex/index.md",
+    ".trellis/workspace/Codex/journal-1.md"
+  ]
+}

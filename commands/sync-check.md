@@ -13,7 +13,8 @@ This project has two states:
 
 1. **Repo state** — files under `commands/`, `agents/`, `skills/`
 2. **Installed runtime state** — files under `~/.claude/commands`,
-   `~/.claude/agents/claude-bug-bounty`, and `~/.claude/skills`
+   `~/.claude/agents/claude-bug-bounty`, `~/.claude/skills`, and CCST lifecycle
+   groups in `~/.claude/settings.json`
 
 If you pull new changes but do not refresh the installed runtime, Claude CLI can
 keep using old command/agent definitions even though the repo looks correct.
@@ -25,7 +26,7 @@ keep using old command/agent definitions even though the repo looks correct.
 /sync-check --kind commands,agents
 /sync-check --sync --kind commands,agents
 /sync-check --sync --prune --kind commands
-/sync-check --sync --prune --kind commands,agents,skills  # required for an entry cutover
+/sync-check --sync --prune --kind commands,agents,skills  # required for entry or lifecycle-hook changes
 ```
 
 ## What This Does
@@ -42,6 +43,7 @@ and reports:
 - `DIFF` — both exist but contents differ
 - `MISSING` — repo file is not installed into runtime
 - `EXTRA` — runtime has a file that the repo no longer provides
+- `host_hooks_drift` — required lifecycle groups are missing, disabled, changed or unowned
 
 ## Recommended Use
 
@@ -66,14 +68,24 @@ and reports:
   unrelated external skills are ignored instead of being reported as drift.
 - Use `--fail-on-drift` for a full installed-inventory check; critical-only
   checks do not cover every Skill or entry file.
+- `settings.json#ccst-autopilot` in the same receipt owns only CCST hook groups.
+  Sync merges those groups, preserving other settings/hooks; a disabled hook policy
+  or locally changed/unowned group is a conflict, never silently overwritten.
+  First installation and changed hook sources require all kinds plus `--prune`.
+  Restart Claude after approved sync; the next invocation verifies observed hooks
+  and source identity. Disk parity alone cannot prove a hook actually ran.
 
 ## Single-entry Cutover And Recovery
 
-- Use a fixed, complete checkout in a maintenance window. An entry cutover needs
-  all three kinds and `--prune`; generic later partial sync remains available.
+- Use a fixed, complete checkout in a maintenance window. An entry cutover or
+  lifecycle-hook change needs all three kinds and `--prune`; partial sync remains
+  available when it does not change that lifecycle contract.
+  Close Claude and settings editors during sync: the install lock coordinates
+  CCST installers only, and cannot prevent an external settings write from racing
+  the final file replacement.
 - Before payload, `.ccst-entry-migration.json` binds this root, direction,
   source/executor/method/native fingerprints, before/after receipt and every file
-  operation. Publish non-entry resources, retire unchanged owned old entries,
+  operation, including before/after hashes of owned hook groups. Publish non-entry resources, retire unchanged owned old entries,
   then publish the new entry last. Verify all bytes and entries before the receipt.
 - Interruption is `partial`, not success. Retry only the same fixed source/executor,
   roots and full sync mode. The record permits only its exact before/after states;

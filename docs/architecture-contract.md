@@ -88,11 +88,28 @@ contracts are read on demand and never enable automatic continuation by themselv
 
 Skills provide methods, applicability conditions, counterexamples and evidence
 requirements, not fixed test sequences or duplicated native tool manuals.
-The native platform owns Skill discovery and loading. Natural-language discovery retains the original
-`src-hunter` description; explicit Autopilot uses that Skill before choosing new investigation, following
-`skills/runtime-protocol.md#native-skill-loading`. The current body is reused in the same session and restored
-when absent, including after compaction. Hosts without a Skill tool read the complete selected-checkout
-body natively. Internal modules and knowledge remain problem-scoped; no extra controller or load receipt.
+The native platform owns Skill discovery. Natural-language discovery retains the
+original `src-hunter` description. Explicit Autopilot receives complete original
+source bodies through `autopilot_host`; independent static parts and one Bootstrap
+share the installed source contract. Static delivery is not execution admission.
+SessionStart restores source-bound bodies after compact/resume; the current resume
+command refreshes Bootstrap/owner/memory without another invocation. The small
+private session binding and source snapshot own no target progress or facts.
+Normal Stop reads current owners and the existing Checkpoint review's optional
+termination (reason, session_id, invocation_id, boundary; explicit_limit additionally
+names an elapsed-seconds threshold or capped Round owner). The host measures elapsed
+time from the preserved invocation start and reads the current Round owner; it does
+not infer thresholds from prose or fabricate cost receipts. The optional explicit
+time threshold and applicable Round limit are bound at entry; an ending review
+cannot shorten them or borrow a prior completed Round. It checks unfinished
+execution and known owner work; Closure alone retains exhaustion meaning. A repeated
+unchanged rejection suspends as incomplete. New user prompts suspend enforcement;
+only an explicit same-task resume rearms it, and native interruption needs no review.
+Running Recon/Scan keeps independent owner work visible; only dependent work waits.
+A valid stop review retains its termination when residual-token form is incomplete:
+scope/limit/global-blocker exits remain possible without claiming exhaustion.
+Internal modules and knowledge remain problem-scoped; ordinary natural-language
+work uses Skill or complete native reading under the shared runtime protocol.
 Queue/Store do not require
 Skill routes, inspect Skill files or prescribe method dimensions. Knowledge cards
 retain `tools/knowledge_registry.py`; Context Pack adds no second registry.
@@ -110,7 +127,7 @@ State acquires owner facts; `autopilot_gate` builds their continuation projectio
 Legacy action tokens, compact views and lane hints derive from that projection;
 multiple owner items remain available for Claude to choose. Closure keeps its own
 evidence verdict and shares only the reason-to-continuation rendering. Empty owner
-work returns to investigation, with `run_recon` as the empty new-target default
+work returns `continue_investigation`, with `run_recon` as the empty new-target default
 under Shared Automation, not a prerequisite for existing evidence. Round retains
 claims, optional explicit lane caps and recovery under the same Autopilot loop.
 Neither mode assigns a default whole-investigation time, cost or lane budget.
@@ -606,6 +623,7 @@ Shared contracts and readers have explicit lower-level owners:
 | `target_memory_schema` | Single legacy-memory normalizer and pollution vocabulary shared by import and memory CLI |
 | `knowledge_relations` | Pure reviewed-method declaration, endpoint and heading-anchor contracts; no I/O or acceptance writer |
 | `skill_reference_contract` | Finite retired identity vocabulary and exact current reading paths; no ranking, registration or target state |
+| `claude_hook_contract` | Original-source capture, bounded Claude transport and owned hook settings; standard library and Skill path vocabulary only |
 | `target_paths` | Target identity, resource locks and target-owned nonempty evidence references; no domain imports |
 | `scope_context` | `url_belongs_to_target`, `target_list_entries` and Scope classification/publication; depends on target paths only |
 | `browser_evidence` | Browser artifact references and readiness inspection; Runtime never imports the browser publisher |
@@ -719,6 +737,15 @@ recorded before/after hashes with the same version. Receipt-phase recovery verif
 and completes the receipt/cleanup only. Third states, unplanned entries and changed
 sources are refused; read-only compare reports pending as critical drift, never repairs.
 Reverse sync uses a separately approved prior asset set and the migration-aware tools.
+
+Required Claude lifecycle settings use the same ownership receipt and journal:
+`settings.json#ccst-autopilot` owns only matching hook groups, preserving unrelated
+settings and order. Missing, modified, unowned or disabled groups block readiness.
+Hook changes require all kinds and prune, exact-source preflight and recorded
+before/after group hashes; interruption never grants ownership of user edits.
+The contract module supplies settings without importing Bootstrap/domain owners.
+Global Review's ordinary evidence references attest target ownership and nonempty
+files; registered raw-artifact bytes retain their existing evidence-owner checks.
 
 Root CLAUDE, rules, tools, support assets and reviewed knowledge stay in the
 selected checkout. The complete src-hunter knowledge directory and modules are

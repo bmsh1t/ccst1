@@ -2165,8 +2165,8 @@ def build_closure_projection(
     """Return the explicit, read-only closure verdict for an existing state."""
     reasons: list[str] = []
     action = str(state.get("next_action") or "handoff")
-    if action == "recon_no_live_hosts":
-        action = "handoff"  # Old diagnostic is not a target-wide terminal state.
+    if action in {"recon_no_live_hosts", "continue_investigation"}:
+        action = "handoff"  # Investigation guidance is not a Closure obligation.
     ledger_health = state.get("_ledger_health") if isinstance(state.get("_ledger_health"), dict) else {}
     checkpoint_health = state.get("_checkpoint_health") if isinstance(state.get("_checkpoint_health"), dict) else {}
     ledger_projection = state.get("_ledger_projection") if isinstance(state.get("_ledger_projection"), dict) else {}
@@ -2333,6 +2333,7 @@ def build_closure_projection(
                 if review_valid:
                     residual_reason = "global_review_form_insufficient"
                     review_view = {
+                        **review,
                         "status": "form_insufficient",
                         "reason": residual_reason,
                         "review_status": str(review.get("status") or ""),
@@ -2478,6 +2479,9 @@ _SNAPSHOT_VOLATILE_KEYS = frozenset({
 })
 
 _GLOBAL_REVIEW_STATUSES = {"complete", "follow_up"}
+AUTOPILOT_STOP_REASONS = frozenset({
+    "scope_boundary", "explicit_limit", "global_blocker", "no_worthwhile_work",
+})
 _GLOBAL_REVIEW_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 _GLOBAL_REVIEW_BASIS_VERSION = 2
 # The review's decision answers "is the target-wide picture consistent?" —
@@ -2668,6 +2672,32 @@ def validate_global_review(
     digest = str(review.get("snapshot_digest") or "").strip().lower()
     if status not in _GLOBAL_REVIEW_STATUSES or not _GLOBAL_REVIEW_DIGEST_RE.fullmatch(digest):
         return _global_review_error("invalid", "global_review_invalid")
+    termination = review.get("termination")
+    if "termination" in review:
+        if (not isinstance(termination, dict) or status != "complete"
+                or set(termination) != ({"reason", "session_id", "invocation_id", "boundary"}
+                                       | ({"limit"} if termination.get("reason") == "explicit_limit" else set()))
+                or not isinstance(termination.get("reason"), str)
+                or termination["reason"] not in AUTOPILOT_STOP_REASONS
+                or any(not isinstance(termination.get(key), str)
+                       or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", termination[key])
+                       for key in ("session_id", "invocation_id"))
+                or not isinstance(termination.get("boundary"), str)
+                or not termination["boundary"].strip() or len(termination["boundary"]) > 500):
+            return _global_review_error("invalid", "global_review_invalid", state_changes=[{
+                "field": "termination", "expected": "complete review with reason, session_id, invocation_id and explicit boundary",
+            }])
+        if termination["reason"] == "explicit_limit":
+            limit = termination["limit"]
+            valid_limit = isinstance(limit, dict) and (
+                (set(limit) == {"elapsed_seconds"} and type(limit["elapsed_seconds"]) is int and limit["elapsed_seconds"] > 0)
+                or (set(limit) == {"round_id"} and isinstance(limit["round_id"], str)
+                    and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", limit["round_id"]))
+            )
+            if not valid_limit:
+                return _global_review_error("invalid", "global_review_invalid", state_changes=[{
+                    "field": "termination.limit", "expected": "positive integer elapsed_seconds or the current capped round_id; host checks actual attainment",
+                }])
     raw_basis = review.get("basis")
     if raw_basis is not None and not isinstance(raw_basis, dict):
         return _global_review_error("invalid", "global_review_invalid")
@@ -2782,6 +2812,8 @@ def validate_global_review(
         normalized["basis"] = _global_review_basis(basis)
     if matched_action is not None:
         normalized["next_action_id"] = str(matched_action.get("id") or "")
+    if termination is not None:
+        normalized["termination"] = dict(termination)
     return {"status": "valid", "reason": "", "review": normalized}
 
 

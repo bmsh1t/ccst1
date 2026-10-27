@@ -66,6 +66,30 @@ python3 tools/checkpoint.py --target target.com --record-global-review \
 
 `follow_up` 必须把 `--next-action` 指向现有活动 Queue action；缺失、过期或无效
 复核会让 Closure 保持 handoff，不会创建新的状态 owner。
+
+Claude Autopilot 正常自动结束还需在同一 `complete` 复核提交
+`--termination-json '{"reason":"no_worthwhile_work","session_id":"当前host值","invocation_id":"当前host值","boundary":"当前证据为何支持停止；未测边界和重开条件"}'`。
+`reason` 仅为 `scope_boundary`、`explicit_limit`、`global_blocker` 或 `no_worthwhile_work`。
+`explicit_limit` 额外要求 `limit`，且只接受以下一种形态：
+
+- `{"elapsed_seconds":720}`：须与入口 `--max-seconds=720` 保存的 `host.max_seconds` 一致。
+  宿主用保留的 `host.started_at` 和当前时钟检查是否已到，
+  resume/压缩不重置起点。提前预留写回时间不等于总时限已到。
+- `{"round_id":"当前round_id"}`：当前 Round 必须有显式 `max_lanes` 且已达到；
+  须匹配入口绑定的活动 Round，或本次显式额度下的新 Round，不能借用旧已完成 Round。
+
+阈值及其入口/owner 来源写入 `boundary`；机器检查入口绑定与实际经过时间/owner，
+未绑定的自然语言时限不能在结束复核里自行新增或缩短。费用限制由原生宿主执行，
+当前适配没有独立费用回执，不能仅凭估算正常结束。
+其他 reason 不带 `limit`。整体阻塞说明为何其他独立路径也无法推进。
+仍有已知可执行 owner 工作时不能用 `no_worthwhile_work`；因范围、限制或整体阻塞退出，
+须在 `residual_unknowns` 保留未完成 owner 和重开条件。历史无 termination 的复核仍可读，
+不能授权新调用结束。机器仅核对绑定和事实，不证明价值判断或所有攻击面已穷尽。
+已到范围/显式限制或确认整体阻塞时，当前有效复核可在保留未测项后结束，
+不要求 `closure.verdict=finish`。`form_insufficient` 中的缺失覆盖 token 继续阻止
+耗尽声明，不抹去已核验的停止依据；`no_worthwhile_work` 仍需完整复核。
+交接与其他写回在读取最后一次 digest 之前完成；复核成功后不要为清除 handoff 重复改写。
+用户主动打断不需要先提交本表。
 全局复核只接受 `--evidence-refs-json`；`--evidence-ref` 属于 lane-result，
 与 `--record-global-review` 同用时返回 `2`，不写 witness，即使同时传入合法 JSON。
 证据列表缺失、为空、超限或引用不属于目标的非空文件时，诊断的

@@ -15,7 +15,17 @@ allowed-tools:
 ---
 # /autopilot-round
 
-Authoritative round bootstrap (do not reinterpret): !`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_bootstrap.py" --json --round-defaults -- "$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"`
+Authoritative round bootstrap (do not reinterpret): !`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_host.py" entry --session-id "${CLAUDE_SESSION_ID}" --round-defaults -- "$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"`
+Complete original sources (ordered parts):
+!`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_host.py" body --round-defaults --session-id "${CLAUDE_SESSION_ID}" --part 0`
+!`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_host.py" body --round-defaults --session-id "${CLAUDE_SESSION_ID}" --part 1`
+!`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_host.py" body --round-defaults --session-id "${CLAUDE_SESSION_ID}" --part 2`
+!`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_host.py" body --round-defaults --session-id "${CLAUDE_SESSION_ID}" --part 3`
+!`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_host.py" body --round-defaults --session-id "${CLAUDE_SESSION_ID}" --part 4`
+!`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_host.py" body --round-defaults --session-id "${CLAUDE_SESSION_ID}" --part 5`
+!`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_host.py" body --round-defaults --session-id "${CLAUDE_SESSION_ID}" --part 6`
+!`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_host.py" body --round-defaults --session-id "${CLAUDE_SESSION_ID}" --part 7`
+
 Native fixed-loop prompt identity (do not reinterpret): `/autopilot-round $ARGUMENTS`
 
 Defaults: `--normal --deep`; arguments match `/autopilot`. No lane cap is added.

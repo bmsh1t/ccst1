@@ -86,9 +86,11 @@ If these files are absent or empty, read the command output. Do not spend anothe
 ## Return To Autopilot
 
 This section applies only when called from an active `/autopilot`. A background
-task ID or "you will be notified" message means collection is still running;
-keep the invocation active and use native TaskOutput/Read to wait, respecting any
-explicit parent limit. A collector timeout ends that operation, not Autopilot.
+task ID or "you will be notified" message means collection is still running.
+Retain the handle; independent in-scope work using available evidence may proceed.
+Wait only for dependent inputs or when no useful independent work remains; consume
+the terminal TaskOutput/Read result before final stopping. Respect explicit parent
+limits. A collector timeout ends that operation, not Autopilot.
 Do not return a final answer or ask whether to continue.
 After completion, read the exit result and manifest, refresh Autopilot state,
 then perform Surface Review and continue the parent investigation in this session.

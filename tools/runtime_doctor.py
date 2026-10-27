@@ -16,9 +16,11 @@ from pathlib import Path
 try:
     from tools.artifact_io import write_text_atomic
     from tools.skill_reference_contract import CORE_SKILL_NAME, CORE_SKILL_PATH, KNOWN_ENTRY_NAMES
+    from tools.claude_hook_contract import HOOK_OWNER, host_hooks, json_digest, managed_hook_groups, replace_managed_hooks
 except ImportError:  # direct script execution; keep the installer standard-library-only
     from artifact_io import write_text_atomic
     from skill_reference_contract import CORE_SKILL_NAME, CORE_SKILL_PATH, KNOWN_ENTRY_NAMES
+    from claude_hook_contract import HOOK_OWNER, host_hooks, json_digest, managed_hook_groups, replace_managed_hooks
 
 KIND_ORDER = ("commands", "agents", "skills")
 RUNTIME_SUBDIRS = {
@@ -88,6 +90,10 @@ def load_critical_runtime_manifest(repo_root: str | Path | None = None) -> dict:
             "paths": paths,
             "mcp_contracts": mcp_contracts,
         }
+        if "host_hooks" in payload:
+            if not isinstance(payload["host_hooks"], bool):
+                raise ValueError("manifest host_hooks must be boolean")
+            canonical["host_hooks"] = payload["host_hooks"]
         encoded = json.dumps(canonical, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
         return {
             **canonical,
@@ -387,7 +393,21 @@ def compare_runtime(
                 entry_issues.append({"kind": "skills", "status": "entry_missing",
                                      "relative_path": path.removeprefix("skills/")})
     critical_drift.extend(entry_issues)
-    unobserved_drift = len(synthetic_missing) + int(manifest["status"] != "valid") + len(entry_issues)
+    host_issues = []
+    if "commands" in selected and manifest.get("host_hooks"):
+        settings, groups = _host_settings(resolved_runtime)
+        expected = host_hooks(resolved_repo, resolved_runtime)
+        receipt = resolved_runtime / ".ccst-installed.json"
+        owned = json.loads(receipt.read_text()) if receipt.is_file() else {}
+        if not isinstance(owned, dict):
+            raise ValueError("invalid runtime ownership manifest")
+        if (settings.get("disableAllHooks") is True or groups != expected
+                or owned.get(HOOK_OWNER) != _hook_receipt(expected)):
+            host_issues.append({"kind": "commands", "status": "host_hooks_drift",
+                                "relative_path": HOOK_OWNER,
+                                "reason": "required lifecycle hooks are missing, disabled, changed or unowned"})
+        critical_drift.extend(host_issues)
+    unobserved_drift = len(synthetic_missing) + int(manifest["status"] != "valid") + len(entry_issues) + len(host_issues)
     full_drift = drift + unobserved_drift
     return {
         "repo_root": str(resolved_repo),
@@ -438,6 +458,13 @@ def _owned_receipt(raw: str | None) -> dict:
     if not isinstance(owned, dict):
         raise ValueError("invalid runtime ownership manifest")
     for rel, record in owned.items():
+        if rel == HOOK_OWNER:
+            if (not isinstance(record, dict) or set(record) != {"kind", "sha256", "groups"}
+                    or record.get("kind") != "hooks" or not isinstance(record.get("groups"), dict)
+                    or not record["groups"] or record != _hook_receipt(record["groups"])
+                    or managed_hook_groups({"hooks": record["groups"]}) != record["groups"]):
+                raise ValueError("invalid runtime hook ownership entry")
+            continue
         path = Path(rel)
         if (path.is_absolute() or rel != path.as_posix() or ".." in path.parts
                 or not isinstance(record, dict) or record.get("kind") not in KIND_ORDER
@@ -445,6 +472,46 @@ def _owned_receipt(raw: str | None) -> dict:
                 or not isinstance(record.get("sha256"), str)):
             raise ValueError("invalid runtime ownership entry")
     return owned
+
+
+def _hook_receipt(groups: dict) -> dict:
+    return {"kind": "hooks", "sha256": json_digest(groups), "groups": groups}
+
+
+def _host_settings(runtime: Path) -> tuple[dict, dict]:
+    path = runtime / "settings.json"
+    digest = _file_hash(path, runtime)
+    settings = json.loads(path.read_text()) if digest is not None else {}
+    groups = managed_hook_groups(settings)
+    if _file_hash(path, runtime) != digest:
+        raise ValueError("Claude settings changed during capture")
+    return settings, groups
+
+
+def _operation_hash(runtime: Path, operation: dict) -> str | None:
+    if operation["kind"] == "hooks":
+        settings, groups = _host_settings(runtime)
+        if operation["source"] and settings.get("disableAllHooks") is True:
+            raise ValueError("Claude hooks are explicitly disabled; preserve operator policy")
+        return json_digest(groups) if groups else None
+    return _file_hash(runtime / operation["path"], runtime)
+
+
+def _source_location(info: dict) -> str:
+    return HOOK_OWNER if info["kind"] == "hooks" else (RUNTIME_SUBDIRS[info["kind"]] / info["relative"]).as_posix()
+
+
+def _publish_hooks(runtime: Path, groups: dict, allowed: set) -> None:
+    path = runtime / "settings.json"
+    before = _file_hash(path, runtime)
+    settings, current = _host_settings(runtime)
+    if (json_digest(current) if current else None) not in allowed:
+        raise ValueError("Claude hook groups changed after preflight")
+    updated = replace_managed_hooks(settings, groups)
+    if _file_hash(path, runtime) != before:
+        raise ValueError("Claude settings changed before publication")
+    # shortcut: external settings writers must be quiescent; shared writer coordination is needed for live sync.
+    write_text_atomic(path, _json_text(updated))
 
 
 def _skill_identity(body: str, path: Path) -> str:
@@ -558,7 +625,7 @@ def _skill_entries(root: Path, *, allow_external_links: bool = False) -> list[di
     return sorted(entries, key=lambda item: item["path"])
 
 
-def _capture_runtime_sources(repo: Path, selected: list[str]) -> dict:
+def _capture_runtime_sources(repo: Path, selected: list[str], runtime: Path) -> dict:
     sources = {}
     for kind in selected:
         for relative, path in _repo_files(repo, kind).items():
@@ -569,6 +636,10 @@ def _capture_runtime_sources(repo: Path, selected: list[str]) -> dict:
                 "kind": kind, "relative": relative, "sha256": digest,
                 "mode": stat.S_IMODE(path.stat().st_mode),
             }
+    if "commands" in selected and load_critical_runtime_manifest(repo).get("host_hooks"):
+        groups = host_hooks(repo, runtime)
+        sources[HOOK_OWNER] = {"kind": "hooks", "relative": HOOK_OWNER,
+                               "sha256": json_digest(groups), "groups": groups}
     return sources
 
 
@@ -594,7 +665,7 @@ def _release_binding(repo: Path, sources: dict) -> dict:
             checkout[path.relative_to(repo).as_posix()] = {"sha256": digest, "mode": stat.S_IMODE(path.stat().st_mode)}
     executor_root = Path(__file__).resolve().parent
     executor = {name: _sha256((executor_root / name).read_bytes()) for name in
-                ("runtime_doctor.py", "artifact_io.py", "skill_reference_contract.py")}
+                ("runtime_doctor.py", "artifact_io.py", "skill_reference_contract.py", "claude_hook_contract.py")}
     return {
         "source_sha256": _sha256(_json_text(checkout).encode()),
         "source_scope": ["AGENTS.md", "CLAUDE.md", "install.sh", "rules/**/*.md", "docs/**/*.md",
@@ -631,8 +702,18 @@ def _prepare_sync_plan(runtime: Path, owned: dict, sources: dict, selected: list
         reason = ""
         current = None
         try:
-            current = _file_hash(runtime / key, runtime)
-            if current is not None:
+            if kind == "hooks":
+                settings, groups = _host_settings(runtime)
+                current = json_digest(groups) if groups else None
+                if source and settings.get("disableAllHooks") is True:
+                    reason = "Claude hooks are explicitly disabled; preserve operator policy"
+                elif prior and current != prior["sha256"]:
+                    reason = "locally modified or removed receipt-owned hook groups"
+                elif not prior and current is not None:
+                    reason = "unowned CCST hook groups; matching bytes do not grant ownership"
+            else:
+                current = _file_hash(runtime / key, runtime)
+            if kind != "hooks" and current is not None:
                 if prior and current != prior["sha256"] and (entry_cutover or current != expected):
                     reason = "locally modified receipt-owned file"
                 elif not prior and (current != expected or
@@ -651,17 +732,18 @@ def _prepare_sync_plan(runtime: Path, owned: dict, sources: dict, selected: list
                               "action": operation["action"], "reason": reason})
 
     for source, info in sorted(sources.items()):
-        key = (RUNTIME_SUBDIRS[info["kind"]] / info["relative"]).as_posix()
+        key = _source_location(info)
         if info["kind"] == "commands" and not (runtime / key).exists():
             disabled = _command_alternative(key)
             if (runtime / disabled).exists() or (runtime / disabled).is_symlink():
                 key = disabled
         desired.add(key)
         add(key, info["kind"], source, previous.get(key))
-        after[key] = {"kind": info["kind"], "sha256": info["sha256"]}
+        after[key] = (_hook_receipt(info["groups"]) if info["kind"] == "hooks"
+                      else {"kind": info["kind"], "sha256": info["sha256"]})
     if prune:
         for original, key in locations.items():
-            if owned[original]["kind"] in selected and key not in desired:
+            if (owned[original]["kind"] in selected or (original == HOOK_OWNER and "commands" in selected)) and key not in desired:
                 add(key, owned[original]["kind"], None, original)
                 after.pop(key, None)
     # Non-entry resources first; retire only owned entries; publish entries last.
@@ -690,8 +772,10 @@ def _validate_entry_record(record: dict, header: dict, sources: dict) -> None:
         if not isinstance(op, dict) or set(op) != {"path", "kind", "action", "source", "ownership_key", "before_sha256", "after_sha256"}:
             raise ValueError("invalid entry migration operation")
         key, kind, source, owner_key = op["path"], op["kind"], op["source"], op["ownership_key"]
+        hook_operation = kind == "hooks" and key == HOOK_OWNER
         if (not isinstance(key, str) or key != Path(key).as_posix() or ".." in Path(key).parts
-                or kind not in KIND_ORDER or not Path(key).is_relative_to(RUNTIME_SUBDIRS[kind]) or key in seen_paths):
+                or (not hook_operation and (kind not in KIND_ORDER
+                    or not Path(key).is_relative_to(RUNTIME_SUBDIRS[kind]))) or key in seen_paths):
             raise ValueError("invalid entry migration operation path")
         seen_paths.add(key)
         prior = owned.get(owner_key) if isinstance(owner_key, str) else None
@@ -705,14 +789,16 @@ def _validate_entry_record(record: dict, header: dict, sources: dict) -> None:
             if not isinstance(source, str) or source not in sources or source in seen_sources:
                 raise ValueError("invalid entry migration source binding")
             info = sources[source]
-            canonical = (RUNTIME_SUBDIRS[info["kind"]] / info["relative"]).as_posix()
+            canonical = _source_location(info)
             if (kind != info["kind"] or op["action"] != "write" or op["after_sha256"] != info["sha256"]
                     or key not in {canonical, _command_alternative(canonical) if kind == "commands" else canonical}
                     or (not prior and op["before_sha256"] not in (None, info["sha256"]))
-                    or (not prior and Path(key).name == "SKILL.md" and op["before_sha256"] is not None)):
+                    or (not prior and (Path(key).name == "SKILL.md" or hook_operation)
+                        and op["before_sha256"] is not None)):
                 raise ValueError("invalid entry migration desired file")
             seen_sources.add(source)
-            expected_after[key] = {"kind": kind, "sha256": info["sha256"]}
+            expected_after[key] = (_hook_receipt(info["groups"]) if hook_operation
+                                   else {"kind": kind, "sha256": info["sha256"]})
         elif op["action"] != "remove" or not prior or op["after_sha256"] is not None:
             raise ValueError("invalid entry migration retirement")
     if seen_sources != set(sources) or seen_owners != set(owned) or after_raw != _json_text(expected_after):
@@ -737,7 +823,7 @@ def _check_known_entries(runtime: Path, operations: list[dict]) -> list[dict]:
 def _verify_sync_state(runtime: Path, operations: list[dict], *, complete: bool) -> None:
     for op in operations:
         allowed = {op["after_sha256"]} if complete else {op["before_sha256"], op["after_sha256"]}
-        if _file_hash(runtime / op["path"], runtime) not in allowed:
+        if _operation_hash(runtime, op) not in allowed:
             raise ValueError(f"runtime file outside recorded {'after' if complete else 'before/after'} state: {op['path']}")
 
 
@@ -798,10 +884,15 @@ def sync_runtime(
         cutover = journal.exists() or (forward and (current_entries != expected_entries or CORE_SKILL_PATH not in owned)) or (not forward and has_core)
         if cutover and (selected != list(KIND_ORDER) or not prune):
             raise ValueError("entry migration requires --kind commands,agents,skills --sync --prune")
-        sources = _capture_runtime_sources(repo, selected)
+        sources = _capture_runtime_sources(repo, selected, runtime)
         if "skills" in selected and any(sources.get(e["path"], {}).get("sha256") != e["sha256"] for e in source_entries):
             raise ValueError("native source entries changed during preflight")
-        binding = _release_binding(repo, sources) if cutover else None
+        hook_change = (sources.get(HOOK_OWNER, {}).get("sha256") != owned.get(HOOK_OWNER, {}).get("sha256")
+                       and ("commands" in selected))
+        durable = cutover or hook_change
+        if durable and (selected != list(KIND_ORDER) or not prune):
+            raise ValueError("host lifecycle installation requires --kind commands,agents,skills --sync --prune")
+        binding = _release_binding(repo, sources) if durable else None
         if cutover and not expected_entries:
             raise ValueError("entry migration requires a fixed native entry set")
         header = {"schema_version": 1, "profile": "src-hunter-single-entry",
@@ -823,7 +914,7 @@ def sync_runtime(
             _verify_sync_state(runtime, operations, complete=receipt_phase)
         else:
             operations, after, conflicts = _prepare_sync_plan(runtime, owned, sources, selected, prune,
-                                                             entry_cutover=cutover)
+                                                             entry_cutover=durable)
             after_raw = _json_text(after)
             if "skills" in selected and (forward or cutover):
                 conflicts.extend(_check_known_entries(runtime, operations))
@@ -836,17 +927,17 @@ def sync_runtime(
             result["conflict_details"] = conflicts
             result["conflicts"] = sorted({str(runtime / item["path"]) for item in conflicts})
             return result
-        if cutover:
+        if durable:
             _validate_entry_record(record, header, sources)
         # Recheck source/receipt after preflight and before publishing the record.
         def check_source():
-            if (_capture_runtime_sources(repo, selected) != sources
-                    or (cutover and _release_binding(repo, sources) != binding)):
+            if (_capture_runtime_sources(repo, selected, runtime) != sources
+                    or (durable and _release_binding(repo, sources) != binding)):
                 raise ValueError("source candidate changed; keep the recorded version for recovery")
         check_source()
         if (manifest.read_text() if manifest.exists() else None) != raw:
             raise ValueError("runtime receipt changed during preflight")
-        if cutover and not journal.exists():
+        if durable and not journal.exists():
             write_text_atomic(journal, _json_text(record))
         def verify_entries():
             if cutover or forward:
@@ -858,10 +949,15 @@ def sync_runtime(
             if not receipt_phase:
                 for op in operations:
                     destination = runtime / op["path"]
-                    current = _file_hash(destination, runtime)
+                    current = _operation_hash(runtime, op)
                     if current not in {op["before_sha256"], op["after_sha256"]}:
                         raise ValueError(f"runtime changed after preflight: {destination}")
-                    if op["action"] == "remove":
+                    if op["kind"] == "hooks":
+                        if current != op["after_sha256"]:
+                            groups = sources[HOOK_OWNER]["groups"] if op["source"] else {}
+                            _publish_hooks(runtime, groups, {op["before_sha256"], op["after_sha256"]})
+                        result["copied" if op["source"] else "removed"].append(str(destination))
+                    elif op["action"] == "remove":
                         destination.unlink(missing_ok=True)
                         result["removed"].append(str(destination))
                     else:
@@ -875,7 +971,7 @@ def sync_runtime(
                 raise ValueError("runtime receipt changed before publication")
             # Persist a fixed after-state decision before receipt publication.
             # This also distinguishes commit when before/after receipt bytes match.
-            if cutover and record["phase"] != "receipt":
+            if durable and record["phase"] != "receipt":
                 record["phase"] = "receipt"
                 write_text_atomic(journal, _json_text(record))
             if raw != after_raw:
@@ -884,10 +980,10 @@ def sync_runtime(
                 raise ValueError("runtime receipt publication verification failed")
             _verify_sync_state(runtime, operations, complete=True)
             verify_entries()
-            if cutover:
+            if durable:
                 journal.unlink()
         except (OSError, ValueError) as exc:
-            result.update(status="partial", error=str(exc), recovery_record=str(journal) if cutover else None)
+            result.update(status="partial", error=str(exc), recovery_record=str(journal) if durable else None)
             return result
         result.update(status="complete", entry_migration="complete" if cutover else "not_required")
         if cutover:
@@ -929,8 +1025,9 @@ def format_report(payload: dict) -> str:
         lines.append("Status: runtime is in sync.")
     else:
         entry_migration = payload.get("entry_migration", {}).get("status") in {"pending", "required"}
-        sync_args = "--sync --prune" if has_runtime_extras or entry_migration else "--sync"
-        kind_arg = ",".join(KIND_ORDER if entry_migration else [result["kind"] for result in payload["kinds"]])
+        host_drift = any(item.get("relative_path") == HOOK_OWNER for item in payload.get("critical_drift", []))
+        sync_args = "--sync --prune" if has_runtime_extras or entry_migration or host_drift else "--sync"
+        kind_arg = ",".join(KIND_ORDER if entry_migration or host_drift else [result["kind"] for result in payload["kinds"]])
         # Carry the exact roots that were checked: a copied hint without them
         # would modify the default checkout and ~/.claude instead of the
         # isolated installation the operator just inspected.
@@ -945,6 +1042,8 @@ def format_report(payload: dict) -> str:
         )
         if entry_migration:
             lines.append("Entry migration is not ready. Preserve conflicts; pending recovery requires the same fixed source and executor.")
+        if host_drift:
+            lines.append("Autopilot lifecycle hooks require repair; modified/unowned groups are preserved for inspection.")
     return "\n".join(lines)
 
 
@@ -996,7 +1095,14 @@ def main() -> int:
             if changes["status"] == "partial":
                 print(f"Runtime sync partial: {changes['error']}; recovery record: {changes['recovery_record']}")
 
-    payload = compare_runtime(args.repo_root, args.runtime_root, kinds=kinds)
+    try:
+        payload = compare_runtime(args.repo_root, args.runtime_root, kinds=kinds)
+    except (OSError, ValueError) as exc:
+        error = {"status": "error", "error": str(exc)}
+        if args.sync:
+            error["sync"] = changes
+        print(json.dumps(error) if args.json else f"Runtime check failed: {exc}")
+        return 1
     if args.sync:
         payload["sync"] = changes
     if args.json:

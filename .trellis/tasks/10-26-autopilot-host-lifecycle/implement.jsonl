@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Owner boundaries and focused verification; no project tests or real target data in this task"}
+{"file": ".trellis/spec/backend/contracts/runtime-autopilot.md", "reason": "Existing native CLI wiring and continuation contracts"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Explicit errors and durable recovery"}
+{"file": "docs/architecture-contract.md", "reason": "Single investigation loop and existing Store ownership"}
+{"file": ".trellis/tasks/10-26-autopilot-host-lifecycle/research/architecture-proposal.md", "reason": "Reviewed architecture, native host limits and staged acceptance"}

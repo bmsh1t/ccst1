@@ -19,7 +19,7 @@ except ModuleNotFoundError:  # 兼容 `python3 tools/autopilot_args.py` 直接�
 
 
 SCHEMA_VERSION = 4
-# target + auth pair + quick + deep + cadence + max-lanes pair + context
+# Bounded inline envelope; use --option=value when combining optional arguments.
 MAX_EFFECTIVE_TOKENS = 9
 MAX_CAPTURED_TOKENS = MAX_EFFECTIVE_TOKENS + 1
 MAX_LANES = 32
@@ -127,6 +127,8 @@ def parse_autopilot_args(
     auth_file_inputs: list[str] = []
     context_file_inputs: list[str] = []
     max_lanes_inputs: list[str] = []
+    max_seconds: int | None = None
+    seconds_seen = False
     quick = False
     deep = round_defaults
 
@@ -196,6 +198,18 @@ def parse_autopilot_args(
                         token=token,
                     )
                 )
+            index += 1
+            continue
+
+        if token.startswith("--max-seconds="):
+            value = token.split("=", 1)[1]
+            if seconds_seen:
+                errors.append(_error("max_seconds_conflict", "Supply --max-seconds=SECONDS only once."))
+            elif not re.fullmatch(r"[0-9]{1,12}", value) or int(value) < 1:
+                errors.append(_error("invalid_max_seconds", "--max-seconds requires positive integer seconds (up to 12 digits)."))
+            else:
+                max_seconds = int(value)
+            seconds_seen = True
             index += 1
             continue
 
@@ -414,6 +428,7 @@ def parse_autopilot_args(
         "quick": quick,
         "deep": deep,
         "max_lanes": max_lanes,
+        "max_seconds": max_seconds,
         "invocation_batch": {
             "bounded": bool(deep and max_lanes is not None),
             "max_lanes": max_lanes,

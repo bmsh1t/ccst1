@@ -141,8 +141,9 @@ Checkpoint, Pickup and preflight never initialize, import, or recreate old owner
 - New follow-ups require explicit actions. Conditional primitives, negative
   results and next intent go through Experience commands with their conditions
   and evidence; neither recall nor Checkpoint generates chains automatically.
-- `wait_recon` / `wait_scan` reflect live phase locks. Wait or poll, then refresh;
-  locks remain the duplicate-launch guard.
+- `wait_recon` / `wait_scan` reflect live phase locks and prevent duplicate launches.
+  Independent work using available evidence may continue; wait for dependent inputs
+  and collect the phase result before final stopping, then refresh its material.
 - `/validate` reads a complete decision through
   `python3 tools/validate.py --target <target_shell> --finding-id <id> --decision-json <json_file_shell> --json`.
   Scaffold and preflight are read-only. Validation publishes AI report text,

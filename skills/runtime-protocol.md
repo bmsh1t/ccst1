@@ -36,15 +36,16 @@ Queue/Store 不持有 Skill 注册表或知识推荐状态。
 
 ## Native Skill Loading
 
-唯一 `src-hunter` 保留原生 description 发现。显式 Autopilot（含 Round）在 Bootstrap
-准入及必要执行恢复后、选择新调查前使用它。当前完整正文可复用；缺失时用原生 Skill
-工具调用 `src-hunter`，无该工具的宿主才读取所选 checkout 的完整
-`skills/src-hunter/SKILL.md`。description、路径或 hash 不能代替正文；压缩后缺失须恢复，
-不按 lane/round 重复调用。等待、终态清理和执行恢复无需新调用。
-在同一会话中携带当前目标/Scope、事实、模式和剩余预算应用它；不新开调查或委派。
+唯一 `src-hunter` 保留原生 description 发现。显式 Autopilot（含 Round）由 Claude
+宿主入口送达原文件完整正文；Bootstrap 准入后才能调查，无需依赖模型想起一次 Skill 调用。
+压缩/重启通过 SessionStart 恢复同源编号块，并由当前 resume 命令刷新 owner 与记忆。
+完整正文可复用，不按 lane/round 重复加载；缺失、预览或恢复失败明确报错。
+自然语言/manual 入口仍用原生 Skill；无该工具时原生读取完整文件。
+description、路径或 hash 不能代替正文，正文送达也不证明方法已正确应用。
+在同一会话中携带当前目标/Scope、事实、模式和显式限制（未设则 unset）应用它。
 沿用入口已确定的目标类型与 Scope；加载技能不将域名重判为集团发现，启动顺序仍归当前命令。
 原生调用示例（填入当前事实，不传占位符）：
-`Skill({"skill":"src-hunter","args":"目标类型/Scope=…；新目标或续接/已有材料=…；当前问题/事实=…；deep=…；剩余预算=…"})`。
+`Skill({"skill":"src-hunter","args":"目标类型/Scope=…；新目标或续接/已有材料=…；当前问题/事实=…；deep=…；显式限制或unset=…"})`。
 工具 schema 或安装命名空间不同则使用宿主实际暴露的名称。
 方法读取按 Shared Knowledge Recall，加载 Skill 或短表不等于已经应用具体方法。
 
