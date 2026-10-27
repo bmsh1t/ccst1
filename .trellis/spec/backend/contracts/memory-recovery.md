@@ -13,6 +13,10 @@ no schema, automatic memory writes or execution authority.
 - Recovery entries retain their owner-provided `version`; `experience_window.context_command`
   expands counterevidence using that entry's ID/version. Its budget is independent
   of the recent-history limit.
+- `load_goal_memory(...)["source"]["experience_window"]` generates compact query/history,
+  next-page and exact-ID commands; context uses its own arguments without `--compact` or `--limit`.
+- `query_recall(..., source_ref=...)` selects an exact current document with
+  `pagination.order=exact-source`; ordinary queries still call `query_text`.
 - `query_text(..., generations=None)` retains FTS ranking and appends fresh
   lexical-only matches; optional generations come from the same acquisition.
 - `relation_recall.traverse(..., max_seconds=1.0, max_bytes=200000, cursor=None)`
@@ -46,6 +50,14 @@ no schema, automatic memory writes or execution authority.
   counterevidence and all independent cursors/expansion commands remain unchanged.
   Default/`--json` output and Python APIs retain their full compatibility shape.
   `--compact` and `--json` are exclusive; other subcommands reject compact before owner I/O.
+- Exact source expansion skips `query_text`, FTS, encoder and reranker work. Ranking
+  health is `not_requested`, `partitions={}`, `ranking_binding/generation=null` and
+  `generations={}`; these are unrequested ranking diagnostics, not source health.
+  Acquisition still uses the existing index capture and reads current owners.
+  The complete document, independent current facts, source health and counterevidence
+  remain. Source-bound cursor validation, final `acquire_snapshot`/`same_snapshot`
+  and `verify_context` still reject changed sources; exact lookup does not claim
+  constant source-read cost or trust a stale record because its ID is known.
 - Recovery carries the same correction/source-health fields with exact versions.
   Latest handoff/next intent remain advisory even when disputed or superseded;
   consumers review counterevidence without suppressing independent investigation.
@@ -129,6 +141,9 @@ no schema, automatic memory writes or execution authority.
 | Compact query/history | Complete record, current facts, health, ranking and independent cursors remain; only exact aliases disappear |
 | Different/unknown display fields | Retain them, including JSON type differences; never truncate records or candidate order |
 | Compact with JSON or another subcommand | Exit 2 before owner I/O |
+| Generated recovery commands | Query/history/next/expand run with compact; context excludes compact and history limit |
+| Exact source with optional model paths | No ranking/model call; complete record, source health and counterevidence remain |
+| Exact source missing/foreign or changing during acquisition | Reject; no fallback to a ranked or newest unrelated record |
 | Review chain changes during another card read | Reject mixed knowledge snapshot |
 | Missing next intent | Empty next actions, explicit save receipt |
 | Older handoff beyond recent five | Bootstrap retains handoff and owner warning |
@@ -183,6 +198,10 @@ hash bytes separately from output size. Include shared artifact sources, error
 metadata, revocation, missing bytes and changes during/following acquisition.
 Compact checks compare the entire top-level key set minus permitted aliases,
 candidate count/order and complete records, not only keys that survived rendering.
+Run generated recovery commands against a synthetic Store, including paths with spaces.
+Compare old/new exact-source records, current facts and correction context; count zero
+ranking calls and retain final-check failure propagation. Ordinary ranked outputs and
+stale-cursor rejection must remain equivalent. No real target or model is needed.
 Loop/Checkpoint checks compare complete final output, count memory acquisitions,
 and inject source/Store changes through the optimized callers; Closure keeps its
 complete diagnostic memory and digest inputs.

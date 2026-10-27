@@ -68,7 +68,9 @@
 ## 示例
 
 - `memory/audit_log.py::AuditLog.log()`：校验、锁、append 和 partial-write 检查。
-- `memory/hunt_journal.py::read_all()`：损坏行 warning 后继续读取其他事件。
+- `HuntJournal.iter_entries()`：按文件顺序逐行解析/校验；完整消费后汇总坏行数量与首条位置，
+  沿用按文件指纹去重的 warning。`read_all()` 是同一 reader 的 list 包装，`query()` 保持列表 API。
+  Resume 完整消费该流，只保留本目标计数、最后 session 与三条 guard；不以 tail 窗口代替精确统计。
 - `tools/evidence_ledger.py::record_evidence()`：记录方法、actor、object、variant、result 和
   red-line 状态。
 - `tools/autopilot_bootstrap.py`：stdout 输出单行稳定 JSON，不混入进度文本。
@@ -80,6 +82,10 @@
 - 在循环中打印每个 URL/每个 payload，拖慢扫描并淹没关键决策。
 - 只保存总结、不保存 raw evidence 路径，导致 finding 无法复现。
 - 把凭证或目标正文写进跨目标 patterns/knowledge。
+- 将流式 reader 的部分消费当完整审阅；未读完不能宣称坏行诊断或目标统计完整。
+
+Journal 读路径修改用合成混合目标、乱序时间戳、空文件及坏行比较新旧结果和 stderr；
+Resume 的完整返回须等价，不能省略旧 guard、改变文件顺序语义或重写任何日志。
 
 ## Scenario: remember 已提交经验后的 journal 恢复
 

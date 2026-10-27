@@ -226,22 +226,32 @@ def query_recall(repo_root: Path, *, target: str, query: str = "", limit: int = 
             offset = decoded["offset"]
         except (ValueError, KeyError, TypeError) as exc:
             raise ValueError("invalid or stale recall cursor; restart query") from exc
-    result = query_text(repo_root, target, snapshot, query, limit=limit, offset=offset,
-                        encoder_path=encoder_path, reranker_path=reranker_path, generations=generations)
+    if source_ref:
+        documents = {doc["source_ref"]: doc for doc in snapshot["documents"]}
+        if source_ref not in documents:
+            raise ValueError("source_ref is not in this target/reviewed knowledge snapshot")
+        selected = [documents[source_ref]][offset:offset + limit]
+        remaining = max(0, 1 - offset - len(selected))
+        result = {
+            "items": selected,
+            "health": {**{channel: {"status": "not_requested"}
+                          for channel in ("lexical", "semantic", "reranker")}, "partitions": {}},
+            "pagination": {"total": 1, "remaining": remaining, "offset": offset,
+                           "next_offset": offset + len(selected) if remaining else None,
+                           "order": "exact-source", "ranking_binding": None,
+                           "generation": None, "generations": {},
+                           "expansion": "query_recall(source_ref=...)"},
+        }
+    else:
+        result = query_text(repo_root, target, snapshot, query, limit=limit, offset=offset,
+                            encoder_path=encoder_path, reranker_path=reranker_path, generations=generations)
+        selected = result["items"]
+        remaining = result["pagination"]["remaining"]
     binding = {"source": snapshot["binding"], "query": query, "source_ref": source_ref,
                "generations": result["pagination"]["generations"],
                "ranking": result["pagination"]["ranking_binding"]}
     if decoded is not None and decoded.get("binding") != digest(binding):
         raise ValueError("invalid or stale recall cursor; restart query")
-    documents = {doc["source_ref"]: doc for doc in snapshot["documents"]}
-    if source_ref:
-        if source_ref not in documents:
-            raise ValueError("source_ref is not in this target/reviewed knowledge snapshot")
-        selected = [documents[source_ref]][offset:offset + limit]
-        remaining = max(0, 1 - offset - len(selected))
-    else:
-        selected = result["items"]
-        remaining = result["pagination"]["remaining"]
     roots = [{"experience_id": item["record"]["id"], "version": item["record"]["version"]}
              for item in selected if item["source_ref"].startswith("experience:")]
     counterevidence = context_page(repo_root, target, roots=roots, limit=context_limit, max_bytes=context_max_bytes)

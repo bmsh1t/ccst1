@@ -201,9 +201,10 @@ def load_goal_memory(repo_root: str | Path, target: str, *, experience_limit: in
         **fields,
         "facts": {},
     }
-    history_args = ["python3", "tools/experience_recall.py", "history", "--repo-root", str(repo.resolve()),
-                    "--target", resolved_target, "--limit", str(experience_limit)]
-    recall_args = [*history_args[:2], "query", *history_args[3:]]
+    command_args = ["python3", "tools/experience_recall.py"]
+    target_args = ["--repo-root", str(repo.resolve()), "--target", resolved_target]
+    history_args = [*command_args, "history", *target_args, "--limit", str(experience_limit), "--compact"]
+    recall_args = [*command_args, "query", *target_args, "--limit", str(experience_limit), "--compact"]
     return {
         "active": selected,
         "raw_active": active,
@@ -222,7 +223,7 @@ def load_goal_memory(repo_root: str | Path, target: str, *, experience_limit: in
                 "next_command": shlex.join([*history_args, "--cursor", page["next_cursor"]]) if page["has_more"] else "",
                 "expand_command": shlex.join([*history_args, "--id", "EXPERIENCE_ID"]),
                 "context_command": shlex.join([
-                    *history_args[:2], "context", *history_args[3:-2],
+                    *command_args, "context", *target_args,
                     "--id", "EXPERIENCE_ID", "--version", "VERSION",
                 ]),
             },

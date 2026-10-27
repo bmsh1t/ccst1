@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import sys
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -162,20 +163,20 @@ class HuntJournal:
             self._append_locked(validated)
             return True
 
-    def read_all(self, *, validate: bool = True) -> list[dict]:
-        """Read all journal entries. Corrupted lines are skipped with a warning.
+    def iter_entries(self, *, validate: bool = True) -> Iterator[dict]:
+        """Yield journal entries; warn about skipped rows after full consumption.
 
         Args:
             validate: If True, validate each entry against the schema. Invalid entries are skipped.
 
-        Returns:
-            List of valid journal entries.
+        Yields:
+            Valid journal entries in file order.
         """
         if not self.path.exists():
-            return []
+            return
 
-        entries = []
-        invalid_rows = []
+        invalid_count = 0
+        first_invalid = None
         with open(self.path, "r", encoding="utf-8") as f:
             for lineno, line in enumerate(f, 1):
                 line = line.strip()
@@ -184,36 +185,42 @@ class HuntJournal:
                 try:
                     entry = json.loads(line)
                 except json.JSONDecodeError as e:
-                    invalid_rows.append((lineno, f"corrupted: {e}"))
+                    invalid_count += 1
+                    if first_invalid is None:
+                        first_invalid = (lineno, f"corrupted: {e}")
                     continue
 
                 if validate:
                     try:
                         validate_journal_entry(entry)
                     except SchemaError as e:
-                        invalid_rows.append((lineno, f"failed validation: {e}"))
+                        invalid_count += 1
+                        if first_invalid is None:
+                            first_invalid = (lineno, f"failed validation: {e}")
                         continue
 
-                entries.append(entry)
+                yield entry
 
-        if invalid_rows:
+        if invalid_count:
             try:
                 stat = self.path.stat()
                 fingerprint = hashlib.sha256(
-                    f"{self.path}:{stat.st_size}:{stat.st_mtime_ns}:{len(invalid_rows)}".encode()
+                    f"{self.path}:{stat.st_size}:{stat.st_mtime_ns}:{invalid_count}".encode()
                 ).hexdigest()
             except OSError:
                 fingerprint = str(self.path)
             if fingerprint not in _DIAGNOSTIC_FINGERPRINTS:
                 _DIAGNOSTIC_FINGERPRINTS.add(fingerprint)
-                first_line, first_reason = invalid_rows[0]
+                first_line, first_reason = first_invalid
                 print(
-                    f"WARNING: journal {self.path} has {len(invalid_rows)} invalid rows "
+                    f"WARNING: journal {self.path} has {invalid_count} invalid rows "
                     f"(first line {first_line}: {first_reason}); valid rows retained",
                     file=sys.stderr,
                 )
 
-        return entries
+    def read_all(self, *, validate: bool = True) -> list[dict]:
+        """Read all journal entries, skipping invalid rows with a warning."""
+        return list(self.iter_entries(validate=validate))
 
     def log_session_summary(
         self,

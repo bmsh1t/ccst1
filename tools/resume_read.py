@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import shlex
+from collections import deque
 from pathlib import Path
 
 from memory.hunt_journal import HuntJournal
@@ -179,10 +180,21 @@ def load_resume_summary(
     if (root / "state" / owner_key / "session.json").is_file():
         canonical_sources.append("runtime")
     journal = HuntJournal(memory_dir / "journal.jsonl")
-    entries = journal.query(target=profile_target)
+    entry_count = session_count = 0
+    latest_session_entry = None
+    guard_entries = deque(maxlen=3)
+    for entry in journal.iter_entries():
+        if entry.get("target") != profile_target:
+            continue
+        entry_count += 1
+        if entry.get("vuln_class") == "session_summary":
+            session_count += 1
+            latest_session_entry = entry
+        elif entry.get("vuln_class") in {"guard_advisory", "guard_block"}:
+            guard_entries.append(entry)
     confirmed_findings = finding_summary["counts"]["confirmed"]
     confirmed_payout = None
-    latest_session = latest_session_summary(entries)
+    latest_session = parse_session_summary_entry(latest_session_entry) if latest_session_entry is not None else None
 
     # 跨目标模式匹配已移除（2026-09-12 收敛裁定）：按 tech_stack 自动带入
     # 其他目标的历史现场经验，相关性难保证且易带入过期条件。本目标模式经
@@ -221,7 +233,7 @@ def load_resume_summary(
             "payout": payout,
         })
 
-    guard_advisories = recent_guard_advisories(entries)
+    guard_advisories = recent_guard_advisories(list(guard_entries))
 
     summary = {
         "target": requested_target,
@@ -236,7 +248,7 @@ def load_resume_summary(
             "next_actions": target_memory["next_actions"],
             "experience_window": experience_window,
         } if target_memory else {},
-        "sessions": sum(entry.get("vuln_class") == "session_summary" for entry in entries),
+        "sessions": session_count,
         "last_hunted": (latest_session or {}).get("ts", ""),
         "total_time_minutes": None,
         "tech_stack": [],
@@ -246,7 +258,7 @@ def load_resume_summary(
         "finding_titles": finding_titles,
         "owner_projection": {key: value for key, value in owner_projection.items() if key not in domain_values},
         "domain_windows": domain_windows,
-        "journal_entries": len(entries),
+        "journal_entries": entry_count,
         "confirmed_findings": confirmed_findings,
         "confirmed_payout": confirmed_payout,
         "pattern_matches": pattern_matches[:5],

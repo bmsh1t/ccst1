@@ -84,7 +84,8 @@ token、密码实值、个人身份信息或客户数据。未验证内容用明
 
 有效 Bootstrap 的 `state.target_memory` 可直接复用；否则用 `show TARGET`，需要整体
 领域视图时用 `resume.py --target TARGET`。恢复条目含 version、条件与来源/纠错健康。
-`experience_window` 给出查询、历史和反证入口；五条预览不是完整记忆。
+`experience_window` 给出查询、历史和反证入口；query/history 及其翻页/展开命令已带
+`--compact`，context 保持独立参数。五条预览不是完整记忆。
 
 ```bash
 python3 tools/experience_recall.py query --target TARGET --query '当前问题与适用条件' --compact
@@ -97,7 +98,9 @@ Claude 读取 query/history 时可加 `--compact`（也可用于恢复窗口返�
 只省精确重复的展示字段，完整经验在 `recalled[].record` 或 `experiences.items`；
 来源、排名、当前事实、反证、健康和分页保留。默认或 `--json` 仍返回完整兼容字段，
 两种输出参数不混用；context 的独立展开命令不加 `--compact`。
-query 精确来源展开可用 `--source-ref experience:ID`；保留历史版本则用下节的 version。
+query 精确来源展开可用 `--source-ref experience:ID`，直接选择当前来源，不做全文/模型排名；
+排名通道显示 `not_requested`，原件健康、当前事实、反证与返回前复核仍保留。
+保留历史版本则用下节的 version。
 按它的 `next_command` 展开相关纠错/依赖，按条目的 `expand_command` 读精确版本；
 不得把它的游标传给 query/history。三种游标分别归各自命令；反证预算用
 `--context-limit`/`--context-max-bytes`，不与 query 的 `--limit` 混用。
