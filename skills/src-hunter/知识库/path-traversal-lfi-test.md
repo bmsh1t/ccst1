@@ -790,35 +790,16 @@ Apps mixing `url.parse()` and `path.join()` may allow traversal that `new URL()`
 
 ## 24. IIS SHORT FILENAME ENUMERATION (~1 TILDE TRICK)
 
-### Concept
+见：IIS 响应头/指纹。
 
-Windows NTFS generates 8.3 short filenames (e.g., `LONGFI~1.TXT`). IIS responds differently for valid vs invalid short name prefixes.
-
-### Detection method
-
-```text
-GET /W~1.ASP HTTP/1.1  -> 404 (name pattern valid)
-GET /Z~1.ASP HTTP/1.1  -> 400 (bad request)
-```
-
-Differential response leaks whether a file starting with that prefix exists.
-
-### Enumeration process
-
-```text
-Step 1: /A~1* -> 404 = file starting with A exists
-Step 2: /AB~1* -> 404 = file starting with AB exists
-Step 3: /ABCDEF~1.A* -> 404 = extension starts with A
-```
-
-### Tools
+打：用实际应用 URL（保留路径）：
 
 ```bash
-java -jar iis_shortname_scanner.jar https://target.com/
+shortscan https://target.com/ -s -p 1
 ```
 
-### Impact
+只检测不枚举加 `-V`。
 
-- Discover hidden backups, config files, source code
-- Shorter brute-force space: 8.3 format limits character set
-- Works even when directory listing is disabled
+算成：同路径真/假短名探针回包有稳定差分；出名后还原长名，跟备份、配置、源码。短名命中不算敏感文件已读。
+
+假点：统一登录码/WAF/自定义错误页，单个 400/404 不算。缺工具、被拦或超时记未测；保留原始输出。

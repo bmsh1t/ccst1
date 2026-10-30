@@ -18,6 +18,7 @@ HOOK_OWNER = "settings.json#ccst-autopilot"
 HOOK_MARKER = "--ccst-autopilot-host"
 RECOVERY_PARTS = 8
 CONTEXT_UNITS = 7000
+DYNAMIC_OUTPUT_LIMIT = 24000
 
 
 def json_digest(value: object) -> str:
@@ -84,7 +85,7 @@ def capture_context(repo_root: Path | str, *, round_mode: bool = False) -> dict:
 
 
 def dynamic_output(text: str) -> str:
-    if len(text.encode("utf-8")) >= 24000:
+    if len(text.encode("utf-8")) >= DYNAMIC_OUTPUT_LIMIT:
         raise ValueError("Autopilot dynamic output exceeds the verified host limit; split transport before continuing")
     return text
 

@@ -36,20 +36,23 @@ existing nine-token inline argument limit.
 <!-- AUTOPILOT_CRITICAL_RUNTIME_MANIFEST
 {"schema_version":4,"host_hooks":true,"paths":[{"kind":"commands","relative_path":"autopilot.md"},{"kind":"commands","relative_path":"autopilot-round.md"},{"kind":"commands","relative_path":"recon.md"},{"kind":"skills","relative_path":"runtime-protocol.md"},{"kind":"skills","relative_path":"src-hunter/SKILL.md"},{"kind":"skills","relative_path":"src-hunter/modules/web2-recon.md"},{"kind":"skills","relative_path":"src-hunter/modules/triage-validation.md"},{"kind":"skills","relative_path":"src-hunter/modules/report-writing.md"},{"kind":"skills","relative_path":"src-hunter/知识库/README.md"},{"kind":"skills","relative_path":"src-hunter/知识库/打穿短表.md"}],"mcp_contracts":["mcp__Playwright__*","mcp__chrome-devtools__*","mcp__fofamap__*"]}
 AUTOPILOT_CRITICAL_RUNTIME_MANIFEST -->
-Authoritative bootstrap contract (do not reinterpret): !`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_host.py" entry --session-id "${CLAUDE_SESSION_ID}" -- "$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"`
+Authoritative bootstrap contract (do not reinterpret): !`python3 tools/autopilot_host.py entry --session-id "${CLAUDE_SESSION_ID}" -- "$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"`
 Complete original sources (ordered parts):
-!`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_host.py" body --session-id "${CLAUDE_SESSION_ID}" --part 0`
-!`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_host.py" body --session-id "${CLAUDE_SESSION_ID}" --part 1`
-!`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_host.py" body --session-id "${CLAUDE_SESSION_ID}" --part 2`
-!`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_host.py" body --session-id "${CLAUDE_SESSION_ID}" --part 3`
-!`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_host.py" body --session-id "${CLAUDE_SESSION_ID}" --part 4`
-!`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_host.py" body --session-id "${CLAUDE_SESSION_ID}" --part 5`
-!`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_host.py" body --session-id "${CLAUDE_SESSION_ID}" --part 6`
-!`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_host.py" body --session-id "${CLAUDE_SESSION_ID}" --part 7`
+!`python3 tools/autopilot_host.py body --session-id "${CLAUDE_SESSION_ID}" --part 0`
+!`python3 tools/autopilot_host.py body --session-id "${CLAUDE_SESSION_ID}" --part 1`
+!`python3 tools/autopilot_host.py body --session-id "${CLAUDE_SESSION_ID}" --part 2`
+!`python3 tools/autopilot_host.py body --session-id "${CLAUDE_SESSION_ID}" --part 3`
+!`python3 tools/autopilot_host.py body --session-id "${CLAUDE_SESSION_ID}" --part 4`
+!`python3 tools/autopilot_host.py body --session-id "${CLAUDE_SESSION_ID}" --part 5`
+!`python3 tools/autopilot_host.py body --session-id "${CLAUDE_SESSION_ID}" --part 6`
+!`python3 tools/autopilot_host.py body --session-id "${CLAUDE_SESSION_ID}" --part 7`
 
 Arguments: `<target> [--paranoid|--normal|--yolo] [--quick] [--deep [--max-lanes N]] [--auth-file PATH] [--context-file=PATH] [--max-seconds=SECONDS]`.
 
 ## Shared Automation
+
+If Bootstrap returns `action=read_bootstrap`, read its exact `bootstrap_path` fully;
+use that JSON as Bootstrap. Missing/truncated output forbids work; never select an older file.
 
 Fresh targets start Recon. While it runs, investigate independent in-scope questions
 using available evidence; wait only for missing inputs the next experiment needs.
@@ -68,15 +71,14 @@ Missing bodies, truncated previews or `CCST_AUTOPILOT_INCOMPLETE` forbid new tar
 work. Natural Skill discovery remains available; no duplicate Skill invocation is
 needed for an already delivered complete body.
 
-The binding is this `host.session_id` + `host.invocation_id`. On resume/compaction
-or a new user message continuing this investigation, run the current hook's
-`host.resume_command` before dependent work: it refreshes Scope/Auth, owner state
-and memory without starting another invocation. A changed task/cancellation leaves
-automation suspended. User interruption never needs a Checkpoint approval.
+Keep `host.session_id` + `host.invocation_id`. Same-session continuation reuses context
+and enters Refresh before work. Questions are answered directly; cancellation/task changes
+stay suspended. User interruption needs no review. SessionStart restores bodies after
+compaction/restart; Refresh's `recovery` replaces entry arguments/root/mode, Scope and state/memory.
 
 ### State Consumption Loop
 
-1. **Start or resume.** Only fresh Bootstrap `action=continue` admits work; obey
+1. **Start.** Only fresh Bootstrap `action=continue` admits a new invocation; obey
    `state.hard_gate`; report missing input/error. Confirm critical drift
    through `/sync-check`; never auto-sync/install. After admission checks, Bootstrap
    initializes a single-target Store before reading state; lists initialize each
@@ -84,8 +86,8 @@ automation suspended. User interruption never needs a Checkpoint approval.
    host:port, URL or list as fixed-target scope under `rules/dig-scope-workflow.md` §0.
    Domain Recon may discover in-scope subdomains; missing history or loading a Skill
    does not turn the target into group/brand discovery or a campaign seed queue.
-   Start, switch, resume or compaction:
-   apply `skills/runtime-protocol.md#shared-memory-continuity` from `state.target_memory`.
+   At start consume `state.target_memory`; after compaction/restart consume
+   `recovery.state.target_memory` under `skills/runtime-protocol.md#shared-memory-continuity`.
    Carry any explicit user/host time, cost or lane limit. Treat absent limits as
    unset; do not invent a deadline, allocation or write-back cutoff.
    `host.started_at` is the invocation's Unix starting time; `host.elapsed_seconds`
@@ -93,8 +95,9 @@ automation suspended. User interruption never needs a Checkpoint approval.
    admitted `host.max_seconds`/`host.round_limit` and their source; reserve write-back time only when
    the user/host supplied that boundary.
 
-2. **Continue.** Recover unfinished execution first; read Bootstrap's
-   `state.round_progress` and use `commands/autopilot-round.md` for existing Round work.
+2. **Continue.** Recover unfinished execution first; read current
+   `state.round_progress` or refreshed `control.round_progress` and use
+   `commands/autopilot-round.md` for existing Round work.
    With an explicit lane cap and no active Round, use that command's Prepare And
    Terminal Precheck, claims, heartbeats and settle without invoking its Bootstrap.
    Otherwise no prior Round means no Round recovery. Completed lanes allow further investigation
@@ -131,7 +134,12 @@ automation suspended. User interruption never needs a Checkpoint approval.
    Save accepted memory deltas under `skills/runtime-protocol.md#cognitive-write-timing`.
    Round claims before execution and writes its terminal heartbeat after write-back.
 
-4. **Refresh.** After each action and any terminal heartbeat, run below once.
+4. **Refresh.** After each action/terminal heartbeat or same-task continuation, run
+   the current `host.state_command` once. It checks Scope/Auth, reads loop state and
+   rearms Stop. Require `action=continue`, consume any `recovery`, and retain the host
+   binding. No separate resume, Bootstrap or Store initialization.
+   Read the full JSON, including persisted output; expand oversized files in consecutive
+   chunks until complete. Never discard the remainder with head/tail or repeat a truncated full read.
    Use fresh `control`, including `control.next_step`; expand changed or unread material
    through `surface_projection.path` and `surface_projection.continuation.command`. `surface.review_window`
    counts describe the display window, not tested coverage. Missing/stale material
@@ -139,10 +147,6 @@ automation suspended. User interruption never needs a Checkpoint approval.
    Empty `control.owner_continuations` returns to step 2 to select investigation. When ready, use
    `commands/validate.md` and `commands/report.md` with the same write-back/refresh
    cycle, then return to step 2. Apply the Finish Contract before stopping.
-
-```bash
-cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded --loop-check --projection-only --json
-```
 
 Apply `rules/ccst/hunting.md`. Use Bootstrap's quoted root/target, exact seed URL and
 `arguments.hunt_auth_flags`. For bound context or `run_recon`, follow

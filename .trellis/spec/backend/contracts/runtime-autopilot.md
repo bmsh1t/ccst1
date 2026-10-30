@@ -13,6 +13,7 @@ mechanical safety, evidence and recovery constraints govern execution.
 ### 2. Signatures
 
 - `/autopilot <target> [--paranoid|--normal|--yolo|--quick|--deep]` runs inline.
+- `autopilot_host.py state --session-id ID --invocation-id ID --prompt-id ID --target TARGET` refreshes/rearms the bound loop.
 - `build_autopilot_state(repo_root, target, memory_dir=None, *, bounded=False, ...)`
   exposes the same owner facts in full or bounded form.
 - `build_closure_projection(state, matrix, ledger_entries=None, *, global_review=None)` is read-only.
@@ -41,10 +42,19 @@ mechanical safety, evidence and recovery constraints govern execution.
   native discovery; no Python selector, Store load receipt or per-lane invocation.
 - The host stores only private session/invocation/target/arguments and an immutable
   source snapshot. SessionStart settings hooks restore complete source parts for
-  compact/resume; the current prompt-bound resume refreshes Bootstrap, Scope/Auth,
-  owners and memory without a new invocation. Source change or damaged recovery
-  bytes fail visibly. Bootstrap is never cached as target truth. Original body
+  compact/restart. Prompt/target-bound `autopilot_host state` combines loop-check,
+  Scope/Auth and rearming; admitted argument paths stay bound, not re-resolved aliases.
+  Bootstrap/init/runtime compare remain entry-only.
+  `needs_refresh` adds existing compact state/memory as `recovery`; otherwise reuse
+  context. Rearming verifies sources; recovery also verifies saved bytes. Failures
+  stay suspended. General queries do not access host bindings. Bootstrap is never
+  cached as target truth. Original body
   reads are independent of activation order and add no second preparation state.
+  State CLI emits complete JSON without the dynamic-entry byte cap; serialization
+  precedes activation. Entry/body and SessionStart transport limits remain enforced.
+  Oversized Bootstrap uses `read_bootstrap` with a unique private, create-only JSON
+  snapshot; both entries read it fully before the real action gate. It is transport,
+  never a target owner or a reusable state cache. Small Bootstrap remains inline.
 - Normal Stop consumes fresh state/Closure and the existing Checkpoint review's
   optional `termination`: `reason`, `session_id`, `invocation_id`, `boundary`.
   Only explicit_limit also requires `limit`, either positive integer
@@ -66,9 +76,11 @@ mechanical safety, evidence and recovery constraints govern execution.
   replace Closure exhaustion. A batch list uses its existing state continuation,
   never a synthetic list Store/review.
 - Repeated identical Stop rejection suspends as incomplete, without a default
-  investigation cap. Calling resume does not clear that progress identity.
+  investigation cap. Refreshing state does not clear that progress identity.
   New user prompts suspend enforcement; same-task continuation explicitly rearms
-  using the current resume command. Native interruption needs no review, ordinary
+  using the current state command. Ordinary questions, cancellation and changed tasks
+  remain suspended; intent is the model's choice, not a hook prose classifier.
+  Native interruption needs no review, ordinary
   later conversation is not forced into a hunt, and a bound session changing cwd
   still receives its suspension/recovery events. Subagent events are excluded.
   Native background `task-notification` envelopes delivered through
@@ -328,6 +340,7 @@ mechanical safety, evidence and recovery constraints govern execution.
 | Untested coverage, no explicit owner work, budget remaining | `handoff`, retained residuals; Round prepare starts/resumes investigation |
 | Active runtime phase or explicit Queue work | Existing lock/owner continuation preserved |
 | Evidence or snapshot damage | Visible integrity/recovery error, never empty success |
+| Host refresh: stale binding / invalid Scope/Auth or failed read | Reject stale caller / remain suspended; no init or Bootstrap; compact/restart adds root, arguments, batch/mode and memory recovery |
 | Exact subject closure with identity-free tested Coverage cell | `missing_matching_ledger_terminal` |
 | Valid global review covers non-blocking bounded residuals | `handoff` with `bounded_recon_residual_deferred`; blocking owner obligations keep their entries |
 | Otherwise finishable ordinary target without a current review | Existing Global Review handoff; `can_claim_exhausted=false` |
@@ -343,6 +356,7 @@ mechanical safety, evidence and recovery constraints govern execution.
 Good: read raw JS directly, save a confirmed A immediately, choose optional B/C
 within budget, and report unresolved context at bounded stop.
 Base: no specialist or next investigation is useful; remain in the same session.
+Host: continuation refreshes once; a question stays suspended; stale prompt cannot rearm.
 Bad: rename a frontier while keeping its automatic route control, or claim
 exhaustion merely because the inferred frontier was deleted.
 For review routing, a valid review missing residual tokens still needs form
@@ -351,6 +365,8 @@ new round. Ordinary settlement without a review reason retains its prior status.
 
 ### 6. Tests Required
 
+- `10-27-autopilot-session-continuity/research/check_continuity.py` under `.trellis/tasks/`
+  checks real-owner recovery, event-delivered CLI commands, retained auth paths and failure suspension in isolated copies.
 - For Skill entry guidance, review the composed Shared Automation instructions:
   fresh investigation loads src-hunter; retained body is reused; missing body after
   compaction is restored; round shares the same rule; waits/cleanup/recovery retain
@@ -424,6 +440,8 @@ user-owned edits. `test_js_reader.py` checks retirement instead of the deleted A
 ```text
 Wrong: observed JS / missing actor / Intel lead -> mandatory route or session task
 Correct: observations -> native reasoning; explicit owner command -> durable work
+Wrong: every continuation -> full Bootstrap + separate state read
+Correct: bound state refresh; only lost context adds owner/memory recovery
 Wrong: no generated frontier -> target exhausted
 Correct: unresolved observations -> native investigation handoff; actual stopping conditions remain separate
 Wrong: a non-empty completed Round is the only reason to require Global Review

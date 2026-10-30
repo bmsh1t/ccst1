@@ -90,7 +90,7 @@ question/stop material through the recorded card, section and family.
 | `tools/validation_runner.py` (`record-evidence`) | Already-executed raw observations or final cleanup read-back | Registers evidence only; cleanup-only input binds exact mutation refs and never confirms a new finding |
 | `tools/validation_runner.py` (`record-observation`) | Saved native/browser observations, with no Finding required | [No-verdict registration](evidence-runners.md#native-observation-registration); immutable full snapshots, original-attempt supplements and registration-only retries |
 | `tools/sender_semantics.py` | Byte-exact/proxy/cache/smuggling work needs sender choice | `--list` / `--require ...`; sender capability matrix + raw HTTP/1 sender for low-level request semantics |
-| `tools/aspnet_viewstate_knownkey.py` ⚠️ manual-only | Captured page contains `__VIEWSTATE` | Offline machineKey check; `--reveal-key` only for controlled validation |
+| `tools/aspnet_viewstate_knownkey.py` | Captured page contains `__VIEWSTATE` | Offline machineKey check; `--reveal-key` only for controlled validation |
 | `tools/telerik_knownkey.py` ⚠️ manual-only | Captured Telerik `SerializedParameters` | Offline vendored Badsecrets default-key check; no HTTP or state write |
 | `tools/eburst_lane.py` | Explicitly selected Exchange HTTPS interface check | Optional bounded upstream `-C` adapter; current Scope, raw bytes and exits, no credentials |
 

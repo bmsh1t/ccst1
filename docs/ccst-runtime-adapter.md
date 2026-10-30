@@ -20,12 +20,12 @@ CCST 路径与操作。本文件导航现有合同并记录来源；根 AGENTS.m
 Claude 宿主入口并行送达完整 `src-hunter` 正文和共享运行协议，Bootstrap 单独完成
 Scope/Auth、安装一致性和目标状态准入。正文分块带来源指纹、原包路径和结束标记，
 避免宿主预览截断与末尾空白丢失；收到正文不等于获准执行。
-`tools/autopilot_host.py` 只保留本次会话/调用/目标绑定和可丢弃的源码快照，
-不保存目标进度、Finding 或记忆。目标列表先走已有批次选择，再绑定具体目标。
+`tools/autopilot_host.py` 保留本次会话/调用/目标绑定和源码快照；超限 Bootstrap
+通过私有文件完整交付，该副本不作为目标事实或恢复缓存。目标列表先走已有批次选择，再绑定具体目标。
 
-SessionStart 在压缩/重启后恢复同源完整正文；当前事件给出的 `resume` 命令重新调用
-Bootstrap，获取最新 Scope/Auth、owner 和记忆，保留原 invocation。
-新用户消息暂停自动结束检查，同任务继续时显式恢复；普通换任务与用户中断不会强行续跑。
+同会话复用上下文；`host.state_command` 合并 Scope/Auth、循环刷新与同任务确认，不重跑
+Bootstrap/初始化。压缩或重启后 SessionStart 恢复正文，同一次刷新附带 owner 记忆与交接。
+失败保持暂停；普通问答、取消和换任务不激活 Stop。通用状态/记忆查询不接触 host 绑定。
 Claude 原生后台结果的完整 `task-notification` 封套不算新用户任务，只保留当前启停状态，
 不激活已暂停的调用。该封套识别不是发送者认证，不读取模型历史。
 Stop 读取当前 owner 与同一 Checkpoint Global Review 的停止依据；未完执行不能正常收尾，

@@ -9,40 +9,27 @@ import sys
 from pathlib import Path
 from typing import Any, Sequence
 
-try:
-    from tools.auth_session import AuthSession
-    from tools.autopilot_args import parse_autopilot_args
-    from tools.autopilot_continuation import load_continuation
-    from tools.autopilot_state import build_autopilot_bootstrap_state, describe_next_step
-    from tools.capability_profile import (
-        build_capability_profile,
-        load_capability_degraded_marker,
-        unknown_capability_profile,
-    )
-    from tools.runtime_config import is_ctf_mode_enabled
-    from tools.runtime_doctor import KIND_ORDER, compare_runtime
-    from tools.scope_context import ScopeContext, ScopeContextError
-    from tools.scope_source import load_scope_context
-    from tools.target_store import initialize_target_store
-except ModuleNotFoundError:  # 兼容 `python3 tools/autopilot_bootstrap.py` 直接执行
-    from auth_session import AuthSession
-    from autopilot_args import parse_autopilot_args
-    from autopilot_continuation import load_continuation
-    from autopilot_state import build_autopilot_bootstrap_state, describe_next_step
-    from capability_profile import (  # type: ignore
-        build_capability_profile,
-        load_capability_degraded_marker,
-        unknown_capability_profile,
-    )
-    from runtime_config import is_ctf_mode_enabled
-    from runtime_doctor import KIND_ORDER, compare_runtime
-    from scope_context import ScopeContext, ScopeContextError
-    from scope_source import load_scope_context
-    from target_store import initialize_target_store
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from tools.auth_session import AuthSession
+from tools.autopilot_args import parse_autopilot_args
+from tools.autopilot_continuation import load_continuation
+from tools.autopilot_state import build_autopilot_bootstrap_state, describe_next_step
+from tools.capability_profile import (
+    build_capability_profile,
+    load_capability_degraded_marker,
+    unknown_capability_profile,
+)
+from tools.runtime_config import is_ctf_mode_enabled
+from tools.runtime_doctor import KIND_ORDER, compare_runtime
+from tools.scope_context import ScopeContext, ScopeContextError
+from tools.scope_source import load_scope_context
+from tools.target_store import initialize_target_store, runtime_store
 
 
 SCHEMA_VERSION = 1
-REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _runtime_projection(payload: dict[str, Any]) -> dict[str, Any]:
@@ -732,6 +719,68 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def load_autopilot_context(repo_root: Path, arguments: dict[str, Any]) -> dict[str, Any]:
+    """Validate current Scope/Auth and retain explicit continuation bindings."""
+    public_continuation = {}
+    if arguments.get("context_file"):
+        continuation = load_continuation(
+            repo_root,
+            str(arguments["context_file"]),
+            selected_target=str(arguments["target"]),
+        )
+        scope_context = continuation["scope_context"]
+        continuation_auth = str(continuation.get("auth_file") or "")
+        if arguments.get("auth_file") and (
+            not continuation_auth
+            or Path(str(arguments["auth_file"])).resolve() != Path(continuation_auth)
+        ):
+            raise ValueError("explicit auth file conflicts with batch continuation")
+        if continuation_auth:
+            arguments["auth_file"] = continuation_auth
+            arguments["auth_file_shell"] = shlex.quote(continuation_auth)
+        arguments["hunt_auth_flags"] = (
+            (["--auth-file", continuation_auth] if continuation_auth else [])
+            + ["--context-file", str(arguments["context_file"])]
+        )
+        public_continuation = {
+            key: continuation["continuation"][key]
+            for key in (
+                "invocation_id", "selected_target", "parent_target", "scope_ref",
+                "scope_hash", "scope_sha256", "auth_private_ref",
+            )
+            if continuation["continuation"].get(key) not in (None, "")
+        }
+    else:
+        scope_context = load_scope_context(repo_root, arguments["target"])
+    if arguments.get("auth_file"):
+        # Lists bind credentials to a concrete child only after selection.
+        AuthSession.from_sources(
+            env={}, file=arguments["auth_file"],
+            target=None if arguments["target_kind"] == "list" else arguments["target"],
+        )
+    return {"scope": _scope_projection(scope_context), "continuation": public_continuation}
+
+
+def load_autopilot_target_state(
+    repo_root: Path, arguments: dict[str, Any], context: dict[str, Any],
+) -> dict[str, Any]:
+    """Read existing owners with the admitted auth/parent context; never initialize."""
+    if arguments["target_kind"] != "list":
+        runtime_store(repo_root, arguments["target"])
+    state = build_autopilot_bootstrap_state(
+        str(repo_root), str(arguments["target"]), include_goal_memory=False,
+    )
+    if arguments.get("auth_file") and state.get("target_kind") == "list":
+        for candidate in (state.get("batch") or {}).get("candidates") or []:
+            candidate.setdefault("continuation_create_args", []).extend(
+                ["--auth-file", str(arguments["auth_file"])]
+            )
+    if context["continuation"]:
+        state["scope"] = {"status": "valid", **context["scope"]}
+        state["continuation"] = context["continuation"]
+    return state
+
+
 def build_autopilot_bootstrap(
     argv: Sequence[str],
     *,
@@ -786,50 +835,8 @@ def build_autopilot_bootstrap(
     # drift must not make an enabled CTF workspace look like ordinary mode.
     payload["ctf_mode"] = is_ctf_mode_enabled(resolved_repo)
 
-    continuation = None
     try:
-        if arguments.get("context_file"):
-            continuation = load_continuation(
-                resolved_repo,
-                str(arguments["context_file"]),
-                selected_target=str(arguments["target"]),
-            )
-            scope_context = continuation["scope_context"]
-            continuation_auth = str(continuation.get("auth_file") or "")
-            if arguments.get("auth_file") and (
-                not continuation_auth
-                or Path(str(arguments["auth_file"])).resolve() != Path(continuation_auth)
-            ):
-                raise ValueError("explicit auth file conflicts with batch continuation")
-            if continuation_auth:
-                arguments["auth_file"] = continuation_auth
-                arguments["auth_file_shell"] = shlex.quote(continuation_auth)
-            arguments["hunt_auth_flags"] = (
-                (["--auth-file", continuation_auth] if continuation_auth else [])
-                + ["--context-file", str(arguments["context_file"])]
-            )
-            public_continuation = continuation["continuation"]
-            payload["continuation"] = {
-                key: public_continuation[key]
-                for key in (
-                    "invocation_id",
-                    "selected_target",
-                    "parent_target",
-                    "scope_ref",
-                    "scope_hash",
-                    "scope_sha256",
-                    "auth_private_ref",
-                )
-                if public_continuation.get(key) not in (None, "")
-            }
-        else:
-            scope_context = load_scope_context(resolved_repo, arguments["target"])
-        if arguments.get("auth_file"):
-            # Lists defer credential target binding until a concrete child is selected.
-            AuthSession.from_sources(
-                env={}, file=arguments["auth_file"],
-                target=None if arguments["target_kind"] == "list" else arguments["target"],
-            )
+        context = load_autopilot_context(resolved_repo, arguments)
     except ScopeContextError as exc:
         payload["action"] = "stop_invalid_scope"
         payload["error"] = {
@@ -844,7 +851,7 @@ def build_autopilot_bootstrap(
             "reason": " ".join(str(exc).split())[:500],
         }
         return payload
-    payload["scope"] = _scope_projection(scope_context)
+    payload.update(context)
 
     try:
         runtime = compare_runtime(
@@ -877,20 +884,7 @@ def build_autopilot_bootstrap(
         # Slash invocation explicitly starts a target; state queries never initialize it.
         if arguments["target_kind"] != "list":
             initialize_target_store(resolved_repo, str(arguments["target"]))
-        # Compact output already uses Resume's bound five-entry memory and handoff.
-        state = build_autopilot_bootstrap_state(
-            str(resolved_repo),
-            str(arguments["target"]),
-            include_goal_memory=False,
-        )
-        if arguments.get("auth_file") and state.get("target_kind") == "list":
-            for candidate in (state.get("batch") or {}).get("candidates") or []:
-                candidate.setdefault("continuation_create_args", []).extend(
-                    ["--auth-file", str(arguments["auth_file"])]
-                )
-        if continuation is not None:
-            state["scope"] = {"status": "valid", **_scope_projection(scope_context)}
-            state["continuation"] = payload["continuation"]
+        state = load_autopilot_target_state(resolved_repo, arguments, context)
         payload["state"] = compact_autopilot_state(state)
     except (OSError, ValueError) as exc:
         payload["action"] = "stop_state_error"

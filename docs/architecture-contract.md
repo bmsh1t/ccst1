@@ -92,9 +92,12 @@ The native platform owns Skill discovery. Natural-language discovery retains the
 original `src-hunter` description. Explicit Autopilot receives complete original
 source bodies through `autopilot_host`; independent static parts and one Bootstrap
 share the installed source contract. Static delivery is not execution admission.
-SessionStart restores source-bound bodies after compact/resume; the current resume
-command refreshes Bootstrap/owner/memory without another invocation. The small
+`autopilot_host state` combines loop-check, Scope/Auth and prompt-bound rearming;
+same-session continuation reuses context and admitted argument paths without Bootstrap/init.
+After compact/restart, SessionStart restores bodies and state adds owner/memory recovery.
+Source/recovery failures suspend enforcement. The small
 private session binding and source snapshot own no target progress or facts.
+Oversized Bootstrap is delivered through a private JSON file; it is transport, never a state cache.
 Normal Stop reads current owners and the existing Checkpoint review's optional
 termination (reason, session_id, invocation_id, boundary; explicit_limit additionally
 names an elapsed-seconds threshold or capped Round owner). The host measures elapsed
@@ -104,7 +107,9 @@ time threshold and applicable Round limit are bound at entry; an ending review
 cannot shorten them or borrow a prior completed Round. It checks unfinished
 execution and known owner work; Closure alone retains exhaustion meaning. A repeated
 unchanged rejection suspends as incomplete. New user prompts suspend enforcement;
-only an explicit same-task resume rearms it, and native interruption needs no review.
+only an explicit same-task state refresh rearms it, and native interruption needs no review.
+Claude decides intent; ordinary questions/cancellation/task changes stay suspended.
+General state/memory queries remain read-only and independent of host bindings.
 Running Recon/Scan keeps independent owner work visible; only dependent work waits.
 A valid stop review retains its termination when residual-token form is incomplete:
 scope/limit/global-blocker exits remain possible without claiming exhaustion.

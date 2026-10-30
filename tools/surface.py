@@ -59,6 +59,7 @@ try:
     from tools.target_paths import compact_url, canonical_target_value, target_storage_key
     from tools.scope_context import url_belongs_to_target
     from tools.target_store import TargetStore, runtime_store, target_switch_lock
+    from tools.technology_inventory import load_or_build_inventory
 except ImportError:  # pragma: no cover - top-level tools/ import
     from closure_resolver import canonical_endpoint_path  # type: ignore
     from coverage_matrix import read_matrix, require_matching_truth  # type: ignore
@@ -78,6 +79,7 @@ except ImportError:  # pragma: no cover - top-level tools/ import
     from target_paths import compact_url, canonical_target_value, target_storage_key  # type: ignore
     from scope_context import url_belongs_to_target
     from target_store import TargetStore, runtime_store, target_switch_lock  # type: ignore
+    from technology_inventory import load_or_build_inventory  # type: ignore
 try:
     from tools.browser_surface import public_url_shape
     from tools.intel_artifact import advisory_is_actionable
@@ -2094,6 +2096,7 @@ def build_surface_review(
     # Keep backend selection stable through index, context and publication.
     with target_switch_lock(repo, target):
         runtime_store(repo, target)
+        load_or_build_inventory(repo, target)
         resolved_memory = str(memory_dir or default_memory_dir(repo))
         index_status = load_surface_index_status(repo, target)
         if refresh or index_status.get("status") != "valid":

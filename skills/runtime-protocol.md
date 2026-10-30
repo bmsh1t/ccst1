@@ -38,7 +38,7 @@ Queue/Store 不持有 Skill 注册表或知识推荐状态。
 
 唯一 `src-hunter` 保留原生 description 发现。显式 Autopilot（含 Round）由 Claude
 宿主入口送达原文件完整正文；Bootstrap 准入后才能调查，无需依赖模型想起一次 Skill 调用。
-压缩/重启通过 SessionStart 恢复同源编号块，并由当前 resume 命令刷新 owner 与记忆。
+同会话续跑复用上下文；压缩/重启通过 SessionStart 恢复同源编号块，循环状态刷新同时恢复 owner 与记忆。
 完整正文可复用，不按 lane/round 重复加载；缺失、预览或恢复失败明确报错。
 自然语言/manual 入口仍用原生 Skill；无该工具时原生读取完整文件。
 description、路径或 hash 不能代替正文，正文送达也不证明方法已正确应用。
@@ -54,8 +54,8 @@ description、路径或 hash 不能代替正文，正文送达也不证明方法
 普通对话、hunt、pickup 与 autopilot 共用记忆责任：主动恢复、按需召回、重要节点写回，
 不等用户说“记住”；明确只读/预览时不写。模式不改变事实标准或扩大执行范围。
 
-开始、切换或续接时从当前 owner 恢复意图、Scope/Auth、未完成工作、当前裁决和交接；
-有效工作集可复用。摘要和场景预览不是当前真源，缺历史展示不代表没有经验。
+开始、换目标、压缩或重启时从当前 owner 恢复意图、Scope/Auth、未完成工作、当前裁决和交接；
+同会话续接复用有效工作集，按执行节点刷新事实。摘要和场景预览不是当前真源，缺历史展示不代表没有经验。
 继承的工具限制/准入判断在使用前只查相关当前命令；未核对则标 inherited/unverified，
 不通读源码。按原时间戳、时区和精度判事件顺序；历史先后不证明当前可达性。
 
@@ -63,7 +63,8 @@ description、路径或 hash 不能代替正文，正文送达也不证明方法
 
 最小恢复：`python3 tools/target_memory.py show TARGET`；需要整体工作/覆盖时读
 `python3 tools/resume.py --target TARGET`。原件与历史通过返回的 ID/命令展开。
-Autopilot Bootstrap 的 `state.target_memory` 已携带同一 owner 的最小恢复视图与来源绑定，
+Autopilot 启动的 `state.target_memory` 与恢复的 `recovery.state.target_memory`
+携带同一 owner 的最小恢复视图与来源绑定，
 当前有效时直接使用；更早的相关经验按其中 `experience_window` 命令查询/展开。
 换目标、compaction 丢失或 owner 更新后重新恢复，不用文件名搜索或直接 SQL 代替
 带纠错、适用条件与来源健康的 owner 视图。无关纯解释不要求查目标，明确只读不写回。
@@ -159,6 +160,7 @@ Cookies, nonces, tokens and oracle rounds do not survive a new invocation by ass
 
 ## 输出契约
 
+开始、阶段变化、重要发现/转向/阻塞时简短说明当前进展和下一步；长时间执行或等待中及时更新并继续。
 使用实际证据引用和 owner 回执，不重抄每个动作的 Target/Phase/Action/保存表。
 未发生的执行不造回执；未知效果保持待回收，专家自报不确认 Finding 或完成 Action。
 结束摘要按当前入口合同给一次，不把中途重复总结当作恢复或执行记录。

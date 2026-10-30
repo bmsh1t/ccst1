@@ -99,7 +99,7 @@ matching lane to be tested.
 | Upload, import, convert, preview, SVG/Office/XML | Upload parser; safe verification and read-back before storage, access, and execution proof |
 | Template syntax, command output, shell primitive | SSTI/command/controlled RCE |
 | ASP.NET `__VIEWSTATE` / ViewState / machineKey | Insecure deserialization / ViewState integrity |
-| IIS/ASP.NET server fingerprint | IIS short filename (~1) enumeration lane — `shortscan` is the tool (the scanner auto-runs it on detected IIS hosts; missing tool degrades to a manual review hint); enumerated filenames feed path/secrets discovery |
+| IIS 指纹 | shortscan 短名 → 备份/配置/源码（`path-traversal-lfi-test.md` §24） |
 | JSON body with `@type`/type-field shape, Java/fastjson/Jackson/Shiro stack signal | Insecure deserialization (Java) |
 | Signed/anti-bot header (sign/sig/hmac/nonce/X-Sensor) blocks replay | Client signer lane — recover the signer only enough to replay the request; reversed signing alone is N/A, hunt the IDOR/authz/business-logic bug on the endpoint the signature was guarding |
 | CL/TE, host header, proxy trust, cache key, unkeyed header | Proxy/cache/smuggling |

@@ -15,16 +15,16 @@ allowed-tools:
 ---
 # /autopilot-round
 
-Authoritative round bootstrap (do not reinterpret): !`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_host.py" entry --session-id "${CLAUDE_SESSION_ID}" --round-defaults -- "$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"`
+Authoritative round bootstrap (do not reinterpret): !`python3 tools/autopilot_host.py entry --session-id "${CLAUDE_SESSION_ID}" --round-defaults -- "$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"`
 Complete original sources (ordered parts):
-!`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_host.py" body --round-defaults --session-id "${CLAUDE_SESSION_ID}" --part 0`
-!`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_host.py" body --round-defaults --session-id "${CLAUDE_SESSION_ID}" --part 1`
-!`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_host.py" body --round-defaults --session-id "${CLAUDE_SESSION_ID}" --part 2`
-!`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_host.py" body --round-defaults --session-id "${CLAUDE_SESSION_ID}" --part 3`
-!`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_host.py" body --round-defaults --session-id "${CLAUDE_SESSION_ID}" --part 4`
-!`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_host.py" body --round-defaults --session-id "${CLAUDE_SESSION_ID}" --part 5`
-!`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_host.py" body --round-defaults --session-id "${CLAUDE_SESSION_ID}" --part 6`
-!`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_host.py" body --round-defaults --session-id "${CLAUDE_SESSION_ID}" --part 7`
+!`python3 tools/autopilot_host.py body --round-defaults --session-id "${CLAUDE_SESSION_ID}" --part 0`
+!`python3 tools/autopilot_host.py body --round-defaults --session-id "${CLAUDE_SESSION_ID}" --part 1`
+!`python3 tools/autopilot_host.py body --round-defaults --session-id "${CLAUDE_SESSION_ID}" --part 2`
+!`python3 tools/autopilot_host.py body --round-defaults --session-id "${CLAUDE_SESSION_ID}" --part 3`
+!`python3 tools/autopilot_host.py body --round-defaults --session-id "${CLAUDE_SESSION_ID}" --part 4`
+!`python3 tools/autopilot_host.py body --round-defaults --session-id "${CLAUDE_SESSION_ID}" --part 5`
+!`python3 tools/autopilot_host.py body --round-defaults --session-id "${CLAUDE_SESSION_ID}" --part 6`
+!`python3 tools/autopilot_host.py body --round-defaults --session-id "${CLAUDE_SESSION_ID}" --part 7`
 
 Native fixed-loop prompt identity (do not reinterpret): `/autopilot-round $ARGUMENTS`
 
@@ -33,6 +33,8 @@ Optional `--max-lanes N` sets an explicit cap. Active checkpoints retain their s
 cap or unset value across resume; omission does not erase an existing round's limit.
 
 ## Bootstrap Gate
+If `action=read_bootstrap`, read the exact `bootstrap_path` fully and use that JSON below.
+Missing/truncated output is an error; never select an older file.
 Only fresh Bootstrap `action=continue` proceeds; otherwise terminal cron cleanup, then
 `STATUS: ERROR reason=<bounded-summary>`; stop before target work/sync.
 Read complete H2 `commands/autopilot.md#shared-automation` with this Bootstrap, excluding main Bootstrap.

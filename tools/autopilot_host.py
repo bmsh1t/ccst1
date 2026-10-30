@@ -15,15 +15,12 @@ import sys
 import time
 import uuid
 
-try:
-    from tools.artifact_io import write_json_atomic
-    from tools.claude_hook_contract import capture_context, context_chunks, dynamic_output, hook_context, host_source_digest, json_digest
-except ImportError:
-    from artifact_io import write_json_atomic
-    from claude_hook_contract import capture_context, context_chunks, dynamic_output, hook_context, host_source_digest, json_digest
-
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from tools.artifact_io import publish_bytes_create_only, write_json_atomic
+from tools.claude_hook_contract import DYNAMIC_OUTPUT_LIMIT, capture_context, context_chunks, dynamic_output, hook_context, host_source_digest, json_digest
 
 
 def _identifier(value: str) -> str:
@@ -50,16 +47,17 @@ def session_binding(runtime: Path, session_id: str):
         yield state, state_path, context_path
 
 
-def _resume_command(runtime: Path, binding: dict) -> str:
+def _state_command(runtime: Path, binding: dict) -> str:
     return shlex.join(["python3", str(REPO_ROOT / "tools/autopilot_host.py"),
-                       "--runtime-root", str(runtime), "resume", "--session-id", binding["session_id"],
-                       "--invocation-id", binding["invocation_id"], "--prompt-id", binding["prompt_id"]])
+                       "--runtime-root", str(runtime), "state", "--session-id", binding["session_id"],
+                       "--invocation-id", binding["invocation_id"], "--prompt-id", binding["prompt_id"],
+                       "--target", binding["target"]])
 
 
 def _host_view(runtime: Path, binding: dict) -> dict:
     started = binding.get("started_at")
     return {key: binding[key] for key in ("session_id", "invocation_id", "target", "status")} | {
-        "resume_command": _resume_command(runtime, binding),
+        "state_command": _state_command(runtime, binding),
         "source_sha256": binding["source_sha256"],
         "round_mode": binding["round_mode"],
         "invocation_prompt": binding.get("invocation_prompt", ""),
@@ -77,11 +75,17 @@ def _capture_bound_context(binding: dict, round_mode: bool) -> dict:
     return context
 
 
+def _entry_output(text: str, directory: Path) -> str:
+    raw = text.encode("utf-8")
+    if len(raw) < DYNAMIC_OUTPUT_LIMIT:
+        return dynamic_output(text)
+    snapshot = directory / f"bootstrap-{uuid.uuid4().hex}.json"
+    publish_bytes_create_only(snapshot, raw)
+    return dynamic_output(json.dumps({"action": "read_bootstrap", "bootstrap_path": str(snapshot)}, ensure_ascii=False))
+
+
 def start(runtime: Path, session_id: str, argv: list[str], *, round_mode: bool) -> str:
-    try:
-        from tools.autopilot_bootstrap import build_autopilot_bootstrap, render_autopilot_bootstrap_json
-    except ImportError:
-        from autopilot_bootstrap import build_autopilot_bootstrap, render_autopilot_bootstrap_json
+    from tools.autopilot_bootstrap import build_autopilot_bootstrap, render_autopilot_bootstrap_json
     started = time.time()
     with session_binding(runtime, session_id) as (binding, path, context_path):
         binding["status"] = "suspended" if binding.get("invocation_id") else "idle"
@@ -89,24 +93,22 @@ def start(runtime: Path, session_id: str, argv: list[str], *, round_mode: bool) 
         context = _capture_bound_context(binding, round_mode)
         payload = build_autopilot_bootstrap(argv, repo_root=REPO_ROOT, runtime_root=runtime, round_defaults=round_mode)
         if payload["action"] != "continue":
-            binding["status"] = "suspended" if binding.get("invocation_id") else "idle"
-            write_json_atomic(path, binding)
-            return dynamic_output(render_autopilot_bootstrap_json(payload))
+            return _entry_output(render_autopilot_bootstrap_json(payload), path.parent)
         progress = (payload.get("state") or {}).get("round_progress") or {}
         inherited = progress.get("status") == "active"
-        binding.update(status="active", invocation_id=uuid.uuid4().hex, arguments=argv,
+        binding.update(status="active", invocation_id=uuid.uuid4().hex, arguments=payload["arguments"],
                        started_at=started,
                        max_seconds=payload["arguments"].get("max_seconds"),
                        round_limit={"max_lanes": progress.get("max_lanes") if inherited else payload["arguments"].get("max_lanes"),
                                     "round_id": progress.get("round_id", "") if inherited else "",
                                     "previous_round_id": "" if inherited else progress.get("round_id", "")},
-                       invocation_cwd=str(Path.cwd()), round_mode=round_mode, repo_root=str(REPO_ROOT),
+                       round_mode=round_mode, repo_root=str(REPO_ROOT),
                        target=payload["arguments"]["target"], source_sha256=context["sha256"],
                        content_sha256=context["content_sha256"],
                        last_stop_basis="", needs_refresh=False,
                        prompt_id=binding.get("prompt_id") or uuid.uuid4().hex)
         payload["host"] = _host_view(runtime, binding)
-        output = dynamic_output(render_autopilot_bootstrap_json(payload))
+        output = _entry_output(render_autopilot_bootstrap_json(payload), path.parent)
         write_json_atomic(context_path, {key: context[key] for key in ("sha256", "sources", "sections")})
         write_json_atomic(path, binding)
         return output
@@ -136,26 +138,45 @@ def body(runtime: Path, session_id: str, part: int, *, round_mode: bool) -> str:
                               f"PART {part + 1}/{len(chunks)}\n" + chunks[part] + "\nCCST_ENTRY_END")
 
 
-def resume(runtime: Path, session_id: str, invocation_id: str, prompt_id: str) -> str:
-    try:
-        from tools.autopilot_bootstrap import build_autopilot_bootstrap, render_autopilot_bootstrap_json
-    except ImportError:
-        from autopilot_bootstrap import build_autopilot_bootstrap, render_autopilot_bootstrap_json
+def refresh_state(runtime: Path, session_id: str, invocation_id: str, prompt_id: str, target: str) -> str:
+    from tools.autopilot_bootstrap import compact_autopilot_state, load_autopilot_context, load_autopilot_target_state
+    from tools.autopilot_loop_guard import _load_loop_guard_projection
+    from tools.autopilot_state import build_decision_projection
+    from tools.runtime_config import is_ctf_mode_enabled
     with session_binding(runtime, session_id) as (binding, path, context_path):
         if (binding.get("status") not in {"active", "suspended"}
                 or binding.get("repo_root") != str(REPO_ROOT)
                 or binding.get("invocation_id") != _identifier(invocation_id)
-                or binding.get("prompt_id") != _identifier(prompt_id)):
-            raise ValueError("stale Autopilot resume binding; use the command from the current host event")
-        payload = build_autopilot_bootstrap(binding["arguments"], cwd=binding["invocation_cwd"],
-                    repo_root=REPO_ROOT, runtime_root=runtime, round_defaults=binding["round_mode"])
-        context = _capture_bound_context(binding, binding["round_mode"])
-        if context["sha256"] != binding["source_sha256"]:
-            raise ValueError("Autopilot source changed; inspect sync-check before a new invocation")
-        binding["status"] = "active" if payload["action"] == "continue" else "suspended"
-        binding["needs_refresh"] = False
-        payload["host"] = _host_view(runtime, binding)
-        output = dynamic_output(render_autopilot_bootstrap_json(payload))
+                or binding.get("prompt_id") != _identifier(prompt_id)
+                or binding.get("target") != target):
+            raise ValueError("stale Autopilot state binding; use the command from the current host event")
+        recovering = bool(binding.get("needs_refresh"))
+        check_source = recovering or binding["status"] == "suspended"
+        binding["status"] = "suspended"
+        write_json_atomic(path, binding)
+        if check_source:
+            source = _capture_bound_context(binding, binding["round_mode"])
+            if source["sha256"] != binding["source_sha256"]:
+                raise ValueError("Autopilot source changed; inspect sync-check before a new invocation")
+        if recovering:
+            _context(binding, context_path)
+        arguments = dict(binding["arguments"])
+        if arguments["action"] != "continue" or arguments["target"] != target:
+            raise ValueError("saved Autopilot arguments do not match the admitted target")
+        context = load_autopilot_context(REPO_ROOT, arguments)
+        state = load_autopilot_target_state(REPO_ROOT, arguments, context)
+        if state.get("target_kind") != "list":
+            state["loop_guard"] = _load_loop_guard_projection(str(REPO_ROOT), state)
+        payload = build_decision_projection(state, "loop_check")
+        if state.get("target_kind") == "list":
+            payload["batch"] = compact_autopilot_state(state)["batch"]
+        if recovering:
+            payload["recovery"] = {"repo_root": str(REPO_ROOT), "repo_root_shell": shlex.quote(str(REPO_ROOT)),
+                "arguments": arguments, "invocation_batch": arguments["invocation_batch"],
+                "ctf_mode": is_ctf_mode_enabled(REPO_ROOT), **context, "state": compact_autopilot_state(state)}
+        binding.update(status="active", needs_refresh=False)
+        payload.update(action="continue", host=_host_view(runtime, binding))
+        output = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         write_json_atomic(path, binding)
         return output
 
@@ -197,15 +218,12 @@ def stop_check(binding: dict, state: dict, closure: dict, event: dict) -> dict:
     host_tasks = [item for item in event.get("background_tasks", [])
                   if item.get("status") in {"running", "pending"}]
     if binding.get("needs_refresh"):
-        reason = "Context recovered. Run the current host resume command before target work or completion."
+        reason = "Context recovered. Run the current host state command before target work or completion."
     elif unfinished or host_tasks:
         reason = ("Collect the existing execution result and finish owner write-back before stopping; "
                   "independent evidence-backed work may continue while it runs.")
     elif state.get("target_kind") == "list":
-        try:
-            from tools.autopilot_gate import describe_next_step
-        except ImportError:
-            from autopilot_gate import describe_next_step
+        from tools.autopilot_gate import describe_next_step
         reason = describe_next_step(state)
     elif not bound_review:
         reason = ("Continue worthwhile investigation. Before a justified stop, read fresh Closure and record an existing "
@@ -259,10 +277,9 @@ def hook(runtime: Path, data: dict, *, part: int | None, contract_sha256: str) -
                 binding["status"] = "suspended"
             write_json_atomic(path, binding)
             if active:
-                return hook_context(event, "Autopilot enforcement is suspended for this new user message. "
-                    "If this continues the same investigation (including 继续/go on or steering), run "
-                    + _resume_command(runtime, binding) + " before dependent work. A changed task or cancellation stays suspended. "
-                    "A new /autopilot creates a new invocation. No previous network effects may be replayed just to restore registration.")
+                return hook_context(event, "Autopilot suspended. Answer questions directly; cancellation/task changes stay suspended. "
+                    "For same-investigation continuation, reuse context and enter the loop's Refresh step with: "
+                    + _state_command(runtime, binding) + ". No separate resume or Bootstrap; never replay effects to recover registration.")
             return {}
         if event == "SessionStart":
             if data.get("source") == "clear":
@@ -280,7 +297,7 @@ def hook(runtime: Path, data: dict, *, part: int | None, contract_sha256: str) -
                     raise ValueError("Autopilot recovery source changed; start a reviewed new invocation after sync-check")
                 context = _context(binding, context_path)
             except (OSError, ValueError, KeyError, TypeError):
-                binding["status"] = "suspended"
+                binding.update(status="suspended", needs_refresh=True)
                 write_json_atomic(path, binding)
                 raise
             activation = ("Retained prior Autopilot context only. Automation is SUSPENDED; do not apply these instructions "
@@ -296,9 +313,9 @@ def hook(runtime: Path, data: dict, *, part: int | None, contract_sha256: str) -
             if data.get("source") != "compact":
                 binding["status"] = "suspended"
             write_json_atomic(path, binding)
-            return hook_context(event, activation + "CCST Autopilot source bodies are restored in numbered source-bound parts. "
-                "For an active or user-resumed investigation, restore current Scope/Auth, owners and memory before dependent work with: " + _resume_command(runtime, binding)
-                + ". This retains the original invocation and explicit limits. Incomplete transport is an error, not a preview. "
+            return hook_context(event, activation + "Complete CCST source bodies follow in numbered parts. "
+                "For active/same-task continuation, state_command restores Scope/Auth, owners and memory. "
+                "Retain invocation/limits; incomplete transport is an error. "
                 + json.dumps(_host_view(runtime, binding), ensure_ascii=False))
         if event in {"SessionEnd", "StopFailure"}:
             if active and part is None:
@@ -307,10 +324,7 @@ def hook(runtime: Path, data: dict, *, part: int | None, contract_sha256: str) -
             return {}
         if event != "Stop" or binding.get("status") != "active":
             return {}
-        try:
-            from tools.autopilot_state import build_autopilot_state, load_closure_projection
-        except ImportError:
-            from autopilot_state import build_autopilot_state, load_closure_projection
+        from tools.autopilot_state import build_autopilot_state, load_closure_projection
         state = build_autopilot_state(str(REPO_ROOT), binding["target"], bounded=True, include_goal_memory=False)
         # A batch selects a real target; its list file has no Finding/Checkpoint Store.
         closure = {} if state.get("target_kind") == "list" else load_closure_projection(str(REPO_ROOT), state)
@@ -325,7 +339,7 @@ def hook(runtime: Path, data: dict, *, part: int | None, contract_sha256: str) -
             write_json_atomic(path, binding)
             return {"continue": False, "stopReason": "CCST_AUTOPILOT_INCOMPLETE: "
                     + (decision["reason"] if batch_blocked else "repeated normal stop without owner progress.")
-                    + " Automation is suspended; retained evidence is not completion. " + _resume_command(runtime, binding)}
+                    + " Automation is suspended; retained evidence is not completion. " + _state_command(runtime, binding)}
         binding["last_stop_basis"] = decision["basis"]
         write_json_atomic(path, binding)
         return {"decision": "block", "reason": decision["reason"] + "\nHost binding: "
@@ -347,9 +361,9 @@ def main(argv: list[str] | None = None) -> int:
     material.add_argument("--session-id", required=True)
     material.add_argument("--part", type=int, required=True)
     material.add_argument("--round-defaults", action="store_true")
-    restore = actions.add_parser("resume")
-    for name in ("session-id", "invocation-id", "prompt-id"):
-        restore.add_argument("--" + name, required=True)
+    state = actions.add_parser("state", help="Refresh the bound investigation and rearm its stop check")
+    for name in ("session-id", "invocation-id", "prompt-id", "target"):
+        state.add_argument("--" + name, required=True)
     hooks = actions.add_parser("hook")
     hooks.add_argument("--part", type=int)
     args = parser.parse_args(argv)
@@ -358,8 +372,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.action == "entry":
             arguments = args.arguments[1:] if args.arguments[:1] == ["--"] else args.arguments
             print(start(runtime, args.session_id, arguments, round_mode=args.round_defaults))
-        elif args.action == "resume":
-            print(resume(runtime, args.session_id, args.invocation_id, args.prompt_id))
+        elif args.action == "state":
+            print(refresh_state(runtime, args.session_id, args.invocation_id, args.prompt_id, args.target))
         elif args.action == "body":
             print(body(runtime, args.session_id, args.part, round_mode=args.round_defaults))
         else:

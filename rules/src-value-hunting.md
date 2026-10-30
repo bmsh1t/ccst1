@@ -74,10 +74,10 @@
 | 越权/IDOR | **有入口打完。** 没号：未授权通了再换 id。有号：基线 → 邻号 / 回包里抄的 id / `0`/`-1`/空 → 附件导出，见 `dig-scope` §4.2.3。不为第二号停工。 |
 | 注入 | 能看出条数变、内容变、或会去拉一个网址的口：上面 **每个** 查询/过滤/排序/关键字参数都测（基线 → 探针 → 差分，详见 §4）。只回「请登录」、没有业务字段 → 整段 N/A，不要挨个丢 `'`。空列表 / 报错 / 超时不是请登录，对照见 `dig-scope` §4.1.2；没差分就停。**按栈选探针**：JSON/Mongo 打操作符；搜索框打 ES 或列表 OR+total；Java 打 HQL/SpEL；有模板打 SSTI；SQL 面仍走 `'`/布尔/延时/WAF 编码。被拦了换位置（query/json/header/path）。用户名/密码框不是业务参；登录接口上的 `tenant` / `corpId` / `moduleId` 有就打（`dig-scope` §4.1.1）。 |
 | SSRF | 全部 URL/回调/webhook/file/fetch/import/preview/proxy 参：内网/元数据/外带 |
-| RCE / 代码执行链 | 命令/表达式/模板/反序列化/危险上传等 Sink 跟到执行或证伪 |
+| RCE / 代码执行链 | 命令/表达式/模板/反序列化/危险上传等 Sink 跟到执行或证伪。见 `__VIEWSTATE`（登录页也算）→ 离线试已知 machineKey（`deserialization-test.md` §4.2），不等 Telerik；缺材料/工具记未测，没中不算反序列化证伪。 |
 | 凭证/密钥泄露 | 抄到 token/AKSK/私钥/连接串后：假值对照，认钥枪须带出身份或列表，再打不影响线上的只读例。人登录后台出会话定级认 format。占位/过期/真假同一句、调不到验钥口、手机号加解密钥 → N/A（不写，认 format）。 |
 | 弱口令 / 默认口 | 中间件/组件裸默认口可一眼；打到真进会话。登录表单弱口令不当必做（`dig-scope` §4.1.1）。**JS/页里写死的演示号、测试租户当钥匙用。** |
-| 敏感路径 | Swagger/Actuator/debug/heapdump/env 等；有没有密钥接着挖 |
+| 敏感路径 | Swagger/Actuator/debug/heapdump/env 等；有没有密钥接着挖。见 IIS → shortscan 查短名，出名追备份/配置/源码（`path-traversal-lfi-test.md` §24）。 |
 | XSS | 反射（参数回显打标签/事件）+ 存储（可写点再读回）；结合是否无登录可读 |
 | 上传 | 类型绕过、路径、可执行/SSRF 链；别停在能传能下 |
 | 穿越 | fileKey/path/filename |
