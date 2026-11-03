@@ -54,6 +54,7 @@ Arguments: `<target> [--paranoid|--normal|--yolo] [--quick] [--deep [--max-lanes
 If Bootstrap returns `action=read_bootstrap`, read its exact `bootstrap_path` fully;
 use that JSON as Bootstrap. Missing/truncated output forbids work; never select an older file.
 
+Apply `skills/runtime-protocol.md#输出契约` throughout this loop.
 Fresh targets start Recon. While it runs, investigate independent in-scope questions
 using available evidence; wait only for missing inputs the next experiment needs.
 Apply the selected method, capture/register, refresh and choose the next question.
@@ -122,10 +123,10 @@ compaction/restart; Refresh's `recovery` replaces entry arguments/root/mode, Sco
    `owner_continuations` order is advisory; keep deferred work and obey `runnable=false`.
    Existing-target gaps mandate neither Recon nor Checkpoint. Do not loop `/hunt`.
 
-3. **Execute and save.** Read evidence and the selected `docs/autopilot-lanes.md`
-   section; reuse matching `state.lane_contract` at `text_available=true`.
-   Fully read the selected original method before its first experiment: a shortlist,
-   search hit or file prefix is only navigation. Before the first native request,
+3. **Execute and save.** Before the selected question's first experiment, read
+   its method under `skills/runtime-protocol.md#shared-knowledge-recall`.
+   Then read current evidence and the selected `docs/autopilot-lanes.md` section;
+   reuse matching `state.lane_contract` at `text_available=true`. Before the first native request,
    read the complete [capture and registration contract](../docs/evidence-runners.md#在执行时捕获原件).
    Prepare capture plus registration in the same tool execution. Use `record-observation`
    when no Finding exists; consume the registration receipt before the next experiment.

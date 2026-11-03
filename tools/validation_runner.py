@@ -678,13 +678,14 @@ def request_once(
 def _validate_request_facts(
     state_changing: bool | None,
     redline_checked: bool,
+    *,
+    redline_declaration: str = "runs[].redline_checked=true",
 ) -> bool | None:
     # The red-line rule is about the concrete effect.  The HTTP verb is only
     # recorded evidence and must not create a second gate in the runner.
     if state_changing is True and not redline_checked:
         raise RequestPreflightError(
-            "state-changing evidence registration requires redline_checked=true "
-            "in the affected runs[] entry (or the record-evidence CLI default)"
+            f"state-changing evidence registration requires {redline_declaration}"
         )
     return state_changing
 
@@ -773,7 +774,10 @@ def record_native_evidence(
             store.verify_operation(expected_operation)
         if (state_changing is not None and type(state_changing) is not bool or type(redline_checked) is not bool):
             raise ValueError("native evidence execution facts must be boolean (state_changing may be null)")
-        effective_state = _validate_request_facts(state_changing, redline_checked)
+        effective_state = _validate_request_facts(
+            state_changing, redline_checked,
+            redline_declaration="the record-evidence default redline_checked=true (CLI: --redline-checked)",
+        )
         cleanup = None
         if "cleanup_confirmation" in evidence:
             cleanup = validate_cleanup_confirmation(evidence["cleanup_confirmation"])
@@ -1267,18 +1271,15 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(output, ensure_ascii=False, indent=2))
                 return 1 if sync["status"] == "partial" or summary["outcome"] != "complete" else 0
             elif args.lane == "record-evidence":
-                try:
-                    evidence = json.loads(Path(args.evidence_json).read_text(encoding="utf-8"))
-                    summary = record_native_evidence(
-                        repo_root=repo_root, target=args.target, finding_id=args.finding_id,
-                        evidence=evidence, state_changing=args.state_changing,
-                        redline_checked=args.redline_checked, identity_v2=identity_v2,
-                        attempt_id=args.attempt_id or None,
-                        expected_operation=args.expected_operation,
-                        action_id=args.action_id, claim_token=args.claim_token, command_actor=args.actor,
-                    )
-                except (OSError, ValueError) as exc:
-                    parser.error(f"record-evidence: {exc}")
+                evidence = json.loads(Path(args.evidence_json).read_text(encoding="utf-8"))
+                summary = record_native_evidence(
+                    repo_root=repo_root, target=args.target, finding_id=args.finding_id,
+                    evidence=evidence, state_changing=args.state_changing,
+                    redline_checked=args.redline_checked, identity_v2=identity_v2,
+                    attempt_id=args.attempt_id or None,
+                    expected_operation=args.expected_operation,
+                    action_id=args.action_id, claim_token=args.claim_token, command_actor=args.actor,
+                )
             else:
                 raise ValueError(f"unknown lane: {args.lane}")
             if identity_v2 is not None and summary.get("ledger_record") is None:
@@ -1293,7 +1294,12 @@ def main(argv: list[str] | None = None) -> int:
             # machine-readable summary JSON (no human-only trailing block exists).
             return 1 if summary.get("result") == "partial" or (summary.get("sync") or {}).get("status") == "partial" else 0
     except (OSError, ValueError, StoreError) as exc:
-        print(f"validation-runner: {exc}", file=sys.stderr)
+        recovery = (
+            "; keep the original attempt, timestamps and raw files. Resolve this error and retry only "
+            "the registration command, not the capture script or target requests"
+            if args.lane in {"record-observation", "record-evidence"} else ""
+        )
+        print(f"validation-runner: {exc}{recovery}", file=sys.stderr)
         return 2
 
 

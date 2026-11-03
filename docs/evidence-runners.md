@@ -33,8 +33,9 @@ Store 和 Coverage 命令本来输出 JSON，**不加 `--json`**。
 父会话的可编排脚本将捕获和登记放在**同一次工具执行**中；多步脚本收集有序 `runs`，
 在 `finally` 提交本批。浏览器/MCP 工具返回后立即按对应合同导入并登记，下一调查前
 消费回执。子代理仍只交付原件/执行元数据，由父会话登记。
-登记失败只重试已保存的登记材料；同次补证沿用 attempt、完整快照与原 expected_operation，
-不重放未知网络效果。原生观察和已有 Finding 的补证分别按下方 registration 合同处理。
+登记失败只处理登记：有 `registration_retry_command` 就按回执重试；输入被拒绝时修正已保存的
+登记输入/参数，单独调用 `record-observation` 或 `record-evidence`，不重跑包含捕获/发送的脚本。
+保留原 attempt、执行时间、原件和原 expected_operation；同次补证仍提交完整快照，详见下方 registration 合同。
 以下是已审核只读、匿名、直连 HTTP 请求的可执行最小例子；认证、代理及浏览器实验使用
 对应捕获合同，不能照搬匿名身份或绕过所需代理。`target` 已初始化，`request_url` 已选定：
 
@@ -109,13 +110,22 @@ finally:
             receipt = None
         if isinstance(receipt, dict):
             sync = receipt.get("sync") or {}
-            refs = receipt.get("observation_refs") or []
-            print(json.dumps({"registration_exit": result.returncode,
-                              "sync_status": sync.get("status"),
-                              "store_operation_id": receipt.get("store_operation_id"),
-                              "observation_refs_preview": refs[:3], "observation_refs_total": len(refs),
-                              "error": str(receipt.get("error") or (sync.get("store") or {}).get("error") or "")[:500],
-                              "receipt_path": str(directory / "registration.stdout")}, ensure_ascii=False))
+            runs, refs = receipt.get("runs"), receipt.get("observation_refs")
+            display = {"registration_exit": result.returncode,
+                       "sync_status": sync.get("status"),
+                       "store_operation_id": receipt.get("store_operation_id"),
+                       "error": str(receipt.get("error") or (sync.get("store") or {}).get("error") or "")[:500],
+                       "receipt_path": str(directory / "registration.stdout")}
+            if not isinstance(runs, list) or not isinstance(refs, list) or len(runs) != len(refs):
+                display["mapping_error"] = "runs/observation_refs missing or unequal; inspect saved receipt and Store; do not resend"
+            else:
+                display["observations"] = [
+                    {"observation_ref": ref, **{key: run.get(key) for key in (
+                        "method", "url", "actor", "observed_at", "artifacts", "description", "error", "body_truncated"
+                    )}}
+                    for run, ref in zip(runs, refs, strict=True)
+                ]
+            print(json.dumps(display, ensure_ascii=False))
         else:
             print(json.dumps({"registration_exit": result.returncode,
                               "receipt_path": str(directory / "registration.stdout"),
@@ -137,10 +147,12 @@ PY_CAPTURE
 缺失部分保持未知，不直接重放请求。`finally` 不保证 SIGTERM、SIGKILL、二次中断或掉电时完成；
 执行元数据与 trace 用于恢复，结束时间不能猜填。HTTP 401/403/500 仍是实际中性响应，不自动判漏洞。
 空 body 保留原文件但不提交空引用；双向 trace 是实际请求/响应字节，不能重写它冒充原件。
-例子保留完整 registration.stdout/stderr，输出状态、操作 ID、最多三个引用预览和引用总数。
-所需的其余引用及 registration_retry_command 从 receipt_path 读取；预览不是全部回执。
-缺字段时读取保存的回执，不能把不完整 stdout 当已核对成功。handoff 重用其 observation_refs，
-不手拼 operation ID 或用目录最后一个文件代替引用。
+例子保留完整 registration.stdout/stderr，将同一份 native-observation 回执的有序 runs 与
+observation_refs 一一配对，逐条展示完整引用、请求事实及原件路径；不套用于其他 lane。
+状态码与关键响应从该条原件读取，actor 标签本身不证明认证身份或对象归属。
+缺字段/数量不一致时只报 mapping_error、不输出部分映射，保留真实登记退出码；缺引用不代表未登记。
+完整回执及 registration_retry_command 从 receipt_path 读取，不能因展示不完整重发请求。
+handoff 按 `commands/target.md#交接与证据` 展开核对后选用真实引用，不手拼编号或用目录最后一个文件代替。
 
 
 ## Native Observation Registration

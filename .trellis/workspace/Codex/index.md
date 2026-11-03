@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 49
-- **Last Active**: 2026-10-22
+- **Total Sessions**: 58
+- **Last Active**: 2026-10-25
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1529 | Active |
+| `journal-1.md` | ~1860 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,15 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 58 | 2026-10-25 | 运行基线收口与无损记忆效率优化 | `57f3637ea5486636a11a8263b6cd460d8a2fb320`, `c8c8a2783712a7689ab28734760122aa67ac2c13`, `bd619ea709a345d6291199963bb952afa93e18d6`, `8b184089097fee3a284af769efd430f1e2fe43e8`, `82e512b6476ade3ab76abfb7691f093d95f31f3a`, `898ac27d5da2f4f066b732f5a4e5a180c54d9149`, `37291b508d6da9e3b688f9c49990eb5e629623db`, `41f45d6584afa7e3369da0ed26200ad1639c9d0e` | `refactor/10-11-capability-architecture` |
+| 57 | 2026-10-25 | 记忆分组提交与Claude CLI安装交付 | `cf8e098`, `5d1603d`, `7fc8341` | `refactor/10-11-capability-architecture` |
+| 56 | 2026-10-24 | 记忆基线整理与入口消费去重 | - | `refactor/10-11-capability-architecture` |
+| 55 | 2026-10-24 | 记忆成本与兼容入口收敛 | - | `refactor/10-11-capability-architecture` |
+| 54 | 2026-10-24 | 记忆路径源码核验与宿主验收收口 | - | `refactor/10-11-capability-architecture` |
+| 53 | 2026-10-24 | 记忆决策路径收敛与受控宿主验收 | - | `refactor/10-11-capability-architecture` |
+| 52 | 2026-10-23 | 恢复薄 recon-ranker 与显式自动化调用 | - | `refactor/10-11-capability-architecture` |
+| 51 | 2026-10-23 | 修复 Autopilot 全流程九项集成缺口 | - | `refactor/10-11-capability-architecture` |
+| 50 | 2026-10-23 | 修复 Autopilot 清理后提前收尾 | - | `refactor/10-11-capability-architecture` |
 | 49 | 2026-10-22 | 修复 Autopilot 新目标启动回归 | `cee2c1f` | `refactor/10-11-capability-architecture` |
 | 48 | 2026-10-22 | Autopilot 收敛为自动化入口 | `1f8518d` | `refactor/10-11-capability-architecture` |
 | 47 | 2026-10-22 | Autopilot 调查主线整理 | `65be265` | `refactor/10-11-capability-architecture` |

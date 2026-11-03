@@ -10,7 +10,10 @@
   `docs/ccst-runtime-adapter.md`。SRC 开场先读 `skills/src-hunter/知识库/打穿短表.md`，
   按当前特征展开完整相关方法；短表是索引，不限制表外探索。
 - 当前方法直接读取 `skills/src-hunter/知识库/`，规则直接读取 `rules/`。
-  保留前提、步骤、成功证据、反例和停止/重开条件；目录不能冒称正文已读。
+  首次实验前读完选中的方法，确定适用前提、关键对照、成立/证伪证据和停止/重开条件。
+  短表、目录、搜索命中或文件前缀只用于定位；输出截断就继续读取剩余正文。
+  需要补读方法或捕获合同时，先接收并理解完整读取结果，再生成依赖它的请求/执行脚本；
+  读取与依赖请求不能放在同一批并行工具调用中。
   已完整读取且仍有效的内容可复用。缺文件明确报告，不用旧库或摘要偷偷补位。
   日常读取不需要 catalog、manifest 或 `hot_method`。
 - 新现象、条件变化、旧假设受挫时重新判断信息缺口；纯解释/规划不必查包。
@@ -136,8 +139,11 @@ Discovery 主动补证据；Exploitation 检查已有信号及连接；Validatio
 
 ## 4. Checks layer
 
-结束按 `rules/ccst/coverage-gate.md` 区分 Covered、Leads/Signals、Candidates、Blocked、
-Not applicable、Dead ends、Still unknown 和 Next actions；无发现不是覆盖证明。
+实验结论、阶段总结和交接按 `rules/ccst/coverage-gate.md` 区分 Covered、Leads/Signals、Candidates、
+Blocked、Not applicable、Dead ends、Still unknown 和 Next actions。
+已测范围写明实际入口、方法、身份/状态及证据；发现数、阅读数和无发现均不证明覆盖。
+未测身份/状态、缺少的材料和延期实验保留未知；未做必要验证不写“已完成/已排除”，暂缓不等于证伪。
+匿名结果不外推到认证后，未发现入口不等于入口不存在。
 
 ## 5. Execution and write-back
 
@@ -160,7 +166,8 @@ Cookies, nonces, tokens and oracle rounds do not survive a new invocation by ass
 
 ## 输出契约
 
-开始、阶段变化、重要发现/转向/阻塞时简短说明当前进展和下一步；长时间执行或等待中及时更新并继续。
+首次使用方法或调查转向时，先用 1–2 句说明当前问题、已完整读取的知识库方法/专项模块文件和关键对照。
+重要结果、阻塞或长时间执行/等待时区分实测现象与待验证解释，说明下一步；工具 description 不代替进展正文。
 使用实际证据引用和 owner 回执，不重抄每个动作的 Target/Phase/Action/保存表。
 未发生的执行不造回执；未知效果保持待回收，专家自报不确认 Finding 或完成 Action。
 结束摘要按当前入口合同给一次，不把中途重复总结当作恢复或执行记录。

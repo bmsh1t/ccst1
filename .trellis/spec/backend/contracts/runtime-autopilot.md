@@ -68,7 +68,13 @@ mechanical safety, evidence and recovery constraints govern execution.
   Reasons are scope_boundary, explicit_limit, global_blocker and
   no_worthwhile_work; only a complete current review can authorize the same
   invocation. Active execution/rounds block; no_worthwhile_work cannot bypass
-  runnable blocking owners. Other reasons retain unfinished owners/reopening
+  runnable blocking owners. A generic recon_budget_partial fallback is not
+  runnable; partial coverage and required residual review remain intact.
+  Concrete Recon phases precede the budget fallback, and a phase with a bound
+  continuation takes precedence over an unbound residual when selecting its head.
+  Evidence candidates and secondary Closure obligations retain their owner items
+  even when the primary reason is a non-executable Recon residual.
+  Other reasons retain unfinished owners/reopening
   conditions in residual_unknowns. A valid complete review with missing residual
   tokens retains its fields in form_insufficient: scope/limit/global-blocker stops
   may consume it, but Closure and no_worthwhile_work still require full review.
@@ -111,7 +117,16 @@ mechanical safety, evidence and recovery constraints govern execution.
   content, so an older installed copy cannot silently omit this return contract.
 - A loaded Skill/shortlist does not establish method use. Read and apply complete
   relevant methods before the selected question's first request, reusing body
-  context when present. New identity/permissions
+  context when present; truncated output requires reading the remainder.
+  Receive and consume required method/capture reads before generating dependent
+  requests or execution scripts; do not batch those reads and requests in parallel.
+  Shared runtime output identifies the question, fully read method/module file and key control
+  at first use of a method or a direction change; tool descriptions are not
+  assistant progress. Interim summaries and handoffs retain the actual endpoint,
+  method, actor/state and evidence boundary, with untested conditions explicit.
+  Separate observations from unverified explanations; untested/deferred surfaces
+  must not be marked complete or ruled out.
+  New identity/permissions
   require reconsidering business paths under `rules/dig-scope-workflow.md` §4.2.3;
   determine whether authorized test identities can be obtained before treating
   a missing session as a local blocker. No mandatory login or exhaustive grid.

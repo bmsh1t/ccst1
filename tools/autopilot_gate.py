@@ -170,10 +170,10 @@ def _recon_phase_residuals(
     return sorted(residuals, key=lambda item: item["phase"])
 
 def _blocking_recon_phase_gate(state: dict) -> tuple[str, dict, dict]:
-    """Return the first owner-declared resumable Recon residual."""
+    """Prefer an executable owner continuation over unbound Recon residuals."""
     residuals = _recon_phase_residuals(state, closure_blocking=True)
     if residuals:
-        item = residuals[0]
+        item = next((item for item in residuals if item["continuation"]), residuals[0])
         return item["phase"], item["gate"], item["bounded"]
     return "", {}, {}
 
@@ -614,7 +614,8 @@ def _closure_reason_frontier(
             expected_information_gain=expected_information_gain,
             stop_condition=stop_condition,
         )
-        item["runnable"] = reason != "cidr_continuation_invalid"
+        # A summary budget status binds no executable continuation.
+        item["runnable"] = reason not in {"cidr_continuation_invalid", "recon_budget_partial"}
         return item
     if reason == "finding_work_pending":
         return _frontier_item(

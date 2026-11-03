@@ -1973,11 +1973,11 @@ def _explicit_partial_reason(state: dict) -> str:
         )
     ):
         return "finding_work_pending"
+    if _blocking_recon_phase_gate(state)[0]:
+        return "recon_phase_partial"
     run_budget = (state.get("recon_artifacts") or {}).get("run_budget") or {}
     if run_budget.get("partial"):
         return "recon_budget_partial"
-    if _blocking_recon_phase_gate(state)[0]:
-        return "recon_phase_partial"
     continuation = (state.get("recon_artifacts") or {}).get("cidr_continuation") or {}
     if continuation.get("status") == "pending":
         return "cidr_continuation_pending"
@@ -2113,8 +2113,12 @@ def _finalize_closure_continuation(
     """Bind primary reason, first frontier item, and next action together."""
     primary = _closure_primary_reason(reasons)
     for reason in reasons:
-        if reason != primary and reason in {"checkpoint_stale", "checkpoint_invalid"}:
-            item = _closure_reason_frontier(reason, state, matrix, current_action)
+        if reason == primary or any(
+            _closure_frontier_matches(reason, item, current_action) for item in frontier
+        ):
+            continue
+        item = _closure_reason_frontier(reason, state, matrix, current_action)
+        if item is not None:
             item.update({"reason": reason, "next_action": _closure_action_for_reason(reason, state, current_action)})
             frontier = [item, *[entry for entry in frontier if entry.get("reason") != reason]]
     matching_exists = any(_closure_frontier_matches(primary, item, current_action) for item in frontier)
@@ -2252,7 +2256,7 @@ def build_closure_projection(
         if partial_reason:
             verdict = "handoff"
             reasons.append(partial_reason)
-        elif str(json_inject.get("status") or "") == "candidate_pending":
+        if str(json_inject.get("status") or "") == "candidate_pending":
             verdict = "handoff"
             reasons.append("json_candidate_pending")
         elif str(json_inject.get("status") or "") in {"partial", "invalid_input"}:
@@ -2282,7 +2286,7 @@ def build_closure_projection(
             verdict = "handoff"
             reasons.append("identity_v2_incomplete")
         else:
-            verdict = "finish"
+            verdict = "handoff" if partial_reason else "finish"
 
     # Keep owner blockers that were masked by an earlier branch as secondary
     # diagnostics.  Primary selection below applies the stable precedence.

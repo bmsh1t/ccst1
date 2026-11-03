@@ -132,6 +132,12 @@ original attempt/operation, without re-registering the same bytes as a new execu
   sending; preserve URL literals with curl globbing/path normalization disabled.
   SIGTERM/SIGKILL/power loss still requires explicit recovery. Browser/MCP import
   and registration happen immediately after tool return, before new investigation.
+  The native-observation example pairs every ordered run with its complete
+  observation ref from the same receipt, showing request facts and artifact paths.
+  Missing/unequal arrays emit a mapping error without a partial pairing or changing
+  the registration exit code; empty arrays remain valid for unknown execution.
+  Preserve the full receipt and recover registration only. Read status/content from
+  the corresponding raw artifacts; actor labels alone do not prove identity.
 - An unbound mistaken Finding is handled by Store v18 `dispose-finding`, not a
   synthetic refutation or a Runner material review. New native evidence and
   validation preflight reject withdrawn claims; Store rechecks new links atomically.
@@ -163,6 +169,11 @@ original attempt/operation, without re-registering the same bytes as a new execu
   Registration does not impose a new current-claim check. Preview/legacy/damage reject.
 - A real execution has its own attempt ID. A registration retry reuses the
   attempt and immutable raw material; registration never resends requests. Operation is a Store registration receipt, not an HTTP request ID.
+  Both native registration branches share the outer CLI exception boundary: caught
+  preflight/file/owner failures exit 2 with stderr guidance to retain the original
+  attempt/timestamps/raw files and retry registration only after resolving the error.
+  Argument-parser failures retain their parser errors; synchronization failures retain
+  partial/exit 1 and the published-summary retry contract. No capture replay or fabricated receipt.
 - `record-evidence --expected-operation ID` can attach a Finding to an already
   registered observation from the same attempt. Preserve source, original start,
   complete snapshot and Action/claim binding; the recorder may change without
@@ -219,7 +230,8 @@ original attempt/operation, without re-registering the same bytes as a new execu
   imply effect. Unknown effect remains unknown. Redirects stay within target;
   sensitive headers require destination-origin authorization.
   Native registration errors name the affected `runs[].redline_checked` declaration
-  (or record-evidence's CLI default), never an unsupported record-observation flag
+  or the record-evidence default (`--redline-checked` on that CLI only),
+  never an unsupported record-observation flag
   or a claim that registration precedes network execution. Missing declaration still
   rejects before attempt, raw-summary or observation publication; retry uses saved raw.
   Native runs may explicitly override CLI state_changing (bool/null) and

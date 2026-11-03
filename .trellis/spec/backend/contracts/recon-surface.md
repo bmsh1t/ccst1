@@ -189,7 +189,9 @@ autopilot_gate._scanner_lane_residuals(state: dict) -> list[dict]
   completion verdict. A completed run records `run_budget.status=ok` and may set
   `soft_budget_status=advisory_exceeded`; only interruption, parent/tool timeout,
   or an actually incomplete run records `run_budget.status=partial` and blocks
-  Closure through the existing `recon_artifacts` projection.
+  Closure exhaustion through the existing `recon_artifacts` projection. The
+  summary alone does not create runnable work or block a reviewed host Stop;
+  actual phase/CIDR continuations retain their own stopping obligations.
 - 常规 quick breadth 使用既有 single-target runtime lock；Deep、raw URL 数量或
   scanner-negative 不能自动触发第二次 broad nuclei。明确组件、CVE、路径或行为
   证据可触发独立 targeted templates，但不得伪装成常规 scanner completion。

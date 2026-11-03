@@ -50,13 +50,19 @@ Runtime 管理，结构化假设由 Case 管理，Skill/知识选择由 AI 按�
 ## 交接与证据
 
 交接正文说明已证明的结论、仍未知的假设和当前阻塞；conditions 保留实际 origin、
-身份、对象及适用条件，next-intent 写具体下一问题。保存后消费真实回执：
+身份、对象及适用条件，next-intent 写具体下一问题。
+保存前从真实回执或已有登记选择证据，用 `python3 tools/target_store.py operations --target TARGET --id OPERATION_ID`
+展开选中批次（本来输出 JSON，不加 `--json`），核对实际步骤的 method、URL、身份/对象、
+原件中的响应及关键对照。支持、反对和必要对照的引用一起保留；引用存在、原件健康不等于支持结论。
+完整编号集中放在 `--operation-ref`；正文和 next-intent 用事实/条件说明对应关系，不重复抄编号。
+保存后消费真实回执，并回读核对正文、条件、下一意图和引用：
 
 ```bash
 python3 tools/target_memory.py handoff '已证明的结论；未验证范围与阻塞' \
   --target TARGET --conditions '实际 origin、身份、对象与当前条件' \
   --next-intent '下一步具体检查及需要重开的条件' \
   --operation-ref OPERATION_ID:STEP --command-id UNIQUE_COMMAND_ID --json
+python3 tools/target_memory.py show TARGET --json
 ```
 
 省略 `--next-intent` 合法且表示没有下一意图，不继承以前的 `next` 或旧交接。
@@ -64,8 +70,10 @@ python3 tools/target_memory.py handoff '已证明的结论；未验证范围与�
 每个 `--operation-ref` 引用支持该结论的真实 observation 步骤，可重复传入；不把整批
 默认绑定到 `:0`。原件路径和 Finding ID 不能代替执行引用；无证据时保留为未验证建议。
 
-`dead-end` 和 `pattern` 必须关联已登记执行。`OPERATION_ID:STEP` 替换为回执 ID
-与实际从零开始的步骤。阴性需要明确条件和重开条件；不能因不可报告就认定为阴性。
+`dead-end` 和 `pattern` 必须关联已登记执行。`OPERATION_ID:STEP` 直接使用回执中的完整引用；
+只有展开记录时，用同一条 observation 的 `operation_id` 与 `step` 组合，保留 `operation:` 前缀，
+不凭上下文猜步骤或跨批次配对。
+阴性需要明确条件和重开条件；不能因不可报告就认定为阴性。
 
 ```bash
 python3 tools/target_memory.py dead-end "Peer account cannot read this object" \

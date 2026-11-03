@@ -1527,3 +1527,334 @@ Aligned validation receipts and on-demand viewing, consolidated complete Chain/W
 - 未读取或运行 tests，未执行真实 Claude/Recon/目标/付费模型，未同步宿主或 push；入口默认不等于 Claude 实跑验收。
 - 无新任务，不归档旧任务；tools/autopilot_state.py 和 tools/surface_projection.py 既有改动继续保留。
 - 初始化/恢复改动须验证新目标启动后首次 owner 消费；旧文案/预先建库夹具不能替代启动链验收。
+
+
+## Session 50: 修复 Autopilot 清理后提前收尾
+<!-- trellis-session: v=2 fp=9a9e620e1329fa61 -->
+
+**Date**: 2026-10-23
+**Task**: 修复 Autopilot 清理后提前收尾
+**Branch**: `refactor/10-11-capability-architecture`
+
+### Summary
+
+未测观察保持调查 handoff，执行后投影保留材料读取入口，普通与 Round 耗尽前统一要求当前 Global Review；7 组隔离验收通过。
+
+### Main Changes
+
+- tools/autopilot_state.py 仅修改 build_closure_projection 与 build_decision_projection；保留既有冷启动 WIP，tools/surface_projection.py 字节不变。
+- 普通与 Round 入口明确 owner 清空和旧 Round 收敛后继续 src-hunter；同步 runtime-autopilot/lifecycle-state 契约与 research/10-23-autopilot-continuation 验收材料。
+
+### Git Commits
+
+(No commits - planning session)
+
+### Testing
+
+- [OK] 临时源码与真实 Store/API 的 7 组断言验收通过：多子域名续接、prepare/settle 幂等、未结束 lane 与预算拒绝、实际 JSON 入口投影、普通/Round 复核一致、跨目标证据拒绝与新事实失效、既有恢复门槛。
+- [OK] git diff --check 通过；本轮差异与改前快照对照，确认旧 WIP 保留。未读取或执行 tests；隔离子进程无网络或私人 runtime 访问尝试。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 子代理独立复核因连接中断未完成，主代理已复核关键调用链。未检查真实运行日志、同步宿主、运行真实 Claude/Recon/靶场或付费模型；源码验收不等于实际模型继续调查效果。
+- 本轮未新建或归档 Trellis 任务；修改留在工作区，未提交或 push。
+
+
+## Session 51: 修复 Autopilot 全流程九项集成缺口
+
+**Date**: 2026-10-23
+**Task**: `10-23-autopilot-flow-repair`
+**Branch**: `refactor/10-11-capability-architecture`
+
+### Summary
+
+用户接受完整审核并要求修复。九项缺口已修完，使用真实生产 API 的 8 组隔离回归全部通过；本轮保留未提交。
+
+### Main Changes
+
+- 局部三轮停滞回到调查 handoff；Bootstrap/compact/loop 显示既有 Round，剩余预算继续选题，损坏 witness 仍须修复。
+- Recon 在最终日志/inventory 写完后发布 Surface；JS 按源 URL 保留主机归属，旧无来源路径不猜测。projection/index schema 升至 8/2，旧缓存显式刷新。
+- expected-operation 接通观测到 Finding 的原 attempt；核验前驱字节并保留 Action/claim。scaffold 选择实际主证据，跳过 cleanup/坏摘要，共享长 ID 目录规则。
+- Store 统一当前报告及分目的地待办；发布器返回精确回执，索引失败仍保留已提交回执。摘要分批核验当前证据，不展开全部历史。
+- 同步 10 份命令/使用文档/契约；与修前快照对照保留全部既有 WIP。本轮源码/文档 26 文件 +375/-164 行，不新增 scheduler、数据库 schema 或依赖。
+
+### Git Commits
+
+未提交或 push。
+
+### Testing
+
+- [OK] `research/check_flow.py` 8 组通过：恢复/剩余预算、多子域 Surface、源 JS 归属、原 attempt 晋升、cleanup 分离、当前报告/真实 heartbeat/索引失败回执、长 ID、三轮停滞续接。
+- [OK] 15 个 Python 源码 AST、Recon `bash -n`、最终 diff 检查通过；隔离子进程网络/私有状态访问尝试为 0。
+- [OK] 运行/证据只读复核发现的前驱原件和 target 字段类型边界已修复并验收；报告/Recon 探子因限流失败，由主代理核对。
+
+### Status
+
+实现与授权验收完成，任务保留未归档/未提交状态。详情：`.trellis/tasks/10-23-autopilot-flow-repair/research/README.md`。
+
+### Next Steps
+
+- 未读取、修改或运行 tests，未同步安装、运行真实 Claude/Recon/靶场、访问真实目标或调用付费模型。离线回归不代表模型实战深度验收。
+- 已有目标需显式刷新 Surface。当前报告检查需读取相关原件；未做大规模延迟或 token 成本基准。
+
+
+## Session 52: 恢复薄 recon-ranker 与显式自动化调用
+
+**Date**: 2026-10-23
+**Task**: 用户已确认的小范围恢复；未另建任务
+**Branch**: `refactor/10-11-capability-architecture`
+
+### Summary
+
+仅恢复 `recon-ranker`，多子域/多业务面 Recon 后由 Autopilot 显式调用；停滞/收尾按具体问题复核，同材料及问题复用，不依赖 description 触发。
+
+### Main Changes
+
+- 新 75 行只读角色继承会话模型，复用 src-hunter 方法、Store/经验/Surface 查询；零目标请求，不写 owner，不再委派或决定 Closure。
+- Shared Automation 承接普通/Round 调用、预算和恢复优先、不可用明示及 handoff 复用；父会话仅写接受的增量，不把排序意见变成行动。
+- 恢复角色进入现有 critical manifest；README、通用执行 agent 和 runtime 契约同步。6 文件 +142/-17 行，无生产 Python/Shell 改动。
+- 与修前快照核对，既有 tools/memory/skills/rules 字节保持，前轮流程修复保留；其它四个角色保持退役。
+
+### Testing
+
+- [OK] `research/10-23-ranker-restore/check_ranker_restore.py` 5 项通过，约 1.06 秒：发现/共享入口、改动保护、10→6 升级和精确 prune、字节收据/用户文件保留、ranker 缺失/漂移检测。
+- [OK] 独立只读复核和最终 diff/hash 核对完成；验收子进程网络/私人安装/tests 读取尝试为 0。
+
+### Status
+
+实现与本地授权验收完成，未提交、推送或同步实际安装。
+详情：`research/10-23-ranker-restore/README.md`。
+
+### Next Steps
+
+- 实际使用需显式同步新命令和 ranker；旧安装会触发现有 critical drift，代码不自动安装。
+- 未读取或运行 tests、真实 Claude/模型/靶场；实际宿主发现、深度收益和模型成本未经对比验证。
+
+
+## Session 53: 记忆决策路径收敛与受控宿主验收
+
+**Date**: 2026-10-24
+**Task**: `10-24-memory-decision-path`
+**Branch**: `refactor/10-11-capability-architecture`
+
+### Summary
+
+用户批准的首批记忆优化已实现，29项机械断言通过；一次真实Claude样本反复读取，达到轮数上限，无交接，未进入compact。实现完成不代表宿主稳定验收通过。
+
+### Main Changes
+
+- runtime-protocol集中恢复、按问题召回、增量写回时机；target集中CLI/交接/版本/纠错/来源/索引恢复；evidence-runners统一执行捕获登记。
+- Autopilot/Hunt/Pickup/Remember/validator等入口引用共享合同，删除只在转向保存、等待用户明确指令和缺next-intent清单等冲突。父会话接受子代理增量后写owner。
+- 仅target_memory与resume两处产品代码变化：保留Store版本，提供按ID/version展开独立反证的导航。不改Store/schema、6k方法、排序或门槛。
+- 相对本批冻结基线16个产品/规范文件+203/-234，净删31行。任务内保存合成机械与宿主脚本、完整结果和SHA；原有WIP保留。
+
+### Validation
+
+- [OK] 142份复制生产Python源码与合成Store：29断言，3.06秒，覆盖旧经验/窗口外交接/版本/反证/条件/失效原件/新进程/幂等/缺库/零写入。
+- [OK] 主线程复核版本调用方、formatter和合同迁移，最终16文件git diff --check通过；独立审查代理限流，没有独立通过结论。
+- [FAIL] Claude CLI2.1.304，请求/回报claude-opus-4-8，隔离/hunt样本78.32秒，18工具调用，11次未变化文件重读，error_max_turns（num_turns19）。收到disputed/version/条件视图，无问题query/context，无计划或handoff；未触发compact。CLI累计$1.198584。
+- [OK] 正式样本有网络命名空间和模型网关限制，目标代理探针403。635源文件、两份原件SHA及Store逻辑dump保持不变，revision32；无新增观察/Finding/报告。前两次本地沙箱预检查失败均在模型启动前。
+
+### Status
+
+任务保持in_progress，未提交、安装或归档。结果：`.trellis/tasks/10-24-memory-decision-path/research/result.md`。
+
+### Remaining
+
+- 模型按问题召回、真实交接和compact后恢复尚未达标；下一步定位宿主的重复读取和上下文消费，不追加无因果依据的规则或控制器。
+- 未读、搜、运行tests，未动真实目标/个人runtime/参考系统；未验证完整Autopilot、真实compact、语义模型/reranker或长期成本收益。本轮单样本不与旧P5作成功率比较。
+
+
+## Session 54: 记忆路径源码核验与宿主验收收口
+<!-- trellis-session: v=2 fp=71a2ed605ee6cc09 -->
+
+**Date**: 2026-10-24
+**Task**: 记忆路径源码核验与宿主验收收口
+**Branch**: `refactor/10-11-capability-architecture`
+
+### Summary
+
+停止中转站数据排查；源码确认记忆字段与Autopilot继续边界未见丢失/冲突，修正handoff空白下一意图回执，33项隔离断言通过。
+
+### Main Changes
+
+- 产品仅追加target_memory.py一行回执格式修正；首批16文件总计+226/-236，净删10行。
+- 验收脚本修正规则来源、首请求核验和结果哈希覆盖；旧样本及执行后脚本快照保留，未据样本扩大生产改造。
+- 用户要求搁置中转站相关数据；任务in_progress，不提交、安装或归档。续轮记录见.trellis/tasks/10-24-memory-decision-path/research/host-followup.md。
+
+### Git Commits
+
+(No commits - planning session)
+
+### Testing
+
+- [OK] check_memory_path.py 33项通过，3.732秒；隔离源码/合成Store，含intent空白规范化与真实CLI回执。
+- [OK] check_host_observer.py六组loopback及负例通过，3.559秒，模型调用0；源码独立核验与主线程复核完成。
+- [OK] 目标文件git diff --check通过；发现并保留其他会话对info-leak-test.md的修改，未纳入本轮。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 稳定宿主下的长期模型行为和完整恢复验收按用户指示暂缓；受干扰样本不作为6k或记忆架构根因。
+- 未读取、搜索或运行tests，未访问真实目标或个人runtime；未做长期大库/语义模型/reranker成本验证。
+
+
+## Session 55: 记忆成本与兼容入口收敛
+<!-- trellis-session: v=2 fp=9c06af479d29b29f -->
+
+**Date**: 2026-10-24
+**Task**: 记忆成本与兼容入口收敛
+**Branch**: `refactor/10-11-capability-architecture`
+
+### Summary
+
+完成已授权的成本专项：减少首页重复计数和单次反证采集的重复原件读取，保留完整输出与重新核验；未增加架构层或依赖。
+
+### Main Changes
+
+- 3个产品文件：target_store复用无cursor首页count；recall_context仅在单次采集中复用artifact状态；target_memory移除不可达show fallback和无生产消费者formatter，保留显式历史及兼容CLI。
+- 相对本轮冻结基线，3产品文件+20/-41，净删21行；含memory-recovery规范共4文件+35/-41。144份冻结文件仅4份变化，142份实际执行Python副本与当前一致。
+- 1000条合成经验、5个相关根共享原件：恢复count 4→2，反证连接25→17、hash 20→12；indexed召回连接73→61、hash 38→26，完整输出保持。
+- 验收原件和cost-final-check.json已固化，结果见.trellis/tasks/10-24-memory-decision-path/research/cost-result.md。保留原有WIP与失败原件，任务仍in_progress，不提交、安装或归档。
+
+### Git Commits
+
+(No commits - implementation remains uncommitted)
+
+### Testing
+
+- [OK] check_memory_cost.py：20/200/1000条合成数据23项完整输出对比及5组变化、失效、跨目标和cursor边界通过；每项测量零领域写入。整次约2.62秒，其中测量部分2.17秒；本次收尾未重跑行为检查。
+- [OK] 独立静态复核未发现本批实质问题；主线程消费者与diff复核通过。最终限定4文件git diff --check、源码SHA、保存输出与机器指标一致性通过。最初3项定位代理限流不计通过。
+- [LIMIT] 项目tests未运行或修改；一次rg排除顺序错误意外返回6行兼容引用，已告知并记录cost-scope.md，后续限定生产目录。未访问真实目标、个人runtime或付费模型。
+
+### Status
+
+[OK] **本批工程收尾完成；总体任务仍 in_progress**
+
+### Next Steps
+
+- 本批工程优化完成；长期真实负载、共享知识及语义模型成本未经测量，单次合成耗时不证明整体延迟或模型费用收益。
+- 稳定宿主长期行为验收继续按用户指示暂缓，不分析中转站数据，不追加控制器或无依据缓存。
+
+
+## Session 56: 记忆基线整理与入口消费去重
+<!-- trellis-session: v=2 fp=dc26ba509e8fe65e -->
+
+**Date**: 2026-10-24
+**Task**: 记忆基线整理与入口消费去重
+**Branch**: `refactor/10-11-capability-architecture`
+
+### Summary
+
+完成用户批准的基线和调用边界两项工作：保留可审阅/回退的三批记忆补丁，紧凑Bootstrap省去未消费诊断读取，入口和Pack路径回归统一owner。
+
+### Main Changes
+
+- 6文件+16/-19：autopilot_bootstrap/autopilot_state仅在紧凑入口跳过默认20条诊断记忆；完整/full/bounded保留；context_pack直接使用owner路径；remember引用共享证据合同，validator删全量Finding例子；同步memory规范。
+- 本轮冻结211份文件，仅6份改变，其他205份不变；验收142份生产Python与当前源码一致。初始59项WIP保留，HEAD/index未改变，不提交/安装/归档。
+- 三批共21文件+277/-296，12个混合WIP路径明确。原三批及合并patch隔离正反向SHA一致；合并patch直接HEAD不适用，前置差异单独留档。成本2个局部hunk可施加HEAD，仅证明文本适用性。
+
+### Git Commits
+
+(No commits - implementation remains uncommitted)
+
+### Testing
+
+- [OK] check_memory_entries.py最终2.961秒：14份完整输出一致，每侧10测量、9语义/错误断言通过；主库和空库logical dump及原件每次测量前后不变。紧凑入口组装27→6、连接36→34，诊断仍保留5+20。
+- [OK] 3项只读定位与独立静态复核完成。脚本fixture/未触碰目标假设/并发精确错误/空库无写检查逐项修正后通过，历史失败及初步passed记录保留，不以伪通过替代最终结果。限定文件diff及源码/证据SHA通过。
+
+### Status
+
+[OK] **本批工程完成；总体任务仍 in_progress**
+
+### Next Steps
+
+- 本批工程完成，结果research/entry-result.md，基线research/memory-baseline.md。兼容CLI、显式历史和来源重验仍保留；混合文件不可整文件暂存为记忆单独提交。
+- 总体任务in_progress，稳定宿主长期行为继续按用户要求暂缓。未读取/运行/修改tests，未访问真实目标/个人runtime或付费模型；真实安装、模型决策、长期负载和token费用未验收。
+
+
+## Session 57: 记忆分组提交与Claude CLI安装交付
+<!-- trellis-session: v=2 fp=79a9f958fff7e625 -->
+
+**Date**: 2026-10-25
+**Task**: 记忆分组提交与Claude CLI安装交付
+**Branch**: `refactor/10-11-capability-architecture`
+
+### Summary
+
+按用户ok,go完成三批记忆提交和当前checkout的Claude管理资产同步；其他WIP保留，长期宿主行为验收仍暂缓。
+
+### Main Changes
+
+- 从HEAD重组21文件为三笔commit，使用隔离索引保留工作区原件；270份冻结文件在提交/安装后逐字不变，剩余49项WIP。详见research/delivery-result.md和delivery-commits.json。
+- 使用既有runtime_doctor同步/root/.claude：105份管理文件内容和收据一致，实际15更新+4退役移除；关键差异0，外部js-read/js-reader保留。110份原文件备份及14项外部文件/链接校验完成。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `cf8e098` | refactor(memory): unify recovery recall and writeback contract |
+| `5d1603d` | perf(memory): reuse scoped reads and retire dead projections |
+| `7fc8341` | perf(memory): avoid unused bootstrap memory projection |
+
+### Testing
+
+- [OK] HEAD加三批补丁的142份生产Python：33恢复断言、23成本完整输出对比及5边界、13入口完整输出和9检查通过；两项独立只读核验未发现阻断问题。
+- [LIMIT] 入口首次验收依赖WIP的未初始化空预览，改为HEAD既有拒绝合同后通过，失败原件保留。安装后mode校验修正为保留未重写文件的既有权限，没有重跑安装或修改无关文件。
+
+### Status
+
+[OK] **本次提交与安装交付完成；总体任务仍 in_progress**
+
+### Next Steps
+
+- 从/root/tool/ccst(rename-_Ya66f2)/ccst3/ccst新开Claude使用已同步版本；磁盘同步不证明旧会话缓存刷新，安装源包含未提交功能WIP。
+- 总体in_progress；不归档，不push，不迁移真实目标，不读跑改tests，不改MCP/凭据，不重跑付费宿主或中转站排查。本条日志与此前日志WIP保留，避免夹带Session51–56提交。
+
+
+## Session 58: 运行基线收口与无损记忆效率优化
+<!-- trellis-session: v=2 fp=d54b4ba52f76b95a -->
+
+**Date**: 2026-10-25
+**Task**: 运行基线收口与无损记忆效率优化
+**Branch**: `refactor/10-11-capability-architecture`
+
+### Summary
+
+完成已授权P0–P3：运行WIP分组提交、显式紧凑召回、Loop/Checkpoint省未消费记忆、Guard归gate；保留信息/重验/控制语义并同步Claude管理资产。
+
+### Main Changes
+
+- P1–P3共11文件，commit 898ac27/37291b5/41f45d6；47份既有运行WIP另分5笔。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `57f3637ea5486636a11a8263b6cd460d8a2fb320` | fix(evidence): preserve registration and current report ownership |
+| `c8c8a2783712a7689ab28734760122aa67ac2c13` | fix(recon): bind collection receipts and retain source provenance |
+| `bd619ea709a345d6291199963bb952afa93e18d6` | refactor(autopilot): derive continuation views from owner facts |
+| `8b184089097fee3a284af769efd430f1e2fe43e8` | perf(memory): verify shared knowledge through one acquisition |
+| `82e512b6476ade3ab76abfb7691f093d95f31f3a` | docs(src-hunter): retain existing exposure investigation guidance |
+| `898ac27d5da2f4f066b732f5a4e5a180c54d9149` | perf(memory): add lossless compact recall presentation |
+| `37291b508d6da9e3b688f9c49990eb5e629623db` | perf(autopilot): skip unconsumed loop and checkpoint memory |
+| `41f45d6584afa7e3369da0ed26200ad1639c9d0e` | refactor(autopilot): keep guard fallback in control projection |
+
+### Testing
+
+- [OK] 21份完整输出与48组Guard相同；142份生产源码SHA对齐，独立审查无阻断，强化后原件/Store并发拒绝通过。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 从当前ccst3/ccst checkout新开Claude使用；长期宿主和compact行为继续按用户要求暂缓，不扩架构。
