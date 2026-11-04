@@ -45,6 +45,12 @@ and reports:
 - `EXTRA` — runtime has a file that the repo no longer provides
 - `host_hooks_drift` — required lifecycle groups are missing, disabled, changed or unowned
 
+An older source digest alone does not invalidate installed hooks. Required events,
+paths, arguments, recovery slots and the ownership receipt must still match.
+Receipt-owned bodies freshly delivered by the host are advisory drift when their
+entry/frontmatter is unchanged. Other critical resources and entry/configuration
+changes still require sync; `--fail-on-drift` continues to report all disk differences.
+
 ## Recommended Use
 
 - After pulling updates
@@ -73,7 +79,7 @@ and reports:
   or locally changed/unowned group is a conflict, never silently overwritten.
   First installation and changed hook sources require all kinds plus `--prune`.
   Restart Claude after approved sync; the next invocation verifies observed hooks
-  and source identity. Disk parity alone cannot prove a hook actually ran.
+  and loads current complete source bodies. Disk parity alone cannot prove a hook actually ran.
 
 ## Single-entry Cutover And Recovery
 

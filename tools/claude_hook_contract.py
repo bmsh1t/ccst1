@@ -19,6 +19,9 @@ HOOK_MARKER = "--ccst-autopilot-host"
 RECOVERY_PARTS = 8
 CONTEXT_UNITS = 7000
 DYNAMIC_OUTPUT_LIMIT = 24000
+CONTEXT_SOURCES = ((CORE_SKILL_PATH, None), ("skills/runtime-protocol.md", None),
+                   ("commands/autopilot.md", "## Shared Automation"),
+                   ("commands/autopilot-round.md", "## Prepare And Terminal Precheck"))
 
 
 def json_digest(value: object) -> str:
@@ -45,35 +48,46 @@ def _source(root: Path, relative: str) -> tuple[str, str]:
     return text, hashlib.sha256(raw).hexdigest()
 
 
-def _body(text: str) -> str:
+def _body(text: str, heading: str | None = None) -> str:
     lines = text.splitlines(keepends=True)
+    if not lines:
+        raise ValueError("empty host source body")
+    offset = 0
     if lines[0].lstrip("\ufeff").strip() == "---":
         end = next((i for i in range(1, len(lines)) if lines[i].strip() == "---"), None)
         if end is None:
             raise ValueError("unterminated host source frontmatter")
-        return "".join(lines[end + 1:])
-    return text
+        offset = end + 1
+    if heading:
+        offset = next((i for i in range(offset, len(lines)) if lines[i].rstrip("\r\n") == heading), None)
+        if offset is None:
+            raise ValueError(f"required host section missing: {heading}")
+    return "".join(lines[offset:])
 
 
-def capture_context(repo_root: Path | str, *, round_mode: bool = False) -> dict:
+def refreshable_source(relative: str, installed: str, current: str) -> bool:
+    """Only bodies delivered by the host may differ; entry/configuration stays installed."""
+    for path, heading in CONTEXT_SOURCES:
+        if path == relative:
+            return installed.removesuffix(_body(installed, heading)) == current.removesuffix(_body(current, heading))
+    return False
+
+
+def capture_context(repo_root: Path | str, *, round_mode: bool = False, previous: dict | None = None) -> dict:
     """Capture original bodies; source hashes prevent mixed-version recovery."""
     root = Path(repo_root).resolve()
-    sources = ((CORE_SKILL_PATH, None), ("skills/runtime-protocol.md", None),
-               ("commands/autopilot.md", "## Shared Automation"))
-    if round_mode:
-        sources += (("commands/autopilot-round.md", "## Prepare And Terminal Precheck"),)
     sections, bindings = [], {}
-    for relative, heading in sources:
+    for index, (relative, heading) in enumerate(CONTEXT_SOURCES[:4 if round_mode else 3]):
         text, digest = _source(root, relative)
-        body = _body(text)
-        if heading:
-            lines = body.splitlines(keepends=True)
-            offset = next((i for i, line in enumerate(lines) if line.rstrip("\r\n") == heading), None)
-            if offset is None:
-                raise ValueError(f"required host section missing: {relative} {heading}")
-            body = "".join(lines[offset:])
+        body = _body(text, heading)
         if not body.strip():
             raise ValueError(f"empty host body: {relative}")
+        if previous is not None and previous["sources"].get(relative) != digest:
+            old_body = previous["sections"][index].split("\nBODY_BEGIN\n", 1)[1].removesuffix("\nBODY_END")
+            # Rebuild the old bytes with today's prefix to detect changes outside delivered bodies.
+            reconstructed = text.removesuffix(body) + old_body
+            if hashlib.sha256(reconstructed.encode()).hexdigest() != previous["sources"].get(relative):
+                raise ValueError(f"Autopilot entry/configuration changed: {relative}; run sync-check and restart Claude")
         bindings[relative] = digest
         sections.append(f"CCST_SOURCE {root / relative}\nPACKAGE_ROOT {root / Path(relative).parent}\n"
                         f"SHA256 {digest}\nBODY_BEGIN\n{body}\nBODY_END")
@@ -126,10 +140,11 @@ def host_source_digest(repo_root: Path | str, *, context: dict | None = None) ->
     return json_digest(binding)
 
 
-def host_hooks(repo_root: Path | str, runtime_root: Path | str) -> dict:
+def host_hooks(repo_root: Path | str, runtime_root: Path | str, *, contract_sha256: str | None = None) -> dict:
     root, runtime = Path(repo_root).resolve(), Path(runtime_root).resolve()
     command = shlex.join(["python3", str(root / "tools/autopilot_host.py"),
-                          "--runtime-root", str(runtime), "--contract-sha256", host_source_digest(root),
+                          "--runtime-root", str(runtime), "--contract-sha256",
+                          host_source_digest(root) if contract_sha256 is None else contract_sha256,
                           HOOK_MARKER, "hook"])
     hooks = {event: [{"hooks": [{"type": "command", "command": command, "timeout": 30}]}]
              for event in ("SessionStart", "UserPromptSubmit", "Stop", "StopFailure", "SessionEnd")}

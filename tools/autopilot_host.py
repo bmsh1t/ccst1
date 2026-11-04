@@ -68,11 +68,18 @@ def _host_view(runtime: Path, binding: dict) -> dict:
     }
 
 
-def _capture_bound_context(binding: dict, round_mode: bool) -> dict:
-    context = capture_context(REPO_ROOT, round_mode=round_mode)
-    if binding.get("contract_sha256") != host_source_digest(REPO_ROOT, context=context):
-        raise ValueError("Autopilot lifecycle hooks were not observed for this session/source; run sync-check and restart Claude")
-    return context
+def _capture_bound_context(binding: dict, round_mode: bool, *, previous: dict | None = None) -> dict:
+    if not re.fullmatch(r"[0-9a-f]{64}", str(binding.get("contract_sha256") or "")):
+        raise ValueError("Autopilot lifecycle hooks were not observed for this session; run sync-check and restart Claude")
+    if binding.get("repo_root") not in {None, str(REPO_ROOT)}:
+        raise ValueError("Claude session is bound to another checkout")
+    return capture_context(REPO_ROOT, round_mode=round_mode, previous=previous)
+
+
+def _save_context(path: Path, context: dict) -> None:
+    snapshot = path.with_name(f"context-{context['content_sha256']}.json")
+    payload = {key: context[key] for key in ("sha256", "sources", "sections")}
+    publish_bytes_create_only(snapshot, json.dumps(payload, ensure_ascii=False).encode())
 
 
 def _entry_output(text: str, directory: Path) -> str:
@@ -110,12 +117,21 @@ def start(runtime: Path, session_id: str, argv: list[str], *, round_mode: bool) 
         binding.pop("reopen_prompt_id", None)
         payload["host"] = _host_view(runtime, binding)
         output = _entry_output(render_autopilot_bootstrap_json(payload), path.parent)
-        write_json_atomic(context_path, {key: context[key] for key in ("sha256", "sources", "sections")})
+        _save_context(context_path, context)
         write_json_atomic(path, binding)
         return output
 
 
 def _context(binding: dict, path: Path) -> dict:
+    digest = binding["content_sha256"]
+    if not re.fullmatch(r"[0-9a-f]{64}", str(digest)):
+        raise ValueError("invalid Autopilot recovery content digest")
+    snapshot = path.with_name(f"context-{digest}.json")
+    if snapshot.is_symlink() or (snapshot.exists() and not snapshot.is_file()):
+        raise ValueError("Claude source snapshot must be a regular private file")
+    # Earlier bindings use context.json; new snapshots remain intact until binding commits.
+    if snapshot.exists():
+        path = snapshot
     context = json.loads(path.read_text())
     text = "\n\n".join(context["sections"])
     if (context.get("sha256") != binding["source_sha256"]
@@ -129,8 +145,7 @@ def body(runtime: Path, session_id: str, part: int, *, round_mode: bool) -> str:
     # Claude expands these in parallel with entry; static delivery cannot depend on admission.
     with session_binding(runtime, session_id) as (binding, path, context_path):
         context = _capture_bound_context(binding, round_mode)
-        sections = context["sections"][:3 if round_mode else 2]
-        chunks = context_chunks("\n\n".join(sections))
+        chunks = context_chunks("\n\n".join(context["sections"]))
         if part < 0:
             raise ValueError("invalid entry body part")
         if part >= len(chunks):
@@ -157,12 +172,12 @@ def refresh_state(runtime: Path, session_id: str, invocation_id: str, prompt_id:
         check_source = recovering or binding["status"] == "suspended"
         binding["status"] = "completed" if reopening else "suspended"
         write_json_atomic(path, binding)
+        source = None
         if check_source:
-            source = _capture_bound_context(binding, binding["round_mode"])
-            if source["sha256"] != binding["source_sha256"]:
-                raise ValueError("Autopilot source changed; inspect sync-check before a new invocation")
-        if recovering:
-            _context(binding, context_path)
+            previous = _context(binding, context_path)
+            current = _capture_bound_context(binding, binding["round_mode"], previous=previous)
+            if current["sha256"] != binding["source_sha256"]:
+                source, recovering = current, True
         arguments = dict(binding["arguments"])
         if arguments["action"] != "continue" or arguments["target"] != target:
             raise ValueError("saved Autopilot arguments do not match the admitted target")
@@ -177,13 +192,22 @@ def refresh_state(runtime: Path, session_id: str, invocation_id: str, prompt_id:
             payload["recovery"] = {"repo_root": str(REPO_ROOT), "repo_root_shell": shlex.quote(str(REPO_ROOT)),
                 "arguments": arguments, "invocation_batch": arguments["invocation_batch"],
                 "ctf_mode": is_ctf_mode_enabled(REPO_ROOT), **context, "state": compact_autopilot_state(state)}
-        if reopening:
+            if source:
+                payload["recovery"]["source_context"] = {"sha256": source["sha256"], "commands": [
+                    shlex.join(["python3", str(REPO_ROOT / "tools/autopilot_host.py"), "--runtime-root", str(runtime),
+                                "body", "--session-id", session_id, "--part", str(part),
+                                *(["--round-defaults"] if binding["round_mode"] else [])])
+                    for part in range(len(source["chunks"]))]}
+                binding.update(source_sha256=source["sha256"], content_sha256=source["content_sha256"])
+        if reopening or source:
             # Retain the original allocation; only the old Stop attestation expires.
             binding.update(invocation_id=uuid.uuid4().hex, last_stop_basis="")
             binding.pop("reopen_prompt_id", None)
         binding.update(status="active", needs_refresh=False)
         payload.update(action="continue", host=_host_view(runtime, binding))
         output = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        if source:
+            _save_context(context_path, source)
         write_json_atomic(path, binding)
         return output
 
@@ -290,6 +314,8 @@ def hook(runtime: Path, data: dict, *, part: int | None, contract_sha256: str) -
                 return hook_context(event, f"Autopilot {binding['status']}. Answer questions directly; cancellation/task changes stay inactive. "
                     "Only if the current user request explicitly continues this investigation, enter Refresh with: "
                     + _state_command(runtime, binding) + ". Retain the original limits and use the returned host identity. "
+                    "Run recovery.source_context.commands and read every part before work; each CCST_ENTRY hash "
+                    "must match source_context.sha256. These bodies supersede prior source instructions. "
                     "No separate resume or Bootstrap; never replay effects to recover registration.")
             return {}
         if event == "SessionStart":
@@ -306,10 +332,8 @@ def hook(runtime: Path, data: dict, *, part: int | None, contract_sha256: str) -
                 binding.pop("reopen_prompt_id")
                 write_json_atomic(path, binding)
             try:
-                current = _capture_bound_context(binding, binding["round_mode"])
-                if current["sha256"] != binding["source_sha256"] or binding.get("contract_sha256") != contract_sha256:
-                    raise ValueError("Autopilot recovery source changed; start a reviewed new invocation after sync-check")
-                context = _context(binding, context_path)
+                previous = _context(binding, context_path)
+                context = _capture_bound_context(binding, binding["round_mode"], previous=previous)
             except (OSError, ValueError, KeyError, TypeError):
                 binding.update(status="completed" if completed else "suspended", needs_refresh=True)
                 write_json_atomic(path, binding)
@@ -329,10 +353,10 @@ def hook(runtime: Path, data: dict, *, part: int | None, contract_sha256: str) -
             if not completed and data.get("source") != "compact":
                 binding["status"] = "suspended"
             write_json_atomic(path, binding)
-            return hook_context(event, activation + "Complete CCST source bodies follow in numbered parts. "
+            return hook_context(event, activation + "Current complete CCST source bodies follow in numbered parts and supersede prior bodies. "
                 "For active/same-task continuation, state_command restores Scope/Auth, owners and memory. "
                 "Retain limits and use the returned host identity; incomplete transport is an error. "
-                + json.dumps(_host_view(runtime, binding), ensure_ascii=False))
+                + json.dumps(_host_view(runtime, binding) | {"source_sha256": context["sha256"]}, ensure_ascii=False))
         if event in {"SessionEnd", "StopFailure"}:
             if active and part is None:
                 binding["status"] = "idle" if data.get("reason") == "clear" else "suspended"

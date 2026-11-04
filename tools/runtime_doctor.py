@@ -16,11 +16,11 @@ from pathlib import Path
 try:
     from tools.artifact_io import write_text_atomic
     from tools.skill_reference_contract import CORE_SKILL_NAME, CORE_SKILL_PATH, KNOWN_ENTRY_NAMES
-    from tools.claude_hook_contract import HOOK_OWNER, host_hooks, json_digest, managed_hook_groups, replace_managed_hooks
+    from tools.claude_hook_contract import CONTEXT_SOURCES, HOOK_OWNER, host_hooks, json_digest, managed_hook_groups, refreshable_source, replace_managed_hooks
 except ImportError:  # direct script execution; keep the installer standard-library-only
     from artifact_io import write_text_atomic
     from skill_reference_contract import CORE_SKILL_NAME, CORE_SKILL_PATH, KNOWN_ENTRY_NAMES
-    from claude_hook_contract import HOOK_OWNER, host_hooks, json_digest, managed_hook_groups, replace_managed_hooks
+    from claude_hook_contract import CONTEXT_SOURCES, HOOK_OWNER, host_hooks, json_digest, managed_hook_groups, refreshable_source, replace_managed_hooks
 
 KIND_ORDER = ("commands", "agents", "skills")
 RUNTIME_SUBDIRS = {
@@ -277,6 +277,10 @@ def compare_runtime(
     resolved_runtime = _runtime_root(runtime_root)
     selected_kinds = [kind for kind in (kinds or list(KIND_ORDER)) if kind in KIND_ORDER]
     results = [compare_kind(resolved_repo, resolved_runtime, kind) for kind in selected_kinds]
+    receipt = resolved_runtime / ".ccst-installed.json"
+    owned = json.loads(receipt.read_text()) if receipt.is_file() else {}
+    if not isinstance(owned, dict):
+        raise ValueError("invalid runtime ownership manifest")
     drift = sum(
         result["counts"]["diff"] + result["counts"]["missing"] + result["counts"]["extra"]
         for result in results
@@ -298,6 +302,16 @@ def compare_runtime(
             seen.add(key)
             if item["status"] == "ok":
                 continue
+            source_path = f"{item['kind']}/{item['relative_path']}"
+            if item["status"] == "diff" and source_path in dict(CONTEXT_SOURCES):
+                path = Path(item["runtime_path"])
+                owner = owned.get(path.relative_to(resolved_runtime).as_posix(), {})
+                if (owner.get("kind") == item["kind"] and owner.get("sha256") == _file_hash(path, resolved_runtime)
+                        and refreshable_source(source_path, path.read_bytes().decode("utf-8"),
+                                               Path(item["repo_path"]).read_bytes().decode("utf-8"))):
+                    advisory_drift.append({"kind": item["kind"], "status": "diff",
+                        "relative_path": item["relative_path"], "reason": "current body is delivered by the host"})
+                    continue
             projection = {
                 "kind": item["kind"],
                 "status": item["status"],
@@ -338,8 +352,6 @@ def compare_runtime(
             if forward and [(e["path"], e["identity"]) for e in source_entries] != [(CORE_SKILL_PATH, CORE_SKILL_NAME)]:
                 entry_issues.append({"kind": "skills", "status": "source_entry_set_invalid",
                                      "relative_path": CORE_SKILL_PATH.removeprefix("skills/")})
-            receipt = resolved_runtime / ".ccst-installed.json"
-            owned = json.loads(receipt.read_text()) if receipt.is_file() else {}
             # compare_kind already applied the read-side object-shape contract.
             # An interrupted ordinary upgrade can leave matching payload bytes
             # with an older receipt. Preserve legacy missing/hashless receipts
@@ -396,13 +408,12 @@ def compare_runtime(
     host_issues = []
     if "commands" in selected and manifest.get("host_hooks"):
         settings, groups = _host_settings(resolved_runtime)
-        expected = host_hooks(resolved_repo, resolved_runtime)
-        receipt = resolved_runtime / ".ccst-installed.json"
-        owned = json.loads(receipt.read_text()) if receipt.is_file() else {}
-        if not isinstance(owned, dict):
-            raise ValueError("invalid runtime ownership manifest")
+        command = next((item.get("command", "") for group in groups.get("SessionStart", [])
+                        for item in group.get("hooks", [])), "")
+        observed = re.search(r"(?:^| )--contract-sha256 ([0-9a-f]{64})(?: |$)", str(command))
+        expected = host_hooks(resolved_repo, resolved_runtime, contract_sha256=observed[1] if observed else "")
         if (settings.get("disableAllHooks") is True or groups != expected
-                or owned.get(HOOK_OWNER) != _hook_receipt(expected)):
+                or not observed or owned.get(HOOK_OWNER) != _hook_receipt(groups)):
             host_issues.append({"kind": "commands", "status": "host_hooks_drift",
                                 "relative_path": HOOK_OWNER,
                                 "reason": "required lifecycle hooks are missing, disabled, changed or unowned"})

@@ -66,7 +66,7 @@ an explicitly supplied lane cap. Ordinary uncapped runs need no new Round.
 
 The native host supplies complete static bodies alongside Bootstrap; only
 `action=continue` admits investigation. Each `CCST_ENTRY` source hash must match
-`host.source_sha256`; apply the bodies in this parent session.
+`host.source_sha256`; apply these current bodies in place of cached bodies for the same files.
 `CCST_SOURCE` names the original file/package root.
 Missing bodies, truncated previews or `CCST_AUTOPILOT_INCOMPLETE` forbid new target
 work. Natural Skill discovery remains available; no duplicate Skill invocation is
@@ -80,6 +80,9 @@ preserving the original start time, time/Round limits, arguments and target fact
 Questions are answered directly; cancellation/task changes
 stay suspended. User interruption needs no review. SessionStart restores bodies after
 compaction/restart; Refresh's `recovery` replaces entry arguments/root/mode, Scope and state/memory.
+When `recovery.source_context` is present, run its `commands` and read every numbered part
+before work; all `CCST_ENTRY` hashes must match its `sha256`. These bodies replace prior
+instructions. Source refresh renews the review identity while retaining the original limits.
 
 ### State Consumption Loop
 

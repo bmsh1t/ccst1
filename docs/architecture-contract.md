@@ -91,7 +91,8 @@ requirements, not fixed test sequences or duplicated native tool manuals.
 The native platform owns Skill discovery. Natural-language discovery retains the
 original `src-hunter` description. Explicit Autopilot receives complete original
 source bodies through `autopilot_host`; independent static parts and one Bootstrap
-share the installed source contract. Static delivery is not execution admission.
+share the current source capture. Installed hooks retain their exact shape and receipt;
+their older source digest alone is not a readiness failure. Static delivery is not execution admission.
 `autopilot_host state` combines loop-check, Scope/Auth and prompt-bound rearming;
 same-session continuation reuses context and admitted argument paths without Bootstrap/init.
 Completed bindings stay inactive until the latest user prompt explicitly continues the
@@ -99,7 +100,13 @@ same task and its state command succeeds. Reopening renews only the invocation i
 used by Stop reviews; it retains entry time, limits, arguments and target facts.
 SessionStart restores completed context without granting continuation by itself.
 After compact/restart, SessionStart restores bodies and state adds owner/memory recovery.
-Source/recovery failures suspend enforcement. The small
+Changed bodies are fully delivered through existing entry/recovery transport; Refresh
+checks the old snapshot before publishing a new immutable, content-addressed snapshot
+and committing its binding. The original snapshot survives an interrupted binding write.
+`recovery.source_context` carries the current hash and existing numbered body commands;
+all parts must be read fully before work. Entry/frontmatter changes still require sync.
+It renews the Stop review identity while retaining the original allocation and target facts.
+Missing/damaged source or recovery data still fails visibly. The small
 private session binding and source snapshot own no target progress or facts.
 Oversized Bootstrap is delivered through a private JSON file; it is transport, never a state cache.
 Normal Stop reads current owners and the existing Checkpoint review's optional
@@ -753,6 +760,11 @@ Reverse sync uses a separately approved prior asset set and the migration-aware 
 Required Claude lifecycle settings use the same ownership receipt and journal:
 `settings.json#ccst-autopilot` owns only matching hook groups, preserving unrelated
 settings and order. Missing, modified, unowned or disabled groups block readiness.
+Source-only digest drift does not: comparison retains the installed digest while
+checking the full expected configuration and its receipt. Receipt-owned stale bodies
+that the host delivers in full are advisory only when entry/frontmatter is unchanged;
+other critical resources and configuration drift remain blocking. Full disk comparison
+still reports these differences and never installs automatically.
 Hook changes require all kinds and prune, exact-source preflight and recorded
 before/after group hashes; interruption never grants ownership of user edits.
 The contract module supplies settings without importing Bootstrap/domain owners.

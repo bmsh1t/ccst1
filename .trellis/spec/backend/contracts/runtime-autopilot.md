@@ -36,17 +36,26 @@ mechanical safety, evidence and recovery constraints govern execution.
   explicit entry delivers original source through `autopilot_host`, without
   depending on model-initiated Skill invocation. Independent dynamic static parts
   may precede Bootstrap, but never admit investigation. Each part validates the
-  same observed source contract and retains boundary whitespace with end markers;
+  observed hook arrival and retains boundary whitespace with end markers;
   its source hash matches the admitted host binding. Description/manifest/hash
   metadata is not body context. The original description remains unchanged for
   native discovery; no Python selector, Store load receipt or per-lane invocation.
-- The host stores only private session/invocation/target/arguments and an immutable
+- The host stores only private session/invocation/target/arguments and an integrity-bound
   source snapshot. SessionStart settings hooks restore complete source parts for
   compact/restart. Prompt/target-bound `autopilot_host state` combines loop-check,
   Scope/Auth and rearming; admitted argument paths stay bound, not re-resolved aliases.
   Bootstrap/init/runtime compare remain entry-only.
   `needs_refresh` adds existing compact state/memory as `recovery`; otherwise reuse
-  context. Rearming verifies sources; recovery also verifies saved bytes. Failures
+  context. Rearming verifies saved bytes before acquiring current sources. A changed
+  body is returned through `recovery.source_context.commands` (existing numbered body
+  reads, all matching `source_context.sha256`). All parts must be read before work.
+  Refresh publishes an immutable content-addressed snapshot before committing its
+  binding; failure leaves the old snapshot usable. Earlier `context.json` stays readable.
+  invocation_id renews without resetting allocation. Undelivered entry/frontmatter
+  changes are detected against the original saved hashes and still require sync.
+  SessionStart delivers current bodies but keeps the prior snapshot until Refresh.
+  Source hashes detect changes rather than rejecting updates. Missing/damaged sources
+  and snapshots still fail; no protocol version or migration state is added. Failures
   stay suspended. General queries do not access host bindings. Bootstrap is never
   cached as target truth. Original body
   reads are independent of activation order and add no second preparation state.
@@ -93,7 +102,7 @@ mechanical safety, evidence and recovery constraints govern execution.
   SessionStart may restore completed source bodies but cannot grant a reopen prompt;
   compact preserves an already current prompt grant, while restart, Stop, StopFailure
   and SessionEnd expire it; clear returns the binding to idle. Source failures retain completed status. Notifications
-  cannot grant continuation. Only successful completed reopen clears last_stop_basis;
+  cannot grant continuation. Only successful completed reopen or source refresh clears last_stop_basis;
   ordinary Refresh preserves repeated-rejection protection.
   Native interruption needs no review, ordinary
   later conversation is not forced into a hunt, and a bound session changing cwd
@@ -397,6 +406,10 @@ new round. Ordinary settlement without a review reason retains its prior status.
   host binding to check current/cleared goals, review v3/legacy behavior, a handoff
   outside the five-entry history, compact/restart/prompt/notification sequences,
   source/Scope failures, unchanged time/Round limits and repeated Stop protection.
+  A real temporary source update with an old hook digest exercises entry, completed/
+  suspended Refresh, compact/restart full-body equality, old-review invalidation,
+  missing hooks and corrupt snapshots. Runtime comparison retains receipt checks,
+  allows only freshly delivered body drift, and rejects entry/configuration changes.
   A real Closure read rejects a captured memory revision older than the current
   Store. Scope and host state acquisition are injected; no target requests, model,
   personal configuration or project tests are read. This is not live host acceptance.
@@ -1789,6 +1802,11 @@ Compare preserves legacy receipt read semantics and checks this entry independen
 it never applies the writer's full receipt requirements to unrelated legacy entries.
 Unowned matching groups, missing/modified owned groups and disableAllHooks refuse
 publication; missing/changed/unowned/disabled groups block critical readiness.
+The installed digest may predate source edits: compare the expected complete hook
+shape using that digest, and verify the receipt against the actual groups.
+`refreshable_source(relative, installed, current)` only admits body changes from
+`CONTEXT_SOURCES` with identical entry/frontmatter and intact installed ownership.
+Such disk diffs remain advisory; other critical diffs stay blocking.
 Only managed groups are replaced, preserving unrelated settings and hook order.
 Hook source changes require all kinds and prune, using the same fixed-source
 entry journal, preflight, publication and receipt-phase recovery below.

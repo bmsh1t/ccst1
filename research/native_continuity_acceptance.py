@@ -105,6 +105,7 @@ def check_rejection(reason, binding, phase):
 def inside():
     require_isolation()
     from tools.autopilot_host import _state_command
+    from tools.claude_hook_contract import capture_context, context_chunks
     from tools.runtime_doctor import sync_runtime
     from tools.target_store import initialize_target_store, runtime_store
     from tools.target_paths import target_storage_key
@@ -127,12 +128,29 @@ def inside():
     evidence.write_text('Synthetic local phase boundary; no target network activity is authorized.\n')
     sid, owner = str(uuid.uuid4()), store.binding()
     state = {'phase': '', 'steps': {}, 'requests': 0, 'tools': {}, 'error': ''}
-    boundaries, timeline = [], []
+    boundaries, timeline, source_updates = [], [], []
     started = time.monotonic()
 
     def log(kind, **fields):
         timeline.append({'t_rel': round(time.monotonic() - started, 3), 'kind': kind, **fields})
         (ROOT / 'timeline.json').write_text(json.dumps(timeline, ensure_ascii=False, indent=2))
+
+    def update_source(phase):
+        protocol = PROJECT / 'skills/runtime-protocol.md'
+        protocol.write_text(protocol.read_text() + f'\n<!-- Local source fixture {phase}: {uuid.uuid4().hex} -->\n')
+        state['source'] = capture_context(PROJECT)
+        update = {'phase': phase, 'sha256': state['source']['sha256'],
+                  'protocol_sha256': hashlib.sha256(protocol.read_bytes()).hexdigest()}
+        source_updates.append(update)
+        log('source_updated', **update)
+
+    def check_bodies(data, marker):
+        current = state['source']
+        rendered = '\n'.join(strings([data.get('messages'), data.get('system')]))
+        chunks = context_chunks(current['text'])
+        for index, chunk in enumerate(chunks):
+            assert f'{marker} {current["sha256"]} PART {index + 1}/{len(chunks)}\n{chunk}' in rendered, 'current body part missing'
+        log('source_bodies_received', phase=state['phase'], sha256=current['sha256'], parts=len(chunks))
 
     def check_memory(memory):
         assert memory['active_goal'] == 'Review the supplied local fixture'
@@ -158,6 +176,8 @@ def inside():
         returned = list(tool_results(messages, state.get('pending_tool')))
         if phase == 'compact':
             return None, '<summary>Continue the same local fixture only on explicit user request. Retain the Store goal, pending-local-review and current handoff.</summary>'
+        if phase == 'question_restart' or (phase == 'after_compact' and step == 0):
+            check_bodies(data, f'CCST_RECOVERY {read_binding(sid)["invocation_id"]}')
         if phase.startswith('question'):
             return None, 'The prior local fixture result is retained. This answer performs no further work.'
         command = None
@@ -165,6 +185,7 @@ def inside():
             before = read_binding(sid)
             state['before'] = before
             if phase == 'entry':
+                check_bodies(data, 'CCST_ENTRY')
                 payload = next(item for item in decoded_objects(messages)
                                if item.get('action') == 'continue' and item.get('host', {}).get('session_id') == sid)
                 check_memory(payload['state']['target_memory'])
@@ -175,9 +196,29 @@ def inside():
             assert command in rendered, 'current hook state command missing from actual request'
             log('current_command_delivered', phase=phase, status=before['status'])
         elif step == 1:
-            payload = next(item for item in decoded_objects(returned)
-                           if item.get('action') == 'continue' and item.get('host', {}).get('session_id') == sid
-                           and item.get('kind') == 'autopilot_loop_check_projection')
+            payload = state.get('source_payload')
+            if payload is None:
+                payload = next(item for item in decoded_objects(returned)
+                               if item.get('action') == 'continue' and item.get('host', {}).get('session_id') == sid
+                               and item.get('kind') == 'autopilot_loop_check_projection')
+                state['source_part'] = 0
+            else:
+                index = state['source_part'] - 1
+                chunks = state['source']['chunks']
+                expected = f'CCST_ENTRY {state["source"]["sha256"]} PART {index + 1}/{len(chunks)}\n{chunks[index]}\nCCST_ENTRY_END'
+                assert expected in '\n'.join(strings(returned)), 'current recovery body was truncated'
+            delivery = payload.get('recovery', {}).get('source_context')
+            if delivery:
+                assert delivery['sha256'] == state['source']['sha256']
+                assert len(delivery['commands']) == len(state['source']['chunks'])
+                if state['source_part'] < len(delivery['commands']):
+                    command = delivery['commands'][state['source_part']]
+                    state['source_part'] += 1
+                    state['source_payload'] = payload
+                    state['tools'][phase] = state['tools'].get(phase, 0) + 1
+                    return command, ''
+                state.pop('source_payload', None)
+                log('refresh_bodies_received', phase=phase, sha256=delivery['sha256'], parts=state['source_part'])
             current, before = read_binding(sid), state['before']
             assert payload['host']['invocation_id'] == current['invocation_id']
             assert payload['active_goal'] == 'Review the supplied local fixture'
@@ -186,6 +227,8 @@ def inside():
                 assert current[key] == before[key], key
             if phase != 'entry':
                 check_memory(payload['recovery']['state']['target_memory'])
+                assert delivery and state['source_part'] == len(delivery['commands'])
+                assert current['source_sha256'] == state['source']['sha256']
                 assert current['invocation_id'] != before['invocation_id']
             else:
                 assert current['invocation_id'] == before['invocation_id']
@@ -302,6 +345,8 @@ def inside():
             try:
                 for phase, prompt in phases:
                     state['phase'] = phase
+                    if phase in {'continue', 'compact', 'continue_restart'}:
+                        update_source(phase)
                     stops = []
                     before = read_binding(sid) if phase != 'entry' else None
                     log('user_prompt', phase=phase, prompt=prompt)
@@ -344,11 +389,13 @@ def inside():
                     process.wait(timeout=5)
 
     try:
+        update_source('entry')
         run(argv, [('entry', f'/autopilot {TARGET} --normal --max-seconds=600'),
                    ('question', '解释刚才的本地记录，不要继续执行'),
                    ('continue', '继续同一个本地夹具核验'), ('compact', '/compact'),
                    ('after_compact', '继续同一个本地夹具核验')])
         argv[argv.index('--session-id')] = '--resume'
+        update_source('restart')
         run(argv, [('question_restart', '解释上次的本地记录，不要继续执行'),
                    ('continue_restart', '继续同一个本地夹具核验')])
         assert boundaries, 'no real compact boundary'
@@ -356,6 +403,7 @@ def inside():
             'elapsed_seconds': round(time.monotonic() - started, 3), 'compact_boundaries': boundaries,
             'requests': state['requests'], 'tool_calls': state['tools'], 'inference': False,
             'phase_steps': state['steps'],
+            'source_updates': source_updates,
             'provider_charge_usd': 0, 'usage': 'scripted; CLI token/cost estimates are not model billing',
             'cli': subprocess.check_output(['/opt/claude', '--version'], env=env, text=True).strip()}
         (ROOT / 'result.json').write_text(json.dumps(result, ensure_ascii=False, indent=2))
@@ -395,6 +443,7 @@ def main():
     (stage / 'home').mkdir()
     (stage / 'home/isolation-marker').write_text('probe')
     shutil.copyfile(__file__, stage / 'probe.py')
+    shutil.copyfile(stage / 'project/skills/runtime-protocol.md', stage / 'runtime-protocol.md')
     provenance = {'kind': 'tracked_worktree', 'git_head': source_head, 'source_files': len(manifest),
         'manifest_sha256': hashlib.sha256((stage / 'source-manifest.json').read_bytes()).hexdigest(),
         'harness_sha256': hashlib.sha256((stage / 'probe.py').read_bytes()).hexdigest()}
@@ -409,6 +458,7 @@ def main():
         '--bind', str(stage / 'home'), '/root', '--ro-bind', str(Path(shutil.which('claude')).resolve()), '/opt/claude']
     for directory in ('tools', 'memory', 'commands', 'agents', 'skills', 'rules', 'docs', 'knowledge'):
         argv.extend(['--ro-bind', str(stage / 'project' / directory), '/probe/project/' + directory])
+    argv.extend(['--bind', str(stage / 'runtime-protocol.md'), '/probe/project/skills/runtime-protocol.md'])
     for name in ('/etc/nsswitch.conf', '/etc/passwd', '/etc/group', '/etc/alternatives'):
         argv.extend(['--ro-bind', name, name])
     argv.extend(['--chdir', '/probe', '--', '/usr/bin/setpriv', '--reuid=65534', '--regid=65534',
@@ -420,6 +470,7 @@ def main():
                    for name, digest in manifest.items()), 'staged source changed'
         assert hashlib.sha256((stage / 'probe.py').read_bytes()).hexdigest() == provenance['harness_sha256'], 'harness changed'
         report = json.loads((stage / 'result.json').read_text())
+        assert hashlib.sha256((stage / 'runtime-protocol.md').read_bytes()).hexdigest() == report['source_updates'][-1]['protocol_sha256']
         report.update(source=provenance, staged_source_unchanged=True)
         (stage / 'result.json').write_text(json.dumps(report, ensure_ascii=False, indent=2))
         print(json.dumps({'source_verified': True, 'result': str(stage / 'result.json')}), flush=True)

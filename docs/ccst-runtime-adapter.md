@@ -25,6 +25,9 @@ Scope/Auth、安装一致性和目标状态准入。正文分块带来源指纹�
 
 同会话复用上下文；`host.state_command` 合并 Scope/Auth、循环刷新与同任务确认，不重跑
 Bootstrap/初始化。压缩或重启后 SessionStart 恢复正文，同一次刷新附带 owner 记忆与交接。
+普通正文更新重新送达当前全文；执行 Refresh 的 `recovery.source_context.commands` 并完整
+读取所有同 hash 分块后替换旧指令，同时更新
+停止审查绑定，原目标、记忆、待办和时间/Round 额度保留。旧快照先校验，损坏仍报错。
 失败保持暂停；普通问答、取消和换任务不激活 Stop。通用状态/记忆查询不接触 host 绑定。
 Claude 原生后台结果的完整 `task-notification` 封套不算新用户任务，只保留当前启停状态，
 不激活已暂停的调用。该封套识别不是发送者认证，不读取模型历史。
@@ -39,6 +42,8 @@ Recon/Scan 运行中可并行独立且有依据的调查；锁只防同阶段重
 安装与恢复钩子通过 [sync-check](../commands/sync-check.md) 的既有 ownership/journal
 写入选定 runtime 的 `settings.json`，只管理 CCST 组；首次安装或 hook 版本变化要求
 全量 kinds 加 `--prune`。未授权时不安装个人 runtime。原生 description 发现保持不变。
+旧源码摘要本身不阻断入口；Hook 配置形状和回执、实际到达、项目/会话绑定仍需有效。
+由宿主完整交付的正文变更可直接刷新；入口配置和其他关键安装资源变化仍需同步。
 宿主机制已在 Claude Code 2.1.304 的隔离假 API 上验证；正文送达与停止校验不证明
 模型正确使用方法，也不能发现所有绕过登记合同的原生请求。
 

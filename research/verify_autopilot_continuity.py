@@ -10,6 +10,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 import json
 import os
+import shutil
 import sys
 
 SOURCE = Path(__file__).resolve().parents[1]
@@ -33,7 +34,8 @@ def isolated_reads(event, args):
 sys.addaudithook(isolated_reads)
 
 from tools import autopilot_bootstrap as bootstrap, autopilot_host as host, autopilot_state as state_owner
-from tools import autopilot_loop_guard, runtime_config
+from tools import autopilot_loop_guard, runtime_config, runtime_doctor
+from tools.claude_hook_contract import CONTEXT_SOURCES, RECOVERY_PARTS, HOOK_OWNER, host_hooks, refreshable_source
 from tools.target_memory import load_goal_memory
 from tools.target_paths import target_storage_key
 from tools.target_store import initialize_target_store, runtime_store
@@ -132,12 +134,16 @@ def verify(project, runtime):
     store.set_active_goal(command_id="goal:restore", goal="", actor="selfcheck")
 
     # Real files/locks/source integrity; only external owner acquisition is injected below.
-    source = host.capture_context(SOURCE)
-    contract = host.host_source_digest(SOURCE, context=source)
+    for name in (*dict(CONTEXT_SOURCES), "tools/autopilot_host.py", "tools/claude_hook_contract.py"):
+        destination = project / name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(SOURCE / name, destination)
+    source = host.capture_context(project)
+    contract = host.host_source_digest(project, context=source)
     path = runtime / ".ccst-autopilot" / SESSION / "binding.json"
     context_path = path.with_name("context.json")
     initial = {"session_id": SESSION, "invocation_id": "completed-invocation", "prompt_id": "old-prompt",
-        "repo_root": str(SOURCE), "target": TARGET, "status": "completed", "round_mode": False,
+        "repo_root": str(project), "target": TARGET, "status": "completed", "round_mode": False,
         "source_sha256": source["sha256"], "content_sha256": source["content_sha256"],
         "contract_sha256": contract, "started_at": 100, "max_seconds": 60,
         "round_limit": {"max_lanes": 2, "round_id": "current-round", "previous_round_id": ""},
@@ -155,13 +161,21 @@ def verify(project, runtime):
     def event(name, **fields):
         part = fields.pop("part", None)
         return host.hook(runtime, {"hook_event_name": name, "session_id": SESSION,
-            "cwd": str(SOURCE), **fields}, part=part, contract_sha256=contract)
+            "cwd": str(project), **fields}, part=part, contract_sha256=contract)
 
     def refresh(value=None):
         value = saved() if value is None else value
         return json.loads(host.refresh_state(runtime, SESSION, value["invocation_id"], value["prompt_id"], value["target"]))
 
-    with patch.object(bootstrap, "load_autopilot_context", return_value={"scope": {}, "continuation": {}}), \
+    def delivered(payload, expected):
+        source_view = payload["recovery"]["source_context"]
+        assert source_view["sha256"] == expected["sha256"]
+        assert len(source_view["commands"]) == len(expected["chunks"])
+        parts = [host.body(runtime, SESSION, n, round_mode=False) for n in range(len(source_view["commands"]))]
+        assert "".join(part.split("\n", 1)[1].removesuffix("\nCCST_ENTRY_END") for part in parts) == expected["text"]
+
+    with patch.object(host, "REPO_ROOT", project), \
+         patch.object(bootstrap, "load_autopilot_context", return_value={"scope": {}, "continuation": {}}), \
          patch.object(bootstrap, "load_autopilot_target_state", side_effect=lambda *args: deepcopy(state)), \
          patch.object(bootstrap, "build_autopilot_bootstrap", side_effect=AssertionError("unexpected Bootstrap")), \
          patch.object(autopilot_loop_guard, "_load_loop_guard_projection", return_value={}), \
@@ -266,7 +280,140 @@ def verify(project, runtime):
         event("SessionStart", source="clear")
         assert saved()["status"] == "idle" and "invocation_id" not in saved()
 
+        # A real new source with an old installed hook must refresh without resetting allocation.
+        protocol = project / "skills/runtime-protocol.md"
+        protocol.write_text(protocol.read_text() + "\nCURRENT LOCAL FIXTURE INSTRUCTIONS\n")
+        updated = host.capture_context(project)
+        assert updated["sha256"] != source["sha256"]
+        assert host.host_source_digest(project, context=updated) != contract
+        for status in ("completed", "suspended"):
+            seed(status=status)
+            event("UserPromptSubmit", prompt="Explain the last result")
+            assert saved()["status"] == status
+            event("Stop")
+            assert saved()["status"] == status
+            seed(status=status)
+            event("UserPromptSubmit", prompt="Continue the local fixture")
+            refreshed = refresh()
+            current = saved()
+            delivered(refreshed, updated)
+            assert current["status"] == "active" and current["invocation_id"] != initial["invocation_id"]
+            assert host._context(current, context_path)["sections"] == updated["sections"]
+            for key in ("started_at", "max_seconds", "round_limit", "arguments", "target"):
+                assert current[key] == initial[key], key
+            stale = deepcopy(closure)
+            stale["global_review"]["termination"]["invocation_id"] = initial["invocation_id"]
+            assert not host.stop_check(current, state, stale, {})["allow"]
+            stale["global_review"]["termination"]["invocation_id"] = current["invocation_id"]
+            assert host.stop_check(current, state, stale, {})["allow"]
+
+        for status, origin in (("active", "compact"), ("suspended", "resume"), ("completed", "resume")):
+            seed(status=status)
+            # Part-first ordering must deliver current bytes without replacing the old snapshot early.
+            parts = [event("SessionStart", source=origin, part=n) for n in range(RECOVERY_PARTS)]
+            body = "".join(part["hookSpecificOutput"]["additionalContext"].split("\n", 2 if status != "active" else 1)[-1]
+                           for part in parts if part)
+            assert body == updated["text"]
+            event("SessionStart", source=origin)
+            assert saved()["status"] == status and saved()["needs_refresh"]
+            assert saved()["source_sha256"] == source["sha256"]
+            if status == "completed":
+                event("UserPromptSubmit", prompt="Continue the local fixture")
+            delivered(refresh(), updated)
+
+        seed()
+        parts = [host.body(runtime, SESSION, n, round_mode=False) for n in range(RECOVERY_PARTS)]
+        assert "".join(part.split("\n", 1)[1].removesuffix("\nCCST_ENTRY_END") for part in parts if part) == updated["text"]
+        with patch.object(bootstrap, "build_autopilot_bootstrap", return_value={
+                "action": "continue", "arguments": initial["arguments"], "state": {}}), \
+             patch.object(bootstrap, "render_autopilot_bootstrap_json", side_effect=json.dumps):
+            assert json.loads(host.start(runtime, SESSION, [TARGET], round_mode=False))["host"]["source_sha256"] == updated["sha256"]
+
+        for missing in (None, "", "invalid"):
+            seed(contract_sha256=missing)
+            refused(lambda: host.body(runtime, SESSION, 0, round_mode=False))
+            refused(lambda: event("SessionStart", source="compact"))
+            seed(contract_sha256=missing, reopen_prompt_id=initial["prompt_id"])
+            refused(refresh)
+            refused(lambda: host.start(runtime, SESSION, [TARGET], round_mode=False))
+        seed(repo_root=str(project.parent / "foreign"))
+        refused(lambda: host.body(runtime, SESSION, 0, round_mode=False))
+        for corrupt in ({}, {"sha256": source["sha256"], "sources": source["sources"], "sections": ["modified"]}):
+            seed()
+            event("UserPromptSubmit", prompt="Continue the local fixture")
+            host.write_json_atomic(context_path, corrupt)
+            refused(refresh, (KeyError, ValueError))
+            assert saved()["status"] == "completed" and saved()["source_sha256"] == source["sha256"]
+
+        seed()
+        event("UserPromptSubmit", prompt="Continue the local fixture")
+        write = host.write_json_atomic
+        def interrupted_commit(destination, value):
+            if destination == path and value.get("status") == "active":
+                raise OSError("interrupted after snapshot publication")
+            return write(destination, value)
+        with patch.object(host, "write_json_atomic", side_effect=interrupted_commit):
+            refused(refresh, OSError)
+        assert saved()["status"] == "completed" and saved()["source_sha256"] == source["sha256"]
+        assert host._context(saved(), context_path)["sections"] == source["sections"]
+        delivered(refresh(), updated)
+        assert saved()["started_at"] == initial["started_at"]
+
+        command = project / "commands/autopilot.md"
+        original = command.read_bytes()
+        for changed in (original.replace(b"  - Bash\n", b"  - Read\n", 1),
+                        original.replace(b"Complete original sources", b"Changed entry sources", 1)):
+            assert changed != original
+            command.write_bytes(changed)
+            seed(status="suspended")
+            event("UserPromptSubmit", prompt="Continue the local fixture")
+            refused(refresh)
+            refused(lambda: event("SessionStart", source="resume"))
+            assert saved()["status"] == "suspended" and saved()["source_sha256"] == source["sha256"]
+        command.write_bytes(original)
+
     assert store.active_goal() == "", "host lifecycle changed target memory"
+
+
+def verify_runtime(project, runtime):
+    manifest = {"status": "valid", "host_hooks": True, "paths": [
+        {"kind": "skills", "relative_path": "runtime-protocol.md"}]}
+    source_path, installed = project / "skills/runtime-protocol.md", runtime / "skills/runtime-protocol.md"
+    source_path.parent.mkdir(parents=True)
+    installed.parent.mkdir(parents=True)
+    source_path.write_text("Updated fixture instructions\n")
+    installed.write_text("Original fixture instructions\n")
+    hooks = host_hooks(project, runtime, contract_sha256="a" * 64)
+    runtime_doctor._publish_hooks(runtime, hooks, {None})
+    owned = {"skills/runtime-protocol.md": {"kind": "skills", "sha256": runtime_doctor._file_hash(installed, runtime)},
+             HOOK_OWNER: runtime_doctor._hook_receipt(hooks)}
+    host.write_json_atomic(runtime / ".ccst-installed.json", owned)
+    with patch.object(runtime_doctor, "load_critical_runtime_manifest", return_value=manifest):
+        result = runtime_doctor.compare_runtime(project, runtime)
+        assert result["critical_clean"] and not result["clean"]
+        assert result["advisory_drift"][0]["reason"] == "current body is delivered by the host"
+        installed.write_text("Local modification outside the receipt\n")
+        assert not runtime_doctor.compare_runtime(project, runtime)["critical_clean"]
+        installed.write_text("Original fixture instructions\n")
+        for change in ("disabled", "missing", "modified", "unowned"):
+            altered, receipt = deepcopy(hooks), deepcopy(owned)
+            settings = {"hooks": altered}
+            if change == "disabled":
+                settings["disableAllHooks"] = True
+            elif change == "missing":
+                del altered["Stop"]
+            elif change == "modified":
+                altered["Stop"][0]["hooks"][0]["timeout"] = 1
+            else:
+                receipt.pop(HOOK_OWNER)
+            host.write_json_atomic(runtime / "settings.json", settings)
+            host.write_json_atomic(runtime / ".ccst-installed.json", receipt)
+            assert not runtime_doctor.compare_runtime(project, runtime)["critical_clean"], change
+    command = "---\nallowed-tools: Bash\n---\nentry command\n## Shared Automation\nOld body\n"
+    assert refreshable_source("commands/autopilot.md", command, command.replace("Old body", "New body"))
+    assert not refreshable_source("commands/autopilot.md", command, command.replace("entry command", "changed command"))
+    assert not refreshable_source("commands/autopilot.md", command, command.replace("Bash", "Read"))
+    assert not refreshable_source("commands/recon.md", command, command.replace("Old body", "New body"))
 
 
 if __name__ == "__main__":
@@ -276,6 +423,7 @@ if __name__ == "__main__":
             root = Path(temporary)
             os.chdir(root)
             verify(root / "project", root / "runtime")
+            verify_runtime(root / "source-refresh", root / "installed-refresh")
     finally:
         os.chdir(original_cwd)
-    print("PASS: goal/review binding, five-entry memory recovery, prompt-bound reopen, unchanged limits and Stop guard")
+    print("PASS: source refresh, full-body delivery, runtime ownership, memory/limits and Stop guard")
