@@ -72,8 +72,12 @@ Missing bodies, truncated previews or `CCST_AUTOPILOT_INCOMPLETE` forbid new tar
 work. Natural Skill discovery remains available; no duplicate Skill invocation is
 needed for an already delivered complete body.
 
-Keep `host.session_id` + `host.invocation_id`. Same-session continuation reuses context
-and enters Refresh before work. Questions are answered directly; cancellation/task changes
+Keep the latest returned `host.session_id` + `host.invocation_id`. Same-session continuation reuses context
+and enters Refresh before work. A completed invocation can reopen only from the current
+user prompt's state command when that request explicitly continues the same task.
+Successful reopening returns a new invocation identity for a fresh Stop review, while
+preserving the original start time, time/Round limits, arguments and target facts.
+Questions are answered directly; cancellation/task changes
 stay suspended. User interruption needs no review. SessionStart restores bodies after
 compaction/restart; Refresh's `recovery` replaces entry arguments/root/mode, Scope and state/memory.
 
@@ -89,6 +93,8 @@ compaction/restart; Refresh's `recovery` replaces entry arguments/root/mode, Sco
    does not turn the target into group/brand discovery or a campaign seed queue.
    At start consume `state.target_memory`; after compaction/restart consume
    `recovery.state.target_memory` under `skills/runtime-protocol.md#shared-memory-continuity`.
+   `active_goal` comes from that target's Store. Save an explicitly changed objective
+   through `commands/target.md`; never replace it with a session summary or an inferred default.
    Carry any explicit user/host time, cost or lane limit. Treat absent limits as
    unset; do not invent a deadline, allocation or write-back cutoff.
    `host.started_at` is the invocation's Unix starting time; `host.elapsed_seconds`
@@ -139,6 +145,8 @@ compaction/restart; Refresh's `recovery` replaces entry arguments/root/mode, Sco
    the current `host.state_command` once. It checks Scope/Auth, reads loop state and
    rearms Stop. Require `action=continue`, consume any `recovery`, and retain the host
    binding. No separate resume, Bootstrap or Store initialization.
+   Consume the projection's current `active_goal`; an empty value clears the previous
+   goal. Goal changes invalidate the prior Global Review; handoff notes alone do not.
    Read the full JSON, including persisted output; expand oversized files in consecutive
    chunks until complete. Never discard the remainder with head/tail or repeat a truncated full read.
    Use fresh `control`, including `control.next_step`; expand changed or unread material

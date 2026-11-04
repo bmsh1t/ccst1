@@ -94,6 +94,10 @@ source bodies through `autopilot_host`; independent static parts and one Bootstr
 share the installed source contract. Static delivery is not execution admission.
 `autopilot_host state` combines loop-check, Scope/Auth and prompt-bound rearming;
 same-session continuation reuses context and admitted argument paths without Bootstrap/init.
+Completed bindings stay inactive until the latest user prompt explicitly continues the
+same task and its state command succeeds. Reopening renews only the invocation identity
+used by Stop reviews; it retains entry time, limits, arguments and target facts.
+SessionStart restores completed context without granting continuation by itself.
 After compact/restart, SessionStart restores bodies and state adds owner/memory recovery.
 Source/recovery failures suspend enforcement. The small
 private session binding and source snapshot own no target progress or facts.
@@ -109,6 +113,9 @@ execution and known owner work; Closure alone retains exhaustion meaning. A repe
 unchanged rejection suspends as incomplete. New user prompts suspend enforcement;
 only an explicit same-task state refresh rearms it, and native interruption needs no review.
 Claude decides intent; ordinary questions/cancellation/task changes stay suspended.
+Decision views carry the current Store goal even on ordinary refresh. Review basis v3
+binds that goal in Closure state, independently of handoff/history presentation;
+changing or clearing the goal invalidates a prior review without binding every memory note.
 General state/memory queries remain read-only and independent of host bindings.
 Running Recon/Scan keeps independent owner work visible; only dependent work waits.
 A valid stop review retains its termination when residual-token form is incomplete:

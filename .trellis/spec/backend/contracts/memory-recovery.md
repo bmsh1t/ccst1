@@ -10,6 +10,9 @@ no schema, automatic memory writes or execution authority.
 
 - `compact_autopilot_state(state)["target_memory"]` reuses
   `state.resume_summary.target_memory` plus its `source_binding`.
+- `build_decision_projection(state, kind)["active_goal"]` carries the same current
+  goal in loop/Closure reads, including an explicit empty value; it reads no extra
+  memory source and writes no state.
 - Recovery entries retain their owner-provided `version`; `experience_window.context_command`
   expands counterevidence using that entry's ID/version. Its budget is independent
   of the recent-history limit.

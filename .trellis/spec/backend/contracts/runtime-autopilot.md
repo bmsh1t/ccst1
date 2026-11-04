@@ -86,6 +86,15 @@ mechanical safety, evidence and recovery constraints govern execution.
   New user prompts suspend enforcement; same-task continuation explicitly rearms
   using the current state command. Ordinary questions, cancellation and changed tasks
   remain suspended; intent is the model's choice, not a hook prose classifier.
+  Completed bindings remain inactive but accept a current real-prompt-bound Refresh
+  for explicit same-task continuation. Successful reopen renews invocation_id for
+  Stop review binding only; started_at, max_seconds, round_limit, arguments and target
+  facts remain unchanged. It restores the existing owner/memory view without Bootstrap.
+  SessionStart may restore completed source bodies but cannot grant a reopen prompt;
+  compact preserves an already current prompt grant, while restart, Stop, StopFailure
+  and SessionEnd expire it; clear returns the binding to idle. Source failures retain completed status. Notifications
+  cannot grant continuation. Only successful completed reopen clears last_stop_basis;
+  ordinary Refresh preserves repeated-rejection protection.
   Native interruption needs no review, ordinary
   later conversation is not forced into a hunt, and a bound session changing cwd
   still receives its suspension/recovery events. Subagent events are excluded.
@@ -355,7 +364,10 @@ mechanical safety, evidence and recovery constraints govern execution.
 | Untested coverage, no explicit owner work, budget remaining | `handoff`, retained residuals; Round prepare starts/resumes investigation |
 | Active runtime phase or explicit Queue work | Existing lock/owner continuation preserved |
 | Evidence or snapshot damage | Visible integrity/recovery error, never empty success |
-| Host refresh: stale binding / invalid Scope/Auth or failed read | Reject stale caller / remain suspended; no init or Bootstrap; compact/restart adds root, arguments, batch/mode and memory recovery |
+| Host refresh: stale binding / invalid Scope/Auth or failed read | Reject stale caller / remain inactive (completed on failed reopen); no init or Bootstrap; recovery adds root, arguments, batch/mode and memory |
+| Completed task, current explicit continuation | New review invocation identity, original time/Round allocation and owner memory retained |
+| Completed task, question/notification/restart alone | Remain completed; no automatic continuation; failed restart also expires an old prompt grant |
+| Goal changed/cleared or captured memory binding stale | Old review becomes stale / Closure requests a fresh state; handoff-only changes do not alter semantic basis |
 | Exact subject closure with identity-free tested Coverage cell | `missing_matching_ledger_terminal` |
 | Valid global review covers non-blocking bounded residuals | `handoff` with `bounded_recon_residual_deferred`; blocking owner obligations keep their entries |
 | Otherwise finishable ordinary target without a current review | Existing Global Review handoff; `can_claim_exhausted=false` |
@@ -372,6 +384,7 @@ Good: read raw JS directly, save a confirmed A immediately, choose optional B/C
 within budget, and report unresolved context at bounded stop.
 Base: no specialist or next investigation is useful; remain in the same session.
 Host: continuation refreshes once; a question stays suspended; stale prompt cannot rearm.
+Completed host: explicit continuation renews its review binding; source recovery alone stays inactive.
 Bad: rename a frontier while keeping its automatic route control, or claim
 exhaustion merely because the inferred frontier was deleted.
 For review routing, a valid review missing residual tokens still needs form
@@ -380,6 +393,13 @@ new round. Ordinary settlement without a review reason retains its prior status.
 
 ### 6. Tests Required
 
+- `python3 -I research/verify_autopilot_continuity.py` uses a temporary Store and
+  host binding to check current/cleared goals, review v3/legacy behavior, a handoff
+  outside the five-entry history, compact/restart/prompt/notification sequences,
+  source/Scope failures, unchanged time/Round limits and repeated Stop protection.
+  A real Closure read rejects a captured memory revision older than the current
+  Store. Scope and host state acquisition are injected; no target requests, model,
+  personal configuration or project tests are read. This is not live host acceptance.
 - `10-27-autopilot-session-continuity/research/check_continuity.py` under `.trellis/tasks/`
   checks real-owner recovery, event-delivered CLI commands, retained auth paths and failure suspension in isolated copies.
 - For Skill entry guidance, review the composed Shared Automation instructions:
@@ -457,6 +477,8 @@ Wrong: observed JS / missing actor / Intel lead -> mandatory route or session ta
 Correct: observations -> native reasoning; explicit owner command -> durable work
 Wrong: every continuation -> full Bootstrap + separate state read
 Correct: bound state refresh; only lost context adds owner/memory recovery
+Wrong: completed refresh reuses the old stop review or restarts the budget
+Correct: explicit current-prompt reopen renews only review identity and preserves allocation
 Wrong: no generated frontier -> target exhausted
 Correct: unresolved observations -> native investigation handoff; actual stopping conditions remain separate
 Wrong: a non-empty completed Round is the only reason to require Global Review

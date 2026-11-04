@@ -242,8 +242,15 @@ default and last-value semantics. Evidence-list validation failures identify
 `follow_up` must name an existing active Queue action. Missing, malformed, stale, or
 unmapped reviews project `global_review_required`, `global_review_invalid`, or
 `global_review_stale`; those are Checkpoint handoffs, not external permission gates.
-Any owner write that changes the digest invalidates the prior review. No new state,
+Review basis v3 binds Queue, Coverage and semantic Closure state, including the
+Store-owned active_goal from resume_summary.target_memory. Changing or clearing the
+goal invalidates the prior review; handoff/history-only writes do not. Old basis
+versions are stale; reviews without basis retain whole-digest comparison. No new state,
 Queue, controller, or state machine is introduced.
+Closure compares the captured Resume source binding with its acquired Store marker;
+a stale/missing binding for a supplied goal reports `snapshot_stale_sources=target_memory`.
+This acquisition fence prevents old goals from borrowing newer Queue/Store snapshots;
+it does not make every Store revision part of the persisted review basis.
 
 Closure hashes a semantic copy of Coverage: omit only root `as_of`/`last_updated`
 and `source_snapshot.as_of`, then recompute the source fingerprint. Keep all cells,

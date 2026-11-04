@@ -55,6 +55,8 @@ Actor 缺口只限制对应比较；观察残余不自动生成行动。
 
 同一 Checkpoint owner 记录复核：先取 Closure 的 `snapshot_digest`，再提交当前证据引用。
 写回后重读 Closure；只有 `closure.verdict=finish` 且 `can_claim_exhausted=true` 才能声称耗尽。
+复核绑定当前 Store 的 `active_goal`；目标修改或清空后须重新复核。更新交接备注本身不使
+复核失效。旧版 basis 返回 stale，按当前快照重审，不自动改写历史 witness。
 
 ```bash
 python3 tools/checkpoint.py --target target.com --record-global-review \

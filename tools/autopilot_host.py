@@ -107,6 +107,7 @@ def start(runtime: Path, session_id: str, argv: list[str], *, round_mode: bool) 
                        content_sha256=context["content_sha256"],
                        last_stop_basis="", needs_refresh=False,
                        prompt_id=binding.get("prompt_id") or uuid.uuid4().hex)
+        binding.pop("reopen_prompt_id", None)
         payload["host"] = _host_view(runtime, binding)
         output = _entry_output(render_autopilot_bootstrap_json(payload), path.parent)
         write_json_atomic(context_path, {key: context[key] for key in ("sha256", "sources", "sections")})
@@ -144,15 +145,17 @@ def refresh_state(runtime: Path, session_id: str, invocation_id: str, prompt_id:
     from tools.autopilot_state import build_decision_projection
     from tools.runtime_config import is_ctf_mode_enabled
     with session_binding(runtime, session_id) as (binding, path, context_path):
-        if (binding.get("status") not in {"active", "suspended"}
+        reopening = binding.get("status") == "completed"
+        if (binding.get("status") not in {"active", "suspended", "completed"}
+                or (reopening and binding.get("reopen_prompt_id") != prompt_id)
                 or binding.get("repo_root") != str(REPO_ROOT)
                 or binding.get("invocation_id") != _identifier(invocation_id)
                 or binding.get("prompt_id") != _identifier(prompt_id)
                 or binding.get("target") != target):
             raise ValueError("stale Autopilot state binding; use the command from the current host event")
-        recovering = bool(binding.get("needs_refresh"))
+        recovering = reopening or bool(binding.get("needs_refresh"))
         check_source = recovering or binding["status"] == "suspended"
-        binding["status"] = "suspended"
+        binding["status"] = "completed" if reopening else "suspended"
         write_json_atomic(path, binding)
         if check_source:
             source = _capture_bound_context(binding, binding["round_mode"])
@@ -174,6 +177,10 @@ def refresh_state(runtime: Path, session_id: str, invocation_id: str, prompt_id:
             payload["recovery"] = {"repo_root": str(REPO_ROOT), "repo_root_shell": shlex.quote(str(REPO_ROOT)),
                 "arguments": arguments, "invocation_batch": arguments["invocation_batch"],
                 "ctf_mode": is_ctf_mode_enabled(REPO_ROOT), **context, "state": compact_autopilot_state(state)}
+        if reopening:
+            # Retain the original allocation; only the old Stop attestation expires.
+            binding.update(invocation_id=uuid.uuid4().hex, last_stop_basis="")
+            binding.pop("reopen_prompt_id", None)
         binding.update(status="active", needs_refresh=False)
         payload.update(action="continue", host=_host_view(runtime, binding))
         output = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
@@ -259,6 +266,7 @@ def hook(runtime: Path, data: dict, *, part: int | None, contract_sha256: str) -
         if binding.get("repo_root") not in {None, str(REPO_ROOT)}:
             raise ValueError("Claude session is bound to another checkout")
         active = binding.get("status") in {"active", "suspended"} and bool(binding.get("invocation_id"))
+        completed = binding.get("status") == "completed" and bool(binding.get("invocation_id"))
         if event == "UserPromptSubmit":
             prompt = str(data.get("prompt") or "").strip()
             # Claude also emits this hook for its reserved background-result envelope.
@@ -275,52 +283,69 @@ def hook(runtime: Path, data: dict, *, part: int | None, contract_sha256: str) -
                 binding["invocation_prompt"] = prompt
             if active:
                 binding["status"] = "suspended"
+            if completed:
+                binding["reopen_prompt_id"] = binding["prompt_id"]
             write_json_atomic(path, binding)
-            if active:
-                return hook_context(event, "Autopilot suspended. Answer questions directly; cancellation/task changes stay suspended. "
-                    "For same-investigation continuation, reuse context and enter the loop's Refresh step with: "
-                    + _state_command(runtime, binding) + ". No separate resume or Bootstrap; never replay effects to recover registration.")
+            if active or completed:
+                return hook_context(event, f"Autopilot {binding['status']}. Answer questions directly; cancellation/task changes stay inactive. "
+                    "Only if the current user request explicitly continues this investigation, enter Refresh with: "
+                    + _state_command(runtime, binding) + ". Retain the original limits and use the returned host identity. "
+                    "No separate resume or Bootstrap; never replay effects to recover registration.")
             return {}
         if event == "SessionStart":
             if data.get("source") == "clear":
                 if part is None:
                     write_json_atomic(path, {"session_id": binding["session_id"], "status": "idle", "contract_sha256": contract_sha256})
                 return {}
-            if not active:
+            if not (active or completed):
                 if part is None:
                     binding["contract_sha256"] = contract_sha256
                     write_json_atomic(path, binding)
                 return {}
+            if completed and data.get("source") != "compact" and "reopen_prompt_id" in binding:
+                binding.pop("reopen_prompt_id")
+                write_json_atomic(path, binding)
             try:
                 current = _capture_bound_context(binding, binding["round_mode"])
                 if current["sha256"] != binding["source_sha256"] or binding.get("contract_sha256") != contract_sha256:
                     raise ValueError("Autopilot recovery source changed; start a reviewed new invocation after sync-check")
                 context = _context(binding, context_path)
             except (OSError, ValueError, KeyError, TypeError):
-                binding.update(status="suspended", needs_refresh=True)
+                binding.update(status="completed" if completed else "suspended", needs_refresh=True)
                 write_json_atomic(path, binding)
                 raise
-            activation = ("Retained prior Autopilot context only. Automation is SUSPENDED; do not apply these instructions "
+            activation = ("Retained prior Autopilot context only. Automation is INACTIVE; do not apply these instructions "
                           "or resume unless the current user request continues this investigation.\n"
-                          if binding["status"] == "suspended" or data.get("source") != "compact" else "")
+                          if binding["status"] != "active" or data.get("source") != "compact" else "")
             if part is not None:
                 chunks = context_chunks("\n\n".join(context["sections"]))
                 if part >= len(chunks):
                     return {}
                 return hook_context(event, activation + f"CCST_RECOVERY {binding['invocation_id']} {context['sha256']} "
                                     f"PART {part + 1}/{len(chunks)}\n" + chunks[part])
-            binding.update(needs_refresh=True, prompt_id=uuid.uuid4().hex)
-            if data.get("source") != "compact":
+            binding["needs_refresh"] = True
+            if not completed:
+                binding["prompt_id"] = uuid.uuid4().hex
+            if not completed and data.get("source") != "compact":
                 binding["status"] = "suspended"
             write_json_atomic(path, binding)
             return hook_context(event, activation + "Complete CCST source bodies follow in numbered parts. "
                 "For active/same-task continuation, state_command restores Scope/Auth, owners and memory. "
-                "Retain invocation/limits; incomplete transport is an error. "
+                "Retain limits and use the returned host identity; incomplete transport is an error. "
                 + json.dumps(_host_view(runtime, binding), ensure_ascii=False))
         if event in {"SessionEnd", "StopFailure"}:
             if active and part is None:
                 binding["status"] = "idle" if data.get("reason") == "clear" else "suspended"
                 write_json_atomic(path, binding)
+            elif completed:
+                binding.pop("reopen_prompt_id", None)
+                if data.get("reason") == "clear":
+                    binding["status"] = "idle"
+                write_json_atomic(path, binding)
+            return {}
+        if event == "Stop" and completed:
+            binding.pop("reopen_prompt_id", None)
+            write_json_atomic(path, binding)
             return {}
         if event != "Stop" or binding.get("status") != "active":
             return {}

@@ -2487,11 +2487,11 @@ AUTOPILOT_STOP_REASONS = frozenset({
     "scope_boundary", "explicit_limit", "global_blocker", "no_worthwhile_work",
 })
 _GLOBAL_REVIEW_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
-_GLOBAL_REVIEW_BASIS_VERSION = 2
+_GLOBAL_REVIEW_BASIS_VERSION = 3
 # The review's decision answers "is the target-wide picture consistent?" —
 # that claim covers exactly these components. Ledger telemetry, checkpoint
-# witness details, surface projections, and target-memory echoes are not part
-# of the claim and must not invalidate a still-correct review.
+# witness details, surface projections, and handoff echoes are not part of
+# the claim. The current goal is part of the claim, independently of memory notes.
 _GLOBAL_REVIEW_BASIS_KEYS = (
     "queue_fingerprint",
     "coverage_fingerprint",
@@ -2580,6 +2580,7 @@ def _review_closure_state_snapshot(state: dict) -> dict:
     # inputs such as Queue, Coverage, Case and current evidence are bound below.
     snapshot.pop("next_action", None)
     snapshot.pop("action_queue_next", None)
+    snapshot["active_goal"] = ((state.get("resume_summary") or {}).get("target_memory") or {}).get("active_goal")
     return snapshot
 
 
@@ -2662,10 +2663,10 @@ def validate_global_review(
     """Validate the optional target-wide review witness against current owners.
 
     Validity binds to what the review actually attests to. A review recorded
-    with basis components (queue/coverage/closure-state fingerprints) stays
+    with basis components (queue/coverage/closure-state including current goal) stays
     valid while those components match, even when the whole snapshot digest
     drifted for non-claim reasons (ledger telemetry, witness details, surface
-    projections, target-memory echoes). Reviews without basis components keep
+    projections, handoff echoes). Reviews without basis components keep
     the legacy whole-digest comparison.
     """
     if review in (None, {}):
@@ -2987,8 +2988,7 @@ def _closure_snapshot_digest(
         },
         "closure_state": _closure_state_snapshot(state),
         "target_memory": {
-            # Handoff memory is operational context, not a claim about target facts.
-            # Keep it in the full snapshot for diagnostics, outside review basis.
+            # Full memory stays diagnostic; only its Store-owned goal enters the review basis.
             "goal": state.get("target_goal_memory") or {},
             # Recon is already bound by closure_state; Resume embeds the same
             # owner in a diagnostic shape (unknown vs exact line counts).
@@ -3134,6 +3134,11 @@ def load_closure_projection(
     ]
     if state_queue_generation and state_queue_generation != queue_generation:
         stale_sources.append("action_queue")
+    resume = state.get("resume_summary") or {}
+    if "active_goal" in (resume.get("target_memory") or {}):
+        memory_binding = resume.get("source_binding") or {}
+        if (memory_binding.get("store_id"), memory_binding.get("revision")) != source_markers_before["store"]:
+            stale_sources.append("target_memory")
     if stale_sources:
         closure.update({
             "verdict": "handoff",
@@ -3691,6 +3696,9 @@ def build_decision_projection(state: dict, kind: str) -> dict:
     }
     if isinstance(state.get("scope"), dict) and state.get("scope"):
         projection["scope"] = state["scope"]
+    target_memory = (state.get("resume_summary") or {}).get("target_memory") or {}
+    if "active_goal" in target_memory:
+        projection["active_goal"] = target_memory["active_goal"]
     surface_projection = state.get("surface_projection")
     surface_projection = surface_projection if isinstance(surface_projection, dict) else {}
     projection["surface_projection"] = {
